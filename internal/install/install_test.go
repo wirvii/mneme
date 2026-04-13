@@ -169,7 +169,7 @@ func TestClaudeCode_Protocol(t *testing.T) {
 
 	requiredSections := []string{
 		"# mneme — Persistent Memory Protocol",
-		"## At Session Start",
+		"## FIRST MESSAGE — MANDATORY (before responding to the user)",
 		"## When to Save",
 		"## When to Search",
 		"## Session End (Mandatory)",

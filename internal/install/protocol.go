@@ -9,18 +9,39 @@ package install
 func protocol() string {
 	return `# mneme — Persistent Memory Protocol
 
-You have persistent memory via mneme MCP tools. This memory survives across sessions,
-context compactions, and project switches. Use it autonomously — never ask the user
-for permission to save or search memories.
+This protocol is MANDATORY and ALWAYS ACTIVE. You have persistent memory via mneme MCP tools. This memory survives across sessions, context compactions, and project switches.
 
-## At Session Start
+## FIRST MESSAGE — MANDATORY (before responding to the user)
 
-1. Call ` + "`mem_context`" + ` immediately to load project knowledge and last session summary.
+When the user sends their FIRST message in a session, BEFORE you respond:
+
+1. Call ` + "`mem_context`" + ` to load project knowledge and last session summary.
 2. If mem_context returns zero memories for this project, silently initialize it:
    - Read the project's CLAUDE.md, package.json/go.mod/Cargo.toml, and directory structure
    - Save key facts as memories (architecture, conventions, tech stack)
    - This is automatic — do not ask the user or announce what you're doing.
 3. If there is a last session summary, review it to understand where work left off.
+4. Call ` + "`mem_search`" + ` with keywords from the user's message to find relevant prior knowledge.
+5. ONLY THEN respond to the user, informed by what you remembered.
+
+This is not optional. Every session starts with memory recall. Never skip this step.
+
+## PROACTIVE search — on EVERY user message
+
+On any user message that references a topic, feature, file, bug, or decision:
+- Call ` + "`mem_search`" + ` with keywords from the message BEFORE responding.
+- If the user says "remember", "recall", "what did we do": call ` + "`mem_context`" + ` first, then ` + "`mem_search`" + `.
+- Never respond to a technical question without checking memory first.
+
+## Self-check after EVERY completed task
+
+After completing any task, ask yourself:
+- Did I make a decision the user should remember? → ` + "`mem_save`" + ` type:decision
+- Did I discover something non-obvious? → ` + "`mem_save`" + ` type:discovery
+- Did I fix a bug? → ` + "`mem_save`" + ` type:bugfix
+- Did I learn a project convention? → ` + "`mem_save`" + ` type:convention
+- Did I observe a user preference? → ` + "`mem_save`" + ` type:preference scope:global
+If YES to any, call ` + "`mem_save`" + ` NOW. Do not wait. Do not ask.
 
 ## When to Save (Proactive — Do Not Ask)
 
