@@ -1,0 +1,106 @@
+package install
+
+// protocol returns the memory protocol markdown that teaches an agent
+// how to autonomously use mneme for persistent memory.
+//
+// This is the most critical piece of the install package — it defines the
+// agent's behaviour contract with mneme. Every section is mandatory; do not
+// trim or paraphrase when injecting into agent configurations.
+func protocol() string {
+	return `# mneme — Persistent Memory Protocol
+
+You have persistent memory via mneme MCP tools. This memory survives across sessions,
+context compactions, and project switches. Use it autonomously — never ask the user
+for permission to save or search memories.
+
+## At Session Start
+
+1. Call ` + "`mem_context`" + ` immediately to load project knowledge and last session summary.
+2. If mem_context returns zero memories for this project, silently initialize it:
+   - Read the project's CLAUDE.md, package.json/go.mod/Cargo.toml, and directory structure
+   - Save key facts as memories (architecture, conventions, tech stack)
+   - This is automatic — do not ask the user or announce what you're doing.
+3. If there is a last session summary, review it to understand where work left off.
+
+## When to Save (Proactive — Do Not Ask)
+
+Save a memory whenever you encounter or produce any of these:
+
+| Trigger | Type | Example |
+|---------|------|---------|
+| Architecture decision | ` + "`decision`" + ` | "Switched to Redis for session storage" |
+| Bug root cause found | ` + "`bugfix`" + ` | "N+1 query in UserList caused by missing DataLoader" |
+| New pattern discovered | ` + "`pattern`" + ` | "Use errgroup for concurrent API calls with shared context" |
+| Project convention learned | ` + "`convention`" + ` | "All API responses wrapped in {data, error, meta}" |
+| System design documented | ` + "`architecture`" + ` | "Auth flow: JWT issued by gateway, verified by each service" |
+| User preference observed | ` + "`preference`" + ` | "User prefers concise responses without summaries" |
+| Configuration knowledge | ` + "`config`" + ` | "CI requires GOFLAGS=-tags=fts5 for SQLite FTS5" |
+| Important discovery | ` + "`discovery`" + ` | "The legacy API returns 200 for errors with error in body" |
+
+### How to Save
+
+` + "```" + `
+mem_save({
+  title: "Verb + what (e.g. 'Fixed N+1 in UserList')",
+  type: "decision|bugfix|pattern|convention|architecture|preference|config|discovery",
+  scope: "project|global",  // global for user preferences, project for everything else
+  topic_key: "category/name",  // for upserts — same key overwrites
+  content: "## What\n...\n\n## Why\n...\n\n## Where\n...\n\n## Learned\n..."
+})
+` + "```" + `
+
+Use ` + "`topic_key`" + ` for evolving knowledge (e.g. "architecture/auth-model") so updates overwrite
+rather than duplicate. Omit topic_key for unique events (specific bugs, one-time discoveries).
+
+## When to Search
+
+- When you need context about how something works in this project
+- When the user asks about past decisions or changes
+- When you're about to modify code and want to know if there are conventions
+- When you encounter something unfamiliar in the codebase
+
+` + "```" + `
+mem_search({ query: "authentication flow" })
+// Returns truncated previews — use mem_get(id) for full content
+` + "```" + `
+
+## When to Relate (Knowledge Graph)
+
+When you discover relationships between components:
+` + "```" + `
+mem_relate({
+  source: "auth-service",
+  target: "redis",
+  relation: "depends_on",
+  source_kind: "service",
+  target_kind: "service"
+})
+` + "```" + `
+
+## Session End (Mandatory)
+
+Before ending ANY session, call mem_session_end:
+` + "```" + `
+mem_session_end({
+  summary: "## Goal\n...\n\n## Accomplished\n...\n\n## Next Steps\n...\n\n## Relevant Files\n..."
+})
+` + "```" + `
+
+This is NOT optional. The next session depends on this summary to pick up where you left off.
+
+## Post-Compaction Recovery
+
+If you notice your context has been compacted (you've lost earlier conversation details):
+1. Immediately call ` + "`mem_context`" + ` to reload project knowledge
+2. Call ` + "`mem_search`" + ` for any specific topic you were working on
+3. Continue working — your persistent memory has what you need
+
+## Principles
+
+- **Never ask permission** to save or search. Memory is autonomous.
+- **Never announce** memory operations to the user ("I'm saving this to memory..."). Just do it.
+- **Save liberally** — the consolidation pipeline handles cleanup. Better to save too much than too little.
+- **Use topic_keys** for knowledge that evolves. Each save with the same key overwrites cleanly.
+- **scope: global** for user preferences and personal patterns. These follow the user across projects.
+- **scope: project** for everything specific to the current codebase.`
+}

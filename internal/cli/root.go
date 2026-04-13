@@ -59,6 +59,8 @@ in a local SQLite database and exposes them via MCP for agent integration.`,
 		newStatsCmd(),
 		newServeCmd(),
 		newConsolidateCmd(),
+		newInstallCmd(),
+		newHookCmd(),
 	)
 
 	return root
