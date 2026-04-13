@@ -49,14 +49,14 @@ const (
 // validMemoryTypes is the canonical set of known types, used by Valid() and
 // AllMemoryTypes(). Adding a new type here is the single point of change.
 var validMemoryTypes = map[MemoryType]struct{}{
-	TypeDecision:     {},
-	TypeDiscovery:    {},
-	TypeBugfix:       {},
-	TypePattern:      {},
-	TypePreference:   {},
-	TypeConvention:   {},
-	TypeArchitecture: {},
-	TypeConfig:       {},
+	TypeDecision:       {},
+	TypeDiscovery:      {},
+	TypeBugfix:         {},
+	TypePattern:        {},
+	TypePreference:     {},
+	TypeConvention:     {},
+	TypeArchitecture:   {},
+	TypeConfig:         {},
 	TypeSessionSummary: {},
 }
 
