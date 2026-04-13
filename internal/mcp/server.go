@@ -48,7 +48,13 @@ func NewServer(svc *service.MemoryService, logger *slog.Logger, toolsMode string
 // Each incoming line must be a complete JSON object. Responses are written as
 // single-line JSON followed by a newline. Notifications (requests without an id)
 // are processed silently with no response emitted.
+//
+// Background tasks (e.g. consolidation) are started via svc.Start before the
+// message loop begins. They are stopped automatically when ctx is cancelled.
 func (s *Server) Run(ctx context.Context, reader io.Reader, writer io.Writer) error {
+	// Start background tasks. This is a no-op when consolidation is disabled.
+	s.svc.Start(ctx)
+
 	scanner := bufio.NewScanner(reader)
 	bw := bufio.NewWriter(writer)
 
