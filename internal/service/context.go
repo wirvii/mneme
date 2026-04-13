@@ -29,7 +29,7 @@ func (svc *MemoryService) Context(ctx context.Context, req model.ContextRequest)
 	}
 
 	// Collect project-scoped memories ordered by importance DESC.
-	projectMemories, err := svc.store.List(ctx, store.ListOptions{
+	projectMemories, err := svc.projectStore.List(ctx, store.ListOptions{
 		Project: req.Project,
 		Scope:   model.ScopeProject,
 		OrderBy: "importance DESC",
@@ -42,9 +42,9 @@ func (svc *MemoryService) Context(ctx context.Context, req model.ContextRequest)
 	candidates := make([]*model.Memory, 0, len(projectMemories))
 	candidates = append(candidates, projectMemories...)
 
-	// Optionally mix in global memories that exceed the minimum importance threshold.
+	// Optionally mix in global memories from the dedicated global store.
 	if svc.config.Context.IncludeGlobal {
-		globalMemories, err := svc.store.List(ctx, store.ListOptions{
+		globalMemories, err := svc.globalStore.List(ctx, store.ListOptions{
 			Scope:   model.ScopeGlobal,
 			OrderBy: "importance DESC",
 			Limit:   svc.config.Storage.GlobalBudget,
@@ -62,17 +62,25 @@ func (svc *MemoryService) Context(ctx context.Context, req model.ContextRequest)
 	totalAvailable := len(candidates)
 
 	// Build a focus boost set when a focus query is provided.
+	// Search both stores so global memories can also be boosted by focus.
 	focusIDs := make(map[string]bool)
 	if req.Focus != "" {
-		focusResults, err := svc.store.FTS5Search(ctx, req.Focus, store.SearchOptions{
+		focusOpts := store.SearchOptions{
 			Project: req.Project,
 			Limit:   20,
-		})
+		}
+		projectFocus, err := svc.projectStore.FTS5Search(ctx, req.Focus, focusOpts)
 		if err != nil {
 			// Focus search failure is non-fatal; degrade gracefully.
-			focusResults = nil
+			projectFocus = nil
 		}
-		for _, r := range focusResults {
+		globalFocusOpts := focusOpts
+		globalFocusOpts.Project = ""
+		globalFocus, err := svc.globalStore.FTS5Search(ctx, req.Focus, globalFocusOpts)
+		if err != nil {
+			globalFocus = nil
+		}
+		for _, r := range append(projectFocus, globalFocus...) {
 			focusIDs[r.Memory.ID] = true
 		}
 	}
@@ -111,14 +119,15 @@ func (svc *MemoryService) Context(ctx context.Context, req model.ContextRequest)
 	})
 
 	// Retrieve the last session summary — included first, exempt from budget.
-	lastSess, err := svc.store.GetLastSession(ctx, req.Project)
+	// Sessions are always stored in the project store.
+	lastSess, err := svc.projectStore.GetLastSession(ctx, req.Project)
 	if err != nil {
 		return nil, fmt.Errorf("service: context: get last session: %w", err)
 	}
 
 	var lastSession *model.SessionSummary
 	if lastSess != nil && lastSess.SummaryID != "" {
-		summaryMem, err := svc.store.Get(ctx, lastSess.SummaryID)
+		summaryMem, err := svc.projectStore.Get(ctx, lastSess.SummaryID)
 		if err == nil && summaryMem != nil {
 			lastSession = &model.SessionSummary{
 				ID:      summaryMem.ID,

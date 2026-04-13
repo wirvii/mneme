@@ -25,15 +25,24 @@ func (svc *MemoryService) SuggestTopicKey(ctx context.Context, title, project st
 	}
 
 	// Search existing memories with the title as the query to find similar records.
+	// Search both project store and global store to surface all relevant keys.
 	var existingMatches []model.TopicKeyMatch
 	if title != "" {
-		results, err := svc.store.FTS5Search(ctx, title, store.SearchOptions{
+		searchOpts := store.SearchOptions{
 			Project: project,
 			Limit:   10,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("service: suggest topic key: search: %w", err)
 		}
+		projectResults, err := svc.projectStore.FTS5Search(ctx, title, searchOpts)
+		if err != nil {
+			return nil, fmt.Errorf("service: suggest topic key: search project store: %w", err)
+		}
+		globalOpts := searchOpts
+		globalOpts.Project = ""
+		globalResults, err := svc.globalStore.FTS5Search(ctx, title, globalOpts)
+		if err != nil {
+			return nil, fmt.Errorf("service: suggest topic key: search global store: %w", err)
+		}
+		results := append(projectResults, globalResults...)
 
 		// Collect unique topic keys from search results.
 		seen := make(map[string]bool)

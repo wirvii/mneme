@@ -105,25 +105,40 @@ func initService() (*service.MemoryService, func(), error) {
 		slug = detected
 	}
 
-	// 4. Open the project-specific database when a project was resolved,
-	//    otherwise fall back to the global database.
-	var dbPath string
+	// 4a. Open the project-specific database (always required; new slugs get a
+	//     fresh DB created automatically by db.Open via auto-migration).
+	var projectDBPath string
 	if slug != "" {
-		dbPath = cfg.ProjectDBPath(slug)
+		projectDBPath = cfg.ProjectDBPath(slug)
 	} else {
-		dbPath = cfg.GlobalDBPath()
+		// No project detected — use global.db as the project store so the CLI
+		// still works for global-only usage.
+		projectDBPath = cfg.GlobalDBPath()
 	}
 
-	database, err := db.Open(dbPath)
+	projectDB, err := db.Open(projectDBPath)
 	if err != nil {
-		return nil, nil, fmt.Errorf("open database: %w", err)
+		return nil, nil, fmt.Errorf("open project database: %w", err)
 	}
 
-	cleanup := func() { _ = database.Close() }
+	// 4b. Always open the global database as a separate connection so that
+	//     memories with scope=global are stored in global.db rather than in
+	//     the per-project file.
+	globalDB, err := db.Open(cfg.GlobalDBPath())
+	if err != nil {
+		_ = projectDB.Close()
+		return nil, nil, fmt.Errorf("open global database: %w", err)
+	}
 
-	// 5. Build store and service on top of the opened database.
-	s := store.NewMemoryStore(database)
-	svc := service.NewMemoryService(s, cfg, slug)
+	cleanup := func() {
+		_ = projectDB.Close()
+		_ = globalDB.Close()
+	}
+
+	// 5. Build stores and service on top of the opened databases.
+	projectStore := store.NewMemoryStore(projectDB)
+	globalStore := store.NewMemoryStore(globalDB)
+	svc := service.NewMemoryService(projectStore, globalStore, cfg, slug)
 
 	return svc, cleanup, nil
 }

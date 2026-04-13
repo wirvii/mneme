@@ -20,16 +20,22 @@ import (
 func newTestServer(t *testing.T) *Server {
 	t.Helper()
 
-	database, err := db.OpenMemory()
+	projectDB, err := db.OpenMemory()
 	if err != nil {
-		t.Fatalf("open memory db: %v", err)
+		t.Fatalf("open project db: %v", err)
 	}
-	database.SetMaxOpenConns(1)
-	t.Cleanup(func() { database.Close() })
+	projectDB.SetMaxOpenConns(1)
+	globalDB, err := db.OpenMemory()
+	if err != nil {
+		t.Fatalf("open global db: %v", err)
+	}
+	globalDB.SetMaxOpenConns(1)
+	t.Cleanup(func() { projectDB.Close(); globalDB.Close() })
 
-	ms := store.NewMemoryStore(database)
+	projectStore := store.NewMemoryStore(projectDB)
+	globalStore := store.NewMemoryStore(globalDB)
 	cfg := config.Default()
-	svc := service.NewMemoryService(ms, cfg, "test-project")
+	svc := service.NewMemoryService(projectStore, globalStore, cfg, "test-project")
 
 	logger := slog.Default()
 	return NewServer(svc, logger, "all", "test")

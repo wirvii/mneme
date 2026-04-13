@@ -6,9 +6,6 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
-
-	"github.com/juanftp/mneme/internal/db"
-	"github.com/juanftp/mneme/internal/store"
 )
 
 // newStatusCmd returns the "mneme status" subcommand. It displays a summary of
@@ -40,17 +37,10 @@ database path, and memory counts for the active project and global scope.`,
 				projectCount = 0
 			}
 
-			// Count global memories from the global DB (a separate file).
+			// Count global memories via the service's global store.
 			globalCount := 0
-			globalDB, err := db.Open(cfg.GlobalDBPath())
-			if err == nil {
-				globalStore := store.NewMemoryStore(globalDB)
-				// Global memories have no project slug — query with empty string.
-				n, countErr := globalStore.Count(ctx, "")
-				_ = globalDB.Close()
-				if countErr == nil {
-					globalCount = n
-				}
+			if n, countErr := svc.CountGlobal(ctx); countErr == nil {
+				globalCount = n
 			}
 
 			var dbPath string

@@ -9,17 +9,23 @@ import (
 	"github.com/juanftp/mneme/internal/store"
 )
 
-// newTestService constructs a MemoryService backed by a fully-migrated in-memory
-// SQLite database. The database is closed automatically when the test ends via
-// t.Cleanup. All tests in this package should use this helper.
+// newTestService constructs a MemoryService backed by two fully-migrated
+// in-memory SQLite databases: one for project-scoped memories and one for
+// global/org-scoped memories. Both databases are closed automatically when the
+// test ends via t.Cleanup. All tests in this package should use this helper.
 func newTestService(t *testing.T) *service.MemoryService {
 	t.Helper()
-	database, err := db.OpenMemory()
+	projectDB, err := db.OpenMemory()
 	if err != nil {
-		t.Fatalf("open memory db: %v", err)
+		t.Fatalf("open project db: %v", err)
 	}
-	t.Cleanup(func() { database.Close() })
-	s := store.NewMemoryStore(database)
+	globalDB, err := db.OpenMemory()
+	if err != nil {
+		t.Fatalf("open global db: %v", err)
+	}
+	t.Cleanup(func() { projectDB.Close(); globalDB.Close() })
+	projectStore := store.NewMemoryStore(projectDB)
+	globalStore := store.NewMemoryStore(globalDB)
 	cfg := config.Default()
-	return service.NewMemoryService(s, cfg, "test/project")
+	return service.NewMemoryService(projectStore, globalStore, cfg, "test/project")
 }

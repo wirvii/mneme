@@ -90,19 +90,25 @@ func TestContext_Budget(t *testing.T) {
 }
 
 func TestContext_IncludesGlobal(t *testing.T) {
-	// Use a separate service instance that shares the same DB so we can save
-	// a global memory and verify it appears in a project context request.
-	database, err := db.OpenMemory()
+	// Build a service with distinct project and global in-memory databases to
+	// verify that global memories (stored in globalStore) are mixed into the
+	// project context response.
+	projectDB, err := db.OpenMemory()
 	if err != nil {
-		t.Fatalf("open memory db: %v", err)
+		t.Fatalf("open project db: %v", err)
 	}
-	t.Cleanup(func() { database.Close() })
+	globalDB, err := db.OpenMemory()
+	if err != nil {
+		t.Fatalf("open global db: %v", err)
+	}
+	t.Cleanup(func() { projectDB.Close(); globalDB.Close() })
 
-	s := store.NewMemoryStore(database)
+	projectStore := store.NewMemoryStore(projectDB)
+	globalStore := store.NewMemoryStore(globalDB)
 	cfg := config.Default()
 	cfg.Context.IncludeGlobal = true
 	cfg.Context.GlobalMinImportance = 0.5
-	svc := service.NewMemoryService(s, cfg, "test/project")
+	svc := service.NewMemoryService(projectStore, globalStore, cfg, "test/project")
 
 	ctx := context.Background()
 

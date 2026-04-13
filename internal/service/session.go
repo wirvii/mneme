@@ -54,7 +54,7 @@ func (svc *MemoryService) SessionEnd(ctx context.Context, req model.SessionEndRe
 		DecayRate:  scoring.DecayRateForType(model.TypeSessionSummary),
 	}
 
-	savedMem, _, err := svc.store.Upsert(ctx, summaryMemory)
+	savedMem, _, err := svc.projectStore.Upsert(ctx, summaryMemory)
 	if err != nil {
 		return nil, fmt.Errorf("service: session end: upsert summary memory: %w", err)
 	}
@@ -68,13 +68,13 @@ func (svc *MemoryService) SessionEnd(ctx context.Context, req model.SessionEndRe
 		SummaryID: savedMem.ID,
 	}
 
-	_, createErr := svc.store.CreateSession(ctx, sess)
+	_, createErr := svc.projectStore.CreateSession(ctx, sess)
 	if createErr != nil {
 		// If the session already exists (duplicate key), fall through and just
 		// update the ended_at and summary_id via EndSession.
 	}
 
-	if err := svc.store.EndSession(ctx, sessionID, savedMem.ID); err != nil {
+	if err := svc.projectStore.EndSession(ctx, sessionID, savedMem.ID); err != nil {
 		// If the session wasn't found above (createErr != nil and EndSession
 		// returned ErrNotFound), it means the session was just created and
 		// ended in the same call — this is the common case. Surface EndSession

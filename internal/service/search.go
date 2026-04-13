@@ -48,9 +48,36 @@ func (svc *MemoryService) Search(ctx context.Context, req model.SearchRequest) (
 		opts.Type = *req.Type
 	}
 
-	results, err := svc.store.FTS5Search(ctx, req.Query, opts)
-	if err != nil {
-		return nil, fmt.Errorf("service: search: %w", err)
+	var results []model.SearchResult
+
+	if req.Scope != nil && (*req.Scope == model.ScopeGlobal || *req.Scope == model.ScopeOrg) {
+		// Explicit global/org scope: query only the global store.
+		r, err := svc.globalStore.FTS5Search(ctx, req.Query, opts)
+		if err != nil {
+			return nil, fmt.Errorf("service: search: global store: %w", err)
+		}
+		results = r
+	} else if req.Scope == nil {
+		// No scope filter: merge results from both stores so the agent can find
+		// any memory regardless of where it lives.
+		projectResults, err := svc.projectStore.FTS5Search(ctx, req.Query, opts)
+		if err != nil {
+			return nil, fmt.Errorf("service: search: project store: %w", err)
+		}
+		globalOpts := opts
+		globalOpts.Project = "" // global store does not partition by project
+		globalResults, err := svc.globalStore.FTS5Search(ctx, req.Query, globalOpts)
+		if err != nil {
+			return nil, fmt.Errorf("service: search: global store: %w", err)
+		}
+		results = append(projectResults, globalResults...)
+	} else {
+		// Explicit project scope: query only the project store.
+		r, err := svc.projectStore.FTS5Search(ctx, req.Query, opts)
+		if err != nil {
+			return nil, fmt.Errorf("service: search: project store: %w", err)
+		}
+		results = r
 	}
 
 	now := time.Now()

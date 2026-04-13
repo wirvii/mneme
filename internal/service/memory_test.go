@@ -5,7 +5,11 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/juanftp/mneme/internal/config"
+	"github.com/juanftp/mneme/internal/db"
 	"github.com/juanftp/mneme/internal/model"
+	"github.com/juanftp/mneme/internal/service"
+	"github.com/juanftp/mneme/internal/store"
 )
 
 func TestSave_Success(t *testing.T) {
@@ -220,5 +224,97 @@ func TestUpdate_NotFound(t *testing.T) {
 	})
 	if !errors.Is(err, model.ErrNotFound) {
 		t.Errorf("expected ErrNotFound, got %v", err)
+	}
+}
+
+// TestSave_GlobalScope_UsesGlobalStore is the regression test for the bug where
+// scope=global memories were written to the project database instead of the
+// dedicated global.db. It verifies:
+//
+//  1. A global memory is findable via Search with an explicit global scope filter.
+//  2. A global memory appears in Context (mixed in from globalStore).
+//  3. A global memory does NOT appear when searching with an explicit project scope.
+func TestSave_GlobalScope_UsesGlobalStore(t *testing.T) {
+	// Build a service with separate in-memory databases so we can assert that
+	// the memory lands in globalStore and not in projectStore.
+	projectDB, err := db.OpenMemory()
+	if err != nil {
+		t.Fatalf("open project db: %v", err)
+	}
+	globalDB, err := db.OpenMemory()
+	if err != nil {
+		t.Fatalf("open global db: %v", err)
+	}
+	t.Cleanup(func() { projectDB.Close(); globalDB.Close() })
+
+	projectStore := store.NewMemoryStore(projectDB)
+	globalStore := store.NewMemoryStore(globalDB)
+	cfg := config.Default()
+	cfg.Context.IncludeGlobal = true
+	cfg.Context.GlobalMinImportance = 0.0 // include all global memories in context
+	svc := service.NewMemoryService(projectStore, globalStore, cfg, "test/project")
+
+	ctx := context.Background()
+
+	// 1. Save a memory with scope=global.
+	highImp := 0.9
+	saveResp, err := svc.Save(ctx, model.SaveRequest{
+		Title:      "universal coding convention",
+		Content:    "Always write tests before shipping code to production.",
+		Type:       model.TypeConvention,
+		Scope:      model.ScopeGlobal,
+		Importance: &highImp,
+	})
+	if err != nil {
+		t.Fatalf("Save global: %v", err)
+	}
+
+	// 2. Findable via Search with explicit global scope filter.
+	globalScope := model.ScopeGlobal
+	searchResp, err := svc.Search(ctx, model.SearchRequest{
+		Query: "universal coding convention tests",
+		Scope: &globalScope,
+	})
+	if err != nil {
+		t.Fatalf("Search global scope: %v", err)
+	}
+	found := false
+	for _, r := range searchResp.Results {
+		if r.Memory.ID == saveResp.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("global memory not found when searching with scope=global")
+	}
+
+	// 3. Appears in Context (global store mixed in).
+	ctxResp, err := svc.Context(ctx, model.ContextRequest{Project: "test/project"})
+	if err != nil {
+		t.Fatalf("Context: %v", err)
+	}
+	foundInCtx := false
+	for _, m := range ctxResp.Memories {
+		if m.ID == saveResp.ID {
+			foundInCtx = true
+		}
+	}
+	if !foundInCtx {
+		t.Error("global memory did not appear in project context")
+	}
+
+	// 4. Does NOT appear when filtering by project scope only.
+	projectScope := model.ScopeProject
+	projectSearchResp, err := svc.Search(ctx, model.SearchRequest{
+		Query: "universal coding convention tests",
+		Scope: &projectScope,
+	})
+	if err != nil {
+		t.Fatalf("Search project scope: %v", err)
+	}
+	for _, r := range projectSearchResp.Results {
+		if r.Memory.ID == saveResp.ID {
+			t.Error("global memory incorrectly appeared in project-scope search")
+		}
 	}
 }

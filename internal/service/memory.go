@@ -20,22 +20,39 @@ import (
 // validation, default resolution, importance scoring, and upsert semantics.
 // All methods require a context.Context as first argument to propagate deadlines
 // and cancellations to the underlying store.
+//
+// It holds two separate stores to enforce the single-database-per-scope
+// invariant from the spec: projectStore is backed by
+// ~/.mneme/projects/{slug}.db and globalStore is backed by ~/.mneme/global.db.
+// Memories with scope=global or scope=org are always routed to globalStore.
 type MemoryService struct {
-	store   *store.MemoryStore
-	config  *config.Config
-	project string // detected or configured project slug
+	projectStore *store.MemoryStore // for project-scoped memories
+	globalStore  *store.MemoryStore // for global/org-scoped memories
+	config       *config.Config
+	project      string // detected or configured project slug
 }
 
-// NewMemoryService constructs a MemoryService. The caller must provide a fully
-// initialised MemoryStore and Config. project is the default project slug used
-// when individual requests omit the Project field — typically the slug detected
-// from the working directory's git remote.
-func NewMemoryService(s *store.MemoryStore, cfg *config.Config, project string) *MemoryService {
+// NewMemoryService constructs a MemoryService. The caller must provide fully
+// initialised MemoryStores and Config. projectStore is used for project-scoped
+// memories and globalStore for global/org-scoped memories. project is the
+// default project slug used when individual requests omit the Project field —
+// typically the slug detected from the working directory's git remote.
+func NewMemoryService(projectStore, globalStore *store.MemoryStore, cfg *config.Config, project string) *MemoryService {
 	return &MemoryService{
-		store:   s,
-		config:  cfg,
-		project: project,
+		projectStore: projectStore,
+		globalStore:  globalStore,
+		config:       cfg,
+		project:      project,
 	}
+}
+
+// storeFor returns the appropriate MemoryStore for the given scope.
+// Global and org memories go to globalStore; all other scopes use projectStore.
+func (svc *MemoryService) storeFor(scope model.Scope) *store.MemoryStore {
+	if scope == model.ScopeGlobal || scope == model.ScopeOrg {
+		return svc.globalStore
+	}
+	return svc.projectStore
 }
 
 // Save persists a new memory or updates an existing one via topic key upsert.
@@ -95,7 +112,7 @@ func (svc *MemoryService) Save(ctx context.Context, req model.SaveRequest) (*mod
 		DecayRate:  decayRate,
 	}
 
-	result, created, err := svc.store.Upsert(ctx, m)
+	result, created, err := svc.storeFor(m.Scope).Upsert(ctx, m)
 	if err != nil {
 		return nil, fmt.Errorf("service: save: %w", err)
 	}
@@ -117,9 +134,10 @@ func (svc *MemoryService) Save(ctx context.Context, req model.SaveRequest) (*mod
 // Get retrieves a memory by its UUIDv7 id and increments its access counter.
 // The access increment is best-effort: failures are logged but not returned to
 // the caller so a read never fails due to a counter-update glitch.
-// Returns ErrNotFound when no active memory exists with that id.
+// Returns ErrNotFound when no active memory exists with that id in either store.
 func (svc *MemoryService) Get(ctx context.Context, id string) (*model.Memory, error) {
-	m, err := svc.store.Get(ctx, id)
+	// Search project store first, then fall back to global store.
+	m, foundIn, err := svc.getFromEitherStore(ctx, id)
 	if err != nil {
 		return nil, fmt.Errorf("service: get: %w", err)
 	}
@@ -127,30 +145,53 @@ func (svc *MemoryService) Get(ctx context.Context, id string) (*model.Memory, er
 		return nil, fmt.Errorf("service: get: %w", model.ErrNotFound)
 	}
 
-	if err := svc.store.IncrementAccess(ctx, id); err != nil {
+	if err := foundIn.IncrementAccess(ctx, id); err != nil {
 		log.Printf("service: get: increment access for %s: %v", id, err)
 	}
 
 	return m, nil
 }
 
+// getFromEitherStore looks up id in projectStore first, then globalStore.
+// It returns the memory, the store it was found in, and any error.
+// When the memory is not found in either store, m is nil and err is nil.
+func (svc *MemoryService) getFromEitherStore(ctx context.Context, id string) (*model.Memory, *store.MemoryStore, error) {
+	m, err := svc.projectStore.Get(ctx, id)
+	if err != nil {
+		return nil, nil, fmt.Errorf("project store: %w", err)
+	}
+	if m != nil {
+		return m, svc.projectStore, nil
+	}
+
+	m, err = svc.globalStore.Get(ctx, id)
+	if err != nil {
+		return nil, nil, fmt.Errorf("global store: %w", err)
+	}
+	if m != nil {
+		return m, svc.globalStore, nil
+	}
+
+	return nil, nil, nil
+}
+
 // Update applies a partial update to an existing memory identified by id.
 // Only non-nil fields in req are applied; other fields remain unchanged.
-// Returns ErrNotFound when no active memory exists with that id.
+// Returns ErrNotFound when no active memory exists with that id in either store.
 func (svc *MemoryService) Update(ctx context.Context, id string, req model.UpdateRequest) (*model.SaveResponse, error) {
-	existing, err := svc.store.Get(ctx, id)
+	_, targetStore, err := svc.getFromEitherStore(ctx, id)
 	if err != nil {
 		return nil, fmt.Errorf("service: update: %w", err)
 	}
-	if existing == nil {
+	if targetStore == nil {
 		return nil, fmt.Errorf("service: update: %w", model.ErrNotFound)
 	}
 
-	if err := svc.store.Update(ctx, id, &req); err != nil {
+	if err := targetStore.Update(ctx, id, &req); err != nil {
 		return nil, fmt.Errorf("service: update: %w", err)
 	}
 
-	updated, err := svc.store.Get(ctx, id)
+	updated, err := targetStore.Get(ctx, id)
 	if err != nil {
 		return nil, fmt.Errorf("service: update: reload: %w", err)
 	}
@@ -171,17 +212,17 @@ func (svc *MemoryService) Update(ctx context.Context, id string, req model.Updat
 // lose importance rapidly on subsequent scoring passes. The reason parameter is
 // accepted for future use (Phase 3 metadata storage) but is not persisted in
 // this implementation. Returns ErrNotFound when no active memory exists with
-// the given id.
+// the given id in either store.
 func (svc *MemoryService) Forget(ctx context.Context, id string, reason string) error {
-	existing, err := svc.store.Get(ctx, id)
+	_, targetStore, err := svc.getFromEitherStore(ctx, id)
 	if err != nil {
 		return fmt.Errorf("service: forget: %w", err)
 	}
-	if existing == nil {
+	if targetStore == nil {
 		return fmt.Errorf("service: forget: %w", model.ErrNotFound)
 	}
 
-	if err := svc.store.SetDecayRate(ctx, id, 1.0); err != nil {
+	if err := targetStore.SetDecayRate(ctx, id, 1.0); err != nil {
 		return fmt.Errorf("service: forget: %w", err)
 	}
 
@@ -201,11 +242,21 @@ func (svc *MemoryService) Config() *config.Config {
 }
 
 // Count returns the number of active (non-deleted) memories for the given
-// project slug. It delegates directly to the underlying store.
+// project slug from the project store.
 func (svc *MemoryService) Count(ctx context.Context, project string) (int, error) {
-	n, err := svc.store.Count(ctx, project)
+	n, err := svc.projectStore.Count(ctx, project)
 	if err != nil {
 		return 0, fmt.Errorf("service: count: %w", err)
+	}
+	return n, nil
+}
+
+// CountGlobal returns the number of active (non-deleted) memories in the
+// global store. The empty project string matches all records stored there.
+func (svc *MemoryService) CountGlobal(ctx context.Context) (int, error) {
+	n, err := svc.globalStore.Count(ctx, "")
+	if err != nil {
+		return 0, fmt.Errorf("service: count global: %w", err)
 	}
 	return n, nil
 }
