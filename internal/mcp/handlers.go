@@ -43,6 +43,14 @@ func (h *handlers) handleToolCall(ctx context.Context, params ToolCallParams) (*
 		return h.handleMemSessionEnd(ctx, params.Arguments)
 	case "mem_suggest_topic_key":
 		return h.handleMemSuggestTopicKey(ctx, params.Arguments)
+	case "mem_relate":
+		return h.handleMemRelate(ctx, params.Arguments)
+	case "mem_timeline":
+		return h.handleMemTimeline(ctx, params.Arguments)
+	case "mem_stats":
+		return h.handleMemStats(ctx, params.Arguments)
+	case "mem_forget":
+		return h.handleMemForget(ctx, params.Arguments)
 	default:
 		return nil, &JSONRPCError{
 			Code:    CodeMethodNotFound,
@@ -207,11 +215,107 @@ func (h *handlers) handleMemSuggestTopicKey(ctx context.Context, raw json.RawMes
 	return resultFromAny(resp)
 }
 
+// handleMemRelate processes a mem_relate tool call.
+func (h *handlers) handleMemRelate(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	var req model.RelateRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return nil, &JSONRPCError{
+			Code:    CodeInvalidParams,
+			Message: fmt.Sprintf("mcp: handle mem_relate: invalid arguments: %s", err),
+		}
+	}
+
+	resp, err := h.svc.Relate(ctx, req)
+	if err != nil {
+		return nil, h.mapServiceError("mem_relate", err)
+	}
+
+	return resultFromAny(resp)
+}
+
+// handleMemTimeline processes a mem_timeline tool call.
+func (h *handlers) handleMemTimeline(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	var req model.TimelineRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return nil, &JSONRPCError{
+			Code:    CodeInvalidParams,
+			Message: fmt.Sprintf("mcp: handle mem_timeline: invalid arguments: %s", err),
+		}
+	}
+
+	resp, err := h.svc.Timeline(ctx, req)
+	if err != nil {
+		return nil, h.mapServiceError("mem_timeline", err)
+	}
+
+	return resultFromAny(resp)
+}
+
+// handleMemStats processes a mem_stats tool call. The arguments object may
+// contain an optional "project" string field; when omitted the service's
+// detected project is used.
+func (h *handlers) handleMemStats(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	var args struct {
+		Project string `json:"project"`
+	}
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &args); err != nil {
+			return nil, &JSONRPCError{
+				Code:    CodeInvalidParams,
+				Message: fmt.Sprintf("mcp: handle mem_stats: invalid arguments: %s", err),
+			}
+		}
+	}
+
+	// When the caller does not supply a project, use the service's detected slug.
+	project := args.Project
+	if project == "" {
+		project = h.svc.ProjectSlug()
+	}
+
+	resp, err := h.svc.Stats(ctx, project)
+	if err != nil {
+		return nil, h.mapServiceError("mem_stats", err)
+	}
+
+	return resultFromAny(resp)
+}
+
+// handleMemForget processes a mem_forget tool call. The arguments object must
+// contain an "id" field; "reason" is optional.
+func (h *handlers) handleMemForget(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	var args struct {
+		ID     string `json:"id"`
+		Reason string `json:"reason"`
+	}
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return nil, &JSONRPCError{
+			Code:    CodeInvalidParams,
+			Message: fmt.Sprintf("mcp: handle mem_forget: invalid arguments: %s", err),
+		}
+	}
+	if args.ID == "" {
+		return nil, &JSONRPCError{
+			Code:    CodeInvalidParams,
+			Message: "mcp: handle mem_forget: id is required",
+		}
+	}
+
+	if err := h.svc.Forget(ctx, args.ID, args.Reason); err != nil {
+		return nil, h.mapServiceError("mem_forget", err)
+	}
+
+	return resultFromAny(map[string]string{
+		"id":     args.ID,
+		"status": "marked_for_decay",
+	})
+}
+
 // mapServiceError converts a service-layer error into a JSONRPCError with an
 // appropriate error code. ErrNotFound maps to CodeMemoryNotFound; validation
 // errors map to CodeInvalidParams; all others become CodeInternalError.
 func (h *handlers) mapServiceError(method string, err error) *JSONRPCError {
-	if errors.Is(err, model.ErrNotFound) {
+	if errors.Is(err, model.ErrNotFound) || errors.Is(err, model.ErrEntityNotFound) || errors.Is(err, model.ErrRelationNotFound) {
 		return &JSONRPCError{
 			Code:    CodeMemoryNotFound,
 			Message: fmt.Sprintf("mcp: handle %s: %s", method, err),
@@ -223,7 +327,9 @@ func (h *handlers) mapServiceError(method string, err error) *JSONRPCError {
 		errors.Is(err, model.ErrQueryRequired) ||
 		errors.Is(err, model.ErrSummaryRequired) ||
 		errors.Is(err, model.ErrInvalidType) ||
-		errors.Is(err, model.ErrInvalidScope) {
+		errors.Is(err, model.ErrInvalidScope) ||
+		errors.Is(err, model.ErrInvalidEntityKind) ||
+		errors.Is(err, model.ErrInvalidRelationType) {
 		return &JSONRPCError{
 			Code:    CodeInvalidParams,
 			Message: fmt.Sprintf("mcp: handle %s: %s", method, err),

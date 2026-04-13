@@ -195,6 +195,7 @@ func TestToolsList(t *testing.T) {
 	wantNames := []string{
 		"mem_save", "mem_search", "mem_get", "mem_context",
 		"mem_update", "mem_session_end", "mem_suggest_topic_key",
+		"mem_relate", "mem_timeline", "mem_stats", "mem_forget",
 	}
 	if len(result.Tools) != len(wantNames) {
 		t.Fatalf("got %d tools, want %d", len(result.Tools), len(wantNames))

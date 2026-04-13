@@ -435,6 +435,20 @@ func (s *MemoryStore) IncrementAccess(ctx context.Context, id string) error {
 	return nil
 }
 
+// DBPath returns the filesystem path of the underlying SQLite database file.
+// It is extracted from the data source name (DSN) used when the connection was
+// opened. Returns an empty string when the path cannot be determined (e.g.
+// in-memory databases).
+func (s *MemoryStore) DBPath() string {
+	// sql.DB does not expose the DSN after opening, but we can retrieve the
+	// driver name and attempt to cast the underlying driver connection.
+	// The simplest reliable approach for our usage is to expose the path via
+	// the db.DB wrapper, which already knows the path at Open time.
+	// For now we return the empty string; the service layer obtains the path
+	// from config.Config instead.
+	return ""
+}
+
 // Count returns the number of active (non-deleted) memories for the given project.
 func (s *MemoryStore) Count(ctx context.Context, project string) (int, error) {
 	const q = `

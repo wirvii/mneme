@@ -9,11 +9,13 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 
 	"github.com/juanftp/mneme/internal/config"
 	"github.com/juanftp/mneme/internal/model"
 	"github.com/juanftp/mneme/internal/scoring"
 	"github.com/juanftp/mneme/internal/store"
+	syncpkg "github.com/juanftp/mneme/internal/sync"
 )
 
 // MemoryService orchestrates memory operations. It owns the business rules for
@@ -259,4 +261,114 @@ func (svc *MemoryService) CountGlobal(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("service: count global: %w", err)
 	}
 	return n, nil
+}
+
+// ExportToFile exports all active memories for the service's current project to
+// a gzip-compressed JSONL archive at <dir>/.mneme/sync/<slug>.jsonl.gz. It
+// delegates to sync.ExportToFile and returns the archive path, an ExportResult
+// summary, and any error. This method exists so the CLI layer does not need to
+// access the internal project store directly.
+func (svc *MemoryService) ExportToFile(ctx context.Context, dir string) (string, *syncpkg.ExportResult, error) {
+	path, result, err := syncpkg.ExportToFile(ctx, svc.projectStore, svc.project, dir)
+	if err != nil {
+		return "", nil, fmt.Errorf("service: export to file: %w", err)
+	}
+	return path, result, nil
+}
+
+// ImportFromFile imports memories from the gzip-compressed JSONL archive at
+// path into the project store. It delegates to sync.ImportFromFile and returns
+// an ImportResult summary, or any error.
+func (svc *MemoryService) ImportFromFile(ctx context.Context, path string) (*syncpkg.ImportResult, error) {
+	result, err := syncpkg.ImportFromFile(ctx, svc.projectStore, path)
+	if err != nil {
+		return nil, fmt.Errorf("service: import from file: %w", err)
+	}
+	return result, nil
+}
+
+// Stats aggregates metrics about the memory store for the given project slug.
+// It queries the project store for per-type/per-scope counts, active vs.
+// superseded vs. forgotten tallies, oldest/newest timestamps, and average
+// importance. The DB size is derived from the file on disk using the path
+// returned by config.Config.ProjectDBPath.
+//
+// Pass an empty project to aggregate over the global store instead.
+func (svc *MemoryService) Stats(ctx context.Context, project string) (*model.StatsResponse, error) {
+	s := svc.projectStore
+	if project == "" {
+		s = svc.globalStore
+	}
+
+	byType, err := s.CountByType(ctx, project)
+	if err != nil {
+		return nil, fmt.Errorf("service: stats: by type: %w", err)
+	}
+
+	byScope, err := s.CountByScope(ctx, project)
+	if err != nil {
+		return nil, fmt.Errorf("service: stats: by scope: %w", err)
+	}
+
+	active, err := s.CountActive(ctx, project)
+	if err != nil {
+		return nil, fmt.Errorf("service: stats: active: %w", err)
+	}
+
+	superseded, err := s.CountSuperseded(ctx, project)
+	if err != nil {
+		return nil, fmt.Errorf("service: stats: superseded: %w", err)
+	}
+
+	forgotten, err := s.CountForgotten(ctx, project)
+	if err != nil {
+		return nil, fmt.Errorf("service: stats: forgotten: %w", err)
+	}
+
+	total, err := s.CountTotal(ctx, project)
+	if err != nil {
+		return nil, fmt.Errorf("service: stats: total: %w", err)
+	}
+
+	oldest, newest, err := s.OldestNewest(ctx, project)
+	if err != nil {
+		return nil, fmt.Errorf("service: stats: oldest/newest: %w", err)
+	}
+
+	avgImportance, err := s.AvgImportance(ctx, project)
+	if err != nil {
+		return nil, fmt.Errorf("service: stats: avg importance: %w", err)
+	}
+
+	// Resolve the DB file path from config so we can stat it for size.
+	var dbPath string
+	if project == "" {
+		dbPath = svc.config.GlobalDBPath()
+	} else {
+		dbPath = svc.config.ProjectDBPath(project)
+	}
+
+	var dbSize int64
+	if info, statErr := os.Stat(dbPath); statErr == nil {
+		dbSize = info.Size()
+	}
+
+	projectLabel := project
+	if projectLabel == "" {
+		projectLabel = "global"
+	}
+
+	return &model.StatsResponse{
+		Project:       projectLabel,
+		TotalMemories: total,
+		ByType:        byType,
+		ByScope:       byScope,
+		Active:        active,
+		Superseded:    superseded,
+		Forgotten:     forgotten,
+		DBSizeBytes:   dbSize,
+		OldestMemory:  oldest,
+		NewestMemory:  newest,
+		AvgImportance: avgImportance,
+	}, nil
 }

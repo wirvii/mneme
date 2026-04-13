@@ -16,7 +16,11 @@ func TestMigrate_Fresh(t *testing.T) {
 	}
 	defer db.Close()
 
-	tables := []string{"memories", "memories_fts", "memory_files", "sessions", "schema_version"}
+	tables := []string{
+		"memories", "memories_fts", "memory_files", "sessions", "schema_version",
+		// Tables introduced by 002_knowledge_graph.sql.
+		"entities", "relations", "memory_entities",
+	}
 	for _, table := range tables {
 		t.Run("table_"+table, func(t *testing.T) {
 			var name string
@@ -30,13 +34,13 @@ func TestMigrate_Fresh(t *testing.T) {
 		})
 	}
 
-	t.Run("schema_version_is_1", func(t *testing.T) {
+	t.Run("schema_version_is_2", func(t *testing.T) {
 		var version int
 		if err := db.QueryRow(`SELECT MAX(version) FROM schema_version`).Scan(&version); err != nil {
 			t.Fatalf("query schema_version: %v", err)
 		}
-		if version != 1 {
-			t.Errorf("expected schema version 1, got %d", version)
+		if version != 2 {
+			t.Errorf("expected schema version 2, got %d", version)
 		}
 	})
 }
@@ -59,11 +63,11 @@ func TestMigrate_Idempotent(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_version`).Scan(&count); err != nil {
 		t.Fatalf("query schema_version count: %v", err)
 	}
-	// 001_initial.sql inserts version 1 with INSERT OR IGNORE, so even if
-	// applyMigration were called twice the row would not be duplicated.
-	// With our version-gate logic it should be exactly 1.
-	if count != 1 {
-		t.Errorf("expected 1 row in schema_version, got %d", count)
+	// Each migration file inserts one row with INSERT OR IGNORE, so there
+	// should be exactly one row per applied migration — currently 2.
+	// A second call to migrate must not insert duplicate rows.
+	if count != 2 {
+		t.Errorf("expected 2 rows in schema_version, got %d", count)
 	}
 }
 

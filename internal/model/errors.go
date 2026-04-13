@@ -34,3 +34,18 @@ var ErrSummaryRequired = errors.New("session summary is required")
 // An empty query would return unfiltered results, which is almost never correct
 // from an agent — callers that want a full list should use a dedicated list API.
 var ErrQueryRequired = errors.New("search query is required")
+
+// ErrEntityNotFound is returned when a requested entity does not exist in the store.
+var ErrEntityNotFound = errors.New("entity not found")
+
+// ErrRelationNotFound is returned when a requested relation does not exist in the store.
+var ErrRelationNotFound = errors.New("relation not found")
+
+// ErrInvalidEntityKind is returned when an EntityKind value is not one of the
+// recognised constants. Used to reject unknown kinds before they reach the database.
+var ErrInvalidEntityKind = errors.New("invalid entity kind")
+
+// ErrInvalidRelationType is returned when a RelationType value is not one of the
+// recognised constants. Used to reject unknown relation types before they reach
+// the database.
+var ErrInvalidRelationType = errors.New("invalid relation type")

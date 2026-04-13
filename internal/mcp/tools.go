@@ -228,6 +228,109 @@ func allTools() []ToolDefinition {
 				},
 			},
 		},
+		{
+			Name:        "mem_relate",
+			Description: "Create or update a relationship between two entities in the knowledge graph.",
+			InputSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"source", "target", "relation"},
+				"properties": map[string]any{
+					"source": map[string]any{
+						"type":        "string",
+						"description": "Name of the source entity.",
+					},
+					"target": map[string]any{
+						"type":        "string",
+						"description": "Name of the target entity.",
+					},
+					"relation": map[string]any{
+						"type":        "string",
+						"description": "Type of relationship between the two entities.",
+						"enum": []string{
+							"depends_on", "implements", "supersedes",
+							"related_to", "part_of", "uses", "conflicts_with",
+						},
+					},
+					"source_kind": map[string]any{
+						"type":        "string",
+						"description": "Entity kind for the source when it needs to be created. Defaults to concept.",
+						"enum": []string{
+							"module", "service", "library", "concept", "person", "pattern", "file",
+						},
+					},
+					"target_kind": map[string]any{
+						"type":        "string",
+						"description": "Entity kind for the target when it needs to be created. Defaults to concept.",
+						"enum": []string{
+							"module", "service", "library", "concept", "person", "pattern", "file",
+						},
+					},
+					"project": map[string]any{
+						"type":        "string",
+						"description": "Project slug. Defaults to the detected project when omitted.",
+					},
+				},
+			},
+		},
+		{
+			Name:        "mem_timeline",
+			Description: "Get memories around a specific point in time, ordered chronologically.",
+			InputSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"around"},
+				"properties": map[string]any{
+					"around": map[string]any{
+						"type":        "string",
+						"description": "A memory UUID or ISO 8601 timestamp to use as the centre of the timeline window.",
+					},
+					"project": map[string]any{
+						"type":        "string",
+						"description": "Project slug. Defaults to the detected project when omitted.",
+					},
+					"window": map[string]any{
+						"type":        "string",
+						"description": "Time range to search (e.g. '7d', '24h', '30d'). Defaults to '7d'.",
+					},
+					"limit": map[string]any{
+						"type":        "integer",
+						"description": "Maximum number of results. Defaults to 20.",
+						"minimum":     1,
+						"maximum":     100,
+					},
+				},
+			},
+		},
+		{
+			Name:        "mem_stats",
+			Description: "Return aggregate statistics about the project memory store.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"project": map[string]any{
+						"type":        "string",
+						"description": "Project slug. Defaults to the detected project. Pass empty string for global stats.",
+					},
+				},
+			},
+		},
+		{
+			Name:        "mem_forget",
+			Description: "Mark a memory for accelerated decay. Sets its decay rate to 1.0 so importance drops to near zero on the next scoring pass.",
+			InputSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"id"},
+				"properties": map[string]any{
+					"id": map[string]any{
+						"type":        "string",
+						"description": "UUIDv7 of the memory to forget.",
+					},
+					"reason": map[string]any{
+						"type":        "string",
+						"description": "Optional reason why the memory should be forgotten.",
+					},
+				},
+			},
+		},
 	}
 }
 
