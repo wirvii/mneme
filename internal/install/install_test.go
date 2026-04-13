@@ -356,6 +356,74 @@ func TestInjectProtocol_Replace(t *testing.T) {
 	}
 }
 
+// TestInjectProtocol_NoOverwrite verifies that important user content is never
+// destroyed by InjectProtocol, regardless of whether markers are present.
+// This is the regression test for the destructive overwrite bug.
+func TestInjectProtocol_NoOverwrite(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "CLAUDE.md")
+
+	importantContent := "# Claude Code — Global Configuration\n\n" +
+		"## Language\nAlways respond in Español.\n\n" +
+		"## Custom Rules\nNever do X.\nAlways do Y.\n"
+
+	if err := os.WriteFile(target, []byte(importantContent), 0o644); err != nil {
+		t.Fatalf("write existing file: %v", err)
+	}
+
+	startMarker := "<!-- mneme:protocol:start -->"
+	endMarker := "<!-- mneme:protocol:end -->"
+	block := []byte(startMarker + "\nprotocol content\n" + endMarker)
+
+	if err := injectProtocolFile(target, block, startMarker, endMarker); err != nil {
+		t.Fatalf("injectProtocolFile error: %v", err)
+	}
+
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read target: %v", err)
+	}
+
+	content := string(data)
+
+	// Every line of the original user config must survive intact.
+	userLines := []string{
+		"# Claude Code — Global Configuration",
+		"Always respond in Español.",
+		"Never do X.",
+		"Always do Y.",
+	}
+	for _, line := range userLines {
+		if !strings.Contains(content, line) {
+			t.Errorf("user content lost after inject: %q", line)
+		}
+	}
+
+	// The protocol must have been appended.
+	if !strings.Contains(content, startMarker) {
+		t.Error("start marker missing after inject")
+	}
+	if !strings.Contains(content, "protocol content") {
+		t.Error("protocol content missing after inject")
+	}
+	if !strings.Contains(content, endMarker) {
+		t.Error("end marker missing after inject")
+	}
+
+	// Running inject a second time must not duplicate the block.
+	if err := injectProtocolFile(target, block, startMarker, endMarker); err != nil {
+		t.Fatalf("second injectProtocolFile error: %v", err)
+	}
+	data2, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read target after second inject: %v", err)
+	}
+	count := strings.Count(string(data2), startMarker)
+	if count != 1 {
+		t.Errorf("start marker appears %d times after second inject, want 1", count)
+	}
+}
+
 // --- helpers -----------------------------------------------------------------
 
 // patchSettingsFile is the testable core of PatchHooks. It accepts an explicit
