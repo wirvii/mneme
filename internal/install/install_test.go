@@ -162,11 +162,16 @@ func TestPatchSettings_Existing(t *testing.T) {
 	dir := t.TempDir()
 	settingsPath := filepath.Join(dir, "settings.json")
 
-	// Write initial settings with an existing hook.
+	// Write initial settings with an existing hook (correct Claude Code format).
 	existing := `{
   "hooks": {
     "SessionStart": [
-      {"type": "command", "command": "existing-hook"}
+      {
+        "matcher": "",
+        "hooks": [
+          {"type": "command", "command": "existing-hook"}
+        ]
+      }
     ]
   },
   "theme": "dark"
@@ -451,7 +456,7 @@ func patchSettingsFile(path string, patches []HookPatch) error {
 	}
 
 	for _, patch := range patches {
-		entry := map[string]any{
+		cmd := map[string]any{
 			"type":    "command",
 			"command": patch.Command,
 		}
@@ -461,8 +466,12 @@ func patchSettingsFile(path string, patches []HookPatch) error {
 				eventList = list
 			}
 		}
-		if !hookEntryExists(eventList, patch.Command) {
-			eventList = append(eventList, entry)
+		if !hookCommandExists(eventList, patch.Command) {
+			group := map[string]any{
+				"matcher": "",
+				"hooks":   []any{cmd},
+			}
+			eventList = append(eventList, group)
 		}
 		hooks[patch.Event] = eventList
 	}
@@ -490,8 +499,8 @@ func injectProtocolFile(path string, block []byte, startMarker, endMarker string
 	return os.WriteFile(path, merged, 0o644)
 }
 
-// assertHookEntry asserts that hooks[event] contains at least one entry with
-// the given command.
+// assertHookEntry asserts that hooks[event] contains at least one matcher-group
+// whose inner "hooks" array has an entry with the given command.
 func assertHookEntry(t *testing.T, hooks map[string]any, event, command string) {
 	t.Helper()
 	raw, ok := hooks[event]
@@ -504,13 +513,13 @@ func assertHookEntry(t *testing.T, hooks map[string]any, event, command string) 
 		t.Errorf("hooks[%q] is not a slice", event)
 		return
 	}
-	if !hookEntryExists(list, command) {
+	if !hookCommandExists(list, command) {
 		t.Errorf("hooks[%q] does not contain command %q", event, command)
 	}
 }
 
 // assertHookCount asserts that hooks[event] contains the given command exactly
-// n times.
+// n times across all matcher-groups' inner "hooks" arrays.
 func assertHookCount(t *testing.T, hooks map[string]any, event, command string, n int) {
 	t.Helper()
 	raw, ok := hooks[event]
@@ -528,12 +537,26 @@ func assertHookCount(t *testing.T, hooks map[string]any, event, command string, 
 	}
 	count := 0
 	for _, item := range list {
-		entry, ok := item.(map[string]any)
+		group, ok := item.(map[string]any)
 		if !ok {
 			continue
 		}
-		if cmd, ok := entry["command"].(string); ok && cmd == command {
-			count++
+		innerRaw, ok := group["hooks"]
+		if !ok {
+			continue
+		}
+		inner, ok := innerRaw.([]any)
+		if !ok {
+			continue
+		}
+		for _, h := range inner {
+			entry, ok := h.(map[string]any)
+			if !ok {
+				continue
+			}
+			if cmd, ok := entry["command"].(string); ok && cmd == command {
+				count++
+			}
 		}
 	}
 	if count != n {

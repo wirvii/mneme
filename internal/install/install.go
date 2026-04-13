@@ -194,12 +194,12 @@ func PatchHooks(agent *Agent) error {
 	}
 
 	for _, patch := range patches {
-		entry := map[string]any{
+		cmd := map[string]any{
 			"type":    "command",
 			"command": patch.Command,
 		}
 
-		// Retrieve existing entries for this event, or start an empty slice.
+		// Retrieve existing event list (array of matcher-groups), or start empty.
 		var eventList []any
 		if raw, exists := hooks[patch.Event]; exists && raw != nil {
 			if list, ok := raw.([]any); ok {
@@ -207,9 +207,14 @@ func PatchHooks(agent *Agent) error {
 			}
 		}
 
-		// Only append if an identical command entry is not already present.
-		if !hookEntryExists(eventList, patch.Command) {
-			eventList = append(eventList, entry)
+		// Only append if an identical command is not already present in any group.
+		if !hookCommandExists(eventList, patch.Command) {
+			// Always add as a new matcher-group with an empty matcher (match all).
+			group := map[string]any{
+				"matcher": "",
+				"hooks":   []any{cmd},
+			}
+			eventList = append(eventList, group)
 		}
 		hooks[patch.Event] = eventList
 	}
@@ -230,16 +235,31 @@ func PatchHooks(agent *Agent) error {
 	return nil
 }
 
-// hookEntryExists reports whether the list already contains a command-type entry
-// with the given command string. Used by PatchHooks to prevent duplicate entries.
-func hookEntryExists(list []any, command string) bool {
-	for _, item := range list {
-		entry, ok := item.(map[string]any)
+// hookCommandExists reports whether the event list (array of matcher-groups)
+// already contains a command entry with the given command string anywhere inside
+// a nested "hooks" array. Used by PatchHooks to prevent duplicate entries.
+func hookCommandExists(eventList []any, command string) bool {
+	for _, item := range eventList {
+		group, ok := item.(map[string]any)
 		if !ok {
 			continue
 		}
-		if cmd, ok := entry["command"].(string); ok && cmd == command {
-			return true
+		innerRaw, ok := group["hooks"]
+		if !ok {
+			continue
+		}
+		inner, ok := innerRaw.([]any)
+		if !ok {
+			continue
+		}
+		for _, h := range inner {
+			entry, ok := h.(map[string]any)
+			if !ok {
+				continue
+			}
+			if cmd, ok := entry["command"].(string); ok && cmd == command {
+				return true
+			}
 		}
 	}
 	return false
