@@ -42,6 +42,30 @@ Registro de avances de implementación. Cada entrada documenta qué se hizo, por
 
 *(Las entradas se agregan cronológicamente, la más reciente arriba)*
 
+#### 2026-04-13 — Fase 4 completa (HTTP API + Hooks)
+- `internal/http/` — REST API con stdlib net/http: 11 endpoints, graceful shutdown, middleware. 10 tests con httptest.
+- `internal/cli/serve.go` — `mneme serve --addr :7437`
+- `internal/cli/consolidate.go` — `mneme consolidate`
+- `docs/HOOKS.md` — Documentación de integración con Claude Code hooks
+- 13 paquetes, 78 archivos Go, 26 test files, ~13,600 líneas de código
+
+#### 2026-04-13 — Fase 3 completa (Consolidation Pipeline)
+- `internal/consolidation/` — Pipeline completo: sweep (decay-based eviction), hard delete (retention), dedup (title matching + merge), budget enforcement. 5 tests.
+- `internal/store/consolidation.go` — FindDuplicateTitles, SetSupersededBy, ListByEffectiveImportance
+- `internal/service/consolidation.go` — RunConsolidation, StartBackgroundConsolidation, Start
+- MCP server arranca consolidación background automáticamente
+
+#### 2026-04-13 — Fase 2 completa (Knowledge Graph + Sync + Stats)
+- `internal/model/entity.go` — Entity, Relation, EntityKind (7 tipos), RelationType (7 tipos)
+- `internal/db/migrations/002_knowledge_graph.sql` — entities, relations, memory_entities tables
+- `internal/store/entity.go` — CRUD entidades y relaciones
+- `internal/store/stats.go` — 7 métodos de estadísticas
+- `internal/service/graph.go` — Relate y Timeline operations
+- `internal/sync/` — Export/Import JSONL.gz con manifest
+- `internal/mcp/` — 11 herramientas MCP total (+mem_relate, mem_timeline, mem_stats, mem_forget)
+- `internal/cli/` — sync export/import/status, forget, stats commands
+- Fix: memorias globales ahora usan global.db separada (no project DB)
+
 #### 2026-04-13 — Fase 1 MVP completa
 
 **Batch 5: MCP + CLI + Entrypoint**
