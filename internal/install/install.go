@@ -69,7 +69,7 @@ type Agent struct {
 
 // ClaudeCode returns a fully configured *Agent for Claude Code using binaryPath
 // as the absolute path to the mneme binary. The returned agent covers:
-//   - MCP server registration at ~/.claude/mcp/mneme.json
+//   - MCP server registration in ~/.claude.json under mcpServers.mneme
 //   - Hook entries merged into ~/.claude/settings.json
 //   - Protocol injection into ~/.claude/CLAUDE.md
 //   - /mneme-init slash command at ~/.claude/commands/mneme-init.md
@@ -82,13 +82,15 @@ func ClaudeCode(binaryPath string) *Agent {
 			if err != nil {
 				return "", nil, fmt.Errorf("install: claude-code: mcp config: home dir: %w", err)
 			}
-			path := filepath.Join(home, ".claude", "mcp", "mneme.json")
+			// Claude Code reads User-scope MCP servers from ~/.claude.json under
+			// the top-level "mcpServers" key — NOT from ~/.claude/mcp/*.json.
+			path := filepath.Join(home, ".claude.json")
 
-			cfg := map[string]any{
+			entry := map[string]any{
 				"command": bp,
 				"args":    []string{"mcp", "--tools=agent"},
 			}
-			data, err := json.MarshalIndent(cfg, "", "  ")
+			data, err := json.MarshalIndent(entry, "", "  ")
 			if err != nil {
 				return "", nil, fmt.Errorf("install: claude-code: mcp config: marshal: %w", err)
 			}
@@ -138,18 +140,62 @@ func ClaudeCode(binaryPath string) *Agent {
 	}
 }
 
-// WriteMCPConfig writes the MCP server configuration file for the given agent.
-// The parent directory is created if it does not exist. The write is atomic:
-// the file is written in full so a partial write leaves no corruption.
+// WriteMCPConfig merges the MCP server entry for the given agent into the
+// target JSON config file (e.g. ~/.claude.json). The function:
+//  1. Reads the existing file, or starts from an empty object if absent.
+//  2. Ensures the top-level "mcpServers" key exists as a JSON object.
+//  3. Adds or replaces the "mneme" entry under mcpServers with the command
+//     and args returned by agent.MCPConfig.
+//  4. Writes the merged result back, preserving all other top-level keys.
+//
+// The operation is idempotent: running it twice produces the same file.
 func WriteMCPConfig(agent *Agent, binaryPath string) error {
-	path, content, err := agent.MCPConfig(binaryPath)
+	path, entryData, err := agent.MCPConfig(binaryPath)
 	if err != nil {
 		return fmt.Errorf("install: mcp config: %w", err)
 	}
+
+	// Decode the server entry returned by the agent.
+	var entry map[string]any
+	if err := json.Unmarshal(entryData, &entry); err != nil {
+		return fmt.Errorf("install: mcp config: parse entry: %w", err)
+	}
+
+	// Read the existing target file, or start with an empty document.
+	root := map[string]any{}
+	existing, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("install: mcp config: read %s: %w", path, err)
+	}
+	if len(existing) > 0 {
+		if err := json.Unmarshal(existing, &root); err != nil {
+			return fmt.Errorf("install: mcp config: parse %s: %w", path, err)
+		}
+	}
+
+	// Ensure "mcpServers" exists and is an object.
+	mcpRaw, ok := root["mcpServers"]
+	if !ok || mcpRaw == nil {
+		mcpRaw = map[string]any{}
+	}
+	mcpServers, ok := mcpRaw.(map[string]any)
+	if !ok {
+		return fmt.Errorf("install: mcp config: mcpServers in %s is not an object", path)
+	}
+
+	// Add or replace the "mneme" server entry.
+	mcpServers["mneme"] = entry
+	root["mcpServers"] = mcpServers
+
+	out, err := json.MarshalIndent(root, "", "  ")
+	if err != nil {
+		return fmt.Errorf("install: mcp config: marshal: %w", err)
+	}
+
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("install: mcp config: mkdir: %w", err)
 	}
-	if err := os.WriteFile(path, append(content, '\n'), 0o644); err != nil {
+	if err := os.WriteFile(path, append(out, '\n'), 0o644); err != nil {
 		return fmt.Errorf("install: mcp config: write: %w", err)
 	}
 	return nil

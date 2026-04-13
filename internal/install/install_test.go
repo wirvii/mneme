@@ -2,14 +2,16 @@ package install
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
 
-// TestClaudeCode_MCPConfig verifies that the generated MCP JSON is valid and
-// contains the expected fields.
+// TestClaudeCode_MCPConfig verifies that the MCP config function returns the
+// correct target path (~/claude.json) and a valid server entry JSON with the
+// expected command and args fields.
 func TestClaudeCode_MCPConfig(t *testing.T) {
 	agent := ClaudeCode("/usr/local/bin/mneme")
 
@@ -21,28 +23,135 @@ func TestClaudeCode_MCPConfig(t *testing.T) {
 	if path == "" {
 		t.Error("MCPConfig path must not be empty")
 	}
-	if !strings.HasSuffix(path, "mneme.json") {
-		t.Errorf("MCPConfig path should end with mneme.json, got %q", path)
+	// Claude Code reads User MCPs from ~/.claude.json, not from a per-server file.
+	if !strings.HasSuffix(path, ".claude.json") {
+		t.Errorf("MCPConfig path should end with .claude.json, got %q", path)
 	}
 
-	var cfg map[string]any
-	if err := json.Unmarshal(content, &cfg); err != nil {
+	// content is the individual server entry (command + args), not the full file.
+	var entry map[string]any
+	if err := json.Unmarshal(content, &entry); err != nil {
 		t.Fatalf("MCPConfig content is not valid JSON: %v", err)
 	}
 
-	if cmd, ok := cfg["command"].(string); !ok || cmd != "/usr/local/bin/mneme" {
-		t.Errorf("MCPConfig command = %v, want /usr/local/bin/mneme", cfg["command"])
+	if cmd, ok := entry["command"].(string); !ok || cmd != "/usr/local/bin/mneme" {
+		t.Errorf("MCPConfig entry command = %v, want /usr/local/bin/mneme", entry["command"])
 	}
 
-	args, ok := cfg["args"].([]any)
+	args, ok := entry["args"].([]any)
 	if !ok || len(args) < 2 {
-		t.Fatalf("MCPConfig args missing or too short: %v", cfg["args"])
+		t.Fatalf("MCPConfig entry args missing or too short: %v", entry["args"])
 	}
 	if args[0] != "mcp" {
-		t.Errorf("MCPConfig args[0] = %v, want mcp", args[0])
+		t.Errorf("MCPConfig entry args[0] = %v, want mcp", args[0])
 	}
 	if args[1] != "--tools=agent" {
-		t.Errorf("MCPConfig args[1] = %v, want --tools=agent", args[1])
+		t.Errorf("MCPConfig entry args[1] = %v, want --tools=agent", args[1])
+	}
+}
+
+// TestWriteMCPConfig_NewFile verifies that WriteMCPConfig creates ~/.claude.json
+// from scratch with the correct mcpServers.mneme entry when the file is absent.
+func TestWriteMCPConfig_NewFile(t *testing.T) {
+	dir := t.TempDir()
+	claudeJSON := filepath.Join(dir, ".claude.json")
+
+	if err := writeMCPConfigFile(claudeJSON, "/usr/local/bin/mneme"); err != nil {
+		t.Fatalf("writeMCPConfigFile error: %v", err)
+	}
+
+	assertClaudeJSONEntry(t, claudeJSON, "/usr/local/bin/mneme")
+}
+
+// TestWriteMCPConfig_ExistingFile verifies that WriteMCPConfig merges into an
+// existing ~/.claude.json without clobbering other top-level keys.
+func TestWriteMCPConfig_ExistingFile(t *testing.T) {
+	dir := t.TempDir()
+	claudeJSON := filepath.Join(dir, ".claude.json")
+
+	existing := `{
+  "theme": "dark",
+  "mcpServers": {
+    "other-tool": {
+      "command": "/usr/bin/other",
+      "args": ["serve"]
+    }
+  }
+}`
+	if err := os.WriteFile(claudeJSON, []byte(existing), 0o644); err != nil {
+		t.Fatalf("write initial file: %v", err)
+	}
+
+	if err := writeMCPConfigFile(claudeJSON, "/usr/local/bin/mneme"); err != nil {
+		t.Fatalf("writeMCPConfigFile error: %v", err)
+	}
+
+	data, err := os.ReadFile(claudeJSON)
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+
+	var root map[string]any
+	if err := json.Unmarshal(data, &root); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+
+	// Existing top-level key must be preserved.
+	if root["theme"] != "dark" {
+		t.Errorf("theme = %v, want dark", root["theme"])
+	}
+
+	mcpServers, ok := root["mcpServers"].(map[string]any)
+	if !ok {
+		t.Fatal("mcpServers is not an object")
+	}
+
+	// Pre-existing server must still be there.
+	if _, exists := mcpServers["other-tool"]; !exists {
+		t.Error("other-tool server entry was removed")
+	}
+
+	// mneme entry must now be present.
+	assertClaudeJSONEntry(t, claudeJSON, "/usr/local/bin/mneme")
+}
+
+// TestWriteMCPConfig_Idempotent verifies that running WriteMCPConfig twice
+// produces the same file with no duplicate entries.
+func TestWriteMCPConfig_Idempotent(t *testing.T) {
+	dir := t.TempDir()
+	claudeJSON := filepath.Join(dir, ".claude.json")
+
+	if err := writeMCPConfigFile(claudeJSON, "/usr/local/bin/mneme"); err != nil {
+		t.Fatalf("first writeMCPConfigFile error: %v", err)
+	}
+	if err := writeMCPConfigFile(claudeJSON, "/usr/local/bin/mneme"); err != nil {
+		t.Fatalf("second writeMCPConfigFile error: %v", err)
+	}
+
+	data, err := os.ReadFile(claudeJSON)
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+
+	var root map[string]any
+	if err := json.Unmarshal(data, &root); err != nil {
+		t.Fatalf("invalid JSON after idempotent run: %v", err)
+	}
+
+	mcpServers, ok := root["mcpServers"].(map[string]any)
+	if !ok {
+		t.Fatal("mcpServers is not an object")
+	}
+
+	// "mneme" must appear exactly once (as a single map key, not duplicated).
+	count := 0
+	for k := range mcpServers {
+		if k == "mneme" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("mcpServers contains mneme %d time(s), want 1", count)
 	}
 }
 
@@ -497,6 +606,81 @@ func injectProtocolFile(path string, block []byte, startMarker, endMarker string
 	}
 	merged := mergeProtocol(existing, block, startMarker, endMarker)
 	return os.WriteFile(path, merged, 0o644)
+}
+
+// writeMCPConfigFile is the testable core of WriteMCPConfig. It accepts an
+// explicit path so tests can use a temporary directory instead of ~/.claude.json.
+func writeMCPConfigFile(path, binaryPath string) error {
+	entry := map[string]any{
+		"command": binaryPath,
+		"args":    []string{"mcp", "--tools=agent"},
+	}
+	entryData, err := json.MarshalIndent(entry, "", "  ")
+	if err != nil {
+		return fmt.Errorf("writeMCPConfigFile: marshal entry: %w", err)
+	}
+
+	root := map[string]any{}
+	existing, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("writeMCPConfigFile: read %s: %w", path, err)
+	}
+	if len(existing) > 0 {
+		if err := json.Unmarshal(existing, &root); err != nil {
+			return fmt.Errorf("writeMCPConfigFile: parse %s: %w", path, err)
+		}
+	}
+
+	mcpRaw, ok := root["mcpServers"]
+	if !ok || mcpRaw == nil {
+		mcpRaw = map[string]any{}
+	}
+	mcpServers, ok := mcpRaw.(map[string]any)
+	if !ok {
+		return fmt.Errorf("writeMCPConfigFile: mcpServers is not an object")
+	}
+
+	var decodedEntry map[string]any
+	if err := json.Unmarshal(entryData, &decodedEntry); err != nil {
+		return fmt.Errorf("writeMCPConfigFile: decode entry: %w", err)
+	}
+	mcpServers["mneme"] = decodedEntry
+	root["mcpServers"] = mcpServers
+
+	out, err := json.MarshalIndent(root, "", "  ")
+	if err != nil {
+		return fmt.Errorf("writeMCPConfigFile: marshal: %w", err)
+	}
+	return os.WriteFile(path, append(out, '\n'), 0o644)
+}
+
+// assertClaudeJSONEntry asserts that the file at path is valid JSON with a
+// mcpServers.mneme entry containing the expected binary path as "command".
+func assertClaudeJSONEntry(t *testing.T, path, expectedBinary string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("assertClaudeJSONEntry: read %s: %v", path, err)
+	}
+	var root map[string]any
+	if err := json.Unmarshal(data, &root); err != nil {
+		t.Fatalf("assertClaudeJSONEntry: invalid JSON in %s: %v", path, err)
+	}
+	mcpServers, ok := root["mcpServers"].(map[string]any)
+	if !ok {
+		t.Fatalf("assertClaudeJSONEntry: mcpServers is missing or not an object in %s", path)
+	}
+	mneme, ok := mcpServers["mneme"].(map[string]any)
+	if !ok {
+		t.Fatalf("assertClaudeJSONEntry: mcpServers.mneme is missing or not an object in %s", path)
+	}
+	if cmd, ok := mneme["command"].(string); !ok || cmd != expectedBinary {
+		t.Errorf("assertClaudeJSONEntry: mneme.command = %v, want %s", mneme["command"], expectedBinary)
+	}
+	args, ok := mneme["args"].([]any)
+	if !ok || len(args) < 2 || args[0] != "mcp" || args[1] != "--tools=agent" {
+		t.Errorf("assertClaudeJSONEntry: mneme.args = %v, want [mcp --tools=agent]", mneme["args"])
+	}
 }
 
 // assertHookEntry asserts that hooks[event] contains at least one matcher-group
