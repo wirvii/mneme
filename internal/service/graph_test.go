@@ -193,7 +193,7 @@ func TestTimeline_ByMemoryID(t *testing.T) {
 	}
 	found := false
 	for _, r := range resp.Results {
-		if r.Memory.ID == saved.ID {
+		if r.ID == saved.ID {
 			found = true
 			break
 		}

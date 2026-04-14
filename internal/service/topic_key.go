@@ -47,17 +47,17 @@ func (svc *MemoryService) SuggestTopicKey(ctx context.Context, title, project st
 		// Collect unique topic keys from search results.
 		seen := make(map[string]bool)
 		for _, r := range results {
-			if r.Memory.TopicKey == "" {
+			if r.TopicKey == "" {
 				continue
 			}
-			if seen[r.Memory.TopicKey] {
+			if seen[r.TopicKey] {
 				continue
 			}
-			seen[r.Memory.TopicKey] = true
+			seen[r.TopicKey] = true
 			existingMatches = append(existingMatches, model.TopicKeyMatch{
-				TopicKey: r.Memory.TopicKey,
-				Title:    r.Memory.Title,
-				ID:       r.Memory.ID,
+				TopicKey: r.TopicKey,
+				Title:    r.Title,
+				ID:       r.ID,
 			})
 		}
 	}

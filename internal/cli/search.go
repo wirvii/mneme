@@ -76,17 +76,17 @@ below each result row.`,
 
 			for _, r := range resp.Results {
 				// Display the first 8 characters of the UUID for compact display.
-				shortID := r.Memory.ID
+				shortID := r.ID
 				if len(shortID) > 8 {
 					shortID = shortID[:8]
 				}
 
-				title := r.Memory.Title
+				title := r.Title
 				if len(title) > 38 {
 					title = title[:35] + "..."
 				}
 
-				memType := string(r.Memory.Type)
+				memType := string(r.Type)
 				if len(memType) > 12 {
 					memType = memType[:12]
 				}
@@ -96,7 +96,7 @@ below each result row.`,
 
 				if flagFull {
 					fmt.Fprintln(os.Stdout)
-					fmt.Fprintln(os.Stdout, r.Memory.Content)
+					fmt.Fprintln(os.Stdout, r.Content)
 					fmt.Fprintln(os.Stdout)
 				}
 			}

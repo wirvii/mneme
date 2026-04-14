@@ -46,8 +46,8 @@ func TestSearch_Success(t *testing.T) {
 		t.Errorf("expected query echoed, got %q", resp.Query)
 	}
 	// The SQLite FTS5 memory should be the top result.
-	if resp.Results[0].Memory.Title != "SQLite FTS5 fulltext search" {
-		t.Errorf("expected SQLite memory first, got %q", resp.Results[0].Memory.Title)
+	if resp.Results[0].Title != "SQLite FTS5 fulltext search" {
+		t.Errorf("expected SQLite memory first, got %q", resp.Results[0].Title)
 	}
 }
 
@@ -113,8 +113,8 @@ func TestSearch_ProjectFilter(t *testing.T) {
 		t.Fatalf("Search: %v", err)
 	}
 	for _, r := range resp.Results {
-		if r.Memory.Project == "other/project" {
-			t.Errorf("got memory from wrong project: %q", r.Memory.Project)
+		if r.Project == "other/project" {
+			t.Errorf("got memory from wrong project: %q", r.Project)
 		}
 	}
 }

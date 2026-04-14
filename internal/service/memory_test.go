@@ -281,7 +281,7 @@ func TestSave_GlobalScope_UsesGlobalStore(t *testing.T) {
 	}
 	found := false
 	for _, r := range searchResp.Results {
-		if r.Memory.ID == saveResp.ID {
+		if r.ID == saveResp.ID {
 			found = true
 		}
 	}
@@ -314,7 +314,7 @@ func TestSave_GlobalScope_UsesGlobalStore(t *testing.T) {
 		t.Fatalf("Search project scope: %v", err)
 	}
 	for _, r := range projectSearchResp.Results {
-		if r.Memory.ID == saveResp.ID {
+		if r.ID == saveResp.ID {
 			t.Error("global memory incorrectly appeared in project-scope search")
 		}
 	}
