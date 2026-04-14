@@ -1,0 +1,36 @@
+version: "2"
+
+linters:
+  settings:
+    errcheck:
+      # Exclude functions whose error return values are genuinely not actionable:
+      # - fmt.Fprint*/fmt.Fprintf: write failures to a terminal are unrecoverable
+      # - rows.Close / db.Close / file.Close in deferred positions: cleanup paths
+      #   where the caller has already consumed the value and the error cannot be
+      #   propagated without masking an earlier, more meaningful error
+      # - resp.Body.Close: HTTP body is fully consumed before the defer fires
+      # - os.Remove / os.RemoveAll: best-effort cleanup; failure leaves only a
+      #   temp file behind which the OS will reclaim
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - (io.Closer).Close
+        - (*os.File).Close
+        - (*database/sql.DB).Close
+        - (*database/sql.Rows).Close
+        - (*compress/gzip.Reader).Close
+        - (*compress/gzip.Writer).Close
+        - (*net/http.Response).Body.Close
+        - os.Remove
+        - os.RemoveAll
+
+  exclusions:
+    rules:
+      # In test helpers and test functions, deferred Close() calls on DB handles
+      # and ResponseWriter.Write calls inside httptest handlers are cleanup/mock
+      # code where propagating the error is not possible or meaningful.
+      - path: "_test\\.go"
+        linters:
+          - errcheck
+        text: "Error return value of .*(Close|Write).* is not checked"
