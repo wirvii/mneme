@@ -51,6 +51,8 @@ func (h *handlers) handleToolCall(ctx context.Context, params ToolCallParams) (*
 		return h.handleMemStats(ctx, params.Arguments)
 	case "mem_forget":
 		return h.handleMemForget(ctx, params.Arguments)
+	case "mem_checkpoint":
+		return h.handleMemCheckpoint(ctx, params.Arguments)
 	default:
 		return nil, &JSONRPCError{
 			Code:    CodeMethodNotFound,
@@ -309,6 +311,24 @@ func (h *handlers) handleMemForget(ctx context.Context, raw json.RawMessage) (*T
 		"id":     args.ID,
 		"status": "marked_for_decay",
 	})
+}
+
+// handleMemCheckpoint processes a mem_checkpoint tool call.
+func (h *handlers) handleMemCheckpoint(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	var req model.CheckpointRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return nil, &JSONRPCError{
+			Code:    CodeInvalidParams,
+			Message: fmt.Sprintf("mcp: handle mem_checkpoint: invalid arguments: %s", err),
+		}
+	}
+
+	resp, err := h.svc.Checkpoint(ctx, req)
+	if err != nil {
+		return nil, h.mapServiceError("mem_checkpoint", err)
+	}
+
+	return resultFromAny(resp)
 }
 
 // mapServiceError converts a service-layer error into a JSONRPCError with an

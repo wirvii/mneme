@@ -173,12 +173,14 @@ func TestClaudeCode_Protocol(t *testing.T) {
 		"## When to Save",
 		"## When to Search",
 		"## Session End (Mandatory)",
+		"## Checkpoints (Compaction Insurance)",
 		"## Post-Compaction Recovery",
 		"## Principles",
 		"mem_context",
 		"mem_save",
 		"mem_search",
 		"mem_session_end",
+		"mem_checkpoint",
 	}
 	for _, section := range requiredSections {
 		if !strings.Contains(proto, section) {

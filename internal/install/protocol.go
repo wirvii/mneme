@@ -109,12 +109,33 @@ mem_session_end({
 
 This is NOT optional. The next session depends on this summary to pick up where you left off.
 
+## Checkpoints (Compaction Insurance)
+
+During long tasks, call mem_checkpoint periodically to snapshot your work state.
+If context compaction occurs, the checkpoint ensures you can recover without losing progress.
+
+` + "```" + `
+mem_checkpoint({
+  summary: "Brief description of what you're doing and current progress",
+  decisions: "Key decisions made so far (optional)",
+  next_steps: "What to do next if context is lost (optional)"
+})
+` + "```" + `
+
+When to checkpoint:
+- Before starting a multi-step operation (build, refactor, migration)
+- After completing a significant sub-task within a larger task
+- When you've accumulated important context that hasn't been saved as individual memories
+
+You do NOT need to checkpoint on every message — only when losing context would cost real work.
+
 ## Post-Compaction Recovery
 
 If you notice your context has been compacted (you've lost earlier conversation details):
-1. Immediately call ` + "`mem_context`" + ` to reload project knowledge
+1. Immediately call ` + "`mem_context`" + ` to reload project knowledge and last checkpoint
 2. Call ` + "`mem_search`" + ` for any specific topic you were working on
-3. Continue working — your persistent memory has what you need
+3. Look for a checkpoint memory (topic_key "checkpoint/latest") in the context — it contains your last saved work state
+4. Continue working from where the checkpoint left off
 
 ## Principles
 

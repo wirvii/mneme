@@ -59,3 +59,30 @@ type SessionEndResponse struct {
 	// SessionDuration is a human-readable duration string (e.g. "1h23m").
 	SessionDuration string `json:"session_duration"`
 }
+
+// CheckpointRequest is sent by the agent to save a snapshot of its current
+// work state. Checkpoints are idempotent via topic_key upsert — only the
+// latest checkpoint is retained per project.
+type CheckpointRequest struct {
+	// Summary is required. Brief description of current work state and progress.
+	Summary string `json:"summary"`
+
+	// Decisions lists key decisions made since the last checkpoint. Optional.
+	Decisions string `json:"decisions,omitempty"`
+
+	// NextSteps describes what needs to happen next if context is lost. Optional.
+	NextSteps string `json:"next_steps,omitempty"`
+
+	// Project identifies the project. Defaults to the service's detected project.
+	Project string `json:"project,omitempty"`
+}
+
+// CheckpointResponse confirms the checkpoint was saved.
+type CheckpointResponse struct {
+	// ID is the UUIDv7 of the checkpoint memory.
+	ID string `json:"id"`
+
+	// Action is "created" when the checkpoint did not exist yet, or "updated"
+	// when a previous checkpoint was overwritten (upsert semantics).
+	Action string `json:"action"`
+}

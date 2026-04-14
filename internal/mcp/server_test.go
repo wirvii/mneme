@@ -196,7 +196,7 @@ func TestToolsList(t *testing.T) {
 	wantNames := []string{
 		"mem_save", "mem_search", "mem_get", "mem_context",
 		"mem_update", "mem_session_end", "mem_suggest_topic_key",
-		"mem_relate", "mem_timeline", "mem_stats", "mem_forget",
+		"mem_relate", "mem_timeline", "mem_stats", "mem_checkpoint", "mem_forget",
 	}
 	if len(result.Tools) != len(wantNames) {
 		t.Fatalf("got %d tools, want %d", len(result.Tools), len(wantNames))
@@ -400,6 +400,74 @@ func TestMemSessionEnd(t *testing.T) {
 	}
 	if sessResp.SummaryMemoryID == "" {
 		t.Error("expected non-empty summary_memory_id")
+	}
+}
+
+func TestMemCheckpoint(t *testing.T) {
+	srv := newTestServer(t)
+
+	// First call should create the checkpoint.
+	resp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name: "mem_checkpoint",
+		Arguments: mustMarshal(t, map[string]any{
+			"summary":    "working on auth handler",
+			"decisions":  "using JWT tokens",
+			"next_steps": "write tests",
+		}),
+	})
+
+	var checkResp struct {
+		ID     string `json:"id"`
+		Action string `json:"action"`
+	}
+	unmarshalToolText(t, resp, &checkResp)
+
+	if checkResp.ID == "" {
+		t.Error("expected non-empty id in checkpoint response")
+	}
+	if checkResp.Action != "created" {
+		t.Errorf("action = %q, want %q", checkResp.Action, "created")
+	}
+
+	// Second call should update (upsert) the existing checkpoint.
+	resp2 := process(t, srv, "tools/call", 2, ToolCallParams{
+		Name: "mem_checkpoint",
+		Arguments: mustMarshal(t, map[string]any{
+			"summary": "auth handler complete, writing tests now",
+		}),
+	})
+
+	var checkResp2 struct {
+		ID     string `json:"id"`
+		Action string `json:"action"`
+	}
+	unmarshalToolText(t, resp2, &checkResp2)
+
+	if checkResp2.Action != "updated" {
+		t.Errorf("second call action = %q, want %q", checkResp2.Action, "updated")
+	}
+	if checkResp.ID != checkResp2.ID {
+		t.Errorf("id changed between checkpoints: %s → %s", checkResp.ID, checkResp2.ID)
+	}
+}
+
+func TestMemCheckpoint_ValidationError(t *testing.T) {
+	srv := newTestServer(t)
+
+	// Call without required summary field → CodeInvalidParams.
+	resp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name:      "mem_checkpoint",
+		Arguments: mustMarshal(t, map[string]any{}),
+	})
+
+	if resp.Error == nil {
+		t.Fatal("expected JSON-RPC error for missing summary, got nil")
+	}
+	if resp.Error.Code != CodeInvalidParams {
+		t.Errorf("error code = %d, want %d (CodeInvalidParams)", resp.Error.Code, CodeInvalidParams)
+	}
+	if !strings.Contains(resp.Error.Message, "summary") {
+		t.Errorf("error message %q should mention 'summary'", resp.Error.Message)
 	}
 }
 

@@ -92,3 +92,60 @@ func (svc *MemoryService) SessionEnd(ctx context.Context, req model.SessionEndRe
 		SessionDuration: "0s", // Phase 2: compute from started_at
 	}, nil
 }
+
+// Checkpoint saves a snapshot of the agent's current work state as a
+// session_summary memory with topic_key "checkpoint/latest". Because of the
+// upsert-by-topic-key semantics, only one checkpoint is ever retained per
+// project — each call overwrites the previous one.
+//
+// This provides compaction insurance: if Claude Code compacts context mid-task,
+// the agent can call mem_context after recovery and find the checkpoint in the
+// top-importance memories.
+//
+// Validation rules:
+//   - Summary must not be empty (ErrSummaryRequired)
+//   - Project defaults to the service's project when omitted
+func (svc *MemoryService) Checkpoint(ctx context.Context, req model.CheckpointRequest) (*model.CheckpointResponse, error) {
+	if req.Summary == "" {
+		return nil, fmt.Errorf("service: checkpoint: %w", model.ErrSummaryRequired)
+	}
+
+	if req.Project == "" {
+		req.Project = svc.project
+	}
+
+	content := "## Current State\n" + req.Summary
+	if req.Decisions != "" {
+		content += "\n\n## Decisions\n" + req.Decisions
+	}
+	if req.NextSteps != "" {
+		content += "\n\n## Next Steps\n" + req.NextSteps
+	}
+
+	m := &model.Memory{
+		Type:       model.TypeSessionSummary,
+		Scope:      model.ScopeProject,
+		Title:      "Work checkpoint",
+		Content:    content,
+		TopicKey:   "checkpoint/latest",
+		Project:    req.Project,
+		Importance: scoring.InitialImportance(model.TypeSessionSummary, nil),
+		Confidence: model.DefaultConfidence,
+		DecayRate:  scoring.DecayRateForType(model.TypeSessionSummary),
+	}
+
+	savedMem, created, err := svc.projectStore.Upsert(ctx, m)
+	if err != nil {
+		return nil, fmt.Errorf("service: checkpoint: upsert memory: %w", err)
+	}
+
+	action := "updated"
+	if created {
+		action = "created"
+	}
+
+	return &model.CheckpointResponse{
+		ID:     savedMem.ID,
+		Action: action,
+	}, nil
+}

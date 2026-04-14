@@ -314,6 +314,32 @@ func allTools() []ToolDefinition {
 			},
 		},
 		{
+			Name:        "mem_checkpoint",
+			Description: "Save a checkpoint of the current work state. Call periodically during long tasks to prevent knowledge loss on context compaction. Overwrites the previous checkpoint automatically.",
+			InputSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"summary"},
+				"properties": map[string]any{
+					"summary": map[string]any{
+						"type":        "string",
+						"description": "Brief summary of current work state and progress.",
+					},
+					"decisions": map[string]any{
+						"type":        "string",
+						"description": "Decisions made since last checkpoint or session start.",
+					},
+					"next_steps": map[string]any{
+						"type":        "string",
+						"description": "What needs to happen next if the context is lost.",
+					},
+					"project": map[string]any{
+						"type":        "string",
+						"description": "Project slug. Defaults to the detected project.",
+					},
+				},
+			},
+		},
+		{
 			Name:        "mem_forget",
 			Description: "Mark a memory for accelerated decay. Sets its decay rate to 1.0 so importance drops to near zero on the next scoring pass.",
 			InputSchema: map[string]any{
