@@ -217,7 +217,10 @@ func initSDDService() (*service.SDDService, func(), error) {
 
 	cleanup := func() { _ = database.Close() }
 	sddStore := store.NewSDDStore(database)
-	sddSvc := service.NewSDDService(sddStore, cfg, slug)
+	// memorySvc is nil here — this standalone SDDService instance is used by CLI
+	// commands that do not have access to a MemoryService. Completion memories
+	// are saved when SDDService is wired with a MemoryService (e.g. in the MCP server).
+	sddSvc := service.NewSDDService(sddStore, cfg, slug, nil)
 
 	return sddSvc, cleanup, nil
 }

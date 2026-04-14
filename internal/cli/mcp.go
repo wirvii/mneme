@@ -39,6 +39,9 @@ Configure your agent to run: mneme mcp`,
 			sddSvc, sddCleanup, sddErr := initSDDService()
 			if sddErr == nil {
 				defer sddCleanup()
+				// Wire the MemoryService into SDDService so that completion
+				// memories are saved automatically when a spec reaches done.
+				sddSvc.WithMemoryService(svc)
 			}
 
 			cfg := svc.Config()

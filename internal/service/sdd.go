@@ -7,9 +7,14 @@ package service
 import (
 	"context"
 	"fmt"
+	"log"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/juanftp/mneme/internal/config"
+	"github.com/juanftp/mneme/internal/install"
 	"github.com/juanftp/mneme/internal/model"
 	"github.com/juanftp/mneme/internal/store"
 )
@@ -18,25 +23,37 @@ import (
 // machine transitions, quality gate validation, and pushback handling.
 // It owns the business rules that sit above the raw store operations.
 type SDDService struct {
-	store   *store.SDDStore
-	config  *config.Config
-	project string
+	store     *store.SDDStore
+	config    *config.Config
+	project   string
+	memorySvc *MemoryService // optional; nil disables completion memory saving
 }
 
 // NewSDDService constructs an SDDService.
 // sddStore is the underlying data store, cfg provides quality gate settings,
 // and project is the default project slug used when requests omit the Project field.
-func NewSDDService(sddStore *store.SDDStore, cfg *config.Config, project string) *SDDService {
+// memorySvc may be nil — when nil, automatic memory saving on spec completion is
+// disabled but all other behaviours remain fully functional.
+func NewSDDService(sddStore *store.SDDStore, cfg *config.Config, project string, memorySvc *MemoryService) *SDDService {
 	return &SDDService{
-		store:   sddStore,
-		config:  cfg,
-		project: project,
+		store:     sddStore,
+		config:    cfg,
+		project:   project,
+		memorySvc: memorySvc,
 	}
 }
 
 // ProjectSlug returns the project slug associated with this service instance.
 func (svc *SDDService) ProjectSlug() string {
 	return svc.project
+}
+
+// WithMemoryService attaches a MemoryService so that SDDService can save
+// completion memories when a spec reaches done status. This is called after
+// construction when both services are available (e.g. in the MCP server).
+// It is safe to call multiple times — later calls overwrite earlier ones.
+func (svc *SDDService) WithMemoryService(memorySvc *MemoryService) {
+	svc.memorySvc = memorySvc
 }
 
 // --- BACKLOG METHODS ---
@@ -229,6 +246,10 @@ func (svc *SDDService) SpecNew(ctx context.Context, req model.SpecNewRequest) (*
 // Logical next states:
 //
 //	draft -> speccing -> specced -> planning -> planned -> implementing -> qa -> done
+//
+// Side effects on specific transitions:
+//   - draft -> speccing: creates the spec directory and copies spec-template.md into it.
+//   - qa -> done: saves a completion memory via MemoryService (when configured).
 func (svc *SDDService) SpecAdvance(ctx context.Context, req model.SpecAdvanceRequest) (*model.Spec, error) {
 	spec, err := svc.store.GetSpec(ctx, req.ID)
 	if err != nil {
@@ -254,7 +275,96 @@ func (svc *SDDService) SpecAdvance(ctx context.Context, req model.SpecAdvanceReq
 	if err != nil {
 		return nil, fmt.Errorf("service: spec advance: reload: %w", err)
 	}
+
+	// Side effects that run after the status transition is committed.
+	svc.onAdvanceSideEffects(ctx, updated, nextStatus)
+
 	return updated, nil
+}
+
+// onAdvanceSideEffects runs best-effort side effects after a successful
+// SpecAdvance transition. Failures are logged but never returned — the
+// transition itself has already been committed and must not be rolled back
+// due to a filesystem or memory-save error.
+func (svc *SDDService) onAdvanceSideEffects(ctx context.Context, spec *model.Spec, to model.SpecStatus) {
+	switch to {
+	case model.SpecStatusSpeccing:
+		svc.createSpecDirectory(spec)
+	case model.SpecStatusDone:
+		svc.saveCompletionMemory(ctx, spec)
+	}
+}
+
+// createSpecDirectory creates the per-spec workflow directory and copies
+// spec-template.md into it as spec.md. This gives the architect a concrete
+// starting point without needing to locate the template manually.
+//
+// The operation is idempotent: if spec.md already exists it is not overwritten.
+// Any filesystem errors are logged and suppressed — the spec transition has
+// already been committed.
+func (svc *SDDService) createSpecDirectory(spec *model.Spec) {
+	specDir := filepath.Join(svc.config.ProjectWorkflowDir(spec.Project), "specs", spec.ID)
+
+	if err := os.MkdirAll(specDir, 0o755); err != nil {
+		log.Printf("service: spec advance: create spec dir %s: %v", specDir, err)
+		return
+	}
+
+	destPath := filepath.Join(specDir, "spec.md")
+	if _, err := os.Stat(destPath); err == nil {
+		// spec.md already exists — preserve any existing content.
+		return
+	}
+
+	content, err := install.SpecTemplateContent()
+	if err != nil {
+		log.Printf("service: spec advance: read spec template: %v", err)
+		return
+	}
+
+	if err := os.WriteFile(destPath, content, 0o644); err != nil {
+		log.Printf("service: spec advance: write spec.md to %s: %v", destPath, err)
+	}
+}
+
+// saveCompletionMemory persists a structured memory summarising what was
+// implemented when a spec reaches done status. This allows future agents to
+// recall completed work via mem_search without needing to parse spec files.
+//
+// The memory type is TypeDecision for all completions — a completed spec
+// represents a deliberate design and implementation choice. The topic key
+// "spec/{ID}" enables deterministic upserts so re-running does not create
+// duplicate memories.
+//
+// Failures are logged and suppressed — the spec is already done.
+func (svc *SDDService) saveCompletionMemory(ctx context.Context, spec *model.Spec) {
+	if svc.memorySvc == nil {
+		return
+	}
+
+	var filesSection string
+	if len(spec.FilesChanged) > 0 {
+		filesSection = strings.Join(spec.FilesChanged, "\n")
+	} else {
+		filesSection = "(none recorded)"
+	}
+
+	content := fmt.Sprintf(
+		"## What\n%s\n\n## Status\nCompleted via spec %s\n\n## Files Changed\n%s",
+		spec.Title, spec.ID, filesSection,
+	)
+
+	_, err := svc.memorySvc.Save(ctx, model.SaveRequest{
+		Title:    fmt.Sprintf("Completed: %s", spec.Title),
+		Type:     model.TypeDecision,
+		Scope:    model.ScopeProject,
+		TopicKey: fmt.Sprintf("spec/%s", spec.ID),
+		Content:  content,
+		Project:  spec.Project,
+	})
+	if err != nil {
+		log.Printf("service: spec advance: save completion memory for %s: %v", spec.ID, err)
+	}
 }
 
 // SpecPushback registers a pushback from an agent, transitioning the spec

@@ -24,7 +24,8 @@ func newTestSDDService(t *testing.T, project string) *SDDService {
 
 	sddStore := store.NewSDDStore(database)
 	cfg := config.Default()
-	return NewSDDService(sddStore, cfg, project)
+	// Pass nil memorySvc — completion memory saving is not exercised in unit tests.
+	return NewSDDService(sddStore, cfg, project, nil)
 }
 
 // --- BACKLOG TESTS ---

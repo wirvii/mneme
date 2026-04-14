@@ -16,6 +16,18 @@ var builtinCommands embed.FS
 //go:embed assets/templates/*.md
 var builtinTemplates embed.FS
 
+// SpecTemplateContent returns the raw bytes of the embedded spec-template.md.
+// The caller is responsible for writing these bytes to the desired destination.
+// Returns an error when the embedded file cannot be read (should never happen
+// in a correctly built binary).
+func SpecTemplateContent() ([]byte, error) {
+	content, err := builtinTemplates.ReadFile("assets/templates/spec-template.md")
+	if err != nil {
+		return nil, fmt.Errorf("install: read spec template: %w", err)
+	}
+	return content, nil
+}
+
 // filesFromEmbed extracts all files from an embed.FS subdirectory and returns
 // them as CommandFiles targeted to destDir. Only direct children are returned
 // (directories are skipped). Paths within the embed.FS always use forward
