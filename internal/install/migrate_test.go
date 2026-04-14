@@ -21,13 +21,73 @@ func TestMigrateWorkflowDir_Basic(t *testing.T) {
 		t.Fatalf("create legacy backlog: %v", err)
 	}
 
-	if err := MigrateWorkflowDir(legacy, newDir); err != nil {
+	result, err := MigrateWorkflowDir(legacy, newDir)
+	if err != nil {
 		t.Fatalf("MigrateWorkflowDir error: %v", err)
 	}
 
 	// Verify files were copied.
 	checkFile(t, filepath.Join(newDir, "specs", "P001", "spec.md"), "# spec")
 	checkFile(t, filepath.Join(newDir, "backlog.md"), "- [ ] Feature A")
+
+	if len(result.Copied) != 2 {
+		t.Errorf("Copied: got %d files, want 2; files: %v", len(result.Copied), result.Copied)
+	}
+	if len(result.Skipped) != 0 {
+		t.Errorf("Skipped: got %d files, want 0", len(result.Skipped))
+	}
+}
+
+// TestMigrateWorkflowDir_MultipleProjects verifies that multiple project
+// sub-directories under legacyDir are each migrated with their full structure
+// intact under the corresponding sub-directory in newDir.
+func TestMigrateWorkflowDir_MultipleProjects(t *testing.T) {
+	// Simulate ~/.workflows/ containing two project dirs.
+	legacy := t.TempDir()
+	newDir := t.TempDir()
+
+	projects := map[string]map[string]string{
+		"mneme": {
+			"specs/P001/spec.md":    "# mneme spec",
+			"plans/backlog.md":      "- [ ] Item A",
+		},
+		"platform": {
+			"bugs/B001/bug.md":      "# platform bug",
+			"specs/P002/spec.md":    "# platform spec",
+		},
+	}
+
+	for project, files := range projects {
+		for relPath, content := range files {
+			full := filepath.Join(legacy, project, relPath)
+			if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+				t.Fatalf("mkdir %s: %v", filepath.Dir(full), err)
+			}
+			if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+				t.Fatalf("write %s: %v", full, err)
+			}
+		}
+	}
+
+	result, err := MigrateWorkflowDir(legacy, newDir)
+	if err != nil {
+		t.Fatalf("MigrateWorkflowDir error: %v", err)
+	}
+
+	// Verify all files landed under their project slug in newDir.
+	for project, files := range projects {
+		for relPath, content := range files {
+			dst := filepath.Join(newDir, project, relPath)
+			checkFile(t, dst, content)
+		}
+	}
+
+	if len(result.Copied) != 4 {
+		t.Errorf("Copied: got %d files, want 4; files: %v", len(result.Copied), result.Copied)
+	}
+	if len(result.Skipped) != 0 {
+		t.Errorf("Skipped: got %d files, want 0", len(result.Skipped))
+	}
 }
 
 // TestMigrateWorkflowDir_NoOverwrite verifies that pre-existing files in newDir
@@ -45,15 +105,24 @@ func TestMigrateWorkflowDir_NoOverwrite(t *testing.T) {
 		t.Fatalf("create new: %v", err)
 	}
 
-	if err := MigrateWorkflowDir(legacy, newDir); err != nil {
+	result, err := MigrateWorkflowDir(legacy, newDir)
+	if err != nil {
 		t.Fatalf("MigrateWorkflowDir error: %v", err)
 	}
 
 	checkFile(t, filepath.Join(newDir, "notes.md"), original)
+
+	if len(result.Copied) != 0 {
+		t.Errorf("Copied: got %d files, want 0", len(result.Copied))
+	}
+	if len(result.Skipped) != 1 {
+		t.Errorf("Skipped: got %d files, want 1", len(result.Skipped))
+	}
 }
 
 // TestMigrateWorkflowDir_Idempotent verifies that running migration twice
-// produces the same result without errors.
+// produces the same result without errors and that the second run reports all
+// files as skipped.
 func TestMigrateWorkflowDir_Idempotent(t *testing.T) {
 	legacy := t.TempDir()
 	newDir := t.TempDir()
@@ -62,11 +131,23 @@ func TestMigrateWorkflowDir_Idempotent(t *testing.T) {
 		t.Fatalf("create legacy: %v", err)
 	}
 
-	if err := MigrateWorkflowDir(legacy, newDir); err != nil {
+	first, err := MigrateWorkflowDir(legacy, newDir)
+	if err != nil {
 		t.Fatalf("first run: %v", err)
 	}
-	if err := MigrateWorkflowDir(legacy, newDir); err != nil {
+	if len(first.Copied) != 1 {
+		t.Errorf("first run Copied: got %d, want 1", len(first.Copied))
+	}
+
+	second, err := MigrateWorkflowDir(legacy, newDir)
+	if err != nil {
 		t.Fatalf("second run: %v", err)
+	}
+	if len(second.Copied) != 0 {
+		t.Errorf("second run Copied: got %d, want 0", len(second.Copied))
+	}
+	if len(second.Skipped) != 1 {
+		t.Errorf("second run Skipped: got %d, want 1", len(second.Skipped))
 	}
 
 	checkFile(t, filepath.Join(newDir, "file.md"), "content")

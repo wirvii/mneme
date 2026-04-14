@@ -143,6 +143,37 @@ produces the same result without clobbering existing configuration.`,
 			}
 			fmt.Fprintln(os.Stdout, "  [ok] Workflow directories created")
 
+			// Migrate legacy ~/.workflows/ to ~/.mneme/workflows/ when the
+			// legacy directory exists. Each project sub-directory is copied
+			// recursively; files already present at the destination are skipped.
+			{
+				home, err := os.UserHomeDir()
+				if err != nil {
+					return fmt.Errorf("install: home dir: %w", err)
+				}
+				legacyDir := filepath.Join(home, ".workflows")
+				if _, statErr := os.Stat(legacyDir); statErr == nil {
+					cfg, cfgErr := config.Load(config.DefaultPath())
+					if cfgErr != nil {
+						return fmt.Errorf("install: load config for migration: %w", cfgErr)
+					}
+					result, migErr := install.MigrateWorkflowDir(legacyDir, cfg.WorkflowDir())
+					if migErr != nil {
+						return migErr
+					}
+					if len(result.Copied) > 0 || len(result.Skipped) > 0 {
+						fmt.Fprintln(os.Stdout, "")
+						fmt.Fprintf(os.Stdout, "Migrating legacy workflows from %s...\n\n", legacyDir)
+						for _, f := range result.Copied {
+							fmt.Fprintf(os.Stdout, "  [migrated] %s\n", f)
+						}
+						for _, f := range result.Skipped {
+							fmt.Fprintf(os.Stdout, "  [skip]     %s (already exists)\n", f)
+						}
+					}
+				}
+			}
+
 			if flagPersonal {
 				source, err := resolvePersonalSource(flagSource)
 				if err != nil {

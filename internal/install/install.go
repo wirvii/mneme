@@ -580,7 +580,7 @@ func Install(agent *Agent, binaryPath string) error {
 		if _, err := os.Stat(legacyDir); err == nil {
 			cfg, cfgErr := config.Load(config.DefaultPath())
 			if cfgErr == nil {
-				if err := MigrateWorkflowDir(legacyDir, cfg.WorkflowDir()); err != nil {
+				if _, err := MigrateWorkflowDir(legacyDir, cfg.WorkflowDir()); err != nil {
 					errs = append(errs, err.Error())
 				}
 			}
