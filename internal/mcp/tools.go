@@ -357,6 +357,210 @@ func allTools() []ToolDefinition {
 				},
 			},
 		},
+
+		// --- BACKLOG TOOLS ---
+
+		{
+			Name:        "backlog_add",
+			Description: "Add a new item to the project backlog.",
+			InputSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"title"},
+				"properties": map[string]any{
+					"title": map[string]any{
+						"type":        "string",
+						"description": "Short description of the idea.",
+					},
+					"description": map[string]any{
+						"type":        "string",
+						"description": "Detailed explanation of the idea.",
+					},
+					"priority": map[string]any{
+						"type":        "string",
+						"description": "Priority level. Defaults to medium.",
+						"enum":        []string{"critical", "high", "medium", "low"},
+					},
+					"project": map[string]any{
+						"type":        "string",
+						"description": "Project slug. Defaults to detected project.",
+					},
+				},
+			},
+		},
+		{
+			Name:        "backlog_list",
+			Description: "List backlog items for the current project.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"status": map[string]any{
+						"type":        "string",
+						"description": "Filter by status.",
+						"enum":        []string{"raw", "refined", "promoted", "archived"},
+					},
+					"project": map[string]any{
+						"type":        "string",
+						"description": "Project slug. Defaults to detected project.",
+					},
+				},
+			},
+		},
+		{
+			Name:        "backlog_refine",
+			Description: "Refine a raw backlog item with additional details.",
+			InputSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"id", "refinement"},
+				"properties": map[string]any{
+					"id": map[string]any{
+						"type":        "string",
+						"description": "Backlog item ID (e.g. BL-001).",
+					},
+					"refinement": map[string]any{
+						"type":        "string",
+						"description": "Refinement content to add to the item.",
+					},
+				},
+			},
+		},
+		{
+			Name:        "backlog_promote",
+			Description: "Promote a refined backlog item to a spec. The item must have status 'refined'.",
+			InputSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"id"},
+				"properties": map[string]any{
+					"id": map[string]any{
+						"type":        "string",
+						"description": "Backlog item ID to promote (e.g. BL-001).",
+					},
+				},
+			},
+		},
+
+		// --- SPEC TOOLS ---
+
+		{
+			Name:        "spec_new",
+			Description: "Create a new spec in draft status.",
+			InputSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"title"},
+				"properties": map[string]any{
+					"title": map[string]any{
+						"type":        "string",
+						"description": "Title of the spec.",
+					},
+					"backlog_id": map[string]any{
+						"type":        "string",
+						"description": "Originating backlog item ID, if any.",
+					},
+					"project": map[string]any{
+						"type":        "string",
+						"description": "Project slug. Defaults to detected project.",
+					},
+				},
+			},
+		},
+		{
+			Name:        "spec_status",
+			Description: "Get the full status of a spec including history and pushbacks.",
+			InputSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"id"},
+				"properties": map[string]any{
+					"id": map[string]any{
+						"type":        "string",
+						"description": "Spec ID (e.g. SPEC-001).",
+					},
+				},
+			},
+		},
+		{
+			Name:        "spec_advance",
+			Description: "Advance a spec to its next lifecycle state.",
+			InputSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"id", "by"},
+				"properties": map[string]any{
+					"id": map[string]any{
+						"type":        "string",
+						"description": "Spec ID to advance.",
+					},
+					"by": map[string]any{
+						"type":        "string",
+						"description": "Who triggers the advance (e.g. orchestrator, architect, backend).",
+					},
+					"reason": map[string]any{
+						"type":        "string",
+						"description": "Optional reason for the transition.",
+					},
+				},
+			},
+		},
+		{
+			Name:        "spec_pushback",
+			Description: "Register a pushback from an agent, transitioning the spec to needs_grill.",
+			InputSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"id", "from_agent", "questions"},
+				"properties": map[string]any{
+					"id": map[string]any{
+						"type":        "string",
+						"description": "Spec ID to push back on.",
+					},
+					"from_agent": map[string]any{
+						"type":        "string",
+						"description": "Agent raising the pushback (e.g. architect, backend, qa).",
+					},
+					"questions": map[string]any{
+						"type":        "array",
+						"description": "Questions blocking progress.",
+						"items":       map[string]any{"type": "string"},
+						"minItems":    1,
+					},
+				},
+			},
+		},
+		{
+			Name:        "spec_resolve",
+			Description: "Resolve the latest pushback on a spec, returning it to speccing.",
+			InputSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"id", "resolution"},
+				"properties": map[string]any{
+					"id": map[string]any{
+						"type":        "string",
+						"description": "Spec ID whose pushback to resolve.",
+					},
+					"resolution": map[string]any{
+						"type":        "string",
+						"description": "Answer to the pushback questions.",
+					},
+				},
+			},
+		},
+		{
+			Name:        "spec_list",
+			Description: "List specs for the current project.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"status": map[string]any{
+						"type":        "string",
+						"description": "Filter by status.",
+						"enum": []string{
+							"draft", "speccing", "needs_grill", "specced",
+							"planning", "planned", "implementing", "qa", "done",
+						},
+					},
+					"project": map[string]any{
+						"type":        "string",
+						"description": "Project slug. Defaults to detected project.",
+					},
+				},
+			},
+		},
 	}
 }
 

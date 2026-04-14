@@ -67,6 +67,8 @@ in a local SQLite database and exposes them via MCP for agent integration.`,
 		newEmbedCmd(),
 		newExportCmd(),
 		newTUICmd(),
+		newBacklogCmd(),
+		newSpecCmd(),
 	)
 
 	return root
@@ -164,4 +166,58 @@ func initService() (*service.MemoryService, func(), error) {
 	svc := service.NewMemoryService(projectStore, globalStore, cfg, slug, emb)
 
 	return svc, cleanup, nil
+}
+
+// initSDDService creates an SDDService sharing the same database as initService.
+// It applies the same config-loading, project-detection, and flag-override logic.
+//
+// The caller MUST invoke the returned cleanup function when done to release the
+// database connection. A typical pattern is:
+//
+//	svc, cleanup, err := initSDDService()
+//	if err != nil { ... }
+//	defer cleanup()
+func initSDDService() (*service.SDDService, func(), error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, nil, fmt.Errorf("cannot determine home directory: %w", err)
+	}
+	cfgPath := filepath.Join(home, ".mneme", "config.toml")
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("load config: %w", err)
+	}
+
+	if flagDataDir != "" {
+		cfg.Storage.DataDir = flagDataDir
+	}
+
+	slug := flagProject
+	if slug == "" {
+		cwd, cwdErr := os.Getwd()
+		if cwdErr != nil {
+			return nil, nil, fmt.Errorf("cannot determine working directory: %w", cwdErr)
+		}
+		det := project.NewDetector(cwd)
+		detected, _ := det.DetectProject()
+		slug = detected
+	}
+
+	var dbPath string
+	if slug != "" {
+		dbPath = cfg.ProjectDBPath(slug)
+	} else {
+		dbPath = cfg.GlobalDBPath()
+	}
+
+	database, err := db.Open(dbPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open database: %w", err)
+	}
+
+	cleanup := func() { _ = database.Close() }
+	sddStore := store.NewSDDStore(database)
+	sddSvc := service.NewSDDService(sddStore, cfg, slug)
+
+	return sddSvc, cleanup, nil
 }

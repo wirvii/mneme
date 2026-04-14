@@ -33,6 +33,14 @@ Configure your agent to run: mneme mcp`,
 			}
 			defer cleanup()
 
+			// Initialise SDDService on the same database as the memory service.
+			// We tolerate errors here so that the MCP server can still serve
+			// memory tools even when SDD initialisation fails.
+			sddSvc, sddCleanup, sddErr := initSDDService()
+			if sddErr == nil {
+				defer sddCleanup()
+			}
+
 			cfg := svc.Config()
 
 			// Build a logger at the configured log level. MCP servers write
@@ -59,7 +67,7 @@ Configure your agent to run: mneme mcp`,
 				toolsMode = cfg.MCP.Tools
 			}
 
-			srv := mcp.NewServer(svc, logger, toolsMode, Version)
+			srv := mcp.NewServer(svc, sddSvc, logger, toolsMode, Version)
 			return srv.Run(cmd.Context(), os.Stdin, os.Stdout)
 		},
 	}

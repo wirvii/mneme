@@ -16,12 +16,13 @@ import (
 // and packaging the result into a ToolCallResult with a JSON text content block.
 type handlers struct {
 	svc    *service.MemoryService
+	sdd    *service.SDDService
 	logger *slog.Logger
 }
 
-// newHandlers constructs a handlers bound to the given service and logger.
-func newHandlers(svc *service.MemoryService, logger *slog.Logger) *handlers {
-	return &handlers{svc: svc, logger: logger}
+// newHandlers constructs a handlers bound to the given services and logger.
+func newHandlers(svc *service.MemoryService, sdd *service.SDDService, logger *slog.Logger) *handlers {
+	return &handlers{svc: svc, sdd: sdd, logger: logger}
 }
 
 // handleToolCall dispatches the tool call to the correct handler method.
@@ -53,6 +54,26 @@ func (h *handlers) handleToolCall(ctx context.Context, params ToolCallParams) (*
 		return h.handleMemForget(ctx, params.Arguments)
 	case "mem_checkpoint":
 		return h.handleMemCheckpoint(ctx, params.Arguments)
+	case "backlog_add":
+		return h.handleBacklogAdd(ctx, params.Arguments)
+	case "backlog_list":
+		return h.handleBacklogList(ctx, params.Arguments)
+	case "backlog_refine":
+		return h.handleBacklogRefine(ctx, params.Arguments)
+	case "backlog_promote":
+		return h.handleBacklogPromote(ctx, params.Arguments)
+	case "spec_new":
+		return h.handleSpecNew(ctx, params.Arguments)
+	case "spec_status":
+		return h.handleSpecStatus(ctx, params.Arguments)
+	case "spec_advance":
+		return h.handleSpecAdvance(ctx, params.Arguments)
+	case "spec_pushback":
+		return h.handleSpecPushback(ctx, params.Arguments)
+	case "spec_resolve":
+		return h.handleSpecResolve(ctx, params.Arguments)
+	case "spec_list":
+		return h.handleSpecList(ctx, params.Arguments)
 	default:
 		return nil, &JSONRPCError{
 			Code:    CodeMethodNotFound,
@@ -335,7 +356,12 @@ func (h *handlers) handleMemCheckpoint(ctx context.Context, raw json.RawMessage)
 // appropriate error code. ErrNotFound maps to CodeMemoryNotFound; validation
 // errors map to CodeInvalidParams; all others become CodeInternalError.
 func (h *handlers) mapServiceError(method string, err error) *JSONRPCError {
-	if errors.Is(err, model.ErrNotFound) || errors.Is(err, model.ErrEntityNotFound) || errors.Is(err, model.ErrRelationNotFound) {
+	if errors.Is(err, model.ErrNotFound) ||
+		errors.Is(err, model.ErrEntityNotFound) ||
+		errors.Is(err, model.ErrRelationNotFound) ||
+		errors.Is(err, model.ErrBacklogNotFound) ||
+		errors.Is(err, model.ErrSpecNotFound) ||
+		errors.Is(err, model.ErrPushbackNotFound) {
 		return &JSONRPCError{
 			Code:    CodeMemoryNotFound,
 			Message: fmt.Sprintf("mcp: handle %s: %s", method, err),
@@ -349,7 +375,13 @@ func (h *handlers) mapServiceError(method string, err error) *JSONRPCError {
 		errors.Is(err, model.ErrInvalidType) ||
 		errors.Is(err, model.ErrInvalidScope) ||
 		errors.Is(err, model.ErrInvalidEntityKind) ||
-		errors.Is(err, model.ErrInvalidRelationType) {
+		errors.Is(err, model.ErrInvalidRelationType) ||
+		errors.Is(err, model.ErrInvalidTransition) ||
+		errors.Is(err, model.ErrBacklogNotRefined) ||
+		errors.Is(err, model.ErrQualityGateFailed) ||
+		errors.Is(err, model.ErrInvalidBacklogStatus) ||
+		errors.Is(err, model.ErrInvalidPriority) ||
+		errors.Is(err, model.ErrInvalidSpecStatus) {
 		return &JSONRPCError{
 			Code:    CodeInvalidParams,
 			Message: fmt.Sprintf("mcp: handle %s: %s", method, err),
@@ -361,6 +393,248 @@ func (h *handlers) mapServiceError(method string, err error) *JSONRPCError {
 		Code:    CodeInternalError,
 		Message: fmt.Sprintf("mcp: handle %s: internal error", method),
 	}
+}
+
+// --- SDD HANDLERS ---
+
+// sddUnavailable returns a JSONRPCError indicating the SDD service is not
+// initialised. This happens when the MCP server starts but the SDD store
+// could not be opened (e.g. during tests that only need memory tools).
+func (h *handlers) sddUnavailable(method string) *JSONRPCError {
+	return &JSONRPCError{
+		Code:    CodeInternalError,
+		Message: fmt.Sprintf("mcp: handle %s: SDD service not available", method),
+	}
+}
+
+// handleBacklogAdd processes a backlog_add tool call.
+func (h *handlers) handleBacklogAdd(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	if h.sdd == nil {
+		return nil, h.sddUnavailable("backlog_add")
+	}
+	var req model.BacklogAddRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return nil, &JSONRPCError{
+			Code:    CodeInvalidParams,
+			Message: fmt.Sprintf("mcp: handle backlog_add: invalid arguments: %s", err),
+		}
+	}
+
+	item, err := h.sdd.BacklogAdd(ctx, req)
+	if err != nil {
+		return nil, h.mapServiceError("backlog_add", err)
+	}
+
+	return resultFromAny(item)
+}
+
+// handleBacklogList processes a backlog_list tool call.
+func (h *handlers) handleBacklogList(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	if h.sdd == nil {
+		return nil, h.sddUnavailable("backlog_list")
+	}
+	var req model.BacklogListRequest
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &req); err != nil {
+			return nil, &JSONRPCError{
+				Code:    CodeInvalidParams,
+				Message: fmt.Sprintf("mcp: handle backlog_list: invalid arguments: %s", err),
+			}
+		}
+	}
+
+	items, err := h.sdd.BacklogList(ctx, req)
+	if err != nil {
+		return nil, h.mapServiceError("backlog_list", err)
+	}
+
+	return resultFromAny(items)
+}
+
+// handleBacklogRefine processes a backlog_refine tool call.
+func (h *handlers) handleBacklogRefine(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	if h.sdd == nil {
+		return nil, h.sddUnavailable("backlog_refine")
+	}
+	var req model.BacklogRefineRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return nil, &JSONRPCError{
+			Code:    CodeInvalidParams,
+			Message: fmt.Sprintf("mcp: handle backlog_refine: invalid arguments: %s", err),
+		}
+	}
+
+	item, err := h.sdd.BacklogRefine(ctx, req)
+	if err != nil {
+		return nil, h.mapServiceError("backlog_refine", err)
+	}
+
+	return resultFromAny(item)
+}
+
+// handleBacklogPromote processes a backlog_promote tool call.
+func (h *handlers) handleBacklogPromote(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	if h.sdd == nil {
+		return nil, h.sddUnavailable("backlog_promote")
+	}
+	var args struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return nil, &JSONRPCError{
+			Code:    CodeInvalidParams,
+			Message: fmt.Sprintf("mcp: handle backlog_promote: invalid arguments: %s", err),
+		}
+	}
+	if args.ID == "" {
+		return nil, &JSONRPCError{
+			Code:    CodeInvalidParams,
+			Message: "mcp: handle backlog_promote: id is required",
+		}
+	}
+
+	spec, err := h.sdd.BacklogPromote(ctx, args.ID)
+	if err != nil {
+		return nil, h.mapServiceError("backlog_promote", err)
+	}
+
+	return resultFromAny(spec)
+}
+
+// handleSpecNew processes a spec_new tool call.
+func (h *handlers) handleSpecNew(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	if h.sdd == nil {
+		return nil, h.sddUnavailable("spec_new")
+	}
+	var req model.SpecNewRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return nil, &JSONRPCError{
+			Code:    CodeInvalidParams,
+			Message: fmt.Sprintf("mcp: handle spec_new: invalid arguments: %s", err),
+		}
+	}
+
+	spec, err := h.sdd.SpecNew(ctx, req)
+	if err != nil {
+		return nil, h.mapServiceError("spec_new", err)
+	}
+
+	return resultFromAny(spec)
+}
+
+// handleSpecStatus processes a spec_status tool call.
+func (h *handlers) handleSpecStatus(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	if h.sdd == nil {
+		return nil, h.sddUnavailable("spec_status")
+	}
+	var args struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return nil, &JSONRPCError{
+			Code:    CodeInvalidParams,
+			Message: fmt.Sprintf("mcp: handle spec_status: invalid arguments: %s", err),
+		}
+	}
+	if args.ID == "" {
+		return nil, &JSONRPCError{
+			Code:    CodeInvalidParams,
+			Message: "mcp: handle spec_status: id is required",
+		}
+	}
+
+	resp, err := h.sdd.SpecStatus(ctx, args.ID)
+	if err != nil {
+		return nil, h.mapServiceError("spec_status", err)
+	}
+
+	return resultFromAny(resp)
+}
+
+// handleSpecAdvance processes a spec_advance tool call.
+func (h *handlers) handleSpecAdvance(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	if h.sdd == nil {
+		return nil, h.sddUnavailable("spec_advance")
+	}
+	var req model.SpecAdvanceRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return nil, &JSONRPCError{
+			Code:    CodeInvalidParams,
+			Message: fmt.Sprintf("mcp: handle spec_advance: invalid arguments: %s", err),
+		}
+	}
+
+	spec, err := h.sdd.SpecAdvance(ctx, req)
+	if err != nil {
+		return nil, h.mapServiceError("spec_advance", err)
+	}
+
+	return resultFromAny(spec)
+}
+
+// handleSpecPushback processes a spec_pushback tool call.
+func (h *handlers) handleSpecPushback(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	if h.sdd == nil {
+		return nil, h.sddUnavailable("spec_pushback")
+	}
+	var req model.SpecPushbackRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return nil, &JSONRPCError{
+			Code:    CodeInvalidParams,
+			Message: fmt.Sprintf("mcp: handle spec_pushback: invalid arguments: %s", err),
+		}
+	}
+
+	spec, err := h.sdd.SpecPushback(ctx, req)
+	if err != nil {
+		return nil, h.mapServiceError("spec_pushback", err)
+	}
+
+	return resultFromAny(spec)
+}
+
+// handleSpecResolve processes a spec_resolve tool call.
+func (h *handlers) handleSpecResolve(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	if h.sdd == nil {
+		return nil, h.sddUnavailable("spec_resolve")
+	}
+	var req model.SpecResolveRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return nil, &JSONRPCError{
+			Code:    CodeInvalidParams,
+			Message: fmt.Sprintf("mcp: handle spec_resolve: invalid arguments: %s", err),
+		}
+	}
+
+	spec, err := h.sdd.SpecResolve(ctx, req)
+	if err != nil {
+		return nil, h.mapServiceError("spec_resolve", err)
+	}
+
+	return resultFromAny(spec)
+}
+
+// handleSpecList processes a spec_list tool call.
+func (h *handlers) handleSpecList(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	if h.sdd == nil {
+		return nil, h.sddUnavailable("spec_list")
+	}
+	var req model.SpecListRequest
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &req); err != nil {
+			return nil, &JSONRPCError{
+				Code:    CodeInvalidParams,
+				Message: fmt.Sprintf("mcp: handle spec_list: invalid arguments: %s", err),
+			}
+		}
+	}
+
+	specs, err := h.sdd.SpecList(ctx, req)
+	if err != nil {
+		return nil, h.mapServiceError("spec_list", err)
+	}
+
+	return resultFromAny(specs)
 }
 
 // resultFromAny serializes v to a compact JSON string and wraps it in a single
