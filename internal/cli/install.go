@@ -3,9 +3,11 @@ package cli
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 
+	"github.com/juanftp/mneme/internal/config"
 	"github.com/juanftp/mneme/internal/install"
 )
 
@@ -16,7 +18,10 @@ import (
 // The command is idempotent: running it multiple times on the same agent
 // produces the same result without duplicating entries or clobbering user config.
 func newInstallCmd() *cobra.Command {
-	var flagDryRun bool
+	var flagDryRun  bool
+	var flagPersonal bool
+	var flagForce   bool
+	var flagSource  string
 
 	cmd := &cobra.Command{
 		Use:   "install <agent>",
@@ -29,12 +34,19 @@ memory system. This command:
   3. Injects the memory protocol into the agent's system prompt file
   4. Installs the /mneme-init slash command
 
+Optionally, pass --personal to also copy your personal Claude Code ecosystem
+(agents, commands, templates, hooks, CLAUDE.md, settings.json) from a git
+repository or local directory configured in ~/.mneme/config.toml.
+
 Supported agents: claude-code
 
 The install is non-destructive and idempotent — running it multiple times
 produces the same result without clobbering existing configuration.`,
 		Example: `  mneme install claude-code
-  mneme install claude-code --dry-run`,
+  mneme install claude-code --dry-run
+  mneme install claude-code --personal
+  mneme install claude-code --personal --source /path/to/my/dotfiles
+  mneme install claude-code --personal --force`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			slug := args[0]
@@ -59,6 +71,27 @@ produces the same result without clobbering existing configuration.`,
 				fmt.Fprintln(os.Stdout, "Dry run — no changes will be made.")
 				fmt.Fprintln(os.Stdout, "")
 				fmt.Fprintln(os.Stdout, description)
+
+				if flagPersonal {
+					source, err := resolvePersonalSource(flagSource)
+					if err != nil {
+						return err
+					}
+					home, err := os.UserHomeDir()
+					if err != nil {
+						return fmt.Errorf("install: home dir: %w", err)
+					}
+					dryDesc, err := install.DryRunPersonal(install.PersonalOpts{
+						Source:    source,
+						ClaudeDir: filepath.Join(home, ".claude"),
+						Force:     flagForce,
+					})
+					if err != nil {
+						return err
+					}
+					fmt.Fprintln(os.Stdout, "")
+					fmt.Fprintln(os.Stdout, dryDesc)
+				}
 				return nil
 			}
 
@@ -84,6 +117,40 @@ produces the same result without clobbering existing configuration.`,
 			}
 			fmt.Fprintln(os.Stdout, "  [ok] Slash commands installed")
 
+			if flagPersonal {
+				source, err := resolvePersonalSource(flagSource)
+				if err != nil {
+					return err
+				}
+				home, err := os.UserHomeDir()
+				if err != nil {
+					return fmt.Errorf("install: home dir: %w", err)
+				}
+
+				fmt.Fprintln(os.Stdout, "")
+				fmt.Fprintln(os.Stdout, "Installing personal ecosystem...")
+				fmt.Fprintln(os.Stdout, "")
+
+				result, err := install.InstallPersonal(install.PersonalOpts{
+					Source:    source,
+					ClaudeDir: filepath.Join(home, ".claude"),
+					Force:     flagForce,
+				})
+				if err != nil {
+					return err
+				}
+
+				for _, f := range result.Installed {
+					fmt.Fprintf(os.Stdout, "  [ok]   %s\n", f)
+				}
+				for _, f := range result.Skipped {
+					fmt.Fprintf(os.Stdout, "  [skip] %s (already exists)\n", f)
+				}
+				if result.Merged {
+					fmt.Fprintln(os.Stdout, "  [merge] settings.json")
+				}
+			}
+
 			fmt.Fprintln(os.Stdout, "")
 			fmt.Fprintf(os.Stdout, "Done. Restart %s for changes to take effect.\n", agent.Name)
 			return nil
@@ -91,8 +158,43 @@ produces the same result without clobbering existing configuration.`,
 	}
 
 	cmd.Flags().BoolVar(&flagDryRun, "dry-run", false, "Show what would be configured without making changes")
+	cmd.Flags().BoolVar(&flagPersonal, "personal", false,
+		"Install personal ecosystem from configured source")
+	cmd.Flags().BoolVar(&flagForce, "force", false,
+		"Overwrite existing files (settings.json is always merged, never overwritten)")
+	cmd.Flags().StringVar(&flagSource, "source", "",
+		"Override personal ecosystem source (git URL or local path)")
 
 	return cmd
+}
+
+// resolvePersonalSource returns the source to use for the personal ecosystem.
+// It returns flagSource if non-empty, otherwise reads Personal.Source from the
+// default config. Returns an error with instructions when no source is found.
+func resolvePersonalSource(flagSource string) (string, error) {
+	if flagSource != "" {
+		return flagSource, nil
+	}
+
+	cfg, err := config.Load(config.DefaultPath())
+	if err != nil {
+		return "", fmt.Errorf("install: load config: %w", err)
+	}
+
+	if cfg.Personal.Source != "" {
+		return cfg.Personal.Source, nil
+	}
+
+	return "", fmt.Errorf(`install: --personal requires a source.
+
+Configure it in ~/.mneme/config.toml:
+
+  [personal]
+  source = "git@github.com:user/dotfiles-claude.git"
+
+Or pass --source directly:
+
+  mneme install claude-code --personal --source /path/to/ecosystem`)
 }
 
 // agentBySlug returns the *install.Agent for the given slug. It returns a

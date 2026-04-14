@@ -24,6 +24,17 @@ type Config struct {
 	Consolidation ConsolidationConfig `toml:"consolidation"`
 	Decay         DecayConfig         `toml:"decay"`
 	MCP           MCPConfig           `toml:"mcp"`
+	Personal      PersonalConfig      `toml:"personal"`
+}
+
+// PersonalConfig holds the configuration for the user's personal Claude Code
+// ecosystem. The source can be a git repository URL (cloned to a temp dir) or
+// a local directory path. Both are treated as read-only sources.
+type PersonalConfig struct {
+	// Source is the location of the personal ecosystem files.
+	// Accepts a git URL (git@..., https://...*.git, ssh://...) or a local
+	// filesystem path. An empty string means no personal ecosystem is configured.
+	Source string `toml:"source"`
 }
 
 // StorageConfig controls where mneme persists its SQLite databases and
@@ -262,6 +273,17 @@ func (c *Config) Validate() error {
 	}
 
 	return nil
+}
+
+// DefaultPath returns the default configuration file path (~/.mneme/config.toml).
+// If the home directory cannot be determined it falls back to a relative path
+// so callers always receive a non-empty string.
+func DefaultPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(".", ".mneme", "config.toml")
+	}
+	return filepath.Join(home, ".mneme", "config.toml")
 }
 
 // expandHome replaces a leading ~ in path with the current user's home
