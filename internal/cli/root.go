@@ -12,6 +12,7 @@ import (
 
 	"github.com/juanftp/mneme/internal/config"
 	"github.com/juanftp/mneme/internal/db"
+	"github.com/juanftp/mneme/internal/embed"
 	"github.com/juanftp/mneme/internal/project"
 	"github.com/juanftp/mneme/internal/service"
 	"github.com/juanftp/mneme/internal/store"
@@ -62,6 +63,7 @@ in a local SQLite database and exposes them via MCP for agent integration.`,
 		newConsolidateCmd(),
 		newInstallCmd(),
 		newHookCmd(),
+		newEmbedCmd(),
 	)
 
 	return root
@@ -146,7 +148,17 @@ func initService() (*service.MemoryService, func(), error) {
 	// 5. Build stores and service on top of the opened databases.
 	projectStore := store.NewMemoryStore(projectDB)
 	globalStore := store.NewMemoryStore(globalDB)
-	svc := service.NewMemoryService(projectStore, globalStore, cfg, slug)
+
+	// 6. Construct the embedder based on config.
+	var emb embed.Embedder
+	switch cfg.Embedding.Provider {
+	case "tfidf":
+		emb = embed.NewTFIDFEmbedder(cfg.Embedding.Dimensions)
+	default:
+		emb = embed.NopEmbedder{}
+	}
+
+	svc := service.NewMemoryService(projectStore, globalStore, cfg, slug, emb)
 
 	return svc, cleanup, nil
 }

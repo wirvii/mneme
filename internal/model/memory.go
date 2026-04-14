@@ -258,6 +258,32 @@ type UpdateRequest struct {
 	Files *[]string `json:"files,omitempty"`
 }
 
+// Embedding represents a vector representation of a memory's content.
+// It is stored as a flat float32 slice serialised to a BLOB in SQLite.
+// The vector is not included in JSON responses because it is a raw numeric
+// array with no human-readable value — callers that need it should use the
+// store layer directly.
+type Embedding struct {
+	// MemoryID is the UUIDv7 of the memory this embedding belongs to.
+	MemoryID string `json:"memory_id"`
+
+	// Vector holds the raw float32 coefficients. Its length equals Dimensions.
+	// Omitted from JSON to avoid bloating API responses.
+	Vector []float32 `json:"-"`
+
+	// Model is a stable identifier for the embedding strategy used to produce
+	// this vector (e.g. "tfidf-v1", "minilm-v2"). Used to detect when
+	// re-embedding is needed after an upgrade.
+	Model string `json:"model"`
+
+	// Dimensions is the length of Vector. Stored explicitly so the reader can
+	// pre-allocate the slice without re-computing it from the BLOB size.
+	Dimensions int `json:"dimensions"`
+
+	// CreatedAt is the wall-clock time when the embedding was generated.
+	CreatedAt time.Time `json:"created_at"`
+}
+
 // SaveResponse is returned after a successful mem_save call. It gives the agent
 // enough information to reference the memory later and understand whether a new
 // record was created or an existing one was updated.

@@ -45,4 +45,8 @@ type StatsResponse struct {
 	// AvgImportance is the mean importance score across all active memories.
 	// A low average may indicate the decay subsystem is not being reset by access.
 	AvgImportance float64 `json:"avg_importance"`
+
+	// EmbeddingsCount is the number of memories that have a stored vector
+	// embedding. Used to monitor backfill coverage and diagnose search quality.
+	EmbeddingsCount int `json:"embeddings_count"`
 }

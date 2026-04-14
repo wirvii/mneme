@@ -25,6 +25,21 @@ type Config struct {
 	Decay         DecayConfig         `toml:"decay"`
 	MCP           MCPConfig           `toml:"mcp"`
 	Personal      PersonalConfig      `toml:"personal"`
+	Embedding     EmbeddingConfig     `toml:"embedding"`
+}
+
+// EmbeddingConfig controls the text embedding strategy used for semantic search.
+// When Provider is "none" the system falls back to FTS5-only retrieval with
+// no behavioural difference from before P002.
+type EmbeddingConfig struct {
+	// Provider controls which Embedder implementation is used.
+	// Accepted values: "tfidf" (default), "none".
+	Provider string `toml:"provider"`
+
+	// Dimensions is the vector dimensionality produced by the embedder.
+	// Only relevant for the "tfidf" provider; ignored for "none".
+	// Default: 512.
+	Dimensions int `toml:"dimensions"`
 }
 
 // PersonalConfig holds the configuration for the user's personal Claude Code
@@ -174,6 +189,10 @@ func Default() *Config {
 		MCP: MCPConfig{
 			Tools:    "all",
 			LogLevel: "info",
+		},
+		Embedding: EmbeddingConfig{
+			Provider:   "tfidf",
+			Dimensions: 512,
 		},
 	}
 }

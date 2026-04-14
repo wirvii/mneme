@@ -20,6 +20,8 @@ func TestMigrate_Fresh(t *testing.T) {
 		"memories", "memories_fts", "memory_files", "sessions", "schema_version",
 		// Tables introduced by 002_knowledge_graph.sql.
 		"entities", "relations", "memory_entities",
+		// Tables introduced by 003_embeddings.sql.
+		"embeddings",
 	}
 	for _, table := range tables {
 		t.Run("table_"+table, func(t *testing.T) {
@@ -34,13 +36,13 @@ func TestMigrate_Fresh(t *testing.T) {
 		})
 	}
 
-	t.Run("schema_version_is_2", func(t *testing.T) {
+	t.Run("schema_version_is_3", func(t *testing.T) {
 		var version int
 		if err := db.QueryRow(`SELECT MAX(version) FROM schema_version`).Scan(&version); err != nil {
 			t.Fatalf("query schema_version: %v", err)
 		}
-		if version != 2 {
-			t.Errorf("expected schema version 2, got %d", version)
+		if version != 3 {
+			t.Errorf("expected schema version 3, got %d", version)
 		}
 	})
 }
@@ -64,10 +66,10 @@ func TestMigrate_Idempotent(t *testing.T) {
 		t.Fatalf("query schema_version count: %v", err)
 	}
 	// Each migration file inserts one row with INSERT OR IGNORE, so there
-	// should be exactly one row per applied migration — currently 2.
+	// should be exactly one row per applied migration — currently 3.
 	// A second call to migrate must not insert duplicate rows.
-	if count != 2 {
-		t.Errorf("expected 2 rows in schema_version, got %d", count)
+	if count != 3 {
+		t.Errorf("expected 3 rows in schema_version, got %d", count)
 	}
 }
 

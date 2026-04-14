@@ -7,6 +7,7 @@ import (
 
 	"github.com/juanftp/mneme/internal/config"
 	"github.com/juanftp/mneme/internal/db"
+	"github.com/juanftp/mneme/internal/embed"
 	"github.com/juanftp/mneme/internal/model"
 	"github.com/juanftp/mneme/internal/service"
 	"github.com/juanftp/mneme/internal/store"
@@ -252,7 +253,7 @@ func TestSave_GlobalScope_UsesGlobalStore(t *testing.T) {
 	cfg := config.Default()
 	cfg.Context.IncludeGlobal = true
 	cfg.Context.GlobalMinImportance = 0.0 // include all global memories in context
-	svc := service.NewMemoryService(projectStore, globalStore, cfg, "test/project")
+	svc := service.NewMemoryService(projectStore, globalStore, cfg, "test/project", embed.NopEmbedder{})
 
 	ctx := context.Background()
 

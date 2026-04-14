@@ -4,14 +4,15 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"log/slog"
 	"strings"
 	"testing"
 
 	"github.com/juanftp/mneme/internal/config"
 	"github.com/juanftp/mneme/internal/db"
+	"github.com/juanftp/mneme/internal/embed"
 	"github.com/juanftp/mneme/internal/service"
 	"github.com/juanftp/mneme/internal/store"
-	"log/slog"
 )
 
 // newTestServer creates a Server backed by a fully migrated in-memory SQLite
@@ -35,7 +36,7 @@ func newTestServer(t *testing.T) *Server {
 	projectStore := store.NewMemoryStore(projectDB)
 	globalStore := store.NewMemoryStore(globalDB)
 	cfg := config.Default()
-	svc := service.NewMemoryService(projectStore, globalStore, cfg, "test-project")
+	svc := service.NewMemoryService(projectStore, globalStore, cfg, "test-project", embed.NopEmbedder{})
 
 	logger := slog.Default()
 	return NewServer(svc, logger, "all", "test")

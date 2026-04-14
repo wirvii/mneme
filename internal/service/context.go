@@ -62,7 +62,9 @@ func (svc *MemoryService) Context(ctx context.Context, req model.ContextRequest)
 	totalAvailable := len(candidates)
 
 	// Build a focus boost set when a focus query is provided.
-	// Search both stores so global memories can also be boosted by focus.
+	// Both FTS5 and vector signals contribute to the focus set so that
+	// semantically related memories are boosted even when they share no
+	// tokens with the focus query.
 	focusIDs := make(map[string]bool)
 	if req.Focus != "" {
 		focusOpts := store.SearchOptions{
@@ -82,6 +84,37 @@ func (svc *MemoryService) Context(ctx context.Context, req model.ContextRequest)
 		}
 		for _, r := range append(projectFocus, globalFocus...) {
 			focusIDs[r.Memory.ID] = true
+		}
+
+		// Augment focus set with vector similarity when embedder is active.
+		// Results above the similarity threshold are treated as focus matches
+		// regardless of whether they appear in the FTS5 results.
+		if svc.embedder.Model() != "none" {
+			focusVec := svc.embedder.Embed(req.Focus)
+			if len(focusVec) > 0 {
+				vOpts := store.VectorSearchOptions{
+					Project: req.Project,
+					Limit:   20,
+				}
+				projectVec, err := svc.projectStore.VectorSearch(ctx, focusVec, vOpts)
+				if err == nil {
+					for _, vr := range projectVec {
+						if vr.Similarity > 0.3 {
+							focusIDs[vr.MemoryID] = true
+						}
+					}
+				}
+				globalVOpts := vOpts
+				globalVOpts.Project = ""
+				globalVec, err := svc.globalStore.VectorSearch(ctx, focusVec, globalVOpts)
+				if err == nil {
+					for _, vr := range globalVec {
+						if vr.Similarity > 0.3 {
+							focusIDs[vr.MemoryID] = true
+						}
+					}
+				}
+			}
 		}
 	}
 

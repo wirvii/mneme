@@ -43,6 +43,11 @@ type SearchResult struct {
 	// BM25Score is the raw FTS5 BM25 ranking before blending. Exposed so callers
 	// can inspect the text-match component independently.
 	BM25Score float64 `json:"bm25_score"`
+
+	// VectorScore is the cosine similarity between the query embedding and the
+	// memory's stored embedding. Zero when embeddings are disabled or the memory
+	// has not been embedded yet.
+	VectorScore float64 `json:"vector_score,omitempty"`
 }
 
 // SearchResponse is the envelope returned by mem_search. It includes pagination

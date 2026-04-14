@@ -12,6 +12,7 @@ import (
 
 	"github.com/juanftp/mneme/internal/config"
 	"github.com/juanftp/mneme/internal/db"
+	"github.com/juanftp/mneme/internal/embed"
 	mnhttp "github.com/juanftp/mneme/internal/http"
 	"github.com/juanftp/mneme/internal/model"
 	"github.com/juanftp/mneme/internal/service"
@@ -39,7 +40,7 @@ func newTestServer(t *testing.T) *httptest.Server {
 	projectStore := store.NewMemoryStore(projectDB)
 	globalStore := store.NewMemoryStore(globalDB)
 	cfg := config.Default()
-	svc := service.NewMemoryService(projectStore, globalStore, cfg, "test-project")
+	svc := service.NewMemoryService(projectStore, globalStore, cfg, "test-project", embed.NopEmbedder{})
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	return httptest.NewServer(mnhttp.NewHandler(svc, logger))

@@ -10,8 +10,10 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"time"
 
 	"github.com/juanftp/mneme/internal/config"
+	"github.com/juanftp/mneme/internal/embed"
 	"github.com/juanftp/mneme/internal/model"
 	"github.com/juanftp/mneme/internal/scoring"
 	"github.com/juanftp/mneme/internal/store"
@@ -31,7 +33,8 @@ type MemoryService struct {
 	projectStore *store.MemoryStore // for project-scoped memories
 	globalStore  *store.MemoryStore // for global/org-scoped memories
 	config       *config.Config
-	project      string // detected or configured project slug
+	project      string        // detected or configured project slug
+	embedder     embed.Embedder // generates vector representations for semantic search
 }
 
 // NewMemoryService constructs a MemoryService. The caller must provide fully
@@ -39,12 +42,16 @@ type MemoryService struct {
 // memories and globalStore for global/org-scoped memories. project is the
 // default project slug used when individual requests omit the Project field —
 // typically the slug detected from the working directory's git remote.
-func NewMemoryService(projectStore, globalStore *store.MemoryStore, cfg *config.Config, project string) *MemoryService {
+//
+// embedder provides the text embedding strategy. Pass embed.NopEmbedder{} to
+// disable embeddings and fall back to FTS5-only retrieval.
+func NewMemoryService(projectStore, globalStore *store.MemoryStore, cfg *config.Config, project string, embedder embed.Embedder) *MemoryService {
 	return &MemoryService{
 		projectStore: projectStore,
 		globalStore:  globalStore,
 		config:       cfg,
 		project:      project,
+		embedder:     embedder,
 	}
 }
 
@@ -114,10 +121,18 @@ func (svc *MemoryService) Save(ctx context.Context, req model.SaveRequest) (*mod
 		DecayRate:  decayRate,
 	}
 
-	result, created, err := svc.storeFor(m.Scope).Upsert(ctx, m)
+	targetStore := svc.storeFor(m.Scope)
+	result, created, err := targetStore.Upsert(ctx, m)
 	if err != nil {
 		return nil, fmt.Errorf("service: save: %w", err)
 	}
+
+	// Generate and persist the embedding synchronously (best-effort).
+	// TF-IDF embed takes <1 ms so there is no value in deferring it to a
+	// background goroutine at this scale. Failures are logged but never
+	// returned to the caller — a missing embedding only degrades search
+	// quality, not correctness.
+	svc.embedMemory(ctx, targetStore, result)
 
 	action := "created"
 	if !created {
@@ -199,6 +214,12 @@ func (svc *MemoryService) Update(ctx context.Context, id string, req model.Updat
 	}
 	if updated == nil {
 		return nil, fmt.Errorf("service: update: reload: %w", model.ErrNotFound)
+	}
+
+	// Re-embed when title or content changed — the embedding must reflect
+	// the current text so vector search stays accurate.
+	if req.Title != nil || req.Content != nil {
+		svc.embedMemory(ctx, targetStore, updated)
 	}
 
 	return &model.SaveResponse{
@@ -358,17 +379,140 @@ func (svc *MemoryService) Stats(ctx context.Context, project string) (*model.Sta
 		projectLabel = "global"
 	}
 
+	embCount, err := s.CountEmbeddings(ctx, project)
+	if err != nil {
+		return nil, fmt.Errorf("service: stats: embeddings count: %w", err)
+	}
+
 	return &model.StatsResponse{
-		Project:       projectLabel,
-		TotalMemories: total,
-		ByType:        byType,
-		ByScope:       byScope,
-		Active:        active,
-		Superseded:    superseded,
-		Forgotten:     forgotten,
-		DBSizeBytes:   dbSize,
-		OldestMemory:  oldest,
-		NewestMemory:  newest,
-		AvgImportance: avgImportance,
+		Project:         projectLabel,
+		TotalMemories:   total,
+		ByType:          byType,
+		ByScope:         byScope,
+		Active:          active,
+		Superseded:      superseded,
+		Forgotten:       forgotten,
+		DBSizeBytes:     dbSize,
+		OldestMemory:    oldest,
+		NewestMemory:    newest,
+		AvgImportance:   avgImportance,
+		EmbeddingsCount: embCount,
 	}, nil
+}
+
+// EmbedBackfillResult summarises the outcome of an EmbedBackfill run.
+type EmbedBackfillResult struct {
+	// Total is the number of memories that lacked an embedding at the start.
+	Total int
+	// Embedded is the number of embeddings successfully generated and stored.
+	Embedded int
+	// Failed is the number of memories for which embedding failed.
+	Failed int
+}
+
+// EmbedBackfill generates embeddings for all active memories in the project
+// (and optionally the global) store that do not yet have one. Progress is
+// reported via the progressFn callback, which receives the current memory's
+// title and its 1-based index. Pass a nil progressFn to suppress progress output.
+//
+// EmbedBackfill is a no-op when the embedder is NopEmbedder.
+func (svc *MemoryService) EmbedBackfill(ctx context.Context, project string, batchSize int, progressFn func(title string, current, total int)) (*EmbedBackfillResult, error) {
+	if svc.embedder.Model() == "none" {
+		return &EmbedBackfillResult{}, nil
+	}
+
+	if batchSize <= 0 {
+		batchSize = 100
+	}
+
+	// Process the project store.
+	projectResult, err := svc.backfillStore(ctx, svc.projectStore, project, batchSize, progressFn, 0)
+	if err != nil {
+		return nil, fmt.Errorf("service: embed backfill: project store: %w", err)
+	}
+
+	// Process the global store — use empty project to cover all global memories.
+	globalResult, err := svc.backfillStore(ctx, svc.globalStore, "", batchSize, progressFn, projectResult.Total)
+	if err != nil {
+		return nil, fmt.Errorf("service: embed backfill: global store: %w", err)
+	}
+
+	return &EmbedBackfillResult{
+		Total:    projectResult.Total + globalResult.Total,
+		Embedded: projectResult.Embedded + globalResult.Embedded,
+		Failed:   projectResult.Failed + globalResult.Failed,
+	}, nil
+}
+
+// backfillStore generates embeddings for memories without one in the given store.
+// offset is the count of already-processed memories (from previous stores) so
+// the progressFn reports consistent global indices.
+func (svc *MemoryService) backfillStore(ctx context.Context, s *store.MemoryStore, project string, batchSize int, progressFn func(string, int, int), offset int) (*EmbedBackfillResult, error) {
+	memories, err := s.ListMemoriesWithoutEmbedding(ctx, project, 0)
+	if err != nil {
+		return nil, err
+	}
+
+	result := &EmbedBackfillResult{Total: len(memories)}
+	total := offset + len(memories)
+
+	for i, m := range memories {
+		select {
+		case <-ctx.Done():
+			return result, ctx.Err()
+		default:
+		}
+
+		vec := svc.embedder.Embed(m.Title + " " + m.Content)
+		if len(vec) == 0 {
+			result.Failed++
+			continue
+		}
+
+		emb := &model.Embedding{
+			MemoryID:   m.ID,
+			Vector:     vec,
+			Model:      svc.embedder.Model(),
+			Dimensions: svc.embedder.Dimensions(),
+			CreatedAt:  time.Now().UTC(),
+		}
+		if saveErr := s.SaveEmbedding(ctx, emb); saveErr != nil {
+			log.Printf("service: backfill: embed memory %s: %v", m.ID, saveErr)
+			result.Failed++
+			continue
+		}
+
+		result.Embedded++
+
+		if progressFn != nil {
+			progressFn(m.Title, offset+i+1, total)
+		}
+
+		// Process in batches to avoid holding the connection for too long.
+		if (i+1)%batchSize == 0 {
+			// Yield briefly between batches; the context check above handles cancellation.
+		}
+	}
+
+	return result, nil
+}
+
+// embedMemory generates an embedding for m and persists it to targetStore.
+// Failures are logged and suppressed — embedding is always best-effort.
+// This method is a no-op when the embedder is NopEmbedder.
+func (svc *MemoryService) embedMemory(ctx context.Context, targetStore *store.MemoryStore, m *model.Memory) {
+	vec := svc.embedder.Embed(m.Title + " " + m.Content)
+	if len(vec) == 0 {
+		return
+	}
+	emb := &model.Embedding{
+		MemoryID:   m.ID,
+		Vector:     vec,
+		Model:      svc.embedder.Model(),
+		Dimensions: svc.embedder.Dimensions(),
+		CreatedAt:  time.Now().UTC(),
+	}
+	if err := targetStore.SaveEmbedding(ctx, emb); err != nil {
+		log.Printf("service: embed memory %s: %v", m.ID, err)
+	}
 }
