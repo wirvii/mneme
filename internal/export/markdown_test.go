@@ -218,7 +218,7 @@ func TestRenderAll_GroupsAndOrders(t *testing.T) {
 	if posBugfix < 0 {
 		t.Fatal("missing ## Bugfix section")
 	}
-	if !(posDecision < posDiscovery && posDiscovery < posBugfix) {
+	if posDecision >= posDiscovery || posDiscovery >= posBugfix {
 		t.Errorf("sections not in canonical order: Decision=%d Discovery=%d Bugfix=%d",
 			posDecision, posDiscovery, posBugfix)
 	}

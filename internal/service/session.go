@@ -68,11 +68,8 @@ func (svc *MemoryService) SessionEnd(ctx context.Context, req model.SessionEndRe
 		SummaryID: savedMem.ID,
 	}
 
+	// If CreateSession fails (e.g. duplicate key), fall through and update via EndSession.
 	_, createErr := svc.projectStore.CreateSession(ctx, sess)
-	if createErr != nil {
-		// If the session already exists (duplicate key), fall through and just
-		// update the ended_at and summary_id via EndSession.
-	}
 
 	if err := svc.projectStore.EndSession(ctx, sessionID, savedMem.ID); err != nil {
 		// If the session wasn't found above (createErr != nil and EndSession

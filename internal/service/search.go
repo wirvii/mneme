@@ -187,7 +187,7 @@ func (svc *MemoryService) fuseAndRank(ctx context.Context, ftsResults []model.Se
 	ftsRanks := make([]scoring.RankedResult, len(ftsResults))
 	for i, r := range ftsResults {
 		ftsRanks[i] = scoring.RankedResult{
-			ID:     r.Memory.ID,
+			ID:     r.ID,
 			Rank:   i + 1,
 			Weight: weightFTS5,
 		}
@@ -209,7 +209,7 @@ func (svc *MemoryService) fuseAndRank(ctx context.Context, ftsResults []model.Se
 	// Build a lookup map for fast access to FTS5 results by ID.
 	ftsMap := make(map[string]*model.SearchResult, len(ftsResults))
 	for i := range ftsResults {
-		ftsMap[ftsResults[i].Memory.ID] = &ftsResults[i]
+		ftsMap[ftsResults[i].ID] = &ftsResults[i]
 	}
 
 	// Build a lookup map for vector scores.

@@ -83,7 +83,7 @@ func (svc *MemoryService) Context(ctx context.Context, req model.ContextRequest)
 			globalFocus = nil
 		}
 		for _, r := range append(projectFocus, globalFocus...) {
-			focusIDs[r.Memory.ID] = true
+			focusIDs[r.ID] = true
 		}
 
 		// Augment focus set with vector similarity when embedder is active.

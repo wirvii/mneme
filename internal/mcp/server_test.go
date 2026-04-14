@@ -103,28 +103,6 @@ func process(t *testing.T, srv *Server, method string, id int, params any) JSONR
 	return resp
 }
 
-// processNotification sends a notification (no response expected).
-func processNotification(t *testing.T, srv *Server, method string, params any) {
-	t.Helper()
-	var in bytes.Buffer
-	// Notifications have no id field in the JSON.
-	req := struct {
-		JSONRPC string `json:"jsonrpc"`
-		Method  string `json:"method"`
-		Params  any    `json:"params,omitempty"`
-	}{
-		JSONRPC: "2.0",
-		Method:  method,
-		Params:  params,
-	}
-	b, _ := json.Marshal(req)
-	in.Write(b)
-
-	_, hasResp := srv.handleMessage(in.Bytes())
-	if hasResp {
-		t.Fatalf("processNotification: expected no response for notification %s", method)
-	}
-}
 
 // unmarshalResult unmarshals resp.Result into v. Fails the test if resp.Error is set.
 func unmarshalResult(t *testing.T, resp JSONRPCResponse, v any) {

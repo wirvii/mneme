@@ -509,10 +509,6 @@ func (svc *MemoryService) backfillStore(ctx context.Context, s *store.MemoryStor
 			progressFn(m.Title, offset+i+1, total)
 		}
 
-		// Process in batches to avoid holding the connection for too long.
-		if (i+1)%batchSize == 0 {
-			// Yield briefly between batches; the context check above handles cancellation.
-		}
 	}
 
 	return result, nil

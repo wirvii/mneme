@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -77,9 +76,3 @@ requests up to 10 seconds to complete.`,
 	return cmd
 }
 
-// contextWithSignal is kept as an internal helper for tests that need to
-// cancel a server without sending a real OS signal. It wraps the provided
-// context so that cancel() stops the server.
-func contextWithSignal(parent context.Context) (context.Context, context.CancelFunc) {
-	return context.WithCancel(parent)
-}
