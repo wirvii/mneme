@@ -91,6 +91,9 @@ func printStats(w *os.File, resp *model.StatsResponse) {
 		fmt.Fprintln(w)
 	}
 
+	fmt.Fprintf(w, "Embeddings\n")
+	fmt.Fprintf(w, "  Count:      %d\n\n", resp.EmbeddingsCount)
+
 	fmt.Fprintf(w, "Database\n")
 	fmt.Fprintf(w, "  Size:       %s\n", formatBytes(resp.DBSizeBytes))
 

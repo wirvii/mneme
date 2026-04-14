@@ -80,7 +80,7 @@ func (svc *MemoryService) Search(ctx context.Context, req model.SearchRequest) (
 	// === Fusion ===
 	var results []model.SearchResult
 	if len(vectorResults) > 0 {
-		results = svc.fuseAndRank(ftsResults, vectorResults, limit)
+		results = svc.fuseAndRank(ctx, ftsResults, vectorResults, limit)
 	} else {
 		// Fallback: FTS5-only with the existing re-ranking logic.
 		results = svc.reRankFTS5(ftsResults)
@@ -177,7 +177,12 @@ func (svc *MemoryService) vectorSearchAll(ctx context.Context, queryVec []float3
 
 // fuseAndRank merges FTS5 and vector results using RRF, then assembles
 // SearchResult values with VectorScore populated for transparency.
-func (svc *MemoryService) fuseAndRank(ftsResults []model.SearchResult, vectorResults []store.VectorResult, limit int) []model.SearchResult {
+//
+// When a memory appears only in vector results (no FTS5 match), it is loaded
+// from the store so that semantic-only hits are not silently dropped. This is
+// the core guarantee of hybrid retrieval: a query like "authentication flow"
+// must surface memories about JWT auth even when FTS5 finds no token overlap.
+func (svc *MemoryService) fuseAndRank(ctx context.Context, ftsResults []model.SearchResult, vectorResults []store.VectorResult, limit int) []model.SearchResult {
 	// Convert FTS5 results into RankedResults (1-based rank).
 	ftsRanks := make([]scoring.RankedResult, len(ftsResults))
 	for i, r := range ftsResults {
@@ -214,10 +219,8 @@ func (svc *MemoryService) fuseAndRank(ftsResults []model.SearchResult, vectorRes
 	}
 
 	// Assemble the final result list in RRF-fused order.
-	// Only IDs that are present in the FTS5 map are included — we do not load
-	// extra memories from the DB here, keeping this path allocation-light.
-	// Memories found only in vector results but not in FTS5 are excluded in
-	// this implementation; a future improvement can load them via store.Get.
+	// When a memory appears only in vector results (not in FTS5), load it from
+	// the store so that semantic-only matches are included in the final output.
 	results := make([]model.SearchResult, 0, len(fused))
 	seen := make(map[string]bool, len(fused))
 
@@ -231,7 +234,25 @@ func (svc *MemoryService) fuseAndRank(ftsResults []model.SearchResult, vectorRes
 
 		sr, ok := ftsMap[fr.ID]
 		if !ok {
-			// Memory is in vector results only — skip (no preview available).
+			// Memory found only by vector search — load it from the store to
+			// build a complete SearchResult with a preview snippet.
+			mem, _, loadErr := svc.getFromEitherStore(ctx, fr.ID)
+			if loadErr != nil || mem == nil {
+				// Non-fatal: best-effort, skip if unavailable.
+				continue
+			}
+			lastAccessed := mem.CreatedAt
+			if mem.LastAccessed != nil {
+				lastAccessed = *mem.LastAccessed
+			}
+			finalScore := scoring.FinalScoreAt(0, mem.Importance, lastAccessed, now, mem.DecayRate)
+			results = append(results, model.SearchResult{
+				Memory:         mem,
+				Preview:        makeTimelinePreview(mem.Content),
+				BM25Score:      0,
+				VectorScore:    vecScoreMap[fr.ID],
+				RelevanceScore: finalScore + fr.Score,
+			})
 			continue
 		}
 
