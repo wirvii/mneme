@@ -182,10 +182,7 @@ func (m *DetailModel) initViewport() {
 
 	headerLines := m.headerLineCount()
 	// Reserve 1 line for the status bar.
-	vpHeight := m.height - headerLines - 1
-	if vpHeight < 3 {
-		vpHeight = 3
-	}
+	vpHeight := max(m.height-headerLines-1, 3)
 
 	m.viewport = viewport.New(m.width, vpHeight)
 	m.viewport.SetContent(m.memory.Content)

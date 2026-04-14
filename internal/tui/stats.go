@@ -50,14 +50,6 @@ func (m StatsModel) Update(msg tea.Msg) (StatsModel, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 
-	case statsLoadedMsg:
-		m.loading = false
-		if msg.err == nil {
-			m.stats = msg.stats
-		}
-		// Errors are propagated via the original msg back to AppModel.
-		return m, func() tea.Msg { return msg }
-
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "q", "esc":
@@ -153,7 +145,7 @@ func (m StatsModel) renderByScopeBox(s *model.StatsResponse) string {
 
 // joinHorizontal places two or more rendered strings side-by-side with gap
 // spaces between them.
-func joinHorizontal(blocks ...interface{}) string {
+func joinHorizontal(blocks ...any) string {
 	// Last arg is the gap (int), rest are strings.
 	if len(blocks) < 2 {
 		return ""

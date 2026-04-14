@@ -58,7 +58,20 @@ func newListModel(svc *service.MemoryService, keys KeyMap) ListModel {
 
 // Init returns the initial command that loads all memories from the store.
 func (m ListModel) Init() tea.Cmd {
-	return loadMemories(m.svc, store.ListOptions{Limit: 200, OrderBy: m.sortField})
+	return loadMemories(m.svc, store.ListOptions{Limit: 200, OrderBy: sortOrderBy(m.sortField)})
+}
+
+// sortOrderBy returns the SQL ORDER BY clause for the given sort field,
+// applying DESC for importance and created_at (highest/newest first) and
+// ASC for type (alphabetical).
+func sortOrderBy(field string) string {
+	switch field {
+	case "type":
+		return "type ASC"
+	default:
+		// "importance" and "created_at" both sort descending.
+		return field + " DESC"
+	}
 }
 
 // Update handles messages for the list screen. It returns the updated model
@@ -83,7 +96,7 @@ func (m ListModel) Update(msg tea.Msg) (ListModel, tea.Cmd) {
 		// After a successful forget, reload the list so the forgotten memory
 		// disappears without a manual refresh.
 		if msg.err == nil {
-			return m, loadMemories(m.svc, store.ListOptions{Limit: 200, OrderBy: m.sortField})
+			return m, loadMemories(m.svc, store.ListOptions{Limit: 200, OrderBy: sortOrderBy(m.sortField)})
 		}
 
 	case tea.KeyMsg:
@@ -139,11 +152,11 @@ func (m ListModel) updateNormal(msg tea.KeyMsg) (ListModel, tea.Cmd) {
 		return m, textinput.Blink
 
 	case msg.String() == "r":
-		return m, loadMemories(m.svc, store.ListOptions{Limit: 200, OrderBy: m.sortField})
+		return m, loadMemories(m.svc, store.ListOptions{Limit: 200, OrderBy: sortOrderBy(m.sortField)})
 
 	case msg.String() == "s":
 		m.sortField = cycleSortField(m.sortField)
-		return m, loadMemories(m.svc, store.ListOptions{Limit: 200, OrderBy: m.sortField})
+		return m, loadMemories(m.svc, store.ListOptions{Limit: 200, OrderBy: sortOrderBy(m.sortField)})
 
 	case msg.String() == "tab":
 		m.typeFilter = cycleTypeFilter(m.typeFilter)
@@ -197,6 +210,9 @@ func (m ListModel) updateNormal(msg tea.KeyMsg) (ListModel, tea.Cmd) {
 		return m, func() tea.Msg {
 			return navigateMsg{target: screenHelp}
 		}
+
+	case msg.String() == "q":
+		return m, tea.Quit
 	}
 
 	return m, nil
@@ -242,9 +258,7 @@ func (m ListModel) renderHeader() string {
 	left := styleTitle.Render("Memories") + "  " + styleSubtle.Render(total)
 
 	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right)
-	if gap < 1 {
-		gap = 1
-	}
+	gap = max(gap, 1)
 	return left + strings.Repeat(" ", gap) + right
 }
 
@@ -265,9 +279,7 @@ func (m ListModel) renderRows() string {
 	typeW, titleW, impW, dateW := m.columnWidths()
 	visible := m.visibleRows()
 	end := m.offset + visible
-	if end > len(m.memories) {
-		end = len(m.memories)
-	}
+	end = min(end, len(m.memories))
 
 	var b strings.Builder
 	for i := m.offset; i < end; i++ {
@@ -300,34 +312,23 @@ func (m ListModel) columnWidths() (typeW, titleW, impW, dateW int) {
 	dateW = 10
 	// "  " separators: 3 separators = 6 chars
 	titleW = m.width - typeW - impW - dateW - 6
-	if titleW < 10 {
-		titleW = 10
-	}
+	titleW = max(titleW, 10)
 	return
 }
 
 // visibleRows returns how many rows fit in the current terminal height.
 // It reserves 4 lines: header + column headers + status bar + separator.
 func (m ListModel) visibleRows() int {
-	rows := m.height - 4
-	if rows < 1 {
-		rows = 1
-	}
-	return rows
+	return max(m.height-4, 1)
 }
 
 // moveCursor moves the cursor by delta, clamping to valid range, and adjusts
 // the scroll offset to keep the cursor visible.
 func (m *ListModel) moveCursor(delta int) {
 	m.cursor += delta
-	if m.cursor < 0 {
-		m.cursor = 0
-	}
+	m.cursor = max(m.cursor, 0)
 	if m.cursor >= len(m.memories) {
-		m.cursor = len(m.memories) - 1
-		if m.cursor < 0 {
-			m.cursor = 0
-		}
+		m.cursor = max(len(m.memories)-1, 0)
 	}
 	m.scrollToCursor()
 }
@@ -336,9 +337,7 @@ func (m *ListModel) moveCursor(delta int) {
 // window.
 func (m *ListModel) scrollToCursor() {
 	visible := m.visibleRows()
-	if m.cursor < m.offset {
-		m.offset = m.cursor
-	}
+	m.offset = min(m.offset, m.cursor)
 	if m.cursor >= m.offset+visible {
 		m.offset = m.cursor - visible + 1
 	}

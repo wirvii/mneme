@@ -83,8 +83,7 @@ func (a *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case memoriesLoadedMsg:
 		if msg.err != nil {
-			a.setError(msg.err)
-			return a, nil
+			return a, a.setError(msg.err)
 		}
 		// Pass through to list.
 		var cmd tea.Cmd
@@ -93,23 +92,20 @@ func (a *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case statsLoadedMsg:
 		if msg.err != nil {
-			a.setError(msg.err)
-		} else {
-			a.stats.stats = msg.stats
-			a.stats.loading = false
+			return a, a.setError(msg.err)
 		}
+		a.stats.stats = msg.stats
+		a.stats.loading = false
 		return a, nil
 
 	case forgetDoneMsg:
 		if msg.err != nil {
-			a.setError(msg.err)
-		} else {
-			a.statusMsg = "Memory forgotten."
-			// Navigate back to list and reload.
-			a.active = screenList
-			return a, a.list.Init()
+			return a, a.setError(msg.err)
 		}
-		return a, nil
+		a.statusMsg = "Memory forgotten."
+		// Navigate back to list and reload.
+		a.active = screenList
+		return a, a.list.Init()
 
 	case errClearedMsg:
 		a.err = nil
@@ -188,10 +184,7 @@ func (a *AppModel) View() string {
 
 	// Pad content to fill the terminal minus the status bar row.
 	contentLines := strings.Split(content, "\n")
-	targetLines := a.height - 1
-	if targetLines < 0 {
-		targetLines = 0
-	}
+	targetLines := max(a.height-1, 0)
 	for len(contentLines) < targetLines {
 		contentLines = append(contentLines, "")
 	}
@@ -237,10 +230,7 @@ func (a *AppModel) renderStatusBar() string {
 	left := project + count
 	right := styleSubtle.Render(hints)
 
-	gap := a.width - lipgloss.Width(left) - lipgloss.Width(right) - 2 // 2 for padding
-	if gap < 1 {
-		gap = 1
-	}
+	gap := max(a.width-lipgloss.Width(left)-lipgloss.Width(right)-2, 1) // 2 for padding
 	bar := left + strings.Repeat(" ", gap) + right
 	return styleStatusBar.Width(a.width).Render(bar)
 }
@@ -261,12 +251,16 @@ func (a *AppModel) hintsByScreen() string {
 	}
 }
 
-// setError stores the error and starts a timer to clear it after 3 seconds.
-func (a *AppModel) setError(err error) {
+// setError stores the error and returns a tea.Cmd that clears it after 3 seconds.
+// Callers must return this command from Update to wire up the auto-dismiss timer.
+func (a *AppModel) setError(err error) tea.Cmd {
 	a.err = err
-	if !a.errTimer {
-		a.errTimer = true
+	if a.errTimer {
+		// Timer already running; don't stack multiple timers.
+		return nil
 	}
+	a.errTimer = true
+	return clearErrorAfter(3 * time.Second)
 }
 
 // clearErrorAfter returns a tea.Cmd that fires errClearedMsg after d.
