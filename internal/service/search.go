@@ -276,18 +276,18 @@ func (svc *MemoryService) fuseAndRank(ctx context.Context, ftsResults []model.Se
 
 	// Include any FTS5-only results not already in the fused list.
 	for i := range ftsResults {
-		id := ftsResults[i].Memory.ID
+		id := ftsResults[i].ID
 		if seen[id] {
 			continue
 		}
 		seen[id] = true
 
 		sr := &ftsResults[i]
-		lastAccessed := sr.Memory.CreatedAt
-		if sr.Memory.LastAccessed != nil {
-			lastAccessed = *sr.Memory.LastAccessed
+		lastAccessed := sr.CreatedAt
+		if sr.LastAccessed != nil {
+			lastAccessed = *sr.LastAccessed
 		}
-		sr.RelevanceScore = scoring.FinalScoreAt(-sr.BM25Score, sr.Memory.Importance, lastAccessed, now, sr.Memory.DecayRate)
+		sr.RelevanceScore = scoring.FinalScoreAt(-sr.BM25Score, sr.Importance, lastAccessed, now, sr.DecayRate)
 		results = append(results, *sr)
 	}
 
@@ -309,16 +309,16 @@ func (svc *MemoryService) reRankFTS5(results []model.SearchResult) []model.Searc
 	now := time.Now()
 	for i := range results {
 		r := &results[i]
-		lastAccessed := r.Memory.CreatedAt
-		if r.Memory.LastAccessed != nil {
-			lastAccessed = *r.Memory.LastAccessed
+		lastAccessed := r.CreatedAt
+		if r.LastAccessed != nil {
+			lastAccessed = *r.LastAccessed
 		}
 		r.RelevanceScore = scoring.FinalScoreAt(
 			-r.BM25Score,
-			r.Memory.Importance,
+			r.Importance,
 			lastAccessed,
 			now,
-			r.Memory.DecayRate,
+			r.DecayRate,
 		)
 	}
 	sort.Slice(results, func(i, j int) bool {
