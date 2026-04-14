@@ -17,6 +17,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/juanftp/mneme/internal/config"
 )
 
 // HookPatch describes a single hook entry that should be merged into the agent's
@@ -65,6 +67,18 @@ type Agent struct {
 
 	// Commands returns the list of CommandFiles (e.g. slash commands) to write.
 	Commands func() ([]CommandFile, error)
+
+	// Agents returns the list of agent profile files to install.
+	// Agent files are always overwritten — they are the authoritative built-in source.
+	Agents func() ([]CommandFile, error)
+
+	// Templates returns the list of workflow template files to install.
+	// Templates are never overwritten so user customisations are preserved.
+	Templates func() ([]CommandFile, error)
+
+	// DelegationHook returns the settings file path and the list of hook
+	// entries to merge for delegation enforcement.
+	DelegationHook func() (string, []HookPatch, error)
 }
 
 // ClaudeCode returns a fully configured *Agent for Claude Code using binaryPath
@@ -136,6 +150,37 @@ func ClaudeCode(binaryPath string) *Agent {
 				return nil, fmt.Errorf("install: claude-code: commands: %w", err)
 			}
 			return []CommandFile{cmd}, nil
+		},
+
+		Agents: func() ([]CommandFile, error) {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return nil, fmt.Errorf("install: claude-code: agents: home dir: %w", err)
+			}
+			return filesFromEmbed(builtinAgents, "assets/agents", filepath.Join(home, ".claude", "agents"))
+		},
+
+		Templates: func() ([]CommandFile, error) {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return nil, fmt.Errorf("install: claude-code: templates: home dir: %w", err)
+			}
+			return filesFromEmbed(builtinTemplates, "assets/templates", filepath.Join(home, ".mneme", "templates"))
+		},
+
+		DelegationHook: func() (string, []HookPatch, error) {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return "", nil, fmt.Errorf("install: claude-code: delegation hook: home dir: %w", err)
+			}
+			path := filepath.Join(home, ".claude", "settings.json")
+			patches := []HookPatch{
+				{
+					Event:   "PreToolUse",
+					Command: "mneme hook enforce-delegation",
+				},
+			}
+			return path, patches, nil
 		},
 	}
 }
@@ -402,11 +447,94 @@ func WriteCommands(agent *Agent) error {
 	return nil
 }
 
+// WriteAgents installs agent profile files (e.g. ~/.claude/agents/).
+// Existing files are always overwritten — built-in agents are the authoritative source.
+func WriteAgents(agent *Agent) error {
+	files, err := agent.Agents()
+	if err != nil {
+		return fmt.Errorf("install: write agents: %w", err)
+	}
+	for _, f := range files {
+		if err := os.MkdirAll(filepath.Dir(f.Path), 0o755); err != nil {
+			return fmt.Errorf("install: write agents: mkdir: %w", err)
+		}
+		if err := os.WriteFile(f.Path, f.Content, 0o644); err != nil {
+			return fmt.Errorf("install: write agents: write %s: %w", f.Path, err)
+		}
+	}
+	return nil
+}
+
+// WriteTemplates installs workflow template files (e.g. ~/.mneme/templates/).
+// Existing files are NOT overwritten — user customisations are preserved.
+func WriteTemplates(agent *Agent) error {
+	files, err := agent.Templates()
+	if err != nil {
+		return fmt.Errorf("install: write templates: %w", err)
+	}
+	for _, f := range files {
+		if err := os.MkdirAll(filepath.Dir(f.Path), 0o755); err != nil {
+			return fmt.Errorf("install: write templates: mkdir: %w", err)
+		}
+		if _, err := os.Stat(f.Path); err == nil {
+			// Already exists — preserve user customisation.
+			continue
+		}
+		if err := os.WriteFile(f.Path, f.Content, 0o644); err != nil {
+			return fmt.Errorf("install: write templates: write %s: %w", f.Path, err)
+		}
+	}
+	return nil
+}
+
+// PatchDelegationHook merges the delegation enforcement hook into the agent's
+// settings file. It reuses PatchHooks logic but driven by agent.DelegationHook.
+func PatchDelegationHook(agent *Agent) error {
+	if agent.DelegationHook == nil {
+		return nil
+	}
+	path, patches, err := agent.DelegationHook()
+	if err != nil {
+		return fmt.Errorf("install: patch delegation hook: %w", err)
+	}
+
+	// Reuse PatchHooks by building a temporary proxy Agent.
+	proxy := &Agent{
+		Hooks: func() (string, []HookPatch, error) {
+			return path, patches, nil
+		},
+	}
+	return PatchHooks(proxy)
+}
+
+// CreateWorkflowDirs creates the default workflow directory structure under
+// cfg.WorkflowDir(). The subdirectories specs/, bugs/, and plans/ are created
+// if they do not already exist. The operation is idempotent.
+func CreateWorkflowDirs() error {
+	cfg, err := config.Load(config.DefaultPath())
+	if err != nil {
+		return fmt.Errorf("install: create workflow dirs: load config: %w", err)
+	}
+	dir := cfg.WorkflowDir()
+	for _, sub := range []string{"", "specs", "bugs", "plans"} {
+		target := filepath.Join(dir, sub)
+		if err := os.MkdirAll(target, 0o755); err != nil {
+			return fmt.Errorf("install: create workflow dirs: %w", err)
+		}
+	}
+	return nil
+}
+
 // Install runs the full installation sequence for the given agent:
 //  1. Write MCP config
 //  2. Patch hooks
 //  3. Inject protocol
 //  4. Write commands
+//  5. Write agent profiles (if Agents is set)
+//  6. Write workflow templates (if Templates is set)
+//  7. Patch delegation hook (if DelegationHook is set)
+//  8. Create workflow directories
+//  9. Migrate legacy workflow directory (if ~/.workflows/ exists)
 //
 // Each step is independent; a failure in one step does not abort the others
 // so partial installs still provide value. All errors are collected and returned
@@ -425,6 +553,38 @@ func Install(agent *Agent, binaryPath string) error {
 	}
 	if err := WriteCommands(agent); err != nil {
 		errs = append(errs, err.Error())
+	}
+	if agent.Agents != nil {
+		if err := WriteAgents(agent); err != nil {
+			errs = append(errs, err.Error())
+		}
+	}
+	if agent.Templates != nil {
+		if err := WriteTemplates(agent); err != nil {
+			errs = append(errs, err.Error())
+		}
+	}
+	if agent.DelegationHook != nil {
+		if err := PatchDelegationHook(agent); err != nil {
+			errs = append(errs, err.Error())
+		}
+	}
+	if err := CreateWorkflowDirs(); err != nil {
+		errs = append(errs, err.Error())
+	}
+
+	// Migrate legacy ~/.workflows/ to ~/.mneme/workflows/ if present.
+	home, _ := os.UserHomeDir()
+	if home != "" {
+		legacyDir := filepath.Join(home, ".workflows")
+		if _, err := os.Stat(legacyDir); err == nil {
+			cfg, cfgErr := config.Load(config.DefaultPath())
+			if cfgErr == nil {
+				if err := MigrateWorkflowDir(legacyDir, cfg.WorkflowDir()); err != nil {
+					errs = append(errs, err.Error())
+				}
+			}
+		}
 	}
 
 	if len(errs) > 0 {
