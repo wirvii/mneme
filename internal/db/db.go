@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	// Register the sqlite3 driver. CGO_ENABLED=1 is required; mattn/go-sqlite3
 	// is the only SQLite driver that reliably supports FTS5 and JSON1 extensions.
@@ -96,4 +97,47 @@ func OpenMemory() (*DB, error) {
 // the error from the first close attempt.
 func (db *DB) Close() error {
 	return db.DB.Close()
+}
+
+// SchemaVersion returns the highest migration version recorded in the
+// schema_version table of the database at path. It opens a read-only
+// connection, queries the table, and closes the connection immediately without
+// running any migrations.
+//
+// Returns 0 (not an error) when:
+//   - The file at path does not exist.
+//   - The schema_version table has not been created yet.
+//
+// Any other failure (e.g. the file is not a valid SQLite database) is returned
+// as an error.
+func SchemaVersion(path string) (int, error) {
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return 0, nil
+	}
+
+	dsn := fmt.Sprintf("file:%s?mode=ro&_foreign_keys=ON", path)
+	sqlDB, err := sql.Open("sqlite3", dsn)
+	if err != nil {
+		return 0, fmt.Errorf("db: schema version: open: %w", err)
+	}
+	defer sqlDB.Close()
+
+	var version int
+	row := sqlDB.QueryRow(`SELECT COALESCE(MAX(version), 0) FROM schema_version`)
+	if err := row.Scan(&version); err != nil {
+		// The table might not exist yet; treat that as version 0.
+		if isNoSuchTable(err) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("db: schema version: query: %w", err)
+	}
+	return version, nil
+}
+
+// isNoSuchTable reports whether err is a SQLite "no such table" error.
+func isNoSuchTable(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "no such table")
 }
