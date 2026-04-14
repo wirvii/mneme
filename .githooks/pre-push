@@ -1,0 +1,46 @@
+#!/bin/sh
+# pre-push hook — bloquea el push si build, tests o lint fallan.
+# Requiere CGO_ENABLED=1 y las tags fts5 (mneme usa mattn/go-sqlite3 con FTS5).
+
+set -e
+
+BOLD='\033[1m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+RED='\033[0;31m'
+RESET='\033[0m'
+
+fail() {
+    printf "${RED}x %s${RESET}\n" "$1" >&2
+    exit 1
+}
+
+# ------------------------------------------------------------
+# 1. Build
+# ------------------------------------------------------------
+printf "${BOLD}pre-push: build...${RESET}\n"
+CGO_ENABLED=1 go build -tags fts5 -o /dev/null ./cmd/mneme \
+    || fail "build fallo — corrige los errores antes de hacer push"
+printf "${GREEN}✓ build${RESET}\n"
+
+# ------------------------------------------------------------
+# 2. Tests
+# ------------------------------------------------------------
+printf "${BOLD}pre-push: tests...${RESET}\n"
+CGO_ENABLED=1 go test -tags fts5 ./... \
+    || fail "tests fallaron — corrige los errores antes de hacer push"
+printf "${GREEN}✓ tests${RESET}\n"
+
+# ------------------------------------------------------------
+# 3. Lint (opcional — se omite si golangci-lint no esta instalado)
+# ------------------------------------------------------------
+if command -v golangci-lint >/dev/null 2>&1; then
+    printf "${BOLD}pre-push: lint...${RESET}\n"
+    CGO_ENABLED=1 golangci-lint run --timeout 5m \
+        || fail "lint fallo — corrige los warnings antes de hacer push"
+    printf "${GREEN}✓ lint${RESET}\n"
+else
+    printf "${YELLOW}! lint omitido — golangci-lint no esta instalado${RESET}\n"
+fi
+
+printf "${GREEN}${BOLD}pre-push: todo OK. Push autorizado.${RESET}\n"
