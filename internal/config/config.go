@@ -26,6 +26,65 @@ type Config struct {
 	MCP           MCPConfig           `toml:"mcp"`
 	Personal      PersonalConfig      `toml:"personal"`
 	Embedding     EmbeddingConfig     `toml:"embedding"`
+	Workflow      WorkflowConfig      `toml:"workflow"`
+	Delegation    DelegationConfig    `toml:"delegation"`
+	Spec          SpecConfig          `toml:"spec"`
+}
+
+// WorkflowConfig controls where workflow artifacts (specs, bugs, backlog)
+// are stored on disk. This is the directory structure that the orchestrator
+// and agents read/write during the SDD lifecycle.
+type WorkflowConfig struct {
+	// Dir is the root directory for workflow artifacts.
+	// Defaults to ~/.mneme/workflows. Supports ~ expansion.
+	// Per-project subdirectories are created automatically.
+	Dir string `toml:"dir"`
+}
+
+// DelegationConfig controls the delegation enforcement hook that prevents
+// the orchestrator agent from editing source code directly.
+type DelegationConfig struct {
+	// Enabled turns delegation enforcement on or off. Defaults to true.
+	Enabled bool `toml:"enabled"`
+
+	// ProtectedPaths is a list of path prefixes that the orchestrator
+	// is forbidden from editing. Matched against the file path relative
+	// to the project root.
+	ProtectedPaths []string `toml:"protected_paths"`
+
+	// AllowedPaths is a list of path patterns that are always allowed,
+	// even if they match a protected prefix. Supports glob syntax.
+	AllowedPaths []string `toml:"allowed_paths"`
+}
+
+// SpecConfig controls the spec lifecycle quality gates and behavior.
+type SpecConfig struct {
+	// AutoGrill requires a grill session before a spec can advance
+	// past the SPECCING state. Defaults to true.
+	AutoGrill bool `toml:"auto_grill"`
+
+	// QualityGates defines the validation rules applied when advancing
+	// a spec through its lifecycle states.
+	QualityGates QualityGatesConfig `toml:"quality_gates"`
+}
+
+// QualityGatesConfig holds individual quality gate thresholds.
+// Each gate is checked during spec_advance transitions.
+type QualityGatesConfig struct {
+	// MinAcceptanceCriteria is the minimum number of acceptance criteria
+	// required in a spec. Defaults to 3.
+	MinAcceptanceCriteria int `toml:"min_acceptance_criteria"`
+
+	// RequireOutOfScope requires the spec to have an explicit "out of scope"
+	// section. Defaults to true.
+	RequireOutOfScope bool `toml:"require_out_of_scope"`
+
+	// RequireDependencies requires the spec to list dependencies. Defaults to true.
+	RequireDependencies bool `toml:"require_dependencies"`
+
+	// MaxAmbiguousTerms is the maximum number of ambiguous terms allowed
+	// in a spec (e.g., "fast", "many", "soon"). 0 means none. Defaults to 0.
+	MaxAmbiguousTerms int `toml:"max_ambiguous_terms"`
 }
 
 // EmbeddingConfig controls the text embedding strategy used for semantic search.
@@ -194,6 +253,23 @@ func Default() *Config {
 			Provider:   "tfidf",
 			Dimensions: 512,
 		},
+		Workflow: WorkflowConfig{
+			Dir: filepath.Join(home, ".mneme", "workflows"),
+		},
+		Delegation: DelegationConfig{
+			Enabled:        true,
+			ProtectedPaths: []string{"cmd/", "internal/", "src/", "apps/", "packages/", "lib/"},
+			AllowedPaths:   []string{"docs/", "*.md", "CLAUDE.md", "CLAUDE.local.md"},
+		},
+		Spec: SpecConfig{
+			AutoGrill: true,
+			QualityGates: QualityGatesConfig{
+				MinAcceptanceCriteria: 3,
+				RequireOutOfScope:     true,
+				RequireDependencies:   true,
+				MaxAmbiguousTerms:     0,
+			},
+		},
 	}
 }
 
@@ -232,9 +308,13 @@ func Load(path string) (*Config, error) {
 	if v := os.Getenv("MNEME_TOOLS"); v != "" {
 		cfg.MCP.Tools = v
 	}
+	if v := os.Getenv("MNEME_WORKFLOW_DIR"); v != "" {
+		cfg.Workflow.Dir = v
+	}
 
 	// Expand ~ after all overrides so every code path benefits.
 	cfg.Storage.DataDir = expandHome(cfg.Storage.DataDir)
+	cfg.Workflow.Dir = expandHome(cfg.Workflow.Dir)
 
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("config: load: %w", err)
@@ -303,6 +383,62 @@ func DefaultPath() string {
 		return filepath.Join(".", ".mneme", "config.toml")
 	}
 	return filepath.Join(home, ".mneme", "config.toml")
+}
+
+// WorkflowDir returns the root workflow directory, with ~ expanded.
+func (c *Config) WorkflowDir() string {
+	return expandHome(c.Workflow.Dir)
+}
+
+// ProjectWorkflowDir returns the workflow directory for a specific project slug.
+// Slashes in the slug are replaced with dashes to produce a safe directory name.
+func (c *Config) ProjectWorkflowDir(slug string) string {
+	safe := strings.ReplaceAll(slug, "/", "-")
+	return filepath.Join(c.WorkflowDir(), safe)
+}
+
+// IsDelegationProtected reports whether the given file path (relative to the
+// project root) is protected by the delegation enforcement rules. A path is
+// protected when it matches a ProtectedPaths prefix and is not exempted by an
+// AllowedPaths entry. Returns false when Delegation.Enabled is false.
+func (c *Config) IsDelegationProtected(path string) bool {
+	if !c.Delegation.Enabled {
+		return false
+	}
+	protected := false
+	for _, prefix := range c.Delegation.ProtectedPaths {
+		if strings.HasPrefix(path, prefix) {
+			protected = true
+			break
+		}
+	}
+	if !protected {
+		return false
+	}
+	for _, allowed := range c.Delegation.AllowedPaths {
+		if matchGlob(allowed, path) {
+			return false
+		}
+	}
+	return true
+}
+
+// matchGlob performs a simple glob match where '*' matches any sequence of
+// non-separator characters and the pattern may appear as a prefix. This is
+// intentionally minimal — it handles the *.md and prefix/ patterns from the
+// default DelegationConfig without pulling in filepath.Match semantics that
+// differ across platforms.
+func matchGlob(pattern, path string) bool {
+	// Delegate to filepath.Match for accurate glob semantics.
+	// Errors from Match only occur when the pattern is malformed — treat those
+	// as non-matching rather than panicking.
+	matched, _ := filepath.Match(pattern, path)
+	if matched {
+		return true
+	}
+	// Also check whether path starts with the pattern (for directory prefixes
+	// like "docs/" that should match "docs/README.md").
+	return strings.HasPrefix(path, pattern)
 }
 
 // expandHome replaces a leading ~ in path with the current user's home

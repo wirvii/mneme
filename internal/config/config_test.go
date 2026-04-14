@@ -344,6 +344,140 @@ func TestValidate(t *testing.T) {
 	}
 }
 
+// TestWorkflowDefaults verifies that Default() sets the expected workflow fields.
+func TestWorkflowDefaults(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("os.UserHomeDir: %v", err)
+	}
+	cfg := Default()
+
+	tests := []struct {
+		name string
+		got  any
+		want any
+	}{
+		{"Workflow.Dir", cfg.Workflow.Dir, filepath.Join(home, ".mneme", "workflows")},
+		{"Delegation.Enabled", cfg.Delegation.Enabled, true},
+		{"Spec.AutoGrill", cfg.Spec.AutoGrill, true},
+		{"Spec.QualityGates.MinAcceptanceCriteria", cfg.Spec.QualityGates.MinAcceptanceCriteria, 3},
+		{"Spec.QualityGates.RequireOutOfScope", cfg.Spec.QualityGates.RequireOutOfScope, true},
+		{"Spec.QualityGates.RequireDependencies", cfg.Spec.QualityGates.RequireDependencies, true},
+		{"Spec.QualityGates.MaxAmbiguousTerms", cfg.Spec.QualityGates.MaxAmbiguousTerms, 0},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.got != tc.want {
+				t.Errorf("got %v, want %v", tc.got, tc.want)
+			}
+		})
+	}
+
+	// ProtectedPaths must include all expected prefixes.
+	wantProtected := []string{"cmd/", "internal/", "src/", "apps/", "packages/", "lib/"}
+	for _, p := range wantProtected {
+		found := false
+		for _, g := range cfg.Delegation.ProtectedPaths {
+			if g == p {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("Delegation.ProtectedPaths missing %q", p)
+		}
+	}
+}
+
+// TestWorkflowEnvOverride verifies that MNEME_WORKFLOW_DIR overrides the default.
+func TestWorkflowEnvOverride(t *testing.T) {
+	wantDir := t.TempDir()
+	t.Setenv("MNEME_WORKFLOW_DIR", wantDir)
+
+	cfg, err := Load("/nonexistent/path/config.toml")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Workflow.Dir != wantDir {
+		t.Errorf("Workflow.Dir: got %q, want %q", cfg.Workflow.Dir, wantDir)
+	}
+}
+
+// TestProjectWorkflowDir verifies path construction and slug sanitisation.
+func TestProjectWorkflowDir(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("os.UserHomeDir: %v", err)
+	}
+	cfg := Default()
+
+	tests := []struct {
+		name string
+		slug string
+		want string
+	}{
+		{
+			name: "simple slug",
+			slug: "mneme",
+			want: filepath.Join(home, ".mneme", "workflows", "mneme"),
+		},
+		{
+			name: "slug with slashes",
+			slug: "wirvii/mneme",
+			want: filepath.Join(home, ".mneme", "workflows", "wirvii-mneme"),
+		},
+		{
+			name: "slug with multiple slashes",
+			slug: "org/team/project",
+			want: filepath.Join(home, ".mneme", "workflows", "org-team-project"),
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := cfg.ProjectWorkflowDir(tc.slug)
+			if got != tc.want {
+				t.Errorf("ProjectWorkflowDir(%q) = %q, want %q", tc.slug, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestIsDelegationProtected verifies the delegation enforcement logic.
+func TestIsDelegationProtected(t *testing.T) {
+	cfg := Default()
+
+	tests := []struct {
+		name string
+		path string
+		want bool
+	}{
+		{name: "protected cmd/", path: "cmd/main.go", want: true},
+		{name: "protected internal/", path: "internal/store/sdd.go", want: true},
+		{name: "protected src/", path: "src/index.ts", want: true},
+		{name: "allowed docs/", path: "docs/README.md", want: false},
+		{name: "allowed *.md", path: "README.md", want: false},
+		{name: "allowed CLAUDE.md", path: "CLAUDE.md", want: false},
+		{name: "unprotected root file", path: "go.mod", want: false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := cfg.IsDelegationProtected(tc.path)
+			if got != tc.want {
+				t.Errorf("IsDelegationProtected(%q) = %v, want %v", tc.path, got, tc.want)
+			}
+		})
+	}
+
+	// Disabled delegation returns false for everything.
+	cfg.Delegation.Enabled = false
+	if cfg.IsDelegationProtected("cmd/main.go") {
+		t.Error("IsDelegationProtected with Enabled=false should return false")
+	}
+}
+
 // writeTempTOML writes content to a temporary TOML file and returns its path.
 // The file is automatically removed when the test ends.
 func writeTempTOML(t *testing.T, content string) string {
