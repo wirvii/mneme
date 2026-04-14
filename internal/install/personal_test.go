@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -532,12 +533,9 @@ func readJSON(t *testing.T, path string) map[string]any {
 // assertContains asserts that slice contains the given element.
 func assertContains(t *testing.T, slice []string, elem string) {
 	t.Helper()
-	for _, s := range slice {
-		if s == elem {
-			return
-		}
+	if !slices.Contains(slice, elem) {
+		t.Errorf("slice %v does not contain %q", slice, elem)
 	}
-	t.Errorf("slice %v does not contain %q", slice, elem)
 }
 
 // assertFileContent asserts that the file at path has exactly the given content.

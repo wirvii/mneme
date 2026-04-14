@@ -178,7 +178,7 @@ func resolveSource(source string) (dir string, cleanup func(), err error) {
 		if err != nil {
 			return "", nil, err
 		}
-		return tmpDir, func() { os.RemoveAll(tmpDir) }, nil
+		return tmpDir, func() { _ = os.RemoveAll(tmpDir) }, nil
 	}
 
 	info, err := os.Stat(source)
@@ -220,7 +220,7 @@ func cloneToTemp(gitURL string) (string, error) {
 	cmd := exec.Command("git", "clone", "--depth=1", "--single-branch", gitURL, tmpDir)
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		os.RemoveAll(tmpDir)
+		_ = os.RemoveAll(tmpDir)
 		return "", fmt.Errorf("install: personal: git clone %s: %w", gitURL, err)
 	}
 	return tmpDir, nil
@@ -266,7 +266,7 @@ func copyTree(srcDir, dstDir string, force bool) (installed, skipped []string, e
 
 // copyFile copies the file at src to dst, creating all parent directories.
 // The destination file is created with permission 0o644.
-func copyFile(src, dst string) error {
+func copyFile(src, dst string) (err error) {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return fmt.Errorf("install: personal: mkdir %s: %w", filepath.Dir(dst), err)
 	}
@@ -275,13 +275,18 @@ func copyFile(src, dst string) error {
 	if err != nil {
 		return fmt.Errorf("install: personal: open %s: %w", src, err)
 	}
-	defer in.Close()
+	defer in.Close() //nolint:errcheck // read-only file; Close error is not meaningful
 
 	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
 	if err != nil {
 		return fmt.Errorf("install: personal: create %s: %w", dst, err)
 	}
-	defer out.Close()
+	defer func() {
+		cerr := out.Close()
+		if err == nil {
+			err = cerr
+		}
+	}()
 
 	if _, err := io.Copy(out, in); err != nil {
 		return fmt.Errorf("install: personal: copy %s → %s: %w", src, dst, err)
