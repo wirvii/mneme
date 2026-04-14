@@ -65,6 +65,7 @@ in a local SQLite database and exposes them via MCP for agent integration.`,
 		newHookCmd(),
 		newEmbedCmd(),
 		newExportCmd(),
+		newTUICmd(),
 	)
 
 	return root
