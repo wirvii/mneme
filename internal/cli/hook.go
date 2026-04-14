@@ -2,12 +2,16 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/juanftp/mneme/internal/config"
 	"github.com/juanftp/mneme/internal/model"
 )
 
@@ -39,8 +43,10 @@ Events:
 				return runHookSessionStart(cmd.Context())
 			case "session-end":
 				return runHookSessionEnd()
+			case "enforce-delegation":
+				return runHookEnforceDelegation()
 			default:
-				return fmt.Errorf("hook: unknown event %q — supported events: session-start, session-end", event)
+				return fmt.Errorf("hook: unknown event %q — supported events: session-start, session-end, enforce-delegation", event)
 			}
 		},
 	}
@@ -120,6 +126,80 @@ func printContextHook(w *os.File, resp *model.ContextResponse) {
 // hook provides the prompt that triggers that behaviour.
 func runHookSessionEnd() error {
 	fmt.Fprint(os.Stdout, sessionEndPrompt)
+	return nil
+}
+
+// runHookEnforceDelegation checks whether the current tool invocation targets
+// a protected source-code path. It reads the tool input JSON from stdin
+// (Claude Code passes it via the PreToolUse hook mechanism) and validates
+// the file_path field against the configured delegation rules.
+//
+// The function loads the project config so that DelegationConfig overrides in
+// the project's config.toml are respected.
+//
+// Exit codes:
+//   - 0: allowed (delegation disabled, unrecognised tool, or path is safe)
+//   - 2: blocked — a human-readable message is printed to stdout so the agent
+//     sees it as the hook output
+func runHookEnforceDelegation() error {
+	cfg, err := config.Load(config.DefaultPath())
+	if err != nil {
+		// Config unreadable — allow rather than block to avoid false positives.
+		return nil
+	}
+
+	if !cfg.Delegation.Enabled {
+		return nil
+	}
+
+	// Claude Code PreToolUse hooks receive JSON on stdin:
+	// {"tool_name": "Edit", "tool_input": {"file_path": "..."}}
+	var hookInput struct {
+		ToolName  string `json:"tool_name"`
+		ToolInput struct {
+			FilePath string `json:"file_path"`
+		} `json:"tool_input"`
+	}
+	if err := json.NewDecoder(os.Stdin).Decode(&hookInput); err != nil {
+		// Malformed input — allow to avoid breaking non-file tools.
+		return nil
+	}
+
+	// Only intercept file-mutating tools.
+	switch hookInput.ToolName {
+	case "Edit", "Write", "MultiEdit":
+		// proceed with path check
+	default:
+		return nil
+	}
+
+	filePath := hookInput.ToolInput.FilePath
+	if filePath == "" {
+		return nil
+	}
+
+	// Allowed paths override protected paths. Check them first.
+	// Patterns are matched against the base name of the path.
+	for _, pattern := range cfg.Delegation.AllowedPaths {
+		if matched, _ := filepath.Match(pattern, filepath.Base(filePath)); matched {
+			return nil
+		}
+		// Also allow exact prefix matches (e.g. "docs/").
+		if strings.HasPrefix(filePath, pattern) {
+			return nil
+		}
+	}
+
+	// Check protected path prefixes.
+	for _, prefix := range cfg.Delegation.ProtectedPaths {
+		if strings.HasPrefix(filePath, prefix) {
+			fmt.Fprintf(os.Stdout, "BLOCKED: Cannot edit %s — this is a protected path.\n", filePath)
+			fmt.Fprintf(os.Stdout, "Delegate this task to the appropriate agent (backend, frontend, etc.).\n")
+			//nolint:gocritic // os.Exit is correct here: hook exit code must be 2
+			os.Exit(2)
+		}
+	}
+
 	return nil
 }
 
