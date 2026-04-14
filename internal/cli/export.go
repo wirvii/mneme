@@ -182,7 +182,7 @@ func exportToDir(memories []*model.Memory, dir string, opts export.MarkdownOptio
 			continue
 		}
 
-		fileName := filepath.Join(absDir, typeSuffix(mt)+".md")
+		fileName := filepath.Join(absDir, typeFileName(mt))
 		f, err := os.Create(fileName)
 		if err != nil {
 			return fmt.Errorf("export markdown: create file for type %s: %w", mt, err)
@@ -206,14 +206,22 @@ func exportToDir(memories []*model.Memory, dir string, opts export.MarkdownOptio
 	return nil
 }
 
-// typeSuffix converts a MemoryType to a lowercase file-name-safe string.
-// "session_summary" → "session_summary", "decision" → "decisions", etc.
-// Pluralisation is simple and covers all current types correctly.
-func typeSuffix(t model.MemoryType) string {
-	s := string(t)
-	// session_summary is already descriptive as-is; all others get a trailing 's'.
-	if s == string(model.TypeSessionSummary) {
-		return s
+// typeFileName maps a MemoryType to its canonical export filename.
+// Each type maps to a human-readable plural form suitable for directory layout.
+func typeFileName(t model.MemoryType) string {
+	names := map[model.MemoryType]string{
+		model.TypeDecision:       "decisions",
+		model.TypeDiscovery:      "discoveries",
+		model.TypeBugfix:         "bugfixes",
+		model.TypePattern:        "patterns",
+		model.TypePreference:     "preferences",
+		model.TypeConvention:     "conventions",
+		model.TypeArchitecture:   "architecture",
+		model.TypeConfig:         "config",
+		model.TypeSessionSummary: "session-summaries",
 	}
-	return s + "s"
+	if name, ok := names[t]; ok {
+		return name + ".md"
+	}
+	return string(t) + ".md"
 }
