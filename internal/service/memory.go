@@ -284,6 +284,27 @@ func (svc *MemoryService) CountGlobal(ctx context.Context) (int, error) {
 	return n, nil
 }
 
+// List returns active memories matching the given filters. It delegates directly
+// to the underlying store's List method, selecting the appropriate store based
+// on the requested scope. When opts.Project is empty it defaults to the service's
+// configured project slug so callers can omit it for the common case.
+func (svc *MemoryService) List(ctx context.Context, opts store.ListOptions) ([]*model.Memory, error) {
+	if opts.Project == "" {
+		opts.Project = svc.project
+	}
+
+	targetStore := svc.projectStore
+	if opts.Scope == model.ScopeGlobal || opts.Scope == model.ScopeOrg {
+		targetStore = svc.globalStore
+	}
+
+	memories, err := targetStore.List(ctx, opts)
+	if err != nil {
+		return nil, fmt.Errorf("service: list: %w", err)
+	}
+	return memories, nil
+}
+
 // ExportToFile exports all active memories for the service's current project to
 // a gzip-compressed JSONL archive at <dir>/.mneme/sync/<slug>.jsonl.gz. It
 // delegates to sync.ExportToFile and returns the archive path, an ExportResult
