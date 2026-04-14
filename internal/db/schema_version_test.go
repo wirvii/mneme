@@ -24,8 +24,8 @@ func TestSchemaVersion_AfterMigrate(t *testing.T) {
 		t.Fatalf("SchemaVersion: %v", err)
 	}
 
-	// The current schema has 3 migration files (001, 002, 003).
-	const wantVersion = 3
+	// The current schema has 4 migration files (001, 002, 003, 004).
+	const wantVersion = 4
 	if version != wantVersion {
 		t.Errorf("SchemaVersion = %d, want %d", version, wantVersion)
 	}
