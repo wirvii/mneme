@@ -257,12 +257,12 @@ func (svc *MemoryService) fuseAndRank(ctx context.Context, ftsResults []model.Se
 		}
 
 		// Update RelevanceScore with the RRF-fused score plus time-decay.
-		lastAccessed := sr.Memory.CreatedAt
-		if sr.Memory.LastAccessed != nil {
-			lastAccessed = *sr.Memory.LastAccessed
+		lastAccessed := sr.CreatedAt
+		if sr.LastAccessed != nil {
+			lastAccessed = *sr.LastAccessed
 		}
 		positiveBM25 := -sr.BM25Score
-		finalScore := scoring.FinalScoreAt(positiveBM25, sr.Memory.Importance, lastAccessed, now, sr.Memory.DecayRate)
+		finalScore := scoring.FinalScoreAt(positiveBM25, sr.Importance, lastAccessed, now, sr.DecayRate)
 
 		result := model.SearchResult{
 			Memory:         sr.Memory,
