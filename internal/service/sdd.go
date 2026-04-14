@@ -356,6 +356,20 @@ func (svc *SDDService) SpecStatus(ctx context.Context, id string) (*model.SpecSt
 	}, nil
 }
 
+// RecentlyCompletedSpecs returns the n most recently completed specs for the
+// project, ordered by updated_at descending. It calls the underlying store
+// directly so the result reflects the true completion order.
+func (svc *SDDService) RecentlyCompletedSpecs(ctx context.Context, project string, n int) ([]*model.Spec, error) {
+	if project == "" {
+		project = svc.project
+	}
+	specs, err := svc.store.RecentlyCompletedSpecs(ctx, project, n)
+	if err != nil {
+		return nil, fmt.Errorf("service: recently completed specs: %w", err)
+	}
+	return specs, nil
+}
+
 // SpecList returns specs matching the filter.
 // When req.Project is empty it defaults to the service project slug.
 func (svc *SDDService) SpecList(ctx context.Context, req model.SpecListRequest) ([]*model.Spec, error) {
