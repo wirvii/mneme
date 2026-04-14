@@ -117,6 +117,32 @@ produces the same result without clobbering existing configuration.`,
 			}
 			fmt.Fprintln(os.Stdout, "  [ok] Slash commands installed")
 
+			if agent.Agents != nil {
+				if err := install.WriteAgents(agent); err != nil {
+					return err
+				}
+				fmt.Fprintln(os.Stdout, "  [ok] Agent profiles installed")
+			}
+
+			if agent.Templates != nil {
+				if err := install.WriteTemplates(agent); err != nil {
+					return err
+				}
+				fmt.Fprintln(os.Stdout, "  [ok] Workflow templates installed")
+			}
+
+			if agent.DelegationHook != nil {
+				if err := install.PatchDelegationHook(agent); err != nil {
+					return err
+				}
+				fmt.Fprintln(os.Stdout, "  [ok] Delegation enforcement hook installed")
+			}
+
+			if err := install.CreateWorkflowDirs(); err != nil {
+				return err
+			}
+			fmt.Fprintln(os.Stdout, "  [ok] Workflow directories created")
+
 			if flagPersonal {
 				source, err := resolvePersonalSource(flagSource)
 				if err != nil {
