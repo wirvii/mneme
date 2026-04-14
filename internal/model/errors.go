@@ -49,3 +49,32 @@ var ErrInvalidEntityKind = errors.New("invalid entity kind")
 // recognised constants. Used to reject unknown relation types before they reach
 // the database.
 var ErrInvalidRelationType = errors.New("invalid relation type")
+
+// ErrInvalidBacklogStatus is returned when a BacklogStatus value is not recognised.
+var ErrInvalidBacklogStatus = errors.New("invalid backlog status")
+
+// ErrInvalidPriority is returned when a Priority value is not recognised.
+var ErrInvalidPriority = errors.New("invalid priority")
+
+// ErrInvalidSpecStatus is returned when a SpecStatus value is not recognised.
+var ErrInvalidSpecStatus = errors.New("invalid spec status")
+
+// ErrInvalidTransition is returned when a spec state transition is not allowed
+// by the state machine.
+var ErrInvalidTransition = errors.New("invalid spec status transition")
+
+// ErrBacklogNotFound is returned when a backlog item does not exist.
+var ErrBacklogNotFound = errors.New("backlog item not found")
+
+// ErrSpecNotFound is returned when a spec does not exist.
+var ErrSpecNotFound = errors.New("spec not found")
+
+// ErrPushbackNotFound is returned when a pushback does not exist.
+var ErrPushbackNotFound = errors.New("pushback not found")
+
+// ErrBacklogNotRefined is returned when trying to promote a backlog item
+// that has not been refined yet.
+var ErrBacklogNotRefined = errors.New("backlog item must be refined before promotion")
+
+// ErrQualityGateFailed is returned when a spec fails a quality gate check.
+var ErrQualityGateFailed = errors.New("quality gate check failed")
