@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 
 	"github.com/spf13/cobra"
 
@@ -44,13 +45,9 @@ must be specified.`,
 
 			// Require at least one update flag to avoid no-op invocations.
 			updateFlags := []string{"title", "content", "type", "importance", "stdin"}
-			anyChanged := false
-			for _, name := range updateFlags {
-				if cmd.Flags().Changed(name) {
-					anyChanged = true
-					break
-				}
-			}
+			anyChanged := slices.ContainsFunc(updateFlags, func(name string) bool {
+				return cmd.Flags().Changed(name)
+			})
 			if !anyChanged {
 				return fmt.Errorf("at least one update flag is required (--title, --content, --type, --importance, or --stdin)")
 			}
