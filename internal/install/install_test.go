@@ -168,14 +168,9 @@ func TestClaudeCode_Protocol(t *testing.T) {
 	proto := string(content)
 
 	requiredSections := []string{
-		"# mneme — Persistent Memory Protocol",
-		"## FIRST MESSAGE — MANDATORY (before responding to the user)",
-		"## When to Save",
-		"## When to Search",
-		"## Session End (Mandatory)",
-		"## Checkpoints (Compaction Insurance)",
-		"## Post-Compaction Recovery",
-		"## Principles",
+		"# mneme — Persistent Memory",
+		"## Session lifecycle",
+		"## Save rules",
 		"mem_context",
 		"mem_save",
 		"mem_search",
