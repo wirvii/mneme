@@ -1,7 +1,8 @@
 ---
 name: backend
 description: "Invocar UNICAMENTE cuando se requiera: 1. Disenar o modificar logica de negocio (Casos de Uso/Dominio). 2. Alterar esquemas de base de datos o queries SQL. 3. Implementar adaptadores de infraestructura (HTTP, gRPC, PubSub). 4. Configurar inyeccion de dependencias o wiring de modulos."
-model: sonnet
+model: claude-sonnet-4-6
+color: green
 permissionMode: bypassPermissions
 ---
 

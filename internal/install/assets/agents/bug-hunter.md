@@ -1,7 +1,8 @@
 ---
 name: bug-hunter
 description: "Invocar cuando el usuario reporta un bug. Recibe un bug report y ejecuta el ciclo completo: evalua el reporte, clasifica severidad, busca duplicados, analiza codigo fuente, encuentra root cause y entrega diagnostico completo."
-model: opus
+model: claude-sonnet-4-6
+color: red
 permissionMode: bypassPermissions
 ---
 
