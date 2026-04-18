@@ -649,3 +649,45 @@ func mustWriteFile(t *testing.T, path string, content string) {
 		t.Fatalf("write %s: %v", path, err)
 	}
 }
+
+// TestCollectBodySignals_IssuesMtimeUsesFilePath verifies that collectBodySignals
+// receives the individual file path (not the parent directory) when scanning issues,
+// so that mtime-based signals reflect the actual file age rather than the directory age.
+//
+// Regression for the bug where the issues case passed `base` (dir) instead of
+// `path` (file), causing all issues to inherit the directory's mtime and receive
+// a false recent_30d(+1) signal.
+func TestCollectBodySignals_IssuesMtimeUsesFilePath(t *testing.T) {
+	dir := t.TempDir()
+
+	freshPath := filepath.Join(dir, "fresh-issue.md")
+	oldPath := filepath.Join(dir, "old-issue.md")
+
+	mustWriteFile(t, freshPath, "# Fresh issue\nstill open")
+	mustWriteFile(t, oldPath, "# Old issue\nstill open")
+
+	now := time.Now()
+	old := now.Add(-200 * 24 * time.Hour)
+
+	// Back-date the old issue to 200 days ago.
+	if err := os.Chtimes(oldPath, old, old); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+
+	freshSignals := collectBodySignals("still open", freshPath, now)
+	oldSignals := collectBodySignals("still open", oldPath, now)
+
+	if !hasSignal(freshSignals, "mtime:recent_30d", 1) {
+		t.Errorf("fresh issue: want mtime:recent_30d(+1), got %v", freshSignals)
+	}
+	if hasSignal(freshSignals, "mtime:old_180d", -1) {
+		t.Errorf("fresh issue: must NOT have mtime:old_180d(-1)")
+	}
+
+	if !hasSignal(oldSignals, "mtime:old_180d", -1) {
+		t.Errorf("old issue: want mtime:old_180d(-1), got %v", oldSignals)
+	}
+	if hasSignal(oldSignals, "mtime:recent_30d", 1) {
+		t.Errorf("old issue: must NOT have mtime:recent_30d(+1)")
+	}
+}

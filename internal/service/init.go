@@ -460,7 +460,7 @@ func (s *InitService) scanSubdir(_ context.Context, dir, subKind, base string) (
 				Frontmatter: fm,
 				LegacyID:    legacyID,
 			}
-			a.Signals = collectBodySignals(body, base, time.Now())
+			a.Signals = collectBodySignals(body, path, time.Now())
 			artifacts = append(artifacts, a)
 		}
 	case "specs":

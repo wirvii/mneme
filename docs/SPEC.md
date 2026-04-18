@@ -1088,6 +1088,31 @@ mneme stats           Detailed statistics
 mneme consolidate     Run consolidation manually
 ```
 
+### 8.4 Migration command
+
+```
+mneme init            Migrate a project from legacy workflows to mneme SDD engine
+```
+
+**`mneme init`:**
+```
+Usage: mneme init [flags]
+
+Flags:
+  --apply    Execute the migration (default is dry-run)
+  -y, --yes  Skip confirmation prompt (only with --apply)
+  -p, --project  Project slug override (inherited from root)
+
+By default (no flags), performs a dry-run: detects legacy workflow artifacts
+(.workflow/, .claude/specs/, etc.), classifies them with a weighted heuristic,
+and prints the migration plan without modifying filesystem or database.
+
+With --apply: migrates artifacts to the SDD engine (backlog items, specs, memories),
+cleans up legacy directories, and rewrites CLAUDE.local.md with the SDD template.
+
+Idempotent: a second run on a fully-migrated project finds no artifacts.
+```
+
 ---
 
 ## 9. Configuration
