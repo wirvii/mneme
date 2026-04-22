@@ -133,8 +133,12 @@ func (s *MemoryStore) FTS5Search(ctx context.Context, query string, opts SearchO
 
 // buildFTS5Query converts a human-readable query string into an FTS5 query.
 // Quoted phrases are preserved. Unquoted tokens are stripped of common English
-// stop words and joined with OR. If all tokens are stop words, the original
-// input is used verbatim.
+// stop words, wrapped in FTS5 double-quotes (neutralising operator characters
+// such as -, *, :, ^, (, )), and joined with OR.
+//
+// If all tokens are stop words and there are no quoted phrases, the original
+// input is escaped with ftsQuoteToken and returned as a single term so that
+// FTS5 operator characters in the raw input do not cause a syntax error.
 func buildFTS5Query(input string) string {
 	input = strings.TrimSpace(input)
 	if input == "" {
@@ -170,22 +174,33 @@ func buildFTS5Query(input string) string {
 	cleaned = buf.String()
 
 	// Tokenise the non-quoted portion and remove stop words.
+	// Each surviving token is wrapped in FTS5 double-quotes so that operator
+	// characters (-, *, :, ^, (, )) are treated as literals, not operators.
 	rawTokens := strings.Fields(cleaned)
 	var kept []string
 	for _, tok := range rawTokens {
 		lower := strings.ToLower(tok)
 		if !isStopWord(lower) {
-			kept = append(kept, tok)
+			kept = append(kept, ftsQuoteToken(tok))
 		}
 	}
 
-	// If all unquoted tokens were stop words, fall back to the original input.
+	// If all unquoted tokens were stop words, fall back to a quoted version of
+	// the original input so that any operator characters are neutralised.
 	if len(kept) == 0 && len(phrases) == 0 {
-		return input
+		return ftsQuoteToken(input)
 	}
 
 	parts := append(phrases, kept...)
 	return strings.Join(parts, " OR ")
+}
+
+// ftsQuoteToken wraps a single token in FTS5 double-quotes and escapes any
+// embedded double-quote characters by doubling them. This neutralises FTS5
+// operator characters (-, *, :, ^, (, )) that would otherwise be interpreted
+// as query syntax, turning the token into a phrase-match literal.
+func ftsQuoteToken(tok string) string {
+	return `"` + strings.ReplaceAll(tok, `"`, `""`) + `"`
 }
 
 // isStopWord reports whether a lowercase token should be removed from the FTS query.

@@ -149,15 +149,16 @@ func TestBuildFTS5Query(t *testing.T) {
 	cases := []struct {
 		name  string
 		input string
-		// wantContains is a substring we expect in the output.
-		// For stop-word-only inputs, the output equals the input.
+		// wantEqual: exact expected output.
+		// wantContains: substring that must appear in the output.
+		// Both may be set simultaneously.
 		wantEqual    string
 		wantContains string
 	}{
 		{
 			name:         "normal query keeps meaningful tokens",
 			input:        "database migration strategy",
-			wantContains: "database",
+			wantContains: `"database"`,
 		},
 		{
 			name:         "quoted phrase is preserved",
@@ -165,9 +166,9 @@ func TestBuildFTS5Query(t *testing.T) {
 			wantContains: `"exact phrase"`,
 		},
 		{
-			name:      "only stop words falls back to original",
+			name:      "only stop words falls back to quoted original",
 			input:     "the and or is",
-			wantEqual: "the and or is",
+			wantEqual: `"the and or is"`,
 		},
 		{
 			name:      "empty input returns empty",
@@ -177,7 +178,36 @@ func TestBuildFTS5Query(t *testing.T) {
 		{
 			name:         "mixed stop and meaningful",
 			input:        "the architecture decision",
-			wantContains: "architecture",
+			wantContains: `"architecture"`,
+		},
+		// Regression: tokens with FTS5 operator characters must be quoted.
+		{
+			name:      "dash token is FTS5-quoted",
+			input:     "error -32603",
+			wantEqual: `"error" OR "-32603"`,
+		},
+		{
+			name:      "asterisk token is FTS5-quoted",
+			input:     "prefix*",
+			wantEqual: `"prefix*"`,
+		},
+		{
+			name:      "colon token is FTS5-quoted",
+			input:     "type:decision",
+			wantEqual: `"type:decision"`,
+		},
+		{
+			name:      "parentheses are FTS5-quoted",
+			input:     "(test)",
+			wantEqual: `"(test)"`,
+		},
+		{
+			// "hello" is parsed as a user-quoted phrase and preserved as-is.
+			// "say" is an unquoted token that gets FTS5-quoted.
+			// phrases are prepended before kept tokens, so "hello" comes first.
+			name:      "user-quoted phrase is preserved, unquoted token is escaped",
+			input:     `say "hello"`,
+			wantEqual: `"hello" OR "say"`,
 		},
 	}
 
@@ -192,4 +222,44 @@ func TestBuildFTS5Query(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestFTS5Search_OperatorChars is a regression test for the FTS5 escaping fix.
+// Queries containing FTS5 operator characters (-, *, :, ^) must not cause a
+// syntax error and must return matching results.
+func TestFTS5Search_OperatorChars(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	m := &model.Memory{
+		Type:      model.TypeBugfix,
+		Scope:     model.ScopeProject,
+		Title:     "JSON-RPC error code",
+		Content:   "The MCP server returns error -32603 for internal errors.",
+		Project:   "test",
+		DecayRate: 0.01,
+	}
+	if _, err := s.Create(ctx, m); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// This query previously caused a FTS5 syntax error because -32603 starts
+	// with a dash, which FTS5 interprets as the NOT operator.
+	results, err := s.FTS5Search(ctx, "error -32603", SearchOptions{Project: "test"})
+	if err != nil {
+		t.Fatalf("FTS5Search with dash token: %v", err)
+	}
+	if len(results) == 0 {
+		t.Error("expected at least one result for query containing dash token")
+	}
+
+	// Asterisk operator.
+	results, err = s.FTS5Search(ctx, "internal*", SearchOptions{Project: "test"})
+	if err != nil {
+		t.Fatalf("FTS5Search with asterisk token: %v", err)
+	}
+	// The asterisk is now escaped so it won't act as a prefix wildcard, but the
+	// query should execute without error. Absence of results is acceptable here
+	// because "internal*" is wrapped in quotes and treated as a phrase literal.
+	_ = results
 }
