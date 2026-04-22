@@ -177,8 +177,12 @@ func (s *SDDStore) BacklogCounts(ctx context.Context, project string) (map[model
 
 // --- SPEC OPERATIONS ---
 
-// NextSpecID returns the next sequential spec ID for the project.
+// NextSpecID returns the next sequential spec ID for the given project.
 // Format: "SPEC-NNN" where NNN is zero-padded to 3 digits.
+//
+// IDs are per-project: two different projects can each have a SPEC-001 without
+// conflict. This is enforced at the schema level by the composite primary key
+// (project, id) introduced in migration 005.
 func (s *SDDStore) NextSpecID(ctx context.Context, project string) (string, error) {
 	const q = `SELECT id FROM specs WHERE project = ? ORDER BY id DESC LIMIT 1`
 	var lastID string
@@ -198,6 +202,9 @@ func (s *SDDStore) NextSpecID(ctx context.Context, project string) (string, erro
 
 // CreateSpec inserts a new spec. The spec's ID must be pre-set by the caller
 // (typically via NextSpecID). Status must be set before calling.
+//
+// The primary key is the composite (project, id) pair (migration 005). The
+// same spec ID may exist in multiple projects without conflict.
 func (s *SDDStore) CreateSpec(ctx context.Context, spec *model.Spec) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	spec.CreatedAt = time.Now().UTC()

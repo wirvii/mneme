@@ -72,6 +72,12 @@ CREATE TABLE IF NOT EXISTS schema_version (
 			return fmt.Errorf("db: migrate: read %q: %w", name, err)
 		}
 
+		if version == 5 {
+			if err := migration005PreFlight(db); err != nil {
+				return fmt.Errorf("db: migrate: apply %q: %w", name, err)
+			}
+		}
+
 		if err := applyMigration(db, version, string(content)); err != nil {
 			return fmt.Errorf("db: migrate: apply %q: %w", name, err)
 		}
@@ -126,4 +132,48 @@ func versionFromFilename(name string) (int, error) {
 	}
 
 	return n, nil
+}
+
+// migration005PreFlight checks that no spec ID appears in more than one project
+// slug before the composite-PK migration runs. If collisions are found the
+// migration is aborted with an actionable error message.
+//
+// Background: migration 005 changes the specs primary key from a single TEXT
+// column (id) to a composite key (project, id). The INSERT … SELECT that moves
+// data into the new table would silently succeed even with cross-project ID
+// collisions because SQLite's composite PK only requires uniqueness within the
+// same (project, id) pair. However, allowing duplicates would contradict the
+// intended semantics, so we abort early with a clear message instead.
+func migration005PreFlight(db *sql.DB) error {
+	// The specs table may not exist yet (e.g. a fresh DB running migrations
+	// 001–005 for the first time). Detect its presence before querying.
+	const checkTable = `SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='specs'`
+	var tableCount int
+	if err := db.QueryRow(checkTable).Scan(&tableCount); err != nil {
+		return fmt.Errorf("migration 005: check specs table: %w", err)
+	}
+	if tableCount == 0 {
+		// Nothing to check — the table doesn't exist yet.
+		return nil
+	}
+
+	const q = `
+SELECT COUNT(*) FROM (
+    SELECT id
+    FROM specs
+    GROUP BY id
+    HAVING COUNT(DISTINCT project) > 1
+)`
+	var n int
+	if err := db.QueryRow(q).Scan(&n); err != nil {
+		return fmt.Errorf("migration 005: collision check: %w", err)
+	}
+	if n > 0 {
+		return fmt.Errorf(
+			"migration 005: cannot apply: found %d spec ID(s) used across multiple project slugs. "+
+				"Normalize slugs manually (see memory topic \"bug/spec-id-collision-cross-slug\") before upgrading",
+			n,
+		)
+	}
+	return nil
 }
