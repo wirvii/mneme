@@ -355,6 +355,11 @@ func (h *handlers) handleMemCheckpoint(ctx context.Context, raw json.RawMessage)
 // mapServiceError converts a service-layer error into a JSONRPCError with an
 // appropriate error code. ErrNotFound maps to CodeMemoryNotFound; validation
 // errors map to CodeInvalidParams; all others become CodeInternalError.
+//
+// For non-sentinel errors the full error message is included in Message so that
+// the calling agent receives an actionable description instead of a generic
+// "internal error" string. This is safe because mneme is a local, single-user
+// tool and error messages never contain sensitive credentials.
 func (h *handlers) mapServiceError(method string, err error) *JSONRPCError {
 	if errors.Is(err, model.ErrNotFound) ||
 		errors.Is(err, model.ErrEntityNotFound) ||
@@ -391,7 +396,7 @@ func (h *handlers) mapServiceError(method string, err error) *JSONRPCError {
 	h.logger.Error("mcp: internal error", "method", method, "error", err)
 	return &JSONRPCError{
 		Code:    CodeInternalError,
-		Message: fmt.Sprintf("mcp: handle %s: internal error", method),
+		Message: fmt.Sprintf("mcp: handle %s: %v", method, err),
 	}
 }
 
