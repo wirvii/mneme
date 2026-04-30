@@ -86,21 +86,39 @@ type ContextResponse struct {
 	Project string `json:"project"`
 
 	// Memories is the ordered set of memories selected within Budget.
+	// Rule-type memories are excluded here; they appear in Rules instead.
 	Memories []Memory `json:"memories"`
 
-	// TokenEstimate is the estimated token count of all returned memories.
+	// TokenEstimate is the estimated token count of all returned content
+	// (rules + memories + last session).
 	TokenEstimate int `json:"token_estimate"`
 
 	// TotalAvailable is the total number of active memories for this project,
 	// before budget filtering. Tells the agent how much was left out.
 	TotalAvailable int `json:"total_available"`
 
-	// Included is the count of memories actually returned.
+	// Included is the count of non-rule memories actually returned.
 	Included int `json:"included"`
 
 	// LastSession is the most recent session summary for this project, nil if none.
 	// Helps the agent quickly understand what was happening last time.
 	LastSession *SessionSummary `json:"last_session,omitempty"`
+
+	// RulesCount is the number of rule-type memories included in the bundle.
+	// Zero when no rules exist or rules_budget is 0.
+	RulesCount int `json:"rules_count"`
+
+	// RulesTokens is the estimated token count consumed by the rules section.
+	RulesTokens int `json:"rules_tokens"`
+
+	// RulesTruncated is the number of rules that could not fit in the rules budget.
+	// A positive value signals the caller to increase rules_budget in config.
+	RulesTruncated int `json:"rules_truncated"`
+
+	// Rules is the ordered set of rule memories included in the bundle.
+	// Separated from Memories so callers can render them in a distinct section.
+	// Omitted from JSON when empty (omitempty).
+	Rules []Memory `json:"rules,omitempty"`
 }
 
 // SessionSummary is a lightweight view of the last session's summary memory.
