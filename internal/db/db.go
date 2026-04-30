@@ -134,6 +134,43 @@ func SchemaVersion(path string) (int, error) {
 	return version, nil
 }
 
+// OpenReadOnly opens an existing SQLite database at path in read-only mode.
+// Unlike Open it does NOT create the directory, run migrations, or enable WAL
+// mode — this is intentional: read-only connections are used by short-lived
+// processes (e.g. hook handlers) where write setup overhead would hurt latency.
+//
+// The connection is configured with:
+//   - mode=ro — SQLite read-only URI parameter; returns an error if the file
+//     does not exist instead of creating it.
+//   - _foreign_keys=ON — referential integrity is still enforced for SELECT
+//     queries that trigger cascades.
+//   - _busy_timeout=1000 — wait at most 1 second when the DB is locked by a
+//     concurrent writer, then fail fast so the hook can fall back to allow.
+//
+// The caller must call Close() on the returned *DB when done.
+func OpenReadOnly(path string) (*DB, error) {
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return nil, fmt.Errorf("db: open read-only: file does not exist: %s", path)
+	}
+
+	dsn := fmt.Sprintf(
+		"file:%s?mode=ro&_foreign_keys=ON&_busy_timeout=1000",
+		path,
+	)
+
+	sqlDB, err := sql.Open("sqlite3", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("db: open read-only: %w", err)
+	}
+
+	if err := sqlDB.Ping(); err != nil {
+		_ = sqlDB.Close()
+		return nil, fmt.Errorf("db: open read-only: ping: %w", err)
+	}
+
+	return &DB{sqlDB}, nil
+}
+
 // isNoSuchTable reports whether err is a SQLite "no such table" error.
 func isNoSuchTable(err error) bool {
 	if err == nil {
