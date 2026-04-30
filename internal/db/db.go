@@ -79,6 +79,12 @@ func OpenMemory() (*DB, error) {
 		return nil, fmt.Errorf("db: open memory: %w", err)
 	}
 
+	// SQLite in-memory databases are private to each physical connection.
+	// The database/sql pool can open multiple physical connections, each with
+	// its own empty database. Restrict the pool to a single connection so that
+	// all operations see the migrated schema.
+	sqlDB.SetMaxOpenConns(1)
+
 	if err := sqlDB.Ping(); err != nil {
 		_ = sqlDB.Close()
 		return nil, fmt.Errorf("db: open memory: ping: %w", err)

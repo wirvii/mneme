@@ -67,11 +67,16 @@ func (svc *MemoryService) StartBackgroundConsolidation(ctx context.Context) {
 	}
 }
 
-// Start launches all background tasks associated with the service. Currently
-// that is only background consolidation, but this method provides a single
-// hook for the MCP server to start everything at once.
+// Start launches all background tasks associated with the service:
+//   - Background consolidation (decay, dedup, budget enforcement).
+//   - Hebbian worker pool (async relation strengthening from co-access events).
+//
+// Both goroutines terminate when ctx is cancelled. For the MCP long-running
+// server path, ctx cancellation is the shutdown signal. For CLI commands use
+// DrainHebbian() instead of Start() to flush events on process exit.
 func (svc *MemoryService) Start(ctx context.Context) {
 	svc.StartBackgroundConsolidation(ctx)
+	svc.hebbianPool.Start(ctx)
 }
 
 // mergeResults adds the counters from b into a and returns a. Duration is

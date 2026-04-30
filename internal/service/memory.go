@@ -9,11 +9,13 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"log/slog"
 	"os"
 	"time"
 
 	"github.com/juanftp/mneme/internal/config"
 	"github.com/juanftp/mneme/internal/embed"
+	"github.com/juanftp/mneme/internal/graph"
 	"github.com/juanftp/mneme/internal/model"
 	"github.com/juanftp/mneme/internal/scoring"
 	"github.com/juanftp/mneme/internal/store"
@@ -29,12 +31,19 @@ import (
 // invariant from the spec: projectStore is backed by
 // ~/.mneme/projects/{slug}.db and globalStore is backed by ~/.mneme/global.db.
 // Memories with scope=global or scope=org are always routed to globalStore.
+//
+// The hebbianPool and tracker implement Hebbian auto-strengthening (SPEC-006):
+// co-accessed memories generate StrengtheningEvents that update relation weights
+// asynchronously. Call Start(ctx) to launch the worker and DrainHebbian to flush
+// pending events on shutdown.
 type MemoryService struct {
 	projectStore *store.MemoryStore // for project-scoped memories
 	globalStore  *store.MemoryStore // for global/org-scoped memories
 	config       *config.Config
-	project      string        // detected or configured project slug
+	project      string         // detected or configured project slug
 	embedder     embed.Embedder // generates vector representations for semantic search
+	hebbianPool  *graph.HebbianWorkerPool
+	tracker      *graph.AccessTracker
 }
 
 // NewMemoryService constructs a MemoryService. The caller must provide fully
@@ -45,13 +54,23 @@ type MemoryService struct {
 //
 // embedder provides the text embedding strategy. Pass embed.NopEmbedder{} to
 // disable embeddings and fall back to FTS5-only retrieval.
+//
+// The Hebbian worker pool is created here but not started. Call Start(ctx) to
+// launch the worker goroutine. For CLI commands call DrainHebbian after the
+// command completes to flush pending strengthening events.
 func NewMemoryService(projectStore, globalStore *store.MemoryStore, cfg *config.Config, project string, embedder embed.Embedder) *MemoryService {
+	logger := slog.Default()
+	pool := graph.NewHebbianWorkerPool(projectStore, cfg.Graph, logger)
+	tracker := graph.NewAccessTracker(pool, cfg.Graph, logger)
+
 	return &MemoryService{
 		projectStore: projectStore,
 		globalStore:  globalStore,
 		config:       cfg,
 		project:      project,
 		embedder:     embedder,
+		hebbianPool:  pool,
+		tracker:      tracker,
 	}
 }
 
@@ -181,6 +200,10 @@ func (svc *MemoryService) Save(ctx context.Context, req model.SaveRequest) (*mod
 // The access increment is best-effort: failures are logged but not returned to
 // the caller so a read never fails due to a counter-update glitch.
 // Returns ErrNotFound when no active memory exists with that id in either store.
+//
+// If the memory has entities linked in the knowledge graph, Get records the
+// access in the Hebbian tracker so co-access pairs can strengthen relations
+// asynchronously. Rules and session summaries are excluded from tracking (D5).
 func (svc *MemoryService) Get(ctx context.Context, id string) (*model.Memory, error) {
 	// Search project store first, then fall back to global store.
 	m, foundIn, err := svc.getFromEitherStore(ctx, id)
@@ -195,7 +218,28 @@ func (svc *MemoryService) Get(ctx context.Context, id string) (*model.Memory, er
 		log.Printf("service: get: increment access for %s: %v", id, err)
 	}
 
+	// Hebbian tracking: record this access for co-access pair generation.
+	// GetMemoryEntities is O(log n) and returns empty when no entities are linked.
+	// The tracker itself filters rules/session_summaries and cross-scope pairs.
+	svc.recordHebbianAccess(ctx, foundIn, m)
+
 	return m, nil
+}
+
+// recordHebbianAccess fetches the entity IDs linked to m and calls
+// tracker.Record. Failures are best-effort: a missed tracking event never
+// affects correctness.
+func (svc *MemoryService) recordHebbianAccess(ctx context.Context, s *store.MemoryStore, m *model.Memory) {
+	entities, err := s.GetMemoryEntities(ctx, m.ID)
+	if err != nil {
+		log.Printf("service: hebbian: get entities for %s: %v", m.ID, err)
+		return
+	}
+	entityIDs := make([]string, len(entities))
+	for i, e := range entities {
+		entityIDs[i] = e.ID
+	}
+	svc.tracker.Record(m.ID, m.Type, m.Scope, entityIDs)
 }
 
 // getFromEitherStore looks up id in projectStore first, then globalStore.
@@ -285,6 +329,14 @@ func (svc *MemoryService) Forget(ctx context.Context, id string, reason string) 
 // It is either the value detected from git or the value provided at construction.
 func (svc *MemoryService) ProjectSlug() string {
 	return svc.project
+}
+
+// DrainHebbian closes the Hebbian worker pool and waits up to 200 ms for
+// pending strengthening events to be processed. CLI commands should call this
+// after their main work completes so that co-access signals are not silently
+// discarded on process exit.
+func (svc *MemoryService) DrainHebbian() {
+	svc.hebbianPool.Drain(200 * time.Millisecond)
 }
 
 // Config returns the configuration used by this service instance.

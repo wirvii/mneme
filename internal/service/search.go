@@ -89,6 +89,21 @@ func (svc *MemoryService) Search(ctx context.Context, req model.SearchRequest) (
 		}
 	}
 
+	// Hebbian tracking: record the top-3 results so co-access pairs can
+	// strengthen relations between frequently co-retrieved entities (Q2).
+	// Only the top-3 are tracked to limit noise from long result lists.
+	const hebbianTopN = 3
+	topN := len(results)
+	if topN > hebbianTopN {
+		topN = hebbianTopN
+	}
+	for _, sr := range results[:topN] {
+		if sr.Memory == nil {
+			continue
+		}
+		svc.recordHebbianAccess(ctx, svc.storeFor(sr.Memory.Scope), sr.Memory)
+	}
+
 	return &model.SearchResponse{
 		Results: results,
 		Total:   len(results),
