@@ -710,6 +710,178 @@ edge_decay_after_days = 60
 	}
 }
 
+// TestGraphConfig_ExpansionDefaults verifies that Default() sets all four
+// expansion parameters to the values documented in D6 of SPEC-007.
+func TestGraphConfig_ExpansionDefaults(t *testing.T) {
+	cfg := Default()
+
+	tests := []struct {
+		name string
+		got  any
+		want any
+	}{
+		{"Graph.ExpansionEnabled", cfg.Graph.ExpansionEnabled, true},
+		{"Graph.ExpansionThreshold", cfg.Graph.ExpansionThreshold, 0.3},
+		{"Graph.ExpansionFanOutCap", cfg.Graph.ExpansionFanOutCap, 50},
+		{"Graph.ExpansionSeedTopK", cfg.Graph.ExpansionSeedTopK, 10},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.got != tc.want {
+				t.Errorf("got %v, want %v", tc.got, tc.want)
+			}
+		})
+	}
+}
+
+// TestGraphConfig_ExpansionValidation verifies that invalid expansion parameter
+// values are rejected by Validate() with a clear error message.
+func TestGraphConfig_ExpansionValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*Config)
+		wantErr bool
+	}{
+		{
+			name:    "valid defaults",
+			mutate:  func(*Config) {},
+			wantErr: false,
+		},
+		{
+			name: "ExpansionThreshold below 0 errors",
+			mutate: func(c *Config) {
+				c.Graph.ExpansionThreshold = -0.1
+			},
+			wantErr: true,
+		},
+		{
+			name: "ExpansionThreshold above 1 errors",
+			mutate: func(c *Config) {
+				c.Graph.ExpansionThreshold = 1.1
+			},
+			wantErr: true,
+		},
+		{
+			name: "ExpansionThreshold zero is valid (no filtering)",
+			mutate: func(c *Config) {
+				c.Graph.ExpansionThreshold = 0.0
+			},
+			wantErr: false,
+		},
+		{
+			name: "ExpansionThreshold 1.0 is valid (strict)",
+			mutate: func(c *Config) {
+				c.Graph.ExpansionThreshold = 1.0
+			},
+			wantErr: false,
+		},
+		{
+			name: "ExpansionFanOutCap negative errors",
+			mutate: func(c *Config) {
+				c.Graph.ExpansionFanOutCap = -1
+			},
+			wantErr: true,
+		},
+		{
+			name: "ExpansionFanOutCap zero is valid (disables expansion via cap)",
+			mutate: func(c *Config) {
+				c.Graph.ExpansionFanOutCap = 0
+			},
+			wantErr: false,
+		},
+		{
+			name: "ExpansionSeedTopK negative errors",
+			mutate: func(c *Config) {
+				c.Graph.ExpansionSeedTopK = -1
+			},
+			wantErr: true,
+		},
+		{
+			name: "ExpansionSeedTopK zero is valid (disables expansion via seeds)",
+			mutate: func(c *Config) {
+				c.Graph.ExpansionSeedTopK = 0
+			},
+			wantErr: false,
+		},
+		{
+			name: "ExpansionEnabled false is valid",
+			mutate: func(c *Config) {
+				c.Graph.ExpansionEnabled = false
+			},
+			wantErr: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Default()
+			tc.mutate(cfg)
+			err := cfg.Validate()
+			if (err != nil) != tc.wantErr {
+				t.Errorf("Validate() error = %v, wantErr %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestGraphConfig_ExpansionTOMLOverride verifies that expansion fields in a
+// config file are parsed correctly, overriding defaults.
+func TestGraphConfig_ExpansionTOMLOverride(t *testing.T) {
+	tomlContent := `
+[graph]
+expansion_enabled = false
+expansion_threshold = 0.5
+expansion_fan_out_cap = 25
+expansion_seed_top_k = 5
+`
+	path := writeTempTOML(t, tomlContent)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if cfg.Graph.ExpansionEnabled {
+		t.Errorf("ExpansionEnabled: got true, want false")
+	}
+	if cfg.Graph.ExpansionThreshold != 0.5 {
+		t.Errorf("ExpansionThreshold: got %f, want 0.5", cfg.Graph.ExpansionThreshold)
+	}
+	if cfg.Graph.ExpansionFanOutCap != 25 {
+		t.Errorf("ExpansionFanOutCap: got %d, want 25", cfg.Graph.ExpansionFanOutCap)
+	}
+	if cfg.Graph.ExpansionSeedTopK != 5 {
+		t.Errorf("ExpansionSeedTopK: got %d, want 5", cfg.Graph.ExpansionSeedTopK)
+	}
+}
+
+// TestGraphConfig_ExpansionEnvOverride verifies that MNEME_EXPANSION_* env
+// variables override both defaults and file-based configuration.
+func TestGraphConfig_ExpansionEnvOverride(t *testing.T) {
+	t.Setenv("MNEME_EXPANSION_ENABLED", "false")
+	t.Setenv("MNEME_EXPANSION_THRESHOLD", "0.6")
+	t.Setenv("MNEME_EXPANSION_FAN_OUT_CAP", "20")
+	t.Setenv("MNEME_EXPANSION_SEED_TOP_K", "7")
+
+	cfg, err := Load("/nonexistent/path/config.toml")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if cfg.Graph.ExpansionEnabled {
+		t.Errorf("ExpansionEnabled: got true, want false")
+	}
+	if cfg.Graph.ExpansionThreshold != 0.6 {
+		t.Errorf("ExpansionThreshold: got %f, want 0.6", cfg.Graph.ExpansionThreshold)
+	}
+	if cfg.Graph.ExpansionFanOutCap != 20 {
+		t.Errorf("ExpansionFanOutCap: got %d, want 20", cfg.Graph.ExpansionFanOutCap)
+	}
+	if cfg.Graph.ExpansionSeedTopK != 7 {
+		t.Errorf("ExpansionSeedTopK: got %d, want 7", cfg.Graph.ExpansionSeedTopK)
+	}
+}
+
 // writeTempTOML writes content to a temporary TOML file and returns its path.
 // The file is automatically removed when the test ends.
 func writeTempTOML(t *testing.T, content string) string {

@@ -66,6 +66,31 @@ type GraphConfig struct {
 	// edge decay begins. Relations traversed more recently are not decayed.
 	// Default: 30.
 	EdgeDecayAfterDays int `toml:"edge_decay_after_days"`
+
+	// ExpansionEnabled controls whether 1-hop graph expansion is active during
+	// mem_search. When false, Search falls back to 2-channel RRF (FTS5 + vector)
+	// without querying the graph. Does not affect Hebbian strengthening or edge
+	// decay. Default: true.
+	ExpansionEnabled bool `toml:"expansion_enabled"`
+
+	// ExpansionThreshold is the minimum relation weight required for a relation
+	// to be followed during 1-hop expansion. Relations below this value are
+	// treated as noise and skipped. 0.3 allows relations strengthened by 4+
+	// Hebbian co-accesses (initial=0.1, increment=0.05) to participate.
+	// Default: 0.3.
+	ExpansionThreshold float64 `toml:"expansion_threshold"`
+
+	// ExpansionFanOutCap is the maximum number of relations followed per entity
+	// during 1-hop expansion. Relations are sorted by weight DESC before
+	// applying the cap, so the strongest edges are always retained.
+	// Default: 50.
+	ExpansionFanOutCap int `toml:"expansion_fan_out_cap"`
+
+	// ExpansionSeedTopK is the number of top-ranked seeds (from the preliminary
+	// FTS5+vector RRF fusion) to expand via the graph. Seeds beyond top-K have
+	// low relevance scores, making their expansions unlikely to improve results.
+	// Default: 10.
+	ExpansionSeedTopK int `toml:"expansion_seed_top_k"`
 }
 
 // WorkflowConfig controls where workflow artifacts (specs, bugs, backlog)
@@ -323,6 +348,10 @@ func Default() *Config {
 			HebbianBufferSize:    1000,
 			EdgeDecayRate:        0.02,
 			EdgeDecayAfterDays:   30,
+			ExpansionEnabled:     true,
+			ExpansionThreshold:   0.3,
+			ExpansionFanOutCap:   50,
+			ExpansionSeedTopK:    10,
 		},
 	}
 }
@@ -368,6 +397,24 @@ func Load(path string) (*Config, error) {
 	if v := os.Getenv("MNEME_RULES_BUDGET"); v != "" {
 		if n, parseErr := strconv.Atoi(v); parseErr == nil {
 			cfg.Context.RulesBudget = n
+		}
+	}
+	if v := os.Getenv("MNEME_EXPANSION_ENABLED"); v != "" {
+		cfg.Graph.ExpansionEnabled = v == "true" || v == "1"
+	}
+	if v := os.Getenv("MNEME_EXPANSION_THRESHOLD"); v != "" {
+		if f, parseErr := strconv.ParseFloat(v, 64); parseErr == nil {
+			cfg.Graph.ExpansionThreshold = f
+		}
+	}
+	if v := os.Getenv("MNEME_EXPANSION_FAN_OUT_CAP"); v != "" {
+		if n, parseErr := strconv.Atoi(v); parseErr == nil {
+			cfg.Graph.ExpansionFanOutCap = n
+		}
+	}
+	if v := os.Getenv("MNEME_EXPANSION_SEED_TOP_K"); v != "" {
+		if n, parseErr := strconv.Atoi(v); parseErr == nil {
+			cfg.Graph.ExpansionSeedTopK = n
 		}
 	}
 
@@ -451,6 +498,15 @@ func (c *Config) Validate() error {
 	}
 	if c.Graph.EdgeDecayAfterDays < 0 {
 		return errors.New("graph.edge_decay_after_days must be >= 0")
+	}
+	if c.Graph.ExpansionThreshold < 0 || c.Graph.ExpansionThreshold > 1 {
+		return errors.New("graph.expansion_threshold must be in [0.0, 1.0]")
+	}
+	if c.Graph.ExpansionFanOutCap < 0 {
+		return errors.New("graph.expansion_fan_out_cap must be >= 0")
+	}
+	if c.Graph.ExpansionSeedTopK < 0 {
+		return errors.New("graph.expansion_seed_top_k must be >= 0")
 	}
 
 	return nil
