@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/pelletier/go-toml/v2"
@@ -146,6 +147,14 @@ type ContextConfig struct {
 	// memories when the caller does not supply an explicit budget.
 	DefaultBudget int `toml:"default_budget"`
 
+	// RulesBudget is the maximum number of tokens reserved for rule-type
+	// memories in the context bundle. Rules are packed before general memories
+	// and use a dedicated budget so they are always present regardless of how
+	// many other memories compete for the general budget.
+	// Set to 0 to disable rule injection (rules compete in general scoring).
+	// Default: 1500.
+	RulesBudget int `toml:"rules_budget"`
+
 	// IncludeGlobal determines whether global-scope memories are mixed into
 	// project-scoped context injections.
 	IncludeGlobal bool `toml:"include_global"`
@@ -225,6 +234,7 @@ func Default() *Config {
 		},
 		Context: ContextConfig{
 			DefaultBudget:       4000,
+			RulesBudget:         1500,
 			IncludeGlobal:       true,
 			GlobalMinImportance: 0.7,
 		},
@@ -311,6 +321,11 @@ func Load(path string) (*Config, error) {
 	if v := os.Getenv("MNEME_WORKFLOW_DIR"); v != "" {
 		cfg.Workflow.Dir = v
 	}
+	if v := os.Getenv("MNEME_RULES_BUDGET"); v != "" {
+		if n, parseErr := strconv.Atoi(v); parseErr == nil {
+			cfg.Context.RulesBudget = n
+		}
+	}
 
 	// Expand ~ after all overrides so every code path benefits.
 	cfg.Storage.DataDir = expandHome(cfg.Storage.DataDir)
@@ -359,6 +374,10 @@ func (c *Config) Validate() error {
 	}
 	if c.Search.PreviewLength <= 0 {
 		return errors.New("search.preview_length must be greater than 0")
+	}
+
+	if c.Context.RulesBudget < 0 {
+		return errors.New("context.rules_budget must be >= 0")
 	}
 
 	validLogLevels := map[string]bool{

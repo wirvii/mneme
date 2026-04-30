@@ -478,6 +478,48 @@ func TestIsDelegationProtected(t *testing.T) {
 	}
 }
 
+// TestContextConfig_RulesBudgetDefault verifies that Default() sets RulesBudget
+// to 1500, the value that guarantees rules always appear in the context bundle.
+func TestContextConfig_RulesBudgetDefault(t *testing.T) {
+	cfg := Default()
+	if cfg.Context.RulesBudget != 1500 {
+		t.Errorf("Context.RulesBudget: got %d, want 1500", cfg.Context.RulesBudget)
+	}
+}
+
+// TestContextConfig_RulesBudgetEnvOverride verifies that MNEME_RULES_BUDGET
+// takes precedence over the compiled-in default.
+func TestContextConfig_RulesBudgetEnvOverride(t *testing.T) {
+	t.Setenv("MNEME_RULES_BUDGET", "2000")
+	cfg, err := Load("/nonexistent/path/config.toml")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Context.RulesBudget != 2000 {
+		t.Errorf("Context.RulesBudget: got %d, want 2000", cfg.Context.RulesBudget)
+	}
+}
+
+// TestContextConfig_RulesBudgetValidation verifies that a negative rules_budget
+// is rejected by Validate so the binary fails early with a clear message.
+func TestContextConfig_RulesBudgetValidation(t *testing.T) {
+	cfg := Default()
+	cfg.Context.RulesBudget = -1
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected validation error for negative RulesBudget, got nil")
+	}
+}
+
+// TestContextConfig_RulesBudgetZero verifies that rules_budget=0 is a valid
+// configuration (it disables rule injection without being an error).
+func TestContextConfig_RulesBudgetZero(t *testing.T) {
+	cfg := Default()
+	cfg.Context.RulesBudget = 0
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("expected no error for RulesBudget=0, got: %v", err)
+	}
+}
+
 // writeTempTOML writes content to a temporary TOML file and returns its path.
 // The file is automatically removed when the test ends.
 func writeTempTOML(t *testing.T, content string) string {
