@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 	"time"
 
 	"github.com/gofrs/uuid/v5"
@@ -352,6 +353,124 @@ func (s *MemoryStore) GetMemoryEntities(ctx context.Context, memoryID string) ([
 	return entities, nil
 }
 
+// GetStrongRelations returns all relations connected to entityID (in either
+// direction) whose weight exceeds threshold, ordered by weight descending and
+// capped at limit. The bidirectional lookup is implemented with two separate
+// indexed queries merged in Go so that SQLite can use idx_relations_source and
+// idx_relations_target independently — which is faster than a single OR query
+// on large tables (D7, SPEC-007).
+//
+// An empty slice is returned when no relations exceed the threshold.
+func (s *MemoryStore) GetStrongRelations(ctx context.Context, entityID string, threshold float64, limit int) ([]*model.Relation, error) {
+	const qFrom = `
+		SELECT id, source_id, target_id, type, weight, metadata, created_at, last_traversed_at
+		FROM relations
+		WHERE source_id = ? AND weight > ?
+		ORDER BY weight DESC
+		LIMIT ?`
+
+	const qTo = `
+		SELECT id, source_id, target_id, type, weight, metadata, created_at, last_traversed_at
+		FROM relations
+		WHERE target_id = ? AND weight > ?
+		ORDER BY weight DESC
+		LIMIT ?`
+
+	fromRels, err := s.queryRelationsMultiArg(ctx, qFrom, entityID, threshold, limit)
+	if err != nil {
+		return nil, fmt.Errorf("store: get strong relations: outgoing: %w", err)
+	}
+
+	toRels, err := s.queryRelationsMultiArg(ctx, qTo, entityID, threshold, limit)
+	if err != nil {
+		return nil, fmt.Errorf("store: get strong relations: incoming: %w", err)
+	}
+
+	// Merge and deduplicate by relation ID, then re-sort by weight descending
+	// and cap at limit.
+	seen := make(map[string]bool, len(fromRels)+len(toRels))
+	merged := make([]*model.Relation, 0, len(fromRels)+len(toRels))
+	for _, r := range append(fromRels, toRels...) {
+		if seen[r.ID] {
+			continue
+		}
+		seen[r.ID] = true
+		merged = append(merged, r)
+	}
+
+	// Insertion-sort by weight descending (stable, small slices).
+	for i := 1; i < len(merged); i++ {
+		for j := i; j > 0 && merged[j].Weight > merged[j-1].Weight; j-- {
+			merged[j], merged[j-1] = merged[j-1], merged[j]
+		}
+	}
+
+	if len(merged) > limit {
+		merged = merged[:limit]
+	}
+
+	return merged, nil
+}
+
+// GetEntityMemoryIDs returns the IDs of all memories linked to entityID. This
+// is the inverse of GetMemoryEntities (which returns full Entity objects given
+// a memory). The result is used by the graph expansion algorithm to map
+// neighbor entities back to their memories without loading full entities.
+//
+// An empty slice is returned when no memories are linked; this is not an error.
+func (s *MemoryStore) GetEntityMemoryIDs(ctx context.Context, entityID string) ([]string, error) {
+	const q = `SELECT memory_id FROM memory_entities WHERE entity_id = ?`
+
+	rows, err := s.db.QueryContext(ctx, q, entityID)
+	if err != nil {
+		return nil, fmt.Errorf("store: get entity memory ids: %w", err)
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("store: get entity memory ids: scan: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: get entity memory ids: iterate: %w", err)
+	}
+
+	return ids, nil
+}
+
+// BatchTouchRelations updates last_traversed_at for multiple relations in a
+// single statement. This is the bulk version of TouchRelation used after graph
+// expansion to mark traversed edges for future decay eligibility (D3, SPEC-007).
+// Best-effort: the caller should log failures and continue — search results are
+// not affected by a failed touch.
+func (s *MemoryStore) BatchTouchRelations(ctx context.Context, ids []string, now time.Time) error {
+	if len(ids) == 0 {
+		return nil
+	}
+
+	// Build a parameterised query: UPDATE ... WHERE id IN (?, ?, ...)
+	placeholders := make([]string, len(ids))
+	args := make([]any, 0, len(ids)+1)
+	args = append(args, now.UTC().Format(time.RFC3339Nano))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args = append(args, id)
+	}
+
+	q := "UPDATE relations SET last_traversed_at = ? WHERE id IN (" +
+		strings.Join(placeholders, ",") + ")"
+
+	_, err := s.db.ExecContext(ctx, q, args...)
+	if err != nil {
+		return fmt.Errorf("store: batch touch relations: %w", err)
+	}
+	return nil
+}
+
 // FindRelationBidirectional looks up an existing relation between two entities
 // with a given type in either direction: (source→target) or (target→source).
 // It first tries sourceID→targetID; if not found it tries targetID→sourceID.
@@ -532,6 +651,31 @@ func (s *MemoryStore) ListMemoriesInRange(ctx context.Context, from, to time.Tim
 }
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
+
+// queryRelationsMultiArg executes a relation SELECT query with multiple
+// positional arguments and returns the scanned results. Used by
+// GetStrongRelations which requires three arguments (entityID, threshold, limit).
+func (s *MemoryStore) queryRelationsMultiArg(ctx context.Context, q string, args ...any) ([]*model.Relation, error) {
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: query relations multi-arg: %w", err)
+	}
+	defer rows.Close()
+
+	var relations []*model.Relation
+	for rows.Next() {
+		r, err := scanRelationRow(rows)
+		if err != nil {
+			return nil, fmt.Errorf("store: query relations multi-arg: scan: %w", err)
+		}
+		relations = append(relations, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: query relations multi-arg: iterate: %w", err)
+	}
+
+	return relations, nil
+}
 
 // queryRelations is a shared helper that executes a relation SELECT query with
 // a single argument and returns the scanned results.

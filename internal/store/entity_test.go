@@ -867,3 +867,272 @@ func TestListMemoriesInRange(t *testing.T) {
 		t.Errorf("got %d memories, want at least 3", len(memories))
 	}
 }
+
+// ─── GetStrongRelations tests ─────────────────────────────────────────────────
+
+// TestGetStrongRelations_AboveThreshold verifies that only relations whose
+// weight strictly exceeds the threshold are returned.
+func TestGetStrongRelations_AboveThreshold(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	e1 := mustCreateEntity(t, s, "e1", model.KindModule, "")
+	e2 := mustCreateEntity(t, s, "e2", model.KindModule, "")
+	e3 := mustCreateEntity(t, s, "e3", model.KindModule, "")
+	e4 := mustCreateEntity(t, s, "e4", model.KindModule, "")
+
+	// Create relations with various weights from e1.
+	mustCreateRelationWithWeight(t, s, e1.ID, e2.ID, model.RelRelatedTo, 0.8)
+	mustCreateRelationWithWeight(t, s, e1.ID, e3.ID, model.RelRelatedTo, 0.3) // at threshold, excluded (>0.3)
+	mustCreateRelationWithWeight(t, s, e1.ID, e4.ID, model.RelRelatedTo, 0.1) // below threshold
+
+	rels, err := s.GetStrongRelations(ctx, e1.ID, 0.3, 50)
+	if err != nil {
+		t.Fatalf("GetStrongRelations: %v", err)
+	}
+	// Only weight=0.8 exceeds 0.3 (strictly greater than).
+	if len(rels) != 1 {
+		t.Errorf("got %d relations, want 1 (weight>0.3 strictly)", len(rels))
+	}
+	if len(rels) == 1 && rels[0].Weight != 0.8 {
+		t.Errorf("unexpected weight %f, want 0.8", rels[0].Weight)
+	}
+}
+
+// TestGetStrongRelations_Bidirectional verifies that relations in both
+// directions (source→entity and entity→target) are returned.
+func TestGetStrongRelations_Bidirectional(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	hub := mustCreateEntity(t, s, "hub", model.KindModule, "")
+	left := mustCreateEntity(t, s, "left", model.KindModule, "")
+	right := mustCreateEntity(t, s, "right", model.KindModule, "")
+
+	// hub → right (outgoing from hub)
+	mustCreateRelationWithWeight(t, s, hub.ID, right.ID, model.RelRelatedTo, 0.7)
+	// left → hub (incoming to hub)
+	mustCreateRelationWithWeight(t, s, left.ID, hub.ID, model.RelRelatedTo, 0.9)
+
+	rels, err := s.GetStrongRelations(ctx, hub.ID, 0.5, 50)
+	if err != nil {
+		t.Fatalf("GetStrongRelations: %v", err)
+	}
+	if len(rels) != 2 {
+		t.Errorf("got %d relations, want 2 (one outgoing + one incoming)", len(rels))
+	}
+}
+
+// TestGetStrongRelations_FanOutCap verifies that the limit parameter caps
+// the number of results and that the strongest relations are retained.
+func TestGetStrongRelations_FanOutCap(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	hub := mustCreateEntity(t, s, "hub", model.KindModule, "")
+
+	// Create 10 outgoing relations with decreasing weights.
+	for i := 0; i < 10; i++ {
+		target := mustCreateEntity(t, s, "tgt"+string(rune('a'+i)), model.KindModule, "")
+		weight := 1.0 - float64(i)*0.05 // 1.0, 0.95, 0.90 ...
+		mustCreateRelationWithWeight(t, s, hub.ID, target.ID, model.RelRelatedTo, weight)
+	}
+
+	cap := 3
+	rels, err := s.GetStrongRelations(ctx, hub.ID, 0.0, cap)
+	if err != nil {
+		t.Fatalf("GetStrongRelations: %v", err)
+	}
+	if len(rels) != cap {
+		t.Errorf("got %d relations, want %d (fan-out cap)", len(rels), cap)
+	}
+	// Verify top relations are sorted weight DESC.
+	for i := 1; i < len(rels); i++ {
+		if rels[i].Weight > rels[i-1].Weight {
+			t.Errorf("relations not sorted weight DESC at index %d: %f > %f", i, rels[i].Weight, rels[i-1].Weight)
+		}
+	}
+}
+
+// TestGetStrongRelations_NoResults verifies that an empty slice (not an error)
+// is returned when no relations exceed the threshold.
+func TestGetStrongRelations_NoResults(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	e := mustCreateEntity(t, s, "lonely", model.KindModule, "")
+	rels, err := s.GetStrongRelations(ctx, e.ID, 0.5, 50)
+	if err != nil {
+		t.Fatalf("GetStrongRelations on entity with no relations: %v", err)
+	}
+	if rels == nil {
+		rels = []*model.Relation{}
+	}
+	if len(rels) != 0 {
+		t.Errorf("got %d relations, want 0", len(rels))
+	}
+}
+
+// ─── GetEntityMemoryIDs tests ─────────────────────────────────────────────────
+
+// TestGetEntityMemoryIDs_Basic verifies that linked memory IDs are returned.
+func TestGetEntityMemoryIDs_Basic(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	e := mustCreateEntity(t, s, "auth-svc", model.KindService, "")
+
+	m1 := mustCreateMemory(t, s, "mem-one", "")
+	m2 := mustCreateMemory(t, s, "mem-two", "")
+
+	if err := s.LinkMemoryEntity(ctx, m1.ID, e.ID, "mention"); err != nil {
+		t.Fatalf("LinkMemoryEntity m1: %v", err)
+	}
+	if err := s.LinkMemoryEntity(ctx, m2.ID, e.ID, "mention"); err != nil {
+		t.Fatalf("LinkMemoryEntity m2: %v", err)
+	}
+
+	ids, err := s.GetEntityMemoryIDs(ctx, e.ID)
+	if err != nil {
+		t.Fatalf("GetEntityMemoryIDs: %v", err)
+	}
+	if len(ids) != 2 {
+		t.Errorf("got %d IDs, want 2", len(ids))
+	}
+
+	idSet := map[string]bool{m1.ID: true, m2.ID: true}
+	for _, id := range ids {
+		if !idSet[id] {
+			t.Errorf("unexpected memory ID %q in result", id)
+		}
+	}
+}
+
+// TestGetEntityMemoryIDs_NoLinks verifies that an empty slice (not an error)
+// is returned for an entity with no linked memories.
+func TestGetEntityMemoryIDs_NoLinks(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	e := mustCreateEntity(t, s, "orphan-entity", model.KindModule, "")
+
+	ids, err := s.GetEntityMemoryIDs(ctx, e.ID)
+	if err != nil {
+		t.Fatalf("GetEntityMemoryIDs: %v", err)
+	}
+	if len(ids) != 0 {
+		t.Errorf("got %d IDs, want 0", len(ids))
+	}
+}
+
+// ─── BatchTouchRelations tests ────────────────────────────────────────────────
+
+// TestBatchTouchRelations_UpdatesTimestamp verifies that last_traversed_at is
+// set on all specified relations after a batch touch.
+func TestBatchTouchRelations_UpdatesTimestamp(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	e1 := mustCreateEntity(t, s, "e1", model.KindModule, "")
+	e2 := mustCreateEntity(t, s, "e2", model.KindModule, "")
+	e3 := mustCreateEntity(t, s, "e3", model.KindModule, "")
+
+	r1 := mustCreateRelationWithWeight(t, s, e1.ID, e2.ID, model.RelRelatedTo, 0.7)
+	r2 := mustCreateRelationWithWeight(t, s, e2.ID, e3.ID, model.RelRelatedTo, 0.5)
+
+	before := time.Now().Add(-time.Second)
+	touchTime := time.Now().UTC()
+
+	if err := s.BatchTouchRelations(ctx, []string{r1.ID, r2.ID}, touchTime); err != nil {
+		t.Fatalf("BatchTouchRelations: %v", err)
+	}
+
+	for _, id := range []string{r1.ID, r2.ID} {
+		rel, err := s.getRelationByID(ctx, id)
+		if err != nil {
+			t.Fatalf("getRelationByID(%s): %v", id, err)
+		}
+		if rel.LastTraversedAt.IsZero() {
+			t.Errorf("relation %s: LastTraversedAt is zero after batch touch", id)
+		}
+		if rel.LastTraversedAt.Before(before) {
+			t.Errorf("relation %s: LastTraversedAt %v is before %v", id, rel.LastTraversedAt, before)
+		}
+	}
+}
+
+// TestBatchTouchRelations_EmptySlice verifies that an empty slice is a no-op
+// and does not return an error.
+func TestBatchTouchRelations_EmptySlice(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	if err := s.BatchTouchRelations(ctx, []string{}, time.Now()); err != nil {
+		t.Errorf("BatchTouchRelations with empty slice: got error %v, want nil", err)
+	}
+}
+
+// TestBatchTouchRelations_Dedup verifies that passing duplicate IDs does not
+// cause a SQL error (the query is idempotent for the same ID).
+func TestBatchTouchRelations_Dedup(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	e1 := mustCreateEntity(t, s, "src", model.KindModule, "")
+	e2 := mustCreateEntity(t, s, "tgt", model.KindModule, "")
+	r := mustCreateRelationWithWeight(t, s, e1.ID, e2.ID, model.RelRelatedTo, 0.8)
+
+	// Pass the same ID twice — should succeed.
+	err := s.BatchTouchRelations(ctx, []string{r.ID, r.ID}, time.Now())
+	if err != nil {
+		t.Errorf("BatchTouchRelations with duplicate IDs: %v", err)
+	}
+}
+
+// ─── helpers used only in this test file ─────────────────────────────────────
+
+// mustCreateEntity creates an entity and fails the test if it errors.
+func mustCreateEntity(t *testing.T, s *MemoryStore, name string, kind model.EntityKind, project string) *model.Entity {
+	t.Helper()
+	e, err := s.CreateEntity(context.Background(), &model.Entity{
+		Name:    name,
+		Kind:    kind,
+		Project: project,
+	})
+	if err != nil {
+		t.Fatalf("mustCreateEntity(%q): %v", name, err)
+	}
+	return e
+}
+
+// mustCreateRelationWithWeight creates a relation with an explicit weight and
+// fails the test if it errors.
+func mustCreateRelationWithWeight(t *testing.T, s *MemoryStore, srcID, tgtID string, relType model.RelationType, weight float64) *model.Relation {
+	t.Helper()
+	r, err := s.CreateRelation(context.Background(), &model.Relation{
+		SourceID: srcID,
+		TargetID: tgtID,
+		Type:     relType,
+		Weight:   weight,
+	})
+	if err != nil {
+		t.Fatalf("mustCreateRelationWithWeight(%q->%q): %v", srcID, tgtID, err)
+	}
+	return r
+}
+
+// mustCreateMemory creates a basic discovery memory and fails the test on error.
+func mustCreateMemory(t *testing.T, s *MemoryStore, title string, project string) *model.Memory {
+	t.Helper()
+	m, err := s.Create(context.Background(), &model.Memory{
+		Type:    model.TypeDiscovery,
+		Scope:   model.ScopeProject,
+		Title:   title,
+		Content: "test content",
+		Project: project,
+	})
+	if err != nil {
+		t.Fatalf("mustCreateMemory(%q): %v", title, err)
+	}
+	return m
+}
