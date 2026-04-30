@@ -96,3 +96,9 @@ var ErrInvalidSeverity = errors.New("invalid severity")
 // ErrEmptyPattern is returned when an applies_to entry is an empty string.
 // Empty patterns are ambiguous and cannot be matched reliably by the rules engine.
 var ErrEmptyPattern = errors.New("applies_to patterns must not be empty")
+
+// ErrInvalidWeight is returned when a weight value is outside [0.0, 1.0] or is
+// not a finite number (NaN, +Inf, -Inf). Validation is intentionally in the Go
+// layer rather than as a SQL CHECK constraint because SQLite does not reject NaN
+// in BETWEEN comparisons.
+var ErrInvalidWeight = errors.New("weight must be a finite number in [0.0, 1.0]")

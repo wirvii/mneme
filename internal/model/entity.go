@@ -3,6 +3,30 @@ package model
 
 import "time"
 
+// DefaultRelationWeights maps each RelationType to its default normalised weight
+// in [0.0, 1.0]. Values reflect the structural importance of each relation type
+// for graph navigation. The Hebbian auto-strengthening pass (SPEC-G2) will adjust
+// these values based on actual traversal patterns.
+var DefaultRelationWeights = map[RelationType]float64{
+	RelDependsOn:     0.9,
+	RelImplements:    0.8,
+	RelSupersedes:    0.6,
+	RelRelatedTo:     0.5,
+	RelPartOf:        0.85,
+	RelUses:          0.7,
+	RelConflictsWith: 0.7,
+	RelReferences:    0.4,
+}
+
+// DefaultWeight returns the default weight for rt. Unknown relation types receive
+// 0.5 as a conservative fallback — equivalent to RelRelatedTo strength.
+func DefaultWeight(rt RelationType) float64 {
+	if w, ok := DefaultRelationWeights[rt]; ok {
+		return w
+	}
+	return 0.5
+}
+
 // EntityKind classifies entities in the knowledge graph. Each kind represents
 // a category of named concept that memories can reference and relate to.
 type EntityKind string
@@ -72,6 +96,12 @@ const (
 
 	// RelConflictsWith indicates the source entity conflicts with the target.
 	RelConflictsWith RelationType = "conflicts_with"
+
+	// RelReferences indicates the source entity references the target, typically
+	// through a [[wikilink]] in memory content. This is a weak relationship
+	// created automatically by the wikilink parser (SPEC-W1). Existing rows use
+	// this type once it is introduced; no backfill is needed.
+	RelReferences RelationType = "references"
 )
 
 // validRelationTypes is the canonical set of recognised relation types.
@@ -83,6 +113,7 @@ var validRelationTypes = map[RelationType]struct{}{
 	RelPartOf:        {},
 	RelUses:          {},
 	RelConflictsWith: {},
+	RelReferences:    {},
 }
 
 // Valid reports whether the RelationType is one of the recognised constants.
@@ -120,6 +151,9 @@ type Entity struct {
 
 // Relation is a directed edge between two entities in the knowledge graph.
 // It records a typed, weighted relationship from a source entity to a target entity.
+// Weight is normalised to [0.0, 1.0] where higher values indicate stronger
+// relationships. LastTraversedAt records when the relation was last used for
+// graph navigation, enabling temporal decay of unused edges (SPEC-G2).
 type Relation struct {
 	// ID is a UUIDv7 — time-sortable and globally unique.
 	ID string `json:"id"`
@@ -133,7 +167,9 @@ type Relation struct {
 	// Type is the kind of relationship.
 	Type RelationType `json:"type"`
 
-	// Weight is a 0.0–∞ strength of the relationship. Defaults to 1.0.
+	// Weight is the normalised strength of the relationship in [0.0, 1.0].
+	// Higher values indicate stronger, more important relationships.
+	// Defaults are type-specific; see DefaultRelationWeights.
 	Weight float64 `json:"weight"`
 
 	// Metadata is an optional JSON blob for storing additional edge attributes.
@@ -141,6 +177,11 @@ type Relation struct {
 
 	// CreatedAt is the wall-clock time when the relation was first created.
 	CreatedAt time.Time `json:"created_at"`
+
+	// LastTraversedAt records the most recent time this relation was used for
+	// graph navigation (e.g. 1-hop expansion, PPR, mem_explore). Zero value
+	// means the relation has never been traversed since tracking began (migration 007).
+	LastTraversedAt time.Time `json:"last_traversed_at,omitempty"`
 }
 
 // RelateRequest is the input for creating a relationship between two named entities.
@@ -165,6 +206,12 @@ type RelateRequest struct {
 
 	// Project scopes the entity lookup to a specific project slug.
 	Project string `json:"project,omitempty"`
+
+	// Weight overrides the default weight for this relation type. When zero,
+	// DefaultWeight(Relation) is used instead. Must be in [0.0, 1.0] when
+	// provided explicitly. A value of 0.0 is treated as "use the type default"
+	// because a relation with zero strength has no semantic value.
+	Weight float64 `json:"weight,omitempty"`
 }
 
 // RelateResponse is the output after creating or verifying a relation.
@@ -180,6 +227,9 @@ type RelateResponse struct {
 
 	// Created is true when a new relation was inserted, false when one already existed.
 	Created bool `json:"created"`
+
+	// Weight is the normalised strength of the created or existing relation in [0.0, 1.0].
+	Weight float64 `json:"weight"`
 }
 
 // TimelineRequest is the input for retrieving memories around a point in time.
