@@ -24,6 +24,8 @@ func newSaveCmd() *cobra.Command {
 		flagFiles      []string
 		flagImportance float64
 		flagStdin      bool
+		flagAppliesTo  []string
+		flagSeverity   string
 	)
 
 	cmd := &cobra.Command{
@@ -79,6 +81,12 @@ a duplicate.`,
 			if cmd.Flags().Changed("importance") {
 				req.Importance = &flagImportance
 			}
+			if len(flagAppliesTo) > 0 {
+				req.AppliesTo = flagAppliesTo
+			}
+			if flagSeverity != "" {
+				req.Severity = model.Severity(flagSeverity)
+			}
 
 			resp, err := svc.Save(cmd.Context(), req)
 			if err != nil {
@@ -98,6 +106,8 @@ a duplicate.`,
 	cmd.Flags().StringArrayVarP(&flagFiles, "file", "f", nil, "Referenced file paths (repeatable)")
 	cmd.Flags().Float64VarP(&flagImportance, "importance", "i", 0, "Importance override (0.0-1.0)")
 	cmd.Flags().BoolVar(&flagStdin, "stdin", false, "Read content from stdin")
+	cmd.Flags().StringArrayVarP(&flagAppliesTo, "applies-to", "a", nil, "Patterns this rule applies to (repeatable, required for --type rule)")
+	cmd.Flags().StringVar(&flagSeverity, "severity", "", "Rule severity: info, warn, block (default \"warn\" for rules)")
 
 	return cmd
 }

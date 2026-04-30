@@ -32,6 +32,8 @@ var (
 		model.TypeArchitecture:   {Light: "#7c3aed", Dark: "#b4befe"},
 		model.TypeConfig:         {Light: "#525252", Dark: "#a6adc8"},
 		model.TypeSessionSummary: {Light: "#888888", Dark: "#6c7086"},
+		// TypeRule uses red to signal that rules are binding constraints.
+		model.TypeRule: {Light: "#b91c1c", Dark: "#f38ba8"},
 	}
 )
 
