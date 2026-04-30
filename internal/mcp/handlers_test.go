@@ -222,6 +222,90 @@ func TestMCP_MemSave_NonRuleWithAppliesTo(t *testing.T) {
 	}
 }
 
+// TestMCP_MemRelate_WithWeight verifies that mem_relate accepts an explicit weight
+// and returns it in the response.
+func TestMCP_MemRelate_WithWeight(t *testing.T) {
+	srv := newTestServerWithSDD(t)
+
+	resp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name: "mem_relate",
+		Arguments: mustMarshal(t, map[string]any{
+			"source":      "auth-service",
+			"target":      "jwt-library",
+			"relation":    "depends_on",
+			"source_kind": "service",
+			"target_kind": "library",
+			"weight":      0.95,
+		}),
+	})
+	if resp.Error != nil {
+		t.Fatalf("mem_relate with weight: %v", resp.Error.Message)
+	}
+
+	var result struct {
+		Weight  float64 `json:"weight"`
+		Created bool    `json:"created"`
+	}
+	unmarshalToolText(t, resp, &result)
+
+	if result.Weight != 0.95 {
+		t.Errorf("weight = %v, want 0.95", result.Weight)
+	}
+	if !result.Created {
+		t.Error("expected created=true")
+	}
+}
+
+// TestMCP_MemRelate_InvalidWeight verifies that an out-of-range weight is rejected
+// with code CodeInvalidParams.
+func TestMCP_MemRelate_InvalidWeight(t *testing.T) {
+	srv := newTestServerWithSDD(t)
+
+	resp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name: "mem_relate",
+		Arguments: mustMarshal(t, map[string]any{
+			"source":   "a",
+			"target":   "b",
+			"relation": "uses",
+			"weight":   1.5,
+		}),
+	})
+	if resp.Error == nil {
+		t.Fatal("expected error for weight=1.5, got nil")
+	}
+	if resp.Error.Code != CodeInvalidParams {
+		t.Errorf("error code = %d, want %d (CodeInvalidParams)", resp.Error.Code, CodeInvalidParams)
+	}
+}
+
+// TestMCP_MemRelate_ReferencesType verifies that relation type "references" is
+// accepted and receives the default weight 0.4.
+func TestMCP_MemRelate_ReferencesType(t *testing.T) {
+	srv := newTestServerWithSDD(t)
+
+	resp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name: "mem_relate",
+		Arguments: mustMarshal(t, map[string]any{
+			"source":   "note-a",
+			"target":   "note-b",
+			"relation": "references",
+		}),
+	})
+	if resp.Error != nil {
+		t.Fatalf("mem_relate with references type: %v", resp.Error.Message)
+	}
+
+	var result struct {
+		Weight float64 `json:"weight"`
+	}
+	unmarshalToolText(t, resp, &result)
+
+	const wantWeight = 0.4 // DefaultRelationWeights[RelReferences]
+	if result.Weight != wantWeight {
+		t.Errorf("weight = %v, want %v", result.Weight, wantWeight)
+	}
+}
+
 // TestMCP_ToolSchema_IncludesRuleFields verifies that the mem_save tool schema
 // in allTools() includes the applies_to and severity fields and that the type
 // enum contains "rule".
@@ -273,5 +357,56 @@ func TestMCP_ToolSchema_IncludesRuleFields(t *testing.T) {
 	}
 	if !hasRule {
 		t.Errorf("mem_save type enum does not include 'rule': %v", enumVal)
+	}
+}
+
+// TestMCP_ToolSchema_MemRelateIncludesWeight verifies that the mem_relate tool
+// schema includes the weight property and the references enum value.
+func TestMCP_ToolSchema_MemRelateIncludesWeight(t *testing.T) {
+	tools := allTools()
+
+	var memRelate *ToolDefinition
+	for i := range tools {
+		if tools[i].Name == "mem_relate" {
+			memRelate = &tools[i]
+			break
+		}
+	}
+	if memRelate == nil {
+		t.Fatal("mem_relate tool not found in allTools()")
+	}
+
+	schema, ok := memRelate.InputSchema.(map[string]any)
+	if !ok {
+		t.Fatal("mem_relate.InputSchema is not map[string]any")
+	}
+	props, ok := schema["properties"].(map[string]any)
+	if !ok {
+		t.Fatal("mem_relate.InputSchema.properties is not map[string]any")
+	}
+
+	// Verify weight property is present.
+	if _, ok := props["weight"]; !ok {
+		t.Error("mem_relate schema is missing weight property")
+	}
+
+	// Verify references is in the relation enum.
+	relProp, ok := props["relation"].(map[string]any)
+	if !ok {
+		t.Fatal("mem_relate schema 'relation' property is not map[string]any")
+	}
+	enumVal, ok := relProp["enum"].([]string)
+	if !ok {
+		t.Fatal("mem_relate schema 'relation' enum is not []string")
+	}
+	hasReferences := false
+	for _, v := range enumVal {
+		if v == "references" {
+			hasReferences = true
+			break
+		}
+	}
+	if !hasReferences {
+		t.Errorf("mem_relate relation enum does not include 'references': %v", enumVal)
 	}
 }

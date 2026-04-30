@@ -390,7 +390,8 @@ func (h *handlers) mapServiceError(method string, err error) *JSONRPCError {
 		errors.Is(err, model.ErrAppliesToRequired) ||
 		errors.Is(err, model.ErrAppliesToForbidden) ||
 		errors.Is(err, model.ErrInvalidSeverity) ||
-		errors.Is(err, model.ErrEmptyPattern) {
+		errors.Is(err, model.ErrEmptyPattern) ||
+		errors.Is(err, model.ErrInvalidWeight) {
 		return &JSONRPCError{
 			Code:    CodeInvalidParams,
 			Message: fmt.Sprintf("mcp: handle %s: %s", method, err),

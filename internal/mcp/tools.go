@@ -261,6 +261,7 @@ func allTools() []ToolDefinition {
 						"enum": []string{
 							"depends_on", "implements", "supersedes",
 							"related_to", "part_of", "uses", "conflicts_with",
+							"references",
 						},
 					},
 					"source_kind": map[string]any{
@@ -280,6 +281,10 @@ func allTools() []ToolDefinition {
 					"project": map[string]any{
 						"type":        "string",
 						"description": "Project slug. Defaults to the detected project when omitted.",
+					},
+					"weight": map[string]any{
+						"type":        "number",
+						"description": "Override the default weight for this relation type. Must be between 0.0 and 1.0. When omitted, a type-specific default is used (e.g. depends_on=0.9, related_to=0.5).",
 					},
 				},
 			},
