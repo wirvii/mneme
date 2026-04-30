@@ -7,6 +7,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -50,12 +51,14 @@ func (s *MemoryStore) Create(ctx context.Context, m *model.Memory) (*model.Memor
 			id, type, scope, title, content, topic_key, project,
 			session_id, created_by, created_at, updated_at,
 			importance, confidence, access_count, last_accessed,
-			decay_rate, revision_count, superseded_by, deleted_at
+			decay_rate, revision_count, superseded_by, deleted_at,
+			applies_to, severity
 		) VALUES (
 			?, ?, ?, ?, ?, ?, ?,
 			?, ?, ?, ?,
 			?, ?, ?, ?,
-			?, ?, ?, ?
+			?, ?, ?, ?,
+			?, ?
 		)`
 
 	var topicKey, project, sessionID, createdBy, supersededBy sql.NullString
@@ -75,6 +78,11 @@ func (s *MemoryStore) Create(ctx context.Context, m *model.Memory) (*model.Memor
 		deletedAt = sql.NullString{String: m.DeletedAt.UTC().Format(time.RFC3339Nano), Valid: true}
 	}
 
+	appliesTo, err := marshalAppliesTo(m.AppliesTo)
+	if err != nil {
+		return nil, fmt.Errorf("store: create memory: marshal applies_to: %w", err)
+	}
+
 	_, err = s.db.ExecContext(ctx, q,
 		m.ID, string(m.Type), string(m.Scope), m.Title, m.Content,
 		topicKey, project,
@@ -83,6 +91,7 @@ func (s *MemoryStore) Create(ctx context.Context, m *model.Memory) (*model.Memor
 		m.UpdatedAt.Format(time.RFC3339Nano),
 		m.Importance, m.Confidence, m.AccessCount, lastAccessed,
 		m.DecayRate, m.RevisionCount, supersededBy, deletedAt,
+		appliesTo, string(m.Severity),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: create memory: insert: %w", err)
@@ -103,7 +112,8 @@ func (s *MemoryStore) Get(ctx context.Context, id string) (*model.Memory, error)
 		SELECT id, type, scope, title, content, topic_key, project,
 		       session_id, created_by, created_at, updated_at,
 		       importance, confidence, access_count, last_accessed,
-		       decay_rate, revision_count, superseded_by, deleted_at
+		       decay_rate, revision_count, superseded_by, deleted_at,
+		       applies_to, severity
 		FROM memories
 		WHERE id = ? AND deleted_at IS NULL`
 
@@ -151,6 +161,18 @@ func (s *MemoryStore) Update(ctx context.Context, id string, req *model.UpdateRe
 	if req.Confidence != nil {
 		setClauses = append(setClauses, "confidence = ?")
 		args = append(args, *req.Confidence)
+	}
+	if req.AppliesTo != nil {
+		encoded, err := marshalAppliesTo(*req.AppliesTo)
+		if err != nil {
+			return fmt.Errorf("store: update memory: marshal applies_to: %w", err)
+		}
+		setClauses = append(setClauses, "applies_to = ?")
+		args = append(args, encoded)
+	}
+	if req.Severity != nil {
+		setClauses = append(setClauses, "severity = ?")
+		args = append(args, string(*req.Severity))
 	}
 
 	args = append(args, id)
@@ -220,12 +242,18 @@ func (s *MemoryStore) Upsert(ctx context.Context, m *model.Memory) (*model.Memor
 	const upd = `
 		UPDATE memories
 		SET title = ?, content = ?, importance = ?, type = ?,
+		    applies_to = ?, severity = ?,
 		    updated_at = ?, revision_count = revision_count + 1
 		WHERE id = ? AND deleted_at IS NULL`
 
 	now := time.Now().UTC()
+	appliesTo, err := marshalAppliesTo(m.AppliesTo)
+	if err != nil {
+		return nil, false, fmt.Errorf("store: upsert memory: marshal applies_to: %w", err)
+	}
 	_, err = s.db.ExecContext(ctx, upd,
 		m.Title, m.Content, m.Importance, string(m.Type),
+		appliesTo, string(m.Severity),
 		now.Format(time.RFC3339Nano),
 		existingID,
 	)
@@ -376,7 +404,8 @@ func (s *MemoryStore) List(ctx context.Context, opts ListOptions) ([]*model.Memo
 		SELECT id, type, scope, title, content, topic_key, project,
 		       session_id, created_by, created_at, updated_at,
 		       importance, confidence, access_count, last_accessed,
-		       decay_rate, revision_count, superseded_by, deleted_at
+		       decay_rate, revision_count, superseded_by, deleted_at,
+		       applies_to, severity
 		FROM memories
 		WHERE %s
 		ORDER BY %s
@@ -534,6 +563,12 @@ func scanMemory(row *sql.Row) (*model.Memory, error) {
 }
 
 // scanMemoryRow scans either a *sql.Row or *sql.Rows into a *model.Memory.
+// The SELECT must include 21 columns in this exact order:
+// id, type, scope, title, content, topic_key, project,
+// session_id, created_by, created_at, updated_at,
+// importance, confidence, access_count, last_accessed,
+// decay_rate, revision_count, superseded_by, deleted_at,
+// applies_to, severity.
 func scanMemoryRow(row scannerRow) (*model.Memory, error) {
 	var (
 		m            model.Memory
@@ -546,6 +581,8 @@ func scanMemoryRow(row scannerRow) (*model.Memory, error) {
 		deletedAt    sql.NullString
 		createdAt    string
 		updatedAt    string
+		appliesTo    string
+		severityStr  string
 	)
 
 	err := row.Scan(
@@ -555,6 +592,7 @@ func scanMemoryRow(row scannerRow) (*model.Memory, error) {
 		&createdAt, &updatedAt,
 		&m.Importance, &m.Confidence, &m.AccessCount, &lastAccessed,
 		&m.DecayRate, &m.RevisionCount, &supersededBy, &deletedAt,
+		&appliesTo, &severityStr,
 	)
 	if err != nil {
 		return nil, err
@@ -565,6 +603,7 @@ func scanMemoryRow(row scannerRow) (*model.Memory, error) {
 	m.SessionID = sessionID.String
 	m.CreatedBy = createdBy.String
 	m.SupersededBy = supersededBy.String
+	m.Severity = model.Severity(severityStr)
 
 	if t, err := parseTime(createdAt); err == nil {
 		m.CreatedAt = t
@@ -583,7 +622,27 @@ func scanMemoryRow(row scannerRow) (*model.Memory, error) {
 		}
 	}
 
+	if appliesTo != "" && appliesTo != "[]" {
+		if err := json.Unmarshal([]byte(appliesTo), &m.AppliesTo); err != nil {
+			return nil, fmt.Errorf("store: scan memory: unmarshal applies_to: %w", err)
+		}
+	}
+
 	return &m, nil
+}
+
+// marshalAppliesTo encodes an applies_to slice to its JSON representation for
+// storage. A nil or empty slice is stored as the JSON empty array "[]" so the
+// NOT NULL constraint is satisfied and the stored value is unambiguous.
+func marshalAppliesTo(patterns []string) (string, error) {
+	if len(patterns) == 0 {
+		return "[]", nil
+	}
+	b, err := json.Marshal(patterns)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
 }
 
 // parseTime attempts multiple SQLite datetime formats, returning the first that parses.

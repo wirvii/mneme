@@ -318,7 +318,8 @@ func (s *MemoryStore) ListMemoriesInRange(ctx context.Context, from, to time.Tim
 		SELECT id, type, scope, title, content, topic_key, project,
 		       session_id, created_by, created_at, updated_at,
 		       importance, confidence, access_count, last_accessed,
-		       decay_rate, revision_count, superseded_by, deleted_at
+		       decay_rate, revision_count, superseded_by, deleted_at,
+		       applies_to, severity
 		FROM memories
 		WHERE %s
 		ORDER BY created_at ASC

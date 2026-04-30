@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -77,6 +78,7 @@ func (s *MemoryStore) FTS5Search(ctx context.Context, query string, opts SearchO
 		       m.session_id, m.created_by, m.created_at, m.updated_at,
 		       m.importance, m.confidence, m.access_count, m.last_accessed,
 		       m.decay_rate, m.revision_count, m.superseded_by, m.deleted_at,
+		       m.applies_to, m.severity,
 		       bm25(memories_fts) AS bm25_score
 		FROM memories m
 		JOIN memories_fts ON m.rowid = memories_fts.rowid
@@ -257,8 +259,9 @@ func bm25ToRelevance(bm25 float64) float64 {
 	return abs / (1 + abs)
 }
 
-// scanMemoryWithExtra scans a row that has an extra trailing column (bm25 score)
-// beyond the standard memory columns.
+// scanMemoryWithExtra scans a row that has extra trailing columns (e.g. bm25 score)
+// beyond the standard 21 memory columns. The caller appends destinations for the
+// extra columns to the standard memory column destinations.
 func scanMemoryWithExtra(rows scannerRow, extra ...any) (*model.Memory, error) {
 	var m model.Memory
 
@@ -273,6 +276,8 @@ func scanMemoryWithExtra(rows scannerRow, extra ...any) (*model.Memory, error) {
 		deletedAt    interface{}
 		createdAt    string
 		updatedAt    string
+		appliesTo    string
+		severityStr  string
 	)
 
 	dests := []any{
@@ -282,6 +287,7 @@ func scanMemoryWithExtra(rows scannerRow, extra ...any) (*model.Memory, error) {
 		&createdAt, &updatedAt,
 		&m.Importance, &m.Confidence, &m.AccessCount, &lastAccessed,
 		&m.DecayRate, &m.RevisionCount, &supersededBy, &deletedAt,
+		&appliesTo, &severityStr,
 	}
 	dests = append(dests, extra...)
 
@@ -294,6 +300,7 @@ func scanMemoryWithExtra(rows scannerRow, extra ...any) (*model.Memory, error) {
 	m.SessionID = nullableToString(sessID)
 	m.CreatedBy = nullableToString(createdBy)
 	m.SupersededBy = nullableToString(supersededBy)
+	m.Severity = model.Severity(severityStr)
 
 	if t, err := parseTime(createdAt); err == nil {
 		m.CreatedAt = t
@@ -309,6 +316,12 @@ func scanMemoryWithExtra(rows scannerRow, extra ...any) (*model.Memory, error) {
 	if s := nullableToString(deletedAt); s != "" {
 		if t, err := parseTime(s); err == nil {
 			m.DeletedAt = &t
+		}
+	}
+
+	if appliesTo != "" && appliesTo != "[]" {
+		if err := json.Unmarshal([]byte(appliesTo), &m.AppliesTo); err != nil {
+			return nil, fmt.Errorf("store: scan memory with extra: unmarshal applies_to: %w", err)
 		}
 	}
 

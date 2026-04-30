@@ -365,6 +365,256 @@ func TestFiles(t *testing.T) {
 	}
 }
 
+// TestStore_CreateRule_Roundtrip verifies that a rule memory survives a full
+// create → get cycle with applies_to and severity intact.
+func TestStore_CreateRule_Roundtrip(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	rule := &model.Memory{
+		Type:      model.TypeRule,
+		Scope:     model.ScopeProject,
+		Title:     "Never use time.Now() directly",
+		Content:   "Use the injected clock from the service constructor.",
+		Project:   "myproject",
+		Importance: 0.95,
+		Confidence: 0.8,
+		DecayRate:  0.0,
+		AppliesTo: []string{"internal/**/*.go", "!internal/**/*_test.go"},
+		Severity:  model.SeverityWarn,
+	}
+
+	created, err := s.Create(ctx, rule)
+	if err != nil {
+		t.Fatalf("Create rule: %v", err)
+	}
+
+	got, err := s.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("Get after Create: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected memory, got nil")
+	}
+
+	if got.Type != model.TypeRule {
+		t.Errorf("Type = %q, want %q", got.Type, model.TypeRule)
+	}
+	if got.Severity != model.SeverityWarn {
+		t.Errorf("Severity = %q, want %q", got.Severity, model.SeverityWarn)
+	}
+	if len(got.AppliesTo) != 2 {
+		t.Fatalf("AppliesTo len = %d, want 2", len(got.AppliesTo))
+	}
+	if got.AppliesTo[0] != "internal/**/*.go" {
+		t.Errorf("AppliesTo[0] = %q, want %q", got.AppliesTo[0], "internal/**/*.go")
+	}
+	if got.AppliesTo[1] != "!internal/**/*_test.go" {
+		t.Errorf("AppliesTo[1] = %q, want %q", got.AppliesTo[1], "!internal/**/*_test.go")
+	}
+}
+
+// TestStore_UpsertRule_UpdatesAppliesTo verifies that upserting a rule by
+// topic_key updates the applies_to and severity fields.
+func TestStore_UpsertRule_UpdatesAppliesTo(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	rule := &model.Memory{
+		Type:      model.TypeRule,
+		Scope:     model.ScopeProject,
+		Title:     "No vendor edits",
+		Content:   "All vendor changes must go through go mod vendor.",
+		TopicKey:  "rule/no-vendor-edits",
+		Project:   "myproject",
+		Importance: 0.95,
+		Confidence: 0.8,
+		DecayRate:  0.0,
+		AppliesTo: []string{"vendor/**"},
+		Severity:  model.SeverityWarn,
+	}
+
+	first, created, err := s.Upsert(ctx, rule)
+	if err != nil {
+		t.Fatalf("first Upsert: %v", err)
+	}
+	if !created {
+		t.Fatal("expected created=true on first upsert")
+	}
+
+	// Now upsert again with changed applies_to and severity.
+	rule2 := &model.Memory{
+		Type:      model.TypeRule,
+		Scope:     model.ScopeProject,
+		Title:     "No vendor edits",
+		Content:   "All vendor changes must go through go mod vendor.",
+		TopicKey:  "rule/no-vendor-edits",
+		Project:   "myproject",
+		Importance: 0.95,
+		Confidence: 0.8,
+		DecayRate:  0.0,
+		AppliesTo: []string{"vendor/**", "!vendor/modules.txt"},
+		Severity:  model.SeverityBlock,
+	}
+
+	second, created2, err := s.Upsert(ctx, rule2)
+	if err != nil {
+		t.Fatalf("second Upsert: %v", err)
+	}
+	if created2 {
+		t.Fatal("expected created=false on second upsert (should update)")
+	}
+	if second.ID != first.ID {
+		t.Errorf("ID changed on upsert: got %s, want %s", second.ID, first.ID)
+	}
+
+	got, err := s.Get(ctx, first.ID)
+	if err != nil {
+		t.Fatalf("Get after upsert: %v", err)
+	}
+
+	if got.Severity != model.SeverityBlock {
+		t.Errorf("Severity after upsert = %q, want %q", got.Severity, model.SeverityBlock)
+	}
+	if len(got.AppliesTo) != 2 {
+		t.Fatalf("AppliesTo len after upsert = %d, want 2", len(got.AppliesTo))
+	}
+	if got.AppliesTo[1] != "!vendor/modules.txt" {
+		t.Errorf("AppliesTo[1] after upsert = %q, want %q", got.AppliesTo[1], "!vendor/modules.txt")
+	}
+}
+
+// TestStore_UpdateRule_PartialSeverity verifies that Update with only Severity
+// set in UpdateRequest changes severity without touching other fields.
+func TestStore_UpdateRule_PartialSeverity(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	rule := &model.Memory{
+		Type:      model.TypeRule,
+		Scope:     model.ScopeProject,
+		Title:     "No SQL inline",
+		Content:   "SQL must live in .sql files.",
+		Project:   "myproject",
+		Importance: 0.95,
+		Confidence: 0.8,
+		DecayRate:  0.0,
+		AppliesTo: []string{"**/*.go"},
+		Severity:  model.SeverityWarn,
+	}
+
+	created, err := s.Create(ctx, rule)
+	if err != nil {
+		t.Fatalf("Create rule: %v", err)
+	}
+
+	newSeverity := model.SeverityBlock
+	if err := s.Update(ctx, created.ID, &model.UpdateRequest{Severity: &newSeverity}); err != nil {
+		t.Fatalf("Update severity: %v", err)
+	}
+
+	got, err := s.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("Get after Update: %v", err)
+	}
+
+	if got.Severity != model.SeverityBlock {
+		t.Errorf("Severity after Update = %q, want %q", got.Severity, model.SeverityBlock)
+	}
+	// applies_to must be unchanged.
+	if len(got.AppliesTo) != 1 || got.AppliesTo[0] != "**/*.go" {
+		t.Errorf("AppliesTo changed unexpectedly: %v", got.AppliesTo)
+	}
+}
+
+// TestStore_ListRules_FilterByType verifies that List with Type=TypeRule only
+// returns rule memories and not other types.
+func TestStore_ListRules_FilterByType(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	// Create one rule and one decision.
+	rule := &model.Memory{
+		Type:      model.TypeRule,
+		Scope:     model.ScopeProject,
+		Title:     "A rule",
+		Content:   "Rule content.",
+		Project:   "myproject",
+		Importance: 0.95,
+		Confidence: 0.8,
+		DecayRate:  0.0,
+		AppliesTo: []string{"**"},
+		Severity:  model.SeverityInfo,
+	}
+	if _, err := s.Create(ctx, rule); err != nil {
+		t.Fatalf("Create rule: %v", err)
+	}
+
+	decision := makeMemory()
+	decision.Type = model.TypeDecision
+	if _, err := s.Create(ctx, decision); err != nil {
+		t.Fatalf("Create decision: %v", err)
+	}
+
+	rules, err := s.List(ctx, ListOptions{Project: "myproject", Type: model.TypeRule})
+	if err != nil {
+		t.Fatalf("List rules: %v", err)
+	}
+
+	if len(rules) != 1 {
+		t.Fatalf("expected 1 rule, got %d", len(rules))
+	}
+	if rules[0].Type != model.TypeRule {
+		t.Errorf("Type = %q, want %q", rules[0].Type, model.TypeRule)
+	}
+}
+
+// TestStore_AppliesTo_JSONMarshalling verifies that complex pattern strings
+// survive a full roundtrip through JSON marshalling and unmarshalling.
+func TestStore_AppliesTo_JSONMarshalling(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	patterns := []string{
+		"tool:Edit+internal/**",
+		"!docs/**",
+		"**/*.go",
+		"tool:Write",
+	}
+
+	rule := &model.Memory{
+		Type:      model.TypeRule,
+		Scope:     model.ScopeProject,
+		Title:     "Complex patterns rule",
+		Content:   "Testing pattern roundtrip.",
+		Project:   "myproject",
+		Importance: 0.95,
+		Confidence: 0.8,
+		DecayRate:  0.0,
+		AppliesTo: patterns,
+		Severity:  model.SeverityBlock,
+	}
+
+	created, err := s.Create(ctx, rule)
+	if err != nil {
+		t.Fatalf("Create rule with complex patterns: %v", err)
+	}
+
+	got, err := s.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("Get after Create: %v", err)
+	}
+
+	if len(got.AppliesTo) != len(patterns) {
+		t.Fatalf("AppliesTo len = %d, want %d", len(got.AppliesTo), len(patterns))
+	}
+	for i, want := range patterns {
+		if got.AppliesTo[i] != want {
+			t.Errorf("AppliesTo[%d] = %q, want %q", i, got.AppliesTo[i], want)
+		}
+	}
+}
+
 // isNotFound unwraps err chain to check for model.ErrNotFound.
 func isNotFound(err error) bool {
 	return err != nil && containsStr(err.Error(), "memory not found")
