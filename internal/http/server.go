@@ -186,7 +186,8 @@ func errorStatus(err error) (int, string) {
 		errors.Is(err, model.ErrInvalidType), errors.Is(err, model.ErrInvalidScope),
 		errors.Is(err, model.ErrInvalidEntityKind), errors.Is(err, model.ErrInvalidRelationType),
 		errors.Is(err, model.ErrAppliesToRequired), errors.Is(err, model.ErrAppliesToForbidden),
-		errors.Is(err, model.ErrInvalidSeverity), errors.Is(err, model.ErrEmptyPattern):
+		errors.Is(err, model.ErrInvalidSeverity), errors.Is(err, model.ErrEmptyPattern),
+		errors.Is(err, model.ErrInvalidWeight):
 		return http.StatusBadRequest, "invalid_request"
 	default:
 		return http.StatusInternalServerError, "internal_error"

@@ -450,3 +450,79 @@ func mustSave(t *testing.T, baseURL string, req model.SaveRequest) string {
 	}
 	return saveResp.ID
 }
+
+// TestHTTP_PostRelate_WithWeight verifies that POST /v1/entities/relate accepts
+// an explicit weight and returns it in the 201 response body.
+func TestHTTP_PostRelate_WithWeight(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+
+	reqBody, _ := json.Marshal(model.RelateRequest{
+		Source:     "auth-service",
+		Target:     "jwt-library",
+		Relation:   model.RelDependsOn,
+		SourceKind: model.KindService,
+		TargetKind: model.KindLibrary,
+		Weight:     0.95,
+	})
+
+	resp, err := http.Post(srv.URL+"/v1/entities/relate", "application/json", bytes.NewReader(reqBody))
+	if err != nil {
+		t.Fatalf("POST /v1/entities/relate: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 201, got %d: %s", resp.StatusCode, raw)
+	}
+
+	var body model.RelateResponse
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode relate response: %v", err)
+	}
+	if !body.Created {
+		t.Error("expected created=true")
+	}
+	if body.Weight != 0.95 {
+		t.Errorf("weight = %v, want 0.95", body.Weight)
+	}
+}
+
+// TestHTTP_PostRelate_InvalidWeight verifies that POST /v1/entities/relate returns
+// 400 Bad Request when the weight is outside [0.0, 1.0].
+func TestHTTP_PostRelate_InvalidWeight(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+
+	reqBody, _ := json.Marshal(map[string]any{
+		"source":   "a",
+		"target":   "b",
+		"relation": "uses",
+		"weight":   1.5,
+	})
+
+	resp, err := http.Post(srv.URL+"/v1/entities/relate", "application/json", bytes.NewReader(reqBody))
+	if err != nil {
+		t.Fatalf("POST /v1/entities/relate: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 400, got %d: %s", resp.StatusCode, raw)
+	}
+
+	var errBody struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&errBody); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if errBody.Error.Code != "invalid_request" {
+		t.Errorf("error code = %q, want %q", errBody.Error.Code, "invalid_request")
+	}
+}
