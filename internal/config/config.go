@@ -30,6 +30,42 @@ type Config struct {
 	Workflow      WorkflowConfig      `toml:"workflow"`
 	Delegation    DelegationConfig    `toml:"delegation"`
 	Spec          SpecConfig          `toml:"spec"`
+	Graph         GraphConfig         `toml:"graph"`
+}
+
+// GraphConfig controls the knowledge graph's Hebbian auto-strengthening
+// and edge decay behaviour. This section is evaluated by the access tracker,
+// worker pool, and consolidation pipeline.
+//
+// Set HebbianWindow to 0 to disable Hebbian tracking entirely.
+// Set EdgeDecayRate to 0 to disable edge decay.
+type GraphConfig struct {
+	// HebbianWindow is the number of recently accessed memories tracked for
+	// co-access pair generation. Set to 0 to disable Hebbian strengthening.
+	// Default: 5.
+	HebbianWindow int `toml:"hebbian_window"`
+
+	// HebbianIncrement is the weight delta applied to a relation when two
+	// memories co-occur in the access window. Default: 0.05.
+	HebbianIncrement float64 `toml:"hebbian_increment"`
+
+	// HebbianInitialWeight is the weight assigned when Hebbian creates a new
+	// relation that did not exist before. Default: 0.1.
+	HebbianInitialWeight float64 `toml:"hebbian_initial_weight"`
+
+	// HebbianBufferSize is the capacity of the async strengthening channel.
+	// Events are dropped when the buffer is full. Default: 1000.
+	HebbianBufferSize int `toml:"hebbian_buffer_size"`
+
+	// EdgeDecayRate is the daily exponential decay rate applied to relation
+	// weights during consolidation. Set to 0 to disable edge decay.
+	// Default: 0.02.
+	EdgeDecayRate float64 `toml:"edge_decay_rate"`
+
+	// EdgeDecayAfterDays is the number of days after last_traversed_at before
+	// edge decay begins. Relations traversed more recently are not decayed.
+	// Default: 30.
+	EdgeDecayAfterDays int `toml:"edge_decay_after_days"`
 }
 
 // WorkflowConfig controls where workflow artifacts (specs, bugs, backlog)
@@ -280,6 +316,14 @@ func Default() *Config {
 				MaxAmbiguousTerms:     0,
 			},
 		},
+		Graph: GraphConfig{
+			HebbianWindow:        5,
+			HebbianIncrement:     0.05,
+			HebbianInitialWeight: 0.1,
+			HebbianBufferSize:    1000,
+			EdgeDecayRate:        0.02,
+			EdgeDecayAfterDays:   30,
+		},
 	}
 }
 
@@ -388,6 +432,25 @@ func (c *Config) Validate() error {
 	}
 	if !validLogLevels[c.MCP.LogLevel] {
 		return fmt.Errorf("mcp.log_level %q is not valid; accepted values: debug, info, warn, error", c.MCP.LogLevel)
+	}
+
+	if c.Graph.HebbianWindow < 0 {
+		return errors.New("graph.hebbian_window must be >= 0")
+	}
+	if c.Graph.HebbianIncrement < 0 || c.Graph.HebbianIncrement > 1 {
+		return errors.New("graph.hebbian_increment must be in [0.0, 1.0]")
+	}
+	if c.Graph.HebbianInitialWeight < 0 || c.Graph.HebbianInitialWeight > 1 {
+		return errors.New("graph.hebbian_initial_weight must be in [0.0, 1.0]")
+	}
+	if c.Graph.HebbianBufferSize < 0 {
+		return errors.New("graph.hebbian_buffer_size must be >= 0")
+	}
+	if c.Graph.EdgeDecayRate < 0 {
+		return errors.New("graph.edge_decay_rate must be >= 0")
+	}
+	if c.Graph.EdgeDecayAfterDays < 0 {
+		return errors.New("graph.edge_decay_after_days must be >= 0")
 	}
 
 	return nil

@@ -520,6 +520,196 @@ func TestContextConfig_RulesBudgetZero(t *testing.T) {
 	}
 }
 
+// TestGraphConfig_Defaults verifies that Default() returns the canonical values
+// documented in D8 of the SPEC-006 design document.
+func TestGraphConfig_Defaults(t *testing.T) {
+	cfg := Default()
+
+	tests := []struct {
+		name string
+		got  any
+		want any
+	}{
+		{"Graph.HebbianWindow", cfg.Graph.HebbianWindow, 5},
+		{"Graph.HebbianIncrement", cfg.Graph.HebbianIncrement, 0.05},
+		{"Graph.HebbianInitialWeight", cfg.Graph.HebbianInitialWeight, 0.1},
+		{"Graph.HebbianBufferSize", cfg.Graph.HebbianBufferSize, 1000},
+		{"Graph.EdgeDecayRate", cfg.Graph.EdgeDecayRate, 0.02},
+		{"Graph.EdgeDecayAfterDays", cfg.Graph.EdgeDecayAfterDays, 30},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.got != tc.want {
+				t.Errorf("got %v, want %v", tc.got, tc.want)
+			}
+		})
+	}
+}
+
+// TestGraphConfig_Validation covers every validation rule for the [graph]
+// config section.
+func TestGraphConfig_Validation(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*Config)
+		wantErr bool
+	}{
+		{
+			name:    "valid default",
+			mutate:  func(*Config) {},
+			wantErr: false,
+		},
+		{
+			name: "HebbianWindow zero is valid (toggle off)",
+			mutate: func(c *Config) {
+				c.Graph.HebbianWindow = 0
+			},
+			wantErr: false,
+		},
+		{
+			name: "HebbianWindow one is valid (no-op)",
+			mutate: func(c *Config) {
+				c.Graph.HebbianWindow = 1
+			},
+			wantErr: false,
+		},
+		{
+			name: "HebbianWindow negative errors",
+			mutate: func(c *Config) {
+				c.Graph.HebbianWindow = -1
+			},
+			wantErr: true,
+		},
+		{
+			name: "HebbianIncrement below 0 errors",
+			mutate: func(c *Config) {
+				c.Graph.HebbianIncrement = -0.01
+			},
+			wantErr: true,
+		},
+		{
+			name: "HebbianIncrement above 1 errors",
+			mutate: func(c *Config) {
+				c.Graph.HebbianIncrement = 1.01
+			},
+			wantErr: true,
+		},
+		{
+			name: "HebbianIncrement zero is valid (no strengthening)",
+			mutate: func(c *Config) {
+				c.Graph.HebbianIncrement = 0
+			},
+			wantErr: false,
+		},
+		{
+			name: "HebbianInitialWeight below 0 errors",
+			mutate: func(c *Config) {
+				c.Graph.HebbianInitialWeight = -0.01
+			},
+			wantErr: true,
+		},
+		{
+			name: "HebbianInitialWeight above 1 errors",
+			mutate: func(c *Config) {
+				c.Graph.HebbianInitialWeight = 1.01
+			},
+			wantErr: true,
+		},
+		{
+			name: "HebbianBufferSize negative errors",
+			mutate: func(c *Config) {
+				c.Graph.HebbianBufferSize = -1
+			},
+			wantErr: true,
+		},
+		{
+			name: "HebbianBufferSize zero is valid",
+			mutate: func(c *Config) {
+				c.Graph.HebbianBufferSize = 0
+			},
+			wantErr: false,
+		},
+		{
+			name: "EdgeDecayRate negative errors",
+			mutate: func(c *Config) {
+				c.Graph.EdgeDecayRate = -0.01
+			},
+			wantErr: true,
+		},
+		{
+			name: "EdgeDecayRate zero is valid (toggle off)",
+			mutate: func(c *Config) {
+				c.Graph.EdgeDecayRate = 0
+			},
+			wantErr: false,
+		},
+		{
+			name: "EdgeDecayAfterDays negative errors",
+			mutate: func(c *Config) {
+				c.Graph.EdgeDecayAfterDays = -1
+			},
+			wantErr: true,
+		},
+		{
+			name: "EdgeDecayAfterDays zero is valid",
+			mutate: func(c *Config) {
+				c.Graph.EdgeDecayAfterDays = 0
+			},
+			wantErr: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Default()
+			tc.mutate(cfg)
+			err := cfg.Validate()
+			if (err != nil) != tc.wantErr {
+				t.Errorf("Validate() error = %v, wantErr %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestGraphConfig_TOMLOverride verifies that [graph] values in config.toml
+// correctly override the defaults when a file is loaded.
+func TestGraphConfig_TOMLOverride(t *testing.T) {
+	tomlContent := `
+[graph]
+hebbian_window = 10
+hebbian_increment = 0.1
+hebbian_initial_weight = 0.2
+hebbian_buffer_size = 500
+edge_decay_rate = 0.01
+edge_decay_after_days = 60
+`
+	path := writeTempTOML(t, tomlContent)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if cfg.Graph.HebbianWindow != 10 {
+		t.Errorf("HebbianWindow: got %d, want 10", cfg.Graph.HebbianWindow)
+	}
+	if cfg.Graph.HebbianIncrement != 0.1 {
+		t.Errorf("HebbianIncrement: got %f, want 0.1", cfg.Graph.HebbianIncrement)
+	}
+	if cfg.Graph.HebbianInitialWeight != 0.2 {
+		t.Errorf("HebbianInitialWeight: got %f, want 0.2", cfg.Graph.HebbianInitialWeight)
+	}
+	if cfg.Graph.HebbianBufferSize != 500 {
+		t.Errorf("HebbianBufferSize: got %d, want 500", cfg.Graph.HebbianBufferSize)
+	}
+	if cfg.Graph.EdgeDecayRate != 0.01 {
+		t.Errorf("EdgeDecayRate: got %f, want 0.01", cfg.Graph.EdgeDecayRate)
+	}
+	if cfg.Graph.EdgeDecayAfterDays != 60 {
+		t.Errorf("EdgeDecayAfterDays: got %d, want 60", cfg.Graph.EdgeDecayAfterDays)
+	}
+}
+
 // writeTempTOML writes content to a temporary TOML file and returns its path.
 // The file is automatically removed when the test ends.
 func writeTempTOML(t *testing.T, content string) string {
