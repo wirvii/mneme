@@ -354,6 +354,76 @@ func TestConsolidate(t *testing.T) {
 	}
 }
 
+// TestHTTP_PostMemories_RuleCreated verifies that POSTing a valid rule body
+// returns HTTP 201 Created with the expected response fields.
+func TestHTTP_PostMemories_RuleCreated(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+
+	reqBody, err := json.Marshal(model.SaveRequest{
+		Title:     "Never edit vendor/",
+		Content:   "All vendor changes must go through go mod vendor.",
+		Type:      model.TypeRule,
+		AppliesTo: []string{"vendor/**"},
+		Severity:  model.SeverityBlock,
+		TopicKey:  "rule/no-vendor-edits",
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	resp, err := http.Post(srv.URL+"/v1/memories", "application/json", bytes.NewReader(reqBody))
+	if err != nil {
+		t.Fatalf("POST /v1/memories: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 201, got %d: %s", resp.StatusCode, raw)
+	}
+
+	var saveResp model.SaveResponse
+	if err := json.NewDecoder(resp.Body).Decode(&saveResp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if saveResp.Action != "created" {
+		t.Errorf("action = %q, want %q", saveResp.Action, "created")
+	}
+	if saveResp.TopicKey != "rule/no-vendor-edits" {
+		t.Errorf("topic_key = %q, want %q", saveResp.TopicKey, "rule/no-vendor-edits")
+	}
+}
+
+// TestHTTP_PostMemories_RuleMissingAppliesTo verifies that POSTing a rule
+// without applies_to returns HTTP 400 Bad Request.
+func TestHTTP_PostMemories_RuleMissingAppliesTo(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+
+	reqBody, err := json.Marshal(model.SaveRequest{
+		Title:    "Rule without applies_to",
+		Content:  "Should fail.",
+		Type:     model.TypeRule,
+		Severity: model.SeverityWarn,
+		// AppliesTo intentionally omitted
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	resp, err := http.Post(srv.URL+"/v1/memories", "application/json", bytes.NewReader(reqBody))
+	if err != nil {
+		t.Fatalf("POST /v1/memories: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 400, got %d: %s", resp.StatusCode, raw)
+	}
+}
+
 // --------------------------------------------------------------------------
 // Test helpers
 // --------------------------------------------------------------------------
