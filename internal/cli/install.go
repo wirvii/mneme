@@ -18,10 +18,11 @@ import (
 // The command is idempotent: running it multiple times on the same agent
 // produces the same result without duplicating entries or clobbering user config.
 func newInstallCmd() *cobra.Command {
-	var flagDryRun  bool
-	var flagPersonal bool
-	var flagForce   bool
-	var flagSource  string
+	var flagDryRun        bool
+	var flagPersonal      bool
+	var flagForce         bool
+	var flagSource        string
+	var flagReinstallHooks bool
 
 	cmd := &cobra.Command{
 		Use:   "install <agent>",
@@ -44,6 +45,7 @@ The install is non-destructive and idempotent — running it multiple times
 produces the same result without clobbering existing configuration.`,
 		Example: `  mneme install claude-code
   mneme install claude-code --dry-run
+  mneme install claude-code --reinstall-hooks
   mneme install claude-code --personal
   mneme install claude-code --personal --source /path/to/my/dotfiles
   mneme install claude-code --personal --force`,
@@ -132,10 +134,35 @@ produces the same result without clobbering existing configuration.`,
 			}
 
 			if agent.DelegationHook != nil {
-				if err := install.PatchDelegationHook(agent); err != nil {
-					return err
+				if flagReinstallHooks {
+					// Replace all existing PreToolUse entries with the new hook.
+					settingsPath, patches, hookErr := agent.DelegationHook()
+					if hookErr != nil {
+						return hookErr
+					}
+					if err := install.ReinstallHooks(settingsPath, patches); err != nil {
+						return err
+					}
+					fmt.Fprintln(os.Stdout, "  [ok] PreToolUse hooks replaced with mneme hook pre-tool-use")
+					fmt.Fprintln(os.Stdout, "")
+					fmt.Fprintln(os.Stdout, "Migration complete. Your hooks have been updated.")
+					fmt.Fprintln(os.Stdout, "")
+					fmt.Fprintln(os.Stdout, "To recreate your protected paths as rules, run:")
+					fmt.Fprintln(os.Stdout, "")
+					fmt.Fprintln(os.Stdout, `  mneme save --type rule --severity block \`)
+					fmt.Fprintln(os.Stdout, `    --applies-to "tool:Edit+cmd/**" --applies-to "tool:Write+cmd/**" --applies-to "tool:MultiEdit+cmd/**" \`)
+					fmt.Fprintln(os.Stdout, `    --applies-to "tool:Edit+internal/**" --applies-to "tool:Write+internal/**" --applies-to "tool:MultiEdit+internal/**" \`)
+					fmt.Fprintln(os.Stdout, `    --title "Delegation: protect source paths" \`)
+					fmt.Fprintln(os.Stdout, `    "Delegate code edits in protected paths to the appropriate subagent."`)
+					fmt.Fprintln(os.Stdout, "")
+					fmt.Fprintln(os.Stdout, "Your old config.toml [delegation] section is still active for the legacy hook.")
+					fmt.Fprintln(os.Stdout, "Once you've created rules and verified they work, you can set delegation.enabled=false in config.toml.")
+				} else {
+					if err := install.PatchDelegationHook(agent); err != nil {
+						return err
+					}
+					fmt.Fprintln(os.Stdout, "  [ok] Delegation enforcement hook installed")
 				}
-				fmt.Fprintln(os.Stdout, "  [ok] Delegation enforcement hook installed")
 			}
 
 			if err := install.CreateWorkflowDirs(); err != nil {
@@ -221,6 +248,8 @@ produces the same result without clobbering existing configuration.`,
 		"Overwrite existing files (settings.json is always merged, never overwritten)")
 	cmd.Flags().StringVar(&flagSource, "source", "",
 		"Override personal ecosystem source (git URL or local path)")
+	cmd.Flags().BoolVar(&flagReinstallHooks, "reinstall-hooks", false,
+		"Replace all existing PreToolUse hook entries with mneme hook pre-tool-use (migration from enforce-delegation)")
 
 	return cmd
 }

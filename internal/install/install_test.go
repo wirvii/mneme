@@ -699,6 +699,137 @@ func assertHookEntry(t *testing.T, hooks map[string]any, event, command string) 
 	}
 }
 
+// TestClaudeCode_DelegationHook_RegistersPreToolUse verifies that a fresh install
+// registers "mneme hook pre-tool-use" (not the legacy enforce-delegation) as the
+// PreToolUse hook.
+func TestClaudeCode_DelegationHook_RegistersPreToolUse(t *testing.T) {
+	dir := t.TempDir()
+	settingsPath := filepath.Join(dir, "settings.json")
+
+	agent := ClaudeCode("/usr/local/bin/mneme")
+
+	// Patch directly via DelegationHook.
+	hookPath, patches, err := agent.DelegationHook()
+	if err != nil {
+		t.Fatalf("DelegationHook: %v", err)
+	}
+	// Use a temp path instead of the real home dir.
+	_ = hookPath
+
+	if err := patchSettingsFile(settingsPath, patches); err != nil {
+		t.Fatalf("patchSettingsFile: %v", err)
+	}
+
+	data, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("read settings: %v", err)
+	}
+	var settings map[string]any
+	if err := json.Unmarshal(data, &settings); err != nil {
+		t.Fatalf("unmarshal settings: %v", err)
+	}
+	hooks := settings["hooks"].(map[string]any)
+
+	// Must register pre-tool-use, not the legacy enforce-delegation.
+	assertHookEntry(t, hooks, "PreToolUse", "mneme hook pre-tool-use")
+}
+
+// TestReinstallHooks_ReplacesLegacy verifies that ReinstallHooks replaces the
+// existing PreToolUse entries (e.g. enforce-delegation) with the new command.
+func TestReinstallHooks_ReplacesLegacy(t *testing.T) {
+	dir := t.TempDir()
+	settingsPath := filepath.Join(dir, "settings.json")
+
+	// Start with a settings file that has the legacy hook.
+	existing := `{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "",
+        "hooks": [{"type": "command", "command": "mneme hook enforce-delegation"}]
+      }
+    ]
+  }
+}`
+	if err := os.WriteFile(settingsPath, []byte(existing), 0o644); err != nil {
+		t.Fatalf("write initial settings: %v", err)
+	}
+
+	patches := []HookPatch{
+		{Event: "PreToolUse", Command: "mneme hook pre-tool-use"},
+	}
+
+	if err := ReinstallHooks(settingsPath, patches); err != nil {
+		t.Fatalf("ReinstallHooks: %v", err)
+	}
+
+	data, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("read settings: %v", err)
+	}
+	var settings map[string]any
+	if err := json.Unmarshal(data, &settings); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	hooks := settings["hooks"].(map[string]any)
+
+	// Legacy hook must be gone.
+	assertHookCount(t, hooks, "PreToolUse", "mneme hook enforce-delegation", 0)
+	// New hook must be present.
+	assertHookEntry(t, hooks, "PreToolUse", "mneme hook pre-tool-use")
+}
+
+// TestReinstallHooks_PreservesOtherEvents verifies that ReinstallHooks leaves
+// unaffected hook events (SessionStart, Stop) intact.
+func TestReinstallHooks_PreservesOtherEvents(t *testing.T) {
+	dir := t.TempDir()
+	settingsPath := filepath.Join(dir, "settings.json")
+
+	existing := `{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [{"type": "command", "command": "mneme hook session-start"}]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "",
+        "hooks": [{"type": "command", "command": "mneme hook enforce-delegation"}]
+      }
+    ]
+  }
+}`
+	if err := os.WriteFile(settingsPath, []byte(existing), 0o644); err != nil {
+		t.Fatalf("write initial settings: %v", err)
+	}
+
+	patches := []HookPatch{
+		{Event: "PreToolUse", Command: "mneme hook pre-tool-use"},
+	}
+
+	if err := ReinstallHooks(settingsPath, patches); err != nil {
+		t.Fatalf("ReinstallHooks: %v", err)
+	}
+
+	data, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("read settings: %v", err)
+	}
+	var settings map[string]any
+	if err := json.Unmarshal(data, &settings); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	hooks := settings["hooks"].(map[string]any)
+
+	// SessionStart must be untouched.
+	assertHookEntry(t, hooks, "SessionStart", "mneme hook session-start")
+	// PreToolUse must have only the new hook.
+	assertHookEntry(t, hooks, "PreToolUse", "mneme hook pre-tool-use")
+	assertHookCount(t, hooks, "PreToolUse", "mneme hook enforce-delegation", 0)
+}
+
 // assertHookCount asserts that hooks[event] contains the given command exactly
 // n times across all matcher-groups' inner "hooks" arrays.
 func assertHookCount(t *testing.T, hooks map[string]any, event, command string, n int) {

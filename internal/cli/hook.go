@@ -317,7 +317,7 @@ func queryRulesFromDB(path string) ([]model.Memory, error) {
 		}
 		return nil, fmt.Errorf("open %s: %w", path, err)
 	}
-	defer database.Close()
+	defer database.Close() //nolint:errcheck // cleanup path; error is not actionable
 
 	rows, err := database.Query(rulesQuery)
 	if err != nil {

@@ -174,10 +174,13 @@ func ClaudeCode(binaryPath string) *Agent {
 				return "", nil, fmt.Errorf("install: claude-code: delegation hook: home dir: %w", err)
 			}
 			path := filepath.Join(home, ".claude", "settings.json")
+			// Register the new rules-based pre-tool-use hook. The legacy
+			// enforce-delegation hook is preserved for backward compatibility;
+			// users can remove it manually or via --reinstall-hooks.
 			patches := []HookPatch{
 				{
 					Event:   "PreToolUse",
-					Command: "mneme hook enforce-delegation",
+					Command: "mneme hook pre-tool-use",
 				},
 			}
 			return path, patches, nil
@@ -505,6 +508,76 @@ func PatchDelegationHook(agent *Agent) error {
 		},
 	}
 	return PatchHooks(proxy)
+}
+
+// ReinstallHooks removes all existing hook entries for the events in patches and
+// replaces them with the new commands. Unlike PatchHooks which is append-only,
+// ReinstallHooks performs a replace-all for the affected events. All other events
+// in the hooks map are left untouched.
+//
+// This is used by "mneme install claude-code --reinstall-hooks" to migrate users
+// from the legacy enforce-delegation hook to the new pre-tool-use hook without
+// leaving stale entries.
+func ReinstallHooks(settingsPath string, patches []HookPatch) error {
+	settings := map[string]any{}
+
+	data, err := os.ReadFile(settingsPath)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("install: reinstall hooks: read settings: %w", err)
+	}
+	if len(data) > 0 {
+		if err := json.Unmarshal(data, &settings); err != nil {
+			return fmt.Errorf("install: reinstall hooks: parse settings: %w", err)
+		}
+	}
+
+	hooksRaw, ok := settings["hooks"]
+	if !ok || hooksRaw == nil {
+		hooksRaw = map[string]any{}
+	}
+	hooks, ok := hooksRaw.(map[string]any)
+	if !ok {
+		return fmt.Errorf("install: reinstall hooks: settings.hooks is not an object")
+	}
+
+	// Group patches by event so we can replace each event's entries atomically.
+	byEvent := make(map[string][]HookPatch)
+	for _, p := range patches {
+		byEvent[p.Event] = append(byEvent[p.Event], p)
+	}
+
+	for event, eventPatches := range byEvent {
+		// Replace the entire event list with fresh entries from patches.
+		var eventList []any
+		for _, patch := range eventPatches {
+			group := map[string]any{
+				"matcher": "",
+				"hooks": []any{
+					map[string]any{
+						"type":    "command",
+						"command": patch.Command,
+					},
+				},
+			}
+			eventList = append(eventList, group)
+		}
+		hooks[event] = eventList
+	}
+
+	settings["hooks"] = hooks
+
+	out, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return fmt.Errorf("install: reinstall hooks: marshal: %w", err)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o755); err != nil {
+		return fmt.Errorf("install: reinstall hooks: mkdir: %w", err)
+	}
+	if err := os.WriteFile(settingsPath, append(out, '\n'), 0o644); err != nil {
+		return fmt.Errorf("install: reinstall hooks: write: %w", err)
+	}
+	return nil
 }
 
 // CreateWorkflowDirs creates the default workflow directory structure under
