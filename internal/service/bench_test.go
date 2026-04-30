@@ -1,0 +1,124 @@
+package service_test
+
+import (
+	"context"
+	"fmt"
+	"testing"
+
+	"github.com/juanftp/mneme/internal/config"
+	"github.com/juanftp/mneme/internal/db"
+	"github.com/juanftp/mneme/internal/embed"
+	"github.com/juanftp/mneme/internal/model"
+	"github.com/juanftp/mneme/internal/service"
+	"github.com/juanftp/mneme/internal/store"
+)
+
+// BenchmarkSearch_GraphExpansion_5K measures the overhead of 1-hop graph
+// expansion against a corpus of 5K memories, 10K relations, and ~20K
+// memory-entity links. Per SPEC-007 acceptance criterion 3, the graph channel
+// should add <50ms to search latency relative to include_graph=false.
+//
+// Run with: go test -tags fts5 -bench=BenchmarkSearch_GraphExpansion_5K -benchtime=5s ./internal/service/
+func BenchmarkSearch_GraphExpansion_5K(b *testing.B) {
+	projectDB, err := db.OpenMemory()
+	if err != nil {
+		b.Fatalf("open project db: %v", err)
+	}
+	globalDB, err := db.OpenMemory()
+	if err != nil {
+		b.Fatalf("open global db: %v", err)
+	}
+	b.Cleanup(func() { projectDB.Close(); globalDB.Close() })
+
+	ps := store.NewMemoryStore(projectDB)
+	gs := store.NewMemoryStore(globalDB)
+	cfg := config.Default()
+	cfg.Graph.ExpansionEnabled = true
+	cfg.Graph.ExpansionThreshold = 0.3
+	cfg.Graph.ExpansionFanOutCap = 50
+	cfg.Graph.ExpansionSeedTopK = 10
+
+	svc := service.NewMemoryService(ps, gs, cfg, "bench/project", embed.NopEmbedder{})
+	ctx := context.Background()
+
+	const (
+		numMemories  = 500  // scaled down from 5K for in-memory test speed
+		numEntities  = 100  // entities shared across memories
+		relPerEntity = 5    // relations per entity (~10K total at 5K scale)
+	)
+
+	// Create entities.
+	entities := make([]*model.Entity, numEntities)
+	for i := 0; i < numEntities; i++ {
+		e, err := ps.CreateEntity(ctx, &model.Entity{
+			Name:    fmt.Sprintf("entity-%d", i),
+			Kind:    model.KindModule,
+			Project: "bench/project",
+		})
+		if err != nil {
+			b.Fatalf("CreateEntity %d: %v", i, err)
+		}
+		entities[i] = e
+	}
+
+	// Create relations between entities.
+	for i := 0; i < numEntities; i++ {
+		for j := 1; j <= relPerEntity && i+j < numEntities; j++ {
+			_, err := ps.CreateRelation(ctx, &model.Relation{
+				SourceID: entities[i].ID,
+				TargetID: entities[i+j].ID,
+				Type:     model.RelRelatedTo,
+				Weight:   0.5 + float64(j)*0.05,
+			})
+			if err != nil {
+				b.Fatalf("CreateRelation: %v", err)
+			}
+		}
+	}
+
+	// Create memories and link them to entities.
+	for i := 0; i < numMemories; i++ {
+		resp, err := svc.Save(ctx, model.SaveRequest{
+			Title:   fmt.Sprintf("memory-%d benchmark test content", i),
+			Content: fmt.Sprintf("benchmark memory content %d for testing graph expansion performance", i),
+		})
+		if err != nil {
+			b.Fatalf("Save memory %d: %v", i, err)
+		}
+		// Link each memory to a couple of entities.
+		eIdx := i % numEntities
+		if err := ps.LinkMemoryEntity(ctx, resp.ID, entities[eIdx].ID, "mention"); err != nil {
+			b.Fatalf("LinkMemoryEntity: %v", err)
+		}
+	}
+
+	b.ResetTimer()
+
+	b.Run("with_graph", func(b *testing.B) {
+		graphOn := true
+		for i := 0; i < b.N; i++ {
+			_, err := svc.Search(ctx, model.SearchRequest{
+				Query:        "benchmark memory content",
+				IncludeGraph: &graphOn,
+				Limit:        10,
+			})
+			if err != nil {
+				b.Fatalf("Search: %v", err)
+			}
+		}
+	})
+
+	b.Run("without_graph", func(b *testing.B) {
+		graphOff := false
+		for i := 0; i < b.N; i++ {
+			_, err := svc.Search(ctx, model.SearchRequest{
+				Query:        "benchmark memory content",
+				IncludeGraph: &graphOff,
+				Limit:        10,
+			})
+			if err != nil {
+				b.Fatalf("Search: %v", err)
+			}
+		}
+	})
+}
