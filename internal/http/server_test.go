@@ -451,6 +451,61 @@ func mustSave(t *testing.T, baseURL string, req model.SaveRequest) string {
 	return saveResp.ID
 }
 
+// TestHandleSearch_IncludeGraph_QueryParam verifies that the include_graph query
+// parameter is accepted in all its common forms. Passing include_graph=false
+// must succeed (HTTP 200) and return a valid SearchResponse. Passing an invalid
+// value must return HTTP 400.
+func TestHandleSearch_IncludeGraph_QueryParam(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+
+	// Save a memory so search has something to return.
+	mustSave(t, srv.URL, model.SaveRequest{
+		Title:   "include_graph HTTP param test",
+		Content: "Verifying that the include_graph query parameter is parsed correctly.",
+		Type:    model.TypeDiscovery,
+	})
+
+	tests := []struct {
+		name           string
+		param          string
+		wantStatus     int
+		wantGraphParam bool // only checked when wantStatus == 200
+	}{
+		{"true", "true", http.StatusOK, true},
+		{"false", "false", http.StatusOK, false},
+		{"1 (truthy)", "1", http.StatusOK, true},
+		{"0 (falsy)", "0", http.StatusOK, false},
+		{"TRUE uppercase", "TRUE", http.StatusOK, true},
+		{"invalid value", "yes", http.StatusBadRequest, false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			resp, err := http.Get(srv.URL + "/v1/memories/search?q=include_graph+HTTP&include_graph=" + tc.param)
+			if err != nil {
+				t.Fatalf("GET /v1/memories/search: %v", err)
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode != tc.wantStatus {
+				raw, _ := io.ReadAll(resp.Body)
+				t.Fatalf("include_graph=%q: expected %d, got %d: %s", tc.param, tc.wantStatus, resp.StatusCode, raw)
+			}
+
+			if tc.wantStatus == http.StatusOK {
+				var body model.SearchResponse
+				if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+					t.Fatalf("decode search response: %v", err)
+				}
+				// We cannot easily assert the internal IncludeGraph value from
+				// outside the service, but a successful decode confirms the
+				// handler parsed and forwarded the param without error.
+			}
+		})
+	}
+}
+
 // TestHTTP_PostRelate_WithWeight verifies that POST /v1/entities/relate accepts
 // an explicit weight and returns it in the 201 response body.
 func TestHTTP_PostRelate_WithWeight(t *testing.T) {

@@ -222,10 +222,11 @@ func (svc *MemoryService) vectorSearchAll(ctx context.Context, queryVec []float3
 // using Reciprocal Rank Fusion (RRF), then assembles SearchResult values with
 // VectorScore populated for transparency.
 //
-// When includeGraph is true and Graph.ExpansionEnabled is set in config, the
-// function performs a preliminary 2-channel fusion to identify top-K seeds,
-// expands them via the knowledge graph, and adds graph results as a third RRF
-// channel (weightGraph=0.6).
+// When includeGraph is true, the function performs a preliminary 2-channel
+// fusion to identify top-K seeds, expands them via the knowledge graph, and
+// adds graph results as a third RRF channel (weightGraph=0.6). Graph expansion
+// runs even when the embedder is NopEmbedder (FTS5-only path) — vector results
+// are simply an empty slice in that case.
 //
 // When a memory appears only in vector results (no FTS5 match), it is loaded
 // from the store so that semantic-only hits are not silently dropped. This is
@@ -399,7 +400,7 @@ func (svc *MemoryService) graphExpand(ctx context.Context, seedIDs []string) ([]
 	accumulated := make(map[string]float64, len(seedIDs)*5) // memoryID → max graph score
 	var touchIDs []string
 
-	slog.InfoContext(ctx, "graph expansion start",
+	slog.DebugContext(ctx, "graph expansion start",
 		"event", "graph_expansion",
 		"seeds_count", len(seedIDs),
 	)
@@ -481,7 +482,7 @@ func (svc *MemoryService) graphExpand(ctx context.Context, seedIDs []string) ([]
 		return results[i].MemoryID < results[j].MemoryID
 	})
 
-	slog.InfoContext(ctx, "graph expansion done",
+	slog.DebugContext(ctx, "graph expansion done",
 		"event", "graph_expansion",
 		"neighbors_found", len(results),
 		"relations_touched", len(touchIDs),

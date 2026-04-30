@@ -311,11 +311,13 @@ func (s *Server) handleForgetMemory(w http.ResponseWriter, r *http.Request, id s
 //
 // Query parameters:
 //
-//	q       — search query (required)
-//	project — project slug filter
-//	scope   — scope filter: global, org, project
-//	type    — memory type filter
-//	limit   — max results (default: service default)
+//	q             — search query (required)
+//	project       — project slug filter
+//	scope         — scope filter: global, org, project
+//	type          — memory type filter
+//	limit         — max results (default: service default)
+//	include_graph — enable/disable 1-hop graph expansion; accepts true/false/1/0/TRUE/FALSE
+//	                (default: service config, which defaults to true)
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "use GET")
@@ -350,7 +352,11 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		req.Limit = n
 	}
 	if igStr := r.URL.Query().Get("include_graph"); igStr != "" {
-		b := igStr == "true" || igStr == "1"
+		b, err := strconv.ParseBool(igStr)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_request", "'include_graph' must be a boolean (true/false/1/0)")
+			return
+		}
 		req.IncludeGraph = &b
 	}
 

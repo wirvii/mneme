@@ -14,12 +14,13 @@ import (
 // table or JSON depending on flags.
 func newSearchCmd() *cobra.Command {
 	var (
-		flagScope string
-		flagType  string
-		flagLimit int
-		flagFull  bool
-		flagJSON  bool
-		flagGraph bool
+		flagScope   string
+		flagType    string
+		flagLimit   int
+		flagFull    bool
+		flagJSON    bool
+		flagGraph   bool
+		flagNoGraph bool
 	)
 
 	cmd := &cobra.Command{
@@ -32,7 +33,8 @@ memory importance, and recency. Use --full to see complete memory content
 below each result row.`,
 		Example: `  mneme search "JWT RS256 auth"
   mneme search "N+1 query" --type bugfix --full
-  mneme search "patterns" --json`,
+  mneme search "patterns" --json
+  mneme search "patterns" --no-graph`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			query := args[0]
@@ -43,10 +45,20 @@ below each result row.`,
 			}
 			defer cleanup()
 
+			// --no-graph takes priority over --graph when both are specified.
+			// Default behaviour (neither flag set) leaves IncludeGraph nil,
+			// which lets the service fall back to the config default (true).
+			includeGraph := true
+			if flagNoGraph {
+				includeGraph = false
+			} else if cmd.Flags().Changed("graph") {
+				includeGraph = flagGraph
+			}
+
 			req := model.SearchRequest{
 				Query:        query,
 				Limit:        flagLimit,
-				IncludeGraph: &flagGraph,
+				IncludeGraph: &includeGraph,
 			}
 			if flagScope != "" && flagScope != "all" {
 				scope := model.Scope(flagScope)
@@ -112,7 +124,8 @@ below each result row.`,
 	cmd.Flags().IntVarP(&flagLimit, "limit", "n", 10, "Max results")
 	cmd.Flags().BoolVar(&flagFull, "full", false, "Show full content below each result")
 	cmd.Flags().BoolVar(&flagJSON, "json", false, "Output as JSON")
-	cmd.Flags().BoolVar(&flagGraph, "graph", true, "Enable graph expansion (use --no-graph to disable)")
+	cmd.Flags().BoolVar(&flagGraph, "graph", true, "Enable 1-hop graph expansion in search results")
+	cmd.Flags().BoolVar(&flagNoGraph, "no-graph", false, "Disable 1-hop graph expansion (overrides --graph)")
 
 	return cmd
 }

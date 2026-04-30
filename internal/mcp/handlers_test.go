@@ -360,6 +360,86 @@ func TestMCP_ToolSchema_IncludesRuleFields(t *testing.T) {
 	}
 }
 
+// TestMemSearch_IncludeGraph_Default verifies that calling mem_search without
+// the include_graph parameter succeeds and returns a result (graph is on by
+// default through the config, but the param is optional).
+func TestMemSearch_IncludeGraph_Default(t *testing.T) {
+	srv := newTestServerWithSDD(t)
+
+	// Save a memory so there is something to search for.
+	saveResp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name: "mem_save",
+		Arguments: mustMarshal(t, map[string]any{
+			"title":   "graph expansion default test",
+			"content": "Testing that mem_search works with default include_graph behaviour.",
+			"type":    "discovery",
+		}),
+	})
+	if saveResp.Error != nil {
+		t.Fatalf("mem_save: %v", saveResp.Error.Message)
+	}
+
+	// Search without specifying include_graph — handler must accept omitted param.
+	resp := process(t, srv, "tools/call", 2, ToolCallParams{
+		Name: "mem_search",
+		Arguments: mustMarshal(t, map[string]any{
+			"query": "graph expansion default",
+			// include_graph intentionally omitted — should default to config value (true)
+		}),
+	})
+	if resp.Error != nil {
+		t.Fatalf("mem_search (default include_graph): %v", resp.Error.Message)
+	}
+
+	var result struct {
+		Total int `json:"total"`
+	}
+	unmarshalToolText(t, resp, &result)
+	if result.Total == 0 {
+		t.Error("expected at least one search result")
+	}
+}
+
+// TestMemSearch_IncludeGraph_False verifies that passing include_graph=false
+// to mem_search is accepted without error. The SearchRequest.IncludeGraph field
+// must be set to false so the service skips the graph expansion path.
+func TestMemSearch_IncludeGraph_False(t *testing.T) {
+	srv := newTestServerWithSDD(t)
+
+	// Save a memory so search returns results.
+	saveResp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name: "mem_save",
+		Arguments: mustMarshal(t, map[string]any{
+			"title":   "graph expansion disabled test",
+			"content": "Testing that mem_search works when include_graph is explicitly false.",
+			"type":    "discovery",
+		}),
+	})
+	if saveResp.Error != nil {
+		t.Fatalf("mem_save: %v", saveResp.Error.Message)
+	}
+
+	// Search with include_graph=false — must succeed and return results.
+	resp := process(t, srv, "tools/call", 2, ToolCallParams{
+		Name: "mem_search",
+		Arguments: mustMarshal(t, map[string]any{
+			"query":         "graph expansion disabled",
+			"include_graph": false,
+		}),
+	})
+	if resp.Error != nil {
+		t.Fatalf("mem_search (include_graph=false): %v", resp.Error.Message)
+	}
+
+	var result struct {
+		Total int `json:"total"`
+	}
+	unmarshalToolText(t, resp, &result)
+	if result.Total == 0 {
+		t.Error("expected at least one search result even with include_graph=false")
+	}
+}
+
 // TestMCP_ToolSchema_MemRelateIncludesWeight verifies that the mem_relate tool
 // schema includes the weight property and the references enum value.
 func TestMCP_ToolSchema_MemRelateIncludesWeight(t *testing.T) {
