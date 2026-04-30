@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -37,6 +38,13 @@ func (svc *MemoryService) Relate(ctx context.Context, req model.RelateRequest) (
 		return nil, fmt.Errorf("service: relate: %w", model.ErrInvalidRelationType)
 	}
 
+	// Validate weight when explicitly provided (zero is treated as "use default").
+	if req.Weight != 0 {
+		if math.IsNaN(req.Weight) || math.IsInf(req.Weight, 0) || req.Weight < 0 || req.Weight > 1 {
+			return nil, fmt.Errorf("service: relate: %w", model.ErrInvalidWeight)
+		}
+	}
+
 	if req.SourceKind == "" {
 		req.SourceKind = model.KindConcept
 	}
@@ -69,7 +77,16 @@ func (svc *MemoryService) Relate(ctx context.Context, req model.RelateRequest) (
 			SourceID:   srcEntity.ID,
 			TargetID:   tgtEntity.ID,
 			Created:    false,
+			Weight:     existing.Weight,
 		}, nil
+	}
+
+	// Resolve weight: explicit caller value takes priority; otherwise use the
+	// type-specific default. The store also applies DefaultWeight when Weight==0,
+	// but we set it here so the response reflects the chosen value.
+	weight := req.Weight
+	if weight == 0 {
+		weight = model.DefaultWeight(req.Relation)
 	}
 
 	// Create the new relation.
@@ -77,7 +94,7 @@ func (svc *MemoryService) Relate(ctx context.Context, req model.RelateRequest) (
 		SourceID: srcEntity.ID,
 		TargetID: tgtEntity.ID,
 		Type:     req.Relation,
-		Weight:   1.0,
+		Weight:   weight,
 	}
 	created, err := svc.projectStore.CreateRelation(ctx, rel)
 	if err != nil {
@@ -89,7 +106,20 @@ func (svc *MemoryService) Relate(ctx context.Context, req model.RelateRequest) (
 		SourceID:   srcEntity.ID,
 		TargetID:   tgtEntity.ID,
 		Created:    true,
+		Weight:     created.Weight,
 	}, nil
+}
+
+// UpdateRelationWeight adjusts the weight of an existing relation by delta,
+// clamping the result to [0.0, 1.0]. It also updates last_traversed_at to now.
+// Returns the relation after the update. This is the primary API for Hebbian
+// auto-strengthening (SPEC-G2); agents should call this after co-accessing two
+// memories to reinforce the edge between them.
+func (svc *MemoryService) UpdateRelationWeight(ctx context.Context, relationID string, delta float64) (*model.Relation, error) {
+	if math.IsNaN(delta) || math.IsInf(delta, 0) {
+		return nil, fmt.Errorf("service: update relation weight: delta must be a finite number")
+	}
+	return svc.projectStore.UpdateRelationWeight(ctx, relationID, delta, time.Now().UTC())
 }
 
 // Timeline returns memories ordered chronologically around a specific point in

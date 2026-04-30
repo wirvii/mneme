@@ -3,6 +3,7 @@ package service_test
 import (
 	"context"
 	"errors"
+	"math"
 	"testing"
 
 	"github.com/juanftp/mneme/internal/model"
@@ -129,6 +130,207 @@ func TestRelate_ValidationErrors(t *testing.T) {
 				t.Fatalf("expected error for %s, got nil", tc.name)
 			}
 		})
+	}
+}
+
+// TestRelate_DefaultWeight verifies that when no weight is supplied the response
+// contains the type-specific default weight.
+func TestRelate_DefaultWeight(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+
+	resp, err := svc.Relate(ctx, model.RelateRequest{
+		Source:   "api",
+		Target:   "db",
+		Relation: model.RelDependsOn,
+	})
+	if err != nil {
+		t.Fatalf("Relate: %v", err)
+	}
+
+	const wantWeight = 0.9 // DefaultRelationWeights[RelDependsOn]
+	if resp.Weight != wantWeight {
+		t.Errorf("Weight = %v, want %v", resp.Weight, wantWeight)
+	}
+	if !resp.Created {
+		t.Error("expected Created=true")
+	}
+}
+
+// TestRelate_ExplicitWeight verifies that an explicit weight is honoured.
+func TestRelate_ExplicitWeight(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+
+	resp, err := svc.Relate(ctx, model.RelateRequest{
+		Source:   "svc-a",
+		Target:   "svc-b",
+		Relation: model.RelRelatedTo,
+		Weight:   0.75,
+	})
+	if err != nil {
+		t.Fatalf("Relate: %v", err)
+	}
+	if resp.Weight != 0.75 {
+		t.Errorf("Weight = %v, want 0.75", resp.Weight)
+	}
+}
+
+// TestRelate_InvalidWeightNaN verifies that a NaN weight returns ErrInvalidWeight.
+func TestRelate_InvalidWeightNaN(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+
+	_, err := svc.Relate(ctx, model.RelateRequest{
+		Source:   "a",
+		Target:   "b",
+		Relation: model.RelUses,
+		Weight:   math.NaN(),
+	})
+	if !errors.Is(err, model.ErrInvalidWeight) {
+		t.Errorf("expected ErrInvalidWeight, got %v", err)
+	}
+}
+
+// TestRelate_InvalidWeightInf verifies that an infinite weight returns ErrInvalidWeight.
+func TestRelate_InvalidWeightInf(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+
+	_, err := svc.Relate(ctx, model.RelateRequest{
+		Source:   "a",
+		Target:   "b",
+		Relation: model.RelUses,
+		Weight:   math.Inf(1),
+	})
+	if !errors.Is(err, model.ErrInvalidWeight) {
+		t.Errorf("expected ErrInvalidWeight for +Inf, got %v", err)
+	}
+}
+
+// TestRelate_InvalidWeightNegative verifies that a negative weight returns ErrInvalidWeight.
+func TestRelate_InvalidWeightNegative(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+
+	_, err := svc.Relate(ctx, model.RelateRequest{
+		Source:   "a",
+		Target:   "b",
+		Relation: model.RelUses,
+		Weight:   -0.1,
+	})
+	if !errors.Is(err, model.ErrInvalidWeight) {
+		t.Errorf("expected ErrInvalidWeight for -0.1, got %v", err)
+	}
+}
+
+// TestRelate_InvalidWeightAboveOne verifies that a weight > 1.0 returns ErrInvalidWeight.
+func TestRelate_InvalidWeightAboveOne(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+
+	_, err := svc.Relate(ctx, model.RelateRequest{
+		Source:   "a",
+		Target:   "b",
+		Relation: model.RelUses,
+		Weight:   1.5,
+	})
+	if !errors.Is(err, model.ErrInvalidWeight) {
+		t.Errorf("expected ErrInvalidWeight for 1.5, got %v", err)
+	}
+}
+
+// TestRelate_ExistingReturnsCurrentWeight verifies that a duplicate mem_relate
+// call returns the existing relation's weight, not the default for the type.
+func TestRelate_ExistingReturnsCurrentWeight(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+
+	req := model.RelateRequest{
+		Source:   "x",
+		Target:   "y",
+		Relation: model.RelDependsOn,
+		Weight:   0.75,
+	}
+	first, err := svc.Relate(ctx, req)
+	if err != nil {
+		t.Fatalf("first Relate: %v", err)
+	}
+	if !first.Created {
+		t.Fatal("expected Created=true on first call")
+	}
+
+	// Second call without explicit weight — should return the stored weight 0.75,
+	// not the default 0.9 for depends_on.
+	second, err := svc.Relate(ctx, model.RelateRequest{
+		Source:   "x",
+		Target:   "y",
+		Relation: model.RelDependsOn,
+	})
+	if err != nil {
+		t.Fatalf("second Relate: %v", err)
+	}
+	if second.Created {
+		t.Error("expected Created=false on second call")
+	}
+	if second.Weight != 0.75 {
+		t.Errorf("Weight = %v, want 0.75 (existing stored weight)", second.Weight)
+	}
+}
+
+// TestRelate_ReferencesType verifies that the new RelReferences type is accepted.
+func TestRelate_ReferencesType(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+
+	resp, err := svc.Relate(ctx, model.RelateRequest{
+		Source:   "note-a",
+		Target:   "note-b",
+		Relation: model.RelReferences,
+	})
+	if err != nil {
+		t.Fatalf("Relate with RelReferences: %v", err)
+	}
+	if resp.Weight != 0.4 { // DefaultRelationWeights[RelReferences]
+		t.Errorf("Weight = %v, want 0.4", resp.Weight)
+	}
+}
+
+// TestUpdateRelationWeight_Normal verifies that UpdateRelationWeight applies the
+// delta and returns the updated relation.
+func TestUpdateRelationWeight_Normal(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+
+	// Create a relation first.
+	resp, err := svc.Relate(ctx, model.RelateRequest{
+		Source:   "a",
+		Target:   "b",
+		Relation: model.RelRelatedTo, // weight 0.5
+	})
+	if err != nil {
+		t.Fatalf("Relate: %v", err)
+	}
+
+	updated, err := svc.UpdateRelationWeight(ctx, resp.RelationID, 0.2)
+	if err != nil {
+		t.Fatalf("UpdateRelationWeight: %v", err)
+	}
+
+	const wantWeight = 0.7 // 0.5 + 0.2
+	if updated.Weight != wantWeight {
+		t.Errorf("Weight = %v, want %v", updated.Weight, wantWeight)
+	}
+}
+
+// TestUpdateRelationWeight_DeltaNaN verifies that a NaN delta is rejected.
+func TestUpdateRelationWeight_DeltaNaN(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+
+	_, err := svc.UpdateRelationWeight(ctx, "some-id", math.NaN())
+	if err == nil {
+		t.Fatal("expected error for NaN delta, got nil")
 	}
 }
 
