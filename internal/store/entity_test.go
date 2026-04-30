@@ -300,6 +300,267 @@ func TestLinkMemoryEntity(t *testing.T) {
 	}
 }
 
+// TestCreateRelation_DefaultWeight verifies that CreateRelation uses the type-specific
+// default weight when the caller does not provide an explicit weight (zero value).
+func TestCreateRelation_DefaultWeight(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	src, _ := s.CreateEntity(ctx, &model.Entity{Name: "svc", Kind: model.KindService, Project: "p"})
+	tgt, _ := s.CreateEntity(ctx, &model.Entity{Name: "db", Kind: model.KindService, Project: "p"})
+
+	rel := &model.Relation{
+		SourceID: src.ID,
+		TargetID: tgt.ID,
+		Type:     model.RelDependsOn,
+		// Weight intentionally zero — store should apply DefaultWeight.
+	}
+	created, err := s.CreateRelation(ctx, rel)
+	if err != nil {
+		t.Fatalf("CreateRelation: %v", err)
+	}
+
+	const wantWeight = 0.9 // DefaultRelationWeights[RelDependsOn]
+	if created.Weight != wantWeight {
+		t.Errorf("Weight = %v, want %v", created.Weight, wantWeight)
+	}
+
+	// Verify roundtrip via GetRelationsFrom.
+	out, err := s.GetRelationsFrom(ctx, src.ID)
+	if err != nil {
+		t.Fatalf("GetRelationsFrom: %v", err)
+	}
+	if len(out) != 1 || out[0].Weight != wantWeight {
+		t.Errorf("roundtrip weight = %v, want %v", out[0].Weight, wantWeight)
+	}
+}
+
+// TestCreateRelation_ExplicitWeight verifies that an explicit weight is persisted.
+func TestCreateRelation_ExplicitWeight(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	src, _ := s.CreateEntity(ctx, &model.Entity{Name: "a", Kind: model.KindModule, Project: "p"})
+	tgt, _ := s.CreateEntity(ctx, &model.Entity{Name: "b", Kind: model.KindModule, Project: "p"})
+
+	rel := &model.Relation{
+		SourceID: src.ID,
+		TargetID: tgt.ID,
+		Type:     model.RelRelatedTo,
+		Weight:   0.75,
+	}
+	created, err := s.CreateRelation(ctx, rel)
+	if err != nil {
+		t.Fatalf("CreateRelation: %v", err)
+	}
+	if created.Weight != 0.75 {
+		t.Errorf("Weight = %v, want 0.75", created.Weight)
+	}
+}
+
+// TestCreateRelation_LastTraversedAtNull verifies that newly created relations
+// have a zero LastTraversedAt (never traversed).
+func TestCreateRelation_LastTraversedAtNull(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	src, _ := s.CreateEntity(ctx, &model.Entity{Name: "x", Kind: model.KindConcept, Project: "p"})
+	tgt, _ := s.CreateEntity(ctx, &model.Entity{Name: "y", Kind: model.KindConcept, Project: "p"})
+
+	rel := &model.Relation{
+		SourceID: src.ID,
+		TargetID: tgt.ID,
+		Type:     model.RelUses,
+	}
+	created, err := s.CreateRelation(ctx, rel)
+	if err != nil {
+		t.Fatalf("CreateRelation: %v", err)
+	}
+	if !created.LastTraversedAt.IsZero() {
+		t.Errorf("expected zero LastTraversedAt, got %v", created.LastTraversedAt)
+	}
+}
+
+// TestUpdateRelationWeight_Normal verifies a standard weight delta is applied.
+func TestUpdateRelationWeight_Normal(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	src, _ := s.CreateEntity(ctx, &model.Entity{Name: "a", Kind: model.KindModule, Project: "p"})
+	tgt, _ := s.CreateEntity(ctx, &model.Entity{Name: "b", Kind: model.KindModule, Project: "p"})
+
+	rel := &model.Relation{SourceID: src.ID, TargetID: tgt.ID, Type: model.RelRelatedTo, Weight: 0.5}
+	created, _ := s.CreateRelation(ctx, rel)
+
+	now := time.Now().UTC()
+	updated, err := s.UpdateRelationWeight(ctx, created.ID, 0.1, now)
+	if err != nil {
+		t.Fatalf("UpdateRelationWeight: %v", err)
+	}
+
+	const wantWeight = 0.6
+	if updated.Weight != wantWeight {
+		t.Errorf("Weight = %v, want %v", updated.Weight, wantWeight)
+	}
+}
+
+// TestUpdateRelationWeight_ClampHigh verifies that weight is clamped to 1.0 when
+// the delta would exceed the upper bound.
+func TestUpdateRelationWeight_ClampHigh(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	src, _ := s.CreateEntity(ctx, &model.Entity{Name: "a", Kind: model.KindModule, Project: "p"})
+	tgt, _ := s.CreateEntity(ctx, &model.Entity{Name: "b", Kind: model.KindModule, Project: "p"})
+
+	rel := &model.Relation{SourceID: src.ID, TargetID: tgt.ID, Type: model.RelDependsOn, Weight: 0.9}
+	created, _ := s.CreateRelation(ctx, rel)
+
+	updated, err := s.UpdateRelationWeight(ctx, created.ID, 10.0, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("UpdateRelationWeight: %v", err)
+	}
+	if updated.Weight != 1.0 {
+		t.Errorf("Weight = %v, want 1.0 (clamped)", updated.Weight)
+	}
+}
+
+// TestUpdateRelationWeight_ClampLow verifies that weight is clamped to 0.0 when
+// the delta would go below the lower bound.
+func TestUpdateRelationWeight_ClampLow(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	src, _ := s.CreateEntity(ctx, &model.Entity{Name: "a", Kind: model.KindModule, Project: "p"})
+	tgt, _ := s.CreateEntity(ctx, &model.Entity{Name: "b", Kind: model.KindModule, Project: "p"})
+
+	rel := &model.Relation{SourceID: src.ID, TargetID: tgt.ID, Type: model.RelRelatedTo, Weight: 0.5}
+	created, _ := s.CreateRelation(ctx, rel)
+
+	updated, err := s.UpdateRelationWeight(ctx, created.ID, -100.0, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("UpdateRelationWeight: %v", err)
+	}
+	if updated.Weight != 0.0 {
+		t.Errorf("Weight = %v, want 0.0 (clamped)", updated.Weight)
+	}
+}
+
+// TestUpdateRelationWeight_NotFound verifies that ErrRelationNotFound is returned
+// when the relation ID does not exist.
+func TestUpdateRelationWeight_NotFound(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	_, err := s.UpdateRelationWeight(ctx, "00000000-0000-7000-8000-000000000000", 0.1, time.Now().UTC())
+	if !errors.Is(err, model.ErrRelationNotFound) {
+		t.Errorf("expected ErrRelationNotFound, got %v", err)
+	}
+}
+
+// TestUpdateRelationWeight_SetsLastTraversed verifies that last_traversed_at is
+// updated to the supplied now value by UpdateRelationWeight.
+func TestUpdateRelationWeight_SetsLastTraversed(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	src, _ := s.CreateEntity(ctx, &model.Entity{Name: "a", Kind: model.KindModule, Project: "p"})
+	tgt, _ := s.CreateEntity(ctx, &model.Entity{Name: "b", Kind: model.KindModule, Project: "p"})
+
+	rel := &model.Relation{SourceID: src.ID, TargetID: tgt.ID, Type: model.RelUses}
+	created, _ := s.CreateRelation(ctx, rel)
+
+	if !created.LastTraversedAt.IsZero() {
+		t.Fatal("expected zero LastTraversedAt before update")
+	}
+
+	now := time.Now().UTC().Truncate(time.Second)
+	updated, err := s.UpdateRelationWeight(ctx, created.ID, 0.05, now)
+	if err != nil {
+		t.Fatalf("UpdateRelationWeight: %v", err)
+	}
+	if updated.LastTraversedAt.IsZero() {
+		t.Error("expected non-zero LastTraversedAt after UpdateRelationWeight")
+	}
+	if !updated.LastTraversedAt.Equal(now) {
+		t.Errorf("LastTraversedAt = %v, want %v", updated.LastTraversedAt, now)
+	}
+}
+
+// TestTouchRelation_OnlyTimestamp verifies that TouchRelation updates only
+// last_traversed_at without changing weight.
+func TestTouchRelation_OnlyTimestamp(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	src, _ := s.CreateEntity(ctx, &model.Entity{Name: "a", Kind: model.KindModule, Project: "p"})
+	tgt, _ := s.CreateEntity(ctx, &model.Entity{Name: "b", Kind: model.KindModule, Project: "p"})
+
+	rel := &model.Relation{SourceID: src.ID, TargetID: tgt.ID, Type: model.RelImplements, Weight: 0.8}
+	created, _ := s.CreateRelation(ctx, rel)
+
+	now := time.Now().UTC().Truncate(time.Second)
+	if err := s.TouchRelation(ctx, created.ID, now); err != nil {
+		t.Fatalf("TouchRelation: %v", err)
+	}
+
+	// Re-read via GetRelationsFrom to verify both fields.
+	out, err := s.GetRelationsFrom(ctx, src.ID)
+	if err != nil {
+		t.Fatalf("GetRelationsFrom: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("expected 1 relation, got %d", len(out))
+	}
+	r := out[0]
+	if r.Weight != 0.8 {
+		t.Errorf("Weight changed after touch: got %v, want 0.8", r.Weight)
+	}
+	if r.LastTraversedAt.IsZero() {
+		t.Error("expected non-zero LastTraversedAt after touch")
+	}
+	if !r.LastTraversedAt.Equal(now) {
+		t.Errorf("LastTraversedAt = %v, want %v", r.LastTraversedAt, now)
+	}
+}
+
+// TestScanRelation_WithLastTraversed verifies the full roundtrip: create,
+// touch, then retrieve and scan last_traversed_at correctly.
+func TestScanRelation_WithLastTraversed(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	src, _ := s.CreateEntity(ctx, &model.Entity{Name: "a", Kind: model.KindConcept, Project: "p"})
+	tgt, _ := s.CreateEntity(ctx, &model.Entity{Name: "b", Kind: model.KindConcept, Project: "p"})
+
+	rel := &model.Relation{SourceID: src.ID, TargetID: tgt.ID, Type: model.RelReferences}
+	created, _ := s.CreateRelation(ctx, rel)
+
+	// Default weight for references should be 0.4.
+	if created.Weight != 0.4 {
+		t.Errorf("default weight for RelReferences = %v, want 0.4", created.Weight)
+	}
+
+	now := time.Now().UTC().Truncate(time.Second)
+	if err := s.TouchRelation(ctx, created.ID, now); err != nil {
+		t.Fatalf("TouchRelation: %v", err)
+	}
+
+	got, err := s.FindRelation(ctx, src.ID, tgt.ID, model.RelReferences)
+	if err != nil {
+		t.Fatalf("FindRelation: %v", err)
+	}
+	if got == nil {
+		t.Fatal("FindRelation returned nil")
+	}
+	if got.LastTraversedAt.IsZero() {
+		t.Error("LastTraversedAt is zero after touch")
+	}
+	if !got.LastTraversedAt.Equal(now) {
+		t.Errorf("LastTraversedAt = %v, want %v", got.LastTraversedAt, now)
+	}
+}
+
 // TestListMemoriesInRange verifies that only memories within the time range are returned.
 func TestListMemoriesInRange(t *testing.T) {
 	s := newTestStore(t)

@@ -165,9 +165,12 @@ func (s *MemoryStore) ListEntities(ctx context.Context, project string, kind mod
 }
 
 // CreateRelation inserts a directed edge between two entities. A UUIDv7 ID is
-// generated and CreatedAt is set to the current UTC time. The caller is
-// responsible for ensuring source and target entity IDs exist; the database
-// foreign key constraint will reject invalid IDs.
+// generated and CreatedAt is set to the current UTC time. When Weight is zero,
+// the type-specific default from model.DefaultRelationWeights is used so that
+// every relation carries a meaningful strength from the start.
+//
+// The caller is responsible for ensuring source and target entity IDs exist;
+// the database foreign key constraint will reject invalid IDs.
 func (s *MemoryStore) CreateRelation(ctx context.Context, r *model.Relation) (*model.Relation, error) {
 	id, err := uuid.NewV7()
 	if err != nil {
@@ -179,17 +182,24 @@ func (s *MemoryStore) CreateRelation(ctx context.Context, r *model.Relation) (*m
 	r.CreatedAt = now
 
 	if r.Weight == 0 {
-		r.Weight = 1.0
+		r.Weight = model.DefaultWeight(r.Type)
 	}
 
 	const q = `
-		INSERT INTO relations (id, source_id, target_id, type, weight, metadata, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`
+		INSERT INTO relations (id, source_id, target_id, type, weight, metadata, created_at, last_traversed_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+
+	var lastTraversed *string
+	if !r.LastTraversedAt.IsZero() {
+		s := r.LastTraversedAt.UTC().Format(time.RFC3339Nano)
+		lastTraversed = &s
+	}
 
 	_, err = s.db.ExecContext(ctx, q,
 		r.ID, r.SourceID, r.TargetID, string(r.Type),
 		r.Weight, toNullString(r.Metadata),
 		r.CreatedAt.Format(time.RFC3339Nano),
+		lastTraversed,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: create relation: insert: %w", err)
@@ -198,11 +208,78 @@ func (s *MemoryStore) CreateRelation(ctx context.Context, r *model.Relation) (*m
 	return r, nil
 }
 
+// UpdateRelationWeight atomically adjusts the weight of a relation by delta,
+// clamping the result to [0.0, 1.0]. The last_traversed_at timestamp is updated
+// to now in the same SQL statement to eliminate any read-modify-write race
+// condition. Returns the relation after the update, or ErrRelationNotFound if
+// the ID does not exist. This is the primary API for Hebbian auto-strengthening
+// (SPEC-G2).
+func (s *MemoryStore) UpdateRelationWeight(ctx context.Context, relationID string, delta float64, now time.Time) (*model.Relation, error) {
+	const q = `
+		UPDATE relations
+		SET weight           = MAX(0.0, MIN(1.0, weight + ?)),
+		    last_traversed_at = ?
+		WHERE id = ?`
+
+	result, err := s.db.ExecContext(ctx, q, delta, now.UTC().Format(time.RFC3339Nano), relationID)
+	if err != nil {
+		return nil, fmt.Errorf("store: update relation weight: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return nil, fmt.Errorf("store: update relation weight: rows affected: %w", err)
+	}
+	if rows == 0 {
+		return nil, fmt.Errorf("store: update relation weight: %w", model.ErrRelationNotFound)
+	}
+
+	return s.getRelationByID(ctx, relationID)
+}
+
+// TouchRelation updates only the last_traversed_at timestamp of a relation
+// without changing its weight. Use this when a relation is traversed during
+// graph navigation (e.g. 1-hop expansion) without intent to strengthen or
+// weaken it.
+func (s *MemoryStore) TouchRelation(ctx context.Context, relationID string, now time.Time) error {
+	const q = `UPDATE relations SET last_traversed_at = ? WHERE id = ?`
+
+	result, err := s.db.ExecContext(ctx, q, now.UTC().Format(time.RFC3339Nano), relationID)
+	if err != nil {
+		return fmt.Errorf("store: touch relation: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("store: touch relation: rows affected: %w", err)
+	}
+	if rows == 0 {
+		return fmt.Errorf("store: touch relation: %w", model.ErrRelationNotFound)
+	}
+	return nil
+}
+
+// getRelationByID retrieves a single relation by primary key.
+func (s *MemoryStore) getRelationByID(ctx context.Context, id string) (*model.Relation, error) {
+	const q = `
+		SELECT id, source_id, target_id, type, weight, metadata, created_at, last_traversed_at
+		FROM relations
+		WHERE id = ?`
+
+	row := s.db.QueryRowContext(ctx, q, id)
+	r, err := scanRelation(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("store: get relation: %w", model.ErrRelationNotFound)
+		}
+		return nil, fmt.Errorf("store: get relation: %w", err)
+	}
+	return r, nil
+}
+
 // GetRelationsFrom returns all outgoing (source → *) relations for the entity
 // identified by entityID. An empty slice is returned when no relations exist.
 func (s *MemoryStore) GetRelationsFrom(ctx context.Context, entityID string) ([]*model.Relation, error) {
 	const q = `
-		SELECT id, source_id, target_id, type, weight, metadata, created_at
+		SELECT id, source_id, target_id, type, weight, metadata, created_at, last_traversed_at
 		FROM relations
 		WHERE source_id = ?
 		ORDER BY created_at`
@@ -214,7 +291,7 @@ func (s *MemoryStore) GetRelationsFrom(ctx context.Context, entityID string) ([]
 // identified by entityID. An empty slice is returned when no relations exist.
 func (s *MemoryStore) GetRelationsTo(ctx context.Context, entityID string) ([]*model.Relation, error) {
 	const q = `
-		SELECT id, source_id, target_id, type, weight, metadata, created_at
+		SELECT id, source_id, target_id, type, weight, metadata, created_at, last_traversed_at
 		FROM relations
 		WHERE target_id = ?
 		ORDER BY created_at`
@@ -278,7 +355,7 @@ func (s *MemoryStore) GetMemoryEntities(ctx context.Context, memoryID string) ([
 // type. Returns (nil, nil) when no matching relation exists.
 func (s *MemoryStore) FindRelation(ctx context.Context, sourceID, targetID string, relType model.RelationType) (*model.Relation, error) {
 	const q = `
-		SELECT id, source_id, target_id, type, weight, metadata, created_at
+		SELECT id, source_id, target_id, type, weight, metadata, created_at, last_traversed_at
 		FROM relations
 		WHERE source_id = ? AND target_id = ? AND type = ?
 		LIMIT 1`
@@ -434,17 +511,22 @@ func scanRelation(row *sql.Row) (*model.Relation, error) {
 }
 
 // scanRelationRow scans either a *sql.Row or *sql.Rows into a *model.Relation.
+// Expects 8 columns in order: id, source_id, target_id, type, weight, metadata,
+// created_at, last_traversed_at. All relation SELECT queries must include
+// last_traversed_at after migration 007.
 func scanRelationRow(row relationScanner) (*model.Relation, error) {
 	var (
-		r         model.Relation
-		metadata  sql.NullString
-		createdAt string
+		r              model.Relation
+		metadata       sql.NullString
+		createdAt      string
+		lastTraversed  sql.NullString
 	)
 
 	err := row.Scan(
 		&r.ID, &r.SourceID, &r.TargetID,
 		&r.Type, &r.Weight,
 		&metadata, &createdAt,
+		&lastTraversed,
 	)
 	if err != nil {
 		return nil, err
@@ -454,6 +536,11 @@ func scanRelationRow(row relationScanner) (*model.Relation, error) {
 
 	if t, err := parseTime(createdAt); err == nil {
 		r.CreatedAt = t
+	}
+	if lastTraversed.Valid && lastTraversed.String != "" {
+		if t, err := parseTime(lastTraversed.String); err == nil {
+			r.LastTraversedAt = t
+		}
 	}
 
 	return &r, nil
