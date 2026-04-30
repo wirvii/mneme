@@ -452,7 +452,7 @@ action (ALLOWED / BLOCKED).`,
 	}
 
 	cmd.Flags().StringVarP(&flagTool, "tool", "T", "Edit", "Tool name to simulate (e.g. Edit, Write, MultiEdit)")
-	cmd.Flags().StringVarP(&flagPath, "path", "p", "", "File path to simulate (absolute or relative to CWD)")
+	cmd.Flags().StringVar(&flagPath, "path", "", "File path to simulate (absolute or relative to CWD)")
 	cmd.Flags().BoolVar(&flagJSON, "json", false, "Output as JSON")
 
 	return cmd
