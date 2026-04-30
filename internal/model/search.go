@@ -24,6 +24,15 @@ type SearchRequest struct {
 	// IncludeSuperseded includes memories that have been superseded by newer ones.
 	// Normally these are hidden to reduce noise.
 	IncludeSuperseded bool `json:"include_superseded,omitempty"`
+
+	// IncludeGraph enables 1-hop graph expansion as a third retrieval signal
+	// alongside FTS5 BM25 and vector similarity. When true (default), the
+	// top-K seeds from the FTS5+vector fusion are expanded to their graph
+	// neighbors via strong relations, and the results are fused via 3-way RRF.
+	//
+	// Using *bool so that omitted (nil) is treated as "use config default"
+	// while an explicit false disables expansion for this request only.
+	IncludeGraph *bool `json:"include_graph,omitempty"`
 }
 
 // SearchResult wraps a Memory with retrieval-specific metadata that helps the
