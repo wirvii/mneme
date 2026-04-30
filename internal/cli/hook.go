@@ -2,9 +2,11 @@ package cli
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,7 +15,10 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/juanftp/mneme/internal/config"
+	"github.com/juanftp/mneme/internal/db"
 	"github.com/juanftp/mneme/internal/model"
+	"github.com/juanftp/mneme/internal/project"
+	"github.com/juanftp/mneme/internal/rules"
 )
 
 // newHookCmd returns the "mneme hook" subcommand. Hook handlers are invoked by
@@ -25,6 +30,9 @@ import (
 //     it as part of its initialization
 //   - session-end: prints a reminder prompt that instructs the agent to call the
 //     mem_session_end MCP tool before the session is closed
+//   - pre-tool-use: evaluates active rules against the current tool invocation
+//     (stdin JSON) and emits markdown to stdout; exits with code 2 to block
+//   - enforce-delegation: legacy config-based delegation enforcement (deprecated)
 func newHookCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "hook <event>",
@@ -34,8 +42,10 @@ automatically by the agent's hook system — they are not intended for direct
 human use.
 
 Events:
-  session-start   Load and print project context for the agent to consume
-  session-end     Print a reminder for the agent to call mem_session_end`,
+  session-start     Load and print project context for the agent to consume
+  session-end       Print a reminder for the agent to call mem_session_end
+  pre-tool-use      Evaluate rules against the current tool invocation (PreToolUse hook)
+  enforce-delegation  Legacy config-based delegation enforcement (deprecated)`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			event := args[0]
@@ -44,10 +54,12 @@ Events:
 				return runHookSessionStart(cmd.Context())
 			case "session-end":
 				return runHookSessionEnd()
+			case "pre-tool-use":
+				return runHookPreToolUse(os.Stdin, os.Stdout, os.Stderr)
 			case "enforce-delegation":
 				return runHookEnforceDelegation()
 			default:
-				return fmt.Errorf("hook: unknown event %q — supported events: session-start, session-end, enforce-delegation", event)
+				return fmt.Errorf("hook: unknown event %q — supported events: session-start, session-end, pre-tool-use, enforce-delegation", event)
 			}
 		},
 	}
@@ -156,6 +168,240 @@ func runHookSessionEnd() error {
 	return nil
 }
 
+// hookPreToolInput is the JSON payload that Claude Code sends to a PreToolUse
+// hook via stdin. Only tool_name and tool_input.file_path are relevant for
+// rule matching; all other fields are ignored.
+type hookPreToolInput struct {
+	ToolName  string `json:"tool_name"`
+	ToolInput struct {
+		FilePath string `json:"file_path"`
+	} `json:"tool_input"`
+}
+
+// mutatingTools is the set of tool names that the pre-tool-use hook intercepts.
+// These are the only tools that carry a file_path and modify files on disk.
+var mutatingTools = map[string]bool{
+	"Edit":      true,
+	"Write":     true,
+	"MultiEdit": true,
+}
+
+// rulesQuery is the SQL used to fetch all active rules from a database. It
+// targets the partial index idx_memories_rules (created in migration 006) and
+// caps results at 200 so the hook completes well within the <50ms target even
+// for large rule sets.
+const rulesQuery = `
+SELECT id, title, content, applies_to, severity
+FROM memories
+WHERE type = 'rule' AND deleted_at IS NULL
+ORDER BY importance DESC
+LIMIT 200`
+
+// runHookPreToolUse implements the PreToolUse hook. It reads the tool invocation
+// JSON from r, queries active rules from the mneme databases, matches rules
+// against the invocation, and writes a markdown reminder to w.
+//
+// Exit behaviour (via os.Exit — not returned as error):
+//   - 0: no rules matched, or only info/warn rules matched (allow).
+//   - 2: at least one block-severity rule matched (reject).
+//
+// All errors are logged to stderr and result in exit 0 (fail open) so that a
+// broken hook never prevents the agent from working.
+func runHookPreToolUse(r io.Reader, w, errW io.Writer) error {
+	cwd, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintf(errW, "[mneme] pre-tool-use hook: cannot determine cwd: %v\n", err)
+		return nil
+	}
+
+	// Parse the tool invocation from stdin. Fail open on any parse error.
+	var input hookPreToolInput
+	if decodeErr := json.NewDecoder(r).Decode(&input); decodeErr != nil {
+		// io.EOF means stdin was empty (e.g. manual invocation) — silent allow.
+		if decodeErr != io.EOF {
+			fmt.Fprintf(errW, "[mneme] pre-tool-use hook: invalid stdin JSON: %v\n", decodeErr)
+		}
+		return nil
+	}
+
+	// Only intercept file-mutating tools; everything else is allowed immediately.
+	if !mutatingTools[input.ToolName] {
+		return nil
+	}
+
+	// Load active rules from the project + global databases.
+	activeRules, loadErr := loadRulesForHook(cwd, errW)
+	if loadErr != nil {
+		// loadRulesForHook already logged the error; fail open.
+		return nil
+	}
+	if len(activeRules) == 0 {
+		return nil
+	}
+
+	// Evaluate which rules fire for this specific tool+path combination.
+	result := rules.Match(activeRules, input.ToolName, input.ToolInput.FilePath, cwd)
+	if len(result.Matched) == 0 {
+		return nil
+	}
+
+	// Emit the markdown reminder to stdout so Claude Code injects it into the
+	// agent's context window as a system reminder.
+	renderPreToolUseOutput(w, input.ToolName, input.ToolInput.FilePath, cwd, result)
+
+	slog.Info("hook_pre_tool_use",
+		"event", "hook_pre_tool_use",
+		"tool", input.ToolName,
+		"file", input.ToolInput.FilePath,
+		"matched_rules", len(result.Matched),
+		"max_severity", string(result.MaxSev),
+	)
+
+	if result.MaxSev == model.SeverityBlock {
+		//nolint:gocritic // os.Exit(2) is the documented hook exit code for rejection
+		os.Exit(2)
+	}
+	return nil
+}
+
+// loadRulesForHook opens the project and global databases in read-only mode,
+// queries all active rules, and returns them as a merged slice. Errors are
+// logged to errW and the function returns whatever rules were successfully
+// loaded (partial results are better than none).
+func loadRulesForHook(cwd string, errW io.Writer) ([]model.Memory, error) {
+	cfg, err := config.Load(config.DefaultPath())
+	if err != nil {
+		fmt.Fprintf(errW, "[mneme] pre-tool-use hook: cannot load config: %v\n", err)
+		return nil, err
+	}
+
+	// Detect the project slug so we can find the right project DB.
+	det := project.NewDetector(cwd)
+	slug, _ := det.DetectProject() // detection failure is non-fatal
+
+	var allRules []model.Memory
+
+	// Load project-scoped rules when a project was detected.
+	if slug != "" {
+		projectPath := cfg.ProjectDBPath(slug)
+		projectRules, rErr := queryRulesFromDB(projectPath)
+		if rErr != nil {
+			fmt.Fprintf(errW, "[mneme] pre-tool-use hook: project DB error: %v\n", rErr)
+			// Non-fatal: continue to load global rules.
+		}
+		allRules = append(allRules, projectRules...)
+	}
+
+	// Load global-scoped rules.
+	globalRules, gErr := queryRulesFromDB(cfg.GlobalDBPath())
+	if gErr != nil {
+		fmt.Fprintf(errW, "[mneme] pre-tool-use hook: global DB error: %v\n", gErr)
+	}
+	allRules = append(allRules, globalRules...)
+
+	return allRules, nil
+}
+
+// queryRulesFromDB opens the database at path in read-only mode, executes
+// rulesQuery, and returns the resulting rule memories. The database is closed
+// before returning regardless of success or failure.
+//
+// Returns an empty slice (not an error) when the file does not exist — this is
+// the expected state for new projects that have not been initialised yet.
+func queryRulesFromDB(path string) ([]model.Memory, error) {
+	database, err := db.OpenReadOnly(path)
+	if err != nil {
+		// File not found is not an error — project may not have a DB yet.
+		if strings.Contains(err.Error(), "file does not exist") {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("open %s: %w", path, err)
+	}
+	defer database.Close()
+
+	rows, err := database.Query(rulesQuery)
+	if err != nil {
+		return nil, fmt.Errorf("query rules: %w", err)
+	}
+	defer rows.Close()
+
+	var result []model.Memory
+	for rows.Next() {
+		var (
+			mem        model.Memory
+			appliesToJ sql.NullString
+		)
+		if scanErr := rows.Scan(
+			&mem.ID,
+			&mem.Title,
+			&mem.Content,
+			&appliesToJ,
+			&mem.Severity,
+		); scanErr != nil {
+			return nil, fmt.Errorf("scan rule row: %w", scanErr)
+		}
+		if appliesToJ.Valid && appliesToJ.String != "" {
+			if jsonErr := json.Unmarshal([]byte(appliesToJ.String), &mem.AppliesTo); jsonErr != nil {
+				// Malformed applies_to — skip this rule silently.
+				continue
+			}
+		}
+		mem.Type = model.TypeRule
+		result = append(result, mem)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate rule rows: %w", err)
+	}
+	return result, nil
+}
+
+// renderPreToolUseOutput writes the markdown block that the agent sees as a
+// system reminder when rules fire. The format follows the spec (section 4.1):
+// HTML comment delimiters, tool+file header, per-rule sections with severity
+// tags, and a final action line.
+func renderPreToolUseOutput(w io.Writer, toolName, filePath, cwd string, result rules.MatchResult) {
+	// Compute the display path (relative when possible, absolute as fallback).
+	displayPath := filePath
+	if rel, err := filepath.Rel(cwd, filePath); err == nil && !strings.HasPrefix(rel, "..") {
+		displayPath = rel
+	}
+
+	fmt.Fprintf(w, "<!-- mneme:rules:start -->\n")
+	fmt.Fprintf(w, "## mneme — Rules for this action\n\n")
+	fmt.Fprintf(w, "**Tool:** %s | **File:** %s\n\n", toolName, displayPath)
+
+	for _, mr := range result.Matched {
+		severityTag := strings.ToUpper(string(mr.Rule.Severity))
+		fmt.Fprintf(w, "### [%s] %s\n", severityTag, mr.Rule.Title)
+		fmt.Fprintf(w, "%s\n", mr.Rule.Content)
+		if len(mr.Entries) > 0 {
+			fmt.Fprintf(w, "_Applies to: %s_\n", strings.Join(mr.Entries, ", "))
+		}
+		fmt.Fprintf(w, "\n---\n\n")
+	}
+
+	if result.MaxSev == model.SeverityBlock {
+		blockCount := 0
+		for _, mr := range result.Matched {
+			if mr.Rule.Severity == model.SeverityBlock {
+				blockCount++
+			}
+		}
+		noun := "block rule"
+		if blockCount != 1 {
+			noun = "block rules"
+		}
+		fmt.Fprintf(w, "**Action: BLOCKED** — %d %s matched. The agent must find an alternative approach.\n", blockCount, noun)
+	} else {
+		fmt.Fprintf(w, "**Action: ALLOWED** — %d rule", len(result.Matched))
+		if len(result.Matched) != 1 {
+			fmt.Fprintf(w, "s")
+		}
+		fmt.Fprintf(w, " matched (review above).\n")
+	}
+	fmt.Fprintf(w, "<!-- mneme:rules:end -->\n")
+}
+
 // runHookEnforceDelegation checks whether the current tool invocation targets
 // a protected source-code path. It reads the tool input JSON from stdin
 // (Claude Code passes it via the PreToolUse hook mechanism) and validates
@@ -169,6 +415,11 @@ func runHookSessionEnd() error {
 //   - 2: blocked — a human-readable message is printed to stdout so the agent
 //     sees it as the hook output
 func runHookEnforceDelegation() error {
+	// Deprecation warning: users should migrate to "mneme hook pre-tool-use"
+	// which reads rules from the DB rather than static config.
+	fmt.Fprintln(os.Stderr, `[mneme] WARNING: "mneme hook enforce-delegation" is deprecated. Use "mneme hook pre-tool-use" instead.`)
+	fmt.Fprintln(os.Stderr, `[mneme] Run "mneme install claude-code --reinstall-hooks" to update your settings.json.`)
+
 	cfg, err := config.Load(config.DefaultPath())
 	if err != nil {
 		// Config unreadable — allow rather than block to avoid false positives.
