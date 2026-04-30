@@ -141,3 +141,137 @@ func TestMapServiceError_SentinelCodesUnchanged(t *testing.T) {
 		t.Errorf("expected CodeInvalidParams, got CodeInternalError; message: %s", saveResp.Error.Message)
 	}
 }
+
+// TestMCP_MemSave_RuleCreated verifies that a valid rule JSON-RPC request
+// creates a memory and returns an "action":"created" response.
+func TestMCP_MemSave_RuleCreated(t *testing.T) {
+	srv := newTestServerWithSDD(t)
+
+	resp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name: "mem_save",
+		Arguments: mustMarshal(t, map[string]any{
+			"title":      "Never use time.Now() directly",
+			"content":    "Use the injected clock from the service constructor.",
+			"type":       "rule",
+			"scope":      "project",
+			"topic_key":  "rule/no-time-now",
+			"applies_to": []string{"internal/**/*.go", "!internal/**/*_test.go"},
+			"severity":   "warn",
+		}),
+	})
+	if resp.Error != nil {
+		t.Fatalf("mem_save rule: unexpected error code=%d message=%s", resp.Error.Code, resp.Error.Message)
+	}
+
+	var result struct {
+		Action   string `json:"action"`
+		TopicKey string `json:"topic_key"`
+	}
+	unmarshalToolText(t, resp, &result)
+
+	if result.Action != "created" {
+		t.Errorf("action = %q, want %q", result.Action, "created")
+	}
+	if result.TopicKey != "rule/no-time-now" {
+		t.Errorf("topic_key = %q, want %q", result.TopicKey, "rule/no-time-now")
+	}
+}
+
+// TestMCP_MemSave_RuleMissingAppliesTo verifies that a rule without applies_to
+// returns JSON-RPC error code -32602 (CodeInvalidParams).
+func TestMCP_MemSave_RuleMissingAppliesTo(t *testing.T) {
+	srv := newTestServerWithSDD(t)
+
+	resp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name: "mem_save",
+		Arguments: mustMarshal(t, map[string]any{
+			"title":    "Rule without applies_to",
+			"content":  "Should fail.",
+			"type":     "rule",
+			"severity": "warn",
+			// applies_to intentionally omitted
+		}),
+	})
+	if resp.Error == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if resp.Error.Code != CodeInvalidParams {
+		t.Errorf("error code = %d, want %d (CodeInvalidParams)", resp.Error.Code, CodeInvalidParams)
+	}
+}
+
+// TestMCP_MemSave_NonRuleWithAppliesTo verifies that a non-rule memory with
+// applies_to returns JSON-RPC error code -32602 (CodeInvalidParams).
+func TestMCP_MemSave_NonRuleWithAppliesTo(t *testing.T) {
+	srv := newTestServerWithSDD(t)
+
+	resp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name: "mem_save",
+		Arguments: mustMarshal(t, map[string]any{
+			"title":      "Architecture with applies_to",
+			"content":    "Should fail.",
+			"type":       "architecture",
+			"applies_to": []string{"internal/**"},
+		}),
+	})
+	if resp.Error == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if resp.Error.Code != CodeInvalidParams {
+		t.Errorf("error code = %d, want %d (CodeInvalidParams)", resp.Error.Code, CodeInvalidParams)
+	}
+}
+
+// TestMCP_ToolSchema_IncludesRuleFields verifies that the mem_save tool schema
+// in allTools() includes the applies_to and severity fields and that the type
+// enum contains "rule".
+func TestMCP_ToolSchema_IncludesRuleFields(t *testing.T) {
+	tools := allTools()
+
+	var memSave *ToolDefinition
+	for i := range tools {
+		if tools[i].Name == "mem_save" {
+			memSave = &tools[i]
+			break
+		}
+	}
+	if memSave == nil {
+		t.Fatal("mem_save tool not found in allTools()")
+	}
+
+	schema, ok := memSave.InputSchema.(map[string]any)
+	if !ok {
+		t.Fatal("mem_save.InputSchema is not map[string]any")
+	}
+
+	props, ok := schema["properties"].(map[string]any)
+	if !ok {
+		t.Fatal("mem_save.InputSchema.properties is not map[string]any")
+	}
+
+	if _, ok := props["applies_to"]; !ok {
+		t.Error("mem_save schema is missing applies_to property")
+	}
+	if _, ok := props["severity"]; !ok {
+		t.Error("mem_save schema is missing severity property")
+	}
+
+	typeProp, ok := props["type"].(map[string]any)
+	if !ok {
+		t.Fatal("mem_save schema 'type' property is not map[string]any")
+	}
+	enumVal, ok := typeProp["enum"].([]string)
+	if !ok {
+		t.Fatal("mem_save schema 'type' enum is not []string")
+	}
+	hasRule := false
+	for _, v := range enumVal {
+		if v == "rule" {
+			hasRule = true
+			break
+		}
+	}
+	if !hasRule {
+		t.Errorf("mem_save type enum does not include 'rule': %v", enumVal)
+	}
+}

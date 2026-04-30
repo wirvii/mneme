@@ -23,10 +23,11 @@ func allTools() []ToolDefinition {
 					},
 					"type": map[string]any{
 						"type":        "string",
-						"description": "Memory type: decision, discovery, bugfix, pattern, preference, convention, architecture, config, session_summary. Defaults to discovery.",
+						"description": "Memory type. Defaults to discovery. Use 'rule' to create a binding constraint with applies_to and severity.",
 						"enum": []string{
 							"decision", "discovery", "bugfix", "pattern",
-							"preference", "convention", "architecture", "config", "session_summary",
+							"preference", "convention", "architecture", "config",
+							"session_summary", "rule",
 						},
 					},
 					"scope": map[string]any{
@@ -61,6 +62,16 @@ func allTools() []ToolDefinition {
 						"minimum":     0.0,
 						"maximum":     1.0,
 					},
+					"applies_to": map[string]any{
+						"type":        "array",
+						"description": "Patterns this rule applies to. Required when type is 'rule'. Supports path globs (internal/**/*.go), tool selectors (tool:Edit), combined (tool:Edit+internal/**), negations (!docs/**), and global wildcard (**).",
+						"items":       map[string]any{"type": "string"},
+					},
+					"severity": map[string]any{
+						"type":        "string",
+						"description": "Enforcement level for rules. Defaults to 'warn' when type is 'rule'. Ignored for non-rule types.",
+						"enum":        []string{"info", "warn", "block"},
+					},
 				},
 			},
 		},
@@ -89,7 +100,8 @@ func allTools() []ToolDefinition {
 						"description": "Filter by memory type.",
 						"enum": []string{
 							"decision", "discovery", "bugfix", "pattern",
-							"preference", "convention", "architecture", "config", "session_summary",
+							"preference", "convention", "architecture", "config",
+							"session_summary", "rule",
 						},
 					},
 					"limit": map[string]any{
