@@ -44,6 +44,13 @@ const (
 	// TypeSessionSummary is a synthetic memory created at session end to capture
 	// what was accomplished. It decays faster than other types.
 	TypeSessionSummary MemoryType = "session_summary"
+
+	// TypeRule marks a memory as a project or global rule — a binding constraint
+	// that agents must respect. Rules differ from conventions in two ways:
+	// (1) they carry applies_to patterns and a severity level, and (2) they
+	// are immune to decay (decay_rate=0) so they remain active until
+	// explicitly revoked via mem_forget or mem_update.
+	TypeRule MemoryType = "rule"
 )
 
 // validMemoryTypes is the canonical set of known types, used by Valid() and
@@ -58,6 +65,7 @@ var validMemoryTypes = map[MemoryType]struct{}{
 	TypeArchitecture:   {},
 	TypeConfig:         {},
 	TypeSessionSummary: {},
+	TypeRule:           {},
 }
 
 // Valid reports whether the MemoryType is one of the recognised constants.
@@ -81,7 +89,40 @@ func AllMemoryTypes() []MemoryType {
 		TypeArchitecture,
 		TypeConfig,
 		TypeSessionSummary,
+		TypeRule,
 	}
+}
+
+// Severity controls how strictly a rule is enforced. It is stored as a
+// string in SQLite and validated before persistence.
+type Severity string
+
+const (
+	// SeverityInfo means the rule is advisory — the agent should consider
+	// it but is not prevented from acting.
+	SeverityInfo Severity = "info"
+
+	// SeverityWarn means the agent receives an explicit warning before
+	// the action proceeds. The hook emits the warning but does not block.
+	SeverityWarn Severity = "warn"
+
+	// SeverityBlock means the hook rejects the action entirely. The agent
+	// must find an alternative approach or request an exception.
+	SeverityBlock Severity = "block"
+)
+
+var validSeverities = map[Severity]struct{}{
+	SeverityInfo:  {},
+	SeverityWarn:  {},
+	SeverityBlock: {},
+}
+
+// Valid reports whether the Severity is one of the recognised constants.
+// An empty string is not a valid severity — callers should set a default
+// before calling Valid when processing rule SaveRequests.
+func (s Severity) Valid() bool {
+	_, ok := validSeverities[s]
+	return ok
 }
 
 // Scope controls which database and query context a memory belongs to.
@@ -194,6 +235,21 @@ type Memory struct {
 	// Files is the list of source file paths this memory is related to.
 	// Enables "show me memories about this file" queries.
 	Files []string `json:"files,omitempty"`
+
+	// AppliesTo holds the list of patterns that determine when this rule is
+	// relevant. Patterns can be file path globs (e.g. "internal/**/*.go"),
+	// tool selectors (e.g. "tool:Edit"), combined selectors
+	// ("tool:Edit+internal/**/*.go"), negations ("!docs/**"), or the global
+	// wildcard "**". Only meaningful when Type is TypeRule; for all other
+	// types this slice must be nil or empty.
+	// Stored in SQLite as a JSON-encoded TEXT column.
+	AppliesTo []string `json:"applies_to,omitempty"`
+
+	// Severity indicates how strictly this rule should be enforced.
+	// Valid values are "info" (advisory), "warn" (explicit warning), and
+	// "block" (reject the action). Only meaningful when Type is TypeRule.
+	// Stored as a TEXT column in SQLite with a CHECK constraint.
+	Severity Severity `json:"severity,omitempty"`
 }
 
 // SaveRequest carries the agent's intent to persist a memory. Title and Content
@@ -233,6 +289,15 @@ type SaveRequest struct {
 	// Importance is a pointer so the service can distinguish "not provided"
 	// (use type-based default) from "explicitly set to 0.0".
 	Importance *float64 `json:"importance,omitempty"`
+
+	// AppliesTo specifies the patterns this rule applies to. Required when
+	// Type is TypeRule; ignored for all other types.
+	AppliesTo []string `json:"applies_to,omitempty"`
+
+	// Severity specifies the enforcement level. Required when Type is
+	// TypeRule; ignored for all other types. Defaults to SeverityWarn
+	// when omitted for a rule.
+	Severity Severity `json:"severity,omitempty"`
 }
 
 // UpdateRequest carries the fields an agent wants to change on an existing memory.
@@ -256,6 +321,14 @@ type UpdateRequest struct {
 
 	// Files replaces the associated file list when non-nil.
 	Files *[]string `json:"files,omitempty"`
+
+	// AppliesTo replaces the applies_to list when non-nil.
+	// Only valid when the memory is of TypeRule.
+	AppliesTo *[]string `json:"applies_to,omitempty"`
+
+	// Severity replaces the severity when non-nil.
+	// Only valid when the memory is of TypeRule.
+	Severity *Severity `json:"severity,omitempty"`
 }
 
 // Embedding represents a vector representation of a memory's content.

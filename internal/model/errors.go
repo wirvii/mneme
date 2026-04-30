@@ -78,3 +78,21 @@ var ErrBacklogNotRefined = errors.New("backlog item must be refined before promo
 
 // ErrQualityGateFailed is returned when a spec fails a quality gate check.
 var ErrQualityGateFailed = errors.New("quality gate check failed")
+
+// ErrAppliesToRequired is returned when saving a rule without any applies_to patterns.
+// A rule without an applies_to list has no defined scope and cannot be matched
+// by the rules engine (SPEC-R3). Use ["**"] to express a global rule.
+var ErrAppliesToRequired = errors.New("applies_to is required for rules")
+
+// ErrAppliesToForbidden is returned when a non-rule memory specifies applies_to.
+// The applies_to field is only meaningful for TypeRule memories; setting it on
+// other types is a client mistake that should be surfaced explicitly.
+var ErrAppliesToForbidden = errors.New("applies_to is only valid for rules")
+
+// ErrInvalidSeverity is returned when a severity value is not one of the
+// recognised constants ("info", "warn", "block").
+var ErrInvalidSeverity = errors.New("invalid severity")
+
+// ErrEmptyPattern is returned when an applies_to entry is an empty string.
+// Empty patterns are ambiguous and cannot be matched reliably by the rules engine.
+var ErrEmptyPattern = errors.New("applies_to patterns must not be empty")

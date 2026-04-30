@@ -6,6 +6,7 @@ package model
 // summaries are transient and lose value quickly. The service layer uses these
 // when the caller does not specify an explicit importance in SaveRequest.
 var DefaultImportance = map[MemoryType]float64{
+	TypeRule:           0.95, // Rules are near-permanent constraints, ranked above architecture.
 	TypeArchitecture:   0.9,
 	TypeDecision:       0.85,
 	TypeConvention:     0.8,
@@ -23,6 +24,7 @@ var DefaultImportance = map[MemoryType]float64{
 // because it remains valid for months; session summaries decay fast because
 // they become irrelevant after a few days.
 var DefaultDecayRate = map[MemoryType]float64{
+	TypeRule:           0.0,   // Rules do not decay — they remain active until explicitly revoked.
 	TypeArchitecture:   0.005,
 	TypeDecision:       0.005,
 	TypeConvention:     0.005,

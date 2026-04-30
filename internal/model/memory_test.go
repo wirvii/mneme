@@ -19,6 +19,7 @@ func TestMemoryTypeValid(t *testing.T) {
 		{"architecture", TypeArchitecture, true},
 		{"config", TypeConfig, true},
 		{"session_summary", TypeSessionSummary, true},
+		{"rule", TypeRule, true},
 		{"empty", MemoryType(""), false},
 		{"unknown", MemoryType("unknown"), false},
 		{"mixed_case", MemoryType("Decision"), false},
@@ -68,7 +69,7 @@ func TestAllMemoryTypes(t *testing.T) {
 
 	types := AllMemoryTypes()
 
-	const wantLen = 9
+	const wantLen = 10
 	if len(types) != wantLen {
 		t.Errorf("AllMemoryTypes() returned %d types, want %d", len(types), wantLen)
 	}
@@ -118,6 +119,12 @@ func TestDefaultDecayRateCoverage(t *testing.T) {
 
 	// Every MemoryType must have a decay rate. A missing entry would be treated
 	// as zero by the decay subsystem, making that memory type immortal.
+	// TypeRule is explicitly 0.0 — rules are permanent by design and do not decay
+	// until explicitly revoked. Any future "immortal" type should also be listed here.
+	exemptFromDecay := map[MemoryType]bool{
+		TypeRule: true,
+	}
+
 	for _, mt := range AllMemoryTypes() {
 		mt := mt
 		t.Run(string(mt), func(t *testing.T) {
@@ -126,8 +133,39 @@ func TestDefaultDecayRateCoverage(t *testing.T) {
 			if !ok {
 				t.Errorf("DefaultDecayRate is missing entry for MemoryType %q", mt)
 			}
-			if val <= 0.0 {
-				t.Errorf("DefaultDecayRate[%q] = %v, must be > 0 (zero means no decay)", mt, val)
+			if val < 0.0 {
+				t.Errorf("DefaultDecayRate[%q] = %v, must be >= 0", mt, val)
+			}
+			if !exemptFromDecay[mt] && val <= 0.0 {
+				t.Errorf("DefaultDecayRate[%q] = %v, must be > 0 (zero means no decay; add to exemptFromDecay if intentional)", mt, val)
+			}
+		})
+	}
+}
+
+func TestSeverityValid(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name  string
+		input Severity
+		want  bool
+	}{
+		{"info", SeverityInfo, true},
+		{"warn", SeverityWarn, true},
+		{"block", SeverityBlock, true},
+		{"empty", Severity(""), false},
+		{"critical", Severity("critical"), false},
+		{"upper", Severity("WARN"), false},
+		{"numeric", Severity("1"), false},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := tc.input.Valid(); got != tc.want {
+				t.Errorf("Severity(%q).Valid() = %v, want %v", tc.input, got, tc.want)
 			}
 		})
 	}
