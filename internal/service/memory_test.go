@@ -319,3 +319,190 @@ func TestSave_GlobalScope_UsesGlobalStore(t *testing.T) {
 		}
 	}
 }
+
+// TestService_Save_RuleValidation verifies the full truth table from SPEC-001 §6.
+func TestService_Save_RuleValidation(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+
+	tests := []struct {
+		name      string
+		req       model.SaveRequest
+		wantErr   error
+		wantOK    bool
+	}{
+		{
+			name: "rule with valid applies_to and severity",
+			req: model.SaveRequest{
+				Title:     "No time.Now",
+				Content:   "Use injected clock.",
+				Type:      model.TypeRule,
+				AppliesTo: []string{"internal/**/*.go"},
+				Severity:  model.SeverityWarn,
+			},
+			wantOK: true,
+		},
+		{
+			name: "rule with omitted severity defaults to warn",
+			req: model.SaveRequest{
+				Title:     "No time.Now default severity",
+				Content:   "Use injected clock.",
+				Type:      model.TypeRule,
+				AppliesTo: []string{"internal/**/*.go"},
+				// Severity omitted
+			},
+			wantOK: true,
+		},
+		{
+			name: "rule with block severity",
+			req: model.SaveRequest{
+				Title:     "No vendor edits block",
+				Content:   "Use go mod vendor.",
+				Type:      model.TypeRule,
+				AppliesTo: []string{"vendor/**"},
+				Severity:  model.SeverityBlock,
+			},
+			wantOK: true,
+		},
+		{
+			name: "rule with info severity",
+			req: model.SaveRequest{
+				Title:     "Prefer server components info",
+				Content:   "Advisory rule.",
+				Type:      model.TypeRule,
+				AppliesTo: []string{"**/*.tsx"},
+				Severity:  model.SeverityInfo,
+			},
+			wantOK: true,
+		},
+		{
+			name: "rule with invalid severity",
+			req: model.SaveRequest{
+				Title:     "Bad severity",
+				Content:   "Content.",
+				Type:      model.TypeRule,
+				AppliesTo: []string{"**"},
+				Severity:  "critical",
+			},
+			wantErr: model.ErrInvalidSeverity,
+		},
+		{
+			name: "rule with empty applies_to slice",
+			req: model.SaveRequest{
+				Title:     "No applies_to",
+				Content:   "Content.",
+				Type:      model.TypeRule,
+				AppliesTo: []string{},
+				Severity:  model.SeverityWarn,
+			},
+			wantErr: model.ErrAppliesToRequired,
+		},
+		{
+			name: "rule with nil applies_to",
+			req: model.SaveRequest{
+				Title:    "Nil applies_to",
+				Content:  "Content.",
+				Type:     model.TypeRule,
+				Severity: model.SeverityWarn,
+			},
+			wantErr: model.ErrAppliesToRequired,
+		},
+		{
+			name: "rule with empty string in applies_to",
+			req: model.SaveRequest{
+				Title:     "Empty pattern",
+				Content:   "Content.",
+				Type:      model.TypeRule,
+				AppliesTo: []string{"", "internal/**"},
+				Severity:  model.SeverityWarn,
+			},
+			wantErr: model.ErrEmptyPattern,
+		},
+		{
+			name: "architecture with applies_to forbidden",
+			req: model.SaveRequest{
+				Title:     "Architecture with applies_to",
+				Content:   "Content.",
+				Type:      model.TypeArchitecture,
+				AppliesTo: []string{"internal/**"},
+			},
+			wantErr: model.ErrAppliesToForbidden,
+		},
+		{
+			name: "decision with applies_to forbidden",
+			req: model.SaveRequest{
+				Title:     "Decision with applies_to",
+				Content:   "Content.",
+				Type:      model.TypeDecision,
+				AppliesTo: []string{"x"},
+			},
+			wantErr: model.ErrAppliesToForbidden,
+		},
+		{
+			name: "discovery ignores severity gracefully",
+			req: model.SaveRequest{
+				Title:    "Discovery with severity",
+				Content:  "Content.",
+				Type:     model.TypeDiscovery,
+				Severity: model.SeverityWarn,
+				// No applies_to — should succeed; severity is ignored
+			},
+			wantOK: true,
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			resp, err := svc.Save(ctx, tc.req)
+			if tc.wantErr != nil {
+				if err == nil {
+					t.Fatalf("expected error %v, got nil", tc.wantErr)
+				}
+				if !errors.Is(err, tc.wantErr) {
+					t.Errorf("expected error %v, got %v", tc.wantErr, err)
+				}
+				return
+			}
+			if tc.wantOK && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if resp == nil {
+				t.Fatal("expected non-nil response")
+			}
+		})
+	}
+}
+
+// TestService_Save_RuleDefaults verifies that a rule saved with minimal params
+// gets importance=0.95, decay_rate=0, and severity=warn applied.
+func TestService_Save_RuleDefaults(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+
+	resp, err := svc.Save(ctx, model.SaveRequest{
+		Title:     "Minimal rule",
+		Content:   "Rule content.",
+		Type:      model.TypeRule,
+		AppliesTo: []string{"**"},
+		// Importance and Severity intentionally omitted
+	})
+	if err != nil {
+		t.Fatalf("Save rule: %v", err)
+	}
+
+	mem, err := svc.Get(ctx, resp.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+
+	if mem.Importance != 0.95 {
+		t.Errorf("Importance = %v, want 0.95", mem.Importance)
+	}
+	if mem.DecayRate != 0.0 {
+		t.Errorf("DecayRate = %v, want 0.0", mem.DecayRate)
+	}
+	if mem.Severity != model.SeverityWarn {
+		t.Errorf("Severity = %q, want %q", mem.Severity, model.SeverityWarn)
+	}
+}

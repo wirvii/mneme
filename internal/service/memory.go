@@ -99,6 +99,33 @@ func (svc *MemoryService) Save(ctx context.Context, req model.SaveRequest) (*mod
 		return nil, fmt.Errorf("service: save: %w", model.ErrInvalidScope)
 	}
 
+	// Validate and normalise rule-specific fields. Rules require a non-empty
+	// applies_to list. Non-rules must not carry applies_to. Severity defaults
+	// to "warn" when omitted for rules; non-rules always get empty severity.
+	if req.Type == model.TypeRule {
+		if len(req.AppliesTo) == 0 {
+			return nil, fmt.Errorf("service: save: %w", model.ErrAppliesToRequired)
+		}
+		for _, p := range req.AppliesTo {
+			if p == "" {
+				return nil, fmt.Errorf("service: save: %w", model.ErrEmptyPattern)
+			}
+		}
+		if req.Severity == "" {
+			req.Severity = model.SeverityWarn
+		}
+		if !req.Severity.Valid() {
+			return nil, fmt.Errorf("service: save: %w", model.ErrInvalidSeverity)
+		}
+	} else {
+		if len(req.AppliesTo) > 0 {
+			return nil, fmt.Errorf("service: save: %w", model.ErrAppliesToForbidden)
+		}
+		// Normalise severity to empty for non-rules so it is stored as ''
+		// in the database, consistent with the CHECK constraint default.
+		req.Severity = ""
+	}
+
 	if req.Project == "" {
 		req.Project = svc.project
 	}
@@ -119,6 +146,8 @@ func (svc *MemoryService) Save(ctx context.Context, req model.SaveRequest) (*mod
 		Importance: importance,
 		Confidence: model.DefaultConfidence,
 		DecayRate:  decayRate,
+		AppliesTo:  req.AppliesTo,
+		Severity:   req.Severity,
 	}
 
 	targetStore := svc.storeFor(m.Scope)
