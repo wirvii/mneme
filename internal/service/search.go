@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sort"
 	"time"
 
@@ -19,6 +20,23 @@ const weightFTS5 = 1.0
 // weightVector is the RRF contribution weight for the vector similarity list.
 // Slightly lower than FTS5 because TF-IDF embeddings are approximate signals.
 const weightVector = 0.8
+
+// weightGraph is the RRF contribution weight for the 1-hop graph expansion
+// channel. Lower than both FTS5 and vector because graph proximity is an
+// indirect signal (topology, not content). High enough to surface strongly
+// connected memories that both text channels miss.
+const weightGraph = 0.6
+
+// graphResult holds a memory discovered via 1-hop graph expansion.
+// Used internally in the service layer; not exposed to any frontend.
+type graphResult struct {
+	// MemoryID is the UUIDv7 of the discovered memory.
+	MemoryID string
+
+	// GraphScore is max(rel_weight × 1/seed_rank) over all paths that led
+	// to this memory. Used for building RankedResult entries.
+	GraphScore float64
+}
 
 // Search performs a hybrid retrieval combining FTS5 BM25 and vector similarity
 // when an embedder is active. Results are fused with Reciprocal Rank Fusion
@@ -77,10 +95,20 @@ func (svc *MemoryService) Search(ctx context.Context, req model.SearchRequest) (
 		}
 	}
 
+	// Resolve include_graph: nil means "use config default (true)".
+	includeGraph := svc.config.Graph.ExpansionEnabled
+	if req.IncludeGraph != nil {
+		includeGraph = *req.IncludeGraph
+	}
+
 	// === Fusion ===
+	// Always use fuseAndRank when graph expansion is enabled, or when vector
+	// results are available, so that graph expansion can augment even FTS5-only
+	// queries. Fall back to the simpler reRankFTS5 path only when both vector
+	// search and graph expansion are inactive.
 	var results []model.SearchResult
-	if len(vectorResults) > 0 {
-		results = svc.fuseAndRank(ctx, ftsResults, vectorResults, limit)
+	if len(vectorResults) > 0 || includeGraph {
+		results = svc.fuseAndRank(ctx, ftsResults, vectorResults, limit, includeGraph)
 	} else {
 		// Fallback: FTS5-only with the existing re-ranking logic.
 		results = svc.reRankFTS5(ftsResults)
@@ -190,14 +218,20 @@ func (svc *MemoryService) vectorSearchAll(ctx context.Context, queryVec []float3
 	return r
 }
 
-// fuseAndRank merges FTS5 and vector results using RRF, then assembles
-// SearchResult values with VectorScore populated for transparency.
+// fuseAndRank merges FTS5, vector, and (optionally) graph expansion results
+// using Reciprocal Rank Fusion (RRF), then assembles SearchResult values with
+// VectorScore populated for transparency.
+//
+// When includeGraph is true and Graph.ExpansionEnabled is set in config, the
+// function performs a preliminary 2-channel fusion to identify top-K seeds,
+// expands them via the knowledge graph, and adds graph results as a third RRF
+// channel (weightGraph=0.6).
 //
 // When a memory appears only in vector results (no FTS5 match), it is loaded
 // from the store so that semantic-only hits are not silently dropped. This is
 // the core guarantee of hybrid retrieval: a query like "authentication flow"
 // must surface memories about JWT auth even when FTS5 finds no token overlap.
-func (svc *MemoryService) fuseAndRank(ctx context.Context, ftsResults []model.SearchResult, vectorResults []store.VectorResult, limit int) []model.SearchResult {
+func (svc *MemoryService) fuseAndRank(ctx context.Context, ftsResults []model.SearchResult, vectorResults []store.VectorResult, limit int, includeGraph bool) []model.SearchResult {
 	// Convert FTS5 results into RankedResults (1-based rank).
 	ftsRanks := make([]scoring.RankedResult, len(ftsResults))
 	for i, r := range ftsResults {
@@ -218,7 +252,37 @@ func (svc *MemoryService) fuseAndRank(ctx context.Context, ftsResults []model.Se
 		}
 	}
 
-	all := append(ftsRanks, vecRanks...)
+	// === Signal 3: Graph expansion (new in SPEC-007) ===
+	var graphRanks []scoring.RankedResult
+	if includeGraph {
+		// Preliminary 2-channel fusion to identify seeds.
+		preliminary := scoring.RRFScore(append(ftsRanks, vecRanks...), scoring.DefaultRRFK)
+		topK := svc.config.Graph.ExpansionSeedTopK
+		if topK > len(preliminary) {
+			topK = len(preliminary)
+		}
+		if topK > 0 {
+			seedIDs := make([]string, topK)
+			for i := 0; i < topK; i++ {
+				seedIDs[i] = preliminary[i].ID
+			}
+
+			graphResults, touchIDs := svc.graphExpand(ctx, seedIDs)
+			graphRanks = make([]scoring.RankedResult, len(graphResults))
+			for i, gr := range graphResults {
+				graphRanks[i] = scoring.RankedResult{
+					ID:     gr.MemoryID,
+					Rank:   i + 1,
+					Weight: weightGraph,
+				}
+			}
+
+			// Touch traversed relations asynchronously (best-effort timestamp update).
+			svc.batchTouchRelations(ctx, touchIDs)
+		}
+	}
+
+	all := append(append(ftsRanks, vecRanks...), graphRanks...)
 	fused := scoring.RRFScore(all, scoring.DefaultRRFK)
 
 	// Build a lookup map for fast access to FTS5 results by ID.
@@ -316,6 +380,142 @@ func (svc *MemoryService) fuseAndRank(ctx context.Context, ftsResults []model.Se
 	}
 
 	return results
+}
+
+// graphExpand performs a 1-hop graph expansion from a set of seed memory IDs.
+// For each seed (ordered by its rank in seedIDs), it:
+//  1. Loads the entities linked to the seed memory.
+//  2. Queries strong relations (weight > ExpansionThreshold) for each entity.
+//  3. Maps neighbor entities back to their memory IDs.
+//  4. Scores each discovered memory as max(rel_weight × 1/seed_rank).
+//
+// Returns the discovered memories sorted by GraphScore descending and a slice
+// of relation IDs that should be touched (last_traversed_at updated).
+//
+// Operates exclusively on projectStore — cross-scope expansion is not supported
+// (same constraint as SPEC-006 D1: relations live within a single DB).
+func (svc *MemoryService) graphExpand(ctx context.Context, seedIDs []string) ([]graphResult, []string) {
+	cfg := svc.config.Graph
+	accumulated := make(map[string]float64, len(seedIDs)*5) // memoryID → max graph score
+	var touchIDs []string
+
+	slog.InfoContext(ctx, "graph expansion start",
+		"event", "graph_expansion",
+		"seeds_count", len(seedIDs),
+	)
+
+	for rank, seedID := range seedIDs {
+		seedWeight := 1.0 / float64(rank+1) // inverse rank, 1-based
+
+		// Step 1: Get entities linked to this seed memory.
+		entities, err := svc.projectStore.GetMemoryEntities(ctx, seedID)
+		if err != nil || len(entities) == 0 {
+			continue
+		}
+
+		// Step 2: For each entity, query strong relations.
+		// neighborEntityID → slice of relations connecting to it from this seed's entities.
+		neighborRelations := make(map[string][]*model.Relation)
+
+		for _, entity := range entities {
+			rels, err := svc.projectStore.GetStrongRelations(ctx, entity.ID, cfg.ExpansionThreshold, cfg.ExpansionFanOutCap)
+			if err != nil {
+				continue
+			}
+			for _, rel := range rels {
+				// Determine the "other end" of the relation from this entity's perspective.
+				neighborEntityID := rel.TargetID
+				if rel.TargetID == entity.ID {
+					neighborEntityID = rel.SourceID
+				}
+				neighborRelations[neighborEntityID] = append(neighborRelations[neighborEntityID], rel)
+				touchIDs = append(touchIDs, rel.ID)
+			}
+		}
+
+		// Step 3: For each neighbor entity, find memories and score them.
+		for neighborEntityID, rels := range neighborRelations {
+			// Maximum relation weight to this neighbor.
+			maxWeight := 0.0
+			for _, rel := range rels {
+				if rel.Weight > maxWeight {
+					maxWeight = rel.Weight
+				}
+			}
+
+			memIDs, err := svc.projectStore.GetEntityMemoryIDs(ctx, neighborEntityID)
+			if err != nil {
+				continue
+			}
+			for _, memID := range memIDs {
+				if memID == seedID {
+					continue // don't re-score the seed itself
+				}
+				score := maxWeight * seedWeight
+				// Use max (not sum) to avoid inflating hub nodes.
+				if score > accumulated[memID] {
+					accumulated[memID] = score
+				}
+			}
+		}
+	}
+
+	if len(accumulated) == 0 {
+		slog.InfoContext(ctx, "graph expansion done",
+			"event", "graph_expansion",
+			"neighbors_found", 0,
+			"relations_touched", len(touchIDs),
+		)
+		return nil, touchIDs
+	}
+
+	// Build sorted results slice.
+	results := make([]graphResult, 0, len(accumulated))
+	for memID, score := range accumulated {
+		results = append(results, graphResult{MemoryID: memID, GraphScore: score})
+	}
+	sort.Slice(results, func(i, j int) bool {
+		if results[i].GraphScore != results[j].GraphScore {
+			return results[i].GraphScore > results[j].GraphScore
+		}
+		return results[i].MemoryID < results[j].MemoryID
+	})
+
+	slog.InfoContext(ctx, "graph expansion done",
+		"event", "graph_expansion",
+		"neighbors_found", len(results),
+		"relations_touched", len(touchIDs),
+	)
+
+	return results, touchIDs
+}
+
+// batchTouchRelations updates last_traversed_at for a deduplicated set of
+// relation IDs. Best-effort: failures are logged but never propagated to the
+// caller since search results are not affected by a failed timestamp update.
+func (svc *MemoryService) batchTouchRelations(ctx context.Context, relationIDs []string) {
+	if len(relationIDs) == 0 {
+		return
+	}
+
+	// Dedup: a relation can appear multiple times if it connects entities
+	// that are both linked to different seeds.
+	seen := make(map[string]bool, len(relationIDs))
+	unique := make([]string, 0, len(relationIDs))
+	for _, id := range relationIDs {
+		if !seen[id] {
+			seen[id] = true
+			unique = append(unique, id)
+		}
+	}
+
+	if err := svc.projectStore.BatchTouchRelations(ctx, unique, time.Now().UTC()); err != nil {
+		slog.WarnContext(ctx, "graph expansion: batch touch failed",
+			"event", "graph_touch_error",
+			"count", len(unique),
+			"error", err,
+		)
+	}
 }
 
 // reRankFTS5 applies the existing time-decay + importance re-ranking over a
