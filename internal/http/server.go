@@ -349,6 +349,10 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		}
 		req.Limit = n
 	}
+	if igStr := r.URL.Query().Get("include_graph"); igStr != "" {
+		b := igStr == "true" || igStr == "1"
+		req.IncludeGraph = &b
+	}
 
 	resp, err := s.svc.Search(r.Context(), req)
 	if err != nil {

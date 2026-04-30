@@ -19,6 +19,7 @@ func newSearchCmd() *cobra.Command {
 		flagLimit int
 		flagFull  bool
 		flagJSON  bool
+		flagGraph bool
 	)
 
 	cmd := &cobra.Command{
@@ -43,8 +44,9 @@ below each result row.`,
 			defer cleanup()
 
 			req := model.SearchRequest{
-				Query: query,
-				Limit: flagLimit,
+				Query:        query,
+				Limit:        flagLimit,
+				IncludeGraph: &flagGraph,
 			}
 			if flagScope != "" && flagScope != "all" {
 				scope := model.Scope(flagScope)
@@ -110,6 +112,7 @@ below each result row.`,
 	cmd.Flags().IntVarP(&flagLimit, "limit", "n", 10, "Max results")
 	cmd.Flags().BoolVar(&flagFull, "full", false, "Show full content below each result")
 	cmd.Flags().BoolVar(&flagJSON, "json", false, "Output as JSON")
+	cmd.Flags().BoolVar(&flagGraph, "graph", true, "Enable graph expansion (use --no-graph to disable)")
 
 	return cmd
 }

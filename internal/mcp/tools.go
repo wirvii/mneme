@@ -114,6 +114,10 @@ func allTools() []ToolDefinition {
 						"type":        "boolean",
 						"description": "Include memories superseded by newer versions. Defaults to false.",
 					},
+					"include_graph": map[string]any{
+						"type":        "boolean",
+						"description": "Enable 1-hop graph expansion. Augments BM25+vector results with topologically related memories from the knowledge graph. Defaults to true (use false to disable for this request only).",
+					},
 				},
 			},
 		},
