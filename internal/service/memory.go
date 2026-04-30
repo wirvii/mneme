@@ -334,6 +334,119 @@ func (svc *MemoryService) List(ctx context.Context, opts store.ListOptions) ([]*
 	return memories, nil
 }
 
+// ListRulesOptions parameterises a ListRules query.
+type ListRulesOptions struct {
+	// Scope restricts results. Empty or "all" queries both stores.
+	Scope string
+
+	// Severity filters by severity. Empty means all severities.
+	Severity model.Severity
+
+	// Limit caps results after merge. Defaults to 50 when zero.
+	Limit int
+}
+
+// ListRules returns active rule-type memories from the project and/or global
+// stores, sorted by severity descending, importance descending, and then
+// updated_at descending. When opts.Scope is empty or "all" both stores are
+// queried and their results merged. Severity filtering is applied post-merge.
+func (svc *MemoryService) ListRules(ctx context.Context, opts ListRulesOptions) ([]*model.Memory, error) {
+	limit := opts.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+
+	var merged []*model.Memory
+
+	// Query project store unless the caller requested global only.
+	if opts.Scope == "" || opts.Scope == "all" || opts.Scope == string(model.ScopeProject) {
+		projectRules, err := svc.projectStore.List(ctx, store.ListOptions{
+			Project: svc.project,
+			Type:    model.TypeRule,
+			OrderBy: "importance DESC, updated_at DESC",
+			Limit:   limit,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("service: list rules: project store: %w", err)
+		}
+		merged = append(merged, projectRules...)
+	}
+
+	// Query global store unless the caller requested project only.
+	if opts.Scope == "" || opts.Scope == "all" || opts.Scope == string(model.ScopeGlobal) {
+		globalRules, err := svc.globalStore.List(ctx, store.ListOptions{
+			Type:    model.TypeRule,
+			OrderBy: "importance DESC, updated_at DESC",
+			Limit:   limit,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("service: list rules: global store: %w", err)
+		}
+		merged = append(merged, globalRules...)
+	}
+
+	// Apply severity filter post-merge.
+	if opts.Severity != "" {
+		filtered := merged[:0]
+		for _, m := range merged {
+			if m.Severity == opts.Severity {
+				filtered = append(filtered, m)
+			}
+		}
+		merged = filtered
+	}
+
+	// Stable sort: severity desc, importance desc, updated_at desc.
+	sortRules(merged)
+
+	// Apply limit to the merged+filtered result.
+	if len(merged) > limit {
+		merged = merged[:limit]
+	}
+
+	return merged, nil
+}
+
+// sortRules sorts rule memories by severity descending, importance descending,
+// then updated_at descending. This is the canonical ordering used for displaying
+// rules to users and for context injection.
+func sortRules(rules []*model.Memory) {
+	sevOrder := func(s model.Severity) int {
+		switch s {
+		case model.SeverityBlock:
+			return 3
+		case model.SeverityWarn:
+			return 2
+		case model.SeverityInfo:
+			return 1
+		default:
+			return 0
+		}
+	}
+
+	// Use a simple insertion-style stable sort via sort.SliceStable.
+	n := len(rules)
+	for i := 1; i < n; i++ {
+		for j := i; j > 0; j-- {
+			a, b := rules[j-1], rules[j]
+			sa, sb := sevOrder(a.Severity), sevOrder(b.Severity)
+			if sa < sb {
+				rules[j-1], rules[j] = rules[j], rules[j-1]
+				continue
+			}
+			if sa == sb && a.Importance < b.Importance {
+				rules[j-1], rules[j] = rules[j], rules[j-1]
+				continue
+			}
+			if sa == sb && a.Importance == b.Importance && a.UpdatedAt.Before(b.UpdatedAt) {
+				rules[j-1], rules[j] = rules[j], rules[j-1]
+				continue
+			}
+			break
+		}
+	}
+}
+
 // ExportToFile exports all active memories for the service's current project to
 // a gzip-compressed JSONL archive at <dir>/.mneme/sync/<slug>.jsonl.gz. It
 // delegates to sync.ExportToFile and returns the archive path, an ExportResult

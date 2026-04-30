@@ -506,3 +506,145 @@ func TestService_Save_RuleDefaults(t *testing.T) {
 		t.Errorf("Severity = %q, want %q", mem.Severity, model.SeverityWarn)
 	}
 }
+
+// saveRuleScoped is a test helper that persists a rule with explicit scope.
+func saveRuleScoped(t *testing.T, svc *service.MemoryService, title string, severity model.Severity, scope model.Scope) string {
+	t.Helper()
+	resp, err := svc.Save(context.Background(), model.SaveRequest{
+		Title:     title,
+		Content:   title + " content.",
+		Type:      model.TypeRule,
+		AppliesTo: []string{"**/*.go"},
+		Severity:  severity,
+		Scope:     scope,
+	})
+	if err != nil {
+		t.Fatalf("saveRuleScoped %q: %v", title, err)
+	}
+	return resp.ID
+}
+
+func TestListRules_AllScopes(t *testing.T) {
+	svc := newTestService(t)
+
+	saveRuleScoped(t, svc, "Project block rule", model.SeverityBlock, model.ScopeProject)
+	saveRuleScoped(t, svc, "Project warn rule", model.SeverityWarn, model.ScopeProject)
+	saveRuleScoped(t, svc, "Global info rule", model.SeverityInfo, model.ScopeGlobal)
+
+	rules, err := svc.ListRules(context.Background(), service.ListRulesOptions{})
+	if err != nil {
+		t.Fatalf("ListRules: %v", err)
+	}
+	if len(rules) != 3 {
+		t.Errorf("got %d rules, want 3", len(rules))
+	}
+}
+
+func TestListRules_ProjectOnly(t *testing.T) {
+	svc := newTestService(t)
+
+	saveRuleScoped(t, svc, "Project rule", model.SeverityWarn, model.ScopeProject)
+	saveRuleScoped(t, svc, "Global rule", model.SeverityInfo, model.ScopeGlobal)
+
+	rules, err := svc.ListRules(context.Background(), service.ListRulesOptions{Scope: "project"})
+	if err != nil {
+		t.Fatalf("ListRules: %v", err)
+	}
+	if len(rules) != 1 {
+		t.Errorf("got %d rules, want 1", len(rules))
+	}
+	if rules[0].Title != "Project rule" {
+		t.Errorf("got title %q, want %q", rules[0].Title, "Project rule")
+	}
+}
+
+func TestListRules_GlobalOnly(t *testing.T) {
+	svc := newTestService(t)
+
+	saveRuleScoped(t, svc, "Project rule", model.SeverityWarn, model.ScopeProject)
+	saveRuleScoped(t, svc, "Global rule", model.SeverityInfo, model.ScopeGlobal)
+
+	rules, err := svc.ListRules(context.Background(), service.ListRulesOptions{Scope: "global"})
+	if err != nil {
+		t.Fatalf("ListRules: %v", err)
+	}
+	if len(rules) != 1 {
+		t.Errorf("got %d rules, want 1", len(rules))
+	}
+	if rules[0].Title != "Global rule" {
+		t.Errorf("got title %q, want %q", rules[0].Title, "Global rule")
+	}
+}
+
+func TestListRules_FilterBySeverity(t *testing.T) {
+	svc := newTestService(t)
+
+	saveRuleScoped(t, svc, "Block rule", model.SeverityBlock, model.ScopeProject)
+	saveRuleScoped(t, svc, "Warn rule", model.SeverityWarn, model.ScopeProject)
+	saveRuleScoped(t, svc, "Info rule", model.SeverityInfo, model.ScopeProject)
+
+	rules, err := svc.ListRules(context.Background(), service.ListRulesOptions{Severity: model.SeverityBlock})
+	if err != nil {
+		t.Fatalf("ListRules: %v", err)
+	}
+	if len(rules) != 1 {
+		t.Errorf("got %d rules, want 1", len(rules))
+	}
+	if rules[0].Severity != model.SeverityBlock {
+		t.Errorf("severity = %q, want block", rules[0].Severity)
+	}
+}
+
+func TestListRules_SortOrder(t *testing.T) {
+	svc := newTestService(t)
+
+	// Insert in reverse order of expected output.
+	saveRuleScoped(t, svc, "Info rule", model.SeverityInfo, model.ScopeProject)
+	saveRuleScoped(t, svc, "Block rule", model.SeverityBlock, model.ScopeProject)
+	saveRuleScoped(t, svc, "Warn rule", model.SeverityWarn, model.ScopeProject)
+
+	rules, err := svc.ListRules(context.Background(), service.ListRulesOptions{})
+	if err != nil {
+		t.Fatalf("ListRules: %v", err)
+	}
+	if len(rules) != 3 {
+		t.Fatalf("got %d rules, want 3", len(rules))
+	}
+	if rules[0].Severity != model.SeverityBlock {
+		t.Errorf("[0] severity = %q, want block", rules[0].Severity)
+	}
+	if rules[1].Severity != model.SeverityWarn {
+		t.Errorf("[1] severity = %q, want warn", rules[1].Severity)
+	}
+	if rules[2].Severity != model.SeverityInfo {
+		t.Errorf("[2] severity = %q, want info", rules[2].Severity)
+	}
+}
+
+func TestListRules_EmptyDB(t *testing.T) {
+	svc := newTestService(t)
+
+	rules, err := svc.ListRules(context.Background(), service.ListRulesOptions{})
+	if err != nil {
+		t.Fatalf("ListRules: unexpected error: %v", err)
+	}
+	if len(rules) != 0 {
+		t.Errorf("got %d rules, want 0", len(rules))
+	}
+}
+
+func TestListRules_Limit(t *testing.T) {
+	svc := newTestService(t)
+
+	for i := 0; i < 5; i++ {
+		saveRuleScoped(t, svc, "Rule", model.SeverityWarn, model.ScopeProject)
+	}
+
+	rules, err := svc.ListRules(context.Background(), service.ListRulesOptions{Limit: 3})
+	if err != nil {
+		t.Fatalf("ListRules: %v", err)
+	}
+	if len(rules) != 3 {
+		t.Errorf("got %d rules, want 3", len(rules))
+	}
+}
