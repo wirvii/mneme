@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -88,7 +89,13 @@ func runHookSessionStart(ctx context.Context) error {
 
 // printContextHook writes the context response as a structured markdown block
 // to w. This is what the agent receives and injects into its working context.
-func printContextHook(w *os.File, resp *model.ContextResponse) {
+//
+// The output order is:
+//  1. Last Session (if any)
+//  2. Active Rules (if any) — always before general memories so the LLM sees
+//     constraints before content
+//  3. Loaded Memories
+func printContextHook(w io.Writer, resp *model.ContextResponse) {
 	fmt.Fprintf(w, "<!-- mneme:context:start -->\n")
 	fmt.Fprintf(w, "# mneme — Session Context\n\n")
 
@@ -104,12 +111,32 @@ func printContextHook(w *os.File, resp *model.ContextResponse) {
 		fmt.Fprintf(w, "%s\n\n", resp.LastSession.Summary)
 	}
 
+	// Render the Active Rules section before general memories so the LLM
+	// encounters constraints (especially block-severity rules) as early as
+	// possible in the injected context.
+	if len(resp.Rules) > 0 {
+		fmt.Fprintf(w, "## Active Rules (%d rules, ~%d tokens)\n\n",
+			resp.RulesCount, resp.RulesTokens)
+		for _, r := range resp.Rules {
+			fmt.Fprintf(w, "### [%s] %s\n", strings.ToUpper(string(r.Severity)), r.Title)
+			fmt.Fprintf(w, "%s\n", r.Content)
+			if len(r.AppliesTo) > 0 {
+				fmt.Fprintf(w, "_Applies to: %s_\n", strings.Join(r.AppliesTo, ", "))
+			}
+			fmt.Fprintf(w, "\n---\n\n")
+		}
+		if resp.RulesTruncated > 0 {
+			fmt.Fprintf(w, "_(%d rules truncated — increase rules_budget in config)_\n\n",
+				resp.RulesTruncated)
+		}
+	}
+
 	if len(resp.Memories) > 0 {
 		fmt.Fprintf(w, "## Loaded Memories (%d of %d)\n\n", resp.Included, resp.TotalAvailable)
 		for _, m := range resp.Memories {
 			fmt.Fprintf(w, "### [%s] %s\n\n%s\n\n", m.Type, m.Title, m.Content)
 		}
-	} else if resp.TotalAvailable == 0 {
+	} else if resp.TotalAvailable == 0 && len(resp.Rules) == 0 {
 		fmt.Fprintf(w, "## No Memories Found\n\n")
 		fmt.Fprintf(w, "This project has no memories yet. Run `/mneme-init` to seed foundational knowledge.\n\n")
 	}
