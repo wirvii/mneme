@@ -70,6 +70,7 @@ in a local SQLite database and exposes them via MCP for agent integration.`,
 		newBacklogCmd(),
 		newSpecCmd(),
 		newInitCmd(),
+		newRuleCmd(),
 	)
 
 	return root
