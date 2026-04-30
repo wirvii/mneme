@@ -400,3 +400,204 @@ func TestRun_FullCycle(t *testing.T) {
 		t.Errorf("duration: want >0, got %s", result.Duration)
 	}
 }
+
+// ─── Edge decay tests ─────────────────────────────────────────────────────────
+
+// newPipelineWithDecay returns a Pipeline with edge decay enabled at the given
+// rate and grace period (in days). The project budget is set high enough that
+// budget enforcement does not interfere with these tests.
+func newPipelineWithDecay(s *store.MemoryStore, rate float64, graceDays int) *consolidation.Pipeline {
+	cfg := config.Default()
+	cfg.Storage.ProjectBudget = 100000
+	cfg.Storage.GlobalBudget = 100000
+	cfg.Graph.EdgeDecayRate = rate
+	cfg.Graph.EdgeDecayAfterDays = graceDays
+	return consolidation.NewPipeline(s, cfg, discardLogger()).WithProject("proj")
+}
+
+// createEntities is a helper that creates two named entities and returns their IDs.
+func createEntities(t *testing.T, s *store.MemoryStore, nameA, nameB string) (string, string) {
+	t.Helper()
+	ctx := context.Background()
+	a, err := s.CreateEntity(ctx, &model.Entity{Name: nameA, Kind: model.KindModule, Project: "proj"})
+	if err != nil {
+		t.Fatalf("CreateEntity %q: %v", nameA, err)
+	}
+	b, err := s.CreateEntity(ctx, &model.Entity{Name: nameB, Kind: model.KindModule, Project: "proj"})
+	if err != nil {
+		t.Fatalf("CreateEntity %q: %v", nameB, err)
+	}
+	return a.ID, b.ID
+}
+
+// TestPipeline_EdgeDecay_Applied verifies that an old relation (60 days since
+// last traversal) is decayed when EdgeDecayRate > 0.
+func TestPipeline_EdgeDecay_Applied(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	aID, bID := createEntities(t, s, "svc-A", "svc-B")
+
+	old := time.Now().UTC().AddDate(0, 0, -60)
+	rel, err := s.CreateRelation(ctx, &model.Relation{
+		SourceID:        aID,
+		TargetID:        bID,
+		Type:            model.RelRelatedTo,
+		Weight:          0.5,
+		LastTraversedAt: old,
+	})
+	if err != nil {
+		t.Fatalf("CreateRelation: %v", err)
+	}
+
+	p := newPipelineWithDecay(s, 0.02, 30)
+	result, err := p.Run(ctx)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.EdgeDecayed != 1 {
+		t.Errorf("EdgeDecayed = %d, want 1", result.EdgeDecayed)
+	}
+
+	// Verify weight decreased.
+	got, err := s.FindRelation(ctx, aID, bID, model.RelRelatedTo)
+	if err != nil {
+		t.Fatalf("FindRelation: %v", err)
+	}
+	if got == nil {
+		t.Fatal("relation disappeared after decay")
+	}
+	if got.ID != rel.ID {
+		t.Error("different relation returned after decay")
+	}
+	if got.Weight >= 0.5 {
+		t.Errorf("weight = %f, want < 0.5 (decayed)", got.Weight)
+	}
+}
+
+// TestPipeline_EdgeDecay_GracePeriodRespected verifies that a recently-traversed
+// relation is not decayed when within the grace period.
+func TestPipeline_EdgeDecay_GracePeriodRespected(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	aID, bID := createEntities(t, s, "svc-C", "svc-D")
+
+	recent := time.Now().UTC().AddDate(0, 0, -10) // within 30-day grace
+	rel, err := s.CreateRelation(ctx, &model.Relation{
+		SourceID:        aID,
+		TargetID:        bID,
+		Type:            model.RelRelatedTo,
+		Weight:          0.5,
+		LastTraversedAt: recent,
+	})
+	if err != nil {
+		t.Fatalf("CreateRelation: %v", err)
+	}
+
+	p := newPipelineWithDecay(s, 0.02, 30)
+	result, err := p.Run(ctx)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.EdgeDecayed != 0 {
+		t.Errorf("EdgeDecayed = %d, want 0 (within grace period)", result.EdgeDecayed)
+	}
+
+	got, err := s.FindRelation(ctx, aID, bID, model.RelRelatedTo)
+	if err != nil {
+		t.Fatalf("FindRelation: %v", err)
+	}
+	if got == nil || got.ID != rel.ID {
+		t.Fatal("relation missing or changed after no-op decay")
+	}
+	if got.Weight != 0.5 {
+		t.Errorf("weight = %f, want 0.5 (unchanged)", got.Weight)
+	}
+}
+
+// TestPipeline_EdgeDecay_NullExcluded verifies that explicit relations
+// (last_traversed_at IS NULL) are not decayed.
+func TestPipeline_EdgeDecay_NullExcluded(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	aID, bID := createEntities(t, s, "svc-E", "svc-F")
+
+	rel, err := s.CreateRelation(ctx, &model.Relation{
+		SourceID: aID,
+		TargetID: bID,
+		Type:     model.RelDependsOn,
+		Weight:   0.9,
+		// LastTraversedAt is zero — stored as NULL.
+	})
+	if err != nil {
+		t.Fatalf("CreateRelation: %v", err)
+	}
+
+	p := newPipelineWithDecay(s, 0.02, 0) // no grace period, any traversed relation would decay
+	result, err := p.Run(ctx)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.EdgeDecayed != 0 {
+		t.Errorf("EdgeDecayed = %d, want 0 (NULL excluded)", result.EdgeDecayed)
+	}
+
+	got, err := s.FindRelation(ctx, aID, bID, model.RelDependsOn)
+	if err != nil {
+		t.Fatalf("FindRelation: %v", err)
+	}
+	if got == nil || got.ID != rel.ID {
+		t.Fatal("relation missing after no-op decay")
+	}
+	if got.Weight != 0.9 {
+		t.Errorf("weight = %f, want 0.9 (unchanged)", got.Weight)
+	}
+}
+
+// TestPipeline_EdgeDecay_RateZeroDisabled verifies that EdgeDecayRate=0
+// disables edge decay entirely.
+func TestPipeline_EdgeDecay_RateZeroDisabled(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	aID, bID := createEntities(t, s, "svc-G", "svc-H")
+	old := time.Now().UTC().AddDate(0, 0, -60)
+	_, err := s.CreateRelation(ctx, &model.Relation{
+		SourceID:        aID,
+		TargetID:        bID,
+		Type:            model.RelRelatedTo,
+		Weight:          0.5,
+		LastTraversedAt: old,
+	})
+	if err != nil {
+		t.Fatalf("CreateRelation: %v", err)
+	}
+
+	p := newPipelineWithDecay(s, 0, 30) // rate=0 disables decay
+	result, err := p.Run(ctx)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.EdgeDecayed != 0 {
+		t.Errorf("EdgeDecayed = %d, want 0 (rate=0 disables decay)", result.EdgeDecayed)
+	}
+}
+
+// TestPipeline_Run_IncludesEdgeDecayField verifies that the EdgeDecayed field
+// is present and zero-initialized in results (not a negative sentinel) even
+// when no relations are eligible for decay.
+func TestPipeline_Run_IncludesEdgeDecayField(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	p := newPipelineWithDecay(s, 0.02, 30)
+	result, err := p.Run(ctx)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.EdgeDecayed < 0 {
+		t.Errorf("EdgeDecayed = %d, want >= 0", result.EdgeDecayed)
+	}
+}

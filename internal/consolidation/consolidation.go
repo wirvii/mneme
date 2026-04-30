@@ -76,6 +76,10 @@ type ConsolidationResult struct {
 	// within the configured budget.
 	Evicted int `json:"evicted"`
 
+	// EdgeDecayed is the number of relations whose weight was reduced by the
+	// edge decay sweep. Only non-zero when config.Graph.EdgeDecayRate > 0.
+	EdgeDecayed int `json:"edge_decayed"`
+
 	// Duration is the total wall-clock time taken by the full cycle.
 	Duration time.Duration `json:"duration"`
 }
@@ -96,6 +100,19 @@ func (p *Pipeline) Run(ctx context.Context) (*ConsolidationResult, error) {
 		return result, fmt.Errorf("consolidation: run: %w", err)
 	}
 	result.Swept = swept
+
+	if err := ctx.Err(); err != nil {
+		result.Duration = time.Since(start)
+		return result, err
+	}
+
+	// Edge decay runs after memory sweep so relation weights reflect current
+	// usage before dedup inspects them.
+	edgeDecayed, err := p.edgeDecay(ctx)
+	if err != nil {
+		return result, fmt.Errorf("consolidation: run: %w", err)
+	}
+	result.EdgeDecayed = edgeDecayed
 
 	if err := ctx.Err(); err != nil {
 		result.Duration = time.Since(start)
@@ -378,6 +395,7 @@ func (p *Pipeline) RunBackground(ctx context.Context, interval time.Duration) {
 			"hard_deleted", result.HardDeleted,
 			"duplicates", result.Duplicates,
 			"evicted", result.Evicted,
+			"edge_decayed", result.EdgeDecayed,
 			"duration_ms", result.Duration.Milliseconds(),
 		)
 	}
@@ -398,6 +416,37 @@ func (p *Pipeline) RunBackground(ctx context.Context, interval time.Duration) {
 			}
 		}
 	}()
+}
+
+// edgeDecay applies exponential weight decay to relations that have not been
+// traversed within the configured grace period. Relations with
+// last_traversed_at IS NULL (explicit, never-traversed) are excluded (D6).
+//
+// Returns the number of relations whose weight was reduced. When
+// config.Graph.EdgeDecayRate is 0 the function returns (0, nil) immediately.
+func (p *Pipeline) edgeDecay(ctx context.Context) (int, error) {
+	decayRate := p.config.Graph.EdgeDecayRate
+	graceDays := p.config.Graph.EdgeDecayAfterDays
+
+	if decayRate <= 0 {
+		return 0, nil
+	}
+
+	n, err := p.store.DecayRelationWeights(ctx, decayRate, graceDays)
+	if err != nil {
+		return 0, fmt.Errorf("consolidation: edge decay: %w", err)
+	}
+
+	if n > 0 {
+		p.logger.Info("consolidation: edge decay applied",
+			"event", "edge_decay_sweep",
+			"relations_decayed", n,
+			"decay_rate", decayRate,
+			"grace_days", graceDays,
+		)
+	}
+
+	return n, nil
 }
 
 // ─── helpers ─────────────────────────────────────────────────────────────────

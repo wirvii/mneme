@@ -101,7 +101,7 @@ func (svc *MemoryService) Search(ctx context.Context, req model.SearchRequest) (
 		if sr.Memory == nil {
 			continue
 		}
-		svc.recordHebbianAccess(ctx, svc.storeFor(sr.Memory.Scope), sr.Memory)
+		svc.recordHebbianAccess(ctx, svc.storeFor(sr.Scope), sr.Memory)
 	}
 
 	return &model.SearchResponse{

@@ -45,16 +45,16 @@ backup or when storage is critically low).`,
 				// before the failure, then surface the error.
 				if result != nil {
 					fmt.Fprintf(os.Stdout,
-						"Consolidation complete: %d swept, %d hard-deleted, %d duplicates merged, %d evicted\n",
-						result.Swept, result.HardDeleted, result.Duplicates, result.Evicted,
+						"Consolidation complete: %d swept, %d hard-deleted, %d duplicates merged, %d evicted, %d edges decayed\n",
+						result.Swept, result.HardDeleted, result.Duplicates, result.Evicted, result.EdgeDecayed,
 					)
 				}
 				return err
 			}
 
 			fmt.Fprintf(os.Stdout,
-				"Consolidation complete: %d swept, %d hard-deleted, %d duplicates merged, %d evicted\n",
-				result.Swept, result.HardDeleted, result.Duplicates, result.Evicted,
+				"Consolidation complete: %d swept, %d hard-deleted, %d duplicates merged, %d evicted, %d edges decayed\n",
+				result.Swept, result.HardDeleted, result.Duplicates, result.Evicted, result.EdgeDecayed,
 			)
 			return nil
 		},

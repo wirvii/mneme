@@ -93,6 +93,7 @@ func mergeResults(a, b *consolidation.ConsolidationResult) *consolidation.Consol
 	a.Duplicates += b.Duplicates
 	a.Conflicts += b.Conflicts
 	a.Evicted += b.Evicted
+	a.EdgeDecayed += b.EdgeDecayed
 	if b.Duration > a.Duration {
 		a.Duration = b.Duration
 	}
