@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sort"
 	"unicode/utf8"
 
@@ -17,6 +18,11 @@ import (
 // budget. The session summary memory is always included first, exempt from the
 // budget limit.
 //
+// Rules (type=rule) are handled in a dedicated phase before the general scoring
+// loop. They use a separate rules_budget that is not competed for by other
+// memories, ensuring they always appear in the context regardless of focus or
+// the volume of other high-importance memories.
+//
 // Budget defaults to config.Context.DefaultBudget when zero or negative.
 // Project defaults to the service's project when omitted.
 func (svc *MemoryService) Context(ctx context.Context, req model.ContextRequest) (*model.ContextResponse, error) {
@@ -27,6 +33,74 @@ func (svc *MemoryService) Context(ctx context.Context, req model.ContextRequest)
 	if budget <= 0 {
 		budget = svc.config.Context.DefaultBudget
 	}
+
+	rulesBudget := svc.config.Context.RulesBudget
+
+	// ── PHASE 1: Rules (dedicated budget) ────────────────────────────────────
+	//
+	// Rules are packed before general memories. They use a separate token budget
+	// so they are always injected regardless of how many other memories compete.
+	// When rulesBudget == 0 this phase is skipped entirely (toggle-off).
+
+	var packedRules []model.Memory
+	var rulesTokens, rulesTruncated int
+	ruleIDs := make(map[string]bool)
+
+	if rulesBudget > 0 {
+		allRules, err := svc.loadActiveRules(ctx, req.Project)
+		if err != nil {
+			return nil, fmt.Errorf("service: context: load active rules: %w", err)
+		}
+
+		// Sort rules by severity desc → effective importance desc → updated_at desc
+		// so that block rules always appear first and highest-priority rules survive
+		// budget truncation.
+		sort.Slice(allRules, func(i, j int) bool {
+			a, b := allRules[i], allRules[j]
+			sa, sb := severityOrder(a.Severity), severityOrder(b.Severity)
+			if sa != sb {
+				return sa > sb
+			}
+			lastA := a.CreatedAt
+			if a.LastAccessed != nil {
+				lastA = *a.LastAccessed
+			}
+			lastB := b.CreatedAt
+			if b.LastAccessed != nil {
+				lastB = *b.LastAccessed
+			}
+			ea := scoring.EffectiveImportance(a.Importance, a.DecayRate, lastA)
+			eb := scoring.EffectiveImportance(b.Importance, b.DecayRate, lastB)
+			if ea != eb {
+				return ea > eb
+			}
+			return a.UpdatedAt.After(b.UpdatedAt)
+		})
+
+		// Pack rules using continue (not break) so smaller rules can still fit
+		// after a large rule is skipped. Rules are never partially truncated.
+		for i := range allRules {
+			r := allRules[i]
+			cost := estimateTokens(r.Title) + estimateTokens(r.Content)
+			if rulesTokens+cost > rulesBudget {
+				rulesTruncated++
+				continue
+			}
+			packedRules = append(packedRules, r)
+			rulesTokens += cost
+			ruleIDs[r.ID] = true
+		}
+
+		slog.Info("rules_injected",
+			"event", "rules_injected",
+			"project", req.Project,
+			"rules_count", len(packedRules),
+			"rules_tokens", rulesTokens,
+			"rules_truncated", rulesTruncated,
+		)
+	}
+
+	// ── PHASE 2: General scoring (unchanged from pre-SPEC-002) ───────────────
 
 	// Collect project-scoped memories ordered by importance DESC.
 	projectMemories, err := svc.projectStore.List(ctx, store.ListOptions{
@@ -191,6 +265,11 @@ func (svc *MemoryService) Context(ctx context.Context, req model.ContextRequest)
 			// Handled via LastSession; skip to avoid duplication.
 			continue
 		}
+		// DEDUP: skip any memory already included in the rules section.
+		// Post-scoring dedup preserves TotalAvailable semantics and backward compat.
+		if ruleIDs[sc.mem.ID] {
+			continue
+		}
 		cost := estimateTokens(sc.mem.Title) + estimateTokens(sc.mem.Content)
 		if tokenUsed+cost > tokenBudget {
 			break
@@ -199,7 +278,9 @@ func (svc *MemoryService) Context(ctx context.Context, req model.ContextRequest)
 		tokenUsed += cost
 	}
 
-	totalTokens := tokenUsed
+	// ── PHASE 3: Build response ───────────────────────────────────────────────
+
+	totalTokens := rulesTokens + tokenUsed
 	if lastSession != nil {
 		totalTokens += estimateTokens(lastSession.Summary)
 	}
@@ -207,11 +288,77 @@ func (svc *MemoryService) Context(ctx context.Context, req model.ContextRequest)
 	return &model.ContextResponse{
 		Project:        req.Project,
 		Memories:       packed,
+		Rules:          packedRules,
 		TokenEstimate:  totalTokens,
 		TotalAvailable: totalAvailable,
 		Included:       len(packed),
 		LastSession:    lastSession,
+		RulesCount:     len(packedRules),
+		RulesTokens:    rulesTokens,
+		RulesTruncated: rulesTruncated,
 	}, nil
+}
+
+// loadActiveRules fetches all active rule-type memories from the project store
+// and, when IncludeGlobal is true, from the global store as well. Global rules
+// are filtered by GlobalMinImportance, matching the behaviour of the general
+// context assembly (context.go phase 2).
+//
+// A safety cap of 200 rules per store is applied to bound memory and CPU usage
+// even when a project accumulates many rules over time.
+func (svc *MemoryService) loadActiveRules(ctx context.Context, project string) ([]model.Memory, error) {
+	const ruleCap = 200
+
+	projectRules, err := svc.projectStore.List(ctx, store.ListOptions{
+		Project: project,
+		Type:    model.TypeRule,
+		OrderBy: "importance DESC",
+		Limit:   ruleCap,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("service: load active rules: project store: %w", err)
+	}
+
+	allRules := make([]model.Memory, 0, len(projectRules))
+	for _, r := range projectRules {
+		allRules = append(allRules, *r)
+	}
+
+	if svc.config.Context.IncludeGlobal {
+		globalRules, err := svc.globalStore.List(ctx, store.ListOptions{
+			Type:    model.TypeRule,
+			Scope:   model.ScopeGlobal,
+			OrderBy: "importance DESC",
+			Limit:   ruleCap,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("service: load active rules: global store: %w", err)
+		}
+		for _, r := range globalRules {
+			if r.Importance >= svc.config.Context.GlobalMinImportance {
+				allRules = append(allRules, *r)
+			}
+		}
+	}
+
+	return allRules, nil
+}
+
+// severityOrder maps a Severity to a numeric rank for use in the rules packing
+// sort. Higher values have higher priority so that block rules are always packed
+// before warn, and warn before info — ensuring the most restrictive constraints
+// are preserved when the rules budget is exhausted.
+func severityOrder(s model.Severity) int {
+	switch s {
+	case model.SeverityBlock:
+		return 3
+	case model.SeverityWarn:
+		return 2
+	case model.SeverityInfo:
+		return 1
+	default:
+		return 0
+	}
 }
 
 // estimateTokens returns a rough token count for the given text using the
