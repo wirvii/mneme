@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/gofrs/uuid/v5"
@@ -349,6 +350,104 @@ func (s *MemoryStore) GetMemoryEntities(ctx context.Context, memoryID string) ([
 	}
 
 	return entities, nil
+}
+
+// FindRelationBidirectional looks up an existing relation between two entities
+// with a given type in either direction: (source→target) or (target→source).
+// It first tries sourceID→targetID; if not found it tries targetID→sourceID.
+// Returns (nil, nil) when no matching relation exists in either direction.
+// This is used by the Hebbian worker to avoid creating duplicate edges when
+// the existing relation was stored in the opposite direction (Q3, SPEC-006).
+func (s *MemoryStore) FindRelationBidirectional(ctx context.Context, sourceID, targetID string, relType model.RelationType) (*model.Relation, error) {
+	rel, err := s.FindRelation(ctx, sourceID, targetID, relType)
+	if err != nil {
+		return nil, fmt.Errorf("store: find relation bidirectional: forward: %w", err)
+	}
+	if rel != nil {
+		return rel, nil
+	}
+	// Try the reverse direction.
+	rel, err = s.FindRelation(ctx, targetID, sourceID, relType)
+	if err != nil {
+		return nil, fmt.Errorf("store: find relation bidirectional: reverse: %w", err)
+	}
+	return rel, nil
+}
+
+// DecayRelationWeights applies exponential weight decay to all relations whose
+// last_traversed_at is not NULL and whose last traversal was more than
+// graceDays ago. The decay formula is:
+//
+//	newWeight = MAX(0.0, weight × e^(-decayRate × daysSinceTraversal))
+//
+// Relations with last_traversed_at IS NULL are excluded — they represent
+// intentionally created structural edges that should not decay (D6, SPEC-006).
+// Relations traversed within graceDays are also excluded.
+//
+// The decay is computed in Go (not SQL) to avoid requiring the SQLite math
+// extension (SQLITE_ENABLE_MATH_FUNCTIONS). Eligible relations are fetched,
+// their new weights are computed, and each is updated individually.
+//
+// Returns the number of relations whose weight was updated. When decayRate is
+// zero the function returns (0, nil) immediately — decay is disabled.
+func (s *MemoryStore) DecayRelationWeights(ctx context.Context, decayRate float64, graceDays int) (int, error) {
+	if decayRate <= 0 {
+		return 0, nil
+	}
+
+	now := time.Now().UTC()
+	graceCutoff := now.AddDate(0, 0, -graceDays)
+
+	// Fetch relations with a non-NULL last_traversed_at that is older than the grace period.
+	const q = `
+		SELECT id, source_id, target_id, type, weight, metadata, created_at, last_traversed_at
+		FROM relations
+		WHERE last_traversed_at IS NOT NULL
+		  AND last_traversed_at < ?`
+
+	rows, err := s.db.QueryContext(ctx, q, graceCutoff.Format(time.RFC3339Nano))
+	if err != nil {
+		return 0, fmt.Errorf("store: decay relation weights: query: %w", err)
+	}
+	defer rows.Close()
+
+	type candidate struct {
+		id      string
+		weight  float64
+		daysDue float64
+	}
+	var candidates []candidate
+
+	for rows.Next() {
+		r, err := scanRelationRow(rows)
+		if err != nil {
+			return 0, fmt.Errorf("store: decay relation weights: scan: %w", err)
+		}
+		days := now.Sub(r.LastTraversedAt).Hours() / 24.0
+		candidates = append(candidates, candidate{id: r.ID, weight: r.Weight, daysDue: days})
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("store: decay relation weights: iterate: %w", err)
+	}
+	rows.Close()
+
+	const upd = `UPDATE relations SET weight = ? WHERE id = ?`
+	updated := 0
+	for _, c := range candidates {
+		if ctx.Err() != nil {
+			return updated, ctx.Err()
+		}
+		newWeight := c.weight * math.Exp(-decayRate*c.daysDue)
+		if newWeight < 0 {
+			newWeight = 0
+		}
+		if _, err := s.db.ExecContext(ctx, upd, newWeight, c.id); err != nil {
+			return updated, fmt.Errorf("store: decay relation weights: update %s: %w", c.id, err)
+		}
+		updated++
+	}
+
+	return updated, nil
 }
 
 // FindRelation looks up an existing relation between two entities with a given

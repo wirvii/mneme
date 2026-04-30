@@ -561,6 +561,280 @@ func TestScanRelation_WithLastTraversed(t *testing.T) {
 	}
 }
 
+// TestDecayRelationWeights_AfterGracePeriod verifies that relations with
+// last_traversed_at older than graceDays receive weight reduction.
+func TestDecayRelationWeights_AfterGracePeriod(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	src, _ := s.CreateEntity(ctx, &model.Entity{Name: "A", Kind: model.KindModule, Project: "p"})
+	tgt, _ := s.CreateEntity(ctx, &model.Entity{Name: "B", Kind: model.KindModule, Project: "p"})
+
+	// Create relation traversed 60 days ago.
+	rel, err := s.CreateRelation(ctx, &model.Relation{
+		SourceID:        src.ID,
+		TargetID:        tgt.ID,
+		Type:            model.RelRelatedTo,
+		Weight:          0.5,
+		LastTraversedAt: time.Now().UTC().AddDate(0, 0, -60),
+	})
+	if err != nil {
+		t.Fatalf("CreateRelation: %v", err)
+	}
+
+	n, err := s.DecayRelationWeights(ctx, 0.02, 30)
+	if err != nil {
+		t.Fatalf("DecayRelationWeights: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("rows affected = %d, want 1", n)
+	}
+
+	got, err := s.getRelationByID(ctx, rel.ID)
+	if err != nil {
+		t.Fatalf("getRelationByID: %v", err)
+	}
+	// weight * EXP(-0.02 * 60) = 0.5 * EXP(-1.2) ≈ 0.5 * 0.301 = 0.150
+	if got.Weight >= 0.5 {
+		t.Errorf("weight should have decreased from 0.5, got %f", got.Weight)
+	}
+	if got.Weight < 0 {
+		t.Errorf("weight should not be negative, got %f", got.Weight)
+	}
+}
+
+// TestDecayRelationWeights_WithinGracePeriod verifies that recently traversed
+// relations are not decayed.
+func TestDecayRelationWeights_WithinGracePeriod(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	src, _ := s.CreateEntity(ctx, &model.Entity{Name: "C", Kind: model.KindModule, Project: "p"})
+	tgt, _ := s.CreateEntity(ctx, &model.Entity{Name: "D", Kind: model.KindModule, Project: "p"})
+
+	rel, err := s.CreateRelation(ctx, &model.Relation{
+		SourceID:        src.ID,
+		TargetID:        tgt.ID,
+		Type:            model.RelRelatedTo,
+		Weight:          0.5,
+		LastTraversedAt: time.Now().UTC().AddDate(0, 0, -10), // within 30-day grace
+	})
+	if err != nil {
+		t.Fatalf("CreateRelation: %v", err)
+	}
+
+	n, err := s.DecayRelationWeights(ctx, 0.02, 30)
+	if err != nil {
+		t.Fatalf("DecayRelationWeights: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("rows affected = %d, want 0", n)
+	}
+
+	got, err := s.getRelationByID(ctx, rel.ID)
+	if err != nil {
+		t.Fatalf("getRelationByID: %v", err)
+	}
+	if got.Weight != 0.5 {
+		t.Errorf("weight = %f, want 0.5 (unchanged)", got.Weight)
+	}
+}
+
+// TestDecayRelationWeights_NullLastTraversed verifies that relations without
+// last_traversed_at (explicit, never-traversed relations) are not decayed.
+func TestDecayRelationWeights_NullLastTraversed(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	src, _ := s.CreateEntity(ctx, &model.Entity{Name: "E", Kind: model.KindModule, Project: "p"})
+	tgt, _ := s.CreateEntity(ctx, &model.Entity{Name: "F", Kind: model.KindModule, Project: "p"})
+
+	// Relation with no last_traversed_at (zero time → NULL in DB).
+	rel, err := s.CreateRelation(ctx, &model.Relation{
+		SourceID: src.ID,
+		TargetID: tgt.ID,
+		Type:     model.RelDependsOn,
+		Weight:   0.9,
+		// LastTraversedAt is zero — stored as NULL.
+	})
+	if err != nil {
+		t.Fatalf("CreateRelation: %v", err)
+	}
+
+	n, err := s.DecayRelationWeights(ctx, 0.02, 0)
+	if err != nil {
+		t.Fatalf("DecayRelationWeights: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("rows affected = %d, want 0 (NULL excluded)", n)
+	}
+
+	got, err := s.getRelationByID(ctx, rel.ID)
+	if err != nil {
+		t.Fatalf("getRelationByID: %v", err)
+	}
+	if got.Weight != 0.9 {
+		t.Errorf("weight = %f, want 0.9 (unchanged)", got.Weight)
+	}
+}
+
+// TestDecayRelationWeights_RateZero verifies that a zero decay rate is a no-op.
+func TestDecayRelationWeights_RateZero(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	src, _ := s.CreateEntity(ctx, &model.Entity{Name: "G", Kind: model.KindModule, Project: "p"})
+	tgt, _ := s.CreateEntity(ctx, &model.Entity{Name: "H", Kind: model.KindModule, Project: "p"})
+	_, _ = s.CreateRelation(ctx, &model.Relation{
+		SourceID:        src.ID,
+		TargetID:        tgt.ID,
+		Type:            model.RelRelatedTo,
+		Weight:          0.5,
+		LastTraversedAt: time.Now().UTC().AddDate(0, 0, -60),
+	})
+
+	n, err := s.DecayRelationWeights(ctx, 0, 30)
+	if err != nil {
+		t.Fatalf("DecayRelationWeights: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("rows affected = %d, want 0 (rate=0 disables decay)", n)
+	}
+}
+
+// TestDecayRelationWeights_WeightFloor verifies that weight never goes below 0.
+func TestDecayRelationWeights_WeightFloor(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	src, _ := s.CreateEntity(ctx, &model.Entity{Name: "I", Kind: model.KindModule, Project: "p"})
+	tgt, _ := s.CreateEntity(ctx, &model.Entity{Name: "J", Kind: model.KindModule, Project: "p"})
+
+	rel, err := s.CreateRelation(ctx, &model.Relation{
+		SourceID:        src.ID,
+		TargetID:        tgt.ID,
+		Type:            model.RelRelatedTo,
+		Weight:          0.001, // very small weight, aggressive decay should floor at 0
+		LastTraversedAt: time.Now().UTC().AddDate(0, 0, -365),
+	})
+	if err != nil {
+		t.Fatalf("CreateRelation: %v", err)
+	}
+
+	_, err = s.DecayRelationWeights(ctx, 1.0, 0) // very aggressive rate, no grace
+	if err != nil {
+		t.Fatalf("DecayRelationWeights: %v", err)
+	}
+
+	got, err := s.getRelationByID(ctx, rel.ID)
+	if err != nil {
+		t.Fatalf("getRelationByID: %v", err)
+	}
+	if got.Weight < 0 {
+		t.Errorf("weight = %f, want >= 0.0 (floor enforced)", got.Weight)
+	}
+}
+
+// TestDecayRelationWeights_MultipleRelations verifies batch behaviour: only
+// relations outside the grace period are decayed.
+func TestDecayRelationWeights_MultipleRelations(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	src, _ := s.CreateEntity(ctx, &model.Entity{Name: "K", Kind: model.KindModule, Project: "p"})
+	t1, _ := s.CreateEntity(ctx, &model.Entity{Name: "L", Kind: model.KindModule, Project: "p"})
+	t2, _ := s.CreateEntity(ctx, &model.Entity{Name: "M", Kind: model.KindModule, Project: "p"})
+	t3, _ := s.CreateEntity(ctx, &model.Entity{Name: "N", Kind: model.KindModule, Project: "p"})
+
+	// Eligible: traversed 60 days ago.
+	old, _ := s.CreateRelation(ctx, &model.Relation{
+		SourceID:        src.ID,
+		TargetID:        t1.ID,
+		Type:            model.RelRelatedTo,
+		Weight:          0.5,
+		LastTraversedAt: time.Now().UTC().AddDate(0, 0, -60),
+	})
+	// Not eligible: within grace.
+	recent, _ := s.CreateRelation(ctx, &model.Relation{
+		SourceID:        src.ID,
+		TargetID:        t2.ID,
+		Type:            model.RelRelatedTo,
+		Weight:          0.5,
+		LastTraversedAt: time.Now().UTC().AddDate(0, 0, -5),
+	})
+	// Not eligible: NULL.
+	explicit, _ := s.CreateRelation(ctx, &model.Relation{
+		SourceID: src.ID,
+		TargetID: t3.ID,
+		Type:     model.RelDependsOn,
+		Weight:   0.9,
+	})
+
+	n, err := s.DecayRelationWeights(ctx, 0.02, 30)
+	if err != nil {
+		t.Fatalf("DecayRelationWeights: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("rows affected = %d, want 1", n)
+	}
+
+	gotOld, _ := s.getRelationByID(ctx, old.ID)
+	gotRecent, _ := s.getRelationByID(ctx, recent.ID)
+	gotExplicit, _ := s.getRelationByID(ctx, explicit.ID)
+
+	if gotOld.Weight >= 0.5 {
+		t.Errorf("old relation weight should have decayed from 0.5, got %f", gotOld.Weight)
+	}
+	if gotRecent.Weight != 0.5 {
+		t.Errorf("recent relation weight = %f, want 0.5 (unchanged)", gotRecent.Weight)
+	}
+	if gotExplicit.Weight != 0.9 {
+		t.Errorf("explicit relation weight = %f, want 0.9 (unchanged)", gotExplicit.Weight)
+	}
+}
+
+// TestFindRelationBidirectional verifies that FindRelationBidirectional finds
+// a relation stored in either direction.
+func TestFindRelationBidirectional(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	a, _ := s.CreateEntity(ctx, &model.Entity{Name: "X", Kind: model.KindModule, Project: "p"})
+	b, _ := s.CreateEntity(ctx, &model.Entity{Name: "Y", Kind: model.KindModule, Project: "p"})
+
+	// Store relation as B→A (reverse of what the tracker generates).
+	rel, err := s.CreateRelation(ctx, &model.Relation{
+		SourceID: b.ID,
+		TargetID: a.ID,
+		Type:     model.RelRelatedTo,
+		Weight:   0.5,
+	})
+	if err != nil {
+		t.Fatalf("CreateRelation: %v", err)
+	}
+
+	// Forward lookup (A→B) should find nothing.
+	fwd, err := s.FindRelation(ctx, a.ID, b.ID, model.RelRelatedTo)
+	if err != nil {
+		t.Fatalf("FindRelation forward: %v", err)
+	}
+	if fwd != nil {
+		t.Errorf("FindRelation forward: expected nil, got relation %q", fwd.ID)
+	}
+
+	// Bidirectional lookup should find the B→A relation.
+	found, err := s.FindRelationBidirectional(ctx, a.ID, b.ID, model.RelRelatedTo)
+	if err != nil {
+		t.Fatalf("FindRelationBidirectional: %v", err)
+	}
+	if found == nil {
+		t.Fatal("FindRelationBidirectional: expected relation, got nil")
+	}
+	if found.ID != rel.ID {
+		t.Errorf("found relation ID = %q, want %q", found.ID, rel.ID)
+	}
+}
+
 // TestListMemoriesInRange verifies that only memories within the time range are returned.
 func TestListMemoriesInRange(t *testing.T) {
 	s := newTestStore(t)
