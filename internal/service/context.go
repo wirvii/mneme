@@ -138,7 +138,8 @@ func (svc *MemoryService) Context(ctx context.Context, req model.ContextRequest)
 	// Build a focus boost set when a focus query is provided.
 	// Both FTS5 and vector signals contribute to the focus set so that
 	// semantically related memories are boosted even when they share no
-	// tokens with the focus query.
+	// tokens with the focus query. The graph channel (PPR or 1-hop) further
+	// augments the set with topologically related memories (SPEC-017).
 	focusIDs := make(map[string]bool)
 	if req.Focus != "" {
 		focusOpts := store.SearchOptions{
@@ -189,6 +190,37 @@ func (svc *MemoryService) Context(ctx context.Context, req model.ContextRequest)
 					}
 				}
 			}
+		}
+
+		// Graph expansion for focus boost: topologically related memories receive
+		// the same +0.3 additive boost as text-matched focus results. Only active
+		// when the graph is enabled (ExpansionEnabled) and not explicitly disabled
+		// for this request via IncludeGraph=false (D4).
+		includeGraph := svc.config.Graph.ExpansionEnabled && svc.config.Graph.GraphMode != "off"
+		if req.IncludeGraph != nil && !*req.IncludeGraph {
+			includeGraph = false
+		}
+		if includeGraph {
+			focusSeedIDs := make([]string, 0, len(focusIDs))
+			count := 0
+			for id := range focusIDs {
+				if count >= svc.config.Graph.ExpansionSeedTopK {
+					break
+				}
+				focusSeedIDs = append(focusSeedIDs, id)
+				count++
+			}
+			graphFocusIDs := svc.contextGraphExpand(ctx, focusSeedIDs)
+			for _, id := range graphFocusIDs {
+				focusIDs[id] = true
+			}
+
+			slog.DebugContext(ctx, "context graph focus expanded",
+				"event", "mem_context_with_ppr",
+				"mode", svc.config.Graph.GraphMode,
+				"seeds", len(focusSeedIDs),
+				"graph_focus_ids", len(graphFocusIDs),
+			)
 		}
 	}
 
@@ -359,6 +391,36 @@ func severityOrder(s model.Severity) int {
 	default:
 		return 0
 	}
+}
+
+// contextGraphExpand discovers memories topologically related to the focus
+// seeds and returns their IDs for inclusion in the focus boost set.
+// Routes to graphChannelPPR or graphExpand based on config.Graph.GraphMode.
+// Errors are swallowed — graph expansion in context is best-effort and must
+// never block context assembly (D4).
+func (svc *MemoryService) contextGraphExpand(ctx context.Context, focusSeedIDs []string) []string {
+	if len(focusSeedIDs) == 0 {
+		return nil
+	}
+
+	var memIDs []string
+
+	switch svc.config.Graph.GraphMode {
+	case "ppr", "": // empty string treated as "ppr"
+		graphResults, _ := svc.graphChannelPPR(ctx, focusSeedIDs)
+		for _, gr := range graphResults {
+			memIDs = append(memIDs, gr.MemoryID)
+		}
+	case "1hop":
+		graphResults, _ := svc.graphExpand(ctx, focusSeedIDs)
+		for _, gr := range graphResults {
+			memIDs = append(memIDs, gr.MemoryID)
+		}
+	default: // "off"
+		return nil
+	}
+
+	return memIDs
 }
 
 // estimateTokens returns a rough token count for the given text using the
