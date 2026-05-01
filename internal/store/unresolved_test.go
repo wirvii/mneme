@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -292,6 +293,341 @@ func TestCountUnresolved(t *testing.T) {
 	}
 	if countB != 1 {
 		t.Errorf("CountUnresolved(proj-b) = %d, want 1", countB)
+	}
+}
+
+// --------------------------------------------------------------------------
+// ListGaps
+// --------------------------------------------------------------------------
+
+// TestListGaps_MultipleSorted verifies that ListGaps returns gaps sorted by
+// total_mentions descending.
+func TestListGaps_MultipleSorted(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	src1 := createTestMemory(t, s, "Src1", "proj")
+	src2 := createTestMemory(t, s, "Src2", "proj")
+	src3 := createTestMemory(t, s, "Src3", "proj")
+
+	// gap/alpha: src1 mentions twice.
+	for range 2 {
+		if err := s.RegisterUnresolved(ctx, makeUnresolved(src1, "gap/alpha", "proj")); err != nil {
+			t.Fatalf("RegisterUnresolved alpha: %v", err)
+		}
+	}
+	// gap/beta: src2 mentions once.
+	if err := s.RegisterUnresolved(ctx, makeUnresolved(src2, "gap/beta", "proj")); err != nil {
+		t.Fatalf("RegisterUnresolved beta: %v", err)
+	}
+	// gap/gamma: src3 mentions three times.
+	for range 3 {
+		if err := s.RegisterUnresolved(ctx, makeUnresolved(src3, "gap/gamma", "proj")); err != nil {
+			t.Fatalf("RegisterUnresolved gamma: %v", err)
+		}
+	}
+
+	gaps, total, err := s.ListGaps(ctx, "proj", 10, 1)
+	if err != nil {
+		t.Fatalf("ListGaps: %v", err)
+	}
+	if total != 3 {
+		t.Errorf("total = %d, want 3", total)
+	}
+	if len(gaps) != 3 {
+		t.Fatalf("len(gaps) = %d, want 3", len(gaps))
+	}
+	// Verify descending order by total_mentions.
+	if gaps[0].TargetTopicKey != "gap/gamma" {
+		t.Errorf("gaps[0] = %q, want gap/gamma", gaps[0].TargetTopicKey)
+	}
+	if gaps[0].TotalMentions != 3 {
+		t.Errorf("gaps[0].TotalMentions = %d, want 3", gaps[0].TotalMentions)
+	}
+	if gaps[1].TargetTopicKey != "gap/alpha" {
+		t.Errorf("gaps[1] = %q, want gap/alpha", gaps[1].TargetTopicKey)
+	}
+	if gaps[2].TargetTopicKey != "gap/beta" {
+		t.Errorf("gaps[2] = %q, want gap/beta", gaps[2].TargetTopicKey)
+	}
+}
+
+// TestListGaps_Limit verifies that the limit parameter is respected.
+func TestListGaps_Limit(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	for i := range 5 {
+		src := createTestMemory(t, s, fmt.Sprintf("Src%d", i), "proj")
+		if err := s.RegisterUnresolved(ctx, makeUnresolved(src, fmt.Sprintf("gap/%d", i), "proj")); err != nil {
+			t.Fatalf("RegisterUnresolved %d: %v", i, err)
+		}
+	}
+
+	gaps, total, err := s.ListGaps(ctx, "proj", 2, 1)
+	if err != nil {
+		t.Fatalf("ListGaps: %v", err)
+	}
+	if total != 5 {
+		t.Errorf("total = %d, want 5", total)
+	}
+	if len(gaps) != 2 {
+		t.Errorf("len(gaps) = %d, want 2", len(gaps))
+	}
+}
+
+// TestListGaps_MinMentions verifies that gaps below the threshold are excluded.
+func TestListGaps_MinMentions(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	src1 := createTestMemory(t, s, "Src1", "proj")
+	src2 := createTestMemory(t, s, "Src2", "proj")
+
+	// gap/high: 5 mentions.
+	for range 5 {
+		if err := s.RegisterUnresolved(ctx, makeUnresolved(src1, "gap/high", "proj")); err != nil {
+			t.Fatalf("RegisterUnresolved high: %v", err)
+		}
+	}
+	// gap/low: 1 mention — should be filtered out.
+	if err := s.RegisterUnresolved(ctx, makeUnresolved(src2, "gap/low", "proj")); err != nil {
+		t.Fatalf("RegisterUnresolved low: %v", err)
+	}
+
+	gaps, total, err := s.ListGaps(ctx, "proj", 10, 3)
+	if err != nil {
+		t.Fatalf("ListGaps: %v", err)
+	}
+	if total != 1 {
+		t.Errorf("total = %d, want 1", total)
+	}
+	if len(gaps) != 1 {
+		t.Fatalf("len(gaps) = %d, want 1", len(gaps))
+	}
+	if gaps[0].TargetTopicKey != "gap/high" {
+		t.Errorf("gaps[0] = %q, want gap/high", gaps[0].TargetTopicKey)
+	}
+}
+
+// TestListGaps_EmptyDB verifies that ListGaps returns an empty (non-nil) slice
+// and total=0 when there are no unresolved references.
+func TestListGaps_EmptyDB(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	gaps, total, err := s.ListGaps(ctx, "proj", 10, 1)
+	if err != nil {
+		t.Fatalf("ListGaps: %v", err)
+	}
+	if total != 0 {
+		t.Errorf("total = %d, want 0", total)
+	}
+	if gaps == nil {
+		t.Error("expected empty slice, got nil")
+	}
+	if len(gaps) != 0 {
+		t.Errorf("len(gaps) = %d, want 0", len(gaps))
+	}
+}
+
+// TestListGaps_ProjectFilter verifies that gaps from different projects are
+// isolated when a project is specified.
+func TestListGaps_ProjectFilter(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	srcA := createTestMemory(t, s, "SrcA", "proj-a")
+	srcB := createTestMemory(t, s, "SrcB", "proj-b")
+
+	if err := s.RegisterUnresolved(ctx, makeUnresolved(srcA, "gap/shared", "proj-a")); err != nil {
+		t.Fatalf("RegisterUnresolved a: %v", err)
+	}
+	if err := s.RegisterUnresolved(ctx, makeUnresolved(srcB, "gap/shared", "proj-b")); err != nil {
+		t.Fatalf("RegisterUnresolved b: %v", err)
+	}
+
+	gapsA, _, err := s.ListGaps(ctx, "proj-a", 10, 1)
+	if err != nil {
+		t.Fatalf("ListGaps proj-a: %v", err)
+	}
+	if len(gapsA) != 1 {
+		t.Errorf("proj-a: len(gaps) = %d, want 1", len(gapsA))
+	}
+
+	gapsB, _, err := s.ListGaps(ctx, "proj-b", 10, 1)
+	if err != nil {
+		t.Fatalf("ListGaps proj-b: %v", err)
+	}
+	if len(gapsB) != 1 {
+		t.Errorf("proj-b: len(gaps) = %d, want 1", len(gapsB))
+	}
+}
+
+// TestListGaps_SourceCount verifies that SourceCount is set correctly when
+// multiple distinct sources reference the same gap.
+func TestListGaps_SourceCount(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	src1 := createTestMemory(t, s, "Src1", "proj")
+	src2 := createTestMemory(t, s, "Src2", "proj")
+	src3 := createTestMemory(t, s, "Src3", "proj")
+
+	for _, src := range []string{src1, src2, src3} {
+		if err := s.RegisterUnresolved(ctx, makeUnresolved(src, "gap/multi", "proj")); err != nil {
+			t.Fatalf("RegisterUnresolved: %v", err)
+		}
+	}
+
+	gaps, _, err := s.ListGaps(ctx, "proj", 10, 1)
+	if err != nil {
+		t.Fatalf("ListGaps: %v", err)
+	}
+	if len(gaps) != 1 {
+		t.Fatalf("len(gaps) = %d, want 1", len(gaps))
+	}
+	if gaps[0].SourceCount != 3 {
+		t.Errorf("SourceCount = %d, want 3", gaps[0].SourceCount)
+	}
+	if gaps[0].TotalMentions != 3 {
+		t.Errorf("TotalMentions = %d, want 3", gaps[0].TotalMentions)
+	}
+}
+
+// --------------------------------------------------------------------------
+// ListGapSamples
+// --------------------------------------------------------------------------
+
+// TestListGapSamples_Normal verifies that up to 3 samples are returned ordered
+// by mention_count descending.
+func TestListGapSamples_Normal(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	src1 := createTestMemory(t, s, "Src1", "proj")
+	src2 := createTestMemory(t, s, "Src2", "proj")
+
+	// src1 mentions 3 times, src2 once.
+	for range 3 {
+		if err := s.RegisterUnresolved(ctx, makeUnresolved(src1, "gap/topic", "proj")); err != nil {
+			t.Fatalf("RegisterUnresolved src1: %v", err)
+		}
+	}
+	if err := s.RegisterUnresolved(ctx, makeUnresolved(src2, "gap/topic", "proj")); err != nil {
+		t.Fatalf("RegisterUnresolved src2: %v", err)
+	}
+
+	samples, err := s.ListGapSamples(ctx, "gap/topic", "proj", 3)
+	if err != nil {
+		t.Fatalf("ListGapSamples: %v", err)
+	}
+	if len(samples) != 2 {
+		t.Fatalf("len(samples) = %d, want 2", len(samples))
+	}
+	// src1 should appear first (higher mention_count).
+	if samples[0].MemoryID != src1 {
+		t.Errorf("samples[0].MemoryID = %q, want %q", samples[0].MemoryID, src1)
+	}
+	if samples[0].Title != "Src1" {
+		t.Errorf("samples[0].Title = %q, want Src1", samples[0].Title)
+	}
+}
+
+// TestListGapSamples_SoftDeletedExcluded verifies that soft-deleted source
+// memories are not included in samples.
+func TestListGapSamples_SoftDeletedExcluded(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	live := createTestMemory(t, s, "Live", "proj")
+	dead := createTestMemory(t, s, "Dead", "proj")
+
+	if err := s.RegisterUnresolved(ctx, makeUnresolved(live, "gap/topic", "proj")); err != nil {
+		t.Fatalf("RegisterUnresolved live: %v", err)
+	}
+	if err := s.RegisterUnresolved(ctx, makeUnresolved(dead, "gap/topic", "proj")); err != nil {
+		t.Fatalf("RegisterUnresolved dead: %v", err)
+	}
+
+	// Soft-delete the "dead" memory.
+	if err := s.SoftDelete(ctx, dead); err != nil {
+		t.Fatalf("SoftDelete: %v", err)
+	}
+
+	samples, err := s.ListGapSamples(ctx, "gap/topic", "proj", 3)
+	if err != nil {
+		t.Fatalf("ListGapSamples: %v", err)
+	}
+	if len(samples) != 1 {
+		t.Fatalf("len(samples) = %d, want 1 (deleted excluded)", len(samples))
+	}
+	if samples[0].MemoryID != live {
+		t.Errorf("samples[0].MemoryID = %q, want %q (live)", samples[0].MemoryID, live)
+	}
+}
+
+// TestListGapSamples_MaxCap verifies that the maxSamples cap is respected even
+// when more sources exist.
+func TestListGapSamples_MaxCap(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	// Create 5 sources, all pointing to the same gap.
+	for i := range 5 {
+		src := createTestMemory(t, s, fmt.Sprintf("Src%d", i), "proj")
+		if err := s.RegisterUnresolved(ctx, makeUnresolved(src, "gap/topic", "proj")); err != nil {
+			t.Fatalf("RegisterUnresolved %d: %v", i, err)
+		}
+	}
+
+	samples, err := s.ListGapSamples(ctx, "gap/topic", "proj", 3)
+	if err != nil {
+		t.Fatalf("ListGapSamples: %v", err)
+	}
+	if len(samples) != 3 {
+		t.Errorf("len(samples) = %d, want 3 (capped)", len(samples))
+	}
+}
+
+// --------------------------------------------------------------------------
+// CountDistinctGaps
+// --------------------------------------------------------------------------
+
+// TestCountDistinctGaps verifies the distinct count of target_topic_keys.
+func TestCountDistinctGaps(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	src := createTestMemory(t, s, "Src", "proj")
+
+	for _, key := range []string{"gap/a", "gap/b", "gap/c"} {
+		if err := s.RegisterUnresolved(ctx, makeUnresolved(src, key, "proj")); err != nil {
+			t.Fatalf("RegisterUnresolved %q: %v", key, err)
+		}
+	}
+
+	n, err := s.CountDistinctGaps(ctx, "proj")
+	if err != nil {
+		t.Fatalf("CountDistinctGaps: %v", err)
+	}
+	if n != 3 {
+		t.Errorf("CountDistinctGaps = %d, want 3", n)
+	}
+}
+
+// TestCountDistinctGaps_Empty verifies that CountDistinctGaps returns 0 for an
+// empty database.
+func TestCountDistinctGaps_Empty(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	n, err := s.CountDistinctGaps(ctx, "proj")
+	if err != nil {
+		t.Fatalf("CountDistinctGaps empty: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("CountDistinctGaps empty = %d, want 0", n)
 	}
 }
 

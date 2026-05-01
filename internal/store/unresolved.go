@@ -159,6 +159,178 @@ func (s *MemoryStore) CountUnresolved(ctx context.Context, project string) (int,
 	return n, nil
 }
 
+// ListGaps returns aggregated knowledge gaps from the unresolved_references
+// table, grouped by target_topic_key. Results are ordered by total_mentions
+// descending, source_count descending as a tiebreaker.
+//
+// When project is empty, all rows in the database are included regardless of
+// project. When minMentions is greater than zero, gaps with a total_mentions
+// sum below the threshold are excluded. When limit is zero or negative, 20
+// results are returned.
+//
+// Returns the page of Gap structs (without Samples — callers load those via
+// ListGapSamples) and the total count of distinct target_topic_keys before the
+// limit was applied.
+func (s *MemoryStore) ListGaps(ctx context.Context, project string, limit, minMentions int) ([]model.Gap, int, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	if minMentions <= 0 {
+		minMentions = 1
+	}
+
+	// Count distinct gaps before applying limit.
+	const countQ = `
+		SELECT COUNT(DISTINCT target_topic_key)
+		FROM unresolved_references
+		WHERE project IS ?
+		  AND (
+		      SELECT SUM(u2.mention_count)
+		      FROM unresolved_references u2
+		      WHERE u2.target_topic_key = unresolved_references.target_topic_key
+		        AND u2.project IS ?
+		  ) >= ?`
+
+	var total int
+	if err := s.db.QueryRowContext(ctx, countQ, toNullString(project), toNullString(project), minMentions).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("store: list gaps: count total: %w", err)
+	}
+
+	if total == 0 {
+		return []model.Gap{}, 0, nil
+	}
+
+	const q = `
+		SELECT
+		    target_topic_key,
+		    SUM(mention_count)           AS total_mentions,
+		    COUNT(DISTINCT source_memory_id) AS source_count,
+		    MIN(first_seen_at)           AS first_seen_at,
+		    MAX(last_seen_at)            AS last_seen_at
+		FROM unresolved_references
+		WHERE project IS ?
+		GROUP BY target_topic_key
+		HAVING SUM(mention_count) >= ?
+		ORDER BY total_mentions DESC, source_count DESC
+		LIMIT ?`
+
+	rows, err := s.db.QueryContext(ctx, q, toNullString(project), minMentions, limit)
+	if err != nil {
+		return nil, 0, fmt.Errorf("store: list gaps: %w", err)
+	}
+	defer rows.Close()
+
+	var gaps []model.Gap
+	for rows.Next() {
+		g, scanErr := scanGap(rows)
+		if scanErr != nil {
+			return nil, 0, fmt.Errorf("store: list gaps: scan: %w", scanErr)
+		}
+		gaps = append(gaps, g)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("store: list gaps: rows: %w", err)
+	}
+	if gaps == nil {
+		gaps = []model.Gap{}
+	}
+	return gaps, total, nil
+}
+
+// ListGapSamples returns up to maxSamples source memories that reference the
+// given target_topic_key, ordered by mention_count descending. Source memories
+// that have been soft-deleted (deleted_at IS NOT NULL) are excluded so the
+// sample list only contains accessible content.
+//
+// When maxSamples is zero or negative, 3 samples are returned. When project is
+// empty, all projects in the database are searched.
+func (s *MemoryStore) ListGapSamples(ctx context.Context, targetTopicKey, project string, maxSamples int) ([]model.GapSample, error) {
+	if maxSamples <= 0 {
+		maxSamples = 3
+	}
+
+	const q = `
+		SELECT m.id, m.title, COALESCE(m.topic_key, '')
+		FROM unresolved_references ur
+		JOIN memories m ON m.id = ur.source_memory_id
+		WHERE ur.target_topic_key = ?
+		  AND ur.project IS ?
+		  AND m.deleted_at IS NULL
+		ORDER BY ur.mention_count DESC
+		LIMIT ?`
+
+	rows, err := s.db.QueryContext(ctx, q, targetTopicKey, toNullString(project), maxSamples)
+	if err != nil {
+		return nil, fmt.Errorf("store: list gap samples: %w", err)
+	}
+	defer rows.Close()
+
+	var samples []model.GapSample
+	for rows.Next() {
+		var gs model.GapSample
+		if scanErr := rows.Scan(&gs.MemoryID, &gs.Title, &gs.TopicKey); scanErr != nil {
+			return nil, fmt.Errorf("store: list gap samples: scan: %w", scanErr)
+		}
+		samples = append(samples, gs)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: list gap samples: rows: %w", err)
+	}
+	if samples == nil {
+		samples = []model.GapSample{}
+	}
+	return samples, nil
+}
+
+// CountDistinctGaps returns the total number of distinct target_topic_key
+// values in the unresolved_references table for the given project. Pass an
+// empty project string to count across all projects in the database.
+func (s *MemoryStore) CountDistinctGaps(ctx context.Context, project string) (int, error) {
+	const q = `SELECT COUNT(DISTINCT target_topic_key) FROM unresolved_references WHERE project IS ?`
+	var n int
+	if err := s.db.QueryRowContext(ctx, q, toNullString(project)).Scan(&n); err != nil {
+		return 0, fmt.Errorf("store: count distinct gaps: %w", err)
+	}
+	return n, nil
+}
+
+// scanGap scans a single row produced by the ListGaps aggregate query into a
+// Gap. The SELECT must include columns in this order:
+// target_topic_key, total_mentions, source_count, first_seen_at, last_seen_at
+func scanGap(row scannerRows) (model.Gap, error) {
+	var (
+		g            model.Gap
+		firstSeenStr string
+		lastSeenStr  string
+	)
+	if err := row.Scan(
+		&g.TargetTopicKey,
+		&g.TotalMentions,
+		&g.SourceCount,
+		&firstSeenStr,
+		&lastSeenStr,
+	); err != nil {
+		return model.Gap{}, err
+	}
+
+	var parseErr error
+	g.FirstSeenAt, parseErr = time.Parse(time.RFC3339Nano, firstSeenStr)
+	if parseErr != nil {
+		g.FirstSeenAt, parseErr = time.Parse(time.RFC3339, firstSeenStr)
+		if parseErr != nil {
+			return model.Gap{}, fmt.Errorf("parse first_seen_at %q: %w", firstSeenStr, parseErr)
+		}
+	}
+	g.LastSeenAt, parseErr = time.Parse(time.RFC3339Nano, lastSeenStr)
+	if parseErr != nil {
+		g.LastSeenAt, parseErr = time.Parse(time.RFC3339, lastSeenStr)
+		if parseErr != nil {
+			return model.Gap{}, fmt.Errorf("parse last_seen_at %q: %w", lastSeenStr, parseErr)
+		}
+	}
+	return g, nil
+}
+
 // scannerRows is satisfied by *sql.Rows for the shared scan helper.
 type scannerRows interface {
 	Scan(dest ...any) error
