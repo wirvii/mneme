@@ -154,6 +154,10 @@ func allTools() []ToolDefinition {
 						"type":        "string",
 						"description": "Optional topic or question that biases memory selection.",
 					},
+					"include_graph": map[string]any{
+						"type":        "boolean",
+						"description": "Enable graph expansion for focus matching. When true and focus is provided, topologically related memories receive the same +0.3 boost as text-matched focus results. Uses PPR or 1-hop depending on config.graph_mode. Default: true (config default).",
+					},
 				},
 			},
 		},

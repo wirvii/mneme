@@ -990,3 +990,107 @@ func TestMemGaps_InvalidParams(t *testing.T) {
 		t.Errorf("expected code %d (CodeInvalidParams), got %d: %s", CodeInvalidParams, resp.Error.Code, resp.Error.Message)
 	}
 }
+
+// TestMemContext_IncludeGraph_Default verifies that omitting include_graph in a
+// mem_context call is accepted and returns memories (graph active by default).
+func TestMemContext_IncludeGraph_Default(t *testing.T) {
+	srv := newTestServerWithSDD(t)
+
+	saveResp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name: "mem_save",
+		Arguments: mustMarshal(t, map[string]any{
+			"title":   "context graph default test",
+			"content": "Testing mem_context with default include_graph behaviour.",
+			"type":    "discovery",
+		}),
+	})
+	if saveResp.Error != nil {
+		t.Fatalf("mem_save: %v", saveResp.Error.Message)
+	}
+
+	resp := process(t, srv, "tools/call", 2, ToolCallParams{
+		Name: "mem_context",
+		Arguments: mustMarshal(t, map[string]any{
+			"focus": "context graph default",
+			// include_graph intentionally omitted — defaults to config value (true)
+		}),
+	})
+	if resp.Error != nil {
+		t.Fatalf("mem_context (default include_graph): %v", resp.Error.Message)
+	}
+
+	var result struct {
+		TotalAvailable int `json:"total_available"`
+	}
+	unmarshalToolText(t, resp, &result)
+	if result.TotalAvailable == 0 {
+		t.Error("expected at least one available memory")
+	}
+}
+
+// TestMemContext_IncludeGraph_False verifies that passing include_graph=false to
+// mem_context is accepted without error and graph expansion is disabled.
+func TestMemContext_IncludeGraph_False(t *testing.T) {
+	srv := newTestServerWithSDD(t)
+
+	saveResp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name: "mem_save",
+		Arguments: mustMarshal(t, map[string]any{
+			"title":   "context graph disabled test",
+			"content": "Testing mem_context with include_graph explicitly false.",
+			"type":    "discovery",
+		}),
+	})
+	if saveResp.Error != nil {
+		t.Fatalf("mem_save: %v", saveResp.Error.Message)
+	}
+
+	resp := process(t, srv, "tools/call", 2, ToolCallParams{
+		Name: "mem_context",
+		Arguments: mustMarshal(t, map[string]any{
+			"focus":         "context graph disabled",
+			"include_graph": false,
+		}),
+	})
+	if resp.Error != nil {
+		t.Fatalf("mem_context (include_graph=false): %v", resp.Error.Message)
+	}
+
+	var result struct {
+		TotalAvailable int `json:"total_available"`
+	}
+	unmarshalToolText(t, resp, &result)
+	if result.TotalAvailable == 0 {
+		t.Error("expected at least one available memory even with include_graph=false")
+	}
+}
+
+// TestMCP_ToolSchema_MemContextIncludesIncludeGraph verifies the mem_context
+// schema includes the include_graph property after SPEC-017.
+func TestMCP_ToolSchema_MemContextIncludesIncludeGraph(t *testing.T) {
+	tools := allTools()
+
+	var memCtx *ToolDefinition
+	for i := range tools {
+		if tools[i].Name == "mem_context" {
+			memCtx = &tools[i]
+			break
+		}
+	}
+	if memCtx == nil {
+		t.Fatal("mem_context tool not found")
+	}
+
+	schema, ok := memCtx.InputSchema.(map[string]any)
+	if !ok {
+		t.Fatal("mem_context InputSchema is not map[string]any")
+	}
+	props, ok := schema["properties"].(map[string]any)
+	if !ok {
+		t.Fatal("mem_context InputSchema.properties is not map[string]any")
+	}
+
+	if _, ok := props["include_graph"]; !ok {
+		t.Error("mem_context schema missing include_graph property")
+	}
+}

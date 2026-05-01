@@ -451,6 +451,55 @@ func mustSave(t *testing.T, baseURL string, req model.SaveRequest) string {
 	return saveResp.ID
 }
 
+// TestHandleContext_IncludeGraph_QueryParam verifies that the include_graph query
+// parameter on GET /v1/memories/context is accepted in all common forms and that
+// an invalid value returns HTTP 400.
+func TestHandleContext_IncludeGraph_QueryParam(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+
+	mustSave(t, srv.URL, model.SaveRequest{
+		Title:   "context include_graph param test",
+		Content: "Verifying context include_graph query param parsing.",
+		Type:    model.TypeDiscovery,
+	})
+
+	tests := []struct {
+		name       string
+		param      string
+		wantStatus int
+	}{
+		{"true", "true", http.StatusOK},
+		{"false", "false", http.StatusOK},
+		{"1 (truthy)", "1", http.StatusOK},
+		{"0 (falsy)", "0", http.StatusOK},
+		{"TRUE uppercase", "TRUE", http.StatusOK},
+		{"invalid value", "yes", http.StatusBadRequest},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			resp, err := http.Get(srv.URL + "/v1/memories/context?focus=context+include_graph+param&include_graph=" + tc.param)
+			if err != nil {
+				t.Fatalf("GET /v1/memories/context: %v", err)
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode != tc.wantStatus {
+				raw, _ := io.ReadAll(resp.Body)
+				t.Fatalf("include_graph=%q: expected %d, got %d: %s", tc.param, tc.wantStatus, resp.StatusCode, raw)
+			}
+
+			if tc.wantStatus == http.StatusOK {
+				var body model.ContextResponse
+				if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+					t.Fatalf("decode context response: %v", err)
+				}
+			}
+		})
+	}
+}
+
 // TestHandleSearch_IncludeGraph_QueryParam verifies that the include_graph query
 // parameter is accepted in all its common forms. Passing include_graph=false
 // must succeed (HTTP 200) and return a valid SearchResponse. Passing an invalid

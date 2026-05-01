@@ -440,9 +440,11 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 //
 // Query parameters:
 //
-//	project — project slug (defaults to service project)
-//	budget  — token budget (default: service default)
-//	focus   — optional focus phrase
+//	project       — project slug (defaults to service project)
+//	budget        — token budget (default: service default)
+//	focus         — optional focus phrase
+//	include_graph — enable/disable graph expansion for focus matching;
+//	                accepts true/false/1/0/TRUE/FALSE (default: service config, which defaults to true)
 func (s *Server) handleContext(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "use GET")
@@ -461,6 +463,14 @@ func (s *Server) handleContext(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		req.Budget = n
+	}
+	if igStr := r.URL.Query().Get("include_graph"); igStr != "" {
+		b, err := strconv.ParseBool(igStr)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_request", "'include_graph' must be a boolean (true/false/1/0)")
+			return
+		}
+		req.IncludeGraph = &b
 	}
 
 	resp, err := s.svc.Context(r.Context(), req)
