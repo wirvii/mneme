@@ -1313,6 +1313,63 @@ func TestStore_FindCandidatePairs_NoDuplicates(t *testing.T) {
 	}
 }
 
+// TestFindCandidatePairs_ExcludesSoftDeleted verifies that soft-deleted memories
+// are not returned as candidate pairs even though their memory_entities rows are
+// retained (ON DELETE CASCADE only fires on hard delete). Specifically: given
+// memories A, B, C all sharing 2 entities, soft-deleting C must remove (A,C) and
+// (B,C) from the result set while preserving (A,B) (IMP-1, SPEC-009).
+func TestFindCandidatePairs_ExcludesSoftDeleted(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	const project = "cand-softdel"
+	mA := mustCreateMemory(t, s, "mem-A", project)
+	mB := mustCreateMemory(t, s, "mem-B", project)
+	mC := mustCreateMemory(t, s, "mem-C", project)
+
+	e1, _ := s.FindOrCreateEntity(ctx, "shared-sd-1", model.KindFile, project)
+	e2, _ := s.FindOrCreateEntity(ctx, "shared-sd-2", model.KindFile, project)
+
+	// All three memories share e1 and e2 — would produce 3 pairs without soft-delete.
+	for _, m := range []*model.Memory{mA, mB, mC} {
+		_ = s.LinkMemoryEntity(ctx, m.ID, e1.ID, "mention")
+		_ = s.LinkMemoryEntity(ctx, m.ID, e2.ID, "mention")
+	}
+
+	// Verify 3 pairs exist before the soft-delete.
+	pairsBefore, err := s.FindCandidatePairs(ctx, project, 2)
+	if err != nil {
+		t.Fatalf("FindCandidatePairs before soft-delete: %v", err)
+	}
+	if len(pairsBefore) != 3 {
+		t.Fatalf("before soft-delete: got %d pairs, want 3", len(pairsBefore))
+	}
+
+	// Soft-delete C — its memory_entities rows remain in the DB.
+	if err := s.SoftDelete(ctx, mC.ID); err != nil {
+		t.Fatalf("SoftDelete(C): %v", err)
+	}
+
+	// After soft-delete: only (A,B) must appear; (A,C) and (B,C) must not.
+	pairsAfter, err := s.FindCandidatePairs(ctx, project, 2)
+	if err != nil {
+		t.Fatalf("FindCandidatePairs after soft-delete: %v", err)
+	}
+	if len(pairsAfter) != 1 {
+		t.Fatalf("after soft-delete: got %d pairs, want 1", len(pairsAfter))
+	}
+	p := pairsAfter[0]
+	hasA := p.MemoryID1 == mA.ID || p.MemoryID2 == mA.ID
+	hasB := p.MemoryID1 == mB.ID || p.MemoryID2 == mB.ID
+	hasC := p.MemoryID1 == mC.ID || p.MemoryID2 == mC.ID
+	if !hasA || !hasB {
+		t.Errorf("remaining pair does not contain (A,B): %+v", p)
+	}
+	if hasC {
+		t.Errorf("soft-deleted memory C still appears in pair: %+v", p)
+	}
+}
+
 // TestStore_ListMemoriesWithoutEntities_Basic verifies that only memories with
 // no memory_entities entry are returned (SPEC-009).
 func TestStore_ListMemoriesWithoutEntities_Basic(t *testing.T) {

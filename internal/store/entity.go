@@ -709,11 +709,17 @@ func (s *MemoryStore) FindCandidatePairs(ctx context.Context, project string, mi
 		      AND superseded_by IS NULL
 		      AND project IS ?
 		)
+		  AND me2.memory_id IN (
+		    SELECT id FROM memories
+		    WHERE deleted_at IS NULL
+		      AND superseded_by IS NULL
+		      AND project IS ?
+		)
 		GROUP BY me1.memory_id, me2.memory_id
 		HAVING COUNT(*) >= ?
 		ORDER BY shared_count DESC`
 
-	rows, err := s.db.QueryContext(ctx, q, toNullString(project), minShared)
+	rows, err := s.db.QueryContext(ctx, q, toNullString(project), toNullString(project), minShared)
 	if err != nil {
 		return nil, fmt.Errorf("store: find candidate pairs: %w", err)
 	}
