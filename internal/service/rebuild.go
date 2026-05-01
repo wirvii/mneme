@@ -394,24 +394,20 @@ func (svc *MemoryService) processEntityBatch(ctx context.Context, s *store.Memor
 			continue
 		}
 
-		// Pre-check existence to track the created/existing counter accurately.
-		existing, lookupErr := s.GetEntityByName(ctx, pl.entity.Name, req.Project)
-		var entityID string
-		if lookupErr == nil {
-			result.EntitiesExisting++
-			entityID = existing.ID
-		} else {
-			created, createErr := s.FindOrCreateEntity(ctx, pl.entity.Name, pl.entity.Kind, req.Project)
-			if createErr != nil {
-				return fmt.Errorf("find or create entity %q: %w", pl.entity.Name, createErr)
-			}
-			result.EntitiesCreated++
-			entityID = created.ID
+		// FindOrCreateEntity is idempotent by (name, project) unique index.
+		// It does GetEntityByName internally; we call it directly (1 DB round
+		// trip for existing entities, 2 for new ones) and track all as "created"
+		// for simplicity — distinguishing requires a second round-trip which
+		// doubles the cost. The count accuracy trade-off is documented in the
+		// spec (D5: idempotence by existing store patterns).
+		e, err := s.FindOrCreateEntity(ctx, pl.entity.Name, pl.entity.Kind, req.Project)
+		if err != nil {
+			return fmt.Errorf("find or create entity %q: %w", pl.entity.Name, err)
 		}
+		result.EntitiesCreated++
 
 		// LinkMemoryEntity uses INSERT OR IGNORE, so duplicate calls are safe.
-		// We count every link operation as LinksCreated (mirrors embed backfill).
-		if linkErr := s.LinkMemoryEntity(ctx, pl.memoryID, entityID, pl.entity.Role); linkErr != nil {
+		if linkErr := s.LinkMemoryEntity(ctx, pl.memoryID, e.ID, pl.entity.Role); linkErr != nil {
 			return fmt.Errorf("link memory entity: %w", linkErr)
 		}
 		result.LinksCreated++

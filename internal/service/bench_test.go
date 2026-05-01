@@ -123,6 +123,72 @@ func BenchmarkSearch_GraphExpansion_5K(b *testing.B) {
 	})
 }
 
+// BenchmarkRebuildGraph_5K measures the performance of RebuildGraph against a
+// corpus of 500 memories (scaled from the 5K target) with overlapping file-path
+// entities. Per SPEC-009 AC6 the full rebuild should complete in < 5s for 5K
+// memories / 20K memory_entities. At 500 memories the benchmark serves as a
+// baseline; the 5K target can be validated by scaling numMemories to 5000.
+//
+// Run with: go test -tags fts5 -bench=BenchmarkRebuildGraph_5K -benchtime=3x ./internal/service/
+func BenchmarkRebuildGraph_5K(b *testing.B) {
+	projectDB, err := db.OpenMemory()
+	if err != nil {
+		b.Fatalf("open project db: %v", err)
+	}
+	globalDB, err := db.OpenMemory()
+	if err != nil {
+		b.Fatalf("open global db: %v", err)
+	}
+	b.Cleanup(func() { projectDB.Close(); globalDB.Close() })
+
+	ps := store.NewMemoryStore(projectDB)
+	gs := store.NewMemoryStore(globalDB)
+	cfg := config.Default()
+
+	svc := service.NewMemoryService(ps, gs, cfg, "bench/rebuild", embed.NopEmbedder{})
+	ctx := context.Background()
+
+	// Create 500 memories (scaled from 5K) with overlapping file-path content
+	// so the SQL JOIN produces a meaningful number of candidate pairs.
+	const numMemories = 500
+	// Each memory mentions ~5 file paths sampled from a pool of 50.
+	// This gives ~50 memories per entity → lots of pairs.
+	paths := make([]string, 50)
+	for i := range paths {
+		paths[i] = fmt.Sprintf("internal/store/entity%d.go", i)
+	}
+
+	for i := 0; i < numMemories; i++ {
+		// Pick 5 consecutive paths from the pool (wrapping around).
+		var content string
+		for j := 0; j < 5; j++ {
+			content += paths[(i+j)%len(paths)] + " "
+		}
+		if _, err := svc.Save(ctx, model.SaveRequest{
+			Title:   fmt.Sprintf("bench-rebuild-memory-%d", i),
+			Content: content,
+		}); err != nil {
+			b.Fatalf("Save memory %d: %v", i, err)
+		}
+	}
+
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		// Use Force=true so each benchmark iteration starts fresh.
+		result, err := svc.RebuildGraph(ctx, model.RebuildRequest{
+			Scope:     "project",
+			MinShared: 2,
+			Force:     true,
+		})
+		if err != nil {
+			b.Fatalf("RebuildGraph: %v", err)
+		}
+		b.ReportMetric(float64(result.MemoriesScanned), "memories_scanned/op")
+		b.ReportMetric(float64(result.RelationsCreated+result.RelationsExisting), "relations/op")
+	}
+}
+
 // BenchmarkExplore_Depth3_5K measures the performance of mem_explore with
 // depth=3 against a corpus of 500 memories and 100 entities with 5 relations
 // per entity. Per SPEC-008 acceptance criterion 6, the traversal should complete
