@@ -612,6 +612,32 @@ func (svc *MemoryService) Stats(ctx context.Context, project string) (*model.Sta
 		return nil, fmt.Errorf("service: stats: embeddings count: %w", err)
 	}
 
+	// Knowledge gaps summary — populate when there are unresolved wikilink refs.
+	gapTotal, gapErr := s.CountDistinctGaps(ctx, project)
+	if gapErr != nil {
+		return nil, fmt.Errorf("service: stats: count distinct gaps: %w", gapErr)
+	}
+
+	var knowledgeGaps *model.KnowledgeGaps
+	if gapTotal > 0 {
+		topGaps, _, listErr := s.ListGaps(ctx, project, 5, 1)
+		if listErr != nil {
+			return nil, fmt.Errorf("service: stats: list top gaps: %w", listErr)
+		}
+		// Load up to 3 samples for each of the top 5 gaps.
+		for i := range topGaps {
+			samples, sErr := s.ListGapSamples(ctx, topGaps[i].TargetTopicKey, project, 3)
+			if sErr != nil {
+				return nil, fmt.Errorf("service: stats: list gap samples: %w", sErr)
+			}
+			topGaps[i].Samples = samples
+		}
+		knowledgeGaps = &model.KnowledgeGaps{
+			Total: gapTotal,
+			Top:   topGaps,
+		}
+	}
+
 	return &model.StatsResponse{
 		Project:         projectLabel,
 		TotalMemories:   total,
@@ -625,7 +651,129 @@ func (svc *MemoryService) Stats(ctx context.Context, project string) (*model.Sta
 		NewestMemory:    newest,
 		AvgImportance:   avgImportance,
 		EmbeddingsCount: embCount,
+		KnowledgeGaps:   knowledgeGaps,
 	}, nil
+}
+
+// Gaps returns aggregated knowledge gaps from the unresolved_references table.
+// It supports multi-scope queries (project, global, all) and optionally loads
+// up to 3 sample source memories for each gap.
+//
+// Default behaviour (zero-value GapsRequest):
+//   - scope=project, querying the project store only.
+//   - limit=20 (clamped to 100 max).
+//   - minMentions=1 (all gaps included).
+//   - include_samples=true.
+func (svc *MemoryService) Gaps(ctx context.Context, req model.GapsRequest) (*model.GapsResponse, error) {
+	// Apply defaults and clamp.
+	limit := req.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	minMentions := req.MinMentions
+	if minMentions <= 0 {
+		minMentions = 1
+	}
+
+	includeSamples := true
+	if req.IncludeSamples != nil {
+		includeSamples = *req.IncludeSamples
+	}
+
+	scope := req.Scope
+	if scope == "" {
+		scope = string(model.ScopeProject)
+	}
+
+	project := req.Project
+	if project == "" {
+		project = svc.project
+	}
+
+	var merged []model.Gap
+	var total int
+
+	// Query project store unless the caller requested global only.
+	if scope == string(model.ScopeProject) || scope == "all" {
+		pGaps, pTotal, err := svc.projectStore.ListGaps(ctx, project, limit, minMentions)
+		if err != nil {
+			return nil, fmt.Errorf("service: gaps: project store: %w", err)
+		}
+		merged = append(merged, pGaps...)
+		total += pTotal
+	}
+
+	// Query global store unless the caller requested project only.
+	if scope == string(model.ScopeGlobal) || scope == "all" {
+		gGaps, gTotal, err := svc.globalStore.ListGaps(ctx, "", limit, minMentions)
+		if err != nil {
+			return nil, fmt.Errorf("service: gaps: global store: %w", err)
+		}
+		merged = append(merged, gGaps...)
+		total += gTotal
+	}
+
+	// Re-sort merged results when both stores were queried.
+	if scope == "all" {
+		sortGapsByMentions(merged)
+		if len(merged) > limit {
+			merged = merged[:limit]
+		}
+	}
+
+	// Load samples for each gap.
+	if includeSamples {
+		for i := range merged {
+			// Determine which store and project to query for this gap.
+			// Gaps from the global store have an empty project in the table.
+			gapProject := project
+			s := svc.projectStore
+			if scope == string(model.ScopeGlobal) {
+				gapProject = ""
+				s = svc.globalStore
+			}
+			samples, err := s.ListGapSamples(ctx, merged[i].TargetTopicKey, gapProject, 3)
+			if err != nil {
+				return nil, fmt.Errorf("service: gaps: list samples for %q: %w", merged[i].TargetTopicKey, err)
+			}
+			merged[i].Samples = samples
+		}
+	}
+
+	if merged == nil {
+		merged = []model.Gap{}
+	}
+
+	projectLabel := project
+	if projectLabel == "" {
+		projectLabel = "global"
+	}
+
+	return &model.GapsResponse{
+		Gaps:    merged,
+		Total:   total,
+		Project: projectLabel,
+	}, nil
+}
+
+// sortGapsByMentions sorts gaps by TotalMentions descending then SourceCount
+// descending. Used to merge and re-sort results from multiple stores.
+func sortGapsByMentions(gaps []model.Gap) {
+	n := len(gaps)
+	for i := 1; i < n; i++ {
+		for j := i; j > 0; j-- {
+			a, b := gaps[j-1], gaps[j]
+			if a.TotalMentions < b.TotalMentions ||
+				(a.TotalMentions == b.TotalMentions && a.SourceCount < b.SourceCount) {
+				gaps[j-1], gaps[j] = gaps[j], gaps[j-1]
+				continue
+			}
+			break
+		}
+	}
 }
 
 // EmbedBackfillResult summarises the outcome of an EmbedBackfill run.
