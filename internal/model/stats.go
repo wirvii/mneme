@@ -49,4 +49,9 @@ type StatsResponse struct {
 	// EmbeddingsCount is the number of memories that have a stored vector
 	// embedding. Used to monitor backfill coverage and diagnose search quality.
 	EmbeddingsCount int `json:"embeddings_count"`
+
+	// KnowledgeGaps summarises the unresolved [[wikilink]] references in the
+	// store. Nil when no unresolved references exist, so projects that don't
+	// use wikilinks see no extra noise in the JSON output.
+	KnowledgeGaps *KnowledgeGaps `json:"knowledge_gaps,omitempty"`
 }
