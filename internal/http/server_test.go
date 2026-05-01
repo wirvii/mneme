@@ -581,3 +581,126 @@ func TestHTTP_PostRelate_InvalidWeight(t *testing.T) {
 		t.Errorf("error code = %q, want %q", errBody.Error.Code, "invalid_request")
 	}
 }
+
+// ─── GET /v1/memories/{id}/explore tests ─────────────────────────────────────
+
+// TestHTTP_GetExplore_404 verifies that exploring a nonexistent memory ID
+// returns HTTP 404.
+func TestHTTP_GetExplore_404(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/v1/memories/00000000-0000-7000-8000-000000000000/explore")
+	if err != nil {
+		t.Fatalf("GET /explore: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status: got %d, want %d", resp.StatusCode, http.StatusNotFound)
+	}
+}
+
+// TestHTTP_GetExplore_200 verifies that a valid memory ID returns HTTP 200 with
+// a well-formed ExploreResponse body.
+func TestHTTP_GetExplore_200(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+
+	// First save a memory.
+	body, _ := json.Marshal(model.SaveRequest{
+		Title:   "HTTP explore seed",
+		Content: "seed memory for HTTP explore test",
+	})
+	postResp, err := http.Post(srv.URL+"/v1/memories", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST /v1/memories: %v", err)
+	}
+	defer postResp.Body.Close()
+	var saved model.SaveResponse
+	if err := json.NewDecoder(postResp.Body).Decode(&saved); err != nil {
+		t.Fatalf("decode save response: %v", err)
+	}
+
+	// Explore from it.
+	resp, err := http.Get(srv.URL + "/v1/memories/" + saved.ID + "/explore?depth=1")
+	if err != nil {
+		t.Fatalf("GET /explore: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status: got %d, body: %s", resp.StatusCode, b)
+	}
+
+	var result struct {
+		SeedID     string `json:"seed_id"`
+		TotalNodes int    `json:"total_nodes"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode explore response: %v", err)
+	}
+	if result.SeedID != saved.ID {
+		t.Errorf("seed_id: got %q, want %q", result.SeedID, saved.ID)
+	}
+}
+
+// TestHTTP_GetExplore_InvalidDepth verifies that a non-numeric or out-of-range
+// depth query parameter returns HTTP 400.
+func TestHTTP_GetExplore_InvalidDepth(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+
+	tests := []struct {
+		name  string
+		query string
+	}{
+		{"non-numeric depth", "depth=abc"},
+		{"depth below range", "depth=-1"},
+		{"depth above range", "depth=6"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			resp, err := http.Get(srv.URL + "/v1/memories/00000000-0000-7000-8000-000000000001/explore?" + tc.query)
+			if err != nil {
+				t.Fatalf("GET: %v", err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Errorf("status: got %d, want 400", resp.StatusCode)
+			}
+		})
+	}
+}
+
+// TestHTTP_GetExplore_DefaultParams verifies that omitting query params uses the
+// service defaults and does not error.
+func TestHTTP_GetExplore_DefaultParams(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+
+	// Save a seed memory.
+	body, _ := json.Marshal(model.SaveRequest{
+		Title:   "defaults test seed",
+		Content: "testing default params",
+	})
+	postResp, err := http.Post(srv.URL+"/v1/memories", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer postResp.Body.Close()
+	var saved model.SaveResponse
+	if err := json.NewDecoder(postResp.Body).Decode(&saved); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	// Explore without any query params.
+	resp, err := http.Get(srv.URL + "/v1/memories/" + saved.ID + "/explore")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status: got %d, body: %s", resp.StatusCode, b)
+	}
+}

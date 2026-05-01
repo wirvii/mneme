@@ -187,7 +187,8 @@ func errorStatus(err error) (int, string) {
 		errors.Is(err, model.ErrInvalidEntityKind), errors.Is(err, model.ErrInvalidRelationType),
 		errors.Is(err, model.ErrAppliesToRequired), errors.Is(err, model.ErrAppliesToForbidden),
 		errors.Is(err, model.ErrInvalidSeverity), errors.Is(err, model.ErrEmptyPattern),
-		errors.Is(err, model.ErrInvalidWeight):
+		errors.Is(err, model.ErrInvalidWeight),
+		errors.Is(err, model.ErrAmbiguousSeed):
 		return http.StatusBadRequest, "invalid_request"
 	default:
 		return http.StatusInternalServerError, "internal_error"
@@ -242,13 +243,22 @@ func (s *Server) handleMemories(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleMemoryByID dispatches GET, PATCH, and DELETE on /v1/memories/{id}.
+// It also handles the sub-resource action GET /v1/memories/{id}/explore.
 func (s *Server) handleMemoryByID(w http.ResponseWriter, r *http.Request) {
-	id := extractID(r.URL.Path, "/v1/memories/")
-	if id == "" {
+	path := strings.TrimPrefix(r.URL.Path, "/v1/memories/")
+	if path == "" {
 		writeError(w, http.StatusBadRequest, "invalid_request", "memory ID is required")
 		return
 	}
 
+	// Detect the /explore sub-resource action before dispatching the regular CRUD methods.
+	if strings.HasSuffix(path, "/explore") {
+		id := strings.TrimSuffix(path, "/explore")
+		s.handleExplore(w, r, id)
+		return
+	}
+
+	id := path
 	switch r.Method {
 	case http.MethodGet:
 		s.handleGetMemory(w, r, id)
@@ -259,6 +269,60 @@ func (s *Server) handleMemoryByID(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "use GET, PATCH, or DELETE")
 	}
+}
+
+// handleExplore handles GET /v1/memories/{id}/explore.
+// The {id} must be a full UUID. Query parameters:
+//
+//	depth     — int, default 2, range 0-5
+//	budget    — int, default 4000
+//	threshold — float, default 0.3, range 0.0-1.0
+func (s *Server) handleExplore(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "use GET")
+		return
+	}
+
+	req := model.ExploreRequest{
+		Seed: id,
+	}
+
+	q := r.URL.Query()
+
+	if rawDepth := q.Get("depth"); rawDepth != "" {
+		d, err := strconv.Atoi(rawDepth)
+		if err != nil || d < 0 || d > 5 {
+			writeError(w, http.StatusBadRequest, "invalid_request", "depth must be an integer between 0 and 5")
+			return
+		}
+		req.Depth = &d
+	}
+
+	if rawBudget := q.Get("budget"); rawBudget != "" {
+		b, err := strconv.Atoi(rawBudget)
+		if err != nil || b < 0 {
+			writeError(w, http.StatusBadRequest, "invalid_request", "budget must be a non-negative integer")
+			return
+		}
+		req.Budget = b
+	}
+
+	if rawThreshold := q.Get("threshold"); rawThreshold != "" {
+		f, err := strconv.ParseFloat(rawThreshold, 64)
+		if err != nil || f < 0 || f > 1.0 {
+			writeError(w, http.StatusBadRequest, "invalid_request", "threshold must be a float between 0.0 and 1.0")
+			return
+		}
+		req.Threshold = f
+	}
+
+	resp, err := s.svc.Explore(r.Context(), req)
+	if err != nil {
+		status, code := errorStatus(err)
+		writeError(w, status, code, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // handleGetMemory handles GET /v1/memories/{id}.
