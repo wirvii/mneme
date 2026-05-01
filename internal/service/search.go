@@ -21,11 +21,18 @@ const weightFTS5 = 1.0
 // Slightly lower than FTS5 because TF-IDF embeddings are approximate signals.
 const weightVector = 0.8
 
-// weightGraph is the RRF contribution weight for the 1-hop graph expansion
+// weightGraph is the RRF contribution weight for the graph expansion
 // channel. Lower than both FTS5 and vector because graph proximity is an
 // indirect signal (topology, not content). High enough to surface strongly
 // connected memories that both text channels miss.
 const weightGraph = 0.6
+
+// graphTopN is the maximum number of results returned by graphChannelPPR
+// before feeding into RRF. Caps the PPR channel at 50 results (same order
+// of magnitude as FTS5 ~50 and vector ~100) so graph noise doesn't dominate
+// the fusion. Not configurable: it is an output-cap, not an input-scale
+// parameter (which is ExpansionSeedTopK).
+const graphTopN = 50
 
 // graphResult holds a memory discovered via 1-hop graph expansion.
 // Used internally in the service layer; not exposed to any frontend.
@@ -95,10 +102,17 @@ func (svc *MemoryService) Search(ctx context.Context, req model.SearchRequest) (
 		}
 	}
 
-	// Resolve include_graph: nil means "use config default (true)".
-	includeGraph := svc.config.Graph.ExpansionEnabled
-	if req.IncludeGraph != nil {
-		includeGraph = *req.IncludeGraph
+	// Resolve effectiveMode: priority chain is IncludeGraph (request) >
+	// ExpansionEnabled (config kill switch) > GraphMode (algorithm selector).
+	effectiveMode := svc.config.Graph.GraphMode
+	if effectiveMode == "" {
+		effectiveMode = "ppr" // empty treated as default
+	}
+	if !svc.config.Graph.ExpansionEnabled {
+		effectiveMode = "off"
+	}
+	if req.IncludeGraph != nil && !*req.IncludeGraph {
+		effectiveMode = "off"
 	}
 
 	// === Fusion ===
@@ -107,8 +121,8 @@ func (svc *MemoryService) Search(ctx context.Context, req model.SearchRequest) (
 	// queries. Fall back to the simpler reRankFTS5 path only when both vector
 	// search and graph expansion are inactive.
 	var results []model.SearchResult
-	if len(vectorResults) > 0 || includeGraph {
-		results = svc.fuseAndRank(ctx, ftsResults, vectorResults, limit, includeGraph)
+	if len(vectorResults) > 0 || effectiveMode != "off" {
+		results = svc.fuseAndRank(ctx, ftsResults, vectorResults, limit, effectiveMode)
 	} else {
 		// Fallback: FTS5-only with the existing re-ranking logic.
 		results = svc.reRankFTS5(ftsResults)
@@ -222,17 +236,19 @@ func (svc *MemoryService) vectorSearchAll(ctx context.Context, queryVec []float3
 // using Reciprocal Rank Fusion (RRF), then assembles SearchResult values with
 // VectorScore populated for transparency.
 //
-// When includeGraph is true, the function performs a preliminary 2-channel
-// fusion to identify top-K seeds, expands them via the knowledge graph, and
-// adds graph results as a third RRF channel (weightGraph=0.6). Graph expansion
-// runs even when the embedder is NopEmbedder (FTS5-only path) — vector results
-// are simply an empty slice in that case.
+// effectiveMode controls graph expansion:
+//   - "ppr"  — runs graphChannelPPR (Personalized PageRank, multi-hop). Default.
+//   - "1hop" — runs graphExpand (1-hop bidirectional, SPEC-007 behaviour).
+//   - "off"  — no graph channel; 2-channel RRF (FTS5 + vector) only.
+//
+// Graph expansion runs even when the embedder is NopEmbedder (FTS5-only path)
+// — vector results are simply an empty slice in that case.
 //
 // When a memory appears only in vector results (no FTS5 match), it is loaded
 // from the store so that semantic-only hits are not silently dropped. This is
 // the core guarantee of hybrid retrieval: a query like "authentication flow"
 // must surface memories about JWT auth even when FTS5 finds no token overlap.
-func (svc *MemoryService) fuseAndRank(ctx context.Context, ftsResults []model.SearchResult, vectorResults []store.VectorResult, limit int, includeGraph bool) []model.SearchResult {
+func (svc *MemoryService) fuseAndRank(ctx context.Context, ftsResults []model.SearchResult, vectorResults []store.VectorResult, limit int, effectiveMode string) []model.SearchResult {
 	// Convert FTS5 results into RankedResults (1-based rank).
 	ftsRanks := make([]scoring.RankedResult, len(ftsResults))
 	for i, r := range ftsResults {
@@ -253,9 +269,9 @@ func (svc *MemoryService) fuseAndRank(ctx context.Context, ftsResults []model.Se
 		}
 	}
 
-	// === Signal 3: Graph expansion (new in SPEC-007) ===
+	// === Signal 3: Graph expansion (ppr/1hop/off) ===
 	var graphRanks []scoring.RankedResult
-	if includeGraph {
+	if effectiveMode != "off" {
 		// Preliminary 2-channel fusion to identify seeds.
 		preliminary := scoring.RRFScore(append(ftsRanks, vecRanks...), scoring.DefaultRRFK)
 		topK := svc.config.Graph.ExpansionSeedTopK
@@ -268,7 +284,15 @@ func (svc *MemoryService) fuseAndRank(ctx context.Context, ftsResults []model.Se
 				seedIDs[i] = preliminary[i].ID
 			}
 
-			graphResults, touchIDs := svc.graphExpand(ctx, seedIDs)
+			var graphResults []graphResult
+			var touchIDs []string
+			switch effectiveMode {
+			case "ppr":
+				graphResults, touchIDs = svc.graphChannelPPR(ctx, seedIDs)
+			default: // "1hop"
+				graphResults, touchIDs = svc.graphExpand(ctx, seedIDs)
+			}
+
 			graphRanks = make([]scoring.RankedResult, len(graphResults))
 			for i, gr := range graphResults {
 				graphRanks[i] = scoring.RankedResult{
@@ -381,6 +405,143 @@ func (svc *MemoryService) fuseAndRank(ctx context.Context, ftsResults []model.Se
 	}
 
 	return results
+}
+
+// graphChannelPPR builds a PPR-ranked graph channel for RRF fusion. It
+// constructs a subgraph from seed memories via BuildGraphForSeeds, runs
+// Personalized PageRank, maps entity scores back to memory IDs, and returns
+// the top graphTopN memory results ranked by PPR score.
+//
+// On any PPR failure (empty graph, no seed entities, PPR error, or panic) the
+// function falls back to graphExpand (1-hop). Search never fails from graph
+// expansion.
+//
+// Returns (graphResults, touchIDs). touchIDs are the relation IDs traversed
+// during BFS so the caller can update last_traversed_at via batchTouchRelations.
+func (svc *MemoryService) graphChannelPPR(ctx context.Context, seedIDs []string) (results []graphResult, touchIDs []string) {
+	// Defensive panic recovery: PPR is well-tested but any unexpected panic
+	// must never break search.
+	defer func() {
+		if r := recover(); r != nil {
+			slog.WarnContext(ctx, "ppr graph channel panic, falling back to 1-hop",
+				"event", "graph_ppr_panic",
+				"recover", r,
+			)
+			results, touchIDs = svc.graphExpand(ctx, seedIDs)
+		}
+	}()
+
+	// 1. Build the BFS subgraph around the seeds.
+	opts := DefaultGraphBuildOptions()
+	graph, bfsTouchIDs := svc.BuildGraphForSeeds(ctx, seedIDs, opts)
+
+	if len(graph.Nodes) == 0 {
+		slog.DebugContext(ctx, "ppr graph empty, falling back to 1-hop",
+			"event", "graph_ppr_fallback",
+			"reason", "empty_graph",
+		)
+		return svc.graphExpand(ctx, seedIDs)
+	}
+
+	// 2. Map seed memory IDs to entity IDs for PPR teleport targets.
+	pprSeeds := svc.resolveSeedEntities(ctx, seedIDs)
+	if len(pprSeeds) == 0 {
+		slog.DebugContext(ctx, "ppr no seed entities, falling back to 1-hop",
+			"event", "graph_ppr_fallback",
+			"reason", "no_seed_entities",
+		)
+		return svc.graphExpand(ctx, seedIDs)
+	}
+
+	// 3. Run PPR power iteration.
+	pprResult, err := scoring.PPR(*graph, pprSeeds, scoring.DefaultPPROptions())
+	if err != nil {
+		slog.WarnContext(ctx, "ppr failed, falling back to 1-hop",
+			"event", "graph_ppr_fallback",
+			"reason", "ppr_error",
+			"error", err,
+		)
+		return svc.graphExpand(ctx, seedIDs)
+	}
+
+	// 4. Map entity PPR scores back to memory IDs.
+	// Memory score = max(PPR score of linked entities).
+	accumulated := make(map[string]float64)
+	for entityID, score := range pprResult.Scores {
+		if score <= 0 {
+			continue
+		}
+		memIDs, memErr := svc.projectStore.GetEntityMemoryIDs(ctx, entityID)
+		if memErr != nil {
+			continue
+		}
+		for _, memID := range memIDs {
+			if isSeed(memID, seedIDs) {
+				continue // exclude seeds from graph results
+			}
+			if score > accumulated[memID] {
+				accumulated[memID] = score
+			}
+		}
+	}
+
+	// 5. Sort by PPR score descending, apply top-N cap.
+	results = make([]graphResult, 0, len(accumulated))
+	for memID, score := range accumulated {
+		results = append(results, graphResult{MemoryID: memID, GraphScore: score})
+	}
+	sort.Slice(results, func(i, j int) bool {
+		if results[i].GraphScore != results[j].GraphScore {
+			return results[i].GraphScore > results[j].GraphScore
+		}
+		return results[i].MemoryID < results[j].MemoryID
+	})
+	if len(results) > graphTopN {
+		results = results[:graphTopN]
+	}
+
+	slog.DebugContext(ctx, "ppr graph channel done",
+		"event", "graph_ppr_done",
+		"nodes", len(graph.Nodes),
+		"ppr_iterations", pprResult.Iterations,
+		"ppr_converged", pprResult.Converged,
+		"graph_results", len(results),
+	)
+
+	return results, bfsTouchIDs
+}
+
+// resolveSeedEntities maps seed memory IDs to the entity IDs that PPR will use
+// as teleport targets. Returns a deduplicated slice of entity IDs.
+// Errors are swallowed (best-effort, same as graphExpand pattern).
+func (svc *MemoryService) resolveSeedEntities(ctx context.Context, seedIDs []string) []scoring.NodeID {
+	seen := make(map[scoring.NodeID]struct{}, len(seedIDs)*3)
+	result := make([]scoring.NodeID, 0, len(seedIDs)*3)
+
+	for _, seedID := range seedIDs {
+		entities, err := svc.projectStore.GetMemoryEntities(ctx, seedID)
+		if err != nil || len(entities) == 0 {
+			continue
+		}
+		for _, e := range entities {
+			if _, ok := seen[e.ID]; !ok {
+				seen[e.ID] = struct{}{}
+				result = append(result, e.ID)
+			}
+		}
+	}
+	return result
+}
+
+// isSeed reports whether memID is contained in the seedIDs slice.
+// Linear scan is acceptable: seedIDs is at most ExpansionSeedTopK long (default 10).
+func isSeed(memID string, seedIDs []string) bool {
+	for _, id := range seedIDs {
+		if id == memID {
+			return true
+		}
+	}
+	return false
 }
 
 // graphExpand performs a 1-hop graph expansion from a set of seed memory IDs.
