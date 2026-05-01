@@ -3,10 +3,13 @@ package service
 import (
 	"context"
 	"fmt"
+	"math"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/juanftp/mneme/internal/model"
+	"github.com/juanftp/mneme/internal/scoring"
 	"github.com/juanftp/mneme/internal/store"
 )
 
@@ -15,59 +18,151 @@ import (
 var nonAlphanumRe = regexp.MustCompile(`[^a-z0-9-]+`)
 
 // SuggestTopicKey generates a stable topic key suggestion based on the memory
-// title and existing keys in the database. It returns any existing memories
-// with similar topic keys so the caller can decide whether to update or create.
+// title and existing keys in the database. It also searches unresolved knowledge
+// gaps so that agents are guided toward filling existing gaps rather than
+// creating new, divergent keys.
 //
-// Project defaults to the service's project when omitted.
-func (svc *MemoryService) SuggestTopicKey(ctx context.Context, title, project string) (*model.TopicKeySuggestion, error) {
+// The response includes:
+//   - ExistingMatches: memories with similar topic keys (scored by Jaccard).
+//   - GapMatches: unresolved gaps whose topic_key is similar (scored by Jaccard
+//     plus a configurable boost and log-scaled pending-count adjustment).
+//   - Suggestion: the highest-scoring gap key when it beats all existing matches;
+//     otherwise the buildTopicKey() slug derived from the title.
+//
+// When the title tokenises to nothing (all stopwords or too short), the function
+// falls back to the pre-SPEC-014 behaviour: FTS5 search only, no gap matching.
+func (svc *MemoryService) SuggestTopicKey(ctx context.Context, req model.SuggestTopicKeyRequest) (*model.TopicKeySuggestion, error) {
+	project := req.Project
 	if project == "" {
 		project = svc.project
 	}
 
-	// Search existing memories with the title as the query to find similar records.
-	// Search both project store and global store to surface all relevant keys.
+	cfg := svc.config.Suggestions
+	queryTokens := scoring.Tokenize(req.Title)
+
+	// --- Existing matches (FTS5 search, always executed) ---
 	var existingMatches []model.TopicKeyMatch
-	if title != "" {
+	if req.Title != "" {
 		searchOpts := store.SearchOptions{
 			Project: project,
-			Limit:   10,
+			Limit:   cfg.MaxResults,
 		}
-		projectResults, err := svc.projectStore.FTS5Search(ctx, title, searchOpts)
+		projectResults, err := svc.projectStore.FTS5Search(ctx, req.Title, searchOpts)
 		if err != nil {
 			return nil, fmt.Errorf("service: suggest topic key: search project store: %w", err)
 		}
 		globalOpts := searchOpts
 		globalOpts.Project = ""
-		globalResults, err := svc.globalStore.FTS5Search(ctx, title, globalOpts)
+		globalResults, err := svc.globalStore.FTS5Search(ctx, req.Title, globalOpts)
 		if err != nil {
 			return nil, fmt.Errorf("service: suggest topic key: search global store: %w", err)
 		}
 		results := append(projectResults, globalResults...)
 
-		// Collect unique topic keys from search results.
 		seen := make(map[string]bool)
 		for _, r := range results {
-			if r.TopicKey == "" {
-				continue
-			}
-			if seen[r.TopicKey] {
+			if r.TopicKey == "" || seen[r.TopicKey] {
 				continue
 			}
 			seen[r.TopicKey] = true
-			existingMatches = append(existingMatches, model.TopicKeyMatch{
+
+			match := model.TopicKeyMatch{
 				TopicKey: r.TopicKey,
 				Title:    r.Title,
 				ID:       r.ID,
-			})
+			}
+
+			if len(queryTokens) > 0 {
+				tkTokens := scoring.Tokenize(r.TopicKey)
+				j := scoring.JaccardSimilarity(queryTokens, tkTokens)
+				if j >= cfg.GapJaccardThreshold {
+					match.Score = j
+					match.Reason = "similar existing topic key"
+				} else {
+					// FTS5 found it via text — keep with a floor score.
+					match.Score = 0.1
+					match.Reason = "FTS5 text match"
+				}
+			}
+
+			existingMatches = append(existingMatches, match)
+		}
+
+		// Sort existing matches by Score descending, then topic_key ascending.
+		sort.Slice(existingMatches, func(i, j int) bool {
+			if existingMatches[i].Score != existingMatches[j].Score {
+				return existingMatches[i].Score > existingMatches[j].Score
+			}
+			return existingMatches[i].TopicKey < existingMatches[j].TopicKey
+		})
+		if len(existingMatches) > cfg.MaxResults {
+			existingMatches = existingMatches[:cfg.MaxResults]
 		}
 	}
 
-	suggestion := buildTopicKey(title)
+	// --- Gap matches (new in SPEC-014) ---
+	var gapMatches []model.TopicKeyMatch
+	if len(queryTokens) > 0 && cfg.MaxGapsToConsider > 0 {
+		gaps, _, err := svc.projectStore.ListGaps(ctx, project, cfg.MaxGapsToConsider, 1)
+		if err != nil {
+			return nil, fmt.Errorf("service: suggest topic key: list gaps: %w", err)
+		}
+
+		for _, gap := range gaps {
+			gapTokens := scoring.Tokenize(gap.TargetTopicKey)
+			j := scoring.JaccardSimilarity(queryTokens, gapTokens)
+			if j < cfg.GapJaccardThreshold {
+				continue
+			}
+			// score = jaccard + boost + log2(pending_count+1) * weight
+			gapScore := j + cfg.GapScoreBoost +
+				math.Log2(float64(gap.TotalMentions+1))*cfg.GapPendingWeight
+
+			gapMatches = append(gapMatches, model.TopicKeyMatch{
+				TopicKey:     gap.TargetTopicKey,
+				Title:        gap.TargetTopicKey,
+				Score:        gapScore,
+				FromGap:      true,
+				PendingCount: gap.TotalMentions,
+				Reason:       fmt.Sprintf("unresolved gap, %d pending mentions", gap.TotalMentions),
+			})
+		}
+
+		// Sort gap matches by Score descending, then topic_key ascending for stability.
+		sort.Slice(gapMatches, func(i, j int) bool {
+			if gapMatches[i].Score != gapMatches[j].Score {
+				return gapMatches[i].Score > gapMatches[j].Score
+			}
+			return gapMatches[i].TopicKey < gapMatches[j].TopicKey
+		})
+		if len(gapMatches) > cfg.MaxResults {
+			gapMatches = gapMatches[:cfg.MaxResults]
+		}
+	}
+
+	// --- Primary suggestion ---
+	// When the top gap scores higher than all existing matches, suggest the gap's
+	// topic_key so the agent is nudged to fill it. Otherwise fall back to the
+	// slug derived from the title (unchanged pre-SPEC-014 behaviour).
+	suggestion := buildTopicKey(req.Title)
+	if len(gapMatches) > 0 {
+		topGapScore := gapMatches[0].Score
+		topExistingScore := 0.0
+		if len(existingMatches) > 0 {
+			topExistingScore = existingMatches[0].Score
+		}
+		if topGapScore > topExistingScore {
+			suggestion = gapMatches[0].TopicKey
+		}
+	}
+
+	isNew := len(existingMatches) == 0 && len(gapMatches) == 0
 
 	return &model.TopicKeySuggestion{
 		Suggestion:      suggestion,
 		ExistingMatches: existingMatches,
-		IsNewTopic:      len(existingMatches) == 0,
+		GapMatches:      gapMatches,
+		IsNewTopic:      isNew,
 	}, nil
 }
 

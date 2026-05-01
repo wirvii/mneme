@@ -23,6 +23,27 @@ func newTestService(t *testing.T) *service.MemoryService {
 	return newTestServiceWithEmbedder(t, embed.NopEmbedder{})
 }
 
+// newTestServiceWikilinksOff is like newTestService but with WikilinksEnabled=false.
+// Use this helper for tests that must verify behaviour when wikilink parsing is
+// disabled (e.g. verifying that no unresolved references are registered).
+func newTestServiceWikilinksOff(t *testing.T) *service.MemoryService {
+	t.Helper()
+	projectDB, err := db.OpenMemory()
+	if err != nil {
+		t.Fatalf("open project db: %v", err)
+	}
+	globalDB, err := db.OpenMemory()
+	if err != nil {
+		t.Fatalf("open global db: %v", err)
+	}
+	t.Cleanup(func() { projectDB.Close(); globalDB.Close() })
+	projectStore := store.NewMemoryStore(projectDB)
+	globalStore := store.NewMemoryStore(globalDB)
+	cfg := config.Default()
+	cfg.Graph.WikilinksEnabled = false
+	return service.NewMemoryService(projectStore, globalStore, cfg, "test/project", embed.NopEmbedder{})
+}
+
 // newTestServiceWithEmbedder is like newTestService but accepts a custom Embedder.
 // Use this helper for tests that require semantic search (e.g. hybrid retrieval
 // or focus-boost tests).
