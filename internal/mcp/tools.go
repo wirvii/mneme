@@ -228,7 +228,7 @@ func allTools() []ToolDefinition {
 		},
 		{
 			Name:        "mem_suggest_topic_key",
-			Description: "Suggest a topic_key for a new memory.",
+			Description: "Suggest a topic_key for a new memory. Searches existing topic keys and unresolved knowledge gaps to find the best match. Returns scored suggestions from both existing memories (Jaccard similarity) and gap analysis (Jaccard + urgency boost). Gap matches signal that the project already needs this key.",
 			InputSchema: map[string]any{
 				"type":     "object",
 				"required": []string{"title"},
@@ -239,7 +239,7 @@ func allTools() []ToolDefinition {
 					},
 					"project": map[string]any{
 						"type":        "string",
-						"description": "Project slug used to search for existing similar keys.",
+						"description": "Project slug used to search for existing similar keys and gaps.",
 					},
 				},
 			},

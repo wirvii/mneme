@@ -839,6 +839,137 @@ func TestMemGaps_Success(t *testing.T) {
 	}
 }
 
+// TestMemSuggestTopicKey_WithGaps verifies that mem_suggest_topic_key returns
+// gap_matches in the response when a wikilink creates an unresolved reference
+// whose topic_key shares tokens with the queried title.
+func TestMemSuggestTopicKey_WithGaps(t *testing.T) {
+	srv := newTestServer(t)
+
+	// Save a memory with a wikilink to a non-existent topic_key.
+	saveResp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name: "mem_save",
+		Arguments: mustMarshal(t, map[string]any{
+			"title":   "Source memory about JWT tokens",
+			"content": "See [[auth/jwt-setup]] for the token configuration.",
+			"type":    "decision",
+		}),
+	})
+	if saveResp.Error != nil {
+		t.Fatalf("mem_save: %s", saveResp.Error.Message)
+	}
+
+	// Suggest a topic key with a title that shares tokens with the gap.
+	resp := process(t, srv, "tools/call", 2, ToolCallParams{
+		Name: "mem_suggest_topic_key",
+		Arguments: mustMarshal(t, map[string]any{
+			"title": "JWT authentication setup",
+		}),
+	})
+	if resp.Error != nil {
+		t.Fatalf("mem_suggest_topic_key: %s", resp.Error.Message)
+	}
+
+	var result struct {
+		Suggestion      string `json:"suggestion"`
+		IsNewTopic      bool   `json:"is_new_topic"`
+		ExistingMatches []struct {
+			TopicKey string  `json:"topic_key"`
+			Score    float64 `json:"score"`
+		} `json:"existing_matches"`
+		GapMatches []struct {
+			TopicKey     string  `json:"topic_key"`
+			Score        float64 `json:"score"`
+			FromGap      bool    `json:"from_gap"`
+			PendingCount int     `json:"pending_count"`
+			Reason       string  `json:"reason"`
+		} `json:"gap_matches"`
+	}
+	unmarshalToolText(t, resp, &result)
+
+	if result.Suggestion == "" {
+		t.Error("expected non-empty suggestion")
+	}
+	if len(result.GapMatches) == 0 {
+		t.Fatal("expected gap_matches to be non-empty")
+	}
+
+	found := false
+	for _, gm := range result.GapMatches {
+		if gm.TopicKey == "auth/jwt-setup" {
+			found = true
+			if !gm.FromGap {
+				t.Error("expected from_gap=true")
+			}
+			if gm.Score <= 0 {
+				t.Errorf("expected positive score, got %f", gm.Score)
+			}
+			if gm.PendingCount < 1 {
+				t.Errorf("expected pending_count >= 1, got %d", gm.PendingCount)
+			}
+			if gm.Reason == "" {
+				t.Error("expected non-empty reason")
+			}
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected gap_matches to contain auth/jwt-setup, got %+v", result.GapMatches)
+	}
+}
+
+// TestMemSuggestTopicKey_BackwardCompat verifies that mem_suggest_topic_key
+// returns the expected fields for the pre-SPEC-014 case: an existing memory is
+// found, suggestion is non-empty, and gap_matches is absent (omitted in JSON).
+func TestMemSuggestTopicKey_BackwardCompat(t *testing.T) {
+	srv := newTestServer(t)
+
+	// Save a memory with an explicit topic key.
+	saveResp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name: "mem_save",
+		Arguments: mustMarshal(t, map[string]any{
+			"title":     "Authentication model overview",
+			"content":   "Describes the authentication architecture.",
+			"topic_key": "architecture/auth-model",
+			"type":      "architecture",
+		}),
+	})
+	if saveResp.Error != nil {
+		t.Fatalf("mem_save: %s", saveResp.Error.Message)
+	}
+
+	resp := process(t, srv, "tools/call", 2, ToolCallParams{
+		Name: "mem_suggest_topic_key",
+		Arguments: mustMarshal(t, map[string]any{
+			"title": "Authentication model overview",
+		}),
+	})
+	if resp.Error != nil {
+		t.Fatalf("mem_suggest_topic_key: %s", resp.Error.Message)
+	}
+
+	var result struct {
+		Suggestion      string `json:"suggestion"`
+		IsNewTopic      bool   `json:"is_new_topic"`
+		ExistingMatches []any  `json:"existing_matches"`
+		GapMatches      []any  `json:"gap_matches"`
+	}
+	unmarshalToolText(t, resp, &result)
+
+	if result.Suggestion == "" {
+		t.Error("expected non-empty suggestion")
+	}
+	if result.IsNewTopic {
+		t.Error("expected is_new_topic=false when existing match found")
+	}
+	if len(result.ExistingMatches) == 0 {
+		t.Error("expected at least one existing_match")
+	}
+	// No gaps registered in this test, so gap_matches must be absent/empty.
+	if len(result.GapMatches) != 0 {
+		t.Errorf("expected no gap_matches, got %d", len(result.GapMatches))
+	}
+}
+
 // TestMemGaps_InvalidParams verifies that a non-object arguments value (a JSON
 // string instead of an object) causes the handler to return CodeInvalidParams.
 // This exercises the json.Unmarshal failure path in handleMemGaps.

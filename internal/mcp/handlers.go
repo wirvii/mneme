@@ -234,7 +234,10 @@ func (h *handlers) handleMemSuggestTopicKey(ctx context.Context, raw json.RawMes
 		}
 	}
 
-	resp, err := h.svc.SuggestTopicKey(ctx, args.Title, args.Project)
+	resp, err := h.svc.SuggestTopicKey(ctx, model.SuggestTopicKeyRequest{
+		Title:   args.Title,
+		Project: args.Project,
+	})
 	if err != nil {
 		return nil, h.mapServiceError("mem_suggest_topic_key", err)
 	}
