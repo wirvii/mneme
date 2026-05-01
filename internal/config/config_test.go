@@ -1119,6 +1119,211 @@ func TestGraphConfig_ExploreValidation(t *testing.T) {
 	}
 }
 
+// TestGraphConfig_AllEnvOverrides verifies that every MNEME_GRAPH_* env var
+// is applied by Load(). Each canonical name must override the default value.
+func TestGraphConfig_AllEnvOverrides(t *testing.T) {
+	t.Setenv("MNEME_GRAPH_HEBBIAN_WINDOW", "8")
+	t.Setenv("MNEME_GRAPH_HEBBIAN_INCREMENT", "0.08")
+	t.Setenv("MNEME_GRAPH_HEBBIAN_INITIAL_WEIGHT", "0.15")
+	t.Setenv("MNEME_GRAPH_HEBBIAN_BUFFER_SIZE", "500")
+	t.Setenv("MNEME_GRAPH_EDGE_DECAY_RATE", "0.05")
+	t.Setenv("MNEME_GRAPH_EDGE_DECAY_AFTER_DAYS", "15")
+	t.Setenv("MNEME_GRAPH_EXPANSION_ENABLED", "false")
+	t.Setenv("MNEME_GRAPH_EXPANSION_THRESHOLD", "0.4")
+	t.Setenv("MNEME_GRAPH_EXPANSION_FAN_OUT_CAP", "25")
+	t.Setenv("MNEME_GRAPH_EXPANSION_SEED_TOP_K", "7")
+	t.Setenv("MNEME_GRAPH_EXPLORE_MAX_NODES", "100")
+	t.Setenv("MNEME_GRAPH_EXPLORE_DEFAULT_DEPTH", "3")
+	t.Setenv("MNEME_GRAPH_EXPLORE_DEFAULT_BUDGET", "2000")
+	t.Setenv("MNEME_GRAPH_REBUILD_MIN_SHARED", "3")
+	t.Setenv("MNEME_GRAPH_REBUILD_MAX_RELATIONS", "30")
+	t.Setenv("MNEME_GRAPH_WIKILINKS_ENABLED", "false")
+	t.Setenv("MNEME_GRAPH_WIKILINK_RELATION_WEIGHT", "0.4")
+	t.Setenv("MNEME_GRAPH_MODE", "1hop")
+
+	cfg, err := Load("/nonexistent/path/config.toml")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if cfg.Graph.HebbianWindow != 8 {
+		t.Errorf("HebbianWindow: got %d, want 8", cfg.Graph.HebbianWindow)
+	}
+	if cfg.Graph.HebbianIncrement != 0.08 {
+		t.Errorf("HebbianIncrement: got %f, want 0.08", cfg.Graph.HebbianIncrement)
+	}
+	if cfg.Graph.HebbianInitialWeight != 0.15 {
+		t.Errorf("HebbianInitialWeight: got %f, want 0.15", cfg.Graph.HebbianInitialWeight)
+	}
+	if cfg.Graph.HebbianBufferSize != 500 {
+		t.Errorf("HebbianBufferSize: got %d, want 500", cfg.Graph.HebbianBufferSize)
+	}
+	if cfg.Graph.EdgeDecayRate != 0.05 {
+		t.Errorf("EdgeDecayRate: got %f, want 0.05", cfg.Graph.EdgeDecayRate)
+	}
+	if cfg.Graph.EdgeDecayAfterDays != 15 {
+		t.Errorf("EdgeDecayAfterDays: got %d, want 15", cfg.Graph.EdgeDecayAfterDays)
+	}
+	if cfg.Graph.ExpansionEnabled {
+		t.Error("ExpansionEnabled: got true, want false")
+	}
+	if cfg.Graph.ExpansionThreshold != 0.4 {
+		t.Errorf("ExpansionThreshold: got %f, want 0.4", cfg.Graph.ExpansionThreshold)
+	}
+	if cfg.Graph.ExpansionFanOutCap != 25 {
+		t.Errorf("ExpansionFanOutCap: got %d, want 25", cfg.Graph.ExpansionFanOutCap)
+	}
+	if cfg.Graph.ExpansionSeedTopK != 7 {
+		t.Errorf("ExpansionSeedTopK: got %d, want 7", cfg.Graph.ExpansionSeedTopK)
+	}
+	if cfg.Graph.ExploreMaxNodes != 100 {
+		t.Errorf("ExploreMaxNodes: got %d, want 100", cfg.Graph.ExploreMaxNodes)
+	}
+	if cfg.Graph.ExploreDefaultDepth != 3 {
+		t.Errorf("ExploreDefaultDepth: got %d, want 3", cfg.Graph.ExploreDefaultDepth)
+	}
+	if cfg.Graph.ExploreDefaultBudget != 2000 {
+		t.Errorf("ExploreDefaultBudget: got %d, want 2000", cfg.Graph.ExploreDefaultBudget)
+	}
+	if cfg.Graph.RebuildMinShared != 3 {
+		t.Errorf("RebuildMinShared: got %d, want 3", cfg.Graph.RebuildMinShared)
+	}
+	if cfg.Graph.RebuildMaxRelations != 30 {
+		t.Errorf("RebuildMaxRelations: got %d, want 30", cfg.Graph.RebuildMaxRelations)
+	}
+	if cfg.Graph.WikilinksEnabled {
+		t.Error("WikilinksEnabled: got true, want false")
+	}
+	if cfg.Graph.WikilinkRelationWeight != 0.4 {
+		t.Errorf("WikilinkRelationWeight: got %f, want 0.4", cfg.Graph.WikilinkRelationWeight)
+	}
+	if cfg.Graph.GraphMode != "1hop" {
+		t.Errorf("GraphMode: got %q, want %q", cfg.Graph.GraphMode, "1hop")
+	}
+}
+
+// TestSuggestionsConfig_AllEnvOverrides verifies that every
+// MNEME_SUGGESTIONS_* env var is applied by Load().
+func TestSuggestionsConfig_AllEnvOverrides(t *testing.T) {
+	t.Setenv("MNEME_SUGGESTIONS_GAP_SCORE_BOOST", "0.25")
+	t.Setenv("MNEME_SUGGESTIONS_GAP_PENDING_WEIGHT", "0.20")
+	t.Setenv("MNEME_SUGGESTIONS_GAP_JACCARD_THRESHOLD", "0.35")
+	t.Setenv("MNEME_SUGGESTIONS_MAX_GAPS_TO_CONSIDER", "30")
+	t.Setenv("MNEME_SUGGESTIONS_MAX_RESULTS", "5")
+
+	cfg, err := Load("/nonexistent/path/config.toml")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if cfg.Suggestions.GapScoreBoost != 0.25 {
+		t.Errorf("GapScoreBoost: got %f, want 0.25", cfg.Suggestions.GapScoreBoost)
+	}
+	if cfg.Suggestions.GapPendingWeight != 0.20 {
+		t.Errorf("GapPendingWeight: got %f, want 0.20", cfg.Suggestions.GapPendingWeight)
+	}
+	if cfg.Suggestions.GapJaccardThreshold != 0.35 {
+		t.Errorf("GapJaccardThreshold: got %f, want 0.35", cfg.Suggestions.GapJaccardThreshold)
+	}
+	if cfg.Suggestions.MaxGapsToConsider != 30 {
+		t.Errorf("MaxGapsToConsider: got %d, want 30", cfg.Suggestions.MaxGapsToConsider)
+	}
+	if cfg.Suggestions.MaxResults != 5 {
+		t.Errorf("MaxResults: got %d, want 5", cfg.Suggestions.MaxResults)
+	}
+}
+
+// TestGraphConfig_CanonicalEnvWinsOverLegacy verifies that when both the
+// canonical MNEME_GRAPH_EXPANSION_* name and the legacy MNEME_EXPANSION_*
+// alias are set, the canonical name takes precedence.
+func TestGraphConfig_CanonicalEnvWinsOverLegacy(t *testing.T) {
+	// Canonical says false; legacy alias says true. Canonical must win.
+	t.Setenv("MNEME_GRAPH_EXPANSION_ENABLED", "false")
+	t.Setenv("MNEME_EXPANSION_ENABLED", "true")
+
+	t.Setenv("MNEME_GRAPH_EXPANSION_THRESHOLD", "0.7")
+	t.Setenv("MNEME_EXPANSION_THRESHOLD", "0.1")
+
+	t.Setenv("MNEME_GRAPH_EXPANSION_FAN_OUT_CAP", "99")
+	t.Setenv("MNEME_EXPANSION_FAN_OUT_CAP", "1")
+
+	t.Setenv("MNEME_GRAPH_EXPANSION_SEED_TOP_K", "15")
+	t.Setenv("MNEME_EXPANSION_SEED_TOP_K", "2")
+
+	cfg, err := Load("/nonexistent/path/config.toml")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if cfg.Graph.ExpansionEnabled {
+		t.Error("ExpansionEnabled: canonical false should win, got true")
+	}
+	if cfg.Graph.ExpansionThreshold != 0.7 {
+		t.Errorf("ExpansionThreshold: canonical 0.7 should win, got %f", cfg.Graph.ExpansionThreshold)
+	}
+	if cfg.Graph.ExpansionFanOutCap != 99 {
+		t.Errorf("ExpansionFanOutCap: canonical 99 should win, got %d", cfg.Graph.ExpansionFanOutCap)
+	}
+	if cfg.Graph.ExpansionSeedTopK != 15 {
+		t.Errorf("ExpansionSeedTopK: canonical 15 should win, got %d", cfg.Graph.ExpansionSeedTopK)
+	}
+}
+
+// TestGraphConfig_LegacyEnvFallback verifies that legacy MNEME_EXPANSION_*
+// env vars still work when the canonical MNEME_GRAPH_EXPANSION_* are absent.
+func TestGraphConfig_LegacyEnvFallback(t *testing.T) {
+	t.Setenv("MNEME_EXPANSION_ENABLED", "false")
+	t.Setenv("MNEME_EXPANSION_THRESHOLD", "0.55")
+	t.Setenv("MNEME_EXPANSION_FAN_OUT_CAP", "12")
+	t.Setenv("MNEME_EXPANSION_SEED_TOP_K", "4")
+
+	cfg, err := Load("/nonexistent/path/config.toml")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if cfg.Graph.ExpansionEnabled {
+		t.Error("ExpansionEnabled: legacy false should be applied, got true")
+	}
+	if cfg.Graph.ExpansionThreshold != 0.55 {
+		t.Errorf("ExpansionThreshold: got %f, want 0.55", cfg.Graph.ExpansionThreshold)
+	}
+	if cfg.Graph.ExpansionFanOutCap != 12 {
+		t.Errorf("ExpansionFanOutCap: got %d, want 12", cfg.Graph.ExpansionFanOutCap)
+	}
+	if cfg.Graph.ExpansionSeedTopK != 4 {
+		t.Errorf("ExpansionSeedTopK: got %d, want 4", cfg.Graph.ExpansionSeedTopK)
+	}
+}
+
+// TestGraphConfig_EdgeDecayRateUpperBound verifies that edge_decay_rate > 1.0
+// is rejected by Validate() (SPEC-018 D5), while 1.0 is accepted.
+func TestGraphConfig_EdgeDecayRateUpperBound(t *testing.T) {
+	tests := []struct {
+		name    string
+		rate    float64
+		wantErr bool
+	}{
+		{name: "zero valid (disables decay)", rate: 0.0, wantErr: false},
+		{name: "default 0.02 valid", rate: 0.02, wantErr: false},
+		{name: "1.0 valid (boundary)", rate: 1.0, wantErr: false},
+		{name: "1.01 invalid (above upper bound)", rate: 1.01, wantErr: true},
+		{name: "2.0 invalid (nonsensical rate)", rate: 2.0, wantErr: true},
+		{name: "negative invalid", rate: -0.01, wantErr: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Default()
+			cfg.Graph.EdgeDecayRate = tc.rate
+			err := cfg.Validate()
+			if (err != nil) != tc.wantErr {
+				t.Errorf("Validate() error = %v, wantErr %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 // writeTempTOML writes content to a temporary TOML file and returns its path.
 // The file is automatically removed when the test ends.
 func writeTempTOML(t *testing.T, content string) string {

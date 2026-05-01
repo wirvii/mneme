@@ -468,10 +468,47 @@ func Default() *Config {
 // function returns the defaults without an error, making it safe to call even
 // when the user has not created a configuration file yet.
 //
-// Environment variable overrides (applied after file parsing):
-//   - MNEME_DATA_DIR   → Storage.DataDir
-//   - MNEME_LOG_LEVEL  → MCP.LogLevel
-//   - MNEME_TOOLS      → MCP.Tools
+// Environment variable overrides (applied after file parsing, env wins):
+//
+// Core:
+//   - MNEME_DATA_DIR              → Storage.DataDir
+//   - MNEME_LOG_LEVEL             → MCP.LogLevel
+//   - MNEME_TOOLS                 → MCP.Tools
+//   - MNEME_WORKFLOW_DIR          → Workflow.Dir
+//   - MNEME_RULES_BUDGET          → Context.RulesBudget
+//
+// [graph] — canonical names (MNEME_GRAPH_*):
+//   - MNEME_GRAPH_HEBBIAN_WINDOW          → Graph.HebbianWindow
+//   - MNEME_GRAPH_HEBBIAN_INCREMENT       → Graph.HebbianIncrement
+//   - MNEME_GRAPH_HEBBIAN_INITIAL_WEIGHT  → Graph.HebbianInitialWeight
+//   - MNEME_GRAPH_HEBBIAN_BUFFER_SIZE     → Graph.HebbianBufferSize
+//   - MNEME_GRAPH_EDGE_DECAY_RATE         → Graph.EdgeDecayRate
+//   - MNEME_GRAPH_EDGE_DECAY_AFTER_DAYS   → Graph.EdgeDecayAfterDays
+//   - MNEME_GRAPH_EXPANSION_ENABLED       → Graph.ExpansionEnabled
+//   - MNEME_GRAPH_EXPANSION_THRESHOLD     → Graph.ExpansionThreshold
+//   - MNEME_GRAPH_EXPANSION_FAN_OUT_CAP   → Graph.ExpansionFanOutCap
+//   - MNEME_GRAPH_EXPANSION_SEED_TOP_K    → Graph.ExpansionSeedTopK
+//   - MNEME_GRAPH_EXPLORE_MAX_NODES       → Graph.ExploreMaxNodes
+//   - MNEME_GRAPH_EXPLORE_DEFAULT_DEPTH   → Graph.ExploreDefaultDepth
+//   - MNEME_GRAPH_EXPLORE_DEFAULT_BUDGET  → Graph.ExploreDefaultBudget
+//   - MNEME_GRAPH_REBUILD_MIN_SHARED      → Graph.RebuildMinShared
+//   - MNEME_GRAPH_REBUILD_MAX_RELATIONS   → Graph.RebuildMaxRelations
+//   - MNEME_GRAPH_WIKILINKS_ENABLED       → Graph.WikilinksEnabled
+//   - MNEME_GRAPH_WIKILINK_RELATION_WEIGHT → Graph.WikilinkRelationWeight
+//   - MNEME_GRAPH_MODE                    → Graph.GraphMode
+//
+// [graph] — legacy aliases (kept for backward compat; canonical wins when both set):
+//   - MNEME_EXPANSION_ENABLED     → Graph.ExpansionEnabled
+//   - MNEME_EXPANSION_THRESHOLD   → Graph.ExpansionThreshold
+//   - MNEME_EXPANSION_FAN_OUT_CAP → Graph.ExpansionFanOutCap
+//   - MNEME_EXPANSION_SEED_TOP_K  → Graph.ExpansionSeedTopK
+//
+// [suggestions] — MNEME_SUGGESTIONS_*:
+//   - MNEME_SUGGESTIONS_GAP_SCORE_BOOST       → Suggestions.GapScoreBoost
+//   - MNEME_SUGGESTIONS_GAP_PENDING_WEIGHT    → Suggestions.GapPendingWeight
+//   - MNEME_SUGGESTIONS_GAP_JACCARD_THRESHOLD → Suggestions.GapJaccardThreshold
+//   - MNEME_SUGGESTIONS_MAX_GAPS_TO_CONSIDER  → Suggestions.MaxGapsToConsider
+//   - MNEME_SUGGESTIONS_MAX_RESULTS           → Suggestions.MaxResults
 //
 // The resulting Config is validated before being returned.
 func Load(path string) (*Config, error) {
@@ -487,8 +524,25 @@ func Load(path string) (*Config, error) {
 		}
 	}
 
-	// Apply environment variable overrides after file parsing so that
-	// environment always wins over file-based configuration.
+	applyEnvOverrides(cfg)
+
+	// Expand ~ after all overrides so every code path benefits.
+	cfg.Storage.DataDir = expandHome(cfg.Storage.DataDir)
+	cfg.Workflow.Dir = expandHome(cfg.Workflow.Dir)
+
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("config: load: %w", err)
+	}
+
+	return cfg, nil
+}
+
+// applyEnvOverrides applies all MNEME_* environment variable overrides to cfg.
+// Canonical MNEME_GRAPH_* names take precedence over legacy MNEME_EXPANSION_* aliases.
+// Unparseable values are silently ignored so a typo in an env var does not
+// crash startup when the TOML file has a valid value.
+func applyEnvOverrides(cfg *Config) {
+	// Core overrides.
 	if v := os.Getenv("MNEME_DATA_DIR"); v != "" {
 		cfg.Storage.DataDir = v
 	}
@@ -502,41 +556,149 @@ func Load(path string) (*Config, error) {
 		cfg.Workflow.Dir = v
 	}
 	if v := os.Getenv("MNEME_RULES_BUDGET"); v != "" {
-		if n, parseErr := strconv.Atoi(v); parseErr == nil {
+		if n, err := strconv.Atoi(v); err == nil {
 			cfg.Context.RulesBudget = n
 		}
 	}
-	if v := os.Getenv("MNEME_EXPANSION_ENABLED"); v != "" {
+
+	// [graph] Hebbian overrides.
+	if v := os.Getenv("MNEME_GRAPH_HEBBIAN_WINDOW"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Graph.HebbianWindow = n
+		}
+	}
+	if v := os.Getenv("MNEME_GRAPH_HEBBIAN_INCREMENT"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			cfg.Graph.HebbianIncrement = f
+		}
+	}
+	if v := os.Getenv("MNEME_GRAPH_HEBBIAN_INITIAL_WEIGHT"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			cfg.Graph.HebbianInitialWeight = f
+		}
+	}
+	if v := os.Getenv("MNEME_GRAPH_HEBBIAN_BUFFER_SIZE"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Graph.HebbianBufferSize = n
+		}
+	}
+
+	// [graph] Edge decay overrides.
+	if v := os.Getenv("MNEME_GRAPH_EDGE_DECAY_RATE"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			cfg.Graph.EdgeDecayRate = f
+		}
+	}
+	if v := os.Getenv("MNEME_GRAPH_EDGE_DECAY_AFTER_DAYS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Graph.EdgeDecayAfterDays = n
+		}
+	}
+
+	// [graph] Expansion overrides — canonical wins over legacy alias.
+	if v := os.Getenv("MNEME_GRAPH_EXPANSION_ENABLED"); v != "" {
+		cfg.Graph.ExpansionEnabled = v == "true" || v == "1"
+	} else if v := os.Getenv("MNEME_EXPANSION_ENABLED"); v != "" {
 		cfg.Graph.ExpansionEnabled = v == "true" || v == "1"
 	}
-	if v := os.Getenv("MNEME_EXPANSION_THRESHOLD"); v != "" {
-		if f, parseErr := strconv.ParseFloat(v, 64); parseErr == nil {
+	if v := os.Getenv("MNEME_GRAPH_EXPANSION_THRESHOLD"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			cfg.Graph.ExpansionThreshold = f
+		}
+	} else if v := os.Getenv("MNEME_EXPANSION_THRESHOLD"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
 			cfg.Graph.ExpansionThreshold = f
 		}
 	}
-	if v := os.Getenv("MNEME_EXPANSION_FAN_OUT_CAP"); v != "" {
-		if n, parseErr := strconv.Atoi(v); parseErr == nil {
+	if v := os.Getenv("MNEME_GRAPH_EXPANSION_FAN_OUT_CAP"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Graph.ExpansionFanOutCap = n
+		}
+	} else if v := os.Getenv("MNEME_EXPANSION_FAN_OUT_CAP"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
 			cfg.Graph.ExpansionFanOutCap = n
 		}
 	}
-	if v := os.Getenv("MNEME_EXPANSION_SEED_TOP_K"); v != "" {
-		if n, parseErr := strconv.Atoi(v); parseErr == nil {
+	if v := os.Getenv("MNEME_GRAPH_EXPANSION_SEED_TOP_K"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Graph.ExpansionSeedTopK = n
+		}
+	} else if v := os.Getenv("MNEME_EXPANSION_SEED_TOP_K"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
 			cfg.Graph.ExpansionSeedTopK = n
 		}
 	}
+
+	// [graph] Explore overrides.
+	if v := os.Getenv("MNEME_GRAPH_EXPLORE_MAX_NODES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Graph.ExploreMaxNodes = n
+		}
+	}
+	if v := os.Getenv("MNEME_GRAPH_EXPLORE_DEFAULT_DEPTH"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Graph.ExploreDefaultDepth = n
+		}
+	}
+	if v := os.Getenv("MNEME_GRAPH_EXPLORE_DEFAULT_BUDGET"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Graph.ExploreDefaultBudget = n
+		}
+	}
+
+	// [graph] Rebuild overrides.
+	if v := os.Getenv("MNEME_GRAPH_REBUILD_MIN_SHARED"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Graph.RebuildMinShared = n
+		}
+	}
+	if v := os.Getenv("MNEME_GRAPH_REBUILD_MAX_RELATIONS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Graph.RebuildMaxRelations = n
+		}
+	}
+
+	// [graph] Wikilink overrides.
+	if v := os.Getenv("MNEME_GRAPH_WIKILINKS_ENABLED"); v != "" {
+		cfg.Graph.WikilinksEnabled = v == "true" || v == "1"
+	}
+	if v := os.Getenv("MNEME_GRAPH_WIKILINK_RELATION_WEIGHT"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			cfg.Graph.WikilinkRelationWeight = f
+		}
+	}
+
+	// [graph] Mode override (already had canonical name from SPEC-017).
 	if v := os.Getenv("MNEME_GRAPH_MODE"); v != "" {
 		cfg.Graph.GraphMode = v
 	}
 
-	// Expand ~ after all overrides so every code path benefits.
-	cfg.Storage.DataDir = expandHome(cfg.Storage.DataDir)
-	cfg.Workflow.Dir = expandHome(cfg.Workflow.Dir)
-
-	if err := cfg.Validate(); err != nil {
-		return nil, fmt.Errorf("config: load: %w", err)
+	// [suggestions] overrides.
+	if v := os.Getenv("MNEME_SUGGESTIONS_GAP_SCORE_BOOST"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			cfg.Suggestions.GapScoreBoost = f
+		}
 	}
-
-	return cfg, nil
+	if v := os.Getenv("MNEME_SUGGESTIONS_GAP_PENDING_WEIGHT"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			cfg.Suggestions.GapPendingWeight = f
+		}
+	}
+	if v := os.Getenv("MNEME_SUGGESTIONS_GAP_JACCARD_THRESHOLD"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			cfg.Suggestions.GapJaccardThreshold = f
+		}
+	}
+	if v := os.Getenv("MNEME_SUGGESTIONS_MAX_GAPS_TO_CONSIDER"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Suggestions.MaxGapsToConsider = n
+		}
+	}
+	if v := os.Getenv("MNEME_SUGGESTIONS_MAX_RESULTS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Suggestions.MaxResults = n
+		}
+	}
 }
 
 // ProjectDBPath returns the absolute path to the SQLite database file for the
@@ -603,8 +765,8 @@ func (c *Config) Validate() error {
 	if c.Graph.HebbianBufferSize < 0 {
 		return errors.New("graph.hebbian_buffer_size must be >= 0")
 	}
-	if c.Graph.EdgeDecayRate < 0 {
-		return errors.New("graph.edge_decay_rate must be >= 0")
+	if c.Graph.EdgeDecayRate < 0 || c.Graph.EdgeDecayRate > 1 {
+		return errors.New("graph.edge_decay_rate must be in [0.0, 1.0]")
 	}
 	if c.Graph.EdgeDecayAfterDays < 0 {
 		return errors.New("graph.edge_decay_after_days must be >= 0")
