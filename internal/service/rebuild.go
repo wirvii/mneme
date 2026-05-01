@@ -118,47 +118,6 @@ func extractEntities(m *model.Memory) []extractedEntity {
 	return result
 }
 
-// extractFilePaths returns the distinct file-path strings extracted from text
-// via H2. Exposed for unit testing.
-func extractFilePaths(text string) []string {
-	var out []string
-	for _, m := range reFilePath.FindAllStringSubmatch(text, -1) {
-		if len(m) > 1 {
-			out = append(out, strings.TrimSpace(m[1]))
-		}
-	}
-	return out
-}
-
-// extractCodeSymbols returns the symbol names found in code blocks in text
-// via H3. Exposed for unit testing.
-func extractCodeSymbols(text string) []string {
-	var out []string
-	for _, block := range reCodeBlock.FindAllStringSubmatch(text, -1) {
-		if len(block) < 2 {
-			continue
-		}
-		for _, sym := range reCodeSymbol.FindAllStringSubmatch(block[1], -1) {
-			if len(sym) > 1 {
-				out = append(out, sym[1])
-			}
-		}
-	}
-	return out
-}
-
-// extractWikilinks returns the link targets found in [[...]] wikilinks via H4.
-// Exposed for unit testing.
-func extractWikilinks(text string) []string {
-	var out []string
-	for _, m := range reWikilink.FindAllStringSubmatch(text, -1) {
-		if len(m) > 1 {
-			out = append(out, m[1])
-		}
-	}
-	return out
-}
-
 // rebuildWeight computes the relation weight for a candidate pair given the
 // number of shared entities: min(0.5, sharedCount * 0.1).
 //
