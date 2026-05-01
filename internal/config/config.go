@@ -91,6 +91,21 @@ type GraphConfig struct {
 	// low relevance scores, making their expansions unlikely to improve results.
 	// Default: 10.
 	ExpansionSeedTopK int `toml:"expansion_seed_top_k"`
+
+	// ExploreMaxNodes is the hard cap on nodes visited during a mem_explore BFS
+	// traversal. The traversal stops once this many distinct memories have been
+	// added to the result, regardless of remaining depth or token budget.
+	// Set to 0 to disable the cap (not recommended for large graphs).
+	// Default: 200.
+	ExploreMaxNodes int `toml:"explore_max_nodes"`
+
+	// ExploreDefaultDepth is the default maximum hop count for mem_explore when
+	// the caller does not supply an explicit depth value. Default: 2.
+	ExploreDefaultDepth int `toml:"explore_default_depth"`
+
+	// ExploreDefaultBudget is the default token budget for mem_explore when the
+	// caller does not supply an explicit budget value. Default: 4000.
+	ExploreDefaultBudget int `toml:"explore_default_budget"`
 }
 
 // WorkflowConfig controls where workflow artifacts (specs, bugs, backlog)
@@ -352,6 +367,9 @@ func Default() *Config {
 			ExpansionThreshold:   0.3,
 			ExpansionFanOutCap:   50,
 			ExpansionSeedTopK:    10,
+			ExploreMaxNodes:      200,
+			ExploreDefaultDepth:  2,
+			ExploreDefaultBudget: 4000,
 		},
 	}
 }
@@ -507,6 +525,15 @@ func (c *Config) Validate() error {
 	}
 	if c.Graph.ExpansionSeedTopK < 0 {
 		return errors.New("graph.expansion_seed_top_k must be >= 0")
+	}
+	if c.Graph.ExploreMaxNodes < 0 {
+		return errors.New("graph.explore_max_nodes must be >= 0")
+	}
+	if c.Graph.ExploreDefaultDepth < 0 || c.Graph.ExploreDefaultDepth > 5 {
+		return errors.New("graph.explore_default_depth must be between 0 and 5")
+	}
+	if c.Graph.ExploreDefaultBudget < 0 {
+		return errors.New("graph.explore_default_budget must be >= 0")
 	}
 
 	return nil

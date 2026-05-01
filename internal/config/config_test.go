@@ -882,6 +882,111 @@ func TestGraphConfig_ExpansionEnvOverride(t *testing.T) {
 	}
 }
 
+// TestGraphConfig_ExploreDefaults verifies the default values for the three
+// explore parameters added in SPEC-008.
+func TestGraphConfig_ExploreDefaults(t *testing.T) {
+	cfg := Default()
+
+	if cfg.Graph.ExploreMaxNodes != 200 {
+		t.Errorf("ExploreMaxNodes: got %d, want 200", cfg.Graph.ExploreMaxNodes)
+	}
+	if cfg.Graph.ExploreDefaultDepth != 2 {
+		t.Errorf("ExploreDefaultDepth: got %d, want 2", cfg.Graph.ExploreDefaultDepth)
+	}
+	if cfg.Graph.ExploreDefaultBudget != 4000 {
+		t.Errorf("ExploreDefaultBudget: got %d, want 4000", cfg.Graph.ExploreDefaultBudget)
+	}
+}
+
+// TestGraphConfig_ExploreValidation verifies that Validate() rejects invalid
+// explore parameter values and accepts valid edge cases (e.g. zero is valid
+// for ExploreMaxNodes to disable the cap).
+func TestGraphConfig_ExploreValidation(t *testing.T) {
+	tests := []struct {
+		name        string
+		mutate      func(*Config)
+		wantErrSub  string
+		wantNoError bool
+	}{
+		{
+			name: "ExploreMaxNodes negative",
+			mutate: func(c *Config) {
+				c.Graph.ExploreMaxNodes = -1
+			},
+			wantErrSub: "explore_max_nodes",
+		},
+		{
+			name: "ExploreMaxNodes zero is valid (disables cap)",
+			mutate: func(c *Config) {
+				c.Graph.ExploreMaxNodes = 0
+			},
+			wantNoError: true,
+		},
+		{
+			name: "ExploreDefaultDepth negative",
+			mutate: func(c *Config) {
+				c.Graph.ExploreDefaultDepth = -1
+			},
+			wantErrSub: "explore_default_depth",
+		},
+		{
+			name: "ExploreDefaultDepth above 5",
+			mutate: func(c *Config) {
+				c.Graph.ExploreDefaultDepth = 6
+			},
+			wantErrSub: "explore_default_depth",
+		},
+		{
+			name: "ExploreDefaultDepth zero is valid (returns seed only)",
+			mutate: func(c *Config) {
+				c.Graph.ExploreDefaultDepth = 0
+			},
+			wantNoError: true,
+		},
+		{
+			name: "ExploreDefaultDepth at max (5) is valid",
+			mutate: func(c *Config) {
+				c.Graph.ExploreDefaultDepth = 5
+			},
+			wantNoError: true,
+		},
+		{
+			name: "ExploreDefaultBudget negative",
+			mutate: func(c *Config) {
+				c.Graph.ExploreDefaultBudget = -1
+			},
+			wantErrSub: "explore_default_budget",
+		},
+		{
+			name: "ExploreDefaultBudget zero is valid",
+			mutate: func(c *Config) {
+				c.Graph.ExploreDefaultBudget = 0
+			},
+			wantNoError: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Default()
+			tc.mutate(cfg)
+			err := cfg.Validate()
+			if tc.wantNoError {
+				if err != nil {
+					t.Errorf("expected no error, got: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("expected validation error, got nil")
+			}
+			if !strings.Contains(err.Error(), tc.wantErrSub) {
+				t.Errorf("error %q does not contain %q", err.Error(), tc.wantErrSub)
+			}
+		})
+	}
+}
+
 // writeTempTOML writes content to a temporary TOML file and returns its path.
 // The file is automatically removed when the test ends.
 func writeTempTOML(t *testing.T, content string) string {
