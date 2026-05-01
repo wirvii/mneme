@@ -62,8 +62,8 @@ type ExploreNode struct {
 	MemoryID string `json:"memory_id"`
 
 	// ParentMemoryID is the UUID of the node that led to this one during the
-	// BFS traversal. Empty for depth-1 nodes whose parent is the seed.
-	// The CLI uses this to reconstruct the tree structure.
+	// BFS traversal. Set to the seed's UUID for depth-1 nodes (direct neighbours
+	// of the seed). The CLI uses this to reconstruct the tree structure.
 	ParentMemoryID string `json:"parent_memory_id,omitempty"`
 
 	// Title is the memory's title.

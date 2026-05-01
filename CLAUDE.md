@@ -54,9 +54,9 @@ Supporting packages: `scoring/` (decay, BM25 re-ranking, RRF fusion), `consolida
 
 ### The three frontends
 
-- **MCP** (`internal/mcp`, primary) — JSON-RPC 2.0 over stdio, ProtocolVersion `2024-11-05`. Surface: 22 tools (12 `mem_*`, 4 `backlog_*`, 6 `spec_*`). `handleMessage()` is exposed separately from `Run()` so unit tests can drive it without I/O loops.
+- **MCP** (`internal/mcp`, primary) — JSON-RPC 2.0 over stdio, ProtocolVersion `2024-11-05`. Surface: 23 tools (13 `mem_*`, 4 `backlog_*`, 6 `spec_*`). `handleMessage()` is exposed separately from `Run()` so unit tests can drive it without I/O loops.
 - **HTTP** (`internal/http`, `mneme serve --addr :7437`) — stdlib `net/http`, graceful shutdown 10s, 8 endpoints under `/v1/`. Currently lacks SDD endpoints and a few mem tools (`mem_checkpoint`, `mem_timeline`, `mem_suggest_topic_key`); when adding service capabilities, decide explicitly whether HTTP gets parity.
-- **CLI** (`internal/cli`, Cobra) — 22 top-level commands. Notable: `sync export|import|status` is the backup/restore path (no dedicated `restore` command); `mneme init` migrates legacy projects to the SDD engine; `mneme install <agent>` writes agent profiles.
+- **CLI** (`internal/cli`, Cobra) — 23 top-level commands. Notable: `sync export|import|status` is the backup/restore path (no dedicated `restore` command); `mneme init` migrates legacy projects to the SDD engine; `mneme install <agent>` writes agent profiles.
 
 ### Persistence
 

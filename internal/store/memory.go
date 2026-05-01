@@ -464,6 +464,12 @@ func (s *MemoryStore) IncrementAccess(ctx context.Context, id string) error {
 	return nil
 }
 
+// DB returns the underlying database handle. It is intended for test helpers
+// that need to execute raw SQL statements (e.g. to manufacture UUID collisions
+// that are impossible to produce through the public API). Production code must
+// not call this method — use the typed MemoryStore methods instead.
+func (s *MemoryStore) DB() *db.DB { return s.db }
+
 // DBPath returns the filesystem path of the underlying SQLite database file.
 // It is extracted from the data source name (DSN) used when the connection was
 // opened. Returns an empty string when the path cannot be determined (e.g.
@@ -566,10 +572,14 @@ type MemoryMetadata struct {
 // memory matches, or (nil, ErrAmbiguousSeed) when multiple memories share the
 // prefix. A prefix of fewer than 8 characters is treated the same as any other
 // prefix but will likely produce many ambiguous matches.
+//
+// prefix must be supplied without hyphens (e.g. "019de0f50a94"). The comparison
+// strips hyphens from the stored UUID via REPLACE so that prefixes of any length
+// work correctly regardless of hyphen positions in the stored ID.
 func (s *MemoryStore) GetByIDPrefix(ctx context.Context, prefix string) (*model.Memory, error) {
 	const countQ = `
 		SELECT COUNT(*) FROM memories
-		WHERE id LIKE ? AND deleted_at IS NULL`
+		WHERE REPLACE(id, '-', '') LIKE ? AND deleted_at IS NULL`
 
 	var count int
 	if err := s.db.QueryRowContext(ctx, countQ, prefix+"%").Scan(&count); err != nil {
@@ -590,7 +600,7 @@ func (s *MemoryStore) GetByIDPrefix(ctx context.Context, prefix string) (*model.
 		       decay_rate, revision_count, superseded_by, deleted_at,
 		       applies_to, severity
 		FROM memories
-		WHERE id LIKE ? AND deleted_at IS NULL
+		WHERE REPLACE(id, '-', '') LIKE ? AND deleted_at IS NULL
 		LIMIT 1`
 
 	row := s.db.QueryRowContext(ctx, q, prefix+"%")

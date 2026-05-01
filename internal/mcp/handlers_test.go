@@ -493,6 +493,142 @@ func TestMCP_ToolSchema_MemRelateIncludesWeight(t *testing.T) {
 
 // ─── mem_explore tests ────────────────────────────────────────────────────────
 
+// newTestServerWithStore creates a Server like newTestServer but also returns the
+// underlying project MemoryStore so tests can do direct SQL manipulation (e.g.
+// to manufacture UUID prefix collisions that cannot be produced via the API).
+func newTestServerWithStore(t *testing.T) (*Server, *store.MemoryStore) {
+	t.Helper()
+
+	projectDB, err := db.OpenMemory()
+	if err != nil {
+		t.Fatalf("open project db: %v", err)
+	}
+	projectDB.SetMaxOpenConns(1)
+	globalDB, err := db.OpenMemory()
+	if err != nil {
+		t.Fatalf("open global db: %v", err)
+	}
+	globalDB.SetMaxOpenConns(1)
+	t.Cleanup(func() { projectDB.Close(); globalDB.Close() })
+
+	ps := store.NewMemoryStore(projectDB)
+	gs := store.NewMemoryStore(globalDB)
+	cfg := config.Default()
+	svc := service.NewMemoryService(ps, gs, cfg, "test-project", embed.NopEmbedder{})
+
+	logger := slog.Default()
+	return NewServer(svc, nil, logger, "all", "test"), ps
+}
+
+// TestMCP_MemExplore_DepthExceeded verifies that supplying a depth value above
+// the allowed maximum (5) returns an error response. The handler delegates to
+// the service which validates depth ∈ [0, 5].
+func TestMCP_MemExplore_DepthExceeded(t *testing.T) {
+	srv := newTestServer(t)
+
+	// Save a seed memory to prevent a "not found" error masking the depth error.
+	saveResp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name: "mem_save",
+		Arguments: mustMarshal(t, map[string]any{
+			"title":   "depth-exceeded seed",
+			"content": "seed for depth exceeded test",
+		}),
+	})
+	if saveResp.Error != nil {
+		t.Fatalf("mem_save: %v", saveResp.Error.Message)
+	}
+	var saved struct {
+		ID string `json:"id"`
+	}
+	unmarshalToolText(t, saveResp, &saved)
+
+	resp := process(t, srv, "tools/call", 2, ToolCallParams{
+		Name: "mem_explore",
+		Arguments: mustMarshal(t, map[string]any{
+			"seed":  saved.ID,
+			"depth": 6, // above the maximum of 5
+		}),
+	})
+	if resp.Error == nil {
+		t.Fatal("expected error for depth=6, got nil")
+	}
+	// depth out of range is a non-sentinel fmt.Errorf from the service, so it
+	// maps to CodeInternalError (-32603).
+	if resp.Error.Code != CodeInternalError {
+		t.Errorf("expected -32603 (CodeInternalError) for depth exceeded, got %d: %s",
+			resp.Error.Code, resp.Error.Message)
+	}
+}
+
+// TestMCP_MemExplore_SeedAmbiguous verifies that when a short UUID prefix
+// matches more than one memory, the handler returns -32602 (CodeInvalidParams).
+func TestMCP_MemExplore_SeedAmbiguous(t *testing.T) {
+	srv, ps := newTestServerWithStore(t)
+	ctx := t.Context()
+
+	// Save two memories.
+	save1 := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name: "mem_save",
+		Arguments: mustMarshal(t, map[string]any{
+			"title":   "ambiguous mcp seed 1",
+			"content": "content 1",
+		}),
+	})
+	if save1.Error != nil {
+		t.Fatalf("mem_save 1: %v", save1.Error.Message)
+	}
+	var saved1 struct{ ID string `json:"id"` }
+	unmarshalToolText(t, save1, &saved1)
+
+	save2 := process(t, srv, "tools/call", 2, ToolCallParams{
+		Name: "mem_save",
+		Arguments: mustMarshal(t, map[string]any{
+			"title":   "ambiguous mcp seed 2",
+			"content": "content 2",
+		}),
+	})
+	if save2.Error != nil {
+		t.Fatalf("mem_save 2: %v", save2.Error.Message)
+	}
+	var saved2 struct{ ID string `json:"id"` }
+	unmarshalToolText(t, save2, &saved2)
+
+	// Force both IDs to share the same 8-char hex prefix via direct SQL.
+	commonHex := "eeff0011"
+	_, err := ps.DB().ExecContext(ctx,
+		"UPDATE memories SET id = ? WHERE id = ?",
+		commonHex+"0000-0000-0000-000000000001",
+		saved1.ID,
+	)
+	if err != nil {
+		t.Fatalf("direct ID update 1: %v", err)
+	}
+	_, err = ps.DB().ExecContext(ctx,
+		"UPDATE memories SET id = ? WHERE id = ?",
+		commonHex+"0000-0000-0000-000000000002",
+		saved2.ID,
+	)
+	if err != nil {
+		t.Fatalf("direct ID update 2: %v", err)
+	}
+
+	// Call mem_explore with the common prefix — should trigger ErrAmbiguousSeed.
+	resp := process(t, srv, "tools/call", 3, ToolCallParams{
+		Name: "mem_explore",
+		Arguments: mustMarshal(t, map[string]any{
+			"seed":  commonHex,
+			"depth": 1,
+		}),
+	})
+	if resp.Error == nil {
+		t.Fatal("expected ErrAmbiguousSeed error, got nil")
+	}
+	if resp.Error.Code != CodeInvalidParams {
+		t.Errorf("expected -32602 (CodeInvalidParams) for ambiguous seed, got %d: %s",
+			resp.Error.Code, resp.Error.Message)
+	}
+}
+
 // TestMCP_MemExplore_Schema verifies that mem_explore is present in allTools()
 // with the required "seed" property in the input schema.
 func TestMCP_MemExplore_Schema(t *testing.T) {

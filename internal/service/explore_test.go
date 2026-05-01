@@ -382,6 +382,122 @@ func TestExplore_OrderByDistanceThenWeight(t *testing.T) {
 	}
 }
 
+// TestExplore_SeedPrefixAmbiguous verifies that ErrAmbiguousSeed is returned
+// when a short prefix matches more than one memory in the project store.
+// We force a collision by updating the two IDs via direct SQL after creation so
+// they share a common hex prefix (white-box store test technique).
+func TestExplore_SeedPrefixAmbiguous(t *testing.T) {
+	svc, ps := newTestServiceWithGraph(t)
+	ctx := context.Background()
+
+	m1, err := svc.Save(ctx, model.SaveRequest{Title: "ambiguous 1", Content: "content"})
+	if err != nil {
+		t.Fatalf("Save m1: %v", err)
+	}
+	m2, err := svc.Save(ctx, model.SaveRequest{Title: "ambiguous 2", Content: "content"})
+	if err != nil {
+		t.Fatalf("Save m2: %v", err)
+	}
+
+	// Force the two IDs to share the first 8 hex chars by updating them via
+	// direct SQL (same technique used in TestStore_GetByIDPrefix_MultipleMatches).
+	commonHex := "aabbccdd"
+	_, err = ps.DB().ExecContext(ctx,
+		"UPDATE memories SET id = ? WHERE id = ?",
+		commonHex+"0000-0000-0000-000000000001",
+		m1.ID,
+	)
+	if err != nil {
+		t.Fatalf("direct ID update m1: %v", err)
+	}
+	_, err = ps.DB().ExecContext(ctx,
+		"UPDATE memories SET id = ? WHERE id = ?",
+		commonHex+"0000-0000-0000-000000000002",
+		m2.ID,
+	)
+	if err != nil {
+		t.Fatalf("direct ID update m2: %v", err)
+	}
+
+	_, exploreErr := svc.Explore(ctx, model.ExploreRequest{
+		Seed:  commonHex,
+		Depth: depthPtr(1),
+	})
+	if exploreErr == nil {
+		t.Fatal("expected ErrAmbiguousSeed, got nil error")
+	}
+	if !errors.Is(exploreErr, model.ErrAmbiguousSeed) {
+		t.Errorf("expected ErrAmbiguousSeed, got: %v", exploreErr)
+	}
+}
+
+// TestExplore_TouchRelations verifies that Explore calls BatchTouchRelations for
+// the relations it traverses, updating last_traversed_at to a non-zero value.
+func TestExplore_TouchRelations(t *testing.T) {
+	svc, ps := newTestServiceWithGraph(t)
+	ctx := context.Background()
+
+	seedResp, _ := svc.Save(ctx, model.SaveRequest{Title: "touch-seed", Content: "seed"})
+	neighborResp, _ := svc.Save(ctx, model.SaveRequest{Title: "touch-neighbor", Content: "neighbor"})
+	seedID, neighborID := seedResp.ID, neighborResp.ID
+
+	seedEnt := findOrCreate(t, ctx, ps, "touch-seed-ent", "test/graph")
+	neighborEnt := findOrCreate(t, ctx, ps, "touch-nbr-ent", "test/graph")
+	if err := ps.LinkMemoryEntity(ctx, seedID, seedEnt.ID, "mention"); err != nil {
+		t.Fatalf("LinkMemoryEntity seed: %v", err)
+	}
+	if err := ps.LinkMemoryEntity(ctx, neighborID, neighborEnt.ID, "mention"); err != nil {
+		t.Fatalf("LinkMemoryEntity neighbor: %v", err)
+	}
+	rel, err := ps.CreateRelation(ctx, &model.Relation{
+		SourceID: seedEnt.ID, TargetID: neighborEnt.ID,
+		Type: model.RelRelatedTo, Weight: 0.8,
+	})
+	if err != nil {
+		t.Fatalf("CreateRelation: %v", err)
+	}
+
+	// Confirm last_traversed_at is zero before exploration.
+	before, err := ps.FindRelation(ctx, seedEnt.ID, neighborEnt.ID, model.RelRelatedTo)
+	if err != nil {
+		t.Fatalf("FindRelation before: %v", err)
+	}
+	if before == nil {
+		t.Fatal("expected relation, got nil")
+	}
+	if !before.LastTraversedAt.IsZero() {
+		t.Error("expected LastTraversedAt to be zero before explore")
+	}
+
+	_, err = svc.Explore(ctx, model.ExploreRequest{
+		Seed:  seedID,
+		Depth: depthPtr(1),
+	})
+	if err != nil {
+		t.Fatalf("Explore: %v", err)
+	}
+
+	// BatchTouchRelations is fire-and-forget (goroutine). Give it a moment.
+	// Use a short sleep only — the goroutine typically completes in <1ms.
+	// The test uses a synchronous store, so the update is immediate on the same
+	// SQLite connection pool.
+	// We retry a few times to avoid flakiness on slow CI.
+	var after *model.Relation
+	for i := 0; i < 50; i++ {
+		after, err = ps.FindRelation(ctx, seedEnt.ID, neighborEnt.ID, model.RelRelatedTo)
+		if err != nil {
+			t.Fatalf("FindRelation after: %v", err)
+		}
+		if after != nil && !after.LastTraversedAt.IsZero() {
+			break
+		}
+	}
+	_ = rel
+	if after == nil || after.LastTraversedAt.IsZero() {
+		t.Error("expected LastTraversedAt to be non-zero after Explore (BatchTouchRelations not called)")
+	}
+}
+
 // ─── graph builder helpers ────────────────────────────────────────────────────
 
 // buildStarGraphSvc creates a seed memory linked to n neighbors via distinct

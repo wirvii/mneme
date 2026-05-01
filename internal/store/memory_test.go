@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -726,6 +727,61 @@ func TestStore_GetByIDPrefix_DeletedExcluded(t *testing.T) {
 	}
 	if got != nil {
 		t.Fatalf("expected nil for deleted memory, got %+v", got)
+	}
+}
+
+// TestStore_GetByIDPrefix_LongPrefix12 verifies that a 12-hex-char prefix (which
+// crosses the hyphen at position 9 of the stored UUID) correctly matches the
+// memory. This was broken before the REPLACE fix: LIKE '019de0f50a94%' would
+// never match '019de0f5-0a94-...' because the hyphen is at position 9.
+func TestStore_GetByIDPrefix_LongPrefix12(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	m, err := s.Create(ctx, makeMemory())
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Build a 12-char hex prefix from the UUID without hyphens.
+	rawID := strings.ReplaceAll(m.ID, "-", "")
+	prefix := rawID[:12]
+
+	got, err := s.GetByIDPrefix(ctx, prefix)
+	if err != nil {
+		t.Fatalf("GetByIDPrefix (12-char prefix): %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected memory, got nil")
+	}
+	if got.ID != m.ID {
+		t.Errorf("ID mismatch: got %q, want %q", got.ID, m.ID)
+	}
+}
+
+// TestStore_GetByIDPrefix_FullWithoutDashes verifies that the full UUID without
+// hyphens (32 hex chars) resolves to exactly the matching memory.
+func TestStore_GetByIDPrefix_FullWithoutDashes(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	m, err := s.Create(ctx, makeMemory())
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Strip all hyphens to get a 32-char hex string.
+	prefix := strings.ReplaceAll(m.ID, "-", "")
+
+	got, err := s.GetByIDPrefix(ctx, prefix)
+	if err != nil {
+		t.Fatalf("GetByIDPrefix (full-without-dashes): %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected memory, got nil")
+	}
+	if got.ID != m.ID {
+		t.Errorf("ID mismatch: got %q, want %q", got.ID, m.ID)
 	}
 }
 
