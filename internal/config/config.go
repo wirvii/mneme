@@ -120,6 +120,20 @@ type GraphConfig struct {
 	// Consistent with ExpansionFanOutCap to prevent hub-node degradation.
 	// Default: 50.
 	RebuildMaxRelations int `toml:"rebuild_max_relations"`
+
+	// WikilinksEnabled controls whether wikilinks [[topic_key]] in memory
+	// content are automatically parsed and resolved to graph relations during
+	// mem_save and mem_update. When false, wikilinks are treated as plain text.
+	// Does not affect graph rebuild (which always extracts wikilink entities).
+	// Default: true.
+	WikilinksEnabled bool `toml:"wikilinks_enabled"`
+
+	// WikilinkRelationWeight is the weight assigned to relations created by
+	// the wikilink parser. Corresponds to RelReferences type. Default: 0.6
+	// (slightly above DefaultRelationWeights[RelReferences]=0.4 because an
+	// explicit [[wikilink]] in content is a stronger signal than a
+	// rebuild-inferred reference).
+	WikilinkRelationWeight float64 `toml:"wikilink_relation_weight"`
 }
 
 // WorkflowConfig controls where workflow artifacts (specs, bugs, backlog)
@@ -384,8 +398,10 @@ func Default() *Config {
 			ExploreMaxNodes:      200,
 			ExploreDefaultDepth:  2,
 			ExploreDefaultBudget: 4000,
-			RebuildMinShared:     2,
-			RebuildMaxRelations:  50,
+			RebuildMinShared:       2,
+			RebuildMaxRelations:    50,
+			WikilinksEnabled:       true,
+			WikilinkRelationWeight: 0.6,
 		},
 	}
 }
@@ -556,6 +572,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Graph.RebuildMaxRelations < 1 {
 		return errors.New("graph.rebuild_max_relations must be >= 1")
+	}
+	if c.Graph.WikilinkRelationWeight < 0 || c.Graph.WikilinkRelationWeight > 1 {
+		return errors.New("graph.wikilink_relation_weight must be in [0.0, 1.0]")
 	}
 
 	return nil

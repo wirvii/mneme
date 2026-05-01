@@ -1085,3 +1085,43 @@ func writeTempTOML(t *testing.T, content string) string {
 	}
 	return f.Name()
 }
+
+// TestGraphConfig_WikilinksDefaults verifies that Default() sets WikilinksEnabled
+// to true and WikilinkRelationWeight to 0.6 (SPEC-011 D11).
+func TestGraphConfig_WikilinksDefaults(t *testing.T) {
+	cfg := Default()
+
+	if !cfg.Graph.WikilinksEnabled {
+		t.Errorf("WikilinksEnabled: got false, want true")
+	}
+	if cfg.Graph.WikilinkRelationWeight != 0.6 {
+		t.Errorf("WikilinkRelationWeight: got %f, want 0.6", cfg.Graph.WikilinkRelationWeight)
+	}
+}
+
+// TestGraphConfig_WikilinkWeightValidation verifies that Validate() rejects
+// weights outside [0.0, 1.0] and accepts boundary values including 0.0 (SPEC-011 D11).
+func TestGraphConfig_WikilinkWeightValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		weight  float64
+		wantErr bool
+	}{
+		{name: "default 0.6 valid", weight: 0.6, wantErr: false},
+		{name: "zero valid", weight: 0.0, wantErr: false},
+		{name: "one valid", weight: 1.0, wantErr: false},
+		{name: "negative invalid", weight: -0.1, wantErr: true},
+		{name: "above one invalid", weight: 1.01, wantErr: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Default()
+			cfg.Graph.WikilinkRelationWeight = tc.weight
+			err := cfg.Validate()
+			if (err != nil) != tc.wantErr {
+				t.Errorf("Validate() error = %v, wantErr %v", err, tc.wantErr)
+			}
+		})
+	}
+}
