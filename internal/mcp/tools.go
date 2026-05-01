@@ -582,6 +582,42 @@ func allTools() []ToolDefinition {
 				},
 			},
 		},
+		// mem_explore
+		{
+			Name:        "mem_explore",
+			Description: "Explore the knowledge graph starting from a seed memory. Performs a prioritised BFS traversal following strong relations, returning connected memories with their distance and accumulated path weight.",
+			InputSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"seed"},
+				"properties": map[string]any{
+					"seed": map[string]any{
+						"type":        "string",
+						"description": "Starting memory: full UUID, short UUID prefix (8+ hex chars), or topic_key (e.g. 'architecture/auth-model').",
+					},
+					"depth": map[string]any{
+						"type":        "integer",
+						"description": "Maximum hops from seed. Default: 2. Range: 0-5.",
+						"minimum":     0,
+						"maximum":     5,
+					},
+					"budget": map[string]any{
+						"type":        "integer",
+						"description": "Maximum token budget for returned memories. Default: 4000.",
+						"minimum":     1,
+					},
+					"threshold": map[string]any{
+						"type":        "number",
+						"description": "Minimum relation weight to follow. Default: 0.3. Range: 0.0-1.0.",
+						"minimum":     0.0,
+						"maximum":     1.0,
+					},
+					"project": map[string]any{
+						"type":        "string",
+						"description": "Project slug. Defaults to the detected project.",
+					},
+				},
+			},
+		},
 	}
 }
 

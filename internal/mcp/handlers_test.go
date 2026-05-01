@@ -490,3 +490,120 @@ func TestMCP_ToolSchema_MemRelateIncludesWeight(t *testing.T) {
 		t.Errorf("mem_relate relation enum does not include 'references': %v", enumVal)
 	}
 }
+
+// ─── mem_explore tests ────────────────────────────────────────────────────────
+
+// TestMCP_MemExplore_Schema verifies that mem_explore is present in allTools()
+// with the required "seed" property in the input schema.
+func TestMCP_MemExplore_Schema(t *testing.T) {
+	tools := allTools()
+	var exploreTool *ToolDefinition
+	for i := range tools {
+		if tools[i].Name == "mem_explore" {
+			exploreTool = &tools[i]
+			break
+		}
+	}
+	if exploreTool == nil {
+		t.Fatal("mem_explore not found in allTools()")
+	}
+	schema, ok := exploreTool.InputSchema.(map[string]any)
+	if !ok {
+		t.Fatal("InputSchema is not map[string]any")
+	}
+	required, ok := schema["required"].([]string)
+	if !ok {
+		t.Fatal("required is not []string")
+	}
+	hasSeeded := false
+	for _, r := range required {
+		if r == "seed" {
+			hasSeeded = true
+		}
+	}
+	if !hasSeeded {
+		t.Errorf("mem_explore schema required does not include 'seed': %v", required)
+	}
+}
+
+// TestMCP_MemExplore_SeedRequired verifies that omitting seed returns -32602.
+func TestMCP_MemExplore_SeedRequired(t *testing.T) {
+	srv := newTestServer(t)
+
+	resp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name:      "mem_explore",
+		Arguments: mustMarshal(t, map[string]any{}),
+	})
+	if resp.Error == nil {
+		t.Fatal("expected error for missing seed, got nil")
+	}
+	if resp.Error.Code != CodeInvalidParams {
+		t.Errorf("expected -32602, got %d: %s", resp.Error.Code, resp.Error.Message)
+	}
+}
+
+// TestMCP_MemExplore_SeedNotFound verifies that a nonexistent UUID seed
+// returns -32000 (CodeMemoryNotFound).
+func TestMCP_MemExplore_SeedNotFound(t *testing.T) {
+	srv := newTestServer(t)
+
+	resp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name: "mem_explore",
+		Arguments: mustMarshal(t, map[string]any{
+			"seed":  "00000000-0000-7000-8000-000000000000",
+			"depth": 1,
+		}),
+	})
+	if resp.Error == nil {
+		t.Fatal("expected error for nonexistent seed, got nil")
+	}
+	if resp.Error.Code != CodeMemoryNotFound {
+		t.Errorf("expected -32000, got %d: %s", resp.Error.Code, resp.Error.Message)
+	}
+}
+
+// TestMCP_MemExplore_Basic verifies a successful end-to-end roundtrip: save a
+// memory, call mem_explore, receive a valid ExploreResponse JSON.
+func TestMCP_MemExplore_Basic(t *testing.T) {
+	srv := newTestServer(t)
+
+	// Save a memory to use as seed.
+	saveResp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name: "mem_save",
+		Arguments: mustMarshal(t, map[string]any{
+			"title":   "MCP explore seed",
+			"content": "seed memory for MCP explore test",
+		}),
+	})
+	if saveResp.Error != nil {
+		t.Fatalf("mem_save: %v", saveResp.Error.Message)
+	}
+	var saved struct {
+		ID string `json:"id"`
+	}
+	unmarshalToolText(t, saveResp, &saved)
+	if saved.ID == "" {
+		t.Fatal("expected non-empty ID from mem_save")
+	}
+
+	// Explore from the saved memory.
+	exploreResp := process(t, srv, "tools/call", 2, ToolCallParams{
+		Name: "mem_explore",
+		Arguments: mustMarshal(t, map[string]any{
+			"seed":  saved.ID,
+			"depth": 1,
+		}),
+	})
+	if exploreResp.Error != nil {
+		t.Fatalf("mem_explore: %v", exploreResp.Error.Message)
+	}
+
+	var result struct {
+		SeedID     string `json:"seed_id"`
+		TotalNodes int    `json:"total_nodes"`
+	}
+	unmarshalToolText(t, exploreResp, &result)
+	if result.SeedID != saved.ID {
+		t.Errorf("seed_id: got %q, want %q", result.SeedID, saved.ID)
+	}
+}

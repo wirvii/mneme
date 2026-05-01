@@ -54,6 +54,8 @@ func (h *handlers) handleToolCall(ctx context.Context, params ToolCallParams) (*
 		return h.handleMemForget(ctx, params.Arguments)
 	case "mem_checkpoint":
 		return h.handleMemCheckpoint(ctx, params.Arguments)
+	case "mem_explore":
+		return h.handleMemExplore(ctx, params.Arguments)
 	case "backlog_add":
 		return h.handleBacklogAdd(ctx, params.Arguments)
 	case "backlog_list":
@@ -391,7 +393,8 @@ func (h *handlers) mapServiceError(method string, err error) *JSONRPCError {
 		errors.Is(err, model.ErrAppliesToForbidden) ||
 		errors.Is(err, model.ErrInvalidSeverity) ||
 		errors.Is(err, model.ErrEmptyPattern) ||
-		errors.Is(err, model.ErrInvalidWeight) {
+		errors.Is(err, model.ErrInvalidWeight) ||
+		errors.Is(err, model.ErrAmbiguousSeed) {
 		return &JSONRPCError{
 			Code:    CodeInvalidParams,
 			Message: fmt.Sprintf("mcp: handle %s: %s", method, err),
@@ -403,6 +406,29 @@ func (h *handlers) mapServiceError(method string, err error) *JSONRPCError {
 		Code:    CodeInternalError,
 		Message: fmt.Sprintf("mcp: handle %s: %v", method, err),
 	}
+}
+
+// handleMemExplore processes a mem_explore tool call.
+func (h *handlers) handleMemExplore(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	var req model.ExploreRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return nil, &JSONRPCError{
+			Code:    CodeInvalidParams,
+			Message: fmt.Sprintf("mcp: handle mem_explore: invalid arguments: %s", err),
+		}
+	}
+	if req.Seed == "" {
+		return nil, &JSONRPCError{
+			Code:    CodeInvalidParams,
+			Message: "mcp: handle mem_explore: seed is required",
+		}
+	}
+
+	resp, err := h.svc.Explore(ctx, req)
+	if err != nil {
+		return nil, h.mapServiceError("mem_explore", err)
+	}
+	return resultFromAny(resp)
 }
 
 // --- SDD HANDLERS ---
