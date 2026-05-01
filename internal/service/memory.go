@@ -184,6 +184,11 @@ func (svc *MemoryService) Save(ctx context.Context, req model.SaveRequest) (*mod
 	// quality, not correctness.
 	svc.embedMemory(ctx, targetStore, result)
 	svc.processWikilinks(ctx, result, targetStore)
+	// SPEC-012: after processWikilinks has registered any new unresolved refs,
+	// attempt to resolve pending refs that point to result's topic_key. This
+	// runs post-commit so the new memory is already visible to FindByTopicKey
+	// inside createWikilinkRelation. No-op when result.TopicKey is empty.
+	svc.autoResolveUnresolved(ctx, result, targetStore)
 
 	action := "created"
 	if !created {
@@ -817,11 +822,13 @@ func (svc *MemoryService) resolveWikilink(
 	}
 
 	if target == nil {
-		// D12: unresolved target — log at debug and skip. SPEC-W2 will persist these.
+		// SPEC-012: unresolved target — log at debug and register the gap for
+		// later auto-resolution when a memory with that topic_key is saved.
 		slog.DebugContext(ctx, "wikilink_unresolved",
 			"memory_id", source.ID,
 			"topic_key", link.Topic,
 		)
+		svc.registerUnresolved(ctx, source, link.Topic, primaryStore, project)
 		return
 	}
 
@@ -845,8 +852,24 @@ func (svc *MemoryService) resolveWikilink(
 	// source memory). When the target was found via globalStore fallback, we
 	// mirror its entity name in primaryStore so both entities and the relation
 	// live in the same SQLite database — cross-DB foreign keys are not possible.
-	entityStore := primaryStore
+	svc.createWikilinkRelation(ctx, source, target, primaryStore, project, link.Anchor)
+}
 
+// createWikilinkRelation creates entities for source and target (or reuses
+// existing ones) and upserts a references relation between them. It is shared
+// by resolveWikilink (live resolution) and autoResolveUnresolved (deferred
+// resolution). The anchor parameter is stored as JSON metadata on the relation
+// when non-empty; pass an empty string when the link has no anchor.
+//
+// All operations are best-effort: failures are logged and never propagated to
+// the caller. Idempotency is ensured by FindRelationBidirectional before
+// CreateRelation.
+func (svc *MemoryService) createWikilinkRelation(
+	ctx context.Context,
+	source, target *model.Memory,
+	entityStore *store.MemoryStore,
+	project, anchor string,
+) {
 	// D7: FindOrCreateEntity for source.
 	sourceName := source.TopicKey
 	if sourceName == "" {
@@ -909,8 +932,8 @@ func (svc *MemoryService) resolveWikilink(
 
 	// D8: build anchor metadata JSON when the wikilink includes an anchor.
 	var metadata string
-	if link.Anchor != "" {
-		anchorJSON, marshalErr := json.Marshal(map[string]string{"anchor": link.Anchor})
+	if anchor != "" {
+		anchorJSON, marshalErr := json.Marshal(map[string]string{"anchor": anchor})
 		if marshalErr == nil {
 			metadata = string(anchorJSON)
 		}
@@ -947,7 +970,102 @@ func (svc *MemoryService) resolveWikilink(
 	slog.DebugContext(ctx, "wikilink_relation_created",
 		"source_id", source.ID,
 		"target_id", target.ID,
-		"topic_key", link.Topic,
 		"weight", svc.config.Graph.WikilinkRelationWeight,
+	)
+}
+
+// registerUnresolved persists an unresolved wikilink reference to the store.
+// Best-effort: failures are logged and never returned to the caller so that a
+// store failure never blocks the parent Save or Update operation.
+func (svc *MemoryService) registerUnresolved(
+	ctx context.Context,
+	source *model.Memory,
+	targetTopicKey string,
+	primaryStore *store.MemoryStore,
+	project string,
+) {
+	ref := &model.UnresolvedReference{
+		SourceMemoryID: source.ID,
+		TargetTopicKey: targetTopicKey,
+		Project:        project,
+	}
+	if err := primaryStore.RegisterUnresolved(ctx, ref); err != nil {
+		slog.ErrorContext(ctx, "wikilink_register_unresolved_error",
+			"source_id", source.ID,
+			"target_topic_key", targetTopicKey,
+			"error", err,
+		)
+	}
+}
+
+// autoResolveUnresolved resolves all pending unresolved_references that point to
+// the topic_key of the newly saved memory m. For each such reference it loads
+// the source memory, checks cross-scope constraints, creates the wikilink
+// relation, and deletes the now-resolved row.
+//
+// This runs after processWikilinks in Save so that the new memory is already
+// committed before FindUnresolvedByTarget queries for it. Best-effort: partial
+// failures are logged but do not block the caller. SQLite's serial write model
+// prevents data races — a concurrent save that processes the same ref first will
+// leave zero rows for the second resolver to find.
+//
+// No-op conditions (zero queries issued):
+//   - m.TopicKey == "" (memories without a topic key cannot be wikilink targets)
+//   - m.Type == TypeSessionSummary (excluded from the knowledge graph)
+func (svc *MemoryService) autoResolveUnresolved(
+	ctx context.Context,
+	m *model.Memory,
+	primaryStore *store.MemoryStore,
+) {
+	if m.TopicKey == "" || m.Type == model.TypeSessionSummary {
+		return
+	}
+
+	refs, err := primaryStore.FindUnresolvedByTarget(ctx, m.TopicKey, m.Project)
+	if err != nil {
+		slog.ErrorContext(ctx, "auto_resolve_query_error",
+			"topic_key", m.TopicKey,
+			"error", err,
+		)
+		return
+	}
+	if len(refs) == 0 {
+		return
+	}
+
+	resolved := 0
+	for _, ref := range refs {
+		source, getErr := primaryStore.Get(ctx, ref.SourceMemoryID)
+		if getErr != nil || source == nil {
+			// Source was deleted or inaccessible. Clean up the stale ref.
+			_ = primaryStore.DeleteUnresolved(ctx, ref.ID)
+			continue
+		}
+
+		// Cross-scope guard (SPEC-011 D5 / SPEC-012 D6): a global or org source
+		// must not create a relation into a project-scoped target.
+		if (source.Scope == model.ScopeGlobal || source.Scope == model.ScopeOrg) &&
+			m.Scope == model.ScopeProject {
+			continue
+		}
+
+		// Create the relation using the shared helper. Anchor is empty for
+		// auto-resolved refs — the original anchor is not stored in the
+		// unresolved_references table (not needed for graph connectivity).
+		svc.createWikilinkRelation(ctx, source, m, primaryStore, ref.Project, "")
+
+		if delErr := primaryStore.DeleteUnresolved(ctx, ref.ID); delErr != nil {
+			slog.ErrorContext(ctx, "auto_resolve_delete_error",
+				"ref_id", ref.ID,
+				"error", delErr,
+			)
+		}
+		resolved++
+	}
+
+	slog.DebugContext(ctx, "auto_resolve_completed",
+		"topic_key", m.TopicKey,
+		"candidates", len(refs),
+		"resolved", resolved,
 	)
 }
