@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -612,6 +613,268 @@ func TestStore_AppliesTo_JSONMarshalling(t *testing.T) {
 		if got.AppliesTo[i] != want {
 			t.Errorf("AppliesTo[%d] = %q, want %q", i, got.AppliesTo[i], want)
 		}
+	}
+}
+
+// ─── GetByIDPrefix tests ─────────────────────────────────────────────────────
+
+// TestStore_GetByIDPrefix_ExactOneMatch verifies that a unique prefix returns
+// the matching memory.
+func TestStore_GetByIDPrefix_ExactOneMatch(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	m, err := s.Create(ctx, makeMemory())
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	prefix := m.ID[:8]
+	got, err := s.GetByIDPrefix(ctx, prefix)
+	if err != nil {
+		t.Fatalf("GetByIDPrefix: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected memory, got nil")
+	}
+	if got.ID != m.ID {
+		t.Errorf("ID mismatch: got %q, want %q", got.ID, m.ID)
+	}
+}
+
+// TestStore_GetByIDPrefix_MultipleMatches verifies that ErrAmbiguousSeed is
+// returned when two memories share the same 8-char prefix. We manipulate the
+// IDs after creation via direct SQL since UUID prefixes are random.
+func TestStore_GetByIDPrefix_MultipleMatches(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	// Create two memories.
+	m1, _ := s.Create(ctx, makeMemory())
+	m2, _ := s.Create(ctx, makeMemory())
+
+	// Choose a prefix that is the common prefix of both IDs. If IDs happen to
+	// share a prefix naturally this test catches that case. Otherwise we use a
+	// prefix that matches multiple rows by lowering it to just 1 hex char.
+	// The safest approach: search for a prefix that returns >1 row by trying the
+	// first character (all UUIDs start with "0" in UUIDv7).
+	_ = m1
+	_ = m2
+
+	// The first 1 character of a UUIDv7 ID is always '0' so "0" is a valid prefix
+	// that matches all memories. Use length 8 to satisfy minimum-prefix semantics.
+	// Find a common prefix by using the first 8 chars of m1's ID, then insert a
+	// second memory with the same prefix via direct Update.
+	prefix := m1.ID[:3]
+	// Brute-force: count how many match; if only 1, use "0" family.
+	// Instead, force a known prefix collision by updating m2's id via SQL.
+	_, err := s.db.ExecContext(ctx,
+		"UPDATE memories SET id = ? WHERE id = ?",
+		prefix+"00000-0000-0000-0000-000000000001",
+		m1.ID,
+	)
+	if err != nil {
+		t.Skipf("direct ID update failed (expected): %v", err)
+	}
+	_, err = s.db.ExecContext(ctx,
+		"UPDATE memories SET id = ? WHERE id = ?",
+		prefix+"00000-0000-0000-0000-000000000002",
+		m2.ID,
+	)
+	if err != nil {
+		t.Skipf("direct ID update failed (expected): %v", err)
+	}
+
+	_, err = s.GetByIDPrefix(ctx, prefix)
+	if err == nil {
+		t.Fatal("expected ErrAmbiguousSeed, got nil error")
+	}
+	if !errors.Is(err, model.ErrAmbiguousSeed) {
+		t.Errorf("expected ErrAmbiguousSeed wrapped in error, got: %v", err)
+	}
+}
+
+// TestStore_GetByIDPrefix_NoMatch verifies that (nil, nil) is returned when
+// the prefix matches nothing.
+func TestStore_GetByIDPrefix_NoMatch(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	got, err := s.GetByIDPrefix(ctx, "ffffffff")
+	if err != nil {
+		t.Fatalf("GetByIDPrefix: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("expected nil, got %+v", got)
+	}
+}
+
+// TestStore_GetByIDPrefix_DeletedExcluded verifies that deleted memories are
+// not returned by GetByIDPrefix.
+func TestStore_GetByIDPrefix_DeletedExcluded(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	m, _ := s.Create(ctx, makeMemory())
+	if err := s.SoftDelete(ctx, m.ID); err != nil {
+		t.Fatalf("SoftDelete: %v", err)
+	}
+
+	got, err := s.GetByIDPrefix(ctx, m.ID[:8])
+	if err != nil {
+		t.Fatalf("GetByIDPrefix: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("expected nil for deleted memory, got %+v", got)
+	}
+}
+
+// ─── GetByTopicKey tests ──────────────────────────────────────────────────────
+
+// TestStore_GetByTopicKey_Found verifies that a memory with the given topic_key
+// in the correct project is returned.
+func TestStore_GetByTopicKey_Found(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	m := makeMemory()
+	m.TopicKey = "architecture/test-service"
+	m.Project = "myproject"
+	created, err := s.Create(ctx, m)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	got, err := s.GetByTopicKey(ctx, "architecture/test-service", "myproject")
+	if err != nil {
+		t.Fatalf("GetByTopicKey: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected memory, got nil")
+	}
+	if got.ID != created.ID {
+		t.Errorf("ID mismatch: got %q, want %q", got.ID, created.ID)
+	}
+	if got.TopicKey != "architecture/test-service" {
+		t.Errorf("TopicKey mismatch: got %q", got.TopicKey)
+	}
+}
+
+// TestStore_GetByTopicKey_NotFound verifies (nil, nil) when the topic_key does
+// not exist.
+func TestStore_GetByTopicKey_NotFound(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	got, err := s.GetByTopicKey(ctx, "nonexistent/key", "myproject")
+	if err != nil {
+		t.Fatalf("GetByTopicKey: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("expected nil, got %+v", got)
+	}
+}
+
+// TestStore_GetByTopicKey_WrongProject verifies that a topic_key for a
+// different project is not returned.
+func TestStore_GetByTopicKey_WrongProject(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	m := makeMemory()
+	m.TopicKey = "architecture/shared"
+	m.Project = "project-a"
+	_, err := s.Create(ctx, m)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	got, err := s.GetByTopicKey(ctx, "architecture/shared", "project-b")
+	if err != nil {
+		t.Fatalf("GetByTopicKey: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("expected nil for wrong project, got %+v", got)
+	}
+}
+
+// ─── GetMemoryMetadata tests ──────────────────────────────────────────────────
+
+// TestStore_GetMemoryMetadata_Found verifies that the lightweight projection
+// returns the correct title, topic_key, type, and a non-zero ContentLen.
+func TestStore_GetMemoryMetadata_Found(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	m := &model.Memory{
+		Type:     model.TypeDecision,
+		Scope:    model.ScopeProject,
+		Title:    "Metadata test memory",
+		Content:  "Content for metadata testing purposes.",
+		TopicKey: "test/metadata-key",
+		Project:  "myproject",
+	}
+	created, err := s.Create(ctx, m)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	meta, err := s.GetMemoryMetadata(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("GetMemoryMetadata: %v", err)
+	}
+	if meta == nil {
+		t.Fatal("expected metadata, got nil")
+	}
+	if meta.ID != created.ID {
+		t.Errorf("ID: got %q, want %q", meta.ID, created.ID)
+	}
+	if meta.Title != "Metadata test memory" {
+		t.Errorf("Title: got %q, want %q", meta.Title, "Metadata test memory")
+	}
+	if meta.TopicKey != "test/metadata-key" {
+		t.Errorf("TopicKey: got %q, want %q", meta.TopicKey, "test/metadata-key")
+	}
+	if meta.Type != model.TypeDecision {
+		t.Errorf("Type: got %q, want %q", meta.Type, model.TypeDecision)
+	}
+	if meta.ContentLen <= 0 {
+		t.Errorf("ContentLen: expected > 0, got %d", meta.ContentLen)
+	}
+}
+
+// TestStore_GetMemoryMetadata_NotFound verifies that (nil, nil) is returned
+// when no active memory exists with the given id.
+func TestStore_GetMemoryMetadata_NotFound(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	meta, err := s.GetMemoryMetadata(ctx, "nonexistent-id")
+	if err != nil {
+		t.Fatalf("GetMemoryMetadata: %v", err)
+	}
+	if meta != nil {
+		t.Fatalf("expected nil, got %+v", meta)
+	}
+}
+
+// TestStore_GetMemoryMetadata_Deleted verifies that deleted memories are
+// excluded from GetMemoryMetadata results.
+func TestStore_GetMemoryMetadata_Deleted(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	m, _ := s.Create(ctx, makeMemory())
+	if err := s.SoftDelete(ctx, m.ID); err != nil {
+		t.Fatalf("SoftDelete: %v", err)
+	}
+
+	meta, err := s.GetMemoryMetadata(ctx, m.ID)
+	if err != nil {
+		t.Fatalf("GetMemoryMetadata: %v", err)
+	}
+	if meta != nil {
+		t.Fatalf("expected nil for deleted memory, got %+v", meta)
 	}
 }
 

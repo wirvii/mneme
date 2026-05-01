@@ -543,6 +543,126 @@ func (s *MemoryStore) loadFiles(ctx context.Context, m *model.Memory) error {
 	return rows.Err()
 }
 
+// MemoryMetadata is a lightweight projection of a memory used when full content
+// loading is not needed. It carries enough information for token estimation and
+// tree rendering during graph traversal without loading large content bodies.
+type MemoryMetadata struct {
+	// ID is the memory's full UUIDv7.
+	ID string
+	// Title is the memory's title.
+	Title string
+	// TopicKey is the memory's topic_key, if set.
+	TopicKey string
+	// Type is the memory's type (decision, discovery, etc.).
+	Type model.MemoryType
+	// ContentLen is SQLite's length(content) for the memory. For TEXT columns
+	// this is the number of characters, which approximates the rune count and
+	// is used for token estimation without loading the full content body.
+	ContentLen int
+}
+
+// GetByIDPrefix returns the single active memory whose ID starts with prefix.
+// Returns (*Memory, nil) when exactly one match is found, (nil, nil) when no
+// memory matches, or (nil, ErrAmbiguousSeed) when multiple memories share the
+// prefix. A prefix of fewer than 8 characters is treated the same as any other
+// prefix but will likely produce many ambiguous matches.
+func (s *MemoryStore) GetByIDPrefix(ctx context.Context, prefix string) (*model.Memory, error) {
+	const countQ = `
+		SELECT COUNT(*) FROM memories
+		WHERE id LIKE ? AND deleted_at IS NULL`
+
+	var count int
+	if err := s.db.QueryRowContext(ctx, countQ, prefix+"%").Scan(&count); err != nil {
+		return nil, fmt.Errorf("store: get by id prefix: count: %w", err)
+	}
+	if count == 0 {
+		return nil, nil
+	}
+	if count > 1 {
+		return nil, fmt.Errorf("store: get by id prefix: %w", model.ErrAmbiguousSeed)
+	}
+
+	// Exactly one match — load it using the full column list.
+	const q = `
+		SELECT id, type, scope, title, content, topic_key, project,
+		       session_id, created_by, created_at, updated_at,
+		       importance, confidence, access_count, last_accessed,
+		       decay_rate, revision_count, superseded_by, deleted_at,
+		       applies_to, severity
+		FROM memories
+		WHERE id LIKE ? AND deleted_at IS NULL
+		LIMIT 1`
+
+	row := s.db.QueryRowContext(ctx, q, prefix+"%")
+	m, err := scanMemory(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			// Race: another writer deleted the row between count and select.
+			return nil, nil
+		}
+		return nil, fmt.Errorf("store: get by id prefix: %w", err)
+	}
+	if err := s.loadFiles(ctx, m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+// GetByTopicKey returns the active memory with the given topic_key and project.
+// Pass an empty project to look up memories that are not project-scoped.
+// Returns (nil, nil) when no active memory matches.
+func (s *MemoryStore) GetByTopicKey(ctx context.Context, topicKey, project string) (*model.Memory, error) {
+	const q = `
+		SELECT id, type, scope, title, content, topic_key, project,
+		       session_id, created_by, created_at, updated_at,
+		       importance, confidence, access_count, last_accessed,
+		       decay_rate, revision_count, superseded_by, deleted_at,
+		       applies_to, severity
+		FROM memories
+		WHERE topic_key = ? AND project IS ? AND deleted_at IS NULL
+		LIMIT 1`
+
+	row := s.db.QueryRowContext(ctx, q, topicKey, toNullString(project))
+	m, err := scanMemory(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("store: get by topic key: %w", err)
+	}
+	if err := s.loadFiles(ctx, m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+// GetMemoryMetadata returns lightweight metadata for a single active memory
+// without loading the full content body. The ContentLen field is populated via
+// SQLite's length(content) function and approximates the rune count, making it
+// suitable for token estimation during graph traversal.
+//
+// Returns (nil, nil) when no active memory with the given id exists.
+func (s *MemoryStore) GetMemoryMetadata(ctx context.Context, id string) (*MemoryMetadata, error) {
+	const q = `
+		SELECT id, title, topic_key, type, length(content)
+		FROM memories
+		WHERE id = ? AND deleted_at IS NULL`
+
+	var meta MemoryMetadata
+	var topicKey sql.NullString
+	err := s.db.QueryRowContext(ctx, q, id).Scan(
+		&meta.ID, &meta.Title, &topicKey, &meta.Type, &meta.ContentLen,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("store: get memory metadata: %w", err)
+	}
+	meta.TopicKey = topicKey.String
+	return &meta, nil
+}
+
 // toNullString converts an empty string to a SQL NULL; non-empty strings are valid.
 func toNullString(s string) sql.NullString {
 	if s == "" {
