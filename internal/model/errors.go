@@ -102,3 +102,8 @@ var ErrEmptyPattern = errors.New("applies_to patterns must not be empty")
 // layer rather than as a SQL CHECK constraint because SQLite does not reject NaN
 // in BETWEEN comparisons.
 var ErrInvalidWeight = errors.New("weight must be a finite number in [0.0, 1.0]")
+
+// ErrAmbiguousSeed is returned when a short UUID prefix supplied to mem_explore
+// matches more than one memory. The caller must use the full UUID to avoid
+// ambiguity.
+var ErrAmbiguousSeed = errors.New("seed matches multiple memories; use the full UUID")
