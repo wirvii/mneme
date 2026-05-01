@@ -50,7 +50,7 @@ cli/  mcp/  http/        ← three frontends (Cobra, JSON-RPC stdio, REST)
 
 **Dependency rule:** imports flow inward only. `model` has no external deps. Adapters (`store`, `mcp`, `http`, `cli`) sit at the edges and are swappable. Don't let frontends call `store` or `db` directly — go through `service`.
 
-Supporting packages: `scoring/` (decay, BM25 re-ranking, RRF fusion), `consolidation/` (background decay/dedup/budget sweeps), `embed/` (TF-IDF baseline), `sync/` (JSONL.gz git-shareable export/import), `project/` (git-remote slug detection), `config/` (TOML + env overrides), `install/` (agent profile installer), `tui/` (Bubble Tea), `upgrade/`, `export/`.
+Supporting packages: `scoring/` (decay, BM25 re-ranking, RRF fusion), `consolidation/` (background decay/dedup/budget sweeps + edge decay), `graph/` (Hebbian auto-strengthening: AccessTracker ring buffer + HebbianWorkerPool async worker), `rules/` (applies_to pattern matching engine for pre-tool-use hook), `embed/` (TF-IDF baseline), `sync/` (JSONL.gz git-shareable export/import), `project/` (git-remote slug detection), `config/` (TOML + env overrides), `install/` (agent profile installer), `tui/` (Bubble Tea), `upgrade/`, `export/`.
 
 ### The three frontends
 
@@ -66,9 +66,11 @@ Two SQLite databases per host:
 
 Scopes (`global` / `org` / `project`) never leak between projects. Migrations are embedded via `embed.FS`.
 
-### Delegation hook (important when editing source)
+### Pre-tool-use hook (important when editing source)
 
-`mneme hook enforce-delegation` is a Claude Code `PreToolUse` hook that **blocks `Edit`/`Write`/`MultiEdit` calls** against protected paths (default: `cmd/`, `internal/`, `src/`, `apps/`, `packages/`, `lib/`) and exits with code 2 telling the principal agent to delegate to the `backend`/`frontend`/`architect` subagents. `AllowedPaths` (default: `docs/`, `*.md`, `CLAUDE.md`) bypass it. Source: `internal/cli/hook.go:runHookEnforceDelegation`. If a code edit gets blocked, that's the hook — delegate, don't bypass.
+`mneme hook pre-tool-use` is the active Claude Code `PreToolUse` hook. It evaluates **rules** from the mneme database against every `Edit`/`Write`/`MultiEdit` call. Rules carry `applies_to` patterns (path globs, tool selectors, negations) and a `severity` level (`info`/`warn`/`block`). When a `block`-severity rule matches, the hook exits with code 2 and Claude Code rejects the tool call. Source: `internal/cli/hook.go:runHookPreToolUse` + `internal/rules/match.go`. If a code edit gets blocked, that's a rule — check `mneme rule list` and delegate or adjust accordingly.
+
+The legacy `mneme hook enforce-delegation` (config-based static paths) is deprecated but still works. Migrate with `mneme install claude-code --reinstall-hooks`. See `docs/HOOKS.md` for details.
 
 ## Testing approach
 

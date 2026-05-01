@@ -230,3 +230,11 @@ A: They serve different purposes. Session hooks are observational — they load
 context in bulk at session boundaries and never block. The pre-tool-use hook is
 active enforcement — it fires on every file mutation and can block the action.
 Combining them would muddle the semantics and hurt performance.
+
+---
+
+## See Also
+
+- [Rules System](RULES.md) — applies_to syntax, severity levels, examples by stack
+- [Architecture](ARCHITECTURE.md) — overall system design and graph layer
+- [Knowledge Graph](GRAPH.md) — weighted relations, Hebbian learning, decay

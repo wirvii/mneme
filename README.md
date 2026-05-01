@@ -1,108 +1,335 @@
 # mneme
 
-Persistent memory system for AI coding agents. Single Go binary, zero runtime dependencies. Full-text search (BM25), knowledge graph, automatic consolidation, multi-scope memory, and agent-agnostic access via MCP.
+Persistent memory system for AI coding agents. Single Go binary, zero runtime dependencies.
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Go](https://img.shields.io/badge/Go-1.24+-00ADD8.svg)](https://go.dev)
+[![CGO](https://img.shields.io/badge/requires-CGO%20%2B%20fts5-orange.svg)](#requirements)
+
+---
+
+## What is mneme?
+
+mneme stores structured knowledge (decisions, discoveries, patterns, conventions, rules) in a local SQLite database and exposes it through MCP, HTTP, and CLI. Any AI agent that speaks MCP can save and retrieve persistent, cross-session memory. It also provides a weighted knowledge graph, rules engine, and a spec-driven development (SDD) lifecycle.
 
 ## Why
 
-AI coding agents forget everything between sessions. CLAUDE.md files become battlegrounds mixing config, conventions, and knowledge. What you learn in one project is invisible in another.
+AI coding agents forget everything between sessions. CLAUDE.md files become battlegrounds mixing config, conventions, and knowledge. What you learn in one project stays invisible in another.
 
-mneme fixes this. It stores structured observations (decisions, discoveries, patterns, conventions) in a local SQLite database and exposes them through MCP, HTTP API, and CLI. Any agent that speaks MCP can save and retrieve persistent knowledge.
+mneme fixes this with four layers:
+
+| Layer | What it does |
+|-------|-------------|
+| **Storage** | SQLite multi-scope (global/project), FTS5 full-text search, UUIDv7 IDs |
+| **Graph** | Weighted knowledge graph with Hebbian auto-strengthening, edge decay, and co-mention backfill |
+| **Retrieval** | RRF fusion of BM25 + vector + graph; rules always injected in context |
+| **SDD Engine** | backlog --> spec --> architect --> backend --> qa lifecycle |
 
 ## Quick Start
 
 ```bash
-# Build
-CGO_ENABLED=1 go build -tags fts5 -o mneme ./cmd/mneme
+# Install from source
+git clone https://github.com/wirvii/mneme.git && cd mneme
+make install
 
-# Save a memory
-mneme save -t "Auth uses JWT with RS256" -T decision -c "## What
-Switched to RS256 for JWT signing.
+# Or use the install script
+curl -sSL https://raw.githubusercontent.com/wirvii/mneme/main/install.sh | sh
 
-## Why
-Legal requires asymmetric key verification for compliance."
+# Configure your agent (adds hooks to ~/.claude/settings.json)
+mneme install claude-code
+
+# Save your first memory
+mneme save --type architecture --title "Auth uses JWT with RS256" \
+  --content "## What\nSwitched to RS256 for JWT signing.\n\n## Why\nLegal requires asymmetric key verification."
 
 # Search memories
 mneme search "authentication"
 
-# Get project context (what an agent receives at session start)
+# Get project context (what the agent receives at session start)
 mneme context --budget 4000
+```
 
-# Start MCP server (for agent integration)
-mneme mcp
+## How It Works
 
-# Start HTTP API
-mneme serve --addr :7437
+```
+┌─────────────────────────────────────────────────────────────┐
+│                       mneme binary                          │
+│                                                             │
+│  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐      │
+│  │   CLI   │  │   MCP   │  │  HTTP   │  │  Hooks  │      │
+│  │ (cobra) │  │ (stdio) │  │ (:7437) │  │ (agent) │      │
+│  └────┬────┘  └────┬────┘  └────┬────┘  └────┬────┘      │
+│       └─────────────┼───────────┼─────────────┘            │
+│                     ▼                                       │
+│            ┌──────────────┐                                 │
+│            │   Service    │  business logic, scoring,       │
+│            │    Layer     │  Hebbian tracking, rules        │
+│            └──────┬───────┘                                 │
+│                   │                                         │
+│       ┌───────────┼───────────┐                             │
+│       ▼           ▼           ▼                             │
+│  ┌────────┐ ┌──────────┐ ┌────────┐                        │
+│  │ Store  │ │ Scoring  │ │ Graph  │                        │
+│  │ (CRUD, │ │ (BM25,   │ │ (ring  │                        │
+│  │  FTS5) │ │ RRF,     │ │ buffer,│                        │
+│  │        │ │ decay)   │ │ worker)│                        │
+│  └───┬────┘ └──────────┘ └────────┘                        │
+│      ▼                                                      │
+│  ┌────────┐                                                 │
+│  │ SQLite │  global.db + projects/<slug>.db                 │
+│  │ + FTS5 │  scopes never leak between projects             │
+│  └────────┘                                                 │
+└─────────────────────────────────────────────────────────────┘
 ```
 
 ## Features
 
 ### Memory Types
-- **decision** — Architectural choices and their rationale
-- **discovery** — Things learned during development
-- **bugfix** — Bugs found and how they were resolved
-- **pattern** — Reusable code patterns and approaches
-- **convention** — Team or project conventions
-- **architecture** — System design and structure
-- **preference** — Personal workflow preferences
-- **config** — Configuration knowledge
-- **session_summary** — Auto-generated session recaps
+
+10 built-in types with per-type decay rates and importance defaults:
+
+| Type | Decay | Purpose |
+|------|-------|---------|
+| `architecture` | 0.005/d | System design and structure |
+| `decision` | 0.005/d | Architectural choices and rationale |
+| `convention` | 0.005/d | Team or project conventions |
+| `pattern` | 0.01/d | Reusable code patterns |
+| `preference` | 0.01/d | Personal workflow preferences |
+| `bugfix` | 0.02/d | Bugs found and how they were resolved |
+| `discovery` | 0.02/d | Things learned during development |
+| `config` | 0.02/d | Configuration knowledge |
+| `session_summary` | 0.05/d | Auto-generated session recaps |
+| `rule` | 0 (immune) | Binding constraints with `applies_to` and `severity` |
 
 ### Multi-Scope Memory
-- **global** — Your preferences and skills, available in every project
-- **org** — Team conventions shared across projects
-- **project** — Project-specific knowledge (architecture, decisions, bugs)
 
-Global memories live in `~/.mneme/global.db`. Project memories live in `~/.mneme/projects/<slug>.db`. Scopes never leak between projects.
+- **global** -- Your preferences and skills, available in every project (`~/.mneme/global.db`)
+- **org** -- Team conventions shared across projects
+- **project** -- Project-specific knowledge (`~/.mneme/projects/<slug>.db`)
 
-### Knowledge Graph
-Entities (modules, services, patterns, files) connected by typed relations (depends_on, implements, uses, conflicts_with). Enables queries like "what depends on the auth service?"
+Scopes never leak between projects.
+
+### Knowledge Graph (SPEC-005..009)
+
+Entities (modules, services, patterns, files) connected by weighted, directed relations. 8 relation types with default weights:
+
+| Relation | Default Weight |
+|----------|---------------|
+| `depends_on` | 0.9 |
+| `part_of` | 0.85 |
+| `implements` | 0.8 |
+| `uses` | 0.7 |
+| `conflicts_with` | 0.7 |
+| `supersedes` | 0.6 |
+| `related_to` | 0.5 |
+| `references` | 0.4 |
+
+**Hebbian auto-strengthening:** when two memories are accessed together, the edge between them is reinforced automatically (ring buffer + async worker pool).
+
+**Edge decay:** relations not traversed for 30 days decay at 0.02/day. Actively used edges stay strong.
+
+**Graph rebuild:** `mneme graph rebuild` backfills the graph from existing memories using 4 heuristics (topic_key, file paths, code symbols, wikilinks).
+
+### Retrieval: 3-Channel RRF Fusion (SPEC-007)
+
+```
+Query ──┬──> FTS5 BM25 ──────────> Rank A (weight 1.0)
+        │
+        ├──> Vector similarity ───> Rank B (weight 0.8)
+        │
+        ├──> 1-hop graph expand ──> Rank C (weight 0.6)
+        │
+        └──> RRF Fusion ──> Final ranking ──> Return
+```
+
+### Rules System (SPEC-001..004)
+
+Rules are memories of type `rule` with `applies_to` patterns and a `severity` level:
+
+- **info** -- advisory, agent should consider
+- **warn** -- explicit warning, action proceeds
+- **block** -- action rejected (hook exits with code 2)
+
+Rules are always injected in `mem_context` output (separate token budget). The `pre-tool-use` hook evaluates rules JIT before every Edit/Write/MultiEdit.
+
+```bash
+# Create a rule
+mneme rule add --title "No vendor edits" \
+  --content "Never edit vendor/ files." \
+  --applies-to "vendor/**" \
+  --severity block
+
+# Test which rules would fire
+mneme rule test --tool Edit --path vendor/foo/bar.go
+```
 
 ### Automatic Consolidation
+
 Background pipeline that keeps memory healthy:
-- **Decay** — Old, unused memories fade based on configurable rates
-- **Dedup** — Duplicate memories are detected and merged
-- **Budget** — When memory exceeds limits, lowest-scored entries are evicted
-- No manual curation needed.
+- **Decay** -- old, unused memories fade based on configurable rates
+- **Dedup** -- duplicate memories detected and merged
+- **Budget** -- when memory exceeds limits, lowest-scored entries are evicted
+- **Edge decay** -- graph relations not traversed in 30d lose weight
+
+### SDD Engine
+
+Spec-driven development lifecycle powered by mneme:
+
+```
+backlog_add --> backlog_refine --> backlog_promote --> spec_new
+  --> spec_advance (draft --> speccing --> specced --> implementing --> qa --> done)
+```
 
 ### Git Sync
-Export memories as compressed JSONL for version-controlled sharing:
+
 ```bash
-mneme sync export          # → .mneme/sync/project.jsonl.gz
+mneme sync export          # --> .mneme/sync/project.jsonl.gz
 mneme sync import file.gz  # merge into local DB
 ```
 
-## Interfaces
+## CLI Commands
 
-### MCP Server (primary — for AI agents)
-```bash
-mneme mcp --tools=agent
-```
-11 tools: `mem_save`, `mem_search`, `mem_get`, `mem_context`, `mem_update`, `mem_session_end`, `mem_suggest_topic_key`, `mem_relate`, `mem_timeline`, `mem_stats`, `mem_forget`
+### Core Memory
 
-### HTTP API
-```bash
-mneme serve --addr :7437
 ```
-RESTful endpoints at `/v1/memories/*`, `/v1/sessions/*`, `/v1/entities/*`, `/v1/stats`, `/v1/health`
+mneme save          Save a memory
+mneme search        Search memories (BM25 + vector + graph)
+mneme get           Retrieve a memory by ID
+mneme context       Get project context (agent session start)
+mneme update        Update an existing memory
+mneme forget        Mark a memory for accelerated decay
+mneme stats         Detailed statistics
+mneme status        Show project and memory status
+mneme consolidate   Run consolidation manually
+```
 
-### CLI
+### Rules (SPEC-001..004)
+
 ```
-mneme save        Save a memory
-mneme search      Search memories (BM25 full-text)
-mneme get         Retrieve a memory by ID
-mneme status      Show project and memory stats
-mneme stats       Detailed statistics
-mneme forget      Mark a memory for accelerated decay
-mneme consolidate Run consolidation manually
-mneme sync        Export/import memories for git sharing
-mneme serve       Start HTTP API server
-mneme mcp         Start MCP server
-mneme version     Print version
+mneme rule add      Create a rule with applies_to + severity
+mneme rule list     Display all active rules (colour-coded table)
+mneme rule test     Evaluate rules against a simulated invocation
 ```
+
+### Graph (SPEC-005..009)
+
+```
+mneme explore       BFS traversal from a seed memory (ASCII tree or JSON)
+mneme graph rebuild Backfill graph from existing memories
+```
+
+### Hooks
+
+```
+mneme hook session-start     Load context at session start
+mneme hook session-end       Remind agent to save session summary
+mneme hook pre-tool-use      Evaluate rules JIT before file edits
+mneme hook enforce-delegation  Legacy delegation (deprecated)
+```
+
+### Integration
+
+```
+mneme mcp           Start MCP server (stdio, JSON-RPC 2.0)
+mneme serve         Start HTTP API server (:7437)
+mneme install       Configure agent profiles (claude-code)
+```
+
+### SDD Lifecycle
+
+```
+mneme backlog       Manage backlog items (add/list)
+mneme spec          Manage specs (status/advance/list)
+mneme init          Migrate legacy projects to SDD engine
+```
+
+### Utilities
+
+```
+mneme sync          Export/import memories (JSONL.gz)
+mneme upgrade       Check for and install updates
+mneme export        Export memories to markdown
+mneme version       Print version
+```
+
+## MCP Tools (23 tools)
+
+The MCP server (`mneme mcp`) exposes 23 tools over JSON-RPC 2.0 stdio:
+
+### Memory Tools (13)
+
+| Tool | Description |
+|------|-------------|
+| `mem_save` | Save a memory (supports type `rule` with `applies_to` and `severity`) |
+| `mem_search` | Hybrid search with optional graph expansion (`include_graph` flag) |
+| `mem_get` | Retrieve full content by ID |
+| `mem_context` | Curated context bundle with rules always injected |
+| `mem_update` | Partial update of an existing memory |
+| `mem_session_end` | End session and save summary |
+| `mem_suggest_topic_key` | Suggest a topic_key for dedup |
+| `mem_relate` | Create/update entity relations (with explicit weight override) |
+| `mem_timeline` | Chronological neighborhood around a point in time |
+| `mem_stats` | Aggregate statistics |
+| `mem_checkpoint` | Save work-in-progress checkpoint |
+| `mem_forget` | Mark for accelerated decay |
+| `mem_explore` | BFS graph traversal from a seed (depth/budget/threshold) |
+
+### Backlog Tools (4)
+
+| Tool | Description |
+|------|-------------|
+| `backlog_add` | Add item to backlog |
+| `backlog_list` | List backlog items |
+| `backlog_refine` | Refine a raw backlog item |
+| `backlog_promote` | Promote refined item to spec |
+
+### Spec Tools (6)
+
+| Tool | Description |
+|------|-------------|
+| `spec_new` | Create a new spec in draft status |
+| `spec_status` | Get full spec status with history |
+| `spec_advance` | Advance spec to next lifecycle state |
+| `spec_pushback` | Register blocking questions |
+| `spec_resolve` | Resolve a pushback |
+| `spec_list` | List specs (filterable by status) |
+
+## Documentation
+
+- [Architecture](docs/ARCHITECTURE.md) -- layered design, graph layer, rules system
+- [Rules System](docs/RULES.md) -- applies_to syntax, severity, hooks, examples
+- [Knowledge Graph](docs/GRAPH.md) -- weights, Hebbian learning, decay, rebuild
+- [Hooks Integration](docs/HOOKS.md) -- session hooks, pre-tool-use, migration
+- [Technical Spec](docs/SPEC.md) -- v0.1 original specification
+
+## Comparison
+
+| Feature | mneme | CLAUDE.md | RAG on vector DB |
+|---------|-------|-----------|-----------------|
+| Persists across sessions | Yes | Yes (manual) | Yes |
+| Structured types | 10 types + rules | Free-form text | Chunks |
+| Cross-project memory | Yes (scopes) | No | Depends |
+| Knowledge graph | Weighted + Hebbian | No | No |
+| Auto-decay | Per-type rates | Manual cleanup | No |
+| Rules enforcement | JIT hook + severity | Static text | No |
+| Agent-agnostic | MCP + HTTP + CLI | Claude only | Varies |
+| Local-only | SQLite, no cloud | File | Usually cloud |
+| SDD lifecycle | Built-in | No | No |
+
+## Status & Roadmap
+
+**Current:** v0.2.0 -- EPIC-1 (Rules) + EPIC-2 (Graph) complete.
+
+Planned EPICs:
+- **EPIC-3:** Wikilinks -- `[[topic_key]]` references in memory content
+- **EPIC-4:** Personalized PageRank -- global importance scoring via PPR
+- **EPIC-5:** Community detection -- automatic memory clustering
+- **EPIC-6:** Vault mirror -- bidirectional sync with Obsidian
+- **EPIC-7:** Deep documentation -- comprehensive docs and guides
 
 ## Configuration
 
-Config file at `~/.mneme/config.toml` (optional — all settings have sensible defaults):
+Config file at `~/.mneme/config.toml` (optional -- all settings have sensible defaults):
 
 ```toml
 [storage]
@@ -125,42 +352,47 @@ interval = "6h"
 retention_days = 30
 
 [decay]
-architecture = 0.005  # slow — stable knowledge
+architecture = 0.005
 decision = 0.005
 convention = 0.005
-pattern = 0.01         # medium
-bugfix = 0.02          # faster — specifics fade
-session_summary = 0.05 # fast — recent sessions matter
+pattern = 0.01
+bugfix = 0.02
+session_summary = 0.05
+
+[graph]
+hebbian_window = 5
+hebbian_increment = 0.05
+hebbian_initial_weight = 0.1
+edge_decay_rate = 0.02
+edge_decay_after_days = 30
+expansion_enabled = true
+expansion_threshold = 0.3
+expansion_fan_out_cap = 50
+expansion_seed_top_k = 10
 ```
 
 Environment variable overrides: `MNEME_DATA_DIR`, `MNEME_PROJECT`, `MNEME_LOG_LEVEL`.
-
-## Architecture
-
-```
-cmd/mneme/          → entrypoint
-internal/
-  model/            → domain types (zero external deps)
-  project/          → git remote detection
-  config/           → TOML config with defaults
-  db/               → SQLite + FTS5 + migrations
-  store/            → repository pattern (CRUD, search, entities, stats)
-  scoring/          → importance, decay, relevance, RRF fusion
-  service/          → business logic orchestration
-  consolidation/    → background decay, dedup, budget enforcement
-  mcp/              → MCP server (JSON-RPC 2.0 over stdio)
-  http/             → REST API (stdlib net/http)
-  sync/             → JSONL.gz export/import
-  cli/              → cobra commands
-```
-
-Dependencies flow inward: `cli/mcp/http → service → store → db → model`. Model is the leaf with zero external imports.
 
 ## Requirements
 
 - Go 1.24+
 - CGO-enabled C compiler (for SQLite FTS5)
 - Build tag: `-tags fts5`
+
+```bash
+make build         # CGO_ENABLED=1 go build -tags fts5 -o mneme ./cmd/mneme
+make test          # go test -tags fts5 ./...
+make install       # build + sudo cp to /usr/local/bin/
+make setup         # install + mneme install claude-code
+```
+
+## Contributing
+
+1. Fork the repo
+2. Create a feature branch (`type/short-description`)
+3. Follow [Conventional Commits](https://www.conventionalcommits.org/) for commit messages
+4. Run `make test-race` and `golangci-lint run` (zero warnings required)
+5. Open a PR
 
 ## License
 
