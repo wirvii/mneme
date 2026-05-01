@@ -9,9 +9,11 @@ type ExploreRequest struct {
 	// a short UUID prefix (8+ hex chars without hyphens), or a topic_key.
 	Seed string `json:"seed"`
 
-	// Depth is the maximum number of hops from the seed. Defaults to the
-	// configured ExploreDefaultDepth (2). Range: 0–5.
-	Depth int `json:"depth,omitempty"`
+	// Depth is the maximum number of hops from the seed. When nil, the
+	// configured ExploreDefaultDepth (2) is used. Range: 0–5.
+	// Use a pointer so that 0 (valid: returns no neighbors) can be
+	// distinguished from "not specified".
+	Depth *int `json:"depth,omitempty"`
 
 	// Budget is the maximum token estimate for returned memories. When zero,
 	// falls back to the configured ExploreDefaultBudget (4000).

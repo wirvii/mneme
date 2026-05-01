@@ -122,3 +122,100 @@ func BenchmarkSearch_GraphExpansion_5K(b *testing.B) {
 		}
 	})
 }
+
+// BenchmarkExplore_Depth3_5K measures the performance of mem_explore with
+// depth=3 against a corpus of 500 memories and 100 entities with 5 relations
+// per entity. Per SPEC-008 acceptance criterion 6, the traversal should complete
+// in < 200ms for depth=3 on 5K memories / 10K relations.
+//
+// Run with: go test -tags fts5 -bench=BenchmarkExplore_Depth3_5K -benchtime=5s ./internal/service/
+func BenchmarkExplore_Depth3_5K(b *testing.B) {
+	projectDB, err := db.OpenMemory()
+	if err != nil {
+		b.Fatalf("open project db: %v", err)
+	}
+	globalDB, err := db.OpenMemory()
+	if err != nil {
+		b.Fatalf("open global db: %v", err)
+	}
+	b.Cleanup(func() { projectDB.Close(); globalDB.Close() })
+
+	ps := store.NewMemoryStore(projectDB)
+	gs := store.NewMemoryStore(globalDB)
+	cfg := config.Default()
+	cfg.Graph.ExpansionEnabled = true
+	cfg.Graph.ExpansionThreshold = 0.3
+	cfg.Graph.ExpansionFanOutCap = 50
+	cfg.Graph.ExploreMaxNodes = 200
+
+	svc := service.NewMemoryService(ps, gs, cfg, "bench/explore", embed.NopEmbedder{})
+	ctx := context.Background()
+
+	const (
+		numMemories  = 500
+		numEntities  = 100
+		relPerEntity = 5
+	)
+
+	// Create entities.
+	entities := make([]*model.Entity, numEntities)
+	for i := 0; i < numEntities; i++ {
+		e, err := ps.CreateEntity(ctx, &model.Entity{
+			Name:    fmt.Sprintf("explore-entity-%d", i),
+			Kind:    model.KindModule,
+			Project: "bench/explore",
+		})
+		if err != nil {
+			b.Fatalf("CreateEntity %d: %v", i, err)
+		}
+		entities[i] = e
+	}
+
+	// Create relations between entities.
+	for i := 0; i < numEntities; i++ {
+		for j := 1; j <= relPerEntity && i+j < numEntities; j++ {
+			_, err := ps.CreateRelation(ctx, &model.Relation{
+				SourceID: entities[i].ID,
+				TargetID: entities[i+j].ID,
+				Type:     model.RelRelatedTo,
+				Weight:   0.5 + float64(j)*0.05,
+			})
+			if err != nil {
+				b.Fatalf("CreateRelation: %v", err)
+			}
+		}
+	}
+
+	// Create memories and link them to entities. Track first memory as seed.
+	var seedID string
+	for i := 0; i < numMemories; i++ {
+		resp, err := svc.Save(ctx, model.SaveRequest{
+			Title:   fmt.Sprintf("explore-memory-%d", i),
+			Content: fmt.Sprintf("benchmark explore memory content %d for testing graph traversal performance", i),
+		})
+		if err != nil {
+			b.Fatalf("Save memory %d: %v", i, err)
+		}
+		if i == 0 {
+			seedID = resp.ID
+		}
+		eIdx := i % numEntities
+		if err := ps.LinkMemoryEntity(ctx, resp.ID, entities[eIdx].ID, "mention"); err != nil {
+			b.Fatalf("LinkMemoryEntity: %v", err)
+		}
+	}
+
+	depth := 3
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		_, err := svc.Explore(ctx, model.ExploreRequest{
+			Seed:   seedID,
+			Depth:  &depth,
+			Budget: 100_000,
+		})
+		if err != nil {
+			b.Fatalf("Explore: %v", err)
+		}
+	}
+}
