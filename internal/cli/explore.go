@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -161,14 +160,4 @@ func printExploreNode(w io.Writer, tn *exploreTreeNode, prefix string, isLast bo
 	for i, child := range tn.children {
 		printExploreNode(w, child, childPrefix, i == len(tn.children)-1)
 	}
-}
-
-// isAnyPrefix is used by tests to verify tree output contains expected strings.
-func isAnyPrefix(lines []string, prefix string) bool {
-	for _, l := range lines {
-		if strings.HasPrefix(l, prefix) {
-			return true
-		}
-	}
-	return false
 }

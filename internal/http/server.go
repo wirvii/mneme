@@ -245,7 +245,7 @@ func (s *Server) handleMemories(w http.ResponseWriter, r *http.Request) {
 // handleMemoryByID dispatches GET, PATCH, and DELETE on /v1/memories/{id}.
 // It also handles the sub-resource action GET /v1/memories/{id}/explore.
 func (s *Server) handleMemoryByID(w http.ResponseWriter, r *http.Request) {
-	path := strings.TrimPrefix(r.URL.Path, "/v1/memories/")
+	path := extractID(r.URL.Path, "/v1/memories/")
 	if path == "" {
 		writeError(w, http.StatusBadRequest, "invalid_request", "memory ID is required")
 		return
