@@ -527,36 +527,48 @@ Rebuild complete in 1.234s:
 
 ## Configuracion
 
-Todos los parametros del grafo viven en `[graph]` en `~/.mneme/config.toml`:
+La referencia completa de todos los parametros del grafo con tipos, rangos y variables de entorno
+esta en [CONFIG.md](CONFIG.md#graph).
+
+Resumen rapido de los parametros disponibles en `~/.mneme/config.toml`:
 
 ```toml
 [graph]
-# Hebbian auto-strengthening
+# Hebbian auto-strengthening (MNEME_GRAPH_HEBBIAN_*)
 hebbian_window = 5            # Ring buffer size (0 = disabled)
 hebbian_increment = 0.05      # Weight delta per co-access
 hebbian_initial_weight = 0.1  # Weight for new Hebbian relations
 hebbian_buffer_size = 1000    # Async channel capacity
 
-# Edge decay (consolidation)
-edge_decay_rate = 0.02        # Daily exponential decay rate
+# Edge decay (consolidation) (MNEME_GRAPH_EDGE_*)
+edge_decay_rate = 0.02        # Daily exponential decay rate [0.0, 1.0]
 edge_decay_after_days = 30    # Grace period before decay starts
 
-# 1-hop expansion in mem_search
+# Expansion in mem_search (MNEME_GRAPH_EXPANSION_*)
 expansion_enabled = true      # Toggle graph expansion
 expansion_threshold = 0.3     # Min weight to follow
 expansion_fan_out_cap = 50    # Max relations per entity
 expansion_seed_top_k = 10     # Seeds for expansion
 
-# mem_explore defaults
+# mem_explore defaults (MNEME_GRAPH_EXPLORE_*)
 explore_max_nodes = 200       # Hard cap on BFS nodes
 explore_default_depth = 2     # Default depth when not specified
 explore_default_budget = 4000 # Default token budget
 
-# graph rebuild
+# graph rebuild (MNEME_GRAPH_REBUILD_*)
 rebuild_min_shared = 2        # K: min shared entities for co-mention
 rebuild_max_relations = 50    # Cap per memory
 
-# wikilinks (SPEC-011)
+# wikilinks (SPEC-011) (MNEME_GRAPH_WIKILINKS_*)
 wikilinks_enabled = true          # Parse [[topic_key]] in mem_save/mem_update
 wikilink_relation_weight = 0.6    # Weight for wikilink-created relations [0.0, 1.0]
+
+# PPR algorithm (SPEC-017)
+graph_mode = "ppr"            # ppr | 1hop | off  (MNEME_GRAPH_MODE)
+```
+
+Para inspeccionar la configuracion activa con proveniencia (default/file/env):
+
+```bash
+mneme config show graph
 ```
