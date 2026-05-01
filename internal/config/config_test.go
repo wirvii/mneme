@@ -444,6 +444,88 @@ func TestProjectWorkflowDir(t *testing.T) {
 	}
 }
 
+// TestGraphConfig_RebuildDefaults verifies that Default() sets the expected
+// values for RebuildMinShared and RebuildMaxRelations (SPEC-009).
+func TestGraphConfig_RebuildDefaults(t *testing.T) {
+	cfg := Default()
+
+	if cfg.Graph.RebuildMinShared != 2 {
+		t.Errorf("RebuildMinShared: got %d, want 2", cfg.Graph.RebuildMinShared)
+	}
+	if cfg.Graph.RebuildMaxRelations != 50 {
+		t.Errorf("RebuildMaxRelations: got %d, want 50", cfg.Graph.RebuildMaxRelations)
+	}
+}
+
+// TestGraphConfig_RebuildValidation verifies that Validate() rejects
+// RebuildMinShared < 1 and RebuildMaxRelations < 1 (SPEC-009).
+func TestGraphConfig_RebuildValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*Config)
+		wantErr bool
+	}{
+		{
+			name:    "valid defaults",
+			mutate:  func(*Config) {},
+			wantErr: false,
+		},
+		{
+			name: "min_shared zero",
+			mutate: func(c *Config) {
+				c.Graph.RebuildMinShared = 0
+			},
+			wantErr: true,
+		},
+		{
+			name: "min_shared negative",
+			mutate: func(c *Config) {
+				c.Graph.RebuildMinShared = -1
+			},
+			wantErr: true,
+		},
+		{
+			name: "min_shared one — valid",
+			mutate: func(c *Config) {
+				c.Graph.RebuildMinShared = 1
+			},
+			wantErr: false,
+		},
+		{
+			name: "max_relations zero",
+			mutate: func(c *Config) {
+				c.Graph.RebuildMaxRelations = 0
+			},
+			wantErr: true,
+		},
+		{
+			name: "max_relations negative",
+			mutate: func(c *Config) {
+				c.Graph.RebuildMaxRelations = -5
+			},
+			wantErr: true,
+		},
+		{
+			name: "max_relations one — valid",
+			mutate: func(c *Config) {
+				c.Graph.RebuildMaxRelations = 1
+			},
+			wantErr: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Default()
+			tc.mutate(cfg)
+			err := cfg.Validate()
+			if (err != nil) != tc.wantErr {
+				t.Errorf("Validate() error = %v, wantErr %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 // TestIsDelegationProtected verifies the delegation enforcement logic.
 func TestIsDelegationProtected(t *testing.T) {
 	cfg := Default()

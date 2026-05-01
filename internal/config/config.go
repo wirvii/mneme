@@ -106,6 +106,20 @@ type GraphConfig struct {
 	// ExploreDefaultBudget is the default token budget for mem_explore when the
 	// caller does not supply an explicit budget value. Default: 4000.
 	ExploreDefaultBudget int `toml:"explore_default_budget"`
+
+	// RebuildMinShared is the minimum number of shared entities required to
+	// create a co-occurrence related_to relation between two memories during
+	// graph rebuild. K=1 is too permissive; K=2 requires two concepts to
+	// overlap, which is a strong signal of thematic relatedness.
+	// Default: 2.
+	RebuildMinShared int `toml:"rebuild_min_shared"`
+
+	// RebuildMaxRelations is the maximum number of co-occurrence related_to
+	// relations created per memory during graph rebuild. Relations with the
+	// highest entity-overlap count are kept; excess pairs are skipped.
+	// Consistent with ExpansionFanOutCap to prevent hub-node degradation.
+	// Default: 50.
+	RebuildMaxRelations int `toml:"rebuild_max_relations"`
 }
 
 // WorkflowConfig controls where workflow artifacts (specs, bugs, backlog)
@@ -370,6 +384,8 @@ func Default() *Config {
 			ExploreMaxNodes:      200,
 			ExploreDefaultDepth:  2,
 			ExploreDefaultBudget: 4000,
+			RebuildMinShared:     2,
+			RebuildMaxRelations:  50,
 		},
 	}
 }
@@ -534,6 +550,12 @@ func (c *Config) Validate() error {
 	}
 	if c.Graph.ExploreDefaultBudget < 0 {
 		return errors.New("graph.explore_default_budget must be >= 0")
+	}
+	if c.Graph.RebuildMinShared < 1 {
+		return errors.New("graph.rebuild_min_shared must be >= 1")
+	}
+	if c.Graph.RebuildMaxRelations < 1 {
+		return errors.New("graph.rebuild_max_relations must be >= 1")
 	}
 
 	return nil
