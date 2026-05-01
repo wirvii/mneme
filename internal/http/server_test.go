@@ -704,3 +704,116 @@ func TestHTTP_GetExplore_DefaultParams(t *testing.T) {
 		t.Fatalf("status: got %d, body: %s", resp.StatusCode, b)
 	}
 }
+
+// --------------------------------------------------------------------------
+// GET /v1/gaps
+// --------------------------------------------------------------------------
+
+// TestGapsEndpoint_Empty verifies that GET /v1/gaps returns 200 with an empty
+// gaps array when no unresolved references exist.
+func TestGapsEndpoint_Empty(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/v1/gaps")
+	if err != nil {
+		t.Fatalf("GET /v1/gaps: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, b)
+	}
+
+	var body struct {
+		Gaps  []any `json:"gaps"`
+		Total int   `json:"total"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if body.Gaps == nil {
+		t.Error("expected non-nil gaps array")
+	}
+	if len(body.Gaps) != 0 {
+		t.Errorf("expected 0 gaps, got %d", len(body.Gaps))
+	}
+	if body.Total != 0 {
+		t.Errorf("expected total=0, got %d", body.Total)
+	}
+}
+
+// TestGapsEndpoint_GET verifies that saving a memory with a wikilink and then
+// calling GET /v1/gaps returns the expected gap.
+func TestGapsEndpoint_GET(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+
+	// Save a memory with an unresolved wikilink to generate a gap.
+	saveBody, _ := json.Marshal(model.SaveRequest{
+		Title:    "Source mem",
+		Content:  "See [[missing/gap-http]] for details.",
+		TopicKey: "src/http-test",
+		Type:     model.TypeDecision,
+	})
+	saveResp, err := http.Post(srv.URL+"/v1/memories", "application/json", bytes.NewReader(saveBody))
+	if err != nil {
+		t.Fatalf("POST /v1/memories: %v", err)
+	}
+	defer saveResp.Body.Close()
+	if saveResp.StatusCode != http.StatusCreated {
+		b, _ := io.ReadAll(saveResp.Body)
+		t.Fatalf("save: expected 201, got %d: %s", saveResp.StatusCode, b)
+	}
+
+	resp, err := http.Get(srv.URL + "/v1/gaps?scope=project")
+	if err != nil {
+		t.Fatalf("GET /v1/gaps: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, b)
+	}
+
+	var body struct {
+		Gaps []struct {
+			TargetTopicKey string `json:"target_topic_key"`
+			TotalMentions  int    `json:"total_mentions"`
+		} `json:"gaps"`
+		Total int `json:"total"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if body.Total == 0 {
+		t.Fatal("expected total > 0 after saving memory with unresolved wikilink")
+	}
+	found := false
+	for _, g := range body.Gaps {
+		if g.TargetTopicKey == "missing/gap-http" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("gap 'missing/gap-http' not found in response; got: %+v", body.Gaps)
+	}
+}
+
+// TestGapsEndpoint_MethodNotAllowed verifies that POST /v1/gaps returns 405.
+func TestGapsEndpoint_MethodNotAllowed(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/v1/gaps", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST /v1/gaps: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405, got %d", resp.StatusCode)
+	}
+}

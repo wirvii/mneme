@@ -109,6 +109,9 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// Stats
 	mux.HandleFunc("/v1/stats", s.withLogging(s.withJSON(s.handleStats)))
 
+	// Knowledge gaps
+	mux.HandleFunc("/v1/gaps", s.withLogging(s.withJSON(s.handleGaps)))
+
 	// Consolidation
 	mux.HandleFunc("/v1/consolidate", s.withLogging(s.withJSON(s.handleConsolidate)))
 }
@@ -532,6 +535,40 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	project := r.URL.Query().Get("project")
 
 	resp, err := s.svc.Stats(r.Context(), project)
+	if err != nil {
+		status, code := errorStatus(err)
+		writeError(w, status, code, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// handleGaps handles GET /v1/gaps.
+//
+// Query parameters:
+//
+//	project      — project slug; defaults to the service's detected project
+//	scope        — "project" (default), "global", or "all"
+//	limit        — maximum number of gaps to return (default 20, max 100)
+//	min_mentions — minimum total_mentions threshold (default 1)
+func (s *Server) handleGaps(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "use GET")
+		return
+	}
+
+	req := model.GapsRequest{
+		Project: r.URL.Query().Get("project"),
+		Scope:   r.URL.Query().Get("scope"),
+	}
+	if v := r.URL.Query().Get("limit"); v != "" {
+		req.Limit, _ = strconv.Atoi(v)
+	}
+	if v := r.URL.Query().Get("min_mentions"); v != "" {
+		req.MinMentions, _ = strconv.Atoi(v)
+	}
+
+	resp, err := s.svc.Gaps(r.Context(), req)
 	if err != nil {
 		status, code := errorStatus(err)
 		writeError(w, status, code, err.Error())
