@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"math"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -118,6 +119,15 @@ func extractEntities(m *model.Memory) []extractedEntity {
 	return result
 }
 
+// pendingLink is a candidate (memoryID, entity) pair produced by entity
+// extraction during Phase 1. It is accumulated in memory and, in dry-run mode,
+// consumed by findCandidatePairsInMemory to replicate SQL JOIN semantics
+// without writing to the database.
+type pendingLink struct {
+	memoryID string
+	entity   extractedEntity
+}
+
 // rebuildWeight computes the relation weight for a candidate pair given the
 // number of shared entities: min(0.5, sharedCount * 0.1).
 //
@@ -127,6 +137,86 @@ func extractEntities(m *model.Memory) []extractedEntity {
 // edges stronger than explicit relations.
 func rebuildWeight(sharedCount int) float64 {
 	return math.Min(0.5, float64(sharedCount)*0.1)
+}
+
+// findCandidatePairsInMemory generates candidate memory pairs from an
+// in-memory pending-link list without touching the database. It replicates
+// the semantics of store.FindCandidatePairs for dry-run mode, where
+// memory_entities is never populated because Phase 1 is read-only.
+//
+// The algorithm:
+//  1. Deduplicates by (memoryID, entityName) so a repeated entity in the same
+//     memory does not inflate pair counts.
+//  2. Builds an entityName -> []memoryID map.
+//  3. For each entity appearing in >= 2 distinct memories, emits all pairwise
+//     combinations, normalising the pair so MemoryID1 < MemoryID2 (matching
+//     the SQL JOIN predicate me1.memory_id < me2.memory_id).
+//  4. Aggregates shared-entity counts per pair.
+//  5. Filters out pairs with SharedCount < minShared.
+//  6. Sorts by (SharedCount DESC, MemoryID1 ASC, MemoryID2 ASC) to match the
+//     SQL ORDER BY, ensuring deterministic output.
+func findCandidatePairsInMemory(pending []pendingLink, minShared int) []store.CandidatePair {
+	// Step 1: deduplicate by (memoryID, entityName).
+	type dedupKey struct{ memoryID, entityName string }
+	seen := make(map[dedupKey]bool, len(pending))
+	deduped := make([]pendingLink, 0, len(pending))
+	for _, p := range pending {
+		k := dedupKey{p.memoryID, p.entity.Name}
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		deduped = append(deduped, p)
+	}
+
+	// Step 2: build entityName -> []memoryID map.
+	entityToMemories := make(map[string][]string)
+	for _, p := range deduped {
+		entityToMemories[p.entity.Name] = append(entityToMemories[p.entity.Name], p.memoryID)
+	}
+
+	// Step 3+4: emit all pairwise combinations and aggregate shared counts.
+	type pairKey struct{ id1, id2 string }
+	pairCounts := make(map[pairKey]int)
+	for _, memIDs := range entityToMemories {
+		if len(memIDs) < 2 {
+			continue
+		}
+		for i := 0; i < len(memIDs); i++ {
+			for j := i + 1; j < len(memIDs); j++ {
+				a, b := memIDs[i], memIDs[j]
+				if a > b {
+					a, b = b, a
+				}
+				pairCounts[pairKey{a, b}]++
+			}
+		}
+	}
+
+	// Step 5: filter by minShared and collect.
+	result := make([]store.CandidatePair, 0, len(pairCounts))
+	for k, count := range pairCounts {
+		if count >= minShared {
+			result = append(result, store.CandidatePair{
+				MemoryID1:   k.id1,
+				MemoryID2:   k.id2,
+				SharedCount: count,
+			})
+		}
+	}
+
+	// Step 6: deterministic sort matching SQL ORDER BY shared_count DESC.
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].SharedCount != result[j].SharedCount {
+			return result[i].SharedCount > result[j].SharedCount
+		}
+		if result[i].MemoryID1 != result[j].MemoryID1 {
+			return result[i].MemoryID1 < result[j].MemoryID1
+		}
+		return result[i].MemoryID2 < result[j].MemoryID2
+	})
+
+	return result
 }
 
 // RebuildGraph extracts entities from existing memories, links them, and
@@ -325,11 +415,6 @@ func (svc *MemoryService) rebuildStore(ctx context.Context, s *store.MemoryStore
 // processed with a pre-existence check so EntitiesExisting and LinksExisting
 // counters are accurate.
 func (svc *MemoryService) processEntityBatch(ctx context.Context, s *store.MemoryStore, req model.RebuildRequest, batch []*model.Memory, result *model.RebuildResult) error {
-	type pendingLink struct {
-		memoryID string
-		entity   extractedEntity
-	}
-
 	var pending []pendingLink
 	for _, m := range batch {
 		extracted := extractEntities(m)
