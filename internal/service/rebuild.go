@@ -304,11 +304,17 @@ func (svc *MemoryService) RebuildGraph(ctx context.Context, req model.RebuildReq
 }
 
 // rebuildStore runs the full rebuild pipeline against a single store.
+//
 // Phase 1: delete existing related_to (if Force), then extract entities
+// and create memory-entity links in batches.
 //
-//	and create memory-entity links in batches.
+// Phase 2: find candidate memory pairs.
+//   - Real run: SQL self-JOIN on memory_entities via FindCandidatePairs.
+//   - Dry run: in-memory pair generation via findCandidatePairsInMemory,
+//     using the pending links accumulated during Phase 1. This is necessary
+//     because dry-run Phase 1 never writes to memory_entities, so the SQL
+//     JOIN would always return zero rows on a first-time run.
 //
-// Phase 2: SQL JOIN to find candidate pairs.
 // Phase 3: create relations for qualifying pairs up to MaxRelationsPerMemory.
 func (svc *MemoryService) rebuildStore(ctx context.Context, s *store.MemoryStore, req model.RebuildRequest, result *model.RebuildResult) error {
 	// ── Force: delete existing related_to for this project ──────────────────
@@ -350,7 +356,9 @@ func (svc *MemoryService) rebuildStore(ctx context.Context, s *store.MemoryStore
 		return nil
 	}
 
-	// Process in batches, each wrapped in its own transaction for safety.
+	// Process in batches, accumulating the full pending list for dry-run pair
+	// generation. In real-run mode allPending is discarded after the loop.
+	var allPending []pendingLink
 	for batchStart := 0; batchStart < total; batchStart += req.BatchSize {
 		end := batchStart + req.BatchSize
 		if end > total {
@@ -358,23 +366,25 @@ func (svc *MemoryService) rebuildStore(ctx context.Context, s *store.MemoryStore
 		}
 		batch := memories[batchStart:end]
 
-		if err := svc.processEntityBatch(ctx, s, req, batch, result); err != nil {
+		batchPending, err := svc.processEntityBatch(ctx, s, req, batch, result)
+		if err != nil {
 			return fmt.Errorf("service: rebuild graph: entity batch [%d:%d]: %w", batchStart, end, err)
 		}
+		allPending = append(allPending, batchPending...)
 
 		if req.ProgressFn != nil {
 			req.ProgressFn("extraction", end, total)
 		}
 	}
 
-	// ── Phase 2: find candidate pairs via SQL JOIN ───────────────────────────
+	// ── Phase 2: find candidate pairs ────────────────────────────────────────
 	var pairs []store.CandidatePair
-	if !req.DryRun {
-		pairs, err = s.FindCandidatePairs(ctx, req.Project, req.MinShared)
+	if req.DryRun {
+		// In dry-run mode, memory_entities was not populated (Phase 1 is
+		// read-only). Generate pairs from the in-memory pending list to
+		// match the SQL JOIN semantics without DB writes.
+		pairs = findCandidatePairsInMemory(allPending, req.MinShared)
 	} else {
-		// In dry-run mode we still compute pairs (read-only query) so the result
-		// counts are meaningful. The entities were not actually written, so pairs
-		// will be 0 for a first-run dry-run — that is correct and expected.
 		pairs, err = s.FindCandidatePairs(ctx, req.Project, req.MinShared)
 	}
 	if err != nil {
@@ -414,7 +424,12 @@ func (svc *MemoryService) rebuildStore(ctx context.Context, s *store.MemoryStore
 // the entity rows + memory_entities links. Each (memoryID, entityName) pair is
 // processed with a pre-existence check so EntitiesExisting and LinksExisting
 // counters are accurate.
-func (svc *MemoryService) processEntityBatch(ctx context.Context, s *store.MemoryStore, req model.RebuildRequest, batch []*model.Memory, result *model.RebuildResult) error {
+//
+// The returned pending slice contains every (memoryID, entity) pair extracted
+// from the batch. In dry-run mode, callers accumulate these across batches for
+// in-memory pair generation (findCandidatePairsInMemory). In real-run mode the
+// caller may discard the slice.
+func (svc *MemoryService) processEntityBatch(ctx context.Context, s *store.MemoryStore, req model.RebuildRequest, batch []*model.Memory, result *model.RebuildResult) ([]pendingLink, error) {
 	var pending []pendingLink
 	for _, m := range batch {
 		extracted := extractEntities(m)
@@ -446,18 +461,18 @@ func (svc *MemoryService) processEntityBatch(ctx context.Context, s *store.Memor
 		// spec (D5: idempotence by existing store patterns).
 		e, err := s.FindOrCreateEntity(ctx, pl.entity.Name, pl.entity.Kind, req.Project)
 		if err != nil {
-			return fmt.Errorf("find or create entity %q: %w", pl.entity.Name, err)
+			return nil, fmt.Errorf("find or create entity %q: %w", pl.entity.Name, err)
 		}
 		result.EntitiesCreated++
 
 		// LinkMemoryEntity uses INSERT OR IGNORE, so duplicate calls are safe.
 		if linkErr := s.LinkMemoryEntity(ctx, pl.memoryID, e.ID, pl.entity.Role); linkErr != nil {
-			return fmt.Errorf("link memory entity: %w", linkErr)
+			return nil, fmt.Errorf("link memory entity: %w", linkErr)
 		}
 		result.LinksCreated++
 	}
 
-	return nil
+	return pending, nil
 }
 
 // processRelationBatch creates related_to relations for a batch of candidate
