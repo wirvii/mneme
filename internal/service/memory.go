@@ -869,12 +869,11 @@ func (svc *MemoryService) resolveWikilink(
 	if tgtName == "" {
 		tgtName = target.ID
 	}
+	// For global/org targets mirrored in primaryStore, use the source's project
+	// so the entity is co-located with source entities in the same DB namespace.
+	// For project-scoped targets, use the target's own project field.
 	tgtProject := project
-	if target.Scope == model.ScopeGlobal || target.Scope == model.ScopeOrg {
-		// For global/org targets mirrored in projectStore, use source project
-		// so the entity is co-located with the source entity in the same DB.
-		tgtProject = project
-	} else {
+	if target.Scope != model.ScopeGlobal && target.Scope != model.ScopeOrg {
 		tgtProject = target.Project
 	}
 	tgtEntity, err := entityStore.FindOrCreateEntity(ctx, tgtName, model.KindConcept, tgtProject)
