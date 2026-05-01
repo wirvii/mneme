@@ -86,6 +86,16 @@ type ContextRequest struct {
 	// Focus is an optional topic or question that biases memory selection
 	// toward the most relevant memories for the current task.
 	Focus string `json:"focus,omitempty"`
+
+	// IncludeGraph enables graph expansion for focus matching. When true and
+	// Focus is provided, memories topologically related to focus results via
+	// the knowledge graph receive the same +0.3 focus boost as text-matched
+	// results. Uses PPR or 1-hop depending on config.Graph.GraphMode.
+	//
+	// Using *bool so that nil (omitted) is treated as "use config default"
+	// while an explicit false disables graph expansion for this request only.
+	// Has no effect when Focus is empty.
+	IncludeGraph *bool `json:"include_graph,omitempty"`
 }
 
 // ContextResponse is the curated memory bundle returned by mem_context.

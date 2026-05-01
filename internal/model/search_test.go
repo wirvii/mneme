@@ -5,6 +5,64 @@ import (
 	"testing"
 )
 
+// TestContextRequest_IncludeGraphJSON verifies the IncludeGraph field JSON
+// serialisation: nil (omitted) maps to no field, explicit false stays false,
+// explicit true stays true.
+func TestContextRequest_IncludeGraphJSON(t *testing.T) {
+	t.Run("nil omitted from JSON", func(t *testing.T) {
+		req := ContextRequest{Project: "p", Focus: "topic"}
+		data, err := json.Marshal(req)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var m map[string]any
+		if err := json.Unmarshal(data, &m); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if _, ok := m["include_graph"]; ok {
+			t.Error("expected include_graph to be omitted when nil")
+		}
+	})
+
+	t.Run("explicit false preserved", func(t *testing.T) {
+		f := false
+		req := ContextRequest{Project: "p", IncludeGraph: &f}
+		data, err := json.Marshal(req)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var decoded ContextRequest
+		if err := json.Unmarshal(data, &decoded); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if decoded.IncludeGraph == nil {
+			t.Fatal("expected IncludeGraph to be non-nil")
+		}
+		if *decoded.IncludeGraph != false {
+			t.Errorf("IncludeGraph: got %v, want false", *decoded.IncludeGraph)
+		}
+	})
+
+	t.Run("explicit true preserved", func(t *testing.T) {
+		tr := true
+		req := ContextRequest{Project: "p", IncludeGraph: &tr}
+		data, err := json.Marshal(req)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var decoded ContextRequest
+		if err := json.Unmarshal(data, &decoded); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if decoded.IncludeGraph == nil {
+			t.Fatal("expected IncludeGraph to be non-nil")
+		}
+		if *decoded.IncludeGraph != true {
+			t.Errorf("IncludeGraph: got %v, want true", *decoded.IncludeGraph)
+		}
+	})
+}
+
 // TestContextResponse_JSONFields verifies that the new SPEC-002 fields
 // (rules, rules_count, rules_tokens, rules_truncated) are serialised and
 // deserialised correctly, and that Rules is omitted from JSON when nil.
