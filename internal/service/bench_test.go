@@ -285,3 +285,201 @@ func BenchmarkExplore_Depth3_5K(b *testing.B) {
 		}
 	}
 }
+
+// BenchmarkSearch_PPRMode_5K measures the overhead of the PPR graph channel
+// (BuildGraphForSeeds + PPR + entity-to-memory mapping) against a corpus of
+// 500 memories and 100 entities with 5 relations per entity. Per SPEC-017 AC4,
+// the full search (FTS5 + vector + PPR graph) must complete in <100ms total.
+//
+// Run with: go test -tags fts5 -bench=BenchmarkSearch_PPRMode_5K -benchtime=5s ./internal/service/
+func BenchmarkSearch_PPRMode_5K(b *testing.B) {
+	projectDB, err := db.OpenMemory()
+	if err != nil {
+		b.Fatalf("open project db: %v", err)
+	}
+	globalDB, err := db.OpenMemory()
+	if err != nil {
+		b.Fatalf("open global db: %v", err)
+	}
+	b.Cleanup(func() { projectDB.Close(); globalDB.Close() })
+
+	ps := store.NewMemoryStore(projectDB)
+	gs := store.NewMemoryStore(globalDB)
+	cfg := config.Default()
+	cfg.Graph.ExpansionEnabled = true
+	cfg.Graph.ExpansionThreshold = 0.3
+	cfg.Graph.ExpansionFanOutCap = 50
+	cfg.Graph.ExpansionSeedTopK = 10
+	cfg.Graph.GraphMode = "ppr"
+
+	svc := service.NewMemoryService(ps, gs, cfg, "bench/ppr", embed.NopEmbedder{})
+	ctx := context.Background()
+
+	const (
+		numMemories  = 500
+		numEntities  = 100
+		relPerEntity = 5
+	)
+
+	entities := make([]*model.Entity, numEntities)
+	for i := 0; i < numEntities; i++ {
+		e, err := ps.CreateEntity(ctx, &model.Entity{
+			Name:    fmt.Sprintf("ppr-entity-%d", i),
+			Kind:    model.KindModule,
+			Project: "bench/ppr",
+		})
+		if err != nil {
+			b.Fatalf("CreateEntity %d: %v", i, err)
+		}
+		entities[i] = e
+	}
+
+	for i := 0; i < numEntities; i++ {
+		for j := 1; j <= relPerEntity && i+j < numEntities; j++ {
+			_, err := ps.CreateRelation(ctx, &model.Relation{
+				SourceID: entities[i].ID,
+				TargetID: entities[i+j].ID,
+				Type:     model.RelRelatedTo,
+				Weight:   0.5 + float64(j)*0.05,
+			})
+			if err != nil {
+				b.Fatalf("CreateRelation: %v", err)
+			}
+		}
+	}
+
+	for i := 0; i < numMemories; i++ {
+		resp, err := svc.Save(ctx, model.SaveRequest{
+			Title:   fmt.Sprintf("ppr-memory-%d benchmark ppr mode content", i),
+			Content: fmt.Sprintf("ppr benchmark memory content %d for testing ppr graph channel performance", i),
+		})
+		if err != nil {
+			b.Fatalf("Save memory %d: %v", i, err)
+		}
+		eIdx := i % numEntities
+		if err := ps.LinkMemoryEntity(ctx, resp.ID, entities[eIdx].ID, "mention"); err != nil {
+			b.Fatalf("LinkMemoryEntity: %v", err)
+		}
+	}
+
+	b.ResetTimer()
+
+	b.Run("ppr_mode", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			_, err := svc.Search(ctx, model.SearchRequest{
+				Query: "ppr benchmark memory content",
+				Limit: 10,
+			})
+			if err != nil {
+				b.Fatalf("Search PPR: %v", err)
+			}
+		}
+	})
+
+	b.Run("1hop_mode", func(b *testing.B) {
+		cfg1Hop := config.Default()
+		cfg1Hop.Graph.ExpansionEnabled = true
+		cfg1Hop.Graph.ExpansionThreshold = 0.3
+		cfg1Hop.Graph.ExpansionFanOutCap = 50
+		cfg1Hop.Graph.ExpansionSeedTopK = 10
+		cfg1Hop.Graph.GraphMode = "1hop"
+		svc1Hop := service.NewMemoryService(ps, gs, cfg1Hop, "bench/ppr", embed.NopEmbedder{})
+
+		for i := 0; i < b.N; i++ {
+			_, err := svc1Hop.Search(ctx, model.SearchRequest{
+				Query: "ppr benchmark memory content",
+				Limit: 10,
+			})
+			if err != nil {
+				b.Fatalf("Search 1hop: %v", err)
+			}
+		}
+	})
+}
+
+// BenchmarkContext_GraphFocus_5K measures the overhead of context assembly
+// with graph-focused expansion (PPR mode). Per SPEC-017 AC4, the total
+// context call should complete in <150ms for 5K memories.
+//
+// Run with: go test -tags fts5 -bench=BenchmarkContext_GraphFocus_5K -benchtime=5s ./internal/service/
+func BenchmarkContext_GraphFocus_5K(b *testing.B) {
+	projectDB, err := db.OpenMemory()
+	if err != nil {
+		b.Fatalf("open project db: %v", err)
+	}
+	globalDB, err := db.OpenMemory()
+	if err != nil {
+		b.Fatalf("open global db: %v", err)
+	}
+	b.Cleanup(func() { projectDB.Close(); globalDB.Close() })
+
+	ps := store.NewMemoryStore(projectDB)
+	gs := store.NewMemoryStore(globalDB)
+	cfg := config.Default()
+	cfg.Graph.ExpansionEnabled = true
+	cfg.Graph.ExpansionThreshold = 0.3
+	cfg.Graph.ExpansionFanOutCap = 50
+	cfg.Graph.ExpansionSeedTopK = 10
+	cfg.Graph.GraphMode = "ppr"
+
+	svc := service.NewMemoryService(ps, gs, cfg, "bench/ctx-ppr", embed.NopEmbedder{})
+	ctx := context.Background()
+
+	const (
+		numMemories  = 500
+		numEntities  = 100
+		relPerEntity = 5
+	)
+
+	entities := make([]*model.Entity, numEntities)
+	for i := 0; i < numEntities; i++ {
+		e, err := ps.CreateEntity(ctx, &model.Entity{
+			Name:    fmt.Sprintf("ctx-ppr-entity-%d", i),
+			Kind:    model.KindModule,
+			Project: "bench/ctx-ppr",
+		})
+		if err != nil {
+			b.Fatalf("CreateEntity %d: %v", i, err)
+		}
+		entities[i] = e
+	}
+
+	for i := 0; i < numEntities; i++ {
+		for j := 1; j <= relPerEntity && i+j < numEntities; j++ {
+			_, err := ps.CreateRelation(ctx, &model.Relation{
+				SourceID: entities[i].ID,
+				TargetID: entities[i+j].ID,
+				Type:     model.RelRelatedTo,
+				Weight:   0.5 + float64(j)*0.05,
+			})
+			if err != nil {
+				b.Fatalf("CreateRelation: %v", err)
+			}
+		}
+	}
+
+	for i := 0; i < numMemories; i++ {
+		resp, err := svc.Save(ctx, model.SaveRequest{
+			Title:   fmt.Sprintf("ctx-ppr-memory-%d architecture benchmark", i),
+			Content: fmt.Sprintf("context ppr benchmark content %d for architecture focus testing", i),
+		})
+		if err != nil {
+			b.Fatalf("Save memory %d: %v", i, err)
+		}
+		eIdx := i % numEntities
+		if err := ps.LinkMemoryEntity(ctx, resp.ID, entities[eIdx].ID, "mention"); err != nil {
+			b.Fatalf("LinkMemoryEntity: %v", err)
+		}
+	}
+
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		_, err := svc.Context(ctx, model.ContextRequest{
+			Focus: "architecture benchmark",
+		})
+		if err != nil {
+			b.Fatalf("Context PPR: %v", err)
+		}
+	}
+}
