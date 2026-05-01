@@ -804,3 +804,87 @@ func TestRebuildGraph_MaxRelationsCap(t *testing.T) {
 			cap, result.RelationsCreated, result.RelationsExisting, totalCandidates)
 	}
 }
+
+// TestRebuildGraph_WikilinkViaPackage verifies that after the H4 refactor,
+// rebuild still correctly extracts wikilinks and creates entity links.
+// This is a regression test to ensure the refactor from reWikilink regex
+// to wikilink.Parse (SPEC-011 D10) does not break the existing behaviour.
+func TestRebuildGraph_WikilinkViaPackage(t *testing.T) {
+	svc, ps := newRebuildService(t)
+	ctx := context.Background()
+
+	m, err := ps.Create(ctx, &model.Memory{
+		Type:    model.TypeDiscovery,
+		Scope:   model.ScopeProject,
+		Title:   "Memory with wikilinks for rebuild regression",
+		Content: "See [[refactor/target]] and [[another/concept]] for details.",
+		Project: "test/rebuild",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if _, err := svc.RebuildGraph(ctx, model.RebuildRequest{MinShared: 1}); err != nil {
+		t.Fatalf("RebuildGraph: %v", err)
+	}
+
+	entities, err := ps.GetMemoryEntities(ctx, m.ID)
+	if err != nil {
+		t.Fatalf("GetMemoryEntities: %v", err)
+	}
+
+	byName := make(map[string]bool)
+	for _, e := range entities {
+		byName[e.Name] = true
+	}
+	if !byName["refactor/target"] {
+		t.Errorf("expected entity 'refactor/target', got entities: %v", byName)
+	}
+	if !byName["another/concept"] {
+		t.Errorf("expected entity 'another/concept', got entities: %v", byName)
+	}
+}
+
+// TestRebuildGraph_WikilinkInCodeBlockSkipped verifies that wikilinks inside
+// fenced code blocks are NOT extracted by rebuild after the H4 refactor.
+// The previous reWikilink regex extracted them; wikilink.Parse correctly skips
+// fenced code blocks per CommonMark 4.5 (SPEC-011 D10 regression note).
+func TestRebuildGraph_WikilinkInCodeBlockSkipped(t *testing.T) {
+	svc, ps := newRebuildService(t)
+	ctx := context.Background()
+
+	content := "Normal text: [[real-link]]\n```\n[[code-block-link]]\n```\n"
+	m, err := ps.Create(ctx, &model.Memory{
+		Type:    model.TypeDiscovery,
+		Scope:   model.ScopeProject,
+		Title:   "Memory with code block wikilink",
+		Content: content,
+		Project: "test/rebuild",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if _, err := svc.RebuildGraph(ctx, model.RebuildRequest{MinShared: 1}); err != nil {
+		t.Fatalf("RebuildGraph: %v", err)
+	}
+
+	entities, err := ps.GetMemoryEntities(ctx, m.ID)
+	if err != nil {
+		t.Fatalf("GetMemoryEntities: %v", err)
+	}
+
+	byName := make(map[string]bool)
+	for _, e := range entities {
+		byName[e.Name] = true
+	}
+
+	// real-link should be extracted (it's in normal text).
+	if !byName["real-link"] {
+		t.Errorf("expected entity 'real-link' from normal text, got: %v", byName)
+	}
+	// code-block-link must NOT be extracted (it's inside a fenced code block).
+	if byName["code-block-link"] {
+		t.Errorf("unexpected entity 'code-block-link': wikilinks inside code blocks must be skipped")
+	}
+}

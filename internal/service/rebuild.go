@@ -12,6 +12,7 @@ import (
 
 	"github.com/juanftp/mneme/internal/model"
 	"github.com/juanftp/mneme/internal/store"
+	"github.com/juanftp/mneme/internal/wikilink"
 )
 
 // rebuildBatchSize is the default number of memories processed per transaction
@@ -54,8 +55,6 @@ var (
 		`(?:func|type|struct|interface|const|var|package|class|def|fn)\s+([A-Za-z][A-Za-z0-9_]{2,})`,
 	)
 
-	// reWikilink (H4): matches [[topic_key]] wikilink references.
-	reWikilink = regexp.MustCompile(`\[\[([^\]\[]{3,})\]\]`)
 )
 
 // extractEntities extracts candidate entities from a memory using 4 heuristics:
@@ -109,11 +108,13 @@ func extractEntities(m *model.Memory) []extractedEntity {
 		}
 	}
 
-	// H4: wikilinks [[topic_key]].
-	for _, match := range reWikilink.FindAllStringSubmatch(text, -1) {
-		if len(match) > 1 {
-			add(match[1], model.KindConcept, "mention")
-		}
+	// H4: wikilinks [[topic_key]] — delegated to wikilink.Parse which handles
+	// code block skip and anchor/alias extraction. Wikilinks inside fenced code
+	// blocks are intentionally excluded (correct behaviour: they are examples,
+	// not semantic references). This is a regression from the previous regex
+	// which extracted wikilinks from code blocks.
+	for _, wl := range wikilink.Parse(text) {
+		add(wl.Topic, model.KindConcept, "mention")
 	}
 
 	return result
