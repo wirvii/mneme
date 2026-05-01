@@ -1136,3 +1136,211 @@ func mustCreateMemory(t *testing.T, s *MemoryStore, title string, project string
 	}
 	return m
 }
+
+// ─── SPEC-009: graph rebuild store tests ─────────────────────────────────────
+
+// TestStore_DeleteRelatedToRelations_OnlyRelatedTo verifies that
+// DeleteRelatedToRelations removes only related_to edges and leaves all other
+// relation types intact (D6, SPEC-009).
+func TestStore_DeleteRelatedToRelations_OnlyRelatedTo(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	const project = "del-test"
+	e1, _ := s.FindOrCreateEntity(ctx, "alpha", model.KindConcept, project)
+	e2, _ := s.FindOrCreateEntity(ctx, "beta", model.KindConcept, project)
+	e3, _ := s.FindOrCreateEntity(ctx, "gamma", model.KindConcept, project)
+
+	// Create one of each type to verify only related_to is removed.
+	mustCreateRelationWithWeight(t, s, e1.ID, e2.ID, model.RelRelatedTo, 0.3)
+	mustCreateRelationWithWeight(t, s, e1.ID, e3.ID, model.RelDependsOn, 0.9)
+	mustCreateRelationWithWeight(t, s, e2.ID, e3.ID, model.RelImplements, 0.8)
+
+	n, err := s.DeleteRelatedToRelations(ctx, project)
+	if err != nil {
+		t.Fatalf("DeleteRelatedToRelations: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("deleted %d, want 1", n)
+	}
+
+	// depends_on and implements must survive.
+	deps, err := s.GetRelationsFrom(ctx, e1.ID)
+	if err != nil {
+		t.Fatalf("GetRelationsFrom: %v", err)
+	}
+	if len(deps) != 1 || deps[0].Type != model.RelDependsOn {
+		t.Errorf("expected depends_on to survive; got %v", deps)
+	}
+
+	impls, err := s.GetRelationsFrom(ctx, e2.ID)
+	if err != nil {
+		t.Fatalf("GetRelationsFrom e2: %v", err)
+	}
+	if len(impls) != 1 || impls[0].Type != model.RelImplements {
+		t.Errorf("expected implements to survive; got %v", impls)
+	}
+}
+
+// TestStore_DeleteRelatedToRelations_ProjectScoped verifies that only relations
+// whose source entity belongs to the given project are deleted — relations for
+// a different project are not affected (D6, SPEC-009).
+func TestStore_DeleteRelatedToRelations_ProjectScoped(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	const projA = "proj-a"
+	const projB = "proj-b"
+
+	eA1, _ := s.FindOrCreateEntity(ctx, "ea1", model.KindConcept, projA)
+	eA2, _ := s.FindOrCreateEntity(ctx, "ea2", model.KindConcept, projA)
+	eB1, _ := s.FindOrCreateEntity(ctx, "eb1", model.KindConcept, projB)
+	eB2, _ := s.FindOrCreateEntity(ctx, "eb2", model.KindConcept, projB)
+
+	mustCreateRelationWithWeight(t, s, eA1.ID, eA2.ID, model.RelRelatedTo, 0.2)
+	mustCreateRelationWithWeight(t, s, eB1.ID, eB2.ID, model.RelRelatedTo, 0.2)
+
+	n, err := s.DeleteRelatedToRelations(ctx, projA)
+	if err != nil {
+		t.Fatalf("DeleteRelatedToRelations: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("deleted %d, want 1 (only proj-a)", n)
+	}
+
+	// proj-b relation must survive.
+	bRels, err := s.GetRelationsFrom(ctx, eB1.ID)
+	if err != nil {
+		t.Fatalf("GetRelationsFrom eB1: %v", err)
+	}
+	if len(bRels) != 1 {
+		t.Errorf("proj-b related_to should survive; got %d relations", len(bRels))
+	}
+}
+
+// TestStore_FindCandidatePairs_Basic verifies that 3 memories where 2 share
+// 2 entities produce exactly 1 candidate pair (D7, SPEC-009).
+func TestStore_FindCandidatePairs_Basic(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	const project = "cand-basic"
+	m1 := mustCreateMemory(t, s, "memory-1", project)
+	m2 := mustCreateMemory(t, s, "memory-2", project)
+	m3 := mustCreateMemory(t, s, "memory-3", project)
+
+	e1, _ := s.FindOrCreateEntity(ctx, "shared-entity-1", model.KindFile, project)
+	e2, _ := s.FindOrCreateEntity(ctx, "shared-entity-2", model.KindFile, project)
+	eX, _ := s.FindOrCreateEntity(ctx, "unique-entity", model.KindConcept, project)
+
+	// m1 and m2 share e1 and e2 — should produce 1 pair.
+	_ = s.LinkMemoryEntity(ctx, m1.ID, e1.ID, "mention")
+	_ = s.LinkMemoryEntity(ctx, m1.ID, e2.ID, "mention")
+	_ = s.LinkMemoryEntity(ctx, m2.ID, e1.ID, "mention")
+	_ = s.LinkMemoryEntity(ctx, m2.ID, e2.ID, "mention")
+	// m3 only has a unique entity — shares nothing with m1/m2.
+	_ = s.LinkMemoryEntity(ctx, m3.ID, eX.ID, "mention")
+
+	pairs, err := s.FindCandidatePairs(ctx, project, 2)
+	if err != nil {
+		t.Fatalf("FindCandidatePairs: %v", err)
+	}
+	if len(pairs) != 1 {
+		t.Fatalf("got %d pairs, want 1", len(pairs))
+	}
+	// The pair must contain m1 and m2 (in lexicographic order).
+	p := pairs[0]
+	if (p.MemoryID1 != m1.ID || p.MemoryID2 != m2.ID) &&
+		(p.MemoryID1 != m2.ID || p.MemoryID2 != m1.ID) {
+		t.Errorf("unexpected pair IDs: %v", p)
+	}
+	if p.SharedCount != 2 {
+		t.Errorf("SharedCount = %d, want 2", p.SharedCount)
+	}
+}
+
+// TestStore_FindCandidatePairs_BelowThreshold verifies that pairs with fewer
+// than K shared entities are not returned (D2, SPEC-009).
+func TestStore_FindCandidatePairs_BelowThreshold(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	const project = "cand-thresh"
+	m1 := mustCreateMemory(t, s, "mem-t1", project)
+	m2 := mustCreateMemory(t, s, "mem-t2", project)
+
+	e1, _ := s.FindOrCreateEntity(ctx, "only-one", model.KindFile, project)
+	_ = s.LinkMemoryEntity(ctx, m1.ID, e1.ID, "mention")
+	_ = s.LinkMemoryEntity(ctx, m2.ID, e1.ID, "mention")
+
+	// K=2: sharing only 1 entity should produce 0 pairs.
+	pairs, err := s.FindCandidatePairs(ctx, project, 2)
+	if err != nil {
+		t.Fatalf("FindCandidatePairs: %v", err)
+	}
+	if len(pairs) != 0 {
+		t.Errorf("got %d pairs, want 0 (below threshold)", len(pairs))
+	}
+}
+
+// TestStore_FindCandidatePairs_NoDuplicates verifies that pair (A,B) appears
+// exactly once regardless of how many entities are shared (D7, SPEC-009).
+func TestStore_FindCandidatePairs_NoDuplicates(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	const project = "cand-nodup"
+	m1 := mustCreateMemory(t, s, "mem-nd1", project)
+	m2 := mustCreateMemory(t, s, "mem-nd2", project)
+
+	// Share 3 entities so SharedCount = 3.
+	for i, name := range []string{"e-nd-1", "e-nd-2", "e-nd-3"} {
+		e, _ := s.FindOrCreateEntity(ctx, name, model.KindFile, project)
+		_ = s.LinkMemoryEntity(ctx, m1.ID, e.ID, "mention")
+		_ = s.LinkMemoryEntity(ctx, m2.ID, e.ID, "mention")
+		_ = i // suppress unused warning
+	}
+
+	pairs, err := s.FindCandidatePairs(ctx, project, 2)
+	if err != nil {
+		t.Fatalf("FindCandidatePairs: %v", err)
+	}
+	if len(pairs) != 1 {
+		t.Errorf("got %d pairs, want exactly 1", len(pairs))
+	}
+	if pairs[0].SharedCount != 3 {
+		t.Errorf("SharedCount = %d, want 3", pairs[0].SharedCount)
+	}
+}
+
+// TestStore_ListMemoriesWithoutEntities_Basic verifies that only memories with
+// no memory_entities entry are returned (SPEC-009).
+func TestStore_ListMemoriesWithoutEntities_Basic(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	const project = "lmwe-basic"
+	m1 := mustCreateMemory(t, s, "has-entity", project)
+	m2 := mustCreateMemory(t, s, "no-entity-1", project)
+	m3 := mustCreateMemory(t, s, "no-entity-2", project)
+
+	// Link m1 to an entity — it should be excluded from results.
+	e, _ := s.FindOrCreateEntity(ctx, "linked-entity", model.KindConcept, project)
+	if err := s.LinkMemoryEntity(ctx, m1.ID, e.ID, "mention"); err != nil {
+		t.Fatalf("LinkMemoryEntity: %v", err)
+	}
+	_ = m1
+
+	result, err := s.ListMemoriesWithoutEntities(ctx, project, 0)
+	if err != nil {
+		t.Fatalf("ListMemoriesWithoutEntities: %v", err)
+	}
+	if len(result) != 2 {
+		t.Fatalf("got %d memories, want 2", len(result))
+	}
+	// Both m2 and m3 must be in the result.
+	ids := map[string]bool{result[0].ID: true, result[1].ID: true}
+	if !ids[m2.ID] || !ids[m3.ID] {
+		t.Errorf("expected m2 and m3 in result, got IDs %v", ids)
+	}
+}

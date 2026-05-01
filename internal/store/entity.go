@@ -650,6 +650,146 @@ func (s *MemoryStore) ListMemoriesInRange(ctx context.Context, from, to time.Tim
 	return memories, nil
 }
 
+// CandidatePair represents two memories with a shared entity overlap count.
+// mem1 is lexicographically less than mem2 — each pair is returned exactly
+// once regardless of the direction the entities were inserted.
+type CandidatePair struct {
+	MemoryID1   string
+	MemoryID2   string
+	SharedCount int
+}
+
+// DeleteRelatedToRelations removes all relations of type 'related_to' whose
+// source entity belongs to the given project. This is used by graph rebuild
+// --force to reset the automatically-generated co-occurrence edges before
+// re-running the full analysis.
+//
+// Only related_to is deleted. Explicit relation types (depends_on, implements,
+// supersedes, part_of, uses, conflicts_with, references) are never touched.
+//
+// Pass an empty project to target entities with no project affiliation
+// (global scope). Returns the number of deleted rows.
+func (s *MemoryStore) DeleteRelatedToRelations(ctx context.Context, project string) (int, error) {
+	const q = `
+		DELETE FROM relations
+		WHERE type = 'related_to'
+		  AND source_id IN (SELECT id FROM entities WHERE project IS ?)`
+
+	result, err := s.db.ExecContext(ctx, q, toNullString(project))
+	if err != nil {
+		return 0, fmt.Errorf("store: delete related_to relations: %w", err)
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("store: delete related_to relations: rows affected: %w", err)
+	}
+	return int(n), nil
+}
+
+// FindCandidatePairs returns pairs of memory IDs that share at least
+// minShared entities, ordered by shared count descending. Each pair appears
+// exactly once with MemoryID1 < MemoryID2 (lexicographic ordering to avoid
+// self-joins and duplicates).
+//
+// The query leverages idx_memory_entities_entity (migration 008) to make
+// the self-join efficient. Pass an empty project to query entities with
+// no project affiliation (global scope).
+func (s *MemoryStore) FindCandidatePairs(ctx context.Context, project string, minShared int) ([]CandidatePair, error) {
+	const q = `
+		SELECT me1.memory_id AS mem1,
+		       me2.memory_id AS mem2,
+		       COUNT(*)      AS shared_count
+		FROM memory_entities me1
+		JOIN memory_entities me2
+		  ON me1.entity_id = me2.entity_id
+		 AND me1.memory_id < me2.memory_id
+		WHERE me1.memory_id IN (
+		    SELECT id FROM memories
+		    WHERE deleted_at IS NULL
+		      AND superseded_by IS NULL
+		      AND project IS ?
+		)
+		GROUP BY me1.memory_id, me2.memory_id
+		HAVING COUNT(*) >= ?
+		ORDER BY shared_count DESC`
+
+	rows, err := s.db.QueryContext(ctx, q, toNullString(project), minShared)
+	if err != nil {
+		return nil, fmt.Errorf("store: find candidate pairs: %w", err)
+	}
+	defer rows.Close()
+
+	var pairs []CandidatePair
+	for rows.Next() {
+		var p CandidatePair
+		if err := rows.Scan(&p.MemoryID1, &p.MemoryID2, &p.SharedCount); err != nil {
+			return nil, fmt.Errorf("store: find candidate pairs: scan: %w", err)
+		}
+		pairs = append(pairs, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: find candidate pairs: iterate: %w", err)
+	}
+
+	return pairs, nil
+}
+
+// ListMemoriesWithoutEntities returns active memories that have no entry in
+// memory_entities. Used by graph rebuild to identify memories that need
+// entity extraction. An empty project returns results across all projects in
+// the database (global store backfill).
+//
+// Pass limit=0 for no cap. Results are ordered by created_at ascending so
+// older memories are processed first.
+func (s *MemoryStore) ListMemoriesWithoutEntities(ctx context.Context, project string, limit int) ([]*model.Memory, error) {
+	where := []string{
+		"m.deleted_at IS NULL",
+		"m.superseded_by IS NULL",
+		"me.memory_id IS NULL",
+	}
+	args := []any{}
+
+	if project != "" {
+		where = append(where, "m.project = ?")
+		args = append(args, project)
+	}
+
+	q := fmt.Sprintf(`
+		SELECT m.id, m.type, m.scope, m.title, m.content, m.topic_key, m.project,
+		       m.session_id, m.created_by, m.created_at, m.updated_at,
+		       m.importance, m.confidence, m.access_count, m.last_accessed,
+		       m.decay_rate, m.revision_count, m.superseded_by, m.deleted_at,
+		       m.applies_to, m.severity
+		FROM memories m
+		LEFT JOIN memory_entities me ON me.memory_id = m.id
+		WHERE %s
+		ORDER BY m.created_at ASC`, strings.Join(where, " AND "))
+
+	if limit > 0 {
+		q += fmt.Sprintf(" LIMIT %d", limit)
+	}
+
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: list memories without entities: %w", err)
+	}
+	defer rows.Close()
+
+	var memories []*model.Memory
+	for rows.Next() {
+		m, err := scanMemoryRow(rows)
+		if err != nil {
+			return nil, fmt.Errorf("store: list memories without entities: scan: %w", err)
+		}
+		memories = append(memories, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: list memories without entities: iterate: %w", err)
+	}
+
+	return memories, nil
+}
+
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
 // queryRelationsMultiArg executes a relation SELECT query with multiple
