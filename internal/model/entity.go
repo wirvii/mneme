@@ -251,3 +251,36 @@ type TimelineRequest struct {
 	// Limit caps the number of results returned. Defaults to 20 when zero.
 	Limit int `json:"limit,omitempty"`
 }
+
+// UnresolvedReference tracks a wikilink [[topic_key]] in a memory's content
+// that could not be resolved to an existing memory at save time. When a memory
+// with a matching topic_key is later saved, the reference is auto-resolved:
+// the relation is created and the unresolved row is deleted.
+//
+// This is the mneme equivalent of Obsidian's unresolvedLinks in MetadataCache.
+// It is the data source for the mem_gaps tool (SPEC-W3).
+type UnresolvedReference struct {
+	// ID is a UUIDv7 — time-sortable and globally unique.
+	ID string `json:"id"`
+
+	// SourceMemoryID is the UUIDv7 of the memory that contains the wikilink.
+	SourceMemoryID string `json:"source_memory_id"`
+
+	// TargetTopicKey is the topic_key from the [[wikilink]] that could not
+	// be resolved to an existing memory at save time.
+	TargetTopicKey string `json:"target_topic_key"`
+
+	// Project is the project slug of the source memory. Used for scope-aware
+	// auto-resolution and for grouping gaps by project in mem_gaps.
+	Project string `json:"project,omitempty"`
+
+	// MentionCount is the number of times this (source, target) pair has been
+	// seen across saves and updates. Higher counts indicate more critical gaps.
+	MentionCount int `json:"mention_count"`
+
+	// FirstSeenAt is the timestamp when this gap was first detected.
+	FirstSeenAt time.Time `json:"first_seen_at"`
+
+	// LastSeenAt is the timestamp of the most recent detection.
+	LastSeenAt time.Time `json:"last_seen_at"`
+}
