@@ -743,3 +743,119 @@ func TestMCP_MemExplore_Basic(t *testing.T) {
 		t.Errorf("seed_id: got %q, want %q", result.SeedID, saved.ID)
 	}
 }
+
+// TestMemGaps_Empty verifies that mem_gaps returns a valid GapsResponse with an
+// empty gaps array and total=0 when there are no unresolved references.
+func TestMemGaps_Empty(t *testing.T) {
+	srv := newTestServer(t)
+
+	resp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name:      "mem_gaps",
+		Arguments: mustMarshal(t, map[string]any{}),
+	})
+	if resp.Error != nil {
+		t.Fatalf("mem_gaps error: %s", resp.Error.Message)
+	}
+
+	var result struct {
+		Gaps  []any `json:"gaps"`
+		Total int   `json:"total"`
+	}
+	unmarshalToolText(t, resp, &result)
+
+	if result.Gaps == nil {
+		t.Error("expected non-nil gaps array")
+	}
+	if len(result.Gaps) != 0 {
+		t.Errorf("expected 0 gaps, got %d", len(result.Gaps))
+	}
+	if result.Total != 0 {
+		t.Errorf("expected total=0, got %d", result.Total)
+	}
+}
+
+// TestMemGaps_Success verifies that mem_gaps returns a valid GapsResponse when
+// unresolved references exist. It saves a memory with a [[wikilink]] to a
+// non-existent topic_key, then calls mem_gaps and asserts the gap appears.
+func TestMemGaps_Success(t *testing.T) {
+	srv := newTestServer(t)
+
+	// Save a memory with a wikilink to a non-existent topic_key.
+	saveResp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name: "mem_save",
+		Arguments: mustMarshal(t, map[string]any{
+			"title":     "Source memory",
+			"content":   "See [[missing/gap-topic]] for details.",
+			"topic_key": "source/mem",
+			"type":      "decision",
+		}),
+	})
+	if saveResp.Error != nil {
+		t.Fatalf("mem_save: %s", saveResp.Error.Message)
+	}
+
+	// Call mem_gaps — the wikilink should have registered an unresolved ref.
+	resp := process(t, srv, "tools/call", 2, ToolCallParams{
+		Name: "mem_gaps",
+		Arguments: mustMarshal(t, map[string]any{
+			"scope": "project",
+		}),
+	})
+	if resp.Error != nil {
+		t.Fatalf("mem_gaps: %s", resp.Error.Message)
+	}
+
+	var result struct {
+		Gaps []struct {
+			TargetTopicKey string `json:"target_topic_key"`
+			TotalMentions  int    `json:"total_mentions"`
+			SourceCount    int    `json:"source_count"`
+		} `json:"gaps"`
+		Total int `json:"total"`
+	}
+	unmarshalToolText(t, resp, &result)
+
+	if result.Total == 0 {
+		t.Fatal("expected total > 0 after saving a memory with an unresolved wikilink")
+	}
+	if len(result.Gaps) == 0 {
+		t.Fatal("expected at least one gap")
+	}
+	// Find the specific gap we created.
+	found := false
+	for _, g := range result.Gaps {
+		if g.TargetTopicKey == "missing/gap-topic" {
+			found = true
+			if g.TotalMentions < 1 {
+				t.Errorf("TotalMentions = %d, want >= 1", g.TotalMentions)
+			}
+			if g.SourceCount < 1 {
+				t.Errorf("SourceCount = %d, want >= 1", g.SourceCount)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("gap 'missing/gap-topic' not found in response; got: %+v", result.Gaps)
+	}
+}
+
+// TestMemGaps_InvalidParams verifies that a non-object arguments value (a JSON
+// string instead of an object) causes the handler to return CodeInvalidParams.
+// This exercises the json.Unmarshal failure path in handleMemGaps.
+func TestMemGaps_InvalidParams(t *testing.T) {
+	srv := newTestServer(t)
+
+	// "arguments" is a JSON string — valid JSON at the transport level but
+	// fails when the handler tries json.Unmarshal into model.GapsRequest (struct).
+	raw := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"mem_gaps","arguments":"not-an-object"}}`)
+	resp, hasResp := srv.handleMessage(raw)
+	if !hasResp {
+		t.Fatal("expected a response")
+	}
+	if resp.Error == nil {
+		t.Fatal("expected error for non-object arguments, got nil")
+	}
+	if resp.Error.Code != CodeInvalidParams {
+		t.Errorf("expected code %d (CodeInvalidParams), got %d: %s", CodeInvalidParams, resp.Error.Code, resp.Error.Message)
+	}
+}

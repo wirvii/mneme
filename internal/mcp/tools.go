@@ -582,6 +582,40 @@ func allTools() []ToolDefinition {
 				},
 			},
 		},
+		// mem_gaps
+		{
+			Name:        "mem_gaps",
+			Description: "List knowledge gaps — unresolved [[wikilink]] references. Shows topic_keys that are mentioned in memories but don't have a corresponding memory yet. Use this to discover what knowledge is missing and decide what to create next.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"scope": map[string]any{
+						"type":        "string",
+						"description": "Query scope: project (default), global, or all.",
+						"enum":        []string{"project", "global", "all"},
+					},
+					"limit": map[string]any{
+						"type":        "integer",
+						"description": "Maximum number of gaps to return. Default: 20, max: 100.",
+						"minimum":     1,
+						"maximum":     100,
+					},
+					"min_mentions": map[string]any{
+						"type":        "integer",
+						"description": "Minimum total_mentions to include a gap. Default: 1.",
+						"minimum":     1,
+					},
+					"include_samples": map[string]any{
+						"type":        "boolean",
+						"description": "Include sample source memories for each gap. Default: true. Set false for faster aggregate-only output.",
+					},
+					"project": map[string]any{
+						"type":        "string",
+						"description": "Project slug. Defaults to the detected project.",
+					},
+				},
+			},
+		},
 		// mem_explore
 		{
 			Name:        "mem_explore",

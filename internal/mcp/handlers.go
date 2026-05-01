@@ -56,6 +56,8 @@ func (h *handlers) handleToolCall(ctx context.Context, params ToolCallParams) (*
 		return h.handleMemCheckpoint(ctx, params.Arguments)
 	case "mem_explore":
 		return h.handleMemExplore(ctx, params.Arguments)
+	case "mem_gaps":
+		return h.handleMemGaps(ctx, params.Arguments)
 	case "backlog_add":
 		return h.handleBacklogAdd(ctx, params.Arguments)
 	case "backlog_list":
@@ -427,6 +429,25 @@ func (h *handlers) handleMemExplore(ctx context.Context, raw json.RawMessage) (*
 	resp, err := h.svc.Explore(ctx, req)
 	if err != nil {
 		return nil, h.mapServiceError("mem_explore", err)
+	}
+	return resultFromAny(resp)
+}
+
+// handleMemGaps processes a mem_gaps tool call.
+func (h *handlers) handleMemGaps(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	var req model.GapsRequest
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &req); err != nil {
+			return nil, &JSONRPCError{
+				Code:    CodeInvalidParams,
+				Message: fmt.Sprintf("mcp: handle mem_gaps: invalid arguments: %s", err),
+			}
+		}
+	}
+
+	resp, err := h.svc.Gaps(ctx, req)
+	if err != nil {
+		return nil, h.mapServiceError("mem_gaps", err)
 	}
 	return resultFromAny(resp)
 }
