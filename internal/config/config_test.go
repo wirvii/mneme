@@ -344,6 +344,56 @@ func TestValidate(t *testing.T) {
 	}
 }
 
+// TestGraphConfig_GraphModeDefault verifies that Default() sets GraphMode to "ppr".
+func TestGraphConfig_GraphModeDefault(t *testing.T) {
+	cfg := Default()
+	if cfg.Graph.GraphMode != "ppr" {
+		t.Errorf("Graph.GraphMode default = %q, want %q", cfg.Graph.GraphMode, "ppr")
+	}
+}
+
+// TestGraphConfig_GraphModeValidation verifies that Validate accepts the three
+// valid values and an empty string (treated as "ppr"), and rejects anything else.
+func TestGraphConfig_GraphModeValidation(t *testing.T) {
+	tests := []struct {
+		mode    string
+		wantErr bool
+	}{
+		{"ppr", false},
+		{"1hop", false},
+		{"off", false},
+		{"", false}, // empty is accepted; treated as "ppr" at runtime
+		{"invalid", true},
+		{"2hop", true},
+		{"PPR", true}, // case-sensitive
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.mode, func(t *testing.T) {
+			cfg := Default()
+			cfg.Graph.GraphMode = tc.mode
+			err := cfg.Validate()
+			if (err != nil) != tc.wantErr {
+				t.Errorf("Validate() error = %v, wantErr %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestGraphConfig_GraphModeEnvOverride verifies that MNEME_GRAPH_MODE overrides
+// the default (or file-based) value.
+func TestGraphConfig_GraphModeEnvOverride(t *testing.T) {
+	t.Setenv("MNEME_GRAPH_MODE", "1hop")
+
+	cfg, err := Load("/nonexistent/path/config.toml")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Graph.GraphMode != "1hop" {
+		t.Errorf("Graph.GraphMode = %q, want %q", cfg.Graph.GraphMode, "1hop")
+	}
+}
+
 // TestWorkflowDefaults verifies that Default() sets the expected workflow fields.
 func TestWorkflowDefaults(t *testing.T) {
 	home, err := os.UserHomeDir()

@@ -169,6 +169,20 @@ type GraphConfig struct {
 	// explicit [[wikilink]] in content is a stronger signal than a
 	// rebuild-inferred reference).
 	WikilinkRelationWeight float64 `toml:"wikilink_relation_weight"`
+
+	// GraphMode controls which graph expansion algorithm is used during
+	// mem_search and mem_context. Accepted values:
+	//   - "ppr"  -- Personalized PageRank via BuildGraphForSeeds + scoring.PPR (SPEC-017).
+	//              Multi-hop, considers global topology. Default.
+	//   - "1hop" -- Original 1-hop expansion via graphExpand (SPEC-007).
+	//              Faster, simpler, useful for debugging or sparse graphs.
+	//   - "off"  -- No graph channel. Equivalent to include_graph=false for every request.
+	//
+	// Default: "ppr". Can be overridden per-request via include_graph (which takes
+	// precedence: include_graph=false means "off" regardless of GraphMode).
+	// ExpansionEnabled=false is the absolute kill switch and overrides GraphMode.
+	// Env override: MNEME_GRAPH_MODE.
+	GraphMode string `toml:"graph_mode"`
 }
 
 // WorkflowConfig controls where workflow artifacts (specs, bugs, backlog)
@@ -437,6 +451,7 @@ func Default() *Config {
 			RebuildMaxRelations:    50,
 			WikilinksEnabled:       true,
 			WikilinkRelationWeight: 0.6,
+			GraphMode:              "ppr",
 		},
 		Suggestions: SuggestionsConfig{
 			GapScoreBoost:       0.15,
@@ -508,6 +523,9 @@ func Load(path string) (*Config, error) {
 		if n, parseErr := strconv.Atoi(v); parseErr == nil {
 			cfg.Graph.ExpansionSeedTopK = n
 		}
+	}
+	if v := os.Getenv("MNEME_GRAPH_MODE"); v != "" {
+		cfg.Graph.GraphMode = v
 	}
 
 	// Expand ~ after all overrides so every code path benefits.
@@ -617,6 +635,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Graph.WikilinkRelationWeight < 0 || c.Graph.WikilinkRelationWeight > 1 {
 		return errors.New("graph.wikilink_relation_weight must be in [0.0, 1.0]")
+	}
+	if c.Graph.GraphMode != "" && c.Graph.GraphMode != "ppr" && c.Graph.GraphMode != "1hop" && c.Graph.GraphMode != "off" {
+		return fmt.Errorf("graph.graph_mode %q is not valid; accepted values: ppr, 1hop, off", c.Graph.GraphMode)
 	}
 
 	if c.Suggestions.GapScoreBoost < 0 || c.Suggestions.GapScoreBoost > 1 {
