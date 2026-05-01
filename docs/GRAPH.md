@@ -10,13 +10,14 @@ Introducido en SPEC-005..009 (EPIC-2).
 
 1. [Modelo del grafo](#modelo-del-grafo)
 2. [Pesos por tipo](#pesos-por-tipo)
-3. [Hebbian auto-strengthening](#hebbian-auto-strengthening)
-4. [Edge decay](#edge-decay)
-5. [Retrieval con grafo](#retrieval-con-grafo)
-6. [mem_explore](#mem_explore)
-7. [graph rebuild](#graph-rebuild)
-8. [Comandos relacionados](#comandos-relacionados)
-9. [Configuracion](#configuracion)
+3. [Wikilinks](#wikilinks)
+4. [Hebbian auto-strengthening](#hebbian-auto-strengthening)
+5. [Edge decay](#edge-decay)
+6. [Retrieval con grafo](#retrieval-con-grafo)
+7. [mem_explore](#mem_explore)
+8. [graph rebuild](#graph-rebuild)
+9. [Comandos relacionados](#comandos-relacionados)
+10. [Configuracion](#configuracion)
 
 ---
 
@@ -82,6 +83,68 @@ Cada `RelationType` tiene un peso default que refleja su importancia estructural
 Se puede pasar un `weight` explicito al crear una relacion via `mem_relate`. Si no se pasa, se usa el default del tipo.
 
 **Intuicion sobre los pesos:** Un path de 2 hops con pesos 0.9 * 0.9 = 0.81 es muy fuerte (dependencia transitiva). Un path de 2 hops con pesos 0.4 * 0.4 = 0.16 es debil (referencia indirecta). El producto penaliza naturalmente caminos largos con aristas debiles.
+
+---
+
+## Wikilinks
+
+`[[topic_key]]` en el contenido de una memoria se parsean automaticamente al final de `mem_save` y `mem_update`. Cada wikilink resuelto crea una relacion `references` entre la memoria origen y la memoria target. Introducido en SPEC-011 (EPIC-3).
+
+### Sintaxis soportada
+
+| Forma | Topic | Anchor | Alias |
+|-------|-------|--------|-------|
+| `[[topic]]` | `topic` | - | - |
+| `[[a/b/c]]` | `a/b/c` | - | - |
+| `[[topic#section]]` | `topic` | `section` | - |
+| `[[topic|Display]]` | `topic` | - | `Display` |
+| `[[topic#sec|Lbl]]` | `topic` | `sec` | `Lbl` |
+
+Solo el **topic** se usa para resolver la memoria target. El **anchor** se almacena en `relation.metadata` como `{"anchor": "section"}` para referencia futura. El **alias** es solo display, no se persiste.
+
+### Comportamiento
+
+- **Automatico y sincrono:** parser O(n) sobre lineas, procesamiento <25ms para 5 wikilinks tipicos.
+- **Code blocks ignorados:** wikilinks dentro de bloques ` ``` ` o `~~~` no se parsean (CommonMark 4.5).
+- **Inline code ignorado:** wikilinks dentro de backticks no se parsean.
+- **Idempotente:** si la relacion ya existe, se llama `TouchRelation` (refresca `last_traversed_at`).
+- **Self-loop guard:** `[[mismo-topic_key]]` de la memoria origen se ignora.
+- **Append-only en updates:** wikilinks removidos en un `mem_update` NO borran relaciones existentes.
+- **TypeSessionSummary excluido:** session summaries no activan el parser.
+
+### Resolucion de scope
+
+| Scope origen | Busca en | Fallback |
+|--------------|----------|----------|
+| `project` | projectStore (mismo proyecto) | globalStore (mismo proyecto) |
+| `global` / `org` | globalStore (mismo proyecto) | ninguno |
+
+Una memoria global NO puede crear relaciones hacia memorias project-scoped (invariante de cross-scope isolation, identico a Hebbian).
+
+### Peso de la relacion
+
+El peso de las relaciones creadas por wikilinks es `wikilink_relation_weight` (default **0.6**), superior al default de `references` (0.4 para rebuild inference) porque un wikilink explicito escrito por el agente es una senal mas fuerte que una inferencia heuristica.
+
+### Configuracion
+
+```toml
+[graph]
+wikilinks_enabled = true         # false = tratar [[...]] como texto plano
+wikilink_relation_weight = 0.6   # [0.0, 1.0]
+```
+
+### Ejemplo
+
+```
+mem_save({
+  "title": "Auth middleware setup",
+  "content": "See [[architecture/auth-model]] for the design. Uses [[convention/error-codes]].",
+  "topic_key": "impl/auth-middleware",
+  "type": "decision"
+})
+```
+
+Despues del save, `mem_explore("impl/auth-middleware")` retorna `architecture/auth-model` y `convention/error-codes` a distancia 1 con weight=0.6.
 
 ---
 
@@ -448,4 +511,8 @@ explore_default_budget = 4000 # Default token budget
 # graph rebuild
 rebuild_min_shared = 2        # K: min shared entities for co-mention
 rebuild_max_relations = 50    # Cap per memory
+
+# wikilinks (SPEC-011)
+wikilinks_enabled = true          # Parse [[topic_key]] in mem_save/mem_update
+wikilink_relation_weight = 0.6    # Weight for wikilink-created relations [0.0, 1.0]
 ```
