@@ -480,7 +480,7 @@ func TestRebuildGraph_Force(t *testing.T) {
 }
 
 // TestRebuildGraph_DryRun verifies that dry-run produces non-zero counts in
-// the result but writes nothing to the database (AC5, SPEC-009).
+// the result but writes nothing to the database (AC5, SPEC-009; SPEC-010 D10).
 func TestRebuildGraph_DryRun(t *testing.T) {
 	svc, ps := newRebuildService(t)
 	ctx := context.Background()
@@ -506,6 +506,11 @@ func TestRebuildGraph_DryRun(t *testing.T) {
 	if result.MemoriesScanned == 0 {
 		t.Error("dry-run: MemoriesScanned should be > 0")
 	}
+	// SPEC-010: dry-run must report RelationsCreated > 0 when memories share
+	// entities — the bug was that this always returned 0 on first runs.
+	if result.RelationsCreated == 0 {
+		t.Errorf("dry-run: RelationsCreated = 0, want > 0 (SPEC-010 D10)")
+	}
 
 	// But nothing should be written — no entities in any memory.
 	entities, err := ps.ListEntities(ctx, "test/rebuild", "", 0)
@@ -514,6 +519,117 @@ func TestRebuildGraph_DryRun(t *testing.T) {
 	}
 	if len(entities) != 0 {
 		t.Errorf("dry-run: expected 0 entities in DB, got %d", len(entities))
+	}
+}
+
+// TestRebuildGraph_DryRunMatchesReal verifies that dry-run and real run on the
+// same project report identical RelationsCreated, EntitiesExtracted, and
+// MemoriesScanned (SPEC-010 AC1, D10 — "dry-run shows same stats as real run").
+//
+// Test data is designed so each memory has a unique topic_key (which becomes
+// its first entity via H1) plus shared file-path entities. This ensures that
+// processRelationBatch picks distinct entity IDs for each memory's "anchor",
+// avoiding the degenerate case where all memories map to the same first entity
+// (which would cause idempotency collapses in the real run only).
+func TestRebuildGraph_DryRunMatchesReal(t *testing.T) {
+	svc, ps := newRebuildService(t)
+	ctx := context.Background()
+
+	sharedPaths := "internal/store/entity.go internal/service/rebuild.go"
+
+	// Create memories with unique topic_keys so each has a distinct first entity.
+	for i := 0; i < 3; i++ {
+		_, err := ps.Create(ctx, &model.Memory{
+			Type:     model.TypeDecision,
+			Scope:    model.ScopeProject,
+			Title:    fmt.Sprintf("dry-match-%d", i),
+			Content:  sharedPaths,
+			TopicKey: fmt.Sprintf("dry-match/concept-%d", i),
+			Project:  "test/rebuild",
+		})
+		if err != nil {
+			t.Fatalf("Create memory %d: %v", i, err)
+		}
+	}
+
+	req := model.RebuildRequest{MinShared: 2, Scope: "project"}
+
+	// Dry-run first (no DB writes).
+	dryResult, err := svc.RebuildGraph(ctx, model.RebuildRequest{
+		MinShared: req.MinShared, Scope: req.Scope, DryRun: true,
+	})
+	if err != nil {
+		t.Fatalf("dry-run: %v", err)
+	}
+	if dryResult.RelationsCreated == 0 {
+		t.Fatal("dry-run: RelationsCreated = 0, expected > 0 for this dataset")
+	}
+
+	// Real run on the same DB (entities are now written for the first time).
+	realResult, err := svc.RebuildGraph(ctx, req)
+	if err != nil {
+		t.Fatalf("real run: %v", err)
+	}
+
+	if dryResult.MemoriesScanned != realResult.MemoriesScanned {
+		t.Errorf("MemoriesScanned: dry=%d real=%d", dryResult.MemoriesScanned, realResult.MemoriesScanned)
+	}
+	if dryResult.EntitiesExtracted != realResult.EntitiesExtracted {
+		t.Errorf("EntitiesExtracted: dry=%d real=%d", dryResult.EntitiesExtracted, realResult.EntitiesExtracted)
+	}
+	if dryResult.RelationsCreated != realResult.RelationsCreated {
+		t.Errorf("RelationsCreated: dry=%d real=%d", dryResult.RelationsCreated, realResult.RelationsCreated)
+	}
+}
+
+// TestRebuildGraph_DryRunInMemoryPairs verifies that dry-run on a project
+// whose memory_entities table is empty (no prior indexing) still reports
+// RelationsCreated > 0 when memories share extractable entities (SPEC-010 AC1).
+//
+// This is the exact regression scenario: before the fix, all first-time dry-runs
+// returned relations_created=0 because Phase 2 queried an empty DB table.
+func TestRebuildGraph_DryRunInMemoryPairs(t *testing.T) {
+	svc, ps := newRebuildService(t)
+	ctx := context.Background()
+
+	// Confirm the DB starts with no entities (first-time run scenario).
+	entities, err := ps.ListEntities(ctx, "test/rebuild", "", 100)
+	if err != nil {
+		t.Fatalf("ListEntities pre-check: %v", err)
+	}
+	if len(entities) != 0 {
+		t.Fatalf("pre-check: expected empty memory_entities, got %d entities", len(entities))
+	}
+
+	// Two memories sharing two file-path entities.
+	sharedContent := "internal/store/entity.go internal/service/rebuild.go"
+	_, _ = ps.Create(ctx, &model.Memory{
+		Type: model.TypeDecision, Scope: model.ScopeProject,
+		Title: "inm-1", Content: sharedContent, Project: "test/rebuild",
+	})
+	_, _ = ps.Create(ctx, &model.Memory{
+		Type: model.TypeDecision, Scope: model.ScopeProject,
+		Title: "inm-2", Content: sharedContent, Project: "test/rebuild",
+	})
+
+	result, err := svc.RebuildGraph(ctx, model.RebuildRequest{
+		MinShared: 2, Scope: "project", DryRun: true,
+	})
+	if err != nil {
+		t.Fatalf("dry-run on empty DB: %v", err)
+	}
+
+	if result.RelationsCreated == 0 {
+		t.Errorf("dry-run on empty DB: RelationsCreated = 0, want > 0 (SPEC-010 regression test)")
+	}
+
+	// Crucially: the DB must still be empty after dry-run.
+	entitiesAfter, err := ps.ListEntities(ctx, "test/rebuild", "", 100)
+	if err != nil {
+		t.Fatalf("ListEntities post-check: %v", err)
+	}
+	if len(entitiesAfter) != 0 {
+		t.Errorf("dry-run wrote %d entities — must be read-only", len(entitiesAfter))
 	}
 }
 
