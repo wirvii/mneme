@@ -148,6 +148,50 @@ Despues del save, `mem_explore("impl/auth-middleware")` retorna `architecture/au
 
 ---
 
+## Knowledge gaps: unresolved references
+
+Cuando un wikilink `[[topic_key]]` no puede resolverse (la memoria target no existe aun), mneme persiste la referencia en la tabla `unresolved_references` en lugar de descartarla silenciosamente. Introducido en SPEC-012 (EPIC-3).
+
+### Por que importa
+
+El agente puede escribir `[[decision/retry-strategy]]` antes de que esa memoria exista. Sin tracking de gaps, este wikilink se perderia en silencio. Con `unresolved_references`, el grafo sabe que hay un gap y puede exponerlo via `mem_gaps` (SPEC-W3, proximo).
+
+### Esquema
+
+```
+unresolved_references
+├── id                  UUIDv7 PK
+├── source_memory_id    FK → memories(id) ON DELETE CASCADE
+├── target_topic_key    el topic_key que no pudo resolverse
+├── project             slug del proyecto origen
+├── mention_count       cuantas veces se ha visto este par (source, target)
+├── first_seen_at       primera deteccion
+└── last_seen_at        ultima deteccion
+```
+
+`mention_count` es el indicador de criticidad: un gap mencionado 10 veces es mas urgente de cerrar que uno mencionado 1 vez.
+
+### Auto-resolve
+
+Cuando se guarda una memoria nueva con `topic_key=X`, mneme busca automaticamente todos los `unresolved_references` cuyo `target_topic_key=X` y:
+
+1. Carga la memoria origen de cada ref.
+2. Aplica el cross-scope guard (global source → project target = skip).
+3. Llama `createWikilinkRelation` (la misma logica que el resolve en vivo).
+4. Elimina la fila de `unresolved_references`.
+
+Es **best-effort**: si falla parcialmente, las refs no resueltas persisten y se intentan de nuevo la proxima vez que se guarde una memoria con el mismo topic_key. Es self-healing.
+
+### Cascade cleanup
+
+`ON DELETE CASCADE` en `source_memory_id`: si la memoria origen se **hard-delete** (expira de la consolidacion), sus gaps se limpian automaticamente. Un **soft-forget** no triggerea el cascade — la memoria sigue existiendo con decay_rate=1.0, y sus gaps siguen siendo validos.
+
+### Comportamiento con updates
+
+`mem_update` que cambia content puede registrar nuevos gaps (via `processWikilinks`). No triggerea auto-resolve porque `topic_key` no es parte de `UpdateRequest` — el auto-resolve solo ocurre cuando una nueva memoria con topic_key se guarda via `mem_save` / upsert.
+
+---
+
 ## Hebbian auto-strengthening
 
 "Cells that fire together, wire together."
