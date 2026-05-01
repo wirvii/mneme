@@ -7,6 +7,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"log/slog"
@@ -20,6 +21,7 @@ import (
 	"github.com/juanftp/mneme/internal/scoring"
 	"github.com/juanftp/mneme/internal/store"
 	syncpkg "github.com/juanftp/mneme/internal/sync"
+	"github.com/juanftp/mneme/internal/wikilink"
 )
 
 // MemoryService orchestrates memory operations. It owns the business rules for
@@ -181,6 +183,7 @@ func (svc *MemoryService) Save(ctx context.Context, req model.SaveRequest) (*mod
 	// returned to the caller — a missing embedding only degrades search
 	// quality, not correctness.
 	svc.embedMemory(ctx, targetStore, result)
+	svc.processWikilinks(ctx, result, targetStore)
 
 	action := "created"
 	if !created {
@@ -293,6 +296,11 @@ func (svc *MemoryService) Update(ctx context.Context, id string, req model.Updat
 	// the current text so vector search stays accurate.
 	if req.Title != nil || req.Content != nil {
 		svc.embedMemory(ctx, targetStore, updated)
+	}
+	// Process wikilinks when content changed — new links create relations,
+	// removed links are intentionally not deleted (append-only, D9 SPEC-011).
+	if req.Content != nil {
+		svc.processWikilinks(ctx, updated, targetStore)
 	}
 
 	return &model.SaveResponse{
@@ -726,4 +734,221 @@ func (svc *MemoryService) embedMemory(ctx context.Context, targetStore *store.Me
 	if err := targetStore.SaveEmbedding(ctx, emb); err != nil {
 		log.Printf("service: embed memory %s: %v", m.ID, err)
 	}
+}
+
+// processWikilinks parses wikilinks from the memory's content and creates
+// reference relations to resolved targets. It is called synchronously at the
+// end of Save and Update. Individual link failures are best-effort: a single
+// unresolvable link never blocks the overall operation.
+//
+// No-op when: WikilinksEnabled=false, content is empty, or type is
+// TypeSessionSummary (session summaries are high-churn synthetic content).
+func (svc *MemoryService) processWikilinks(ctx context.Context, m *model.Memory, primaryStore *store.MemoryStore) {
+	if !svc.config.Graph.WikilinksEnabled {
+		return
+	}
+	if m.Content == "" || m.Type == model.TypeSessionSummary {
+		return
+	}
+
+	links := wikilink.Parse(m.Content)
+	if len(links) == 0 {
+		return
+	}
+
+	slog.DebugContext(ctx, "wikilinks_parsed",
+		"memory_id", m.ID,
+		"topic_key", m.TopicKey,
+		"count", len(links),
+	)
+
+	project := m.Project
+	for _, link := range links {
+		svc.resolveWikilink(ctx, m, link, primaryStore, project)
+	}
+}
+
+// resolveWikilink attempts to resolve a single wikilink to a target memory and
+// create a references relation. Self-loops, cross-scope violations, and
+// unresolved targets are silently skipped. Unresolved targets are logged at
+// debug level so the caller can distinguish from errors.
+func (svc *MemoryService) resolveWikilink(
+	ctx context.Context,
+	source *model.Memory,
+	link wikilink.Link,
+	primaryStore *store.MemoryStore,
+	project string,
+) {
+	// D6: self-loop guard.
+	if source.TopicKey != "" && link.Topic == source.TopicKey {
+		slog.DebugContext(ctx, "wikilink_self_loop_skipped",
+			"memory_id", source.ID,
+			"topic_key", link.Topic,
+		)
+		return
+	}
+
+	// D5: resolve topic_key to a target memory, scope-aware.
+	var target *model.Memory
+	var err error
+
+	target, err = primaryStore.GetByTopicKey(ctx, link.Topic, project)
+	if err != nil {
+		slog.ErrorContext(ctx, "wikilink_resolve_error",
+			"memory_id", source.ID,
+			"topic_key", link.Topic,
+			"error", err,
+		)
+		return
+	}
+	if target == nil && source.Scope == model.ScopeProject {
+		// Fallback: project memories may reference global-scoped memories stored
+		// in globalStore. Global memories are stored with the project slug of the
+		// agent that created them, so we pass the same project to GetByTopicKey.
+		target, err = svc.globalStore.GetByTopicKey(ctx, link.Topic, project)
+		if err != nil {
+			slog.ErrorContext(ctx, "wikilink_resolve_global_error",
+				"memory_id", source.ID,
+				"topic_key", link.Topic,
+				"error", err,
+			)
+			return
+		}
+	}
+
+	if target == nil {
+		// D12: unresolved target — log at debug and skip. SPEC-W2 will persist these.
+		slog.DebugContext(ctx, "wikilink_unresolved",
+			"memory_id", source.ID,
+			"topic_key", link.Topic,
+		)
+		return
+	}
+
+	// D5 cross-scope guard: a global or org source must not create relations into
+	// a project-scoped target (same invariant as Hebbian SPEC-006 D1). A
+	// project-scoped source may reference a global target (the fallback path
+	// above), because the project store contains the source and can hold a
+	// mirrored entity for the global target.
+	if (source.Scope == model.ScopeGlobal || source.Scope == model.ScopeOrg) &&
+		target.Scope == model.ScopeProject {
+		slog.DebugContext(ctx, "wikilink_cross_scope_skipped",
+			"source_id", source.ID,
+			"target_id", target.ID,
+			"source_scope", source.Scope,
+			"target_scope", target.Scope,
+		)
+		return
+	}
+
+	// Entity and relation operations always use primaryStore (the store of the
+	// source memory). When the target was found via globalStore fallback, we
+	// mirror its entity name in primaryStore so both entities and the relation
+	// live in the same SQLite database — cross-DB foreign keys are not possible.
+	entityStore := primaryStore
+
+	// D7: FindOrCreateEntity for source.
+	sourceName := source.TopicKey
+	if sourceName == "" {
+		sourceName = source.ID
+	}
+	srcEntity, err := entityStore.FindOrCreateEntity(ctx, sourceName, model.KindConcept, project)
+	if err != nil {
+		slog.ErrorContext(ctx, "wikilink_src_entity_error",
+			"memory_id", source.ID,
+			"error", err,
+		)
+		return
+	}
+
+	// D7: FindOrCreateEntity for target. When the target was resolved via the
+	// global-store fallback, its project field is empty. We use the source's
+	// project so the entity lives in the same namespace as all project entities,
+	// which is required since entityStore is always primaryStore.
+	tgtName := target.TopicKey
+	if tgtName == "" {
+		tgtName = target.ID
+	}
+	tgtProject := project
+	if target.Scope == model.ScopeGlobal || target.Scope == model.ScopeOrg {
+		// For global/org targets mirrored in projectStore, use source project
+		// so the entity is co-located with the source entity in the same DB.
+		tgtProject = project
+	} else {
+		tgtProject = target.Project
+	}
+	tgtEntity, err := entityStore.FindOrCreateEntity(ctx, tgtName, model.KindConcept, tgtProject)
+	if err != nil {
+		slog.ErrorContext(ctx, "wikilink_tgt_entity_error",
+			"memory_id", target.ID,
+			"error", err,
+		)
+		return
+	}
+
+	// D7: idempotency — check if relation already exists in either direction.
+	existing, err := entityStore.FindRelationBidirectional(ctx, srcEntity.ID, tgtEntity.ID, model.RelReferences)
+	if err != nil {
+		slog.ErrorContext(ctx, "wikilink_find_relation_error",
+			"src_entity", srcEntity.ID,
+			"tgt_entity", tgtEntity.ID,
+			"error", err,
+		)
+		return
+	}
+
+	if existing != nil {
+		// Relation exists — touch to refresh last_traversed_at (protects from edge decay).
+		if touchErr := entityStore.TouchRelation(ctx, existing.ID, time.Now().UTC()); touchErr != nil {
+			slog.ErrorContext(ctx, "wikilink_touch_relation_error",
+				"relation_id", existing.ID,
+				"error", touchErr,
+			)
+		}
+		return
+	}
+
+	// D8: build anchor metadata JSON when the wikilink includes an anchor.
+	var metadata string
+	if link.Anchor != "" {
+		anchorJSON, marshalErr := json.Marshal(map[string]string{"anchor": link.Anchor})
+		if marshalErr == nil {
+			metadata = string(anchorJSON)
+		}
+	}
+
+	// Create the references relation with the configured weight.
+	rel := &model.Relation{
+		SourceID: srcEntity.ID,
+		TargetID: tgtEntity.ID,
+		Type:     model.RelReferences,
+		Weight:   svc.config.Graph.WikilinkRelationWeight,
+		Metadata: metadata,
+	}
+	if _, createErr := entityStore.CreateRelation(ctx, rel); createErr != nil {
+		// Best-effort: log and continue. Concurrent saves may cause UNIQUE constraint
+		// violations (D5.9), which are harmless.
+		slog.DebugContext(ctx, "wikilink_create_relation_error",
+			"src_entity", srcEntity.ID,
+			"tgt_entity", tgtEntity.ID,
+			"error", createErr,
+		)
+		return
+	}
+
+	// Link both memories to their respective entities so the graph is navigable
+	// from either direction.
+	if linkErr := entityStore.LinkMemoryEntity(ctx, source.ID, srcEntity.ID, "mention"); linkErr != nil {
+		slog.DebugContext(ctx, "wikilink_link_src_entity_error", "error", linkErr)
+	}
+	if linkErr := entityStore.LinkMemoryEntity(ctx, target.ID, tgtEntity.ID, "mention"); linkErr != nil {
+		slog.DebugContext(ctx, "wikilink_link_tgt_entity_error", "error", linkErr)
+	}
+
+	slog.DebugContext(ctx, "wikilink_relation_created",
+		"source_id", source.ID,
+		"target_id", target.ID,
+		"topic_key", link.Topic,
+		"weight", svc.config.Graph.WikilinkRelationWeight,
+	)
 }
