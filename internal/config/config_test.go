@@ -1603,3 +1603,40 @@ func TestValidate_SuggestionsInvalid_MaxResults(t *testing.T) {
 		t.Errorf("MaxResults=1 should be valid, got: %v", err)
 	}
 }
+
+// TestGraphConfig_CommunityDetectionEnabled_Default verifies the default is true.
+func TestGraphConfig_CommunityDetectionEnabled_Default(t *testing.T) {
+	cfg := Default()
+	if !cfg.Graph.CommunityDetectionEnabled {
+		t.Error("CommunityDetectionEnabled default should be true")
+	}
+}
+
+// TestGraphConfig_CommunityMinSize_Default verifies the default is 3.
+func TestGraphConfig_CommunityMinSize_Default(t *testing.T) {
+	cfg := Default()
+	if cfg.Graph.CommunityMinSize != 3 {
+		t.Errorf("CommunityMinSize default: got %d, want 3", cfg.Graph.CommunityMinSize)
+	}
+}
+
+// TestGraphConfig_CommunityMinSize_Zero_IsValid verifies that 0 passes
+// validation (it is treated as "use default 3" at runtime, but the config
+// itself does not reject it — negative values are the only invalid input).
+func TestGraphConfig_CommunityMinSize_Zero_IsValid(t *testing.T) {
+	cfg := Default()
+	cfg.Graph.CommunityMinSize = 0
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("CommunityMinSize=0 should be valid, got: %v", err)
+	}
+}
+
+// TestGraphConfig_CommunityMinSize_Negative_Error verifies that a negative
+// min_size returns a validation error.
+func TestGraphConfig_CommunityMinSize_Negative_Error(t *testing.T) {
+	cfg := Default()
+	cfg.Graph.CommunityMinSize = -1
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected validation error for CommunityMinSize=-1")
+	}
+}

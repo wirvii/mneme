@@ -183,6 +183,19 @@ type GraphConfig struct {
 	// ExpansionEnabled=false is the absolute kill switch and overrides GraphMode.
 	// Env override: MNEME_GRAPH_MODE.
 	GraphMode string `toml:"graph_mode"`
+
+	// CommunityDetectionEnabled controls whether community detection runs during
+	// consolidation. When false, the detectCommunities step is skipped entirely.
+	// Disabling is useful when the project graph is too sparse for meaningful
+	// communities or when detection latency is unacceptable. Default: true.
+	CommunityDetectionEnabled bool `toml:"community_detection_enabled"`
+
+	// CommunityMinSize is the minimum number of entity members a community must
+	// have to be persisted. Communities smaller than this are discarded as noise
+	// (singletons and pairs rarely represent coherent thematic clusters).
+	// A value of 0 is treated as the default (3). Negative values are rejected
+	// by Validate. Default: 3.
+	CommunityMinSize int `toml:"community_min_size"`
 }
 
 // WorkflowConfig controls where workflow artifacts (specs, bugs, backlog)
@@ -447,11 +460,13 @@ func Default() *Config {
 			ExploreMaxNodes:      200,
 			ExploreDefaultDepth:  2,
 			ExploreDefaultBudget: 4000,
-			RebuildMinShared:       2,
-			RebuildMaxRelations:    50,
-			WikilinksEnabled:       true,
-			WikilinkRelationWeight: 0.6,
-			GraphMode:              "ppr",
+			RebuildMinShared:          2,
+			RebuildMaxRelations:       50,
+			WikilinksEnabled:          true,
+			WikilinkRelationWeight:    0.6,
+			GraphMode:                 "ppr",
+			CommunityDetectionEnabled: true,
+			CommunityMinSize:          3,
 		},
 		Suggestions: SuggestionsConfig{
 			GapScoreBoost:       0.15,
@@ -1106,6 +1121,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Graph.GraphMode != "" && c.Graph.GraphMode != "ppr" && c.Graph.GraphMode != "1hop" && c.Graph.GraphMode != "off" {
 		return fmt.Errorf("graph.graph_mode %q is not valid; accepted values: ppr, 1hop, off", c.Graph.GraphMode)
+	}
+	if c.Graph.CommunityMinSize < 0 {
+		return errors.New("graph.community_min_size must be >= 0")
 	}
 
 	if c.Suggestions.GapScoreBoost < 0 || c.Suggestions.GapScoreBoost > 1 {
