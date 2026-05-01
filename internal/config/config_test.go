@@ -1324,6 +1324,139 @@ func TestGraphConfig_EdgeDecayRateUpperBound(t *testing.T) {
 	}
 }
 
+// TestLoadWithOrigins_DefaultsOnly verifies that when there is no config file
+// and no env overrides, every field has origin "default".
+func TestLoadWithOrigins_DefaultsOnly(t *testing.T) {
+	cfg, origins, err := LoadWithOrigins("/nonexistent/path/config.toml")
+	if err != nil {
+		t.Fatalf("LoadWithOrigins: %v", err)
+	}
+	if cfg == nil {
+		t.Fatal("expected non-nil config")
+	}
+	if origins.FileExists {
+		t.Error("FileExists should be false for missing file")
+	}
+
+	// Every field in every section should be "default".
+	for section, fields := range origins.Sections {
+		for _, f := range fields {
+			if f.Origin != OriginDefault {
+				t.Errorf("[%s].%s: got origin %q, want %q", section, f.Key, f.Origin, OriginDefault)
+			}
+			if f.EnvVar != "" {
+				t.Errorf("[%s].%s: EnvVar should be empty for default origin, got %q", section, f.Key, f.EnvVar)
+			}
+		}
+	}
+}
+
+// TestLoadWithOrigins_FileOverride verifies that a field set in the TOML file
+// gets origin "file" and not "default".
+func TestLoadWithOrigins_FileOverride(t *testing.T) {
+	tomlContent := `
+[graph]
+edge_decay_rate = 0.01
+`
+	path := writeTempTOML(t, tomlContent)
+	_, origins, err := LoadWithOrigins(path)
+	if err != nil {
+		t.Fatalf("LoadWithOrigins: %v", err)
+	}
+	if !origins.FileExists {
+		t.Error("FileExists should be true when file is present")
+	}
+
+	graphFields := origins.Sections["graph"]
+	for _, f := range graphFields {
+		if f.Key == "edge_decay_rate" {
+			if f.Origin != OriginFile {
+				t.Errorf("edge_decay_rate origin: got %q, want %q", f.Origin, OriginFile)
+			}
+			if f.Value != 0.01 {
+				t.Errorf("edge_decay_rate value: got %v, want 0.01", f.Value)
+			}
+			return
+		}
+	}
+	t.Error("edge_decay_rate not found in graph section")
+}
+
+// TestLoadWithOrigins_EnvOverride verifies that a field set via env gets
+// origin "env" and the env var name is recorded.
+func TestLoadWithOrigins_EnvOverride(t *testing.T) {
+	t.Setenv("MNEME_GRAPH_MODE", "1hop")
+
+	_, origins, err := LoadWithOrigins("/nonexistent/path/config.toml")
+	if err != nil {
+		t.Fatalf("LoadWithOrigins: %v", err)
+	}
+
+	graphFields := origins.Sections["graph"]
+	for _, f := range graphFields {
+		if f.Key == "graph_mode" {
+			if f.Origin != OriginEnv {
+				t.Errorf("graph_mode origin: got %q, want %q", f.Origin, OriginEnv)
+			}
+			if f.EnvVar != "MNEME_GRAPH_MODE" {
+				t.Errorf("graph_mode env_var: got %q, want %q", f.EnvVar, "MNEME_GRAPH_MODE")
+			}
+			return
+		}
+	}
+	t.Error("graph_mode not found in graph section")
+}
+
+// TestLoadWithOrigins_EnvOverridesFile verifies that when both file and env
+// set a field, the env wins and origin is "env".
+func TestLoadWithOrigins_EnvOverridesFile(t *testing.T) {
+	tomlContent := `
+[graph]
+graph_mode = "1hop"
+`
+	path := writeTempTOML(t, tomlContent)
+	t.Setenv("MNEME_GRAPH_MODE", "off")
+
+	cfg, origins, err := LoadWithOrigins(path)
+	if err != nil {
+		t.Fatalf("LoadWithOrigins: %v", err)
+	}
+	if cfg.Graph.GraphMode != "off" {
+		t.Errorf("GraphMode: env should win, got %q", cfg.Graph.GraphMode)
+	}
+
+	graphFields := origins.Sections["graph"]
+	for _, f := range graphFields {
+		if f.Key == "graph_mode" {
+			if f.Origin != OriginEnv {
+				t.Errorf("graph_mode origin: got %q, want %q (env should beat file)", f.Origin, OriginEnv)
+			}
+			return
+		}
+	}
+	t.Error("graph_mode not found in graph section")
+}
+
+// TestLoadWithOrigins_AllSectionsPresent verifies that the returned ConfigOrigins
+// contains all 13 expected section keys.
+func TestLoadWithOrigins_AllSectionsPresent(t *testing.T) {
+	_, origins, err := LoadWithOrigins("/nonexistent/path/config.toml")
+	if err != nil {
+		t.Fatalf("LoadWithOrigins: %v", err)
+	}
+
+	wantSections := []string{
+		"storage", "search", "context", "consolidation", "decay",
+		"mcp", "embedding", "personal", "workflow", "delegation",
+		"spec", "graph", "suggestions",
+	}
+	for _, s := range wantSections {
+		if _, ok := origins.Sections[s]; !ok {
+			t.Errorf("section %q missing from ConfigOrigins", s)
+		}
+	}
+}
+
 // writeTempTOML writes content to a temporary TOML file and returns its path.
 // The file is automatically removed when the test ends.
 func writeTempTOML(t *testing.T, content string) string {

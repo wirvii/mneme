@@ -701,6 +701,312 @@ func applyEnvOverrides(cfg *Config) {
 	}
 }
 
+// FieldOrigin describes where a config field value came from.
+type FieldOrigin string
+
+const (
+	// OriginDefault means the value comes from Default() with no file or env override.
+	OriginDefault FieldOrigin = "default"
+	// OriginFile means the value was set by the TOML config file.
+	OriginFile FieldOrigin = "file"
+	// OriginEnv means the value was set by an environment variable.
+	OriginEnv FieldOrigin = "env"
+)
+
+// ConfigFieldInfo describes a single resolved config field with its provenance.
+type ConfigFieldInfo struct {
+	// Key is the TOML key for this field (e.g. "hebbian_window").
+	Key string `json:"key"`
+	// Value is the resolved value (string, int, float64, or bool).
+	Value any `json:"value"`
+	// Origin indicates where the value came from.
+	Origin FieldOrigin `json:"origin"`
+	// EnvVar is the environment variable name that provided this value
+	// (only set when Origin == OriginEnv). May be the canonical or legacy name.
+	EnvVar string `json:"env_var"`
+}
+
+// ConfigOrigins holds the full provenance of a resolved Config: which file was
+// loaded, whether it existed, and per-section per-field origin information.
+type ConfigOrigins struct {
+	// Path is the config file path that was consulted.
+	Path string `json:"config_path"`
+	// FileExists reports whether the config file was found and loaded.
+	FileExists bool `json:"config_file_exists"`
+	// Sections maps section name (e.g. "graph") to its ordered field list.
+	Sections map[string][]ConfigFieldInfo `json:"sections"`
+}
+
+// LoadWithOrigins is like Load but additionally returns a *ConfigOrigins that
+// records, for every config field, whether its value came from the default,
+// the TOML file, or an environment variable. The existing Load() is unchanged
+// for backward compatibility.
+//
+// Provenance detection:
+//  1. After TOML unmarshal, any field that differs from Default() gets origin="file".
+//  2. After env override, any field whose controlling env var is set gets origin="env".
+//  3. Otherwise origin="default".
+//
+// When both a legacy and a canonical env var are set, the canonical name wins
+// and is recorded as the EnvVar.
+func LoadWithOrigins(path string) (*Config, *ConfigOrigins, error) {
+	origins := &ConfigOrigins{
+		Path:     path,
+		Sections: make(map[string][]ConfigFieldInfo),
+	}
+
+	dflt := Default()
+	cfg := Default()
+
+	// Check whether the file exists and load it.
+	if _, err := os.Stat(path); err == nil {
+		origins.FileExists = true
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, nil, fmt.Errorf("config: load with origins: read file: %w", err)
+		}
+		if err := toml.Unmarshal(data, cfg); err != nil {
+			return nil, nil, fmt.Errorf("config: load with origins: parse toml: %w", err)
+		}
+	}
+
+	applyEnvOverrides(cfg)
+
+	cfg.Storage.DataDir = expandHome(cfg.Storage.DataDir)
+	cfg.Workflow.Dir = expandHome(cfg.Workflow.Dir)
+
+	if err := cfg.Validate(); err != nil {
+		return nil, nil, fmt.Errorf("config: load with origins: %w", err)
+	}
+
+	// Build the origins map by comparing defaults, checking file diff, then
+	// checking which env vars are actually set.
+	origins.Sections["storage"] = buildStorageOrigins(cfg, dflt)
+	origins.Sections["search"] = buildSearchOrigins(cfg, dflt)
+	origins.Sections["context"] = buildContextOrigins(cfg, dflt)
+	origins.Sections["consolidation"] = buildConsolidationOrigins(cfg, dflt)
+	origins.Sections["decay"] = buildDecayOrigins(cfg, dflt)
+	origins.Sections["mcp"] = buildMCPOrigins(cfg, dflt)
+	origins.Sections["embedding"] = buildEmbeddingOrigins(cfg, dflt)
+	origins.Sections["personal"] = buildPersonalOrigins(cfg, dflt)
+	origins.Sections["workflow"] = buildWorkflowOrigins(cfg, dflt)
+	origins.Sections["delegation"] = buildDelegationOrigins(cfg, dflt)
+	origins.Sections["spec"] = buildSpecOrigins(cfg, dflt)
+	origins.Sections["graph"] = buildGraphOrigins(cfg, dflt)
+	origins.Sections["suggestions"] = buildSuggestionsOrigins(cfg, dflt)
+
+	return cfg, origins, nil
+}
+
+// fieldOrigin determines the origin for a single field. It checks whether the
+// value was set by any of the named env vars (first match wins), and otherwise
+// compares the resolved value to the default.
+func fieldOrigin(resolvedVal, defaultVal any, fileExists bool, envVars ...string) (FieldOrigin, string) {
+	// Check env vars in priority order (caller lists canonical first).
+	for _, ev := range envVars {
+		if os.Getenv(ev) != "" {
+			return OriginEnv, ev
+		}
+	}
+	// If file was loaded and value differs from default, it came from the file.
+	if fileExists && fmt.Sprintf("%v", resolvedVal) != fmt.Sprintf("%v", defaultVal) {
+		return OriginFile, ""
+	}
+	return OriginDefault, ""
+}
+
+func makeField(key string, value any, origin FieldOrigin, envVar string) ConfigFieldInfo {
+	return ConfigFieldInfo{Key: key, Value: value, Origin: origin, EnvVar: envVar}
+}
+
+func buildStorageOrigins(cfg, dflt *Config) []ConfigFieldInfo {
+	fe := cfg.Storage != dflt.Storage || false // file-exists check is done per-field
+	_ = fe
+	fields := []ConfigFieldInfo{}
+	o, ev := fieldOrigin(cfg.Storage.DataDir, dflt.Storage.DataDir, true, "MNEME_DATA_DIR")
+	fields = append(fields, makeField("data_dir", cfg.Storage.DataDir, o, ev))
+	o, ev = fieldOrigin(cfg.Storage.ProjectBudget, dflt.Storage.ProjectBudget, true)
+	fields = append(fields, makeField("project_budget", cfg.Storage.ProjectBudget, o, ev))
+	o, ev = fieldOrigin(cfg.Storage.GlobalBudget, dflt.Storage.GlobalBudget, true)
+	fields = append(fields, makeField("global_budget", cfg.Storage.GlobalBudget, o, ev))
+	return fields
+}
+
+func buildSearchOrigins(cfg, dflt *Config) []ConfigFieldInfo {
+	var fields []ConfigFieldInfo
+	o, ev := fieldOrigin(cfg.Search.DefaultLimit, dflt.Search.DefaultLimit, true)
+	fields = append(fields, makeField("default_limit", cfg.Search.DefaultLimit, o, ev))
+	o, ev = fieldOrigin(cfg.Search.PreviewLength, dflt.Search.PreviewLength, true)
+	fields = append(fields, makeField("preview_length", cfg.Search.PreviewLength, o, ev))
+	o, ev = fieldOrigin(cfg.Search.MinRelevance, dflt.Search.MinRelevance, true)
+	fields = append(fields, makeField("min_relevance", cfg.Search.MinRelevance, o, ev))
+	return fields
+}
+
+func buildContextOrigins(cfg, dflt *Config) []ConfigFieldInfo {
+	var fields []ConfigFieldInfo
+	o, ev := fieldOrigin(cfg.Context.DefaultBudget, dflt.Context.DefaultBudget, true)
+	fields = append(fields, makeField("default_budget", cfg.Context.DefaultBudget, o, ev))
+	o, ev = fieldOrigin(cfg.Context.RulesBudget, dflt.Context.RulesBudget, true, "MNEME_RULES_BUDGET")
+	fields = append(fields, makeField("rules_budget", cfg.Context.RulesBudget, o, ev))
+	o, ev = fieldOrigin(cfg.Context.IncludeGlobal, dflt.Context.IncludeGlobal, true)
+	fields = append(fields, makeField("include_global", cfg.Context.IncludeGlobal, o, ev))
+	o, ev = fieldOrigin(cfg.Context.GlobalMinImportance, dflt.Context.GlobalMinImportance, true)
+	fields = append(fields, makeField("global_min_importance", cfg.Context.GlobalMinImportance, o, ev))
+	return fields
+}
+
+func buildConsolidationOrigins(cfg, dflt *Config) []ConfigFieldInfo {
+	var fields []ConfigFieldInfo
+	o, ev := fieldOrigin(cfg.Consolidation.Enabled, dflt.Consolidation.Enabled, true)
+	fields = append(fields, makeField("enabled", cfg.Consolidation.Enabled, o, ev))
+	o, ev = fieldOrigin(cfg.Consolidation.Interval, dflt.Consolidation.Interval, true)
+	fields = append(fields, makeField("interval", cfg.Consolidation.Interval, o, ev))
+	o, ev = fieldOrigin(cfg.Consolidation.RetentionDays, dflt.Consolidation.RetentionDays, true)
+	fields = append(fields, makeField("retention_days", cfg.Consolidation.RetentionDays, o, ev))
+	o, ev = fieldOrigin(cfg.Consolidation.DedupThreshold, dflt.Consolidation.DedupThreshold, true)
+	fields = append(fields, makeField("dedup_threshold", cfg.Consolidation.DedupThreshold, o, ev))
+	return fields
+}
+
+func buildDecayOrigins(cfg, dflt *Config) []ConfigFieldInfo {
+	var fields []ConfigFieldInfo
+	for _, f := range []struct {
+		key     string
+		got, def float64
+	}{
+		{"architecture", cfg.Decay.Architecture, dflt.Decay.Architecture},
+		{"decision", cfg.Decay.Decision, dflt.Decay.Decision},
+		{"convention", cfg.Decay.Convention, dflt.Decay.Convention},
+		{"pattern", cfg.Decay.Pattern, dflt.Decay.Pattern},
+		{"preference", cfg.Decay.Preference, dflt.Decay.Preference},
+		{"bugfix", cfg.Decay.Bugfix, dflt.Decay.Bugfix},
+		{"discovery", cfg.Decay.Discovery, dflt.Decay.Discovery},
+		{"config", cfg.Decay.Config, dflt.Decay.Config},
+		{"session_summary", cfg.Decay.SessionSummary, dflt.Decay.SessionSummary},
+	} {
+		o, ev := fieldOrigin(f.got, f.def, true)
+		fields = append(fields, makeField(f.key, f.got, o, ev))
+	}
+	return fields
+}
+
+func buildMCPOrigins(cfg, dflt *Config) []ConfigFieldInfo {
+	var fields []ConfigFieldInfo
+	o, ev := fieldOrigin(cfg.MCP.Tools, dflt.MCP.Tools, true, "MNEME_TOOLS")
+	fields = append(fields, makeField("tools", cfg.MCP.Tools, o, ev))
+	o, ev = fieldOrigin(cfg.MCP.LogLevel, dflt.MCP.LogLevel, true, "MNEME_LOG_LEVEL")
+	fields = append(fields, makeField("log_level", cfg.MCP.LogLevel, o, ev))
+	return fields
+}
+
+func buildEmbeddingOrigins(cfg, dflt *Config) []ConfigFieldInfo {
+	var fields []ConfigFieldInfo
+	o, ev := fieldOrigin(cfg.Embedding.Provider, dflt.Embedding.Provider, true)
+	fields = append(fields, makeField("provider", cfg.Embedding.Provider, o, ev))
+	o, ev = fieldOrigin(cfg.Embedding.Dimensions, dflt.Embedding.Dimensions, true)
+	fields = append(fields, makeField("dimensions", cfg.Embedding.Dimensions, o, ev))
+	return fields
+}
+
+func buildPersonalOrigins(cfg, dflt *Config) []ConfigFieldInfo {
+	var fields []ConfigFieldInfo
+	o, ev := fieldOrigin(cfg.Personal.Source, dflt.Personal.Source, true)
+	fields = append(fields, makeField("source", cfg.Personal.Source, o, ev))
+	return fields
+}
+
+func buildWorkflowOrigins(cfg, dflt *Config) []ConfigFieldInfo {
+	var fields []ConfigFieldInfo
+	o, ev := fieldOrigin(cfg.Workflow.Dir, dflt.Workflow.Dir, true, "MNEME_WORKFLOW_DIR")
+	fields = append(fields, makeField("dir", cfg.Workflow.Dir, o, ev))
+	return fields
+}
+
+func buildDelegationOrigins(cfg, dflt *Config) []ConfigFieldInfo {
+	var fields []ConfigFieldInfo
+	o, ev := fieldOrigin(cfg.Delegation.Enabled, dflt.Delegation.Enabled, true)
+	fields = append(fields, makeField("enabled", cfg.Delegation.Enabled, o, ev))
+	// ProtectedPaths and AllowedPaths are []string — no env override, always compare by length.
+	o, ev = fieldOrigin(len(cfg.Delegation.ProtectedPaths), len(dflt.Delegation.ProtectedPaths), true)
+	fields = append(fields, makeField("protected_paths", cfg.Delegation.ProtectedPaths, o, ev))
+	o, ev = fieldOrigin(len(cfg.Delegation.AllowedPaths), len(dflt.Delegation.AllowedPaths), true)
+	fields = append(fields, makeField("allowed_paths", cfg.Delegation.AllowedPaths, o, ev))
+	return fields
+}
+
+func buildSpecOrigins(cfg, dflt *Config) []ConfigFieldInfo {
+	var fields []ConfigFieldInfo
+	o, ev := fieldOrigin(cfg.Spec.AutoGrill, dflt.Spec.AutoGrill, true)
+	fields = append(fields, makeField("auto_grill", cfg.Spec.AutoGrill, o, ev))
+	o, ev = fieldOrigin(cfg.Spec.QualityGates.MinAcceptanceCriteria, dflt.Spec.QualityGates.MinAcceptanceCriteria, true)
+	fields = append(fields, makeField("quality_gates.min_acceptance_criteria", cfg.Spec.QualityGates.MinAcceptanceCriteria, o, ev))
+	o, ev = fieldOrigin(cfg.Spec.QualityGates.RequireOutOfScope, dflt.Spec.QualityGates.RequireOutOfScope, true)
+	fields = append(fields, makeField("quality_gates.require_out_of_scope", cfg.Spec.QualityGates.RequireOutOfScope, o, ev))
+	o, ev = fieldOrigin(cfg.Spec.QualityGates.RequireDependencies, dflt.Spec.QualityGates.RequireDependencies, true)
+	fields = append(fields, makeField("quality_gates.require_dependencies", cfg.Spec.QualityGates.RequireDependencies, o, ev))
+	o, ev = fieldOrigin(cfg.Spec.QualityGates.MaxAmbiguousTerms, dflt.Spec.QualityGates.MaxAmbiguousTerms, true)
+	fields = append(fields, makeField("quality_gates.max_ambiguous_terms", cfg.Spec.QualityGates.MaxAmbiguousTerms, o, ev))
+	return fields
+}
+
+func buildGraphOrigins(cfg, dflt *Config) []ConfigFieldInfo {
+	var fields []ConfigFieldInfo
+	o, ev := fieldOrigin(cfg.Graph.HebbianWindow, dflt.Graph.HebbianWindow, true, "MNEME_GRAPH_HEBBIAN_WINDOW")
+	fields = append(fields, makeField("hebbian_window", cfg.Graph.HebbianWindow, o, ev))
+	o, ev = fieldOrigin(cfg.Graph.HebbianIncrement, dflt.Graph.HebbianIncrement, true, "MNEME_GRAPH_HEBBIAN_INCREMENT")
+	fields = append(fields, makeField("hebbian_increment", cfg.Graph.HebbianIncrement, o, ev))
+	o, ev = fieldOrigin(cfg.Graph.HebbianInitialWeight, dflt.Graph.HebbianInitialWeight, true, "MNEME_GRAPH_HEBBIAN_INITIAL_WEIGHT")
+	fields = append(fields, makeField("hebbian_initial_weight", cfg.Graph.HebbianInitialWeight, o, ev))
+	o, ev = fieldOrigin(cfg.Graph.HebbianBufferSize, dflt.Graph.HebbianBufferSize, true, "MNEME_GRAPH_HEBBIAN_BUFFER_SIZE")
+	fields = append(fields, makeField("hebbian_buffer_size", cfg.Graph.HebbianBufferSize, o, ev))
+	o, ev = fieldOrigin(cfg.Graph.EdgeDecayRate, dflt.Graph.EdgeDecayRate, true, "MNEME_GRAPH_EDGE_DECAY_RATE")
+	fields = append(fields, makeField("edge_decay_rate", cfg.Graph.EdgeDecayRate, o, ev))
+	o, ev = fieldOrigin(cfg.Graph.EdgeDecayAfterDays, dflt.Graph.EdgeDecayAfterDays, true, "MNEME_GRAPH_EDGE_DECAY_AFTER_DAYS")
+	fields = append(fields, makeField("edge_decay_after_days", cfg.Graph.EdgeDecayAfterDays, o, ev))
+	// Expansion — canonical env checked first, then legacy alias.
+	o, ev = fieldOrigin(cfg.Graph.ExpansionEnabled, dflt.Graph.ExpansionEnabled, true, "MNEME_GRAPH_EXPANSION_ENABLED", "MNEME_EXPANSION_ENABLED")
+	fields = append(fields, makeField("expansion_enabled", cfg.Graph.ExpansionEnabled, o, ev))
+	o, ev = fieldOrigin(cfg.Graph.ExpansionThreshold, dflt.Graph.ExpansionThreshold, true, "MNEME_GRAPH_EXPANSION_THRESHOLD", "MNEME_EXPANSION_THRESHOLD")
+	fields = append(fields, makeField("expansion_threshold", cfg.Graph.ExpansionThreshold, o, ev))
+	o, ev = fieldOrigin(cfg.Graph.ExpansionFanOutCap, dflt.Graph.ExpansionFanOutCap, true, "MNEME_GRAPH_EXPANSION_FAN_OUT_CAP", "MNEME_EXPANSION_FAN_OUT_CAP")
+	fields = append(fields, makeField("expansion_fan_out_cap", cfg.Graph.ExpansionFanOutCap, o, ev))
+	o, ev = fieldOrigin(cfg.Graph.ExpansionSeedTopK, dflt.Graph.ExpansionSeedTopK, true, "MNEME_GRAPH_EXPANSION_SEED_TOP_K", "MNEME_EXPANSION_SEED_TOP_K")
+	fields = append(fields, makeField("expansion_seed_top_k", cfg.Graph.ExpansionSeedTopK, o, ev))
+	o, ev = fieldOrigin(cfg.Graph.ExploreMaxNodes, dflt.Graph.ExploreMaxNodes, true, "MNEME_GRAPH_EXPLORE_MAX_NODES")
+	fields = append(fields, makeField("explore_max_nodes", cfg.Graph.ExploreMaxNodes, o, ev))
+	o, ev = fieldOrigin(cfg.Graph.ExploreDefaultDepth, dflt.Graph.ExploreDefaultDepth, true, "MNEME_GRAPH_EXPLORE_DEFAULT_DEPTH")
+	fields = append(fields, makeField("explore_default_depth", cfg.Graph.ExploreDefaultDepth, o, ev))
+	o, ev = fieldOrigin(cfg.Graph.ExploreDefaultBudget, dflt.Graph.ExploreDefaultBudget, true, "MNEME_GRAPH_EXPLORE_DEFAULT_BUDGET")
+	fields = append(fields, makeField("explore_default_budget", cfg.Graph.ExploreDefaultBudget, o, ev))
+	o, ev = fieldOrigin(cfg.Graph.RebuildMinShared, dflt.Graph.RebuildMinShared, true, "MNEME_GRAPH_REBUILD_MIN_SHARED")
+	fields = append(fields, makeField("rebuild_min_shared", cfg.Graph.RebuildMinShared, o, ev))
+	o, ev = fieldOrigin(cfg.Graph.RebuildMaxRelations, dflt.Graph.RebuildMaxRelations, true, "MNEME_GRAPH_REBUILD_MAX_RELATIONS")
+	fields = append(fields, makeField("rebuild_max_relations", cfg.Graph.RebuildMaxRelations, o, ev))
+	o, ev = fieldOrigin(cfg.Graph.WikilinksEnabled, dflt.Graph.WikilinksEnabled, true, "MNEME_GRAPH_WIKILINKS_ENABLED")
+	fields = append(fields, makeField("wikilinks_enabled", cfg.Graph.WikilinksEnabled, o, ev))
+	o, ev = fieldOrigin(cfg.Graph.WikilinkRelationWeight, dflt.Graph.WikilinkRelationWeight, true, "MNEME_GRAPH_WIKILINK_RELATION_WEIGHT")
+	fields = append(fields, makeField("wikilink_relation_weight", cfg.Graph.WikilinkRelationWeight, o, ev))
+	o, ev = fieldOrigin(cfg.Graph.GraphMode, dflt.Graph.GraphMode, true, "MNEME_GRAPH_MODE")
+	fields = append(fields, makeField("graph_mode", cfg.Graph.GraphMode, o, ev))
+	return fields
+}
+
+func buildSuggestionsOrigins(cfg, dflt *Config) []ConfigFieldInfo {
+	var fields []ConfigFieldInfo
+	o, ev := fieldOrigin(cfg.Suggestions.GapScoreBoost, dflt.Suggestions.GapScoreBoost, true, "MNEME_SUGGESTIONS_GAP_SCORE_BOOST")
+	fields = append(fields, makeField("gap_score_boost", cfg.Suggestions.GapScoreBoost, o, ev))
+	o, ev = fieldOrigin(cfg.Suggestions.GapPendingWeight, dflt.Suggestions.GapPendingWeight, true, "MNEME_SUGGESTIONS_GAP_PENDING_WEIGHT")
+	fields = append(fields, makeField("gap_pending_weight", cfg.Suggestions.GapPendingWeight, o, ev))
+	o, ev = fieldOrigin(cfg.Suggestions.GapJaccardThreshold, dflt.Suggestions.GapJaccardThreshold, true, "MNEME_SUGGESTIONS_GAP_JACCARD_THRESHOLD")
+	fields = append(fields, makeField("gap_jaccard_threshold", cfg.Suggestions.GapJaccardThreshold, o, ev))
+	o, ev = fieldOrigin(cfg.Suggestions.MaxGapsToConsider, dflt.Suggestions.MaxGapsToConsider, true, "MNEME_SUGGESTIONS_MAX_GAPS_TO_CONSIDER")
+	fields = append(fields, makeField("max_gaps_to_consider", cfg.Suggestions.MaxGapsToConsider, o, ev))
+	o, ev = fieldOrigin(cfg.Suggestions.MaxResults, dflt.Suggestions.MaxResults, true, "MNEME_SUGGESTIONS_MAX_RESULTS")
+	fields = append(fields, makeField("max_results", cfg.Suggestions.MaxResults, o, ev))
+	return fields
+}
+
 // ProjectDBPath returns the absolute path to the SQLite database file for the
 // given project slug. Slashes in the slug are replaced with dashes so the
 // result is always a single filename component inside the projects sub-directory.
