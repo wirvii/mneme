@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"sort"
 
@@ -55,7 +56,7 @@ and the average importance score across all active memories.`,
 }
 
 // printStats writes a human-readable representation of resp to w.
-func printStats(w *os.File, resp *model.StatsResponse) {
+func printStats(w io.Writer, resp *model.StatsResponse) {
 	fmt.Fprintf(w, "Project: %s\n\n", resp.Project)
 
 	fmt.Fprintf(w, "Memories\n")
@@ -93,6 +94,27 @@ func printStats(w *os.File, resp *model.StatsResponse) {
 
 	fmt.Fprintf(w, "Embeddings\n")
 	fmt.Fprintf(w, "  Count:      %d\n\n", resp.EmbeddingsCount)
+
+	if resp.KnowledgeGaps != nil {
+		fmt.Fprintf(w, "Knowledge gaps\n")
+		fmt.Fprintf(w, "  Total gaps: %d\n", resp.KnowledgeGaps.Total)
+		top := resp.KnowledgeGaps.Top
+		if len(top) > 3 {
+			top = top[:3]
+		}
+		if len(top) > 0 {
+			fmt.Fprintf(w, "  Top gaps:\n")
+			for _, g := range top {
+				key := g.TargetTopicKey
+				if len(key) > 30 {
+					key = key[:30]
+				}
+				fmt.Fprintf(w, "    %-30s (%d mentions, %d sources)\n",
+					key, g.TotalMentions, g.SourceCount)
+			}
+		}
+		fmt.Fprintln(w)
+	}
 
 	fmt.Fprintf(w, "Database\n")
 	fmt.Fprintf(w, "  Size:       %s\n", formatBytes(resp.DBSizeBytes))
