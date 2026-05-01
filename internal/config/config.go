@@ -31,6 +31,41 @@ type Config struct {
 	Delegation    DelegationConfig    `toml:"delegation"`
 	Spec          SpecConfig          `toml:"spec"`
 	Graph         GraphConfig         `toml:"graph"`
+	Suggestions   SuggestionsConfig   `toml:"suggestions"`
+}
+
+// SuggestionsConfig controls the mem_suggest_topic_key behaviour when matching
+// against existing topic keys and unresolved knowledge gaps (SPEC-014). All
+// parameters have sensible defaults so the feature works out-of-the-box.
+//
+// This section is separate from [graph] because suggestions are orthogonal to
+// graph traversal: they use the unresolved_references table, not graph edges.
+type SuggestionsConfig struct {
+	// GapScoreBoost is the additive boost applied to gap matches' Jaccard scores.
+	// Higher values make gaps surface more aggressively. A gap with Jaccard=0.35
+	// and boost=0.15 will outscore an existing match with Jaccard=0.5 only when
+	// the pending-count adjustment adds enough weight. Default: 0.15.
+	GapScoreBoost float64 `toml:"gap_score_boost"`
+
+	// GapPendingWeight is the multiplier applied to log2(pending_count+1) when
+	// scoring gap matches. Keeps pending count influential but non-dominant.
+	// Default: 0.10.
+	GapPendingWeight float64 `toml:"gap_pending_weight"`
+
+	// GapJaccardThreshold is the minimum Jaccard similarity for a gap to be
+	// included in suggestions. Gaps below this value are discarded as noise.
+	// 0.2 means at least 1 shared token out of 5, which is a useful signal for
+	// the short topic keys mneme uses. Default: 0.2.
+	GapJaccardThreshold float64 `toml:"gap_jaccard_threshold"`
+
+	// MaxGapsToConsider is the maximum number of top gaps (by total_mentions)
+	// to evaluate for Jaccard similarity. Limits the per-call O(n) cost.
+	// Default: 50.
+	MaxGapsToConsider int `toml:"max_gaps_to_consider"`
+
+	// MaxResults is the maximum number of total suggestions returned (existing
+	// matches and gap matches each trimmed to this limit). Default: 10.
+	MaxResults int `toml:"max_results"`
 }
 
 // GraphConfig controls the knowledge graph's Hebbian auto-strengthening
@@ -403,6 +438,13 @@ func Default() *Config {
 			WikilinksEnabled:       true,
 			WikilinkRelationWeight: 0.6,
 		},
+		Suggestions: SuggestionsConfig{
+			GapScoreBoost:       0.15,
+			GapPendingWeight:    0.10,
+			GapJaccardThreshold: 0.2,
+			MaxGapsToConsider:   50,
+			MaxResults:          10,
+		},
 	}
 }
 
@@ -575,6 +617,22 @@ func (c *Config) Validate() error {
 	}
 	if c.Graph.WikilinkRelationWeight < 0 || c.Graph.WikilinkRelationWeight > 1 {
 		return errors.New("graph.wikilink_relation_weight must be in [0.0, 1.0]")
+	}
+
+	if c.Suggestions.GapScoreBoost < 0 || c.Suggestions.GapScoreBoost > 1 {
+		return errors.New("suggestions.gap_score_boost must be in [0.0, 1.0]")
+	}
+	if c.Suggestions.GapPendingWeight < 0 || c.Suggestions.GapPendingWeight > 1 {
+		return errors.New("suggestions.gap_pending_weight must be in [0.0, 1.0]")
+	}
+	if c.Suggestions.GapJaccardThreshold < 0 || c.Suggestions.GapJaccardThreshold > 1 {
+		return errors.New("suggestions.gap_jaccard_threshold must be in [0.0, 1.0]")
+	}
+	if c.Suggestions.MaxGapsToConsider < 0 {
+		return errors.New("suggestions.max_gaps_to_consider must be >= 0")
+	}
+	if c.Suggestions.MaxResults < 1 {
+		return errors.New("suggestions.max_results must be >= 1")
 	}
 
 	return nil

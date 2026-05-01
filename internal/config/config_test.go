@@ -1125,3 +1125,93 @@ func TestGraphConfig_WikilinkWeightValidation(t *testing.T) {
 		})
 	}
 }
+
+// TestValidate_SuggestionsDefaults verifies that the default SuggestionsConfig
+// values all pass validation without modification.
+func TestValidate_SuggestionsDefaults(t *testing.T) {
+	cfg := Default()
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("default config failed validation: %v", err)
+	}
+	if cfg.Suggestions.GapScoreBoost != 0.15 {
+		t.Errorf("GapScoreBoost: got %f, want 0.15", cfg.Suggestions.GapScoreBoost)
+	}
+	if cfg.Suggestions.GapPendingWeight != 0.10 {
+		t.Errorf("GapPendingWeight: got %f, want 0.10", cfg.Suggestions.GapPendingWeight)
+	}
+	if cfg.Suggestions.GapJaccardThreshold != 0.2 {
+		t.Errorf("GapJaccardThreshold: got %f, want 0.2", cfg.Suggestions.GapJaccardThreshold)
+	}
+	if cfg.Suggestions.MaxGapsToConsider != 50 {
+		t.Errorf("MaxGapsToConsider: got %d, want 50", cfg.Suggestions.MaxGapsToConsider)
+	}
+	if cfg.Suggestions.MaxResults != 10 {
+		t.Errorf("MaxResults: got %d, want 10", cfg.Suggestions.MaxResults)
+	}
+}
+
+// TestValidate_SuggestionsInvalid_GapScoreBoost verifies boundary checks on
+// the GapScoreBoost field.
+func TestValidate_SuggestionsInvalid_GapScoreBoost(t *testing.T) {
+	tests := []struct {
+		name    string
+		boost   float64
+		wantErr bool
+	}{
+		{name: "valid 0.15", boost: 0.15, wantErr: false},
+		{name: "valid 0.0", boost: 0.0, wantErr: false},
+		{name: "valid 1.0", boost: 1.0, wantErr: false},
+		{name: "negative invalid", boost: -0.01, wantErr: true},
+		{name: "above one invalid", boost: 1.01, wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Default()
+			cfg.Suggestions.GapScoreBoost = tc.boost
+			err := cfg.Validate()
+			if (err != nil) != tc.wantErr {
+				t.Errorf("Validate() error = %v, wantErr %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestValidate_SuggestionsInvalid_Threshold verifies boundary checks on
+// the GapJaccardThreshold field.
+func TestValidate_SuggestionsInvalid_Threshold(t *testing.T) {
+	tests := []struct {
+		name      string
+		threshold float64
+		wantErr   bool
+	}{
+		{name: "valid 0.2", threshold: 0.2, wantErr: false},
+		{name: "valid 0.0", threshold: 0.0, wantErr: false},
+		{name: "valid 1.0", threshold: 1.0, wantErr: false},
+		{name: "negative invalid", threshold: -0.1, wantErr: true},
+		{name: "above one invalid", threshold: 1.1, wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Default()
+			cfg.Suggestions.GapJaccardThreshold = tc.threshold
+			err := cfg.Validate()
+			if (err != nil) != tc.wantErr {
+				t.Errorf("Validate() error = %v, wantErr %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestValidate_SuggestionsInvalid_MaxResults verifies that MaxResults=0 fails
+// validation, since at least 1 result must be returned.
+func TestValidate_SuggestionsInvalid_MaxResults(t *testing.T) {
+	cfg := Default()
+	cfg.Suggestions.MaxResults = 0
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected validation error for MaxResults=0")
+	}
+	cfg.Suggestions.MaxResults = 1
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("MaxResults=1 should be valid, got: %v", err)
+	}
+}
