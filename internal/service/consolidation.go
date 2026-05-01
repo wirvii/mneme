@@ -7,11 +7,15 @@ import (
 	"time"
 
 	"github.com/juanftp/mneme/internal/consolidation"
+	"github.com/juanftp/mneme/internal/model"
 )
 
 // RunConsolidation executes one full consolidation cycle against the project
 // store. If config.Context.IncludeGlobal is true, a second cycle is also run
 // against the global store and its results are added to the returned summary.
+//
+// The community detection callback (SPEC-020) is wired into the pipeline so
+// the detectCommunities step runs automatically after edge decay.
 //
 // A nil-safe logger is used when no structured logger is available at the
 // service level; callers that care about log output should wire a logger
@@ -19,15 +23,26 @@ import (
 func (svc *MemoryService) RunConsolidation(ctx context.Context) (*consolidation.ConsolidationResult, error) {
 	logger := slog.Default()
 
-	projectPipeline := consolidation.NewPipeline(svc.projectStore, svc.config, logger).WithProject(svc.project)
+	projectDetector := func(ctx context.Context) (*model.DetectionResult, error) {
+		return svc.DetectAndPersistCommunities(ctx, model.ScopeProject, svc.project)
+	}
+
+	projectPipeline := consolidation.NewPipeline(svc.projectStore, svc.config, logger).
+		WithProject(svc.project).
+		WithCommunityDetector(projectDetector)
 	result, err := projectPipeline.Run(ctx)
 	if err != nil {
 		return result, fmt.Errorf("service: run consolidation: project store: %w", err)
 	}
 
 	if svc.config.Context.IncludeGlobal {
+		globalDetector := func(ctx context.Context) (*model.DetectionResult, error) {
+			return svc.DetectAndPersistCommunities(ctx, model.ScopeGlobal, "")
+		}
+
 		// Global store uses an empty project slug — GlobalBudget applies.
-		globalPipeline := consolidation.NewPipeline(svc.globalStore, svc.config, logger)
+		globalPipeline := consolidation.NewPipeline(svc.globalStore, svc.config, logger).
+			WithCommunityDetector(globalDetector)
 		globalResult, globalErr := globalPipeline.Run(ctx)
 		if globalErr != nil {
 			// Return the combined partial result alongside the error.
@@ -59,11 +74,23 @@ func (svc *MemoryService) StartBackgroundConsolidation(ctx context.Context) {
 	}
 
 	logger := slog.Default()
-	consolidation.NewPipeline(svc.projectStore, svc.config, logger).WithProject(svc.project).RunBackground(ctx, interval)
+
+	projectDetector := func(ctx context.Context) (*model.DetectionResult, error) {
+		return svc.DetectAndPersistCommunities(ctx, model.ScopeProject, svc.project)
+	}
+	consolidation.NewPipeline(svc.projectStore, svc.config, logger).
+		WithProject(svc.project).
+		WithCommunityDetector(projectDetector).
+		RunBackground(ctx, interval)
 
 	if svc.config.Context.IncludeGlobal {
+		globalDetector := func(ctx context.Context) (*model.DetectionResult, error) {
+			return svc.DetectAndPersistCommunities(ctx, model.ScopeGlobal, "")
+		}
 		// Global store uses empty project (GlobalBudget).
-		consolidation.NewPipeline(svc.globalStore, svc.config, logger).RunBackground(ctx, interval)
+		consolidation.NewPipeline(svc.globalStore, svc.config, logger).
+			WithCommunityDetector(globalDetector).
+			RunBackground(ctx, interval)
 	}
 }
 
@@ -94,6 +121,9 @@ func mergeResults(a, b *consolidation.ConsolidationResult) *consolidation.Consol
 	a.Conflicts += b.Conflicts
 	a.Evicted += b.Evicted
 	a.EdgeDecayed += b.EdgeDecayed
+	a.CommunitiesDetected += b.CommunitiesDetected
+	a.CommunitiesNew += b.CommunitiesNew
+	a.CommunitiesDeleted += b.CommunitiesDeleted
 	if b.Duration > a.Duration {
 		a.Duration = b.Duration
 	}

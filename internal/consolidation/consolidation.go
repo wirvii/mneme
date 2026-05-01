@@ -21,15 +21,24 @@ import (
 // considered stale and eligible for soft-deletion during the sweep phase.
 const sweepThreshold = 0.05
 
+// CommunityDetector is the callback signature used by the Pipeline to invoke
+// community detection without directly importing the service package (which
+// would create a circular import: consolidation → service → consolidation).
+//
+// The callback is wired at construction time by service.StartBackgroundConsolidation
+// and service.RunConsolidation. When nil the detectCommunities step is skipped.
+type CommunityDetector func(ctx context.Context) (*model.DetectionResult, error)
+
 // Pipeline orchestrates a single consolidation cycle against a MemoryStore.
 // It runs sweep, hard-delete, dedup, and budget-enforcement in sequence.
 // Each step is independent: a partial failure returns what was accomplished
 // up to the failing step and wraps the underlying error.
 type Pipeline struct {
-	store   *store.MemoryStore
-	config  *config.Config
-	logger  *slog.Logger
-	project string // slug for project stores; empty string for the global store
+	store              *store.MemoryStore
+	config             *config.Config
+	logger             *slog.Logger
+	project            string            // slug for project stores; empty string for the global store
+	communityDetector  CommunityDetector // optional; nil = skip community detection step
 }
 
 // NewPipeline constructs a Pipeline. All three arguments are required; passing
@@ -50,6 +59,16 @@ func NewPipeline(s *store.MemoryStore, cfg *config.Config, logger *slog.Logger) 
 func (p *Pipeline) WithProject(project string) *Pipeline {
 	cp := *p
 	cp.project = project
+	return &cp
+}
+
+// WithCommunityDetector returns a copy of the Pipeline with the given
+// CommunityDetector callback wired in. The callback is invoked by the
+// detectCommunities step, which runs after edge decay and before hard delete
+// (SPEC-020 D7). Passing nil removes a previously set detector.
+func (p *Pipeline) WithCommunityDetector(d CommunityDetector) *Pipeline {
+	cp := *p
+	cp.communityDetector = d
 	return &cp
 }
 
@@ -79,6 +98,20 @@ type ConsolidationResult struct {
 	// EdgeDecayed is the number of relations whose weight was reduced by the
 	// edge decay sweep. Only non-zero when config.Graph.EdgeDecayRate > 0.
 	EdgeDecayed int `json:"edge_decayed"`
+
+	// CommunitiesDetected is the total number of communities in the final
+	// persisted partition after the detectCommunities step. Zero when
+	// CommunityDetectionEnabled=false or no detector is wired.
+	CommunitiesDetected int `json:"communities_detected"`
+
+	// CommunitiesNew is the number of community clusters that were newly
+	// inserted in this cycle (membership hash was not seen before).
+	CommunitiesNew int `json:"communities_new"`
+
+	// CommunitiesDeleted is the number of previously-persisted communities
+	// that were removed because their membership hash is absent from the new
+	// partition.
+	CommunitiesDeleted int `json:"communities_deleted"`
 
 	// Duration is the total wall-clock time taken by the full cycle.
 	Duration time.Duration `json:"duration"`
@@ -113,6 +146,22 @@ func (p *Pipeline) Run(ctx context.Context) (*ConsolidationResult, error) {
 		return result, fmt.Errorf("consolidation: run: %w", err)
 	}
 	result.EdgeDecayed = edgeDecayed
+
+	if err := ctx.Err(); err != nil {
+		result.Duration = time.Since(start)
+		return result, err
+	}
+
+	// Community detection runs after edge decay (uses current weights) and before
+	// hard delete (captures full graph topology while soft-deleted nodes still
+	// exist as entities). SPEC-020 D7.
+	detectionResult, err := p.detectCommunities(ctx)
+	if err != nil {
+		return result, fmt.Errorf("consolidation: run: %w", err)
+	}
+	result.CommunitiesDetected = detectionResult.TotalCommunities
+	result.CommunitiesNew = detectionResult.NewCommunities
+	result.CommunitiesDeleted = detectionResult.DeletedCommunities
 
 	if err := ctx.Err(); err != nil {
 		result.Duration = time.Since(start)
@@ -396,6 +445,9 @@ func (p *Pipeline) RunBackground(ctx context.Context, interval time.Duration) {
 			"duplicates", result.Duplicates,
 			"evicted", result.Evicted,
 			"edge_decayed", result.EdgeDecayed,
+			"communities_detected", result.CommunitiesDetected,
+			"communities_new", result.CommunitiesNew,
+			"communities_deleted", result.CommunitiesDeleted,
 			"duration_ms", result.Duration.Milliseconds(),
 		)
 	}
@@ -416,6 +468,34 @@ func (p *Pipeline) RunBackground(ctx context.Context, interval time.Duration) {
 			}
 		}
 	}()
+}
+
+// detectCommunities invokes the CommunityDetector callback if one is wired.
+// When the callback is nil (e.g. standalone pipeline in tests or the detector
+// was not registered) the step is a no-op that returns a zero-value result.
+//
+// The callback pattern avoids a direct import of the service package, which
+// would create a circular dependency: consolidation → service → consolidation.
+// The callback is injected at construction time via WithCommunityDetector.
+func (p *Pipeline) detectCommunities(ctx context.Context) (*model.DetectionResult, error) {
+	if p.communityDetector == nil {
+		return &model.DetectionResult{}, nil
+	}
+	result, err := p.communityDetector(ctx)
+	if err != nil {
+		return &model.DetectionResult{}, fmt.Errorf("consolidation: detect communities: %w", err)
+	}
+	if result.TotalCommunities > 0 || result.NewCommunities > 0 || result.DeletedCommunities > 0 {
+		p.logger.Info("consolidation: community detection complete",
+			"event", "community_detection_sweep",
+			"communities_total", result.TotalCommunities,
+			"communities_new", result.NewCommunities,
+			"communities_deleted", result.DeletedCommunities,
+			"modularity", result.ModularityFinal,
+			"duration_ms", result.Duration.Milliseconds(),
+		)
+	}
+	return result, nil
 }
 
 // edgeDecay applies exponential weight decay to relations that have not been

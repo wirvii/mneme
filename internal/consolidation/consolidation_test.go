@@ -601,3 +601,83 @@ func TestPipeline_Run_IncludesEdgeDecayField(t *testing.T) {
 		t.Errorf("EdgeDecayed = %d, want >= 0", result.EdgeDecayed)
 	}
 }
+
+// ─── Community detection step ─────────────────────────────────────────────────
+
+// TestPipeline_Run_NilDetector verifies that when no community detector is
+// wired the pipeline still completes successfully and community fields are 0.
+func TestPipeline_Run_NilDetector(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	// Pipeline created without WithCommunityDetector (detector is nil).
+	p := newPipeline(s)
+	result, err := p.Run(ctx)
+	if err != nil {
+		t.Fatalf("Run with nil detector: %v", err)
+	}
+	if result.CommunitiesDetected != 0 {
+		t.Errorf("CommunitiesDetected = %d, want 0 (no detector)", result.CommunitiesDetected)
+	}
+	if result.CommunitiesNew != 0 {
+		t.Errorf("CommunitiesNew = %d, want 0 (no detector)", result.CommunitiesNew)
+	}
+	if result.CommunitiesDeleted != 0 {
+		t.Errorf("CommunitiesDeleted = %d, want 0 (no detector)", result.CommunitiesDeleted)
+	}
+}
+
+// TestPipeline_Run_IncludesCommunityDetection verifies that when a community
+// detector is wired its result is merged into ConsolidationResult.
+func TestPipeline_Run_IncludesCommunityDetection(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	// Fake detector that returns a predictable DetectionResult.
+	fakeDetector := consolidation.CommunityDetector(func(_ context.Context) (*model.DetectionResult, error) {
+		return &model.DetectionResult{
+			NewCommunities:     3,
+			UpdatedCommunities: 1,
+			DeletedCommunities: 2,
+			TotalCommunities:   4, // new + updated
+		}, nil
+	})
+
+	p := newPipeline(s).WithCommunityDetector(fakeDetector)
+	result, err := p.Run(ctx)
+	if err != nil {
+		t.Fatalf("Run with detector: %v", err)
+	}
+	if result.CommunitiesDetected != 4 {
+		t.Errorf("CommunitiesDetected = %d, want 4", result.CommunitiesDetected)
+	}
+	if result.CommunitiesNew != 3 {
+		t.Errorf("CommunitiesNew = %d, want 3", result.CommunitiesNew)
+	}
+	if result.CommunitiesDeleted != 2 {
+		t.Errorf("CommunitiesDeleted = %d, want 2", result.CommunitiesDeleted)
+	}
+}
+
+// TestPipeline_Run_CommunityDetectionError verifies that an error from the
+// detector is surfaced in the Run return value and the partial result is still
+// populated with the steps that completed before the failure.
+func TestPipeline_Run_CommunityDetectionError(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	errDetector := consolidation.CommunityDetector(func(_ context.Context) (*model.DetectionResult, error) {
+		return nil, fmt.Errorf("detector: simulated failure")
+	})
+
+	p := newPipeline(s).WithCommunityDetector(errDetector)
+	result, err := p.Run(ctx)
+	if err == nil {
+		t.Fatal("expected error from failing detector, got nil")
+	}
+	// The steps that ran before detectCommunities (sweep, edgeDecay) should
+	// have contributed non-negative counts to the partial result.
+	if result == nil {
+		t.Fatal("expected non-nil partial result on error")
+	}
+}
