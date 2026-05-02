@@ -13,8 +13,7 @@ import (
 )
 
 // newVaultCmd returns the "mneme vault" parent command. It groups subcommands
-// related to the filesystem vault mirror. Currently only "export" is implemented;
-// future subcommands (status, gc, open) are planned in SPEC-M2 and SPEC-M3.
+// related to the filesystem vault mirror.
 func newVaultCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "vault",
@@ -28,6 +27,7 @@ The vault is a valid Obsidian vault. Open it directly:
 	}
 
 	cmd.AddCommand(newVaultExportCmd())
+	cmd.AddCommand(newVaultImportCmd())
 	return cmd
 }
 
@@ -113,6 +113,98 @@ vault root to track metadata.`,
 	cmd.Flags().StringVarP(&flagType, "type", "t", "", "Filter by memory type (e.g. decision, architecture)")
 
 	return cmd
+}
+
+// newVaultImportCmd returns the "mneme vault import" command which reads .md
+// files from a vault directory and upserts their memories into SQLite.
+//
+// Import respects the .mneme-vault marker file for project verification and
+// supports two conflict-resolution strategies:
+//   - merge (default): file.updated_at > DB.updated_at → update; else skip.
+//   - overwrite: file always wins.
+//
+// --dry-run performs full parse + conflict resolution with zero DB writes.
+func newVaultImportCmd() *cobra.Command {
+	var (
+		flagScope    string
+		flagInput    string
+		flagStrategy string
+		flagDryRun   bool
+	)
+
+	cmd := &cobra.Command{
+		Use:   "import",
+		Short: "Import memories from vault Markdown files into SQLite",
+		Long: `Reads .md files from the vault's notes/ directory, parses their YAML
+frontmatter, and upserts the memories into the SQLite store.
+
+The vault must contain a .mneme-vault marker file (created by vault export).
+Only files under notes/ are processed; other files (images, config) are ignored.
+
+Merge strategy (default):
+  Files with updated_at newer than the DB record update the DB.
+  Files with updated_at older than or equal to the DB record are skipped.
+  Running "vault export && vault import" with no edits results in 0 changes.
+
+Overwrite strategy:
+  File always wins, regardless of timestamps. Use for "restore from vault".
+
+Files without an id field are always inserted as new memories. Files with a
+topic_key trigger upsert dedup — if a memory with the same topic_key exists,
+it is updated rather than duplicated.`,
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			svc, cleanup, err := initService()
+			if err != nil {
+				return fmt.Errorf("vault import: init service: %w", err)
+			}
+			defer cleanup()
+
+			ctx := context.Background()
+
+			if flagDryRun {
+				fmt.Fprintf(os.Stdout, "Dry run — no changes will be written to the database.\n\n")
+			}
+
+			result, err := svc.VaultImport(ctx, service.VaultImportOptions{
+				Scope:    flagScope,
+				InputDir: flagInput,
+				Strategy: flagStrategy,
+				DryRun:   flagDryRun,
+			})
+			if err != nil {
+				return fmt.Errorf("vault import: %w", err)
+			}
+
+			printVaultImportResult(result, flagDryRun)
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVarP(&flagScope, "scope", "s", "project", "Scope to import into: project or global")
+	cmd.Flags().StringVarP(&flagInput, "input", "i", "", "Vault root directory (default: ~/.mneme/vaults/<slug>)")
+	cmd.Flags().StringVar(&flagStrategy, "strategy", "merge", "Conflict resolution: merge (default) or overwrite")
+	cmd.Flags().BoolVarP(&flagDryRun, "dry-run", "n", false, "Show what would be imported without writing to DB")
+
+	return cmd
+}
+
+// printVaultImportResult writes a summary of the vault import operation to stdout.
+func printVaultImportResult(result *service.VaultImportResult, dryRun bool) {
+	if dryRun {
+		fmt.Fprintf(os.Stdout, "Vault import (dry run): %d would create, %d would update, %d would skip, %d errors\n",
+			result.Created, result.Updated, result.Skipped, result.Errors)
+		if len(result.Paths) > 0 {
+			fmt.Fprintf(os.Stdout, "Paths (first %d):\n", len(result.Paths))
+			for _, p := range result.Paths {
+				fmt.Fprintf(os.Stdout, "  %s\n", p)
+			}
+		}
+	} else {
+		fmt.Fprintf(os.Stdout, "Vault import: %d created, %d updated, %d skipped, %d errors\n",
+			result.Created, result.Updated, result.Skipped, result.Errors)
+	}
+	fmt.Fprintf(os.Stdout, "Vault root: %s\n", result.VaultRoot)
 }
 
 // printVaultResult writes a summary line for a single vault export result to stdout.
