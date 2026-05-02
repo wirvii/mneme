@@ -294,6 +294,39 @@ func TestWriter_EmptyVault(t *testing.T) {
 	}
 }
 
+// TestWriter_SkipUnchanged_SubSecondPrecision verifies that idempotency holds
+// when the memory's UpdatedAt carries sub-second precision (nanoseconds). This
+// was the root cause of SPEC-023 CRIT-1: RFC3339 truncates to the second, so
+// the on-disk timestamp was always slightly older than the DB timestamp, causing
+// every export run to rewrite all files.
+func TestWriter_SkipUnchanged_SubSecondPrecision(t *testing.T) {
+	root := t.TempDir()
+	w := newTestWriter(t, root)
+
+	// Use a timestamp that contains sub-second precision.
+	ts := time.Date(2026, 5, 2, 1, 34, 34, 729792000, time.UTC) // 729792 µs
+	m := newTestMemory("019ddc45-0000-0000-0000-000000000042", "spec/subsecond", "content v1", ts)
+
+	// First export — must write the file.
+	written, _, err := w.WriteMemory(m)
+	if err != nil {
+		t.Fatalf("first WriteMemory failed: %v", err)
+	}
+	if !written {
+		t.Fatal("first WriteMemory should have written the file")
+	}
+
+	// Second export with the same memory — must skip (idempotent round-trip).
+	w2 := newTestWriter(t, root)
+	written2, _, err := w2.WriteMemory(m)
+	if err != nil {
+		t.Fatalf("second WriteMemory failed: %v", err)
+	}
+	if written2 {
+		t.Error("second WriteMemory should have skipped the unchanged file (sub-second idempotency broken)")
+	}
+}
+
 func TestWriter_DryRun_Paths(t *testing.T) {
 	root := t.TempDir()
 	w := NewWriter(ExportOptions{

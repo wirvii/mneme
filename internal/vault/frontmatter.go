@@ -53,8 +53,8 @@ func FromMemory(m *model.Memory) Frontmatter {
 		Importance:    m.Importance,
 		Confidence:    m.Confidence,
 		DecayRate:     m.DecayRate,
-		CreatedAt:     m.CreatedAt.UTC().Format(time.RFC3339),
-		UpdatedAt:     m.UpdatedAt.UTC().Format(time.RFC3339),
+		CreatedAt:     m.CreatedAt.UTC().Format(time.RFC3339Nano),
+		UpdatedAt:     m.UpdatedAt.UTC().Format(time.RFC3339Nano),
 		RevisionCount: m.RevisionCount,
 	}
 
@@ -214,8 +214,13 @@ func parseUpdatedAt(header []byte) (time.Time, bool) {
 		if !found {
 			continue
 		}
-		t, err := time.Parse(time.RFC3339, strings.TrimSpace(after))
-		if err == nil {
+		// Try RFC3339Nano first (sub-second precision written by FromMemory),
+		// then fall back to RFC3339 for files written before this fix.
+		v := strings.TrimSpace(after)
+		if t, err := time.Parse(time.RFC3339Nano, v); err == nil {
+			return t, true
+		}
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
 			return t, true
 		}
 	}
