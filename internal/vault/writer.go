@@ -345,6 +345,17 @@ func (w *Writer) readMarker() (*VaultMarker, []byte, error) {
 	return &m, data, nil
 }
 
+// ReadMarkerBytes parses a VaultMarker from raw JSON bytes. It is exposed so
+// the import path can verify the marker without duplicating the JSON decode
+// logic that lives in readMarker (private to Writer).
+func ReadMarkerBytes(data []byte) (*VaultMarker, error) {
+	var m VaultMarker
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil, fmt.Errorf("parse vault marker: %w", err)
+	}
+	return &m, nil
+}
+
 // cleanStaleTmp removes any .*.tmp files under root that were left by a
 // previous interrupted export.
 func cleanStaleTmp(root string) error {
