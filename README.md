@@ -247,6 +247,7 @@ mneme init          Migrate legacy projects to SDD engine
 
 ```
 mneme sync          Export/import memories (JSONL.gz)
+mneme vault export  Export memories as Markdown vault (with frontmatter, Obsidian-compatible)
 mneme upgrade       Check for and install updates
 mneme export        Export memories to markdown
 mneme version       Print version
