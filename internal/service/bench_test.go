@@ -483,3 +483,162 @@ func BenchmarkContext_GraphFocus_5K(b *testing.B) {
 		}
 	}
 }
+
+// BenchmarkContext_CommunityPacking measures context assembly with community
+// packing enabled against a corpus of ~500 memories across 10 communities.
+// Target: <150ms total per call (SPEC-022 AC-6). Run with:
+//
+//	CGO_ENABLED=1 go test -tags fts5 -bench=BenchmarkContext_CommunityPacking -benchtime=5s ./internal/service/
+func BenchmarkContext_CommunityPacking(b *testing.B) {
+	projectDB, err := db.OpenMemory()
+	if err != nil {
+		b.Fatalf("open project db: %v", err)
+	}
+	globalDB, err := db.OpenMemory()
+	if err != nil {
+		b.Fatalf("open global db: %v", err)
+	}
+	b.Cleanup(func() { projectDB.Close(); globalDB.Close() })
+
+	ps := store.NewMemoryStore(projectDB)
+	gs := store.NewMemoryStore(globalDB)
+	cfg := config.Default()
+	cfg.Context.ContextPackingMode = "communities"
+	cfg.Context.ClusterOverviewsBudget = 1500
+	cfg.Context.TopClusterMaxMembers = 10
+	cfg.Graph.CommunityMinSize = 1
+
+	svc := service.NewMemoryService(ps, gs, cfg, "bench/commpack", embed.NopEmbedder{})
+	ctx := context.Background()
+
+	const (
+		numMemories    = 500
+		numCommunities = 10
+		entitiesPerC   = 5
+	)
+
+	// Create entities and communities.
+	allEntityIDs := make([]string, 0, numCommunities*entitiesPerC)
+	communities := make([]*model.Community, 0, numCommunities)
+	for c := 0; c < numCommunities; c++ {
+		entityIDs := make([]string, 0, entitiesPerC)
+		for e := 0; e < entitiesPerC; e++ {
+			ent, entErr := ps.FindOrCreateEntity(ctx,
+				fmt.Sprintf("bench-c%d-e%d", c, e),
+				model.KindConcept,
+				"bench/commpack",
+			)
+			if entErr != nil {
+				b.Fatalf("FindOrCreateEntity: %v", entErr)
+			}
+			entityIDs = append(entityIDs, ent.ID)
+			allEntityIDs = append(allEntityIDs, ent.ID)
+		}
+		communities = append(communities, &model.Community{
+			ID:             fmt.Sprintf("bench-comm-%d", c),
+			Project:        "bench/commpack",
+			Scope:          model.ScopeProject,
+			MembershipHash: fmt.Sprintf("hash-bench-%d", c),
+			MemberCount:    entitiesPerC,
+			Modularity:     0.4,
+			Label:          fmt.Sprintf("Bench Community %d", c),
+			EntityIDs:      entityIDs,
+		})
+	}
+	if saveErr := ps.SaveCommunitiesTx(ctx, communities, nil, nil); saveErr != nil {
+		b.Fatalf("SaveCommunitiesTx: %v", saveErr)
+	}
+
+	// Create synthesis memories for each community.
+	for _, comm := range communities {
+		imp := 0.85
+		synthTopicKey := "synthesis/community-" + comm.ID
+		_, _, uErr := ps.Upsert(ctx, &model.Memory{
+			Type:       model.TypeSynthesis,
+			Scope:      model.ScopeProject,
+			Project:    "bench/commpack",
+			Title:      "Cluster: " + comm.Label,
+			Content:    fmt.Sprintf("## Cluster Overview\n%s\n## Top Members\n- member 1\n## Aggregate Metadata\ncount: %d", comm.Label, comm.MemberCount),
+			TopicKey:   synthTopicKey,
+			Importance: imp,
+		})
+		if uErr != nil {
+			b.Fatalf("Upsert synthesis: %v", uErr)
+		}
+	}
+
+	// Create memories linked to entities.
+	for i := 0; i < numMemories; i++ {
+		resp, saveErr := svc.Save(ctx, model.SaveRequest{
+			Title:   fmt.Sprintf("bench-commpack-memory-%d", i),
+			Content: fmt.Sprintf("community packing benchmark content %d architecture focus", i),
+		})
+		if saveErr != nil {
+			b.Fatalf("Save memory %d: %v", i, saveErr)
+		}
+		eIdx := i % len(allEntityIDs)
+		if linkErr := ps.LinkMemoryEntity(ctx, resp.ID, allEntityIDs[eIdx], "mention"); linkErr != nil {
+			b.Fatalf("LinkMemoryEntity: %v", linkErr)
+		}
+	}
+
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		_, benchErr := svc.Context(ctx, model.ContextRequest{
+			Focus: "architecture benchmark",
+		})
+		if benchErr != nil {
+			b.Fatalf("Context: %v", benchErr)
+		}
+	}
+}
+
+// BenchmarkContext_FlatMode_Baseline measures context assembly in flat mode
+// against the same ~500-memory corpus as BenchmarkContext_CommunityPacking,
+// providing a baseline for the community packing overhead measurement.
+//
+// Run with:
+//
+//	CGO_ENABLED=1 go test -tags fts5 -bench=BenchmarkContext_FlatMode_Baseline -benchtime=5s ./internal/service/
+func BenchmarkContext_FlatMode_Baseline(b *testing.B) {
+	projectDB, err := db.OpenMemory()
+	if err != nil {
+		b.Fatalf("open project db: %v", err)
+	}
+	globalDB, err := db.OpenMemory()
+	if err != nil {
+		b.Fatalf("open global db: %v", err)
+	}
+	b.Cleanup(func() { projectDB.Close(); globalDB.Close() })
+
+	ps := store.NewMemoryStore(projectDB)
+	gs := store.NewMemoryStore(globalDB)
+	cfg := config.Default()
+	cfg.Context.ContextPackingMode = "flat"
+
+	svc := service.NewMemoryService(ps, gs, cfg, "bench/flatbase", embed.NopEmbedder{})
+	ctx := context.Background()
+
+	const numMemories = 500
+	for i := 0; i < numMemories; i++ {
+		_, saveErr := svc.Save(ctx, model.SaveRequest{
+			Title:   fmt.Sprintf("bench-flatbase-memory-%d", i),
+			Content: fmt.Sprintf("flat mode baseline benchmark content %d architecture focus", i),
+		})
+		if saveErr != nil {
+			b.Fatalf("Save memory %d: %v", i, saveErr)
+		}
+	}
+
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		_, benchErr := svc.Context(ctx, model.ContextRequest{
+			Focus: "architecture benchmark",
+		})
+		if benchErr != nil {
+			b.Fatalf("Context: %v", benchErr)
+		}
+	}
+}
