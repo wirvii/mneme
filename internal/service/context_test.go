@@ -2,6 +2,8 @@ package service_test
 
 import (
 	"context"
+	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -764,6 +766,389 @@ func TestContext_NoFocus_NoGraphExpansion(t *testing.T) {
 	}
 	if len(resp.Memories) == 0 {
 		t.Error("expected memories in context even without focus")
+	}
+}
+
+// ─── Community packing tests (SPEC-022) ──────────────────────────────────────
+
+// newCommunityPackingService creates a service with community packing enabled.
+// It returns the service and the raw project store for direct DB manipulation.
+func newCommunityPackingService(t *testing.T) (*service.MemoryService, *store.MemoryStore) {
+	t.Helper()
+	projectDB, err := db.OpenMemory()
+	if err != nil {
+		t.Fatalf("open project db: %v", err)
+	}
+	globalDB, err := db.OpenMemory()
+	if err != nil {
+		t.Fatalf("open global db: %v", err)
+	}
+	t.Cleanup(func() { projectDB.Close(); globalDB.Close() })
+
+	ps := store.NewMemoryStore(projectDB)
+	gs := store.NewMemoryStore(globalDB)
+	cfg := config.Default()
+	cfg.Context.ContextPackingMode = "communities"
+	cfg.Context.ClusterOverviewsBudget = 1500
+	cfg.Context.TopClusterMaxMembers = 10
+	cfg.Graph.CommunityDetectionEnabled = true
+	cfg.Graph.CommunityMinSize = 1
+
+	svc := service.NewMemoryService(ps, gs, cfg, "test/commpack", embed.NopEmbedder{})
+	return svc, ps
+}
+
+// savePackMem saves a memory into the "test/commpack" project and returns ID.
+func savePackMem(t *testing.T, ctx context.Context, svc *service.MemoryService, title, content string, memType model.MemoryType) string {
+	t.Helper()
+	resp, err := svc.Save(ctx, model.SaveRequest{
+		Title:   title,
+		Content: content,
+		Type:    memType,
+	})
+	if err != nil {
+		t.Fatalf("savePackMem %q: %v", title, err)
+	}
+	return resp.ID
+}
+
+// insertCommunityWithSynthesis inserts a community record and its synthesis
+// memory directly into the store. Returns the community and synthesis IDs.
+func insertCommunityWithSynthesis(
+	t *testing.T,
+	ctx context.Context,
+	ps *store.MemoryStore,
+	label string,
+	memberCount int,
+	entityIDs []string,
+	synthTopicKey string,
+) (communityID, synthID string) {
+	t.Helper()
+
+	comm := &model.Community{
+		ID:             fmt.Sprintf("comm-%s", strings.ReplaceAll(label, " ", "-")),
+		Project:        "test/commpack",
+		Scope:          model.ScopeProject,
+		MembershipHash: fmt.Sprintf("hash-%s", label),
+		MemberCount:    memberCount,
+		Modularity:     0.4,
+		Label:          label,
+		CreatedAt:      time.Now().UTC(),
+		UpdatedAt:      time.Now().UTC(),
+		EntityIDs:      entityIDs,
+	}
+	if err := ps.SaveCommunitiesTx(ctx, []*model.Community{comm}, nil, nil); err != nil {
+		t.Fatalf("SaveCommunitiesTx %q: %v", label, err)
+	}
+
+	// Insert synthesis memory directly.
+	imp := 0.85
+	synthResp, _, err := ps.Upsert(ctx, &model.Memory{
+		Type:       model.TypeSynthesis,
+		Scope:      model.ScopeProject,
+		Project:    "test/commpack",
+		Title:      "Cluster: " + label,
+		Content:    fmt.Sprintf("## Cluster Overview\n%s cluster with %d members.\n## Top Members\n- item 1\n## Aggregate Metadata\ncount: %d", label, memberCount, memberCount),
+		TopicKey:   synthTopicKey,
+		Importance: imp,
+	})
+	if err != nil {
+		t.Fatalf("Upsert synthesis %q: %v", label, err)
+	}
+	return comm.ID, synthResp.ID
+}
+
+// TestContext_CommunityPacking_ClusterOverviews verifies that when 3 communities
+// with syntheses exist, Context() populates ClusterOverviews and sets
+// PackingMode="communities".
+func TestContext_CommunityPacking_ClusterOverviews(t *testing.T) {
+	svc, ps := newCommunityPackingService(t)
+	ctx := context.Background()
+
+	// Seed some project memories.
+	for i := 0; i < 5; i++ {
+		savePackMem(t, ctx, svc, fmt.Sprintf("mem %d", i), "content "+strconv.Itoa(i), model.TypeDecision)
+	}
+
+	// Insert 3 communities with syntheses.
+	insertCommunityWithSynthesis(t, ctx, ps, "Auth", 5, nil, "synthesis/community-comm-Auth")
+	insertCommunityWithSynthesis(t, ctx, ps, "Database", 4, nil, "synthesis/community-comm-Database")
+	insertCommunityWithSynthesis(t, ctx, ps, "API", 3, nil, "synthesis/community-comm-API")
+
+	resp, err := svc.Context(ctx, model.ContextRequest{})
+	if err != nil {
+		t.Fatalf("Context: %v", err)
+	}
+
+	if resp.PackingMode != "communities" {
+		t.Errorf("PackingMode: got %q, want %q", resp.PackingMode, "communities")
+	}
+	if resp.ClusterOverviewsCount < 1 {
+		t.Errorf("ClusterOverviewsCount: got %d, want >= 1", resp.ClusterOverviewsCount)
+	}
+	if len(resp.ClusterOverviews) != resp.ClusterOverviewsCount {
+		t.Errorf("ClusterOverviews len %d != ClusterOverviewsCount %d", len(resp.ClusterOverviews), resp.ClusterOverviewsCount)
+	}
+	for _, ov := range resp.ClusterOverviews {
+		if ov.Type != model.TypeSynthesis {
+			t.Errorf("ClusterOverview memory type: got %q, want synthesis", ov.Type)
+		}
+	}
+}
+
+// TestContext_CommunityPacking_ZeroCommunities verifies that auto mode with no
+// communities returns PackingMode empty (flat).
+func TestContext_CommunityPacking_ZeroCommunities(t *testing.T) {
+	svc, _ := newCommunityPackingService(t)
+	// Override to auto mode.
+	_ = svc // service already uses "communities" mode from helper; rebuild with auto.
+	projectDB, err := db.OpenMemory()
+	if err != nil {
+		t.Fatalf("open project db: %v", err)
+	}
+	globalDB, err := db.OpenMemory()
+	if err != nil {
+		t.Fatalf("open global db: %v", err)
+	}
+	t.Cleanup(func() { projectDB.Close(); globalDB.Close() })
+	ps := store.NewMemoryStore(projectDB)
+	gs := store.NewMemoryStore(globalDB)
+	cfg := config.Default()
+	cfg.Context.ContextPackingMode = "auto"
+	// No communities inserted — ListCommunities returns 0.
+	svcAuto := service.NewMemoryService(ps, gs, cfg, "test/autopack", embed.NopEmbedder{})
+	ctx := context.Background()
+
+	savePackMem(t, ctx, svcAuto, "some memory", "content", model.TypeDecision)
+
+	resp, err := svcAuto.Context(ctx, model.ContextRequest{})
+	if err != nil {
+		t.Fatalf("Context: %v", err)
+	}
+
+	// No communities → flat mode, PackingMode should be empty.
+	if resp.PackingMode != "" {
+		t.Errorf("PackingMode: got %q, want empty (flat mode)", resp.PackingMode)
+	}
+	if len(resp.ClusterOverviews) != 0 {
+		t.Errorf("expected no ClusterOverviews in flat mode")
+	}
+}
+
+// TestContext_CommunityPacking_FlatModeExplicit verifies that mode="flat" never
+// triggers community packing even when communities exist.
+func TestContext_CommunityPacking_FlatModeExplicit(t *testing.T) {
+	projectDB, err := db.OpenMemory()
+	if err != nil {
+		t.Fatalf("open project db: %v", err)
+	}
+	globalDB, err := db.OpenMemory()
+	if err != nil {
+		t.Fatalf("open global db: %v", err)
+	}
+	t.Cleanup(func() { projectDB.Close(); globalDB.Close() })
+	ps := store.NewMemoryStore(projectDB)
+	gs := store.NewMemoryStore(globalDB)
+	cfg := config.Default()
+	cfg.Context.ContextPackingMode = "flat"
+	svcFlat := service.NewMemoryService(ps, gs, cfg, "test/flatmode", embed.NopEmbedder{})
+	ctx := context.Background()
+
+	// Insert a community — should be ignored.
+	insertCommunityWithFlatStore(t, ctx, ps, "FlatTest", 3, "synthesis/community-comm-FlatTest")
+
+	savePackMemInProject(t, ctx, svcFlat, "mem flat 1", "content flat", model.TypeDecision)
+
+	resp, err := svcFlat.Context(ctx, model.ContextRequest{})
+	if err != nil {
+		t.Fatalf("Context: %v", err)
+	}
+
+	if resp.PackingMode != "" {
+		t.Errorf("PackingMode: got %q, want empty (flat mode)", resp.PackingMode)
+	}
+	if len(resp.ClusterOverviews) != 0 {
+		t.Errorf("expected no ClusterOverviews when mode=flat")
+	}
+}
+
+// insertCommunityWithFlatStore inserts a community + synthesis directly using
+// the raw store, for tests that bypass the service layer.
+func insertCommunityWithFlatStore(t *testing.T, ctx context.Context, ps *store.MemoryStore, label string, memberCount int, topicKey string) {
+	t.Helper()
+	comm := &model.Community{
+		ID:             fmt.Sprintf("comm-%s", strings.ReplaceAll(label, " ", "-")),
+		Project:        "test/flatmode",
+		Scope:          model.ScopeProject,
+		MembershipHash: "hash-flat-" + label,
+		MemberCount:    memberCount,
+		Modularity:     0.3,
+		Label:          label,
+		CreatedAt:      time.Now().UTC(),
+		UpdatedAt:      time.Now().UTC(),
+	}
+	if err := ps.SaveCommunitiesTx(ctx, []*model.Community{comm}, nil, nil); err != nil {
+		t.Fatalf("insertCommunityWithFlatStore: %v", err)
+	}
+	imp := 0.85
+	_, _, err := ps.Upsert(ctx, &model.Memory{
+		Type:       model.TypeSynthesis,
+		Scope:      model.ScopeProject,
+		Project:    "test/flatmode",
+		Title:      "Cluster: " + label,
+		Content:    "overview",
+		TopicKey:   topicKey,
+		Importance: imp,
+	})
+	if err != nil {
+		t.Fatalf("insertCommunityWithFlatStore upsert: %v", err)
+	}
+}
+
+// savePackMemInProject saves a memory into an arbitrary project via the given service.
+func savePackMemInProject(t *testing.T, ctx context.Context, svc *service.MemoryService, title, content string, memType model.MemoryType) string {
+	t.Helper()
+	resp, err := svc.Save(ctx, model.SaveRequest{
+		Title:   title,
+		Content: content,
+		Type:    memType,
+	})
+	if err != nil {
+		t.Fatalf("savePackMemInProject %q: %v", title, err)
+	}
+	return resp.ID
+}
+
+// TestContext_CommunityPacking_NoFocusSizeRanking verifies that without a focus
+// query, the largest community's synthesis appears first in ClusterOverviews.
+func TestContext_CommunityPacking_NoFocusSizeRanking(t *testing.T) {
+	svc, ps := newCommunityPackingService(t)
+	ctx := context.Background()
+
+	savePackMem(t, ctx, svc, "some memory", "content", model.TypeDecision)
+
+	// Insert communities: small (2 members), large (10 members).
+	insertCommunityWithSynthesis(t, ctx, ps, "Small", 2, nil, "synthesis/community-comm-Small")
+	insertCommunityWithSynthesis(t, ctx, ps, "Large", 10, nil, "synthesis/community-comm-Large")
+
+	resp, err := svc.Context(ctx, model.ContextRequest{}) // no focus
+	if err != nil {
+		t.Fatalf("Context: %v", err)
+	}
+
+	if len(resp.ClusterOverviews) < 2 {
+		t.Fatalf("expected 2 cluster overviews, got %d", len(resp.ClusterOverviews))
+	}
+	// Large community should appear first (member_count DESC).
+	if !strings.Contains(resp.ClusterOverviews[0].Title, "Large") {
+		t.Errorf("first overview should be Large community, got title %q", resp.ClusterOverviews[0].Title)
+	}
+}
+
+// TestContext_CommunityPacking_Dedup_SynthesisNotInOther verifies that a synthesis
+// memory in ClusterOverviews does not appear in the Memories slice.
+func TestContext_CommunityPacking_Dedup_SynthesisNotInOther(t *testing.T) {
+	svc, ps := newCommunityPackingService(t)
+	ctx := context.Background()
+
+	savePackMem(t, ctx, svc, "memory 1", "content 1", model.TypeDecision)
+	_, synthID := insertCommunityWithSynthesis(t, ctx, ps, "DedupeTest", 3, nil, "synthesis/community-comm-DedupeTest")
+
+	resp, err := svc.Context(ctx, model.ContextRequest{})
+	if err != nil {
+		t.Fatalf("Context: %v", err)
+	}
+
+	if len(resp.ClusterOverviews) == 0 {
+		t.Skip("no cluster overviews produced; skipping dedup check")
+	}
+
+	// Verify the synthesis ID does not appear in Memories.
+	for _, m := range resp.Memories {
+		if m.ID == synthID {
+			t.Errorf("synthesis %q should not appear in Memories (dedup violation)", synthID)
+		}
+	}
+}
+
+// TestContext_CommunityPacking_SmallBudget verifies graceful degradation when
+// the budget is very small.
+func TestContext_CommunityPacking_SmallBudget(t *testing.T) {
+	svc, ps := newCommunityPackingService(t)
+	ctx := context.Background()
+
+	savePackMem(t, ctx, svc, "budget test memory", "some content", model.TypeDecision)
+	insertCommunityWithSynthesis(t, ctx, ps, "BudgetCluster", 2, nil, "synthesis/community-comm-BudgetCluster")
+
+	// Very small budget — should not panic.
+	resp, err := svc.Context(ctx, model.ContextRequest{Budget: 50})
+	if err != nil {
+		t.Fatalf("Context with small budget: %v", err)
+	}
+	// PackingMode should still be "communities" if a community exists.
+	if resp.PackingMode != "communities" {
+		t.Errorf("PackingMode: got %q, want communities", resp.PackingMode)
+	}
+}
+
+// TestContext_CommunityPacking_NoSyntheses verifies that when communities exist
+// but no synthesis memories exist, Phase 3 (top cluster members) still runs
+// and Phase 2 (overviews) returns empty.
+func TestContext_CommunityPacking_NoSyntheses(t *testing.T) {
+	svc, ps := newCommunityPackingService(t)
+	ctx := context.Background()
+
+	// Save a memory and link it to an entity.
+	memID := savePackMem(t, ctx, svc, "cluster member", "important content", model.TypeArchitecture)
+
+	// Create entity and link it to the memory.
+	ent, err := ps.FindOrCreateEntity(ctx, "entity-nosyn-1", model.KindConcept, "test/commpack")
+	if err != nil {
+		t.Fatalf("FindOrCreateEntity: %v", err)
+	}
+	if lErr := ps.LinkMemoryEntity(ctx, memID, ent.ID, "mention"); lErr != nil {
+		t.Fatalf("LinkMemoryEntity: %v", lErr)
+	}
+
+	// Insert community with this entity member, but NO synthesis memory.
+	comm := &model.Community{
+		ID:             "comm-nosynth",
+		Project:        "test/commpack",
+		Scope:          model.ScopeProject,
+		MembershipHash: "hash-nosynth",
+		MemberCount:    1,
+		Modularity:     0.3,
+		Label:          "NoSynthCluster",
+		CreatedAt:      time.Now().UTC(),
+		UpdatedAt:      time.Now().UTC(),
+		EntityIDs:      []string{ent.ID},
+	}
+	if err := ps.SaveCommunitiesTx(ctx, []*model.Community{comm}, nil, nil); err != nil {
+		t.Fatalf("SaveCommunitiesTx: %v", err)
+	}
+
+	resp, err := svc.Context(ctx, model.ContextRequest{})
+	if err != nil {
+		t.Fatalf("Context: %v", err)
+	}
+
+	if resp.PackingMode != "communities" {
+		t.Errorf("PackingMode: got %q, want communities", resp.PackingMode)
+	}
+	// No syntheses → no cluster overviews.
+	if len(resp.ClusterOverviews) != 0 {
+		t.Errorf("expected 0 cluster overviews when no syntheses, got %d", len(resp.ClusterOverviews))
+	}
+	// The member should appear somewhere (top cluster or other memories).
+	found := false
+	for _, m := range resp.Memories {
+		if m.ID == memID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("cluster member %q should appear in Memories", memID)
 	}
 }
 

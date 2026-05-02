@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 	"unicode/utf8"
 
 	"github.com/juanftp/mneme/internal/model"
@@ -226,12 +227,7 @@ func (svc *MemoryService) Context(ctx context.Context, req model.ContextRequest)
 
 	// Score each candidate using effective importance (decay applied) plus focus
 	// boost and architecture type boost.
-	type scored struct {
-		mem   *model.Memory
-		score float64
-	}
-
-	scoredCandidates := make([]scored, 0, len(candidates))
+	scoredCandidates := make([]scoredMem, 0, len(candidates))
 	for _, m := range candidates {
 		lastAccessed := m.CreatedAt
 		if m.LastAccessed != nil {
@@ -250,7 +246,7 @@ func (svc *MemoryService) Context(ctx context.Context, req model.ContextRequest)
 			eff += 0.3
 		}
 
-		scoredCandidates = append(scoredCandidates, scored{mem: m, score: eff})
+		scoredCandidates = append(scoredCandidates, scoredMem{mem: m, score: eff})
 	}
 
 	sort.Slice(scoredCandidates, func(i, j int) bool {
@@ -276,29 +272,314 @@ func (svc *MemoryService) Context(ctx context.Context, req model.ContextRequest)
 		}
 	}
 
-	// Pack memories into the budget, starting with non-session-summary records.
-	// Session summaries are excluded from the packed list because the last session
-	// is already surfaced via LastSession; packing it again would waste budget.
+	// Deduct the session summary from the general budget estimate so callers can
+	// rely on TokenEstimate as an accurate total.
 	tokenBudget := budget
 	if lastSession != nil {
-		// Deduct the session summary from the budget estimate so callers can rely on
-		// TokenEstimate as an accurate total.
 		tokenBudget -= estimateTokens(lastSession.Summary)
 		if tokenBudget < 0 {
 			tokenBudget = 0
 		}
 	}
 
-	packed := make([]model.Memory, 0, len(scoredCandidates))
+	// ── Determine packing mode ────────────────────────────────────────────────
+
+	effectiveMode := svc.config.Context.ContextPackingMode
+	if effectiveMode == "" {
+		effectiveMode = "auto"
+	}
+
+	// For auto/communities modes, attempt to load communities. Any error falls
+	// back to flat silently to ensure Context() never fails on packing errors.
+	var communities []*model.Community
+	if effectiveMode != "flat" {
+		var lcErr error
+		communities, lcErr = svc.projectStore.ListCommunities(ctx, req.Project)
+		if lcErr != nil {
+			slog.WarnContext(ctx, "community packing: ListCommunities failed, using flat mode",
+				"event", "context_community_fallback",
+				"error", lcErr,
+			)
+			communities = nil
+		}
+		if effectiveMode == "auto" && len(communities) == 0 {
+			effectiveMode = "flat"
+		}
+	}
+
+	useCommunityPacking := effectiveMode != "flat" && len(communities) > 0
+
+	// ── PHASE 2b-4: Community packing or flat fallback ────────────────────────
+
+	if !useCommunityPacking {
+		// Flat mode: existing packing loop (pre-SPEC-022 behaviour).
+		packed := make([]model.Memory, 0, len(scoredCandidates))
+		tokenUsed := 0
+		for _, sc := range scoredCandidates {
+			if sc.mem.Type == model.TypeSessionSummary {
+				continue
+			}
+			if ruleIDs[sc.mem.ID] {
+				continue
+			}
+			cost := estimateTokens(sc.mem.Title) + estimateTokens(sc.mem.Content)
+			if tokenUsed+cost > tokenBudget {
+				break
+			}
+			packed = append(packed, *sc.mem)
+			tokenUsed += cost
+		}
+
+		totalTokens := rulesTokens + tokenUsed
+		if lastSession != nil {
+			totalTokens += estimateTokens(lastSession.Summary)
+		}
+
+		return &model.ContextResponse{
+			Project:        req.Project,
+			Memories:       packed,
+			Rules:          packedRules,
+			TokenEstimate:  totalTokens,
+			TotalAvailable: totalAvailable,
+			Included:       len(packed),
+			LastSession:    lastSession,
+			RulesCount:     len(packedRules),
+			RulesTokens:    rulesTokens,
+			RulesTruncated: rulesTruncated,
+		}, nil
+	}
+
+	return svc.packContextWithCommunities(ctx, req, communities, scoredCandidates, focusIDs, ruleIDs,
+		packedRules, lastSession, tokenBudget, totalAvailable, rulesTokens, rulesTruncated)
+}
+
+// scoredMem pairs a memory pointer with its pre-computed effective score.
+type scoredMem struct {
+	mem   *model.Memory
+	score float64
+}
+
+// packContextWithCommunities executes the 4-phase community-aware packing
+// algorithm (SPEC-022). It is called when ListCommunities returns N > 0 and
+// the effective packing mode is "auto" or "communities".
+//
+// Phase order:
+//  1. Rank communities by PPR proximity to focus (or member_count when no focus).
+//  2. Pack synthesis summaries into the dedicated ClusterOverviewsBudget.
+//  3. Deep-dive the top-ranked community: pack its members by EffectiveImportance.
+//  4. Fill remaining general budget with flat scoring, deduplicating against
+//     Phases 1-3.
+func (svc *MemoryService) packContextWithCommunities(
+	ctx context.Context,
+	req model.ContextRequest,
+	communities []*model.Community,
+	scoredCandidates []scoredMem,
+	focusIDs, ruleIDs map[string]bool,
+	packedRules []model.Memory,
+	lastSession *model.SessionSummary,
+	tokenBudget, totalAvailable, rulesTokens, rulesTruncated int,
+) (*model.ContextResponse, error) {
+	// ── Phase 1: Load syntheses and rank communities ──────────────────────────
+	syntheses, err := svc.projectStore.List(ctx, store.ListOptions{
+		Project: req.Project,
+		Type:    model.TypeSynthesis,
+		Limit:   200,
+	})
+	if err != nil {
+		slog.WarnContext(ctx, "community packing: synthesis load failed, using flat mode",
+			"event", "context_community_fallback",
+			"error", err,
+		)
+		return svc.packContextFlat(req, scoredCandidates, focusIDs, ruleIDs,
+			packedRules, lastSession, tokenBudget, totalAvailable, rulesTokens, rulesTruncated)
+	}
+
+	// Build community-ID → synthesis memory map.
+	synthesisMap := make(map[string]*model.Memory, len(syntheses))
+	for _, syn := range syntheses {
+		commID := strings.TrimPrefix(syn.TopicKey, "synthesis/community-")
+		if commID != syn.TopicKey { // trim had an effect — valid synthesis key
+			synCopy := *syn
+			synthesisMap[commID] = &synCopy
+		}
+	}
+
+	// Rank communities by focus relevance (PPR) or by size when no focus.
+	var rankedCommunities []*model.Community
+	if req.Focus != "" {
+		rankedCommunities = svc.rankCommunitiesByFocus(ctx, communities, synthesisMap, req.Focus, req.Project)
+	} else {
+		rankedCommunities = sortCommunitiesBySize(communities)
+	}
+
+	// ── Phase 2: Pack cluster overviews into dedicated budget ─────────────────
+	overviewsBudget := svc.config.Context.ClusterOverviewsBudget
+	var packedOverviews []model.Memory
+	var overviewsTokens int
+	synthesisIDs := make(map[string]bool)
+
+	if overviewsBudget > 0 {
+		for _, comm := range rankedCommunities {
+			syn, ok := synthesisMap[comm.ID]
+			if !ok || syn == nil {
+				continue
+			}
+			cost := estimateTokens(syn.Title) + estimateTokens(syn.Content)
+			if overviewsTokens+cost > overviewsBudget {
+				continue // try smaller syntheses (same pattern as rules packing)
+			}
+			packedOverviews = append(packedOverviews, *syn)
+			overviewsTokens += cost
+			synthesisIDs[syn.ID] = true
+		}
+	}
+
+	// ── Phase 3: Deep-dive the top-ranked community ───────────────────────────
+	var topClusterLabel string
+	var topClusterPacked []model.Memory
+	topClusterIDs := make(map[string]bool)
+	topClusterMaxMembers := svc.config.Context.TopClusterMaxMembers
 	tokenUsed := 0
 
+	if len(rankedCommunities) > 0 {
+		topComm := rankedCommunities[0]
+		topClusterLabel = topComm.Label
+
+		entityIDs, eErr := svc.projectStore.GetCommunityEntityIDs(ctx, topComm.ID)
+		if eErr != nil {
+			slog.WarnContext(ctx, "community packing: top cluster entity load failed",
+				"event", "context_top_cluster_error",
+				"community_id", topComm.ID,
+				"error", eErr,
+			)
+		} else if len(entityIDs) > 0 {
+			members, mErr := svc.projectStore.GetMemoriesByEntityIDs(ctx, entityIDs, req.Project)
+			if mErr != nil {
+				slog.WarnContext(ctx, "community packing: top cluster members load failed",
+					"event", "context_top_cluster_error",
+					"community_id", topComm.ID,
+					"error", mErr,
+				)
+			} else {
+				// Score members using the same EffectiveImportance logic as the flat path.
+				scored3 := make([]scoredMem, 0, len(members))
+				for _, m := range members {
+					lastAccessed := m.CreatedAt
+					if m.LastAccessed != nil {
+						lastAccessed = *m.LastAccessed
+					}
+					eff := scoring.EffectiveImportance(m.Importance, m.DecayRate, lastAccessed)
+					if m.Type == model.TypeArchitecture {
+						eff *= 1.5
+					}
+					if focusIDs[m.ID] {
+						eff += 0.3
+					}
+					scored3 = append(scored3, scoredMem{mem: m, score: eff})
+				}
+				sort.Slice(scored3, func(i, j int) bool {
+					return scored3[i].score > scored3[j].score
+				})
+
+				count := 0
+				for _, sc := range scored3 {
+					if count >= topClusterMaxMembers {
+						break
+					}
+					if sc.mem.Type == model.TypeSessionSummary {
+						continue
+					}
+					if ruleIDs[sc.mem.ID] || synthesisIDs[sc.mem.ID] {
+						continue
+					}
+					cost := estimateTokens(sc.mem.Title) + estimateTokens(sc.mem.Content)
+					if tokenUsed+cost > tokenBudget {
+						break
+					}
+					topClusterPacked = append(topClusterPacked, *sc.mem)
+					tokenUsed += cost
+					topClusterIDs[sc.mem.ID] = true
+					count++
+				}
+			}
+		}
+	}
+
+	// ── Phase 4: Fill remaining budget with flat scoring ──────────────────────
+	otherPacked := make([]model.Memory, 0, len(scoredCandidates))
 	for _, sc := range scoredCandidates {
 		if sc.mem.Type == model.TypeSessionSummary {
-			// Handled via LastSession; skip to avoid duplication.
 			continue
 		}
-		// DEDUP: skip any memory already included in the rules section.
-		// Post-scoring dedup preserves TotalAvailable semantics and backward compat.
+		if ruleIDs[sc.mem.ID] || synthesisIDs[sc.mem.ID] || topClusterIDs[sc.mem.ID] {
+			continue
+		}
+		cost := estimateTokens(sc.mem.Title) + estimateTokens(sc.mem.Content)
+		if tokenUsed+cost > tokenBudget {
+			break
+		}
+		otherPacked = append(otherPacked, *sc.mem)
+		tokenUsed += cost
+	}
+
+	// Merge Phase 3 (top cluster) followed by Phase 4 (other) into Memories.
+	// TopClusterMembers marks the split point for the CLI hook to render distinct sections.
+	allMemories := make([]model.Memory, 0, len(topClusterPacked)+len(otherPacked))
+	allMemories = append(allMemories, topClusterPacked...)
+	allMemories = append(allMemories, otherPacked...)
+
+	totalTokens := rulesTokens + overviewsTokens + tokenUsed
+	if lastSession != nil {
+		totalTokens += estimateTokens(lastSession.Summary)
+	}
+
+	slog.InfoContext(ctx, "context_community_packing",
+		"event", "context_community_packing",
+		"project", req.Project,
+		"communities", len(rankedCommunities),
+		"overviews", len(packedOverviews),
+		"top_cluster_members", len(topClusterPacked),
+		"other_memories", len(otherPacked),
+		"total_tokens", totalTokens,
+	)
+
+	return &model.ContextResponse{
+		Project:                req.Project,
+		Memories:               allMemories,
+		Rules:                  packedRules,
+		ClusterOverviews:       packedOverviews,
+		ClusterOverviewsCount:  len(packedOverviews),
+		ClusterOverviewsTokens: overviewsTokens,
+		TopCluster:             topClusterLabel,
+		TopClusterMembers:      len(topClusterPacked),
+		PackingMode:            "communities",
+		TokenEstimate:          totalTokens,
+		TotalAvailable:         totalAvailable,
+		Included:               len(allMemories),
+		LastSession:            lastSession,
+		RulesCount:             len(packedRules),
+		RulesTokens:            rulesTokens,
+		RulesTruncated:         rulesTruncated,
+	}, nil
+}
+
+// packContextFlat is the fallback path used when community packing encounters
+// an unrecoverable error. It reproduces the pre-SPEC-022 flat scoring loop.
+func (svc *MemoryService) packContextFlat(
+	req model.ContextRequest,
+	scoredCandidates []scoredMem,
+	focusIDs, ruleIDs map[string]bool,
+	packedRules []model.Memory,
+	lastSession *model.SessionSummary,
+	tokenBudget, totalAvailable, rulesTokens, rulesTruncated int,
+) (*model.ContextResponse, error) {
+	_ = focusIDs // used by caller; kept for symmetry
+	packed := make([]model.Memory, 0, len(scoredCandidates))
+	tokenUsed := 0
+	for _, sc := range scoredCandidates {
+		if sc.mem.Type == model.TypeSessionSummary {
+			continue
+		}
 		if ruleIDs[sc.mem.ID] {
 			continue
 		}
@@ -309,14 +590,10 @@ func (svc *MemoryService) Context(ctx context.Context, req model.ContextRequest)
 		packed = append(packed, *sc.mem)
 		tokenUsed += cost
 	}
-
-	// ── PHASE 3: Build response ───────────────────────────────────────────────
-
 	totalTokens := rulesTokens + tokenUsed
 	if lastSession != nil {
 		totalTokens += estimateTokens(lastSession.Summary)
 	}
-
 	return &model.ContextResponse{
 		Project:        req.Project,
 		Memories:       packed,
@@ -329,6 +606,144 @@ func (svc *MemoryService) Context(ctx context.Context, req model.ContextRequest)
 		RulesTokens:    rulesTokens,
 		RulesTruncated: rulesTruncated,
 	}, nil
+}
+
+// rankCommunitiesByFocus ranks communities by PPR proximity to a focus query.
+// It resolves the focus to entity IDs via FTS5, builds a subgraph, runs PPR
+// seeded from the focus entities, and scores each community as the maximum PPR
+// score of its synthesis memory's entities.
+//
+// Falls back to sortCommunitiesBySize on any error, consistent with SPEC-017 D6.
+func (svc *MemoryService) rankCommunitiesByFocus(
+	ctx context.Context,
+	communities []*model.Community,
+	synthesisMap map[string]*model.Memory,
+	focus, project string,
+) []*model.Community {
+	focusSeedIDs := svc.collectFocusSeedEntityIDs(ctx, focus, project)
+	if len(focusSeedIDs) == 0 {
+		return sortCommunitiesBySize(communities)
+	}
+
+	opts := DefaultGraphBuildOptions()
+	graph, _ := svc.BuildGraphForSeeds(ctx, focusSeedIDs, opts)
+	if len(graph.Nodes) == 0 {
+		return sortCommunitiesBySize(communities)
+	}
+
+	pprSeeds := make([]scoring.NodeID, 0, len(focusSeedIDs))
+	pprSeeds = append(pprSeeds, focusSeedIDs...)
+
+	pprResult, err := scoring.PPR(*graph, pprSeeds, scoring.DefaultPPROptions())
+	if err != nil {
+		slog.WarnContext(ctx, "community packing: PPR failed, using size ranking",
+			"event", "context_community_ppr_fallback",
+			"error", err,
+		)
+		return sortCommunitiesBySize(communities)
+	}
+
+	type commScore struct {
+		comm  *model.Community
+		score float64
+	}
+	ranked := make([]commScore, 0, len(communities))
+	for _, comm := range communities {
+		syn, ok := synthesisMap[comm.ID]
+		if !ok || syn == nil {
+			ranked = append(ranked, commScore{comm: comm, score: 0})
+			continue
+		}
+		entities, eErr := svc.projectStore.GetMemoryEntities(ctx, syn.ID)
+		if eErr != nil || len(entities) == 0 {
+			ranked = append(ranked, commScore{comm: comm, score: 0})
+			continue
+		}
+		maxScore := 0.0
+		for _, e := range entities {
+			if s, ok := pprResult.Scores[e.ID]; ok && s > maxScore {
+				maxScore = s
+			}
+		}
+		ranked = append(ranked, commScore{comm: comm, score: maxScore})
+	}
+
+	sort.SliceStable(ranked, func(i, j int) bool {
+		if ranked[i].score != ranked[j].score {
+			return ranked[i].score > ranked[j].score
+		}
+		return ranked[i].comm.MemberCount > ranked[j].comm.MemberCount
+	})
+
+	result := make([]*model.Community, len(ranked))
+	for i, cs := range ranked {
+		result[i] = cs.comm
+	}
+	return result
+}
+
+// collectFocusSeedEntityIDs resolves a focus query string to entity IDs by
+// performing FTS5 (and optionally vector) search, then mapping matched memory
+// IDs to their linked entities. Returns at most ExpansionSeedTopK entity IDs.
+func (svc *MemoryService) collectFocusSeedEntityIDs(ctx context.Context, focus, project string) []string {
+	focusOpts := store.SearchOptions{Project: project, Limit: 20}
+	ftsResults, _ := svc.projectStore.FTS5Search(ctx, focus, focusOpts)
+
+	matchedIDs := make(map[string]bool, len(ftsResults))
+	for _, r := range ftsResults {
+		matchedIDs[r.ID] = true
+	}
+
+	if svc.embedder.Model() != "none" {
+		focusVec := svc.embedder.Embed(focus)
+		if len(focusVec) > 0 {
+			vOpts := store.VectorSearchOptions{Project: project, Limit: 20}
+			vecResults, vErr := svc.projectStore.VectorSearch(ctx, focusVec, vOpts)
+			if vErr == nil {
+				for _, vr := range vecResults {
+					if vr.Similarity > 0.3 {
+						matchedIDs[vr.MemoryID] = true
+					}
+				}
+			}
+		}
+	}
+
+	seedEntities := make(map[string]bool)
+	count := 0
+	for memID := range matchedIDs {
+		if count >= svc.config.Graph.ExpansionSeedTopK {
+			break
+		}
+		entities, eErr := svc.projectStore.GetMemoryEntities(ctx, memID)
+		if eErr != nil {
+			continue
+		}
+		for _, e := range entities {
+			seedEntities[e.ID] = true
+		}
+		count++
+	}
+
+	result := make([]string, 0, len(seedEntities))
+	for id := range seedEntities {
+		result = append(result, id)
+	}
+	return result
+}
+
+// sortCommunitiesBySize returns a new slice of communities sorted by
+// member_count DESC, with modularity as a secondary tiebreaker.
+func sortCommunitiesBySize(communities []*model.Community) []*model.Community {
+	result := make([]*model.Community, len(communities))
+	copy(result, communities)
+	sort.SliceStable(result, func(i, j int) bool {
+		if result[i].MemberCount != result[j].MemberCount {
+			return result[i].MemberCount > result[j].MemberCount
+		}
+		return result[i].Modularity > result[j].Modularity
+	})
+	return result
 }
 
 // loadActiveRules fetches all active rule-type memories from the project store
