@@ -69,7 +69,7 @@ func TestAllMemoryTypes(t *testing.T) {
 
 	types := AllMemoryTypes()
 
-	const wantLen = 10
+	const wantLen = 11
 	if len(types) != wantLen {
 		t.Errorf("AllMemoryTypes() returned %d types, want %d", len(types), wantLen)
 	}
@@ -122,7 +122,8 @@ func TestDefaultDecayRateCoverage(t *testing.T) {
 	// TypeRule is explicitly 0.0 — rules are permanent by design and do not decay
 	// until explicitly revoked. Any future "immortal" type should also be listed here.
 	exemptFromDecay := map[MemoryType]bool{
-		TypeRule: true,
+		TypeRule:      true,
+		TypeSynthesis: true, // Synthesis memories are regenerated each cycle; zero decay is correct.
 	}
 
 	for _, mt := range AllMemoryTypes() {
@@ -140,6 +141,51 @@ func TestDefaultDecayRateCoverage(t *testing.T) {
 				t.Errorf("DefaultDecayRate[%q] = %v, must be > 0 (zero means no decay; add to exemptFromDecay if intentional)", mt, val)
 			}
 		})
+	}
+}
+
+func TestMemoryTypeValid_Synthesis(t *testing.T) {
+	t.Parallel()
+
+	if !TypeSynthesis.Valid() {
+		t.Error("TypeSynthesis.Valid() = false, want true")
+	}
+}
+
+func TestAllMemoryTypes_IncludesSynthesis(t *testing.T) {
+	t.Parallel()
+
+	types := AllMemoryTypes()
+	for _, mt := range types {
+		if mt == TypeSynthesis {
+			return
+		}
+	}
+	t.Error("AllMemoryTypes() does not contain TypeSynthesis")
+}
+
+func TestDefaultImportance_Synthesis(t *testing.T) {
+	t.Parallel()
+
+	const want = 0.85
+	got, ok := DefaultImportance[TypeSynthesis]
+	if !ok {
+		t.Fatal("DefaultImportance is missing entry for TypeSynthesis")
+	}
+	if got != want {
+		t.Errorf("DefaultImportance[TypeSynthesis] = %v, want %v", got, want)
+	}
+}
+
+func TestDefaultDecayRate_Synthesis(t *testing.T) {
+	t.Parallel()
+
+	got, ok := DefaultDecayRate[TypeSynthesis]
+	if !ok {
+		t.Fatal("DefaultDecayRate is missing entry for TypeSynthesis")
+	}
+	if got != 0.0 {
+		t.Errorf("DefaultDecayRate[TypeSynthesis] = %v, want 0.0", got)
 	}
 }
 

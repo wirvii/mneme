@@ -51,6 +51,14 @@ const (
 	// are immune to decay (decay_rate=0) so they remain active until
 	// explicitly revoked via mem_forget or mem_update.
 	TypeRule MemoryType = "rule"
+
+	// TypeSynthesis marks a memory as an auto-generated community summary.
+	// Synthesis memories are produced by the consolidation pipeline after
+	// community detection (SPEC-021). They are excluded from community detection
+	// seeds (to prevent synthesis-of-synthesis loops) and from Hebbian co-access
+	// tracking (to prevent graph inflation). Decay rate is 0 — synthesis memories
+	// are regenerated each consolidation cycle and never stale.
+	TypeSynthesis MemoryType = "synthesis"
 )
 
 // validMemoryTypes is the canonical set of known types, used by Valid() and
@@ -66,6 +74,7 @@ var validMemoryTypes = map[MemoryType]struct{}{
 	TypeConfig:         {},
 	TypeSessionSummary: {},
 	TypeRule:           {},
+	TypeSynthesis:      {},
 }
 
 // Valid reports whether the MemoryType is one of the recognised constants.
@@ -90,6 +99,7 @@ func AllMemoryTypes() []MemoryType {
 		TypeConfig,
 		TypeSessionSummary,
 		TypeRule,
+		TypeSynthesis,
 	}
 }
 

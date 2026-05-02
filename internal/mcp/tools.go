@@ -27,7 +27,7 @@ func allTools() []ToolDefinition {
 						"enum": []string{
 							"decision", "discovery", "bugfix", "pattern",
 							"preference", "convention", "architecture", "config",
-							"session_summary", "rule",
+							"session_summary", "rule", "synthesis",
 						},
 					},
 					"scope": map[string]any{
@@ -101,7 +101,7 @@ func allTools() []ToolDefinition {
 						"enum": []string{
 							"decision", "discovery", "bugfix", "pattern",
 							"preference", "convention", "architecture", "config",
-							"session_summary", "rule",
+							"session_summary", "rule", "synthesis",
 						},
 					},
 					"limit": map[string]any{

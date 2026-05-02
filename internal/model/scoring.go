@@ -9,6 +9,7 @@ var DefaultImportance = map[MemoryType]float64{
 	TypeRule:           0.95, // Rules are near-permanent constraints, ranked above architecture.
 	TypeArchitecture:   0.9,
 	TypeDecision:       0.85,
+	TypeSynthesis:      0.85, // Auto-generated cluster summaries; same tier as decisions.
 	TypeConvention:     0.8,
 	TypePattern:        0.75,
 	TypeBugfix:         0.7,
@@ -25,6 +26,7 @@ var DefaultImportance = map[MemoryType]float64{
 // they become irrelevant after a few days.
 var DefaultDecayRate = map[MemoryType]float64{
 	TypeRule:           0.0,   // Rules do not decay — they remain active until explicitly revoked.
+	TypeSynthesis:      0.0,   // Synthesis memories are regenerated each cycle; decay is meaningless.
 	TypeArchitecture:   0.005,
 	TypeDecision:       0.005,
 	TypeConvention:     0.005,
