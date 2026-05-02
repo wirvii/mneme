@@ -414,3 +414,219 @@ func TestStore_CommunityMembers_CascadeOnEntityDelete(t *testing.T) {
 		t.Errorf("expected 1 member remaining, got %d", len(members))
 	}
 }
+
+// ─── ListActiveMemoryIDs synthesis exclusion (SPEC-021) ──────────────────────
+
+// insertSynthesisMemory inserts a synthesis-type memory and returns its ID.
+func insertSynthesisMemory(t *testing.T, s *MemoryStore, project string) string {
+	t.Helper()
+	ctx := context.Background()
+	m := &model.Memory{
+		Type:       model.TypeSynthesis,
+		Scope:      model.ScopeProject,
+		Title:      "synthesis memory",
+		Content:    "## Cluster Overview\n\nTest synthesis.",
+		Project:    project,
+		Importance: 0.85,
+	}
+	created, err := s.Create(ctx, m)
+	if err != nil {
+		t.Fatalf("insertSynthesisMemory: %v", err)
+	}
+	return created.ID
+}
+
+// TestStore_ListActiveMemoryIDs_ExcludesSynthesis verifies that synthesis
+// memories are not returned by ListActiveMemoryIDs (SPEC-021 D5).
+func TestStore_ListActiveMemoryIDs_ExcludesSynthesis(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	proj := "proj-excludes-synthesis"
+
+	// 4 regular memories.
+	id1 := insertCommunityTestMemory(t, s, proj, false)
+	id2 := insertCommunityTestMemory(t, s, proj, false)
+	id3 := insertCommunityTestMemory(t, s, proj, false)
+	id4 := insertCommunityTestMemory(t, s, proj, false)
+
+	// 1 synthesis memory — must NOT appear in results.
+	_ = insertSynthesisMemory(t, s, proj)
+
+	ids, err := s.ListActiveMemoryIDs(ctx, proj)
+	if err != nil {
+		t.Fatalf("ListActiveMemoryIDs: %v", err)
+	}
+
+	want := map[string]bool{id1: true, id2: true, id3: true, id4: true}
+	if len(ids) != len(want) {
+		t.Fatalf("got %d ids, want %d: %v", len(ids), len(want), ids)
+	}
+	for _, id := range ids {
+		if !want[id] {
+			t.Errorf("unexpected id in result: %s", id)
+		}
+	}
+}
+
+// ─── GetMemoriesByEntityIDs (SPEC-021) ────────────────────────────────────────
+
+// TestStore_GetMemoriesByEntityIDs_Basic verifies that memories linked to the
+// queried entities are returned.
+func TestStore_GetMemoriesByEntityIDs_Basic(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	proj := "proj-get-by-ent"
+
+	// Create 3 memories and 3 entities, one entity per memory.
+	memID1 := insertCommunityTestMemory(t, s, proj, false)
+	memID2 := insertCommunityTestMemory(t, s, proj, false)
+	memID3 := insertCommunityTestMemory(t, s, proj, false)
+
+	ent1 := insertEntity(t, s, proj)
+	ent2 := insertEntity(t, s, proj)
+	ent3 := insertEntity(t, s, proj)
+
+	if err := s.LinkMemoryEntity(ctx, memID1, ent1, "mentions"); err != nil {
+		t.Fatalf("LinkMemoryEntity 1: %v", err)
+	}
+	if err := s.LinkMemoryEntity(ctx, memID2, ent2, "mentions"); err != nil {
+		t.Fatalf("LinkMemoryEntity 2: %v", err)
+	}
+	if err := s.LinkMemoryEntity(ctx, memID3, ent3, "mentions"); err != nil {
+		t.Fatalf("LinkMemoryEntity 3: %v", err)
+	}
+
+	result, err := s.GetMemoriesByEntityIDs(ctx, []string{ent1, ent2, ent3}, proj)
+	if err != nil {
+		t.Fatalf("GetMemoriesByEntityIDs: %v", err)
+	}
+
+	got := make(map[string]bool)
+	for _, m := range result {
+		got[m.ID] = true
+	}
+
+	for _, want := range []string{memID1, memID2, memID3} {
+		if !got[want] {
+			t.Errorf("missing memory %s in result", want)
+		}
+	}
+	if len(result) != 3 {
+		t.Errorf("expected 3 memories, got %d", len(result))
+	}
+}
+
+// TestStore_GetMemoriesByEntityIDs_ExcludesSynthesis verifies that synthesis
+// memories are excluded even when linked to queried entities.
+func TestStore_GetMemoriesByEntityIDs_ExcludesSynthesis(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	proj := "proj-excl-synth"
+
+	regularID := insertCommunityTestMemory(t, s, proj, false)
+	synthID := insertSynthesisMemory(t, s, proj)
+
+	ent := insertEntity(t, s, proj)
+
+	if err := s.LinkMemoryEntity(ctx, regularID, ent, "mentions"); err != nil {
+		t.Fatalf("LinkMemoryEntity regular: %v", err)
+	}
+	if err := s.LinkMemoryEntity(ctx, synthID, ent, "mentions"); err != nil {
+		t.Fatalf("LinkMemoryEntity synthesis: %v", err)
+	}
+
+	result, err := s.GetMemoriesByEntityIDs(ctx, []string{ent}, proj)
+	if err != nil {
+		t.Fatalf("GetMemoriesByEntityIDs: %v", err)
+	}
+
+	if len(result) != 1 {
+		t.Fatalf("expected 1 memory (synthesis excluded), got %d", len(result))
+	}
+	if result[0].ID != regularID {
+		t.Errorf("expected regular memory %s, got %s", regularID, result[0].ID)
+	}
+}
+
+// TestStore_GetMemoriesByEntityIDs_Empty verifies that an empty entity list
+// returns a non-nil empty slice without querying the DB.
+func TestStore_GetMemoriesByEntityIDs_Empty(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	result, err := s.GetMemoriesByEntityIDs(ctx, []string{}, "some-project")
+	if err != nil {
+		t.Fatalf("GetMemoriesByEntityIDs: %v", err)
+	}
+	if result == nil {
+		t.Error("expected non-nil slice for empty entity list")
+	}
+	if len(result) != 0 {
+		t.Errorf("expected 0 memories, got %d", len(result))
+	}
+}
+
+// TestStore_GetMemoriesByEntityIDs_Dedup verifies that a memory linked to
+// two queried entities is returned exactly once.
+func TestStore_GetMemoriesByEntityIDs_Dedup(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	proj := "proj-dedup"
+
+	memID := insertCommunityTestMemory(t, s, proj, false)
+	ent1 := insertEntity(t, s, proj)
+	ent2 := insertEntity(t, s, proj)
+
+	if err := s.LinkMemoryEntity(ctx, memID, ent1, "mentions"); err != nil {
+		t.Fatalf("LinkMemoryEntity ent1: %v", err)
+	}
+	if err := s.LinkMemoryEntity(ctx, memID, ent2, "mentions"); err != nil {
+		t.Fatalf("LinkMemoryEntity ent2: %v", err)
+	}
+
+	result, err := s.GetMemoriesByEntityIDs(ctx, []string{ent1, ent2}, proj)
+	if err != nil {
+		t.Fatalf("GetMemoriesByEntityIDs: %v", err)
+	}
+
+	if len(result) != 1 {
+		t.Errorf("expected 1 memory (dedup), got %d", len(result))
+	}
+}
+
+// ─── UpdateCommunityLabel (SPEC-021) ─────────────────────────────────────────
+
+// TestStore_UpdateCommunityLabel verifies that the community label is
+// persisted after calling UpdateCommunityLabel.
+func TestStore_UpdateCommunityLabel(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	proj := "proj-update-label"
+	e1 := insertEntity(t, s, proj)
+	c := newCommunity(proj, "hash-label", []string{e1})
+
+	if err := s.SaveCommunitiesTx(ctx, []*model.Community{c}, nil, nil); err != nil {
+		t.Fatalf("SaveCommunitiesTx: %v", err)
+	}
+
+	const wantLabel = "Cluster: Architecture decisions + DB migrations"
+	if err := s.UpdateCommunityLabel(ctx, c.ID, wantLabel); err != nil {
+		t.Fatalf("UpdateCommunityLabel: %v", err)
+	}
+
+	communities, err := s.ListCommunities(ctx, proj)
+	if err != nil {
+		t.Fatalf("ListCommunities: %v", err)
+	}
+	if len(communities) != 1 {
+		t.Fatalf("expected 1 community, got %d", len(communities))
+	}
+	if communities[0].Label != wantLabel {
+		t.Errorf("Label = %q, want %q", communities[0].Label, wantLabel)
+	}
+}

@@ -246,3 +246,22 @@ func TestTracker_Record_CanonicalOrdering(t *testing.T) {
 		t.Errorf("pair = (%s, %s), want (aaa-entity, zzz-entity)", evts[0].SourceEntityID, evts[0].TargetEntityID)
 	}
 }
+
+// TestTracker_Record_ExcludesSynthesis verifies that TypeSynthesis memories
+// are silently ignored and generate no co-access pairs (SPEC-021 D6).
+func TestTracker_Record_ExcludesSynthesis(t *testing.T) {
+	tracker, pool := newTestTrackerAndPool(5)
+
+	// Record a regular memory first to populate the window.
+	tracker.Record("mem-regular", model.TypeDiscovery, model.ScopeProject, []string{"ent-regular"})
+
+	// Record a synthesis memory — must not produce any pairs.
+	tracker.Record("mem-synthesis", model.TypeSynthesis, model.ScopeProject, []string{"ent-synthesis"})
+
+	evts := drainEvents(pool)
+	// Only the synthesis record is new — it should produce zero events.
+	// The window still contains mem-regular, but the synthesis is filtered out.
+	if len(evts) != 0 {
+		t.Errorf("expected 0 events for TypeSynthesis access, got %d", len(evts))
+	}
+}

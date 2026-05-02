@@ -14,6 +14,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/juanftp/mneme/internal/model"
@@ -24,15 +25,19 @@ import (
 // returns all active memories in the store regardless of project. The
 // returned slice is never nil; an empty project returns an empty slice.
 //
+// Memories of type 'synthesis' are excluded (SPEC-021 D5): including them
+// would cause synthesis-of-synthesis loops in community detection and inflate
+// graph connectivity around synthesis nodes.
+//
 // This is used by the community detection service to gather seeds for
 // BuildGraphForSeeds (SPEC-020 D6).
 func (s *MemoryStore) ListActiveMemoryIDs(ctx context.Context, project string) ([]string, error) {
 	const qAll = `
 		SELECT id FROM memories
-		WHERE deleted_at IS NULL AND superseded_by IS NULL`
+		WHERE deleted_at IS NULL AND superseded_by IS NULL AND type != 'synthesis'`
 	const qProject = `
 		SELECT id FROM memories
-		WHERE deleted_at IS NULL AND superseded_by IS NULL AND project = ?`
+		WHERE deleted_at IS NULL AND superseded_by IS NULL AND type != 'synthesis' AND project = ?`
 
 	var rows *sql.Rows
 	var err error
@@ -218,6 +223,78 @@ func (s *MemoryStore) SaveCommunitiesTx(
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("store: save communities tx: commit: %w", err)
+	}
+	return nil
+}
+
+// GetMemoriesByEntityIDs returns active memories that are linked to any of
+// the given entity IDs via the memory_entities join table. Each memory appears
+// at most once even if it is linked to multiple entities. Memories of type
+// 'synthesis' are excluded to prevent recursive summaries (SPEC-021 D5).
+//
+// The returned slice is never nil.
+func (s *MemoryStore) GetMemoriesByEntityIDs(ctx context.Context, entityIDs []string, project string) ([]*model.Memory, error) {
+	if len(entityIDs) == 0 {
+		return []*model.Memory{}, nil
+	}
+
+	// Build the IN clause placeholder list.
+	placeholders := make([]string, len(entityIDs))
+	args := make([]any, len(entityIDs))
+	for i, id := range entityIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	args = append(args, project)
+
+	q := fmt.Sprintf(`
+		SELECT DISTINCT m.id, m.type, m.scope, m.title, m.content, m.topic_key, m.project,
+		       m.session_id, m.created_by, m.created_at, m.updated_at,
+		       m.importance, m.confidence, m.access_count, m.last_accessed,
+		       m.decay_rate, m.revision_count, m.superseded_by, m.deleted_at,
+		       m.applies_to, m.severity
+		FROM memories m
+		JOIN memory_entities me ON me.memory_id = m.id
+		WHERE me.entity_id IN (%s)
+		  AND m.deleted_at IS NULL
+		  AND m.superseded_by IS NULL
+		  AND m.type != 'synthesis'
+		  AND m.project = ?`,
+		strings.Join(placeholders, ","),
+	)
+
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: get memories by entity ids: %w", err)
+	}
+	defer rows.Close()
+
+	var memories []*model.Memory
+	for rows.Next() {
+		m, err := scanMemoryRow(rows)
+		if err != nil {
+			return nil, fmt.Errorf("store: get memories by entity ids: scan: %w", err)
+		}
+		memories = append(memories, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: get memories by entity ids: rows: %w", err)
+	}
+
+	if memories == nil {
+		return []*model.Memory{}, nil
+	}
+	return memories, nil
+}
+
+// UpdateCommunityLabel sets the label column for a community. Used by the
+// synthesis generator to populate the human-readable community name after
+// synthesis content is generated (SPEC-021 D12).
+func (s *MemoryStore) UpdateCommunityLabel(ctx context.Context, communityID, label string) error {
+	const q = `UPDATE communities SET label = ? WHERE id = ?`
+	_, err := s.db.ExecContext(ctx, q, label, communityID)
+	if err != nil {
+		return fmt.Errorf("store: update community label: %w", err)
 	}
 	return nil
 }

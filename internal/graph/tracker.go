@@ -74,8 +74,11 @@ func NewAccessTracker(pool *HebbianWorkerPool, cfg config.GraphConfig, logger *s
 // entityIDs are the IDs of entities linked to this memory via memory_entities.
 // scope is used to discard cross-scope pairs (D1).
 func (t *AccessTracker) Record(memoryID string, memoryType model.MemoryType, memoryScope model.Scope, entityIDs []string) {
-	// D5: exclude noise-generating types.
-	if memoryType == model.TypeRule || memoryType == model.TypeSessionSummary {
+	// D5: exclude noise-generating types. TypeSynthesis is excluded because
+	// synthesis memories are injected into mem_context and co-accessed with
+	// every memory in the session window, which would create spurious Hebbian
+	// strengthening across unrelated entities (SPEC-021 D6).
+	if memoryType == model.TypeRule || memoryType == model.TypeSessionSummary || memoryType == model.TypeSynthesis {
 		return
 	}
 
