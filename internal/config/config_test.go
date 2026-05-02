@@ -1702,3 +1702,83 @@ func TestGraphConfig_SynthesisTopN_ClampedToMaxMembers(t *testing.T) {
 		t.Errorf("SynthesisTopN should be clamped to 5, got %d", cfg.Graph.SynthesisTopN)
 	}
 }
+
+// TestContextConfig_PackingModeDefault verifies the default ContextPackingMode is "auto".
+func TestContextConfig_PackingModeDefault(t *testing.T) {
+	t.Parallel()
+	cfg := Default()
+	if cfg.Context.ContextPackingMode != "auto" {
+		t.Errorf("expected ContextPackingMode=%q, got %q", "auto", cfg.Context.ContextPackingMode)
+	}
+}
+
+// TestContextConfig_PackingModeValidation verifies that only accepted values pass Validate.
+func TestContextConfig_PackingModeValidation(t *testing.T) {
+	t.Parallel()
+
+	validCases := []string{"", "auto", "communities", "flat"}
+	for _, mode := range validCases {
+		cfg := Default()
+		cfg.Context.ContextPackingMode = mode
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("mode %q should be valid, got error: %v", mode, err)
+		}
+	}
+
+	invalidCases := []string{"invalid", "FLAT", "Community", "none"}
+	for _, mode := range invalidCases {
+		cfg := Default()
+		cfg.Context.ContextPackingMode = mode
+		if err := cfg.Validate(); err == nil {
+			t.Errorf("mode %q should fail validation", mode)
+		}
+	}
+}
+
+// TestContextConfig_ClusterOverviewsBudgetDefault verifies the default is 1500.
+func TestContextConfig_ClusterOverviewsBudgetDefault(t *testing.T) {
+	t.Parallel()
+	cfg := Default()
+	if cfg.Context.ClusterOverviewsBudget != 1500 {
+		t.Errorf("expected ClusterOverviewsBudget=1500, got %d", cfg.Context.ClusterOverviewsBudget)
+	}
+}
+
+// TestContextConfig_ClusterOverviewsBudgetZero verifies that 0 is accepted (disables overviews).
+func TestContextConfig_ClusterOverviewsBudgetZero(t *testing.T) {
+	t.Parallel()
+	cfg := Default()
+	cfg.Context.ClusterOverviewsBudget = 0
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("ClusterOverviewsBudget=0 should be valid, got: %v", err)
+	}
+}
+
+// TestContextConfig_ClusterOverviewsBudgetNegative verifies that negative values are rejected.
+func TestContextConfig_ClusterOverviewsBudgetNegative(t *testing.T) {
+	t.Parallel()
+	cfg := Default()
+	cfg.Context.ClusterOverviewsBudget = -1
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected validation error for ClusterOverviewsBudget=-1")
+	}
+}
+
+// TestContextConfig_TopClusterMaxMembersDefault verifies the default is 10.
+func TestContextConfig_TopClusterMaxMembersDefault(t *testing.T) {
+	t.Parallel()
+	cfg := Default()
+	if cfg.Context.TopClusterMaxMembers != 10 {
+		t.Errorf("expected TopClusterMaxMembers=10, got %d", cfg.Context.TopClusterMaxMembers)
+	}
+}
+
+// TestContextConfig_TopClusterMaxMembersZero verifies that 0 is rejected (must be >= 1).
+func TestContextConfig_TopClusterMaxMembersZero(t *testing.T) {
+	t.Parallel()
+	cfg := Default()
+	cfg.Context.TopClusterMaxMembers = 0
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected validation error for TopClusterMaxMembers=0")
+	}
+}

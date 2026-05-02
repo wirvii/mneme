@@ -344,6 +344,32 @@ type ContextConfig struct {
 	// must have to be included in project context injections.
 	// Only evaluated when IncludeGlobal is true.
 	GlobalMinImportance float64 `toml:"global_min_importance"`
+
+	// ContextPackingMode controls how mem_context assembles the memory bundle:
+	//   - "auto"        — use community packing when communities exist
+	//                     (ListCommunities returns N > 0); otherwise flat.
+	//                     Default. Zero overhead on fresh projects.
+	//   - "communities" — always attempt community packing; falls back to flat
+	//                     silently when no communities exist.
+	//   - "flat"        — original flat scoring; ignores communities entirely.
+	//                     Useful for debugging or small projects.
+	//
+	// Empty string is treated as "auto".
+	// Env override: MNEME_CONTEXT_PACKING_MODE.
+	ContextPackingMode string `toml:"context_packing_mode"`
+
+	// ClusterOverviewsBudget is the maximum token budget reserved for synthesis
+	// summaries in the Cluster Overviews section. Independent of DefaultBudget.
+	// Set to 0 to disable cluster overviews (top cluster detail still runs when
+	// mode is not "flat").
+	// Default: 1500.
+	ClusterOverviewsBudget int `toml:"cluster_overviews_budget"`
+
+	// TopClusterMaxMembers caps the number of individual memories packed from
+	// the top-ranked cluster in the Top Cluster Detail section. Higher values
+	// give deeper coverage of the focus area at the cost of breadth.
+	// Must be >= 1. Default: 10.
+	TopClusterMaxMembers int `toml:"top_cluster_max_members"`
 }
 
 // ConsolidationConfig configures the background job that scores, deduplicates,
@@ -414,10 +440,13 @@ func Default() *Config {
 			MinRelevance:  0.01,
 		},
 		Context: ContextConfig{
-			DefaultBudget:       4000,
-			RulesBudget:         1500,
-			IncludeGlobal:       true,
-			GlobalMinImportance: 0.7,
+			DefaultBudget:          4000,
+			RulesBudget:            1500,
+			IncludeGlobal:          true,
+			GlobalMinImportance:    0.7,
+			ContextPackingMode:     "auto",
+			ClusterOverviewsBudget: 1500,
+			TopClusterMaxMembers:   10,
 		},
 		Consolidation: ConsolidationConfig{
 			Enabled:        true,
@@ -591,6 +620,19 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("MNEME_RULES_BUDGET"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			cfg.Context.RulesBudget = n
+		}
+	}
+	if v := os.Getenv("MNEME_CONTEXT_PACKING_MODE"); v != "" {
+		cfg.Context.ContextPackingMode = v
+	}
+	if v := os.Getenv("MNEME_CLUSTER_OVERVIEWS_BUDGET"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Context.ClusterOverviewsBudget = n
+		}
+	}
+	if v := os.Getenv("MNEME_TOP_CLUSTER_MAX_MEMBERS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Context.TopClusterMaxMembers = n
 		}
 	}
 
@@ -886,6 +928,12 @@ func buildContextOrigins(cfg, dflt *Config) []ConfigFieldInfo {
 	fields = append(fields, makeField("include_global", cfg.Context.IncludeGlobal, o, ev))
 	o, ev = fieldOrigin(cfg.Context.GlobalMinImportance, dflt.Context.GlobalMinImportance, true)
 	fields = append(fields, makeField("global_min_importance", cfg.Context.GlobalMinImportance, o, ev))
+	o, ev = fieldOrigin(cfg.Context.ContextPackingMode, dflt.Context.ContextPackingMode, true, "MNEME_CONTEXT_PACKING_MODE")
+	fields = append(fields, makeField("context_packing_mode", cfg.Context.ContextPackingMode, o, ev))
+	o, ev = fieldOrigin(cfg.Context.ClusterOverviewsBudget, dflt.Context.ClusterOverviewsBudget, true, "MNEME_CLUSTER_OVERVIEWS_BUDGET")
+	fields = append(fields, makeField("cluster_overviews_budget", cfg.Context.ClusterOverviewsBudget, o, ev))
+	o, ev = fieldOrigin(cfg.Context.TopClusterMaxMembers, dflt.Context.TopClusterMaxMembers, true, "MNEME_TOP_CLUSTER_MAX_MEMBERS")
+	fields = append(fields, makeField("top_cluster_max_members", cfg.Context.TopClusterMaxMembers, o, ev))
 	return fields
 }
 
@@ -1080,6 +1128,16 @@ func (c *Config) Validate() error {
 
 	if c.Context.RulesBudget < 0 {
 		return errors.New("context.rules_budget must be >= 0")
+	}
+	validPackingModes := map[string]bool{"": true, "auto": true, "communities": true, "flat": true}
+	if !validPackingModes[c.Context.ContextPackingMode] {
+		return fmt.Errorf("context.context_packing_mode %q is not valid; accepted values: auto, communities, flat", c.Context.ContextPackingMode)
+	}
+	if c.Context.ClusterOverviewsBudget < 0 {
+		return errors.New("context.cluster_overviews_budget must be >= 0")
+	}
+	if c.Context.TopClusterMaxMembers < 1 {
+		return errors.New("context.top_cluster_max_members must be >= 1")
 	}
 
 	validLogLevels := map[string]bool{
