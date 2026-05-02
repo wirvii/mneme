@@ -138,6 +138,35 @@ type ContextResponse struct {
 	// Separated from Memories so callers can render them in a distinct section.
 	// Omitted from JSON when empty (omitempty).
 	Rules []Memory `json:"rules,omitempty"`
+
+	// ClusterOverviews is the ordered list of synthesis memories packed as
+	// cluster summaries. Populated only when context_packing_mode is "auto" or
+	// "communities" and at least one community with a synthesis exists.
+	// Omitted from JSON when empty (flat mode or no communities).
+	ClusterOverviews []Memory `json:"cluster_overviews,omitempty"`
+
+	// ClusterOverviewsCount is the number of cluster overviews included in the
+	// ClusterOverviews slice. Zero in flat mode.
+	ClusterOverviewsCount int `json:"cluster_overviews_count,omitempty"`
+
+	// ClusterOverviewsTokens is the estimated token count consumed by the
+	// ClusterOverviews section, charged against ClusterOverviewsBudget.
+	ClusterOverviewsTokens int `json:"cluster_overviews_tokens,omitempty"`
+
+	// TopCluster is the human-readable label of the top-ranked community when
+	// community packing is active. Empty in flat mode.
+	TopCluster string `json:"top_cluster,omitempty"`
+
+	// TopClusterMembers is the number of individual memories from the top
+	// cluster placed at the front of Memories (before Other Memories). The CLI
+	// hook uses this count to split Memories into "Top Cluster Detail" and
+	// "Other Memories" subsections without a second array field.
+	TopClusterMembers int `json:"top_cluster_members,omitempty"`
+
+	// PackingMode indicates which packing mode was actually used for this
+	// response: "communities" or "flat". Useful for debugging when the config
+	// mode is "auto". Empty when the service used pre-SPEC-022 flat mode.
+	PackingMode string `json:"packing_mode,omitempty"`
 }
 
 // SessionSummary is a lightweight view of the last session's summary memory.

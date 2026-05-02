@@ -63,6 +63,90 @@ func TestContextRequest_IncludeGraphJSON(t *testing.T) {
 	})
 }
 
+// TestContextResponse_ClusterFields_JSON verifies that the SPEC-022 cluster
+// fields are serialised and deserialised correctly when populated.
+func TestContextResponse_ClusterFields_JSON(t *testing.T) {
+	resp := ContextResponse{
+		Project:                "test/project",
+		PackingMode:            "communities",
+		ClusterOverviewsCount:  3,
+		ClusterOverviewsTokens: 900,
+		TopCluster:             "Auth + JWT + Token rotation",
+		TopClusterMembers:      7,
+		ClusterOverviews: []Memory{
+			{ID: "syn-1", Title: "Auth Cluster", Content: "Overview.", Type: TypeSynthesis},
+		},
+	}
+
+	data, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+
+	expected := map[string]any{
+		"packing_mode":             "communities",
+		"cluster_overviews_count":  float64(3),
+		"cluster_overviews_tokens": float64(900),
+		"top_cluster":              "Auth + JWT + Token rotation",
+		"top_cluster_members":      float64(7),
+	}
+	for k, want := range expected {
+		if got[k] != want {
+			t.Errorf("field %q: got %v, want %v", k, got[k], want)
+		}
+	}
+	if _, ok := got["cluster_overviews"]; !ok {
+		t.Error("expected cluster_overviews field to be present")
+	}
+
+	// Round-trip.
+	var decoded ContextResponse
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if decoded.PackingMode != resp.PackingMode {
+		t.Errorf("PackingMode round-trip: got %q", decoded.PackingMode)
+	}
+	if decoded.TopCluster != resp.TopCluster {
+		t.Errorf("TopCluster round-trip: got %q", decoded.TopCluster)
+	}
+	if len(decoded.ClusterOverviews) != 1 {
+		t.Errorf("ClusterOverviews len: got %d", len(decoded.ClusterOverviews))
+	}
+}
+
+// TestContextResponse_ClusterFields_Omitempty verifies that zero-value cluster
+// fields do not appear in JSON output (flat mode backward-compatibility).
+func TestContextResponse_ClusterFields_Omitempty(t *testing.T) {
+	resp := ContextResponse{
+		Project:  "test/project",
+		Included: 3,
+	}
+
+	data, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+
+	absentFields := []string{
+		"packing_mode", "cluster_overviews", "cluster_overviews_count",
+		"cluster_overviews_tokens", "top_cluster", "top_cluster_members",
+	}
+	for _, f := range absentFields {
+		if _, ok := got[f]; ok {
+			t.Errorf("field %q should be absent when zero-valued (omitempty)", f)
+		}
+	}
+}
+
 // TestContextResponse_JSONFields verifies that the new SPEC-002 fields
 // (rules, rules_count, rules_tokens, rules_truncated) are serialised and
 // deserialised correctly, and that Rules is omitted from JSON when nil.
