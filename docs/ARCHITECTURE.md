@@ -1,341 +1,492 @@
 # mneme -- Architecture & Design Documentation
 
-Documentacion viva de la arquitectura de mneme. Explica que se construyo, como funciona, por que se tomaron las decisiones, y como encajan las piezas.
+Living documentation of mneme's architecture. Explains what was built, how it works, why each decision was made, and how the pieces fit together.
 
 ---
 
 ## Table of Contents
 
-1. [Que es mneme](#que-es-mneme)
-2. [Arquitectura de alto nivel](#arquitectura-de-alto-nivel)
-3. [Paquetes implementados](#paquetes-implementados)
-4. [Graph Layer (SPEC-005..009)](#graph-layer-spec-005009)
-5. [Rules System (SPEC-001..004)](#rules-system-spec-001004)
-6. [Retrieval Pipeline](#retrieval-pipeline)
+1. [What is mneme](#what-is-mneme)
+2. [High-Level Architecture](#high-level-architecture)
+3. [The Four Layers](#the-four-layers)
+   - [Layer 1 -- Storage](#layer-1--storage)
+   - [Layer 2 -- Graph](#layer-2--graph)
+   - [Layer 3 -- Retrieval](#layer-3--retrieval)
+   - [Layer 4 -- Synthesis](#layer-4--synthesis)
+4. [Vault & Memory Manifest](#vault--memory-manifest)
+5. [The Three Frontends](#the-three-frontends)
+6. [End-to-End Flow Diagrams](#end-to-end-flow-diagrams)
 7. [Consolidation Pipeline](#consolidation-pipeline)
-8. [Decisiones de diseno](#decisiones-de-diseno)
+8. [Rules System](#rules-system)
+9. [Design Decisions](#design-decisions)
+10. [Why These Choices](#why-these-choices)
+11. [Performance Budgets](#performance-budgets)
 
 ---
 
-## Que es mneme
+## What is mneme
 
-mneme es un sistema de memoria persistente para agentes AI de coding. Un solo binario Go que expone un servidor MCP (Model Context Protocol) sobre stdio, permitiendo que cualquier agente AI compatible (Claude Code, OpenCode, Gemini CLI, Codex, Cursor, Windsurf) guarde y recupere conocimiento entre sesiones.
+mneme is a persistent memory system for AI coding agents. A single Go binary (no runtime dependencies beyond libc for SQLite) that exposes an MCP server (Model Context Protocol) over stdio, letting any MCP-compatible agent -- Claude Code, OpenCode, Gemini CLI, Codex, Cursor, Windsurf -- save and retrieve structured knowledge between sessions.
 
-### El problema que resuelve
+### The problem
 
-1. **CLAUDE.md como campo de batalla** -- Los archivos de instrucciones mezclan configuracion del agente con conocimiento del proyecto. Cuando un lider de equipo define reglas y el desarrollador define las suyas, colisionan.
+1. **CLAUDE.md as a battleground** -- Instruction files mix agent configuration with project knowledge. Team leader rules and developer preferences collide.
+2. **Amnesia between sessions** -- Every new session starts from zero. Patterns discovered, architecture decisions, bugs resolved -- all lost.
+3. **Knowledge silos** -- What is learned in one project does not exist in another. Reusable solutions, personal patterns, custom libraries -- none are shared.
 
-2. **Amnesia entre sesiones** -- Cada vez que se abre una nueva sesion, el agente no sabe nada. Patrones descubiertos, decisiones de arquitectura, bugs resueltos -- todo se pierde.
+### The solution
 
-3. **Islas de conocimiento** -- Lo que se aprende en un proyecto no existe en otro. Soluciones reutilizables, patrones propios, librerias custom -- no se comparten.
-
-### La solucion
-
-Una base de datos SQLite local con busqueda full-text (FTS5) y un grafo de conocimiento pesado, expuestos via MCP. El agente llama herramientas como `mem_save`, `mem_search`, `mem_context`, `mem_explore` para guardar y recuperar conocimiento estructurado. Las reglas se inyectan automaticamente en el contexto y se aplican JIT via hooks.
+A local SQLite database with FTS5 full-text search, a weighted knowledge graph with Hebbian learning and Personalized PageRank, community detection via Louvain, and automatic synthesis -- all exposed through 24 MCP tools. Agents call `mem_save`, `mem_search`, `mem_context`, `mem_explore`, and `mem_gaps` to manage structured knowledge. Rules are injected automatically and enforced via hooks.
 
 ---
 
-## Arquitectura de alto nivel
+## High-Level Architecture
+
+```mermaid
+graph TB
+    subgraph Frontends
+        CLI["CLI<br/>(Cobra)"]
+        MCP["MCP<br/>(JSON-RPC stdio)"]
+        HTTP["HTTP<br/>(:7437)"]
+        HOOKS["Hooks<br/>(agent lifecycle)"]
+    end
+
+    subgraph "Service Layer"
+        SVC["service/<br/>Business Logic"]
+    end
+
+    subgraph "Layer 4 — Synthesis"
+        SYNTH["Synthesis Generator"]
+        COMM["Community Detection<br/>(Louvain)"]
+        CPAK["Community Packing"]
+    end
+
+    subgraph "Layer 3 — Retrieval"
+        FTS["FTS5 BM25"]
+        VEC["Vector Similarity<br/>(TF-IDF)"]
+        PPR["Graph Expansion<br/>(PPR / 1-hop)"]
+        RRF["RRF Fusion<br/>(k=60)"]
+        RULES["Rules Injection"]
+    end
+
+    subgraph "Layer 2 — Graph"
+        HEBB["Hebbian Tracker<br/>(ring buffer)"]
+        WORKER["Worker Pool<br/>(async)"]
+        WLINK["Wikilink Parser"]
+        RBLD["Graph Rebuild"]
+    end
+
+    subgraph "Layer 1 — Storage"
+        STORE["store/<br/>Repository Pattern"]
+        DB["SQLite + FTS5<br/>(schema v10)"]
+    end
+
+    CLI --> SVC
+    MCP --> SVC
+    HTTP --> SVC
+    HOOKS --> SVC
+
+    SVC --> SYNTH
+    SVC --> COMM
+    SVC --> CPAK
+
+    SVC --> FTS
+    SVC --> VEC
+    SVC --> PPR
+    SVC --> RRF
+    SVC --> RULES
+
+    SVC --> HEBB
+    SVC --> WORKER
+    SVC --> WLINK
+    SVC --> RBLD
+
+    FTS --> STORE
+    VEC --> STORE
+    PPR --> STORE
+    HEBB --> STORE
+    WLINK --> STORE
+    RBLD --> STORE
+    COMM --> STORE
+
+    STORE --> DB
+```
+
+### Dependency rule -- Clean Architecture
+
+Imports flow inward only. The `model` package is the leaf -- zero external dependencies. Frontends never call `store` or `db` directly; everything goes through `service`.
+
+```mermaid
+graph LR
+    CLI["cli/ mcp/ http/"] --> SVC["service/"]
+    SVC --> STORE["store/"]
+    SVC --> SCORING["scoring/"]
+    SVC --> GRAPH["graph/"]
+    SVC --> RULES["rules/"]
+    SVC --> WIKI["wikilink/"]
+    SVC --> EMBED["embed/"]
+    SVC --> SYNC["sync/"]
+    STORE --> DB["db/"]
+    STORE --> MODEL["model/<br/>(leaf, zero deps)"]
+    SCORING --> MODEL
+    GRAPH --> MODEL
+    RULES --> MODEL
+    WIKI --> |"stdlib only"| STDLIB["stdlib"]
+    DB --> MODEL
+```
+
+No internal package imports another that is "above" it in the dependency chain.
+
+### Implemented packages (`internal/`)
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                       mneme binary                          │
-│                                                             │
-│  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐      │
-│  │   CLI   │  │   MCP   │  │  HTTP   │  │  Hooks  │      │
-│  │ (cobra) │  │ (stdio) │  │ (:7437) │  │ (agent) │      │
-│  └────┬────┘  └────┬────┘  └────┬────┘  └────┬────┘      │
-│       └─────────────┼───────────┼─────────────┘            │
-│                     ▼                                       │
-│            ┌──────────────┐                                 │
-│            │   Service    │  business logic, scoring,       │
-│            │    Layer     │  Hebbian tracking, rules        │
-│            └──────┬───────┘                                 │
-│                   │                                         │
-│       ┌───────────┼───────────┐                             │
-│       ▼           ▼           ▼                             │
-│  ┌────────┐ ┌──────────┐ ┌────────┐                        │
-│  │ Store  │ │ Scoring  │ │ Graph  │                        │
-│  │ (CRUD, │ │ (BM25,   │ │ (ring  │                        │
-│  │  FTS5) │ │ RRF,     │ │ buffer,│                        │
-│  │        │ │ decay)   │ │ worker)│                        │
-│  └───┬────┘ └──────────┘ └────────┘                        │
-│      ▼                                                      │
-│  ┌────────┐                                                 │
-│  │ SQLite │  global.db + projects/<slug>.db                 │
-│  │ + FTS5 │  scopes never leak between projects             │
-│  └────────┘                                                 │
-└─────────────────────────────────────────────────────────────┘
+cmd/mneme/              -- entrypoint (main)
+internal/
+  model/                -- domain types (11 memory types, 3 scopes, 7 entity kinds,
+                           8 relation types, request/response structs). Zero deps.
+  project/              -- git remote / project slug detection
+  config/               -- TOML config + defaults + env overrides
+  db/                   -- SQLite + FTS5 + embedded migrations (schema v10)
+  store/                -- repository pattern (CRUD, FTS5, vectors, entities, relations,
+                           communities, sessions, unresolved refs)
+  scoring/              -- importance, decay (Ebbinghaus), BM25 re-rank, RRF fusion,
+                           PPR (Personalized PageRank), SparseGraph, Louvain
+  graph/                -- Hebbian subsystem (AccessTracker, HebbianWorkerPool),
+                           Louvain community detection
+  rules/                -- pattern matching engine (globs, tool selectors, negations)
+  wikilink/             -- [[topic_key]] parser (CommonMark-aware, code-block safe)
+  service/              -- business logic orchestration (the only layer frontends call)
+  consolidation/        -- background pipeline: sweep, decay, dedup, budget, edge decay,
+                           community detection, synthesis generation
+  embed/                -- TF-IDF baseline embedder
+  sync/                 -- JSONL.gz + Memory Manifest (tar.gz) export/import
+  vault/                -- markdown vault: path mapping, frontmatter, writer, reader
+  mcp/                  -- MCP server (JSON-RPC 2.0 over stdio, 24 tools)
+  http/                 -- REST API (stdlib net/http, 8 endpoints under /v1/)
+  cli/                  -- Cobra commands (27+ top-level commands)
+  install/              -- agent profile installer (5 subagent profiles + slash commands)
+  tui/                  -- Bubble Tea interface (list, stats)
+  upgrade/              -- self-upgrade checker
+  export/               -- markdown export (rendering only, no filesystem)
+docs/                   -- ARCHITECTURE.md, HOOKS.md, VAULT.md, MEMORY-MANIFEST.md, etc.
 ```
-
-### Principio de diseno: Clean Architecture
-
-Las dependencias fluyen hacia adentro. El paquete `model` es el centro -- no depende de nada externo. `store` depende de `model` y `db`. `service` depende de `store` y `model`. `mcp` y `cli` dependen de `service`.
-
-```
-cli, mcp, http, hooks --> service --> store --> db
-                                  --> model (leaf, zero deps)
-                                  --> scoring --> model
-                                  --> graph --> store, model, config
-                                  --> rules --> model
-                                  --> project
-```
-
-Ningun paquete interno importa a otro que este "arriba" en la cadena.
-
-### Las cuatro frontends
-
-- **MCP** (`internal/mcp`, primary) -- JSON-RPC 2.0 sobre stdio, ProtocolVersion `2024-11-05`. Superficie: 23 tools (13 `mem_*`, 4 `backlog_*`, 6 `spec_*`). `handleMessage()` se expone separado de `Run()` para testing sin I/O loops.
-- **HTTP** (`internal/http`, `mneme serve --addr :7437`) -- stdlib `net/http`, graceful shutdown 10s, 8 endpoints bajo `/v1/`. Actualmente le faltan endpoints SDD y algunos mem tools (`mem_checkpoint`, `mem_timeline`, `mem_suggest_topic_key`, `mem_explore`).
-- **CLI** (`internal/cli`, Cobra) -- 23+ comandos top-level. Notable: `sync export|import|status` para backup/restore; `mneme init` migra proyectos legacy al SDD engine; `mneme install <agent>` escribe agent profiles; `mneme rule add|list|test` para gestion de reglas; `mneme explore` para exploracion del grafo; `mneme graph rebuild` para backfill.
-- **Hooks** (`internal/cli/hook.go`) -- 4 hook handlers (`session-start`, `session-end`, `pre-tool-use`, `enforce-delegation`). Los hooks no son un frontend separado; son subcommands de CLI invocados por el sistema de hooks del agente.
-
-### Persistencia
-
-Dos bases de datos SQLite por host:
-- `~/.mneme/global.db` -- memorias global + org scope
-- `~/.mneme/projects/<slug>.db` -- memorias project-scoped (slug derivado del git remote)
-
-Scopes (`global` / `org` / `project`) nunca filtran entre proyectos. Migraciones embebidas via `embed.FS`.
 
 ---
 
-## Paquetes implementados
+## The Four Layers
 
-### `internal/model/` -- Tipos de dominio
-**Deps:** Solo stdlib
+mneme's architecture is organized into four functional layers that build upon each other. Each layer adds capabilities while respecting the dependency rule.
 
-El paquete hoja. Define todos los tipos de dominio: `Memory`, `MemoryType` (10 tipos incluyendo `rule`), `Scope` (3 scopes), `Severity` (info/warn/block), `Entity`, `Relation`, `RelationType` (8 tipos), `EntityKind` (7 tipos), `DefaultRelationWeights`, request/response structs (SaveRequest, ExploreRequest, RebuildRequest, etc.), scoring defaults, y sentinel errors. Cero dependencias externas.
+### Layer 1 -- Storage
 
-### `internal/project/` -- Deteccion de proyecto
-**Deps:** Solo stdlib
+The persistence foundation. SQLite with WAL mode, foreign keys, 5s busy timeout. Two databases per host:
 
-Detecta el proyecto actual parseando el git remote origin. Soporta SSH, HTTPS, SSH con puerto, y GitLab anidado. Fallback al nombre del directorio cuando no hay remote.
+| Database | Location | Scope |
+|----------|----------|-------|
+| Global | `~/.mneme/global.db` | `global` + `org` memories |
+| Project | `~/.mneme/projects/<slug>.db` | `project`-scoped memories |
 
-### `internal/config/` -- Configuracion
-**Deps:** go-toml/v2
+**Scopes never leak between projects.** The service layer routes reads/writes via `storeFor(scope)`.
 
-Carga configuracion TOML con tres niveles de precedencia: defaults -> archivo TOML -> env vars. Incluye `GraphConfig` con todos los knobs de Hebbian, edge decay, expansion, y rebuild.
+#### Schema v10 (migrations 001-010)
 
-### `internal/db/` -- Base de datos
-**Deps:** go-sqlite3
+```mermaid
+erDiagram
+    memories {
+        text id PK "UUIDv7"
+        text title
+        text content
+        text type "11 types"
+        text scope "global|org|project"
+        text project
+        text topic_key "idempotent upsert key"
+        real importance "0.0-1.0"
+        real confidence "0.0-1.0"
+        real decay_rate
+        text applies_to "JSON array (rules)"
+        text severity "info|warn|block (rules)"
+        text created_at
+        text updated_at
+        text deleted_at "soft delete"
+    }
 
-Wrapper sobre `*sql.DB` que configura SQLite con WAL mode, foreign keys, busy timeout 5s. Ejecuta migraciones embebidas automaticamente. Incluye `OpenReadOnly` para hooks de alta performance.
+    entities {
+        text id PK "UUIDv7"
+        text name
+        text kind "7 kinds"
+        text project
+        text created_at
+        text updated_at
+    }
 
-### `internal/store/` -- Acceso a datos
-**Deps:** db, model
+    relations {
+        text id PK "UUIDv7"
+        text source_id FK
+        text target_id FK
+        text type "8 types"
+        real weight "0.0-1.0"
+        text last_traversed_at
+        text created_at
+    }
 
-Repository pattern. CRUD completo de memorias con soporte para upsert via `topic_key`. FTS5 search. Entity CRUD, relation CRUD con `FindRelationBidirectional`, `GetStrongRelations`, `BatchTouchRelations`, `GetMemoryEntities`, `GetEntityMemoryIDs`, `GetMemoryMetadata`, `GetByIDPrefix`, `GetByTopicKey`. Vector search (cosine similarity).
+    memory_entities {
+        text memory_id FK
+        text entity_id FK
+    }
 
-### `internal/scoring/` -- Scoring de importancia
-**Deps:** model
+    communities {
+        text id PK "UUIDv7"
+        text project
+        text scope
+        text membership_hash "SHA-256"
+        int member_count
+        real modularity
+        text label
+        text created_at
+        text updated_at
+    }
 
-Importancia inicial (type-based defaults con override), decay exponencial (Ebbinghaus-inspired), relevancia final (BM25 x importance x recency), y RRF fusion con constante k=60.
+    community_members {
+        text community_id FK
+        text entity_id FK
+    }
 
-### `internal/graph/` -- Hebbian subsystem (SPEC-006)
-**Deps:** store, model, config
+    unresolved_references {
+        text id PK "UUIDv7"
+        text source_memory_id FK
+        text target_topic_key
+        text project
+        int mention_count
+        text first_seen_at
+        text last_seen_at
+    }
 
-`AccessTracker`: ring buffer de window size configurable que genera pares de co-acceso. Excluye reglas y session_summaries (D5), cross-scope (D1), self-loops (D4). `HebbianWorkerPool`: single-worker goroutine que procesa `StrengtheningEvent`s asynchronamente. Aplica delta a relaciones existentes o crea nuevas con `HebbianInitialWeight`. Drop policy cuando el buffer esta lleno.
+    memories ||--o{ memory_entities : "linked to"
+    entities ||--o{ memory_entities : "referenced by"
+    entities ||--o{ relations : "source"
+    entities ||--o{ relations : "target"
+    entities ||--o{ community_members : "member of"
+    communities ||--o{ community_members : "contains"
+    memories ||--o{ unresolved_references : "has gaps"
+```
 
-### `internal/rules/` -- Matching engine (SPEC-003)
-**Deps:** model
+**Migration history:**
 
-`Match()` evalua una lista de reglas contra un tool name + file path. Soporta path globs, tool selectors, combined selectors (`tool:Edit+internal/**`), negations (`!docs/**`), y wildcard (`**`). `ValidatePattern()` para validacion sintatica.
+| # | Name | EPIC/SPEC | What it does |
+|---|------|-----------|-------------|
+| 001 | `initial` | -- | Core tables: memories, FTS5 index, sessions, schema_version |
+| 002 | `knowledge_graph` | -- | entities, relations, memory_entities |
+| 003 | `embeddings` | -- | embeddings table for vector search |
+| 004 | `sdd` | -- | backlog_items, specs, spec_history, spec_pushbacks |
+| 005 | `spec_pk_by_project` | -- | Composite spec PK (project, id) |
+| 006 | `rule_fields` | SPEC-001 | `applies_to` + `severity` columns, partial index on type='rule' |
+| 007 | `weighted_relations` | SPEC-005 | Backfill type-based weights, `last_traversed_at`, weight/traversal indices |
+| 008 | `graph_expansion` | SPEC-007 | Index on `memory_entities(entity_id)` for O(log n) entity lookups |
+| 009 | `unresolved_references` | SPEC-012 | `unresolved_references` table for wikilink gaps + auto-resolve |
+| 010 | `communities` | SPEC-020 | `communities` + `community_members` tables for Louvain persistence |
 
-### `internal/service/` -- Logica de negocio
-**Deps:** store, model, scoring, config, graph, rules, embed, sync
+#### Memory types (11)
 
-Orquesta operaciones: validacion, scoring, upsert, access tracking, context assembly con token budgeting y rules injection (SPEC-002), search con RRF 3-channel (SPEC-007), `Explore()` BFS priorizado (SPEC-008), `RebuildGraph()` (SPEC-009), `ListRules()`, Hebbian tracking en `recordHebbianAccess()`, `UpdateRelationWeight()`.
+| Type | Decay rate | Purpose |
+|------|-----------|---------|
+| `decision` | 0.005 | Architectural or technical decisions |
+| `discovery` | 0.02 | Learned facts about a codebase, API, or tool |
+| `bugfix` | 0.02 | Bug and its fix |
+| `pattern` | 0.01 | Recurring design/implementation pattern |
+| `preference` | 0.005 | Personal or team style preferences |
+| `convention` | 0.005 | Naming, formatting, structural conventions |
+| `architecture` | 0.005 | High-level structure and component relationships |
+| `config` | 0.01 | Configuration values, endpoints, env settings |
+| `session_summary` | 0.05 | Synthetic session-end summary (fast decay) |
+| `rule` | **0.0** | Binding constraint with `applies_to` + `severity` (SPEC-001) |
+| `synthesis` | **0.0** | Auto-generated community summary (SPEC-021) |
 
-### `internal/mcp/` -- Servidor MCP
-**Deps:** service, model
+#### Entity kinds (7) and relation types (8)
 
-Servidor JSON-RPC 2.0 sobre stdio. 23 tools con JSON schemas completos. `handleMessage()` permite testing sin I/O loop.
+**Entity kinds:** `module`, `service`, `library`, `concept`, `person`, `pattern`, `file`
 
-### `internal/cli/` -- Comandos CLI
-**Deps:** service, config, db, store, project, mcp, rules, cobra
+**Relation types with default weights (SPEC-005):**
 
-23+ comandos cobra incluyendo `rule add|list|test`, `explore`, `graph rebuild`, `hook pre-tool-use|session-start|session-end|enforce-delegation`, `backlog`, `spec`, `init`, `install`, `sync`, `serve`, `mcp`.
+| Type | Default weight | Semantics |
+|------|---------------|-----------|
+| `depends_on` | 0.9 | A depends on B |
+| `part_of` | 0.85 | A is a component of B |
+| `implements` | 0.8 | A implements B |
+| `uses` | 0.7 | A uses/calls B |
+| `conflicts_with` | 0.7 | A conflicts with B |
+| `supersedes` | 0.6 | A replaces B |
+| `related_to` | 0.5 | Generic bidirectional (co-occurrence) |
+| `references` | 0.4 | A references B (wikilinks) |
 
-### Supporting packages
-
-- `embed/` -- TF-IDF baseline embedder
-- `consolidation/` -- background decay/dedup/budget sweeps + edge decay
-- `sync/` -- JSONL.gz git-shareable export/import
-- `install/` -- agent profile installer (writes settings.json)
-- `tui/` -- Bubble Tea interface
-- `upgrade/` -- release update checker
-- `export/` -- markdown export
+Weight range: `[0.0, 1.0]`. Explicit weights can be passed via `mem_relate`.
 
 ---
 
-## Graph Layer (SPEC-005..009)
+### Layer 2 -- Graph
 
-### Modelo de datos
+The knowledge graph connects entities (nodes) via weighted directed relations (edges). Three mechanisms build and maintain it:
 
-El grafo de conocimiento conecta **entities** (nodos) con **relations** (aristas dirigidas y pesadas).
+#### 2a. Hebbian auto-strengthening (SPEC-006)
 
-**Entities** (`internal/model/entity.go`):
-- 7 kinds: `module`, `service`, `library`, `concept`, `person`, `pattern`, `file`
-- Unicas dentro de `(name, project)`
-- Se crean automaticamente al llamar `mem_relate` o durante `graph rebuild`
+"Cells that fire together, wire together." When an agent accesses memory A then memory B in the same session window, relations between their entities are strengthened automatically.
 
-**Relations** (`internal/model/entity.go`):
-- 8 tipos con pesos default diferenciados (SPEC-005):
+```mermaid
+sequenceDiagram
+    participant Agent
+    participant Service
+    participant Tracker as AccessTracker<br/>(ring buffer)
+    participant Worker as HebbianWorkerPool<br/>(async goroutine)
+    participant Store
 
-| Tipo | Peso default | Semantica |
-|------|-------------|-----------|
-| `depends_on` | 0.9 | A depende de B |
-| `part_of` | 0.85 | A es componente de B |
-| `implements` | 0.8 | A implementa B |
-| `uses` | 0.7 | A usa/llama a B |
-| `conflicts_with` | 0.7 | A conflicta con B |
-| `supersedes` | 0.6 | A reemplaza a B |
-| `related_to` | 0.5 | Relacion generica (bidireccional) |
-| `references` | 0.4 | A referencia a B (wikilinks) |
-
-- Rango de peso: `[0.0, 1.0]`
-- `last_traversed_at`: timestamp de ultima navegacion (para decay)
-- Se puede pasar `weight` explicitamente al crear via `mem_relate`
-
-### Hebbian auto-strengthening (SPEC-006)
-
-"Cells that fire together, wire together" -- cuando el agente accede a memoria A y luego a memoria B en la misma ventana de sesion, la arista entre sus entidades se refuerza automaticamente.
-
-**Mecanismo:**
-
-```
-mem_get(A)  -->  AccessTracker.Record(A, entities_A)
-                   |
-                   +--> Para cada memoria en el ring buffer:
-                          Para cada par (entity_A_i, entity_prev_j):
-                            Enqueue StrengtheningEvent
-                                |
-                                v
-mem_search(B) -->  HebbianWorkerPool (goroutine unica)
-                   |
-                   +--> Existe relacion? -> UpdateRelationWeight(+delta)
-                   +--> No existe?       -> CreateRelation(initial_weight)
+    Agent->>Service: mem_get(A) / mem_search(B)
+    Service->>Tracker: Record(memID, type, scope, entityIDs)
+    Tracker->>Tracker: Generate co-access pairs<br/>with window entries
+    Tracker->>Worker: Enqueue StrengtheningEvents
+    Worker->>Store: UpdateRelationWeight(+delta)<br/>or CreateRelation(initial)
 ```
 
-**Parametros (config.toml `[graph]`):**
+**Configuration (`config.toml [graph]`):**
 
-| Parametro | Default | Funcion |
-|-----------|---------|---------|
-| `hebbian_window` | 5 | Tamano del ring buffer (slots de memoria reciente) |
-| `hebbian_increment` | 0.05 | Delta aplicado a relaciones existentes |
-| `hebbian_initial_weight` | 0.1 | Peso al crear una relacion nueva por co-acceso |
-| `hebbian_buffer_size` | 1000 | Capacidad del canal async. Eventos dropeados cuando lleno |
+| Parameter | Default | Function |
+|-----------|---------|----------|
+| `hebbian_window` | 5 | Ring buffer size (recent memory slots) |
+| `hebbian_increment` | 0.05 | Delta applied to existing relations |
+| `hebbian_initial_weight` | 0.1 | Weight for new Hebbian-created relations |
+| `hebbian_buffer_size` | 1000 | Async channel capacity; events dropped when full |
 
-**Guardas de seguridad:**
-- D1: Pares cross-scope (project vs global) descartados
-- D4: Self-loop guard -- acceso consecutivo al mismo ID no genera pares
-- D5: Tipos `rule` y `session_summary` excluidos (generan ruido)
+**Safety guards:**
+- D1: Cross-scope pairs (project vs global) are discarded
+- D4: Self-loop guard -- consecutive access to the same memory ID produces nothing
+- D5: Types `rule`, `session_summary`, and `synthesis` are excluded (noise generators)
 
-### Edge decay (SPEC-006)
+#### 2b. Wikilink parser (SPEC-011)
 
-Relaciones no traversadas decaen durante el ciclo de consolidacion:
+`[[topic_key]]` references in memory content are automatically parsed on `mem_save` and `mem_update`. The parser (`internal/wikilink/`) is CommonMark-aware: it skips fenced code blocks (``` and ~~~) and inline code spans.
+
+Supported forms: `[[topic]]`, `[[topic#anchor]]`, `[[topic|alias]]`, `[[topic#anchor|alias]]`.
+
+**Resolution flow:**
+1. Parse wikilinks from content
+2. For each `[[topic_key]]`: look up a memory with that `topic_key`
+3. **Found** -- create a `references` relation (weight from `wikilink_relation_weight`, default 0.6)
+4. **Not found** -- insert into `unresolved_references` table (SPEC-012). Auto-resolved when a memory with that `topic_key` is later saved.
+
+Unresolved references power the `mem_gaps` tool (SPEC-013), which surfaces knowledge debt.
+
+#### 2c. Graph rebuild (SPEC-009)
+
+`mneme graph rebuild` bootstraps the graph for projects with pre-existing memories that have no graph data. Four extraction heuristics:
+
+| Heuristic | What it detects | Example |
+|-----------|----------------|---------|
+| H1: topic_key | Each topic_key becomes a `concept` entity | `architecture/auth-model` |
+| H2: file paths | Recognized paths in content become `file` entities | `internal/store/entity.go` |
+| H3: code symbols | `func`/`type`/`struct` in code blocks | `func NewMemoryStore` |
+| H4: wikilinks | `[[topic_key]]` references | `[[architecture/auth-model]]` |
+
+**Co-mention:** Memories sharing >= K entities (default K=2) receive a `related_to` relation with `weight = min(0.5, shared_count * 0.1)`.
+
+**Idempotent:** Safe to re-run. `--force` only deletes `related_to` relations before regenerating; explicit types (`depends_on`, `implements`, etc.) are never touched.
+
+#### 2d. Edge decay (SPEC-006)
+
+Relations not traversed decay during consolidation:
 
 ```
 if days_since_last_traversed > edge_decay_after_days:
     weight *= exp(-edge_decay_rate * excess_days)
 ```
 
-| Parametro | Default |
+| Parameter | Default |
 |-----------|---------|
-| `edge_decay_rate` | 0.02/dia |
+| `edge_decay_rate` | 0.02/day |
 | `edge_decay_after_days` | 30 |
 
-Relaciones con `last_traversed_at = NULL` (nunca traversadas desde la migracion) son excluidas del decay para no penalizar aristas historicas.
+Relations with `last_traversed_at = NULL` (never traversed since migration 007) are excluded from decay to avoid penalizing historical edges.
 
-### Retrieval con grafo: 1-hop expansion (SPEC-007)
+---
 
-El `mem_search` fusiona 3 canales via RRF (ver [Retrieval Pipeline](#retrieval-pipeline)):
+### Layer 3 -- Retrieval
 
-1. FTS5 BM25 (peso 1.0)
-2. Vector similarity (peso 0.8)
-3. Graph expansion (peso 0.6)
+#### 3-channel RRF fusion (SPEC-007, SPEC-015, SPEC-017)
 
-La expansion funciona asi:
-1. Fusion preliminar 2-channel (FTS5 + vector) para identificar top-K seeds
-2. Para cada seed: obtener entidades -> obtener relaciones fuertes (weight > threshold) -> mapear a memory IDs
-3. Score: `max(rel_weight * 1/seed_rank)` -- max para evitar inflacion de hub nodes
-4. RRF fusion final 3-channel
+`mem_search` fuses three independent retrieval channels via Reciprocal Rank Fusion:
 
-**Parametros:**
+```mermaid
+flowchart LR
+    Q["Query"] --> FTS["FTS5 BM25<br/>weight = 1.0"]
+    Q --> VEC["Vector Similarity<br/>(TF-IDF cosine)<br/>weight = 0.8"]
+    Q --> GRF["Graph Expansion<br/>(PPR or 1-hop)<br/>weight = 0.6"]
 
-| Parametro | Default |
+    FTS --> RRF["RRF Fusion<br/>(k=60)"]
+    VEC --> RRF
+    GRF --> RRF
+
+    RRF --> RERANK["Re-rank:<br/>BM25 x importance x decay"]
+    RERANK --> OUT["Top-N results"]
+```
+
+**RRF formula:**
+
+```
+RRF_score(d) = SUM over all rank lists R:
+    weight_R / (k + rank_R(d))
+
+k = 60 (standard RRF constant)
+```
+
+Channel weights reflect reliability: FTS5 (1.0) is the most precise signal (exact term matches), vector (0.8) captures semantic similarity, and graph (0.6) adds topological context but is noisier.
+
+#### Graph expansion modes (`config.toml graph_mode`)
+
+| Mode | Algorithm | When to use |
+|------|-----------|-------------|
+| `ppr` (default) | Personalized PageRank via `BuildGraphForSeeds` + `scoring.PPR` (SPEC-015/017) | Multi-hop, considers global topology. Best for dense graphs. |
+| `1hop` | 1-hop bidirectional expansion via `graphExpand` (SPEC-007) | Faster, simpler. Useful for sparse graphs or debugging. |
+| `off` | No graph channel; 2-channel RRF (FTS5 + vector) | Fallback when graph adds no value. |
+
+`ExpansionEnabled=false` is the absolute kill switch. `include_graph=false` in individual requests overrides `graph_mode`.
+
+**PPR parameters (SPEC-015):**
+
+| Parameter | Default | Source |
+|-----------|---------|--------|
+| Alpha (teleport probability) | 0.85 | Brin & Page 1998 |
+| MaxIter | 100 | Convergence threshold |
+| Epsilon (L1 convergence) | 1e-6 | Standard for <50K nodes |
+| MaxDepth (BFS for graph build) | 3 | PPR mass at d=3 is negligible |
+| MaxNodes (graph build cap) | 5000 | <20ms at this scale |
+| WeightThreshold | 0.3 | 4+ Hebbian co-accesses required |
+| FanOutCap | 50 | Prevents hub-node explosion |
+
+**1-hop expansion parameters (SPEC-007):**
+
+| Parameter | Default |
 |-----------|---------|
-| `expansion_enabled` | true |
 | `expansion_threshold` | 0.3 |
 | `expansion_fan_out_cap` | 50 |
 | `expansion_seed_top_k` | 10 |
 
-El flag `include_graph` en `mem_search` permite deshabilitar la expansion por request.
+**Hebbian tracking post-search:** Top-3 results from each search are registered for Hebbian auto-strengthening, reinforcing relations between frequently co-retrieved memories.
 
-### mem_explore: BFS prioritizado (SPEC-008)
+#### `mem_explore`: Prioritized BFS (SPEC-008)
 
-`mem_explore` realiza un BFS priorizado (priority queue por `accumulatedWeight` descendente) desde una memoria seed.
+`mem_explore` performs a prioritized BFS (max-heap by `accumulatedWeight` descending) from a seed memory.
 
-**Seed resolution:** UUID completo, prefijo hex (8+ chars), o `topic_key`.
+**Seed resolution:** Full UUID, hex prefix (8+ chars), or `topic_key`.
 
-**Algoritmo:**
-1. Resolver seed -> obtener entidades -> encolar vecinos a distancia 1
-2. BFS loop: pop del max-heap, token budget check, expandir vecinos si hay depth restante
-3. `accumulatedWeight = parent_weight * relation_weight` (producto a lo largo del path)
-4. Nodos ordenados por `(distance ASC, accumulated_weight DESC)`
-5. Relaciones traversadas se tocan asynchronamente (`BatchTouchRelations`)
+**Algorithm:**
+1. Resolve seed -> get entities -> enqueue neighbors at distance 1
+2. BFS loop: pop from max-heap, check token budget, expand neighbors if depth remains
+3. `accumulatedWeight = parent_weight * relation_weight` (product along the path)
+4. Results ordered by `(distance ASC, accumulated_weight DESC)`
+5. Traversed relations are touched asynchronously via `BatchTouchRelations`
 
-**Parametros:** `depth` (0-5, default 2), `budget` (tokens, default 4000), `threshold` (min weight, default 0.3).
+**Parameters:** `depth` (0-5, default 2), `budget` (tokens, default 4000), `threshold` (min weight, default 0.3).
 
-**Output CLI:** arbol ASCII con tipo de relacion, peso acumulado, y tokens estimados.
+#### Rules injection in `mem_context` (SPEC-002)
 
-### graph rebuild: backfill (SPEC-009)
-
-`mneme graph rebuild` extrae entidades de memorias existentes y crea relaciones de co-mencion.
-
-**4 heuristicas de extraccion:**
-
-| Heuristica | Que detecta | Ejemplo |
-|------------|-------------|---------|
-| H1: topic_key | Cada topic_key -> entidad concept | `architecture/auth-model` |
-| H2: file paths | Paths reconocidos en content | `internal/store/entity.go` |
-| H3: code symbols | func/type/struct en code blocks | `func NewMemoryStore` |
-| H4: wikilinks | `[[topic_key]]` references | `[[architecture/auth-model]]` |
-
-**Co-mencion:** memorias que comparten >= K entidades (default K=2) reciben una relacion `related_to` con `weight = min(0.5, shared_count * 0.1)`.
-
-**Idempotente:** seguro re-ejecutar. `--force` borra relaciones `related_to` existentes antes de regenerar; otros tipos (`depends_on`, `implements`, etc.) nunca se tocan.
-
-**Flags:** `--min-shared` (K), `--max-relations` (cap por memoria), `--batch-size`, `--force`, `--dry-run`.
-
----
-
-## Rules System (SPEC-001..004)
-
-### Modelo
-
-Las reglas son memorias de tipo `rule` con dos campos adicionales (SPEC-001):
-
-- **`applies_to`**: lista de patrones que determinan cuando aplica la regla
-- **`severity`**: nivel de enforcement (`info` / `warn` / `block`)
-
-Las reglas son inmunes al decay (`decay_rate = 0`) -- permanecen activas hasta que se revocan via `mem_forget` o `mem_update`.
-
-### Sintaxis applies_to
-
-| Patron | Match |
-|--------|-------|
-| `**` | Cualquier tool, cualquier path (wildcard global) |
-| `tool:Edit` | Tool especifico (case-sensitive) |
-| `internal/**/*.go` | Path glob con doublestar |
-| `tool:Edit+internal/**` | AND: tool Y path deben matchear |
-| `!docs/**` | Negacion: veta la regla cuando este patron matchea |
-| `["**", "!docs/**"]` | Combinacion: todo excepto docs/ |
-
-### Inyeccion en contexto (SPEC-002)
-
-`mem_context` siempre inyecta las reglas del scope activo con un presupuesto de tokens separado. Las reglas aparecen en la seccion "Active Rules" del output, ANTES de las memorias generales, para que el LLM las encuentre primero.
+`mem_context` injects all active rules with a **dedicated token budget** (default 1500 tokens), separate from the general memory budget. Rules always appear in the context regardless of how many other memories compete:
 
 ```
 <!-- mneme:context:start -->
@@ -352,147 +503,489 @@ _Applies to: vendor/**_
 <!-- mneme:context:end -->
 ```
 
-### Hook pre-tool-use (SPEC-003)
+Rules are sorted by severity DESC -> effective importance DESC -> updated_at DESC, ensuring `block` rules always appear first.
 
-El hook `mneme hook pre-tool-use` se ejecuta antes de cada `Edit`, `Write`, y `MultiEdit`:
+---
 
-1. Lee JSON de stdin (tool_name + tool_input.file_path)
-2. Abre las DBs en read-only mode (no migraciones, no WAL writer)
-3. Matchea reglas contra tool + path
-4. Emite markdown a stdout con reglas que aplican
-5. Exit 2 si alguna regla tiene severity `block`
+### Layer 4 -- Synthesis
 
-**Performance target:** <50ms. Query unica con `LIMIT 200`, matching in-memory.
+The synthesis layer builds on communities and graph data to generate higher-level knowledge artifacts.
 
-**Fail open:** cualquier error interno resulta en exit 0 (allow).
+#### 4a. Community detection -- Louvain (SPEC-019/020)
 
-### CLI de gestion (SPEC-004)
+The Louvain algorithm (Blondel et al. 2008) detects communities of densely connected entities in the knowledge graph. It runs during each consolidation cycle.
+
+```mermaid
+flowchart TD
+    SEEDS["List active memory IDs<br/>(exclude synthesis type)"] --> BUILD["BuildGraphForSeeds<br/>(MaxNodes=10000)"]
+    BUILD --> LOUV["Louvain community detection<br/>(gamma=1.0, min_gain=1e-7,<br/>max_levels=10)"]
+    LOUV --> FILTER["Filter communities<br/>< min_size (default 3)"]
+    FILTER --> DIFF["Diff against persisted<br/>communities (SHA-256<br/>membership hash)"]
+    DIFF --> |"Hash match"| UPDATE["UPDATE<br/>(refresh metadata)"]
+    DIFF --> |"New hash"| INSERT["INSERT<br/>(new UUIDv7)"]
+    DIFF --> |"Missing hash"| DELETE["DELETE<br/>(stale community)"]
+    UPDATE --> TX["Atomic transaction"]
+    INSERT --> TX
+    DELETE --> TX
+```
+
+**Configuration:**
+
+| Parameter | Default |
+|-----------|---------|
+| `community_detection_enabled` | true |
+| `community_min_size` | 3 |
+
+#### 4b. Synthesis generation (SPEC-021)
+
+After community detection, a deterministic generator produces `synthesis` type memories -- one per community. No LLM required.
+
+**Content structure:** Overview line, top-3 members (detailed), all members table (capped at `synthesis_max_members=50`), aggregate metadata. Wikilinks `[[topic_key]]` link synthesis to members.
+
+**Lifecycle:**
+- New community -> create synthesis (topic_key: `synthesis/community-{uuid7}`)
+- Stable community (same hash) -> check content; upsert if changed, skip if identical
+- Deleted community -> soft-delete synthesis via `mem_forget`
+
+**Exclusions:** Synthesis memories are excluded from:
+- Community detection seeds (prevents synthesis-of-synthesis loops, D5)
+- Hebbian co-access tracking (prevents graph inflation, D6)
+- But **included** in wikilink processing (D8) -- `references` relations are the linking mechanism
+
+**Configuration:**
+
+| Parameter | Default |
+|-----------|---------|
+| `synthesis_enabled` | true |
+| `synthesis_max_members` | 50 |
+| `synthesis_top_n` | 3 |
+
+#### 4c. Community packing in `mem_context` (SPEC-022)
+
+When communities exist, `mem_context` uses a 4-phase community-aware packing algorithm instead of flat scoring:
+
+```mermaid
+flowchart TD
+    P1["Phase 1: Rank communities<br/>by PPR proximity to focus<br/>(or member_count if no focus)"]
+    P2["Phase 2: Pack synthesis summaries<br/>into ClusterOverviewsBudget<br/>(default 1500 tokens)"]
+    P3["Phase 3: Deep-dive top cluster<br/>Pack top members by importance<br/>(max top_cluster_max_members=10)"]
+    P4["Phase 4: Fill remaining budget<br/>with flat scoring<br/>(dedup against phases 1-3)"]
+
+    P1 --> P2
+    P2 --> P3
+    P3 --> P4
+```
+
+**Packing modes (`context_packing_mode`):**
+
+| Mode | Behavior |
+|------|----------|
+| `auto` (default) | Community packing when communities exist; flat otherwise |
+| `communities` | Always attempt community packing; falls back to flat silently |
+| `flat` | Original flat scoring; ignores communities entirely |
+
+---
+
+## Vault & Memory Manifest
+
+### Vault -- Markdown mirror (SPEC-023/024)
+
+The vault is a filesystem mirror of the SQLite database in human-readable Markdown with YAML frontmatter. It enables:
+- Browsing memories in Obsidian (zero integration needed)
+- PR-reviewable memory changes
+- Offline backup in a universal format
+
+**Layout:**
+```
+~/.mneme/vaults/<slug>/
+  .mneme-vault              # JSON marker (vault_version, project, scope)
+  notes/
+    architecture/
+      auth-model.md         # topic_key segments = directory segments
+    patterns/
+      repository.md
+    _no-topic/
+      019abc12.md           # memories without topic_key (8-char UUID prefix)
+```
+
+**Frontmatter:** 17 fields max, fixed-order YAML (no `gopkg.in/yaml.v3` dependency). Always: id, type, scope, title, importance, confidence, decay_rate, created_at, updated_at, revision_count. Conditional: topic_key, project, created_by, files, applies_to, severity, superseded_by.
+
+**Export:** Atomic writes (tmp file + `os.Rename`). Idempotency via `updated_at` comparison (first 512 bytes probe). Soft-deleted memories never exported.
+
+**Import:** Two strategies -- `merge` (default, file wins when `updated_at > DB`) and `overwrite` (file always wins). Marker file mandatory (prevents cross-project injection). Per-memory `service.Save()`/`Update()` calls (crash-safe, re-runnable).
+
+### Memory Manifest -- Open spec (SPEC-026)
+
+A portable archive format for cross-tool memory interchange. Modeled after Obsidian's JSON Canvas -- a neutral, open specification.
+
+**Format:** `manifest.tar.gz` containing `manifest.json` + `schemas/` directory. JSON Schema 2020-12.
+
+**Contents:**
+- All 22 Memory fields
+- All 7 Entity fields
+- All 9 Relation fields
+- All 6 Session fields
+- Producer metadata + stats
+
+**Excluded from v1.0:** Embeddings (large, model-specific, regenerable), unresolved references (derived), communities (derived), SDD state (workflow semantics).
+
+**Import auto-detection:** Extension-based (`.manifest.tar.gz`) + content inspection (POSIX tar magic at byte 257). Entity ID remapping on import (CreateEntity generates new UUIDv7, relations are translated via `map[srcID]dstID`).
+
+**CLI:**
+```bash
+mneme sync export --format manifest -o backup.manifest.tar.gz
+mneme sync import backup.manifest.tar.gz   # auto-detects format
+```
+
+---
+
+## The Three Frontends
+
+### MCP (primary) -- `mneme mcp`
+
+JSON-RPC 2.0 over stdio. ProtocolVersion `2024-11-05`. 24 tools with JSON schemas:
+
+| Group | Tools |
+|-------|-------|
+| **Memory (14)** | `mem_save`, `mem_search`, `mem_get`, `mem_context`, `mem_update`, `mem_session_end`, `mem_suggest_topic_key`, `mem_relate`, `mem_timeline`, `mem_stats`, `mem_checkpoint`, `mem_forget`, `mem_gaps`, `mem_explore` |
+| **Backlog (4)** | `backlog_add`, `backlog_list`, `backlog_refine`, `backlog_promote` |
+| **Spec (6)** | `spec_new`, `spec_status`, `spec_advance`, `spec_pushback`, `spec_resolve`, `spec_list` |
+
+`handleMessage()` is exposed separately from `Run()` for unit testing without I/O loops (D007).
+
+### HTTP API -- `mneme serve --addr :7437`
+
+Stdlib `net/http`, graceful shutdown 10s. 8+ endpoints under `/v1/`:
+
+| Method | Endpoint | Status |
+|--------|----------|--------|
+| GET | `/v1/health` | 200 |
+| POST | `/v1/memories` | 201 |
+| GET | `/v1/memories/{id}` | 200 |
+| PATCH | `/v1/memories/{id}` | 200 |
+| DELETE | `/v1/memories/{id}` | 200 |
+| GET | `/v1/memories/search` | 200 |
+| GET | `/v1/memories/context` | 200 |
+| POST | `/v1/sessions/end` | 200 |
+| POST | `/v1/entities/relate` | 201/200 |
+| GET | `/v1/stats` | 200 |
+| POST | `/v1/consolidate` | 200 |
+
+**HTTP gap:** No SDD endpoints (`/v1/specs/*`, `/v1/backlog/*`), no `mem_checkpoint`, no `mem_timeline`, no `mem_suggest_topic_key`, no `mem_gaps`, no `mem_explore`. No auth, no rate limiting.
+
+### CLI -- Cobra
+
+27+ top-level commands: `save`, `search`, `get`, `forget`, `status`, `stats`, `consolidate`, `serve`, `mcp`, `init`, `install`, `upgrade`, `version`, `sync export|import|status`, `rule add|list|test`, `explore`, `graph rebuild`, `vault export|import`, `spec`, `backlog`, `hook`, `tui`, `embed backfill`.
+
+### Hooks (`internal/cli/hook.go`)
+
+4 hook handlers invoked by the agent system:
+
+| Hook | Type | Purpose |
+|------|------|---------|
+| `session-start` | Observational | Hydrates context with `mem_context` |
+| `session-end` | Observational | Persists session summary |
+| `pre-tool-use` | Enforcement | Matches rules against tool+path, blocks on severity=block |
+| `enforce-delegation` | Enforcement | Blocks `Edit`/`Write`/`MultiEdit` on protected paths |
+
+**`pre-tool-use` performance:** <50ms target. Single query with `LIMIT 200`, in-memory matching. **Fail open:** any internal error results in exit 0 (allow).
+
+---
+
+## End-to-End Flow Diagrams
+
+### `mem_save`
+
+```mermaid
+sequenceDiagram
+    participant Agent
+    participant MCP
+    participant Service
+    participant Store
+    participant Wikilink as Wikilink Parser
+    participant Graph as Graph Layer
+
+    Agent->>MCP: mem_save(title, content, type, ...)
+    MCP->>Service: Save(ctx, SaveRequest)
+    Service->>Service: Validate (title, content, type, scope)
+    Service->>Service: Apply importance defaults (type-based)
+
+    alt topic_key provided
+        Service->>Store: Upsert(topic_key, project, scope)
+        Store-->>Service: action: "created" | "updated"
+    else no topic_key
+        Service->>Store: Create(memory)
+        Store-->>Service: action: "created"
+    end
+
+    Service->>Store: Generate embedding (TF-IDF)
+    Service->>Store: Save embedding vector
+
+    Service->>Wikilink: Parse(content)
+    Wikilink-->>Service: []Link
+
+    loop For each wikilink
+        alt Target topic_key exists
+            Service->>Store: CreateRelation(references, weight=0.6)
+        else Target not found
+            Service->>Store: UpsertUnresolvedReference
+        end
+    end
+
+    Service->>Service: Auto-resolve: check if this memory's topic_key<br/>resolves any existing unresolved refs
+    Service->>Graph: Record Hebbian access
+
+    Service-->>MCP: SaveResponse(id, action)
+    MCP-->>Agent: JSON-RPC result
+```
+
+### `mem_search`
+
+```mermaid
+sequenceDiagram
+    participant Agent
+    participant Service
+    participant Store
+    participant Scoring as scoring/
+    participant Graph as Graph Layer
+
+    Agent->>Service: Search(query, project, include_graph)
+
+    par Three channels
+        Service->>Store: FTS5Search(query) → Rank A
+        Service->>Store: VectorSearch(embed(query)) → Rank B
+        Service->>Service: Resolve graph_mode (ppr|1hop|off)
+    end
+
+    alt mode = ppr
+        Service->>Store: Collect seed entity IDs from FTS5+vector top-K
+        Service->>Service: BuildGraphForSeeds (BFS, MaxNodes=5000)
+        Service->>Scoring: PPR(sparseGraph, seeds, alpha=0.85)
+        Scoring-->>Service: PPRResult.Scores → Rank C
+    else mode = 1hop
+        Service->>Store: graphExpand (1-hop bidirectional)
+        Store-->>Service: graphResults → Rank C
+    end
+
+    Service->>Scoring: RRF fusion (FTS5 w=1.0, vector w=0.8, graph w=0.6)
+    Service->>Service: Re-rank by BM25 x importance x decay
+
+    Service->>Graph: Record Hebbian access (top 3)
+    Service-->>Agent: SearchResponse(results, total)
+```
+
+### `mem_context`
+
+```mermaid
+sequenceDiagram
+    participant Agent
+    participant Service
+    participant Store
+
+    Agent->>Service: Context(project, budget, focus)
+
+    Service->>Service: Phase 1: Load + pack active rules<br/>(dedicated rules_budget=1500)
+
+    Service->>Store: List project memories (importance DESC)
+    Service->>Store: List global memories (importance > threshold)
+
+    opt focus provided
+        Service->>Store: FTS5Search(focus) + VectorSearch(focus)
+        Service->>Service: Graph expansion for focus boost (PPR/1-hop)
+    end
+
+    Service->>Service: Score candidates:<br/>effective_importance * type_boost + focus_boost
+
+    Service->>Store: GetLastSession(project)
+
+    alt Communities exist & mode != flat
+        Service->>Service: Phase 1: Rank communities (PPR or size)
+        Service->>Service: Phase 2: Pack synthesis summaries
+        Service->>Service: Phase 3: Deep-dive top cluster
+        Service->>Service: Phase 4: Fill remaining with flat
+    else Flat mode
+        Service->>Service: Pack by effective score until budget
+    end
+
+    Service-->>Agent: ContextResponse(memories, rules, session, tokens)
+```
+
+### Consolidation sweep
+
+```mermaid
+flowchart TD
+    START["Pipeline.Run()"] --> SWEEP["1. SWEEP<br/>Compute effective_importance<br/>Soft-delete if < 0.05"]
+    SWEEP --> EDGE["2. EDGE DECAY<br/>weight *= exp(-rate * excess_days)<br/>for relations idle > 30 days"]
+    EDGE --> DETECT["3. COMMUNITY DETECTION<br/>Louvain on full entity graph<br/>Persist via SHA-256 hash diff"]
+    DETECT --> SYNTH["4. SYNTHESIS GENERATION<br/>Create/update/delete synthesis<br/>memories per community"]
+    SYNTH --> HARD["5. HARD DELETE<br/>Remove soft-deleted memories<br/>older than retention period"]
+    HARD --> DEDUP["6. DEDUP<br/>Detect duplicates by<br/>title + BM25 overlap, merge"]
+    DEDUP --> BUDGET["7. BUDGET ENFORCEMENT<br/>Evict lowest-scored if<br/>over budget limit"]
+    BUDGET --> DONE["ConsolidationResult"]
+```
+
+Runs automatically when `mneme mcp` starts and every 6h (configurable). Both project and global stores are processed.
+
+---
+
+## Rules System
+
+### Model (SPEC-001)
+
+Rules are memories of type `rule` with two additional fields:
+- **`applies_to`**: JSON array of pattern strings
+- **`severity`**: enforcement level (`info` / `warn` / `block`)
+
+Rules are **immune to decay** (`decay_rate = 0`) -- they remain active until explicitly revoked via `mem_forget` or `mem_update` (D016).
+
+### Pattern syntax
+
+| Pattern | Matches |
+|---------|---------|
+| `**` | Any tool, any path (global wildcard) |
+| `tool:Edit` | Specific tool name (case-sensitive) |
+| `internal/**/*.go` | Path glob with doublestar |
+| `tool:Edit+internal/**` | AND: both tool AND path must match |
+| `!docs/**` | Negation: vetoes the rule when matched |
+| `["**", "!docs/**"]` | Combined: everything except docs/ |
+
+### Hook enforcement (SPEC-003)
+
+The `mneme hook pre-tool-use` hook runs before `Edit`, `Write`, and `MultiEdit`:
+
+1. Read JSON from stdin (tool_name + tool_input.file_path)
+2. Open DBs in read-only mode (no migrations, no WAL writer)
+3. Match rules against tool + path
+4. Emit markdown to stdout with applicable rules
+5. Exit 2 if any rule has severity `block`
+
+**Performance:** <50ms. Single query with `LIMIT 200`, in-memory matching.
+**Fail open:** Any internal error results in exit 0 (allow) (D017).
+
+### CLI (SPEC-004)
 
 ```bash
-# Crear regla
+# Create rule
 mneme rule add --title "No vendor edits" --content "..." \
   --applies-to "vendor/**" --severity block
 
-# Listar reglas (tabla coloreada por severity)
+# List rules (colored by severity)
 mneme rule list
 mneme rule list --severity block --scope global
 
-# Testear contra invocacion simulada
+# Test against simulated invocation
 mneme rule test --tool Edit --path internal/store/memory.go
 ```
 
 ---
 
-## Retrieval Pipeline
+## Design Decisions
 
-### 3-Channel RRF (v0.2.0, SPEC-007)
+### Storage decisions
 
-```
-Query ──┬──> FTS5 BM25 ──────────> Rank A (w=1.0)
-        │
-        ├──> Vector similarity ───> Rank B (w=0.8)
-        │
-        ├──> 1-hop graph expand ──> Rank C (w=0.6)
-        │
-        └──> RRF Fusion (k=60) ──> Re-rank (decay + importance) ──> Return
-```
+| ID | Decision | Rationale | SPEC |
+|----|----------|-----------|------|
+| D001 | SQLite with CGO (`mattn/go-sqlite3`) | FTS5 is critical; no pure-Go driver supports it | -- |
+| D002 | UUIDv7 for all IDs | Time-sortable, globally unique without coordination (RFC 9562) | -- |
+| D003 | No ORM -- raw SQL with `database/sql` | Full control, no abstraction leaks | -- |
+| D004 | Tests against real SQLite in-memory | DB is part of the unit under test; no mocks | -- |
+| D005 | `model/` has zero external deps | Leaf package, clean architecture boundary | -- |
+| D006 | Build tag `-tags fts5` mandatory | Prevents accidental builds without FTS5 | -- |
+| D009 | `SetMaxOpenConns(1)` in tests | Prevents deadlock with `:memory:` databases | -- |
+| D010 | Rows closed before secondary queries | Avoids SQLite lock contention in shared-cache mode | -- |
 
-**RRF formula:**
+### Graph decisions
 
-```
-RRF_score(d) = SUM over all rank lists R:
-    weight_R / (k + rank_R(d))
+| ID | Decision | Rationale | SPEC |
+|----|----------|-----------|------|
+| D011 | Type-differentiated relation weights [0.0, 1.0] | `depends_on=0.9` is structural; `references=0.4` is weak signal | SPEC-005 |
+| D012 | Single-worker Hebbian goroutine, buffered channel, drop policy | Simplicity over throughput; read path never blocks | SPEC-006 |
+| D013 | Graph expansion as 3rd RRF channel (weight 0.6) | Topologically connected memories surface even without text match; low weight prevents graph dominance | SPEC-007 |
+| D014 | BFS with product-of-weights accumulation | Product penalizes long weak paths: `0.3^3 = 0.027` vs `0.9^3 = 0.729` | SPEC-008 |
+| D015 | Idempotent rebuild with 4 heuristics | Bootstraps graph for legacy projects; `--force` only touches `related_to` | SPEC-009 |
 
-k = 60 (standard RRF constant)
-```
+### Retrieval decisions
 
-Los pesos reflejan que FTS5 es la senal mas confiable (term matches exactos), vectors son fuertes para similitud semantica, y graph expansion agrega contexto topologico pero es mas ruidoso.
+| ID | Decision | Rationale | SPEC |
+|----|----------|-----------|------|
+| D018 | PPR alpha=0.85 (Brin & Page 1998) | Standard value, balances topology vs seed affinity | SPEC-015 |
+| D019 | Map-based adjacency (not CSR) | <50K nodes per project; simplicity > cache locality | SPEC-015 |
+| D020 | MaxNodes=5000 for graph build | PPR benchmarks confirm <20ms at this scale | SPEC-016 |
+| D021 | GraphMode config with per-request override | Allows experimentation without restarting | SPEC-017 |
+| D022 | `mem_suggest_topic_key` via Jaccard + gap boost | Surfaces gap matches alongside existing keys | SPEC-014 |
 
-**Hebbian tracking post-search:** los top-3 resultados de cada busqueda se registran para Hebbian auto-strengthening, reforzando las relaciones entre memorias frecuentemente co-recuperadas.
+### Community & synthesis decisions
 
-### Context assembly (`mem_context`)
+| ID | Decision | Rationale | SPEC |
+|----|----------|-----------|------|
+| D023 | SHA-256 membership hash for community diff | Collision-resistant, stdlib, O(1) lookup | SPEC-020 |
+| D024 | Deterministic synthesis (no LLM) | Reproducible, fast, zero external dependencies | SPEC-021 |
+| D025 | Synthesis excluded from detection seeds + Hebbian | Prevents loops and graph inflation | SPEC-021 |
+| D026 | 4-phase community packing (rank + overview + detail + fill) | Focus-aware context that leverages graph structure | SPEC-022 |
 
-1. Cargar ultimo session summary del proyecto
-2. Cargar todas las reglas activas (presupuesto separado, inyectadas primero)
-3. Cargar memorias activas ordenadas por `importance * recency_factor`
-4. Incluir memorias globales con importance > 0.7
-5. Si `focus` provisto: boost FTS5 a memorias que matcheen
-6. Empacar en token budget, highest scored first
-7. Architecture memories reciben 1.5x weight (priorizadas)
+### Rules decisions
+
+| ID | Decision | Rationale | SPEC |
+|----|----------|-----------|------|
+| D016 | Rules immune to decay (`decay_rate=0`) | Active constraints must not fade; revoke explicitly | SPEC-001 |
+| D017 | Pre-tool-use hook fail open | Broken hook must never block the agent from working | SPEC-003 |
+
+### Vault & manifest decisions
+
+| ID | Decision | Rationale | SPEC |
+|----|----------|-----------|------|
+| D027 | New `vault/` package (not extend `export/`) | Single responsibility; export is rendering-only | SPEC-023 |
+| D028 | Manual YAML serialization (no gopkg.in/yaml.v3) | Flat key-value frontmatter; `fmt.Fprintf` is deterministic | SPEC-023 |
+| D029 | Atomic writes (tmp + os.Rename) | POSIX-safe on same filesystem | SPEC-023 |
+| D030 | Manifest format: `manifest.tar.gz` with JSON Schema 2020-12 | Extensible, bundled schemas, offline validation | SPEC-026 |
+| D031 | SDD types excluded from manifest | Workflow semantics don't transfer across installations | SPEC-026 |
+
+### Frontend decisions
+
+| ID | Decision | Rationale | SPEC |
+|----|----------|-----------|------|
+| D007 | `handleMessage()` exposed for MCP testing | Unit tests drive the MCP server without I/O loops | -- |
+| D008 | Fire-and-forget access tracking in `service.Get()` | Access count increments after response returns | -- |
 
 ---
 
-## Consolidation Pipeline
+## Why These Choices
 
-Corre automaticamente cuando `mneme mcp` arranca y cada 6h (configurable):
+**Why SQLite, not Postgres/Redis?** Zero infrastructure. mneme is a single binary for individual developers. SQLite's FTS5 provides full-text search good enough for <100K memories. WAL mode handles the single-writer-many-reader pattern perfectly.
 
-1. **SWEEP:** Calcular effective_importance, soft-delete si < 0.05
-2. **HARD DELETE:** Borrar memorias soft-deleted > 30 dias
-3. **DEDUP:** Detectar duplicados por titulo + BM25 overlap, merge
-4. **BUDGET:** Si total > budget, evict las de menor score
-5. **EDGE DECAY** (nuevo, SPEC-006): Aplicar decay a relaciones no traversadas en > 30 dias
+**Why FTS5 BM25, not just embeddings?** BM25 is exact-match and highly precise when it fires. TF-IDF embeddings are a semantic complement. The two channels cover different failure modes: BM25 misses paraphrases, embeddings miss exact terms. RRF fusion gives both a voice.
+
+**Why Personalized PageRank?** Standard PageRank treats all nodes equally. PPR biases the random walk toward the query-relevant seed set, making it a natural fit for "find memories related to X." Multi-hop propagation surfaces connections that 1-hop expansion misses.
+
+**Why Louvain, not spectral clustering / label propagation?** Louvain is the most widely used community detection algorithm (>40K citations). It is fast (O(n log n) in practice), deterministic with sorted input, and produces high-modularity partitions. Reference implementations exist in every language (NetworkX, igraph), making the algorithm well-understood and debuggable.
+
+**Why Hebbian strengthening?** Co-accessed memories should become more strongly related over time. The biological metaphor (Hebb 1949) maps directly to the use case: if an agent repeatedly retrieves "auth model" and "JWT validation" in the same session window, the graph should reflect that association without explicit `mem_relate` calls.
+
+**Why rules as first-class memories?** Rules need the same storage, search, and scope isolation as other memories. Making them a memory type with special fields (`applies_to`, `severity`) avoids a parallel system while enabling rule-specific behaviors (zero decay, dedicated context budget, hook enforcement).
+
+**Why a vault (Markdown mirror)?** SQLite is opaque to humans. A Markdown mirror with frontmatter is browsable in any editor, reviewable in PRs, and opens the door to Obsidian as a zero-integration read-only frontend. The vault is a view, not the source of truth -- SQLite remains canonical.
+
+**Why Memory Manifest (open spec)?** Avoids vendor lock-in. JSON Schema-based validation, tar.gz bundling for extensibility, and auto-detection on import make the format tool-agnostic. Other agents can read and write mneme memories without importing mneme's Go code.
 
 ---
 
-## Decisiones de diseno
+## Performance Budgets
 
-### D001: SQLite con CGO obligatorio
-**Decision:** Usar `mattn/go-sqlite3` con CGO en lugar de alternativas pure-Go.
-**Razon:** FTS5 (full-text search) es critico para mneme.
-**Consecuencia:** El build requiere `CGO_ENABLED=1` y un compilador C.
+Verified against benchmarks in `internal/service/bench_test.go`.
 
-### D002: UUIDv7 para identificadores
-**Decision:** Usar UUIDv7 (RFC 9562) para todos los IDs.
-**Razon:** Time-sortable, globalmente unicos sin coordinacion.
+| Operation | Target | Verified |
+|-----------|--------|----------|
+| `mem_search` (FTS5 only, 5K memories) | <50ms | `BenchmarkSearch_GraphExpansion_5K` |
+| `mem_search` (graph expansion overhead vs no graph) | <50ms additional | SPEC-007 AC3 |
+| `mem_context` (community packing, 5K memories) | <200ms | `BenchmarkContext_CommunityPacking` |
+| Pre-tool-use hook (rule matching) | <50ms | Read-only DB, `LIMIT 200`, in-memory matching |
+| PPR convergence (<50K nodes) | <20ms | `scoring.PPR` with MaxNodes=5000 |
+| Louvain community detection | <500ms for typical project graphs | `DefaultLouvainOptions` (gamma=1.0, max_levels=10) |
+| Vault export (5K memories) | <10s | Sequential writes, no parallelism in v1 |
+| Vault import (1K files) | <10s | Sequential reads, no parallelism in v1 |
 
-### D003: No ORM
-**Decision:** SQL crudo con `database/sql`.
+**Test suite:** 527+ test functions across core packages. Tests run against real in-memory SQLite (no mocks). Target >85% coverage on `model`, `store`, `service`, `scoring`.
 
-### D004: Tests contra SQLite real
-**Decision:** No mockear la base de datos. Tests usan SQLite in-memory (`:memory:`).
+---
 
-### D005: internal/model sin dependencias externas
-**Decision:** El paquete `model` no importa nada fuera de la stdlib.
-
-### D006: Build tag -tags fts5
-**Decision:** Todos los builds y tests requieren `-tags fts5`.
-
-### D007: handleMessage() para testing del MCP server
-**Decision:** El server MCP expone `handleMessage([]byte)` para tests unitarios directos.
-
-### D008: Fire-and-forget en access tracking
-**Decision:** `service.Get()` incrementa `access_count` despues de retornar.
-
-### D009: SetMaxOpenConns(1) en tests
-**Decision:** Los tests de store usan max 1 conexion para evitar deadlock con `:memory:`.
-
-### D010: Rows cerrados antes de queries secundarias
-**Decision:** Las rows del query principal se cierran antes de queries de files.
-
-### D011: Pesos diferenciados por tipo de relacion (SPEC-005)
-**Decision:** Cada RelationType tiene un peso default en `[0.0, 1.0]` que refleja su importancia estructural. `depends_on=0.9` porque las dependencias son criticas; `references=0.4` porque son senales debiles.
-**Consecuencia:** La expansion y el BFS siguen caminos mas fuertes primero.
-
-### D012: Hebbian single-worker goroutine (SPEC-006)
-**Decision:** Un solo worker procesa StrengtheningEvents. Canal buffered con drop policy.
-**Razon:** Simplicidad sobre throughput. A la escala de mneme (~1000 memorias/proyecto), un worker es suficiente. El path de lectura nunca se bloquea.
-
-### D013: Graph expansion como tercer canal RRF (SPEC-007)
-**Decision:** Graph expansion es un canal RRF con peso 0.6, no un filter ni un boost post-hoc.
-**Razon:** RRF permite que memorias topologicamente conectadas aparezcan incluso cuando FTS5 y vector no las encuentran, mientras que el peso bajo (0.6 vs 1.0 para FTS5) evita que el grafo domine los resultados.
-
-### D014: BFS priorizado con producto de pesos (SPEC-008)
-**Decision:** `mem_explore` usa un max-heap por `accumulatedWeight = parent * edge`, no suma.
-**Razon:** El producto penaliza naturalmente caminos largos con aristas debiles. Un path de 3 hops con pesos 0.9*0.8*0.7=0.504 es significativo; con 0.3*0.3*0.3=0.027 no.
-
-### D015: Backfill idempotente con 4 heuristicas (SPEC-009)
-**Decision:** `graph rebuild` extrae entidades heuristicamente y crea relaciones `related_to` de co-mencion.
-**Razon:** Proyectos legacy con muchas memorias preexistentes no tienen grafo. El rebuild bootstraps el grafo sin requerir que el usuario cree relaciones manualmente. `--force` solo toca `related_to`; las relaciones explicitas son inmutables.
-
-### D016: Rules inmunes a decay (SPEC-001)
-**Decision:** Memorias de tipo `rule` tienen `decay_rate = 0`.
-**Razon:** Las reglas son constraints activos. Si decayeran, el agente las ignoraria gradualmente -- el opuesto de lo deseado. Se revocan explicitamente con `mem_forget`.
-
-### D017: Pre-tool-use hook fail open (SPEC-003)
-**Decision:** Cualquier error en el hook `pre-tool-use` resulta en exit 0 (allow).
-**Razon:** Un hook roto nunca debe bloquear al agente de trabajar. Es preferible que pase una accion sin evaluar reglas a que el agente quede paralizado.
+*Last updated: 2026-04-30. Reflects the state of mneme after EPIC-1 through EPIC-6 (SPEC-001 through SPEC-026).*
