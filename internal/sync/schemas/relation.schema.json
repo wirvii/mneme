@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/wirvii/mneme-spec/v1.0/schemas/relation.schema.json",
+  "title": "Relation",
+  "description": "A directed, weighted edge between two entities in the knowledge graph.",
+  "type": "object",
+  "required": ["id", "source_id", "target_id", "type", "weight", "created_at"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "source_id": {
+      "type": "string",
+      "description": "UUIDv7 of the originating entity."
+    },
+    "target_id": {
+      "type": "string",
+      "description": "UUIDv7 of the destination entity."
+    },
+    "type": {
+      "type": "string",
+      "enum": [
+        "depends_on", "implements", "supersedes", "related_to",
+        "part_of", "uses", "conflicts_with", "references"
+      ],
+      "description": "Kind of directed relationship."
+    },
+    "weight": {
+      "type": "number",
+      "minimum": 0.0,
+      "maximum": 1.0,
+      "description": "Normalised strength of the relationship."
+    },
+    "metadata": {
+      "type": "string",
+      "description": "Optional JSON blob for additional edge attributes."
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "last_traversed_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When this relation was last used for graph navigation."
+    }
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/wirvii/mneme-spec/v1.0/schemas/session.schema.json",
+  "title": "Session",
+  "description": "An agent working session that groups memories created during a continuous work period.",
+  "type": "object",
+  "required": ["id", "project", "agent", "started_at"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "project": {
+      "type": "string",
+      "description": "Project slug this session is associated with."
+    },
+    "agent": {
+      "type": "string",
+      "description": "Agent that created this session (e.g. 'claude-code')."
+    },
+    "started_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "ended_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When the session was closed. Absent if still active."
+    },
+    "summary_id": {
+      "type": "string",
+      "description": "ID of the session_summary Memory created at session end."
+    }
+  }
+}

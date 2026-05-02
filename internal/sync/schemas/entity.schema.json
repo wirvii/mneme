@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/wirvii/mneme-spec/v1.0/schemas/entity.schema.json",
+  "title": "Entity",
+  "description": "A node in the knowledge graph.",
+  "type": "object",
+  "required": ["id", "name", "kind", "created_at", "updated_at"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Human-readable identifier (e.g. 'auth-service')."
+    },
+    "kind": {
+      "type": "string",
+      "enum": ["module", "service", "library", "concept", "person", "pattern", "file"],
+      "description": "Category of the named concept."
+    },
+    "project": {
+      "type": "string",
+      "description": "Project slug. Empty for global entities."
+    },
+    "metadata": {
+      "type": "string",
+      "description": "Optional JSON blob for additional attributes."
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

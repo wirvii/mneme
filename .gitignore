@@ -34,3 +34,6 @@ CLAUDE.local.md
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Spec artifact tree — generated locally, published manually to wirvii/mneme-spec
+tmp/

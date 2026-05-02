@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/wirvii/mneme-spec/v1.0/schemas/manifest.schema.json",
+  "title": "Memory Manifest",
+  "description": "A portable interchange format for AI agent persistent memory.",
+  "type": "object",
+  "required": ["version", "exported_at", "producer", "project", "memories"],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "type": "string",
+      "const": "1.0",
+      "description": "Manifest specification version. Consumers MUST reject unknown versions."
+    },
+    "exported_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp of when this manifest was produced."
+    },
+    "producer": {
+      "type": "object",
+      "required": ["name", "version"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Name of the tool that produced this manifest (e.g. 'mneme')."
+        },
+        "version": {
+          "type": "string",
+          "description": "Semantic version of the producer (e.g. '1.0.0')."
+        }
+      }
+    },
+    "project": {
+      "type": "string",
+      "description": "Project slug this manifest belongs to (e.g. 'wirvii/mneme')."
+    },
+    "scope": {
+      "type": "string",
+      "enum": ["project", "global", "org"],
+      "default": "project",
+      "description": "Memory scope of the exported data."
+    },
+    "memories": {
+      "type": "array",
+      "items": { "$ref": "memory.schema.json" },
+      "description": "Array of memory records. May be empty."
+    },
+    "entities": {
+      "type": "array",
+      "items": { "$ref": "entity.schema.json" },
+      "default": [],
+      "description": "Knowledge graph nodes. Optional; defaults to empty array."
+    },
+    "relations": {
+      "type": "array",
+      "items": { "$ref": "relation.schema.json" },
+      "default": [],
+      "description": "Knowledge graph edges. Optional; defaults to empty array."
+    },
+    "sessions": {
+      "type": "array",
+      "items": { "$ref": "session.schema.json" },
+      "default": [],
+      "description": "Agent working sessions. Optional; defaults to empty array."
+    },
+    "stats": {
+      "type": "object",
+      "description": "Summary statistics at export time. Informational only.",
+      "properties": {
+        "memory_count": { "type": "integer", "minimum": 0 },
+        "entity_count": { "type": "integer", "minimum": 0 },
+        "relation_count": { "type": "integer", "minimum": 0 },
+        "session_count": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}
