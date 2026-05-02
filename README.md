@@ -269,6 +269,7 @@ The MCP server (`mneme mcp`) exposes 24 tools over JSON-RPC 2.0 stdio:
 
 | Document | Contents |
 |----------|----------|
+| [User Guide](docs/GUIDE.md) | End-to-end guide for humans and agents -- concepts, examples, cheatsheets |
 | [Architecture](docs/ARCHITECTURE.md) | Layered design, graph layer, rules system, retrieval pipeline |
 | [Rules System](docs/RULES.md) | applies_to syntax, severity, hooks, examples by stack |
 | [Knowledge Graph](docs/GRAPH.md) | Weights, Hebbian learning, decay, wikilinks, rebuild |
