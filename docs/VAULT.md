@@ -244,7 +244,9 @@ The vault is a valid Obsidian vault. Open it directly:
 open -a Obsidian ~/.mneme/vaults/wirvii-mneme
 ```
 
-No `.obsidian/` configuration is generated — Obsidian will create it on first open. The YAML frontmatter is compatible with Obsidian's Dataview plugin for querying memories by type, importance, or date.
+No `.obsidian/` configuration is generated -- Obsidian will create it on first open. The YAML frontmatter is compatible with Obsidian's Dataview plugin for querying memories by type, importance, or date.
+
+For a complete guide on using Obsidian with mneme -- including setup, recommended plugins, Dataview queries, and workflows -- see **[docs/OBSIDIAN.md](OBSIDIAN.md)**.
 
 ## Scope Rules
 
@@ -260,7 +262,7 @@ Soft-deleted memories are never exported. Superseded memories are excluded by de
 
 - **SPEC-M2b:** fsnotify watcher — continuous filesystem watching that auto-imports
   on file change. Will call `VaultImport` in a loop.
-- **SPEC-M3:** Obsidian integration documentation and `.obsidian/` config generation.
+- **SPEC-M3:** ~~Obsidian integration documentation~~ -- delivered in [docs/OBSIDIAN.md](OBSIDIAN.md).
 - **`vault gc`:** Remove orphan vault files for deleted/superseded memories.
 - **MCP tools:** `mem_vault_export` and `mem_vault_import` for agent-driven access.
 - **Original ID preservation:** Extend `store.Create()` to accept caller-supplied

@@ -302,6 +302,7 @@ The MCP server (`mneme mcp`) exposes 23 tools over JSON-RPC 2.0 stdio:
 - [Rules System](docs/RULES.md) -- applies_to syntax, severity, hooks, examples
 - [Knowledge Graph](docs/GRAPH.md) -- weights, Hebbian learning, decay, rebuild
 - [Hooks Integration](docs/HOOKS.md) -- session hooks, pre-tool-use, migration
+- [Obsidian Integration](docs/OBSIDIAN.md) -- use Obsidian as a front-end for your mneme vault
 - [Technical Spec](docs/SPEC.md) -- v0.1 original specification
 
 ## Comparison
