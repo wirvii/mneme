@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/juanftp/mneme/internal/model"
 	"github.com/juanftp/mneme/internal/service"
@@ -28,14 +27,6 @@ func saveMemoryForVaultTest(t *testing.T, svc *service.MemoryService, req model.
 		t.Fatalf("Save failed: %v", err)
 	}
 	return resp.ID
-}
-
-func mustTime(s string) time.Time {
-	t, err := time.Parse(time.RFC3339, s)
-	if err != nil {
-		panic(err)
-	}
-	return t
 }
 
 func TestVaultExport_ProjectScope(t *testing.T) {
