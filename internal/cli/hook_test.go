@@ -193,3 +193,125 @@ func TestPrintContextHook_NoMemoriesNoRules(t *testing.T) {
 		t.Errorf("expected 'No Memories Found', got:\n%s", got)
 	}
 }
+
+// TestPrintContextHook_WithClusters verifies that when PackingMode=="communities"
+// and ClusterOverviews are present, the output contains the expected headings.
+func TestPrintContextHook_WithClusters(t *testing.T) {
+	resp := &model.ContextResponse{
+		Project:     "test/project",
+		PackingMode: "communities",
+		ClusterOverviews: []model.Memory{
+			{
+				ID:      "syn-1",
+				Title:   "Auth + JWT + Token Validation",
+				Content: "## Cluster Overview\nAuth cluster.",
+				Type:    model.TypeSynthesis,
+			},
+			{
+				ID:      "syn-2",
+				Title:   "Database Schema + Migrations",
+				Content: "## Cluster Overview\nDB cluster.",
+				Type:    model.TypeSynthesis,
+			},
+		},
+		ClusterOverviewsCount:  2,
+		ClusterOverviewsTokens: 600,
+		TopCluster:             "Auth + JWT + Token Validation",
+		TopClusterMembers:      2,
+		TotalAvailable:         15,
+		Included:               4,
+		Memories: []model.Memory{
+			// First TopClusterMembers entries are from the top cluster.
+			{ID: "mem-1", Title: "JWT auth model", Content: "RS256 with refresh.", Type: model.TypeArchitecture},
+			{ID: "mem-2", Title: "Token rotation policy", Content: "15min access.", Type: model.TypeDecision},
+			// Remaining are "Other Memories".
+			{ID: "mem-3", Title: "Other memory A", Content: "content A.", Type: model.TypeDiscovery},
+			{ID: "mem-4", Title: "Other memory B", Content: "content B.", Type: model.TypePattern},
+		},
+	}
+
+	var buf bytes.Buffer
+	printContextHook(&buf, resp)
+	got := buf.String()
+
+	checks := []string{
+		"## Cluster Overviews (2 clusters, ~600 tokens)",
+		"### Cluster: Auth + JWT + Token Validation",
+		"### Cluster: Database Schema + Migrations",
+		"## Top Cluster Detail: Auth + JWT + Token Validation (2 members)",
+		"### [architecture] JWT auth model",
+		"## Other Memories",
+		"### [discovery] Other memory A",
+		"<!-- mneme:context:start -->",
+		"<!-- mneme:context:end -->",
+	}
+	for _, want := range checks {
+		if !strings.Contains(got, want) {
+			t.Errorf("output missing %q\nfull output:\n%s", want, got)
+		}
+	}
+
+	// "Loaded Memories" must NOT appear in community mode.
+	if strings.Contains(got, "## Loaded Memories") {
+		t.Error("'## Loaded Memories' should not appear in community packing mode")
+	}
+}
+
+// TestPrintContextHook_FlatMode verifies that when PackingMode is empty (flat),
+// the output uses "## Loaded Memories" and has no cluster sections.
+func TestPrintContextHook_FlatMode(t *testing.T) {
+	resp := &model.ContextResponse{
+		Project:        "test/project",
+		TotalAvailable: 5,
+		Included:       2,
+		Memories: []model.Memory{
+			{ID: "m1", Title: "Flat mem 1", Content: "flat content 1.", Type: model.TypeDecision},
+			{ID: "m2", Title: "Flat mem 2", Content: "flat content 2.", Type: model.TypePattern},
+		},
+	}
+
+	var buf bytes.Buffer
+	printContextHook(&buf, resp)
+	got := buf.String()
+
+	if !strings.Contains(got, "## Loaded Memories (2 of 5)") {
+		t.Error("expected '## Loaded Memories' heading in flat mode")
+	}
+	if strings.Contains(got, "## Cluster Overviews") {
+		t.Error("'## Cluster Overviews' must not appear in flat mode")
+	}
+	if strings.Contains(got, "## Top Cluster Detail") {
+		t.Error("'## Top Cluster Detail' must not appear in flat mode")
+	}
+	if strings.Contains(got, "## Other Memories") {
+		t.Error("'## Other Memories' must not appear in flat mode")
+	}
+}
+
+// TestPrintContextHook_ClustersNoTopCluster verifies that when ClusterOverviews
+// are present but TopClusterMembers == 0, no Top Cluster Detail section appears.
+func TestPrintContextHook_ClustersNoTopCluster(t *testing.T) {
+	resp := &model.ContextResponse{
+		Project:     "test/project",
+		PackingMode: "communities",
+		ClusterOverviews: []model.Memory{
+			{ID: "syn-1", Title: "Cluster A", Content: "overview A.", Type: model.TypeSynthesis},
+		},
+		ClusterOverviewsCount:  1,
+		ClusterOverviewsTokens: 300,
+		TopClusterMembers:      0, // no top cluster members packed
+		TotalAvailable:         10,
+		Included:               0,
+	}
+
+	var buf bytes.Buffer
+	printContextHook(&buf, resp)
+	got := buf.String()
+
+	if !strings.Contains(got, "## Cluster Overviews") {
+		t.Error("expected '## Cluster Overviews' heading")
+	}
+	if strings.Contains(got, "## Top Cluster Detail") {
+		t.Error("'## Top Cluster Detail' must not appear when TopClusterMembers == 0")
+	}
+}

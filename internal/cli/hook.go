@@ -106,7 +106,12 @@ func runHookSessionStart(ctx context.Context) error {
 //  1. Last Session (if any)
 //  2. Active Rules (if any) — always before general memories so the LLM sees
 //     constraints before content
-//  3. Loaded Memories
+//  3. Cluster Overviews (if community packing active) — structural knowledge map
+//  4. Top Cluster Detail (if community packing active and TopClusterMembers > 0)
+//  5. Other Memories (or "Loaded Memories" in flat mode)
+//
+// When PackingMode is empty or "flat", sections 3 and 4 are absent and the
+// output is identical to pre-SPEC-022 behavior.
 func printContextHook(w io.Writer, resp *model.ContextResponse) {
 	fmt.Fprintf(w, "<!-- mneme:context:start -->\n")
 	fmt.Fprintf(w, "# mneme — Session Context\n\n")
@@ -143,14 +148,65 @@ func printContextHook(w io.Writer, resp *model.ContextResponse) {
 		}
 	}
 
-	if len(resp.Memories) > 0 {
-		fmt.Fprintf(w, "## Loaded Memories (%d of %d)\n\n", resp.Included, resp.TotalAvailable)
-		for _, m := range resp.Memories {
-			fmt.Fprintf(w, "### [%s] %s\n\n%s\n\n", m.Type, m.Title, m.Content)
+	// Community packing sections — only present when PackingMode == "communities".
+	if resp.PackingMode == "communities" {
+		// Section 3: Cluster Overviews.
+		if len(resp.ClusterOverviews) > 0 {
+			fmt.Fprintf(w, "## Cluster Overviews (%d clusters, ~%d tokens)\n\n",
+				resp.ClusterOverviewsCount, resp.ClusterOverviewsTokens)
+			for _, ov := range resp.ClusterOverviews {
+				fmt.Fprintf(w, "### Cluster: %s\n\n%s\n\n---\n\n", ov.Title, ov.Content)
+			}
 		}
-	} else if resp.TotalAvailable == 0 && len(resp.Rules) == 0 {
-		fmt.Fprintf(w, "## No Memories Found\n\n")
-		fmt.Fprintf(w, "This project has no memories yet. Run `/mneme-init` to seed foundational knowledge.\n\n")
+
+		// Section 4: Top Cluster Detail.
+		// TopClusterMembers tells us how many of the first entries in Memories
+		// belong to the top cluster (Phase 3 memories precede Phase 4 others).
+		if resp.TopClusterMembers > 0 && len(resp.Memories) > 0 {
+			topN := resp.TopClusterMembers
+			if topN > len(resp.Memories) {
+				topN = len(resp.Memories)
+			}
+			clusterLabel := resp.TopCluster
+			if clusterLabel == "" {
+				clusterLabel = "Top Cluster"
+			}
+			fmt.Fprintf(w, "## Top Cluster Detail: %s (%d members)\n\n",
+				clusterLabel, topN)
+			for _, m := range resp.Memories[:topN] {
+				fmt.Fprintf(w, "### [%s] %s\n\n%s\n\n", m.Type, m.Title, m.Content)
+			}
+		}
+
+		// Section 5: Other Memories (remainder after top cluster members).
+		otherMemories := resp.Memories
+		if resp.TopClusterMembers > 0 && resp.TopClusterMembers < len(resp.Memories) {
+			otherMemories = resp.Memories[resp.TopClusterMembers:]
+		} else if resp.TopClusterMembers >= len(resp.Memories) {
+			otherMemories = nil
+		}
+
+		if len(otherMemories) > 0 {
+			fmt.Fprintf(w, "## Other Memories (%d of %d)\n\n",
+				len(otherMemories), resp.TotalAvailable)
+			for _, m := range otherMemories {
+				fmt.Fprintf(w, "### [%s] %s\n\n%s\n\n", m.Type, m.Title, m.Content)
+			}
+		} else if resp.TotalAvailable == 0 && len(resp.Rules) == 0 && len(resp.ClusterOverviews) == 0 {
+			fmt.Fprintf(w, "## No Memories Found\n\n")
+			fmt.Fprintf(w, "This project has no memories yet. Run `/mneme-init` to seed foundational knowledge.\n\n")
+		}
+	} else {
+		// Flat mode: original "Loaded Memories" output (pre-SPEC-022).
+		if len(resp.Memories) > 0 {
+			fmt.Fprintf(w, "## Loaded Memories (%d of %d)\n\n", resp.Included, resp.TotalAvailable)
+			for _, m := range resp.Memories {
+				fmt.Fprintf(w, "### [%s] %s\n\n%s\n\n", m.Type, m.Title, m.Content)
+			}
+		} else if resp.TotalAvailable == 0 && len(resp.Rules) == 0 {
+			fmt.Fprintf(w, "## No Memories Found\n\n")
+			fmt.Fprintf(w, "This project has no memories yet. Run `/mneme-init` to seed foundational knowledge.\n\n")
+		}
 	}
 
 	fmt.Fprintf(w, "<!-- mneme:context:end -->\n")
