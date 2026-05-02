@@ -360,48 +360,71 @@ func TestGenerateCommunitySyntheses_Disabled(t *testing.T) {
 }
 
 // TestGenerateCommunitySyntheses_WikilinksCreated verifies that after a
-// synthesis is saved, references relations exist from the synthesis entity to
-// member entities (via SPEC-011 wikilink processing).
+// synthesis is saved, the synthesis content contains [[topic_key]] wikilinks
+// referencing member memories (SPEC-021 D7, acceptance criterion 5).
+//
+// Fix for QA pushback: the original test created wiki-entity-* entities with
+// dense relations but never linked those entities to the saved memories via
+// memory_entities. Louvain only finds communities among entities reachable from
+// memory seeds, so the unlinked entities were invisible.
+//
+// The correct approach: save memories with cross-referencing [[topic_key]]
+// wikilinks in their content. processWikilinks (SPEC-011) then creates
+// entity-to-entity references relations AND links each memory to its entity via
+// memory_entities in a single Save call — no manual wiring needed.
 func TestGenerateCommunitySyntheses_WikilinksCreated(t *testing.T) {
 	svc, ps := newSynthesisTestService(t)
 	ctx := context.Background()
 
-	// Seed with topic_key memories so wikilinks are generated.
-	for i := 0; i < 4; i++ {
-		tk := fmt.Sprintf("arch/decision-%d", i)
-		_, err := svc.Save(ctx, model.SaveRequest{
-			Title:    fmt.Sprintf("Decision %d", i),
-			Content:  fmt.Sprintf("Decision content %d", i),
+	// Save memories in two passes so each can reference the others by topic_key.
+	// Pass 1: save all 4 without cross-refs so topic_keys exist when Pass 2 runs.
+	topicKeys := []string{
+		"wikitest/alpha",
+		"wikitest/beta",
+		"wikitest/gamma",
+		"wikitest/delta",
+	}
+	memIDs := make([]string, 4)
+	for i, tk := range topicKeys {
+		resp, err := svc.Save(ctx, model.SaveRequest{
+			Title:    fmt.Sprintf("Wiki Memory %d", i),
+			Content:  fmt.Sprintf("Initial content for wikitest memory %d.", i),
 			TopicKey: tk,
+			Project:  "test/synthesis",
 		})
 		if err != nil {
-			t.Fatalf("Save decision %d: %v", i, err)
+			t.Fatalf("Save wikitest memory %d: %v", i, err)
+		}
+		memIDs[i] = resp.ID
+	}
+
+	// Pass 2: update each memory so its content references all other topic_keys.
+	// This causes processWikilinks to create entity-level references relations and
+	// link each memory to its entity via memory_entities.
+	for i, tk := range topicKeys {
+		var refs strings.Builder
+		for j, other := range topicKeys {
+			if j != i {
+				fmt.Fprintf(&refs, " [[%s]]", other)
+			}
+		}
+		content := fmt.Sprintf("Updated content for %s referencing:%s", tk, refs.String())
+		_, err := svc.Update(ctx, memIDs[i], model.UpdateRequest{
+			Content: &content,
+		})
+		if err != nil {
+			t.Fatalf("Update wikitest memory %d: %v", i, err)
 		}
 	}
 
-	// Manually link entities and create relations so a community forms.
-	entityIDs := make([]string, 4)
-	for i := 0; i < 4; i++ {
-		ent, err := ps.FindOrCreateEntity(ctx,
-			fmt.Sprintf("wiki-entity-%d", i),
-			model.KindConcept,
-			"test/synthesis",
-		)
+	// Verify that the wikilink processing linked memories to their entities.
+	for i, memID := range memIDs {
+		entities, err := ps.GetMemoryEntities(ctx, memID)
 		if err != nil {
-			t.Fatalf("FindOrCreateEntity %d: %v", i, err)
+			t.Fatalf("GetMemoryEntities for mem %d: %v", i, err)
 		}
-		entityIDs[i] = ent.ID
-	}
-	for i := 0; i < len(entityIDs); i++ {
-		for j := i + 1; j < len(entityIDs); j++ {
-			if _, err := ps.CreateRelation(ctx, &model.Relation{
-				SourceID: entityIDs[i],
-				TargetID: entityIDs[j],
-				Type:     model.RelRelatedTo,
-				Weight:   0.8,
-			}); err != nil {
-				t.Fatalf("CreateRelation: %v", err)
-			}
+		if len(entities) == 0 {
+			t.Fatalf("memory %d (%s) has no entities linked — wikilink processing did not run", i, topicKeys[i])
 		}
 	}
 
@@ -410,7 +433,7 @@ func TestGenerateCommunitySyntheses_WikilinksCreated(t *testing.T) {
 		t.Fatalf("DetectAndPersistCommunities: %v", err)
 	}
 	if detection.TotalCommunities == 0 {
-		t.Skip("no communities detected")
+		t.Skip("no communities detected — graph topology did not produce a community at this min_size")
 	}
 
 	_, err = svc.GenerateCommunitySyntheses(ctx, model.ScopeProject, "test/synthesis", detection)
@@ -418,21 +441,22 @@ func TestGenerateCommunitySyntheses_WikilinksCreated(t *testing.T) {
 		t.Fatalf("GenerateCommunitySyntheses: %v", err)
 	}
 
-	// Find the synthesis memory and verify it has wikilink relations.
-	opts := store.ListOptions{
+	// Verify that at least one synthesis was created.
+	syntheses, err := ps.List(ctx, store.ListOptions{
 		Project: "test/synthesis",
 		Type:    model.TypeSynthesis,
 		Limit:   10,
-	}
-	syntheses, err := ps.List(ctx, opts)
+	})
 	if err != nil {
 		t.Fatalf("List syntheses: %v", err)
 	}
 	if len(syntheses) == 0 {
-		t.Skip("no synthesis created — graph too sparse")
+		t.Fatal("expected at least one synthesis memory after GenerateCommunitySyntheses")
 	}
 
-	// At least one synthesis should have wikilinks in the content.
+	// AC-5: at least one synthesis must contain [[topic_key]] wikilinks.
+	// GenerateSynthesisContent emits [[topic_key]] for every member that has a
+	// topic_key, so members saved above must appear in synthesis content.
 	found := false
 	for _, syn := range syntheses {
 		if strings.Contains(syn.Content, "[[") {
@@ -441,6 +465,145 @@ func TestGenerateCommunitySyntheses_WikilinksCreated(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Log("no wikilinks found in synthesis content — members may have no topic_key; skipping wikilink assertion")
+		t.Error("no [[wikilink]] found in any synthesis content — GenerateSynthesisContent did not emit topic_key wikilinks for community members")
+	}
+}
+
+// TestGenerateCommunitySyntheses_ContentChanged verifies that when a member
+// memory's importance is updated, re-running GenerateCommunitySyntheses
+// detects the content change and increments Updated (SPEC-021 section 7,
+// acceptance criterion 3 lifecycle coverage).
+func TestGenerateCommunitySyntheses_ContentChanged(t *testing.T) {
+	svc, ps := newSynthesisTestService(t)
+	ctx := context.Background()
+
+	// Seed a cluster of 4 memories.
+	memIDs, _ := seedSynthesisCluster(t, ctx, svc, ps, "changed", 4)
+
+	// First detection + synthesis generation.
+	detection, err := svc.DetectAndPersistCommunities(ctx, model.ScopeProject, "test/synthesis")
+	if err != nil {
+		t.Fatalf("DetectAndPersistCommunities: %v", err)
+	}
+	if detection.TotalCommunities == 0 {
+		t.Skip("no communities detected — graph too sparse for this test environment")
+	}
+
+	first, err := svc.GenerateCommunitySyntheses(ctx, model.ScopeProject, "test/synthesis", detection)
+	if err != nil {
+		t.Fatalf("first GenerateCommunitySyntheses: %v", err)
+	}
+	if first.Created == 0 {
+		t.Fatalf("expected at least one synthesis created on first run, got %+v", first)
+	}
+
+	// Update the importance of the first member to a very high value.
+	// GenerateSynthesisContent renders importance in both the "Top Members"
+	// section and the "All Members" table, so any importance change produces
+	// different content.
+	newImportance := 0.99
+	if _, err := svc.Update(ctx, memIDs[0], model.UpdateRequest{
+		Importance: &newImportance,
+	}); err != nil {
+		t.Fatalf("Update importance: %v", err)
+	}
+
+	// Re-detect communities (same members, but importance change affects sort
+	// order which changes the content produced by GenerateSynthesisContent).
+	detection2, err := svc.DetectAndPersistCommunities(ctx, model.ScopeProject, "test/synthesis")
+	if err != nil {
+		t.Fatalf("second DetectAndPersistCommunities: %v", err)
+	}
+
+	// Re-generate syntheses — content must differ from the first run.
+	second, err := svc.GenerateCommunitySyntheses(ctx, model.ScopeProject, "test/synthesis", detection2)
+	if err != nil {
+		t.Fatalf("second GenerateCommunitySyntheses: %v", err)
+	}
+	if second.Updated == 0 {
+		t.Errorf("expected Updated >= 1 after importance change, got %+v", second)
+	}
+	if second.Created != 0 {
+		t.Errorf("expected Created=0 on second run (no new communities), got %+v", second)
+	}
+}
+
+// TestGenerateCommunitySyntheses_DeletedCommunity verifies that when all
+// memories of a community are soft-deleted, re-running detection and synthesis
+// generation soft-deletes the orphaned synthesis (SPEC-021 section 7, D4
+// deleted-community lifecycle, lines 287-316 in synthesis.go).
+func TestGenerateCommunitySyntheses_DeletedCommunity(t *testing.T) {
+	svc, ps := newSynthesisTestService(t)
+	ctx := context.Background()
+
+	// Seed two separate clusters so we get two distinct communities.
+	memIDsA, _ := seedSynthesisCluster(t, ctx, svc, ps, "del-a", 4)
+	_, _ = seedSynthesisCluster(t, ctx, svc, ps, "del-b", 4)
+
+	// First detection: expect at least two communities.
+	detection, err := svc.DetectAndPersistCommunities(ctx, model.ScopeProject, "test/synthesis")
+	if err != nil {
+		t.Fatalf("DetectAndPersistCommunities: %v", err)
+	}
+	if detection.TotalCommunities < 2 {
+		t.Skipf("need at least 2 communities for this test, got %d — graph too sparse", detection.TotalCommunities)
+	}
+
+	// First synthesis generation: creates one synthesis per community.
+	first, err := svc.GenerateCommunitySyntheses(ctx, model.ScopeProject, "test/synthesis", detection)
+	if err != nil {
+		t.Fatalf("first GenerateCommunitySyntheses: %v", err)
+	}
+	if first.Created < 2 {
+		t.Fatalf("expected at least 2 syntheses created, got %+v", first)
+	}
+
+	// Soft-delete all memories from cluster A. ListActiveMemoryIDs filters
+	// deleted_at IS NULL, so those memories (and their entities) drop out of the
+	// Louvain seeds on the next detection run, dissolving cluster A's community.
+	for _, id := range memIDsA {
+		if err := ps.SoftDelete(ctx, id); err != nil {
+			t.Fatalf("SoftDelete memory %s: %v", id, err)
+		}
+	}
+
+	// Re-detect: cluster A's community should be gone (or significantly shrunken).
+	detection2, err := svc.DetectAndPersistCommunities(ctx, model.ScopeProject, "test/synthesis")
+	if err != nil {
+		t.Fatalf("second DetectAndPersistCommunities: %v", err)
+	}
+	if detection2.DeletedCommunities == 0 {
+		t.Skip("community A was not removed by re-detection — Louvain merged the sparse remnants into another cluster; orphan-delete path untestable in this graph configuration")
+	}
+
+	// Re-generate: the orphaned synthesis (for the deleted community) must be
+	// soft-expired via service.Forget (sets decay_rate=1.0).
+	second, err := svc.GenerateCommunitySyntheses(ctx, model.ScopeProject, "test/synthesis", detection2)
+	if err != nil {
+		t.Fatalf("second GenerateCommunitySyntheses: %v", err)
+	}
+	if second.Deleted == 0 {
+		t.Errorf("expected Deleted >= 1 after community removal, got %+v", second)
+	}
+
+	// Confirm the orphaned synthesis has decay_rate=1.0 (Forget semantics).
+	// store.List still returns the memory (deleted_at IS NULL), but its
+	// decay_rate must be 1.0 to mark it as forgotten.
+	allSyntheses, err := ps.List(ctx, store.ListOptions{
+		Project: "test/synthesis",
+		Type:    model.TypeSynthesis,
+		Limit:   100,
+	})
+	if err != nil {
+		t.Fatalf("List syntheses after deletion: %v", err)
+	}
+	forgottenCount := 0
+	for _, s := range allSyntheses {
+		if s.DecayRate == 1.0 {
+			forgottenCount++
+		}
+	}
+	if forgottenCount == 0 {
+		t.Error("expected at least one synthesis with decay_rate=1.0 (orphan forgotten), found none")
 	}
 }
