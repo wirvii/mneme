@@ -180,12 +180,25 @@ backlog_add --> backlog_refine --> backlog_promote --> spec_new
   --> spec_advance (draft --> speccing --> specced --> implementing --> qa --> done)
 ```
 
-### Git Sync
+### Git Sync and Memory Manifest
+
+Two export formats, one import command:
 
 ```bash
-mneme sync export          # --> .mneme/sync/project.jsonl.gz
-mneme sync import file.gz  # merge into local DB
+# Legacy format — memories only (default, smallest output)
+mneme sync export                    # --> .mneme/sync/project.jsonl.gz
+
+# Memory Manifest v1.0 — memories + entities + relations + sessions
+mneme sync export --format manifest  # --> .mneme/sync/project.manifest.tar.gz
+
+# Import either format — auto-detected from extension and content
+mneme sync import .mneme/sync/project.manifest.tar.gz
+mneme sync import .mneme/sync/project.jsonl.gz
 ```
+
+The Memory Manifest is a portable, open format defined by JSON Schema 2020-12.
+It enables full-fidelity transfer and interoperability with third-party tools.
+See [`docs/MEMORY-MANIFEST.md`](docs/MEMORY-MANIFEST.md) for the format reference.
 
 ## CLI Commands
 
@@ -246,7 +259,7 @@ mneme init          Migrate legacy projects to SDD engine
 ### Utilities
 
 ```
-mneme sync          Export/import memories (JSONL.gz)
+mneme sync          Export/import memories — JSONL.gz or Memory Manifest v1.0 (--format manifest)
 mneme vault export  Export memories as Markdown vault (with frontmatter, Obsidian-compatible)
 mneme vault import  Import memories from vault Markdown files back into SQLite
 mneme upgrade       Check for and install updates
