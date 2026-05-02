@@ -536,6 +536,33 @@ func (svc *MemoryService) ImportFromFile(ctx context.Context, path string) (*syn
 	return result, nil
 }
 
+// ExportManifestToFile exports all data for the current project (memories,
+// entities, relations, sessions) as a Memory Manifest v1.0 tarball at
+// <dir>/.mneme/sync/<project-slug>.manifest.tar.gz.
+//
+// producerVer is the mneme binary version string (e.g. "1.0.0" or "dev").
+func (svc *MemoryService) ExportManifestToFile(ctx context.Context, dir, producerVer string) (string, *syncpkg.ManifestExportResult, error) {
+	path, result, err := syncpkg.ExportManifestToFile(ctx, svc.projectStore, "mneme", producerVer, svc.project, dir)
+	if err != nil {
+		return "", nil, fmt.Errorf("service: export manifest to file: %w", err)
+	}
+	return path, result, nil
+}
+
+// ImportManifestFromFile imports records from the archive at path into the
+// project store. The format is auto-detected from the file name and content:
+// .manifest.tar.gz archives are processed as Memory Manifests; .jsonl.gz
+// archives fall back to the legacy JSONL importer.
+//
+// Returns a ManifestImportResult with counts for all imported types.
+func (svc *MemoryService) ImportManifestFromFile(ctx context.Context, path string) (*syncpkg.ManifestImportResult, error) {
+	result, err := syncpkg.ImportManifestFromFile(ctx, svc.projectStore, path)
+	if err != nil {
+		return nil, fmt.Errorf("service: import manifest from file: %w", err)
+	}
+	return result, nil
+}
+
 // Stats aggregates metrics about the memory store for the given project slug.
 // It queries the project store for per-type/per-scope counts, active vs.
 // superseded vs. forgotten tallies, oldest/newest timestamps, and average
