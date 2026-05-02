@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -679,5 +680,97 @@ func TestPipeline_Run_CommunityDetectionError(t *testing.T) {
 	// have contributed non-negative counts to the partial result.
 	if result == nil {
 		t.Fatal("expected non-nil partial result on error")
+	}
+}
+
+// ─── Synthesis pipeline integration (SPEC-021) ───────────────────────────────
+
+// TestPipeline_Run_NilSynthesisGenerator verifies that when no synthesis
+// generator is wired, Run succeeds and synthesis counters are all zero.
+func TestPipeline_Run_NilSynthesisGenerator(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	// Pipeline with community detector wired but no synthesis generator.
+	p := consolidation.NewPipeline(s, testConfig(), discardLogger()).
+		WithProject("proj").
+		WithCommunityDetector(func(ctx context.Context) (*model.DetectionResult, error) {
+			return &model.DetectionResult{}, nil
+		})
+
+	result, err := p.Run(ctx)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if result.SynthesisCreated != 0 || result.SynthesisUpdated != 0 ||
+		result.SynthesisDeleted != 0 || result.SynthesisSkipped != 0 {
+		t.Errorf("expected zero synthesis counters with nil generator, got %+v", result)
+	}
+}
+
+// TestPipeline_Run_SynthesisGeneratorCalled verifies that when a synthesis
+// generator is wired, its return values are reflected in the result.
+func TestPipeline_Run_SynthesisGeneratorCalled(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	fakeDetection := &model.DetectionResult{TotalCommunities: 2, NewCommunities: 2}
+
+	var capturedDetection *model.DetectionResult
+	synthGen := func(ctx context.Context, dr *model.DetectionResult) (*consolidation.SynthesisResult, error) {
+		capturedDetection = dr
+		return &consolidation.SynthesisResult{Created: 2, Skipped: 0}, nil
+	}
+
+	p := consolidation.NewPipeline(s, testConfig(), discardLogger()).
+		WithProject("proj").
+		WithCommunityDetector(func(ctx context.Context) (*model.DetectionResult, error) {
+			return fakeDetection, nil
+		}).
+		WithSynthesisGenerator(synthGen)
+
+	result, err := p.Run(ctx)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if result.SynthesisCreated != 2 {
+		t.Errorf("SynthesisCreated: got %d, want 2", result.SynthesisCreated)
+	}
+	if capturedDetection == nil {
+		t.Fatal("synthesis generator was not called")
+	}
+	if capturedDetection.TotalCommunities != 2 {
+		t.Errorf("detection passed to generator: got TotalCommunities=%d, want 2", capturedDetection.TotalCommunities)
+	}
+}
+
+// TestPipeline_Run_SynthesisGeneratorError verifies that a synthesis generator
+// error is wrapped and returned from Run alongside a non-nil partial result.
+func TestPipeline_Run_SynthesisGeneratorError(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	synthGen := func(ctx context.Context, dr *model.DetectionResult) (*consolidation.SynthesisResult, error) {
+		return nil, fmt.Errorf("synthesis error: injected failure")
+	}
+
+	p := consolidation.NewPipeline(s, testConfig(), discardLogger()).
+		WithProject("proj").
+		WithCommunityDetector(func(ctx context.Context) (*model.DetectionResult, error) {
+			return &model.DetectionResult{}, nil
+		}).
+		WithSynthesisGenerator(synthGen)
+
+	result, err := p.Run(ctx)
+	if err == nil {
+		t.Fatal("expected error from synthesis generator, got nil")
+	}
+	if !strings.Contains(err.Error(), "synthesis error") {
+		t.Errorf("error %q does not contain 'synthesis error'", err.Error())
+	}
+	if result == nil {
+		t.Fatal("expected non-nil partial result on synthesis error")
 	}
 }

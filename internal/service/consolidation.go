@@ -26,10 +26,23 @@ func (svc *MemoryService) RunConsolidation(ctx context.Context) (*consolidation.
 	projectDetector := func(ctx context.Context) (*model.DetectionResult, error) {
 		return svc.DetectAndPersistCommunities(ctx, model.ScopeProject, svc.project)
 	}
+	projectSynthesisGen := func(ctx context.Context, dr *model.DetectionResult) (*consolidation.SynthesisResult, error) {
+		r, err := svc.GenerateCommunitySyntheses(ctx, model.ScopeProject, svc.project, dr)
+		if err != nil {
+			return nil, err
+		}
+		return &consolidation.SynthesisResult{
+			Created: r.Created,
+			Updated: r.Updated,
+			Deleted: r.Deleted,
+			Skipped: r.Skipped,
+		}, nil
+	}
 
 	projectPipeline := consolidation.NewPipeline(svc.projectStore, svc.config, logger).
 		WithProject(svc.project).
-		WithCommunityDetector(projectDetector)
+		WithCommunityDetector(projectDetector).
+		WithSynthesisGenerator(projectSynthesisGen)
 	result, err := projectPipeline.Run(ctx)
 	if err != nil {
 		return result, fmt.Errorf("service: run consolidation: project store: %w", err)
@@ -39,10 +52,23 @@ func (svc *MemoryService) RunConsolidation(ctx context.Context) (*consolidation.
 		globalDetector := func(ctx context.Context) (*model.DetectionResult, error) {
 			return svc.DetectAndPersistCommunities(ctx, model.ScopeGlobal, "")
 		}
+		globalSynthesisGen := func(ctx context.Context, dr *model.DetectionResult) (*consolidation.SynthesisResult, error) {
+			r, err := svc.GenerateCommunitySyntheses(ctx, model.ScopeGlobal, "", dr)
+			if err != nil {
+				return nil, err
+			}
+			return &consolidation.SynthesisResult{
+				Created: r.Created,
+				Updated: r.Updated,
+				Deleted: r.Deleted,
+				Skipped: r.Skipped,
+			}, nil
+		}
 
 		// Global store uses an empty project slug — GlobalBudget applies.
 		globalPipeline := consolidation.NewPipeline(svc.globalStore, svc.config, logger).
-			WithCommunityDetector(globalDetector)
+			WithCommunityDetector(globalDetector).
+			WithSynthesisGenerator(globalSynthesisGen)
 		globalResult, globalErr := globalPipeline.Run(ctx)
 		if globalErr != nil {
 			// Return the combined partial result alongside the error.
@@ -78,18 +104,44 @@ func (svc *MemoryService) StartBackgroundConsolidation(ctx context.Context) {
 	projectDetector := func(ctx context.Context) (*model.DetectionResult, error) {
 		return svc.DetectAndPersistCommunities(ctx, model.ScopeProject, svc.project)
 	}
+	projectSynthesisGen := func(ctx context.Context, dr *model.DetectionResult) (*consolidation.SynthesisResult, error) {
+		r, err := svc.GenerateCommunitySyntheses(ctx, model.ScopeProject, svc.project, dr)
+		if err != nil {
+			return nil, err
+		}
+		return &consolidation.SynthesisResult{
+			Created: r.Created,
+			Updated: r.Updated,
+			Deleted: r.Deleted,
+			Skipped: r.Skipped,
+		}, nil
+	}
 	consolidation.NewPipeline(svc.projectStore, svc.config, logger).
 		WithProject(svc.project).
 		WithCommunityDetector(projectDetector).
+		WithSynthesisGenerator(projectSynthesisGen).
 		RunBackground(ctx, interval)
 
 	if svc.config.Context.IncludeGlobal {
 		globalDetector := func(ctx context.Context) (*model.DetectionResult, error) {
 			return svc.DetectAndPersistCommunities(ctx, model.ScopeGlobal, "")
 		}
+		globalSynthesisGen := func(ctx context.Context, dr *model.DetectionResult) (*consolidation.SynthesisResult, error) {
+			r, err := svc.GenerateCommunitySyntheses(ctx, model.ScopeGlobal, "", dr)
+			if err != nil {
+				return nil, err
+			}
+			return &consolidation.SynthesisResult{
+				Created: r.Created,
+				Updated: r.Updated,
+				Deleted: r.Deleted,
+				Skipped: r.Skipped,
+			}, nil
+		}
 		// Global store uses empty project (GlobalBudget).
 		consolidation.NewPipeline(svc.globalStore, svc.config, logger).
 			WithCommunityDetector(globalDetector).
+			WithSynthesisGenerator(globalSynthesisGen).
 			RunBackground(ctx, interval)
 	}
 }
@@ -124,6 +176,10 @@ func mergeResults(a, b *consolidation.ConsolidationResult) *consolidation.Consol
 	a.CommunitiesDetected += b.CommunitiesDetected
 	a.CommunitiesNew += b.CommunitiesNew
 	a.CommunitiesDeleted += b.CommunitiesDeleted
+	a.SynthesisCreated += b.SynthesisCreated
+	a.SynthesisUpdated += b.SynthesisUpdated
+	a.SynthesisDeleted += b.SynthesisDeleted
+	a.SynthesisSkipped += b.SynthesisSkipped
 	if b.Duration > a.Duration {
 		a.Duration = b.Duration
 	}

@@ -45,18 +45,20 @@ backup or when storage is critically low).`,
 				// before the failure, then surface the error.
 				if result != nil {
 					fmt.Fprintf(os.Stdout,
-						"Consolidation complete: %d swept, %d hard-deleted, %d duplicates merged, %d evicted, %d edges decayed, %d communities detected (%d new, %d deleted)\n",
+						"Consolidation complete: %d swept, %d hard-deleted, %d duplicates merged, %d evicted, %d edges decayed, %d communities detected (%d new, %d deleted), synthesis: %d created, %d updated, %d deleted, %d skipped\n",
 						result.Swept, result.HardDeleted, result.Duplicates, result.Evicted, result.EdgeDecayed,
 						result.CommunitiesDetected, result.CommunitiesNew, result.CommunitiesDeleted,
+						result.SynthesisCreated, result.SynthesisUpdated, result.SynthesisDeleted, result.SynthesisSkipped,
 					)
 				}
 				return err
 			}
 
 			fmt.Fprintf(os.Stdout,
-				"Consolidation complete: %d swept, %d hard-deleted, %d duplicates merged, %d evicted, %d edges decayed, %d communities detected (%d new, %d deleted)\n",
+				"Consolidation complete: %d swept, %d hard-deleted, %d duplicates merged, %d evicted, %d edges decayed, %d communities detected (%d new, %d deleted), synthesis: %d created, %d updated, %d deleted, %d skipped\n",
 				result.Swept, result.HardDeleted, result.Duplicates, result.Evicted, result.EdgeDecayed,
 				result.CommunitiesDetected, result.CommunitiesNew, result.CommunitiesDeleted,
+				result.SynthesisCreated, result.SynthesisUpdated, result.SynthesisDeleted, result.SynthesisSkipped,
 			)
 			return nil
 		},

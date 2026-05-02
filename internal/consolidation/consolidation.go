@@ -29,16 +29,35 @@ const sweepThreshold = 0.05
 // and service.RunConsolidation. When nil the detectCommunities step is skipped.
 type CommunityDetector func(ctx context.Context) (*model.DetectionResult, error)
 
+// SynthesisGenerator is the callback signature used by the Pipeline to invoke
+// synthesis generation without importing the service package. It receives the
+// DetectionResult from the preceding detectCommunities step so the generator
+// can optimise for new/changed communities.
+//
+// Wired at construction time via WithSynthesisGenerator. When nil the
+// generateSyntheses step is silently skipped (zero counters).
+type SynthesisGenerator func(ctx context.Context, detectionResult *model.DetectionResult) (*SynthesisResult, error)
+
+// SynthesisResult is re-exported here so consolidation callers (e.g. CLI) can
+// reference it without importing the service package.
+type SynthesisResult struct {
+	Created  int `json:"synthesis_created"`
+	Updated  int `json:"synthesis_updated"`
+	Deleted  int `json:"synthesis_deleted"`
+	Skipped  int `json:"synthesis_skipped"`
+}
+
 // Pipeline orchestrates a single consolidation cycle against a MemoryStore.
 // It runs sweep, hard-delete, dedup, and budget-enforcement in sequence.
 // Each step is independent: a partial failure returns what was accomplished
 // up to the failing step and wraps the underlying error.
 type Pipeline struct {
-	store              *store.MemoryStore
-	config             *config.Config
-	logger             *slog.Logger
-	project            string            // slug for project stores; empty string for the global store
-	communityDetector  CommunityDetector // optional; nil = skip community detection step
+	store               *store.MemoryStore
+	config              *config.Config
+	logger              *slog.Logger
+	project             string             // slug for project stores; empty string for the global store
+	communityDetector   CommunityDetector  // optional; nil = skip community detection step
+	synthesisGenerator  SynthesisGenerator // optional; nil = skip synthesis generation step
 }
 
 // NewPipeline constructs a Pipeline. All three arguments are required; passing
@@ -69,6 +88,16 @@ func (p *Pipeline) WithProject(project string) *Pipeline {
 func (p *Pipeline) WithCommunityDetector(d CommunityDetector) *Pipeline {
 	cp := *p
 	cp.communityDetector = d
+	return &cp
+}
+
+// WithSynthesisGenerator returns a copy of the Pipeline with the given
+// SynthesisGenerator callback wired in. The callback is invoked immediately
+// after detectCommunities so it can act on the fresh detection result
+// (SPEC-021). Passing nil removes a previously set generator.
+func (p *Pipeline) WithSynthesisGenerator(g SynthesisGenerator) *Pipeline {
+	cp := *p
+	cp.synthesisGenerator = g
 	return &cp
 }
 
@@ -112,6 +141,22 @@ type ConsolidationResult struct {
 	// that were removed because their membership hash is absent from the new
 	// partition.
 	CommunitiesDeleted int `json:"communities_deleted"`
+
+	// SynthesisCreated is the number of new synthesis memories written
+	// during the generateSyntheses step (SPEC-021).
+	SynthesisCreated int `json:"synthesis_created"`
+
+	// SynthesisUpdated is the number of existing synthesis memories whose
+	// content was refreshed.
+	SynthesisUpdated int `json:"synthesis_updated"`
+
+	// SynthesisDeleted is the number of synthesis memories soft-deleted
+	// because their community was removed.
+	SynthesisDeleted int `json:"synthesis_deleted"`
+
+	// SynthesisSkipped is the number of communities whose synthesis content
+	// was identical to the existing record (no-op).
+	SynthesisSkipped int `json:"synthesis_skipped"`
 
 	// Duration is the total wall-clock time taken by the full cycle.
 	Duration time.Duration `json:"duration"`
@@ -162,6 +207,22 @@ func (p *Pipeline) Run(ctx context.Context) (*ConsolidationResult, error) {
 	result.CommunitiesDetected = detectionResult.TotalCommunities
 	result.CommunitiesNew = detectionResult.NewCommunities
 	result.CommunitiesDeleted = detectionResult.DeletedCommunities
+
+	if err := ctx.Err(); err != nil {
+		result.Duration = time.Since(start)
+		return result, err
+	}
+
+	// Synthesis generation runs immediately after community detection so the
+	// generator can act on the fresh partition (SPEC-021).
+	synthResult, err := p.generateSyntheses(ctx, detectionResult)
+	if err != nil {
+		return result, fmt.Errorf("consolidation: run: %w", err)
+	}
+	result.SynthesisCreated = synthResult.Created
+	result.SynthesisUpdated = synthResult.Updated
+	result.SynthesisDeleted = synthResult.Deleted
+	result.SynthesisSkipped = synthResult.Skipped
 
 	if err := ctx.Err(); err != nil {
 		result.Duration = time.Since(start)
@@ -448,6 +509,10 @@ func (p *Pipeline) RunBackground(ctx context.Context, interval time.Duration) {
 			"communities_detected", result.CommunitiesDetected,
 			"communities_new", result.CommunitiesNew,
 			"communities_deleted", result.CommunitiesDeleted,
+			"synthesis_created", result.SynthesisCreated,
+			"synthesis_updated", result.SynthesisUpdated,
+			"synthesis_deleted", result.SynthesisDeleted,
+			"synthesis_skipped", result.SynthesisSkipped,
 			"duration_ms", result.Duration.Milliseconds(),
 		)
 	}
@@ -493,6 +558,32 @@ func (p *Pipeline) detectCommunities(ctx context.Context) (*model.DetectionResul
 			"communities_deleted", result.DeletedCommunities,
 			"modularity", result.ModularityFinal,
 			"duration_ms", result.Duration.Milliseconds(),
+		)
+	}
+	return result, nil
+}
+
+// generateSyntheses invokes the SynthesisGenerator callback if one is wired.
+// When the callback is nil the step returns a zero-value SynthesisResult
+// without error — callers can check counts to determine whether synthesis ran.
+//
+// The callback pattern avoids a direct import of the service package, preventing
+// the same circular dependency that motivated CommunityDetector (see above).
+func (p *Pipeline) generateSyntheses(ctx context.Context, detection *model.DetectionResult) (*SynthesisResult, error) {
+	if p.synthesisGenerator == nil {
+		return &SynthesisResult{}, nil
+	}
+	result, err := p.synthesisGenerator(ctx, detection)
+	if err != nil {
+		return &SynthesisResult{}, fmt.Errorf("consolidation: generate syntheses: %w", err)
+	}
+	if result.Created > 0 || result.Updated > 0 || result.Deleted > 0 {
+		p.logger.Info("consolidation: synthesis generation complete",
+			"event", "synthesis_generation_sweep",
+			"created", result.Created,
+			"updated", result.Updated,
+			"deleted", result.Deleted,
+			"skipped", result.Skipped,
 		)
 	}
 	return result, nil

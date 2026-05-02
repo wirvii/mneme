@@ -34,6 +34,8 @@ var (
 		model.TypeSessionSummary: {Light: "#888888", Dark: "#6c7086"},
 		// TypeRule uses red to signal that rules are binding constraints.
 		model.TypeRule: {Light: "#b91c1c", Dark: "#f38ba8"},
+		// TypeSynthesis uses teal to suggest a synthesised/aggregated view.
+		model.TypeSynthesis: {Light: "#0d9488", Dark: "#94e2d5"},
 	}
 )
 
