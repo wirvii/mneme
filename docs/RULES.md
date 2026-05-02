@@ -413,3 +413,11 @@ A: Si. Las reglas globales (`--scope global`) se almacenan en `global.db` y apli
 
 **Q: Que diferencia hay con el hook legacy `enforce-delegation`?**
 A: `enforce-delegation` usa paths estaticos definidos en `config.toml`. El nuevo `pre-tool-use` usa reglas dinamicas almacenadas en la DB, con patrones mas expresivos (globs, negaciones, tool selectors) y 3 niveles de severity. Se recomienda migrar con `mneme install claude-code --reinstall-hooks`.
+
+---
+
+## See also
+
+- [API.md](API.md) -- Full API reference for `mem_save` (type `rule`), `mem_context` (rule injection), CLI `mneme rule` commands
+- [HOOKS.md](HOOKS.md) -- Hook system details (`session-start`, `session-end`, `pre-tool-use`)
+- [CONFIG.md](CONFIG.md) -- Configuration reference including rule-related settings

@@ -14,10 +14,14 @@ Introducido en SPEC-005..009 (EPIC-2).
 4. [Hebbian auto-strengthening](#hebbian-auto-strengthening)
 5. [Edge decay](#edge-decay)
 6. [Retrieval con grafo](#retrieval-con-grafo)
-7. [mem_explore](#mem_explore)
-8. [graph rebuild](#graph-rebuild)
-9. [Comandos relacionados](#comandos-relacionados)
-10. [Configuracion](#configuracion)
+7. [Personalized PageRank (PPR)](#personalized-pagerank-ppr)
+8. [Community detection](#community-detection)
+9. [Synthesis (community summaries)](#synthesis-community-summaries)
+10. [Context packing por comunidades](#context-packing-por-comunidades)
+11. [mem_explore](#mem_explore)
+12. [graph rebuild](#graph-rebuild)
+13. [Comandos relacionados](#comandos-relacionados)
+14. [Configuracion](#configuracion)
 
 ---
 
@@ -283,7 +287,7 @@ Una relacion con weight=0.5 que no se traversa por 60 dias:
 
 ### 1-hop expansion en mem_search (SPEC-007)
 
-Cuando `expansion_enabled = true` (default), `mem_search` fusiona 3 canales via RRF:
+Cuando `expansion_enabled = true` (default) y `graph_mode = "1hop"`, `mem_search` fusiona 3 canales via RRF. (Para `graph_mode = "ppr"`, el tercer canal usa Personalized PageRank — ver [PPR](#personalized-pagerank-ppr).)
 
 ```
 Query ──┬──> FTS5 BM25 ────────────> Channel A (weight 1.0)
@@ -326,6 +330,206 @@ mem_search({
 ### Hebbian tracking post-search
 
 Los top-3 resultados de cada `mem_search` se registran en el AccessTracker para Hebbian auto-strengthening. Esto significa que memorias frecuentemente co-recuperadas por las mismas queries refuerzan sus conexiones automaticamente.
+
+---
+
+## Personalized PageRank (PPR)
+
+Personalized PageRank es un algoritmo de ranking sobre grafos que propaga importancia desde un conjunto de "seed nodes" a traves de la topologia del grafo. mneme lo usa como tercer canal de retrieval (ademas de BM25 y vector similarity). Introducido en SPEC-017..018 (EPIC-4).
+
+### Algoritmo
+
+mneme implementa PPR via power iteration sobre la matriz de adyacencia del grafo:
+
+1. Construir la matriz de adyacencia en memoria desde `entities` + `relations` (solo relaciones con `weight > threshold`)
+2. Seed vector: los entity IDs correspondientes a los top-K resultados de la fusion BM25+vector
+3. Iterar `max_iterations` veces (default: 20) con damping factor `alpha` (default: 0.85)
+4. Convergir cuando `||v_new - v_old|| < epsilon` (default: 1e-6)
+5. Mapear entity scores de vuelta a memory IDs via `memory_entities`
+
+### Modos de grafo
+
+El parametro `graph_mode` controla que algoritmo se usa para la expansion:
+
+| Mode | Algoritmo | Cuando usarlo |
+|------|-----------|---------------|
+| `ppr` | Personalized PageRank | Default. Mejor ranking para grafos grandes (>100 entities) |
+| `1hop` | 1-hop BFS expansion | Rapido, predecible. Mejor para grafos chicos |
+| `off` | Sin expansion | Solo BM25 + vector. Para debugging o DBs sin grafo |
+
+### RRF de 3 canales (con PPR)
+
+```
+Query ──┬──> FTS5 BM25 ────────────> Channel A (weight 1.0)
+        │
+        ├──> Vector similarity ─────> Channel B (weight 0.8)
+        │
+        ├──> PPR ranking ──────────> Channel C (weight 0.6)
+        │
+        └──> RRF Fusion (k=60) ─────> Final ranking
+```
+
+En modo `ppr`, Channel C usa PPR en lugar de 1-hop BFS. El RRF weight (0.6) es el mismo para ambos modos.
+
+### Cache
+
+La matriz de adyacencia se construye una vez por llamada a `mem_search`/`mem_context`. No se cachea entre llamadas porque el grafo puede cambiar entre invocaciones (Hebbian, nuevas relaciones). El costo tipico de construccion es <15ms para grafos de 5K entities.
+
+---
+
+## Community detection
+
+mneme usa el algoritmo Louvain para detectar comunidades de memorias densamente conectadas en el grafo. Las comunidades agrupan memorias que comparten muchas entidades y relaciones fuertes, formando "clusters tematicos" naturales. Introducido en SPEC-019..020 (EPIC-5).
+
+### Algoritmo Louvain
+
+1. **Input:** Grafo de entidades conectadas por relaciones pesadas
+2. **Fase 1 (local moves):** Cada entidad se mueve a la comunidad vecina que maximiza la ganancia de modularidad, iterando hasta convergencia
+3. **Fase 2 (aggregation):** Las comunidades se colapsan en super-nodos y se repite Fase 1 sobre el grafo reducido
+4. **Output:** Asignacion de cada entidad a una comunidad, con un hash de membership para deteccion de cambios
+
+### Persistencia
+
+Las comunidades se persisten en dos tablas (migracion 010):
+
+```
+communities
+├── id              UUIDv7 PK
+├── project         slug
+├── label           titulo generado (actualizado por synthesis)
+├── membership_hash SHA256 del sorted set de entity IDs
+├── modularity      score de modularidad (0.0-1.0)
+├── member_count    numero de entidades
+├── created_at
+├── updated_at
+└── deleted_at      soft-delete
+
+community_members
+├── community_id    FK → communities(id)
+├── entity_id       FK → entities(id) ON DELETE CASCADE
+└── PRIMARY KEY (community_id, entity_id)
+```
+
+### Deteccion de cambios
+
+Cada comunidad tiene un `membership_hash` que es el SHA256 de los entity IDs ordenados. En cada ciclo de consolidacion:
+
+- **Hash igual:** Comunidad estable, no se modifica
+- **Hash diferente:** Comunidad cambio, se actualiza con los nuevos miembros
+- **Comunidad nueva:** Se crea con los nuevos miembros
+- **Comunidad desaparecida:** Se soft-deleta
+
+### Pipeline
+
+La deteccion de comunidades corre como parte del pipeline de consolidacion, despues del edge decay y antes de la generacion de synthesis:
+
+```
+sweep → edgeDecay → detectCommunities → generateSyntheses → hardDelete → dedup → budget
+```
+
+### Output en CLI
+
+```
+Consolidation complete: 3 swept, 1 hard-deleted, 0 duplicates merged, 2 evicted,
+5 edges decayed, 8 communities detected (2 new, 1 deleted),
+synthesis: 2 created, 1 updated, 0 deleted, 5 skipped
+```
+
+---
+
+## Synthesis (community summaries)
+
+El tipo `synthesis` es un tipo especial de memoria que resume automaticamente el contenido de una comunidad. Cada comunidad activa tiene exactamente un synthesis, generado de forma deterministica (sin LLM). Introducido en SPEC-021 (EPIC-5).
+
+### Generacion deterministica
+
+El generador toma los miembros de una comunidad y produce:
+
+1. **Titulo:** De los top-3 miembros por importancia, truncado a 80 chars
+2. **Content (4 secciones):**
+   - Overview: resumen cuantitativo (N memorias, tipos, importancia promedio)
+   - Top members: las 3 memorias mas importantes con titulo y extracto
+   - All members: tabla con ID, titulo, tipo, importancia (max 50 filas)
+   - Aggregate metadata: estadisticas de tipos, archivos referenciados
+3. **Wikilinks:** `[[topic_key]]` para cada miembro con topic_key, creando relaciones `references` automaticamente
+
+### topic_key
+
+Formato: `synthesis/community-{uuid7}` donde uuid7 es el ID de la comunidad. Esto permite upserts idempotentes.
+
+### Lifecycle
+
+| Situacion | Accion |
+|-----------|--------|
+| Comunidad nueva | Crear synthesis |
+| Comunidad estable, mismo contenido | Skip (no-op) |
+| Comunidad estable, contenido cambio | Update synthesis |
+| Comunidad eliminada | Forget synthesis (decay_rate = 1.0) |
+
+### Propiedades especiales
+
+| Propiedad | Valor | Razon |
+|-----------|-------|-------|
+| `importance` | 0.85 | Alto para aparecer en context |
+| `decay_rate` | 0.0 | Inmune a decay (como rules) |
+| Hebbian | Excluido | Previene loops de auto-refuerzo |
+| Seeds (Louvain) | Excluido | Previene synthesis-of-synthesis |
+| Wikilinks | Procesado | Crea relaciones `references` a miembros |
+
+---
+
+## Context packing por comunidades
+
+Cuando hay comunidades detectadas, `mem_context` puede organizar las memorias por clusters tematicos en lugar de un ranking plano. Esto produce contextos mas coherentes y navegables para el agente. Introducido en SPEC-022 (EPIC-5).
+
+### Modos de packing
+
+| Mode | Comportamiento |
+|------|---------------|
+| `auto` (default) | Detecta comunidades; si hay > 0, usa community packing; si no, flat |
+| `communities` | Fuerza community packing (falla silenciosamente a flat si no hay comunidades) |
+| `flat` | Ranking plano pre-SPEC-022 (backward compatible) |
+
+### Algoritmo de 4 fases
+
+```
+Phase 1: Community ranking
+  ├── Focus provided? → PPR seeded by focus entities → rank communities by PPR score
+  └── No focus?       → rank by member_count DESC, modularity DESC
+
+Phase 2: Cluster overviews (dedicated budget: 1500 tokens)
+  └── Pack synthesis summaries of top communities
+
+Phase 3: Top cluster deep-dive (max 10 members)
+  └── Pack individual memories from the highest-ranked community by importance
+
+Phase 4: Fill remaining budget
+  └── Pack remaining memories from all communities using flat scoring
+  └── Dedup: exclude memories already packed in Phases 2 and 3
+```
+
+### Sections en el output
+
+| # | Section | Presente en |
+|---|---------|-------------|
+| 1 | Last Session | flat + community |
+| 2 | Active Rules | flat + community |
+| 3 | Cluster Overviews | community only |
+| 4 | Top Cluster Detail | community only |
+| 5 | Other Memories / Loaded Memories | both (renamed) |
+
+### Configuracion
+
+```toml
+[context]
+context_packing_mode = "auto"       # auto | communities | flat
+cluster_overviews_budget = 1500     # tokens for Phase 2
+top_cluster_max_members = 10        # max memories in Phase 3
+```
+
+### Fallback silencioso
+
+Cualquier error durante el community packing (ListCommunities, PPR, etc.) se logea como warning y el sistema cae a flat mode. `mem_context` nunca falla por culpa del packing.
 
 ---
 
@@ -519,9 +723,14 @@ Rebuild complete in 1.234s:
 |---------|-------------|
 | `mneme explore <seed>` | BFS desde seed (arbol ASCII o JSON) |
 | `mneme graph rebuild` | Backfill grafo desde memorias existentes |
-| `mneme search --include-graph=false` | Busqueda sin expansion de grafo |
+| `mneme gaps` | Listar knowledge gaps (wikilinks no resueltos) |
+| `mneme search --no-graph` | Busqueda sin expansion de grafo |
+| `mneme consolidate` | Run pipeline incluyendo community detection + synthesis |
 | `mem_relate` (MCP) | Crear/actualizar relacion entre entidades |
 | `mem_explore` (MCP) | Exploracion del grafo desde MCP |
+| `mem_gaps` (MCP) | Listar knowledge gaps |
+
+Referencia completa de todos los endpoints: [API.md](API.md).
 
 ---
 
@@ -534,6 +743,9 @@ Resumen rapido de los parametros disponibles en `~/.mneme/config.toml`:
 
 ```toml
 [graph]
+# Graph mode (MNEME_GRAPH_MODE)
+graph_mode = "ppr"            # ppr | 1hop | off
+
 # Hebbian auto-strengthening (MNEME_GRAPH_HEBBIAN_*)
 hebbian_window = 5            # Ring buffer size (0 = disabled)
 hebbian_increment = 0.05      # Weight delta per co-access
@@ -563,12 +775,21 @@ rebuild_max_relations = 50    # Cap per memory
 wikilinks_enabled = true          # Parse [[topic_key]] in mem_save/mem_update
 wikilink_relation_weight = 0.6    # Weight for wikilink-created relations [0.0, 1.0]
 
-# PPR algorithm (SPEC-017)
-graph_mode = "ppr"            # ppr | 1hop | off  (MNEME_GRAPH_MODE)
+# Synthesis (SPEC-021) (MNEME_GRAPH_SYNTHESIS_*)
+synthesis_enabled = true      # Generate community summaries during consolidation
+synthesis_max_members = 50    # Max members in synthesis content table
+synthesis_top_n = 3           # Top members for title generation
+
+[context]
+# Context packing (SPEC-022) (MNEME_CONTEXT_*)
+context_packing_mode = "auto"       # auto | communities | flat
+cluster_overviews_budget = 1500     # Tokens for cluster overview phase
+top_cluster_max_members = 10        # Max memories in top cluster deep-dive
 ```
 
 Para inspeccionar la configuracion activa con proveniencia (default/file/env):
 
 ```bash
 mneme config show graph
+mneme config show context
 ```
