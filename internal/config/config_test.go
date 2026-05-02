@@ -1640,3 +1640,65 @@ func TestGraphConfig_CommunityMinSize_Negative_Error(t *testing.T) {
 		t.Error("expected validation error for CommunityMinSize=-1")
 	}
 }
+
+// TestGraphConfig_SynthesisDefaults verifies the synthesis config defaults.
+func TestGraphConfig_SynthesisDefaults(t *testing.T) {
+	t.Parallel()
+
+	cfg := Default()
+	if !cfg.Graph.SynthesisEnabled {
+		t.Error("SynthesisEnabled default: got false, want true")
+	}
+	if cfg.Graph.SynthesisMaxMembers != 50 {
+		t.Errorf("SynthesisMaxMembers default: got %d, want 50", cfg.Graph.SynthesisMaxMembers)
+	}
+	if cfg.Graph.SynthesisTopN != 3 {
+		t.Errorf("SynthesisTopN default: got %d, want 3", cfg.Graph.SynthesisTopN)
+	}
+}
+
+// TestGraphConfig_SynthesisMaxMembers_Negative verifies that zero or negative
+// values are rejected by Validate.
+func TestGraphConfig_SynthesisMaxMembers_Negative(t *testing.T) {
+	t.Parallel()
+
+	cases := []int{0, -1}
+	for _, v := range cases {
+		cfg := Default()
+		cfg.Graph.SynthesisMaxMembers = v
+		if err := cfg.Validate(); err == nil {
+			t.Errorf("expected validation error for SynthesisMaxMembers=%d", v)
+		}
+	}
+}
+
+// TestGraphConfig_SynthesisTopN_Negative verifies that zero or negative values
+// are rejected by Validate.
+func TestGraphConfig_SynthesisTopN_Negative(t *testing.T) {
+	t.Parallel()
+
+	cases := []int{0, -1}
+	for _, v := range cases {
+		cfg := Default()
+		cfg.Graph.SynthesisTopN = v
+		if err := cfg.Validate(); err == nil {
+			t.Errorf("expected validation error for SynthesisTopN=%d", v)
+		}
+	}
+}
+
+// TestGraphConfig_SynthesisTopN_ClampedToMaxMembers verifies that when
+// SynthesisTopN > SynthesisMaxMembers, Validate clamps TopN to MaxMembers.
+func TestGraphConfig_SynthesisTopN_ClampedToMaxMembers(t *testing.T) {
+	t.Parallel()
+
+	cfg := Default()
+	cfg.Graph.SynthesisMaxMembers = 5
+	cfg.Graph.SynthesisTopN = 100
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() returned error: %v", err)
+	}
+	if cfg.Graph.SynthesisTopN != 5 {
+		t.Errorf("SynthesisTopN should be clamped to 5, got %d", cfg.Graph.SynthesisTopN)
+	}
+}

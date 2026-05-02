@@ -196,6 +196,21 @@ type GraphConfig struct {
 	// A value of 0 is treated as the default (3). Negative values are rejected
 	// by Validate. Default: 3.
 	CommunityMinSize int `toml:"community_min_size"`
+
+	// SynthesisEnabled controls whether community synthesis memories are
+	// auto-generated after community detection. When false, communities are
+	// detected and persisted but no synthesis memories are created.
+	// Default: true.
+	SynthesisEnabled bool `toml:"synthesis_enabled"`
+
+	// SynthesisMaxMembers is the maximum number of community members included
+	// in the synthesis content's "All Members" table. Members beyond this limit
+	// are omitted with a truncation note. Default: 50.
+	SynthesisMaxMembers int `toml:"synthesis_max_members"`
+
+	// SynthesisTopN is the number of top-importance members used for the
+	// synthesis title and the detailed "Top Members" section. Default: 3.
+	SynthesisTopN int `toml:"synthesis_top_n"`
 }
 
 // WorkflowConfig controls where workflow artifacts (specs, bugs, backlog)
@@ -467,6 +482,9 @@ func Default() *Config {
 			GraphMode:                 "ppr",
 			CommunityDetectionEnabled: true,
 			CommunityMinSize:          3,
+			SynthesisEnabled:          true,
+			SynthesisMaxMembers:       50,
+			SynthesisTopN:             3,
 		},
 		Suggestions: SuggestionsConfig{
 			GapScoreBoost:       0.15,
@@ -1124,6 +1142,16 @@ func (c *Config) Validate() error {
 	}
 	if c.Graph.CommunityMinSize < 0 {
 		return errors.New("graph.community_min_size must be >= 0")
+	}
+	if c.Graph.SynthesisMaxMembers < 1 {
+		return errors.New("graph.synthesis_max_members must be >= 1")
+	}
+	if c.Graph.SynthesisTopN < 1 {
+		return errors.New("graph.synthesis_top_n must be >= 1")
+	}
+	// Clamp SynthesisTopN to SynthesisMaxMembers when it exceeds it.
+	if c.Graph.SynthesisTopN > c.Graph.SynthesisMaxMembers {
+		c.Graph.SynthesisTopN = c.Graph.SynthesisMaxMembers
 	}
 
 	if c.Suggestions.GapScoreBoost < 0 || c.Suggestions.GapScoreBoost > 1 {
