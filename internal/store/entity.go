@@ -111,6 +111,29 @@ func (s *MemoryStore) FindOrCreateEntity(ctx context.Context, name string, kind 
 	return created, nil
 }
 
+// ListRelationsByProject returns all relations whose source entity belongs to
+// the given project. Pass an empty project to return relations for all projects.
+// Results are ordered by created_at ascending and are unlimited in size, making
+// this suitable for manifest export of complete project state.
+func (s *MemoryStore) ListRelationsByProject(ctx context.Context, project string) ([]*model.Relation, error) {
+	const qWithProject = `
+		SELECT r.id, r.source_id, r.target_id, r.type, r.weight, r.metadata, r.created_at, r.last_traversed_at
+		FROM relations r
+		JOIN entities e ON r.source_id = e.id
+		WHERE e.project = ?
+		ORDER BY r.created_at ASC`
+
+	const qAll = `
+		SELECT id, source_id, target_id, type, weight, metadata, created_at, last_traversed_at
+		FROM relations
+		ORDER BY created_at ASC`
+
+	if project != "" {
+		return s.queryRelationsMultiArg(ctx, qWithProject, project)
+	}
+	return s.queryRelationsMultiArg(ctx, qAll)
+}
+
 // ListEntities returns entities filtered by project and optionally by kind.
 // Pass an empty project to list across all projects; pass an empty kind to
 // skip kind filtering. Results are ordered by name and capped by limit (defaults

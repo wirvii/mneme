@@ -1401,3 +1401,79 @@ func TestStore_ListMemoriesWithoutEntities_Basic(t *testing.T) {
 		t.Errorf("expected m2 and m3 in result, got IDs %v", ids)
 	}
 }
+
+// TestListRelationsByProject verifies that all relations whose source entity
+// belongs to the given project are returned, and that relations from other
+// projects are excluded.
+func TestListRelationsByProject(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	const projectA = "proj-a"
+	const projectB = "proj-b"
+
+	// Create entities for both projects.
+	eA1, err := s.FindOrCreateEntity(ctx, "entity-a1", model.KindModule, projectA)
+	if err != nil {
+		t.Fatalf("FindOrCreateEntity A1: %v", err)
+	}
+	eA2, err := s.FindOrCreateEntity(ctx, "entity-a2", model.KindModule, projectA)
+	if err != nil {
+		t.Fatalf("FindOrCreateEntity A2: %v", err)
+	}
+	eB1, err := s.FindOrCreateEntity(ctx, "entity-b1", model.KindModule, projectB)
+	if err != nil {
+		t.Fatalf("FindOrCreateEntity B1: %v", err)
+	}
+	eB2, err := s.FindOrCreateEntity(ctx, "entity-b2", model.KindModule, projectB)
+	if err != nil {
+		t.Fatalf("FindOrCreateEntity B2: %v", err)
+	}
+
+	// Create two relations for project A, one for project B.
+	_, err = s.CreateRelation(ctx, &model.Relation{SourceID: eA1.ID, TargetID: eA2.ID, Type: model.RelRelatedTo})
+	if err != nil {
+		t.Fatalf("CreateRelation A-A: %v", err)
+	}
+	_, err = s.CreateRelation(ctx, &model.Relation{SourceID: eA2.ID, TargetID: eA1.ID, Type: model.RelDependsOn})
+	if err != nil {
+		t.Fatalf("CreateRelation A2-A1: %v", err)
+	}
+	_, err = s.CreateRelation(ctx, &model.Relation{SourceID: eB1.ID, TargetID: eB2.ID, Type: model.RelRelatedTo})
+	if err != nil {
+		t.Fatalf("CreateRelation B-B: %v", err)
+	}
+
+	got, err := s.ListRelationsByProject(ctx, projectA)
+	if err != nil {
+		t.Fatalf("ListRelationsByProject: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("len: got %d, want 2", len(got))
+	}
+	for _, r := range got {
+		// Source entity must belong to project A.
+		src, err := s.GetEntity(ctx, r.SourceID)
+		if err != nil {
+			t.Fatalf("GetEntity: %v", err)
+		}
+		if src.Project != projectA {
+			t.Errorf("expected source entity in %q, got %q", projectA, src.Project)
+		}
+	}
+}
+
+// TestListRelationsByProject_Empty verifies that an empty (not nil) slice is
+// returned when no relations exist for the given project.
+func TestListRelationsByProject_Empty(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	got, err := s.ListRelationsByProject(ctx, "no-such-project")
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("expected 0 relations, got %d", len(got))
+	}
+}

@@ -123,6 +123,65 @@ func TestGetLastSession(t *testing.T) {
 	}
 }
 
+// TestListSessionsByProject verifies that all sessions for a given project are
+// returned in ascending started_at order, and that sessions from other projects
+// are not included.
+func TestListSessionsByProject(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	base := time.Now().UTC().Add(-2 * time.Hour)
+
+	// Three sessions for "proj-a", one for "proj-b".
+	projA := []*model.Session{
+		{ID: newSessionID(t), Project: "proj-a", Agent: "a", StartedAt: base},
+		{ID: newSessionID(t), Project: "proj-a", Agent: "b", StartedAt: base.Add(time.Hour)},
+		{ID: newSessionID(t), Project: "proj-a", Agent: "c", StartedAt: base.Add(2 * time.Hour)},
+	}
+	projB := &model.Session{ID: newSessionID(t), Project: "proj-b", Agent: "x", StartedAt: base}
+
+	for _, sess := range projA {
+		if _, err := s.CreateSession(ctx, sess); err != nil {
+			t.Fatalf("CreateSession proj-a: %v", err)
+		}
+	}
+	if _, err := s.CreateSession(ctx, projB); err != nil {
+		t.Fatalf("CreateSession proj-b: %v", err)
+	}
+
+	got, err := s.ListSessionsByProject(ctx, "proj-a")
+	if err != nil {
+		t.Fatalf("ListSessionsByProject: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("len: got %d, want 3", len(got))
+	}
+	// Results must be ascending by started_at.
+	if got[0].Agent != "a" || got[1].Agent != "b" || got[2].Agent != "c" {
+		t.Errorf("order wrong: agents = %q %q %q", got[0].Agent, got[1].Agent, got[2].Agent)
+	}
+	for _, sess := range got {
+		if sess.Project != "proj-a" {
+			t.Errorf("unexpected project %q in results", sess.Project)
+		}
+	}
+}
+
+// TestListSessionsByProject_Empty verifies that an empty slice (not nil error) is
+// returned when no sessions exist for the requested project.
+func TestListSessionsByProject_Empty(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	got, err := s.ListSessionsByProject(ctx, "nonexistent")
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("expected 0 sessions, got %d", len(got))
+	}
+}
+
 // TestGetLastSession_None verifies that GetLastSession returns nil, nil when no sessions exist.
 func TestGetLastSession_None(t *testing.T) {
 	s := newTestStore(t)
