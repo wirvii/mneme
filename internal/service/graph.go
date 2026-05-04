@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"math"
 	"strconv"
 	"strings"
@@ -11,11 +12,13 @@ import (
 	"github.com/juanftp/mneme/internal/model"
 )
 
-// Relate creates a relationship between two named entities in the knowledge graph.
-// The source and target entities are resolved by name within the given project,
-// and created with the supplied kinds when they do not exist yet. If an identical
-// relation (same source, target, and type) already exists, the existing relation
-// is returned with Created=false.
+// Relate creates a relationship between two graph endpoints in the knowledge
+// graph. SPEC-031 introduces hybrid resolution: each of Source/Target is treated
+// as either a memory reference (UUID full, UUID prefix, or topic_key) or as an
+// entity name, in that order. When resolution lands on a memory, the memory is
+// linked to the proxy entity via memory_entities so the relation is reachable
+// from mem_explore. Legacy callers passing an explicit non-default kind (e.g.
+// source_kind="service") preserve the original entity-only semantics.
 //
 // Validation rules (applied in order):
 //   - Source name must not be empty
@@ -24,6 +27,10 @@ import (
 //   - SourceKind defaults to KindConcept when omitted
 //   - TargetKind defaults to KindConcept when omitted
 //   - Project defaults to the service's project when omitted
+//
+// Cross-scope guard: when both endpoints resolve to memories and the source is
+// global/org while the target is project-scoped, ErrCrossScopeRelation is
+// returned (mirrors the wikilink invariant, SPEC-006 D1).
 func (svc *MemoryService) Relate(ctx context.Context, req model.RelateRequest) (*model.RelateResponse, error) {
 	if req.Source == "" {
 		return nil, fmt.Errorf("service: relate: source is required")
@@ -55,27 +62,35 @@ func (svc *MemoryService) Relate(ctx context.Context, req model.RelateRequest) (
 		req.Project = svc.project
 	}
 
-	// Resolve or create both entities using the project store.
-	srcEntity, err := svc.projectStore.FindOrCreateEntity(ctx, req.Source, req.SourceKind, req.Project)
+	srcRes, err := svc.resolveRelateEndpoint(ctx, req.Source, req.SourceKind, req.Project)
 	if err != nil {
-		return nil, fmt.Errorf("service: relate: resolve source entity: %w", err)
+		return nil, fmt.Errorf("service: relate: resolve source: %w", err)
 	}
 
-	tgtEntity, err := svc.projectStore.FindOrCreateEntity(ctx, req.Target, req.TargetKind, req.Project)
+	tgtRes, err := svc.resolveRelateEndpoint(ctx, req.Target, req.TargetKind, req.Project)
 	if err != nil {
-		return nil, fmt.Errorf("service: relate: resolve target entity: %w", err)
+		return nil, fmt.Errorf("service: relate: resolve target: %w", err)
+	}
+
+	// Cross-scope guard mirrors SPEC-006 D1 / wikilinks: a global or org source
+	// memory must not create relations into a project-scoped target memory.
+	if srcRes.memory != nil && tgtRes.memory != nil {
+		if (srcRes.memory.Scope == model.ScopeGlobal || srcRes.memory.Scope == model.ScopeOrg) &&
+			tgtRes.memory.Scope == model.ScopeProject {
+			return nil, fmt.Errorf("service: relate: %w", model.ErrCrossScopeRelation)
+		}
 	}
 
 	// Check whether the relation already exists.
-	existing, err := svc.projectStore.FindRelation(ctx, srcEntity.ID, tgtEntity.ID, req.Relation)
+	existing, err := svc.projectStore.FindRelation(ctx, srcRes.entity.ID, tgtRes.entity.ID, req.Relation)
 	if err != nil {
 		return nil, fmt.Errorf("service: relate: check existing relation: %w", err)
 	}
 	if existing != nil {
 		return &model.RelateResponse{
 			RelationID: existing.ID,
-			SourceID:   srcEntity.ID,
-			TargetID:   tgtEntity.ID,
+			SourceID:   srcRes.entity.ID,
+			TargetID:   tgtRes.entity.ID,
 			Created:    false,
 			Weight:     existing.Weight,
 		}, nil
@@ -91,8 +106,8 @@ func (svc *MemoryService) Relate(ctx context.Context, req model.RelateRequest) (
 
 	// Create the new relation.
 	rel := &model.Relation{
-		SourceID: srcEntity.ID,
-		TargetID: tgtEntity.ID,
+		SourceID: srcRes.entity.ID,
+		TargetID: tgtRes.entity.ID,
 		Type:     req.Relation,
 		Weight:   weight,
 	}
@@ -103,11 +118,146 @@ func (svc *MemoryService) Relate(ctx context.Context, req model.RelateRequest) (
 
 	return &model.RelateResponse{
 		RelationID: created.ID,
-		SourceID:   srcEntity.ID,
-		TargetID:   tgtEntity.ID,
+		SourceID:   srcRes.entity.ID,
+		TargetID:   tgtRes.entity.ID,
 		Created:    true,
 		Weight:     created.Weight,
 	}, nil
+}
+
+// relateResolution captures the outcome of resolving a Relate endpoint string.
+// entity is always non-nil on success and is the proxy entity used by the
+// relation. memory is non-nil only when the string resolved to an existing
+// memory (UUID, UUID prefix, or topic_key); in that case memory_entities has
+// been linked between memory and entity (idempotently).
+type relateResolution struct {
+	entity *model.Entity
+	memory *model.Memory
+}
+
+// resolveRelateEndpoint maps a Relate source/target string to a proxy entity,
+// optionally also identifying the memory it represents. The lookup order is:
+//
+//  1. UUID (full or 8+ hex prefix) → memory in either store.
+//  2. If kind == KindConcept (i.e. caller did not specify a non-default kind):
+//     topic_key → memory in project store, then global store.
+//  3. Entity by name in the project's entity table (creates with kind when
+//     missing).
+//
+// When the lookup ends in a memory, FindOrCreateEntity creates a proxy entity
+// named after the memory's TopicKey (or ID if no topic_key) and LinkMemoryEntity
+// is called to ensure the puente row exists in memory_entities. INSERT OR
+// IGNORE makes the link idempotent across repeat calls.
+func (svc *MemoryService) resolveRelateEndpoint(ctx context.Context, name string, kind model.EntityKind, project string) (*relateResolution, error) {
+	// 1. UUID full or prefix → memory.
+	if mem := svc.tryResolveMemoryByID(ctx, name); mem != nil {
+		entity, err := svc.linkMemoryAsProxy(ctx, mem, project)
+		if err != nil {
+			return nil, err
+		}
+		return &relateResolution{entity: entity, memory: mem}, nil
+	}
+
+	// 2. topic_key → memory (only when kind is the default KindConcept).
+	if kind == model.KindConcept {
+		mem, err := svc.tryResolveMemoryByTopicKey(ctx, name, project)
+		if err != nil {
+			return nil, err
+		}
+		if mem != nil {
+			entity, linkErr := svc.linkMemoryAsProxy(ctx, mem, project)
+			if linkErr != nil {
+				return nil, linkErr
+			}
+			return &relateResolution{entity: entity, memory: mem}, nil
+		}
+	}
+
+	// 3. Entity by name (or create with kind).
+	entity, err := svc.projectStore.FindOrCreateEntity(ctx, name, kind, project)
+	if err != nil {
+		return nil, fmt.Errorf("find or create entity %q: %w", name, err)
+	}
+	return &relateResolution{entity: entity}, nil
+}
+
+// tryResolveMemoryByID attempts to interpret name as a memory UUID (full or
+// 8+ hex prefix) and looks it up in either store. Returns nil silently when
+// the name is not a UUID or no memory matches.
+func (svc *MemoryService) tryResolveMemoryByID(ctx context.Context, name string) *model.Memory {
+	if looksLikeUUID(name) {
+		mem, _, err := svc.getFromEitherStore(ctx, name)
+		if err != nil {
+			slog.DebugContext(ctx, "relate_resolve_uuid_error", "name", name, "error", err)
+			return nil
+		}
+		return mem
+	}
+	if len(name) >= 8 && len(name) < 36 && isAllHex(name) {
+		mem, err := svc.projectStore.GetByIDPrefix(ctx, name)
+		if err == nil && mem != nil {
+			return mem
+		}
+		mem, err = svc.globalStore.GetByIDPrefix(ctx, name)
+		if err == nil && mem != nil {
+			return mem
+		}
+	}
+	return nil
+}
+
+// tryResolveMemoryByTopicKey looks up name as a topic_key in the project store
+// and falls back to the global store. Returns nil when no match is found.
+// Errors from the underlying store are propagated.
+func (svc *MemoryService) tryResolveMemoryByTopicKey(ctx context.Context, name, project string) (*model.Memory, error) {
+	mem, err := svc.projectStore.GetByTopicKey(ctx, name, project)
+	if err != nil {
+		return nil, fmt.Errorf("topic_key lookup (project): %w", err)
+	}
+	if mem != nil {
+		return mem, nil
+	}
+	mem, err = svc.globalStore.GetByTopicKey(ctx, name, project)
+	if err != nil {
+		return nil, fmt.Errorf("topic_key lookup (global): %w", err)
+	}
+	if mem != nil {
+		return mem, nil
+	}
+	// Some legacy global memories were stored with an empty project field —
+	// retry with empty project for safety.
+	mem, err = svc.globalStore.GetByTopicKey(ctx, name, "")
+	if err != nil {
+		return nil, fmt.Errorf("topic_key lookup (global empty proj): %w", err)
+	}
+	return mem, nil
+}
+
+// linkMemoryAsProxy ensures a proxy entity exists for the given memory and that
+// memory_entities contains the puente row connecting them. The proxy entity is
+// always created in the project's entity namespace (the project parameter, not
+// the memory's project) so cross-scope memories share the same SQLite database
+// as the source — entities live alongside the source memory, not the target.
+func (svc *MemoryService) linkMemoryAsProxy(ctx context.Context, mem *model.Memory, project string) (*model.Entity, error) {
+	proxyName := mem.TopicKey
+	if proxyName == "" {
+		proxyName = mem.ID
+	}
+	entity, err := svc.projectStore.FindOrCreateEntity(ctx, proxyName, model.KindConcept, project)
+	if err != nil {
+		return nil, fmt.Errorf("proxy entity for memory %s: %w", mem.ID, err)
+	}
+	if linkErr := svc.projectStore.LinkMemoryEntity(ctx, mem.ID, entity.ID, "relate"); linkErr != nil {
+		// Best-effort: the link is INSERT OR IGNORE so duplicates are harmless.
+		// A real error here (e.g. FOREIGN KEY when memory not in projectStore)
+		// is logged but does not abort relate.
+		slog.DebugContext(ctx, "relate_link_memory_entity_error",
+			"memory_id", mem.ID,
+			"entity_id", entity.ID,
+			"error", linkErr,
+		)
+	}
+	return entity, nil
 }
 
 // UpdateRelationWeight adjusts the weight of an existing relation by delta,
