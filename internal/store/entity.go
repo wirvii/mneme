@@ -682,6 +682,124 @@ type CandidatePair struct {
 	SharedCount int
 }
 
+// OrphanRelation describes a relation whose source or target entity is not
+// linked to any memory via memory_entities. These relations were created by
+// the legacy mem_relate path that did not call LinkMemoryEntity (see
+// SPEC-031), and they are unreachable from mem_explore.
+type OrphanRelation struct {
+	RelationID string
+	SourceID   string
+	SourceName string
+	TargetID   string
+	TargetName string
+	Type       model.RelationType
+}
+
+// FindOrphanRelations returns relations where at least one endpoint entity has
+// zero rows in memory_entities. Pass an empty project string to target entities
+// without a project (global scope). Results are ordered by created_at ASC for
+// deterministic output. The query is unlimited and intended for cleanup tasks;
+// it leverages idx_memory_entities_entity (migration 008) to keep the
+// NOT EXISTS subquery efficient.
+func (s *MemoryStore) FindOrphanRelations(ctx context.Context, project string) ([]OrphanRelation, error) {
+	const q = `
+		SELECT r.id, r.type,
+		       es.id, es.name,
+		       et.id, et.name
+		FROM relations r
+		JOIN entities es ON es.id = r.source_id
+		JOIN entities et ON et.id = r.target_id
+		WHERE es.project IS ?
+		  AND (
+		      NOT EXISTS (SELECT 1 FROM memory_entities WHERE entity_id = r.source_id)
+		   OR NOT EXISTS (SELECT 1 FROM memory_entities WHERE entity_id = r.target_id)
+		  )
+		ORDER BY r.created_at ASC`
+
+	rows, err := s.db.QueryContext(ctx, q, toNullString(project))
+	if err != nil {
+		return nil, fmt.Errorf("store: find orphan relations: %w", err)
+	}
+	defer rows.Close()
+
+	var orphans []OrphanRelation
+	for rows.Next() {
+		var (
+			relID, relType         string
+			srcID, srcName         string
+			tgtID, tgtName         string
+		)
+		if scanErr := rows.Scan(&relID, &relType, &srcID, &srcName, &tgtID, &tgtName); scanErr != nil {
+			return nil, fmt.Errorf("store: find orphan relations: scan: %w", scanErr)
+		}
+		orphans = append(orphans, OrphanRelation{
+			RelationID: relID,
+			SourceID:   srcID,
+			SourceName: srcName,
+			TargetID:   tgtID,
+			TargetName: tgtName,
+			Type:       model.RelationType(relType),
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: find orphan relations: iterate: %w", err)
+	}
+	return orphans, nil
+}
+
+// DeleteRelation removes a relation by its ID. Returns ErrRelationNotFound
+// when no relation matches. Used by cleanup-orphan-relations (SPEC-031).
+func (s *MemoryStore) DeleteRelation(ctx context.Context, relationID string) error {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM relations WHERE id = ?`, relationID)
+	if err != nil {
+		return fmt.Errorf("store: delete relation: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("store: delete relation: rows affected: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("store: delete relation %q: %w", relationID, model.ErrRelationNotFound)
+	}
+	return nil
+}
+
+// DeleteEntity removes an entity by ID. Callers must ensure no relations
+// reference it (FOREIGN KEY constraint) and that memory_entities has no
+// remaining rows for this entity. Used by cleanup-orphan-relations with
+// --also-delete-entities (SPEC-031).
+func (s *MemoryStore) DeleteEntity(ctx context.Context, entityID string) error {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM entities WHERE id = ?`, entityID)
+	if err != nil {
+		return fmt.Errorf("store: delete entity: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("store: delete entity: rows affected: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("store: delete entity %q: %w", entityID, model.ErrEntityNotFound)
+	}
+	return nil
+}
+
+// EntityIsLinkedOrReferenced reports whether the given entity is currently
+// linked to any memory (memory_entities) or referenced by any relation as
+// source or target. Used to decide whether an entity can be safely deleted
+// after orphan relation cleanup.
+func (s *MemoryStore) EntityIsLinkedOrReferenced(ctx context.Context, entityID string) (bool, error) {
+	const q = `
+		SELECT
+		  EXISTS(SELECT 1 FROM memory_entities WHERE entity_id = ?) +
+		  EXISTS(SELECT 1 FROM relations WHERE source_id = ? OR target_id = ?)`
+	row := s.db.QueryRowContext(ctx, q, entityID, entityID, entityID)
+	var n int
+	if err := row.Scan(&n); err != nil {
+		return false, fmt.Errorf("store: entity is linked or referenced: %w", err)
+	}
+	return n > 0, nil
+}
+
 // DeleteRelatedToRelations removes all relations of type 'related_to' whose
 // source entity belongs to the given project. This is used by graph rebuild
 // --force to reset the automatically-generated co-occurrence edges before

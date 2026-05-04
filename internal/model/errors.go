@@ -107,3 +107,9 @@ var ErrInvalidWeight = errors.New("weight must be a finite number in [0.0, 1.0]"
 // matches more than one memory. The caller must use the full UUID to avoid
 // ambiguity.
 var ErrAmbiguousSeed = errors.New("seed matches multiple memories; use the full UUID")
+
+// ErrCrossScopeRelation is returned by mem_relate when the resolved source and
+// target memories form a forbidden scope pair: a global or org source memory
+// cannot create a relation that targets a project-scoped memory. This mirrors
+// the SPEC-006 D1 invariant enforced for wikilinks and Hebbian co-access.
+var ErrCrossScopeRelation = errors.New("cross-scope relation not allowed (global/org → project)")
