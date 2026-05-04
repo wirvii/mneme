@@ -717,12 +717,79 @@ Rebuild complete in 1.234s:
 
 ---
 
+## graph cleanup-orphan-relations
+
+`mneme graph cleanup-orphan-relations` detecta y opcionalmente borra **relations huerfanas**: aquellas cuyas entities no tienen ningun row en `memory_entities` y por lo tanto no son alcanzables desde `mem_explore`. Introducido en SPEC-031.
+
+### Por que existe
+
+Antes de SPEC-031, `mem_relate` no resolvia `topic_key` a memoria y nunca llamaba `LinkMemoryEntity`. Resultado: relations creadas via `mem_relate` quedaban desconectadas del puente memory_entities y eran invisibles para `mem_explore`. El comando permite limpiar el residual.
+
+### Flujo recomendado de recuperacion
+
+Para un proyecto victima del bug (relations existentes pero `mem_explore` retorna 0 hops):
+
+```bash
+# 1) Ver que se borraria (dry-run, default)
+mneme graph cleanup-orphan-relations
+
+# 2) Borrar relations huerfanas
+mneme graph cleanup-orphan-relations --apply --yes
+
+# 3) Reconstruir grafo desde wikilinks/heuristicas
+mneme graph rebuild --force
+
+# 4) Verificar
+mneme explore <topic_key>
+```
+
+### Resolucion de mem_relate post-fix
+
+Despues de SPEC-031, `mem_relate` resuelve cada endpoint en este orden:
+
+1. UUID full o prefix de 8+ hex de memoria existente → memoria
+2. Si `*_kind` esta omitido (default `concept`): `topic_key` exacto en project store o global store → memoria
+3. Entity con `name == string` en project (reusar)
+4. Crear entity nueva con `kind` (default `concept`)
+
+Cuando la resolucion termina en una memoria, se llama `LinkMemoryEntity(memory.ID, proxy_entity.ID, "relate")` automaticamente para que la relation sea alcanzable por BFS de `mem_explore`. Pasar un `*_kind` explicito distinto de `concept` (e.g. `"service"`, `"library"`) preserva la semantica legacy entity-only.
+
+### Flags
+
+| Flag | Short | Default | Descripcion |
+|------|-------|---------|-------------|
+| `--scope` | `-s` | `project` | project, global, o all |
+| `--apply` | | false | Default es dry-run; usar `--apply` para borrar |
+| `--also-delete-entities` | | false | Borra entities que quedan totalmente sin referencias |
+| `--output` | `-o` | `text` | text o json |
+| `--yes` | `-y` | false | Confirma borrado destructivo (requerido con `--apply`) |
+
+### Output
+
+```
+Orphan relations found: 21
+Relations deleted:      21
+Entities deleted:       0
+
+Examples:
+  - architecture/backend-modular-hexagonal --[depends_on]--> architecture/event-system-detail
+  - architecture/backend-modular-hexagonal --[references]--> architecture/bounded-contexts
+  ...
+```
+
+### Idempotencia
+
+Re-correr el comando despues de un `--apply` exitoso reporta 0 candidatos. Es seguro ejecutar repetidamente.
+
+---
+
 ## Comandos relacionados
 
 | Comando | Descripcion |
 |---------|-------------|
 | `mneme explore <seed>` | BFS desde seed (arbol ASCII o JSON) |
 | `mneme graph rebuild` | Backfill grafo desde memorias existentes |
+| `mneme graph cleanup-orphan-relations` | Limpiar relations huerfanas (SPEC-031) |
 | `mneme gaps` | Listar knowledge gaps (wikilinks no resueltos) |
 | `mneme search --no-graph` | Busqueda sin expansion de grafo |
 | `mneme consolidate` | Run pipeline incluyendo community detection + synthesis |

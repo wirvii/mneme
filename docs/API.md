@@ -234,14 +234,20 @@ End the current session and save a summary.
 
 #### mem_relate
 
-Create or update a relationship between two entities in the knowledge graph.
+Create or update a relationship between two graph endpoints. Each endpoint string is resolved hybrid (SPEC-031):
+
+1. Memory UUID full or 8+ hex prefix → memory in either store
+2. Memory `topic_key` (only when the corresponding `*_kind` is omitted or `concept`)
+3. Entity by name (creates with `kind` when missing)
+
+When resolution lands on a memory, a proxy entity is created and `memory_entities` is auto-linked so the relation is reachable from `mem_explore`. Pass an explicit non-default `*_kind` (e.g. `"service"`, `"library"`) to force entity-only semantics and skip topic_key resolution.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `source` | string | yes | Source entity name |
-| `target` | string | yes | Target entity name |
+| `source` | string | yes | Source endpoint: memory UUID, UUID prefix, topic_key, or entity name |
+| `target` | string | yes | Target endpoint: same semantics as `source` |
 | `relation` | string | yes | `depends_on`, `implements`, `supersedes`, `related_to`, `part_of`, `uses`, `conflicts_with`, `references` |
-| `source_kind` | string | no | `module`, `service`, `library`, `concept`, `person`, `pattern`, `file`. Default: `concept` |
+| `source_kind` | string | no | `module`, `service`, `library`, `concept`, `person`, `pattern`, `file`. Default: `concept` (enables topic_key resolution) |
 | `target_kind` | string | no | Same enum. Default: `concept` |
 | `project` | string | no | Project slug |
 | `weight` | number | no | Override default weight (0.0-1.0) |
@@ -250,17 +256,17 @@ Create or update a relationship between two entities in the knowledge graph.
 
 ```json
 {
-  "source": "internal/store",
-  "target": "internal/db",
-  "relation": "depends_on",
+  "relation_id": "019df133-d294-7c81-97b4-0bc1dfd16608",
+  "source_id": "019df115-f9d6-7c70-9679-592598f8533a",
+  "target_id": "019df116-5035-7c70-9d4b-8c49e76d3aa3",
   "created": true,
   "weight": 0.9
 }
 ```
 
-`created` is `true` for new relations, `false` for updates.
+`created` is `true` for new relations, `false` when an identical relation already existed (idempotent).
 
-**Errors:** `-32602` invalid relation type, entity kind, weight.
+**Errors:** `-32602` invalid relation type, entity kind, weight; `-32603` cross-scope relation rejected (global/org → project memory).
 
 ---
 
@@ -1185,6 +1191,31 @@ mneme graph rebuild --force --min-shared 3
 
 ---
 
+### mneme graph cleanup-orphan-relations
+
+Remove relations whose endpoint entities are not linked to any memory through `memory_entities`. Such relations are unreachable from `mem_explore` and were created by the legacy `mem_relate` path before SPEC-031.
+
+```bash
+# Default is dry-run — list candidates
+mneme graph cleanup-orphan-relations
+
+# Actually delete (requires --yes)
+mneme graph cleanup-orphan-relations --apply --yes
+
+# After cleanup, rebuild the graph from scratch
+mneme graph rebuild --force
+```
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--scope` | `-s` | `project` | `project`, `global`, `all` |
+| `--apply` | | false | Default is dry-run; pass to actually delete |
+| `--also-delete-entities` | | false | Also delete entities that become fully unreferenced |
+| `--output` | `-o` | `text` | `text` or `json` |
+| `--yes` | `-y` | false | Required with `--apply` to confirm destructive deletion |
+
+---
+
 ### mneme rule add
 
 Create a rule (memory with type `rule`).
@@ -1650,6 +1681,7 @@ mneme upgrade --check
 | `explore` | Graph BFS | `<seed>`, `--depth`, `--threshold` |
 | `gaps` | Knowledge gaps | `--scope`, `--limit`, `--json` |
 | `graph rebuild` | Backfill graph | `--dry-run`, `--force` |
+| `graph cleanup-orphan-relations` | Remove relations not linked to memories (SPEC-031) | `--apply`, `--yes`, `--also-delete-entities` |
 | `rule add` | Create rule | `--title`, `--applies-to`, `--severity` |
 | `rule list` | List rules | `--scope`, `--severity`, `--json` |
 | `rule test` | Test rules | `--tool`, `--path` |
