@@ -250,18 +250,18 @@ func allTools() []ToolDefinition {
 		},
 		{
 			Name:        "mem_relate",
-			Description: "Create or update a relationship between two entities in the knowledge graph.",
+			Description: "Create or update a relationship between two graph endpoints. Each endpoint is a string resolved in this order: (1) memory UUID full or 8+ hex prefix, (2) memory topic_key (when *_kind is omitted or 'concept'), (3) entity name. When resolution lands on a memory, the memory is auto-linked to its proxy entity so the relation is reachable from mem_explore. Pass an explicit non-default *_kind (e.g. 'service', 'library') to force entity-only semantics.",
 			InputSchema: map[string]any{
 				"type":     "object",
 				"required": []string{"source", "target", "relation"},
 				"properties": map[string]any{
 					"source": map[string]any{
 						"type":        "string",
-						"description": "Name of the source entity.",
+						"description": "Source endpoint: memory UUID, UUID prefix (8+ hex), topic_key, or entity name.",
 					},
 					"target": map[string]any{
 						"type":        "string",
-						"description": "Name of the target entity.",
+						"description": "Target endpoint: memory UUID, UUID prefix (8+ hex), topic_key, or entity name.",
 					},
 					"relation": map[string]any{
 						"type":        "string",

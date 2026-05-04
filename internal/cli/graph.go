@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/juanftp/mneme/internal/model"
+	"github.com/juanftp/mneme/internal/service"
 )
 
 // newGraphCmd returns the "mneme graph" parent command. It groups subcommands
@@ -25,7 +27,114 @@ memories using entity extraction heuristics.`,
 	}
 
 	cmd.AddCommand(newGraphRebuildCmd())
+	cmd.AddCommand(newGraphCleanupOrphanCmd())
 	return cmd
+}
+
+// newGraphCleanupOrphanCmd returns the "mneme graph cleanup-orphan-relations"
+// command (SPEC-031). It detects relations whose source or target entity has
+// no row in memory_entities — these are unreachable from mem_explore and were
+// created by the legacy mem_relate path before the SPEC-031 fix.
+//
+// Default behaviour is dry-run for safety: the command lists candidates
+// without deleting anything. Use --apply to actually delete. The optional
+// --also-delete-entities flag additionally removes entities that became fully
+// unreferenced after their relations were dropped.
+func newGraphCleanupOrphanCmd() *cobra.Command {
+	var (
+		flagScope             string
+		flagApply             bool
+		flagAlsoDeleteEnts    bool
+		flagOutput            string
+		flagYes               bool
+	)
+
+	cmd := &cobra.Command{
+		Use:   "cleanup-orphan-relations",
+		Short: "Remove relations not connected to any memory (SPEC-031)",
+		Long: `Detects and optionally deletes relations whose source or target
+entity has no link to any memory through memory_entities. Such relations
+are unreachable from mem_explore and were created by the legacy mem_relate
+path before the SPEC-031 fix.
+
+By default this command runs in dry-run mode and only lists candidates.
+Use --apply to actually delete. Use --also-delete-entities to additionally
+remove entities that become fully unreferenced.
+
+After cleanup, run "mneme graph rebuild" to regenerate entity links from
+existing wikilinks and heuristics:
+
+    mneme graph cleanup-orphan-relations --apply
+    mneme graph rebuild --force`,
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			svc, cleanup, err := initService()
+			if err != nil {
+				return fmt.Errorf("graph cleanup-orphan-relations: init service: %w", err)
+			}
+			defer cleanup()
+
+			ctx := context.Background()
+
+			if flagApply && !flagYes {
+				fmt.Fprintln(os.Stderr, "Refusing to apply without --yes. Re-run with --apply --yes to proceed.")
+				return fmt.Errorf("graph cleanup-orphan-relations: --apply requires --yes")
+			}
+
+			req := service.CleanupOrphanRelationsRequest{
+				Project:            svc.ProjectSlug(),
+				Scope:              flagScope,
+				DryRun:             !flagApply,
+				AlsoDeleteEntities: flagAlsoDeleteEnts,
+			}
+
+			result, err := svc.CleanupOrphanRelations(ctx, req)
+			if err != nil {
+				return fmt.Errorf("graph cleanup-orphan-relations: %w", err)
+			}
+
+			switch flagOutput {
+			case "json":
+				enc := json.NewEncoder(os.Stdout)
+				enc.SetIndent("", "  ")
+				if encErr := enc.Encode(result); encErr != nil {
+					return fmt.Errorf("graph cleanup-orphan-relations: encode json: %w", encErr)
+				}
+			default:
+				printCleanupOrphanResult(result)
+			}
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVarP(&flagScope, "scope", "s", "project", "Scope to scan: project, global, or all")
+	cmd.Flags().BoolVar(&flagApply, "apply", false, "Actually delete (default is dry-run)")
+	cmd.Flags().BoolVar(&flagAlsoDeleteEnts, "also-delete-entities", false, "Also delete entities that become fully unreferenced")
+	cmd.Flags().StringVarP(&flagOutput, "output", "o", "text", "Output format: text or json")
+	cmd.Flags().BoolVarP(&flagYes, "yes", "y", false, "Confirm destructive deletion (required with --apply)")
+	return cmd
+}
+
+// printCleanupOrphanResult writes a human-readable summary of a cleanup pass.
+func printCleanupOrphanResult(result *service.CleanupOrphanRelationsResult) {
+	if result.DryRun {
+		fmt.Fprintln(os.Stdout, "Dry-run mode — no changes were written.")
+	}
+	fmt.Fprintf(os.Stdout, "Orphan relations found: %d\n", result.OrphanRelationsFound)
+	if !result.DryRun {
+		fmt.Fprintf(os.Stdout, "Relations deleted:      %d\n", result.RelationsDeleted)
+		fmt.Fprintf(os.Stdout, "Entities deleted:       %d\n", result.EntitiesDeleted)
+	}
+	if len(result.Examples) == 0 {
+		return
+	}
+	fmt.Fprintln(os.Stdout, "\nExamples:")
+	for _, ex := range result.Examples {
+		fmt.Fprintf(os.Stdout, "  - %s --[%s]--> %s\n", ex.SourceName, ex.Type, ex.TargetName)
+	}
+	if result.OrphanRelationsFound > len(result.Examples) {
+		fmt.Fprintf(os.Stdout, "  ... and %d more.\n", result.OrphanRelationsFound-len(result.Examples))
+	}
 }
 
 // newGraphRebuildCmd returns the "mneme graph rebuild" command which extracts
