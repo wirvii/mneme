@@ -46,4 +46,6 @@ func GetExtractor(language string) Extractor {
 
 func init() {
 	RegisterExtractor("go", func() Extractor { return NewGoExtractor() })
+	RegisterExtractor("typescript", func() Extractor { return NewTSExtractor() })
+	RegisterExtractor("javascript", func() Extractor { return NewTSExtractor() })
 }
