@@ -4,12 +4,14 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/juanftp/mneme/internal/codegraph"
 	"github.com/juanftp/mneme/internal/config"
 	"github.com/juanftp/mneme/internal/db"
 	"github.com/juanftp/mneme/internal/embed"
+	"github.com/juanftp/mneme/internal/model"
 	"github.com/juanftp/mneme/internal/service"
 	"github.com/juanftp/mneme/internal/store"
 )
@@ -223,3 +225,129 @@ func TestMCP_CodegraphFiles(t *testing.T) {
 		t.Error("expected non-empty files list")
 	}
 }
+
+// TestMCP_MemContext_IncludesCodeGraphHint_Indexed verifies that when a codegraph
+// service has indexed data, the mem_context response includes a codegraph_hint
+// field with symbol/file counts and tool usage instructions.
+func TestMCP_MemContext_IncludesCodeGraphHint_Indexed(t *testing.T) {
+	srv := newTestServerWithCodeGraph(t)
+
+	resp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name:      "mem_context",
+		Arguments: mustMarshal(t, map[string]any{}),
+	})
+	if resp.Error != nil {
+		t.Fatalf("mem_context: code=%d message=%s", resp.Error.Code, resp.Error.Message)
+	}
+
+	var ctxResp model.ContextResponse
+	unmarshalToolText(t, resp, &ctxResp)
+
+	if ctxResp.CodeGraphHint == "" {
+		t.Fatal("expected codegraph_hint to be non-empty when cgSvc has indexed data")
+	}
+	if !strings.Contains(ctxResp.CodeGraphHint, "Code Graph (indexed)") {
+		t.Errorf("codegraph_hint should indicate indexed state, got: %s", ctxResp.CodeGraphHint)
+	}
+	if !strings.Contains(ctxResp.CodeGraphHint, "codegraph_search") {
+		t.Errorf("codegraph_hint should mention codegraph_search tool, got: %s", ctxResp.CodeGraphHint)
+	}
+}
+
+// TestMCP_MemContext_IncludesCodeGraphHint_NoCgSvc verifies that when no
+// codegraph service is available (no project slug), the mem_context response
+// includes the generic codegraph hint.
+func TestMCP_MemContext_IncludesCodeGraphHint_NoCgSvc(t *testing.T) {
+	// Use a server with no project slug to trigger the generic hint path.
+	projectDB, err := db.OpenMemory()
+	if err != nil {
+		t.Fatalf("open project db: %v", err)
+	}
+	projectDB.SetMaxOpenConns(1)
+	globalDB, err := db.OpenMemory()
+	if err != nil {
+		t.Fatalf("open global db: %v", err)
+	}
+	globalDB.SetMaxOpenConns(1)
+	t.Cleanup(func() { projectDB.Close(); globalDB.Close() })
+
+	projectStore := store.NewMemoryStore(projectDB)
+	globalStore := store.NewMemoryStore(globalDB)
+	cfg := config.Default()
+	// Empty project slug means no codegraph DB can be found.
+	svc := service.NewMemoryService(projectStore, globalStore, cfg, "", embed.NopEmbedder{})
+
+	logger := slog.Default()
+	srv := NewServer(svc, nil, logger, "all", "test")
+
+	resp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name:      "mem_context",
+		Arguments: mustMarshal(t, map[string]any{}),
+	})
+	if resp.Error != nil {
+		t.Fatalf("mem_context: code=%d message=%s", resp.Error.Code, resp.Error.Message)
+	}
+
+	var ctxResp model.ContextResponse
+	unmarshalToolText(t, resp, &ctxResp)
+
+	if ctxResp.CodeGraphHint == "" {
+		t.Fatal("expected codegraph_hint to be non-empty even without project")
+	}
+	if !strings.Contains(ctxResp.CodeGraphHint, "codegraph_search") {
+		t.Errorf("generic hint should mention codegraph_search, got: %s", ctxResp.CodeGraphHint)
+	}
+}
+
+// TestMCP_MemContext_IncludesCodeGraphHint_NotIndexed verifies that when cgSvc
+// exists but has no data (empty DB), the hint indicates indexing is needed.
+func TestMCP_MemContext_IncludesCodeGraphHint_NotIndexed(t *testing.T) {
+	// Create a server with an empty codegraph DB (no indexed data).
+	projectDB, err := db.OpenMemory()
+	if err != nil {
+		t.Fatalf("open project db: %v", err)
+	}
+	projectDB.SetMaxOpenConns(1)
+	globalDB, err := db.OpenMemory()
+	if err != nil {
+		t.Fatalf("open global db: %v", err)
+	}
+	globalDB.SetMaxOpenConns(1)
+	t.Cleanup(func() { projectDB.Close(); globalDB.Close() })
+
+	projectStore := store.NewMemoryStore(projectDB)
+	globalStore := store.NewMemoryStore(globalDB)
+	cfg := config.Default()
+	svc := service.NewMemoryService(projectStore, globalStore, cfg, "test-project", embed.NopEmbedder{})
+
+	// Empty codegraph DB — no nodes.
+	cdb, err := codegraph.OpenDB(":memory:")
+	if err != nil {
+		t.Fatalf("open codegraph db: %v", err)
+	}
+	t.Cleanup(func() { _ = cdb.Close() })
+	cgSvc := service.NewCodeGraphServiceFromDB(cdb)
+
+	logger := slog.Default()
+	srv := NewServer(svc, nil, logger, "all", "test")
+	srv.handlers.cgSvc = cgSvc
+
+	resp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name:      "mem_context",
+		Arguments: mustMarshal(t, map[string]any{}),
+	})
+	if resp.Error != nil {
+		t.Fatalf("mem_context: code=%d message=%s", resp.Error.Code, resp.Error.Message)
+	}
+
+	var ctxResp model.ContextResponse
+	unmarshalToolText(t, resp, &ctxResp)
+
+	if ctxResp.CodeGraphHint == "" {
+		t.Fatal("expected codegraph_hint to be non-empty for empty codegraph DB")
+	}
+	if !strings.Contains(ctxResp.CodeGraphHint, "not yet indexed") {
+		t.Errorf("hint should mention 'not yet indexed', got: %s", ctxResp.CodeGraphHint)
+	}
+}
+

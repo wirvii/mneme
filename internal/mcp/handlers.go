@@ -191,8 +191,70 @@ func (h *handlers) handleMemContext(ctx context.Context, raw json.RawMessage) (*
 		return nil, h.mapServiceError("mem_context", err)
 	}
 
+	// Inject codegraph availability hint so agents discover it automatically.
+	resp.CodeGraphHint = h.buildCodeGraphContextSection()
+
 	return resultFromAny(resp)
 }
+
+// buildCodeGraphContextSection returns a text hint describing codegraph tool
+// availability and current indexing status. The hint is included in every
+// mem_context response so agents automatically discover codegraph without
+// requiring manual CLAUDE.md configuration.
+func (h *handlers) buildCodeGraphContextSection() string {
+	// If cgSvc is already initialized, use it to get live stats.
+	if h.cgSvc != nil {
+		return h.buildCodeGraphHintFromService(h.cgSvc)
+	}
+
+	// Try to determine whether a codegraph DB exists for this project.
+	slug := h.svc.ProjectSlug()
+	if slug == "" {
+		return codeGraphGenericHint
+	}
+
+	cfg := h.svc.Config()
+	projectsDir := filepath.Join(cfg.Storage.DataDir, "projects")
+
+	if !service.CodeGraphDBExists(projectsDir, slug) {
+		return codeGraphNotIndexedHint
+	}
+
+	// DB file exists — open it to check stats.
+	cgSvc, rpcErr := h.getCodeGraphService()
+	if rpcErr != nil {
+		// Cannot open DB; fall back to generic hint.
+		return codeGraphNotIndexedHint
+	}
+
+	return h.buildCodeGraphHintFromService(cgSvc)
+}
+
+// buildCodeGraphHintFromService generates the codegraph hint text using a live
+// service instance to query stats.
+func (h *handlers) buildCodeGraphHintFromService(cgSvc *service.CodeGraphService) string {
+	stats, err := cgSvc.Status()
+	if err != nil || stats.NodeCount == 0 {
+		return codeGraphNotIndexedHint
+	}
+
+	return fmt.Sprintf(`Code Graph (indexed): %d symbols across %d files. `+
+		`Use codegraph_search, codegraph_context, codegraph_callers, codegraph_callees, `+
+		`codegraph_impact, codegraph_node, codegraph_explore, codegraph_trace instead of reading files. `+
+		`Re-index with codegraph_index if code changed significantly.`,
+		stats.NodeCount, stats.FileCount)
+}
+
+const codeGraphGenericHint = `Code graph tools available: codegraph_search, codegraph_context, ` +
+	`codegraph_callers, codegraph_callees, codegraph_impact, codegraph_node, codegraph_explore, ` +
+	`codegraph_trace, codegraph_status, codegraph_files. ` +
+	`Call codegraph_index with the project root path to index a codebase. ` +
+	`Prefer codegraph queries over reading entire files when exploring code structure.`
+
+const codeGraphNotIndexedHint = `Code graph available but not yet indexed for this project. ` +
+	`Run codegraph_index with the project root path to index the codebase. ` +
+	`Once indexed, use codegraph_search, codegraph_callers, codegraph_impact etc. ` +
+	`to understand code without reading files.`
 
 // handleMemUpdate processes a mem_update tool call. The arguments object must
 // contain an "id" field; all other update fields are optional.

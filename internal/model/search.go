@@ -167,6 +167,11 @@ type ContextResponse struct {
 	// response: "communities" or "flat". Useful for debugging when the config
 	// mode is "auto". Empty when the service used pre-SPEC-022 flat mode.
 	PackingMode string `json:"packing_mode,omitempty"`
+
+	// CodeGraphHint contains usage instructions about the code graph tools.
+	// Populated by the MCP handler (not the service) so agents automatically
+	// discover codegraph availability at session start. Empty when omitted.
+	CodeGraphHint string `json:"codegraph_hint,omitempty"`
 }
 
 // SessionSummary is a lightweight view of the last session's summary memory.

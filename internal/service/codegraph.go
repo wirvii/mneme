@@ -189,6 +189,15 @@ func (s *CodeGraphService) Files(pattern, language string) ([]codegraph.FileReco
 	return files, nil
 }
 
+// CodeGraphDBExists checks whether a codegraph database file exists for the
+// given project without opening it. Returns false when the file is missing or
+// inaccessible.
+func CodeGraphDBExists(projectsDir, slug string) bool {
+	path := codegraph.DBPath(projectsDir, slug)
+	_, err := os.Stat(path)
+	return err == nil
+}
+
 // resolveSymbol maps a symbol name (short or fully qualified) to its node ID.
 // Resolution order:
 //  1. Exact qualified_name match.
