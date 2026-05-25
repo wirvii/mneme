@@ -714,3 +714,166 @@ func marshalStringSlice(ss []string) (sql.NullString, error) {
 	}
 	return sql.NullString{String: string(b), Valid: true}, nil
 }
+
+// ---------------------------------------------------------------------------
+// Unresolved reference operations
+// ---------------------------------------------------------------------------
+
+// UpsertUnresolvedRef inserts an UnresolvedRef row into the unresolved_refs
+// table. It does not enforce uniqueness beyond the FK on from_node_id; callers
+// should avoid inserting identical refs. Used primarily in tests and by the
+// indexer when writing extraction results.
+func (s *Store) UpsertUnresolvedRef(ref UnresolvedRef) error {
+	const q = `
+		INSERT INTO unresolved_refs (
+			from_node_id, reference_name, reference_kind,
+			line, col, candidates, file_path, language
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+
+	_, err := s.db.DB.Exec(q,
+		ref.FromNodeID, ref.ReferenceName, string(ref.ReferenceKind),
+		ref.Line, ref.Col,
+		nullableString(ref.Candidates),
+		ref.FilePath, ref.Language,
+	)
+	if err != nil {
+		return fmt.Errorf("codegraph: store: upsert unresolved ref: %w", err)
+	}
+	return nil
+}
+
+// ListUnresolvedRefs returns all rows from the unresolved_refs table ordered by
+// id (insertion order). The list is intended for use by the Resolver to iterate
+// over pending cross-file references.
+func (s *Store) ListUnresolvedRefs() ([]UnresolvedRef, error) {
+	const q = `
+		SELECT id, from_node_id, reference_name, reference_kind,
+		       line, col, candidates, file_path, language
+		FROM unresolved_refs
+		ORDER BY id`
+
+	rows, err := s.db.DB.Query(q)
+	if err != nil {
+		return nil, fmt.Errorf("codegraph: store: list unresolved refs: %w", err)
+	}
+	defer rows.Close()
+
+	var refs []UnresolvedRef
+	for rows.Next() {
+		var ref UnresolvedRef
+		var candidates sql.NullString
+		if err := rows.Scan(
+			&ref.ID, &ref.FromNodeID, &ref.ReferenceName, &ref.ReferenceKind,
+			&ref.Line, &ref.Col, &candidates, &ref.FilePath, &ref.Language,
+		); err != nil {
+			return nil, fmt.Errorf("codegraph: store: list unresolved refs: scan: %w", err)
+		}
+		ref.Candidates = candidates.String
+		refs = append(refs, ref)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("codegraph: store: list unresolved refs: rows: %w", err)
+	}
+	return refs, nil
+}
+
+// DeleteUnresolvedRef removes the unresolved_refs row with the given id.
+// No error is returned when the id does not exist (idempotent).
+func (s *Store) DeleteUnresolvedRef(id int64) error {
+	_, err := s.db.DB.Exec(`DELETE FROM unresolved_refs WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("codegraph: store: delete unresolved ref: %w", err)
+	}
+	return nil
+}
+
+// FindNodeByQualifiedName returns the first node whose qualified_name exactly
+// matches qualifiedName. Returns nil, nil when no such node exists.
+func (s *Store) FindNodeByQualifiedName(qualifiedName string) (*Node, error) {
+	const q = `
+		SELECT id, kind, name, qualified_name, file_path, language,
+		       start_line, end_line, start_column, end_column,
+		       docstring, signature, visibility,
+		       is_exported, is_async, is_static, is_abstract,
+		       decorators, type_parameters, updated_at
+		FROM nodes
+		WHERE qualified_name = ?
+		LIMIT 1`
+
+	row := s.db.DB.QueryRow(q, qualifiedName)
+	n, err := scanNode(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("codegraph: store: find node by qualified name: %w", err)
+	}
+	return n, nil
+}
+
+// FindNodeByName returns the first node whose name field exactly matches name.
+// This is the fallback resolution strategy for references that carry only the
+// short, unqualified symbol name (e.g. "Bar" instead of "pkg.Bar").
+// Returns nil, nil when no matching node exists.
+func (s *Store) FindNodeByName(name string) (*Node, error) {
+	const q = `
+		SELECT id, kind, name, qualified_name, file_path, language,
+		       start_line, end_line, start_column, end_column,
+		       docstring, signature, visibility,
+		       is_exported, is_async, is_static, is_abstract,
+		       decorators, type_parameters, updated_at
+		FROM nodes
+		WHERE name = ?
+		LIMIT 1`
+
+	row := s.db.DB.QueryRow(q, name)
+	n, err := scanNode(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("codegraph: store: find node by name: %w", err)
+	}
+	return n, nil
+}
+
+// FindNodeBySuffix returns the first node whose qualified_name ends with
+// "." + suffix. This supports partial-qualification resolution: a reference to
+// "store.Create" will match a node with qualified_name "internal/store.Create".
+// Returns nil, nil when no matching node exists.
+func (s *Store) FindNodeBySuffix(suffix string) (*Node, error) {
+	const q = `
+		SELECT id, kind, name, qualified_name, file_path, language,
+		       start_line, end_line, start_column, end_column,
+		       docstring, signature, visibility,
+		       is_exported, is_async, is_static, is_abstract,
+		       decorators, type_parameters, updated_at
+		FROM nodes
+		WHERE qualified_name LIKE ?
+		LIMIT 1`
+
+	row := s.db.DB.QueryRow(q, "%."+suffix)
+	n, err := scanNode(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("codegraph: store: find node by suffix: %w", err)
+	}
+	return n, nil
+}
+
+// EdgeExists reports whether an edge with the given source, target, and kind
+// already exists in the edges table. Used by the Resolver to prevent creating
+// duplicate edges when Resolve is called more than once.
+func (s *Store) EdgeExists(source, target string, kind EdgeKind) (bool, error) {
+	const q = `
+		SELECT COUNT(*) FROM edges
+		WHERE source = ? AND target = ? AND kind = ?`
+
+	var count int
+	if err := s.db.DB.QueryRow(q, source, target, string(kind)).Scan(&count); err != nil {
+		return false, fmt.Errorf("codegraph: store: edge exists: %w", err)
+	}
+	return count > 0, nil
+}
