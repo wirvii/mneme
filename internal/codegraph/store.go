@@ -863,6 +863,56 @@ func (s *Store) FindNodeBySuffix(suffix string) (*Node, error) {
 	return n, nil
 }
 
+// GetNodesByFilePath returns all nodes whose file_path equals filePath and whose
+// kind is not NodeKindFile, ordered by start_line ascending. This is used by the
+// Bridge to list the symbols defined in a specific source file.
+func (s *Store) GetNodesByFilePath(filePath string) ([]Node, error) {
+	const q = `
+		SELECT id, kind, name, qualified_name, file_path, language,
+		       start_line, end_line, start_column, end_column,
+		       docstring, signature, visibility,
+		       is_exported, is_async, is_static, is_abstract,
+		       decorators, type_parameters, updated_at
+		FROM nodes
+		WHERE file_path = ? AND kind != 'file'
+		ORDER BY start_line`
+
+	rows, err := s.db.DB.Query(q, filePath)
+	if err != nil {
+		return nil, fmt.Errorf("codegraph: store: get nodes by file path: %w", err)
+	}
+	defer rows.Close()
+
+	var results []Node
+	for rows.Next() {
+		n, err := scanNodeRow(rows)
+		if err != nil {
+			return nil, fmt.Errorf("codegraph: store: get nodes by file path: scan: %w", err)
+		}
+		results = append(results, *n)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("codegraph: store: get nodes by file path: rows: %w", err)
+	}
+	return results, nil
+}
+
+// NodeExistsForPath reports whether any node in the store has file_path equal to
+// path. It is a lightweight existence check used by the Bridge to annotate memory
+// search results without loading full node data.
+func (s *Store) NodeExistsForPath(path string) (bool, error) {
+	const q = `SELECT 1 FROM nodes WHERE file_path = ? LIMIT 1`
+	var dummy int
+	err := s.db.DB.QueryRow(q, path).Scan(&dummy)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, fmt.Errorf("codegraph: store: node exists for path: %w", err)
+	}
+	return true, nil
+}
+
 // EdgeExists reports whether an edge with the given source, target, and kind
 // already exists in the edges table. Used by the Resolver to prevent creating
 // duplicate edges when Resolve is called more than once.
