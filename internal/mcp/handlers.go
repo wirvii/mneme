@@ -6,7 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path/filepath"
+	"strings"
 
+	"github.com/juanftp/mneme/internal/codegraph"
 	"github.com/juanftp/mneme/internal/model"
 	"github.com/juanftp/mneme/internal/service"
 )
@@ -17,6 +20,7 @@ import (
 type handlers struct {
 	svc    *service.MemoryService
 	sdd    *service.SDDService
+	cgSvc  *service.CodeGraphService // lazy-initialized on first codegraph tool call
 	logger *slog.Logger
 }
 
@@ -78,6 +82,29 @@ func (h *handlers) handleToolCall(ctx context.Context, params ToolCallParams) (*
 		return h.handleSpecResolve(ctx, params.Arguments)
 	case "spec_list":
 		return h.handleSpecList(ctx, params.Arguments)
+
+	// --- CODEGRAPH TOOLS ---
+	case "codegraph_search":
+		return h.handleCodegraphSearch(ctx, params.Arguments)
+	case "codegraph_context":
+		return h.handleCodegraphContext(ctx, params.Arguments)
+	case "codegraph_callers":
+		return h.handleCodegraphCallers(ctx, params.Arguments)
+	case "codegraph_callees":
+		return h.handleCodegraphCallees(ctx, params.Arguments)
+	case "codegraph_impact":
+		return h.handleCodegraphImpact(ctx, params.Arguments)
+	case "codegraph_node":
+		return h.handleCodegraphNode(ctx, params.Arguments)
+	case "codegraph_explore":
+		return h.handleCodegraphExplore(ctx, params.Arguments)
+	case "codegraph_trace":
+		return h.handleCodegraphTrace(ctx, params.Arguments)
+	case "codegraph_status":
+		return h.handleCodegraphStatus(ctx, params.Arguments)
+	case "codegraph_files":
+		return h.handleCodegraphFiles(ctx, params.Arguments)
+
 	default:
 		return nil, &JSONRPCError{
 			Code:    CodeMethodNotFound,
@@ -711,4 +738,577 @@ func resultFromAny(v any) (*ToolCallResult, *JSONRPCError) {
 	return &ToolCallResult{
 		Content: []ContentBlock{{Type: "text", Text: string(b)}},
 	}, nil
+}
+
+// --- CODEGRAPH HANDLERS ---
+
+// textResult wraps a plain text string in a ToolCallResult.
+func textResult(text string) *ToolCallResult {
+	return &ToolCallResult{
+		Content: []ContentBlock{{Type: "text", Text: text}},
+	}
+}
+
+// getCodeGraphService returns the lazily initialized CodeGraphService. If not
+// already set (e.g. injected in tests), it creates one using the MemoryService's
+// project config. Returns a JSONRPCError if initialization fails.
+func (h *handlers) getCodeGraphService() (*service.CodeGraphService, *JSONRPCError) {
+	if h.cgSvc != nil {
+		return h.cgSvc, nil
+	}
+
+	cfg := h.svc.Config()
+	slug := h.svc.ProjectSlug()
+	if slug == "" {
+		return nil, &JSONRPCError{
+			Code:    CodeInternalError,
+			Message: "mcp: codegraph: no project context available",
+		}
+	}
+
+	projectsDir := filepath.Join(cfg.Storage.DataDir, "projects")
+	cgSvc, err := service.NewCodeGraphService(projectsDir, slug)
+	if err != nil {
+		return nil, &JSONRPCError{
+			Code:    CodeInternalError,
+			Message: fmt.Sprintf("mcp: codegraph: init: %v", err),
+		}
+	}
+	h.cgSvc = cgSvc
+	return h.cgSvc, nil
+}
+
+// intFromArgs extracts an integer from args, returning defaultVal when the key
+// is missing or not a number.
+func intFromArgs(args map[string]any, key string, defaultVal int) int {
+	v, ok := args[key]
+	if !ok {
+		return defaultVal
+	}
+	switch n := v.(type) {
+	case float64:
+		return int(n)
+	case int:
+		return n
+	case json.Number:
+		i, err := n.Int64()
+		if err != nil {
+			return defaultVal
+		}
+		return int(i)
+	default:
+		return defaultVal
+	}
+}
+
+// stringSliceFromArgs extracts a []string from args at the given key.
+func stringSliceFromArgs(args map[string]any, key string) []string {
+	v, ok := args[key]
+	if !ok {
+		return nil
+	}
+	arr, ok := v.([]any)
+	if !ok {
+		return nil
+	}
+	result := make([]string, 0, len(arr))
+	for _, item := range arr {
+		if s, ok := item.(string); ok {
+			result = append(result, s)
+		}
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
+// handleCodegraphSearch processes a codegraph_search tool call.
+func (h *handlers) handleCodegraphSearch(_ context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	cgSvc, rpcErr := h.getCodeGraphService()
+	if rpcErr != nil {
+		return nil, rpcErr
+	}
+
+	var args map[string]any
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return nil, &JSONRPCError{
+			Code:    CodeInvalidParams,
+			Message: fmt.Sprintf("mcp: handle codegraph_search: invalid arguments: %s", err),
+		}
+	}
+
+	query, _ := args["query"].(string)
+	if query == "" {
+		return nil, &JSONRPCError{
+			Code:    CodeInvalidParams,
+			Message: "mcp: handle codegraph_search: query is required",
+		}
+	}
+
+	limit := intFromArgs(args, "limit", 20)
+	kindStrs := stringSliceFromArgs(args, "kind")
+	languages := stringSliceFromArgs(args, "language")
+
+	var kinds []codegraph.NodeKind
+	for _, k := range kindStrs {
+		kinds = append(kinds, codegraph.NodeKind(k))
+	}
+
+	nodes, err := cgSvc.Search(query, kinds, languages, limit)
+	if err != nil {
+		return nil, &JSONRPCError{
+			Code:    CodeInternalError,
+			Message: fmt.Sprintf("mcp: handle codegraph_search: %v", err),
+		}
+	}
+
+	return textResult(formatSearchResults(nodes)), nil
+}
+
+// handleCodegraphContext processes a codegraph_context tool call.
+func (h *handlers) handleCodegraphContext(_ context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	cgSvc, rpcErr := h.getCodeGraphService()
+	if rpcErr != nil {
+		return nil, rpcErr
+	}
+
+	var args map[string]any
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return nil, &JSONRPCError{
+			Code:    CodeInvalidParams,
+			Message: fmt.Sprintf("mcp: handle codegraph_context: invalid arguments: %s", err),
+		}
+	}
+
+	symbol, _ := args["symbol"].(string)
+	if symbol == "" {
+		return nil, &JSONRPCError{
+			Code:    CodeInvalidParams,
+			Message: "mcp: handle codegraph_context: symbol is required",
+		}
+	}
+
+	depth := intFromArgs(args, "depth", 1)
+
+	// Get the node detail (without source since we don't have rootDir in context).
+	node, source, err := cgSvc.NodeDetail(symbol, "")
+	if err != nil {
+		return nil, &JSONRPCError{
+			Code:    CodeInternalError,
+			Message: fmt.Sprintf("mcp: handle codegraph_context: %v", err),
+		}
+	}
+
+	// Get callers and callees at the requested depth.
+	callers, _ := cgSvc.Callers(symbol, depth, 20)
+	callees, _ := cgSvc.Callees(symbol, depth, 20)
+
+	var sb strings.Builder
+	sb.WriteString(formatNodeDetail(node, source))
+	if len(callers) > 0 {
+		sb.WriteString("\n")
+		sb.WriteString(formatNodeList(callers, "Callers"))
+	}
+	if len(callees) > 0 {
+		sb.WriteString("\n")
+		sb.WriteString(formatNodeList(callees, "Callees"))
+	}
+
+	return textResult(sb.String()), nil
+}
+
+// handleCodegraphCallers processes a codegraph_callers tool call.
+func (h *handlers) handleCodegraphCallers(_ context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	cgSvc, rpcErr := h.getCodeGraphService()
+	if rpcErr != nil {
+		return nil, rpcErr
+	}
+
+	var args map[string]any
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return nil, &JSONRPCError{
+			Code:    CodeInvalidParams,
+			Message: fmt.Sprintf("mcp: handle codegraph_callers: invalid arguments: %s", err),
+		}
+	}
+
+	symbol, _ := args["symbol"].(string)
+	if symbol == "" {
+		return nil, &JSONRPCError{
+			Code:    CodeInvalidParams,
+			Message: "mcp: handle codegraph_callers: symbol is required",
+		}
+	}
+
+	depth := intFromArgs(args, "depth", 1)
+	limit := intFromArgs(args, "limit", 20)
+
+	nodes, err := cgSvc.Callers(symbol, depth, limit)
+	if err != nil {
+		return nil, &JSONRPCError{
+			Code:    CodeInternalError,
+			Message: fmt.Sprintf("mcp: handle codegraph_callers: %v", err),
+		}
+	}
+
+	return textResult(formatNodeList(nodes, "Callers of "+symbol)), nil
+}
+
+// handleCodegraphCallees processes a codegraph_callees tool call.
+func (h *handlers) handleCodegraphCallees(_ context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	cgSvc, rpcErr := h.getCodeGraphService()
+	if rpcErr != nil {
+		return nil, rpcErr
+	}
+
+	var args map[string]any
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return nil, &JSONRPCError{
+			Code:    CodeInvalidParams,
+			Message: fmt.Sprintf("mcp: handle codegraph_callees: invalid arguments: %s", err),
+		}
+	}
+
+	symbol, _ := args["symbol"].(string)
+	if symbol == "" {
+		return nil, &JSONRPCError{
+			Code:    CodeInvalidParams,
+			Message: "mcp: handle codegraph_callees: symbol is required",
+		}
+	}
+
+	depth := intFromArgs(args, "depth", 1)
+	limit := intFromArgs(args, "limit", 20)
+
+	nodes, err := cgSvc.Callees(symbol, depth, limit)
+	if err != nil {
+		return nil, &JSONRPCError{
+			Code:    CodeInternalError,
+			Message: fmt.Sprintf("mcp: handle codegraph_callees: %v", err),
+		}
+	}
+
+	return textResult(formatNodeList(nodes, "Callees of "+symbol)), nil
+}
+
+// handleCodegraphImpact processes a codegraph_impact tool call.
+func (h *handlers) handleCodegraphImpact(_ context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	cgSvc, rpcErr := h.getCodeGraphService()
+	if rpcErr != nil {
+		return nil, rpcErr
+	}
+
+	var args map[string]any
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return nil, &JSONRPCError{
+			Code:    CodeInvalidParams,
+			Message: fmt.Sprintf("mcp: handle codegraph_impact: invalid arguments: %s", err),
+		}
+	}
+
+	symbol, _ := args["symbol"].(string)
+	if symbol == "" {
+		return nil, &JSONRPCError{
+			Code:    CodeInvalidParams,
+			Message: "mcp: handle codegraph_impact: symbol is required",
+		}
+	}
+
+	depth := intFromArgs(args, "depth", 3)
+	limit := intFromArgs(args, "limit", 50)
+
+	nodes, err := cgSvc.Impact(symbol, depth, limit)
+	if err != nil {
+		return nil, &JSONRPCError{
+			Code:    CodeInternalError,
+			Message: fmt.Sprintf("mcp: handle codegraph_impact: %v", err),
+		}
+	}
+
+	return textResult(formatNodeList(nodes, "Impact of "+symbol)), nil
+}
+
+// handleCodegraphNode processes a codegraph_node tool call.
+func (h *handlers) handleCodegraphNode(_ context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	cgSvc, rpcErr := h.getCodeGraphService()
+	if rpcErr != nil {
+		return nil, rpcErr
+	}
+
+	var args map[string]any
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return nil, &JSONRPCError{
+			Code:    CodeInvalidParams,
+			Message: fmt.Sprintf("mcp: handle codegraph_node: invalid arguments: %s", err),
+		}
+	}
+
+	symbol, _ := args["symbol"].(string)
+	if symbol == "" {
+		return nil, &JSONRPCError{
+			Code:    CodeInvalidParams,
+			Message: "mcp: handle codegraph_node: symbol is required",
+		}
+	}
+
+	node, source, err := cgSvc.NodeDetail(symbol, "")
+	if err != nil {
+		return nil, &JSONRPCError{
+			Code:    CodeInternalError,
+			Message: fmt.Sprintf("mcp: handle codegraph_node: %v", err),
+		}
+	}
+
+	return textResult(formatNodeDetail(node, source)), nil
+}
+
+// handleCodegraphExplore processes a codegraph_explore tool call.
+func (h *handlers) handleCodegraphExplore(_ context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	cgSvc, rpcErr := h.getCodeGraphService()
+	if rpcErr != nil {
+		return nil, rpcErr
+	}
+
+	var args map[string]any
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return nil, &JSONRPCError{
+			Code:    CodeInvalidParams,
+			Message: fmt.Sprintf("mcp: handle codegraph_explore: invalid arguments: %s", err),
+		}
+	}
+
+	symbols := stringSliceFromArgs(args, "symbols")
+	if len(symbols) == 0 {
+		return nil, &JSONRPCError{
+			Code:    CodeInvalidParams,
+			Message: "mcp: handle codegraph_explore: symbols is required",
+		}
+	}
+	if len(symbols) > 10 {
+		symbols = symbols[:10]
+	}
+
+	budget := intFromArgs(args, "budget", 30000)
+
+	var sb strings.Builder
+	for _, sym := range symbols {
+		if sb.Len() >= budget {
+			break
+		}
+		node, source, err := cgSvc.NodeDetail(sym, "")
+		if err != nil {
+			fmt.Fprintf(&sb, "## %s\nError: %v\n\n", sym, err)
+			continue
+		}
+		sb.WriteString(formatNodeDetail(node, source))
+		sb.WriteString("\n")
+	}
+
+	output := sb.String()
+	if len(output) > budget {
+		output = output[:budget]
+	}
+
+	return textResult(output), nil
+}
+
+// handleCodegraphTrace processes a codegraph_trace tool call.
+func (h *handlers) handleCodegraphTrace(_ context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	cgSvc, rpcErr := h.getCodeGraphService()
+	if rpcErr != nil {
+		return nil, rpcErr
+	}
+
+	var args map[string]any
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return nil, &JSONRPCError{
+			Code:    CodeInvalidParams,
+			Message: fmt.Sprintf("mcp: handle codegraph_trace: invalid arguments: %s", err),
+		}
+	}
+
+	from, _ := args["from"].(string)
+	to, _ := args["to"].(string)
+	if from == "" || to == "" {
+		return nil, &JSONRPCError{
+			Code:    CodeInvalidParams,
+			Message: "mcp: handle codegraph_trace: from and to are required",
+		}
+	}
+
+	maxDepth := intFromArgs(args, "max_depth", 5)
+
+	nodes, edges, err := cgSvc.Trace(from, to, maxDepth)
+	if err != nil {
+		return nil, &JSONRPCError{
+			Code:    CodeInternalError,
+			Message: fmt.Sprintf("mcp: handle codegraph_trace: %v", err),
+		}
+	}
+
+	return textResult(formatTrace(nodes, edges)), nil
+}
+
+// handleCodegraphStatus processes a codegraph_status tool call.
+func (h *handlers) handleCodegraphStatus(_ context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	cgSvc, rpcErr := h.getCodeGraphService()
+	if rpcErr != nil {
+		return nil, rpcErr
+	}
+
+	stats, err := cgSvc.Status()
+	if err != nil {
+		return nil, &JSONRPCError{
+			Code:    CodeInternalError,
+			Message: fmt.Sprintf("mcp: handle codegraph_status: %v", err),
+		}
+	}
+
+	return textResult(formatStats(stats)), nil
+}
+
+// handleCodegraphFiles processes a codegraph_files tool call.
+func (h *handlers) handleCodegraphFiles(_ context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	cgSvc, rpcErr := h.getCodeGraphService()
+	if rpcErr != nil {
+		return nil, rpcErr
+	}
+
+	var args map[string]any
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &args); err != nil {
+			return nil, &JSONRPCError{
+				Code:    CodeInvalidParams,
+				Message: fmt.Sprintf("mcp: handle codegraph_files: invalid arguments: %s", err),
+			}
+		}
+	}
+
+	pattern, _ := args["pattern"].(string)
+	language, _ := args["language"].(string)
+
+	files, err := cgSvc.Files(pattern, language)
+	if err != nil {
+		return nil, &JSONRPCError{
+			Code:    CodeInternalError,
+			Message: fmt.Sprintf("mcp: handle codegraph_files: %v", err),
+		}
+	}
+
+	return textResult(formatFiles(files)), nil
+}
+
+// --- CODEGRAPH OUTPUT FORMATTERS ---
+
+// formatSearchResults formats a list of nodes as a readable text list.
+func formatSearchResults(nodes []codegraph.Node) string {
+	if len(nodes) == 0 {
+		return "No results found."
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Found %d symbol(s):\n\n", len(nodes))
+	for _, n := range nodes {
+		fmt.Fprintf(&sb, "  %s %s  (%s:%d)\n", n.Kind, n.QualifiedName, n.FilePath, n.StartLine)
+	}
+	return sb.String()
+}
+
+// formatNodeList formats a list of nodes under a title heading.
+func formatNodeList(nodes []codegraph.Node, title string) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "### %s (%d)\n", title, len(nodes))
+	if len(nodes) == 0 {
+		sb.WriteString("  (none)\n")
+		return sb.String()
+	}
+	for _, n := range nodes {
+		fmt.Fprintf(&sb, "  %s %s  %s:%d\n", n.Kind, n.QualifiedName, n.FilePath, n.StartLine)
+	}
+	return sb.String()
+}
+
+// formatNodeDetail formats a single node's full information.
+func formatNodeDetail(node *codegraph.Node, source string) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "## %s (%s)\n", node.QualifiedName, node.Kind)
+	fmt.Fprintf(&sb, "File: %s:%d-%d\n", node.FilePath, node.StartLine, node.EndLine)
+	fmt.Fprintf(&sb, "Language: %s\n", node.Language)
+	if node.Signature != "" {
+		fmt.Fprintf(&sb, "Signature: %s\n", node.Signature)
+	}
+	if node.Docstring != "" {
+		fmt.Fprintf(&sb, "Doc: %s\n", node.Docstring)
+	}
+	if node.IsExported {
+		sb.WriteString("Exported: yes\n")
+	}
+	if source != "" {
+		sb.WriteString("\n```\n")
+		sb.WriteString(source)
+		sb.WriteString("\n```\n")
+	}
+	return sb.String()
+}
+
+// formatTrace formats a call path between two symbols.
+func formatTrace(nodes []codegraph.Node, edges []codegraph.Edge) string {
+	if len(nodes) == 0 {
+		return "No path found."
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Call path (%d hops):\n\n", len(edges))
+	for i, n := range nodes {
+		if i > 0 {
+			sb.WriteString("  -> ")
+		} else {
+			sb.WriteString("  ")
+		}
+		fmt.Fprintf(&sb, "%s (%s:%d)\n", n.QualifiedName, n.FilePath, n.StartLine)
+	}
+	return sb.String()
+}
+
+// formatStats formats graph statistics as a readable table.
+func formatStats(stats *codegraph.GraphStats) string {
+	var sb strings.Builder
+	sb.WriteString("Code Graph Status\n")
+	sb.WriteString("=================\n\n")
+	fmt.Fprintf(&sb, "Nodes: %d\n", stats.NodeCount)
+	fmt.Fprintf(&sb, "Edges: %d\n", stats.EdgeCount)
+	fmt.Fprintf(&sb, "Files: %d\n", stats.FileCount)
+	fmt.Fprintf(&sb, "DB Size: %d bytes\n", stats.DBSizeBytes)
+
+	if len(stats.NodesByKind) > 0 {
+		sb.WriteString("\nNodes by kind:\n")
+		for k, v := range stats.NodesByKind {
+			fmt.Fprintf(&sb, "  %s: %d\n", k, v)
+		}
+	}
+	if len(stats.EdgesByKind) > 0 {
+		sb.WriteString("\nEdges by kind:\n")
+		for k, v := range stats.EdgesByKind {
+			fmt.Fprintf(&sb, "  %s: %d\n", k, v)
+		}
+	}
+	if len(stats.FilesByLanguage) > 0 {
+		sb.WriteString("\nFiles by language:\n")
+		for k, v := range stats.FilesByLanguage {
+			fmt.Fprintf(&sb, "  %s: %d\n", k, v)
+		}
+	}
+	return sb.String()
+}
+
+// formatFiles formats a list of file records.
+func formatFiles(files []codegraph.FileRecord) string {
+	if len(files) == 0 {
+		return "No files indexed."
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Indexed files (%d):\n\n", len(files))
+	for _, f := range files {
+		fmt.Fprintf(&sb, "  %s  [%s] %d nodes\n", f.Path, f.Language, f.NodeCount)
+	}
+	return sb.String()
 }

@@ -181,6 +181,10 @@ func TestToolsList(t *testing.T) {
 		// Graph tools
 		"mem_gaps",
 		"mem_explore",
+		// Codegraph tools
+		"codegraph_search", "codegraph_context", "codegraph_callers",
+		"codegraph_callees", "codegraph_impact", "codegraph_node",
+		"codegraph_explore", "codegraph_trace", "codegraph_status", "codegraph_files",
 	}
 	if len(result.Tools) != len(wantNames) {
 		t.Fatalf("got %d tools, want %d", len(result.Tools), len(wantNames))
