@@ -728,7 +728,10 @@ func DryRun(agent *Agent, binaryPath string) (string, error) {
 	}
 
 	if agent.DelegationHook != nil {
-		home, _ := os.UserHomeDir()
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("install: dry-run: home dir: %w", err)
+		}
 		hookPath := filepath.Join(home, ".claude", "hooks", "enforce_delegation.sh")
 		lines = append(lines, fmt.Sprintf("  [write]  Delegation hook → %s (0755)", hookPath))
 		settingsPath, patches, err := agent.DelegationHook()
