@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 
 	"github.com/spf13/cobra"
@@ -135,7 +136,7 @@ produces the same result without clobbering existing configuration.`,
 
 			if agent.DelegationHook != nil {
 				if flagReinstallHooks {
-					// Replace all existing PreToolUse entries with the new hook.
+					// Replace all existing PreToolUse entries with the new hooks.
 					settingsPath, patches, hookErr := agent.DelegationHook()
 					if hookErr != nil {
 						return hookErr
@@ -144,6 +145,23 @@ produces the same result without clobbering existing configuration.`,
 						return err
 					}
 					fmt.Fprintln(os.Stdout, "  [ok] PreToolUse hooks replaced with mneme hook pre-tool-use")
+
+					// Force-overwrite the bash delegation hook script.
+					home, homeErr := os.UserHomeDir()
+					if homeErr != nil {
+						return fmt.Errorf("install: home dir: %w", homeErr)
+					}
+					hookDir := filepath.Join(home, ".claude", "hooks")
+					action, err := install.WriteDelegationHook(hookDir, true)
+					if err != nil {
+						return err
+					}
+					fmt.Fprintf(os.Stdout, "  [ok] Delegation hook script %s\n", action)
+
+					if _, jqErr := exec.LookPath("jq"); jqErr != nil {
+						fmt.Fprintln(os.Stderr, "  [warn] jq not found in PATH; the delegation hook will fail-open until jq is installed")
+					}
+
 					fmt.Fprintln(os.Stdout, "")
 					fmt.Fprintln(os.Stdout, "Migration complete. Your hooks have been updated.")
 					fmt.Fprintln(os.Stdout, "")
@@ -162,6 +180,22 @@ produces the same result without clobbering existing configuration.`,
 						return err
 					}
 					fmt.Fprintln(os.Stdout, "  [ok] Delegation enforcement hook installed")
+
+					// Write the bash delegation hook script (skip if unchanged).
+					home, homeErr := os.UserHomeDir()
+					if homeErr != nil {
+						return fmt.Errorf("install: home dir: %w", homeErr)
+					}
+					hookDir := filepath.Join(home, ".claude", "hooks")
+					action, err := install.WriteDelegationHook(hookDir, false)
+					if err != nil {
+						return err
+					}
+					fmt.Fprintf(os.Stdout, "  [ok] Delegation hook script %s\n", action)
+
+					if _, jqErr := exec.LookPath("jq"); jqErr != nil {
+						fmt.Fprintln(os.Stderr, "  [warn] jq not found in PATH; the delegation hook will fail-open until jq is installed")
+					}
 				}
 			}
 

@@ -172,6 +172,85 @@ The hook is designed to complete in under 50ms:
 
 ---
 
+## Delegation Enforcement (bash hook)
+
+### What it does
+
+`mneme install claude-code` writes an executable bash script to
+`~/.claude/hooks/enforce_delegation.sh` and registers it as a second
+`PreToolUse` hook alongside the Go `pre-tool-use` hook. The two hooks
+complement each other:
+
+| Hook | Language | Reads | Purpose |
+|------|----------|-------|---------|
+| `mneme hook pre-tool-use` | Go | mneme DB rules | Context injection — warn/block via stored rules |
+| `enforce_delegation.sh` | Bash | stdin JSON | Hard-block orchestrator from editing source files |
+
+### Why a separate bash hook
+
+The bash hook enforces a **structural constraint** that cannot be expressed as a
+DB rule: the orchestrator (main Claude Code session) must never edit source code
+directly — it must delegate that work to a specialised subagent. The hook
+detects the difference via the `agent_id` field that Claude Code injects into
+the PreToolUse JSON payload only when a subagent fires the tool.
+
+### Agent detection
+
+Claude Code includes `"agent_id": "<uuid>"` in stdin when a tool fires inside a
+subagent (Task/Agent tool call). The hook reads this field:
+
+- **`agent_id` present** → subagent → allow (exit 0).
+- **`agent_id` absent** → orchestrator → apply whitelist check.
+
+### Whitelist (what the orchestrator _can_ touch)
+
+| Pattern | Matches |
+|---------|---------|
+| `CLAUDE.md` | Any file named `CLAUDE.md` |
+| `.claudeignore` | Root-level ignore file |
+| `**/docs/*.md` | Markdown files under any `docs/` directory |
+| `.claude/**` | Project-local Claude config directory |
+| `~/.claude/**` | Global Claude config directory (absolute path check) |
+
+### Tools intercepted
+
+- `Write`, `Edit`, `MultiEdit`, `NotebookEdit` — file path extracted from
+  `tool_input.file_path`.
+- `Bash` — redirect targets (`>`, `>>`, `2>`), `sed -i`, `perl -i`, `mv`, `cp`,
+  `rm`, `touch`, `chmod`, `chown`, `ln`, `tee`, `dd of=`, here-docs, and inline
+  Python/Node scripts with file writes.
+
+### Fail-open behaviour
+
+Any error — malformed JSON, missing `jq`, unreadable stdin — causes the hook to
+exit 0 (allow). A broken hook must never prevent the agent from working.
+
+### Runtime dependency: `jq`
+
+The hook requires `jq` for JSON parsing. macOS ships with `jq`; on Linux install
+it via the system package manager. If `jq` is absent, `mneme install claude-code`
+prints a warning to stderr:
+
+```
+  [warn] jq not found in PATH; the delegation hook will fail-open until jq is installed
+```
+
+### Installation and updates
+
+```bash
+# Install or update (no-op if content is already identical):
+mneme install claude-code
+
+# Force reinstall even when content matches (e.g. after a mneme upgrade):
+mneme install claude-code --reinstall-hooks
+```
+
+The hook script is embedded in the mneme binary. On upgrade the new version is
+distributed automatically when `mneme install claude-code` is re-run; the old
+script is backed up as `enforce_delegation.sh.bak-YYYYMMDD-HHMMSS`.
+
+---
+
 ## Legacy Hook: `mneme hook enforce-delegation` (deprecated)
 
 The legacy hook uses `DelegationConfig` in `config.toml` (static path lists)

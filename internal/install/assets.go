@@ -16,6 +16,21 @@ var builtinCommands embed.FS
 //go:embed assets/templates/*.md
 var builtinTemplates embed.FS
 
+//go:embed assets/hooks/enforce_delegation.sh
+var delegationHookScript []byte
+
+// DelegationHookContent returns the raw bytes of the embedded
+// enforce_delegation.sh bash hook. The caller is responsible for writing
+// these bytes to the desired destination with executable permissions.
+// Returns an error when the embedded script is empty (should never happen
+// in a correctly built binary).
+func DelegationHookContent() ([]byte, error) {
+	if len(delegationHookScript) == 0 {
+		return nil, fmt.Errorf("install: delegation hook script is empty")
+	}
+	return delegationHookScript, nil
+}
+
 // SpecTemplateContent returns the raw bytes of the embedded spec-template.md.
 // The caller is responsible for writing these bytes to the desired destination.
 // Returns an error when the embedded file cannot be read (should never happen
