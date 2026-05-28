@@ -281,16 +281,18 @@ check_bash_go() {
 }
 
 # _find_last_word_target: dado el índice del token de comando vigilado, busca
-# el último token de tipo "word" no-quoted antes del próximo redirect o fin.
+# el último token de tipo "word" no-quoted antes del próximo redirect, separator,
+# o fin. El separator marca el límite entre sub-comandos dentro de un BinaryCmd
+# (pipeline |, logical-and &&, logical-or ||) — nunca cruzamos ese boundary.
 _find_last_word_target() {
   local tokens_json="$1"
   local cmd_idx="$2"
   printf '%s' "$tokens_json" | jq -r "
     .tokens[($cmd_idx+1):] |
-    # detener en el primer redirect (el segmento del comando termina ahí)
+    # detener en el primer redirect o separator (boundary del sub-comando)
     . as \$arr |
-    ([ \$arr[] | .type == \"redirect\" ] | index(true)) as \$redir_idx |
-    (if \$redir_idx != null then \$arr[:(\$redir_idx)] else \$arr end) |
+    ([ \$arr[] | (.type == \"redirect\" or .type == \"separator\") ] | index(true)) as \$stop_idx |
+    (if \$stop_idx != null then \$arr[:(\$stop_idx)] else \$arr end) |
     # de ese segmento, tomar solo words no-quoted que no son flags
     map(select(.type == \"word\" and (.quoted // false) == false and (.value | startswith(\"-\") | not))) |
     last | .value // empty" 2>/dev/null
