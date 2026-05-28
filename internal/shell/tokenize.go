@@ -78,16 +78,26 @@ func Tokenize(command string) ([]Token, error) {
 	return tokens, nil
 }
 
-// tokensFromStmt extracts tokens from a single statement. It handles the most
-// common statement command type (CallExpr) as well as any attached redirects.
+// tokensFromStmt extracts tokens from a single statement. It handles CallExpr
+// (simple commands), BinaryCmd (pipelines, &&, ||), and any attached redirects.
+// Other command types (IfClause, ForClause, etc.) only contribute their
+// attached redirects — their internal statements are not walked because the
+// enforcement hook only needs to inspect simple command arguments.
 func tokensFromStmt(stmt *syntax.Stmt) []Token {
 	var tokens []Token
 
-	// Extract word tokens from the command body (CallExpr = simple command).
-	if call, ok := stmt.Cmd.(*syntax.CallExpr); ok {
-		for _, arg := range call.Args {
+	switch cmd := stmt.Cmd.(type) {
+	case *syntax.CallExpr:
+		// Simple command: extract all argument words.
+		for _, arg := range cmd.Args {
 			tokens = append(tokens, tokensFromWord(arg)...)
 		}
+	case *syntax.BinaryCmd:
+		// Pipeline or && / || compound: walk both sides recursively so
+		// commands like `echo foo | tee internal/x.go` produce tokens for
+		// both halves of the pipeline.
+		tokens = append(tokens, tokensFromStmt(cmd.X)...)
+		tokens = append(tokens, tokensFromStmt(cmd.Y)...)
 	}
 
 	// Redirects are attached to the Stmt regardless of command type.

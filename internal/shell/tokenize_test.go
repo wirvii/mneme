@@ -529,3 +529,104 @@ func TestTokenize_MultiPartDblQuotedInWord(t *testing.T) {
 		t.Errorf("expected at least one quoted token in %v", formatTokens(tokens))
 	}
 }
+
+// TestTokenize_Pipeline exercises the BinaryCmd path in tokensFromStmt.
+// A pipeline like `echo foo | tee bar` must emit tokens from both sides.
+func TestTokenize_Pipeline(t *testing.T) {
+	tokens, err := Tokenize(`echo foo | tee internal/x.go`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Expect: [word:echo, word:foo, word:tee, word:internal/x.go]
+	if len(tokens) < 4 {
+		t.Fatalf("expected at least 4 tokens from pipeline, got %d: %v", len(tokens), formatTokens(tokens))
+	}
+	values := make(map[string]bool)
+	for _, tok := range tokens {
+		values[tok.Value] = true
+	}
+	for _, want := range []string{"echo", "foo", "tee", "internal/x.go"} {
+		if !values[want] {
+			t.Errorf("expected token %q in pipeline output %v", want, formatTokens(tokens))
+		}
+	}
+}
+
+// TestTokenize_LogicalAnd exercises BinaryCmd for && chains.
+func TestTokenize_LogicalAnd(t *testing.T) {
+	tokens, err := Tokenize(`mkdir tmp && mv src.go tmp/`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(tokens) < 4 {
+		t.Fatalf("expected at least 4 tokens, got %d: %v", len(tokens), formatTokens(tokens))
+	}
+	values := make(map[string]bool)
+	for _, tok := range tokens {
+		values[tok.Value] = true
+	}
+	for _, want := range []string{"mkdir", "tmp", "mv", "src.go"} {
+		if !values[want] {
+			t.Errorf("expected token %q in && chain output %v", want, formatTokens(tokens))
+		}
+	}
+}
+
+// TestTokenize_LogicalOr exercises BinaryCmd for || chains.
+func TestTokenize_LogicalOr(t *testing.T) {
+	tokens, err := Tokenize(`rm internal/x.go || echo "fallback"`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(tokens) < 3 {
+		t.Fatalf("expected at least 3 tokens from || chain, got %d: %v", len(tokens), formatTokens(tokens))
+	}
+	values := make(map[string]bool)
+	for _, tok := range tokens {
+		values[tok.Value] = true
+	}
+	for _, want := range []string{"rm", "internal/x.go", "echo"} {
+		if !values[want] {
+			t.Errorf("expected token %q in || chain output %v", want, formatTokens(tokens))
+		}
+	}
+}
+
+// TestTokenize_PipelineAndChain exercises a combined pipeline followed by a &&
+// logical chain: A | B && C. All three commands must produce tokens.
+func TestTokenize_PipelineAndChain(t *testing.T) {
+	tokens, err := Tokenize(`echo foo | tee internal/x.go && rm internal/x.go`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(tokens) < 5 {
+		t.Fatalf("expected at least 5 tokens from A|B&&C, got %d: %v", len(tokens), formatTokens(tokens))
+	}
+	values := make(map[string]bool)
+	for _, tok := range tokens {
+		values[tok.Value] = true
+	}
+	for _, want := range []string{"echo", "foo", "tee", "internal/x.go", "rm"} {
+		if !values[want] {
+			t.Errorf("expected token %q in A|B&&C output %v", want, formatTokens(tokens))
+		}
+	}
+}
+
+// TestTokenize_CdAndRm exercises a common attack pattern: cd /tmp && rm internal/x.go.
+// Both sides of the && must be tokenised so the hook can detect rm.
+func TestTokenize_CdAndRm(t *testing.T) {
+	tokens, err := Tokenize(`cd /tmp && rm internal/x.go`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	values := make(map[string]bool)
+	for _, tok := range tokens {
+		values[tok.Value] = true
+	}
+	for _, want := range []string{"cd", "/tmp", "rm", "internal/x.go"} {
+		if !values[want] {
+			t.Errorf("expected token %q in cd&&rm output %v", want, formatTokens(tokens))
+		}
+	}
+}
