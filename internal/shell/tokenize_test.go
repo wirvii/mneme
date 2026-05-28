@@ -811,3 +811,235 @@ func TestTokenize_C4ExploitGolden(t *testing.T) {
 			formatTokens(tokens), formatTokens(want))
 	}
 }
+
+// ---- C5: compound command tests (SPEC-033 QA round 4 regressions) ----
+
+// TestTokenize_Subshell verifies that a subshell (echo content > internal/x.go)
+// emits the redirect target so the enforcement hook can block it.
+func TestTokenize_Subshell(t *testing.T) {
+	tokens, err := Tokenize(`(echo content > internal/x.go)`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	assertContainsTokens(t, tokens,
+		Token{Value: "echo", Type: TypeWord},
+		Token{Value: ">", Type: TypeRedirect},
+		Token{Value: "internal/x.go", Type: TypeRedirectTarget},
+	)
+}
+
+// TestTokenize_Block verifies that a brace block { rm internal/x.go; }
+// emits the rm command and its argument.
+func TestTokenize_Block(t *testing.T) {
+	tokens, err := Tokenize(`{ rm internal/x.go; }`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	assertContainsTokens(t, tokens,
+		Token{Value: "rm", Type: TypeWord},
+		Token{Value: "internal/x.go", Type: TypeWord},
+	)
+}
+
+// TestTokenize_IfClause verifies that the then-body of an if statement is
+// tokenized: "if true; then rm internal/x.go; fi".
+func TestTokenize_IfClause(t *testing.T) {
+	tokens, err := Tokenize(`if true; then rm internal/x.go; fi`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	assertContainsTokens(t, tokens,
+		Token{Value: "rm", Type: TypeWord},
+		Token{Value: "internal/x.go", Type: TypeWord},
+	)
+}
+
+// TestTokenize_IfElseClause verifies that both then and else branches are
+// tokenized in an if/else construct.
+func TestTokenize_IfElseClause(t *testing.T) {
+	tokens, err := Tokenize(`if false; then echo ok; else rm internal/x.go; fi`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	assertContainsTokens(t, tokens,
+		Token{Value: "rm", Type: TypeWord},
+		Token{Value: "internal/x.go", Type: TypeWord},
+	)
+}
+
+// TestTokenize_ForClause verifies that the in-list words and the do-body of
+// a for loop are tokenized: "for f in internal/x.go; do rm $f; done".
+func TestTokenize_ForClause(t *testing.T) {
+	tokens, err := Tokenize(`for f in internal/x.go; do rm $f; done`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// The in-list item "internal/x.go" must be visible.
+	assertContainsToken(t, tokens, func(tok Token) bool {
+		return tok.Type == TypeWord && tok.Value == "internal/x.go"
+	}, "expected word:internal/x.go in for-clause in-list")
+	// The rm command in the body must be visible.
+	assertContainsToken(t, tokens, func(tok Token) bool {
+		return tok.Type == TypeWord && tok.Value == "rm"
+	}, "expected word:rm in for-clause body")
+}
+
+// TestTokenize_WhileClause verifies that both condition and body of a while
+// loop are tokenized.
+func TestTokenize_WhileClause(t *testing.T) {
+	tokens, err := Tokenize(`while true; do rm internal/x.go; break; done`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	assertContainsTokens(t, tokens,
+		Token{Value: "rm", Type: TypeWord},
+		Token{Value: "internal/x.go", Type: TypeWord},
+	)
+}
+
+// TestTokenize_UntilClause verifies that the until variant of WhileClause is
+// also tokenized (WhileClause.Until == true).
+func TestTokenize_UntilClause(t *testing.T) {
+	tokens, err := Tokenize(`until false; do rm internal/x.go; done`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	assertContainsTokens(t, tokens,
+		Token{Value: "rm", Type: TypeWord},
+		Token{Value: "internal/x.go", Type: TypeWord},
+	)
+}
+
+// TestTokenize_CaseClause verifies that the body statements of each case item
+// are tokenized: "case x in x) rm internal/x.go;; esac".
+func TestTokenize_CaseClause(t *testing.T) {
+	tokens, err := Tokenize(`case x in x) rm internal/x.go;; esac`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	assertContainsTokens(t, tokens,
+		Token{Value: "rm", Type: TypeWord},
+		Token{Value: "internal/x.go", Type: TypeWord},
+	)
+}
+
+// TestTokenize_FuncDecl verifies that the function body is tokenized:
+// "f(){ rm internal/x.go; }; f".
+func TestTokenize_FuncDecl(t *testing.T) {
+	tokens, err := Tokenize(`f(){ rm internal/x.go; }; f`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	assertContainsTokens(t, tokens,
+		Token{Value: "rm", Type: TypeWord},
+		Token{Value: "internal/x.go", Type: TypeWord},
+	)
+}
+
+// TestTokenize_C5Regressions is a table-driven golden test for all 7 compound
+// command regressions reported in SPEC-033 QA round 4. Each case must produce
+// at least 2 tokens that include "rm" and "internal/x.go" (or the redirect
+// equivalent), matching the legacy awk parser's behaviour.
+func TestTokenize_C5Regressions(t *testing.T) {
+	cases := []struct {
+		name      string
+		input     string
+		wantWords []string // values that must appear as word or redirect_target tokens
+	}{
+		{
+			name:      "block",
+			input:     `{ rm internal/x.go; }`,
+			wantWords: []string{"rm", "internal/x.go"},
+		},
+		{
+			name:      "if_then",
+			input:     `if true; then rm internal/x.go; fi`,
+			wantWords: []string{"rm", "internal/x.go"},
+		},
+		{
+			name:      "for_loop",
+			input:     `for f in internal/x.go; do rm $f; done`,
+			wantWords: []string{"rm", "internal/x.go"},
+		},
+		{
+			name:      "while_loop",
+			input:     `while true; do rm internal/x.go; break; done`,
+			wantWords: []string{"rm", "internal/x.go"},
+		},
+		{
+			name:      "case",
+			input:     `case x in x) rm internal/x.go;; esac`,
+			wantWords: []string{"rm", "internal/x.go"},
+		},
+		{
+			name:      "func_decl",
+			input:     `f(){ rm internal/x.go; }; f`,
+			wantWords: []string{"rm", "internal/x.go"},
+		},
+		{
+			name:      "subshell_redirect",
+			input:     `(echo content > internal/x.go)`,
+			wantWords: []string{"echo", "internal/x.go"},
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			tokens, err := Tokenize(tc.input)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			values := make(map[string]bool, len(tokens))
+			for _, tok := range tokens {
+				values[tok.Value] = true
+			}
+			for _, want := range tc.wantWords {
+				if !values[want] {
+					t.Errorf("Tokenize(%q): expected value %q in tokens %v",
+						tc.input, want, formatTokens(tokens))
+				}
+			}
+		})
+	}
+}
+
+// TestTokenize_TimeClause verifies that a time-prefixed statement is tokenized.
+func TestTokenize_TimeClause(t *testing.T) {
+	tokens, err := Tokenize(`time rm internal/x.go`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	assertContainsTokens(t, tokens,
+		Token{Value: "rm", Type: TypeWord},
+		Token{Value: "internal/x.go", Type: TypeWord},
+	)
+}
+
+// assertContainsTokens checks that each of the expected tokens appears in got.
+func assertContainsTokens(t *testing.T, got []Token, expected ...Token) {
+	t.Helper()
+	for _, want := range expected {
+		found := false
+		for _, tok := range got {
+			if tok == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected token %v in %v", want, formatTokens(got))
+		}
+	}
+}
+
+// assertContainsToken checks that at least one token in got satisfies predicate.
+func assertContainsToken(t *testing.T, got []Token, pred func(Token) bool, msg string) {
+	t.Helper()
+	for _, tok := range got {
+		if pred(tok) {
+			return
+		}
+	}
+	t.Errorf("%s: tokens = %v", msg, formatTokens(got))
+}

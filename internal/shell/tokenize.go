@@ -7,9 +7,10 @@
 //   - Import direction: cli/ -> shell/ -> mvdan.cc/sh/v3/syntax.
 //   - No globals, no init(). All state is local to Tokenize.
 //
-// The tokenizer is intentionally not recursive: bash -c "..." and $() nodes
-// are emitted as-is so the calling bash hook can decide whether to recurse
-// (max 1 level, per D5).
+// Compound command types (if, for, while, case, function bodies, etc.) are
+// walked recursively so that protected paths inside control-flow constructs
+// are visible to enforcement hooks. bash -c "..." and $() nodes are emitted
+// as-is; the calling bash hook handles those via 1-level recursion (D5).
 package shell
 
 import (
@@ -76,25 +77,28 @@ func Tokenize(command string) ([]Token, error) {
 		return nil, fmt.Errorf("shell: parse: %w", err)
 	}
 
-	var tokens []Token
-	for i, stmt := range f.Stmts {
-		// Emit a separator before every statement except the first. Semicolons
-		// and newlines both produce separate Stmts in the AST; we normalise
-		// them to a single TypeSeparator with value ";" so that enforcement
-		// hooks know a statement boundary has been crossed.
-		if i >= 1 {
-			tokens = append(tokens, Token{Value: ";", Type: TypeSeparator})
+	return tokensFromStmtList(f.Stmts), nil
+}
+
+// tokensFromStmtList converts a slice of Stmts into a flat token list.
+// A TypeSeparator with value ";" is emitted between consecutive statements
+// so that enforcement hooks respect statement boundaries.
+func tokensFromStmtList(stmts []*syntax.Stmt) []Token {
+	var out []Token
+	for i, s := range stmts {
+		if i > 0 {
+			out = append(out, Token{Value: ";", Type: TypeSeparator})
 		}
-		tokens = append(tokens, tokensFromStmt(stmt)...)
+		out = append(out, tokensFromStmt(s)...)
 	}
-	return tokens, nil
+	return out
 }
 
 // tokensFromStmt extracts tokens from a single statement. It handles CallExpr
-// (simple commands), BinaryCmd (pipelines, &&, ||), and any attached redirects.
-// Other command types (IfClause, ForClause, etc.) only contribute their
-// attached redirects — their internal statements are not walked because the
-// enforcement hook only needs to inspect simple command arguments.
+// (simple commands), BinaryCmd (pipelines, &&, ||), and all compound command
+// types (Subshell, Block, IfClause, ForClause, WhileClause, CaseClause,
+// FuncDecl, TimeClause, CoprocClause). Any attached redirects are always
+// appended at the end regardless of command type.
 func tokensFromStmt(stmt *syntax.Stmt) []Token {
 	var tokens []Token
 
@@ -104,6 +108,7 @@ func tokensFromStmt(stmt *syntax.Stmt) []Token {
 		for _, arg := range cmd.Args {
 			tokens = append(tokens, tokensFromWord(arg)...)
 		}
+
 	case *syntax.BinaryCmd:
 		// Pipeline or && / || compound: walk both sides recursively and emit
 		// a separator token between them. The separator carries the operator
@@ -112,6 +117,71 @@ func tokensFromStmt(stmt *syntax.Stmt) []Token {
 		tokens = append(tokens, tokensFromStmt(cmd.X)...)
 		tokens = append(tokens, Token{Value: cmd.Op.String(), Type: TypeSeparator})
 		tokens = append(tokens, tokensFromStmt(cmd.Y)...)
+
+	case *syntax.Subshell:
+		// ( stmts ) — walk inner statements.
+		tokens = append(tokens, tokensFromStmtList(cmd.Stmts)...)
+
+	case *syntax.Block:
+		// { stmts; } — walk inner statements.
+		tokens = append(tokens, tokensFromStmtList(cmd.Stmts)...)
+
+	case *syntax.IfClause:
+		// if cond; then body; [elif/else ...]; fi
+		// Walk condition, then-body, and the chain of elif/else clauses.
+		tokens = append(tokens, tokensFromStmtList(cmd.Cond)...)
+		tokens = append(tokens, tokensFromStmtList(cmd.Then)...)
+		for chain := cmd.Else; chain != nil; chain = chain.Else {
+			tokens = append(tokens, Token{Value: ";", Type: TypeSeparator})
+			tokens = append(tokens, tokensFromStmtList(chain.Cond)...)
+			tokens = append(tokens, tokensFromStmtList(chain.Then)...)
+		}
+
+	case *syntax.WhileClause:
+		// while/until cond; do body; done
+		// WhileClause.Until==true means "until". Either way we walk the same fields.
+		tokens = append(tokens, tokensFromStmtList(cmd.Cond)...)
+		tokens = append(tokens, tokensFromStmtList(cmd.Do)...)
+
+	case *syntax.ForClause:
+		// for var in items; do body; done  (also handles select)
+		// Walk the item-list words (which may contain protected paths) and the body.
+		if wi, ok := cmd.Loop.(*syntax.WordIter); ok {
+			for _, item := range wi.Items {
+				tokens = append(tokens, tokensFromWord(item)...)
+			}
+		}
+		tokens = append(tokens, tokensFromStmtList(cmd.Do)...)
+
+	case *syntax.CaseClause:
+		// case word in pattern) stmts;; esac
+		// Walk the discriminant word and each item's statement list.
+		tokens = append(tokens, tokensFromWord(cmd.Word)...)
+		for _, item := range cmd.Items {
+			tokens = append(tokens, tokensFromStmtList(item.Stmts)...)
+		}
+
+	case *syntax.FuncDecl:
+		// f() { body; }  — walk the function body statement.
+		if cmd.Body != nil {
+			tokens = append(tokens, tokensFromStmt(cmd.Body)...)
+		}
+
+	case *syntax.TimeClause:
+		// time stmt — walk the timed statement if present.
+		if cmd.Stmt != nil {
+			tokens = append(tokens, tokensFromStmt(cmd.Stmt)...)
+		}
+
+	case *syntax.CoprocClause:
+		// coproc [name] stmt — walk the coprocess statement.
+		if cmd.Stmt != nil {
+			tokens = append(tokens, tokensFromStmt(cmd.Stmt)...)
+		}
+
+		// *syntax.TestClause, *syntax.LetClause, *syntax.DeclClause:
+		// These contain arithmetic/test expressions or variable assignments,
+		// not command lists that could reference protected paths. Skip.
 	}
 
 	// Redirects are attached to the Stmt regardless of command type.
