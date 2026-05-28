@@ -77,7 +77,14 @@ func Tokenize(command string) ([]Token, error) {
 	}
 
 	var tokens []Token
-	for _, stmt := range f.Stmts {
+	for i, stmt := range f.Stmts {
+		// Emit a separator before every statement except the first. Semicolons
+		// and newlines both produce separate Stmts in the AST; we normalise
+		// them to a single TypeSeparator with value ";" so that enforcement
+		// hooks know a statement boundary has been crossed.
+		if i >= 1 {
+			tokens = append(tokens, Token{Value: ";", Type: TypeSeparator})
+		}
 		tokens = append(tokens, tokensFromStmt(stmt)...)
 	}
 	return tokens, nil

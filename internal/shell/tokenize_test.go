@@ -188,6 +188,7 @@ var edgeCases = []tokenCase{
 		want: []Token{
 			{Value: "echo", Type: TypeWord},
 			{Value: "hello", Type: TypeWord},
+			{Value: ";", Type: TypeSeparator},
 			{Value: "rm", Type: TypeWord},
 			{Value: "/tmp/x", Type: TypeWord},
 		},
@@ -740,6 +741,73 @@ func TestTokenize_BoundaryBleedFix(t *testing.T) {
 	}
 	if !tokensEqual(tokens, want) {
 		t.Errorf("Tokenize boundary bleed golden\n  got:  %v\n  want: %v",
+			formatTokens(tokens), formatTokens(want))
+	}
+}
+
+// TestTokenize_SemicolonSeparator verifies that semicolon-separated top-level
+// statements emit a TypeSeparator token with value ";" between them.
+// This prevents enforcement hooks from crossing the boundary.
+func TestTokenize_SemicolonSeparator(t *testing.T) {
+	tokens, err := Tokenize(`rm /tmp/a ; echo b`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Golden: [word:rm, word:/tmp/a, separator:;, word:echo, word:b]
+	want := []Token{
+		{Value: "rm", Type: TypeWord},
+		{Value: "/tmp/a", Type: TypeWord},
+		{Value: ";", Type: TypeSeparator},
+		{Value: "echo", Type: TypeWord},
+		{Value: "b", Type: TypeWord},
+	}
+	if !tokensEqual(tokens, want) {
+		t.Errorf("Tokenize semicolon separator golden\n  got:  %v\n  want: %v",
+			formatTokens(tokens), formatTokens(want))
+	}
+}
+
+// TestTokenize_NewlineSeparator verifies that newline-separated top-level
+// statements emit a TypeSeparator token with value ";" between them.
+func TestTokenize_NewlineSeparator(t *testing.T) {
+	tokens, err := Tokenize("rm /tmp/a\necho b")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Golden: [word:rm, word:/tmp/a, separator:;, word:echo, word:b]
+	want := []Token{
+		{Value: "rm", Type: TypeWord},
+		{Value: "/tmp/a", Type: TypeWord},
+		{Value: ";", Type: TypeSeparator},
+		{Value: "echo", Type: TypeWord},
+		{Value: "b", Type: TypeWord},
+	}
+	if !tokensEqual(tokens, want) {
+		t.Errorf("Tokenize newline separator golden\n  got:  %v\n  want: %v",
+			formatTokens(tokens), formatTokens(want))
+	}
+}
+
+// TestTokenize_C4ExploitGolden is the exact golden test for the C4 security
+// bypass reported in QA round 3. "rm internal/x.go ; echo CLAUDE.md" must
+// produce a separator token between the two statements so that
+// _find_last_word_target stops at the boundary and returns internal/x.go
+// (blocked) rather than CLAUDE.md (whitelisted).
+func TestTokenize_C4ExploitGolden(t *testing.T) {
+	tokens, err := Tokenize(`rm internal/x.go ; echo CLAUDE.md`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Golden: [word:rm, word:internal/x.go, separator:;, word:echo, word:CLAUDE.md]
+	want := []Token{
+		{Value: "rm", Type: TypeWord},
+		{Value: "internal/x.go", Type: TypeWord},
+		{Value: ";", Type: TypeSeparator},
+		{Value: "echo", Type: TypeWord},
+		{Value: "CLAUDE.md", Type: TypeWord},
+	}
+	if !tokensEqual(tokens, want) {
+		t.Errorf("Tokenize C4 exploit golden\n  got:  %v\n  want: %v",
 			formatTokens(tokens), formatTokens(want))
 	}
 }
