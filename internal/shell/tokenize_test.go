@@ -531,15 +531,26 @@ func TestTokenize_MultiPartDblQuotedInWord(t *testing.T) {
 }
 
 // TestTokenize_Pipeline exercises the BinaryCmd path in tokensFromStmt.
-// A pipeline like `echo foo | tee bar` must emit tokens from both sides.
+// A pipeline like `echo foo | tee bar` must emit tokens from both sides
+// separated by a separator token carrying the "|" operator.
 func TestTokenize_Pipeline(t *testing.T) {
 	tokens, err := Tokenize(`echo foo | tee internal/x.go`)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// Expect: [word:echo, word:foo, word:tee, word:internal/x.go]
-	if len(tokens) < 4 {
-		t.Fatalf("expected at least 4 tokens from pipeline, got %d: %v", len(tokens), formatTokens(tokens))
+	// Expect: [word:echo, word:foo, separator:|, word:tee, word:internal/x.go]
+	if len(tokens) < 5 {
+		t.Fatalf("expected at least 5 tokens from pipeline, got %d: %v", len(tokens), formatTokens(tokens))
+	}
+	// Verify separator is present with correct operator.
+	foundSep := false
+	for _, tok := range tokens {
+		if tok.Type == TypeSeparator && tok.Value == "|" {
+			foundSep = true
+		}
+	}
+	if !foundSep {
+		t.Errorf("expected separator:| in pipeline output %v", formatTokens(tokens))
 	}
 	values := make(map[string]bool)
 	for _, tok := range tokens {
@@ -553,13 +564,24 @@ func TestTokenize_Pipeline(t *testing.T) {
 }
 
 // TestTokenize_LogicalAnd exercises BinaryCmd for && chains.
+// A separator token with value "&&" must appear between the two sides.
 func TestTokenize_LogicalAnd(t *testing.T) {
 	tokens, err := Tokenize(`mkdir tmp && mv src.go tmp/`)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(tokens) < 4 {
-		t.Fatalf("expected at least 4 tokens, got %d: %v", len(tokens), formatTokens(tokens))
+	// Expect: [word:mkdir, word:tmp, separator:&&, word:mv, word:src.go, word:tmp/]
+	if len(tokens) < 5 {
+		t.Fatalf("expected at least 5 tokens, got %d: %v", len(tokens), formatTokens(tokens))
+	}
+	foundSep := false
+	for _, tok := range tokens {
+		if tok.Type == TypeSeparator && tok.Value == "&&" {
+			foundSep = true
+		}
+	}
+	if !foundSep {
+		t.Errorf("expected separator:&& in output %v", formatTokens(tokens))
 	}
 	values := make(map[string]bool)
 	for _, tok := range tokens {
@@ -573,13 +595,24 @@ func TestTokenize_LogicalAnd(t *testing.T) {
 }
 
 // TestTokenize_LogicalOr exercises BinaryCmd for || chains.
+// A separator token with value "||" must appear between the two sides.
 func TestTokenize_LogicalOr(t *testing.T) {
 	tokens, err := Tokenize(`rm internal/x.go || echo "fallback"`)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(tokens) < 3 {
-		t.Fatalf("expected at least 3 tokens from || chain, got %d: %v", len(tokens), formatTokens(tokens))
+	// Expect: [word:rm, word:internal/x.go, separator:||, word:echo, word(quoted):fallback]
+	if len(tokens) < 4 {
+		t.Fatalf("expected at least 4 tokens from || chain, got %d: %v", len(tokens), formatTokens(tokens))
+	}
+	foundSep := false
+	for _, tok := range tokens {
+		if tok.Type == TypeSeparator && tok.Value == "||" {
+			foundSep = true
+		}
+	}
+	if !foundSep {
+		t.Errorf("expected separator:|| in output %v", formatTokens(tokens))
 	}
 	values := make(map[string]bool)
 	for _, tok := range tokens {
@@ -593,14 +626,25 @@ func TestTokenize_LogicalOr(t *testing.T) {
 }
 
 // TestTokenize_PipelineAndChain exercises a combined pipeline followed by a &&
-// logical chain: A | B && C. All three commands must produce tokens.
+// logical chain: A | B && C. Two separator tokens must appear.
 func TestTokenize_PipelineAndChain(t *testing.T) {
 	tokens, err := Tokenize(`echo foo | tee internal/x.go && rm internal/x.go`)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(tokens) < 5 {
-		t.Fatalf("expected at least 5 tokens from A|B&&C, got %d: %v", len(tokens), formatTokens(tokens))
+	// Expect separators: | between A and B, && between (A|B) and C.
+	// Total: word:echo, word:foo, sep:|, word:tee, word:internal/x.go, sep:&&, word:rm, word:internal/x.go
+	if len(tokens) < 7 {
+		t.Fatalf("expected at least 7 tokens from A|B&&C, got %d: %v", len(tokens), formatTokens(tokens))
+	}
+	var seps []string
+	for _, tok := range tokens {
+		if tok.Type == TypeSeparator {
+			seps = append(seps, tok.Value)
+		}
+	}
+	if len(seps) < 2 {
+		t.Errorf("expected at least 2 separator tokens in A|B&&C, got %v: %v", seps, formatTokens(tokens))
 	}
 	values := make(map[string]bool)
 	for _, tok := range tokens {
@@ -614,11 +658,24 @@ func TestTokenize_PipelineAndChain(t *testing.T) {
 }
 
 // TestTokenize_CdAndRm exercises a common attack pattern: cd /tmp && rm internal/x.go.
-// Both sides of the && must be tokenised so the hook can detect rm.
+// Both sides of the && must be tokenised and a separator token must appear between them.
 func TestTokenize_CdAndRm(t *testing.T) {
 	tokens, err := Tokenize(`cd /tmp && rm internal/x.go`)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	// Expect: [word:cd, word:/tmp, separator:&&, word:rm, word:internal/x.go]
+	if len(tokens) < 5 {
+		t.Fatalf("expected at least 5 tokens, got %d: %v", len(tokens), formatTokens(tokens))
+	}
+	foundSep := false
+	for _, tok := range tokens {
+		if tok.Type == TypeSeparator && tok.Value == "&&" {
+			foundSep = true
+		}
+	}
+	if !foundSep {
+		t.Errorf("expected separator:&& in cd&&rm output %v", formatTokens(tokens))
 	}
 	values := make(map[string]bool)
 	for _, tok := range tokens {
@@ -628,5 +685,61 @@ func TestTokenize_CdAndRm(t *testing.T) {
 		if !values[want] {
 			t.Errorf("expected token %q in cd&&rm output %v", want, formatTokens(tokens))
 		}
+	}
+}
+
+// TestTokenize_SeparatorOperators is a table-driven test that verifies separator
+// tokens are emitted with the correct operator value for |, &&, and || chains.
+func TestTokenize_SeparatorOperators(t *testing.T) {
+	cases := []struct {
+		name    string
+		input   string
+		wantSep string
+	}{
+		{name: "pipe", input: "A | B", wantSep: "|"},
+		{name: "and", input: "A && B", wantSep: "&&"},
+		{name: "or", input: "A || B", wantSep: "||"},
+		{name: "pipe_and", input: "A | B && C", wantSep: "&&"},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			tokens, err := Tokenize(tc.input)
+			if err != nil {
+				t.Fatalf("unexpected error for %q: %v", tc.input, err)
+			}
+			found := false
+			for _, tok := range tokens {
+				if tok.Type == TypeSeparator && tok.Value == tc.wantSep {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("Tokenize(%q): expected separator:%q in %v", tc.input, tc.wantSep, formatTokens(tokens))
+			}
+		})
+	}
+}
+
+// TestTokenize_BoundaryBleedFix is the golden test for the boundary-bleed exploit
+// fixed in SPEC-033 round 3. The token list for "rm internal/x.go && echo CLAUDE.md"
+// must contain a separator token between the rm segment and the echo segment,
+// preventing _find_last_word_target from crossing the boundary.
+func TestTokenize_BoundaryBleedFix(t *testing.T) {
+	tokens, err := Tokenize(`rm internal/x.go && echo CLAUDE.md`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Golden: [word:rm, word:internal/x.go, separator:&&, word:echo, word:CLAUDE.md]
+	want := []Token{
+		{Value: "rm", Type: TypeWord},
+		{Value: "internal/x.go", Type: TypeWord},
+		{Value: "&&", Type: TypeSeparator},
+		{Value: "echo", Type: TypeWord},
+		{Value: "CLAUDE.md", Type: TypeWord},
+	}
+	if !tokensEqual(tokens, want) {
+		t.Errorf("Tokenize boundary bleed golden\n  got:  %v\n  want: %v",
+			formatTokens(tokens), formatTokens(want))
 	}
 }

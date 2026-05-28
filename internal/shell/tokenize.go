@@ -34,6 +34,11 @@ const (
 	TypeHeredocBody TokenType = "heredoc_body"
 	// TypeCommandSubstitution is the command text inside $(...) or backticks.
 	TypeCommandSubstitution TokenType = "command_substitution"
+	// TypeSeparator marks the boundary between two sub-commands in a BinaryCmd
+	// (pipeline |, logical-and &&, or logical-or ||). It prevents enforcement
+	// hooks from crossing statement boundaries when scanning for the target of a
+	// destructive command. Value holds the operator string ("|", "&&", "||").
+	TypeSeparator TokenType = "separator"
 )
 
 // Token is a single element extracted from a shell command string.
@@ -93,10 +98,12 @@ func tokensFromStmt(stmt *syntax.Stmt) []Token {
 			tokens = append(tokens, tokensFromWord(arg)...)
 		}
 	case *syntax.BinaryCmd:
-		// Pipeline or && / || compound: walk both sides recursively so
-		// commands like `echo foo | tee internal/x.go` produce tokens for
-		// both halves of the pipeline.
+		// Pipeline or && / || compound: walk both sides recursively and emit
+		// a separator token between them. The separator carries the operator
+		// string ("|", "&&", "||") so that enforcement hooks can stop at the
+		// boundary and never cross into the next sub-command's arguments.
 		tokens = append(tokens, tokensFromStmt(cmd.X)...)
+		tokens = append(tokens, Token{Value: cmd.Op.String(), Type: TypeSeparator})
 		tokens = append(tokens, tokensFromStmt(cmd.Y)...)
 	}
 
