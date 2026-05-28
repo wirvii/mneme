@@ -134,13 +134,18 @@ check_file_tool() {
 # 7. Checker para Bash — versión robusta usando mneme hook tokenize
 # ---------------------------------------------------------------------------
 
+# BASH_C_DEPTH tracks recursive depth for "bash/sh/zsh -c <cmd>" detection.
+# D5 (SPEC-033): recurse at most 1 level into the inner command string.
+BASH_C_DEPTH=0
+
 # check_bash_go: tokeniza el comando con 'mneme hook tokenize' y aplica las
 # mismas reglas de matching sobre los tokens estructurados.
 #
 # Reglas de matching:
 #   - type=redirect_target → validar path contra whitelist (excepto /dev/*)
 #   - type=word && !quoted && value in comandos_vigilados → buscar target
-#   - type=command_substitution → re-tokenize 1 nivel (bash -c / $() recursion)
+#   - type=word && !quoted && value in (bash|sh|zsh) && next==-c → recurse 1 nivel
+#   - type=command_substitution → re-tokenize 1 nivel ($() recursion)
 #   - type=heredoc_body → skip (no es un comando)
 #
 # Comandos vigilados: tee mv cp rm rmdir touch chmod chown ln install patch truncate
@@ -177,6 +182,21 @@ check_bash_go() {
         ;;
       word)
         if [[ "$tok_quoted" == "false" ]]; then
+          # Detectar bash/sh/zsh -c <cmd> y recursar 1 nivel (D5, SPEC-033).
+          case "$tok_value" in
+            bash|sh|zsh)
+              local next_val next_cmd
+              next_val="$(printf '%s' "$tokens_json" | jq -r ".tokens[$((i+1))].value // empty" 2>/dev/null)"
+              if [[ "$next_val" == "-c" ]]; then
+                next_cmd="$(printf '%s' "$tokens_json" | jq -r ".tokens[$((i+2))].value // empty" 2>/dev/null)"
+                if [[ -n "$next_cmd" && "$BASH_C_DEPTH" -lt 1 ]]; then
+                  BASH_C_DEPTH=$((BASH_C_DEPTH+1))
+                  check_bash_go "$next_cmd"
+                  BASH_C_DEPTH=$((BASH_C_DEPTH-1))
+                fi
+              fi
+              ;;
+          esac
           # Verificar si es un comando vigilado como primer token del segmento
           case "$tok_value" in
             tee|mv|cp|rm|rmdir|touch|chmod|chown|ln|install|patch|truncate)
