@@ -875,3 +875,209 @@ func assertHookCount(t *testing.T, hooks map[string]any, event, command string, 
 		t.Errorf("hooks[%q] contains %q %d time(s), want %d", event, command, count, n)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Delegation hook tests (SPEC-032)
+// ---------------------------------------------------------------------------
+
+// TestDelegationHookContent_ValidBash verifies that the embedded hook asset is
+// non-empty, starts with the expected shebang, and contains the key functions
+// that make the hook work: is_allowed_path and agent_id detection.
+func TestDelegationHookContent_ValidBash(t *testing.T) {
+	content, err := DelegationHookContent()
+	if err != nil {
+		t.Fatalf("DelegationHookContent returned error: %v", err)
+	}
+	if len(content) == 0 {
+		t.Fatal("DelegationHookContent returned empty bytes")
+	}
+	text := string(content)
+	if !strings.HasPrefix(text, "#!/usr/bin/env bash") {
+		t.Errorf("hook script shebang mismatch: first line = %q", strings.SplitN(text, "\n", 2)[0])
+	}
+	for _, marker := range []string{"is_allowed_path", "agent_id"} {
+		if !strings.Contains(text, marker) {
+			t.Errorf("hook script is missing expected marker: %q", marker)
+		}
+	}
+}
+
+// TestWriteDelegationHook_NewFile verifies that WriteDelegationHook creates the
+// hook file with executable permissions (0755) and returns action="created"
+// when the destination does not yet exist.
+func TestWriteDelegationHook_NewFile(t *testing.T) {
+	dir := t.TempDir()
+
+	action, err := WriteDelegationHook(dir, false)
+	if err != nil {
+		t.Fatalf("WriteDelegationHook error: %v", err)
+	}
+	if action != "created" {
+		t.Errorf("action = %q, want created", action)
+	}
+
+	dest := filepath.Join(dir, "enforce_delegation.sh")
+	info, err := os.Stat(dest)
+	if err != nil {
+		t.Fatalf("stat hook file: %v", err)
+	}
+	if info.Mode().Perm() != 0o755 {
+		t.Errorf("file permissions = %o, want 0755", info.Mode().Perm())
+	}
+}
+
+// TestWriteDelegationHook_IdenticalSkip verifies that writing the hook twice
+// (without force) returns action="unchanged" and does not create a backup file.
+func TestWriteDelegationHook_IdenticalSkip(t *testing.T) {
+	dir := t.TempDir()
+
+	// First write.
+	if _, err := WriteDelegationHook(dir, false); err != nil {
+		t.Fatalf("first WriteDelegationHook error: %v", err)
+	}
+
+	// Second write — same content, force=false.
+	action, err := WriteDelegationHook(dir, false)
+	if err != nil {
+		t.Fatalf("second WriteDelegationHook error: %v", err)
+	}
+	if action != "unchanged" {
+		t.Errorf("action = %q, want unchanged", action)
+	}
+
+	// No backup file should exist.
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if strings.Contains(e.Name(), ".bak-") {
+			t.Errorf("unexpected backup file created: %s", e.Name())
+		}
+	}
+}
+
+// TestWriteDelegationHook_DifferentBackup verifies that when the destination
+// file has different content, a .bak-YYYYMMDD-HHMMSS backup is created and the
+// file is overwritten with the asset, returning action="updated".
+func TestWriteDelegationHook_DifferentBackup(t *testing.T) {
+	dir := t.TempDir()
+	dest := filepath.Join(dir, "enforce_delegation.sh")
+
+	// Pre-populate with different content.
+	if err := os.WriteFile(dest, []byte("#!/bin/bash\n# old version\n"), 0o755); err != nil {
+		t.Fatalf("write initial hook: %v", err)
+	}
+
+	action, err := WriteDelegationHook(dir, false)
+	if err != nil {
+		t.Fatalf("WriteDelegationHook error: %v", err)
+	}
+	if action != "updated" {
+		t.Errorf("action = %q, want updated", action)
+	}
+
+	// Exactly one .bak-* file must exist.
+	entries, _ := os.ReadDir(dir)
+	backups := 0
+	for _, e := range entries {
+		if strings.Contains(e.Name(), ".bak-") {
+			backups++
+		}
+	}
+	if backups != 1 {
+		t.Errorf("expected 1 backup file, got %d", backups)
+	}
+
+	// The hook file must now contain the embedded asset.
+	written, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatalf("read written hook: %v", err)
+	}
+	expected, _ := DelegationHookContent()
+	if string(written) != string(expected) {
+		t.Error("written hook content does not match the embedded asset")
+	}
+}
+
+// TestWriteDelegationHook_ForceReinstall verifies that force=true causes the
+// hook to be rewritten even when the content is already identical, returning
+// action="reinstalled".
+func TestWriteDelegationHook_ForceReinstall(t *testing.T) {
+	dir := t.TempDir()
+
+	// Write the hook once so it is already identical to the asset.
+	if _, err := WriteDelegationHook(dir, false); err != nil {
+		t.Fatalf("first WriteDelegationHook error: %v", err)
+	}
+
+	action, err := WriteDelegationHook(dir, true)
+	if err != nil {
+		t.Fatalf("force WriteDelegationHook error: %v", err)
+	}
+	if action != "reinstalled" {
+		t.Errorf("action = %q, want reinstalled", action)
+	}
+}
+
+// TestClaudeCode_DelegationHook_IncludesBashHook verifies that DelegationHook
+// returns exactly 2 PreToolUse patches: the mneme Go hook and the bash script.
+func TestClaudeCode_DelegationHook_IncludesBashHook(t *testing.T) {
+	agent := ClaudeCode("/usr/local/bin/mneme")
+
+	_, patches, err := agent.DelegationHook()
+	if err != nil {
+		t.Fatalf("DelegationHook error: %v", err)
+	}
+	if len(patches) != 2 {
+		t.Fatalf("expected 2 patches, got %d", len(patches))
+	}
+
+	// Both must target PreToolUse.
+	for i, p := range patches {
+		if p.Event != "PreToolUse" {
+			t.Errorf("patches[%d].Event = %q, want PreToolUse", i, p.Event)
+		}
+	}
+
+	// First patch must be the Go hook.
+	if patches[0].Command != "mneme hook pre-tool-use" {
+		t.Errorf("patches[0].Command = %q, want mneme hook pre-tool-use", patches[0].Command)
+	}
+
+	// Second patch must be the bash hook path.
+	if !strings.HasSuffix(patches[1].Command, "enforce_delegation.sh") {
+		t.Errorf("patches[1].Command = %q, expected path ending with enforce_delegation.sh", patches[1].Command)
+	}
+}
+
+// TestPatchSettings_DelegationBashIdempotent verifies that applying the
+// delegation hook patches twice does not duplicate the bash hook entry.
+func TestPatchSettings_DelegationBashIdempotent(t *testing.T) {
+	dir := t.TempDir()
+	settingsPath := filepath.Join(dir, "settings.json")
+
+	patches := []HookPatch{
+		{Event: "PreToolUse", Command: "mneme hook pre-tool-use"},
+		{Event: "PreToolUse", Command: "/home/user/.claude/hooks/enforce_delegation.sh"},
+	}
+
+	// Apply twice.
+	if err := patchSettingsFile(settingsPath, patches); err != nil {
+		t.Fatalf("first patchSettingsFile error: %v", err)
+	}
+	if err := patchSettingsFile(settingsPath, patches); err != nil {
+		t.Fatalf("second patchSettingsFile error: %v", err)
+	}
+
+	data, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("read settings: %v", err)
+	}
+	var settings map[string]any
+	if err := json.Unmarshal(data, &settings); err != nil {
+		t.Fatalf("unmarshal settings: %v", err)
+	}
+	hooks := settings["hooks"].(map[string]any)
+
+	// Each command must appear exactly once.
+	assertHookCount(t, hooks, "PreToolUse", "mneme hook pre-tool-use", 1)
+	assertHookCount(t, hooks, "PreToolUse", "/home/user/.claude/hooks/enforce_delegation.sh", 1)
+}
