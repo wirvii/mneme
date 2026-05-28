@@ -220,6 +220,70 @@ subagent (Task/Agent tool call). The hook reads this field:
   `rm`, `touch`, `chmod`, `chown`, `ln`, `tee`, `dd of=`, here-docs, and inline
   Python/Node scripts with file writes.
 
+### Shell command tokenizer (added in v1.3.0)
+
+The hook uses `mneme hook tokenize` as its shell command parser. This subcommand
+uses a real bash AST parser (`mvdan.cc/sh/v3`) to tokenize commands into
+structured tokens, eliminating false positives caused by quoted arguments or
+heredoc content.
+
+**Examples fixed by the Go tokenizer:**
+
+| Command | Old parser (awk) | New parser (Go) |
+|---------|-----------------|-----------------|
+| `gh pr create --title "feat(install): X"` | BLOCK (install in title) | ALLOW (quoted) |
+| `echo "rm /tmp"` | BLOCK (rm in quoted arg) | ALLOW (quoted) |
+| `echo content > docs/test.md` | BLOCK or ALLOW (fragile) | ALLOW (whitelisted target) |
+| `rmdir .claude/tmp 2>/dev/null` | Fragile | ALLOW (correct redirect handling) |
+
+**Token types:**
+
+| Type | Description | Hook action |
+|------|-------------|-------------|
+| `word` | Command name or argument | Check if it is a dangerous command (only when `quoted: false`) |
+| `redirect` | Redirect operator (`>`, `>>`, `2>`, etc.) | Emit; next token is the target |
+| `redirect_target` | File path after a redirect | Validate against whitelist |
+| `heredoc_body` | Content of a `<<EOF` block | **Skip entirely** — not a command |
+| `command_substitution` | Content of `$(...)` | Re-tokenize 1 level |
+
+#### `mneme hook tokenize`
+
+```bash
+# Usage: read a shell command from stdin, emit JSON tokens to stdout
+printf 'rm $(date +%s).txt' | mneme hook tokenize
+```
+
+Output:
+```json
+{"tokens":[
+  {"value":"rm","type":"word"},
+  {"value":"date +%s","type":"command_substitution"},
+  {"value":".txt","type":"word"}
+]}
+```
+
+The `quoted` field (omitted when false) indicates the token came from a
+single- or double-quoted string and must not be treated as an executable command.
+
+#### Fallback to legacy parser
+
+At startup the hook probes for the Go tokenizer:
+
+```bash
+printf '' | mneme hook tokenize >/dev/null 2>&1
+```
+
+- **Succeeds (exit 0)** → `USE_GO_TOKENIZER=1` — use Go tokenizer.
+- **Fails (exit 1, e.g. old binary without tokenize)** → `USE_GO_TOKENIZER=0` —
+  fall back to the original awk/regex parser with a warning to stderr:
+
+```
+[enforce_delegation] WARNING: mneme hook tokenize not available, using legacy parser (may produce false positives)
+```
+
+The legacy parser (`check_bash_legacy`) is preserved unchanged so the hook
+continues to work after `mneme upgrade` if the binary has not been replaced yet.
+
 ### Fail-open behaviour
 
 Any error — malformed JSON, missing `jq`, unreadable stdin — causes the hook to
