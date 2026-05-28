@@ -19,6 +19,7 @@ import (
 	"github.com/juanftp/mneme/internal/model"
 	"github.com/juanftp/mneme/internal/project"
 	"github.com/juanftp/mneme/internal/rules"
+	"github.com/juanftp/mneme/internal/shell"
 )
 
 // newHookCmd returns the "mneme hook" subcommand. Hook handlers are invoked by
@@ -33,6 +34,8 @@ import (
 //   - pre-tool-use: evaluates active rules against the current tool invocation
 //     (stdin JSON) and emits markdown to stdout; exits with code 2 to block
 //   - enforce-delegation: legacy config-based delegation enforcement (deprecated)
+//   - tokenize: parse a shell command from stdin and write structured JSON tokens
+//     to stdout; used by enforce_delegation.sh as a robust tokenizer backend
 func newHookCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "hook <event>",
@@ -45,7 +48,8 @@ Events:
   session-start     Load and print project context for the agent to consume
   session-end       Print a reminder for the agent to call mem_session_end
   pre-tool-use      Evaluate rules against the current tool invocation (PreToolUse hook)
-  enforce-delegation  Legacy config-based delegation enforcement (deprecated)`,
+  enforce-delegation  Legacy config-based delegation enforcement (deprecated)
+  tokenize          Parse a shell command from stdin and emit structured JSON tokens`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			event := args[0]
@@ -58,8 +62,10 @@ Events:
 				return runHookPreToolUse(os.Stdin, os.Stdout, os.Stderr)
 			case "enforce-delegation":
 				return runHookEnforceDelegation()
+			case "tokenize":
+				return runHookTokenize(os.Stdin, os.Stdout)
 			default:
-				return fmt.Errorf("hook: unknown event %q — supported events: session-start, session-end, pre-tool-use, enforce-delegation", event)
+				return fmt.Errorf("hook: unknown event %q — supported events: session-start, session-end, pre-tool-use, enforce-delegation, tokenize", event)
 			}
 		},
 	}
@@ -210,6 +216,57 @@ func printContextHook(w io.Writer, resp *model.ContextResponse) {
 	}
 
 	fmt.Fprintf(w, "<!-- mneme:context:end -->\n")
+}
+
+// hookTokenizeResponse is the JSON envelope that runHookTokenize writes to
+// stdout. It wraps the token slice in a top-level "tokens" key so callers
+// (bash hooks using jq) can access the array directly.
+type hookTokenizeResponse struct {
+	Tokens []shell.Token `json:"tokens"`
+}
+
+// runHookTokenize reads a shell command from r (one or more lines), tokenizes
+// it using the shell package, and writes a JSON response to w.
+//
+// Output format:
+//
+//	{"tokens": [{"value": "...", "type": "word", "quoted": true}, ...]}
+//
+// The function always exits cleanly (no error return on parse failure) because
+// it is invoked by the bash delegation hook and must never block the hook's
+// execution. On any error it writes an empty tokens array so the bash hook can
+// fall back gracefully.
+func runHookTokenize(r io.Reader, w io.Writer) error {
+	input, err := io.ReadAll(r)
+	if err != nil {
+		// Cannot read stdin — emit empty response (fail open).
+		writeTokenizeResponse(w, nil)
+		return nil
+	}
+
+	tokens, err := shell.Tokenize(string(input))
+	if err != nil {
+		// Parse error — emit empty response so the bash hook falls back.
+		writeTokenizeResponse(w, nil)
+		return nil
+	}
+
+	writeTokenizeResponse(w, tokens)
+	return nil
+}
+
+// writeTokenizeResponse serialises tokens as {"tokens": [...]} to w. JSON
+// encoding errors are silently swallowed because the output is for a bash
+// hook that must never crash on tokenizer failures.
+func writeTokenizeResponse(w io.Writer, tokens []shell.Token) {
+	resp := hookTokenizeResponse{Tokens: tokens}
+	if resp.Tokens == nil {
+		resp.Tokens = []shell.Token{} // always emit an array, never null
+	}
+	enc := json.NewEncoder(w)
+	enc.SetEscapeHTML(false) // preserve <, >, & literals in paths/titles
+	//nolint:errcheck // output errors are non-actionable in a hook context
+	_ = enc.Encode(resp)
 }
 
 // runHookSessionEnd prints a prompt that reminds (or instructs) the agent to
