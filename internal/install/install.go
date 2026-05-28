@@ -174,13 +174,19 @@ func ClaudeCode(binaryPath string) *Agent {
 				return "", nil, fmt.Errorf("install: claude-code: delegation hook: home dir: %w", err)
 			}
 			path := filepath.Join(home, ".claude", "settings.json")
-			// Register the new rules-based pre-tool-use hook. The legacy
-			// enforce-delegation hook is preserved for backward compatibility;
-			// users can remove it manually or via --reinstall-hooks.
+			hookScript := filepath.Join(home, ".claude", "hooks", "enforce_delegation.sh")
+			// Register both the rules-based Go hook and the bash delegation hook.
+			// Both coexist in PreToolUse: the Go hook provides context injection
+			// (warn/info rules), the bash hook blocks the orchestrator from editing
+			// source files directly.
 			patches := []HookPatch{
 				{
 					Event:   "PreToolUse",
 					Command: "mneme hook pre-tool-use",
+				},
+				{
+					Event:   "PreToolUse",
+					Command: hookScript,
 				},
 			}
 			return path, patches, nil
@@ -641,6 +647,16 @@ func Install(agent *Agent, binaryPath string) error {
 		if err := PatchDelegationHook(agent); err != nil {
 			errs = append(errs, err.Error())
 		}
+		// Write the bash delegation hook script alongside the settings patch.
+		home, homeErr := os.UserHomeDir()
+		if homeErr != nil {
+			errs = append(errs, fmt.Errorf("install: write delegation hook: home dir: %w", homeErr).Error())
+		} else {
+			hookDir := filepath.Join(home, ".claude", "hooks")
+			if _, err := WriteDelegationHook(hookDir, false); err != nil {
+				errs = append(errs, err.Error())
+			}
+		}
 	}
 	if err := CreateWorkflowDirs(); err != nil {
 		errs = append(errs, err.Error())
@@ -708,6 +724,20 @@ func DryRun(agent *Agent, binaryPath string) (string, error) {
 		}
 		for _, cmd := range cmds {
 			lines = append(lines, fmt.Sprintf("  [write]  Command       → %s", cmd.Path))
+		}
+	}
+
+	if agent.DelegationHook != nil {
+		home, _ := os.UserHomeDir()
+		hookPath := filepath.Join(home, ".claude", "hooks", "enforce_delegation.sh")
+		lines = append(lines, fmt.Sprintf("  [write]  Delegation hook → %s (0755)", hookPath))
+		settingsPath, patches, err := agent.DelegationHook()
+		if err != nil {
+			return "", fmt.Errorf("install: dry-run: delegation hook: %w", err)
+		}
+		lines = append(lines, fmt.Sprintf("  [patch]  Delegation hooks → %s", settingsPath))
+		for _, p := range patches {
+			lines = append(lines, fmt.Sprintf("             %s: %q", p.Event, p.Command))
 		}
 	}
 
