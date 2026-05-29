@@ -43,7 +43,7 @@ func newTestServerWithSDD(t *testing.T) *Server {
 	sddSvc := service.NewSDDService(sddStore, cfg, "test-project", svc)
 
 	logger := slog.Default()
-	return NewServer(svc, sddSvc, logger, "all", "test")
+	return NewServer(svc, sddSvc, nil, logger, "all", "test")
 }
 
 // TestMapServiceError_InternalErrorIncludesMessage is a regression test for the
@@ -522,7 +522,7 @@ func newTestServerWithStore(t *testing.T) (*Server, *store.MemoryStore) {
 	svc := service.NewMemoryService(ps, gs, cfg, "test-project", embed.NopEmbedder{})
 
 	logger := slog.Default()
-	return NewServer(svc, nil, logger, "all", "test"), ps
+	return NewServer(svc, nil, nil, logger, "all", "test"), ps
 }
 
 // TestMCP_MemExplore_DepthExceeded verifies that supplying a depth value above
@@ -1128,7 +1128,7 @@ func newTestServerWithRepoDir(t *testing.T, dir string) *Server {
 	sddSvc.WithRepoDir(dir)
 
 	logger := slog.Default()
-	return NewServer(svc, sddSvc, logger, "all", "test")
+	return NewServer(svc, sddSvc, nil, logger, "all", "test")
 }
 
 // unmarshalToolResult extracts the ToolCallResult from a JSON-RPC response

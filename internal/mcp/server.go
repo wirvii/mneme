@@ -12,21 +12,23 @@ import (
 )
 
 // Server is a Model Context Protocol server that speaks JSON-RPC 2.0 over stdio.
-// It wraps a MemoryService and an SDDService, exposing their capabilities as MCP tools.
+// It wraps a MemoryService, an SDDService, and a SkillsService, exposing their
+// capabilities as MCP tools.
 type Server struct {
-	svc      *service.MemoryService
-	sdd      *service.SDDService
-	tools    []ToolDefinition
-	handlers *handlers
-	logger   *slog.Logger
-	version  string
+	svc       *service.MemoryService
+	sdd       *service.SDDService
+	skillsSvc *service.SkillsService
+	tools     []ToolDefinition
+	handlers  *handlers
+	logger    *slog.Logger
+	version   string
 }
 
 // NewServer constructs a Server. toolsMode selects which tool set to expose:
 // "agent" exposes the agent-facing subset; any other value (including "all")
-// exposes the full set. sddSvc may be nil — when nil, all SDD tools return an
-// error indicating the service is unavailable.
-func NewServer(svc *service.MemoryService, sddSvc *service.SDDService, logger *slog.Logger, toolsMode string, version string) *Server {
+// exposes the full set. sddSvc and skillsSvc may be nil — when nil, the
+// corresponding tools return an error indicating the service is unavailable.
+func NewServer(svc *service.MemoryService, sddSvc *service.SDDService, skillsSvc *service.SkillsService, logger *slog.Logger, toolsMode string, version string) *Server {
 	var tools []ToolDefinition
 	if toolsMode == "agent" {
 		tools = agentTools()
@@ -35,12 +37,13 @@ func NewServer(svc *service.MemoryService, sddSvc *service.SDDService, logger *s
 	}
 
 	return &Server{
-		svc:      svc,
-		sdd:      sddSvc,
-		tools:    tools,
-		handlers: newHandlers(svc, sddSvc, logger),
-		logger:   logger,
-		version:  version,
+		svc:       svc,
+		sdd:       sddSvc,
+		skillsSvc: skillsSvc,
+		tools:     tools,
+		handlers:  newHandlers(svc, sddSvc, skillsSvc, logger),
+		logger:    logger,
+		version:   version,
 	}
 }
 
