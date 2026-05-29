@@ -261,7 +261,7 @@ func (svc *SDDService) SpecAdvance(ctx context.Context, req model.SpecAdvanceReq
 		return nil, fmt.Errorf("service: spec advance: %w", err)
 	}
 
-	if !spec.Status.CanTransitionTo(nextStatus) {
+	if !spec.Status.CanTransitionTo(nextStatus, spec.Lane) {
 		return nil, fmt.Errorf("service: spec advance: %s -> %s: %w",
 			spec.Status, nextStatus, model.ErrInvalidTransition)
 	}
@@ -376,7 +376,7 @@ func (svc *SDDService) SpecPushback(ctx context.Context, req model.SpecPushbackR
 		return nil, fmt.Errorf("service: spec pushback: get: %w", err)
 	}
 
-	if !spec.Status.CanTransitionTo(model.SpecStatusNeedsGrill) {
+	if !spec.Status.CanTransitionTo(model.SpecStatusNeedsGrill, spec.Lane) {
 		return nil, fmt.Errorf("service: spec pushback: cannot push from %s: %w",
 			spec.Status, model.ErrInvalidTransition)
 	}

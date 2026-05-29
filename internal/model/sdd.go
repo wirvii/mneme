@@ -6,6 +6,35 @@ package model
 
 import "time"
 
+// --- LANE ---
+
+// Lane controls the SDD workflow path for a spec. Trivial items take a
+// shortened path (draft→rationale→implementing→audit→done), while standard
+// items traverse the full SDD lifecycle. Classification is declared at
+// creation time and never inferred automatically.
+type Lane string
+
+const (
+	// LaneTrivial identifies changes that touch ≤3 files and ≤20 lines,
+	// add no public symbols, and avoid SQL/migrations/cmd/** paths.
+	LaneTrivial Lane = "trivial"
+
+	// LaneStandard identifies all other changes that require the full
+	// SDD cycle (speccing, planning, QA).
+	LaneStandard Lane = "standard"
+)
+
+var validLanes = map[Lane]struct{}{
+	LaneTrivial:  {},
+	LaneStandard: {},
+}
+
+// Valid reports whether the Lane value is one of the recognised constants.
+func (l Lane) Valid() bool {
+	_, ok := validLanes[l]
+	return ok
+}
+
 // --- BACKLOG ---
 
 // BacklogStatus represents the lifecycle state of a backlog item.
@@ -117,6 +146,14 @@ type BacklogItem struct {
 	// Position is the display order within same priority. Lower = first.
 	Position int `json:"position"`
 
+	// Lane determines which SDD workflow path this item follows.
+	// Required at creation time; defaults to standard for legacy items.
+	Lane Lane `json:"lane"`
+
+	// Scope is a glob pattern declaring which files this item may touch.
+	// Required when Lane is trivial; used by the post-implementation auditor.
+	Scope string `json:"scope,omitempty"`
+
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -127,6 +164,13 @@ type BacklogAddRequest struct {
 	Description string   `json:"description,omitempty"`
 	Priority    Priority `json:"priority,omitempty"`
 	Project     string   `json:"project,omitempty"`
+
+	// Lane is required. Omitting it returns ErrLaneRequired.
+	Lane Lane `json:"lane"`
+
+	// Scope is required when Lane is trivial; the auditor uses it to verify
+	// no files outside this glob were modified.
+	Scope string `json:"scope,omitempty"`
 }
 
 // BacklogListRequest filters backlog items for listing.
@@ -173,6 +217,15 @@ const (
 
 	// SpecStatusDone is the terminal state: the spec is fully delivered.
 	SpecStatusDone SpecStatus = "done"
+
+	// SpecStatusRationale is the trivial-lane equivalent of speccing.
+	// A 1–3 sentence justification is recorded via spec_quick before
+	// the item moves directly to implementing.
+	SpecStatusRationale SpecStatus = "rationale"
+
+	// SpecStatusAudit is the trivial-lane equivalent of qa. The deterministic
+	// auditor checks the actual diff against the declared scope and thresholds.
+	SpecStatusAudit SpecStatus = "audit"
 )
 
 var validSpecStatuses = map[SpecStatus]struct{}{
@@ -185,6 +238,8 @@ var validSpecStatuses = map[SpecStatus]struct{}{
 	SpecStatusImplementing: {},
 	SpecStatusQA:           {},
 	SpecStatusDone:         {},
+	SpecStatusRationale:    {},
+	SpecStatusAudit:        {},
 }
 
 // Valid reports whether the SpecStatus is one of the recognised constants.
@@ -205,11 +260,11 @@ func (s SpecStatus) IsActive() bool {
 	return s != SpecStatusDone && s != SpecStatusDraft
 }
 
-// validTransitions defines the state machine. Each key maps to the set
-// of valid target states. Any transition not in this map is rejected with
-// ErrInvalidTransition. The machine is intentionally strict: callers must
-// explicitly name the target state rather than relying on a "next" heuristic.
-var validTransitions = map[SpecStatus]map[SpecStatus]struct{}{
+// validTransitionsStandard defines the state machine for standard-lane specs.
+// Each key maps to the set of valid target states. Any transition not in this
+// map is rejected with ErrInvalidTransition. The machine is intentionally
+// strict: callers must explicitly name the target state.
+var validTransitionsStandard = map[SpecStatus]map[SpecStatus]struct{}{
 	SpecStatusDraft: {
 		SpecStatusSpeccing: {},
 	},
@@ -240,11 +295,40 @@ var validTransitions = map[SpecStatus]map[SpecStatus]struct{}{
 	},
 }
 
-// CanTransitionTo reports whether transitioning from the current status
-// to target is a valid state machine move. Returns false for any unknown
-// source status or when the target is not in the allowed set.
-func (s SpecStatus) CanTransitionTo(target SpecStatus) bool {
-	targets, ok := validTransitions[s]
+// validTransitionsTrivial defines the state machine for trivial-lane specs.
+// The path is shortened: draft→rationale→implementing→audit→done.
+// The speccing, specced, planning, planned, and qa states are not used.
+var validTransitionsTrivial = map[SpecStatus]map[SpecStatus]struct{}{
+	SpecStatusDraft: {
+		SpecStatusRationale: {},
+	},
+	SpecStatusRationale: {
+		SpecStatusImplementing: {},
+	},
+	SpecStatusImplementing: {
+		SpecStatusAudit:      {},
+		SpecStatusNeedsGrill: {},
+	},
+	SpecStatusAudit: {
+		SpecStatusDone:         {},
+		SpecStatusImplementing: {},
+	},
+	SpecStatusNeedsGrill: {
+		SpecStatusRationale: {},
+	},
+}
+
+// CanTransitionTo reports whether transitioning from the current status to
+// target is a valid state machine move for the given lane. Returns false for
+// any unknown source status or when the target is not in the allowed set.
+// The lane parameter selects which transition table to consult — trivial items
+// use a shortened path that skips speccing, planning, and qa.
+func (s SpecStatus) CanTransitionTo(target SpecStatus, lane Lane) bool {
+	transitions := validTransitionsStandard
+	if lane == LaneTrivial {
+		transitions = validTransitionsTrivial
+	}
+	targets, ok := transitions[s]
 	if !ok {
 		return false
 	}
@@ -269,6 +353,13 @@ type Spec struct {
 
 	// BacklogID links to the originating backlog item, if any.
 	BacklogID string `json:"backlog_id,omitempty"`
+
+	// Lane determines which SDD workflow path this spec follows.
+	Lane Lane `json:"lane"`
+
+	// Scope is a glob pattern declaring which files this spec may touch.
+	// Required when Lane is trivial; used by the post-implementation auditor.
+	Scope string `json:"scope,omitempty"`
 
 	// AssignedAgents lists which agents are currently assigned.
 	AssignedAgents []string `json:"assigned_agents,omitempty"`
@@ -337,6 +428,86 @@ type SpecNewRequest struct {
 	Title     string `json:"title"`
 	BacklogID string `json:"backlog_id,omitempty"`
 	Project   string `json:"project,omitempty"`
+
+	// Lane is required. Omitting it returns ErrLaneRequired.
+	Lane Lane `json:"lane"`
+
+	// Scope is required when Lane is trivial.
+	Scope string `json:"scope,omitempty"`
+}
+
+// SpecQuickRequest advances a trivial-lane spec from draft directly to
+// implementing by recording a one-line rationale. Rejected for standard specs.
+type SpecQuickRequest struct {
+	// ID is the spec to advance (must be trivial lane, draft status).
+	ID string `json:"id"`
+
+	// Rationale is a 1–3 sentence justification for the trivial classification.
+	Rationale string `json:"rationale"`
+
+	// By identifies who triggered the advance.
+	By string `json:"by"`
+}
+
+// LaneAuditRequest triggers the deterministic post-implementation auditor for a
+// trivial-lane spec that is in audit status.
+type LaneAuditRequest struct {
+	// ID is the spec to audit.
+	ID string `json:"id"`
+
+	// BaseRef is the git ref to diff against. When empty the auditor uses
+	// git merge-base HEAD <default-branch> as the base.
+	BaseRef string `json:"base_ref,omitempty"`
+}
+
+// LaneReclassifyRequest reclassifies a spec's lane. Only trivial→standard is
+// allowed; upgrading standard→trivial is forbidden to prevent abuse.
+type LaneReclassifyRequest struct {
+	// ID is the spec to reclassify.
+	ID string `json:"id"`
+
+	// Lane must be "standard" (only trivial→standard is supported).
+	Lane Lane `json:"lane"`
+
+	// Scope may be updated during reclassification.
+	Scope string `json:"scope,omitempty"`
+
+	// By identifies who triggered the reclassification.
+	By string `json:"by"`
+}
+
+// LaneOverrideRequest overrides a failed audit and advances a trivial-lane spec
+// from audit directly to done. Requires a reason to document the decision.
+type LaneOverrideRequest struct {
+	// ID is the spec to override.
+	ID string `json:"id"`
+
+	// Reason must be non-empty; it is persisted as a discovery memory.
+	Reason string `json:"reason"`
+
+	// By identifies who triggered the override.
+	By string `json:"by"`
+}
+
+// LaneStatusResponse is returned by LaneStatus with lane classification details
+// and the latest audit summary.
+type LaneStatusResponse struct {
+	Spec        *Spec         `json:"spec"`
+	Lane        Lane          `json:"lane"`
+	Scope       string        `json:"scope,omitempty"`
+	LatestAudit *AuditSummary `json:"latest_audit,omitempty"`
+}
+
+// AuditSummary summarises the most recent auditor run for a spec.
+type AuditSummary struct {
+	// Passed is true when all auditor checks passed.
+	Passed bool `json:"passed"`
+
+	// Breaches lists the individual threshold violations that caused failure.
+	Breaches []string `json:"breaches,omitempty"`
+
+	// At is the timestamp of the audit run.
+	At time.Time `json:"at"`
 }
 
 // SpecAdvanceRequest is the input for advancing a spec to its next state.
