@@ -63,6 +63,12 @@ func TestLint_Violations(t *testing.T) {
 			wantErrMsg: "not a valid semver",
 		},
 		{
+			name:       "semver with trailing garbage rejected",
+			md:         makeSkillMD("my-skill", "Valid description that is longer than 20 chars.", "1.2.3garbage", false, ""),
+			dirName:    "my-skill",
+			wantErrMsg: "not a valid semver",
+		},
+		{
 			name: "missing section When to Use",
 			md: "---\nname: my-skill\ndescription: \"Valid description that is longer than 20 chars.\"\nversion: 1.0.0\n---\n" +
 				"## Critical Rules\n1. rule\n## Automated Checks\n| Check | What it verifies | How to fix |\n|---|---|---|\n| a | b | c |\n## Verification\nok\n## Workflow\n1. step\n",
@@ -116,6 +122,22 @@ func TestLint_Violations(t *testing.T) {
 				t.Errorf("want error containing %q, got errors: %v", tc.wantErrMsg, result.Errors)
 			}
 		})
+	}
+}
+
+// TestLint_SemverPreRelease verifies that a pre-release version like "1.2.3-rc.1"
+// is accepted by the semver check.
+func TestLint_SemverPreRelease(t *testing.T) {
+	md := makeSkillMD("my-skill", "Valid description that is longer than 20 chars.", "1.2.3-rc.1", false, conformantBody)
+	s, err := skill.Parse([]byte(md))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	result := skill.Lint(s, "my-skill")
+	for _, f := range result.Errors {
+		if contains(f.Message, "not a valid semver") {
+			t.Errorf("pre-release version 1.2.3-rc.1 should be accepted, got error: %s", f.Message)
+		}
 	}
 }
 

@@ -68,10 +68,11 @@ var automatedChecksHeaders = []string{
 	"how to fix",
 }
 
-// semverRe matches a basic semantic version string X.Y.Z where each component
-// is a non-negative integer. Pre-release and build-metadata extensions are not
-// required by the schema but are accepted.
-var semverRe = regexp.MustCompile(`^\d+\.\d+\.\d+`)
+// semverRe matches a semantic version string X.Y.Z optionally followed by a
+// pre-release identifier (-[0-9A-Za-z.-]+) and/or build metadata
+// (+[0-9A-Za-z.-]+). The pattern is anchored at both ends so that strings
+// like "1.2.3garbage" are rejected.
+var semverRe = regexp.MustCompile(`^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$`)
 
 // LintFile parses and lints the SKILL.md at path. dirName is the skill
 // directory name (used to verify name==dir). It is equivalent to calling

@@ -74,7 +74,7 @@ func TestValidate_Timeout(t *testing.T) {
 	}
 	// Script that sleeps longer than our context deadline.
 	script := filepath.Join(validationDir, "run.sh")
-	if err := os.WriteFile(script, []byte("#!/bin/sh\nsleep 60\n"), 0o755); err != nil {
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nsleep 2\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
