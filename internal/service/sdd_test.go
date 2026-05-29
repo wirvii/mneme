@@ -3,6 +3,10 @@ package service
 import (
 	"context"
 	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/juanftp/mneme/internal/config"
@@ -781,8 +785,9 @@ func TestLaneOverride_RequiresReason(t *testing.T) {
 }
 
 // TestLaneStatus_AfterFailedAudit verifies that LaneStatus returns the correct
-// breaches from the most recent audit failure, not the reason from the
-// implementing→audit transition. This is the regression test for SPEC-035 QA bug 2.
+// breaches from the most recent audit failure recorded in the lane_audits table.
+// Updated for SPEC-036: uses InsertLaneAudit instead of the removed
+// InsertSpecHistoryEntry hack; breaches are stored newline-joined.
 func TestLaneStatus_AfterFailedAudit(t *testing.T) {
 	svc := newTestSDDService(t, "project")
 	ctx := context.Background()
@@ -820,15 +825,19 @@ func TestLaneStatus_AfterFailedAudit(t *testing.T) {
 		t.Fatalf("expected audit status, got %s", spec.Status)
 	}
 
-	// Directly insert an audit-failed history entry (simulating what LaneAudit
-	// writes via InsertSpecHistoryEntry when the deterministic auditor detects
-	// threshold violations).
+	// Insert a structured audit failure into lane_audits (SPEC-036 approach).
+	// Breaches are stored newline-joined, not "; "-joined.
 	breaches := []string{"file count 5 exceeds trivial limit of 3", "line count 42 exceeds trivial limit of 20"}
-	breachReason := "audit failed: " + breaches[0] + "; " + breaches[1]
-	if err := svc.store.InsertSpecHistoryEntry(ctx, spec.ID,
-		model.SpecStatusAudit, model.SpecStatusAudit,
-		"system", breachReason); err != nil {
-		t.Fatalf("InsertSpecHistoryEntry: %v", err)
+	auditRec := &model.LaneAuditRecord{
+		SpecID:       spec.ID,
+		Passed:       false,
+		FileCount:    5,
+		LinesChanged: 42,
+		Breaches:     strings.Join(breaches, "\n"),
+		BaseSHA:      "test-sha",
+	}
+	if err := svc.store.InsertLaneAudit(ctx, auditRec); err != nil {
+		t.Fatalf("InsertLaneAudit: %v", err)
 	}
 
 	// LaneStatus must reflect the AUDIT FAILURE (not the implementing→audit reason).
@@ -904,5 +913,425 @@ func TestLaneStatus_NoAuditRun(t *testing.T) {
 
 	if status.LatestAudit != nil {
 		t.Errorf("expected LatestAudit=nil before any audit has run, got %+v", status.LatestAudit)
+	}
+}
+
+// newTestGitRepo initialises a minimal git repository in a temp dir and returns
+// the directory path. It creates an initial commit so HEAD is valid.
+func newTestGitRepo(t *testing.T) string {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found in PATH")
+	}
+
+	dir := t.TempDir()
+
+	gitRun := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=Test",
+			"GIT_AUTHOR_EMAIL=test@test.com",
+			"GIT_COMMITTER_NAME=Test",
+			"GIT_COMMITTER_EMAIL=test@test.com",
+		)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+
+	gitRun("init", "-b", "main")
+	gitRun("config", "user.email", "test@test.com")
+	gitRun("config", "user.name", "Test")
+
+	fPath := filepath.Join(dir, "main.go")
+	if err := os.WriteFile(fPath, []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("write main.go: %v", err)
+	}
+	gitRun("add", ".")
+	gitRun("commit", "-m", "initial")
+
+	return dir
+}
+
+// TestSpecReject_StandardQAToImplementing verifies that a standard-lane spec in
+// qa status can be rejected back to implementing.
+func TestSpecReject_StandardQAToImplementing(t *testing.T) {
+	svc := newTestSDDService(t, "project")
+	ctx := context.Background()
+
+	spec, err := svc.SpecNew(ctx, model.SpecNewRequest{
+		Title: "Standard reject test",
+		Lane:  model.LaneStandard,
+	})
+	if err != nil {
+		t.Fatalf("SpecNew: %v", err)
+	}
+
+	// Advance to qa: draft→speccing→specced→planning→planned→implementing→qa (6 steps).
+	for _, by := range []string{"orch", "arch", "arch", "arch", "backend", "backend"} {
+		spec, err = svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: by})
+		if err != nil {
+			t.Fatalf("SpecAdvance (to qa, status=%s): %v", spec.Status, err)
+		}
+	}
+	if spec.Status != model.SpecStatusQA {
+		t.Fatalf("expected qa status, got %s", spec.Status)
+	}
+
+	rejected, err := svc.SpecReject(ctx, model.SpecRejectRequest{
+		ID:     spec.ID,
+		Reason: "tests fail on edge case",
+		By:     "qa-agent",
+	})
+	if err != nil {
+		t.Fatalf("SpecReject: %v", err)
+	}
+	if rejected.Status != model.SpecStatusImplementing {
+		t.Errorf("expected implementing, got %s", rejected.Status)
+	}
+}
+
+// TestSpecReject_TrivialAuditToImplementing verifies that a trivial-lane spec
+// in audit status can be rejected back to implementing.
+func TestSpecReject_TrivialAuditToImplementing(t *testing.T) {
+	svc := newTestSDDService(t, "project")
+	ctx := context.Background()
+
+	spec, err := svc.SpecNew(ctx, model.SpecNewRequest{
+		Title: "Trivial reject test",
+		Lane:  model.LaneTrivial,
+		Scope: "internal/model/*.go",
+	})
+	if err != nil {
+		t.Fatalf("SpecNew: %v", err)
+	}
+
+	spec, err = svc.SpecQuick(ctx, model.SpecQuickRequest{
+		ID:        spec.ID,
+		Rationale: "One-line fix",
+		By:        "orchestrator",
+	})
+	if err != nil {
+		t.Fatalf("SpecQuick: %v", err)
+	}
+
+	// implementing → audit.
+	spec, err = svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: "backend"})
+	if err != nil {
+		t.Fatalf("SpecAdvance to audit: %v", err)
+	}
+	if spec.Status != model.SpecStatusAudit {
+		t.Fatalf("expected audit, got %s", spec.Status)
+	}
+
+	rejected, err := svc.SpecReject(ctx, model.SpecRejectRequest{
+		ID:     spec.ID,
+		Reason: "scope exceeded",
+		By:     "orchestrator",
+	})
+	if err != nil {
+		t.Fatalf("SpecReject (trivial audit): %v", err)
+	}
+	if rejected.Status != model.SpecStatusImplementing {
+		t.Errorf("expected implementing, got %s", rejected.Status)
+	}
+}
+
+// TestSpecReject_EmptyReasonReturnsError verifies that SpecReject returns
+// ErrReasonRequired when Reason is empty.
+func TestSpecReject_EmptyReasonReturnsError(t *testing.T) {
+	svc := newTestSDDService(t, "project")
+	ctx := context.Background()
+
+	_, err := svc.SpecReject(ctx, model.SpecRejectRequest{
+		ID:     "SPEC-001",
+		Reason: "",
+		By:     "orchestrator",
+	})
+	if !errors.Is(err, model.ErrReasonRequired) {
+		t.Errorf("expected ErrReasonRequired, got %v", err)
+	}
+}
+
+// TestSpecReject_InvalidStatusReturnsError verifies that SpecReject returns
+// ErrInvalidTransition when the spec is in a status that does not allow
+// a backward transition to implementing (e.g. draft).
+func TestSpecReject_InvalidStatusReturnsError(t *testing.T) {
+	svc := newTestSDDService(t, "project")
+	ctx := context.Background()
+
+	spec, err := svc.SpecNew(ctx, model.SpecNewRequest{
+		Title: "Reject invalid",
+		Lane:  model.LaneStandard,
+	})
+	if err != nil {
+		t.Fatalf("SpecNew: %v", err)
+	}
+
+	// Spec is in draft — cannot reject from draft.
+	_, err = svc.SpecReject(ctx, model.SpecRejectRequest{
+		ID:     spec.ID,
+		Reason: "bad status",
+		By:     "orchestrator",
+	})
+	if !errors.Is(err, model.ErrInvalidTransition) {
+		t.Errorf("expected ErrInvalidTransition, got %v", err)
+	}
+}
+
+// TestCaptureBaseSHA_ImplementingViaSpecAdvance verifies that when a standard
+// spec enters implementing via SpecAdvance in a valid git repo, base_sha is set.
+func TestCaptureBaseSHA_ImplementingViaSpecAdvance(t *testing.T) {
+	repoDir := newTestGitRepo(t)
+
+	svc := newTestSDDService(t, "project")
+	svc.WithRepoDir(repoDir)
+	ctx := context.Background()
+
+	spec, err := svc.SpecNew(ctx, model.SpecNewRequest{
+		Title: "SHA via advance",
+		Lane:  model.LaneStandard,
+	})
+	if err != nil {
+		t.Fatalf("SpecNew: %v", err)
+	}
+
+	// Advance to implementing: draft→speccing→specced→planning→planned→implementing (5 steps).
+	for i := range 5 {
+		spec, err = svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: "test"})
+		if err != nil {
+			t.Fatalf("SpecAdvance %d: %v", i, err)
+		}
+	}
+	if spec.Status != model.SpecStatusImplementing {
+		t.Fatalf("expected implementing, got %s", spec.Status)
+	}
+
+	// Reload to pick up the async captureBaseSHA write.
+	got, err := svc.store.GetSpec(ctx, spec.ID)
+	if err != nil {
+		t.Fatalf("GetSpec: %v", err)
+	}
+	if got.BaseSHA == "" {
+		t.Error("expected base_sha to be set after entering implementing, got empty string")
+	}
+	if len(got.BaseSHA) != 40 {
+		t.Errorf("expected 40-char SHA, got %q", got.BaseSHA)
+	}
+}
+
+// TestCaptureBaseSHA_ImplementingViaSpecQuick verifies that a trivial spec
+// entering implementing via SpecQuick also captures base_sha.
+func TestCaptureBaseSHA_ImplementingViaSpecQuick(t *testing.T) {
+	repoDir := newTestGitRepo(t)
+
+	svc := newTestSDDService(t, "project")
+	svc.WithRepoDir(repoDir)
+	ctx := context.Background()
+
+	spec, err := svc.SpecNew(ctx, model.SpecNewRequest{
+		Title: "SHA via quick",
+		Lane:  model.LaneTrivial,
+		Scope: "internal/model/*.go",
+	})
+	if err != nil {
+		t.Fatalf("SpecNew: %v", err)
+	}
+
+	spec, err = svc.SpecQuick(ctx, model.SpecQuickRequest{
+		ID:        spec.ID,
+		Rationale: "Tiny fix",
+		By:        "orchestrator",
+	})
+	if err != nil {
+		t.Fatalf("SpecQuick: %v", err)
+	}
+	if spec.Status != model.SpecStatusImplementing {
+		t.Fatalf("expected implementing, got %s", spec.Status)
+	}
+
+	got, err := svc.store.GetSpec(ctx, spec.ID)
+	if err != nil {
+		t.Fatalf("GetSpec: %v", err)
+	}
+	if got.BaseSHA == "" {
+		t.Error("expected base_sha to be set after spec_quick, got empty string")
+	}
+}
+
+// TestCaptureBaseSHA_NoGitNoBlock verifies that when repoDir is not a git
+// repository, base_sha stays "" but the transition completes without error.
+func TestCaptureBaseSHA_NoGitNoBlock(t *testing.T) {
+	svc := newTestSDDService(t, "project")
+	svc.WithRepoDir(t.TempDir()) // not a git repo
+	ctx := context.Background()
+
+	spec, err := svc.SpecNew(ctx, model.SpecNewRequest{
+		Title: "No git, no block",
+		Lane:  model.LaneTrivial,
+		Scope: "internal/**",
+	})
+	if err != nil {
+		t.Fatalf("SpecNew: %v", err)
+	}
+
+	spec, err = svc.SpecQuick(ctx, model.SpecQuickRequest{
+		ID:        spec.ID,
+		Rationale: "Should not fail",
+		By:        "orchestrator",
+	})
+	if err != nil {
+		t.Fatalf("SpecQuick must not fail when git is absent: %v", err)
+	}
+	if spec.Status != model.SpecStatusImplementing {
+		t.Errorf("expected implementing, got %s", spec.Status)
+	}
+
+	got, err := svc.store.GetSpec(ctx, spec.ID)
+	if err != nil {
+		t.Fatalf("GetSpec: %v", err)
+	}
+	// base_sha should be empty — git failed silently.
+	if got.BaseSHA != "" {
+		t.Errorf("expected base_sha='', got %q", got.BaseSHA)
+	}
+}
+
+// TestLaneStatus_RejectionCount verifies that RejectionCount reflects the
+// number of qa/audit → implementing backward transitions in spec_history.
+func TestLaneStatus_RejectionCount(t *testing.T) {
+	svc := newTestSDDService(t, "project")
+	ctx := context.Background()
+
+	spec, err := svc.SpecNew(ctx, model.SpecNewRequest{
+		Title: "Rejection count test",
+		Lane:  model.LaneTrivial,
+		Scope: "internal/**",
+	})
+	if err != nil {
+		t.Fatalf("SpecNew: %v", err)
+	}
+
+	spec, err = svc.SpecQuick(ctx, model.SpecQuickRequest{
+		ID:        spec.ID,
+		Rationale: "Small fix",
+		By:        "orchestrator",
+	})
+	if err != nil {
+		t.Fatalf("SpecQuick: %v", err)
+	}
+
+	// implementing → audit.
+	spec, err = svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: "backend"})
+	if err != nil {
+		t.Fatalf("SpecAdvance to audit: %v", err)
+	}
+
+	// First rejection: audit → implementing.
+	spec, err = svc.SpecReject(ctx, model.SpecRejectRequest{
+		ID:     spec.ID,
+		Reason: "first failure",
+		By:     "orchestrator",
+	})
+	if err != nil {
+		t.Fatalf("first SpecReject: %v", err)
+	}
+
+	// implementing → audit again.
+	spec, err = svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: "backend"})
+	if err != nil {
+		t.Fatalf("SpecAdvance to audit (2nd): %v", err)
+	}
+
+	// Second rejection: audit → implementing.
+	_, err = svc.SpecReject(ctx, model.SpecRejectRequest{
+		ID:     spec.ID,
+		Reason: "second failure",
+		By:     "orchestrator",
+	})
+	if err != nil {
+		t.Fatalf("second SpecReject: %v", err)
+	}
+
+	status, err := svc.LaneStatus(ctx, spec.ID)
+	if err != nil {
+		t.Fatalf("LaneStatus: %v", err)
+	}
+	if status.RejectionCount != 2 {
+		t.Errorf("RejectionCount: got %d, want 2", status.RejectionCount)
+	}
+}
+
+// TestLaneStats_Counts verifies that LaneStats returns correct counts for
+// trivial specs, audit failures, overrides, and reclassifications.
+func TestLaneStats_Counts(t *testing.T) {
+	svc := newTestSDDService(t, "project")
+	ctx := context.Background()
+
+	// Create 2 trivial specs.
+	for i := range 2 {
+		spec, err := svc.SpecNew(ctx, model.SpecNewRequest{
+			Title: "Trivial " + strings.Repeat("x", i),
+			Lane:  model.LaneTrivial,
+			Scope: "internal/**",
+		})
+		if err != nil {
+			t.Fatalf("SpecNew trivial %d: %v", i, err)
+		}
+
+		spec, err = svc.SpecQuick(ctx, model.SpecQuickRequest{
+			ID:        spec.ID,
+			Rationale: "quick",
+			By:        "orchestrator",
+		})
+		if err != nil {
+			t.Fatalf("SpecQuick %d: %v", i, err)
+		}
+
+		// Advance to audit.
+		spec, err = svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: "backend"})
+		if err != nil {
+			t.Fatalf("SpecAdvance to audit %d: %v", i, err)
+		}
+
+		// Insert a failing audit record for the first spec only.
+		if i == 0 {
+			if err := svc.store.InsertLaneAudit(ctx, &model.LaneAuditRecord{
+				SpecID:       spec.ID,
+				Passed:       false,
+				FileCount:    6,
+				LinesChanged: 50,
+				Breaches:     "too many files",
+				BaseSHA:      "sha0",
+			}); err != nil {
+				t.Fatalf("InsertLaneAudit: %v", err)
+			}
+		}
+	}
+
+	// Create 1 standard spec (should not count in trivial stats).
+	_, err := svc.SpecNew(ctx, model.SpecNewRequest{
+		Title: "Standard spec",
+		Lane:  model.LaneStandard,
+	})
+	if err != nil {
+		t.Fatalf("SpecNew standard: %v", err)
+	}
+
+	stats, err := svc.LaneStats(ctx, "project")
+	if err != nil {
+		t.Fatalf("LaneStats: %v", err)
+	}
+
+	if stats.TrivialCount != 2 {
+		t.Errorf("TrivialCount: got %d, want 2", stats.TrivialCount)
+	}
+	if stats.AuditFailCount != 1 {
+		t.Errorf("AuditFailCount: got %d, want 1", stats.AuditFailCount)
+	}
+	if stats.AuditFailRate == 0 {
+		t.Error("AuditFailRate must be > 0")
 	}
 }
