@@ -199,6 +199,3 @@ var ErrInvalidRelation = errors.New("invalid conflict relation: must be supersed
 // resolve both IDs to the same store before creating a relation.
 var ErrCrossStoreRelation = errors.New("cannot relate a global and a project memory; they live in separate stores")
 
-// ErrNotARepo is returned when an operation that requires a git repository root
-// (such as mneme init or repo block injection) is invoked outside a git repo.
-var ErrNotARepo = errors.New("not a git repository")

@@ -560,8 +560,7 @@ func (h *handlers) mapServiceError(method string, err error) *JSONRPCError {
 		errors.Is(err, model.ErrSkillNoValidation) ||
 		errors.Is(err, model.ErrUnknownAgent) ||
 		errors.Is(err, model.ErrInvalidModel) ||
-		errors.Is(err, model.ErrInvalidRelation) ||
-		errors.Is(err, model.ErrNotARepo) {
+		errors.Is(err, model.ErrInvalidRelation) {
 		return &JSONRPCError{
 			Code:    CodeInvalidParams,
 			Message: fmt.Sprintf("mcp: handle %s: %s", method, err),
