@@ -1,13 +1,17 @@
 package mcp
 
 import (
+	"encoding/json"
 	"log/slog"
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/juanftp/mneme/internal/config"
 	"github.com/juanftp/mneme/internal/db"
 	"github.com/juanftp/mneme/internal/embed"
+	"github.com/juanftp/mneme/internal/lane"
+	"github.com/juanftp/mneme/internal/model"
 	"github.com/juanftp/mneme/internal/service"
 	"github.com/juanftp/mneme/internal/store"
 )
@@ -1093,5 +1097,161 @@ func TestMCP_ToolSchema_MemContextIncludesIncludeGraph(t *testing.T) {
 
 	if _, ok := props["include_graph"]; !ok {
 		t.Error("mem_context schema missing include_graph property")
+	}
+}
+
+// newTestServerWithRepoDir creates an SDD-enabled Server where the SDDService's
+// lane auditor uses dir as the git repository root. This lets tests trigger real
+// audit runs without depending on the working directory.
+func newTestServerWithRepoDir(t *testing.T, dir string) *Server {
+	t.Helper()
+
+	projectDB, err := db.OpenMemory()
+	if err != nil {
+		t.Fatalf("open project db: %v", err)
+	}
+	projectDB.SetMaxOpenConns(1)
+	globalDB, err := db.OpenMemory()
+	if err != nil {
+		t.Fatalf("open global db: %v", err)
+	}
+	globalDB.SetMaxOpenConns(1)
+	t.Cleanup(func() { projectDB.Close(); globalDB.Close() })
+
+	projectStore := store.NewMemoryStore(projectDB)
+	globalStore := store.NewMemoryStore(globalDB)
+	cfg := config.Default()
+	svc := service.NewMemoryService(projectStore, globalStore, cfg, "test-project", embed.NopEmbedder{})
+
+	sddStore := store.NewSDDStore(projectDB)
+	sddSvc := service.NewSDDService(sddStore, cfg, "test-project", svc)
+	sddSvc.WithRepoDir(dir)
+
+	logger := slog.Default()
+	return NewServer(svc, sddSvc, logger, "all", "test")
+}
+
+// unmarshalToolResult extracts the ToolCallResult from a JSON-RPC response
+// without failing when resp.Error is set. It returns the tool result and
+// whether the JSON-RPC layer itself returned an error.
+func unmarshalToolResult(t *testing.T, resp JSONRPCResponse) (ToolCallResult, bool) {
+	t.Helper()
+	if resp.Error != nil {
+		return ToolCallResult{}, true
+	}
+	b, err := json.Marshal(resp.Result)
+	if err != nil {
+		t.Fatalf("re-marshal result: %v", err)
+	}
+	var tr ToolCallResult
+	if err := json.Unmarshal(b, &tr); err != nil {
+		t.Fatalf("unmarshal ToolCallResult: %v", err)
+	}
+	return tr, false
+}
+
+// TestLaneAudit_FailedAuditReturnsBreaches verifies that when a trivial-lane spec
+// fails the deterministic audit (too many changed files), the MCP handler returns
+// a ToolCallResult with IsError=true and the AuditResult payload — not an empty
+// JSON-RPC error. This is the regression test for the SPEC-035 QA critical bug.
+func TestLaneAudit_FailedAuditReturnsBreaches(t *testing.T) {
+	// Use the mneme repo itself as the audit target. The current feature branch
+	// has far more than 3 changed files relative to main, guaranteeing a breach.
+	repoDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	// Walk up until we find the git root.
+	for {
+		if _, statErr := os.Stat(repoDir + "/.git"); statErr == nil {
+			break
+		}
+		parent := repoDir[:strings.LastIndex(repoDir, string(os.PathSeparator))]
+		if parent == repoDir {
+			t.Skip("no git repo found; skipping lane audit integration test")
+		}
+		repoDir = parent
+	}
+
+	srv := newTestServerWithRepoDir(t, repoDir)
+
+	// 1. Create a trivial-lane spec.
+	newResp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name: "spec_new",
+		Arguments: mustMarshal(t, map[string]any{
+			"title": "MCP lane audit regression test",
+			"lane":  string(model.LaneTrivial),
+			"scope": "internal/mcp/*.go",
+		}),
+	})
+	if newResp.Error != nil {
+		t.Fatalf("spec_new: %v", newResp.Error.Message)
+	}
+	var spec struct {
+		ID string `json:"id"`
+	}
+	unmarshalToolText(t, newResp, &spec)
+
+	// 2. Advance to implementing via spec_quick.
+	quickResp := process(t, srv, "tools/call", 2, ToolCallParams{
+		Name: "spec_quick",
+		Arguments: mustMarshal(t, map[string]any{
+			"id":        spec.ID,
+			"rationale": "Tiny fix — just one handler tweak.",
+			"by":        "orchestrator",
+		}),
+	})
+	if quickResp.Error != nil {
+		t.Fatalf("spec_quick: %v", quickResp.Error.Message)
+	}
+
+	// 3. Advance implementing → audit.
+	auditMoveResp := process(t, srv, "tools/call", 3, ToolCallParams{
+		Name: "spec_advance",
+		Arguments: mustMarshal(t, map[string]any{
+			"id": spec.ID,
+			"by": "backend",
+		}),
+	})
+	if auditMoveResp.Error != nil {
+		t.Fatalf("spec_advance (implementing->audit): %v", auditMoveResp.Error.Message)
+	}
+
+	// 4. Run lane_audit — this repo has >3 changed files so audit must fail.
+	auditResp := process(t, srv, "tools/call", 4, ToolCallParams{
+		Name: "lane_audit",
+		Arguments: mustMarshal(t, map[string]any{
+			"id": spec.ID,
+		}),
+	})
+
+	// The JSON-RPC envelope must succeed (no protocol-level error).
+	if auditResp.Error != nil {
+		t.Fatalf("lane_audit returned a JSON-RPC error (breach info was discarded): code=%d msg=%s",
+			auditResp.Error.Code, auditResp.Error.Message)
+	}
+
+	// The tool result must carry IsError=true (audit failed).
+	toolResult, hasRPCErr := unmarshalToolResult(t, auditResp)
+	if hasRPCErr {
+		t.Fatal("lane_audit returned a JSON-RPC error instead of a tool-level error")
+	}
+	if !toolResult.IsError {
+		t.Error("expected ToolCallResult.IsError=true for a failed audit, got false")
+	}
+
+	// The content must be a valid AuditResult with non-empty breaches.
+	if len(toolResult.Content) == 0 {
+		t.Fatal("ToolCallResult has no content blocks")
+	}
+	var auditResult lane.AuditResult
+	if err := json.Unmarshal([]byte(toolResult.Content[0].Text), &auditResult); err != nil {
+		t.Fatalf("unmarshal AuditResult: %v (text: %s)", err, toolResult.Content[0].Text)
+	}
+	if auditResult.Passed {
+		t.Error("expected AuditResult.Passed=false")
+	}
+	if len(auditResult.Breaches) == 0 {
+		t.Error("expected non-empty breaches in AuditResult")
 	}
 }

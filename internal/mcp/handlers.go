@@ -823,6 +823,13 @@ func (h *handlers) handleSpecQuick(ctx context.Context, raw json.RawMessage) (*T
 }
 
 // handleLaneAudit processes a lane_audit tool call.
+//
+// When the auditor detects threshold violations it returns both a non-nil
+// AuditResult (containing the breach list) and ErrAuditFailed. In that case we
+// must not discard the result and route it through mapServiceError — the agent
+// needs the breach details to decide whether to reclassify or override. We
+// return a ToolCallResult with IsError=true so the agent is signalled that the
+// audit failed while still receiving the full AuditResult payload.
 func (h *handlers) handleLaneAudit(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
 	if h.sdd == nil {
 		return nil, h.sddUnavailable("lane_audit")
@@ -836,6 +843,22 @@ func (h *handlers) handleLaneAudit(ctx context.Context, raw json.RawMessage) (*T
 	}
 	result, err := h.sdd.LaneAudit(ctx, req)
 	if err != nil {
+		if errors.Is(err, model.ErrAuditFailed) && result != nil {
+			// Audit ran successfully but breaches were found. Return the full
+			// AuditResult to the agent so it can inspect the breach list.
+			// IsError=true signals failure at the tool level without losing data.
+			b, serErr := json.Marshal(result)
+			if serErr != nil {
+				return nil, &JSONRPCError{
+					Code:    CodeInternalError,
+					Message: fmt.Sprintf("mcp: handle lane_audit: serialize result: %s", serErr),
+				}
+			}
+			return &ToolCallResult{
+				Content: []ContentBlock{{Type: "text", Text: string(b)}},
+				IsError: true,
+			}, nil
+		}
 		return nil, h.mapServiceError("lane_audit", err)
 	}
 	return resultFromAny(result)
