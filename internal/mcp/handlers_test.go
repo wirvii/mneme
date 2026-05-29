@@ -1217,11 +1217,15 @@ func TestLaneAudit_FailedAuditReturnsBreaches(t *testing.T) {
 		t.Fatalf("spec_advance (implementing->audit): %v", auditMoveResp.Error.Message)
 	}
 
-	// 4. Run lane_audit — this repo has >3 changed files so audit must fail.
+	// 4. Run lane_audit with an explicit base_ref pointing to main so the diff
+	// spans the whole feature branch. Without an explicit base_ref, SPEC-036 would
+	// use spec.base_sha (HEAD at implementing time), yielding an empty diff.
+	// We override with "main" to guarantee >3 changed files and a breach.
 	auditResp := process(t, srv, "tools/call", 4, ToolCallParams{
 		Name: "lane_audit",
 		Arguments: mustMarshal(t, map[string]any{
-			"id": spec.ID,
+			"id":       spec.ID,
+			"base_ref": "main",
 		}),
 	})
 
