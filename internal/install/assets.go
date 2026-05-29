@@ -24,6 +24,9 @@ var builtinTemplates embed.FS
 //go:embed assets/hooks/enforce_delegation.sh
 var delegationHookScript []byte
 
+//go:embed assets/operating-manual.md
+var operatingManualAsset []byte
+
 // DelegationHookContent returns the raw bytes of the embedded
 // enforce_delegation.sh bash hook. The caller is responsible for writing
 // these bytes to the desired destination with executable permissions.

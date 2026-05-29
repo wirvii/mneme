@@ -1,7 +1,9 @@
 package install
 
 import (
+	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 )
 
@@ -133,11 +135,81 @@ func TestDefaultModelFor(t *testing.T) {
 		{"architect", "opus"},
 		{"backend", "sonnet"},
 		{"qa-tester", "sonnet"},
+		{"diagnostician", "sonnet"},
 		{"nosuchagent", ""},
 	}
 	for _, tc := range cases {
 		if got := DefaultModelFor(tc.agent); got != tc.want {
 			t.Errorf("DefaultModelFor(%q) = %q, want %q", tc.agent, got, tc.want)
 		}
+	}
+}
+
+// TestDiagnosticianAgent verifies that the diagnostician agent asset has the
+// correct tool allowlist (Bash yes, no Edit/Write/MultiEdit) and the default
+// model is sonnet (SPEC-041 D4).
+func TestDiagnosticianAgent(t *testing.T) {
+	destDir := t.TempDir()
+	files, err := filesFromEmbed(builtinAgents, "assets/agents", destDir)
+	if err != nil {
+		t.Fatalf("filesFromEmbed error: %v", err)
+	}
+
+	var found bool
+	for _, f := range files {
+		if filepath.Base(f.Path) != "diagnostician.md" {
+			continue
+		}
+		found = true
+		text := string(f.Content)
+
+		// Bash is required (reads logs).
+		var toolsLine string
+		for _, line := range strings.Split(text, "\n") {
+			if strings.HasPrefix(strings.TrimSpace(line), "tools:") {
+				toolsLine = line
+				break
+			}
+		}
+		if toolsLine == "" {
+			t.Fatal("diagnostician.md: missing tools: line in frontmatter")
+		}
+		if !strings.Contains(toolsLine, "Bash") {
+			t.Errorf("diagnostician tools: must include Bash, got %q", toolsLine)
+		}
+		// Must NOT have edit tools.
+		for _, editTool := range []string{"Edit", "Write", "MultiEdit", "NotebookEdit"} {
+			if strings.Contains(toolsLine, editTool) {
+				t.Errorf("diagnostician tools: must not include %q, got %q", editTool, toolsLine)
+			}
+		}
+		// Must not have bypassPermissions.
+		if strings.Contains(text, "permissionMode: bypassPermissions") {
+			t.Error("diagnostician.md: must not contain permissionMode: bypassPermissions")
+		}
+		// Default model must be sonnet.
+		got := DefaultModelFor("diagnostician")
+		if got != "sonnet" {
+			t.Errorf("DefaultModelFor(diagnostician) = %q, want sonnet", got)
+		}
+	}
+	if !found {
+		t.Error("diagnostician.md not found in bundled agents")
+	}
+
+	// BundledAgentNames must include diagnostician.
+	names, err := BundledAgentNames()
+	if err != nil {
+		t.Fatalf("BundledAgentNames error: %v", err)
+	}
+	var hasDiag bool
+	for _, n := range names {
+		if n == "diagnostician" {
+			hasDiag = true
+			break
+		}
+	}
+	if !hasDiag {
+		t.Error("BundledAgentNames: diagnostician is missing")
 	}
 }

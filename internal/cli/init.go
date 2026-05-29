@@ -11,33 +11,42 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/juanftp/mneme/internal/config"
+	"github.com/juanftp/mneme/internal/install"
 	"github.com/juanftp/mneme/internal/service"
 )
 
 // newInitCmd returns the "mneme init" subcommand.
-// By default it performs a dry-run: it detects legacy workflow artifacts, prints
-// the migration plan, and exits without touching the filesystem or the database.
-// Pass --apply to execute the migration; pair with --yes to skip the confirmation
-// prompt (useful for scripts and CI).
+//
+// Default behaviour (no flags): applies managed blocks to ~/.claude/CLAUDE.md
+// and <repo>/CLAUDE.md, prints drift findings, and shows the legacy migration
+// plan in dry-run mode (does not touch the DB or run rm-rf).
+//
+// --check: all report mode — does not write any managed blocks, only reports.
+// --apply: also executes the destructive legacy migration (rm-rf, DB writes).
+// --yes:   skip confirmation prompt (only with --apply).
 func newInitCmd() *cobra.Command {
-	var flagApply, flagYes bool
+	var flagApply, flagCheck, flagYes bool
 
 	cmd := &cobra.Command{
 		Use:   "init",
-		Short: "Migrate a project from legacy workflows to mneme SDD engine",
-		Long: `mneme init detects legacy workflow artifacts (.workflow/, .claude/specs/, etc.),
-classifies them using a weighted heuristic, and migrates them to the SDD engine.
+		Short: "Initialise a project with mneme managed blocks and show drift report",
+		Long: `mneme init sets up the mneme managed blocks for a project and reports drift.
 
-By default it performs a dry-run and prints the migration plan. Use --apply to
-execute the migration. The command is idempotent: a second run on a fully-migrated
-project finds no artifacts and exits cleanly.`,
-		Example: `  mneme init                  # dry-run: show migration plan
-  mneme init --apply          # execute (asks for confirmation)
-  mneme init --apply --yes    # execute without prompt (script-safe)
-  mneme init --yes            # dry-run (--yes without --apply is ignored with warning)`,
+Default: applies managed blocks (global manual + repo block), prints drift
+findings, and shows the legacy migration plan in dry-run mode.
+
+--check: report-only mode — no files are written, only findings printed.
+--apply: also executes the destructive legacy migration (DB writes + rm-rf).
+--yes:   skip confirmation prompt (only with --apply).
+
+The command is idempotent: re-running on an already-configured project is safe.`,
+		Example: `  mneme init                  # apply blocks + drift report + dry-run plan
+  mneme init --check          # report-only (no writes)
+  mneme init --apply          # also execute legacy migration (asks confirmation)
+  mneme init --apply --yes    # execute without prompt (script-safe)`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if flagYes && !flagApply {
-				fmt.Fprintln(cmd.ErrOrStderr(), "Warning: --yes has no effect without --apply. Running dry-run.")
+				fmt.Fprintln(cmd.ErrOrStderr(), "Warning: --yes has no effect without --apply. Ignored.")
 			}
 
 			cwd, err := os.Getwd()
@@ -68,37 +77,85 @@ project finds no artifacts and exits cleanly.`,
 				return fmt.Errorf("load config: %w", err)
 			}
 
-			initSvc := service.NewInitService(cfg, sddSvc, memSvc, sddSvc.ProjectSlug())
+			opts := service.InitServiceOptions{}
+			if !flagCheck {
+				// Wire the real managed-block primitive from internal/install.
+				opts.UpsertBlock = install.UpsertManagedBlock
+				opts.ManualContent = install.OperatingManual
+			}
 
-			// Step 1: always compute the plan first (dry-run).
+			initSvc := service.NewInitService(cfg, sddSvc, memSvc, sddSvc.ProjectSlug(), opts)
+
+			// Step 1: greenfield scaffold (no-op if CLAUDE.md already exists).
+			if !flagCheck {
+				if err := initSvc.EnsureGreenfieldScaffold(cwd); err != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "Warning: greenfield scaffold: %v\n", err)
+				}
+			}
+
+			// Step 2: ensure global manual present.
+			if !flagCheck {
+				if err := initSvc.EnsureGlobalManual(); err != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "Warning: ensure global manual: %v\n", err)
+				} else {
+					fmt.Fprintln(cmd.OutOrStdout(), "[ok] Global operating manual present (~/.claude/CLAUDE.md)")
+				}
+			}
+
+			// Step 3: upsert repo block.
+			if !flagCheck {
+				if err := initSvc.UpsertRepoBlock(cwd); err != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "Warning: repo block: %v\n", err)
+				} else {
+					fmt.Fprintln(cmd.OutOrStdout(), "[ok] Repo managed block present (CLAUDE.md)")
+				}
+			}
+
+			// Step 4: drift report (always, even in --check mode).
+			findings, driftErr := initSvc.RunDrift(cwd)
+			if driftErr != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "Warning: drift detection: %v\n", driftErr)
+			}
+			if len(findings) > 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "\n[drift] Advisory findings in CLAUDE.md:")
+				for _, f := range findings {
+					fmt.Fprintf(cmd.OutOrStdout(), "  %s\n", f)
+				}
+			} else {
+				fmt.Fprintln(cmd.OutOrStdout(), "[ok] No drift detected in CLAUDE.md")
+			}
+
+			// Step 5: always compute the legacy migration plan (dry-run view).
 			report, err := initSvc.Plan(cmd.Context(), cwd)
 			if err != nil {
 				return fmt.Errorf("plan: %w", err)
 			}
 
-			// Step 2: print plan.
-			printPlan(cmd.OutOrStdout(), report.Plan)
+			if len(report.Plan.Artifacts) > 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "\n[legacy] Migration plan (dry-run):")
+				printPlan(cmd.OutOrStdout(), report.Plan)
+			}
 
 			if !flagApply {
-				fmt.Fprintln(cmd.OutOrStdout(), "\nDry run — usa --apply para ejecutar.")
+				if len(report.Plan.Artifacts) > 0 {
+					fmt.Fprintln(cmd.OutOrStdout(), "\nUse --apply to execute the legacy migration.")
+				}
 				return nil
 			}
 
-			// Step 3: confirm interactively unless --yes.
+			// --apply: execute the destructive legacy migration.
 			if !flagYes {
-				if !promptYes(cmd.InOrStdin(), cmd.OutOrStdout(), "¿Ejecutar migración? [y/N] ") {
+				if !promptYes(cmd.InOrStdin(), cmd.OutOrStdout(), "¿Ejecutar migración legacy? [y/N] ") {
 					fmt.Fprintln(cmd.OutOrStdout(), "Cancelado.")
 					return nil
 				}
 			}
 
-			// Step 4: apply.
 			applied, err := initSvc.Apply(cmd.Context(), cwd)
 			if err != nil {
 				return err
 			}
 
-			// Step 5: emit report.
 			reportPath, reportErr := initSvc.EmitReport(cmd.Context(), applied)
 			if reportErr != nil {
 				fmt.Fprintf(cmd.ErrOrStderr(), "Warning: no se pudo escribir el reporte: %v\n", reportErr)
@@ -109,9 +166,7 @@ project finds no artifacts and exits cleanly.`,
 			if len(applied.Cleanup.Errors) > 0 {
 				// Exit code 2 signals a partial migration: some cleanup steps failed
 				// but the DB migration succeeded. The user should inspect the report
-				// and decide whether to re-run. We call os.Exit directly because Cobra
-				// always translates a non-nil RunE error to exit 1; there is no way to
-				// produce exit 2 through the normal error return path.
+				// and decide whether to re-run.
 				fmt.Fprintf(cmd.ErrOrStderr(), "Error: migración parcial — ver reporte en %s\n", reportPath)
 				os.Exit(2)
 			}
@@ -119,7 +174,8 @@ project finds no artifacts and exits cleanly.`,
 		},
 	}
 
-	cmd.Flags().BoolVar(&flagApply, "apply", false, "Execute the migration (default is dry-run)")
+	cmd.Flags().BoolVar(&flagApply, "apply", false, "Also execute the legacy migration (DB writes + rm-rf)")
+	cmd.Flags().BoolVar(&flagCheck, "check", false, "Report-only mode: no files are written")
 	cmd.Flags().BoolVarP(&flagYes, "yes", "y", false, "Skip confirmation prompt (only with --apply)")
 
 	return cmd

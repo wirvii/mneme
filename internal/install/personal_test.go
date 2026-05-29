@@ -255,24 +255,24 @@ func TestMergeSettingsJSON_Idempotent(t *testing.T) {
 // TestCopyClaudeMD
 // ---------------------------------------------------------------------------
 
-// TestCopyClaudeMD_PreservesProtocol verifies that if the destination CLAUDE.md
-// already contains mneme protocol markers and force=true causes a copy, the
-// protocol block is re-injected into the new file automatically.
-func TestCopyClaudeMD_PreservesProtocol(t *testing.T) {
+// TestCopyClaudeMD_PreservesManagedBlock verifies that if the destination
+// CLAUDE.md already contains a managed block and force=true causes a copy, the
+// managed block is re-injected into the new file automatically.
+// Note: legacy mneme:protocol markers are NOT preserved (one-time migration
+// handled by upsertManagedBlock when InjectManual is next called).
+func TestCopyClaudeMD_PreservesManagedBlock(t *testing.T) {
 	srcDir := t.TempDir()
 	dstDir := t.TempDir()
 
 	srcFile := filepath.Join(srcDir, "CLAUDE.md")
 	dstFile := filepath.Join(dstDir, "CLAUDE.md")
 
-	const startMarker = "<!-- mneme:protocol:start -->"
-	const endMarker = "<!-- mneme:protocol:end -->"
-
 	writeFile(t, srcFile, "# Personal CLAUDE.md\nMy rules.\n")
 
-	// Destination already has protocol markers.
+	// Destination already has a managed block.
+	managedContent := "my preserved manual content"
 	writeFile(t, dstFile, "# Old content\n\n"+
-		startMarker+"\nprotocol block content\n"+endMarker+"\n")
+		managedBlockStart(1)+"\n"+managedContent+"\n"+managedBlockEnd+"\n")
 
 	installed, err := copyClaudeMD(srcFile, dstFile, true /* force */)
 	if err != nil {
@@ -292,15 +292,15 @@ func TestCopyClaudeMD_PreservesProtocol(t *testing.T) {
 	if !strings.Contains(content, "My rules.") {
 		t.Error("source CLAUDE.md content is missing from destination")
 	}
-	// Protocol block must have been re-injected.
-	if !strings.Contains(content, startMarker) {
-		t.Error("protocol start marker missing after copyClaudeMD with force")
+	// Managed block must have been re-injected.
+	if !strings.Contains(content, managedBlockStart(managedBlockVersion)) {
+		t.Error("managed start marker missing after copyClaudeMD with force")
 	}
-	if !strings.Contains(content, "protocol block content") {
-		t.Error("protocol block content missing after copyClaudeMD with force")
+	if !strings.Contains(content, managedContent) {
+		t.Error("managed block content missing after copyClaudeMD with force")
 	}
-	if !strings.Contains(content, endMarker) {
-		t.Error("protocol end marker missing after copyClaudeMD with force")
+	if !strings.Contains(content, managedBlockEnd) {
+		t.Error("managed end marker missing after copyClaudeMD with force")
 	}
 }
 

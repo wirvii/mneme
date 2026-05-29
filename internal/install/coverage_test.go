@@ -5,7 +5,7 @@ package install
 //
 //   - WriteMCPConfig
 //   - PatchHooks
-//   - InjectProtocol
+//   - InjectManual (replaces InjectProtocol since SPEC-041)
 //   - WriteCommands
 //   - PatchDelegationHook
 //   - DryRun (including the DelegationHook branch fixed in the QA polish commit)
@@ -61,14 +61,9 @@ func fakeAgent(t *testing.T, base, binaryPath string) *Agent {
 			return path, patches, nil
 		},
 
-		Protocol: func() (string, []byte, [2]string, error) {
+		Manual: func() (string, []byte, error) {
 			path := filepath.Join(base, ".claude", "CLAUDE.md")
-			markers := [2]string{
-				"<!-- mneme:protocol:start -->",
-				"<!-- mneme:protocol:end -->",
-			}
-			content := []byte(markers[0] + "\nprotocol content\n" + markers[1])
-			return path, content, markers, nil
+			return path, []byte("manual content"), nil
 		},
 
 		Commands: func() ([]CommandFile, error) {
@@ -250,17 +245,18 @@ func TestPatchHooks_Idempotent(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// InjectProtocol
+// InjectManual
 // ---------------------------------------------------------------------------
 
-// TestInjectProtocol_NewFileViaAgent verifies that InjectProtocol creates the
-// protocol file when it does not yet exist, using a fake agent.
-func TestInjectProtocol_NewFileViaAgent(t *testing.T) {
+// TestInjectManual_NewFileViaAgent verifies that InjectManual creates the
+// target file with the managed block when it does not yet exist, using a
+// fake agent.
+func TestInjectManual_NewFileViaAgent(t *testing.T) {
 	base := t.TempDir()
 	agent := fakeAgent(t, base, "")
 
-	if err := InjectProtocol(agent); err != nil {
-		t.Fatalf("InjectProtocol error: %v", err)
+	if err := InjectManual(agent); err != nil {
+		t.Fatalf("InjectManual error: %v", err)
 	}
 
 	target := filepath.Join(base, ".claude", "CLAUDE.md")
@@ -269,17 +265,17 @@ func TestInjectProtocol_NewFileViaAgent(t *testing.T) {
 		t.Fatalf("read CLAUDE.md: %v", err)
 	}
 	content := string(data)
-	if !strings.Contains(content, "<!-- mneme:protocol:start -->") {
-		t.Error("CLAUDE.md missing start marker")
+	if !strings.Contains(content, "<!-- mneme:managed:start") {
+		t.Error("CLAUDE.md missing managed start marker")
 	}
-	if !strings.Contains(content, "protocol content") {
-		t.Error("CLAUDE.md missing protocol content")
+	if !strings.Contains(content, "manual content") {
+		t.Error("CLAUDE.md missing manual content")
 	}
 }
 
-// TestInjectProtocol_ReplaceExisting verifies that InjectProtocol replaces
-// an existing protocol block without clobbering surrounding content.
-func TestInjectProtocol_ReplaceExisting(t *testing.T) {
+// TestInjectManual_ReplaceExisting verifies that InjectManual replaces an
+// existing managed block without clobbering surrounding content.
+func TestInjectManual_ReplaceExisting(t *testing.T) {
 	base := t.TempDir()
 	claudeDir := filepath.Join(base, ".claude")
 	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
@@ -287,24 +283,24 @@ func TestInjectProtocol_ReplaceExisting(t *testing.T) {
 	}
 
 	target := filepath.Join(claudeDir, "CLAUDE.md")
-	existing := "# Header\n\n<!-- mneme:protocol:start -->\nOLD content\n<!-- mneme:protocol:end -->\n\n# Footer\n"
+	existing := "# Header\n\n" + managedBlockStart(1) + "\nOLD content\n" + managedBlockEnd + "\n\n# Footer\n"
 	if err := os.WriteFile(target, []byte(existing), 0o644); err != nil {
 		t.Fatalf("write existing: %v", err)
 	}
 
 	agent := fakeAgent(t, base, "")
-	if err := InjectProtocol(agent); err != nil {
-		t.Fatalf("InjectProtocol error: %v", err)
+	if err := InjectManual(agent); err != nil {
+		t.Fatalf("InjectManual error: %v", err)
 	}
 
 	data, _ := os.ReadFile(target)
 	content := string(data)
 
 	if strings.Contains(content, "OLD content") {
-		t.Error("old protocol content should have been replaced")
+		t.Error("old managed content should have been replaced")
 	}
-	if !strings.Contains(content, "protocol content") {
-		t.Error("new protocol content is missing")
+	if !strings.Contains(content, "manual content") {
+		t.Error("new manual content is missing")
 	}
 	if !strings.Contains(content, "# Header") {
 		t.Error("content before markers was clobbered")
@@ -768,12 +764,12 @@ func TestWriteTemplates_WritesNew(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// InjectProtocol — os.IsNotExist branch (new file path via InjectProtocol public API)
+// InjectManual — append when no managed markers present
 // ---------------------------------------------------------------------------
 
-// TestInjectProtocol_AppendNoMarkers verifies that InjectProtocol appends the
-// protocol block when the target file exists but has no markers.
-func TestInjectProtocol_AppendNoMarkers(t *testing.T) {
+// TestInjectManual_AppendNoMarkers verifies that InjectManual appends the
+// managed block when the target file exists but has no markers.
+func TestInjectManual_AppendNoMarkers(t *testing.T) {
 	base := t.TempDir()
 	claudeDir := filepath.Join(base, ".claude")
 	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
@@ -787,8 +783,8 @@ func TestInjectProtocol_AppendNoMarkers(t *testing.T) {
 	}
 
 	agent := fakeAgent(t, base, "")
-	if err := InjectProtocol(agent); err != nil {
-		t.Fatalf("InjectProtocol error: %v", err)
+	if err := InjectManual(agent); err != nil {
+		t.Fatalf("InjectManual error: %v", err)
 	}
 
 	data, _ := os.ReadFile(target)
@@ -797,8 +793,8 @@ func TestInjectProtocol_AppendNoMarkers(t *testing.T) {
 	if !strings.Contains(content, "My custom rules") {
 		t.Error("existing content was clobbered")
 	}
-	if !strings.Contains(content, "<!-- mneme:protocol:start -->") {
-		t.Error("start marker missing after inject into existing file")
+	if !strings.Contains(content, "<!-- mneme:managed:start") {
+		t.Error("managed start marker missing after inject into existing file")
 	}
 }
 
@@ -886,23 +882,23 @@ func TestClaudeCode_Hooks_Structure(t *testing.T) {
 	}
 }
 
-// TestClaudeCode_Protocol_ContentValid verifies that the Protocol closure
-// returns a valid path, non-empty content, and non-empty markers.
-func TestClaudeCode_Protocol_ContentValid(t *testing.T) {
+// TestClaudeCode_Manual_ContentValid verifies that the Manual closure
+// returns a valid path and non-empty content containing the operating manual.
+func TestClaudeCode_Manual_ContentValid(t *testing.T) {
 	agent := ClaudeCode("")
 
-	path, content, markers, err := agent.Protocol()
+	path, content, err := agent.Manual()
 	if err != nil {
-		t.Fatalf("Protocol error: %v", err)
+		t.Fatalf("Manual error: %v", err)
 	}
 	if path == "" {
-		t.Error("Protocol path must not be empty")
+		t.Error("Manual path must not be empty")
 	}
 	if len(content) == 0 {
-		t.Error("Protocol content must not be empty")
+		t.Error("Manual content must not be empty")
 	}
-	if markers[0] == "" || markers[1] == "" {
-		t.Error("Protocol markers must not be empty")
+	if !strings.Contains(string(content), "mneme Operating Manual") {
+		t.Error("Manual content missing expected heading")
 	}
 }
 
@@ -1090,10 +1086,10 @@ func TestPatchHooks_HooksNotObject(t *testing.T) {
 // InjectProtocol — mkdir error branch
 // ---------------------------------------------------------------------------
 
-// TestInjectProtocol_MkdirError verifies that InjectProtocol returns an error
+// TestInjectManual_MkdirError verifies that InjectManual returns an error
 // when the parent directory cannot be created (because a file blocks the path).
 // Skipped when running as root.
-func TestInjectProtocol_MkdirError(t *testing.T) {
+func TestInjectManual_MkdirError(t *testing.T) {
 	if os.Getuid() == 0 {
 		t.Skip("running as root — permission checks do not apply")
 	}
@@ -1106,7 +1102,7 @@ func TestInjectProtocol_MkdirError(t *testing.T) {
 	}
 
 	agent := fakeAgent(t, base, "")
-	err := InjectProtocol(agent)
+	err := InjectManual(agent)
 	if err == nil {
 		t.Fatal("expected error when parent directory cannot be created")
 	}
@@ -1117,7 +1113,7 @@ func TestInjectProtocol_MkdirError(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestDryRun_ComponentFuncErrors verifies that DryRun does NOT propagate errors
-// from individual component funcs (MCPConfig, Hooks, Protocol, Commands,
+// from individual component funcs (MCPConfig, Hooks, Manual, Commands,
 // DelegationHook). DryRun only enumerates installStep Names without executing
 // the step.Run closures, so faults in component funcs are never triggered.
 func TestDryRun_ComponentFuncErrors(t *testing.T) {
@@ -1146,12 +1142,12 @@ func TestDryRun_ComponentFuncErrors(t *testing.T) {
 			},
 		},
 		{
-			name: "protocol_error",
+			name: "manual_error",
 			agent: &Agent{
 				Name: "Error Agent",
 				Slug: "err",
-				Protocol: func() (string, []byte, [2]string, error) {
-					return "", nil, [2]string{}, os.ErrPermission
+				Manual: func() (string, []byte, error) {
+					return "", nil, os.ErrPermission
 				},
 			},
 		},

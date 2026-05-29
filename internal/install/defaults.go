@@ -10,11 +10,12 @@ import (
 // the architect uses opus because its output (the spec) propagates to all other
 // agents; implementers use sonnet for cost efficiency.
 var defaultAgentModels = map[string]string{
-	"architect":  "opus",
-	"backend":    "sonnet",
-	"frontend":   "sonnet",
-	"qa-tester":  "sonnet",
-	"bug-hunter": "sonnet",
+	"architect":     "opus",
+	"backend":       "sonnet",
+	"frontend":      "sonnet",
+	"qa-tester":     "sonnet",
+	"bug-hunter":    "sonnet",
+	"diagnostician": "sonnet",
 }
 
 // knownAliases is the set of model alias strings that Claude Code recognises.

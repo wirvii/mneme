@@ -6,10 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/juanftp/mneme/internal/codegraph"
+	"github.com/juanftp/mneme/internal/config"
+	"github.com/juanftp/mneme/internal/install"
 	"github.com/juanftp/mneme/internal/model"
 	"github.com/juanftp/mneme/internal/service"
 )
@@ -156,6 +159,9 @@ func (h *handlers) handleToolCall(ctx context.Context, params ToolCallParams) (*
 		return h.handleCodegraphStatus(ctx, params.Arguments)
 	case "codegraph_files":
 		return h.handleCodegraphFiles(ctx, params.Arguments)
+
+	case "init":
+		return h.handleInit(ctx, params.Arguments)
 
 	default:
 		return nil, &JSONRPCError{
@@ -1997,4 +2003,107 @@ func (h *handlers) handleModelReset(ctx context.Context, raw json.RawMessage) (*
 		return nil, h.mapServiceError("model_reset", err)
 	}
 	return resultFromAny(resp)
+}
+
+// handleInit processes an init tool call. It applies managed blocks to CLAUDE.md
+// files and runs drift detection. When check=true, it is report-only (no writes).
+func (h *handlers) handleInit(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	if h.sdd == nil {
+		return nil, &JSONRPCError{
+			Code:    CodeInternalError,
+			Message: "mcp: handle init: SDD service unavailable",
+		}
+	}
+
+	var args struct {
+		RepoRoot string `json:"repo_root"`
+		Check    bool   `json:"check"`
+	}
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return nil, &JSONRPCError{
+			Code:    CodeInvalidParams,
+			Message: fmt.Sprintf("mcp: handle init: invalid arguments: %s", err),
+		}
+	}
+
+	repoRoot := args.RepoRoot
+	if repoRoot == "" {
+		var err error
+		repoRoot, err = os.Getwd()
+		if err != nil {
+			return nil, &JSONRPCError{
+				Code:    CodeInternalError,
+				Message: fmt.Sprintf("mcp: handle init: getwd: %s", err),
+			}
+		}
+	}
+
+	// Load config for workflow dir.
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, &JSONRPCError{
+			Code:    CodeInternalError,
+			Message: fmt.Sprintf("mcp: handle init: home dir: %s", err),
+		}
+	}
+	cfg, cfgErr := config.Load(home + "/.mneme/config.toml")
+	if cfgErr != nil {
+		cfg = config.Default()
+	}
+
+	opts := service.InitServiceOptions{}
+	if !args.Check {
+		opts.UpsertBlock = install.UpsertManagedBlock
+		opts.ManualContent = install.OperatingManual
+	}
+
+	initSvc := service.NewInitService(cfg, h.sdd, h.svc, h.svc.ProjectSlug(), opts)
+
+	type initResult struct {
+		RepoRoot      string   `json:"repo_root"`
+		CheckMode     bool     `json:"check_mode"`
+		ManualApplied bool     `json:"manual_applied"`
+		RepoBlock     bool     `json:"repo_block_applied"`
+		DriftFindings []string `json:"drift_findings"`
+	}
+
+	result := initResult{
+		RepoRoot:  repoRoot,
+		CheckMode: args.Check,
+	}
+
+	// Greenfield scaffold.
+	if !args.Check {
+		_ = initSvc.EnsureGreenfieldScaffold(repoRoot)
+	}
+
+	// Global manual.
+	if !args.Check {
+		if err := initSvc.EnsureGlobalManual(); err != nil {
+			h.logger.Warn("mcp: init: ensure global manual", "error", err)
+		} else {
+			result.ManualApplied = true
+		}
+	}
+
+	// Repo block.
+	if !args.Check {
+		if err := initSvc.UpsertRepoBlock(repoRoot); err != nil {
+			h.logger.Warn("mcp: init: upsert repo block", "error", err)
+		} else {
+			result.RepoBlock = true
+		}
+	}
+
+	// Drift detection.
+	findings, driftErr := initSvc.RunDrift(repoRoot)
+	if driftErr != nil {
+		h.logger.Warn("mcp: init: drift", "error", driftErr)
+	}
+	for _, f := range findings {
+		result.DriftFindings = append(result.DriftFindings, f.String())
+	}
+
+	_ = ctx
+	return resultFromAny(result)
 }

@@ -296,16 +296,13 @@ func copyFile(src, dst string) (err error) {
 
 // copyClaudeMD copies CLAUDE.md from srcFile to dstFile.
 // If the target already exists and force is false, the copy is skipped.
-// Special case: if the target has mneme protocol markers, and the copy
-// proceeds (force=true or target is absent), the existing protocol block is
-// re-injected into the new file so the mneme protocol is never lost.
+// Special case: if the target has an existing mneme managed block, the copy
+// proceeds and the managed block is re-upserted afterward so the operating
+// manual is never lost when a personal ecosystem is re-installed.
 // Returns true when the file was copied, false when it was skipped.
 func copyClaudeMD(srcFile, dstFile string, force bool) (installed bool, err error) {
-	const startMarker = "<!-- mneme:protocol:start -->"
-	const endMarker = "<!-- mneme:protocol:end -->"
-
 	// Read the current destination (may not exist).
-	existing, readErr := os.ReadFile(dstFile)
+	_, readErr := os.ReadFile(dstFile)
 
 	dstExists := readErr == nil
 	if !dstExists && !os.IsNotExist(readErr) {
@@ -317,16 +314,12 @@ func copyClaudeMD(srcFile, dstFile string, force bool) (installed bool, err erro
 		return false, nil
 	}
 
-	// Extract the existing protocol block before overwriting, so it can be
-	// re-injected after the source CLAUDE.md is copied.
-	var protocolBlock []byte
+	// Capture the managed block content (if any) so it can be re-upserted
+	// after the source CLAUDE.md overwrites the destination.
+	var managedContent string
+	var hadManaged bool
 	if dstExists {
-		text := string(existing)
-		startIdx := strings.Index(text, startMarker)
-		endIdx := strings.Index(text, endMarker)
-		if startIdx != -1 && endIdx != -1 && endIdx > startIdx {
-			protocolBlock = []byte(text[startIdx : endIdx+len(endMarker)])
-		}
+		managedContent, _, hadManaged, _ = readManagedBlock(dstFile)
 	}
 
 	// Copy source to destination.
@@ -334,15 +327,10 @@ func copyClaudeMD(srcFile, dstFile string, force bool) (installed bool, err erro
 		return false, err
 	}
 
-	// Re-inject protocol block if the old destination had one.
-	if len(protocolBlock) > 0 {
-		newContent, readErr := os.ReadFile(dstFile)
-		if readErr != nil {
-			return true, fmt.Errorf("install: personal: read %s after copy: %w", dstFile, readErr)
-		}
-		merged := mergeProtocol(newContent, protocolBlock, startMarker, endMarker)
-		if writeErr := os.WriteFile(dstFile, merged, 0o644); writeErr != nil {
-			return true, fmt.Errorf("install: personal: re-inject protocol %s: %w", dstFile, writeErr)
+	// Re-inject managed block when the destination previously had one.
+	if hadManaged && managedContent != "" {
+		if err := upsertManagedBlock(dstFile, managedContent); err != nil {
+			return true, fmt.Errorf("install: personal: re-inject managed block %s: %w", dstFile, err)
 		}
 	}
 

@@ -198,3 +198,4 @@ var ErrInvalidRelation = errors.New("invalid conflict relation: must be supersed
 // and no single store can atomically own the relation row. Callers must
 // resolve both IDs to the same store before creating a relation.
 var ErrCrossStoreRelation = errors.New("cannot relate a global and a project memory; they live in separate stores")
+

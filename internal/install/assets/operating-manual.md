@@ -1,0 +1,73 @@
+# mneme Operating Manual
+
+Injected globally into ~/.claude/CLAUDE.md by `mneme install claude-code`. Always active.
+Full reference: `docs/` in the mneme repo and `mneme help`.
+
+## 1. How to launch
+
+Run Claude Code as: `claude --permission-mode acceptEdits`
+
+Do NOT use `--dangerously-skip-permissions`. The two-layer enforcement model
+(capability allowlists + PreToolUse hooks) requires the permission layer to
+remain active — bypassing it disables the orchestrator-edit block.
+
+## 2. Roles
+
+- **orchestrator** — routes work, manages SDD lifecycle, never edits code (enforced by hook).
+- **architect** — designs, writes specs; read-only on code.
+- **backend** — implements server-side logic; full edit toolset.
+- **frontend** — implements client-side logic; full edit toolset.
+- **qa-tester** — verifies; read-only on code.
+- **bug-hunter** — investigates bugs; full edit toolset.
+- **diagnostician** — reads logs/infra, triages, proposes; Bash allowed for reading, NO code edits.
+
+## 3. Delegation triggers
+
+| Situation | Action |
+|-----------|--------|
+| 4+ files to understand a flow | Delegate exploration to a specialist |
+| 2+ non-trivial files to change | Single writer rule; fresh review after |
+| Commit / push / PR | Fresh review before merge |
+| Wrong cwd or git accident | Stop immediately; audit before continuing |
+| Long monolithic session | Pause and re-plan |
+
+## 4. SDD + lanes
+
+Every change flows through SDD — no ad-hoc edits, no markdown in `.workflow/` by hand.
+
+**Lane declaration is required at creation:**
+- `trivial` — ≤3 files, ≤20 lines, no SQL/migrations, no cmd/install/assets changes, no public API change.
+- `standard` — everything else.
+
+State machine: `backlog_add` → refine → `backlog_promote` → `spec_advance` × N → `qa` → `done`.
+`spec_reject` bounces a failed QA review back to implementing for fixes.
+`spec_pushback` pauses a spec at `needs_grill` until the orchestrator resolves ambiguity.
+
+## 5. Skills
+
+Check installed skills before implementing: `mneme skills list`.
+Validate before relying on: `mneme skills lint [name]` / `mneme skills validate <name>`.
+Manage: `mneme skills install|pin|unpin|remove`.
+
+## 6. Models
+
+Default assignments: architect→opus, all others→sonnet.
+Override: `mneme model set <agent> <alias>` / `mneme model reset [agent]`.
+Apply: `mneme install claude-code` (writes to agent files, never touches config.toml).
+
+## 7. Memory & conflicts
+
+Save decisions, discoveries, bugfixes, conventions to mneme — never rely on chat history alone.
+
+Session lifecycle:
+- FIRST MESSAGE: `mem_context`, then `mem_search` with keywords. `spec_list` to see active specs.
+- EVERY user message: `mem_search` before responding.
+- AFTER completed task: `mem_save` (decision/discovery/bugfix/convention). Use `topic_key` for evolving knowledge.
+- BEFORE session end: `mem_session_end` with summary.
+- LONG tasks: `mem_checkpoint` periodically.
+- POST-COMPACTION: `mem_context` to recover context.
+
+Save rules: `scope:global` for user preferences, `scope:project` for everything else.
+`topic_key` for knowledge that evolves (overwrites). Omit for unique events. Save liberally.
+
+Conflict hygiene: `mneme conflicts scan` periodically to surface superseded memories.
