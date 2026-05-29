@@ -1202,3 +1202,185 @@ func TestAgentAssets_ImplementerAllowlists(t *testing.T) {
 		}
 	}
 }
+
+// --- SPEC-038 parity tests ---
+
+// TestInstallSteps_DefaultSequence verifies that installSteps with default
+// options returns the expected ordered step names, including "Agent models"
+// immediately after "Agent profiles".
+func TestInstallSteps_DefaultSequence(t *testing.T) {
+	agent := ClaudeCode("/usr/local/bin/mneme")
+	opts := InstallOptions{BinaryPath: "/usr/local/bin/mneme"}
+	steps := agent.installSteps(opts)
+
+	var names []string
+	for _, s := range steps {
+		names = append(names, s.Name)
+	}
+
+	agentProfilesIdx := -1
+	agentModelsIdx := -1
+	for i, n := range names {
+		switch n {
+		case "Agent profiles":
+			agentProfilesIdx = i
+		case "Agent models":
+			agentModelsIdx = i
+		}
+	}
+
+	if agentProfilesIdx == -1 {
+		t.Error("missing step 'Agent profiles'")
+	}
+	if agentModelsIdx == -1 {
+		t.Fatal("missing step 'Agent models' — required by SPEC-038")
+	}
+	if agentProfilesIdx != -1 && agentModelsIdx != agentProfilesIdx+1 {
+		t.Errorf("'Agent models' must immediately follow 'Agent profiles'; got indices %d and %d", agentProfilesIdx, agentModelsIdx)
+	}
+
+	required := []string{"MCP server", "Session hooks", "Protocol", "Slash commands", "Workflow directories"}
+	for _, req := range required {
+		found := false
+		for _, n := range names {
+			if n == req {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("missing required step %q", req)
+		}
+	}
+}
+
+// TestInstallSteps_ReinstallHooks verifies that with ReinstallHooks=true,
+// the "Delegation hook (reinstall)" step appears instead of "Delegation hook".
+func TestInstallSteps_ReinstallHooks(t *testing.T) {
+	agent := ClaudeCode("/usr/local/bin/mneme")
+	opts := InstallOptions{BinaryPath: "/usr/local/bin/mneme", ReinstallHooks: true}
+	steps := agent.installSteps(opts)
+
+	var names []string
+	for _, s := range steps {
+		names = append(names, s.Name)
+	}
+
+	hasReinstall := false
+	hasRegular := false
+	for _, n := range names {
+		if n == "Delegation hook (reinstall)" {
+			hasReinstall = true
+		}
+		if n == "Delegation hook" {
+			hasRegular = true
+		}
+	}
+
+	if !hasReinstall {
+		t.Error("ReinstallHooks=true: expected 'Delegation hook (reinstall)' step")
+	}
+	if hasRegular {
+		t.Error("ReinstallHooks=true: unexpected 'Delegation hook' (non-reinstall) step")
+	}
+}
+
+// TestInstallSteps_Personal verifies that with Personal=true,
+// the "Personal ecosystem" step is present.
+func TestInstallSteps_Personal(t *testing.T) {
+	agent := ClaudeCode("/usr/local/bin/mneme")
+	opts := InstallOptions{BinaryPath: "/usr/local/bin/mneme", Personal: true, PersonalSource: "/tmp/dotfiles"}
+	steps := agent.installSteps(opts)
+
+	found := false
+	for _, s := range steps {
+		if s.Name == "Personal ecosystem" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("Personal=true: expected 'Personal ecosystem' step")
+	}
+}
+
+// TestInstallSteps_NoPersonalByDefault verifies that without Personal=true,
+// the "Personal ecosystem" step is absent.
+func TestInstallSteps_NoPersonalByDefault(t *testing.T) {
+	agent := ClaudeCode("/usr/local/bin/mneme")
+	opts := InstallOptions{BinaryPath: "/usr/local/bin/mneme"}
+	steps := agent.installSteps(opts)
+
+	for _, s := range steps {
+		if s.Name == "Personal ecosystem" {
+			t.Error("Personal=false: 'Personal ecosystem' step must not be present")
+		}
+	}
+}
+
+// TestApplyAgentModels_WritesModel verifies that ApplyAgentModels writes the
+// effective model into each installed agent file using the surgical editor.
+func TestApplyAgentModels_WritesModel(t *testing.T) {
+	dir := t.TempDir()
+
+	content := "---\nname: backend\ndescription: \"desc\"\nmodel: claude-sonnet-4-6\ntools: Read\n---\n\nBody.\n"
+	agentPath := filepath.Join(dir, "backend.md")
+	if err := os.WriteFile(agentPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write agent file: %v", err)
+	}
+
+	overrides := map[string]string{"backend": "haiku"}
+	if err := ApplyAgentModels(dir, overrides); err != nil {
+		t.Fatalf("ApplyAgentModels error: %v", err)
+	}
+
+	data, err := os.ReadFile(agentPath)
+	if err != nil {
+		t.Fatalf("read agent file: %v", err)
+	}
+
+	result := string(data)
+	if !strings.Contains(result, "model: haiku") {
+		t.Errorf("expected model: haiku in result\ngot:\n%s", result)
+	}
+	if strings.Contains(result, "claude-sonnet-4-6") {
+		t.Errorf("old pinned model ID should be replaced")
+	}
+	if !strings.Contains(result, `description: "desc"`) {
+		t.Error("description must be preserved after ApplyAgentModels")
+	}
+}
+
+// TestApplyAgentModels_SkipsMissingFile verifies that ApplyAgentModels
+// silently skips agents whose files do not exist.
+func TestApplyAgentModels_SkipsMissingFile(t *testing.T) {
+	dir := t.TempDir()
+	if err := ApplyAgentModels(dir, nil); err != nil {
+		t.Errorf("ApplyAgentModels with no files: unexpected error: %v", err)
+	}
+}
+
+// TestRunInstallSteps_CollectAll verifies that runInstallSteps continues past
+// errors and returns all of them (collect-all semantics).
+func TestRunInstallSteps_CollectAll(t *testing.T) {
+	errA := fmt.Errorf("step A failed")
+	errC := fmt.Errorf("step C failed")
+
+	steps := []installStep{
+		{Name: "A", Run: func() (string, error) { return "", errA }},
+		{Name: "B", Run: func() (string, error) { return "ok", nil }},
+		{Name: "C", Run: func() (string, error) { return "", errC }},
+	}
+
+	var called []string
+	errs := runInstallSteps(steps, func(name, detail string, err error) {
+		called = append(called, name)
+	})
+
+	if len(errs) != 2 {
+		t.Errorf("expected 2 errors, got %d: %v", len(errs), errs)
+	}
+	if len(called) != 3 {
+		t.Errorf("expected all 3 steps called, got %d: %v", len(called), called)
+	}
+}

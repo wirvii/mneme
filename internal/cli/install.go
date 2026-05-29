@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -18,6 +19,11 @@ import (
 //
 // The command is idempotent: running it multiple times on the same agent
 // produces the same result without duplicating entries or clobbering user config.
+//
+// Behaviour change (v1.8.0): the CLI now uses collect-all error semantics
+// (consistent with Install() / the upgrade path). Previously it was fail-fast.
+// All steps are attempted; errors are printed as [fail] lines and returned
+// as a combined error at the end.
 func newInstallCmd() *cobra.Command {
 	var flagDryRun        bool
 	var flagPersonal      bool
@@ -35,6 +41,7 @@ memory system. This command:
   2. Installs session-start and session-end hooks
   3. Injects the memory protocol into the agent's system prompt file
   4. Installs the /mneme-init slash command
+  5. Applies per-agent model assignments (from config or defaults)
 
 Optionally, pass --personal to also copy your personal Claude Code ecosystem
 (agents, commands, templates, hooks, CLAUDE.md, settings.json) from a git
@@ -67,30 +74,30 @@ produces the same result without clobbering existing configuration.`,
 			}
 
 			if flagDryRun {
-				description, err := install.DryRun(agent, binaryPath)
-				if err != nil {
-					return err
+				description, dryErr := install.DryRun(agent, binaryPath)
+				if dryErr != nil {
+					return dryErr
 				}
 				fmt.Fprintln(os.Stdout, "Dry run — no changes will be made.")
 				fmt.Fprintln(os.Stdout, "")
 				fmt.Fprintln(os.Stdout, description)
 
 				if flagPersonal {
-					source, err := resolvePersonalSource(flagSource)
-					if err != nil {
-						return err
+					source, resolveErr := resolvePersonalSource(flagSource)
+					if resolveErr != nil {
+						return resolveErr
 					}
-					home, err := os.UserHomeDir()
-					if err != nil {
-						return fmt.Errorf("install: home dir: %w", err)
+					home, homeErr := os.UserHomeDir()
+					if homeErr != nil {
+						return fmt.Errorf("install: home dir: %w", homeErr)
 					}
-					dryDesc, err := install.DryRunPersonal(install.PersonalOpts{
+					dryDesc, dryPersonalErr := install.DryRunPersonal(install.PersonalOpts{
 						Source:    source,
 						ClaudeDir: filepath.Join(home, ".claude"),
 						Force:     flagForce,
 					})
-					if err != nil {
-						return err
+					if dryPersonalErr != nil {
+						return dryPersonalErr
 					}
 					fmt.Fprintln(os.Stdout, "")
 					fmt.Fprintln(os.Stdout, dryDesc)
@@ -98,89 +105,48 @@ produces the same result without clobbering existing configuration.`,
 				return nil
 			}
 
+			// Resolve personal source when --personal is requested.
+			var personalSource string
+			if flagPersonal {
+				personalSource, err = resolvePersonalSource(flagSource)
+				if err != nil {
+					return err
+				}
+			}
+
+			opts := install.InstallOptions{
+				Force:          flagForce,
+				ReinstallHooks: flagReinstallHooks,
+				Personal:       flagPersonal,
+				PersonalSource: personalSource,
+				BinaryPath:     binaryPath,
+			}
+
 			fmt.Fprintf(os.Stdout, "Installing mneme for %s...\n\n", agent.Name)
 
-			if err := install.WriteMCPConfig(agent, binaryPath); err != nil {
-				return err
-			}
-			fmt.Fprintln(os.Stdout, "  [ok] MCP server registered")
+			steps := agent.InstallSteps(opts)
 
-			if err := install.PatchHooks(agent); err != nil {
-				return err
-			}
-			fmt.Fprintln(os.Stdout, "  [ok] Session hooks installed")
-
-			if err := install.InjectProtocol(agent); err != nil {
-				return err
-			}
-			fmt.Fprintln(os.Stdout, "  [ok] Memory protocol injected")
-
-			if err := install.WriteCommands(agent); err != nil {
-				return err
-			}
-			fmt.Fprintln(os.Stdout, "  [ok] Slash commands installed")
-
-			if agent.Agents != nil {
-				if err := install.WriteAgents(agent); err != nil {
-					return err
+			// progress prints [ok] or [fail] for each step.
+			// collect-all: we continue on errors and aggregate them.
+			var installErrs []string
+			progress := func(name, detail string, stepErr error) {
+				if stepErr != nil {
+					fmt.Fprintf(os.Stdout, "  [fail] %s: %s\n", name, stepErr)
+					installErrs = append(installErrs, stepErr.Error())
+					return
 				}
-				fmt.Fprintln(os.Stdout, "  [ok] Agent profiles installed")
-			}
-
-			if agent.Templates != nil {
-				if err := install.WriteTemplates(agent); err != nil {
-					return err
+				if detail != "" {
+					fmt.Fprintf(os.Stdout, "  [ok]   %s: %s\n", name, detail)
+				} else {
+					fmt.Fprintf(os.Stdout, "  [ok]   %s\n", name)
 				}
-				fmt.Fprintln(os.Stdout, "  [ok] Workflow templates installed")
-			}
 
-			if agent.Skills != nil {
-				home, homeErr := os.UserHomeDir()
-				if homeErr != nil {
-					return fmt.Errorf("install: skills: home dir: %w", homeErr)
-				}
-				skillsDir := filepath.Join(home, ".claude", "skills")
-				force := flagForce || flagReinstallHooks
-				result, skillErr := install.WriteSkills(agent, skillsDir, force)
-				if skillErr != nil {
-					return skillErr
-				}
-				for _, name := range result.Installed {
-					fmt.Fprintf(os.Stdout, "  [ok]   Skill installed: %s\n", name)
-				}
-				for _, name := range result.Skipped {
-					fmt.Fprintf(os.Stdout, "  [skip] Skill pinned:    %s\n", name)
-				}
-			}
-
-			if agent.DelegationHook != nil {
-				if flagReinstallHooks {
-					// Replace all existing PreToolUse entries with the new hooks.
-					settingsPath, patches, hookErr := agent.DelegationHook()
-					if hookErr != nil {
-						return hookErr
-					}
-					if err := install.ReinstallHooks(settingsPath, patches); err != nil {
-						return err
-					}
-					fmt.Fprintln(os.Stdout, "  [ok] PreToolUse hooks replaced with mneme hook pre-tool-use")
-
-					// Force-overwrite the bash delegation hook script.
-					home, homeErr := os.UserHomeDir()
-					if homeErr != nil {
-						return fmt.Errorf("install: home dir: %w", homeErr)
-					}
-					hookDir := filepath.Join(home, ".claude", "hooks")
-					action, err := install.WriteDelegationHook(hookDir, true)
-					if err != nil {
-						return err
-					}
-					fmt.Fprintf(os.Stdout, "  [ok] Delegation hook script %s\n", action)
-
+				// Post-step side effects for user experience.
+				switch name {
+				case "Delegation hook (reinstall)":
 					if _, jqErr := exec.LookPath("jq"); jqErr != nil {
 						fmt.Fprintln(os.Stderr, "  [warn] jq not found in PATH; the delegation hook will fail-open until jq is installed")
 					}
-
 					fmt.Fprintln(os.Stdout, "")
 					fmt.Fprintln(os.Stdout, "Migration complete. Your hooks have been updated.")
 					fmt.Fprintln(os.Stdout, "")
@@ -194,102 +160,21 @@ produces the same result without clobbering existing configuration.`,
 					fmt.Fprintln(os.Stdout, "")
 					fmt.Fprintln(os.Stdout, "Your old config.toml [delegation] section is still active for the legacy hook.")
 					fmt.Fprintln(os.Stdout, "Once you've created rules and verified they work, you can set delegation.enabled=false in config.toml.")
-				} else {
-					if err := install.PatchDelegationHook(agent); err != nil {
-						return err
-					}
-					fmt.Fprintln(os.Stdout, "  [ok] Delegation enforcement hook installed")
-
-					// Write the bash delegation hook script (skip if unchanged).
-					home, homeErr := os.UserHomeDir()
-					if homeErr != nil {
-						return fmt.Errorf("install: home dir: %w", homeErr)
-					}
-					hookDir := filepath.Join(home, ".claude", "hooks")
-					action, err := install.WriteDelegationHook(hookDir, false)
-					if err != nil {
-						return err
-					}
-					fmt.Fprintf(os.Stdout, "  [ok] Delegation hook script %s\n", action)
-
+				case "Delegation hook":
 					if _, jqErr := exec.LookPath("jq"); jqErr != nil {
 						fmt.Fprintln(os.Stderr, "  [warn] jq not found in PATH; the delegation hook will fail-open until jq is installed")
 					}
 				}
 			}
 
-			if err := install.CreateWorkflowDirs(); err != nil {
-				return err
-			}
-			fmt.Fprintln(os.Stdout, "  [ok] Workflow directories created")
-
-			// Migrate legacy ~/.workflows/ to ~/.mneme/workflows/ when the
-			// legacy directory exists. Each project sub-directory is copied
-			// recursively; files already present at the destination are skipped.
-			{
-				home, err := os.UserHomeDir()
-				if err != nil {
-					return fmt.Errorf("install: home dir: %w", err)
-				}
-				legacyDir := filepath.Join(home, ".workflows")
-				if _, statErr := os.Stat(legacyDir); statErr == nil {
-					cfg, cfgErr := config.Load(config.DefaultPath())
-					if cfgErr != nil {
-						return fmt.Errorf("install: load config for migration: %w", cfgErr)
-					}
-					result, migErr := install.MigrateWorkflowDir(legacyDir, cfg.WorkflowDir())
-					if migErr != nil {
-						return migErr
-					}
-					if len(result.Copied) > 0 || len(result.Skipped) > 0 {
-						fmt.Fprintln(os.Stdout, "")
-						fmt.Fprintf(os.Stdout, "Migrating legacy workflows from %s...\n\n", legacyDir)
-						for _, f := range result.Copied {
-							fmt.Fprintf(os.Stdout, "  [migrated] %s\n", f)
-						}
-						for _, f := range result.Skipped {
-							fmt.Fprintf(os.Stdout, "  [skip]     %s (already exists)\n", f)
-						}
-					}
-				}
-			}
-
-			if flagPersonal {
-				source, err := resolvePersonalSource(flagSource)
-				if err != nil {
-					return err
-				}
-				home, err := os.UserHomeDir()
-				if err != nil {
-					return fmt.Errorf("install: home dir: %w", err)
-				}
-
-				fmt.Fprintln(os.Stdout, "")
-				fmt.Fprintln(os.Stdout, "Installing personal ecosystem...")
-				fmt.Fprintln(os.Stdout, "")
-
-				result, err := install.InstallPersonal(install.PersonalOpts{
-					Source:    source,
-					ClaudeDir: filepath.Join(home, ".claude"),
-					Force:     flagForce,
-				})
-				if err != nil {
-					return err
-				}
-
-				for _, f := range result.Installed {
-					fmt.Fprintf(os.Stdout, "  [ok]   %s\n", f)
-				}
-				for _, f := range result.Skipped {
-					fmt.Fprintf(os.Stdout, "  [skip] %s (already exists)\n", f)
-				}
-				if result.Merged {
-					fmt.Fprintln(os.Stdout, "  [merge] settings.json")
-				}
-			}
+			install.RunInstallSteps(steps, progress)
 
 			fmt.Fprintln(os.Stdout, "")
 			fmt.Fprintf(os.Stdout, "Done. Restart %s for changes to take effect.\n", agent.Name)
+
+			if len(installErrs) > 0 {
+				return fmt.Errorf("install: some steps failed: %s", strings.Join(installErrs, "; "))
+			}
 			return nil
 		},
 	}
