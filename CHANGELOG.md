@@ -6,6 +6,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [v1.7.0] — 2026-05-29
+
+### Added
+
+- **Skills Framework** (SPEC-037): mneme is now the package manager for Claude
+  Code skills. Skills live at `~/.claude/skills/<name>/` and are installed by
+  `mneme install claude-code` alongside agents and hooks.
+
+  - **`internal/skill/`** — leaf package (no internal deps): deterministic
+    SKILL.md parser (`parse.go`), structural linter (`lint.go`), and validation
+    runner (`validate.go`). No yaml dependency; manual frontmatter scanner.
+  - **`example-skill` fixture** — the only bundled skill; structural fixture for
+    testing the framework. Not architectural guidance.
+  - **7 MCP tools** (41 → 48 total): `skills_list`, `skills_install`,
+    `skills_pin`, `skills_unpin`, `skills_remove`, `skills_lint`,
+    `skills_validate`. `skills_lint` and `skills_validate` use the
+    `IsError:true`+payload pattern (mirrors `lane_audit`) so callers receive
+    full finding lists on failure.
+  - **`mneme skills` CLI command group** (7 subcommands) with `--json` and
+    `--force` flags; exit 1 on lint/validate failures.
+  - **Install machinery**: `WriteSkills` with pin-aware idempotency — bundled
+    skills are authoritative for non-pinned installs; `pinned:true` in the
+    installed `SKILL.md` blocks overwrite/remove without `--force`.
+  - **4 model sentinel errors**: `ErrSkillNotFound`, `ErrSkillMalformed`,
+    `ErrSkillPinned`, `ErrSkillNoValidation`. Mapped by `mapServiceError`.
+  - **`docs/skills.md`** — authoring guide (skill directory contract, SKILL.md
+    schema, validation script conventions, pinning, lifecycle).
+
+### Changed
+
+- MCP tool count: 41 → 48.
+- CLI top-level command count: 23 → 25 (added `skills`, `codegraph` was
+  already counted).
+- `NewServer` signature adds `skillsSvc *service.SkillsService` parameter
+  (nil-safe; existing callers pass nil).
+
 ## [v1.6.0] — 2026-05-29
 
 ### Added

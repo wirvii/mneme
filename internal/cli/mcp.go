@@ -3,10 +3,12 @@ package cli
 import (
 	"log/slog"
 	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 
 	"github.com/juanftp/mneme/internal/mcp"
+	"github.com/juanftp/mneme/internal/service"
 )
 
 // newMCPCmd returns the "mneme mcp" subcommand. It starts the MCP server over
@@ -70,7 +72,14 @@ Configure your agent to run: mneme mcp`,
 				toolsMode = cfg.MCP.Tools
 			}
 
-			srv := mcp.NewServer(svc, sddSvc, logger, toolsMode, Version)
+			// Build a SkillsService targeting ~/.claude/skills/.
+			home, homeErr := os.UserHomeDir()
+			var skillsSvc *service.SkillsService
+			if homeErr == nil {
+				skillsSvc = service.NewSkillsService(filepath.Join(home, ".claude", "skills"))
+			}
+
+			srv := mcp.NewServer(svc, sddSvc, skillsSvc, logger, toolsMode, Version)
 			return srv.Run(cmd.Context(), os.Stdin, os.Stdout)
 		},
 	}

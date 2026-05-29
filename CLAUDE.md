@@ -50,13 +50,13 @@ cli/  mcp/  http/        ← three frontends (Cobra, JSON-RPC stdio, REST)
 
 **Dependency rule:** imports flow inward only. `model` has no external deps. Adapters (`store`, `mcp`, `http`, `cli`) sit at the edges and are swappable. Don't let frontends call `store` or `db` directly — go through `service`.
 
-Supporting packages: `scoring/` (decay, BM25 re-ranking, RRF fusion), `consolidation/` (background decay/dedup/budget sweeps + edge decay), `graph/` (Hebbian auto-strengthening: AccessTracker ring buffer + HebbianWorkerPool async worker), `rules/` (applies_to pattern matching engine for pre-tool-use hook), `embed/` (TF-IDF baseline), `sync/` (JSONL.gz git-shareable export/import), `project/` (git-remote slug detection), `config/` (TOML + env overrides), `install/` (agent profile installer), `tui/` (Bubble Tea), `upgrade/`, `export/`.
+Supporting packages: `scoring/` (decay, BM25 re-ranking, RRF fusion), `consolidation/` (background decay/dedup/budget sweeps + edge decay), `graph/` (Hebbian auto-strengthening: AccessTracker ring buffer + HebbianWorkerPool async worker), `rules/` (applies_to pattern matching engine for pre-tool-use hook), `embed/` (TF-IDF baseline), `sync/` (JSONL.gz git-shareable export/import), `project/` (git-remote slug detection), `config/` (TOML + env overrides), `install/` (agent profile installer + skills embed), `skill/` (leaf: SKILL.md parser, structural linter, validate runner — no internal deps), `tui/` (Bubble Tea), `upgrade/`, `export/`.
 
 ### The three frontends
 
-- **MCP** (`internal/mcp`, primary) — JSON-RPC 2.0 over stdio, ProtocolVersion `2024-11-05`. Surface: 41 tools (14 `mem_*`, 4 `backlog_*`, 8 `spec_*`, 5 `lane_*`, 10 `codegraph_*`). `spec_*`: spec_new, spec_status, spec_advance, spec_pushback, spec_resolve, spec_list, spec_quick, spec_reject. `lane_*`: lane_audit, lane_reclassify, lane_override, lane_status, lane_stats. `handleMessage()` is exposed separately from `Run()` so unit tests can drive it without I/O loops.
+- **MCP** (`internal/mcp`, primary) — JSON-RPC 2.0 over stdio, ProtocolVersion `2024-11-05`. Surface: 48 tools (14 `mem_*`, 4 `backlog_*`, 8 `spec_*`, 5 `lane_*`, 10 `codegraph_*`, 7 `skills_*`). `spec_*`: spec_new, spec_status, spec_advance, spec_pushback, spec_resolve, spec_list, spec_quick, spec_reject. `lane_*`: lane_audit, lane_reclassify, lane_override, lane_status, lane_stats. `skills_*`: skills_list, skills_install, skills_pin, skills_unpin, skills_remove, skills_lint, skills_validate. `handleMessage()` is exposed separately from `Run()` so unit tests can drive it without I/O loops.
 - **HTTP** (`internal/http`, `mneme serve --addr :7437`) — stdlib `net/http`, graceful shutdown 10s, 8 endpoints under `/v1/`. Currently lacks SDD endpoints and a few mem tools (`mem_checkpoint`, `mem_timeline`, `mem_suggest_topic_key`); when adding service capabilities, decide explicitly whether HTTP gets parity.
-- **CLI** (`internal/cli`, Cobra) — 23 top-level commands. Notable: `sync export|import|status` is the backup/restore path (no dedicated `restore` command); `mneme init` migrates legacy projects to the SDD engine; `mneme install <agent>` writes agent profiles.
+- **CLI** (`internal/cli`, Cobra) — 30 top-level commands. Notable: `sync export|import|status` is the backup/restore path (no dedicated `restore` command); `mneme init` migrates legacy projects to the SDD engine; `mneme install <agent>` writes agent profiles; `mneme skills` manages skills in `~/.claude/skills/`.
 
 ### Persistence
 
@@ -139,3 +139,31 @@ mneme lane status SPEC-007
 ```
 
 Full reference: `docs/lanes.md`.
+
+## Skills (v1.7.0)
+
+mneme is the **package manager** for Claude Code skills. It embeds skills under
+`internal/install/assets/skills/` and installs them to `~/.claude/skills/`.
+mneme does NOT implement the Claude Code skill runtime.
+
+**Bundled skills (SPEC-037):** only `example-skill` (structural fixture — NOT architectural guidance).
+
+**Key commands:**
+```bash
+mneme skills list
+mneme skills install example-skill
+mneme skills pin example-skill        # protect from overwrite/remove
+mneme skills unpin example-skill
+mneme skills lint [<name>]            # deterministic structural check
+mneme skills validate <name>          # run validation/run.sh
+mneme skills remove <name> [--force]
+```
+
+**Rules:**
+- `pinned: true` in an installed SKILL.md = only protection from overwrite/remove. No hook or capability coupling.
+- `lint` is pure Go, deterministic, no LLM, no script execution.
+- `validate` runs `validation/run.sh` with a 120s timeout; ErrNoValidation if absent.
+- `internal/skill` is a leaf package — no imports of `internal/model` or other internal packages.
+- SKILL.md requires 5 H2 sections and a 3-col Automated Checks table (see `docs/skills.md`).
+
+Full reference: `docs/skills.md`.

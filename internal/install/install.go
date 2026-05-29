@@ -79,6 +79,11 @@ type Agent struct {
 	// DelegationHook returns the settings file path and the list of hook
 	// entries to merge for delegation enforcement.
 	DelegationHook func() (string, []HookPatch, error)
+
+	// Skills returns the list of skill entries to install under ~/.claude/skills/.
+	// Each entry carries a relative path, raw content, and an executable flag.
+	// When nil, the skills installation step is skipped.
+	Skills func() ([]SkillEntry, error)
 }
 
 // ClaudeCode returns a fully configured *Agent for Claude Code using binaryPath
@@ -191,6 +196,8 @@ func ClaudeCode(binaryPath string) *Agent {
 			}
 			return path, patches, nil
 		},
+
+		Skills: BundledSkillEntries,
 	}
 }
 
@@ -643,6 +650,17 @@ func Install(agent *Agent, binaryPath string) error {
 			errs = append(errs, err.Error())
 		}
 	}
+	if agent.Skills != nil {
+		home, homeErr := os.UserHomeDir()
+		if homeErr != nil {
+			errs = append(errs, fmt.Errorf("install: skills: home dir: %w", homeErr).Error())
+		} else {
+			skillsDir := filepath.Join(home, ".claude", "skills")
+			if _, err := WriteSkills(agent, skillsDir, false); err != nil {
+				errs = append(errs, err.Error())
+			}
+		}
+	}
 	if agent.DelegationHook != nil {
 		if err := PatchDelegationHook(agent); err != nil {
 			errs = append(errs, err.Error())
@@ -724,6 +742,21 @@ func DryRun(agent *Agent, binaryPath string) (string, error) {
 		}
 		for _, cmd := range cmds {
 			lines = append(lines, fmt.Sprintf("  [write]  Command       → %s", cmd.Path))
+		}
+	}
+
+	if agent.Skills != nil {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("install: dry-run: home dir: %w", err)
+		}
+		names, err := BundledSkillNames()
+		if err != nil {
+			return "", fmt.Errorf("install: dry-run: skills: %w", err)
+		}
+		skillsDir := filepath.Join(home, ".claude", "skills")
+		for _, n := range names {
+			lines = append(lines, fmt.Sprintf("  [write]  Skill          → %s (pin-aware)", filepath.Join(skillsDir, n)))
 		}
 	}
 

@@ -1011,6 +1011,112 @@ func allTools() []ToolDefinition {
 				},
 			},
 		},
+
+		// --- SKILLS TOOLS ---
+
+		{
+			Name:        "skills_list",
+			Description: "List all available skills (bundled and installed), showing name, version, installed status, pinned status, and lint result.",
+			InputSchema: map[string]any{
+				"type":       "object",
+				"properties": map[string]any{},
+			},
+		},
+		{
+			Name:        "skills_install",
+			Description: "Install a bundled skill to ~/.claude/skills/. Respects pin protection unless force is true.",
+			InputSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"name"},
+				"properties": map[string]any{
+					"name": map[string]any{
+						"type":        "string",
+						"description": "Skill name to install (must be in the bundled set).",
+					},
+					"force": map[string]any{
+						"type":        "boolean",
+						"description": "When true, overwrite even if the installed skill is pinned. Default: false.",
+					},
+				},
+			},
+		},
+		{
+			Name:        "skills_pin",
+			Description: "Set pinned:true in the installed SKILL.md to protect it from overwrite or removal.",
+			InputSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"name"},
+				"properties": map[string]any{
+					"name": map[string]any{
+						"type":        "string",
+						"description": "Skill name to pin.",
+					},
+				},
+			},
+		},
+		{
+			Name:        "skills_unpin",
+			Description: "Set pinned:false in the installed SKILL.md, allowing future installs to overwrite it.",
+			InputSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"name"},
+				"properties": map[string]any{
+					"name": map[string]any{
+						"type":        "string",
+						"description": "Skill name to unpin.",
+					},
+				},
+			},
+		},
+		{
+			Name:        "skills_remove",
+			Description: "Remove an installed skill directory. Refuses if the skill is pinned unless force is true.",
+			InputSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"name"},
+				"properties": map[string]any{
+					"name": map[string]any{
+						"type":        "string",
+						"description": "Skill name to remove.",
+					},
+					"force": map[string]any{
+						"type":        "boolean",
+						"description": "When true, remove even if the skill is pinned. Default: false.",
+					},
+				},
+			},
+		},
+		{
+			Name: "skills_lint",
+			Description: "Run the deterministic structural linter on a skill or all installed skills. " +
+				"Returns a list of LintResult objects. On lint error, result is returned with IsError:true " +
+				"(not a protocol error) so the caller receives the full finding list.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"name": map[string]any{
+						"type":        "string",
+						"description": "Skill name to lint. When omitted, all installed skills are linted.",
+					},
+				},
+			},
+		},
+		{
+			Name: "skills_validate",
+			Description: "Run the validation/run.sh script for a skill. " +
+				"Returns a ValidateResult. On failure (non-zero exit or missing script), " +
+				"result is returned with IsError:true so the caller receives the full output.",
+			InputSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"name"},
+				"properties": map[string]any{
+					"name": map[string]any{
+						"type":        "string",
+						"description": "Skill name to validate.",
+					},
+				},
+			},
+		},
 	}
 }
 

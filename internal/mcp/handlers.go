@@ -18,15 +18,16 @@ import (
 // Each handler is responsible for deserializing arguments, calling the service,
 // and packaging the result into a ToolCallResult with a JSON text content block.
 type handlers struct {
-	svc    *service.MemoryService
-	sdd    *service.SDDService
-	cgSvc  *service.CodeGraphService // lazy-initialized on first codegraph tool call
-	logger *slog.Logger
+	svc       *service.MemoryService
+	sdd       *service.SDDService
+	cgSvc     *service.CodeGraphService // lazy-initialized on first codegraph tool call
+	skillsSvc *service.SkillsService    // optional; nil disables skills tools
+	logger    *slog.Logger
 }
 
 // newHandlers constructs a handlers bound to the given services and logger.
-func newHandlers(svc *service.MemoryService, sdd *service.SDDService, logger *slog.Logger) *handlers {
-	return &handlers{svc: svc, sdd: sdd, logger: logger}
+func newHandlers(svc *service.MemoryService, sdd *service.SDDService, skillsSvc *service.SkillsService, logger *slog.Logger) *handlers {
+	return &handlers{svc: svc, sdd: sdd, skillsSvc: skillsSvc, logger: logger}
 }
 
 // handleToolCall dispatches the tool call to the correct handler method.
@@ -96,6 +97,22 @@ func (h *handlers) handleToolCall(ctx context.Context, params ToolCallParams) (*
 		return h.handleSpecReject(ctx, params.Arguments)
 	case "lane_stats":
 		return h.handleLaneStats(ctx, params.Arguments)
+
+	// --- SKILLS TOOLS ---
+	case "skills_list":
+		return h.handleSkillsList(ctx, params.Arguments)
+	case "skills_install":
+		return h.handleSkillsInstall(ctx, params.Arguments)
+	case "skills_pin":
+		return h.handleSkillsPin(ctx, params.Arguments)
+	case "skills_unpin":
+		return h.handleSkillsUnpin(ctx, params.Arguments)
+	case "skills_remove":
+		return h.handleSkillsRemove(ctx, params.Arguments)
+	case "skills_lint":
+		return h.handleSkillsLint(ctx, params.Arguments)
+	case "skills_validate":
+		return h.handleSkillsValidate(ctx, params.Arguments)
 
 	// --- CODEGRAPH TOOLS ---
 	case "codegraph_search":
@@ -476,7 +493,8 @@ func (h *handlers) mapServiceError(method string, err error) *JSONRPCError {
 		errors.Is(err, model.ErrRelationNotFound) ||
 		errors.Is(err, model.ErrBacklogNotFound) ||
 		errors.Is(err, model.ErrSpecNotFound) ||
-		errors.Is(err, model.ErrPushbackNotFound) {
+		errors.Is(err, model.ErrPushbackNotFound) ||
+		errors.Is(err, model.ErrSkillNotFound) {
 		return &JSONRPCError{
 			Code:    CodeMemoryNotFound,
 			Message: fmt.Sprintf("mcp: handle %s: %s", method, err),
@@ -509,7 +527,10 @@ func (h *handlers) mapServiceError(method string, err error) *JSONRPCError {
 		errors.Is(err, model.ErrLaneImmutable) ||
 		errors.Is(err, model.ErrLaneMismatch) ||
 		errors.Is(err, model.ErrAuditFailed) ||
-		errors.Is(err, model.ErrReasonRequired) {
+		errors.Is(err, model.ErrReasonRequired) ||
+		errors.Is(err, model.ErrSkillMalformed) ||
+		errors.Is(err, model.ErrSkillPinned) ||
+		errors.Is(err, model.ErrSkillNoValidation) {
 		return &JSONRPCError{
 			Code:    CodeInvalidParams,
 			Message: fmt.Sprintf("mcp: handle %s: %s", method, err),
@@ -991,6 +1012,205 @@ func resultFromAny(v any) (*ToolCallResult, *JSONRPCError) {
 	return &ToolCallResult{
 		Content: []ContentBlock{{Type: "text", Text: string(b)}},
 	}, nil
+}
+
+// --- SKILLS HANDLERS ---
+
+// skillsUnavailable returns a JSONRPCError indicating the SkillsService is not
+// initialised. This is the guard used by all skills handlers when skillsSvc is nil.
+func (h *handlers) skillsUnavailable(method string) *JSONRPCError {
+	return &JSONRPCError{
+		Code:    CodeInternalError,
+		Message: fmt.Sprintf("mcp: handle %s: skills service not available", method),
+	}
+}
+
+// handleSkillsList processes a skills_list tool call.
+func (h *handlers) handleSkillsList(_ context.Context, _ json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	if h.skillsSvc == nil {
+		return nil, h.skillsUnavailable("skills_list")
+	}
+	infos, err := h.skillsSvc.List()
+	if err != nil {
+		return nil, h.mapServiceError("skills_list", err)
+	}
+	return resultFromAny(infos)
+}
+
+// handleSkillsInstall processes a skills_install tool call.
+func (h *handlers) handleSkillsInstall(_ context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	if h.skillsSvc == nil {
+		return nil, h.skillsUnavailable("skills_install")
+	}
+	var args struct {
+		Name  string `json:"name"`
+		Force bool   `json:"force"`
+	}
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return nil, &JSONRPCError{Code: CodeInvalidParams, Message: fmt.Sprintf("mcp: handle skills_install: invalid arguments: %s", err)}
+	}
+	if args.Name == "" {
+		return nil, &JSONRPCError{Code: CodeInvalidParams, Message: "mcp: handle skills_install: name is required"}
+	}
+	if err := h.skillsSvc.Install(args.Name, args.Force); err != nil {
+		return nil, h.mapServiceError("skills_install", err)
+	}
+	return resultFromAny(map[string]string{"skill": args.Name, "status": "installed"})
+}
+
+// handleSkillsPin processes a skills_pin tool call.
+func (h *handlers) handleSkillsPin(_ context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	if h.skillsSvc == nil {
+		return nil, h.skillsUnavailable("skills_pin")
+	}
+	var args struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return nil, &JSONRPCError{Code: CodeInvalidParams, Message: fmt.Sprintf("mcp: handle skills_pin: invalid arguments: %s", err)}
+	}
+	if args.Name == "" {
+		return nil, &JSONRPCError{Code: CodeInvalidParams, Message: "mcp: handle skills_pin: name is required"}
+	}
+	if err := h.skillsSvc.Pin(args.Name); err != nil {
+		return nil, h.mapServiceError("skills_pin", err)
+	}
+	return resultFromAny(map[string]string{"skill": args.Name, "status": "pinned"})
+}
+
+// handleSkillsUnpin processes a skills_unpin tool call.
+func (h *handlers) handleSkillsUnpin(_ context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	if h.skillsSvc == nil {
+		return nil, h.skillsUnavailable("skills_unpin")
+	}
+	var args struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return nil, &JSONRPCError{Code: CodeInvalidParams, Message: fmt.Sprintf("mcp: handle skills_unpin: invalid arguments: %s", err)}
+	}
+	if args.Name == "" {
+		return nil, &JSONRPCError{Code: CodeInvalidParams, Message: "mcp: handle skills_unpin: name is required"}
+	}
+	if err := h.skillsSvc.Unpin(args.Name); err != nil {
+		return nil, h.mapServiceError("skills_unpin", err)
+	}
+	return resultFromAny(map[string]string{"skill": args.Name, "status": "unpinned"})
+}
+
+// handleSkillsRemove processes a skills_remove tool call.
+func (h *handlers) handleSkillsRemove(_ context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	if h.skillsSvc == nil {
+		return nil, h.skillsUnavailable("skills_remove")
+	}
+	var args struct {
+		Name  string `json:"name"`
+		Force bool   `json:"force"`
+	}
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return nil, &JSONRPCError{Code: CodeInvalidParams, Message: fmt.Sprintf("mcp: handle skills_remove: invalid arguments: %s", err)}
+	}
+	if args.Name == "" {
+		return nil, &JSONRPCError{Code: CodeInvalidParams, Message: "mcp: handle skills_remove: name is required"}
+	}
+	if err := h.skillsSvc.Remove(args.Name, args.Force); err != nil {
+		return nil, h.mapServiceError("skills_remove", err)
+	}
+	return resultFromAny(map[string]string{"skill": args.Name, "status": "removed"})
+}
+
+// handleSkillsLint processes a skills_lint tool call.
+// When lint errors are found, the result is returned with IsError:true so the
+// caller receives the full LintResult payload instead of a protocol error.
+func (h *handlers) handleSkillsLint(_ context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	if h.skillsSvc == nil {
+		return nil, h.skillsUnavailable("skills_lint")
+	}
+	var args struct {
+		Name string `json:"name"`
+	}
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &args); err != nil {
+			return nil, &JSONRPCError{Code: CodeInvalidParams, Message: fmt.Sprintf("mcp: handle skills_lint: invalid arguments: %s", err)}
+		}
+	}
+
+	results, err := h.skillsSvc.Lint(args.Name)
+	if err != nil {
+		return nil, h.mapServiceError("skills_lint", err)
+	}
+
+	// Determine whether any skill has lint errors.
+	hasErrors := false
+	for _, r := range results {
+		if !r.Passed {
+			hasErrors = true
+			break
+		}
+	}
+
+	b, serErr := json.Marshal(results)
+	if serErr != nil {
+		return nil, &JSONRPCError{Code: CodeInternalError, Message: fmt.Sprintf("mcp: handle skills_lint: serialize: %s", serErr)}
+	}
+
+	if hasErrors {
+		return &ToolCallResult{
+			Content: []ContentBlock{{Type: "text", Text: string(b)}},
+			IsError: true,
+		}, nil
+	}
+	return resultFromAny(results)
+}
+
+// handleSkillsValidate processes a skills_validate tool call.
+// When the script fails or the no-validation sentinel is returned, the result
+// is returned with IsError:true so the caller receives the full output.
+func (h *handlers) handleSkillsValidate(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	if h.skillsSvc == nil {
+		return nil, h.skillsUnavailable("skills_validate")
+	}
+	var args struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return nil, &JSONRPCError{Code: CodeInvalidParams, Message: fmt.Sprintf("mcp: handle skills_validate: invalid arguments: %s", err)}
+	}
+	if args.Name == "" {
+		return nil, &JSONRPCError{Code: CodeInvalidParams, Message: "mcp: handle skills_validate: name is required"}
+	}
+
+	result, err := h.skillsSvc.Validate(ctx, args.Name)
+	if err != nil {
+		// ErrSkillNotFound → normal not-found protocol error.
+		// ErrSkillNoValidation → IsError:true with structured payload.
+		if errors.Is(err, model.ErrSkillNoValidation) {
+			payload := map[string]any{
+				"skill":  args.Name,
+				"passed": false,
+				"error":  err.Error(),
+			}
+			b, _ := json.Marshal(payload)
+			return &ToolCallResult{
+				Content: []ContentBlock{{Type: "text", Text: string(b)}},
+				IsError: true,
+			}, nil
+		}
+		return nil, h.mapServiceError("skills_validate", err)
+	}
+
+	if !result.Passed {
+		b, serErr := json.Marshal(result)
+		if serErr != nil {
+			return nil, &JSONRPCError{Code: CodeInternalError, Message: fmt.Sprintf("mcp: handle skills_validate: serialize: %s", serErr)}
+		}
+		return &ToolCallResult{
+			Content: []ContentBlock{{Type: "text", Text: string(b)}},
+			IsError: true,
+		}, nil
+	}
+
+	return resultFromAny(result)
 }
 
 // --- CODEGRAPH HANDLERS ---
