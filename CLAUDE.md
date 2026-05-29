@@ -72,6 +72,31 @@ Scopes (`global` / `org` / `project`) never leak between projects. Migrations ar
 
 The legacy `mneme hook enforce-delegation` (config-based static paths) is deprecated but still works. Migrate with `mneme install claude-code --reinstall-hooks`. See `docs/HOOKS.md` for details.
 
+### Enforcement Model
+
+mneme enforces role boundaries at two layers:
+
+1. **Capability (primary)**: every subagent declares an explicit `tools:`
+   allowlist in its YAML frontmatter (`internal/install/assets/agents/*.md`).
+   Read-only agents (`architect`, `qa-tester`) physically cannot edit code
+   because they lack `Edit`, `Write`, `MultiEdit`, `NotebookEdit`, and `Bash`.
+   Implementer agents (`backend`, `frontend`, `bug-hunter`) have the full
+   edit+execution toolset.
+
+2. **Hook (defense in depth)**: `enforce_delegation.sh` (a bash `PreToolUse`
+   hook) detects the orchestrator by the absence of `agent_id` in the hook
+   payload. Orchestrator edit attempts against protected paths are blocked with
+   exit code 2 and logged as `discovery` memories.
+
+Every blocked attempt is queryable via:
+
+```bash
+mneme search "Blocked edit"
+```
+
+For the full reference — adding subagents, debugging blocks, allowlist tables —
+see `docs/enforcement-model.md`.
+
 ## Testing approach
 
 - `internal/store` tests run against a **real in-memory SQLite** — no mocks (per `docs/ARCHITECTURE.md`). Treat the DB as part of the unit under test.

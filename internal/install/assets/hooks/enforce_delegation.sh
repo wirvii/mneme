@@ -103,6 +103,14 @@ is_allowed_path() {
 # ---------------------------------------------------------------------------
 # 5. Imprimir bloqueo y exit 2
 # ---------------------------------------------------------------------------
+
+# TARGET_PATH holds the file/target being blocked, set before calling block().
+# Used by the mneme discovery logging inside block(). Default: "unknown".
+TARGET_PATH=""
+
+# IMPLEMENTER_AGENT_TYPES={backend,frontend,bug-hunter} — Claude Code hoy solo inyecta agent_id (no agent_type);
+# este hook bloquea SOLO al orquestador. La discriminacion por rol la hace el allowlist tools: de cada subagente.
+
 block() {
   local reason="$1"
   printf 'BLOQUEADO: El orquestador NO puede modificar archivos fuera de la whitelist.\n' >&2
@@ -110,6 +118,15 @@ block() {
   printf 'Whitelist: .claude/**, ~/.claude/**, CLAUDE.md, **/docs/*.md, .claudeignore\n' >&2
   printf 'ACCIÓN: Delegá al subagente correspondiente (Agent tool con subagent_type=backend|frontend|architect|...).\n' >&2
   printf 'Tu trabajo es coordinar y conversar, NO implementar código.\n' >&2
+  if command -v mneme >/dev/null 2>&1; then
+    local _basename="${TARGET_PATH##*/}"
+    local _tool="${TOOL_NAME:-unknown}"
+    mneme save \
+      --type discovery \
+      --title "Blocked edit: principal -> ${_tool} -> ${_basename}" \
+      --content "$(printf '## Blocked edit attempt\n\n**What:** Attempted %s on %s. Agent label: principal. Session: unknown.\n\n**Why:** Capability rule fired: principal is not in implementer allowlist [backend, frontend, bug-hunter]. Edit tools require implementer role.\n\n**Learned:** Pattern to watch: orchestrator attempted to edit directly instead of delegating. Likely cause: agent judged change "trivial" and bypassed SDD. Consider whether the task should have been routed via a lane classifier.\n\n**Reason (hook):** %s' "${_tool}" "${TARGET_PATH:-unknown}" "${reason}")" \
+      >/dev/null 2>&1 || printf '[enforce_delegation] WARNING: mneme save failed (block still enforced)\n' >&2
+  fi
   exit 2
 }
 
@@ -127,6 +144,7 @@ check_file_tool() {
     exit 0
   fi
 
+  TARGET_PATH="$file_path"
   block "Ruta bloqueada: '$file_path'"
 }
 
@@ -176,6 +194,7 @@ check_bash_go() {
         # Validar redirect targets (excepto /dev/*)
         if [[ "$tok_value" != /dev/* ]]; then
           if ! is_allowed_path "$tok_value"; then
+            TARGET_PATH="$tok_value"
             block "Redirect a ruta protegida: '$tok_value'"
           fi
         fi
@@ -205,6 +224,7 @@ check_bash_go() {
               target="$(_find_last_word_target "$tokens_json" "$i")"
               if [[ -n "$target" && "$target" != -* ]]; then
                 if ! is_allowed_path "$target"; then
+                  TARGET_PATH="$target"
                   block "'$tok_value' a ruta protegida: '$target'"
                 fi
               fi
@@ -217,6 +237,7 @@ check_bash_go() {
               if [[ "$next_tok" == -* && "$next_tok" == *i* ]]; then
                 local cmd_str="$command"
                 if [[ "$cmd_str" != *".claude/"* && "$cmd_str" != *"CLAUDE.md"* ]]; then
+                  TARGET_PATH="unknown"
                   block "sed -i fuera de .claude/"
                 fi
               fi
@@ -227,6 +248,7 @@ check_bash_go() {
               if [[ "$next_tok" == -* && "$next_tok" == *i* ]]; then
                 local cmd_str="$command"
                 if [[ "$cmd_str" != *".claude/"* && "$cmd_str" != *"CLAUDE.md"* ]]; then
+                  TARGET_PATH="unknown"
                   block "perl -i fuera de .claude/"
                 fi
               fi
@@ -245,6 +267,7 @@ check_bash_go() {
                 dd_target="${dd_target//\'/}"
                 dd_target="${dd_target//\"/}"
                 if ! is_allowed_path "$dd_target"; then
+                  TARGET_PATH="$dd_target"
                   block "'dd' a ruta protegida: '$dd_target'"
                 fi
               fi
@@ -253,6 +276,7 @@ check_bash_go() {
               # python -c con open/write/Path
               local full_cmd="$command"
               if [[ "$full_cmd" =~ (open|write|Path) && "$full_cmd" != *".claude/"* ]]; then
+                TARGET_PATH="unknown"
                 block "Script Python inline con escritura fuera de .claude/"
               fi
               ;;
@@ -260,6 +284,7 @@ check_bash_go() {
               # node -e con writeFile/appendFile/fs.
               local full_cmd="$command"
               if [[ "$full_cmd" =~ (writeFile|appendFile|fs\.) && "$full_cmd" != *".claude/"* ]]; then
+                TARGET_PATH="unknown"
                 block "Script Node inline con escritura fuera de .claude/"
               fi
               ;;
@@ -343,6 +368,7 @@ check_bash_legacy() {
     target="${target//\"/}"
     if [[ "$target" != /dev/* ]]; then
       if ! is_allowed_path "$target"; then
+        TARGET_PATH="$target"
         block "Redirect a ruta protegida: '$target'"
       fi
     fi
@@ -356,11 +382,13 @@ check_bash_legacy() {
   # --- 8.2 sed -i / perl -i fuera de .claude/
   if [[ "$command" =~ ${BL}sed[[:space:]]+(-[a-zA-Z]*i|--in-place) ]]; then
     if [[ "$command" != *".claude/"* && "$command" != *"CLAUDE.md"* ]]; then
+      TARGET_PATH="unknown"
       block "sed -i fuera de .claude/"
     fi
   fi
   if [[ "$command" =~ ${BL}perl[[:space:]]+-[a-zA-Z]*i ]]; then
     if [[ "$command" != *".claude/"* && "$command" != *"CLAUDE.md"* ]]; then
+      TARGET_PATH="unknown"
       block "perl -i fuera de .claude/"
     fi
   fi
@@ -374,6 +402,7 @@ check_bash_legacy() {
       target="${target//\"/}"
       # Filtrar flags que pudieran quedar como último arg
       if [[ -n "$target" && "$target" != -* ]] && ! is_allowed_path "$target"; then
+        TARGET_PATH="$target"
         block "'$cmd_name' a ruta protegida: '$target'"
       fi
     fi
@@ -385,6 +414,7 @@ check_bash_legacy() {
     target="${target//\'/}"
     target="${target//\"/}"
     if ! is_allowed_path "$target"; then
+      TARGET_PATH="$target"
       block "'dd' a ruta protegida: '$target'"
     fi
   fi
@@ -395,6 +425,7 @@ check_bash_legacy() {
     target="${target//\'/}"
     target="${target//\"/}"
     if ! is_allowed_path "$target"; then
+      TARGET_PATH="$target"
       block "Heredoc a ruta protegida: '$target'"
     fi
   fi
@@ -402,11 +433,13 @@ check_bash_legacy() {
   # --- 8.5 Scripts inline que escriben archivos
   if [[ "$command" =~ ${BL}python[23]?[[:space:]]+-c[[:space:]] ]]; then
     if [[ "$command" =~ (open|write|Path) && "$command" != *".claude/"* ]]; then
+      TARGET_PATH="unknown"
       block "Script Python inline con escritura fuera de .claude/"
     fi
   fi
   if [[ "$command" =~ ${BL}node[[:space:]]+-e[[:space:]] ]]; then
     if [[ "$command" =~ (writeFile|appendFile|fs\.) && "$command" != *".claude/"* ]]; then
+      TARGET_PATH="unknown"
       block "Script Node inline con escritura fuera de .claude/"
     fi
   fi

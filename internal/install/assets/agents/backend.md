@@ -4,6 +4,8 @@ description: "Invocar UNICAMENTE cuando se requiera: 1. Disenar o modificar logi
 model: claude-sonnet-4-6
 color: green
 permissionMode: bypassPermissions
+# bypassPermissions: implementer en autonomous runs (sin prompts de permiso); la barrera de rol es el allowlist tools: de abajo
+tools: Read, Grep, Glob, NotebookRead, NotebookEdit, BashOutput, Edit, Write, MultiEdit, Bash, mcp__mneme__*
 ---
 
 # Backend Agent

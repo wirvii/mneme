@@ -1081,3 +1081,124 @@ func TestPatchSettings_DelegationBashIdempotent(t *testing.T) {
 	assertHookCount(t, hooks, "PreToolUse", "mneme hook pre-tool-use", 1)
 	assertHookCount(t, hooks, "PreToolUse", "/home/user/.claude/hooks/enforce_delegation.sh", 1)
 }
+
+// ---------------------------------------------------------------------------
+// SPEC-034: permission enforcement by capability
+// ---------------------------------------------------------------------------
+
+// TestDelegationHookContent_LogsBlockedAttempts verifies that the embedded hook
+// script contains the mneme discovery-memory logging block and that the exit 2
+// guarantee is preserved.
+func TestDelegationHookContent_LogsBlockedAttempts(t *testing.T) {
+	content, err := DelegationHookContent()
+	if err != nil {
+		t.Fatalf("DelegationHookContent returned error: %v", err)
+	}
+	text := string(content)
+
+	markers := []string{
+		"mneme save",
+		"--type discovery",
+		"Blocked edit: principal",
+		"command -v mneme",
+		"|| ",
+		"exit 2",
+	}
+	for _, m := range markers {
+		if !strings.Contains(text, m) {
+			t.Errorf("hook script missing expected marker: %q", m)
+		}
+	}
+}
+
+// TestAgentAssets_ReadOnlyAllowlists verifies that architect and qa-tester have
+// the correct read-only tools allowlist and do not include edit tools or
+// permissionMode: bypassPermissions.
+func TestAgentAssets_ReadOnlyAllowlists(t *testing.T) {
+	readOnlyAgents := []string{"architect.md", "qa-tester.md"}
+	wantTools := "tools: Read, Grep, Glob, NotebookRead, BashOutput, mcp__mneme__*"
+	editTools := []string{"Edit", "Write", "MultiEdit"}
+
+	destDir := t.TempDir()
+	files, err := filesFromEmbed(builtinAgents, "assets/agents", destDir)
+	if err != nil {
+		t.Fatalf("filesFromEmbed returned error: %v", err)
+	}
+
+	for _, name := range readOnlyAgents {
+		var found bool
+		for _, f := range files {
+			if filepath.Base(f.Path) != name {
+				continue
+			}
+			found = true
+			text := string(f.Content)
+
+			if !strings.Contains(text, wantTools) {
+				t.Errorf("%s: missing expected tools line %q", name, wantTools)
+			}
+			if strings.Contains(text, "permissionMode: bypassPermissions") {
+				t.Errorf("%s: must not contain permissionMode: bypassPermissions", name)
+			}
+			// The tools: line must not include edit tools. Extract just the tools line.
+			for _, line := range strings.Split(text, "\n") {
+				if strings.HasPrefix(strings.TrimSpace(line), "tools:") {
+					for _, editTool := range editTools {
+						if strings.Contains(line, editTool) {
+							t.Errorf("%s: tools: line must not contain %q, got %q", name, editTool, line)
+						}
+					}
+					break
+				}
+			}
+		}
+		if !found {
+			t.Errorf("agent file not found in embed: %s", name)
+		}
+	}
+}
+
+// TestAgentAssets_ImplementerAllowlists verifies that backend, frontend, and
+// bug-hunter have the full edit toolset and mcp__mneme__* in their tools: line.
+func TestAgentAssets_ImplementerAllowlists(t *testing.T) {
+	implementerAgents := []string{"backend.md", "frontend.md", "bug-hunter.md"}
+	requiredTools := []string{"Edit", "Write", "MultiEdit", "Bash", "mcp__mneme__*"}
+
+	destDir := t.TempDir()
+	files, err := filesFromEmbed(builtinAgents, "assets/agents", destDir)
+	if err != nil {
+		t.Fatalf("filesFromEmbed returned error: %v", err)
+	}
+
+	for _, name := range implementerAgents {
+		var found bool
+		for _, f := range files {
+			if filepath.Base(f.Path) != name {
+				continue
+			}
+			found = true
+			text := string(f.Content)
+
+			// Extract the tools: line from the YAML frontmatter.
+			var toolsLine string
+			for _, line := range strings.Split(text, "\n") {
+				if strings.HasPrefix(strings.TrimSpace(line), "tools:") {
+					toolsLine = line
+					break
+				}
+			}
+			if toolsLine == "" {
+				t.Errorf("%s: missing tools: line in frontmatter", name)
+				continue
+			}
+			for _, tool := range requiredTools {
+				if !strings.Contains(toolsLine, tool) {
+					t.Errorf("%s: tools: line missing %q, got %q", name, tool, toolsLine)
+				}
+			}
+		}
+		if !found {
+			t.Errorf("agent file not found in embed: %s", name)
+		}
+	}
+}
