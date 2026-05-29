@@ -351,6 +351,140 @@ func containsStr(slice []string, s string) bool {
 	return false
 }
 
+// TestConflictLink_GlobalGlobal verifies that ConflictLink works correctly when
+// both memories are global-scoped (the fix for SPEC-040 P2: writes to the
+// resolved global store, not the hardcoded projectStore).
+func TestConflictLink_GlobalGlobal(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+
+	saveGlobal := func(title, content string) string {
+		resp, err := svc.Save(ctx, model.SaveRequest{
+			Title:   title,
+			Content: content,
+			Scope:   model.ScopeGlobal,
+			Type:    model.TypeDecision,
+		})
+		if err != nil {
+			t.Fatalf("Save global(%q): %v", title, err)
+		}
+		return resp.ID
+	}
+
+	aID := saveGlobal("Global auth convention", "We use OAuth2 across all services globally")
+	bID := saveGlobal("Global auth alternative", "Some teams use API keys for service-to-service auth")
+
+	// Both global — must succeed (fix: writes to globalStore, not projectStore).
+	if err := svc.ConflictLink(ctx, aID, bID, "conflicts_with", "contradictory global auth choices"); err != nil {
+		t.Fatalf("ConflictLink global-global: %v", err)
+	}
+}
+
+// TestConflictLink_CrossStore verifies that ConflictLink returns
+// ErrCrossStoreRelation when one memory is project-scoped and the other is
+// global-scoped, and that no write is performed.
+func TestConflictLink_CrossStore(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+
+	projectID, err := svc.Save(ctx, model.SaveRequest{
+		Title:   "Project auth decision",
+		Content: "Use JWT for this project's API",
+		Project: "test/project",
+		Scope:   model.ScopeProject,
+		Type:    model.TypeDecision,
+	})
+	if err != nil {
+		t.Fatalf("Save project: %v", err)
+	}
+
+	globalID, err := svc.Save(ctx, model.SaveRequest{
+		Title:   "Global auth convention",
+		Content: "Use OAuth2 across all services globally",
+		Scope:   model.ScopeGlobal,
+		Type:    model.TypeDecision,
+	})
+	if err != nil {
+		t.Fatalf("Save global: %v", err)
+	}
+
+	linkErr := svc.ConflictLink(ctx, projectID.ID, globalID.ID, "conflicts_with", "")
+	if linkErr == nil {
+		t.Fatal("expected ErrCrossStoreRelation, got nil")
+	}
+	if !errors.Is(linkErr, model.ErrCrossStoreRelation) {
+		t.Errorf("expected ErrCrossStoreRelation, got %v", linkErr)
+	}
+}
+
+// TestConflictUnlink_GlobalGlobal verifies that ConflictUnlink works correctly
+// when both memories are global-scoped (symmetric fix with ConflictLink).
+func TestConflictUnlink_GlobalGlobal(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+
+	saveGlobal := func(title, content string) string {
+		resp, err := svc.Save(ctx, model.SaveRequest{
+			Title:   title,
+			Content: content,
+			Scope:   model.ScopeGlobal,
+			Type:    model.TypeDecision,
+		})
+		if err != nil {
+			t.Fatalf("Save global(%q): %v", title, err)
+		}
+		return resp.ID
+	}
+
+	aID := saveGlobal("Global pattern A", "Use REST for external APIs")
+	bID := saveGlobal("Global pattern B", "Use gRPC for external APIs")
+
+	if err := svc.ConflictLink(ctx, aID, bID, "conflicts_with", "REST vs gRPC"); err != nil {
+		t.Fatalf("ConflictLink global-global: %v", err)
+	}
+
+	// Unlink must succeed (fix: operates on globalStore).
+	if err := svc.ConflictUnlink(ctx, aID, bID); err != nil {
+		t.Fatalf("ConflictUnlink global-global: %v", err)
+	}
+}
+
+// TestConflictUnlink_CrossStore verifies that ConflictUnlink returns
+// ErrCrossStoreRelation when one memory is project-scoped and the other global.
+func TestConflictUnlink_CrossStore(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+
+	projectID, err := svc.Save(ctx, model.SaveRequest{
+		Title:   "Project decision",
+		Content: "Use JWT for this project",
+		Project: "test/project",
+		Scope:   model.ScopeProject,
+		Type:    model.TypeDecision,
+	})
+	if err != nil {
+		t.Fatalf("Save project: %v", err)
+	}
+
+	globalID, err := svc.Save(ctx, model.SaveRequest{
+		Title:   "Global convention",
+		Content: "Use OAuth2 globally",
+		Scope:   model.ScopeGlobal,
+		Type:    model.TypeDecision,
+	})
+	if err != nil {
+		t.Fatalf("Save global: %v", err)
+	}
+
+	unlinkErr := svc.ConflictUnlink(ctx, projectID.ID, globalID.ID)
+	if unlinkErr == nil {
+		t.Fatal("expected ErrCrossStoreRelation, got nil")
+	}
+	if !errors.Is(unlinkErr, model.ErrCrossStoreRelation) {
+		t.Errorf("expected ErrCrossStoreRelation, got %v", unlinkErr)
+	}
+}
+
 // TestConflictScan_CLIAbsent verifies that ConflictScan returns an error
 // wrapping model.ErrCLIUnavailable when claude binary is not on PATH.
 func TestConflictScan_CLIAbsent(t *testing.T) {

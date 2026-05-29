@@ -257,14 +257,39 @@ func (svc *MemoryService) judgeOnePair(
 // persistVerdict writes the judgment to the appropriate storage: supersedes
 // relations go to memories.superseded_by via SetSupersededBy; conflicts_with
 // and unrelated go to memory_relations.
+//
+// Both memory IDs are resolved to their owning store. If they live in different
+// stores (one global, one project) persistVerdict returns ErrCrossStoreRelation
+// without writing anything — judgeOnePair converts this into Skipped=true.
 func (svc *MemoryService) persistVerdict(ctx context.Context, v *conflicts.Verdict, aID, bID string) error {
+	_, storeA, err := svc.getFromEitherStore(ctx, aID)
+	if err != nil {
+		return fmt.Errorf("persist verdict: resolve memory A: %w", err)
+	}
+	_, storeB, err := svc.getFromEitherStore(ctx, bID)
+	if err != nil {
+		return fmt.Errorf("persist verdict: resolve memory B: %w", err)
+	}
+	if storeA != nil && storeB != nil && storeA != storeB {
+		return fmt.Errorf("persist verdict: %w", model.ErrCrossStoreRelation)
+	}
+
+	// Use whichever store resolved (prefer A).
+	ts := storeA
+	if ts == nil {
+		ts = storeB
+	}
+	if ts == nil {
+		ts = svc.projectStore
+	}
+
 	switch v.Relation {
 	case "supersedes_a_over_b", "supersedes_b_over_a":
-		if err := svc.projectStore.SetSupersededBy(ctx, v.LoserID, v.WinnerID); err != nil {
+		if err := ts.SetSupersededBy(ctx, v.LoserID, v.WinnerID); err != nil {
 			return fmt.Errorf("set superseded_by: %w", err)
 		}
 	case "conflicts_with", "unrelated":
-		if err := svc.projectStore.CreateMemoryRelation(ctx, aID, bID, v.Relation, "cli", v.Rationale); err != nil {
+		if err := ts.CreateMemoryRelation(ctx, aID, bID, v.Relation, "cli", v.Rationale); err != nil {
 			return fmt.Errorf("create memory relation: %w", err)
 		}
 	}
@@ -277,20 +302,24 @@ func (svc *MemoryService) persistVerdict(ctx context.Context, v *conflicts.Verdi
 // supersedes to; to becomes obsolete). For "conflicts_with" and "unrelated"
 // a row is inserted in memory_relations with judged_by="manual".
 //
+// Both memories must live in the same store (both project or both global).
+// Mixing stores returns ErrCrossStoreRelation without any write.
+//
 // Sentinel errors:
 //   - model.ErrInvalidRelation when relation is not in the accepted set
 //   - model.ErrNotFound when either memory does not exist
+//   - model.ErrCrossStoreRelation when the memories live in different stores
 func (svc *MemoryService) ConflictLink(ctx context.Context, from, to, relation, rationale string) error {
 	validRelations := map[string]bool{
-		"supersedes":   true,
+		"supersedes":     true,
 		"conflicts_with": true,
-		"unrelated":    true,
+		"unrelated":      true,
 	}
 	if !validRelations[relation] {
 		return fmt.Errorf("service: conflict link: %w: %q", model.ErrInvalidRelation, relation)
 	}
 
-	mFrom, _, err := svc.getFromEitherStore(ctx, from)
+	mFrom, storeFrom, err := svc.getFromEitherStore(ctx, from)
 	if err != nil {
 		return fmt.Errorf("service: conflict link: load from: %w", err)
 	}
@@ -298,7 +327,7 @@ func (svc *MemoryService) ConflictLink(ctx context.Context, from, to, relation, 
 		return fmt.Errorf("service: conflict link: from memory: %w", model.ErrNotFound)
 	}
 
-	mTo, _, err := svc.getFromEitherStore(ctx, to)
+	mTo, storeTo, err := svc.getFromEitherStore(ctx, to)
 	if err != nil {
 		return fmt.Errorf("service: conflict link: load to: %w", err)
 	}
@@ -306,14 +335,20 @@ func (svc *MemoryService) ConflictLink(ctx context.Context, from, to, relation, 
 		return fmt.Errorf("service: conflict link: to memory: %w", model.ErrNotFound)
 	}
 
+	if storeFrom != storeTo {
+		return fmt.Errorf("service: conflict link: %w", model.ErrCrossStoreRelation)
+	}
+
+	targetStore := storeFrom
+
 	switch relation {
 	case "supersedes":
 		// from supersedes to: mark to as superseded by from.
-		if err := svc.projectStore.SetSupersededBy(ctx, to, from); err != nil {
+		if err := targetStore.SetSupersededBy(ctx, to, from); err != nil {
 			return fmt.Errorf("service: conflict link: set superseded_by: %w", err)
 		}
 	default:
-		if err := svc.projectStore.CreateMemoryRelation(ctx, from, to, relation, "manual", rationale); err != nil {
+		if err := targetStore.CreateMemoryRelation(ctx, from, to, relation, "manual", rationale); err != nil {
 			return fmt.Errorf("service: conflict link: create relation: %w", err)
 		}
 	}
@@ -324,24 +359,53 @@ func (svc *MemoryService) ConflictLink(ctx context.Context, from, to, relation, 
 // ConflictUnlink removes a memory relation between from and to. For conflicts_with
 // and unrelated, the memory_relations row is deleted. Additionally, if either
 // memory has superseded_by pointing to the other, that column is cleared.
+//
+// When both memories resolve successfully but live in different stores
+// (one global, one project), ErrCrossStoreRelation is returned before any write.
+// When a memory is not found (deleted), the operation continues best-effort
+// using whichever store resolved (with projectStore as final fallback), so that
+// orphaned relation rows can still be cleaned up.
 func (svc *MemoryService) ConflictUnlink(ctx context.Context, from, to string) error {
+	mFrom, storeFrom, err := svc.getFromEitherStore(ctx, from)
+	if err != nil {
+		return fmt.Errorf("service: conflict unlink: load from: %w", err)
+	}
+
+	mTo, storeTo, err := svc.getFromEitherStore(ctx, to)
+	if err != nil {
+		return fmt.Errorf("service: conflict unlink: load to: %w", err)
+	}
+
+	// Both memories exist: check they live in the same store.
+	if storeFrom != nil && storeTo != nil && storeFrom != storeTo {
+		return fmt.Errorf("service: conflict unlink: %w", model.ErrCrossStoreRelation)
+	}
+
+	// Determine target store: prefer the resolved one; fall back to projectStore
+	// for orphaned records when one or both memories were deleted.
+	targetStore := storeFrom
+	if targetStore == nil {
+		targetStore = storeTo
+	}
+	if targetStore == nil {
+		targetStore = svc.projectStore
+	}
+
 	// Attempt to delete from memory_relations (best-effort; may not exist).
-	delErr := svc.projectStore.DeleteMemoryRelation(ctx, from, to)
+	delErr := targetStore.DeleteMemoryRelation(ctx, from, to)
 	if delErr != nil && !errors.Is(delErr, model.ErrNotFound) {
 		return fmt.Errorf("service: conflict unlink: delete relation: %w", delErr)
 	}
 
 	// Clear superseded_by if from→to or to→from supersede relation exists.
-	mFrom, _, err := svc.getFromEitherStore(ctx, from)
-	if err == nil && mFrom != nil && mFrom.SupersededBy == to {
-		if clearErr := svc.projectStore.ClearSupersededBy(ctx, from); clearErr != nil {
+	if mFrom != nil && mFrom.SupersededBy == to {
+		if clearErr := targetStore.ClearSupersededBy(ctx, from); clearErr != nil {
 			return fmt.Errorf("service: conflict unlink: clear superseded_by (from): %w", clearErr)
 		}
 	}
 
-	mTo, _, err := svc.getFromEitherStore(ctx, to)
-	if err == nil && mTo != nil && mTo.SupersededBy == from {
-		if clearErr := svc.projectStore.ClearSupersededBy(ctx, to); clearErr != nil {
+	if mTo != nil && mTo.SupersededBy == from {
+		if clearErr := targetStore.ClearSupersededBy(ctx, to); clearErr != nil {
 			return fmt.Errorf("service: conflict unlink: clear superseded_by (to): %w", clearErr)
 		}
 	}

@@ -191,3 +191,10 @@ var ErrCLIUnavailable = errors.New("claude CLI not available")
 // relation type that is not one of the accepted values: supersedes,
 // conflicts_with, or unrelated.
 var ErrInvalidRelation = errors.New("invalid conflict relation: must be supersedes, conflicts_with, or unrelated")
+
+// ErrCrossStoreRelation is returned when ConflictLink, ConflictUnlink, or
+// persistVerdict are asked to relate a global-scoped memory and a
+// project-scoped memory. The two memories live in separate SQLite databases
+// and no single store can atomically own the relation row. Callers must
+// resolve both IDs to the same store before creating a relation.
+var ErrCrossStoreRelation = errors.New("cannot relate a global and a project memory; they live in separate stores")
