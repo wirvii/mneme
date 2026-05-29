@@ -35,6 +35,7 @@ machine enforces valid transitions; use pushback/resolve for detours via needs_g
 		newSpecResolveCmd(),
 		newSpecHistoryCmd(),
 		newSpecQuickCmd(),
+		newSpecRejectCmd(),
 	)
 
 	return cmd
@@ -410,6 +411,62 @@ they must be resolved one at a time.`,
 	}
 
 	cmd.Flags().StringVar(&flagResolution, "resolution", "", "Resolution of the pushback (required)")
+
+	return cmd
+}
+
+// newSpecRejectCmd returns the "mneme spec reject" subcommand.
+// It sends a spec backward from qa (standard) or audit (trivial) to implementing,
+// recording the reason in spec_history. Both --reason and --by are required.
+func newSpecRejectCmd() *cobra.Command {
+	var (
+		flagReason string
+		flagBy     string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "reject <id>",
+		Short: "Reject a spec from qa/audit back to implementing",
+		Long: `Reject a spec from QA review back to implementing.
+
+Standard lane: qa → implementing.
+Trivial lane:  audit → implementing.
+
+The rejection reason is required and is persisted in spec_history. Use this
+command to model a QA review that found defects requiring further implementation
+work. For ambiguity or missing spec detail use "spec pushback" instead.`,
+		Example: `  mneme spec reject SPEC-012 --reason "edge case in payment flow" --by qa-agent`,
+		Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if flagReason == "" {
+				return fmt.Errorf("--reason is required")
+			}
+			if flagBy == "" {
+				return fmt.Errorf("--by is required")
+			}
+
+			svc, cleanup, err := initSDDService()
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+
+			spec, err := svc.SpecReject(cmd.Context(), model.SpecRejectRequest{
+				ID:     args[0],
+				Reason: flagReason,
+				By:     flagBy,
+			})
+			if err != nil {
+				return err
+			}
+
+			fmt.Fprintf(os.Stdout, "%s: rejected back to implementing (by %s)\n", spec.ID, flagBy)
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&flagReason, "reason", "", "Rejection reason (required)")
+	cmd.Flags().StringVar(&flagBy, "by", "", "Who triggers the rejection (required)")
 
 	return cmd
 }
