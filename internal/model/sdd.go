@@ -6,6 +6,59 @@ package model
 
 import "time"
 
+// LaneAuditRecord is a structured record of a single lane auditor run.
+// One row is inserted per run — both passes and failures — so lane_status
+// can read the latest outcome without parsing spec_history text.
+type LaneAuditRecord struct {
+	// ID is the auto-incremented row identifier assigned by SQLite.
+	ID int64 `json:"id"`
+
+	// SpecID references the audited spec.
+	SpecID string `json:"spec_id"`
+
+	// Passed is true when all auditor checks passed for this run.
+	Passed bool `json:"passed"`
+
+	// FileCount is the number of files changed according to git diff --numstat.
+	FileCount int `json:"file_count"`
+
+	// LinesChanged is the sum of added and removed lines across all files.
+	LinesChanged int `json:"lines_changed"`
+
+	// Breaches is a newline-joined string of individual threshold violations.
+	// Empty string when Passed is true.
+	Breaches string `json:"breaches,omitempty"`
+
+	// BaseSHA is the git ref used as the base for diffing (the actual SHA or
+	// "(default)" when the auditor's merge-base logic was used).
+	BaseSHA string `json:"base_sha,omitempty"`
+
+	// CreatedAt is when this audit run was recorded.
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// LaneStatsResponse summarises lane compliance metrics for a project.
+// All counts are scoped to the project passed to LaneStats.
+type LaneStatsResponse struct {
+	// TrivialCount is the total number of trivial-lane specs.
+	TrivialCount int `json:"trivial_count"`
+
+	// AuditFailCount is the number of trivial specs whose latest audit failed.
+	AuditFailCount int `json:"audit_fail_count"`
+
+	// AuditFailRate is AuditFailCount / TrivialCount when TrivialCount > 0.
+	// Zero when there are no trivial specs.
+	AuditFailRate float64 `json:"audit_fail_rate"`
+
+	// OverrideCount is the number of trivial specs that were completed via
+	// lane_override (detected from history reasons starting with "lane override:").
+	OverrideCount int `json:"override_count"`
+
+	// ReclassifyCount is the number of trivial specs reclassified to standard
+	// (detected from history reasons containing "reclassified from trivial to standard").
+	ReclassifyCount int `json:"reclassify_count"`
+}
+
 // --- LANE ---
 
 // Lane controls the SDD workflow path for a spec. Trivial items take a
@@ -361,6 +414,12 @@ type Spec struct {
 	// Required when Lane is trivial; used by the post-implementation auditor.
 	Scope string `json:"scope,omitempty"`
 
+	// BaseSHA is the full git commit SHA captured when the spec first entered
+	// implementing status. Used by the lane auditor to produce a per-spec diff
+	// (rather than a diff against the whole branch) so audits are accurate when
+	// multiple specs are in flight on the same branch.
+	BaseSHA string `json:"base_sha,omitempty"`
+
 	// AssignedAgents lists which agents are currently assigned.
 	AssignedAgents []string `json:"assigned_agents,omitempty"`
 
@@ -489,6 +548,26 @@ type LaneOverrideRequest struct {
 	By string `json:"by"`
 }
 
+// SpecRejectRequest sends a spec backward from QA/audit to implementing,
+// recording a rejection reason. This is the canonical way to model a QA
+// review that uncovers defects requiring further implementation work.
+//
+// Standard lane: qa → implementing.
+// Trivial lane:  audit → implementing.
+//
+// Distinct from SpecPushback (which models ambiguity → needs_grill).
+type SpecRejectRequest struct {
+	// ID is the spec to reject.
+	ID string `json:"id"`
+
+	// Reason documents why the spec was rejected. Must be non-empty
+	// (ErrReasonRequired) — rejections are auditable decisions.
+	Reason string `json:"reason"`
+
+	// By identifies who triggered the rejection (e.g. "qa-agent", "orchestrator").
+	By string `json:"by"`
+}
+
 // LaneStatusResponse is returned by LaneStatus with lane classification details
 // and the latest audit summary.
 type LaneStatusResponse struct {
@@ -496,6 +575,12 @@ type LaneStatusResponse struct {
 	Lane        Lane          `json:"lane"`
 	Scope       string        `json:"scope,omitempty"`
 	LatestAudit *AuditSummary `json:"latest_audit,omitempty"`
+
+	// RejectionCount is the number of times this spec was rejected back to
+	// implementing from qa (standard) or audit (trivial). Derived from
+	// spec_history entries where to_status=implementing and from_status is
+	// qa or audit. No additional column — history is the source of truth.
+	RejectionCount int `json:"rejection_count"`
 }
 
 // AuditSummary summarises the most recent auditor run for a spec.
