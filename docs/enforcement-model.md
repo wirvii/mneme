@@ -33,6 +33,7 @@ it, regardless of what the prompt says.
 |---|---|
 | `architect` | `Read, Grep, Glob, NotebookRead, BashOutput, mcp__mneme__*` |
 | `qa-tester` | `Read, Grep, Glob, NotebookRead, BashOutput, mcp__mneme__*` |
+| `diagnostician` | `Read, Grep, Glob, NotebookRead, BashOutput, Bash, mcp__mneme__*` — Bash for log reading; NO Edit/Write/MultiEdit |
 | `backend` | `Read, Grep, Glob, NotebookRead, NotebookEdit, BashOutput, Edit, Write, MultiEdit, Bash, mcp__mneme__*` |
 | `frontend` | `Read, Grep, Glob, NotebookRead, NotebookEdit, BashOutput, Edit, Write, MultiEdit, Bash, mcp__mneme__*` |
 | `bug-hunter` | `Read, Grep, Glob, NotebookRead, NotebookEdit, BashOutput, Edit, Write, MultiEdit, Bash, mcp__mneme__*` |

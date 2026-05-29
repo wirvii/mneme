@@ -6,6 +6,52 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [v1.10.0] — 2026-05-29
+
+### Added
+
+- **Process/Architecture split** (SPEC-041): mneme now separates process instructions
+  (owned globally by mneme) from project architecture docs (owned by each project).
+
+  - **Managed-block primitive** (`internal/install/managedblock.go`): `upsertManagedBlock`
+    and `readManagedBlock` replace the old `InjectProtocol`/`mergeProtocol` pair. Single
+    versioned block `<!-- mneme:managed:start v=N -->` … `<!-- mneme:managed:end -->`.
+    Idempotent by construction; detects and removes legacy `mneme:protocol` markers as a
+    one-time migration.
+
+  - **Operating manual** (`internal/install/assets/operating-manual.md`): lean 7-section
+    global manual (roles, delegation triggers, SDD+lanes, skills, models, memory) embedded
+    at build time. Replaces the old `protocol()` function. `mneme install claude-code` now
+    runs an "Operating manual" step instead of "Protocol".
+
+  - **`diagnostician` agent** (`internal/install/assets/agents/diagnostician.md`): new
+    bundled agent for ops/diagnostics. Tools: Read, Grep, Glob, BashOutput, Bash,
+    mcp__mneme__* — Bash for log reading; no Edit/Write/MultiEdit. Model: sonnet.
+    6 bundled agents total (was 5).
+
+  - **Drift detection** (`internal/service/drift.go`): `DetectDrift` scans a project's
+    `CLAUDE.md` (outside the managed block) and reports two advisory categories:
+    (a) headings duplicating global manual sections; (b) phrases contradicting the
+    enforcement model. Deterministic, no LLM, exit 0 always.
+
+  - **Extended `mneme init`**: default mode now applies managed blocks (global manual +
+    repo block) + prints drift report + shows legacy migration plan in dry-run. New
+    `--check` flag for report-only mode. `--apply` remains the gate for the destructive
+    legacy migration.
+
+  - **MCP `init` tool** (57th tool): applies managed blocks and runs drift detection.
+    `check=true` for report-only. Destructive migration remains CLI-only.
+
+  - **`model.ErrNotARepo`** sentinel for init operations outside a git repo.
+
+### Changed
+
+- `Agent.Protocol` field replaced by `Agent.Manual` in `internal/install`. All callers
+  updated. `InjectProtocol`/`mergeProtocol` removed; use `InjectManual`/`upsertManagedBlock`.
+- `service.NewInitService` now accepts `InitServiceOptions` for injectable UpsertBlock and
+  ManualContent dependencies (no breaking change for zero-value callers).
+- `docs/enforcement-model.md`: diagnostician added to the agent allowlist table.
+
 ## [v1.9.1] — 2026-05-29
 
 ### Fixed
