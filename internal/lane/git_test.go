@@ -73,6 +73,65 @@ func TestDiffStats_Totals(t *testing.T) {
 	}
 }
 
+// TestGitDiffer_HeadSHA verifies that HeadSHA returns a non-empty 40-hex SHA
+// for a valid repository, and returns an error for a non-git directory.
+func TestGitDiffer_HeadSHA(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found in PATH")
+	}
+
+	dir := t.TempDir()
+
+	gitRun := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=Test",
+			"GIT_AUTHOR_EMAIL=test@test.com",
+			"GIT_COMMITTER_NAME=Test",
+			"GIT_COMMITTER_EMAIL=test@test.com",
+		)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+
+	gitRun("init", "-b", "main")
+	gitRun("config", "user.email", "test@test.com")
+	gitRun("config", "user.name", "Test")
+
+	fPath := filepath.Join(dir, "file.go")
+	if err := os.WriteFile(fPath, []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	gitRun("add", ".")
+	gitRun("commit", "-m", "initial")
+
+	differ := &GitDiffer{RepoDir: dir}
+	sha, err := differ.HeadSHA()
+	if err != nil {
+		t.Fatalf("HeadSHA: %v", err)
+	}
+	if len(sha) != 40 {
+		t.Errorf("expected 40-char SHA, got %q (len=%d)", sha, len(sha))
+	}
+	for _, c := range sha {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			t.Errorf("HeadSHA returned non-hex char %q in %q", c, sha)
+			break
+		}
+	}
+
+	// Non-git directory should return an error.
+	notGit := t.TempDir()
+	notGitDiffer := &GitDiffer{RepoDir: notGit}
+	_, err = notGitDiffer.HeadSHA()
+	if err == nil {
+		t.Error("expected error from HeadSHA in non-git dir, got nil")
+	}
+}
+
 // TestGitDiffer_NumStat performs an integration test against a temporary git
 // repository. It creates a commit, modifies a file, and verifies NumStat output.
 func TestGitDiffer_NumStat(t *testing.T) {
