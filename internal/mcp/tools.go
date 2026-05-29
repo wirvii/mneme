@@ -387,10 +387,10 @@ func allTools() []ToolDefinition {
 
 		{
 			Name:        "backlog_add",
-			Description: "Add a new item to the project backlog.",
+			Description: "Add a new item to the project backlog. lane is required; scope is required when lane=trivial.",
 			InputSchema: map[string]any{
 				"type":     "object",
-				"required": []string{"title"},
+				"required": []string{"title", "lane"},
 				"properties": map[string]any{
 					"title": map[string]any{
 						"type":        "string",
@@ -408,6 +408,15 @@ func allTools() []ToolDefinition {
 					"project": map[string]any{
 						"type":        "string",
 						"description": "Project slug. Defaults to detected project.",
+					},
+					"lane": map[string]any{
+						"type":        "string",
+						"description": "SDD workflow lane. trivial: ≤3 files, ≤20 lines, no public API change, no SQL/cmd. standard: everything else.",
+						"enum":        []string{"trivial", "standard"},
+					},
+					"scope": map[string]any{
+						"type":        "string",
+						"description": "Glob pattern for files this item may touch (e.g. internal/store/**). Required when lane=trivial.",
 					},
 				},
 			},
@@ -467,10 +476,10 @@ func allTools() []ToolDefinition {
 
 		{
 			Name:        "spec_new",
-			Description: "Create a new spec in draft status.",
+			Description: "Create a new spec in draft status. lane is required; scope is required when lane=trivial.",
 			InputSchema: map[string]any{
 				"type":     "object",
-				"required": []string{"title"},
+				"required": []string{"title", "lane"},
 				"properties": map[string]any{
 					"title": map[string]any{
 						"type":        "string",
@@ -483,6 +492,15 @@ func allTools() []ToolDefinition {
 					"project": map[string]any{
 						"type":        "string",
 						"description": "Project slug. Defaults to detected project.",
+					},
+					"lane": map[string]any{
+						"type":        "string",
+						"description": "SDD workflow lane. trivial: ≤3 files, ≤20 lines, no public API change, no SQL/cmd. standard: everything else.",
+						"enum":        []string{"trivial", "standard"},
+					},
+					"scope": map[string]any{
+						"type":        "string",
+						"description": "Glob pattern for files this spec may touch. Required when lane=trivial.",
 					},
 				},
 			},
@@ -577,6 +595,7 @@ func allTools() []ToolDefinition {
 						"enum": []string{
 							"draft", "speccing", "needs_grill", "specced",
 							"planning", "planned", "implementing", "qa", "done",
+							"rationale", "audit",
 						},
 					},
 					"project": map[string]any{
@@ -586,6 +605,112 @@ func allTools() []ToolDefinition {
 				},
 			},
 		},
+		// --- LANE TOOLS ---
+
+		{
+			Name:        "spec_quick",
+			Description: "Advance a trivial-lane spec from draft to implementing in one step by recording a rationale. Rejected for standard-lane specs.",
+			InputSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"id", "rationale", "by"},
+				"properties": map[string]any{
+					"id": map[string]any{
+						"type":        "string",
+						"description": "Spec ID (must be trivial lane, draft status).",
+					},
+					"rationale": map[string]any{
+						"type":        "string",
+						"description": "1–3 sentence justification for the trivial classification.",
+					},
+					"by": map[string]any{
+						"type":        "string",
+						"description": "Who triggers the advance (e.g. orchestrator).",
+					},
+				},
+			},
+		},
+		{
+			Name:        "lane_audit",
+			Description: "Run the deterministic post-implementation auditor for a trivial-lane spec in audit status. Checks file count, line count, forbidden paths, scope, and public-symbol changes against the declared scope. On pass: advances to done. On fail: stays in audit, saves discovery memory.",
+			InputSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"id"},
+				"properties": map[string]any{
+					"id": map[string]any{
+						"type":        "string",
+						"description": "Spec ID to audit (must be trivial lane, audit status).",
+					},
+					"base_ref": map[string]any{
+						"type":        "string",
+						"description": "Git ref to diff against. Defaults to merge-base with the default branch.",
+					},
+				},
+			},
+		},
+		{
+			Name:        "lane_reclassify",
+			Description: "Reclassify a spec's lane from trivial to standard. Only trivial→standard is allowed. Moves the spec to speccing so the full SDD workflow can proceed.",
+			InputSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"id", "lane", "by"},
+				"properties": map[string]any{
+					"id": map[string]any{
+						"type":        "string",
+						"description": "Spec ID to reclassify.",
+					},
+					"lane": map[string]any{
+						"type":        "string",
+						"description": "Target lane (only 'standard' is allowed).",
+						"enum":        []string{"standard"},
+					},
+					"scope": map[string]any{
+						"type":        "string",
+						"description": "Updated scope glob (optional when moving to standard).",
+					},
+					"by": map[string]any{
+						"type":        "string",
+						"description": "Who triggers the reclassification.",
+					},
+				},
+			},
+		},
+		{
+			Name:        "lane_override",
+			Description: "Override a failed lane audit and advance a trivial-lane spec from audit to done. Requires a documented reason. Persists a discovery memory.",
+			InputSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"id", "reason", "by"},
+				"properties": map[string]any{
+					"id": map[string]any{
+						"type":        "string",
+						"description": "Spec ID to override (must be trivial lane, audit status).",
+					},
+					"reason": map[string]any{
+						"type":        "string",
+						"description": "Justification for bypassing the audit (required, persisted as memory).",
+					},
+					"by": map[string]any{
+						"type":        "string",
+						"description": "Who triggers the override.",
+					},
+				},
+			},
+		},
+		{
+			Name:        "lane_status",
+			Description: "Show the lane classification, scope, and latest audit summary for a spec.",
+			InputSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"id"},
+				"properties": map[string]any{
+					"id": map[string]any{
+						"type":        "string",
+						"description": "Spec ID to inspect.",
+					},
+				},
+			},
+		},
+
 		// mem_gaps
 		{
 			Name:        "mem_gaps",

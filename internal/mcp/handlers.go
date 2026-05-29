@@ -82,6 +82,16 @@ func (h *handlers) handleToolCall(ctx context.Context, params ToolCallParams) (*
 		return h.handleSpecResolve(ctx, params.Arguments)
 	case "spec_list":
 		return h.handleSpecList(ctx, params.Arguments)
+	case "spec_quick":
+		return h.handleSpecQuick(ctx, params.Arguments)
+	case "lane_audit":
+		return h.handleLaneAudit(ctx, params.Arguments)
+	case "lane_reclassify":
+		return h.handleLaneReclassify(ctx, params.Arguments)
+	case "lane_override":
+		return h.handleLaneOverride(ctx, params.Arguments)
+	case "lane_status":
+		return h.handleLaneStatus(ctx, params.Arguments)
 
 	// --- CODEGRAPH TOOLS ---
 	case "codegraph_search":
@@ -488,7 +498,14 @@ func (h *handlers) mapServiceError(method string, err error) *JSONRPCError {
 		errors.Is(err, model.ErrInvalidSeverity) ||
 		errors.Is(err, model.ErrEmptyPattern) ||
 		errors.Is(err, model.ErrInvalidWeight) ||
-		errors.Is(err, model.ErrAmbiguousSeed) {
+		errors.Is(err, model.ErrAmbiguousSeed) ||
+		errors.Is(err, model.ErrLaneRequired) ||
+		errors.Is(err, model.ErrInvalidLane) ||
+		errors.Is(err, model.ErrScopeRequired) ||
+		errors.Is(err, model.ErrLaneImmutable) ||
+		errors.Is(err, model.ErrLaneMismatch) ||
+		errors.Is(err, model.ErrAuditFailed) ||
+		errors.Is(err, model.ErrReasonRequired) {
 		return &JSONRPCError{
 			Code:    CodeInvalidParams,
 			Message: fmt.Sprintf("mcp: handle %s: %s", method, err),
@@ -784,6 +801,109 @@ func (h *handlers) handleSpecList(ctx context.Context, raw json.RawMessage) (*To
 	}
 
 	return resultFromAny(specs)
+}
+
+// handleSpecQuick processes a spec_quick tool call.
+func (h *handlers) handleSpecQuick(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	if h.sdd == nil {
+		return nil, h.sddUnavailable("spec_quick")
+	}
+	var req model.SpecQuickRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return nil, &JSONRPCError{
+			Code:    CodeInvalidParams,
+			Message: fmt.Sprintf("mcp: handle spec_quick: invalid arguments: %s", err),
+		}
+	}
+	spec, err := h.sdd.SpecQuick(ctx, req)
+	if err != nil {
+		return nil, h.mapServiceError("spec_quick", err)
+	}
+	return resultFromAny(spec)
+}
+
+// handleLaneAudit processes a lane_audit tool call.
+func (h *handlers) handleLaneAudit(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	if h.sdd == nil {
+		return nil, h.sddUnavailable("lane_audit")
+	}
+	var req model.LaneAuditRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return nil, &JSONRPCError{
+			Code:    CodeInvalidParams,
+			Message: fmt.Sprintf("mcp: handle lane_audit: invalid arguments: %s", err),
+		}
+	}
+	result, err := h.sdd.LaneAudit(ctx, req)
+	if err != nil {
+		return nil, h.mapServiceError("lane_audit", err)
+	}
+	return resultFromAny(result)
+}
+
+// handleLaneReclassify processes a lane_reclassify tool call.
+func (h *handlers) handleLaneReclassify(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	if h.sdd == nil {
+		return nil, h.sddUnavailable("lane_reclassify")
+	}
+	var req model.LaneReclassifyRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return nil, &JSONRPCError{
+			Code:    CodeInvalidParams,
+			Message: fmt.Sprintf("mcp: handle lane_reclassify: invalid arguments: %s", err),
+		}
+	}
+	spec, err := h.sdd.LaneReclassify(ctx, req)
+	if err != nil {
+		return nil, h.mapServiceError("lane_reclassify", err)
+	}
+	return resultFromAny(spec)
+}
+
+// handleLaneOverride processes a lane_override tool call.
+func (h *handlers) handleLaneOverride(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	if h.sdd == nil {
+		return nil, h.sddUnavailable("lane_override")
+	}
+	var req model.LaneOverrideRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return nil, &JSONRPCError{
+			Code:    CodeInvalidParams,
+			Message: fmt.Sprintf("mcp: handle lane_override: invalid arguments: %s", err),
+		}
+	}
+	spec, err := h.sdd.LaneOverride(ctx, req)
+	if err != nil {
+		return nil, h.mapServiceError("lane_override", err)
+	}
+	return resultFromAny(spec)
+}
+
+// handleLaneStatus processes a lane_status tool call.
+func (h *handlers) handleLaneStatus(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	if h.sdd == nil {
+		return nil, h.sddUnavailable("lane_status")
+	}
+	var args struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return nil, &JSONRPCError{
+			Code:    CodeInvalidParams,
+			Message: fmt.Sprintf("mcp: handle lane_status: invalid arguments: %s", err),
+		}
+	}
+	if args.ID == "" {
+		return nil, &JSONRPCError{
+			Code:    CodeInvalidParams,
+			Message: "mcp: handle lane_status: id is required",
+		}
+	}
+	resp, err := h.sdd.LaneStatus(ctx, args.ID)
+	if err != nil {
+		return nil, h.mapServiceError("lane_status", err)
+	}
+	return resultFromAny(resp)
 }
 
 // resultFromAny serializes v to a compact JSON string and wraps it in a single

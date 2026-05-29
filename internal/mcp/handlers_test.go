@@ -59,6 +59,7 @@ func TestMapServiceError_InternalErrorIncludesMessage(t *testing.T) {
 		Arguments: mustMarshal(t, map[string]any{
 			"title":       "Test item for error propagation",
 			"description": "Checking that store errors reach the caller.",
+			"lane":        "standard",
 		}),
 	})
 	if addResp.Error != nil {
