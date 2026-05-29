@@ -1,4 +1,4 @@
-# Lanes Reference (v1.5.0)
+# Lanes Reference (v1.6.0)
 
 Lanes introduce two SDD workflow paths — **trivial** and **standard** — so that genuinely small changes can move through the system quickly without bypassing process controls.
 
@@ -72,6 +72,48 @@ The auditor runs when `lane audit <id>` is called on a trivial spec in `audit` s
 | TS/JS exports | `export ` added/removed | `public export changed in <path>` |
 
 The base ref defaults to `git merge-base HEAD <default-branch>`. Override with `--base <ref>`.
+
+**Base-SHA binding (v1.6.0):** When a spec enters `implementing`, mneme captures the current HEAD SHA as `base_sha` on the spec. On subsequent `lane_audit` runs the base ref is resolved in this order:
+1. Explicit `--base <ref>` / `base_ref` argument (caller override).
+2. `spec.base_sha` (captured at implementing time — recommended for multi-spec branches).
+3. `""` (auditor falls back to `git merge-base HEAD <default-branch>`).
+
+## Reject (v1.6.0)
+
+When a QA review finds defects, send the spec backward to `implementing` without changing the spec document:
+
+```bash
+mneme spec reject SPEC-012 --reason "payment edge case fails" --by qa-agent
+# MCP: spec_reject {id, reason, by}
+```
+
+- Standard lane: `qa → implementing`
+- Trivial lane: `audit → implementing`
+
+The rejection reason is persisted in `spec_history`. `lane status` reports the total `rejection_count` derived from history (no extra column). Distinct from `spec_pushback` which models ambiguity → `needs_grill`.
+
+## Structured Audit Records (v1.6.0)
+
+Every `lane_audit` run inserts a row in the `lane_audits` table (migration 012) — both passes and failures. `lane status` reads the latest row instead of parsing `spec_history` text, making audit outcomes deterministic and format-independent.
+
+Fields stored: `spec_id`, `passed`, `file_count`, `lines_changed`, `breaches` (newline-joined), `base_sha` (ref used for diffing), `created_at`.
+
+## Lane Stats (v1.6.0)
+
+```bash
+mneme lane stats [--json]
+# MCP: lane_stats {project?}
+```
+
+Reports trivial-lane compliance for the current project:
+
+| Field | Description |
+|-------|-------------|
+| `trivial_count` | Total trivial specs |
+| `audit_fail_count` | Trivial specs whose latest audit failed |
+| `audit_fail_rate` | `audit_fail_count / trivial_count` |
+| `override_count` | Specs completed via `lane_override` |
+| `reclassify_count` | Specs reclassified trivial → standard |
 
 ## How to Fix a Failed Audit
 
