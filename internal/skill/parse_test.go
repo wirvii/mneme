@@ -135,6 +135,13 @@ func TestParseFile(t *testing.T) {
 func TestRewritePinned_RoundTrip(t *testing.T) {
 	data := []byte(conformantSKILLMD)
 
+	// Parse original to capture baseline description.
+	orig, err := skill.Parse(data)
+	if err != nil {
+		t.Fatalf("Parse original: %v", err)
+	}
+	wantDesc := orig.Description
+
 	pinned, err := skill.RewritePinned(data, true)
 	if err != nil {
 		t.Fatalf("RewritePinned(true): %v", err)
@@ -147,13 +154,16 @@ func TestRewritePinned_RoundTrip(t *testing.T) {
 	if !s.Pinned {
 		t.Error("Pinned should be true after RewritePinned(true)")
 	}
+	if s.Description != wantDesc {
+		t.Errorf("Description corrupted after first RewritePinned: got %q, want %q", s.Description, wantDesc)
+	}
 
 	// Sections must survive the round-trip.
 	if len(s.Sections) != 5 {
 		t.Errorf("Sections count = %d after RewritePinned, want 5", len(s.Sections))
 	}
 
-	// Unpin.
+	// Unpin — description must still be intact.
 	unpinned, err := skill.RewritePinned(pinned, false)
 	if err != nil {
 		t.Fatalf("RewritePinned(false): %v", err)
@@ -164,6 +174,55 @@ func TestRewritePinned_RoundTrip(t *testing.T) {
 	}
 	if s2.Pinned {
 		t.Error("Pinned should be false after RewritePinned(false)")
+	}
+	if s2.Description != wantDesc {
+		t.Errorf("Description corrupted after second RewritePinned: got %q, want %q", s2.Description, wantDesc)
+	}
+
+	// Third cycle — pin again. Description must not accumulate extra quoting.
+	pinned2, err := skill.RewritePinned(unpinned, true)
+	if err != nil {
+		t.Fatalf("RewritePinned(true) cycle 3: %v", err)
+	}
+	s3, err := skill.Parse(pinned2)
+	if err != nil {
+		t.Fatalf("Parse after cycle 3 RewritePinned: %v", err)
+	}
+	if s3.Description != wantDesc {
+		t.Errorf("Description corrupted after third RewritePinned: got %q, want %q", s3.Description, wantDesc)
+	}
+}
+
+// TestRewritePinned_DescriptionWithSpecialChars verifies that description values
+// containing double-quotes and other special characters survive multiple
+// RewritePinned cycles without corruption or accumulated quoting.
+func TestRewritePinned_DescriptionWithSpecialChars(t *testing.T) {
+	// Build a SKILL.md with a description that contains double-quotes and
+	// a backslash — characters that strconv.Quote would escape.
+	specialDesc := `Use this skill when "debugging" or escaping \ chars.`
+	md := "---\n" +
+		"name: test-skill\n" +
+		"description: " + specialDesc + "\n" +
+		"version: 1.0.0\n" +
+		"pinned: false\n" +
+		"---\n" +
+		conformantBody
+
+	data := []byte(md)
+
+	for cycle := 1; cycle <= 3; cycle++ {
+		var err error
+		data, err = skill.RewritePinned(data, cycle%2 == 1)
+		if err != nil {
+			t.Fatalf("cycle %d RewritePinned: %v", cycle, err)
+		}
+		s, parseErr := skill.Parse(data)
+		if parseErr != nil {
+			t.Fatalf("cycle %d Parse: %v", cycle, parseErr)
+		}
+		if s.Description != specialDesc {
+			t.Errorf("cycle %d: Description = %q, want %q", cycle, s.Description, specialDesc)
+		}
 	}
 }
 

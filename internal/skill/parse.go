@@ -136,7 +136,7 @@ func parseFrontmatter(lines []string) (Metadata, int, error) {
 		case "name":
 			meta.Name = value
 		case "description":
-			meta.Description = value
+			meta.Description = unquoteIfNeeded(value)
 		case "version":
 			meta.Version = value
 		case "pinned":
@@ -200,7 +200,7 @@ func WriteFrontmatter(m Metadata) []byte {
 	var buf bytes.Buffer
 	buf.WriteString("---\n")
 	buf.WriteString("name: " + m.Name + "\n")
-	buf.WriteString("description: " + strconv.Quote(m.Description) + "\n")
+	buf.WriteString("description: " + m.Description + "\n")
 	buf.WriteString("version: " + m.Version + "\n")
 	if m.Pinned {
 		buf.WriteString("pinned: true\n")
@@ -241,6 +241,23 @@ func RewritePinned(data []byte, pinned bool) ([]byte, error) {
 		buf.WriteByte('\n')
 	}
 	return buf.Bytes(), nil
+}
+
+// unquoteIfNeeded removes a surrounding pair of double-quote characters from s
+// using strconv.Unquote, which also handles escape sequences. If s is not a
+// valid quoted string (i.e. it does not start and end with `"`, or Unquote
+// returns an error), the original value is returned unchanged.
+//
+// This makes parseFrontmatter tolerant of values that were previously written
+// with strconv.Quote (which wrapped the description in double-quotes). Without
+// this, each RewritePinned cycle would add another layer of quoting.
+func unquoteIfNeeded(s string) string {
+	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
+		if unquoted, err := strconv.Unquote(s); err == nil {
+			return unquoted
+		}
+	}
+	return s
 }
 
 // sortedKeys returns the keys of a map[string]string in sorted order.
