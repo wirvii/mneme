@@ -193,6 +193,8 @@ func TestToolsList(t *testing.T) {
 		"skills_remove", "skills_lint", "skills_validate",
 		// Model tools (SPEC-038)
 		"model_list", "model_set", "model_reset",
+		// Conflicts tools (SPEC-039)
+		"conflicts_candidates", "conflicts_scan", "conflicts_link", "conflicts_unlink", "conflicts_list",
 	}
 	if len(result.Tools) != len(wantNames) {
 		t.Fatalf("got %d tools, want %d", len(result.Tools), len(wantNames))

@@ -123,6 +123,18 @@ func (h *handlers) handleToolCall(ctx context.Context, params ToolCallParams) (*
 	case "model_reset":
 		return h.handleModelReset(ctx, params.Arguments)
 
+	// --- CONFLICTS TOOLS (SPEC-039) ---
+	case "conflicts_candidates":
+		return h.handleConflictsCandidates(ctx, params.Arguments)
+	case "conflicts_scan":
+		return h.handleConflictsScan(ctx, params.Arguments)
+	case "conflicts_link":
+		return h.handleConflictsLink(ctx, params.Arguments)
+	case "conflicts_unlink":
+		return h.handleConflictsUnlink(ctx, params.Arguments)
+	case "conflicts_list":
+		return h.handleConflictsList(ctx, params.Arguments)
+
 	// --- CODEGRAPH TOOLS ---
 	case "codegraph_search":
 		return h.handleCodegraphSearch(ctx, params.Arguments)
@@ -541,7 +553,8 @@ func (h *handlers) mapServiceError(method string, err error) *JSONRPCError {
 		errors.Is(err, model.ErrSkillPinned) ||
 		errors.Is(err, model.ErrSkillNoValidation) ||
 		errors.Is(err, model.ErrUnknownAgent) ||
-		errors.Is(err, model.ErrInvalidModel) {
+		errors.Is(err, model.ErrInvalidModel) ||
+		errors.Is(err, model.ErrInvalidRelation) {
 		return &JSONRPCError{
 			Code:    CodeInvalidParams,
 			Message: fmt.Sprintf("mcp: handle %s: %s", method, err),
@@ -1007,6 +1020,134 @@ func (h *handlers) handleLaneStats(ctx context.Context, raw json.RawMessage) (*T
 		return nil, h.mapServiceError("lane_stats", err)
 	}
 	return resultFromAny(resp)
+}
+
+// --- CONFLICTS HANDLERS (SPEC-039) ---
+
+// handleConflictsCandidates processes a conflicts_candidates tool call.
+// Returns candidate memory IDs that share FTS5 terms with the given memory.
+// Purely deterministic — no LLM involved.
+func (h *handlers) handleConflictsCandidates(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	var args struct {
+		ID    string `json:"id"`
+		Limit int    `json:"limit"`
+	}
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return nil, &JSONRPCError{Code: CodeInvalidParams, Message: fmt.Sprintf("mcp: handle conflicts_candidates: invalid arguments: %s", err)}
+	}
+	if args.ID == "" {
+		return nil, &JSONRPCError{Code: CodeInvalidParams, Message: "mcp: handle conflicts_candidates: id is required"}
+	}
+
+	ids, err := h.svc.ConflictCandidates(ctx, args.ID, args.Limit)
+	if err != nil {
+		return nil, h.mapServiceError("conflicts_candidates", err)
+	}
+
+	return resultFromAny(map[string]any{"id": args.ID, "candidates": ids, "count": len(ids)})
+}
+
+// handleConflictsScan processes a conflicts_scan tool call.
+// When the Claude CLI is unavailable, returns IsError:true with a structured
+// payload rather than a protocol error, consistent with the SPEC-035 pattern.
+func (h *handlers) handleConflictsScan(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	var req service.ConflictScanRequest
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &req); err != nil {
+			return nil, &JSONRPCError{Code: CodeInvalidParams, Message: fmt.Sprintf("mcp: handle conflicts_scan: invalid arguments: %s", err)}
+		}
+	}
+
+	resp, err := h.svc.ConflictScan(ctx, req)
+	if err != nil {
+		if errors.Is(err, model.ErrCLIUnavailable) {
+			payload := map[string]any{
+				"error":      err.Error(),
+				"suggestion": "Install the Claude CLI (claude) and ensure it is on PATH, then retry. Run 'mneme conflicts scan' from the terminal for interactive use.",
+			}
+			b, _ := json.Marshal(payload)
+			return &ToolCallResult{
+				Content: []ContentBlock{{Type: "text", Text: string(b)}},
+				IsError: true,
+			}, nil
+		}
+		return nil, h.mapServiceError("conflicts_scan", err)
+	}
+
+	return resultFromAny(resp)
+}
+
+// handleConflictsLink processes a conflicts_link tool call.
+func (h *handlers) handleConflictsLink(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	var args struct {
+		FromID    string `json:"from_id"`
+		ToID      string `json:"to_id"`
+		Relation  string `json:"relation"`
+		Rationale string `json:"rationale"`
+	}
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return nil, &JSONRPCError{Code: CodeInvalidParams, Message: fmt.Sprintf("mcp: handle conflicts_link: invalid arguments: %s", err)}
+	}
+	if args.FromID == "" || args.ToID == "" {
+		return nil, &JSONRPCError{Code: CodeInvalidParams, Message: "mcp: handle conflicts_link: from_id and to_id are required"}
+	}
+	if args.Relation == "" {
+		return nil, &JSONRPCError{Code: CodeInvalidParams, Message: "mcp: handle conflicts_link: relation is required"}
+	}
+
+	if err := h.svc.ConflictLink(ctx, args.FromID, args.ToID, args.Relation, args.Rationale); err != nil {
+		return nil, h.mapServiceError("conflicts_link", err)
+	}
+
+	return resultFromAny(map[string]string{
+		"from_id":  args.FromID,
+		"to_id":    args.ToID,
+		"relation": args.Relation,
+		"status":   "linked",
+	})
+}
+
+// handleConflictsUnlink processes a conflicts_unlink tool call.
+func (h *handlers) handleConflictsUnlink(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	var args struct {
+		FromID string `json:"from_id"`
+		ToID   string `json:"to_id"`
+	}
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return nil, &JSONRPCError{Code: CodeInvalidParams, Message: fmt.Sprintf("mcp: handle conflicts_unlink: invalid arguments: %s", err)}
+	}
+	if args.FromID == "" || args.ToID == "" {
+		return nil, &JSONRPCError{Code: CodeInvalidParams, Message: "mcp: handle conflicts_unlink: from_id and to_id are required"}
+	}
+
+	if err := h.svc.ConflictUnlink(ctx, args.FromID, args.ToID); err != nil {
+		return nil, h.mapServiceError("conflicts_unlink", err)
+	}
+
+	return resultFromAny(map[string]string{
+		"from_id": args.FromID,
+		"to_id":   args.ToID,
+		"status":  "unlinked",
+	})
+}
+
+// handleConflictsList processes a conflicts_list tool call.
+func (h *handlers) handleConflictsList(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	var args struct {
+		Project string `json:"project"`
+	}
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &args); err != nil {
+			return nil, &JSONRPCError{Code: CodeInvalidParams, Message: fmt.Sprintf("mcp: handle conflicts_list: invalid arguments: %s", err)}
+		}
+	}
+
+	rels, err := h.svc.ConflictList(ctx, args.Project)
+	if err != nil {
+		return nil, h.mapServiceError("conflicts_list", err)
+	}
+
+	return resultFromAny(map[string]any{"relations": rels, "count": len(rels)})
 }
 
 // resultFromAny serializes v to a compact JSON string and wraps it in a single
