@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"github.com/juanftp/mneme/internal/config"
@@ -221,9 +220,3 @@ func (s *ModelsService) Reset(ctx context.Context, req ModelResetRequest) (Model
 	return ModelResetResponse{Reset: reset, Hint: hint}, nil
 }
 
-// mapModelsError maps known model sentinel errors to a human-readable form.
-// It is used by MCP handlers to translate service errors to JSON-RPC error codes.
-// Returns true when the error is ErrUnknownAgent or ErrInvalidModel.
-func mapModelsError(err error) bool {
-	return errors.Is(err, model.ErrUnknownAgent) || errors.Is(err, model.ErrInvalidModel)
-}
