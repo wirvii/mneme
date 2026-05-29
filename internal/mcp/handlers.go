@@ -22,12 +22,13 @@ type handlers struct {
 	sdd       *service.SDDService
 	cgSvc     *service.CodeGraphService // lazy-initialized on first codegraph tool call
 	skillsSvc *service.SkillsService    // optional; nil disables skills tools
+	modelsSvc *service.ModelsService    // optional; nil disables model tools
 	logger    *slog.Logger
 }
 
 // newHandlers constructs a handlers bound to the given services and logger.
-func newHandlers(svc *service.MemoryService, sdd *service.SDDService, skillsSvc *service.SkillsService, logger *slog.Logger) *handlers {
-	return &handlers{svc: svc, sdd: sdd, skillsSvc: skillsSvc, logger: logger}
+func newHandlers(svc *service.MemoryService, sdd *service.SDDService, skillsSvc *service.SkillsService, modelsSvc *service.ModelsService, logger *slog.Logger) *handlers {
+	return &handlers{svc: svc, sdd: sdd, skillsSvc: skillsSvc, modelsSvc: modelsSvc, logger: logger}
 }
 
 // handleToolCall dispatches the tool call to the correct handler method.
@@ -113,6 +114,14 @@ func (h *handlers) handleToolCall(ctx context.Context, params ToolCallParams) (*
 		return h.handleSkillsLint(ctx, params.Arguments)
 	case "skills_validate":
 		return h.handleSkillsValidate(ctx, params.Arguments)
+
+	// --- MODEL TOOLS (SPEC-038) ---
+	case "model_list":
+		return h.handleModelList(ctx, params.Arguments)
+	case "model_set":
+		return h.handleModelSet(ctx, params.Arguments)
+	case "model_reset":
+		return h.handleModelReset(ctx, params.Arguments)
 
 	// --- CODEGRAPH TOOLS ---
 	case "codegraph_search":
@@ -530,7 +539,9 @@ func (h *handlers) mapServiceError(method string, err error) *JSONRPCError {
 		errors.Is(err, model.ErrReasonRequired) ||
 		errors.Is(err, model.ErrSkillMalformed) ||
 		errors.Is(err, model.ErrSkillPinned) ||
-		errors.Is(err, model.ErrSkillNoValidation) {
+		errors.Is(err, model.ErrSkillNoValidation) ||
+		errors.Is(err, model.ErrUnknownAgent) ||
+		errors.Is(err, model.ErrInvalidModel) {
 		return &JSONRPCError{
 			Code:    CodeInvalidParams,
 			Message: fmt.Sprintf("mcp: handle %s: %s", method, err),
@@ -1784,4 +1795,65 @@ func formatFiles(files []codegraph.FileRecord) string {
 		fmt.Fprintf(&sb, "  %s  [%s] %d nodes\n", f.Path, f.Language, f.NodeCount)
 	}
 	return sb.String()
+}
+
+// --- MODEL HANDLERS (SPEC-038) ---
+
+// handleModelList processes a model_list tool call.
+func (h *handlers) handleModelList(ctx context.Context, _ json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	if h.modelsSvc == nil {
+		return nil, &JSONRPCError{
+			Code:    CodeInternalError,
+			Message: "mcp: model_list: models service unavailable",
+		}
+	}
+	resp, err := h.modelsSvc.List(ctx)
+	if err != nil {
+		return nil, h.mapServiceError("model_list", err)
+	}
+	return resultFromAny(resp)
+}
+
+// handleModelSet processes a model_set tool call.
+func (h *handlers) handleModelSet(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	if h.modelsSvc == nil {
+		return nil, &JSONRPCError{
+			Code:    CodeInternalError,
+			Message: "mcp: model_set: models service unavailable",
+		}
+	}
+	var req service.ModelSetRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return nil, &JSONRPCError{
+			Code:    CodeInvalidParams,
+			Message: fmt.Sprintf("mcp: model_set: invalid arguments: %s", err),
+		}
+	}
+	resp, err := h.modelsSvc.Set(ctx, req)
+	if err != nil {
+		return nil, h.mapServiceError("model_set", err)
+	}
+	return resultFromAny(resp)
+}
+
+// handleModelReset processes a model_reset tool call.
+func (h *handlers) handleModelReset(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	if h.modelsSvc == nil {
+		return nil, &JSONRPCError{
+			Code:    CodeInternalError,
+			Message: "mcp: model_reset: models service unavailable",
+		}
+	}
+	var req service.ModelResetRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return nil, &JSONRPCError{
+			Code:    CodeInvalidParams,
+			Message: fmt.Sprintf("mcp: model_reset: invalid arguments: %s", err),
+		}
+	}
+	resp, err := h.modelsSvc.Reset(ctx, req)
+	if err != nil {
+		return nil, h.mapServiceError("model_reset", err)
+	}
+	return resultFromAny(resp)
 }

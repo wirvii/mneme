@@ -39,7 +39,7 @@ func newTestServer(t *testing.T) *Server {
 	svc := service.NewMemoryService(projectStore, globalStore, cfg, "test-project", embed.NopEmbedder{})
 
 	logger := slog.Default()
-	return NewServer(svc, nil, nil, logger, "all", "test")
+	return NewServer(svc, nil, nil, nil, logger, "all", "test")
 }
 
 // sendMessage writes a single JSON-RPC request as a line to buf and returns the
@@ -191,6 +191,8 @@ func TestToolsList(t *testing.T) {
 		// Skills tools (SPEC-037)
 		"skills_list", "skills_install", "skills_pin", "skills_unpin",
 		"skills_remove", "skills_lint", "skills_validate",
+		// Model tools (SPEC-038)
+		"model_list", "model_set", "model_reset",
 	}
 	if len(result.Tools) != len(wantNames) {
 		t.Fatalf("got %d tools, want %d", len(result.Tools), len(wantNames))

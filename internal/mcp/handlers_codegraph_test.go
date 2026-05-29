@@ -80,7 +80,7 @@ func newTestServerWithCodeGraph(t *testing.T) *Server {
 	}
 
 	logger := slog.Default()
-	srv := NewServer(svc, nil, nil, logger, "all", "test")
+	srv := NewServer(svc, nil, nil, nil, logger, "all", "test")
 	// Inject the CodeGraphService directly into the handlers.
 	srv.handlers.cgSvc = cgSvc
 	return srv
@@ -278,7 +278,7 @@ func TestMCP_MemContext_IncludesCodeGraphHint_NoCgSvc(t *testing.T) {
 	svc := service.NewMemoryService(projectStore, globalStore, cfg, "", embed.NopEmbedder{})
 
 	logger := slog.Default()
-	srv := NewServer(svc, nil, nil, logger, "all", "test")
+	srv := NewServer(svc, nil, nil, nil, logger, "all", "test")
 
 	resp := process(t, srv, "tools/call", 1, ToolCallParams{
 		Name:      "mem_context",
@@ -329,7 +329,7 @@ func TestMCP_MemContext_IncludesCodeGraphHint_NotIndexed(t *testing.T) {
 	cgSvc := service.NewCodeGraphServiceFromDB(cdb)
 
 	logger := slog.Default()
-	srv := NewServer(svc, nil, nil, logger, "all", "test")
+	srv := NewServer(svc, nil, nil, nil, logger, "all", "test")
 	srv.handlers.cgSvc = cgSvc
 
 	resp := process(t, srv, "tools/call", 1, ToolCallParams{

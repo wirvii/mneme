@@ -1117,6 +1117,48 @@ func allTools() []ToolDefinition {
 				},
 			},
 		},
+
+		// --- MODEL TOOLS (SPEC-038) ---
+
+		{
+			Name:        "model_list",
+			Description: "List the effective model for each bundled agent, showing origin (default or override).",
+			InputSchema: map[string]any{
+				"type":       "object",
+				"properties": map[string]any{},
+			},
+		},
+		{
+			Name:        "model_set",
+			Description: "Set the model alias for a specific agent. Writes an override to config.toml. Validates that the agent is a bundled agent (error if not). Accepts any non-empty string as the model alias; warns (does not error) when the alias is not in the known-aliases list (opus/sonnet/haiku/inherit). Returns a hint to run `mneme install claude-code` to apply.",
+			InputSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"agent", "model"},
+				"properties": map[string]any{
+					"agent": map[string]any{
+						"type":        "string",
+						"description": "Agent name (e.g. bug-hunter, architect).",
+					},
+					"model": map[string]any{
+						"type":        "string",
+						"description": "Model alias to assign (e.g. opus, sonnet, haiku). Must not be empty.",
+					},
+				},
+			},
+		},
+		{
+			Name:        "model_reset",
+			Description: "Remove the model override for a specific agent, or for all agents when agent is omitted. Restores default models. Returns a hint to run `mneme install claude-code` to apply.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"agent": map[string]any{
+						"type":        "string",
+						"description": "Agent name to reset. Omit to reset all agents.",
+					},
+				},
+			},
+		},
 	}
 }
 
