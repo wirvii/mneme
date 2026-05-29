@@ -414,6 +414,25 @@ func (s *SDDStore) GetSpecHistory(ctx context.Context, specID string) ([]*model.
 	return history, rows.Err()
 }
 
+// InsertSpecHistoryEntry writes a single history row without the optimistic-lock
+// check of UpdateSpecStatus. It is used to record events (e.g. a failed audit
+// run that leaves the spec in the same status) that are not status transitions.
+// from and to may be equal to signal a same-status annotation.
+func (s *SDDStore) InsertSpecHistoryEntry(ctx context.Context, specID string, from, to model.SpecStatus, by, reason string) error {
+	historyID, err := uuid.NewV7()
+	if err != nil {
+		return fmt.Errorf("store: insert spec history: gen id: %w", err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err = s.db.ExecContext(ctx,
+		`INSERT INTO spec_history (id, spec_id, from_status, to_status, by, reason, at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		historyID.String(), specID, string(from), string(to), by, reason, now)
+	if err != nil {
+		return fmt.Errorf("store: insert spec history: %w", err)
+	}
+	return nil
+}
+
 // SpecCounts returns the number of specs per status for a project.
 func (s *SDDStore) SpecCounts(ctx context.Context, project string) (map[model.SpecStatus]int, error) {
 	const q = `SELECT status, COUNT(*) FROM specs WHERE project = ? GROUP BY status`

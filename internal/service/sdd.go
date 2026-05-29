@@ -696,7 +696,14 @@ func (svc *SDDService) LaneAudit(ctx context.Context, req model.LaneAuditRequest
 		return result, nil
 	}
 
-	// Audit failed — save a discovery memory with the breach list.
+	// Audit failed — persist an audit-failed history entry so LaneStatus can
+	// report the real breaches deterministically, then save a discovery memory.
+	breachReason := strings.Join(result.Breaches, "; ")
+	if err := svc.store.InsertSpecHistoryEntry(ctx, spec.ID,
+		model.SpecStatusAudit, model.SpecStatusAudit,
+		"system", "audit failed: "+breachReason); err != nil {
+		log.Printf("service: lane audit: record failure history for %s: %v", spec.ID, err)
+	}
 	svc.saveAuditFailureMemory(ctx, spec, result.Breaches)
 	return result, model.ErrAuditFailed
 }
@@ -808,20 +815,44 @@ func (svc *SDDService) LaneStatus(ctx context.Context, id string) (*model.LaneSt
 		Scope: spec.Scope,
 	}
 
-	// Find the most recent audit or done history entry that carries breach info.
+	// Find the most recent real audit-run entry. There are two kinds:
+	//
+	// 1. A failed audit: from=audit, to=audit, reason starts with "audit failed: "
+	//    (written by LaneAudit via InsertSpecHistoryEntry when breaches are found).
+	// 2. A passing audit: the spec transitions from=audit, to=done, reason="lane audit passed"
+	//    (written by UpdateSpecStatus inside LaneAudit on success).
+	//
+	// Entries where to=audit but from!=audit represent the implementing→audit
+	// transition (not an actual audit run) and must be ignored for audit summary.
 	for i := len(history) - 1; i >= 0; i-- {
 		h := history[i]
-		if h.ToStatus == model.SpecStatusAudit || h.ToStatus == model.SpecStatusDone {
-			// The "reason" field on the done entry after a successful audit is
-			// "lane audit passed"; for failures it contains the breach list.
-			summary := &model.AuditSummary{
+
+		// Passing audit: implementing→done with "lane audit passed" reason.
+		if h.FromStatus == model.SpecStatusAudit &&
+			h.ToStatus == model.SpecStatusDone &&
+			h.Reason == "lane audit passed" {
+			resp.LatestAudit = &model.AuditSummary{
 				At:     h.At,
-				Passed: h.ToStatus == model.SpecStatusDone && h.Reason == "lane audit passed",
+				Passed: true,
 			}
-			if !summary.Passed && h.Reason != "" {
-				summary.Breaches = []string{h.Reason}
+			break
+		}
+
+		// Failed audit: audit→audit annotation written by LaneAudit on failure.
+		const auditFailedPrefix = "audit failed: "
+		if h.FromStatus == model.SpecStatusAudit &&
+			h.ToStatus == model.SpecStatusAudit &&
+			strings.HasPrefix(h.Reason, auditFailedPrefix) {
+			breachStr := strings.TrimPrefix(h.Reason, auditFailedPrefix)
+			var breaches []string
+			if breachStr != "" {
+				breaches = strings.Split(breachStr, "; ")
 			}
-			resp.LatestAudit = summary
+			resp.LatestAudit = &model.AuditSummary{
+				At:       h.At,
+				Passed:   false,
+				Breaches: breaches,
+			}
 			break
 		}
 	}

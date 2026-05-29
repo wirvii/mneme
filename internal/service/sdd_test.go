@@ -779,3 +779,130 @@ func TestLaneOverride_RequiresReason(t *testing.T) {
 		t.Errorf("expected ErrReasonRequired, got %v", err)
 	}
 }
+
+// TestLaneStatus_AfterFailedAudit verifies that LaneStatus returns the correct
+// breaches from the most recent audit failure, not the reason from the
+// implementing→audit transition. This is the regression test for SPEC-035 QA bug 2.
+func TestLaneStatus_AfterFailedAudit(t *testing.T) {
+	svc := newTestSDDService(t, "project")
+	ctx := context.Background()
+
+	// Create a trivial-lane spec.
+	spec, err := svc.SpecNew(ctx, model.SpecNewRequest{
+		Title: "Regression: LaneStatus after failed audit",
+		Lane:  model.LaneTrivial,
+		Scope: "internal/model/*.go",
+	})
+	if err != nil {
+		t.Fatalf("SpecNew: %v", err)
+	}
+
+	// Advance: draft → rationale → implementing.
+	spec, err = svc.SpecQuick(ctx, model.SpecQuickRequest{
+		ID:        spec.ID,
+		Rationale: "Tiny fix",
+		By:        "orchestrator",
+	})
+	if err != nil {
+		t.Fatalf("SpecQuick: %v", err)
+	}
+
+	// Advance: implementing → audit.
+	spec, err = svc.SpecAdvance(ctx, model.SpecAdvanceRequest{
+		ID:     spec.ID,
+		By:     "backend",
+		Reason: "implementation done",
+	})
+	if err != nil {
+		t.Fatalf("SpecAdvance (implementing→audit): %v", err)
+	}
+	if spec.Status != model.SpecStatusAudit {
+		t.Fatalf("expected audit status, got %s", spec.Status)
+	}
+
+	// Directly insert an audit-failed history entry (simulating what LaneAudit
+	// writes via InsertSpecHistoryEntry when the deterministic auditor detects
+	// threshold violations).
+	breaches := []string{"file count 5 exceeds trivial limit of 3", "line count 42 exceeds trivial limit of 20"}
+	breachReason := "audit failed: " + breaches[0] + "; " + breaches[1]
+	if err := svc.store.InsertSpecHistoryEntry(ctx, spec.ID,
+		model.SpecStatusAudit, model.SpecStatusAudit,
+		"system", breachReason); err != nil {
+		t.Fatalf("InsertSpecHistoryEntry: %v", err)
+	}
+
+	// LaneStatus must reflect the AUDIT FAILURE (not the implementing→audit reason).
+	status, err := svc.LaneStatus(ctx, spec.ID)
+	if err != nil {
+		t.Fatalf("LaneStatus: %v", err)
+	}
+
+	if status.LatestAudit == nil {
+		t.Fatal("expected LatestAudit to be non-nil after a recorded audit failure")
+	}
+	if status.LatestAudit.Passed {
+		t.Error("expected LatestAudit.Passed=false")
+	}
+	if len(status.LatestAudit.Breaches) == 0 {
+		t.Error("expected non-empty Breaches in LatestAudit")
+	}
+	// Verify the specific breach messages are preserved correctly.
+	for _, want := range breaches {
+		found := false
+		for _, got := range status.LatestAudit.Breaches {
+			if got == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("breach %q not found in LatestAudit.Breaches %v", want, status.LatestAudit.Breaches)
+		}
+	}
+}
+
+// TestLaneStatus_NoAuditRun verifies that LaneStatus returns nil LatestAudit when
+// the spec has only been transitioned to audit status but no audit has run.
+// This ensures we don't accidentally report the implementing→audit reason as breaches.
+func TestLaneStatus_NoAuditRun(t *testing.T) {
+	svc := newTestSDDService(t, "project")
+	ctx := context.Background()
+
+	spec, err := svc.SpecNew(ctx, model.SpecNewRequest{
+		Title: "No audit run yet",
+		Lane:  model.LaneTrivial,
+		Scope: "internal/model/*.go",
+	})
+	if err != nil {
+		t.Fatalf("SpecNew: %v", err)
+	}
+
+	spec, err = svc.SpecQuick(ctx, model.SpecQuickRequest{
+		ID:        spec.ID,
+		Rationale: "Small change",
+		By:        "orchestrator",
+	})
+	if err != nil {
+		t.Fatalf("SpecQuick: %v", err)
+	}
+
+	spec, err = svc.SpecAdvance(ctx, model.SpecAdvanceRequest{
+		ID:     spec.ID,
+		By:     "backend",
+		Reason: "done implementing",
+	})
+	if err != nil {
+		t.Fatalf("SpecAdvance (implementing→audit): %v", err)
+	}
+
+	// No audit has been run yet. LaneStatus must NOT report the
+	// implementing→audit transition as an audit result.
+	status, err := svc.LaneStatus(ctx, spec.ID)
+	if err != nil {
+		t.Fatalf("LaneStatus: %v", err)
+	}
+
+	if status.LatestAudit != nil {
+		t.Errorf("expected LatestAudit=nil before any audit has run, got %+v", status.LatestAudit)
+	}
+}
