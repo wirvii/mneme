@@ -229,7 +229,7 @@ func RewritePinned(data []byte, pinned bool) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("skill: rewrite pinned: %w", err)
 	}
-	s.Metadata.Pinned = pinned
+	s.Pinned = pinned
 
 	fm := WriteFrontmatter(s.Metadata)
 

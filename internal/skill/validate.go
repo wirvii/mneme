@@ -53,18 +53,15 @@ func Validate(ctx context.Context, skillDir string) (*ValidateResult, error) {
 	output := string(out)
 
 	if err != nil {
-		exitCode := 1
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
-			exitCode = exitErr.ExitCode()
-		} else {
-			return nil, fmt.Errorf("skill: validate: exec: %w", err)
+			return &ValidateResult{
+				Passed:   false,
+				Output:   output,
+				ExitCode: exitErr.ExitCode(),
+			}, nil
 		}
-		return &ValidateResult{
-			Passed:   false,
-			Output:   output,
-			ExitCode: exitCode,
-		}, nil
+		return nil, fmt.Errorf("skill: validate: exec: %w", err)
 	}
 
 	return &ValidateResult{
