@@ -50,13 +50,13 @@ cli/  mcp/  http/        ← three frontends (Cobra, JSON-RPC stdio, REST)
 
 **Dependency rule:** imports flow inward only. `model` has no external deps. Adapters (`store`, `mcp`, `http`, `cli`) sit at the edges and are swappable. Don't let frontends call `store` or `db` directly — go through `service`.
 
-Supporting packages: `scoring/` (decay, BM25 re-ranking, RRF fusion), `consolidation/` (background decay/dedup/budget sweeps + edge decay), `graph/` (Hebbian auto-strengthening: AccessTracker ring buffer + HebbianWorkerPool async worker), `rules/` (applies_to pattern matching engine for pre-tool-use hook), `embed/` (TF-IDF baseline), `sync/` (JSONL.gz git-shareable export/import), `project/` (git-remote slug detection), `config/` (TOML + env overrides), `install/` (agent profile installer + skills embed), `skill/` (leaf: SKILL.md parser, structural linter, validate runner — no internal deps), `tui/` (Bubble Tea), `upgrade/`, `export/`.
+Supporting packages: `scoring/` (decay, BM25 re-ranking, RRF fusion), `consolidation/` (background decay/dedup/budget sweeps + edge decay), `graph/` (Hebbian auto-strengthening: AccessTracker ring buffer + HebbianWorkerPool async worker), `rules/` (applies_to pattern matching engine for pre-tool-use hook), `embed/` (TF-IDF baseline), `sync/` (JSONL.gz git-shareable export/import), `project/` (git-remote slug detection), `config/` (TOML + env overrides), `install/` (agent profile installer + skills embed), `skill/` (leaf: SKILL.md parser, structural linter, validate runner — no internal deps), `conflicts/` (leaf: deterministic FTS5 candidate extraction + LLM judgment via claude CLI subprocess — no internal deps), `tui/` (Bubble Tea), `upgrade/`, `export/`.
 
 ### The three frontends
 
-- **MCP** (`internal/mcp`, primary) — JSON-RPC 2.0 over stdio, ProtocolVersion `2024-11-05`. Surface: 51 tools (14 `mem_*`, 4 `backlog_*`, 8 `spec_*`, 5 `lane_*`, 10 `codegraph_*`, 7 `skills_*`, 3 `model_*`). `spec_*`: spec_new, spec_status, spec_advance, spec_pushback, spec_resolve, spec_list, spec_quick, spec_reject. `lane_*`: lane_audit, lane_reclassify, lane_override, lane_status, lane_stats. `skills_*`: skills_list, skills_install, skills_pin, skills_unpin, skills_remove, skills_lint, skills_validate. `model_*`: model_list, model_set, model_reset. `handleMessage()` is exposed separately from `Run()` so unit tests can drive it without I/O loops.
+- **MCP** (`internal/mcp`, primary) — JSON-RPC 2.0 over stdio, ProtocolVersion `2024-11-05`. Surface: 56 tools (14 `mem_*`, 4 `backlog_*`, 8 `spec_*`, 5 `lane_*`, 10 `codegraph_*`, 7 `skills_*`, 3 `model_*`, 5 `conflicts_*`). `spec_*`: spec_new, spec_status, spec_advance, spec_pushback, spec_resolve, spec_list, spec_quick, spec_reject. `lane_*`: lane_audit, lane_reclassify, lane_override, lane_status, lane_stats. `skills_*`: skills_list, skills_install, skills_pin, skills_unpin, skills_remove, skills_lint, skills_validate. `model_*`: model_list, model_set, model_reset. `conflicts_*`: conflicts_candidates, conflicts_scan, conflicts_link, conflicts_unlink, conflicts_list. `handleMessage()` is exposed separately from `Run()` so unit tests can drive it without I/O loops.
 - **HTTP** (`internal/http`, `mneme serve --addr :7437`) — stdlib `net/http`, graceful shutdown 10s, 8 endpoints under `/v1/`. Currently lacks SDD endpoints and a few mem tools (`mem_checkpoint`, `mem_timeline`, `mem_suggest_topic_key`); when adding service capabilities, decide explicitly whether HTTP gets parity.
-- **CLI** (`internal/cli`, Cobra) — 31 top-level commands. Notable: `sync export|import|status` is the backup/restore path (no dedicated `restore` command); `mneme init` migrates legacy projects to the SDD engine; `mneme install <agent>` writes agent profiles; `mneme skills` manages skills in `~/.claude/skills/`; `mneme model` manages per-agent model assignments.
+- **CLI** (`internal/cli`, Cobra) — 32 top-level commands. Notable: `sync export|import|status` is the backup/restore path (no dedicated `restore` command); `mneme init` migrates legacy projects to the SDD engine; `mneme install <agent>` writes agent profiles; `mneme skills` manages skills in `~/.claude/skills/`; `mneme model` manages per-agent model assignments; `mneme conflicts` detects and manages memory conflict relations.
 
 ### Persistence
 
@@ -197,3 +197,36 @@ mneme install claude-code           # apply current model assignments
 - The assign step runs automatically after WriteAgents in every install.
 
 Full reference: `docs/models.md`.
+
+## Conflicts (v1.9.0)
+
+mneme surfaces memory conflicts via a two-phase workflow (SPEC-039):
+
+1. **Detection (deterministic, FTS5):** `internal/conflicts/detect.go` extracts salient
+   terms and builds a candidate FTS5 query. No LLM.
+2. **Judgment (LLM via subprocess, explicit):** `internal/conflicts/judge.go` invokes
+   `claude -p --output-format json` for each pair. $0 cost on subscription. Never automatic.
+
+**Relation types:**
+- `supersedes` → reuses `memories.superseded_by` + `SetSupersededBy`. Already excluded by retrieval.
+- `conflicts_with` → `memory_relations` table (migration 013). Post-ranking `annotateConflicts` pass.
+- `unrelated` → `memory_relations` table. Negative cache only; no retrieval effect.
+
+**Key commands:**
+```bash
+mneme conflicts candidates <id>            # FTS5 candidates (deterministic)
+mneme conflicts scan                       # dry-run judgment (needs claude CLI)
+mneme conflicts scan --apply               # persist judgments
+mneme conflicts link <from> <to> supersedes --rationale "..."
+mneme conflicts link <from> <to> conflicts_with
+mneme conflicts unlink <from> <to>
+mneme conflicts list
+```
+
+**Rules:**
+- `internal/conflicts/` is a leaf package — stdlib only, no model/store imports.
+- CLI absent → `ErrCLIUnavailable`; MCP returns `IsError:true` with structured payload.
+- Scan is dry-run by default; `--apply` persists. NEVER auto-judges on save.
+- No auto-delete/edit of memories. No embeddings. No metered API.
+
+Full reference: `docs/conflicts.md`.

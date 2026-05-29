@@ -6,6 +6,46 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [v1.9.0] — 2026-05-29
+
+### Added
+
+- **Memory Conflict Surfacing** (SPEC-039): two-phase workflow for detecting and
+  managing conflicting memories. Closes "the agent followed a decision we already
+  changed."
+
+  - **Migration 013** (`internal/db/migrations/013_memory_relations.sql`): new
+    `memory_relations` table for `conflicts_with` and `unrelated` edges with
+    CHECK constraint, UNIQUE (from_id, to_id), and three indices. `supersedes`
+    reuses the existing `memories.superseded_by` column.
+  - **`internal/conflicts/`** — new leaf package (stdlib only, no internal deps):
+    - `detect.go`: `ExtractSalientTerms` + `BuildCandidateQuery` — purely
+      deterministic FTS5 term extraction.
+    - `judge.go`: `JudgePair` — invokes `claude -p --output-format json` as a
+      subprocess; parses outer/inner JSON; validates relation ∈
+      {supersedes_a_over_b, supersedes_b_over_a, conflicts_with, unrelated};
+      60s timeout. `NewJudgeConfig` → `ErrCLIUnavailable` when CLI absent.
+  - **`internal/store/conflicts.go`**: `MemoryRelation`, `MemoryRelationListOptions`,
+    `CreateMemoryRelation` (normalised pair, INSERT OR REPLACE),
+    `DeleteMemoryRelation`, `ListMemoryRelations`, `GetMemoryConflicts` (symmetric),
+    `IsJudged` (negative cache), `FTS5Candidates` (scoped, excludes self/judged).
+    `ClearSupersededBy` added to `consolidation.go`.
+  - **`internal/service/conflicts.go`**: `ConflictCandidates` (deterministic),
+    `ConflictScan` (judge config guard, dedup pairs, `judgeOnePair`, dry-run
+    default, `persistVerdict`), `ConflictLink` (ErrInvalidRelation/ErrNotFound),
+    `ConflictUnlink` (clears superseded_by), `ConflictList`. Non-blocking
+    `logConflictHint` goroutine added to `memory.go` Save().
+  - **`model/search.go`**: `SearchResult.ConflictsWith []string` field. Post-ranking
+    `annotateConflicts` pass in `service/search.go`.
+  - **`model/errors.go`**: `ErrCLIUnavailable`, `ErrInvalidRelation`.
+  - **MCP tools** (51→56): `conflicts_candidates`, `conflicts_scan`,
+    `conflicts_link`, `conflicts_unlink`, `conflicts_list`. `conflicts_scan` CLI
+    absent → `IsError:true` with `{error, suggestion}` payload.
+  - **CLI**: `mneme conflicts` command group with candidates/scan/link/unlink/list
+    subcommands. `mneme conflicts scan` with `--apply` flag.
+  - **`docs/conflicts.md`**: full reference including architecture notes,
+    relation model table, anti-scope.
+
 ## [v1.8.0] — 2026-05-29
 
 ### Added
