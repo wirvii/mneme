@@ -276,12 +276,52 @@ func TestMatchGlobStar(t *testing.T) {
 		{"internal/store/**", "internal/service/sdd.go", false},
 		{"internal/store/*.go", "internal/store/sdd.go", true},
 		{"internal/store/*.go", "internal/store/subdir/sdd.go", false},
+		// **/schema.* must match schema files at any depth.
+		{"**/schema.*", "internal/foo/schema.go", true},
+		{"**/schema.*", "schema.sql", true},
+		{"**/schema.*", "db/schema.json", true},
+		{"**/schema.*", "internal/schema_test.go", false},
 	}
 	for _, tc := range tests {
 		got := matchGlobStar(tc.pattern, tc.path)
 		if got != tc.want {
 			t.Errorf("matchGlobStar(%q, %q) = %v, want %v", tc.pattern, tc.path, got, tc.want)
 		}
+	}
+}
+
+// TestAudit_ForbiddenSchema verifies that files matching **/schema.* trigger a
+// forbidden-path breach, covering the glob that was not exercised by any prior test.
+func TestAudit_ForbiddenSchema(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+	}{
+		{"nested go file", "internal/foo/schema.go"},
+		{"root sql file", "schema.sql"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			stats := buildStats([]struct{ added, removed int; path string }{
+				{1, 0, tc.path},
+			})
+			result, err := auditFromStats(stats, AuditInput{}, nil, "")
+			if err != nil {
+				t.Fatalf("auditFromStats: %v", err)
+			}
+			if result.Passed {
+				t.Errorf("expected Passed=false for schema file %q", tc.path)
+			}
+			found := false
+			for _, b := range result.Breaches {
+				if strings.Contains(b, "forbidden path modified") {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("expected forbidden path breach for %q, got %v", tc.path, result.Breaches)
+			}
+		})
 	}
 }
 
