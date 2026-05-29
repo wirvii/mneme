@@ -145,3 +145,25 @@ var ErrAuditFailed = errors.New("lane audit failed: threshold violations detecte
 // and none was supplied. Used by lane_override and spec_reject, both of which
 // are auditable decisions that must be documented.
 var ErrReasonRequired = errors.New("reason is required")
+
+// --- Skill sentinel errors (SPEC-037) ---
+
+// ErrSkillNotFound is returned when a requested skill directory does not exist
+// under the skills install directory. Distinct from a filesystem error — it
+// means the lookup succeeded but matched nothing.
+var ErrSkillNotFound = errors.New("skill not found")
+
+// ErrSkillMalformed is returned when a SKILL.md file cannot be parsed or
+// contains structurally invalid content. The caller should inspect the wrapped
+// error for details about the specific failure.
+var ErrSkillMalformed = errors.New("skill malformed")
+
+// ErrSkillPinned is returned when a remove or overwrite operation is attempted
+// on a skill whose SKILL.md has pinned:true. Pass --force to override.
+// pinned solely protects overwrite/remove — it has no hook or capability coupling.
+var ErrSkillPinned = errors.New("skill is pinned")
+
+// ErrSkillNoValidation is returned when skills_validate is called for a skill
+// that does not have a validation/run.sh script. This is informational — the
+// absence of a validator is not treated as a failure.
+var ErrSkillNoValidation = errors.New("skill has no validation script")
