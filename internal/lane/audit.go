@@ -138,9 +138,7 @@ func auditFromStats(stats *DiffStats, input AuditInput, differ *GitDiffer, baseR
 			return nil, fmt.Errorf("lane: audit: check public symbols: %w", err)
 		}
 		result.PublicSymbolChanges = symBreaches
-		for _, b := range symBreaches {
-			result.Breaches = append(result.Breaches, b)
-		}
+		result.Breaches = append(result.Breaches, symBreaches...)
 	}
 
 	result.Passed = len(result.Breaches) == 0

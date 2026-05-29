@@ -738,7 +738,7 @@ func (svc *SDDService) LaneReclassify(ctx context.Context, req model.LaneReclass
 	// caller has explicitly requested the reclassification.
 	if err := svc.store.UpdateSpecStatus(ctx, spec.ID,
 		spec.Status, model.SpecStatusSpeccing,
-		req.By, fmt.Sprintf("reclassified from trivial to standard")); err != nil {
+		req.By, "reclassified from trivial to standard"); err != nil {
 		return nil, fmt.Errorf("service: lane reclassify: move to speccing: %w", err)
 	}
 
