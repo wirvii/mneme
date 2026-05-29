@@ -221,14 +221,14 @@ func (s *SDDStore) CreateSpec(ctx context.Context, spec *model.Spec) error {
 
 	const q = `
 		INSERT INTO specs
-			(id, title, status, project, backlog_id, lane, scope, assigned_agents, files_changed, created_at, updated_at)
+			(id, title, status, project, backlog_id, lane, scope, base_sha, assigned_agents, files_changed, created_at, updated_at)
 		VALUES
-			(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+			(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	backlogID := toNullString(spec.BacklogID)
 	_, err = s.db.ExecContext(ctx, q,
 		spec.ID, spec.Title, string(spec.Status), spec.Project,
-		backlogID, string(spec.Lane), spec.Scope, agents, files, now, now,
+		backlogID, string(spec.Lane), spec.Scope, spec.BaseSHA, agents, files, now, now,
 	)
 	if err != nil {
 		return fmt.Errorf("store: create spec: %w", err)
@@ -241,7 +241,7 @@ func (s *SDDStore) CreateSpec(ctx context.Context, spec *model.Spec) error {
 func (s *SDDStore) GetSpec(ctx context.Context, id string) (*model.Spec, error) {
 	const q = `
 		SELECT id, title, status, project, COALESCE(backlog_id, ''),
-		       lane, scope, assigned_agents, files_changed, created_at, updated_at
+		       lane, scope, COALESCE(base_sha, ''), assigned_agents, files_changed, created_at, updated_at
 		FROM specs WHERE id = ?`
 
 	row := s.db.QueryRowContext(ctx, q, id)
@@ -265,7 +265,7 @@ func (s *SDDStore) ListSpecs(ctx context.Context, project string, status model.S
 
 	const baseQ = `
 		SELECT id, title, status, project, COALESCE(backlog_id, ''),
-		       lane, scope, assigned_agents, files_changed, created_at, updated_at
+		       lane, scope, COALESCE(base_sha, ''), assigned_agents, files_changed, created_at, updated_at
 		FROM specs WHERE project = ?`
 
 	if status != "" {
@@ -385,6 +385,92 @@ func (s *SDDStore) UpdateSpecLaneScope(ctx context.Context, specID string, lane 
 	return nil
 }
 
+// UpdateSpecBaseSHA sets the base_sha column for a spec. Called when the spec
+// enters implementing status to bind it to the current HEAD commit. This SHA
+// is later used by the lane auditor to produce a per-spec diff.
+// Returns ErrSpecNotFound when the spec does not exist.
+func (s *SDDStore) UpdateSpecBaseSHA(ctx context.Context, specID, sha string) error {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+
+	const q = `UPDATE specs SET base_sha = ?, updated_at = ? WHERE id = ?`
+	res, err := s.db.ExecContext(ctx, q, sha, now, specID)
+	if err != nil {
+		return fmt.Errorf("store: update spec base sha: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("store: update spec base sha: rows affected: %w", err)
+	}
+	if n == 0 {
+		return model.ErrSpecNotFound
+	}
+	return nil
+}
+
+// InsertLaneAudit writes a structured audit record to the lane_audits table.
+// One row is inserted per auditor run — both passes and failures — so that
+// LaneStatus can read the latest outcome without parsing spec_history text.
+// The created_at field is set to the current UTC time in RFC3339Nano format.
+func (s *SDDStore) InsertLaneAudit(ctx context.Context, rec *model.LaneAuditRecord) error {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+
+	passed := 0
+	if rec.Passed {
+		passed = 1
+	}
+
+	const q = `
+		INSERT INTO lane_audits (spec_id, passed, file_count, lines_changed, breaches, base_sha, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`
+
+	res, err := s.db.ExecContext(ctx, q,
+		rec.SpecID, passed, rec.FileCount, rec.LinesChanged, rec.Breaches, rec.BaseSHA, now,
+	)
+	if err != nil {
+		return fmt.Errorf("store: insert lane audit: %w", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return fmt.Errorf("store: insert lane audit: last insert id: %w", err)
+	}
+	rec.ID = id
+	rec.CreatedAt, _ = parseTime(now)
+	return nil
+}
+
+// LatestLaneAudit returns the most recent lane_audits row for specID.
+// Returns nil, nil when no audit has been recorded yet (sql.ErrNoRows).
+func (s *SDDStore) LatestLaneAudit(ctx context.Context, specID string) (*model.LaneAuditRecord, error) {
+	const q = `
+		SELECT id, spec_id, passed, file_count, lines_changed, breaches, base_sha, created_at
+		FROM lane_audits
+		WHERE spec_id = ?
+		ORDER BY created_at DESC LIMIT 1`
+
+	row := s.db.QueryRowContext(ctx, q, specID)
+
+	rec := &model.LaneAuditRecord{}
+	var passedInt int
+	var createdAtStr string
+	err := row.Scan(
+		&rec.ID, &rec.SpecID, &passedInt, &rec.FileCount, &rec.LinesChanged,
+		&rec.Breaches, &rec.BaseSHA, &createdAtStr,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("store: latest lane audit: %w", err)
+	}
+	rec.Passed = passedInt == 1
+	t, err := parseTime(createdAtStr)
+	if err != nil {
+		return nil, fmt.Errorf("store: latest lane audit: parse created_at: %w", err)
+	}
+	rec.CreatedAt = t
+	return rec, nil
+}
+
 // GetSpecHistory returns all history entries for a spec, ordered by timestamp ascending.
 func (s *SDDStore) GetSpecHistory(ctx context.Context, specID string) ([]*model.SpecHistory, error) {
 	const q = `
@@ -459,7 +545,7 @@ func (s *SDDStore) SpecCounts(ctx context.Context, project string) (map[model.Sp
 func (s *SDDStore) RecentlyCompletedSpecs(ctx context.Context, project string, n int) ([]*model.Spec, error) {
 	const q = `
 		SELECT id, title, status, project, COALESCE(backlog_id, ''),
-		       lane, scope, assigned_agents, files_changed, created_at, updated_at
+		       lane, scope, COALESCE(base_sha, ''), assigned_agents, files_changed, created_at, updated_at
 		FROM specs WHERE project = ? AND status = 'done'
 		ORDER BY updated_at DESC LIMIT ?`
 
@@ -649,7 +735,7 @@ func collectBacklogItems(rows *sql.Rows) ([]*model.BacklogItem, error) {
 
 // scanSpec scans a single row into a Spec.
 // The SELECT must include columns in this order: id, title, status, project,
-// backlog_id, lane, scope, assigned_agents, files_changed, created_at, updated_at.
+// backlog_id, lane, scope, base_sha, assigned_agents, files_changed, created_at, updated_at.
 func scanSpec(row *sql.Row) (*model.Spec, error) {
 	spec := &model.Spec{}
 	var createdStr, updatedStr string
@@ -657,7 +743,7 @@ func scanSpec(row *sql.Row) (*model.Spec, error) {
 	err := row.Scan(
 		&spec.ID, &spec.Title, (*string)(&spec.Status),
 		&spec.Project, &spec.BacklogID,
-		(*string)(&spec.Lane), &spec.Scope,
+		(*string)(&spec.Lane), &spec.Scope, &spec.BaseSHA,
 		&agentsJSON, &filesJSON,
 		&createdStr, &updatedStr,
 	)
@@ -692,7 +778,7 @@ func collectSpecs(rows *sql.Rows) ([]*model.Spec, error) {
 		if err := rows.Scan(
 			&spec.ID, &spec.Title, (*string)(&spec.Status),
 			&spec.Project, &spec.BacklogID,
-			(*string)(&spec.Lane), &spec.Scope,
+			(*string)(&spec.Lane), &spec.Scope, &spec.BaseSHA,
 			&agentsJSON, &filesJSON,
 			&createdStr, &updatedStr,
 		); err != nil {

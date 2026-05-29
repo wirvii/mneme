@@ -37,6 +37,7 @@ Subcommands:
 		newLaneReclassifyCmd(),
 		newLaneOverrideCmd(),
 		newLaneStatusCmd(),
+		newLaneStatsCmd(),
 	)
 
 	return cmd
@@ -202,6 +203,55 @@ discovery memory. Use sparingly — prefer reclassify when possible.`,
 
 	cmd.Flags().StringVar(&flagReason, "reason", "", "Reason for bypassing the audit (required)")
 	cmd.Flags().StringVar(&flagBy, "by", "", "Who triggers the override (required)")
+
+	return cmd
+}
+
+// newLaneStatsCmd returns the "mneme lane stats" subcommand.
+// It reports trivial lane compliance metrics: trivial count, audit-fail
+// count and rate, override count, and reclassify count.
+func newLaneStatsCmd() *cobra.Command {
+	var flagJSON bool
+
+	cmd := &cobra.Command{
+		Use:   "stats",
+		Short: "Show trivial-lane compliance statistics",
+		Long: `Show lane compliance statistics for the project.
+
+Reported metrics:
+  trivial_count      Total number of trivial-lane specs.
+  audit_fail_count   Number whose latest audit failed.
+  audit_fail_rate    audit_fail_count / trivial_count.
+  override_count     Number completed via lane_override.
+  reclassify_count   Number reclassified from trivial to standard.`,
+		Example: `  mneme lane stats
+  mneme lane stats --json`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			svc, cleanup, err := initSDDService()
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+
+			resp, err := svc.LaneStats(cmd.Context(), "")
+			if err != nil {
+				return err
+			}
+
+			if flagJSON {
+				return printJSON(os.Stdout, resp)
+			}
+
+			fmt.Fprintf(os.Stdout, "Trivial specs:   %d\n", resp.TrivialCount)
+			fmt.Fprintf(os.Stdout, "Audit failures:  %d (rate: %.1f%%)\n",
+				resp.AuditFailCount, resp.AuditFailRate*100)
+			fmt.Fprintf(os.Stdout, "Overrides:       %d\n", resp.OverrideCount)
+			fmt.Fprintf(os.Stdout, "Reclassified:    %d\n", resp.ReclassifyCount)
+			return nil
+		},
+	}
+
+	cmd.Flags().BoolVar(&flagJSON, "json", false, "Output as JSON")
 
 	return cmd
 }

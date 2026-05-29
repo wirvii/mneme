@@ -334,8 +334,48 @@ func (svc *SDDService) onAdvanceSideEffects(ctx context.Context, spec *model.Spe
 		// "active work" states; create the spec directory so the agent has
 		// a place to store spec.md.
 		svc.createSpecDirectory(spec)
+	case model.SpecStatusImplementing:
+		// Capture the HEAD SHA as the base for per-spec auditing.
+		// Non-blocking: git failure logs a warning but never fails the transition.
+		// (See also SpecQuick which calls captureBaseSHA explicitly after the
+		// rationale→implementing transition with the reloaded spec.)
+		svc.captureBaseSHA(ctx, spec)
 	case model.SpecStatusDone:
 		svc.saveCompletionMemory(ctx, spec)
+	}
+}
+
+// captureBaseSHA captures the current HEAD commit SHA and stores it as
+// spec.BaseSHA. It is called non-blockingly when a spec enters implementing
+// status so that the lane auditor can later produce a per-spec diff rather
+// than a diff against the whole branch tip.
+//
+// If git is unavailable or the repo dir is not a git repository, the failure
+// is logged but the spec transition is NOT rolled back — base_sha remains "".
+//
+// Called from two sites:
+//  1. onAdvanceSideEffects (case SpecStatusImplementing) for SpecAdvance
+//  2. SpecQuick explicitly after the rationale→implementing transition
+func (svc *SDDService) captureBaseSHA(ctx context.Context, spec *model.Spec) {
+	repoDir := svc.repoDir
+	if repoDir == "" {
+		var err error
+		repoDir, err = os.Getwd()
+		if err != nil {
+			log.Printf("service: capture base sha: getwd for %s: %v", spec.ID, err)
+			return
+		}
+	}
+
+	differ := &lane.GitDiffer{RepoDir: repoDir}
+	sha, err := differ.HeadSHA()
+	if err != nil {
+		log.Printf("service: capture base sha: git rev-parse HEAD for %s: %v", spec.ID, err)
+		return
+	}
+
+	if err := svc.store.UpdateSpecBaseSHA(ctx, spec.ID, sha); err != nil {
+		log.Printf("service: capture base sha: store update for %s: %v", spec.ID, err)
 	}
 }
 
@@ -442,6 +482,47 @@ func (svc *SDDService) SpecPushback(ctx context.Context, req model.SpecPushbackR
 	updated, err := svc.store.GetSpec(ctx, req.ID)
 	if err != nil {
 		return nil, fmt.Errorf("service: spec pushback: reload: %w", err)
+	}
+	return updated, nil
+}
+
+// SpecReject sends a spec backward from qa (standard) or audit (trivial) to
+// implementing, recording the rejection reason in spec_history. This models
+// a QA review that uncovers defects requiring further implementation work.
+//
+// Standard lane: qa → implementing.
+// Trivial lane:  audit → implementing.
+//
+// Distinct from SpecPushback, which models ambiguity → needs_grill.
+// Returns ErrReasonRequired when req.Reason is empty.
+// Returns ErrInvalidTransition when the spec is not in the expected review state.
+func (svc *SDDService) SpecReject(ctx context.Context, req model.SpecRejectRequest) (*model.Spec, error) {
+	if req.Reason == "" {
+		return nil, model.ErrReasonRequired
+	}
+
+	spec, err := svc.store.GetSpec(ctx, req.ID)
+	if err != nil {
+		return nil, fmt.Errorf("service: spec reject: get: %w", err)
+	}
+
+	// The target is always implementing; validate via the state machine so we
+	// don't bypass lane-specific guard rails.
+	if !spec.Status.CanTransitionTo(model.SpecStatusImplementing, spec.Lane) {
+		return nil, fmt.Errorf("service: spec reject: cannot reject from %s (lane=%s): %w",
+			spec.Status, spec.Lane, model.ErrInvalidTransition)
+	}
+
+	reason := "rejected: " + req.Reason
+	if err := svc.store.UpdateSpecStatus(ctx, spec.ID,
+		spec.Status, model.SpecStatusImplementing,
+		req.By, reason); err != nil {
+		return nil, fmt.Errorf("service: spec reject: update status: %w", err)
+	}
+
+	updated, err := svc.store.GetSpec(ctx, req.ID)
+	if err != nil {
+		return nil, fmt.Errorf("service: spec reject: reload: %w", err)
 	}
 	return updated, nil
 }
@@ -646,6 +727,13 @@ func (svc *SDDService) SpecQuick(ctx context.Context, req model.SpecQuickRequest
 	if err != nil {
 		return nil, fmt.Errorf("service: spec quick: reload: %w", err)
 	}
+
+	// Capture the HEAD SHA as the base for per-spec auditing.
+	// This mirrors the onAdvanceSideEffects case for SpecStatusImplementing in
+	// SpecAdvance. SpecQuick bypasses onAdvanceSideEffects for this transition
+	// so we invoke captureBaseSHA explicitly here with the reloaded spec.
+	svc.captureBaseSHA(ctx, updated)
+
 	return updated, nil
 }
 
@@ -654,6 +742,15 @@ func (svc *SDDService) SpecQuick(ctx context.Context, req model.SpecQuickRequest
 // done and a completion memory is saved. If any check fails the spec stays in
 // audit, a discovery memory is saved listing the breaches, and ErrAuditFailed
 // is returned (the caller can inspect the returned AuditResult for details).
+//
+// Base ref precedence for the git diff:
+//  1. req.BaseRef (explicit caller override)
+//  2. spec.BaseSHA (captured when the spec entered implementing)
+//  3. "" (auditor falls back to its DefaultBaseRef logic)
+//
+// Every run — pass and fail — inserts a row in lane_audits so LaneStatus can
+// read the latest outcome without parsing spec_history text. The former hack
+// of writing audit→audit history entries has been removed.
 func (svc *SDDService) LaneAudit(ctx context.Context, req model.LaneAuditRequest) (*lane.AuditResult, error) {
 	spec, err := svc.store.GetSpec(ctx, req.ID)
 	if err != nil {
@@ -673,13 +770,45 @@ func (svc *SDDService) LaneAudit(ctx context.Context, req model.LaneAuditRequest
 		repoDir, _ = os.Getwd()
 	}
 
+	// Resolve the base ref using the precedence rule from D5:
+	//   req.BaseRef → spec.BaseSHA → "" (let auditor use its DefaultBaseRef)
+	baseRef := req.BaseRef
+	if baseRef == "" {
+		baseRef = spec.BaseSHA
+	}
+
 	result, err := lane.Audit(lane.AuditInput{
 		Scope:   spec.Scope,
-		BaseRef: req.BaseRef,
+		BaseRef: baseRef,
 		RepoDir: repoDir,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("service: lane audit: run auditor: %w", err)
+	}
+
+	// Determine the base ref label stored in lane_audits. When neither caller
+	// nor spec provided a ref the auditor used its internal DefaultBaseRef logic.
+	auditBaseSHA := baseRef
+	if auditBaseSHA == "" {
+		auditBaseSHA = "(default)"
+	}
+
+	// Persist the structured audit record (both pass and fail) so LaneStatus
+	// reads from the table instead of parsing spec_history text.
+	breachStr := ""
+	if !result.Passed {
+		breachStr = strings.Join(result.Breaches, "\n")
+	}
+	auditRec := &model.LaneAuditRecord{
+		SpecID:       spec.ID,
+		Passed:       result.Passed,
+		FileCount:    result.FileCount,
+		LinesChanged: result.LinesChanged,
+		Breaches:     breachStr,
+		BaseSHA:      auditBaseSHA,
+	}
+	if insertErr := svc.store.InsertLaneAudit(ctx, auditRec); insertErr != nil {
+		log.Printf("service: lane audit: insert audit record for %s: %v", spec.ID, insertErr)
 	}
 
 	if result.Passed {
@@ -696,14 +825,8 @@ func (svc *SDDService) LaneAudit(ctx context.Context, req model.LaneAuditRequest
 		return result, nil
 	}
 
-	// Audit failed — persist an audit-failed history entry so LaneStatus can
-	// report the real breaches deterministically, then save a discovery memory.
-	breachReason := strings.Join(result.Breaches, "; ")
-	if err := svc.store.InsertSpecHistoryEntry(ctx, spec.ID,
-		model.SpecStatusAudit, model.SpecStatusAudit,
-		"system", "audit failed: "+breachReason); err != nil {
-		log.Printf("service: lane audit: record failure history for %s: %v", spec.ID, err)
-	}
+	// Audit failed — save a discovery memory; the structured record is already
+	// in lane_audits above. No longer writes the same-status history hack.
 	svc.saveAuditFailureMemory(ctx, spec, result.Breaches)
 	return result, model.ErrAuditFailed
 }
@@ -796,17 +919,13 @@ func (svc *SDDService) LaneOverride(ctx context.Context, req model.LaneOverrideR
 	return updated, nil
 }
 
-// LaneStatus returns a summary of a spec's lane classification and the latest
-// audit outcome (if any) by inspecting the spec_history table.
+// LaneStatus returns a summary of a spec's lane classification, the latest
+// audit outcome (from the lane_audits table), and the rejection count derived
+// from spec_history (transitions to=implementing from qa or audit).
 func (svc *SDDService) LaneStatus(ctx context.Context, id string) (*model.LaneStatusResponse, error) {
 	spec, err := svc.store.GetSpec(ctx, id)
 	if err != nil {
 		return nil, fmt.Errorf("service: lane status: get: %w", err)
-	}
-
-	history, err := svc.store.GetSpecHistory(ctx, id)
-	if err != nil {
-		return nil, fmt.Errorf("service: lane status: history: %w", err)
 	}
 
 	resp := &model.LaneStatusResponse{
@@ -815,46 +934,92 @@ func (svc *SDDService) LaneStatus(ctx context.Context, id string) (*model.LaneSt
 		Scope: spec.Scope,
 	}
 
-	// Find the most recent real audit-run entry. There are two kinds:
-	//
-	// 1. A failed audit: from=audit, to=audit, reason starts with "audit failed: "
-	//    (written by LaneAudit via InsertSpecHistoryEntry when breaches are found).
-	// 2. A passing audit: the spec transitions from=audit, to=done, reason="lane audit passed"
-	//    (written by UpdateSpecStatus inside LaneAudit on success).
-	//
-	// Entries where to=audit but from!=audit represent the implementing→audit
-	// transition (not an actual audit run) and must be ignored for audit summary.
-	for i := len(history) - 1; i >= 0; i-- {
-		h := history[i]
+	// Read the latest audit record from the structured table (SPEC-036).
+	// Prior to SPEC-036 these were parsed from spec_history text — that path
+	// has been replaced. If no rows exist, LatestAudit stays nil.
+	latest, err := svc.store.LatestLaneAudit(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("service: lane status: latest audit: %w", err)
+	}
+	if latest != nil {
+		var breaches []string
+		if latest.Breaches != "" {
+			breaches = strings.Split(latest.Breaches, "\n")
+		}
+		resp.LatestAudit = &model.AuditSummary{
+			Passed:   latest.Passed,
+			Breaches: breaches,
+			At:       latest.CreatedAt,
+		}
+	}
 
-		// Passing audit: implementing→done with "lane audit passed" reason.
-		if h.FromStatus == model.SpecStatusAudit &&
-			h.ToStatus == model.SpecStatusDone &&
-			h.Reason == "lane audit passed" {
-			resp.LatestAudit = &model.AuditSummary{
-				At:     h.At,
-				Passed: true,
-			}
-			break
+	// Derive RejectionCount from history: transitions where to=implementing and
+	// from is qa (standard) or audit (trivial). No extra column needed.
+	history, err := svc.store.GetSpecHistory(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("service: lane status: history: %w", err)
+	}
+	for _, h := range history {
+		if h.ToStatus == model.SpecStatusImplementing &&
+			(h.FromStatus == model.SpecStatusQA || h.FromStatus == model.SpecStatusAudit) {
+			resp.RejectionCount++
+		}
+	}
+
+	return resp, nil
+}
+
+// LaneStats returns lane compliance metrics for a project. All counts are
+// scoped to the provided project (defaults to the service project when empty).
+//
+// Counts are derived by iterating specs and their histories — no dedicated
+// counter columns are needed.
+func (svc *SDDService) LaneStats(ctx context.Context, project string) (*model.LaneStatsResponse, error) {
+	if project == "" {
+		project = svc.project
+	}
+
+	specs, err := svc.store.ListSpecs(ctx, project, "")
+	if err != nil {
+		return nil, fmt.Errorf("service: lane stats: list specs: %w", err)
+	}
+
+	resp := &model.LaneStatsResponse{}
+
+	for _, spec := range specs {
+		if spec.Lane != model.LaneTrivial {
+			continue
+		}
+		resp.TrivialCount++
+
+		// Check if the latest audit failed.
+		rec, err := svc.store.LatestLaneAudit(ctx, spec.ID)
+		if err != nil {
+			log.Printf("service: lane stats: latest audit for %s: %v", spec.ID, err)
+			continue
+		}
+		if rec != nil && !rec.Passed {
+			resp.AuditFailCount++
 		}
 
-		// Failed audit: audit→audit annotation written by LaneAudit on failure.
-		const auditFailedPrefix = "audit failed: "
-		if h.FromStatus == model.SpecStatusAudit &&
-			h.ToStatus == model.SpecStatusAudit &&
-			strings.HasPrefix(h.Reason, auditFailedPrefix) {
-			breachStr := strings.TrimPrefix(h.Reason, auditFailedPrefix)
-			var breaches []string
-			if breachStr != "" {
-				breaches = strings.Split(breachStr, "; ")
-			}
-			resp.LatestAudit = &model.AuditSummary{
-				At:       h.At,
-				Passed:   false,
-				Breaches: breaches,
-			}
-			break
+		// Scan history for override and reclassify markers.
+		history, err := svc.store.GetSpecHistory(ctx, spec.ID)
+		if err != nil {
+			log.Printf("service: lane stats: history for %s: %v", spec.ID, err)
+			continue
 		}
+		for _, h := range history {
+			if strings.HasPrefix(h.Reason, "lane override:") {
+				resp.OverrideCount++
+			}
+			if strings.Contains(h.Reason, "reclassified from trivial to standard") {
+				resp.ReclassifyCount++
+			}
+		}
+	}
+
+	if resp.TrivialCount > 0 {
+		resp.AuditFailRate = float64(resp.AuditFailCount) / float64(resp.TrivialCount)
 	}
 
 	return resp, nil

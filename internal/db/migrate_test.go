@@ -28,6 +28,8 @@ func TestMigrate_Fresh(t *testing.T) {
 		"unresolved_references",
 		// Tables introduced by 010_communities.sql.
 		"communities", "community_members",
+		// Tables introduced by 012_add_spec_base_sha_and_audits.sql.
+		"lane_audits",
 	}
 	for _, table := range tables {
 		t.Run("table_"+table, func(t *testing.T) {
@@ -42,13 +44,13 @@ func TestMigrate_Fresh(t *testing.T) {
 		})
 	}
 
-	t.Run("schema_version_is_11", func(t *testing.T) {
+	t.Run("schema_version_is_12", func(t *testing.T) {
 		var version int
 		if err := db.QueryRow(`SELECT MAX(version) FROM schema_version`).Scan(&version); err != nil {
 			t.Fatalf("query schema_version: %v", err)
 		}
-		if version != 11 {
-			t.Errorf("expected schema version 11, got %d", version)
+		if version != 12 {
+			t.Errorf("expected schema version 12, got %d", version)
 		}
 	})
 }
@@ -72,10 +74,10 @@ func TestMigrate_Idempotent(t *testing.T) {
 		t.Fatalf("query schema_version count: %v", err)
 	}
 	// Each migration file inserts one row with INSERT OR IGNORE, so there
-	// should be exactly one row per applied migration — currently 11.
+	// should be exactly one row per applied migration — currently 12.
 	// A second call to migrate must not insert duplicate rows.
-	if count != 11 {
-		t.Errorf("expected 11 rows in schema_version, got %d", count)
+	if count != 12 {
+		t.Errorf("expected 12 rows in schema_version, got %d", count)
 	}
 }
 

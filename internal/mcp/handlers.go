@@ -92,6 +92,10 @@ func (h *handlers) handleToolCall(ctx context.Context, params ToolCallParams) (*
 		return h.handleLaneOverride(ctx, params.Arguments)
 	case "lane_status":
 		return h.handleLaneStatus(ctx, params.Arguments)
+	case "spec_reject":
+		return h.handleSpecReject(ctx, params.Arguments)
+	case "lane_stats":
+		return h.handleLaneStats(ctx, params.Arguments)
 
 	// --- CODEGRAPH TOOLS ---
 	case "codegraph_search":
@@ -925,6 +929,50 @@ func (h *handlers) handleLaneStatus(ctx context.Context, raw json.RawMessage) (*
 	resp, err := h.sdd.LaneStatus(ctx, args.ID)
 	if err != nil {
 		return nil, h.mapServiceError("lane_status", err)
+	}
+	return resultFromAny(resp)
+}
+
+// handleSpecReject processes a spec_reject tool call. It rejects a spec from
+// qa (standard) or audit (trivial) back to implementing. Uses the standard
+// mapServiceError path — no special IsError-with-payload pattern.
+func (h *handlers) handleSpecReject(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	if h.sdd == nil {
+		return nil, h.sddUnavailable("spec_reject")
+	}
+	var req model.SpecRejectRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return nil, &JSONRPCError{
+			Code:    CodeInvalidParams,
+			Message: fmt.Sprintf("mcp: handle spec_reject: invalid arguments: %s", err),
+		}
+	}
+	spec, err := h.sdd.SpecReject(ctx, req)
+	if err != nil {
+		return nil, h.mapServiceError("spec_reject", err)
+	}
+	return resultFromAny(spec)
+}
+
+// handleLaneStats processes a lane_stats tool call.
+func (h *handlers) handleLaneStats(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	if h.sdd == nil {
+		return nil, h.sddUnavailable("lane_stats")
+	}
+	var args struct {
+		Project string `json:"project"`
+	}
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &args); err != nil {
+			return nil, &JSONRPCError{
+				Code:    CodeInvalidParams,
+				Message: fmt.Sprintf("mcp: handle lane_stats: invalid arguments: %s", err),
+			}
+		}
+	}
+	resp, err := h.sdd.LaneStats(ctx, args.Project)
+	if err != nil {
+		return nil, h.mapServiceError("lane_stats", err)
 	}
 	return resultFromAny(resp)
 }

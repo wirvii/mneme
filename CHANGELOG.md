@@ -6,6 +6,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [v1.6.0] — 2026-05-29
+
+### Added
+
+- **`spec_reject`** / `mneme spec reject` (SPEC-036): rejects a spec from `qa`
+  (standard lane) or `audit` (trivial lane) back to `implementing` with a
+  documented reason. Models QA review that found defects. Distinct from
+  `spec_pushback` (ambiguity → `needs_grill`). MCP tool count: 39 → 41.
+- **`lane_stats`** / `mneme lane stats` (SPEC-036): reports trivial-lane compliance
+  metrics — trivial count, audit-fail count and rate, override count, reclassify
+  count. Scoped to the current project.
+- **Base-SHA binding** (SPEC-036): when a spec enters `implementing` status, mneme
+  captures the current HEAD commit SHA as `spec.base_sha`. `lane_audit` uses it
+  as the diff base (precedence: explicit `--base` → `spec.base_sha` → merge-base).
+  Prevents cross-spec diff contamination on multi-spec branches.
+- **Structured lane audit records** (SPEC-036): every `lane_audit` run inserts a
+  row in the new `lane_audits` table (migration 012). `lane_status` reads the
+  latest row instead of parsing `spec_history` text.
+- **`rejection_count`** in `lane_status` response (SPEC-036): derived from
+  `spec_history` transitions `qa/audit → implementing`; no additional column.
+- Migration 012 (`012_add_spec_base_sha_and_audits.sql`): adds `base_sha TEXT`
+  column to `specs` and creates the `lane_audits` table.
+
+### Changed
+
+- `lane_status` now reads audit outcome from `lane_audits` table rather than
+  parsing `spec_history` reason strings. Existing specs without audit rows
+  report `latest_audit: null` (no crash).
+- `lane_audit` base-ref precedence updated: `req.base_ref` → `spec.base_sha` →
+  auditor's default `merge-base` logic.
+
+### Removed
+
+- The `spec_history` hack of writing same-status `audit → audit` entries to
+  record audit failures has been removed. `lane_audits` table is now canonical.
+
 ## [v1.5.0] — 2026-05-28
 
 ### Added

@@ -679,3 +679,128 @@ func TestCreateSpecWithLane(t *testing.T) {
 		t.Errorf("Scope: got %q, want internal/model/*.go", got.Scope)
 	}
 }
+
+// TestUpdateSpecBaseSHA verifies that UpdateSpecBaseSHA sets the base_sha and that
+// GetSpec and ListSpecs both return the updated value. Also verifies ErrSpecNotFound
+// for a non-existent spec ID.
+func TestUpdateSpecBaseSHA(t *testing.T) {
+	s := newTestSDDStore(t)
+	ctx := context.Background()
+
+	spec := &model.Spec{
+		ID: "SPEC-001", Title: "SHA test", Status: model.SpecStatusDraft,
+		Project: "proj", Lane: model.LaneStandard,
+	}
+	if err := s.CreateSpec(ctx, spec); err != nil {
+		t.Fatalf("CreateSpec: %v", err)
+	}
+
+	const wantSHA = "abc0123456789def0123456789abcdef01234567"
+	if err := s.UpdateSpecBaseSHA(ctx, "SPEC-001", wantSHA); err != nil {
+		t.Fatalf("UpdateSpecBaseSHA: %v", err)
+	}
+
+	got, err := s.GetSpec(ctx, "SPEC-001")
+	if err != nil {
+		t.Fatalf("GetSpec after SHA update: %v", err)
+	}
+	if got.BaseSHA != wantSHA {
+		t.Errorf("BaseSHA: got %q, want %q", got.BaseSHA, wantSHA)
+	}
+
+	// ListSpecs must also return the SHA.
+	list, err := s.ListSpecs(ctx, "proj", "")
+	if err != nil {
+		t.Fatalf("ListSpecs: %v", err)
+	}
+	if len(list) == 0 || list[0].BaseSHA != wantSHA {
+		t.Errorf("ListSpecs BaseSHA: got %q, want %q", func() string {
+			if len(list) > 0 {
+				return list[0].BaseSHA
+			}
+			return "(empty list)"
+		}(), wantSHA)
+	}
+
+	// Non-existent spec returns ErrSpecNotFound.
+	err = s.UpdateSpecBaseSHA(ctx, "SPEC-999", wantSHA)
+	if !errors.Is(err, model.ErrSpecNotFound) {
+		t.Errorf("expected ErrSpecNotFound, got %v", err)
+	}
+}
+
+// TestInsertLaneAuditAndLatestLaneAudit verifies the round-trip for lane audit records.
+// Two inserts for the same spec: LatestLaneAudit must return the newer one.
+// Also verifies that LatestLaneAudit returns nil when no rows exist.
+func TestInsertLaneAuditAndLatestLaneAudit(t *testing.T) {
+	s := newTestSDDStore(t)
+	ctx := context.Background()
+
+	spec := &model.Spec{
+		ID: "SPEC-001", Title: "audit test", Status: model.SpecStatusAudit,
+		Project: "proj", Lane: model.LaneTrivial, Scope: "internal/**",
+	}
+	if err := s.CreateSpec(ctx, spec); err != nil {
+		t.Fatalf("CreateSpec: %v", err)
+	}
+
+	// No rows yet — LatestLaneAudit must return nil, nil.
+	rec, err := s.LatestLaneAudit(ctx, "SPEC-001")
+	if err != nil {
+		t.Fatalf("LatestLaneAudit (no rows): %v", err)
+	}
+	if rec != nil {
+		t.Errorf("expected nil record before any audits, got %+v", rec)
+	}
+
+	// Insert first (failing) audit.
+	first := &model.LaneAuditRecord{
+		SpecID:       "SPEC-001",
+		Passed:       false,
+		FileCount:    5,
+		LinesChanged: 42,
+		Breaches:     "file count 5 exceeds limit\nline count 42 exceeds limit",
+		BaseSHA:      "sha1sha1sha1",
+	}
+	if err := s.InsertLaneAudit(ctx, first); err != nil {
+		t.Fatalf("InsertLaneAudit (fail): %v", err)
+	}
+	if first.ID == 0 {
+		t.Error("InsertLaneAudit did not populate ID")
+	}
+
+	// Insert second (passing) audit slightly later (time.Sleep not needed;
+	// RFC3339Nano includes nanoseconds and the second insert runs after).
+	second := &model.LaneAuditRecord{
+		SpecID:       "SPEC-001",
+		Passed:       true,
+		FileCount:    2,
+		LinesChanged: 8,
+		Breaches:     "",
+		BaseSHA:      "sha2sha2sha2",
+	}
+	if err := s.InsertLaneAudit(ctx, second); err != nil {
+		t.Fatalf("InsertLaneAudit (pass): %v", err)
+	}
+
+	// LatestLaneAudit must return the passing (second) row.
+	latest, err := s.LatestLaneAudit(ctx, "SPEC-001")
+	if err != nil {
+		t.Fatalf("LatestLaneAudit: %v", err)
+	}
+	if latest == nil {
+		t.Fatal("expected non-nil latest audit record")
+	}
+	if !latest.Passed {
+		t.Error("expected latest audit Passed=true")
+	}
+	if latest.FileCount != 2 {
+		t.Errorf("FileCount: got %d, want 2", latest.FileCount)
+	}
+	if latest.BaseSHA != "sha2sha2sha2" {
+		t.Errorf("BaseSHA: got %q, want sha2sha2sha2", latest.BaseSHA)
+	}
+	if latest.CreatedAt.IsZero() {
+		t.Error("CreatedAt must not be zero")
+	}
+}

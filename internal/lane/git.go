@@ -50,6 +50,20 @@ type GitDiffer struct {
 	RepoDir string
 }
 
+// HeadSHA returns the full 40-character SHA of the current HEAD commit.
+// It is used by the SDD service to capture the base commit when a spec enters
+// implementing status, so each spec's audit diff is bounded to exactly the
+// commits introduced for that spec.
+func (g *GitDiffer) HeadSHA() (string, error) {
+	cmd := exec.Command("git", "rev-parse", "HEAD")
+	cmd.Dir = g.RepoDir
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("lane: git rev-parse HEAD: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 // DefaultBaseRef resolves the merge-base between HEAD and the default remote
 // branch (origin/HEAD → strip to branch name). Falls back to "main", then
 // "master" if origin/HEAD is not configured.
