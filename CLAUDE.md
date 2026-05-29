@@ -231,3 +231,10 @@ mneme conflicts list
 - No auto-delete/edit of memories. No embeddings. No metered API.
 
 Full reference: `docs/conflicts.md`.
+
+<!-- mneme:managed:start v=1 -->
+Process and operating instructions are managed globally via mneme.
+See the mneme operating manual in your global ~/.claude/CLAUDE.md.
+
+Project scope: see this file's sections below for stack, conventions, and module structure.
+<!-- mneme:managed:end -->
