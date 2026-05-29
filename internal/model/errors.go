@@ -141,6 +141,7 @@ var ErrLaneMismatch = errors.New("operation is only valid for the other lane")
 // AuditResult breaches field for the list of individual failures.
 var ErrAuditFailed = errors.New("lane audit failed: threshold violations detected")
 
-// ErrReasonRequired is returned when lane_override is called without a reason.
-// Overrides are auditable decisions and must be documented.
-var ErrReasonRequired = errors.New("reason is required for lane override")
+// ErrReasonRequired is returned when an operation requires a non-empty reason
+// and none was supplied. Used by lane_override and spec_reject, both of which
+// are auditable decisions that must be documented.
+var ErrReasonRequired = errors.New("reason is required")
