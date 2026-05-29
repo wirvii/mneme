@@ -961,84 +961,23 @@ func CreateWorkflowDirs() error {
 	return nil
 }
 
-// DryRun returns a human-readable description of what Install would do
-// without making any filesystem changes.
-func DryRun(agent *Agent, binaryPath string) (string, error) {
+// DryRun returns a human-readable description of what Install would do for the
+// given agent and options, without making any filesystem changes.
+//
+// The output is derived directly from agent.installSteps(opts), so it always
+// reflects the exact step sequence that Install would execute — there is no
+// separate, manually maintained list to keep in sync.
+//
+// Each step is rendered as "  [would run]  <step.Name>". The caller (CLI) is
+// responsible for printing the surrounding "Dry run — no changes" header.
+func DryRun(agent *Agent, opts InstallOptions) (string, error) {
 	var lines []string
 
 	lines = append(lines, fmt.Sprintf("Agent: %s (%s)", agent.Name, agent.Slug))
 	lines = append(lines, "")
 
-	if agent.MCPConfig != nil {
-		path, _, err := agent.MCPConfig(binaryPath)
-		if err != nil {
-			return "", fmt.Errorf("install: dry-run: mcp config: %w", err)
-		}
-		lines = append(lines, fmt.Sprintf("  [write]  MCP config    → %s", path))
-	}
-
-	if agent.Hooks != nil {
-		path, patches, err := agent.Hooks()
-		if err != nil {
-			return "", fmt.Errorf("install: dry-run: hooks: %w", err)
-		}
-		lines = append(lines, fmt.Sprintf("  [patch]  Hooks         → %s", path))
-		for _, p := range patches {
-			lines = append(lines, fmt.Sprintf("             %s: %q", p.Event, p.Command))
-		}
-	}
-
-	if agent.Protocol != nil {
-		path, _, _, err := agent.Protocol()
-		if err != nil {
-			return "", fmt.Errorf("install: dry-run: protocol: %w", err)
-		}
-		lines = append(lines, fmt.Sprintf("  [inject] Protocol      → %s", path))
-	}
-
-	if agent.Commands != nil {
-		cmds, err := agent.Commands()
-		if err != nil {
-			return "", fmt.Errorf("install: dry-run: commands: %w", err)
-		}
-		for _, cmd := range cmds {
-			lines = append(lines, fmt.Sprintf("  [write]  Command       → %s", cmd.Path))
-		}
-	}
-
-	// Agent models step is always present.
-	lines = append(lines, "  [apply]  Agent models  → ~/.claude/agents/<agent>.md (model: field)")
-
-	if agent.Skills != nil {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("install: dry-run: home dir: %w", err)
-		}
-		names, err := BundledSkillNames()
-		if err != nil {
-			return "", fmt.Errorf("install: dry-run: skills: %w", err)
-		}
-		skillsDir := filepath.Join(home, ".claude", "skills")
-		for _, n := range names {
-			lines = append(lines, fmt.Sprintf("  [write]  Skill          → %s (pin-aware)", filepath.Join(skillsDir, n)))
-		}
-	}
-
-	if agent.DelegationHook != nil {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("install: dry-run: home dir: %w", err)
-		}
-		hookPath := filepath.Join(home, ".claude", "hooks", "enforce_delegation.sh")
-		lines = append(lines, fmt.Sprintf("  [write]  Delegation hook → %s (0755)", hookPath))
-		settingsPath, patches, err := agent.DelegationHook()
-		if err != nil {
-			return "", fmt.Errorf("install: dry-run: delegation hook: %w", err)
-		}
-		lines = append(lines, fmt.Sprintf("  [patch]  Delegation hooks → %s", settingsPath))
-		for _, p := range patches {
-			lines = append(lines, fmt.Sprintf("             %s: %q", p.Event, p.Command))
-		}
+	for _, step := range agent.installSteps(opts) {
+		lines = append(lines, fmt.Sprintf("  [would run]  %s", step.Name))
 	}
 
 	return strings.Join(lines, "\n"), nil

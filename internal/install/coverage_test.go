@@ -427,40 +427,37 @@ func TestPatchDelegationHook_Idempotent(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestDryRun_AllBranches exercises DryRun with a fully-configured fake agent
-// and verifies the output mentions each expected path/entry.
+// and verifies the output contains the agent name and at least one
+// "[would run]" step line. DryRun derives its output from installSteps (SPEC-040
+// P3) so it never calls the individual component funcs — only step Names appear.
 func TestDryRun_AllBranches(t *testing.T) {
 	base := t.TempDir()
 	agent := fakeAgent(t, base, "/usr/local/bin/mneme")
+	opts := InstallOptions{BinaryPath: "/usr/local/bin/mneme"}
 
-	out, err := DryRun(agent, "/usr/local/bin/mneme")
+	out, err := DryRun(agent, opts)
 	if err != nil {
 		t.Fatalf("DryRun error: %v", err)
 	}
 
-	for _, want := range []string{
-		"Test Agent",
-		".claude.json",
-		"settings.json",
-		"CLAUDE.md",
-		"mneme-init.md",
-		"enforce_delegation.sh",
-		"PreToolUse",
-	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("DryRun output missing %q\nfull output:\n%s", want, out)
-		}
+	if !strings.Contains(out, "Test Agent") {
+		t.Errorf("DryRun output missing agent name\nfull output:\n%s", out)
+	}
+	if !strings.Contains(out, "[would run]") {
+		t.Errorf("DryRun output has no [would run] lines\nfull output:\n%s", out)
 	}
 }
 
 // TestDryRun_NilOptionalFuncs verifies that DryRun handles an agent with nil
 // optional functions (Commands, Hooks, Protocol, DelegationHook) gracefully.
+// DryRun only enumerates step names; it never invokes the component funcs.
 func TestDryRun_NilOptionalFuncs(t *testing.T) {
 	agent := &Agent{
 		Name: "Minimal",
 		Slug: "minimal",
 	}
 
-	out, err := DryRun(agent, "")
+	out, err := DryRun(agent, InstallOptions{})
 	if err != nil {
 		t.Fatalf("DryRun error: %v", err)
 	}
@@ -469,28 +466,25 @@ func TestDryRun_NilOptionalFuncs(t *testing.T) {
 	}
 }
 
-// TestDryRun_WithDelegationHook_PropagatesHomeDirError verifies that when
-// os.UserHomeDir fails inside DryRun, the error is propagated (not swallowed).
-// This exercises the fix applied in the QA polish commit.
-// Note: On macOS/Linux, unsetting HOME may not make os.UserHomeDir fail if it
-// falls back to password-database lookup. We test the DryRun code path by
-// supplying a custom agent whose DelegationHook func returns an error, which
-// forces the DelegationHook error branch.
-func TestDryRun_WithDelegationHookError(t *testing.T) {
+// TestDryRun_WithDelegationHook verifies that DryRun emits a step Name for the
+// delegation hook when DelegationHook is configured, without calling it.
+// DryRun only enumerates step names (SPEC-040 P3) so it never errors on
+// component-function failures.
+func TestDryRun_WithDelegationHook(t *testing.T) {
 	agent := &Agent{
-		Name: "Error Agent",
-		Slug: "error-agent",
+		Name: "Hook Agent",
+		Slug: "hook-agent",
 		DelegationHook: func() (string, []HookPatch, error) {
-			return "", nil, os.ErrPermission
+			return "", nil, os.ErrPermission // would error if called
 		},
 	}
 
-	_, err := DryRun(agent, "")
-	if err == nil {
-		t.Fatal("DryRun must return error when DelegationHook returns error")
+	out, err := DryRun(agent, InstallOptions{})
+	if err != nil {
+		t.Fatalf("DryRun must not call DelegationHook, but got error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "delegation hook") {
-		t.Errorf("error %q should mention 'delegation hook'", err.Error())
+	if !strings.Contains(out, "Delegation hook") {
+		t.Errorf("DryRun output missing delegation hook step\nfull output:\n%s", out)
 	}
 }
 
@@ -1119,76 +1113,68 @@ func TestInjectProtocol_MkdirError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// DryRun — MCPConfig error and Hooks error propagation
+// DryRun — component-func error isolation (SPEC-040 P3)
 // ---------------------------------------------------------------------------
 
-// TestDryRun_MCPConfigError verifies that DryRun propagates an error from
-// agent.MCPConfig.
-func TestDryRun_MCPConfigError(t *testing.T) {
-	agent := &Agent{
-		Name: "Error Agent",
-		Slug: "err",
-		MCPConfig: func(_ string) (string, []byte, error) {
-			return "", nil, os.ErrPermission
+// TestDryRun_ComponentFuncErrors verifies that DryRun does NOT propagate errors
+// from individual component funcs (MCPConfig, Hooks, Protocol, Commands,
+// DelegationHook). DryRun only enumerates installStep Names without executing
+// the step.Run closures, so faults in component funcs are never triggered.
+func TestDryRun_ComponentFuncErrors(t *testing.T) {
+	cases := []struct {
+		name  string
+		agent *Agent
+	}{
+		{
+			name: "mcp_config_error",
+			agent: &Agent{
+				Name: "Error Agent",
+				Slug: "err",
+				MCPConfig: func(_ string) (string, []byte, error) {
+					return "", nil, os.ErrPermission
+				},
+			},
+		},
+		{
+			name: "hooks_error",
+			agent: &Agent{
+				Name: "Error Agent",
+				Slug: "err",
+				Hooks: func() (string, []HookPatch, error) {
+					return "", nil, os.ErrPermission
+				},
+			},
+		},
+		{
+			name: "protocol_error",
+			agent: &Agent{
+				Name: "Error Agent",
+				Slug: "err",
+				Protocol: func() (string, []byte, [2]string, error) {
+					return "", nil, [2]string{}, os.ErrPermission
+				},
+			},
+		},
+		{
+			name: "commands_error",
+			agent: &Agent{
+				Name: "Error Agent",
+				Slug: "err",
+				Commands: func() ([]CommandFile, error) {
+					return nil, os.ErrPermission
+				},
+			},
 		},
 	}
-	_, err := DryRun(agent, "")
-	if err == nil {
-		t.Fatal("expected error from MCPConfig, got nil")
-	}
-	if !strings.Contains(err.Error(), "mcp config") {
-		t.Errorf("error %q should mention 'mcp config'", err.Error())
-	}
-}
 
-// TestDryRun_HooksError verifies that DryRun propagates an error from
-// agent.Hooks.
-func TestDryRun_HooksError(t *testing.T) {
-	agent := &Agent{
-		Name: "Error Agent",
-		Slug: "err",
-		Hooks: func() (string, []HookPatch, error) {
-			return "", nil, os.ErrPermission
-		},
-	}
-	_, err := DryRun(agent, "")
-	if err == nil {
-		t.Fatal("expected error from Hooks, got nil")
-	}
-	if !strings.Contains(err.Error(), "hooks") {
-		t.Errorf("error %q should mention 'hooks'", err.Error())
-	}
-}
-
-// TestDryRun_ProtocolError verifies that DryRun propagates an error from
-// agent.Protocol.
-func TestDryRun_ProtocolError(t *testing.T) {
-	agent := &Agent{
-		Name: "Error Agent",
-		Slug: "err",
-		Protocol: func() (string, []byte, [2]string, error) {
-			return "", nil, [2]string{}, os.ErrPermission
-		},
-	}
-	_, err := DryRun(agent, "")
-	if err == nil {
-		t.Fatal("expected error from Protocol, got nil")
-	}
-}
-
-// TestDryRun_CommandsError verifies that DryRun propagates an error from
-// agent.Commands.
-func TestDryRun_CommandsError(t *testing.T) {
-	agent := &Agent{
-		Name: "Error Agent",
-		Slug: "err",
-		Commands: func() ([]CommandFile, error) {
-			return nil, os.ErrPermission
-		},
-	}
-	_, err := DryRun(agent, "")
-	if err == nil {
-		t.Fatal("expected error from Commands, got nil")
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := DryRun(tc.agent, InstallOptions{})
+			if err != nil {
+				t.Errorf("DryRun(%s): unexpected error %v; DryRun must not call component funcs", tc.name, err)
+			}
+		})
 	}
 }
 

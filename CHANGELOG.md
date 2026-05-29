@@ -6,6 +6,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [v1.9.1] — 2026-05-29
+
+### Fixed
+
+- **P1 — tokenizer fd-dup false positive** (`internal/shell/tokenize.go`): `2>&1`
+  and `1>&2` (fd-dup redirects) no longer emit a `TypeRedirectTarget` token for the
+  numeric file-descriptor word. Enforcement hooks (`mneme hook pre-tool-use`,
+  `enforce_delegation.sh`) were treating the digit `"1"` as a protected path,
+  producing a spurious "Redirect a ruta protegida: '1'" block for commands like
+  `golangci-lint run 2>&1`. Non-numeric targets (e.g. `>&file`) still emit
+  `TypeRedirectTarget` correctly. Adds helper `isAllDigits` and table-driven tests
+  with exact token-stream assertions.
+
+- **P2 — conflict link/unlink write to resolved store** (`internal/service/conflicts.go`,
+  `internal/model/errors.go`): `ConflictLink`, `ConflictUnlink`, and `persistVerdict`
+  previously discarded the store returned by `getFromEitherStore` and always wrote to
+  `projectStore`. Global-global relation operations therefore silently failed with
+  `ErrNotFound`. Fix: writes go to the resolved store. Cross-store pairs (one project,
+  one global) now return the new sentinel `model.ErrCrossStoreRelation` before any
+  write is attempted. No new migration needed — migration 013 already applies to every
+  database, including `global.db`.
+
+- **P3 — DryRun derived from installSteps** (`internal/install/install.go`,
+  `internal/cli/install.go`): `DryRun` previously maintained a hardcoded list of
+  steps that could silently diverge from `installSteps`. Signature changed to
+  `DryRun(agent *Agent, opts InstallOptions)` and the implementation now enumerates
+  `agent.installSteps(opts)`, printing `[would run] <step.Name>` for each step.
+  CLI builds `opts` before the dry-run branch so both paths share the same value.
+
 ## [v1.9.0] — 2026-05-29
 
 ### Added
