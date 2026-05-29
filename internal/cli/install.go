@@ -73,39 +73,8 @@ produces the same result without clobbering existing configuration.`,
 				return err
 			}
 
-			if flagDryRun {
-				description, dryErr := install.DryRun(agent, binaryPath)
-				if dryErr != nil {
-					return dryErr
-				}
-				fmt.Fprintln(os.Stdout, "Dry run — no changes will be made.")
-				fmt.Fprintln(os.Stdout, "")
-				fmt.Fprintln(os.Stdout, description)
-
-				if flagPersonal {
-					source, resolveErr := resolvePersonalSource(flagSource)
-					if resolveErr != nil {
-						return resolveErr
-					}
-					home, homeErr := os.UserHomeDir()
-					if homeErr != nil {
-						return fmt.Errorf("install: home dir: %w", homeErr)
-					}
-					dryDesc, dryPersonalErr := install.DryRunPersonal(install.PersonalOpts{
-						Source:    source,
-						ClaudeDir: filepath.Join(home, ".claude"),
-						Force:     flagForce,
-					})
-					if dryPersonalErr != nil {
-						return dryPersonalErr
-					}
-					fmt.Fprintln(os.Stdout, "")
-					fmt.Fprintln(os.Stdout, dryDesc)
-				}
-				return nil
-			}
-
-			// Resolve personal source when --personal is requested.
+			// Resolve personal source eagerly so both the dry-run and the live
+			// path share the same opts construction logic.
 			var personalSource string
 			if flagPersonal {
 				personalSource, err = resolvePersonalSource(flagSource)
@@ -120,6 +89,34 @@ produces the same result without clobbering existing configuration.`,
 				Personal:       flagPersonal,
 				PersonalSource: personalSource,
 				BinaryPath:     binaryPath,
+			}
+
+			if flagDryRun {
+				description, dryErr := install.DryRun(agent, opts)
+				if dryErr != nil {
+					return dryErr
+				}
+				fmt.Fprintln(os.Stdout, "Dry run — no changes will be made.")
+				fmt.Fprintln(os.Stdout, "")
+				fmt.Fprintln(os.Stdout, description)
+
+				if flagPersonal {
+					home, homeErr := os.UserHomeDir()
+					if homeErr != nil {
+						return fmt.Errorf("install: home dir: %w", homeErr)
+					}
+					dryDesc, dryPersonalErr := install.DryRunPersonal(install.PersonalOpts{
+						Source:    personalSource,
+						ClaudeDir: filepath.Join(home, ".claude"),
+						Force:     flagForce,
+					})
+					if dryPersonalErr != nil {
+						return dryPersonalErr
+					}
+					fmt.Fprintln(os.Stdout, "")
+					fmt.Fprintln(os.Stdout, dryDesc)
+				}
+				return nil
 			}
 
 			fmt.Fprintf(os.Stdout, "Installing mneme for %s...\n\n", agent.Name)

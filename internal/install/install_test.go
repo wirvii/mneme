@@ -1384,3 +1384,69 @@ func TestRunInstallSteps_CollectAll(t *testing.T) {
 		t.Errorf("expected all 3 steps called, got %d: %v", len(called), called)
 	}
 }
+
+// TestDryRun_MatchesInstallSteps verifies that DryRun's output lists exactly
+// the same step names as installSteps(opts), in the same order and count.
+// This test closes the mini-C1 class: a future change to installSteps cannot
+// leave DryRun out of sync because DryRun is derived from installSteps directly.
+//
+// Two variants of opts are exercised to cover conditional steps (ReinstallHooks
+// adds the "Delegation hook (reinstall)" variant instead of "Delegation hook").
+func TestDryRun_MatchesInstallSteps(t *testing.T) {
+	cases := []struct {
+		name string
+		opts InstallOptions
+	}{
+		{
+			name: "default_opts",
+			opts: InstallOptions{BinaryPath: "/usr/local/bin/mneme"},
+		},
+		{
+			name: "reinstall_hooks",
+			opts: InstallOptions{
+				BinaryPath:     "/usr/local/bin/mneme",
+				ReinstallHooks: true,
+			},
+		},
+	}
+
+	agent := ClaudeCode("/usr/local/bin/mneme")
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			// Collect expected step names from installSteps.
+			steps := agent.installSteps(tc.opts)
+			var wantNames []string
+			for _, s := range steps {
+				wantNames = append(wantNames, s.Name)
+			}
+
+			// Parse the names from DryRun output.
+			output, err := DryRun(agent, tc.opts)
+			if err != nil {
+				t.Fatalf("DryRun(%s): unexpected error: %v", tc.name, err)
+			}
+
+			var gotNames []string
+			const prefix = "  [would run]  "
+			for _, line := range strings.Split(output, "\n") {
+				if strings.HasPrefix(line, prefix) {
+					gotNames = append(gotNames, strings.TrimPrefix(line, prefix))
+				}
+			}
+
+			if len(gotNames) != len(wantNames) {
+				t.Errorf("DryRun(%s): step count mismatch\n  got  %d: %v\n  want %d: %v",
+					tc.name, len(gotNames), gotNames, len(wantNames), wantNames)
+				return
+			}
+			for i := range wantNames {
+				if gotNames[i] != wantNames[i] {
+					t.Errorf("DryRun(%s): step[%d] mismatch: got %q, want %q",
+						tc.name, i, gotNames[i], wantNames[i])
+				}
+			}
+		})
+	}
+}
