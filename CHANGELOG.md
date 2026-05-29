@@ -6,6 +6,55 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [v1.8.0] — 2026-05-29
+
+### Added
+
+- **Per-Agent Model Assignment** (SPEC-038): each bundled agent now has its model
+  alias written into `~/.claude/agents/<agent>.md` at install time, driven by
+  config overrides with built-in defaults.
+
+  - **`internal/install/defaults.go`** — `defaultAgentModels` map, `knownAliases`
+    set, and helpers `BundledAgentNames`, `DefaultModelFor`, `IsKnownAlias`,
+    `ResolveEffectiveModels`. BundledAgentNames is the canonical source for agent
+    names across service validation and MCP tools.
+  - **`internal/install/frontmatter.go`** — `SetModelInFrontmatter`: surgical
+    line-scanner editor that replaces exactly the `model:` line in YAML frontmatter
+    without re-serializing any other field. I1-hardened (3-cycle round-trip, special
+    chars in description, YAML comments, permissionMode all preserved verbatim).
+  - **`ApplyAgentModels(agentsDir, overrides)`** in `internal/install/install.go`:
+    resolves effective models and writes them to each installed agent file; skips
+    agents not yet installed (graceful).
+  - **`[models]` config section**: `ModelsConfig{Overrides map[string]string}` added
+    to `internal/config/config.go`; `SetModelsOverrides` atomic write-back in
+    `internal/config/write.go`. Config survives upgrade (not an asset).
+  - **`internal/service/models.go`** — `ModelsService` with `List`, `Set`, `Reset`.
+    `Set` rejects unknown agents (`ErrUnknownAgent`) and empty model (`ErrInvalidModel`);
+    warns (does not error) on unknown alias.
+  - **3 MCP tools** (48 → 51): `model_list`, `model_set`, `model_reset`. Mapped by
+    `mapServiceError`: `ErrUnknownAgent` and `ErrInvalidModel` → `CodeInvalidParams`.
+  - **`mneme model` CLI command group** (31 top-level commands): `list [--json]`,
+    `set <agent> <model>`, `reset [<agent>]`. Filesystem-only (no DB connection).
+  - **`docs/models.md`** — defaults rationale, config format, alias table.
+  - **2 model sentinel errors**: `ErrUnknownAgent`, `ErrInvalidModel`.
+
+### Changed
+
+- **Install consolidation** (D5): `install.go` now exposes a single `installSteps(opts
+  InstallOptions)` builder and `runInstallSteps` runner. Both `Install()` (upgrade
+  path) and the CLI `mneme install claude-code` (RunE) consume the same step list.
+  The step "Agent models" runs immediately after "Agent profiles" in every install.
+- **CLI install behavior change**: `mneme install claude-code` now uses collect-all
+  error semantics (was fail-fast). All steps are attempted; errors are printed as
+  `[fail]` lines and returned combined. This is consistent with the upgrade path
+  and improves partial installs.
+- **Agent assets**: all bundled `*.md` files now use model aliases instead of pinned
+  IDs (`opus`/`sonnet` instead of `claude-opus-4-6`/`claude-sonnet-4-6`). `qa-tester`
+  changed from `opus` to `sonnet` (deliberate per §2 cost rationale).
+- `NewServer` signature adds `modelsSvc *service.ModelsService` parameter (nil-safe).
+- MCP tool count: 48 → 51.
+- CLI top-level command count: 30 → 31 (added `model`).
+
 ## [v1.7.0] — 2026-05-29
 
 ### Added
