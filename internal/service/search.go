@@ -146,6 +146,11 @@ func (svc *MemoryService) Search(ctx context.Context, req model.SearchRequest) (
 		svc.recordHebbianAccess(ctx, svc.storeFor(sr.Scope), sr.Memory)
 	}
 
+	// Post-ranking pass: annotate results with conflicts_with partners that
+	// appear in the same result set. This is purely additive — no reordering
+	// or filtering is performed. Failures are recovered silently.
+	svc.annotateConflicts(ctx, results)
+
 	return &model.SearchResponse{
 		Results: results,
 		Total:   len(results),
@@ -678,6 +683,72 @@ func (svc *MemoryService) batchTouchRelations(ctx context.Context, relationIDs [
 			"error", err,
 		)
 	}
+}
+
+// annotateConflicts performs a post-ranking pass over search results to
+// populate the ConflictsWith field of each SearchResult. For each result it
+// queries GetMemoryConflicts from both project and global stores; any conflict
+// partner whose ID is also in the result set is recorded symmetrically.
+//
+// This method never reorders or filters results. Failures are recovered with a
+// defer/recover so a store error never breaks search.
+func (svc *MemoryService) annotateConflicts(ctx context.Context, results []model.SearchResult) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.WarnContext(ctx, "annotateConflicts panic recovered", "panic", r)
+		}
+	}()
+
+	if len(results) == 0 {
+		return
+	}
+
+	// Build a quick-lookup set of IDs in the result set.
+	inResults := make(map[string]int, len(results)) // id → slice index
+	for i := range results {
+		if results[i].Memory != nil {
+			inResults[results[i].ID] = i
+		}
+	}
+
+	for i := range results {
+		if results[i].Memory == nil {
+			continue
+		}
+		memID := results[i].ID
+
+		// Query both project and global stores; ignore errors (best-effort).
+		conflictIDs, err := svc.projectStore.GetMemoryConflicts(ctx, memID)
+		if err != nil {
+			continue
+		}
+		globalConflictIDs, _ := svc.globalStore.GetMemoryConflicts(ctx, memID)
+		conflictIDs = append(conflictIDs, globalConflictIDs...)
+
+		for _, cID := range conflictIDs {
+			if _, ok := inResults[cID]; !ok {
+				continue // conflict partner not in this result page
+			}
+			// Mark symmetrically.
+			if !containsID(results[i].ConflictsWith, cID) {
+				results[i].ConflictsWith = append(results[i].ConflictsWith, cID)
+			}
+			j := inResults[cID]
+			if !containsID(results[j].ConflictsWith, memID) {
+				results[j].ConflictsWith = append(results[j].ConflictsWith, memID)
+			}
+		}
+	}
+}
+
+// containsID reports whether s is present in the slice. Used by annotateConflicts.
+func containsID(slice []string, s string) bool {
+	for _, v := range slice {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }
 
 // reRankFTS5 applies the existing time-decay + importance re-ranking over a

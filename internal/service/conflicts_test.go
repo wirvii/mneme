@@ -276,6 +276,81 @@ func TestConflictList(t *testing.T) {
 	}
 }
 
+// TestAnnotateConflicts verifies that search results are annotated with
+// conflicts_with partners when those partners appear in the same result set.
+func TestAnnotateConflicts(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+
+	save := func(title, content string) string {
+		resp, err := svc.Save(ctx, model.SaveRequest{
+			Title: title, Content: content,
+			Project: "test/project", Scope: model.ScopeProject, Type: model.TypeDecision,
+		})
+		if err != nil {
+			t.Fatalf("Save(%q): %v", title, err)
+		}
+		return resp.ID
+	}
+
+	aID := save("HMAC authentication token", "Use HMAC-SHA256 for API token authentication and signing")
+	bID := save("RS256 JWT authentication", "Use RS256 JWT tokens for authentication and API access")
+
+	// Link them as conflicts_with.
+	if err := svc.ConflictLink(ctx, aID, bID, "conflicts_with", "contradictory auth methods"); err != nil {
+		t.Fatalf("ConflictLink: %v", err)
+	}
+
+	// Search for "authentication token" — both should be in results.
+	resp, err := svc.Search(ctx, model.SearchRequest{
+		Query:   "authentication token",
+		Project: "test/project",
+		Limit:   10,
+	})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+
+	// Find both memories in the result and check ConflictsWith annotation.
+	foundA, foundB := false, false
+	for _, r := range resp.Results {
+		if r.ID == aID {
+			foundA = true
+			if len(r.ConflictsWith) == 0 {
+				t.Errorf("result A (%s) has no ConflictsWith annotation, expected [%s]", aID, bID)
+			}
+		}
+		if r.ID == bID {
+			foundB = true
+			if len(r.ConflictsWith) == 0 {
+				t.Errorf("result B (%s) has no ConflictsWith annotation, expected [%s]", bID, aID)
+			}
+		}
+	}
+
+	// Only assert annotation if both are in the result set.
+	if foundA && foundB {
+		for _, r := range resp.Results {
+			if r.ID == aID && !containsStr(r.ConflictsWith, bID) {
+				t.Errorf("result A ConflictsWith %v does not contain B (%s)", r.ConflictsWith, bID)
+			}
+			if r.ID == bID && !containsStr(r.ConflictsWith, aID) {
+				t.Errorf("result B ConflictsWith %v does not contain A (%s)", r.ConflictsWith, aID)
+			}
+		}
+	}
+}
+
+// containsStr reports whether s is in the slice.
+func containsStr(slice []string, s string) bool {
+	for _, v := range slice {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
 // TestConflictScan_CLIAbsent verifies that ConflictScan returns an error
 // wrapping model.ErrCLIUnavailable when claude binary is not on PATH.
 func TestConflictScan_CLIAbsent(t *testing.T) {
