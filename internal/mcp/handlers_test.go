@@ -1255,3 +1255,124 @@ func TestLaneAudit_FailedAuditReturnsBreaches(t *testing.T) {
 		t.Error("expected non-empty breaches in AuditResult")
 	}
 }
+
+// TestHandleSpecReject_HappyPath verifies that spec_reject transitions a spec
+// from qa (standard lane) to implementing and returns the updated spec.
+func TestHandleSpecReject_HappyPath(t *testing.T) {
+	srv := newTestServerWithSDD(t)
+
+	// Create a standard-lane spec.
+	newResp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name: "spec_new",
+		Arguments: mustMarshal(t, map[string]any{
+			"title": "Reject happy path test",
+			"lane":  "standard",
+		}),
+	})
+	if newResp.Error != nil {
+		t.Fatalf("spec_new: %v", newResp.Error.Message)
+	}
+	var spec struct {
+		ID     string `json:"id"`
+		Status string `json:"status"`
+	}
+	unmarshalToolText(t, newResp, &spec)
+
+	// Advance to qa (6 advances for standard lane).
+	for i, by := range []string{"orch", "arch", "arch", "arch", "backend", "backend"} {
+		advResp := process(t, srv, "tools/call", i+2, ToolCallParams{
+			Name: "spec_advance",
+			Arguments: mustMarshal(t, map[string]any{
+				"id": spec.ID,
+				"by": by,
+			}),
+		})
+		if advResp.Error != nil {
+			t.Fatalf("spec_advance %d: %v", i, advResp.Error.Message)
+		}
+		unmarshalToolText(t, advResp, &spec)
+	}
+	if spec.Status != "qa" {
+		t.Fatalf("expected qa status before reject, got %s", spec.Status)
+	}
+
+	// Reject back to implementing.
+	rejectResp := process(t, srv, "tools/call", 10, ToolCallParams{
+		Name: "spec_reject",
+		Arguments: mustMarshal(t, map[string]any{
+			"id":     spec.ID,
+			"reason": "edge case test fails",
+			"by":     "qa-agent",
+		}),
+	})
+	if rejectResp.Error != nil {
+		t.Fatalf("spec_reject: %v", rejectResp.Error.Message)
+	}
+	unmarshalToolText(t, rejectResp, &spec)
+	if spec.Status != "implementing" {
+		t.Errorf("expected implementing after reject, got %s", spec.Status)
+	}
+}
+
+// TestHandleSpecReject_InvalidStatus verifies that spec_reject returns an
+// error when the spec is in a status that does not allow backward transition.
+func TestHandleSpecReject_InvalidStatus(t *testing.T) {
+	srv := newTestServerWithSDD(t)
+
+	// Create a standard-lane spec in draft (not qa — cannot reject from draft).
+	newResp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name: "spec_new",
+		Arguments: mustMarshal(t, map[string]any{
+			"title": "Reject invalid status",
+			"lane":  "standard",
+		}),
+	})
+	if newResp.Error != nil {
+		t.Fatalf("spec_new: %v", newResp.Error.Message)
+	}
+	var spec struct {
+		ID string `json:"id"`
+	}
+	unmarshalToolText(t, newResp, &spec)
+
+	rejectResp := process(t, srv, "tools/call", 2, ToolCallParams{
+		Name: "spec_reject",
+		Arguments: mustMarshal(t, map[string]any{
+			"id":     spec.ID,
+			"reason": "bad status test",
+			"by":     "orchestrator",
+		}),
+	})
+	// Expect a JSON-RPC error (invalid params).
+	if rejectResp.Error == nil {
+		t.Fatal("expected JSON-RPC error for invalid status reject, got nil")
+	}
+	if rejectResp.Error.Code != CodeInvalidParams {
+		t.Errorf("error code: got %d, want %d (invalid params)", rejectResp.Error.Code, CodeInvalidParams)
+	}
+}
+
+// TestHandleLaneStats_ReturnsResponse verifies that lane_stats returns a
+// LaneStatsResponse with JSON fields.
+func TestHandleLaneStats_ReturnsResponse(t *testing.T) {
+	srv := newTestServerWithSDD(t)
+
+	statsResp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name:      "lane_stats",
+		Arguments: mustMarshal(t, map[string]any{}),
+	})
+	if statsResp.Error != nil {
+		t.Fatalf("lane_stats: %v", statsResp.Error.Message)
+	}
+
+	var stats struct {
+		TrivialCount   int     `json:"trivial_count"`
+		AuditFailCount int     `json:"audit_fail_count"`
+		AuditFailRate  float64 `json:"audit_fail_rate"`
+	}
+	unmarshalToolText(t, statsResp, &stats)
+	// For an empty project all counts are 0; the response must be well-formed.
+	if stats.TrivialCount < 0 {
+		t.Errorf("TrivialCount must be ≥ 0, got %d", stats.TrivialCount)
+	}
+}

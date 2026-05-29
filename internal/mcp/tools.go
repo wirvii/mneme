@@ -710,6 +710,41 @@ func allTools() []ToolDefinition {
 				},
 			},
 		},
+		{
+			Name:        "spec_reject",
+			Description: "Reject a spec from qa (standard lane) or audit (trivial lane) back to implementing. Records the rejection reason in history. Distinct from spec_pushback which models ambiguity → needs_grill.",
+			InputSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"id", "reason", "by"},
+				"properties": map[string]any{
+					"id": map[string]any{
+						"type":        "string",
+						"description": "Spec ID to reject.",
+					},
+					"reason": map[string]any{
+						"type":        "string",
+						"description": "Why the spec was rejected (required; persisted in history).",
+					},
+					"by": map[string]any{
+						"type":        "string",
+						"description": "Who triggers the rejection (e.g. qa-agent, orchestrator).",
+					},
+				},
+			},
+		},
+		{
+			Name:        "lane_stats",
+			Description: "Return lane compliance statistics for the project: trivial spec count, audit-fail count and rate, override count, reclassify count.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"project": map[string]any{
+						"type":        "string",
+						"description": "Project slug. Defaults to the detected project.",
+					},
+				},
+			},
+		},
 
 		// mem_gaps
 		{
