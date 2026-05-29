@@ -247,6 +247,13 @@ func tokensFromWord(w *syntax.Word) []Token {
 // tokensFromRedirect converts a Redirect node into tokens. It always emits a
 // TypeRedirect token for the operator, followed by either a TypeRedirectTarget
 // token for the destination word or a TypeHeredocBody token for here-docs.
+//
+// Special case for fd-dup operators (DplOut / DplIn): in `2>&1` the word "1"
+// is a file-descriptor number, NOT a path. Emitting it as TypeRedirectTarget
+// would cause enforcement hooks to treat the digit "1" as a protected path
+// (false positive). We suppress the TypeRedirectTarget for purely-numeric words
+// so `2>&1` and `1>&2` produce no redirect_target, while `>&file` (non-numeric
+// word) still does.
 func tokensFromRedirect(r *syntax.Redirect) []Token {
 	var tokens []Token
 
@@ -265,6 +272,18 @@ func tokensFromRedirect(r *syntax.Redirect) []Token {
 			body := extractWordLiteral(r.Hdoc)
 			tokens = append(tokens, Token{Value: body, Type: TypeHeredocBody})
 		}
+	case syntax.DplOut, syntax.DplIn:
+		// fd-dup operators (>&, <&): the word is a file descriptor when it is
+		// purely numeric (e.g. "1" in 2>&1). A numeric word is NOT a path, so
+		// do NOT emit TypeRedirectTarget — that would be a false positive for
+		// enforcement hooks. A non-numeric word (e.g. "file" in >&file) IS a
+		// path and must be emitted.
+		if r.Word != nil {
+			target := extractWordLiteral(r.Word)
+			if !isAllDigits(target) {
+				tokens = append(tokens, Token{Value: target, Type: TypeRedirectTarget})
+			}
+		}
 	default:
 		// Normal redirect: the target is r.Word.
 		if r.Word != nil {
@@ -274,6 +293,21 @@ func tokensFromRedirect(r *syntax.Redirect) []Token {
 	}
 
 	return tokens
+}
+
+// isAllDigits reports whether s is a non-empty string containing only ASCII
+// decimal digits. Used by tokensFromRedirect to distinguish fd-dup targets
+// (numeric, e.g. "1" in 2>&1) from path targets (e.g. "file" in >&file).
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // extractDblQuoted reconstructs the string value of a double-quoted word by

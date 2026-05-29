@@ -1004,6 +1004,114 @@ func TestTokenize_C5Regressions(t *testing.T) {
 	}
 }
 
+// TestTokenize_FdDup_NoRedirectTarget is the table-driven suite for fd-dup
+// operators (DplOut / DplIn). It verifies that numeric fd words (e.g. "1" in
+// 2>&1) do NOT produce a TypeRedirectTarget token, while non-numeric path words
+// (e.g. "out.txt" in >&out.txt) DO produce one (SPEC-040 P1).
+func TestTokenize_FdDup_NoRedirectTarget(t *testing.T) {
+	cases := []tokenCase{
+		{
+			// 2>&1: fd-dup with numeric word — must NOT emit redirect_target.
+			// Fix for the false positive observed with `golangci-lint run 2>&1`.
+			name:  "fd_dup_2_to_1",
+			input: `git log 2>&1`,
+			want: []Token{
+				{Value: "git", Type: TypeWord},
+				{Value: "log", Type: TypeWord},
+				{Value: "2>&", Type: TypeRedirect},
+				// No TypeRedirectTarget — "1" is a file descriptor, not a path.
+			},
+		},
+		{
+			// 1>&2: reverse fd-dup — must NOT emit redirect_target.
+			name:  "fd_dup_1_to_2",
+			input: `cmd 1>&2`,
+			want: []Token{
+				{Value: "cmd", Type: TypeWord},
+				{Value: "1>&", Type: TypeRedirect},
+				// No TypeRedirectTarget — "2" is a file descriptor, not a path.
+			},
+		},
+		{
+			// >&out.txt: non-numeric word — MUST emit redirect_target (no bypass).
+			name:  "fd_dup_to_path",
+			input: `echo hi >&out.txt`,
+			want: []Token{
+				{Value: "echo", Type: TypeWord},
+				{Value: "hi", Type: TypeWord},
+				{Value: ">&", Type: TypeRedirect},
+				{Value: "out.txt", Type: TypeRedirectTarget},
+			},
+		},
+		{
+			// &>/dev/null (RdrAll): regression — must still emit redirect_target.
+			name:  "rdr_all_dev_null_regression",
+			input: `make build &>/dev/null`,
+			want: []Token{
+				{Value: "make", Type: TypeWord},
+				{Value: "build", Type: TypeWord},
+				{Value: "&>", Type: TypeRedirect},
+				{Value: "/dev/null", Type: TypeRedirectTarget},
+			},
+		},
+		{
+			// 2>/dev/null (RdrOut with N=2): regression — must still emit redirect_target.
+			name:  "stderr_to_dev_null_regression",
+			input: `rmdir x 2>/dev/null`,
+			want: []Token{
+				{Value: "rmdir", Type: TypeWord},
+				{Value: "x", Type: TypeWord},
+				{Value: "2>", Type: TypeRedirect},
+				{Value: "/dev/null", Type: TypeRedirectTarget},
+			},
+		},
+		{
+			// echo foo > internal/x.go (plain redirect): regression — must still emit redirect_target.
+			name:  "plain_redirect_regression",
+			input: `echo foo > internal/x.go`,
+			want: []Token{
+				{Value: "echo", Type: TypeWord},
+				{Value: "foo", Type: TypeWord},
+				{Value: ">", Type: TypeRedirect},
+				{Value: "internal/x.go", Type: TypeRedirectTarget},
+			},
+		},
+	}
+	runCases(t, cases)
+}
+
+// TestTokenize_FdDup_Pipeline_NoSpuriousTarget verifies that a pipeline
+// containing a fd-dup redirect (2>&1) does NOT produce any TypeRedirectTarget
+// token. This is the exact scenario observed in production with golangci-lint.
+func TestTokenize_FdDup_Pipeline_NoSpuriousTarget(t *testing.T) {
+	input := `golangci-lint run 2>&1 | tee log`
+	tokens, err := Tokenize(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, tok := range tokens {
+		if tok.Type == TypeRedirectTarget {
+			t.Errorf("Tokenize(%q) produced unexpected redirect_target token: %v", input, tok)
+		}
+	}
+}
+
+// TestTokenize_FdDup_Consumer verifies the consumer-level contract: Tokenize of
+// "golangci-lint run 2>&1" produces zero TypeRedirectTarget tokens.
+func TestTokenize_FdDup_Consumer(t *testing.T) {
+	input := `golangci-lint run 2>&1`
+	tokens, err := Tokenize(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, tok := range tokens {
+		if tok.Type == TypeRedirectTarget {
+			t.Errorf("Tokenize(%q): unexpected redirect_target %q; 2>&1 fd-dup must not produce path tokens",
+				input, tok.Value)
+		}
+	}
+}
+
 // TestTokenize_TimeClause verifies that a time-prefixed statement is tokenized.
 func TestTokenize_TimeClause(t *testing.T) {
 	tokens, err := Tokenize(`time rm internal/x.go`)
