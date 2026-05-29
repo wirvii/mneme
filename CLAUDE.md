@@ -54,9 +54,9 @@ Supporting packages: `scoring/` (decay, BM25 re-ranking, RRF fusion), `consolida
 
 ### The three frontends
 
-- **MCP** (`internal/mcp`, primary) — JSON-RPC 2.0 over stdio, ProtocolVersion `2024-11-05`. Surface: 48 tools (14 `mem_*`, 4 `backlog_*`, 8 `spec_*`, 5 `lane_*`, 10 `codegraph_*`, 7 `skills_*`). `spec_*`: spec_new, spec_status, spec_advance, spec_pushback, spec_resolve, spec_list, spec_quick, spec_reject. `lane_*`: lane_audit, lane_reclassify, lane_override, lane_status, lane_stats. `skills_*`: skills_list, skills_install, skills_pin, skills_unpin, skills_remove, skills_lint, skills_validate. `handleMessage()` is exposed separately from `Run()` so unit tests can drive it without I/O loops.
+- **MCP** (`internal/mcp`, primary) — JSON-RPC 2.0 over stdio, ProtocolVersion `2024-11-05`. Surface: 51 tools (14 `mem_*`, 4 `backlog_*`, 8 `spec_*`, 5 `lane_*`, 10 `codegraph_*`, 7 `skills_*`, 3 `model_*`). `spec_*`: spec_new, spec_status, spec_advance, spec_pushback, spec_resolve, spec_list, spec_quick, spec_reject. `lane_*`: lane_audit, lane_reclassify, lane_override, lane_status, lane_stats. `skills_*`: skills_list, skills_install, skills_pin, skills_unpin, skills_remove, skills_lint, skills_validate. `model_*`: model_list, model_set, model_reset. `handleMessage()` is exposed separately from `Run()` so unit tests can drive it without I/O loops.
 - **HTTP** (`internal/http`, `mneme serve --addr :7437`) — stdlib `net/http`, graceful shutdown 10s, 8 endpoints under `/v1/`. Currently lacks SDD endpoints and a few mem tools (`mem_checkpoint`, `mem_timeline`, `mem_suggest_topic_key`); when adding service capabilities, decide explicitly whether HTTP gets parity.
-- **CLI** (`internal/cli`, Cobra) — 30 top-level commands. Notable: `sync export|import|status` is the backup/restore path (no dedicated `restore` command); `mneme init` migrates legacy projects to the SDD engine; `mneme install <agent>` writes agent profiles; `mneme skills` manages skills in `~/.claude/skills/`.
+- **CLI** (`internal/cli`, Cobra) — 31 top-level commands. Notable: `sync export|import|status` is the backup/restore path (no dedicated `restore` command); `mneme init` migrates legacy projects to the SDD engine; `mneme install <agent>` writes agent profiles; `mneme skills` manages skills in `~/.claude/skills/`; `mneme model` manages per-agent model assignments.
 
 ### Persistence
 
@@ -167,3 +167,33 @@ mneme skills remove <name> [--force]
 - SKILL.md requires 5 H2 sections and a 3-col Automated Checks table (see `docs/skills.md`).
 
 Full reference: `docs/skills.md`.
+
+## Models (v1.8.0)
+
+mneme assigns a model alias to each bundled agent at install time (SPEC-038).
+Assignments are stored in `~/.mneme/config.toml` under `[models.overrides]` and
+applied to `~/.claude/agents/<agent>.md` on every `mneme install claude-code`.
+Config overrides are NOT assets — they survive upgrades.
+
+**Defaults (cost/quality rationale):**
+- `architect` → `opus` (its output is the spec; errors propagate to all agents)
+- `backend`, `frontend`, `qa-tester`, `bug-hunter` → `sonnet`
+
+**Key commands:**
+```bash
+mneme model list                    # show effective model + origin for each agent
+mneme model set bug-hunter opus     # override one agent
+mneme model reset bug-hunter        # remove override, restore default
+mneme model reset                   # remove all overrides
+mneme install claude-code           # apply current model assignments
+```
+
+**Rules:**
+- Any non-empty string is accepted as a model string (open-ended).
+- Unknown aliases produce a WARNING, never an error (`model set backend banana` warns).
+- Empty model string → `ErrInvalidModel`.
+- Unknown agent name → `ErrUnknownAgent` (rejected with CodeInvalidParams in MCP).
+- Override in config survives `mneme install` (Install() never rewrites config.toml).
+- The assign step runs automatically after WriteAgents in every install.
+
+Full reference: `docs/models.md`.

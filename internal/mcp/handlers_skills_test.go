@@ -41,7 +41,7 @@ func newSkillsTestServer(t *testing.T) (*Server, string) {
 	skillsSvc := service.NewSkillsService(skillsDir)
 
 	logger := slog.Default()
-	srv := NewServer(svc, nil, skillsSvc, logger, "all", "test")
+	srv := NewServer(svc, nil, skillsSvc, nil, logger, "all", "test")
 	return srv, skillsDir
 }
 
@@ -330,7 +330,7 @@ func TestHandleSkillsUnavailable(t *testing.T) {
 	svc := service.NewMemoryService(ps, gs, cfg, "test-project", embed.NopEmbedder{})
 
 	logger := slog.Default()
-	srv := NewServer(svc, nil, nil, logger, "all", "test")
+	srv := NewServer(svc, nil, nil, nil, logger, "all", "test")
 
 	resp := process(t, srv, "tools/call", 1, ToolCallParams{
 		Name:      "skills_list",

@@ -167,3 +167,15 @@ var ErrSkillPinned = errors.New("skill is pinned")
 // that does not have a validation/run.sh script. This is informational — the
 // absence of a validator is not treated as a failure.
 var ErrSkillNoValidation = errors.New("skill has no validation script")
+
+// --- Model sentinel errors (SPEC-038) ---
+
+// ErrUnknownAgent is returned when a model set/reset operation references an
+// agent name that is not in the set of bundled agents. Agents are derived from
+// the embedded assets/agents/*.md files — the canonical source of truth.
+var ErrUnknownAgent = errors.New("unknown agent")
+
+// ErrInvalidModel is returned when a model string is empty. Any non-empty
+// string is accepted as a valid model alias (unknown aliases produce a warning,
+// not an error, so the field intentionally stays open-ended).
+var ErrInvalidModel = errors.New("model must not be empty")

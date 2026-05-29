@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -43,7 +44,7 @@ func newTestServerWithSDD(t *testing.T) *Server {
 	sddSvc := service.NewSDDService(sddStore, cfg, "test-project", svc)
 
 	logger := slog.Default()
-	return NewServer(svc, sddSvc, nil, logger, "all", "test")
+	return NewServer(svc, sddSvc, nil, nil, logger, "all", "test")
 }
 
 // TestMapServiceError_InternalErrorIncludesMessage is a regression test for the
@@ -522,7 +523,7 @@ func newTestServerWithStore(t *testing.T) (*Server, *store.MemoryStore) {
 	svc := service.NewMemoryService(ps, gs, cfg, "test-project", embed.NopEmbedder{})
 
 	logger := slog.Default()
-	return NewServer(svc, nil, nil, logger, "all", "test"), ps
+	return NewServer(svc, nil, nil, nil, logger, "all", "test"), ps
 }
 
 // TestMCP_MemExplore_DepthExceeded verifies that supplying a depth value above
@@ -1128,7 +1129,7 @@ func newTestServerWithRepoDir(t *testing.T, dir string) *Server {
 	sddSvc.WithRepoDir(dir)
 
 	logger := slog.Default()
-	return NewServer(svc, sddSvc, nil, logger, "all", "test")
+	return NewServer(svc, sddSvc, nil, nil, logger, "all", "test")
 }
 
 // unmarshalToolResult extracts the ToolCallResult from a JSON-RPC response
@@ -1378,5 +1379,128 @@ func TestHandleLaneStats_ReturnsResponse(t *testing.T) {
 	// For an empty project all counts are 0; the response must be well-formed.
 	if stats.TrivialCount < 0 {
 		t.Errorf("TrivialCount must be ≥ 0, got %d", stats.TrivialCount)
+	}
+}
+
+// --- MODEL TOOL TESTS (SPEC-038) ---
+
+// newTestServerWithModels builds a test server with a real ModelsService
+// targeting a fresh temp config file.
+func newTestServerWithModels(t *testing.T) *Server {
+	t.Helper()
+	srv := newTestServerWithSDD(t)
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	modelsSvc := service.NewModelsService(cfgPath)
+	srv.modelsSvc = modelsSvc
+	srv.handlers.modelsSvc = modelsSvc
+	return srv
+}
+
+func TestHandleModelList_ReturnsAllAgents(t *testing.T) {
+	srv := newTestServerWithModels(t)
+
+	resp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name:      "model_list",
+		Arguments: mustMarshal(t, map[string]any{}),
+	})
+	if resp.Error != nil {
+		t.Fatalf("model_list error: %v", resp.Error.Message)
+	}
+
+	var result struct {
+		Agents []struct {
+			Agent  string `json:"agent"`
+			Model  string `json:"model"`
+			Origin string `json:"origin"`
+		} `json:"agents"`
+	}
+	unmarshalToolText(t, resp, &result)
+
+	if len(result.Agents) == 0 {
+		t.Fatal("model_list returned no agents")
+	}
+	for _, a := range result.Agents {
+		if a.Model == "" {
+			t.Errorf("agent %s has empty model", a.Agent)
+		}
+	}
+}
+
+func TestHandleModelSet_KnownAgent(t *testing.T) {
+	srv := newTestServerWithModels(t)
+
+	resp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name: "model_set",
+		Arguments: mustMarshal(t, map[string]any{
+			"agent": "bug-hunter",
+			"model": "opus",
+		}),
+	})
+	if resp.Error != nil {
+		t.Fatalf("model_set error: %v", resp.Error.Message)
+	}
+}
+
+func TestHandleModelSet_UnknownAgent_InvalidParams(t *testing.T) {
+	srv := newTestServerWithModels(t)
+
+	resp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name: "model_set",
+		Arguments: mustMarshal(t, map[string]any{
+			"agent": "nosuchagent",
+			"model": "opus",
+		}),
+	})
+	if resp.Error == nil {
+		t.Fatal("expected error for unknown agent")
+	}
+	if resp.Error.Code != CodeInvalidParams {
+		t.Errorf("error code: got %d, want %d (invalid params)", resp.Error.Code, CodeInvalidParams)
+	}
+}
+
+func TestHandleModelSet_EmptyModel_InvalidParams(t *testing.T) {
+	srv := newTestServerWithModels(t)
+
+	resp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name: "model_set",
+		Arguments: mustMarshal(t, map[string]any{
+			"agent": "backend",
+			"model": "",
+		}),
+	})
+	if resp.Error == nil {
+		t.Fatal("expected error for empty model")
+	}
+	if resp.Error.Code != CodeInvalidParams {
+		t.Errorf("error code: got %d, want %d (invalid params)", resp.Error.Code, CodeInvalidParams)
+	}
+}
+
+func TestHandleModelReset_ReturnsReset(t *testing.T) {
+	srv := newTestServerWithModels(t)
+
+	// Set first.
+	_ = process(t, srv, "tools/call", 1, ToolCallParams{
+		Name:      "model_set",
+		Arguments: mustMarshal(t, map[string]any{"agent": "backend", "model": "haiku"}),
+	})
+
+	// Then reset.
+	resp := process(t, srv, "tools/call", 2, ToolCallParams{
+		Name:      "model_reset",
+		Arguments: mustMarshal(t, map[string]any{"agent": "backend"}),
+	})
+	if resp.Error != nil {
+		t.Fatalf("model_reset error: %v", resp.Error.Message)
+	}
+
+	var result struct {
+		Reset []string `json:"reset"`
+	}
+	unmarshalToolText(t, resp, &result)
+	if len(result.Reset) != 1 || result.Reset[0] != "backend" {
+		t.Errorf("model_reset returned %v, want [backend]", result.Reset)
 	}
 }

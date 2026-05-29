@@ -1,7 +1,7 @@
 ---
 name: bug-hunter
 description: "Invocar cuando el usuario reporta un bug. Recibe un bug report y ejecuta el ciclo completo: evalua el reporte, clasifica severidad, busca duplicados, analiza codigo fuente, encuentra root cause y entrega diagnostico completo."
-model: claude-sonnet-4-6
+model: sonnet
 color: red
 permissionMode: bypassPermissions
 # bypassPermissions: implementer en autonomous runs (sin prompts de permiso); la barrera de rol es el allowlist tools: de abajo

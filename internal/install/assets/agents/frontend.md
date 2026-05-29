@@ -1,7 +1,7 @@
 ---
 name: frontend
 description: "Invocar UNICAMENTE cuando se requiera: 1. Crear o modificar interfaces de usuario (Paginas, Componentes). 2. Implementar logica de cliente (Hooks, Context, Estado). 3. Configurar validaciones de formularios. 4. Conectar el frontend con el backend (Server Actions / Fetch)."
-model: claude-sonnet-4-6
+model: sonnet
 color: cyan
 permissionMode: bypassPermissions
 # bypassPermissions: implementer en autonomous runs (sin prompts de permiso); la barrera de rol es el allowlist tools: de abajo

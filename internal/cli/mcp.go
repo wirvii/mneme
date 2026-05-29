@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/juanftp/mneme/internal/config"
 	"github.com/juanftp/mneme/internal/mcp"
 	"github.com/juanftp/mneme/internal/service"
 )
@@ -79,7 +80,10 @@ Configure your agent to run: mneme mcp`,
 				skillsSvc = service.NewSkillsService(filepath.Join(home, ".claude", "skills"))
 			}
 
-			srv := mcp.NewServer(svc, sddSvc, skillsSvc, logger, toolsMode, Version)
+			// Build a ModelsService targeting the default config path.
+			modelsSvc := service.NewModelsService(config.DefaultPath())
+
+			srv := mcp.NewServer(svc, sddSvc, skillsSvc, modelsSvc, logger, toolsMode, Version)
 			return srv.Run(cmd.Context(), os.Stdin, os.Stdout)
 		},
 	}

@@ -32,6 +32,26 @@ type Config struct {
 	Spec          SpecConfig          `toml:"spec"`
 	Graph         GraphConfig         `toml:"graph"`
 	Suggestions   SuggestionsConfig   `toml:"suggestions"`
+	Models        ModelsConfig        `toml:"models"`
+}
+
+// ModelsConfig holds per-agent model overrides for the install-time model
+// assignment (SPEC-038). Overrides are keyed by agent name (e.g. "bug-hunter")
+// and contain model alias strings (e.g. "opus"). When an agent is absent from
+// Overrides, the built-in default from install.defaultAgentModels is used.
+//
+// This section lives in ~/.mneme/config.toml and is intentionally NOT an asset
+// — it survives upgrade because Install() never rewrites config.toml.
+//
+// TOML representation:
+//
+//	[models.overrides]
+//	bug-hunter = "opus"
+type ModelsConfig struct {
+	// Overrides maps agent name → model alias string. Keys absent from this
+	// map fall back to the code-level default. An empty map means all agents
+	// use their defaults.
+	Overrides map[string]string `toml:"overrides"`
 }
 
 // SuggestionsConfig controls the mem_suggest_topic_key behaviour when matching
@@ -521,6 +541,9 @@ func Default() *Config {
 			GapJaccardThreshold: 0.2,
 			MaxGapsToConsider:   50,
 			MaxResults:          10,
+		},
+		Models: ModelsConfig{
+			Overrides: map[string]string{},
 		},
 	}
 }

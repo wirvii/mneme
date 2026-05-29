@@ -201,6 +201,356 @@ func ClaudeCode(binaryPath string) *Agent {
 	}
 }
 
+// InstallOptions parametrizes which installation steps run and their mode.
+// It is consumed by installSteps to build the ordered step list, allowing
+// both Install() and the CLI to share the exact same sequence.
+type InstallOptions struct {
+	// Force causes skills to be overwritten even when pinned, and forces
+	// the delegation hook script to be overwritten.
+	Force bool
+
+	// ReinstallHooks replaces all existing PreToolUse entries rather than
+	// appending. Used by "mneme install claude-code --reinstall-hooks".
+	ReinstallHooks bool
+
+	// Personal installs the personal ecosystem from the configured source
+	// in addition to the standard steps. Used by "--personal".
+	Personal bool
+
+	// PersonalSource overrides the personal ecosystem source from config.
+	// Only consulted when Personal is true.
+	PersonalSource string
+
+	// BinaryPath is the absolute path to the mneme binary for MCP config.
+	BinaryPath string
+}
+
+// installStep is a single named, ordered step in the installation sequence.
+// Run returns a human-readable detail string (e.g. a filename or action label)
+// and an error. A nil error means the step succeeded.
+type installStep struct {
+	// Name is a stable, human-readable label used for progress output.
+	Name string
+
+	// Run executes the step and returns a detail string and an error.
+	Run func() (detail string, err error)
+}
+
+// installSteps builds the complete ordered list of installation steps for the
+// given agent and options. This is the single authoritative source of the
+// installation sequence — both Install() and the CLI RunE consume it.
+//
+// Step ordering:
+//  1. MCP server
+//  2. Session hooks
+//  3. Protocol injection
+//  4. Slash commands
+//  5. Agent profiles
+//  6. Agent models  ← new, always after profiles
+//  7. Workflow templates
+//  8. Skills (force = opts.Force || opts.ReinstallHooks)
+//  9. Delegation hook (reinstall vs patch, depending on opts.ReinstallHooks)
+// 10. Workflow directories
+// 11. Migrate legacy workflow
+// 12. Personal ecosystem (only when opts.Personal)
+func (a *Agent) installSteps(opts InstallOptions) []installStep {
+	var steps []installStep
+
+	// Step 1: MCP server.
+	steps = append(steps, installStep{
+		Name: "MCP server",
+		Run: func() (string, error) {
+			return "", WriteMCPConfig(a, opts.BinaryPath)
+		},
+	})
+
+	// Step 2: Session hooks.
+	steps = append(steps, installStep{
+		Name: "Session hooks",
+		Run: func() (string, error) {
+			return "", PatchHooks(a)
+		},
+	})
+
+	// Step 3: Protocol injection.
+	steps = append(steps, installStep{
+		Name: "Protocol",
+		Run: func() (string, error) {
+			return "", InjectProtocol(a)
+		},
+	})
+
+	// Step 4: Slash commands.
+	steps = append(steps, installStep{
+		Name: "Slash commands",
+		Run: func() (string, error) {
+			return "", WriteCommands(a)
+		},
+	})
+
+	// Step 5: Agent profiles.
+	if a.Agents != nil {
+		steps = append(steps, installStep{
+			Name: "Agent profiles",
+			Run: func() (string, error) {
+				return "", WriteAgents(a)
+			},
+		})
+	}
+
+	// Step 6: Agent models — always after agent profiles.
+	steps = append(steps, installStep{
+		Name: "Agent models",
+		Run: func() (string, error) {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return "", fmt.Errorf("install: agent models: home dir: %w", err)
+			}
+			agentsDir := filepath.Join(home, ".claude", "agents")
+			cfg, cfgErr := config.Load(config.DefaultPath())
+			var overrides map[string]string
+			if cfgErr == nil {
+				overrides = cfg.Models.Overrides
+			}
+			return "", ApplyAgentModels(agentsDir, overrides)
+		},
+	})
+
+	// Step 7: Workflow templates.
+	if a.Templates != nil {
+		steps = append(steps, installStep{
+			Name: "Workflow templates",
+			Run: func() (string, error) {
+				return "", WriteTemplates(a)
+			},
+		})
+	}
+
+	// Step 8: Skills.
+	if a.Skills != nil {
+		forceSkills := opts.Force || opts.ReinstallHooks
+		steps = append(steps, installStep{
+			Name: "Skills",
+			Run: func() (string, error) {
+				home, err := os.UserHomeDir()
+				if err != nil {
+					return "", fmt.Errorf("install: skills: home dir: %w", err)
+				}
+				skillsDir := filepath.Join(home, ".claude", "skills")
+				result, err := WriteSkills(a, skillsDir, forceSkills)
+				if err != nil {
+					return "", err
+				}
+				// Build a compact summary for the progress callback.
+				var parts []string
+				if len(result.Installed) > 0 {
+					parts = append(parts, fmt.Sprintf("installed: %s", strings.Join(result.Installed, ", ")))
+				}
+				if len(result.Skipped) > 0 {
+					parts = append(parts, fmt.Sprintf("pinned: %s", strings.Join(result.Skipped, ", ")))
+				}
+				return strings.Join(parts, "; "), nil
+			},
+		})
+	}
+
+	// Step 9: Delegation hook.
+	if a.DelegationHook != nil {
+		if opts.ReinstallHooks {
+			steps = append(steps, installStep{
+				Name: "Delegation hook (reinstall)",
+				Run: func() (string, error) {
+					settingsPath, patches, err := a.DelegationHook()
+					if err != nil {
+						return "", err
+					}
+					if err := ReinstallHooks(settingsPath, patches); err != nil {
+						return "", err
+					}
+					home, homeErr := os.UserHomeDir()
+					if homeErr != nil {
+						return "", fmt.Errorf("install: delegation hook: home dir: %w", homeErr)
+					}
+					hookDir := filepath.Join(home, ".claude", "hooks")
+					action, err := WriteDelegationHook(hookDir, true)
+					if err != nil {
+						return "", err
+					}
+					return action, nil
+				},
+			})
+		} else {
+			steps = append(steps, installStep{
+				Name: "Delegation hook",
+				Run: func() (string, error) {
+					if err := PatchDelegationHook(a); err != nil {
+						return "", err
+					}
+					home, homeErr := os.UserHomeDir()
+					if homeErr != nil {
+						return "", fmt.Errorf("install: delegation hook: home dir: %w", homeErr)
+					}
+					hookDir := filepath.Join(home, ".claude", "hooks")
+					action, err := WriteDelegationHook(hookDir, false)
+					if err != nil {
+						return "", err
+					}
+					return action, nil
+				},
+			})
+		}
+	}
+
+	// Step 10: Workflow directories.
+	steps = append(steps, installStep{
+		Name: "Workflow directories",
+		Run: func() (string, error) {
+			return "", CreateWorkflowDirs()
+		},
+	})
+
+	// Step 11: Migrate legacy workflow directory.
+	steps = append(steps, installStep{
+		Name: "Migrate legacy workflow",
+		Run: func() (string, error) {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return "", nil // non-fatal; skip silently
+			}
+			legacyDir := filepath.Join(home, ".workflows")
+			if _, statErr := os.Stat(legacyDir); statErr != nil {
+				return "", nil // nothing to migrate
+			}
+			cfg, cfgErr := config.Load(config.DefaultPath())
+			if cfgErr != nil {
+				return "", nil // non-fatal
+			}
+			result, migErr := MigrateWorkflowDir(legacyDir, cfg.WorkflowDir())
+			if migErr != nil {
+				return "", migErr
+			}
+			detail := fmt.Sprintf("copied=%d skipped=%d", len(result.Copied), len(result.Skipped))
+			return detail, nil
+		},
+	})
+
+	// Step 12: Personal ecosystem — only when requested.
+	if opts.Personal {
+		source := opts.PersonalSource
+		force := opts.Force
+		steps = append(steps, installStep{
+			Name: "Personal ecosystem",
+			Run: func() (string, error) {
+				home, err := os.UserHomeDir()
+				if err != nil {
+					return "", fmt.Errorf("install: personal: home dir: %w", err)
+				}
+				result, err := InstallPersonal(PersonalOpts{
+					Source:    source,
+					ClaudeDir: filepath.Join(home, ".claude"),
+					Force:     force,
+				})
+				if err != nil {
+					return "", err
+				}
+				detail := fmt.Sprintf("installed=%d skipped=%d", len(result.Installed), len(result.Skipped))
+				return detail, nil
+			},
+		})
+	}
+
+	return steps
+}
+
+// runInstallSteps executes the steps in order, invoking progress for each one.
+// progress may be nil (silent mode). All errors are collected — the runner
+// never stops on the first error (collect-all semantics, consistent with the
+// upgrade path). Returns a slice of all errors encountered; nil means success.
+func runInstallSteps(steps []installStep, progress func(name, detail string, err error)) []error {
+	var errs []error
+	for _, step := range steps {
+		detail, err := step.Run()
+		if progress != nil {
+			progress(step.Name, detail, err)
+		}
+		if err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errs
+}
+
+// InstallSteps is the exported version of installSteps for use by the CLI.
+// It builds and returns the ordered list of installation steps for opts.
+func (a *Agent) InstallSteps(opts InstallOptions) []installStep {
+	return a.installSteps(opts)
+}
+
+// RunInstallSteps is the exported version of runInstallSteps for use by the CLI.
+func RunInstallSteps(steps []installStep, progress func(name, detail string, err error)) []error {
+	return runInstallSteps(steps, progress)
+}
+
+// ApplyAgentModels resolves the effective model for each bundled agent
+// (default overridden by any entry in overrides) and writes the model alias
+// into the installed agent file at agentsDir/<agent>.md using the surgical
+// SetModelInFrontmatter editor. Partial failures are collected and returned
+// as a combined error so a single bad file does not abort the others.
+func ApplyAgentModels(agentsDir string, overrides map[string]string) error {
+	effective := ResolveEffectiveModels(overrides)
+
+	var errs []string
+	for agent, model := range effective {
+		path := filepath.Join(agentsDir, agent+".md")
+		content, err := os.ReadFile(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				// Agent not installed yet — skip gracefully.
+				continue
+			}
+			errs = append(errs, fmt.Errorf("apply agent models: read %s: %w", path, err).Error())
+			continue
+		}
+		updated, err := SetModelInFrontmatter(content, model)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("apply agent models: set model in %s: %w", path, err).Error())
+			continue
+		}
+		if err := os.WriteFile(path, updated, 0o644); err != nil {
+			errs = append(errs, fmt.Errorf("apply agent models: write %s: %w", path, err).Error())
+		}
+	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf("install: %s", strings.Join(errs, "; "))
+	}
+	return nil
+}
+
+// Install runs the full installation sequence for the given agent using the
+// default options (no reinstall-hooks, no personal, no force). It is used by
+// the upgrade path and any non-interactive caller.
+//
+// Behaviour: collect-all errors (does not abort on the first failure), silent
+// (no progress output). All errors are joined and returned as one.
+//
+// The step sequence is defined by installSteps; this function is a thin
+// wrapper that delegates to the shared builder and runner.
+func Install(agent *Agent, binaryPath string) error {
+	opts := InstallOptions{BinaryPath: binaryPath}
+	steps := agent.installSteps(opts)
+	errs := runInstallSteps(steps, nil)
+
+	if len(errs) > 0 {
+		msgs := make([]string, len(errs))
+		for i, e := range errs {
+			msgs[i] = e.Error()
+		}
+		return fmt.Errorf("install: %s", strings.Join(msgs, "; "))
+	}
+	return nil
+}
+
 // WriteMCPConfig merges the MCP server entry for the given agent into the
 // target JSON config file (e.g. ~/.claude.json). The function:
 //  1. Reads the existing file, or starts from an empty object if absent.
@@ -611,95 +961,6 @@ func CreateWorkflowDirs() error {
 	return nil
 }
 
-// Install runs the full installation sequence for the given agent:
-//  1. Write MCP config
-//  2. Patch hooks
-//  3. Inject protocol
-//  4. Write commands
-//  5. Write agent profiles (if Agents is set)
-//  6. Write workflow templates (if Templates is set)
-//  7. Patch delegation hook (if DelegationHook is set)
-//  8. Create workflow directories
-//  9. Migrate legacy workflow directory (if ~/.workflows/ exists)
-//
-// Each step is independent; a failure in one step does not abort the others
-// so partial installs still provide value. All errors are collected and returned
-// as a combined error.
-func Install(agent *Agent, binaryPath string) error {
-	var errs []string
-
-	if err := WriteMCPConfig(agent, binaryPath); err != nil {
-		errs = append(errs, err.Error())
-	}
-	if err := PatchHooks(agent); err != nil {
-		errs = append(errs, err.Error())
-	}
-	if err := InjectProtocol(agent); err != nil {
-		errs = append(errs, err.Error())
-	}
-	if err := WriteCommands(agent); err != nil {
-		errs = append(errs, err.Error())
-	}
-	if agent.Agents != nil {
-		if err := WriteAgents(agent); err != nil {
-			errs = append(errs, err.Error())
-		}
-	}
-	if agent.Templates != nil {
-		if err := WriteTemplates(agent); err != nil {
-			errs = append(errs, err.Error())
-		}
-	}
-	if agent.Skills != nil {
-		home, homeErr := os.UserHomeDir()
-		if homeErr != nil {
-			errs = append(errs, fmt.Errorf("install: skills: home dir: %w", homeErr).Error())
-		} else {
-			skillsDir := filepath.Join(home, ".claude", "skills")
-			if _, err := WriteSkills(agent, skillsDir, false); err != nil {
-				errs = append(errs, err.Error())
-			}
-		}
-	}
-	if agent.DelegationHook != nil {
-		if err := PatchDelegationHook(agent); err != nil {
-			errs = append(errs, err.Error())
-		}
-		// Write the bash delegation hook script alongside the settings patch.
-		home, homeErr := os.UserHomeDir()
-		if homeErr != nil {
-			errs = append(errs, fmt.Errorf("install: write delegation hook: home dir: %w", homeErr).Error())
-		} else {
-			hookDir := filepath.Join(home, ".claude", "hooks")
-			if _, err := WriteDelegationHook(hookDir, false); err != nil {
-				errs = append(errs, err.Error())
-			}
-		}
-	}
-	if err := CreateWorkflowDirs(); err != nil {
-		errs = append(errs, err.Error())
-	}
-
-	// Migrate legacy ~/.workflows/ to ~/.mneme/workflows/ if present.
-	home, _ := os.UserHomeDir()
-	if home != "" {
-		legacyDir := filepath.Join(home, ".workflows")
-		if _, err := os.Stat(legacyDir); err == nil {
-			cfg, cfgErr := config.Load(config.DefaultPath())
-			if cfgErr == nil {
-				if _, err := MigrateWorkflowDir(legacyDir, cfg.WorkflowDir()); err != nil {
-					errs = append(errs, err.Error())
-				}
-			}
-		}
-	}
-
-	if len(errs) > 0 {
-		return fmt.Errorf("install: %s", strings.Join(errs, "; "))
-	}
-	return nil
-}
-
 // DryRun returns a human-readable description of what Install would do
 // without making any filesystem changes.
 func DryRun(agent *Agent, binaryPath string) (string, error) {
@@ -744,6 +1005,9 @@ func DryRun(agent *Agent, binaryPath string) (string, error) {
 			lines = append(lines, fmt.Sprintf("  [write]  Command       → %s", cmd.Path))
 		}
 	}
+
+	// Agent models step is always present.
+	lines = append(lines, "  [apply]  Agent models  → ~/.claude/agents/<agent>.md (model: field)")
 
 	if agent.Skills != nil {
 		home, err := os.UserHomeDir()
