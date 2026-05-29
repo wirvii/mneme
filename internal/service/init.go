@@ -166,6 +166,10 @@ func (r *InitReport) addError(source string, err error) {
 // artifacts, classifies them via a weighted heuristic, migrates viable content
 // to the SDD engine, cleans up filesystem debris, and rewrites CLAUDE.local.md.
 //
+// It also handles the SPEC-041 managed-block steps: ensuring the global
+// operating manual is present in ~/.claude/CLAUDE.md, injecting a minimal
+// repo block into the project's CLAUDE.md, and running drift detection.
+//
 // All filesystem operations are injected so the service is fully testable without
 // touching real paths. Use NewInitService for production; inject mocks in tests.
 type InitService struct {
@@ -179,19 +183,47 @@ type InitService struct {
 	writeFile func(string, []byte, os.FileMode) error
 	removeAll func(string) error
 	mkdirAll  func(string, os.FileMode) error
+	// upsertBlock writes a versioned managed block into a file (see internal/install).
+	// Injected so tests can stub without touching the real home directory.
+	upsertBlock func(filePath, content string) error
+	// manualContent returns the operating manual markdown to embed.
+	// Injected so tests can supply a lightweight fixture.
+	manualContent func() string
 	// inventory is populated by DetectLegacy and reused by Apply without re-reading disk.
 	inventory *LegacyInventory
+}
+
+// InitServiceOptions carries optional injectable dependencies for InitService.
+// The zero value selects no-op stubs so callers that only use the legacy
+// migration path are unaffected.
+type InitServiceOptions struct {
+	// UpsertBlock injects the managed-block writer (upsertManagedBlock from
+	// internal/install). When nil, the global-manual and repo-block steps are
+	// skipped silently (safe default for tests that only exercise legacy migration).
+	UpsertBlock func(filePath, content string) error
+
+	// ManualContent returns the operating manual markdown. When nil, a short
+	// stub is used so the struct can be fully initialised without importing install.
+	ManualContent func() string
 }
 
 // NewInitService constructs an InitService with production filesystem operations.
 // cfg provides workflow directory paths, sdd and mem provide the SDD/memory backends,
 // and slug is the project identifier used for topic_key generation.
-func NewInitService(cfg *config.Config, sdd *SDDService, mem *MemoryService, slug string) *InitService {
+// opts carries optional injectable dependencies; the zero value is safe.
+func NewInitService(cfg *config.Config, sdd *SDDService, mem *MemoryService, slug string, opts InitServiceOptions) *InitService {
+	ub := opts.UpsertBlock
+	mc := opts.ManualContent
+	if mc == nil {
+		mc = func() string { return "# mneme Operating Manual\n(stub)\n" }
+	}
 	return &InitService{
-		cfg:    cfg,
-		sdd:    sdd,
-		memory: mem,
-		slug:   slug,
+		cfg:           cfg,
+		sdd:           sdd,
+		memory:        mem,
+		slug:          slug,
+		upsertBlock:   ub,
+		manualContent: mc,
 		now:    time.Now,
 		readFile: func(p string) ([]byte, error) {
 			return os.ReadFile(p)
@@ -1173,6 +1205,105 @@ func (s *InitService) Apply(ctx context.Context, repoRoot string) (InitReport, e
 	report.CLAUDELocal = claudeRes
 
 	return report, nil
+}
+
+// --- SPEC-041: Managed-block steps ---
+
+// repoBlockContent is the minimal managed block content written to <repo>/CLAUDE.md.
+// It is a pointer to the global operating manual without duplicating content.
+const repoBlockContent = `Process and operating instructions are managed globally via mneme.
+See the mneme operating manual in your global ~/.claude/CLAUDE.md.
+
+Project scope: see this file's sections below for stack, conventions, and module structure.`
+
+// greenfieldSkeleton is the template written when creating a new CLAUDE.md in an
+// empty (greenfield) repo. It contains architecture-only H2 headings with no
+// process content, which belongs exclusively in the managed block.
+const greenfieldSkeleton = `# CLAUDE.md
+
+## Stack
+
+<!-- TODO: describe language, frameworks, major dependencies -->
+
+## Conventions
+
+<!-- TODO: naming, formatting, commit style -->
+
+## Module structure
+
+<!-- TODO: describe packages/directories and their responsibilities -->
+`
+
+// EnsureGlobalManual writes the operating manual managed block to
+// ~/.claude/CLAUDE.md (or the path returned by globalManualPath). If
+// s.upsertBlock is nil the step is silently skipped.
+//
+// This is a safety-net step: the managed block should already be present from
+// mneme install, but init ensures it exists even on fresh or partially-installed
+// machines.
+func (s *InitService) EnsureGlobalManual() error {
+	if s.upsertBlock == nil {
+		return nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("service: init: ensure global manual: home dir: %w", err)
+	}
+	path := filepath.Join(home, ".claude", "CLAUDE.md")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("service: init: ensure global manual: mkdir: %w", err)
+	}
+	if err := s.upsertBlock(path, s.manualContent()); err != nil {
+		return fmt.Errorf("service: init: ensure global manual: %w", err)
+	}
+	return nil
+}
+
+// UpsertRepoBlock injects a minimal managed block into repoRoot/CLAUDE.md.
+// The block is a pointer to the global operating manual (no process content
+// duplication). Surrounding user prose is preserved. If s.upsertBlock is nil
+// the step is silently skipped.
+func (s *InitService) UpsertRepoBlock(repoRoot string) error {
+	if s.upsertBlock == nil {
+		return nil
+	}
+	path := filepath.Join(repoRoot, "CLAUDE.md")
+	if err := s.upsertBlock(path, repoBlockContent); err != nil {
+		return fmt.Errorf("service: init: upsert repo block: %w", err)
+	}
+	return nil
+}
+
+// EnsureGreenfieldScaffold creates repoRoot/CLAUDE.md with a skeleton template
+// when the file does not yet exist. The skeleton contains only architecture-only
+// headings (Stack, Conventions, Module structure) and the managed block with the
+// repo block content; it intentionally contains no process content.
+//
+// If the file already exists, this is a no-op.
+func (s *InitService) EnsureGreenfieldScaffold(repoRoot string) error {
+	path := filepath.Join(repoRoot, "CLAUDE.md")
+	if _, err := os.Stat(path); err == nil {
+		// Already exists — do not touch.
+		return nil
+	}
+
+	// Write the skeleton (no managed block yet — UpsertRepoBlock handles that).
+	if err := os.WriteFile(path, []byte(greenfieldSkeleton), 0o644); err != nil {
+		return fmt.Errorf("service: init: greenfield scaffold: write: %w", err)
+	}
+	return nil
+}
+
+// RunDrift runs the drift detector on repoRoot/CLAUDE.md and returns the
+// findings. It never modifies any file. Callers should print findings as
+// advisory output.
+func (s *InitService) RunDrift(repoRoot string) ([]DriftFinding, error) {
+	path := filepath.Join(repoRoot, "CLAUDE.md")
+	findings, err := DetectDrift(path)
+	if err != nil {
+		return nil, fmt.Errorf("service: init: run drift: %w", err)
+	}
+	return findings, nil
 }
 
 // --- Parsing helpers ---

@@ -11,3 +11,18 @@ package install
 func operatingManual() string {
 	return string(operatingManualAsset)
 }
+
+// OperatingManual is the exported version of operatingManual for use by callers
+// outside this package (e.g. the CLI init command) that need to wire the real
+// operating manual content into service.InitService without importing install
+// as a hard dependency in the service layer.
+func OperatingManual() string {
+	return operatingManual()
+}
+
+// UpsertManagedBlock is the exported version of upsertManagedBlock for use by
+// callers outside this package (e.g. the CLI init command) that need to wire
+// the real managed-block primitive into service.InitService.
+func UpsertManagedBlock(filePath, content string) error {
+	return upsertManagedBlock(filePath, content)
+}

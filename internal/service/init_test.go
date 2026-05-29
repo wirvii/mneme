@@ -48,7 +48,7 @@ func newTestInitService(t *testing.T) *InitService {
 	globalStore := store.NewMemoryStore(globalDB)
 	memSvc := NewMemoryService(projectStore, globalStore, cfg, "test-project", embed.NopEmbedder{})
 
-	svc := NewInitService(cfg, sddSvc, memSvc, "test-project")
+	svc := NewInitService(cfg, sddSvc, memSvc, "test-project", InitServiceOptions{})
 	return svc
 }
 

@@ -1261,6 +1261,23 @@ func allTools() []ToolDefinition {
 				},
 			},
 		},
+		{
+			Name:        "init",
+			Description: "Initialise a project with mneme managed blocks and report drift. Applies the global operating manual and a minimal repo block to CLAUDE.md files, then runs the drift detector. Pass check=true for report-only mode (no writes). Returns drift findings and a summary of blocks applied.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"repo_root": map[string]any{
+						"type":        "string",
+						"description": "Absolute path to the repository root. Defaults to current working directory.",
+					},
+					"check": map[string]any{
+						"type":        "boolean",
+						"description": "When true, report-only mode: drift is reported but no managed blocks are written. Defaults to false.",
+					},
+				},
+			},
+		},
 	}
 }
 
