@@ -155,42 +155,80 @@ func TestWriteMCPConfig_Idempotent(t *testing.T) {
 	}
 }
 
-// TestClaudeCode_Protocol verifies that the protocol markdown contains all
-// critical sections the agent needs to operate mneme autonomously.
-func TestClaudeCode_Protocol(t *testing.T) {
+// TestClaudeCode_Manual verifies that the Manual function returns a valid path
+// and content that covers all critical sections of the operating manual.
+func TestClaudeCode_Manual(t *testing.T) {
 	agent := ClaudeCode("")
 
-	_, content, markers, err := agent.Protocol()
+	path, content, err := agent.Manual()
 	if err != nil {
-		t.Fatalf("Protocol returned error: %v", err)
+		t.Fatalf("Manual returned error: %v", err)
 	}
 
-	proto := string(content)
+	if path == "" {
+		t.Error("Manual path must not be empty")
+	}
+	if !strings.HasSuffix(path, "CLAUDE.md") {
+		t.Errorf("Manual path should end with CLAUDE.md, got %q", path)
+	}
+
+	manual := string(content)
 
 	requiredSections := []string{
-		"# mneme — Persistent Memory",
-		"## Session lifecycle",
-		"## Save rules",
+		"# mneme Operating Manual",
 		"mem_context",
 		"mem_save",
 		"mem_search",
 		"mem_session_end",
 		"mem_checkpoint",
+		"SDD",
+		"trivial",
+		"standard",
 	}
 	for _, section := range requiredSections {
-		if !strings.Contains(proto, section) {
-			t.Errorf("Protocol missing required section/keyword: %q", section)
+		if !strings.Contains(manual, section) {
+			t.Errorf("Manual missing required section/keyword: %q", section)
 		}
 	}
+}
 
-	if markers[0] == "" || markers[1] == "" {
-		t.Error("Protocol markers must not be empty")
+// TestInjectManual_NewFile verifies that InjectManual creates the target file
+// with the managed block when the file does not yet exist.
+func TestInjectManual_NewFile(t *testing.T) {
+	dir := t.TempDir()
+
+	agent := &Agent{
+		Manual: func() (string, []byte, error) {
+			return filepath.Join(dir, "CLAUDE.md"), []byte("# Manual content"), nil
+		},
 	}
-	if !strings.HasPrefix(proto, markers[0]) {
-		t.Errorf("Protocol content should start with start marker %q", markers[0])
+
+	if err := InjectManual(agent); err != nil {
+		t.Fatalf("InjectManual error: %v", err)
 	}
-	if !strings.HasSuffix(strings.TrimSpace(proto), markers[1]) {
-		t.Errorf("Protocol content should end with end marker %q", markers[1])
+
+	data, err := os.ReadFile(filepath.Join(dir, "CLAUDE.md"))
+	if err != nil {
+		t.Fatalf("read CLAUDE.md: %v", err)
+	}
+	text := string(data)
+
+	if !strings.Contains(text, "<!-- mneme:managed:start") {
+		t.Error("managed start marker missing")
+	}
+	if !strings.Contains(text, "<!-- mneme:managed:end -->") {
+		t.Error("managed end marker missing")
+	}
+	if !strings.Contains(text, "Manual content") {
+		t.Error("manual content missing")
+	}
+}
+
+// TestInjectManual_Nil verifies that InjectManual is a no-op when Manual is nil.
+func TestInjectManual_Nil(t *testing.T) {
+	agent := &Agent{Manual: nil}
+	if err := InjectManual(agent); err != nil {
+		t.Fatalf("InjectManual with nil Manual returned error: %v", err)
 	}
 }
 
@@ -360,141 +398,36 @@ func TestPatchSettings_Idempotent(t *testing.T) {
 	assertHookCount(t, hooks, "Stop", "mneme hook session-end", 1)
 }
 
-// TestInjectProtocol_NewFile verifies that InjectProtocol creates the target
-// file containing the protocol block when the file does not yet exist.
-func TestInjectProtocol_NewFile(t *testing.T) {
+// TestInjectManual_PreservesUserProsa verifies that InjectManual appends the
+// managed block to an existing file without clobbering user content.
+// This is the regression test for the non-destructive injection property
+// (previously covered by the now-replaced InjectProtocol tests).
+func TestInjectManual_PreservesUserProsa(t *testing.T) {
 	dir := t.TempDir()
-	target := filepath.Join(dir, "CLAUDE.md")
-
-	startMarker := "<!-- mneme:protocol:start -->"
-	endMarker := "<!-- mneme:protocol:end -->"
-	block := []byte(startMarker + "\nprotocol content\n" + endMarker)
-
-	if err := injectProtocolFile(target, block, startMarker, endMarker); err != nil {
-		t.Fatalf("injectProtocolFile error: %v", err)
-	}
-
-	data, err := os.ReadFile(target)
-	if err != nil {
-		t.Fatalf("read target: %v", err)
-	}
-
-	content := string(data)
-	if !strings.Contains(content, startMarker) {
-		t.Error("injected file missing start marker")
-	}
-	if !strings.Contains(content, "protocol content") {
-		t.Error("injected file missing protocol content")
-	}
-	if !strings.Contains(content, endMarker) {
-		t.Error("injected file missing end marker")
-	}
-}
-
-// TestInjectProtocol_ExistingFile verifies that InjectProtocol appends the
-// protocol block to an existing file that has no markers, without overwriting
-// the existing content.
-func TestInjectProtocol_ExistingFile(t *testing.T) {
-	dir := t.TempDir()
-	target := filepath.Join(dir, "CLAUDE.md")
-
-	existingContent := "# My existing CLAUDE.md\n\nSome existing rules here.\n"
-	if err := os.WriteFile(target, []byte(existingContent), 0o644); err != nil {
-		t.Fatalf("write existing file: %v", err)
-	}
-
-	startMarker := "<!-- mneme:protocol:start -->"
-	endMarker := "<!-- mneme:protocol:end -->"
-	block := []byte(startMarker + "\nprotocol content\n" + endMarker)
-
-	if err := injectProtocolFile(target, block, startMarker, endMarker); err != nil {
-		t.Fatalf("injectProtocolFile error: %v", err)
-	}
-
-	data, err := os.ReadFile(target)
-	if err != nil {
-		t.Fatalf("read target: %v", err)
-	}
-
-	content := string(data)
-	if !strings.Contains(content, "My existing CLAUDE.md") {
-		t.Error("existing content was clobbered")
-	}
-	if !strings.Contains(content, "protocol content") {
-		t.Error("protocol content was not appended")
-	}
-}
-
-// TestInjectProtocol_Replace verifies that InjectProtocol replaces the existing
-// protocol block between markers with the new content.
-func TestInjectProtocol_Replace(t *testing.T) {
-	dir := t.TempDir()
-	target := filepath.Join(dir, "CLAUDE.md")
-
-	startMarker := "<!-- mneme:protocol:start -->"
-	endMarker := "<!-- mneme:protocol:end -->"
-
-	existingContent := "# My CLAUDE.md\n\n" +
-		startMarker + "\nOLD protocol content\n" + endMarker + "\n\n" +
-		"# After section\n"
-	if err := os.WriteFile(target, []byte(existingContent), 0o644); err != nil {
-		t.Fatalf("write existing file: %v", err)
-	}
-
-	block := []byte(startMarker + "\nNEW protocol content\n" + endMarker)
-
-	if err := injectProtocolFile(target, block, startMarker, endMarker); err != nil {
-		t.Fatalf("injectProtocolFile error: %v", err)
-	}
-
-	data, err := os.ReadFile(target)
-	if err != nil {
-		t.Fatalf("read target: %v", err)
-	}
-
-	content := string(data)
-	if strings.Contains(content, "OLD protocol content") {
-		t.Error("old protocol content should have been replaced")
-	}
-	if !strings.Contains(content, "NEW protocol content") {
-		t.Error("new protocol content is missing")
-	}
-	if !strings.Contains(content, "My CLAUDE.md") {
-		t.Error("content before markers was clobbered")
-	}
-	if !strings.Contains(content, "After section") {
-		t.Error("content after markers was clobbered")
-	}
-}
-
-// TestInjectProtocol_NoOverwrite verifies that important user content is never
-// destroyed by InjectProtocol, regardless of whether markers are present.
-// This is the regression test for the destructive overwrite bug.
-func TestInjectProtocol_NoOverwrite(t *testing.T) {
-	dir := t.TempDir()
-	target := filepath.Join(dir, "CLAUDE.md")
 
 	importantContent := "# Claude Code — Global Configuration\n\n" +
 		"## Language\nAlways respond in Español.\n\n" +
 		"## Custom Rules\nNever do X.\nAlways do Y.\n"
 
+	target := filepath.Join(dir, "CLAUDE.md")
 	if err := os.WriteFile(target, []byte(importantContent), 0o644); err != nil {
 		t.Fatalf("write existing file: %v", err)
 	}
 
-	startMarker := "<!-- mneme:protocol:start -->"
-	endMarker := "<!-- mneme:protocol:end -->"
-	block := []byte(startMarker + "\nprotocol content\n" + endMarker)
+	agent := &Agent{
+		Manual: func() (string, []byte, error) {
+			return target, []byte("manual content"), nil
+		},
+	}
 
-	if err := injectProtocolFile(target, block, startMarker, endMarker); err != nil {
-		t.Fatalf("injectProtocolFile error: %v", err)
+	if err := InjectManual(agent); err != nil {
+		t.Fatalf("InjectManual error: %v", err)
 	}
 
 	data, err := os.ReadFile(target)
 	if err != nil {
 		t.Fatalf("read target: %v", err)
 	}
-
 	content := string(data)
 
 	// Every line of the original user config must survive intact.
@@ -506,32 +439,32 @@ func TestInjectProtocol_NoOverwrite(t *testing.T) {
 	}
 	for _, line := range userLines {
 		if !strings.Contains(content, line) {
-			t.Errorf("user content lost after inject: %q", line)
+			t.Errorf("user content lost after InjectManual: %q", line)
 		}
 	}
 
-	// The protocol must have been appended.
-	if !strings.Contains(content, startMarker) {
-		t.Error("start marker missing after inject")
+	// The manual block must have been appended.
+	if !strings.Contains(content, "<!-- mneme:managed:start") {
+		t.Error("managed start marker missing after InjectManual")
 	}
-	if !strings.Contains(content, "protocol content") {
-		t.Error("protocol content missing after inject")
+	if !strings.Contains(content, "manual content") {
+		t.Error("manual content missing after InjectManual")
 	}
-	if !strings.Contains(content, endMarker) {
-		t.Error("end marker missing after inject")
+	if !strings.Contains(content, managedBlockEnd) {
+		t.Error("managed end marker missing after InjectManual")
 	}
 
-	// Running inject a second time must not duplicate the block.
-	if err := injectProtocolFile(target, block, startMarker, endMarker); err != nil {
-		t.Fatalf("second injectProtocolFile error: %v", err)
+	// Running InjectManual a second time must not duplicate the block.
+	if err := InjectManual(agent); err != nil {
+		t.Fatalf("second InjectManual error: %v", err)
 	}
 	data2, err := os.ReadFile(target)
 	if err != nil {
-		t.Fatalf("read target after second inject: %v", err)
+		t.Fatalf("read target after second InjectManual: %v", err)
 	}
-	count := strings.Count(string(data2), startMarker)
+	count := strings.Count(string(data2), "<!-- mneme:managed:start")
 	if count != 1 {
-		t.Errorf("start marker appears %d times after second inject, want 1", count)
+		t.Errorf("managed start marker appears %d times after second InjectManual, want 1", count)
 	}
 }
 
@@ -589,20 +522,6 @@ func patchSettingsFile(path string, patches []HookPatch) error {
 		return err
 	}
 	return os.WriteFile(path, append(out, '\n'), 0o644)
-}
-
-// injectProtocolFile is the testable core of InjectProtocol. It accepts an
-// explicit file path so tests can use a temporary directory.
-func injectProtocolFile(path string, block []byte, startMarker, endMarker string) error {
-	existing, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		return os.WriteFile(path, append(block, '\n'), 0o644)
-	}
-	if err != nil {
-		return err
-	}
-	merged := mergeProtocol(existing, block, startMarker, endMarker)
-	return os.WriteFile(path, merged, 0o644)
 }
 
 // writeMCPConfigFile is the testable core of WriteMCPConfig. It accepts an
@@ -1239,7 +1158,7 @@ func TestInstallSteps_DefaultSequence(t *testing.T) {
 		t.Errorf("'Agent models' must immediately follow 'Agent profiles'; got indices %d and %d", agentProfilesIdx, agentModelsIdx)
 	}
 
-	required := []string{"MCP server", "Session hooks", "Protocol", "Slash commands", "Workflow directories"}
+	required := []string{"MCP server", "Session hooks", "Operating manual", "Slash commands", "Workflow directories"}
 	for _, req := range required {
 		found := false
 		for _, n := range names {

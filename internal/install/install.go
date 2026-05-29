@@ -11,7 +11,6 @@
 package install
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -60,10 +59,11 @@ type Agent struct {
 	// into it. The patcher appends entries that are not already present.
 	Hooks func() (path string, patches []HookPatch, err error)
 
-	// Protocol returns the path and content for the protocol injection, plus the
-	// start and end marker strings that delimit the managed block inside the file.
-	// If the file does not exist it will be created with just the protocol content.
-	Protocol func() (path string, content []byte, markers [2]string, err error)
+	// Manual returns the filesystem path and content for the operating manual
+	// managed block. The content is injected (or updated) in the target file via
+	// upsertManagedBlock, which handles versioning and legacy protocol migration
+	// transparently. If nil, the "Operating manual" install step is skipped.
+	Manual func() (path string, content []byte, err error)
 
 	// Commands returns the list of CommandFiles (e.g. slash commands) to write.
 	Commands func() ([]CommandFile, error)
@@ -135,18 +135,13 @@ func ClaudeCode(binaryPath string) *Agent {
 			return path, patches, nil
 		},
 
-		Protocol: func() (string, []byte, [2]string, error) {
+		Manual: func() (string, []byte, error) {
 			home, err := os.UserHomeDir()
 			if err != nil {
-				return "", nil, [2]string{}, fmt.Errorf("install: claude-code: protocol: home dir: %w", err)
+				return "", nil, fmt.Errorf("install: claude-code: manual: home dir: %w", err)
 			}
 			path := filepath.Join(home, ".claude", "CLAUDE.md")
-			markers := [2]string{
-				"<!-- mneme:protocol:start -->",
-				"<!-- mneme:protocol:end -->",
-			}
-			content := []byte(markers[0] + "\n" + protocol() + "\n" + markers[1])
-			return path, content, markers, nil
+			return path, []byte(operatingManual()), nil
 		},
 
 		Commands: func() ([]CommandFile, error) {
@@ -272,13 +267,15 @@ func (a *Agent) installSteps(opts InstallOptions) []installStep {
 		},
 	})
 
-	// Step 3: Protocol injection.
-	steps = append(steps, installStep{
-		Name: "Protocol",
-		Run: func() (string, error) {
-			return "", InjectProtocol(a)
-		},
-	})
+	// Step 3: Operating manual injection (replaces legacy Protocol step).
+	if a.Manual != nil {
+		steps = append(steps, installStep{
+			Name: "Operating manual",
+			Run: func() (string, error) {
+				return "", InjectManual(a)
+			},
+		})
+	}
 
 	// Step 4: Slash commands.
 	steps = append(steps, installStep{
@@ -722,76 +719,23 @@ func hookCommandExists(eventList []any, command string) bool {
 	return false
 }
 
-// InjectProtocol injects (or replaces) the protocol block inside the target
-// file. The block is delimited by the start and end markers returned by
-// agent.Protocol.
+// InjectManual injects (or updates) the operating manual managed block into
+// the target file returned by agent.Manual. It delegates to upsertManagedBlock,
+// which handles versioning, legacy protocol migration, and idempotency.
 //
-// Injection rules:
-//   - If the file does not exist, create it containing only the protocol block.
-//   - If the file exists but contains no markers, append the block at the end.
-//   - If the file exists and contains the start marker, replace everything
-//     between (and including) the start and end markers with the new block.
-func InjectProtocol(agent *Agent) error {
-	path, content, markers, err := agent.Protocol()
+// If agent.Manual is nil, InjectManual is a no-op and returns nil.
+func InjectManual(agent *Agent) error {
+	if agent.Manual == nil {
+		return nil
+	}
+	path, content, err := agent.Manual()
 	if err != nil {
-		return fmt.Errorf("install: inject protocol: %w", err)
+		return fmt.Errorf("install: inject manual: %w", err)
 	}
-
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("install: inject protocol: mkdir: %w", err)
-	}
-
-	existing, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		// File does not exist — create it with just the protocol block.
-		return os.WriteFile(path, append(content, '\n'), 0o644)
-	}
-	if err != nil {
-		return fmt.Errorf("install: inject protocol: read: %w", err)
-	}
-
-	merged := mergeProtocol(existing, content, markers[0], markers[1])
-	if err := os.WriteFile(path, merged, 0o644); err != nil {
-		return fmt.Errorf("install: inject protocol: write: %w", err)
+	if err := upsertManagedBlock(path, string(content)); err != nil {
+		return fmt.Errorf("install: inject manual: %w", err)
 	}
 	return nil
-}
-
-// mergeProtocol replaces or appends the protocol block in existing.
-// It returns the new file content as a byte slice.
-func mergeProtocol(existing, block []byte, startMarker, endMarker string) []byte {
-	text := string(existing)
-
-	startIdx := strings.Index(text, startMarker)
-	endIdx := strings.Index(text, endMarker)
-
-	if startIdx != -1 && endIdx != -1 && endIdx > startIdx {
-		// Replace the existing block (inclusive of markers).
-		before := text[:startIdx]
-		after := text[endIdx+len(endMarker):]
-		var buf bytes.Buffer
-		buf.WriteString(strings.TrimRight(before, "\n"))
-		if buf.Len() > 0 {
-			buf.WriteString("\n\n")
-		}
-		buf.Write(block)
-		trimmed := strings.TrimLeft(after, "\n")
-		if trimmed != "" {
-			buf.WriteString("\n\n")
-			buf.WriteString(trimmed)
-		} else {
-			buf.WriteString("\n")
-		}
-		return buf.Bytes()
-	}
-
-	// No markers found — append at the end.
-	var buf bytes.Buffer
-	buf.Write(bytes.TrimRight(existing, "\n"))
-	buf.WriteString("\n\n")
-	buf.Write(block)
-	buf.WriteString("\n")
-	return buf.Bytes()
 }
 
 // WriteCommands writes each CommandFile returned by agent.Commands to the
