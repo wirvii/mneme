@@ -1,7 +1,7 @@
 ---
 name: qa-tester
 description: "Invocar SIEMPRE antes de dar por terminada una implementacion para: 1. Validar que el codigo cumple con lineamientos. 2. Verificar que se satisface la spec del arquitecto. 3. Ejecutar pruebas funcionales y reportar resultados."
-model: claude-opus-4-6
+model: sonnet
 color: purple
 tools: Read, Grep, Glob, NotebookRead, BashOutput, mcp__mneme__*
 ---
