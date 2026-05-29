@@ -38,6 +38,7 @@ func TestBacklogAdd_Success(t *testing.T) {
 		Title:       "Add notifications",
 		Description: "Push notification support",
 		Priority:    model.PriorityHigh,
+		Lane:        model.LaneStandard,
 	})
 	if err != nil {
 		t.Fatalf("BacklogAdd: %v", err)
@@ -77,6 +78,7 @@ func TestBacklogAdd_InvalidPriority(t *testing.T) {
 	_, err := svc.BacklogAdd(ctx, model.BacklogAddRequest{
 		Title:    "Test",
 		Priority: "urgent",
+		Lane:     model.LaneStandard,
 	})
 	if !errors.Is(err, model.ErrInvalidPriority) {
 		t.Errorf("expected ErrInvalidPriority, got %v", err)
@@ -88,7 +90,7 @@ func TestBacklogAdd_DefaultProject(t *testing.T) {
 	ctx := context.Background()
 
 	// No Project in request — should use service project.
-	item, err := svc.BacklogAdd(ctx, model.BacklogAddRequest{Title: "Test"})
+	item, err := svc.BacklogAdd(ctx, model.BacklogAddRequest{Title: "Test", Lane: model.LaneStandard})
 	if err != nil {
 		t.Fatalf("BacklogAdd: %v", err)
 	}
@@ -101,7 +103,7 @@ func TestBacklogAdd_DefaultPriority(t *testing.T) {
 	svc := newTestSDDService(t, "p")
 	ctx := context.Background()
 
-	item, err := svc.BacklogAdd(ctx, model.BacklogAddRequest{Title: "Test"})
+	item, err := svc.BacklogAdd(ctx, model.BacklogAddRequest{Title: "Test", Lane: model.LaneStandard})
 	if err != nil {
 		t.Fatalf("BacklogAdd: %v", err)
 	}
@@ -116,11 +118,11 @@ func TestBacklogList_FilterByStatus(t *testing.T) {
 
 	// Create 3 items: 2 raw, 1 refined.
 	for _, title := range []string{"A", "B"} {
-		if _, err := svc.BacklogAdd(ctx, model.BacklogAddRequest{Title: title}); err != nil {
+		if _, err := svc.BacklogAdd(ctx, model.BacklogAddRequest{Title: title, Lane: model.LaneStandard}); err != nil {
 			t.Fatalf("add %s: %v", title, err)
 		}
 	}
-	itemC, err := svc.BacklogAdd(ctx, model.BacklogAddRequest{Title: "C"})
+	itemC, err := svc.BacklogAdd(ctx, model.BacklogAddRequest{Title: "C", Lane: model.LaneStandard})
 	if err != nil {
 		t.Fatalf("add C: %v", err)
 	}
@@ -149,7 +151,7 @@ func TestBacklogRefine_Success(t *testing.T) {
 	svc := newTestSDDService(t, "project")
 	ctx := context.Background()
 
-	item, err := svc.BacklogAdd(ctx, model.BacklogAddRequest{Title: "Feature X"})
+	item, err := svc.BacklogAdd(ctx, model.BacklogAddRequest{Title: "Feature X", Lane: model.LaneStandard})
 	if err != nil {
 		t.Fatalf("add: %v", err)
 	}
@@ -174,7 +176,7 @@ func TestBacklogRefine_NotRaw(t *testing.T) {
 	svc := newTestSDDService(t, "project")
 	ctx := context.Background()
 
-	item, err := svc.BacklogAdd(ctx, model.BacklogAddRequest{Title: "X"})
+	item, err := svc.BacklogAdd(ctx, model.BacklogAddRequest{Title: "X", Lane: model.LaneStandard})
 	if err != nil {
 		t.Fatalf("add: %v", err)
 	}
@@ -193,7 +195,7 @@ func TestBacklogPromote_Success(t *testing.T) {
 	svc := newTestSDDService(t, "project")
 	ctx := context.Background()
 
-	item, err := svc.BacklogAdd(ctx, model.BacklogAddRequest{Title: "Feature Y"})
+	item, err := svc.BacklogAdd(ctx, model.BacklogAddRequest{Title: "Feature Y", Lane: model.LaneStandard})
 	if err != nil {
 		t.Fatalf("add: %v", err)
 	}
@@ -230,7 +232,7 @@ func TestBacklogPromote_NotRefined(t *testing.T) {
 	svc := newTestSDDService(t, "project")
 	ctx := context.Background()
 
-	item, err := svc.BacklogAdd(ctx, model.BacklogAddRequest{Title: "Raw item"})
+	item, err := svc.BacklogAdd(ctx, model.BacklogAddRequest{Title: "Raw item", Lane: model.LaneStandard})
 	if err != nil {
 		t.Fatalf("add: %v", err)
 	}
@@ -245,7 +247,7 @@ func TestBacklogArchive(t *testing.T) {
 	svc := newTestSDDService(t, "project")
 	ctx := context.Background()
 
-	item, err := svc.BacklogAdd(ctx, model.BacklogAddRequest{Title: "Archive me"})
+	item, err := svc.BacklogAdd(ctx, model.BacklogAddRequest{Title: "Archive me", Lane: model.LaneStandard})
 	if err != nil {
 		t.Fatalf("add: %v", err)
 	}
@@ -272,7 +274,7 @@ func TestSpecNew(t *testing.T) {
 	svc := newTestSDDService(t, "project")
 	ctx := context.Background()
 
-	spec, err := svc.SpecNew(ctx, model.SpecNewRequest{Title: "SDD Engine"})
+	spec, err := svc.SpecNew(ctx, model.SpecNewRequest{Title: "SDD Engine", Lane: model.LaneStandard})
 	if err != nil {
 		t.Fatalf("SpecNew: %v", err)
 	}
@@ -292,7 +294,7 @@ func TestSpecAdvance_ValidTransitions(t *testing.T) {
 	svc := newTestSDDService(t, "project")
 	ctx := context.Background()
 
-	spec, err := svc.SpecNew(ctx, model.SpecNewRequest{Title: "Full lifecycle"})
+	spec, err := svc.SpecNew(ctx, model.SpecNewRequest{Title: "Full lifecycle", Lane: model.LaneStandard})
 	if err != nil {
 		t.Fatalf("SpecNew: %v", err)
 	}
@@ -330,7 +332,7 @@ func TestSpecAdvance_InvalidTransition(t *testing.T) {
 	svc := newTestSDDService(t, "project")
 	ctx := context.Background()
 
-	spec, err := svc.SpecNew(ctx, model.SpecNewRequest{Title: "Invalid advance"})
+	spec, err := svc.SpecNew(ctx, model.SpecNewRequest{Title: "Invalid advance", Lane: model.LaneStandard})
 	if err != nil {
 		t.Fatalf("SpecNew: %v", err)
 	}
@@ -367,7 +369,7 @@ func TestSpecPushback_FromSpeccing(t *testing.T) {
 	svc := newTestSDDService(t, "project")
 	ctx := context.Background()
 
-	spec, err := svc.SpecNew(ctx, model.SpecNewRequest{Title: "Pushback test"})
+	spec, err := svc.SpecNew(ctx, model.SpecNewRequest{Title: "Pushback test", Lane: model.LaneStandard})
 	if err != nil {
 		t.Fatalf("SpecNew: %v", err)
 	}
@@ -394,7 +396,7 @@ func TestSpecPushback_FromImplementing(t *testing.T) {
 	svc := newTestSDDService(t, "project")
 	ctx := context.Background()
 
-	spec, err := svc.SpecNew(ctx, model.SpecNewRequest{Title: "Impl pushback"})
+	spec, err := svc.SpecNew(ctx, model.SpecNewRequest{Title: "Impl pushback", Lane: model.LaneStandard})
 	if err != nil {
 		t.Fatalf("SpecNew: %v", err)
 	}
@@ -422,7 +424,7 @@ func TestSpecPushback_InvalidState(t *testing.T) {
 	svc := newTestSDDService(t, "project")
 	ctx := context.Background()
 
-	spec, err := svc.SpecNew(ctx, model.SpecNewRequest{Title: "Draft pushback"})
+	spec, err := svc.SpecNew(ctx, model.SpecNewRequest{Title: "Draft pushback", Lane: model.LaneStandard})
 	if err != nil {
 		t.Fatalf("SpecNew: %v", err)
 	}
@@ -442,7 +444,7 @@ func TestSpecResolve(t *testing.T) {
 	svc := newTestSDDService(t, "project")
 	ctx := context.Background()
 
-	spec, err := svc.SpecNew(ctx, model.SpecNewRequest{Title: "Resolve test"})
+	spec, err := svc.SpecNew(ctx, model.SpecNewRequest{Title: "Resolve test", Lane: model.LaneStandard})
 	if err != nil {
 		t.Fatalf("SpecNew: %v", err)
 	}
@@ -482,7 +484,7 @@ func TestSpecResolve_NotNeedsGrill(t *testing.T) {
 	svc := newTestSDDService(t, "project")
 	ctx := context.Background()
 
-	spec, err := svc.SpecNew(ctx, model.SpecNewRequest{Title: "No grill"})
+	spec, err := svc.SpecNew(ctx, model.SpecNewRequest{Title: "No grill", Lane: model.LaneStandard})
 	if err != nil {
 		t.Fatalf("SpecNew: %v", err)
 	}
@@ -497,7 +499,7 @@ func TestSpecStatus(t *testing.T) {
 	svc := newTestSDDService(t, "project")
 	ctx := context.Background()
 
-	spec, err := svc.SpecNew(ctx, model.SpecNewRequest{Title: "Status test"})
+	spec, err := svc.SpecNew(ctx, model.SpecNewRequest{Title: "Status test", Lane: model.LaneStandard})
 	if err != nil {
 		t.Fatalf("SpecNew: %v", err)
 	}
@@ -536,8 +538,8 @@ func TestSpecList_FilterByStatus(t *testing.T) {
 	ctx := context.Background()
 
 	// Create 2 specs in draft, advance 1 to speccing.
-	s1, _ := svc.SpecNew(ctx, model.SpecNewRequest{Title: "S1"})
-	s2, _ := svc.SpecNew(ctx, model.SpecNewRequest{Title: "S2"})
+	s1, _ := svc.SpecNew(ctx, model.SpecNewRequest{Title: "S1", Lane: model.LaneStandard})
+	s2, _ := svc.SpecNew(ctx, model.SpecNewRequest{Title: "S2", Lane: model.LaneStandard})
 	if _, err := svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: s1.ID, By: "test"}); err != nil {
 		t.Fatalf("advance s1: %v", err)
 	}
@@ -557,5 +559,350 @@ func TestSpecList_FilterByStatus(t *testing.T) {
 	}
 	if len(speccing) != 1 {
 		t.Errorf("expected 1 speccing, got %d", len(speccing))
+	}
+}
+
+// --- LANE TESTS ---
+
+// TestBacklogAdd_LaneRequired verifies that omitting lane returns ErrLaneRequired.
+func TestBacklogAdd_LaneRequired(t *testing.T) {
+	svc := newTestSDDService(t, "project")
+	ctx := context.Background()
+
+	_, err := svc.BacklogAdd(ctx, model.BacklogAddRequest{Title: "Test"})
+	if !errors.Is(err, model.ErrLaneRequired) {
+		t.Errorf("expected ErrLaneRequired, got %v", err)
+	}
+}
+
+// TestBacklogAdd_ScopeRequired verifies that trivial lane without scope returns ErrScopeRequired.
+func TestBacklogAdd_ScopeRequired(t *testing.T) {
+	svc := newTestSDDService(t, "project")
+	ctx := context.Background()
+
+	_, err := svc.BacklogAdd(ctx, model.BacklogAddRequest{Title: "Test", Lane: model.LaneTrivial})
+	if !errors.Is(err, model.ErrScopeRequired) {
+		t.Errorf("expected ErrScopeRequired, got %v", err)
+	}
+}
+
+// TestSpecNew_LaneRequired verifies that omitting lane returns ErrLaneRequired.
+func TestSpecNew_LaneRequired(t *testing.T) {
+	svc := newTestSDDService(t, "project")
+	ctx := context.Background()
+
+	_, err := svc.SpecNew(ctx, model.SpecNewRequest{Title: "Test"})
+	if !errors.Is(err, model.ErrLaneRequired) {
+		t.Errorf("expected ErrLaneRequired, got %v", err)
+	}
+}
+
+// TestSpecNew_ScopeRequired verifies that trivial lane without scope returns ErrScopeRequired.
+func TestSpecNew_ScopeRequired(t *testing.T) {
+	svc := newTestSDDService(t, "project")
+	ctx := context.Background()
+
+	_, err := svc.SpecNew(ctx, model.SpecNewRequest{Title: "Test", Lane: model.LaneTrivial})
+	if !errors.Is(err, model.ErrScopeRequired) {
+		t.Errorf("expected ErrScopeRequired, got %v", err)
+	}
+}
+
+// TestSpecQuick_RejectsStandard verifies that spec_quick returns ErrLaneMismatch
+// when called on a standard-lane spec.
+func TestSpecQuick_RejectsStandard(t *testing.T) {
+	svc := newTestSDDService(t, "project")
+	ctx := context.Background()
+
+	spec, err := svc.SpecNew(ctx, model.SpecNewRequest{Title: "Standard spec", Lane: model.LaneStandard})
+	if err != nil {
+		t.Fatalf("SpecNew: %v", err)
+	}
+
+	_, err = svc.SpecQuick(ctx, model.SpecQuickRequest{
+		ID:        spec.ID,
+		Rationale: "This is quick",
+		By:        "orchestrator",
+	})
+	if !errors.Is(err, model.ErrLaneMismatch) {
+		t.Errorf("expected ErrLaneMismatch, got %v", err)
+	}
+}
+
+// TestSpecQuick_TrivialFlow verifies the happy path: trivial spec goes from
+// draft to implementing after spec_quick.
+func TestSpecQuick_TrivialFlow(t *testing.T) {
+	svc := newTestSDDService(t, "project")
+	ctx := context.Background()
+
+	spec, err := svc.SpecNew(ctx, model.SpecNewRequest{
+		Title: "Tiny fix",
+		Lane:  model.LaneTrivial,
+		Scope: "internal/store/*.go",
+	})
+	if err != nil {
+		t.Fatalf("SpecNew: %v", err)
+	}
+	if spec.Lane != model.LaneTrivial {
+		t.Errorf("Lane: got %q, want trivial", spec.Lane)
+	}
+
+	implementing, err := svc.SpecQuick(ctx, model.SpecQuickRequest{
+		ID:        spec.ID,
+		Rationale: "One-line fix to a comment typo",
+		By:        "orchestrator",
+	})
+	if err != nil {
+		t.Fatalf("SpecQuick: %v", err)
+	}
+	if implementing.Status != model.SpecStatusImplementing {
+		t.Errorf("Status: got %q, want implementing", implementing.Status)
+	}
+}
+
+// TestBacklogPromote_PropagatesLane verifies that BacklogPromote copies lane and
+// scope from the backlog item to the newly created spec.
+func TestBacklogPromote_PropagatesLane(t *testing.T) {
+	svc := newTestSDDService(t, "project")
+	ctx := context.Background()
+
+	item, err := svc.BacklogAdd(ctx, model.BacklogAddRequest{
+		Title: "Tiny thing",
+		Lane:  model.LaneTrivial,
+		Scope: "internal/model/*.go",
+	})
+	if err != nil {
+		t.Fatalf("BacklogAdd: %v", err)
+	}
+	if _, err := svc.BacklogRefine(ctx, model.BacklogRefineRequest{
+		ID:         item.ID,
+		Refinement: "One-line refactoring",
+	}); err != nil {
+		t.Fatalf("BacklogRefine: %v", err)
+	}
+
+	spec, err := svc.BacklogPromote(ctx, item.ID)
+	if err != nil {
+		t.Fatalf("BacklogPromote: %v", err)
+	}
+	if spec.Lane != model.LaneTrivial {
+		t.Errorf("spec.Lane: got %q, want trivial", spec.Lane)
+	}
+	if spec.Scope != "internal/model/*.go" {
+		t.Errorf("spec.Scope: got %q, want internal/model/*.go", spec.Scope)
+	}
+}
+
+// TestSpecAdvance_TrivialPath verifies the trivial lane forward path:
+// draft → rationale → implementing → audit → done (using manual store transitions
+// to avoid git dependency on the audit step).
+func TestSpecAdvance_TrivialPath(t *testing.T) {
+	svc := newTestSDDService(t, "project")
+	ctx := context.Background()
+
+	spec, err := svc.SpecNew(ctx, model.SpecNewRequest{
+		Title: "Trivial fix",
+		Lane:  model.LaneTrivial,
+		Scope: "internal/model/*.go",
+	})
+	if err != nil {
+		t.Fatalf("SpecNew: %v", err)
+	}
+
+	// draft → rationale
+	advanced, err := svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: "orch"})
+	if err != nil {
+		t.Fatalf("advance draft->rationale: %v", err)
+	}
+	if advanced.Status != model.SpecStatusRationale {
+		t.Errorf("Status: got %q, want rationale", advanced.Status)
+	}
+
+	// rationale → implementing
+	advanced, err = svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: "orch"})
+	if err != nil {
+		t.Fatalf("advance rationale->implementing: %v", err)
+	}
+	if advanced.Status != model.SpecStatusImplementing {
+		t.Errorf("Status: got %q, want implementing", advanced.Status)
+	}
+
+	// implementing → audit
+	advanced, err = svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: "orch"})
+	if err != nil {
+		t.Fatalf("advance implementing->audit: %v", err)
+	}
+	if advanced.Status != model.SpecStatusAudit {
+		t.Errorf("Status: got %q, want audit", advanced.Status)
+	}
+}
+
+// TestLaneReclassify_TrivialToStandard verifies that a trivial spec in draft
+// can be reclassified to standard and moves to speccing.
+func TestLaneReclassify_TrivialToStandard(t *testing.T) {
+	svc := newTestSDDService(t, "project")
+	ctx := context.Background()
+
+	spec, err := svc.SpecNew(ctx, model.SpecNewRequest{
+		Title: "Will become standard",
+		Lane:  model.LaneTrivial,
+		Scope: "internal/model/*.go",
+	})
+	if err != nil {
+		t.Fatalf("SpecNew: %v", err)
+	}
+
+	reclassified, err := svc.LaneReclassify(ctx, model.LaneReclassifyRequest{
+		ID:   spec.ID,
+		Lane: model.LaneStandard,
+		By:   "orchestrator",
+	})
+	if err != nil {
+		t.Fatalf("LaneReclassify: %v", err)
+	}
+	if reclassified.Lane != model.LaneStandard {
+		t.Errorf("Lane: got %q, want standard", reclassified.Lane)
+	}
+	if reclassified.Status != model.SpecStatusSpeccing {
+		t.Errorf("Status: got %q, want speccing", reclassified.Status)
+	}
+}
+
+// TestLaneOverride_RequiresReason verifies that LaneOverride returns ErrReasonRequired
+// when no reason is provided.
+func TestLaneOverride_RequiresReason(t *testing.T) {
+	svc := newTestSDDService(t, "project")
+	ctx := context.Background()
+
+	_, err := svc.LaneOverride(ctx, model.LaneOverrideRequest{ID: "SPEC-001"})
+	if !errors.Is(err, model.ErrReasonRequired) {
+		t.Errorf("expected ErrReasonRequired, got %v", err)
+	}
+}
+
+// TestLaneStatus_AfterFailedAudit verifies that LaneStatus returns the correct
+// breaches from the most recent audit failure, not the reason from the
+// implementing→audit transition. This is the regression test for SPEC-035 QA bug 2.
+func TestLaneStatus_AfterFailedAudit(t *testing.T) {
+	svc := newTestSDDService(t, "project")
+	ctx := context.Background()
+
+	// Create a trivial-lane spec.
+	spec, err := svc.SpecNew(ctx, model.SpecNewRequest{
+		Title: "Regression: LaneStatus after failed audit",
+		Lane:  model.LaneTrivial,
+		Scope: "internal/model/*.go",
+	})
+	if err != nil {
+		t.Fatalf("SpecNew: %v", err)
+	}
+
+	// Advance: draft → rationale → implementing.
+	spec, err = svc.SpecQuick(ctx, model.SpecQuickRequest{
+		ID:        spec.ID,
+		Rationale: "Tiny fix",
+		By:        "orchestrator",
+	})
+	if err != nil {
+		t.Fatalf("SpecQuick: %v", err)
+	}
+
+	// Advance: implementing → audit.
+	spec, err = svc.SpecAdvance(ctx, model.SpecAdvanceRequest{
+		ID:     spec.ID,
+		By:     "backend",
+		Reason: "implementation done",
+	})
+	if err != nil {
+		t.Fatalf("SpecAdvance (implementing→audit): %v", err)
+	}
+	if spec.Status != model.SpecStatusAudit {
+		t.Fatalf("expected audit status, got %s", spec.Status)
+	}
+
+	// Directly insert an audit-failed history entry (simulating what LaneAudit
+	// writes via InsertSpecHistoryEntry when the deterministic auditor detects
+	// threshold violations).
+	breaches := []string{"file count 5 exceeds trivial limit of 3", "line count 42 exceeds trivial limit of 20"}
+	breachReason := "audit failed: " + breaches[0] + "; " + breaches[1]
+	if err := svc.store.InsertSpecHistoryEntry(ctx, spec.ID,
+		model.SpecStatusAudit, model.SpecStatusAudit,
+		"system", breachReason); err != nil {
+		t.Fatalf("InsertSpecHistoryEntry: %v", err)
+	}
+
+	// LaneStatus must reflect the AUDIT FAILURE (not the implementing→audit reason).
+	status, err := svc.LaneStatus(ctx, spec.ID)
+	if err != nil {
+		t.Fatalf("LaneStatus: %v", err)
+	}
+
+	if status.LatestAudit == nil {
+		t.Fatal("expected LatestAudit to be non-nil after a recorded audit failure")
+	}
+	if status.LatestAudit.Passed {
+		t.Error("expected LatestAudit.Passed=false")
+	}
+	if len(status.LatestAudit.Breaches) == 0 {
+		t.Error("expected non-empty Breaches in LatestAudit")
+	}
+	// Verify the specific breach messages are preserved correctly.
+	for _, want := range breaches {
+		found := false
+		for _, got := range status.LatestAudit.Breaches {
+			if got == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("breach %q not found in LatestAudit.Breaches %v", want, status.LatestAudit.Breaches)
+		}
+	}
+}
+
+// TestLaneStatus_NoAuditRun verifies that LaneStatus returns nil LatestAudit when
+// the spec has only been transitioned to audit status but no audit has run.
+// This ensures we don't accidentally report the implementing→audit reason as breaches.
+func TestLaneStatus_NoAuditRun(t *testing.T) {
+	svc := newTestSDDService(t, "project")
+	ctx := context.Background()
+
+	spec, err := svc.SpecNew(ctx, model.SpecNewRequest{
+		Title: "No audit run yet",
+		Lane:  model.LaneTrivial,
+		Scope: "internal/model/*.go",
+	})
+	if err != nil {
+		t.Fatalf("SpecNew: %v", err)
+	}
+
+	spec, err = svc.SpecQuick(ctx, model.SpecQuickRequest{
+		ID:        spec.ID,
+		Rationale: "Small change",
+		By:        "orchestrator",
+	})
+	if err != nil {
+		t.Fatalf("SpecQuick: %v", err)
+	}
+
+	spec, err = svc.SpecAdvance(ctx, model.SpecAdvanceRequest{
+		ID:     spec.ID,
+		By:     "backend",
+		Reason: "done implementing",
+	})
+	if err != nil {
+		t.Fatalf("SpecAdvance (implementing→audit): %v", err)
+	}
+
+	// No audit has been run yet. LaneStatus must NOT report the
+	// implementing→audit transition as an audit result.
+	status, err := svc.LaneStatus(ctx, spec.ID)
+	if err != nil {
+		t.Fatalf("LaneStatus: %v", err)
+	}
+
+	if status.LatestAudit != nil {
+		t.Errorf("expected LatestAudit=nil before any audit has run, got %+v", status.LatestAudit)
 	}
 }

@@ -178,6 +178,8 @@ func TestToolsList(t *testing.T) {
 		// SDD tools
 		"backlog_add", "backlog_list", "backlog_refine", "backlog_promote",
 		"spec_new", "spec_status", "spec_advance", "spec_pushback", "spec_resolve", "spec_list",
+		// Lane tools (SPEC-035)
+		"spec_quick", "lane_audit", "lane_reclassify", "lane_override", "lane_status",
 		// Graph tools
 		"mem_gaps",
 		"mem_explore",

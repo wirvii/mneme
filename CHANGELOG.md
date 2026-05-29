@@ -6,6 +6,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [v1.5.0] — 2026-05-28
+
+### Added
+
+- **Graduated lanes for SDD** (SPEC-035): every backlog item and spec now
+  carries a `lane` field (`trivial` or `standard`) declared at creation time.
+  - **Trivial lane**: shortened path `draft → rationale → implementing → audit → done`.
+    Skips speccing, planning, and QA. Requires a `scope` glob declaring which
+    files the change is allowed to touch.
+  - **Standard lane**: full SDD flow unchanged. All existing items and flows
+    continue to work as before with no required changes.
+  - **Deterministic post-implementation auditor**: `lane_audit` / `mneme lane audit`
+    checks the actual git diff against thresholds (≤3 files, ≤20 lines, no
+    forbidden paths, scope compliance, no public Go/TS symbol changes). Pure Go,
+    no LLM. Violations are saved as discovery memories.
+  - **`spec_quick`** / `mneme spec quick`: advances a trivial spec from draft to
+    implementing in one step with a rationale string.
+  - **`lane_reclassify`** / `mneme lane reclassify`: reclassifies trivial→standard,
+    moves spec to speccing.
+  - **`lane_override`** / `mneme lane override`: bypasses a failed audit (requires
+    documented reason, persisted as discovery memory).
+  - **`lane_status`** / `mneme lane status`: shows lane, scope, and latest audit
+    summary.
+  - Migration `011_add_lane.sql`: adds `lane` and `scope` columns to
+    `backlog_items` and `specs` with CHECK constraint and DEFAULT backfill.
+  - `internal/lane/`: new leaf package with git-exec adapter (`GitDiffer`) and
+    auditor (`Audit`) — no internal/model imports.
+  - `docs/lanes.md`: full lanes reference (Critical Rules, Automated Checks,
+    How to Fix).
+  - `CLAUDE.md` Lanes section with orchestrator instructions.
+
 ## [v1.4.0] — 2026-05-29
 
 ### Added

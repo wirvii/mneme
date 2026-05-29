@@ -37,6 +37,7 @@ func TestCreateBacklogItem(t *testing.T) {
 		Priority:    model.PriorityHigh,
 		Project:     "testproject",
 		Position:    0,
+		Lane:        model.LaneStandard,
 	}
 
 	if err := s.CreateBacklogItem(ctx, item); err != nil {
@@ -79,7 +80,7 @@ func TestNextBacklogID(t *testing.T) {
 	// Create BL-001.
 	if err := s.CreateBacklogItem(ctx, &model.BacklogItem{
 		ID: "BL-001", Title: "first", Status: model.BacklogStatusRaw,
-		Priority: model.PriorityMedium, Project: project,
+		Priority: model.PriorityMedium, Project: project, Lane: model.LaneStandard,
 	}); err != nil {
 		t.Fatalf("create BL-001: %v", err)
 	}
@@ -96,7 +97,7 @@ func TestNextBacklogID(t *testing.T) {
 	// Sequentiality: create BL-002 and verify next is BL-003.
 	if err := s.CreateBacklogItem(ctx, &model.BacklogItem{
 		ID: "BL-002", Title: "second", Status: model.BacklogStatusRaw,
-		Priority: model.PriorityMedium, Project: project,
+		Priority: model.PriorityMedium, Project: project, Lane: model.LaneStandard,
 	}); err != nil {
 		t.Fatalf("create BL-002: %v", err)
 	}
@@ -115,9 +116,9 @@ func TestListBacklogItems(t *testing.T) {
 	project := "listtest"
 
 	items := []*model.BacklogItem{
-		{ID: "BL-001", Title: "Critical item", Status: model.BacklogStatusRaw, Priority: model.PriorityCritical, Project: project},
-		{ID: "BL-002", Title: "Low item", Status: model.BacklogStatusRefined, Priority: model.PriorityLow, Project: project},
-		{ID: "BL-003", Title: "Medium item", Status: model.BacklogStatusRaw, Priority: model.PriorityMedium, Project: project},
+		{ID: "BL-001", Title: "Critical item", Status: model.BacklogStatusRaw, Priority: model.PriorityCritical, Project: project, Lane: model.LaneStandard},
+		{ID: "BL-002", Title: "Low item", Status: model.BacklogStatusRefined, Priority: model.PriorityLow, Project: project, Lane: model.LaneStandard},
+		{ID: "BL-003", Title: "Medium item", Status: model.BacklogStatusRaw, Priority: model.PriorityMedium, Project: project, Lane: model.LaneStandard},
 	}
 	for _, item := range items {
 		if err := s.CreateBacklogItem(ctx, item); err != nil {
@@ -166,7 +167,7 @@ func TestUpdateBacklogItem(t *testing.T) {
 
 	item := &model.BacklogItem{
 		ID: "BL-001", Title: "Original", Status: model.BacklogStatusRaw,
-		Priority: model.PriorityMedium, Project: project,
+		Priority: model.PriorityMedium, Project: project, Lane: model.LaneStandard,
 	}
 	if err := s.CreateBacklogItem(ctx, item); err != nil {
 		t.Fatalf("create: %v", err)
@@ -213,6 +214,7 @@ func TestCreateSpec(t *testing.T) {
 				Status:    model.SpecStatusDraft,
 				Project:   "testproject",
 				BacklogID: tc.backlogID,
+				Lane:      model.LaneStandard,
 			}
 			if err := s.CreateSpec(ctx, spec); err != nil {
 				t.Fatalf("CreateSpec: %v", err)
@@ -250,7 +252,7 @@ func TestNextSpecID(t *testing.T) {
 	}
 
 	if err := s.CreateSpec(ctx, &model.Spec{
-		ID: "SPEC-001", Title: "first", Status: model.SpecStatusDraft, Project: project,
+		ID: "SPEC-001", Title: "first", Status: model.SpecStatusDraft, Project: project, Lane: model.LaneStandard,
 	}); err != nil {
 		t.Fatalf("create SPEC-001: %v", err)
 	}
@@ -269,7 +271,7 @@ func TestUpdateSpecStatus(t *testing.T) {
 	ctx := context.Background()
 
 	if err := s.CreateSpec(ctx, &model.Spec{
-		ID: "SPEC-001", Title: "status test", Status: model.SpecStatusDraft, Project: "proj",
+		ID: "SPEC-001", Title: "status test", Status: model.SpecStatusDraft, Project: "proj", Lane: model.LaneStandard,
 	}); err != nil {
 		t.Fatalf("create spec: %v", err)
 	}
@@ -305,7 +307,7 @@ func TestGetSpecHistory(t *testing.T) {
 	ctx := context.Background()
 
 	if err := s.CreateSpec(ctx, &model.Spec{
-		ID: "SPEC-001", Title: "history test", Status: model.SpecStatusDraft, Project: "proj",
+		ID: "SPEC-001", Title: "history test", Status: model.SpecStatusDraft, Project: "proj", Lane: model.LaneStandard,
 	}); err != nil {
 		t.Fatalf("create spec: %v", err)
 	}
@@ -353,7 +355,7 @@ func TestCreatePushback(t *testing.T) {
 	ctx := context.Background()
 
 	if err := s.CreateSpec(ctx, &model.Spec{
-		ID: "SPEC-001", Title: "pb test", Status: model.SpecStatusSpeccing, Project: "proj",
+		ID: "SPEC-001", Title: "pb test", Status: model.SpecStatusSpeccing, Project: "proj", Lane: model.LaneStandard,
 	}); err != nil {
 		t.Fatalf("create spec: %v", err)
 	}
@@ -391,7 +393,7 @@ func TestResolvePushback(t *testing.T) {
 	ctx := context.Background()
 
 	if err := s.CreateSpec(ctx, &model.Spec{
-		ID: "SPEC-001", Title: "resolve test", Status: model.SpecStatusNeedsGrill, Project: "proj",
+		ID: "SPEC-001", Title: "resolve test", Status: model.SpecStatusNeedsGrill, Project: "proj", Lane: model.LaneStandard,
 	}); err != nil {
 		t.Fatalf("create spec: %v", err)
 	}
@@ -442,7 +444,7 @@ func TestGetUnresolvedPushbacks(t *testing.T) {
 	ctx := context.Background()
 
 	if err := s.CreateSpec(ctx, &model.Spec{
-		ID: "SPEC-001", Title: "multi pb", Status: model.SpecStatusNeedsGrill, Project: "proj",
+		ID: "SPEC-001", Title: "multi pb", Status: model.SpecStatusNeedsGrill, Project: "proj", Lane: model.LaneStandard,
 	}); err != nil {
 		t.Fatalf("create spec: %v", err)
 	}
@@ -483,10 +485,10 @@ func TestBacklogCounts(t *testing.T) {
 	project := "counttest"
 
 	items := []*model.BacklogItem{
-		{ID: "BL-001", Status: model.BacklogStatusRaw, Priority: model.PriorityMedium, Project: project, Title: "a"},
-		{ID: "BL-002", Status: model.BacklogStatusRaw, Priority: model.PriorityMedium, Project: project, Title: "b"},
-		{ID: "BL-003", Status: model.BacklogStatusRefined, Priority: model.PriorityMedium, Project: project, Title: "c"},
-		{ID: "BL-004", Status: model.BacklogStatusArchived, Priority: model.PriorityMedium, Project: project, Title: "d"},
+		{ID: "BL-001", Status: model.BacklogStatusRaw, Priority: model.PriorityMedium, Project: project, Title: "a", Lane: model.LaneStandard},
+		{ID: "BL-002", Status: model.BacklogStatusRaw, Priority: model.PriorityMedium, Project: project, Title: "b", Lane: model.LaneStandard},
+		{ID: "BL-003", Status: model.BacklogStatusRefined, Priority: model.PriorityMedium, Project: project, Title: "c", Lane: model.LaneStandard},
+		{ID: "BL-004", Status: model.BacklogStatusArchived, Priority: model.PriorityMedium, Project: project, Title: "d", Lane: model.LaneStandard},
 	}
 	for _, item := range items {
 		if err := s.CreateBacklogItem(ctx, item); err != nil {
@@ -515,10 +517,10 @@ func TestSpecCounts(t *testing.T) {
 	project := "speccounttest"
 
 	specs := []*model.Spec{
-		{ID: "SPEC-001", Status: model.SpecStatusDraft, Project: project, Title: "a"},
-		{ID: "SPEC-002", Status: model.SpecStatusDraft, Project: project, Title: "b"},
-		{ID: "SPEC-003", Status: model.SpecStatusImplementing, Project: project, Title: "c"},
-		{ID: "SPEC-004", Status: model.SpecStatusDone, Project: project, Title: "d"},
+		{ID: "SPEC-001", Status: model.SpecStatusDraft, Project: project, Title: "a", Lane: model.LaneStandard},
+		{ID: "SPEC-002", Status: model.SpecStatusDraft, Project: project, Title: "b", Lane: model.LaneStandard},
+		{ID: "SPEC-003", Status: model.SpecStatusImplementing, Project: project, Title: "c", Lane: model.LaneStandard},
+		{ID: "SPEC-004", Status: model.SpecStatusDone, Project: project, Title: "d", Lane: model.LaneStandard},
 	}
 	for _, spec := range specs {
 		if err := s.CreateSpec(ctx, spec); err != nil {
@@ -553,7 +555,7 @@ func TestRecentlyCompletedSpecs(t *testing.T) {
 			status = model.SpecStatusImplementing
 		}
 		if err := s.CreateSpec(ctx, &model.Spec{
-			ID: id, Status: status, Project: project, Title: "spec " + id,
+			ID: id, Status: status, Project: project, Title: "spec " + id, Lane: model.LaneStandard,
 		}); err != nil {
 			t.Fatalf("create %s: %v", id, err)
 		}
@@ -573,5 +575,107 @@ func TestRecentlyCompletedSpecs(t *testing.T) {
 		if spec.Status != model.SpecStatusDone {
 			t.Errorf("spec %s has status %q, want done", spec.ID, spec.Status)
 		}
+	}
+}
+
+// TestUpdateSpecLaneScope verifies that lane and scope can be updated independently
+// of status transitions.
+func TestUpdateSpecLaneScope(t *testing.T) {
+	s := newTestSDDStore(t)
+	ctx := context.Background()
+
+	spec := &model.Spec{
+		ID: "SPEC-001", Title: "reclassify test", Status: model.SpecStatusDraft,
+		Project: "proj", Lane: model.LaneTrivial, Scope: "internal/foo/**",
+	}
+	if err := s.CreateSpec(ctx, spec); err != nil {
+		t.Fatalf("CreateSpec: %v", err)
+	}
+
+	// Reclassify from trivial to standard.
+	if err := s.UpdateSpecLaneScope(ctx, "SPEC-001", model.LaneStandard, ""); err != nil {
+		t.Fatalf("UpdateSpecLaneScope: %v", err)
+	}
+
+	got, err := s.GetSpec(ctx, "SPEC-001")
+	if err != nil {
+		t.Fatalf("GetSpec after lane update: %v", err)
+	}
+	if got.Lane != model.LaneStandard {
+		t.Errorf("Lane: got %q, want standard", got.Lane)
+	}
+	if got.Scope != "" {
+		t.Errorf("Scope: got %q, want empty", got.Scope)
+	}
+
+	// Status must be unchanged.
+	if got.Status != model.SpecStatusDraft {
+		t.Errorf("Status changed unexpectedly: %q", got.Status)
+	}
+
+	// Non-existent spec returns ErrSpecNotFound.
+	err = s.UpdateSpecLaneScope(ctx, "SPEC-999", model.LaneStandard, "")
+	if !errors.Is(err, model.ErrSpecNotFound) {
+		t.Errorf("expected ErrSpecNotFound, got %v", err)
+	}
+}
+
+// TestCreateBacklogItemTrivialLane verifies that lane and scope are stored and
+// retrieved correctly for trivial-lane backlog items.
+func TestCreateBacklogItemTrivialLane(t *testing.T) {
+	s := newTestSDDStore(t)
+	ctx := context.Background()
+
+	item := &model.BacklogItem{
+		ID:       "BL-001",
+		Title:    "Tiny fix",
+		Status:   model.BacklogStatusRaw,
+		Priority: model.PriorityMedium,
+		Project:  "proj",
+		Lane:     model.LaneTrivial,
+		Scope:    "internal/store/*.go",
+	}
+	if err := s.CreateBacklogItem(ctx, item); err != nil {
+		t.Fatalf("CreateBacklogItem: %v", err)
+	}
+
+	got, err := s.GetBacklogItem(ctx, "BL-001")
+	if err != nil {
+		t.Fatalf("GetBacklogItem: %v", err)
+	}
+	if got.Lane != model.LaneTrivial {
+		t.Errorf("Lane: got %q, want trivial", got.Lane)
+	}
+	if got.Scope != "internal/store/*.go" {
+		t.Errorf("Scope: got %q, want internal/store/*.go", got.Scope)
+	}
+}
+
+// TestCreateSpecWithLane verifies that lane and scope round-trip correctly for specs.
+func TestCreateSpecWithLane(t *testing.T) {
+	s := newTestSDDStore(t)
+	ctx := context.Background()
+
+	spec := &model.Spec{
+		ID:      "SPEC-001",
+		Title:   "Trivial fix",
+		Status:  model.SpecStatusDraft,
+		Project: "proj",
+		Lane:    model.LaneTrivial,
+		Scope:   "internal/model/*.go",
+	}
+	if err := s.CreateSpec(ctx, spec); err != nil {
+		t.Fatalf("CreateSpec: %v", err)
+	}
+
+	got, err := s.GetSpec(ctx, "SPEC-001")
+	if err != nil {
+		t.Fatalf("GetSpec: %v", err)
+	}
+	if got.Lane != model.LaneTrivial {
+		t.Errorf("Lane: got %q, want trivial", got.Lane)
+	}
+	if got.Scope != "internal/model/*.go" {
+		t.Errorf("Scope: got %q, want internal/model/*.go", got.Scope)
 	}
 }

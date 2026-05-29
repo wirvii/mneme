@@ -159,57 +159,99 @@ func TestSpecStatusIsActive(t *testing.T) {
 	}
 }
 
-// TestSpecStatusCanTransitionTo verifies all valid and invalid transitions in the
-// state machine. This table is the authoritative record of the allowed moves.
+// TestSpecStatusCanTransitionTo verifies all valid and invalid transitions in
+// the state machine for both lanes. This table is the authoritative record of
+// the allowed moves.
 func TestSpecStatusCanTransitionTo(t *testing.T) {
 	tests := []struct {
 		from  SpecStatus
 		to    SpecStatus
+		lane  Lane
 		valid bool
 	}{
-		// Valid transitions — forward path.
-		{SpecStatusDraft, SpecStatusSpeccing, true},
-		{SpecStatusSpeccing, SpecStatusSpecced, true},
-		{SpecStatusSpeccing, SpecStatusNeedsGrill, true},
-		{SpecStatusNeedsGrill, SpecStatusSpeccing, true},
-		{SpecStatusSpecced, SpecStatusPlanning, true},
-		{SpecStatusPlanning, SpecStatusPlanned, true},
-		{SpecStatusPlanned, SpecStatusImplementing, true},
-		{SpecStatusImplementing, SpecStatusQA, true},
-		{SpecStatusImplementing, SpecStatusNeedsGrill, true},
-		{SpecStatusQA, SpecStatusDone, true},
-		{SpecStatusQA, SpecStatusImplementing, true},
-		{SpecStatusQA, SpecStatusNeedsGrill, true},
+		// Standard lane — valid forward path.
+		{SpecStatusDraft, SpecStatusSpeccing, LaneStandard, true},
+		{SpecStatusSpeccing, SpecStatusSpecced, LaneStandard, true},
+		{SpecStatusSpeccing, SpecStatusNeedsGrill, LaneStandard, true},
+		{SpecStatusNeedsGrill, SpecStatusSpeccing, LaneStandard, true},
+		{SpecStatusSpecced, SpecStatusPlanning, LaneStandard, true},
+		{SpecStatusPlanning, SpecStatusPlanned, LaneStandard, true},
+		{SpecStatusPlanned, SpecStatusImplementing, LaneStandard, true},
+		{SpecStatusImplementing, SpecStatusQA, LaneStandard, true},
+		{SpecStatusImplementing, SpecStatusNeedsGrill, LaneStandard, true},
+		{SpecStatusQA, SpecStatusDone, LaneStandard, true},
+		{SpecStatusQA, SpecStatusImplementing, LaneStandard, true},
+		{SpecStatusQA, SpecStatusNeedsGrill, LaneStandard, true},
 
-		// Invalid transitions — skipping states.
-		{SpecStatusDraft, SpecStatusDone, false},
-		{SpecStatusDraft, SpecStatusImplementing, false},
-		{SpecStatusDraft, SpecStatusPlanned, false},
-		{SpecStatusSpeccing, SpecStatusImplementing, false},
-		{SpecStatusSpeccing, SpecStatusDone, false},
-		{SpecStatusSpeccing, SpecStatusPlanning, false},
-		{SpecStatusNeedsGrill, SpecStatusDone, false},
-		{SpecStatusNeedsGrill, SpecStatusImplementing, false},
-		{SpecStatusSpecced, SpecStatusDone, false},
-		{SpecStatusSpecced, SpecStatusImplementing, false},
-		{SpecStatusPlanning, SpecStatusDone, false},
-		{SpecStatusPlanned, SpecStatusDone, false},
-		{SpecStatusQA, SpecStatusSpeccing, false},
-		{SpecStatusQA, SpecStatusDraft, false},
+		// Standard lane — invalid transitions (skipping states).
+		{SpecStatusDraft, SpecStatusDone, LaneStandard, false},
+		{SpecStatusDraft, SpecStatusImplementing, LaneStandard, false},
+		{SpecStatusDraft, SpecStatusPlanned, LaneStandard, false},
+		{SpecStatusSpeccing, SpecStatusImplementing, LaneStandard, false},
+		{SpecStatusSpeccing, SpecStatusDone, LaneStandard, false},
+		{SpecStatusSpeccing, SpecStatusPlanning, LaneStandard, false},
+		{SpecStatusNeedsGrill, SpecStatusDone, LaneStandard, false},
+		{SpecStatusNeedsGrill, SpecStatusImplementing, LaneStandard, false},
+		{SpecStatusSpecced, SpecStatusDone, LaneStandard, false},
+		{SpecStatusSpecced, SpecStatusImplementing, LaneStandard, false},
+		{SpecStatusPlanning, SpecStatusDone, LaneStandard, false},
+		{SpecStatusPlanned, SpecStatusDone, LaneStandard, false},
+		{SpecStatusQA, SpecStatusSpeccing, LaneStandard, false},
+		{SpecStatusQA, SpecStatusDraft, LaneStandard, false},
 
-		// Invalid — from terminal state.
-		{SpecStatusDone, SpecStatusDraft, false},
-		{SpecStatusDone, SpecStatusSpeccing, false},
-		{SpecStatusDone, SpecStatusImplementing, false},
-		{SpecStatusDone, SpecStatusQA, false},
+		// Standard lane — invalid from terminal state.
+		{SpecStatusDone, SpecStatusDraft, LaneStandard, false},
+		{SpecStatusDone, SpecStatusSpeccing, LaneStandard, false},
+		{SpecStatusDone, SpecStatusImplementing, LaneStandard, false},
+		{SpecStatusDone, SpecStatusQA, LaneStandard, false},
+
+		// Trivial lane — valid forward path.
+		{SpecStatusDraft, SpecStatusRationale, LaneTrivial, true},
+		{SpecStatusRationale, SpecStatusImplementing, LaneTrivial, true},
+		{SpecStatusImplementing, SpecStatusAudit, LaneTrivial, true},
+		{SpecStatusImplementing, SpecStatusNeedsGrill, LaneTrivial, true},
+		{SpecStatusAudit, SpecStatusDone, LaneTrivial, true},
+		{SpecStatusAudit, SpecStatusImplementing, LaneTrivial, true},
+		{SpecStatusNeedsGrill, SpecStatusRationale, LaneTrivial, true},
+
+		// Trivial lane — standard states must not be reachable.
+		{SpecStatusDraft, SpecStatusSpeccing, LaneTrivial, false},
+		{SpecStatusDraft, SpecStatusDone, LaneTrivial, false},
+		{SpecStatusRationale, SpecStatusSpeccing, LaneTrivial, false},
+		{SpecStatusRationale, SpecStatusDone, LaneTrivial, false},
+
+		// Lanes must not mix: trivial paths rejected for standard lane.
+		{SpecStatusDraft, SpecStatusRationale, LaneStandard, false},
+		{SpecStatusRationale, SpecStatusImplementing, LaneStandard, false},
 	}
 
 	for _, tc := range tests {
-		name := string(tc.from) + " -> " + string(tc.to)
+		name := string(tc.lane) + "/" + string(tc.from) + "->" + string(tc.to)
 		t.Run(name, func(t *testing.T) {
-			got := tc.from.CanTransitionTo(tc.to)
+			got := tc.from.CanTransitionTo(tc.to, tc.lane)
 			if got != tc.valid {
-				t.Errorf("CanTransitionTo() = %v, want %v", got, tc.valid)
+				t.Errorf("CanTransitionTo(%q, %q) = %v, want %v", tc.to, tc.lane, got, tc.valid)
+			}
+		})
+	}
+}
+
+// TestLaneValid verifies Lane.Valid returns true only for recognised constants.
+func TestLaneValid(t *testing.T) {
+	tests := []struct {
+		lane  Lane
+		valid bool
+	}{
+		{LaneTrivial, true},
+		{LaneStandard, true},
+		{Lane(""), false},
+		{Lane("fast"), false},
+		{Lane("TRIVIAL"), false},
+	}
+	for _, tc := range tests {
+		t.Run(string(tc.lane), func(t *testing.T) {
+			if got := tc.lane.Valid(); got != tc.valid {
+				t.Errorf("Lane(%q).Valid() = %v, want %v", tc.lane, got, tc.valid)
 			}
 		})
 	}

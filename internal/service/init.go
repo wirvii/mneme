@@ -766,6 +766,7 @@ func (s *InitService) MigrateToBacklog(ctx context.Context, a LegacyArtifact) (*
 		Title:       a.RawTitle,
 		Description: desc,
 		Priority:    priority,
+		Lane:        model.LaneStandard, // migrated items default to standard lane
 	}
 	item, err := s.sdd.BacklogAdd(ctx, req)
 	if err != nil {
@@ -780,6 +781,7 @@ func (s *InitService) MigrateToBacklog(ctx context.Context, a LegacyArtifact) (*
 func (s *InitService) MigrateToSpec(ctx context.Context, a LegacyArtifact) (*model.Spec, error) {
 	spec, err := s.sdd.SpecNew(ctx, model.SpecNewRequest{
 		Title: a.RawTitle,
+		Lane:  model.LaneStandard, // migrated specs default to standard lane
 	})
 	if err != nil {
 		return nil, fmt.Errorf("service: init: migrate to spec: new: %w", err)

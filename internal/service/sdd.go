@@ -1,7 +1,8 @@
 // Package service implements the business logic layer for mneme.
 // This file provides the SDDService which orchestrates the SDD lifecycle:
 // backlog management, spec state machine transitions, quality gate validation,
-// and pushback handling. All methods require a context.Context as first argument.
+// pushback handling, and lane-aware routing for trivial items.
+// All methods require a context.Context as first argument.
 package service
 
 import (
@@ -15,18 +16,24 @@ import (
 
 	"github.com/juanftp/mneme/internal/config"
 	"github.com/juanftp/mneme/internal/install"
+	"github.com/juanftp/mneme/internal/lane"
 	"github.com/juanftp/mneme/internal/model"
 	"github.com/juanftp/mneme/internal/store"
 )
 
 // SDDService orchestrates the SDD lifecycle: backlog management, spec state
-// machine transitions, quality gate validation, and pushback handling.
+// machine transitions, quality gate validation, pushback handling, and
+// lane-aware routing that enables trivial items to skip the full spec/plan cycle.
 // It owns the business rules that sit above the raw store operations.
 type SDDService struct {
 	store     *store.SDDStore
 	config    *config.Config
 	project   string
 	memorySvc *MemoryService // optional; nil disables completion memory saving
+
+	// repoDir is the working directory used by the lane auditor to run git
+	// commands. When empty the auditor uses the current working directory.
+	repoDir string
 }
 
 // NewSDDService constructs an SDDService.
@@ -41,6 +48,13 @@ func NewSDDService(sddStore *store.SDDStore, cfg *config.Config, project string,
 		project:   project,
 		memorySvc: memorySvc,
 	}
+}
+
+// WithRepoDir sets the repository directory used by the lane auditor when
+// invoking git commands. Call this after construction when the working
+// directory is known (e.g. from the MCP server's project root).
+func (svc *SDDService) WithRepoDir(dir string) {
+	svc.repoDir = dir
 }
 
 // ProjectSlug returns the project slug associated with this service instance.
@@ -65,6 +79,8 @@ func (svc *SDDService) WithMemoryService(memorySvc *MemoryService) {
 //   - Priority defaults to PriorityMedium when omitted
 //   - Priority must be a recognised value (ErrInvalidPriority)
 //   - Project defaults to the service's project slug when omitted
+//   - Lane must be provided (ErrLaneRequired) and valid (ErrInvalidLane)
+//   - Scope must be provided when lane is trivial (ErrScopeRequired)
 func (svc *SDDService) BacklogAdd(ctx context.Context, req model.BacklogAddRequest) (*model.BacklogItem, error) {
 	if req.Title == "" {
 		return nil, model.ErrTitleRequired
@@ -77,6 +93,15 @@ func (svc *SDDService) BacklogAdd(ctx context.Context, req model.BacklogAddReque
 	}
 	if req.Project == "" {
 		req.Project = svc.project
+	}
+	if req.Lane == "" {
+		return nil, model.ErrLaneRequired
+	}
+	if !req.Lane.Valid() {
+		return nil, model.ErrInvalidLane
+	}
+	if req.Lane == model.LaneTrivial && req.Scope == "" {
+		return nil, model.ErrScopeRequired
 	}
 
 	id, err := svc.store.NextBacklogID(ctx, req.Project)
@@ -92,6 +117,8 @@ func (svc *SDDService) BacklogAdd(ctx context.Context, req model.BacklogAddReque
 		Priority:    req.Priority,
 		Project:     req.Project,
 		Position:    0,
+		Lane:        req.Lane,
+		Scope:       req.Scope,
 	}
 
 	if err := svc.store.CreateBacklogItem(ctx, item); err != nil {
@@ -158,6 +185,8 @@ func (svc *SDDService) BacklogPromote(ctx context.Context, id string) (*model.Sp
 		Title:     item.Title,
 		BacklogID: item.ID,
 		Project:   item.Project,
+		Lane:      item.Lane,
+		Scope:     item.Scope,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("service: backlog promote: create spec: %w", err)
@@ -193,6 +222,8 @@ func (svc *SDDService) BacklogArchive(ctx context.Context, id, reason string) er
 // Validation:
 //   - Title must not be empty (ErrTitleRequired)
 //   - Project defaults to the service's project slug when omitted
+//   - Lane must be provided (ErrLaneRequired) and valid (ErrInvalidLane)
+//   - Scope must be provided when lane is trivial (ErrScopeRequired)
 //
 // An initial history entry ("" -> draft by "system") is recorded.
 func (svc *SDDService) SpecNew(ctx context.Context, req model.SpecNewRequest) (*model.Spec, error) {
@@ -201,6 +232,15 @@ func (svc *SDDService) SpecNew(ctx context.Context, req model.SpecNewRequest) (*
 	}
 	if req.Project == "" {
 		req.Project = svc.project
+	}
+	if req.Lane == "" {
+		return nil, model.ErrLaneRequired
+	}
+	if !req.Lane.Valid() {
+		return nil, model.ErrInvalidLane
+	}
+	if req.Lane == model.LaneTrivial && req.Scope == "" {
+		return nil, model.ErrScopeRequired
 	}
 
 	id, err := svc.store.NextSpecID(ctx, req.Project)
@@ -214,6 +254,8 @@ func (svc *SDDService) SpecNew(ctx context.Context, req model.SpecNewRequest) (*
 		Status:    model.SpecStatusDraft,
 		Project:   req.Project,
 		BacklogID: req.BacklogID,
+		Lane:      req.Lane,
+		Scope:     req.Scope,
 	}
 
 	if err := svc.store.CreateSpec(ctx, spec); err != nil {
@@ -240,28 +282,27 @@ func (svc *SDDService) SpecNew(ctx context.Context, req model.SpecNewRequest) (*
 }
 
 // SpecAdvance moves a spec to its next logical state.
-// The next state is determined by the current state — there is exactly one
-// forward path. Use SpecPushback to deviate into needs_grill.
-//
-// Logical next states:
-//
-//	draft -> speccing -> specced -> planning -> planned -> implementing -> qa -> done
+// The next state is determined by the current state and lane — trivial items
+// follow the shortened path (draft→rationale→implementing→audit→done) while
+// standard items follow the full path unchanged.
+// Use SpecPushback to deviate into needs_grill.
 //
 // Side effects on specific transitions:
-//   - draft -> speccing: creates the spec directory and copies spec-template.md into it.
-//   - qa -> done: saves a completion memory via MemoryService (when configured).
+//   - draft -> speccing (standard) or draft -> rationale (trivial):
+//     creates the spec directory and copies spec-template.md into it.
+//   - done: saves a completion memory via MemoryService (when configured).
 func (svc *SDDService) SpecAdvance(ctx context.Context, req model.SpecAdvanceRequest) (*model.Spec, error) {
 	spec, err := svc.store.GetSpec(ctx, req.ID)
 	if err != nil {
 		return nil, fmt.Errorf("service: spec advance: get: %w", err)
 	}
 
-	nextStatus, err := nextForwardStatus(spec.Status)
+	nextStatus, err := nextForwardStatusForLane(spec.Status, spec.Lane)
 	if err != nil {
 		return nil, fmt.Errorf("service: spec advance: %w", err)
 	}
 
-	if !spec.Status.CanTransitionTo(nextStatus) {
+	if !spec.Status.CanTransitionTo(nextStatus, spec.Lane) {
 		return nil, fmt.Errorf("service: spec advance: %s -> %s: %w",
 			spec.Status, nextStatus, model.ErrInvalidTransition)
 	}
@@ -288,7 +329,10 @@ func (svc *SDDService) SpecAdvance(ctx context.Context, req model.SpecAdvanceReq
 // due to a filesystem or memory-save error.
 func (svc *SDDService) onAdvanceSideEffects(ctx context.Context, spec *model.Spec, to model.SpecStatus) {
 	switch to {
-	case model.SpecStatusSpeccing:
+	case model.SpecStatusSpeccing, model.SpecStatusRationale:
+		// Both speccing (standard) and rationale (trivial) are the first
+		// "active work" states; create the spec directory so the agent has
+		// a place to store spec.md.
 		svc.createSpecDirectory(spec)
 	case model.SpecStatusDone:
 		svc.saveCompletionMemory(ctx, spec)
@@ -376,7 +420,7 @@ func (svc *SDDService) SpecPushback(ctx context.Context, req model.SpecPushbackR
 		return nil, fmt.Errorf("service: spec pushback: get: %w", err)
 	}
 
-	if !spec.Status.CanTransitionTo(model.SpecStatusNeedsGrill) {
+	if !spec.Status.CanTransitionTo(model.SpecStatusNeedsGrill, spec.Lane) {
 		return nil, fmt.Errorf("service: spec pushback: cannot push from %s: %w",
 			spec.Status, model.ErrInvalidTransition)
 	}
@@ -430,8 +474,14 @@ func (svc *SDDService) SpecResolve(ctx context.Context, req model.SpecResolveReq
 		return nil, fmt.Errorf("service: spec resolve: resolve pushback: %w", err)
 	}
 
+	// Trivial lane resolves back to rationale; standard resolves back to speccing.
+	resolveTarget := model.SpecStatusSpeccing
+	if spec.Lane == model.LaneTrivial {
+		resolveTarget = model.SpecStatusRationale
+	}
+
 	reason := fmt.Sprintf("pushback resolved: %s", req.Resolution)
-	if err := svc.store.UpdateSpecStatus(ctx, spec.ID, spec.Status, model.SpecStatusSpeccing, "system", reason); err != nil {
+	if err := svc.store.UpdateSpecStatus(ctx, spec.ID, spec.Status, resolveTarget, "system", reason); err != nil {
 		return nil, fmt.Errorf("service: spec resolve: update status: %w", err)
 	}
 
@@ -513,11 +563,27 @@ func (svc *SDDService) SpecHistory(ctx context.Context, id string) ([]*model.Spe
 
 // --- HELPERS ---
 
-// nextForwardStatus returns the next logical forward state for a given status.
-// It encodes the canonical happy-path sequence. Returns ErrInvalidTransition
-// for terminal or unknown states.
-func nextForwardStatus(current model.SpecStatus) (model.SpecStatus, error) {
-	forward := map[model.SpecStatus]model.SpecStatus{
+// nextForwardStatusForLane returns the next logical forward state for the
+// given status and lane. Trivial items follow the shortened path
+// (draft→rationale→implementing→audit→done); standard items follow the
+// full path unchanged. Returns ErrInvalidTransition for terminal or unknown states.
+func nextForwardStatusForLane(current model.SpecStatus, l model.Lane) (model.SpecStatus, error) {
+	if l == model.LaneTrivial {
+		trivialForward := map[model.SpecStatus]model.SpecStatus{
+			model.SpecStatusDraft:        model.SpecStatusRationale,
+			model.SpecStatusRationale:    model.SpecStatusImplementing,
+			model.SpecStatusImplementing: model.SpecStatusAudit,
+			model.SpecStatusAudit:        model.SpecStatusDone,
+		}
+		next, ok := trivialForward[current]
+		if !ok {
+			return "", fmt.Errorf("no forward transition from %s (trivial lane): %w",
+				current, model.ErrInvalidTransition)
+		}
+		return next, nil
+	}
+
+	standardForward := map[model.SpecStatus]model.SpecStatus{
 		model.SpecStatusDraft:        model.SpecStatusSpeccing,
 		model.SpecStatusSpeccing:     model.SpecStatusSpecced,
 		model.SpecStatusSpecced:      model.SpecStatusPlanning,
@@ -526,11 +592,325 @@ func nextForwardStatus(current model.SpecStatus) (model.SpecStatus, error) {
 		model.SpecStatusImplementing: model.SpecStatusQA,
 		model.SpecStatusQA:           model.SpecStatusDone,
 	}
-	next, ok := forward[current]
+	next, ok := standardForward[current]
 	if !ok {
-		return "", fmt.Errorf("no forward transition from %s: %w", current, model.ErrInvalidTransition)
+		return "", fmt.Errorf("no forward transition from %s (standard lane): %w",
+			current, model.ErrInvalidTransition)
 	}
 	return next, nil
+}
+
+// --- LANE METHODS ---
+
+// SpecQuick advances a trivial-lane spec from draft to implementing in one step
+// by recording the provided rationale. It performs two consecutive status
+// transitions: draft→rationale (recording the rationale as the reason) and
+// rationale→implementing. Returns the spec in implementing status.
+// Returns ErrLaneMismatch when the spec is not on the trivial lane.
+func (svc *SDDService) SpecQuick(ctx context.Context, req model.SpecQuickRequest) (*model.Spec, error) {
+	spec, err := svc.store.GetSpec(ctx, req.ID)
+	if err != nil {
+		return nil, fmt.Errorf("service: spec quick: get: %w", err)
+	}
+	if spec.Lane != model.LaneTrivial {
+		return nil, fmt.Errorf("service: spec quick: spec %s is %s lane: %w",
+			req.ID, spec.Lane, model.ErrLaneMismatch)
+	}
+	if spec.Status != model.SpecStatusDraft {
+		return nil, fmt.Errorf("service: spec quick: spec %s must be draft, got %s: %w",
+			req.ID, spec.Status, model.ErrInvalidTransition)
+	}
+
+	// Transition 1: draft → rationale.
+	if err := svc.store.UpdateSpecStatus(ctx, spec.ID,
+		model.SpecStatusDraft, model.SpecStatusRationale,
+		req.By, req.Rationale); err != nil {
+		return nil, fmt.Errorf("service: spec quick: draft->rationale: %w", err)
+	}
+
+	// Create the spec directory on the rationale transition (same as speccing for standard).
+	reloaded, err := svc.store.GetSpec(ctx, req.ID)
+	if err != nil {
+		return nil, fmt.Errorf("service: spec quick: reload after rationale: %w", err)
+	}
+	svc.createSpecDirectory(reloaded)
+
+	// Transition 2: rationale → implementing.
+	if err := svc.store.UpdateSpecStatus(ctx, spec.ID,
+		model.SpecStatusRationale, model.SpecStatusImplementing,
+		req.By, "rationale accepted, starting implementation"); err != nil {
+		return nil, fmt.Errorf("service: spec quick: rationale->implementing: %w", err)
+	}
+
+	updated, err := svc.store.GetSpec(ctx, req.ID)
+	if err != nil {
+		return nil, fmt.Errorf("service: spec quick: reload: %w", err)
+	}
+	return updated, nil
+}
+
+// LaneAudit runs the deterministic post-implementation auditor for a
+// trivial-lane spec in audit status. If all checks pass the spec advances to
+// done and a completion memory is saved. If any check fails the spec stays in
+// audit, a discovery memory is saved listing the breaches, and ErrAuditFailed
+// is returned (the caller can inspect the returned AuditResult for details).
+func (svc *SDDService) LaneAudit(ctx context.Context, req model.LaneAuditRequest) (*lane.AuditResult, error) {
+	spec, err := svc.store.GetSpec(ctx, req.ID)
+	if err != nil {
+		return nil, fmt.Errorf("service: lane audit: get: %w", err)
+	}
+	if spec.Lane != model.LaneTrivial {
+		return nil, fmt.Errorf("service: lane audit: spec %s is %s lane: %w",
+			req.ID, spec.Lane, model.ErrLaneMismatch)
+	}
+	if spec.Status != model.SpecStatusAudit {
+		return nil, fmt.Errorf("service: lane audit: spec %s must be in audit status, got %s: %w",
+			req.ID, spec.Status, model.ErrInvalidTransition)
+	}
+
+	repoDir := svc.repoDir
+	if repoDir == "" {
+		repoDir, _ = os.Getwd()
+	}
+
+	result, err := lane.Audit(lane.AuditInput{
+		Scope:   spec.Scope,
+		BaseRef: req.BaseRef,
+		RepoDir: repoDir,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("service: lane audit: run auditor: %w", err)
+	}
+
+	if result.Passed {
+		// Advance to done.
+		if err := svc.store.UpdateSpecStatus(ctx, spec.ID,
+			model.SpecStatusAudit, model.SpecStatusDone,
+			"system", "lane audit passed"); err != nil {
+			return nil, fmt.Errorf("service: lane audit: advance to done: %w", err)
+		}
+		updated, _ := svc.store.GetSpec(ctx, req.ID)
+		if updated != nil {
+			svc.saveCompletionMemory(ctx, updated)
+		}
+		return result, nil
+	}
+
+	// Audit failed — persist an audit-failed history entry so LaneStatus can
+	// report the real breaches deterministically, then save a discovery memory.
+	breachReason := strings.Join(result.Breaches, "; ")
+	if err := svc.store.InsertSpecHistoryEntry(ctx, spec.ID,
+		model.SpecStatusAudit, model.SpecStatusAudit,
+		"system", "audit failed: "+breachReason); err != nil {
+		log.Printf("service: lane audit: record failure history for %s: %v", spec.ID, err)
+	}
+	svc.saveAuditFailureMemory(ctx, spec, result.Breaches)
+	return result, model.ErrAuditFailed
+}
+
+// LaneReclassify changes a spec's lane from trivial to standard. After
+// reclassification the spec moves to speccing so the full workflow can proceed.
+// Upgrading from standard to trivial is forbidden. Lane cannot be changed
+// after implementing has started (ErrLaneImmutable).
+func (svc *SDDService) LaneReclassify(ctx context.Context, req model.LaneReclassifyRequest) (*model.Spec, error) {
+	spec, err := svc.store.GetSpec(ctx, req.ID)
+	if err != nil {
+		return nil, fmt.Errorf("service: lane reclassify: get: %w", err)
+	}
+
+	if req.Lane != model.LaneStandard {
+		return nil, fmt.Errorf("service: lane reclassify: only trivial→standard is allowed: %w",
+			model.ErrInvalidLane)
+	}
+	if spec.Lane == model.LaneStandard {
+		return nil, fmt.Errorf("service: lane reclassify: spec %s is already standard: %w",
+			req.ID, model.ErrLaneMismatch)
+	}
+
+	// Immutability check: implementing or later is locked.
+	switch spec.Status {
+	case model.SpecStatusImplementing, model.SpecStatusAudit, model.SpecStatusDone:
+		return nil, fmt.Errorf("service: lane reclassify: spec %s is in %s status: %w",
+			req.ID, spec.Status, model.ErrLaneImmutable)
+	}
+
+	// Update lane and scope.
+	if err := svc.store.UpdateSpecLaneScope(ctx, spec.ID, model.LaneStandard, req.Scope); err != nil {
+		return nil, fmt.Errorf("service: lane reclassify: update lane: %w", err)
+	}
+
+	// Transition to speccing so the standard workflow can begin.
+	// The current status may be draft, rationale, or needs_grill.
+	// We update to speccing regardless of the current state because the
+	// caller has explicitly requested the reclassification.
+	if err := svc.store.UpdateSpecStatus(ctx, spec.ID,
+		spec.Status, model.SpecStatusSpeccing,
+		req.By, "reclassified from trivial to standard"); err != nil {
+		return nil, fmt.Errorf("service: lane reclassify: move to speccing: %w", err)
+	}
+
+	updated, err := svc.store.GetSpec(ctx, req.ID)
+	if err != nil {
+		return nil, fmt.Errorf("service: lane reclassify: reload: %w", err)
+	}
+	return updated, nil
+}
+
+// LaneOverride bypasses a failed lane audit and advances a trivial-lane spec
+// from audit directly to done. The reason is required and persisted as a
+// discovery memory alongside the normal completion memory.
+func (svc *SDDService) LaneOverride(ctx context.Context, req model.LaneOverrideRequest) (*model.Spec, error) {
+	if req.Reason == "" {
+		return nil, model.ErrReasonRequired
+	}
+
+	spec, err := svc.store.GetSpec(ctx, req.ID)
+	if err != nil {
+		return nil, fmt.Errorf("service: lane override: get: %w", err)
+	}
+	if spec.Lane != model.LaneTrivial {
+		return nil, fmt.Errorf("service: lane override: spec %s is %s lane: %w",
+			req.ID, spec.Lane, model.ErrLaneMismatch)
+	}
+	if spec.Status != model.SpecStatusAudit {
+		return nil, fmt.Errorf("service: lane override: spec %s must be in audit status, got %s: %w",
+			req.ID, spec.Status, model.ErrInvalidTransition)
+	}
+
+	if err := svc.store.UpdateSpecStatus(ctx, spec.ID,
+		model.SpecStatusAudit, model.SpecStatusDone,
+		req.By, fmt.Sprintf("lane override: %s", req.Reason)); err != nil {
+		return nil, fmt.Errorf("service: lane override: advance to done: %w", err)
+	}
+
+	updated, err := svc.store.GetSpec(ctx, req.ID)
+	if err != nil {
+		return nil, fmt.Errorf("service: lane override: reload: %w", err)
+	}
+
+	// Save override memory.
+	svc.saveOverrideMemory(ctx, updated, req.Reason)
+	// Also save the standard completion memory.
+	svc.saveCompletionMemory(ctx, updated)
+
+	return updated, nil
+}
+
+// LaneStatus returns a summary of a spec's lane classification and the latest
+// audit outcome (if any) by inspecting the spec_history table.
+func (svc *SDDService) LaneStatus(ctx context.Context, id string) (*model.LaneStatusResponse, error) {
+	spec, err := svc.store.GetSpec(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("service: lane status: get: %w", err)
+	}
+
+	history, err := svc.store.GetSpecHistory(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("service: lane status: history: %w", err)
+	}
+
+	resp := &model.LaneStatusResponse{
+		Spec:  spec,
+		Lane:  spec.Lane,
+		Scope: spec.Scope,
+	}
+
+	// Find the most recent real audit-run entry. There are two kinds:
+	//
+	// 1. A failed audit: from=audit, to=audit, reason starts with "audit failed: "
+	//    (written by LaneAudit via InsertSpecHistoryEntry when breaches are found).
+	// 2. A passing audit: the spec transitions from=audit, to=done, reason="lane audit passed"
+	//    (written by UpdateSpecStatus inside LaneAudit on success).
+	//
+	// Entries where to=audit but from!=audit represent the implementing→audit
+	// transition (not an actual audit run) and must be ignored for audit summary.
+	for i := len(history) - 1; i >= 0; i-- {
+		h := history[i]
+
+		// Passing audit: implementing→done with "lane audit passed" reason.
+		if h.FromStatus == model.SpecStatusAudit &&
+			h.ToStatus == model.SpecStatusDone &&
+			h.Reason == "lane audit passed" {
+			resp.LatestAudit = &model.AuditSummary{
+				At:     h.At,
+				Passed: true,
+			}
+			break
+		}
+
+		// Failed audit: audit→audit annotation written by LaneAudit on failure.
+		const auditFailedPrefix = "audit failed: "
+		if h.FromStatus == model.SpecStatusAudit &&
+			h.ToStatus == model.SpecStatusAudit &&
+			strings.HasPrefix(h.Reason, auditFailedPrefix) {
+			breachStr := strings.TrimPrefix(h.Reason, auditFailedPrefix)
+			var breaches []string
+			if breachStr != "" {
+				breaches = strings.Split(breachStr, "; ")
+			}
+			resp.LatestAudit = &model.AuditSummary{
+				At:       h.At,
+				Passed:   false,
+				Breaches: breaches,
+			}
+			break
+		}
+	}
+
+	return resp, nil
+}
+
+// saveAuditFailureMemory saves a discovery memory when the lane auditor detects
+// threshold violations. This gives the orchestrator a searchable record of why
+// the audit failed without needing to re-run the auditor.
+func (svc *SDDService) saveAuditFailureMemory(ctx context.Context, spec *model.Spec, breaches []string) {
+	if svc.memorySvc == nil {
+		return
+	}
+	content := "## Lane audit failed: " + spec.ID + "\n\n" +
+		"Lane: " + string(spec.Lane) + "\n" +
+		"Scope: " + spec.Scope + "\n\n" +
+		"### Breaches\n\n"
+	for _, b := range breaches {
+		content += "- " + b + "\n"
+	}
+	content += "\nUse `lane reclassify " + spec.ID +
+		" standard` to restart with full SDD flow, or " +
+		"`lane override " + spec.ID + " --reason <justification>` to force completion."
+
+	_, err := svc.memorySvc.Save(ctx, model.SaveRequest{
+		Title:   fmt.Sprintf("Lane audit failed: %s", spec.ID),
+		Type:    model.TypeDiscovery,
+		Scope:   model.ScopeProject,
+		Content: content,
+		Project: spec.Project,
+	})
+	if err != nil {
+		log.Printf("service: lane audit: save failure memory for %s: %v", spec.ID, err)
+	}
+}
+
+// saveOverrideMemory saves a discovery memory when an audit is bypassed via
+// lane_override. The reason is included so there is an auditable record.
+func (svc *SDDService) saveOverrideMemory(ctx context.Context, spec *model.Spec, reason string) {
+	if svc.memorySvc == nil {
+		return
+	}
+	content := "## Lane override applied: " + spec.ID + "\n\n" +
+		"Reason: " + reason + "\n" +
+		"Lane: " + string(spec.Lane) + "\n" +
+		"Scope: " + spec.Scope
+
+	_, err := svc.memorySvc.Save(ctx, model.SaveRequest{
+		Title:   fmt.Sprintf("Lane override applied: %s", spec.ID),
+		Type:    model.TypeDiscovery,
+		Scope:   model.ScopeProject,
+		Content: content,
+		Project: spec.Project,
+	})
+	if err != nil {
+		log.Printf("service: lane override: save override memory for %s: %v", spec.ID, err)
+	}
 }
 
 // insertHistory writes a single history entry directly. This is used for the

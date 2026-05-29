@@ -113,3 +113,34 @@ var ErrAmbiguousSeed = errors.New("seed matches multiple memories; use the full 
 // cannot create a relation that targets a project-scoped memory. This mirrors
 // the SPEC-006 D1 invariant enforced for wikilinks and Hebbian co-access.
 var ErrCrossScopeRelation = errors.New("cross-scope relation not allowed (global/org → project)")
+
+// --- Lane sentinel errors (SPEC-035) ---
+
+// ErrLaneRequired is returned when backlog_add or spec_new is called without
+// a lane. Classification is always explicit — there is no default.
+var ErrLaneRequired = errors.New("lane is required (trivial or standard)")
+
+// ErrInvalidLane is returned when the lane value is not one of the recognised
+// constants. Valid values are "trivial" and "standard".
+var ErrInvalidLane = errors.New("invalid lane: must be trivial or standard")
+
+// ErrScopeRequired is returned when lane=trivial is declared but no scope glob
+// is provided. The auditor cannot verify boundary compliance without a scope.
+var ErrScopeRequired = errors.New("scope is required for trivial lane")
+
+// ErrLaneImmutable is returned when a caller attempts to change the lane after
+// the spec has entered implementing status. Lane is immutable at that point.
+var ErrLaneImmutable = errors.New("lane cannot be changed after implementing has started")
+
+// ErrLaneMismatch is returned when a lane-specific operation is called on a
+// spec whose lane does not match. For example, spec_quick requires trivial.
+var ErrLaneMismatch = errors.New("operation is only valid for the other lane")
+
+// ErrAuditFailed is returned when the deterministic post-implementation auditor
+// detects one or more threshold violations. The caller should inspect the
+// AuditResult breaches field for the list of individual failures.
+var ErrAuditFailed = errors.New("lane audit failed: threshold violations detected")
+
+// ErrReasonRequired is returned when lane_override is called without a reason.
+// Overrides are auditable decisions and must be documented.
+var ErrReasonRequired = errors.New("reason is required for lane override")
