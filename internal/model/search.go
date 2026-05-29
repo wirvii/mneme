@@ -57,6 +57,11 @@ type SearchResult struct {
 	// memory's stored embedding. Zero when embeddings are disabled or the memory
 	// has not been embedded yet.
 	VectorScore float64 `json:"vector_score,omitempty"`
+
+	// ConflictsWith contains the IDs of memories in the result set that have a
+	// conflicts_with relation with this memory. Populated by a post-ranking pass
+	// (annotateConflicts in service/search.go). Omitted when empty.
+	ConflictsWith []string `json:"conflicts_with,omitempty"`
 }
 
 // SearchResponse is the envelope returned by mem_search. It includes pagination

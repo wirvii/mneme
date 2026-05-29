@@ -1159,6 +1159,108 @@ func allTools() []ToolDefinition {
 				},
 			},
 		},
+
+		// --- CONFLICTS TOOLS (SPEC-039) ---
+
+		{
+			Name:        "conflicts_candidates",
+			Description: "Find candidate memories that may conflict with the given memory using deterministic FTS5 term matching. No LLM involved. Use conflicts_scan to judge candidates.",
+			InputSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"id"},
+				"properties": map[string]any{
+					"id": map[string]any{
+						"type":        "string",
+						"description": "Memory ID to find conflict candidates for.",
+					},
+					"limit": map[string]any{
+						"type":        "integer",
+						"description": "Maximum number of candidates to return (default 5).",
+					},
+				},
+			},
+		},
+		{
+			Name: "conflicts_scan",
+			Description: "Scan memories for conflicts using the local Claude CLI as judge (subprocess, $0 cost). " +
+				"Dry-run by default — set apply:true to persist judgments. " +
+				"Returns ErrCLIUnavailable (IsError:true) when the Claude CLI is not installed.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"project": map[string]any{
+						"type":        "string",
+						"description": "Project slug to scan. Defaults to the current project.",
+					},
+					"limit": map[string]any{
+						"type":        "integer",
+						"description": "Maximum number of candidate pairs to judge (default 5, max 10).",
+					},
+					"apply": map[string]any{
+						"type":        "boolean",
+						"description": "When true, persist judged relations. Default: false (dry-run).",
+					},
+				},
+			},
+		},
+		{
+			Name:        "conflicts_link",
+			Description: "Manually create a relation between two memories. Relation must be one of: supersedes, conflicts_with, unrelated. Manual links always win over CLI-judged links.",
+			InputSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"from_id", "to_id", "relation"},
+				"properties": map[string]any{
+					"from_id": map[string]any{
+						"type":        "string",
+						"description": "Source memory ID.",
+					},
+					"to_id": map[string]any{
+						"type":        "string",
+						"description": "Target memory ID.",
+					},
+					"relation": map[string]any{
+						"type":        "string",
+						"description": "Relation type: supersedes (from supersedes to), conflicts_with, or unrelated.",
+						"enum":        []string{"supersedes", "conflicts_with", "unrelated"},
+					},
+					"rationale": map[string]any{
+						"type":        "string",
+						"description": "Optional one-line explanation for the relation.",
+					},
+				},
+			},
+		},
+		{
+			Name:        "conflicts_unlink",
+			Description: "Remove a memory relation between two memories (in either direction). Also clears superseded_by when applicable.",
+			InputSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"from_id", "to_id"},
+				"properties": map[string]any{
+					"from_id": map[string]any{
+						"type":        "string",
+						"description": "First memory ID of the pair.",
+					},
+					"to_id": map[string]any{
+						"type":        "string",
+						"description": "Second memory ID of the pair.",
+					},
+				},
+			},
+		},
+		{
+			Name:        "conflicts_list",
+			Description: "List all memory conflict relations (conflicts_with and unrelated edges) for the given project.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"project": map[string]any{
+						"type":        "string",
+						"description": "Project slug to filter results. Defaults to the current project.",
+					},
+				},
+			},
+		},
 	}
 }
 

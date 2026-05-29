@@ -100,6 +100,31 @@ func (s *MemoryStore) SetSupersededBy(ctx context.Context, id, supersededByID st
 	return nil
 }
 
+// ClearSupersededBy removes the superseded_by value from the memory with the
+// given id, marking it as no longer superseded. Returns model.ErrNotFound when
+// no active memory with that id exists.
+func (s *MemoryStore) ClearSupersededBy(ctx context.Context, id string) error {
+	const q = `
+		UPDATE memories
+		SET superseded_by = NULL, updated_at = datetime('now')
+		WHERE id = ? AND deleted_at IS NULL`
+
+	res, err := s.db.ExecContext(ctx, q, id)
+	if err != nil {
+		return fmt.Errorf("store: clear superseded by: %w", err)
+	}
+
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("store: clear superseded by: rows affected: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("store: clear superseded by: %w", model.ErrNotFound)
+	}
+
+	return nil
+}
+
 // ListByEffectiveImportance returns up to limit active, non-superseded memories
 // for the given project, ordered by their effective importance in ascending
 // order (lowest effective importance first). The effective importance is

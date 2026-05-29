@@ -179,3 +179,15 @@ var ErrUnknownAgent = errors.New("unknown agent")
 // string is accepted as a valid model alias (unknown aliases produce a warning,
 // not an error, so the field intentionally stays open-ended).
 var ErrInvalidModel = errors.New("model must not be empty")
+
+// --- Conflict sentinel errors (SPEC-039) ---
+
+// ErrCLIUnavailable is returned when the Claude CLI binary is not found on
+// PATH during a conflicts scan. The scan must not fall back to any metered API;
+// callers should report the condition and skip judgment gracefully.
+var ErrCLIUnavailable = errors.New("claude CLI not available")
+
+// ErrInvalidRelation is returned when a conflict link operation specifies a
+// relation type that is not one of the accepted values: supersedes,
+// conflicts_with, or unrelated.
+var ErrInvalidRelation = errors.New("invalid conflict relation: must be supersedes, conflicts_with, or unrelated")

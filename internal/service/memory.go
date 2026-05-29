@@ -195,13 +195,20 @@ func (svc *MemoryService) Save(ctx context.Context, req model.SaveRequest) (*mod
 		action = "updated"
 	}
 
-	return &model.SaveResponse{
+	resp := &model.SaveResponse{
 		ID:            result.ID,
 		Action:        action,
 		RevisionCount: result.RevisionCount,
 		Title:         result.Title,
 		TopicKey:      result.TopicKey,
-	}, nil
+	}
+
+	// Non-blocking conflict hint: runs best-effort, never fails the save.
+	// It finds FTS5 candidates and emits a slog.Info when potential conflicts
+	// exist. No judgment, no relation writes.
+	go svc.logConflictHint(context.Background(), resp)
+
+	return resp, nil
 }
 
 // Get retrieves a memory by its UUIDv7 id and increments its access counter.
