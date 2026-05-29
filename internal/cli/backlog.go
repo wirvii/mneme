@@ -38,6 +38,8 @@ func newBacklogAddCmd() *cobra.Command {
 	var (
 		flagDescription string
 		flagPriority    string
+		flagLane        string
+		flagScope       string
 	)
 
 	cmd := &cobra.Command{
@@ -45,10 +47,14 @@ func newBacklogAddCmd() *cobra.Command {
 		Short: "Add a new backlog item",
 		Long: `Add a new idea to the backlog with status raw.
 
-The title is required as the first positional argument. Description and priority
-are optional; priority defaults to medium.`,
-		Example: `  mneme backlog add "Agregar notificaciones push"
-  mneme backlog add "Soporte Windows" --priority low --description "Support Windows builds"`,
+The title is required as the first positional argument. --lane is required
+(trivial or standard). --scope is required when --lane=trivial.
+
+Trivial items (≤3 files, ≤20 lines, no public API change, no SQL/cmd paths)
+follow a shortened SDD path. All other items should use standard.`,
+		Example: `  mneme backlog add "Fix comment typo" --lane trivial --scope "internal/model/*.go"
+  mneme backlog add "Add push notifications" --lane standard
+  mneme backlog add "Soporte Windows" --lane standard --priority low --description "Support Windows builds"`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			svc, cleanup, err := initSDDService()
@@ -61,6 +67,8 @@ are optional; priority defaults to medium.`,
 				Title:       args[0],
 				Description: flagDescription,
 				Priority:    model.Priority(flagPriority),
+				Lane:        model.Lane(flagLane),
+				Scope:       flagScope,
 			}
 
 			item, err := svc.BacklogAdd(cmd.Context(), req)
@@ -68,14 +76,16 @@ are optional; priority defaults to medium.`,
 				return err
 			}
 
-			fmt.Fprintf(os.Stdout, "Created %s: %q [%s] priority:%s\n",
-				item.ID, item.Title, item.Status, item.Priority)
+			fmt.Fprintf(os.Stdout, "Created %s: %q [%s] priority:%s lane:%s\n",
+				item.ID, item.Title, item.Status, item.Priority, item.Lane)
 			return nil
 		},
 	}
 
 	cmd.Flags().StringVar(&flagDescription, "description", "", "Detailed description")
 	cmd.Flags().StringVar(&flagPriority, "priority", "medium", "Priority: critical, high, medium, low")
+	cmd.Flags().StringVar(&flagLane, "lane", "", "SDD lane: trivial or standard (required)")
+	cmd.Flags().StringVar(&flagScope, "scope", "", "Glob pattern for allowed file paths (required when --lane=trivial)")
 
 	return cmd
 }

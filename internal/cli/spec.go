@@ -17,8 +17,10 @@ func newSpecCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "spec",
 		Short: "Manage specs in the SDD lifecycle",
-		Long: `Manage specs through their lifecycle: draft -> speccing -> specced ->
-planning -> planned -> implementing -> qa -> done.
+		Long: `Manage specs through their lifecycle.
+
+Standard lane: draft -> speccing -> specced -> planning -> planned -> implementing -> qa -> done.
+Trivial lane:  draft -> rationale -> implementing -> audit -> done.
 
 Specs can be created directly or by promoting a refined backlog item. The state
 machine enforces valid transitions; use pushback/resolve for detours via needs_grill.`,
@@ -32,6 +34,7 @@ machine enforces valid transitions; use pushback/resolve for detours via needs_g
 		newSpecPushbackCmd(),
 		newSpecResolveCmd(),
 		newSpecHistoryCmd(),
+		newSpecQuickCmd(),
 	)
 
 	return cmd
@@ -39,18 +42,22 @@ machine enforces valid transitions; use pushback/resolve for detours via needs_g
 
 // newSpecNewCmd returns the "mneme spec new" subcommand.
 func newSpecNewCmd() *cobra.Command {
-	var flagFromBacklog string
+	var (
+		flagFromBacklog string
+		flagLane        string
+		flagScope       string
+	)
 
 	cmd := &cobra.Command{
 		Use:   "new <title>",
 		Short: "Create a new spec in draft status",
 		Long: `Create a new spec with status draft.
 
-Use --from-backlog to link the spec to an existing backlog item. The backlog
-item must have been refined before promotion; this command does not enforce
-that rule — use "mneme backlog promote" to enforce it.`,
-		Example: `  mneme spec new "SDD Engine"
-  mneme spec new "Push notifications" --from-backlog BL-003`,
+--lane is required (trivial or standard). --scope is required when --lane=trivial.
+Use --from-backlog to link the spec to an existing backlog item.`,
+		Example: `  mneme spec new "SDD Engine" --lane standard
+  mneme spec new "Fix typo" --lane trivial --scope "internal/model/*.go"
+  mneme spec new "Push notifications" --lane standard --from-backlog BL-003`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			svc, cleanup, err := initSDDService()
@@ -62,6 +69,8 @@ that rule — use "mneme backlog promote" to enforce it.`,
 			req := model.SpecNewRequest{
 				Title:     args[0],
 				BacklogID: flagFromBacklog,
+				Lane:      model.Lane(flagLane),
+				Scope:     flagScope,
 			}
 
 			spec, err := svc.SpecNew(cmd.Context(), req)
@@ -69,12 +78,58 @@ that rule — use "mneme backlog promote" to enforce it.`,
 				return err
 			}
 
-			fmt.Fprintf(os.Stdout, "Created %s: %q [%s]\n", spec.ID, spec.Title, spec.Status)
+			fmt.Fprintf(os.Stdout, "Created %s: %q [%s] lane:%s\n", spec.ID, spec.Title, spec.Status, spec.Lane)
 			return nil
 		},
 	}
 
 	cmd.Flags().StringVar(&flagFromBacklog, "from-backlog", "", "Link to backlog item ID (e.g. BL-001)")
+	cmd.Flags().StringVar(&flagLane, "lane", "", "SDD lane: trivial or standard (required)")
+	cmd.Flags().StringVar(&flagScope, "scope", "", "Glob pattern for allowed file paths (required when --lane=trivial)")
+
+	return cmd
+}
+
+// newSpecQuickCmd returns the "mneme spec quick" subcommand.
+// It is only valid for trivial-lane specs in draft status.
+func newSpecQuickCmd() *cobra.Command {
+	var flagBy string
+
+	cmd := &cobra.Command{
+		Use:   "quick <id> <rationale>",
+		Short: "Advance a trivial spec from draft to implementing with a rationale",
+		Long: `Advance a trivial-lane spec from draft directly to implementing by recording
+a 1-3 sentence rationale. The spec must be on the trivial lane and in draft status.
+For standard-lane specs use "mneme spec advance" instead.`,
+		Example: `  mneme spec quick SPEC-007 "One-line fix to a comment typo in audit.go" --by orchestrator`,
+		Args:    cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if flagBy == "" {
+				return fmt.Errorf("--by is required")
+			}
+
+			svc, cleanup, err := initSDDService()
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+
+			spec, err := svc.SpecQuick(cmd.Context(), model.SpecQuickRequest{
+				ID:        args[0],
+				Rationale: args[1],
+				By:        flagBy,
+			})
+			if err != nil {
+				return err
+			}
+
+			fmt.Fprintf(os.Stdout, "%s: draft -> implementing (trivial, by %s)\n",
+				spec.ID, flagBy)
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&flagBy, "by", "", "Who triggers the advance (required)")
 
 	return cmd
 }
