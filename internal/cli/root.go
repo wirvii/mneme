@@ -79,6 +79,7 @@ in a local SQLite database and exposes them via MCP for agent integration.`,
 		newVaultCmd(),
 		newCodegraphCmd(),
 		newSkillsCmd(),
+		newModelCmd(),
 	)
 
 	return root
