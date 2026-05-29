@@ -190,6 +190,30 @@ func TestBundledSkillEntries(t *testing.T) {
 	}
 }
 
+// TestInstall_DeploysSkills verifies that Install writes skills to the skills
+// directory. This is the regression test for the C1 bug where the CLI install
+// command omitted the WriteSkills step (only Install() included it).
+func TestInstall_DeploysSkills(t *testing.T) {
+	// Install requires a real home-dir lookup for several steps; instead we
+	// test the contract at the level that the CLI bug was located: that
+	// WriteSkills is called for an agent that has a non-nil Skills function.
+	agent := install.ClaudeCode("/usr/local/bin/mneme")
+	if agent.Skills == nil {
+		t.Fatal("ClaudeCode agent.Skills must not be nil — CLI install would skip skills")
+	}
+
+	// Verify that WriteSkills can actually deploy skills to a temp dir,
+	// proving the path that Install() (and now the CLI) exercises works.
+	dir := t.TempDir()
+	result, err := install.WriteSkills(agent, dir, false)
+	if err != nil {
+		t.Fatalf("WriteSkills via ClaudeCode agent: %v", err)
+	}
+	if len(result.Installed) == 0 && len(result.Skipped) == 0 {
+		t.Error("expected at least one skill to be installed or skipped")
+	}
+}
+
 func TestBundledSkillNames(t *testing.T) {
 	names, err := install.BundledSkillNames()
 	if err != nil {

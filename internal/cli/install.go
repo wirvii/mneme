@@ -134,6 +134,25 @@ produces the same result without clobbering existing configuration.`,
 				fmt.Fprintln(os.Stdout, "  [ok] Workflow templates installed")
 			}
 
+			if agent.Skills != nil {
+				home, homeErr := os.UserHomeDir()
+				if homeErr != nil {
+					return fmt.Errorf("install: skills: home dir: %w", homeErr)
+				}
+				skillsDir := filepath.Join(home, ".claude", "skills")
+				force := flagForce || flagReinstallHooks
+				result, skillErr := install.WriteSkills(agent, skillsDir, force)
+				if skillErr != nil {
+					return skillErr
+				}
+				for _, name := range result.Installed {
+					fmt.Fprintf(os.Stdout, "  [ok]   Skill installed: %s\n", name)
+				}
+				for _, name := range result.Skipped {
+					fmt.Fprintf(os.Stdout, "  [skip] Skill pinned:    %s\n", name)
+				}
+			}
+
 			if agent.DelegationHook != nil {
 				if flagReinstallHooks {
 					// Replace all existing PreToolUse entries with the new hooks.
