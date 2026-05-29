@@ -567,7 +567,7 @@ func allTools() []ToolDefinition {
 		},
 		{
 			Name:        "spec_resolve",
-			Description: "Resolve the latest pushback on a spec, returning it to speccing.",
+			Description: "Resolve the latest pushback on a spec, returning it to speccing (standard) or rationale (trivial).",
 			InputSchema: map[string]any{
 				"type":     "object",
 				"required": []string{"id", "resolution"},
