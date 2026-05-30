@@ -62,6 +62,24 @@ subagents but does NOT inject `agent_type`. The hook therefore cannot identify
 which subagent role is attempting an action — only whether the caller is the
 principal or a subagent. This is by design: Layer 1 handles role discrimination.
 
+#### Inherent limits of Layer 2
+
+Layer 2 is designed to stop the **cooperative orchestrator** from accidentally
+editing source code instead of delegating. It is NOT a sandbox. The following
+bypass patterns are out of scope by design (closing them would require a full OS
+sandbox, which is beyond mneme's scope):
+
+- **base64 / eval**: `echo <b64> | base64 -d | bash` — the hook sees an
+  innocuous-looking command and cannot decode arbitrary indirection.
+- **Arbitrary binaries**: custom binaries or scripts that write files are not
+  in the hook's detection set.
+- **Pipe to unlisted interpreters**: `ruby -e`, `perl -e`, `php -r`, etc.
+
+The **primary defense** against subagent misbehavior remains **Layer 1**
+(capability allowlist in `agents/*.md`). If a subagent's `tools:` allowlist
+does not include `Edit`/`Write`/`MultiEdit`, Claude Code will reject those tool
+calls before the hook is even invoked.
+
 ### Querying blocked attempts
 
 Every orchestrator block produces a discovery memory. Query them with:

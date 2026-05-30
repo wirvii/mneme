@@ -286,8 +286,30 @@ continues to work after `mneme upgrade` if the binary has not been replaced yet.
 
 ### Fail-open behaviour
 
-Any error — malformed JSON, missing `jq`, unreadable stdin — causes the hook to
-exit 0 (allow). A broken hook must never prevent the agent from working.
+Any error — malformed JSON, unreadable stdin — causes the hook to exit 0
+(allow). A broken hook must never prevent the agent from working.
+
+**`jq` absent**: when `jq` is not found in PATH the hook emits a WARNING to
+stderr and exits 0 (fail-open). The WARNING is deliberate — jq absent means
+the hook provides **no enforcement at all**. Unlike a silent fail-open, the
+WARNING makes this visible in the agent output stream.
+
+### Inherent limits (Layer 2 scope)
+
+`enforce_delegation.sh` is Layer 2: it stops the **cooperative orchestrator**
+from accidentally editing source code. It is **not a sandbox**.
+
+Bypass patterns that are **out of scope by design**:
+
+| Pattern | Why not closed |
+|---------|---------------|
+| `echo <b64> \| base64 -d \| bash` | Arbitrary indirection; requires a full sandbox to close |
+| Custom binaries writing files | Hook cannot introspect arbitrary executables |
+| `ruby -e`, `php -r`, etc. | Unlisted interpreters |
+
+**Primary defense** against subagent misbehavior is **Layer 1** (capability
+`tools:` allowlist in `agents/*.md`). Claude Code enforces allowlists natively
+before the hook is invoked.
 
 ### Runtime dependency: `jq`
 
@@ -298,6 +320,9 @@ prints a warning to stderr:
 ```
   [warn] jq not found in PATH; the delegation hook will fail-open until jq is installed
 ```
+
+The hook itself also emits a richer WARNING at runtime so the gap is visible
+even if installation did not detect the absence.
 
 ### Installation and updates
 
