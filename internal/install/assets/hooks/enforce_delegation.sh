@@ -1,10 +1,18 @@
 #!/usr/bin/env bash
-# enforce_delegation.sh — PreToolUse hook
+# enforce_delegation.sh — PreToolUse hook (Layer 2 — orchestrator guard)
 #
-# Bloquea que el orquestador (sesión principal de Claude Code) modifique
-# archivos fuera de una whitelist mínima. Los subagentes (lanzados via
-# Task/Agent tool) NO son afectados — se detectan por la presencia del
-# campo `agent_id` en el JSON de stdin.
+# SCOPE: Este script es la capa 2 del modelo de enforcement de mneme.
+#   Layer 1 (primaria): capability allowlist tools: en agents/*.md — Claude Code
+#     hace cumplir esto nativamente; los subagentes no pueden invocar herramientas
+#     ausentes de su allowlist.
+#   Layer 2 (este script): bloquea al orquestador (sesión principal) para que no
+#     modifique archivos fuera de una whitelist mínima. Los subagentes NO son
+#     afectados — se detectan por la presencia del campo agent_id en el payload.
+#
+# LÍMITE INHERENTE: Este hook solo frena al orquestador cooperativo. No es un
+#   sandbox. Bypasses NO cerrados por diseño (fuera de scope): base64/eval,
+#   binarios arbitrarios, pipe a intérpretes no listados. La defensa real de
+#   subagentes maliciosos/accidentales es Layer 1 (capability allowlist).
 #
 # Whitelist (lo que el orquestador SÍ puede tocar):
 #   - .claude/**         (config local del proyecto)
@@ -16,16 +24,30 @@
 # Cobertura:
 #   - Write, Edit, MultiEdit, NotebookEdit (file_path directo)
 #   - Bash (redirects >, >>, 2>; sed -i; mv/cp/rm/touch/chmod/chown/ln/dd/
-#           patch/install/truncate/tee; here-docs; python -c / node -e con escritura)
+#           patch/install/truncate/tee; here-docs; python -c / node -e con escritura
+#           o mención de rutas no-whitelisted; node -e con escritura)
 #
 # Salida:
 #   - exit 0: permitido (subagente, herramienta no relevante, o path en whitelist)
 #   - exit 2: bloqueado (Claude Code rechaza la herramienta y muestra stderr al agente)
 #
-# Fail-open: cualquier error de parsing o jq → exit 0. Mejor no bloquear
-# falsamente que bloquear y romper el flujo.
+# Fail-open: jq ausente, error de parsing, o cualquier fallo interno → exit 0.
+#   jq ausente emite WARNING ruidoso (ver sección Guard más abajo).
+#   Fail-open intencionado: mejor no bloquear falsamente que romper el flujo.
 
 set -u
+
+# ---------------------------------------------------------------------------
+# Guard: jq es necesario para parsear el JSON de stdin. Si no está disponible,
+# emitir WARNING y salir con 0 (fail-open intencionado — ver header).
+# El WARNING es deliberadamente ruidoso: jq ausente significa que el hook
+# no protege NADA (el orquestador puede editar libremente). Instalarlo es
+# responsabilidad del operador.
+# ---------------------------------------------------------------------------
+if ! command -v jq >/dev/null 2>&1; then
+  printf '[enforce_delegation] WARNING: jq not found in PATH — hook is fail-open; install jq to enable enforcement\n' >&2
+  exit 0
+fi
 
 # ---------------------------------------------------------------------------
 # 0. Detectar si mneme hook tokenize está disponible (una sola vez al inicio)
@@ -48,9 +70,17 @@ if [[ -z "$INPUT" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 2. Skip si es subagente (campo agent_id presente en el JSON)
+# 2. Skip si es subagente (campo agent_id presente y no-vacío en el JSON)
+#
+# Claude Code inyecta agent_id cuando el tool lo dispara un subagente (Task/Agent).
+# Resolución multi-clave: primer valor presente y NO-vacío entre las rutas conocidas.
+# "" y null NO cuentan como presencia — son indistinguibles del orquestador.
+# Las 5 claves son defensivas (el payload real de distintos runtimes puede variar).
 # ---------------------------------------------------------------------------
-AGENT_ID="$(printf '%s' "$INPUT" | jq -r '.agent_id // empty' 2>/dev/null)"
+AGENT_ID="$(printf '%s' "$INPUT" | jq -r '
+  [.agent_id, .session.agent_id, .subagent.agent_id, .context.agent_id, .metadata.agent_id]
+  | map(select(. != null and . != ""))
+  | first // empty' 2>/dev/null)"
 if [[ -n "$AGENT_ID" ]]; then
   exit 0
 fi
@@ -96,6 +126,59 @@ is_allowed_path() {
 
   # Path relativo: debe empezar con .claude/
   [[ "$path" == .claude/* || "$path" == ".claude" ]] && return 0
+
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# 4b. Detectar si un comando inline (python -c / node -e) menciona una ruta
+#     fuera de la whitelist. Estrategia: extraer tokens que parecen rutas
+#     (contienen / o empiezan con . o ~ o son nombres con extensión de código)
+#     y bloquear si alguno no es is_allowed_path y no es /dev/*.
+#
+# Racional (D3): cambiar de "detectar API de escritura" a "detectar mención de
+# ruta no-whitelisted". Esto cierra shutil.copy/move, subprocess.run(['cp',...]),
+# os.rename/replace, node child_process, etc. Acepta falsos positivos en lecturas
+# (deny-by-default para el orquestador en python/node inline). El comando
+# python -c 'print(2+2)' (sin rutas) → permite.
+# Las APIs de escritura se mantienen como señal adicional (falla rápido antes
+# de hacer el parse de paths si hay match obvio).
+# ---------------------------------------------------------------------------
+command_mentions_protected_path() {
+  local cmd="$1"
+
+  # Fast-path: si el comando NO contiene ningún separador de path probable,
+  # es poco probable que haya rutas. Evita falsos positivos en cálculos puros.
+  if [[ "$cmd" != */* && "$cmd" != *"~/"* && "$cmd" != *".\\"* ]]; then
+    return 1
+  fi
+
+  # Extraer candidatos a ruta: secuencias de chars no-espacio que contienen /
+  # (excluye URLs http://, argumentos como -r/--recursive, etc.)
+  local candidate
+  while IFS= read -r candidate; do
+    # Ignorar candidatos vacíos, URLs, y flags
+    [[ -z "$candidate" ]] && continue
+    [[ "$candidate" == http://* || "$candidate" == https://* ]] && continue
+    [[ "$candidate" == -* ]] && continue
+    # Ignorar /dev/ especial
+    [[ "$candidate" == /dev/* ]] && continue
+    # Si parece una ruta (comienza con /, ./, ~/, o contiene /)
+    if [[ "$candidate" == /* || "$candidate" == ./* || "$candidate" == ~/* || "$candidate" == */* ]]; then
+      # Limpiar comillas
+      candidate="${candidate//\'/}"
+      candidate="${candidate//\"/}"
+      candidate="${candidate//,/}"
+      candidate="${candidate//)/}"
+      candidate="${candidate//(/}"
+      candidate="${candidate//]/}"
+      candidate="${candidate//[/}"
+      [[ -z "$candidate" ]] && continue
+      if ! is_allowed_path "$candidate"; then
+        return 0  # encontró ruta protegida
+      fi
+    fi
+  done < <(printf '%s' "$cmd" | tr ' \t\n()[],' '\n' | grep '/')
 
   return 1
 }
@@ -273,17 +356,26 @@ check_bash_go() {
               fi
               ;;
             python|python2|python3)
-              # python -c con open/write/Path
+              # python inline: bloquear si menciona ruta fuera de whitelist (D3).
+              # También bloquear si usa APIs de escritura conocidas. El comando
+              # python -c 'print(2+2)' sin rutas → permite.
               local full_cmd="$command"
-              if [[ "$full_cmd" =~ (open|write|Path) && "$full_cmd" != *".claude/"* ]]; then
+              if command_mentions_protected_path "$full_cmd"; then
+                TARGET_PATH="unknown"
+                block "Script Python inline menciona ruta fuera de whitelist"
+              elif [[ "$full_cmd" =~ (open|write|Path|shutil\.|subprocess\.|os\.rename|os\.replace|os\.remove) && "$full_cmd" != *".claude/"* ]]; then
                 TARGET_PATH="unknown"
                 block "Script Python inline con escritura fuera de .claude/"
               fi
               ;;
             node)
-              # node -e con writeFile/appendFile/fs.
+              # node inline: bloquear si menciona ruta fuera de whitelist (D3).
+              # También bloquear si usa APIs de escritura conocidas.
               local full_cmd="$command"
-              if [[ "$full_cmd" =~ (writeFile|appendFile|fs\.) && "$full_cmd" != *".claude/"* ]]; then
+              if command_mentions_protected_path "$full_cmd"; then
+                TARGET_PATH="unknown"
+                block "Script Node inline menciona ruta fuera de whitelist"
+              elif [[ "$full_cmd" =~ (writeFile|appendFile|fs\.|child_process\.) && "$full_cmd" != *".claude/"* ]]; then
                 TARGET_PATH="unknown"
                 block "Script Node inline con escritura fuera de .claude/"
               fi
@@ -430,15 +522,23 @@ check_bash_legacy() {
     fi
   fi
 
-  # --- 8.5 Scripts inline que escriben archivos
+  # --- 8.5 Scripts inline que escriben archivos (D3: ruta + API de escritura)
   if [[ "$command" =~ ${BL}python[23]?[[:space:]]+-c[[:space:]] ]]; then
-    if [[ "$command" =~ (open|write|Path) && "$command" != *".claude/"* ]]; then
+    # Primero: menciona ruta no-whitelisted → bloquear (cierra shutil/subprocess/os.rename)
+    if command_mentions_protected_path "$command"; then
+      TARGET_PATH="unknown"
+      block "Script Python inline menciona ruta fuera de whitelist"
+    elif [[ "$command" =~ (open|write|Path|shutil\.|subprocess\.|os\.rename|os\.replace|os\.remove) && "$command" != *".claude/"* ]]; then
       TARGET_PATH="unknown"
       block "Script Python inline con escritura fuera de .claude/"
     fi
   fi
   if [[ "$command" =~ ${BL}node[[:space:]]+-e[[:space:]] ]]; then
-    if [[ "$command" =~ (writeFile|appendFile|fs\.) && "$command" != *".claude/"* ]]; then
+    # Primero: menciona ruta no-whitelisted → bloquear (cierra child_process)
+    if command_mentions_protected_path "$command"; then
+      TARGET_PATH="unknown"
+      block "Script Node inline menciona ruta fuera de whitelist"
+    elif [[ "$command" =~ (writeFile|appendFile|fs\.|child_process\.) && "$command" != *".claude/"* ]]; then
       TARGET_PATH="unknown"
       block "Script Node inline con escritura fuera de .claude/"
     fi
