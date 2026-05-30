@@ -6,6 +6,52 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [v1.11.0] — 2026-05-30
+
+### Changed
+
+- **Hook hardening** (SPEC-042): `enforce_delegation.sh` — three targeted improvements
+  to the orchestrator-guard bash hook.
+
+  - **D1 — Robust subagent detection**: multi-key `agent_id` resolution replaces
+    the single `.agent_id` read. The hook now checks
+    `[.agent_id, .session.agent_id, .subagent.agent_id, .context.agent_id,
+    .metadata.agent_id]` and treats empty string and `null` as orchestrator
+    (previously `""` was incorrectly accepted as a subagent, creating a bypass).
+
+  - **D2 — Noisy jq guard**: when `jq` is absent from PATH the hook now emits a
+    visible WARNING to stderr before exiting 0 (fail-open). Previously the
+    fail-open was completely silent, hiding the fact that enforcement was disabled.
+
+  - **D3 — Hardened python/node detection**: new `command_mentions_protected_path`
+    helper blocks inline python/node commands that reference any path outside the
+    whitelist. This closes `shutil.copy`, `subprocess.run(['cp',...])`,
+    `os.rename`/`os.replace`, `node child_process`, and other indirect write APIs
+    that previously bypassed the API-name heuristic.
+    `python -c 'print(2+2)'` (no paths) continues to be allowed.
+
+  - **D4 — Layer-2 scope documented**: script header, `docs/enforcement-model.md`,
+    and `docs/HOOKS.md` now explicitly describe inherent limits (base64/eval
+    indirection, arbitrary binaries, unlisted interpreters) as out-of-scope by
+    design. Primary defense for subagent boundaries remains Layer 1 (capability
+    `tools:` allowlist in `agents/*.md`).
+
+### Tests
+
+- `TestDelegationHookContent_ValidBash` extended with D1/D2/D3 marker assertions
+  (`session.agent_id`, `command -v jq`, `command_mentions_protected_path`).
+- New `TestDelegationHook_SmokeTests`: table-driven Go harness that writes the
+  embedded hook to a temp file and invokes it via `exec.Command("bash", ...)`.
+  Covers AC1 (5 B-cases), AC2 (3 A-bypass cases), AC3 (6 non-regression cases).
+  Skips gracefully when `bash` or `jq` are absent from PATH.
+- New `internal/install/assets/hooks/enforce_delegation_test.sh`: standalone bash
+  smoke runner for local manual verification.
+
+### Upgrade path
+
+Run `mneme install claude-code` (or `--reinstall-hooks`) and restart Claude Code
+to deploy the updated hook to `~/.claude/hooks/enforce_delegation.sh`.
+
 ## [v1.10.0] — 2026-05-29
 
 ### Added
