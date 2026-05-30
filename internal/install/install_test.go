@@ -1,9 +1,11 @@
 package install
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -814,7 +816,17 @@ func TestDelegationHookContent_ValidBash(t *testing.T) {
 	if !strings.HasPrefix(text, "#!/usr/bin/env bash") {
 		t.Errorf("hook script shebang mismatch: first line = %q", strings.SplitN(text, "\n", 2)[0])
 	}
-	for _, marker := range []string{"is_allowed_path", "agent_id"} {
+	// Base markers (SPEC-032) + SPEC-042 hardening markers.
+	for _, marker := range []string{
+		"is_allowed_path",
+		"agent_id",
+		// D1: multi-key subagent detection
+		"session.agent_id",
+		// D2: explicit jq guard
+		"command -v jq",
+		// D3: protected-path helper for python/node
+		"command_mentions_protected_path",
+	} {
 		if !strings.Contains(text, marker) {
 			t.Errorf("hook script is missing expected marker: %q", marker)
 		}
@@ -1365,6 +1377,166 @@ func TestDryRun_MatchesInstallSteps(t *testing.T) {
 					t.Errorf("DryRun(%s): step[%d] mismatch: got %q, want %q",
 						tc.name, i, gotNames[i], wantNames[i])
 				}
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SPEC-042: enforce_delegation.sh smoke tests (D6)
+// ---------------------------------------------------------------------------
+
+// hookSmokeCase describes a single PreToolUse JSON payload and its expected
+// exit code when passed to enforce_delegation.sh.
+type hookSmokeCase struct {
+	name     string
+	payload  string
+	wantExit int
+}
+
+// TestDelegationHook_SmokeTests runs table-driven bash invocations of the
+// embedded enforce_delegation.sh hook against synthetic PreToolUse JSON
+// payloads and verifies the correct exit code for each case.
+//
+// The test is skipped (not failed) when bash or jq are absent from PATH so
+// it does not break CI environments that lack these tools.
+func TestDelegationHook_SmokeTests(t *testing.T) {
+	// Require bash.
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not found in PATH — skipping smoke test")
+	}
+	// Require jq (hook uses jq for all JSON parsing).
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq not found in PATH — skipping smoke test")
+	}
+
+	// Write the embedded hook to a temp file so we invoke the asset directly.
+	hookContent, err := DelegationHookContent()
+	if err != nil {
+		t.Fatalf("DelegationHookContent: %v", err)
+	}
+	hookFile := filepath.Join(t.TempDir(), "enforce_delegation.sh")
+	if err := os.WriteFile(hookFile, hookContent, 0o755); err != nil {
+		t.Fatalf("write hook to temp: %v", err)
+	}
+
+	cases := []hookSmokeCase{
+		// --- B-cases: subagent detection (AC1) ---
+
+		// B1: agent_id at root (non-empty) → subagent → allow.
+		{
+			name:     "B1_agent_id_root_nonempty",
+			payload:  `{"agent_id":"abc-123","tool_name":"Edit","tool_input":{"file_path":"internal/foo.go"}}`,
+			wantExit: 0,
+		},
+		// B2: agent_id empty string at root → treated as orchestrator → block.
+		{
+			name:     "B2_agent_id_root_empty",
+			payload:  `{"agent_id":"","tool_name":"Edit","tool_input":{"file_path":"internal/foo.go"}}`,
+			wantExit: 2,
+		},
+		// B3: agent_id null at root → treated as orchestrator → block.
+		{
+			name:     "B3_agent_id_root_null",
+			payload:  `{"agent_id":null,"tool_name":"Edit","tool_input":{"file_path":"internal/foo.go"}}`,
+			wantExit: 2,
+		},
+		// B4: agent_id nested in session → D1 multi-key reads it → allow.
+		{
+			name:     "B4_agent_id_session_nested",
+			payload:  `{"session":{"agent_id":"abc-456"},"tool_name":"Edit","tool_input":{"file_path":"internal/foo.go"}}`,
+			wantExit: 0,
+		},
+		// B5: agent_id nested in context → D1 multi-key reads it → allow.
+		{
+			name:     "B5_agent_id_context_nested",
+			payload:  `{"context":{"agent_id":"abc-789"},"tool_name":"Edit","tool_input":{"file_path":"internal/foo.go"}}`,
+			wantExit: 0,
+		},
+
+		// --- A-cases: orchestrator bypass hardening (AC2) ---
+
+		// A1: python shutil.copy to protected path → block.
+		{
+			name:     "A1_python_shutil_copy",
+			payload:  `{"tool_name":"Bash","tool_input":{"command":"python3 -c \"import shutil; shutil.copy('src.go', 'internal/dst.go')\""}}`,
+			wantExit: 2,
+		},
+		// A2: python subprocess.run(['cp', ...]) to protected path → block.
+		{
+			name:     "A2_python_subprocess_cp",
+			payload:  `{"tool_name":"Bash","tool_input":{"command":"python3 -c \"import subprocess; subprocess.run(['cp', 'src', 'internal/dst.go'])\""}}`,
+			wantExit: 2,
+		},
+		// A3: python os.rename to protected path → block.
+		{
+			name:     "A3_python_os_rename",
+			payload:  `{"tool_name":"Bash","tool_input":{"command":"python3 -c \"import os; os.rename('src.go', 'internal/dst.go')\""}}`,
+			wantExit: 2,
+		},
+
+		// --- Non-regression (AC3) ---
+
+		// NR1: python print(2+2) — no paths → allow.
+		{
+			name:     "NR1_python_print_only",
+			payload:  `{"tool_name":"Bash","tool_input":{"command":"python3 -c \"print(2+2)\""}}`,
+			wantExit: 0,
+		},
+		// NR2: Edit to .claude/ path → allow (in whitelist).
+		{
+			name:     "NR2_edit_dotclaude",
+			payload:  `{"tool_name":"Edit","tool_input":{"file_path":".claude/settings.json"}}`,
+			wantExit: 0,
+		},
+		// NR3: Non-mutating tool (Read) → allow.
+		{
+			name:     "NR3_non_mutating_tool",
+			payload:  `{"tool_name":"Read","tool_input":{"file_path":"internal/foo.go"}}`,
+			wantExit: 0,
+		},
+		// NR4: Edit to docs/*.md → allow (in whitelist).
+		{
+			name:     "NR4_edit_docs_md",
+			payload:  `{"tool_name":"Edit","tool_input":{"file_path":"docs/ARCHITECTURE.md"}}`,
+			wantExit: 0,
+		},
+		// NR5: SPEC-033/040 non-regression: redirect to internal/ → block.
+		{
+			name:     "NR5_redirect_to_internal",
+			payload:  `{"tool_name":"Bash","tool_input":{"command":"echo hello > internal/foo.go"}}`,
+			wantExit: 2,
+		},
+		// NR6: SPEC-033/040 non-regression: redirect to .claude/ → allow.
+		{
+			name:     "NR6_redirect_to_dotclaude",
+			payload:  `{"tool_name":"Bash","tool_input":{"command":"echo hello > .claude/settings.json"}}`,
+			wantExit: 0,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := exec.Command("bash", hookFile)
+			cmd.Stdin = bytes.NewBufferString(tc.payload)
+			// Discard hook stdout/stderr — we only care about exit code.
+			cmd.Stdout = nil
+			cmd.Stderr = nil
+
+			runErr := cmd.Run()
+
+			var gotExit int
+			if runErr != nil {
+				if exitErr, ok := runErr.(*exec.ExitError); ok {
+					gotExit = exitErr.ExitCode()
+				} else {
+					t.Fatalf("unexpected exec error: %v", runErr)
+				}
+			}
+
+			if gotExit != tc.wantExit {
+				t.Errorf("exit code = %d, want %d (payload: %s)", gotExit, tc.wantExit, tc.payload)
 			}
 		})
 	}
