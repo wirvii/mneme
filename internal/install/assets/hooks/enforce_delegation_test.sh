@@ -116,6 +116,23 @@ run_case "NR4_edit_docs_md" \
   '{"tool_name":"Edit","tool_input":{"file_path":"docs/ARCHITECTURE.md"}}' \
   0
 
+# NR7: SPEC-042 I-1 fix: node writeFileSync to CLAUDE.md (whitelist) → allow
+# Previously the elif fallback blocked this because it only checked .claude/
+run_case "NR7_node_write_CLAUDE_md" \
+  '{"tool_name":"Bash","tool_input":{"command":"node -e \"fs.writeFileSync('\''CLAUDE.md'\'','\''x'\'')\""}}' \
+  0
+
+# NR8: SPEC-042 I-1 fix: python open to docs/*.md (whitelist) → allow
+# Previously the elif fallback blocked this because it only checked .claude/
+run_case "NR8_python_open_docs_md" \
+  '{"tool_name":"Bash","tool_input":{"command":"python3 -c \"open('\''docs/x.md'\'','\''w'\'')\""}}' \
+  0
+
+# NR9: python open('.claude/x','w') → allow (existing behavior preserved)
+run_case "NR9_python_open_dotclaude" \
+  '{"tool_name":"Bash","tool_input":{"command":"python3 -c \"open('\''.claude/x'\'','\''w'\'')\""}}' \
+  0
+
 # NR5: SPEC-033/040 non-regression: redirect to internal → block
 run_case "NR5_redirect_to_internal" \
   '{"tool_name":"Bash","tool_input":{"command":"echo hello > internal/foo.go"}}' \

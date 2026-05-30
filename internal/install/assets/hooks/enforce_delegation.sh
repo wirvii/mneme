@@ -357,27 +357,28 @@ check_bash_go() {
               ;;
             python|python2|python3)
               # python inline: bloquear si menciona ruta fuera de whitelist (D3).
-              # También bloquear si usa APIs de escritura conocidas. El comando
-              # python -c 'print(2+2)' sin rutas → permite.
+              # El comando python -c 'print(2+2)' sin rutas → permite.
+              # El elif de API-keywords fue eliminado (SPEC-042 I-1): producía
+              # falsos positivos para rutas en la whitelist como CLAUDE.md o
+              # docs/*.md porque solo eximía .claude/, ignorando el resto de la
+              # whitelist. command_mentions_protected_path ya cubre los bypasses
+              # AC2 (A1-A3) detectando la ruta no-whitelisted en el comando.
               local full_cmd="$command"
               if command_mentions_protected_path "$full_cmd"; then
                 TARGET_PATH="unknown"
                 block "Script Python inline menciona ruta fuera de whitelist"
-              elif [[ "$full_cmd" =~ (open|write|Path|shutil\.|subprocess\.|os\.rename|os\.replace|os\.remove) && "$full_cmd" != *".claude/"* ]]; then
-                TARGET_PATH="unknown"
-                block "Script Python inline con escritura fuera de .claude/"
               fi
               ;;
             node)
               # node inline: bloquear si menciona ruta fuera de whitelist (D3).
-              # También bloquear si usa APIs de escritura conocidas.
+              # El elif de API-keywords fue eliminado (SPEC-042 I-1): producía
+              # falsos positivos para rutas en la whitelist como CLAUDE.md porque
+              # solo eximía .claude/, ignorando el resto de la whitelist.
+              # command_mentions_protected_path ya cubre los bypasses AC2.
               local full_cmd="$command"
               if command_mentions_protected_path "$full_cmd"; then
                 TARGET_PATH="unknown"
                 block "Script Node inline menciona ruta fuera de whitelist"
-              elif [[ "$full_cmd" =~ (writeFile|appendFile|fs\.|child_process\.) && "$full_cmd" != *".claude/"* ]]; then
-                TARGET_PATH="unknown"
-                block "Script Node inline con escritura fuera de .claude/"
               fi
               ;;
           esac
@@ -523,24 +524,22 @@ check_bash_legacy() {
   fi
 
   # --- 8.5 Scripts inline que escriben archivos (D3: ruta + API de escritura)
+  # El elif de API-keywords fue eliminado en los 4 sitios (SPEC-042 I-1):
+  # solo eximía .claude/, ignorando CLAUDE.md, docs/*.md y ~/.claude/**,
+  # produciendo falsos positivos para rutas en la whitelist. El helper
+  # command_mentions_protected_path ya cubre los bypasses AC2 (A1-A3).
   if [[ "$command" =~ ${BL}python[23]?[[:space:]]+-c[[:space:]] ]]; then
-    # Primero: menciona ruta no-whitelisted → bloquear (cierra shutil/subprocess/os.rename)
+    # Menciona ruta no-whitelisted → bloquear (cierra shutil/subprocess/os.rename)
     if command_mentions_protected_path "$command"; then
       TARGET_PATH="unknown"
       block "Script Python inline menciona ruta fuera de whitelist"
-    elif [[ "$command" =~ (open|write|Path|shutil\.|subprocess\.|os\.rename|os\.replace|os\.remove) && "$command" != *".claude/"* ]]; then
-      TARGET_PATH="unknown"
-      block "Script Python inline con escritura fuera de .claude/"
     fi
   fi
   if [[ "$command" =~ ${BL}node[[:space:]]+-e[[:space:]] ]]; then
-    # Primero: menciona ruta no-whitelisted → bloquear (cierra child_process)
+    # Menciona ruta no-whitelisted → bloquear (cierra child_process)
     if command_mentions_protected_path "$command"; then
       TARGET_PATH="unknown"
       block "Script Node inline menciona ruta fuera de whitelist"
-    elif [[ "$command" =~ (writeFile|appendFile|fs\.|child_process\.) && "$command" != *".claude/"* ]]; then
-      TARGET_PATH="unknown"
-      block "Script Node inline con escritura fuera de .claude/"
     fi
   fi
 }

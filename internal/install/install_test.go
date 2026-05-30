@@ -1513,6 +1513,30 @@ func TestDelegationHook_SmokeTests(t *testing.T) {
 			payload:  `{"tool_name":"Bash","tool_input":{"command":"echo hello > .claude/settings.json"}}`,
 			wantExit: 0,
 		},
+
+		// SPEC-042 I-1 fix: API-keyword fallback elif removed. Whitelisted paths
+		// (CLAUDE.md, docs/*.md) must not be blocked by the write-API heuristic.
+
+		// NR7: node writeFileSync to CLAUDE.md (whitelist) → allow.
+		// The removed elif only exempted .claude/, so CLAUDE.md was blocked.
+		{
+			name:     "NR7_node_write_CLAUDE_md",
+			payload:  `{"tool_name":"Bash","tool_input":{"command":"node -e \"fs.writeFileSync('CLAUDE.md','x')\""}}`,
+			wantExit: 0,
+		},
+		// NR8: python open to docs/x.md (whitelist) → allow.
+		// The removed elif only exempted .claude/, so docs/*.md was blocked.
+		{
+			name:     "NR8_python_open_docs_md",
+			payload:  `{"tool_name":"Bash","tool_input":{"command":"python3 -c \"open('docs/x.md','w')\""}}`,
+			wantExit: 0,
+		},
+		// NR9: python open('.claude/x','w') → allow (existing behavior preserved).
+		{
+			name:     "NR9_python_open_dotclaude",
+			payload:  `{"tool_name":"Bash","tool_input":{"command":"python3 -c \"open('.claude/x','w')\""}}`,
+			wantExit: 0,
+		},
 	}
 
 	for _, tc := range cases {
