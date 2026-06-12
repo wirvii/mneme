@@ -33,6 +33,15 @@ type Config struct {
 	Graph         GraphConfig         `toml:"graph"`
 	Suggestions   SuggestionsConfig   `toml:"suggestions"`
 	Models        ModelsConfig        `toml:"models"`
+	Codegraph     CodegraphConfig     `toml:"codegraph"`
+}
+
+// CodegraphConfig controls codegraph-related runtime behaviour (SPEC-044).
+type CodegraphConfig struct {
+	// HookNudgeEnabled controls whether the pre-tool-use hook injects a reminder
+	// to use codegraph_* tools when an agent runs Read/Grep/Glob on a project
+	// that has an indexed code graph. Default: true.
+	HookNudgeEnabled bool `toml:"hook_nudge_enabled"`
 }
 
 // ModelsConfig holds per-agent model overrides for the install-time model
@@ -545,6 +554,9 @@ func Default() *Config {
 		Models: ModelsConfig{
 			Overrides: map[string]string{},
 		},
+		Codegraph: CodegraphConfig{
+			HookNudgeEnabled: true,
+		},
 	}
 }
 
@@ -594,6 +606,9 @@ func Default() *Config {
 //   - MNEME_SUGGESTIONS_GAP_JACCARD_THRESHOLD → Suggestions.GapJaccardThreshold
 //   - MNEME_SUGGESTIONS_MAX_GAPS_TO_CONSIDER  → Suggestions.MaxGapsToConsider
 //   - MNEME_SUGGESTIONS_MAX_RESULTS           → Suggestions.MaxResults
+//
+// [codegraph] — SPEC-044:
+//   - MNEME_CODEGRAPH_HOOK_NUDGE → Codegraph.HookNudgeEnabled ("false"/"0" disables, "true"/"1" enables; env wins over TOML)
 //
 // The resulting Config is validated before being returned.
 func Load(path string) (*Config, error) {
@@ -797,6 +812,12 @@ func applyEnvOverrides(cfg *Config) {
 			cfg.Suggestions.MaxResults = n
 		}
 	}
+
+	// [codegraph] overrides (SPEC-044).
+	// "false"/"0" disables; "true"/"1" enables. Env value wins over TOML.
+	if v := os.Getenv("MNEME_CODEGRAPH_HOOK_NUDGE"); v != "" {
+		cfg.Codegraph.HookNudgeEnabled = v == "true" || v == "1"
+	}
 }
 
 // FieldOrigin describes where a config field value came from.
@@ -892,6 +913,7 @@ func LoadWithOrigins(path string) (*Config, *ConfigOrigins, error) {
 	origins.Sections["spec"] = buildSpecOrigins(cfg, dflt)
 	origins.Sections["graph"] = buildGraphOrigins(cfg, dflt)
 	origins.Sections["suggestions"] = buildSuggestionsOrigins(cfg, dflt)
+	origins.Sections["codegraph"] = buildCodegraphOrigins(cfg, dflt)
 
 	return cfg, origins, nil
 }
@@ -1108,6 +1130,15 @@ func buildSuggestionsOrigins(cfg, dflt *Config) []ConfigFieldInfo {
 	fields = append(fields, makeField("max_gaps_to_consider", cfg.Suggestions.MaxGapsToConsider, o, ev))
 	o, ev = fieldOrigin(cfg.Suggestions.MaxResults, dflt.Suggestions.MaxResults, true, "MNEME_SUGGESTIONS_MAX_RESULTS")
 	fields = append(fields, makeField("max_results", cfg.Suggestions.MaxResults, o, ev))
+	return fields
+}
+
+// buildCodegraphOrigins returns the origin provenance for the [codegraph]
+// config section (SPEC-044).
+func buildCodegraphOrigins(cfg, dflt *Config) []ConfigFieldInfo {
+	var fields []ConfigFieldInfo
+	o, ev := fieldOrigin(cfg.Codegraph.HookNudgeEnabled, dflt.Codegraph.HookNudgeEnabled, true, "MNEME_CODEGRAPH_HOOK_NUDGE")
+	fields = append(fields, makeField("hook_nudge_enabled", cfg.Codegraph.HookNudgeEnabled, o, ev))
 	return fields
 }
 

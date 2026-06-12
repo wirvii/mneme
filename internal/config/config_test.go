@@ -1782,3 +1782,78 @@ func TestContextConfig_TopClusterMaxMembersZero(t *testing.T) {
 		t.Error("expected validation error for TopClusterMaxMembers=0")
 	}
 }
+
+// ---- [codegraph] config tests (SPEC-044) ------------------------------------
+
+// TestCodegraphConfig_Default verifies that the default value for
+// HookNudgeEnabled is true (nudge on by default).
+func TestCodegraphConfig_Default(t *testing.T) {
+	t.Parallel()
+	cfg := Default()
+	if !cfg.Codegraph.HookNudgeEnabled {
+		t.Error("expected Codegraph.HookNudgeEnabled=true by default")
+	}
+}
+
+// TestCodegraphConfig_EnvOverride verifies that MNEME_CODEGRAPH_HOOK_NUDGE
+// disables the nudge when set to "false" or "0", and enables it when set to
+// "true" or "1". The env variable wins over any TOML value.
+func TestCodegraphConfig_EnvOverride(t *testing.T) {
+	cases := []struct {
+		env  string
+		want bool
+	}{
+		{"false", false},
+		{"0", false},
+		{"true", true},
+		{"1", true},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run("env="+tc.env, func(t *testing.T) {
+			t.Setenv("MNEME_CODEGRAPH_HOOK_NUDGE", tc.env)
+			cfg := Default()
+			applyEnvOverrides(cfg)
+			if cfg.Codegraph.HookNudgeEnabled != tc.want {
+				t.Errorf("HookNudgeEnabled = %v, want %v for env %q", cfg.Codegraph.HookNudgeEnabled, tc.want, tc.env)
+			}
+		})
+	}
+}
+
+// TestCodegraphConfig_Origins verifies that LoadWithOrigins reports
+// hook_nudge_enabled with origin=env and the correct env var name when
+// MNEME_CODEGRAPH_HOOK_NUDGE is set.
+func TestCodegraphConfig_Origins(t *testing.T) {
+	t.Setenv("MNEME_CODEGRAPH_HOOK_NUDGE", "false")
+
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.toml")
+
+	_, origins, err := LoadWithOrigins(configPath)
+	if err != nil {
+		t.Fatalf("LoadWithOrigins: %v", err)
+	}
+
+	cgFields, ok := origins.Sections["codegraph"]
+	if !ok {
+		t.Fatal("codegraph section missing from origins")
+	}
+
+	var found bool
+	for _, f := range cgFields {
+		if f.Key == "hook_nudge_enabled" {
+			found = true
+			if f.Origin != OriginEnv {
+				t.Errorf("hook_nudge_enabled origin = %q, want %q", f.Origin, OriginEnv)
+			}
+			if !strings.Contains(f.EnvVar, "MNEME_CODEGRAPH_HOOK_NUDGE") {
+				t.Errorf("hook_nudge_enabled EnvVar = %q, want to contain MNEME_CODEGRAPH_HOOK_NUDGE", f.EnvVar)
+			}
+		}
+	}
+	if !found {
+		t.Error("hook_nudge_enabled field not found in codegraph origins")
+	}
+}
