@@ -56,7 +56,7 @@ Supporting packages: `scoring/` (decay, BM25 re-ranking, RRF fusion), `consolida
 
 - **MCP** (`internal/mcp`, primary) — JSON-RPC 2.0 over stdio, ProtocolVersion `2024-11-05`. Surface: 57 tools (14 `mem_*`, 4 `backlog_*`, 8 `spec_*`, 5 `lane_*`, 10 `codegraph_*`, 7 `skills_*`, 3 `model_*`, 5 `conflicts_*`, 1 `init`). `spec_*`: spec_new, spec_status, spec_advance, spec_pushback, spec_resolve, spec_list, spec_quick, spec_reject. `lane_*`: lane_audit, lane_reclassify, lane_override, lane_status, lane_stats. `skills_*`: skills_list, skills_install, skills_pin, skills_unpin, skills_remove, skills_lint, skills_validate. `model_*`: model_list, model_set, model_reset. `conflicts_*`: conflicts_candidates, conflicts_scan, conflicts_link, conflicts_unlink, conflicts_list. `init`: applies managed blocks + drift report (see `docs/init.md`). `handleMessage()` is exposed separately from `Run()` so unit tests can drive it without I/O loops.
 - **HTTP** (`internal/http`, `mneme serve --addr :7437`) — stdlib `net/http`, graceful shutdown 10s, 8 endpoints under `/v1/`. Currently lacks SDD endpoints and a few mem tools (`mem_checkpoint`, `mem_timeline`, `mem_suggest_topic_key`); when adding service capabilities, decide explicitly whether HTTP gets parity.
-- **CLI** (`internal/cli`, Cobra) — 32 top-level commands. Notable: `sync export|import|status` is the backup/restore path (no dedicated `restore` command); `mneme init` sets up managed blocks, reports drift, and (with `--apply`) migrates legacy projects to the SDD engine (see `docs/init.md`); `mneme install <agent>` writes agent profiles; `mneme skills` manages skills in `~/.claude/skills/`; `mneme model` manages per-agent model assignments; `mneme conflicts` detects and manages memory conflict relations.
+- **CLI** (`internal/cli`, Cobra) — 32 top-level commands. Notable: `sync export|import|status` is the backup/restore path (no dedicated `restore` command); `mneme init` sets up managed blocks, reports drift, and (with `--apply`) migrates legacy projects to the SDD engine (see `docs/init.md`); `mneme install <agent>` writes agent profiles; `mneme skills` manages skills in `~/.claude/skills/`; `mneme model` manages per-agent model assignments; `mneme conflicts` detects and manages memory conflict relations; `mneme codegraph hooks install|remove` installs/removes git hooks that auto-reindex the code graph after commits and checkouts (see `docs/codegraph.md`).
 
 ### Persistence
 
@@ -71,6 +71,13 @@ Scopes (`global` / `org` / `project`) never leak between projects. Migrations ar
 `mneme hook pre-tool-use` is the active Claude Code `PreToolUse` hook. It evaluates **rules** from the mneme database against every `Edit`/`Write`/`MultiEdit` call. Rules carry `applies_to` patterns (path globs, tool selectors, negations) and a `severity` level (`info`/`warn`/`block`). When a `block`-severity rule matches, the hook exits with code 2 and Claude Code rejects the tool call. Source: `internal/cli/hook.go:runHookPreToolUse` + `internal/rules/match.go`. If a code edit gets blocked, that's a rule — check `mneme rule list` and delegate or adjust accordingly.
 
 The legacy `mneme hook enforce-delegation` (config-based static paths) is deprecated but still works. Migrate with `mneme install claude-code --reinstall-hooks`. See `docs/HOOKS.md` for details.
+
+The hook also emits a context-only reminder (exit 0, never blocking) when an agent calls `Read`/`Grep`/`Glob` on a project with an indexed code graph — see `docs/codegraph.md` for the adoption nudge (C1) and auto-reindex git hooks (C2). The nudge is controlled by:
+
+```toml
+[codegraph]
+hook_nudge_enabled = true   # MNEME_CODEGRAPH_HOOK_NUDGE env var overrides
+```
 
 ### Enforcement Model
 
