@@ -441,7 +441,15 @@ action (ALLOWED / BLOCKED).`,
 				return fmt.Errorf("cannot determine working directory: %w", err)
 			}
 
-			result := rules.Match(ruleSlice, flagTool, flagPath, cwd)
+			// mneme rule test is a human-initiated simulation; default to
+			// CallerOrchestrator so block rules show as block (strictest view).
+			inv := rules.Invocation{
+				Tool:     flagTool,
+				FilePath: flagPath,
+				CWD:      cwd,
+				Caller:   rules.CallerOrchestrator,
+			}
+			result := rules.Match(ruleSlice, inv)
 
 			if flagJSON {
 				return printTestJSON(os.Stdout, flagTool, flagPath, len(ruleSlice), result)

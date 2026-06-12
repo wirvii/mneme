@@ -30,12 +30,32 @@ func insertTestRule(database *db.DB, id, title, content string, severity model.S
 }
 
 // buildPreToolStdin returns a JSON-encoded PreToolUse hook stdin payload as a buffer.
-func buildPreToolStdin(toolName, filePath string) *bytes.Buffer {
+// callerAgentID, when non-empty, is injected into the top-level agent_id field to
+// simulate a subagent invocation. notebookPath, when non-empty, sets
+// tool_input.notebook_path.
+func buildPreToolStdin(toolName, filePath string, opts ...string) *bytes.Buffer {
+	agentID := ""
+	notebookPath := ""
+	if len(opts) > 0 {
+		agentID = opts[0]
+	}
+	if len(opts) > 1 {
+		notebookPath = opts[1]
+	}
+
+	toolInput := map[string]any{
+		"file_path": filePath,
+	}
+	if notebookPath != "" {
+		toolInput["notebook_path"] = notebookPath
+	}
+
 	payload := map[string]any{
-		"tool_name": toolName,
-		"tool_input": map[string]any{
-			"file_path": filePath,
-		},
+		"tool_name":  toolName,
+		"tool_input": toolInput,
+	}
+	if agentID != "" {
+		payload["agent_id"] = agentID
 	}
 	data, _ := json.Marshal(payload)
 	return bytes.NewBuffer(data)
@@ -64,7 +84,7 @@ func TestPreToolUse_BlockRule(t *testing.T) {
 
 	cwd := dir
 	filePath := filepath.Join(dir, "internal", "store", "memory.go")
-	result := rules.Match(rulesList, "Edit", filePath, cwd)
+	result := rules.Match(rulesList, rules.Invocation{Tool: "Edit", FilePath: filePath, CWD: cwd, Caller: rules.CallerOrchestrator})
 
 	var stdout bytes.Buffer
 	renderPreToolUseOutput(&stdout, "Edit", filePath, cwd, result)
@@ -100,7 +120,7 @@ func TestPreToolUse_WarnRule(t *testing.T) {
 
 	cwd := dir
 	filePath := filepath.Join(dir, "cmd", "main.go")
-	result := rules.Match(rulesList, "Edit", filePath, cwd)
+	result := rules.Match(rulesList, rules.Invocation{Tool: "Edit", FilePath: filePath, CWD: cwd, Caller: rules.CallerOrchestrator})
 
 	var stdout bytes.Buffer
 	renderPreToolUseOutput(&stdout, "Edit", filePath, cwd, result)
@@ -137,7 +157,7 @@ func TestPreToolUse_InfoRule(t *testing.T) {
 
 	cwd := dir
 	filePath := filepath.Join(dir, "foo.go")
-	result := rules.Match(rulesList, "Write", filePath, cwd)
+	result := rules.Match(rulesList, rules.Invocation{Tool: "Write", FilePath: filePath, CWD: cwd, Caller: rules.CallerOrchestrator})
 
 	var stdout bytes.Buffer
 	renderPreToolUseOutput(&stdout, "Write", filePath, cwd, result)
@@ -175,7 +195,7 @@ func TestPreToolUse_NoMatch(t *testing.T) {
 	cwd := dir
 	// Editing a docs file must not match "tool:Edit+internal/**".
 	filePath := filepath.Join(dir, "docs", "README.md")
-	result := rules.Match(rulesList, "Edit", filePath, cwd)
+	result := rules.Match(rulesList, rules.Invocation{Tool: "Edit", FilePath: filePath, CWD: cwd, Caller: rules.CallerOrchestrator})
 
 	if len(result.Matched) != 0 {
 		t.Errorf("expected 0 matches for docs file, got %d", len(result.Matched))
@@ -262,7 +282,7 @@ func TestPreToolUse_MultipleSeverities(t *testing.T) {
 
 	cwd := dir
 	filePath := filepath.Join(dir, "internal", "store", "memory.go")
-	result := rules.Match(rulesList, "Edit", filePath, cwd)
+	result := rules.Match(rulesList, rules.Invocation{Tool: "Edit", FilePath: filePath, CWD: cwd, Caller: rules.CallerOrchestrator})
 
 	if result.MaxSev != model.SeverityBlock {
 		t.Errorf("MaxSev = %q, want block", result.MaxSev)

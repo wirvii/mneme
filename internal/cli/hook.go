@@ -282,21 +282,71 @@ func runHookSessionEnd() error {
 }
 
 // hookPreToolInput is the JSON payload that Claude Code sends to a PreToolUse
-// hook via stdin. Only tool_name and tool_input.file_path are relevant for
-// rule matching; all other fields are ignored.
+// hook via stdin. It captures the fields used by the hook: the tool name, the
+// target file path, the notebook path (NotebookEdit), and the five known
+// locations where agent_id may appear to signal a subagent invocation.
+//
+// Note: null JSON values deserialise to "" for string fields, which matches the
+// desired semantics — an absent or null agent_id means orchestrator.
 type hookPreToolInput struct {
 	ToolName  string `json:"tool_name"`
 	ToolInput struct {
-		FilePath string `json:"file_path"`
+		FilePath     string `json:"file_path"`
+		NotebookPath string `json:"notebook_path"`
 	} `json:"tool_input"`
+
+	// The five paths where Claude Code may inject agent_id (SPEC-042 / SPEC-043).
+	// Any non-empty value signals a subagent; all empty / absent means orchestrator.
+	AgentID  string `json:"agent_id"`
+	Session  struct{ AgentID string `json:"agent_id"` } `json:"session"`
+	Subagent struct{ AgentID string `json:"agent_id"` } `json:"subagent"`
+	Context  struct{ AgentID string `json:"agent_id"` } `json:"context"`
+	Metadata struct{ AgentID string `json:"agent_id"` } `json:"metadata"`
+}
+
+// resolveCaller inspects all five known agent_id locations in the payload and
+// returns CallerSubagent if any of them is non-empty, CallerOrchestrator otherwise.
+//
+// This replicates the multi-key resolution logic of enforce_delegation.sh so
+// both layers behave identically regardless of which payload field Claude Code
+// uses in a given version.
+func (in hookPreToolInput) resolveCaller() rules.Caller {
+	for _, id := range []string{
+		in.AgentID,
+		in.Session.AgentID,
+		in.Subagent.AgentID,
+		in.Context.AgentID,
+		in.Metadata.AgentID,
+	} {
+		if id != "" {
+			return rules.CallerSubagent
+		}
+	}
+	return rules.CallerOrchestrator
+}
+
+// filePath returns the target file path for the invocation. For most tools this
+// is tool_input.file_path; for NotebookEdit the path is in tool_input.notebook_path.
+// file_path takes precedence when both are present.
+func (in hookPreToolInput) filePath() string {
+	if in.ToolInput.FilePath != "" {
+		return in.ToolInput.FilePath
+	}
+	return in.ToolInput.NotebookPath
 }
 
 // mutatingTools is the set of tool names that the pre-tool-use hook intercepts.
-// These are the only tools that carry a file_path and modify files on disk.
+// These are the only tools that carry a file path and modify files on disk.
+//
+// Note: Bash is intentionally absent. A rule with tool:Bash never reaches the
+// Go matching engine from the pre-tool-use hook because Bash does not appear
+// here. Bash enforcement is the exclusive territory of enforce_delegation.sh
+// (Layer 2). Intercepting Bash in the Go engine is out of scope (SPEC-043 D-Q3).
 var mutatingTools = map[string]bool{
-	"Edit":      true,
-	"Write":     true,
-	"MultiEdit": true,
+	"Edit":         true,
+	"Write":        true,
+	"MultiEdit":    true,
+	"NotebookEdit": true,
 }
 
 // rulesQuery is the SQL used to fetch all active rules from a database. It
@@ -352,22 +402,42 @@ func runHookPreToolUse(r io.Reader, w, errW io.Writer) error {
 		return nil
 	}
 
-	// Evaluate which rules fire for this specific tool+path combination.
-	result := rules.Match(activeRules, input.ToolName, input.ToolInput.FilePath, cwd)
+	// Resolve the invoking role and build the invocation context.
+	caller := input.resolveCaller()
+	fp := input.filePath()
+	inv := rules.Invocation{
+		Tool:     input.ToolName,
+		FilePath: fp,
+		CWD:      cwd,
+		Caller:   caller,
+	}
+
+	// Evaluate which rules fire for this specific invocation.
+	result := rules.Match(activeRules, inv)
 	if len(result.Matched) == 0 {
 		return nil
 	}
 
+	// Count degraded rules for logging.
+	degradedCount := 0
+	for _, mr := range result.Matched {
+		if mr.Degraded {
+			degradedCount++
+		}
+	}
+
 	// Emit the markdown reminder to stdout so Claude Code injects it into the
 	// agent's context window as a system reminder.
-	renderPreToolUseOutput(w, input.ToolName, input.ToolInput.FilePath, cwd, result)
+	renderPreToolUseOutput(w, input.ToolName, fp, cwd, result)
 
 	slog.Info("hook_pre_tool_use",
 		"event", "hook_pre_tool_use",
 		"tool", input.ToolName,
-		"file", input.ToolInput.FilePath,
+		"file", fp,
 		"matched_rules", len(result.Matched),
 		"max_severity", string(result.MaxSev),
+		"caller", string(caller),
+		"degraded_count", degradedCount,
 	)
 
 	if result.MaxSev == model.SeverityBlock {
@@ -469,9 +539,10 @@ func queryRulesFromDB(path string) ([]model.Memory, error) {
 }
 
 // renderPreToolUseOutput writes the markdown block that the agent sees as a
-// system reminder when rules fire. The format follows the spec (section 4.1):
-// HTML comment delimiters, tool+file header, per-rule sections with severity
-// tags, and a final action line.
+// system reminder when rules fire. It uses the effective (role-adjusted)
+// severity for all tags and counts, so subagents see degraded rules as [WARN]
+// with an annotation rather than [BLOCK], and the action line correctly
+// reflects whether the invocation is blocked or allowed.
 func renderPreToolUseOutput(w io.Writer, toolName, filePath, cwd string, result rules.MatchResult) {
 	// Compute the display path (relative when possible, absolute as fallback).
 	displayPath := filePath
@@ -483,8 +554,17 @@ func renderPreToolUseOutput(w io.Writer, toolName, filePath, cwd string, result 
 	fmt.Fprintf(w, "## mneme — Rules for this action\n\n")
 	fmt.Fprintf(w, "**Tool:** %s | **File:** %s\n\n", toolName, displayPath)
 
+	degradedCount := 0
 	for _, mr := range result.Matched {
-		severityTag := strings.ToUpper(string(mr.Rule.Severity))
+		var severityTag string
+		if mr.Degraded {
+			// Show the effective severity tag but annotate the degradation so the
+			// subagent understands this rule is BLOCK for the orchestrator.
+			severityTag = "WARN — degraded from BLOCK for subagent"
+			degradedCount++
+		} else {
+			severityTag = strings.ToUpper(string(mr.Effective))
+		}
 		fmt.Fprintf(w, "### [%s] %s\n", severityTag, mr.Rule.Title)
 		fmt.Fprintf(w, "%s\n", mr.Rule.Content)
 		if len(mr.Entries) > 0 {
@@ -493,10 +573,11 @@ func renderPreToolUseOutput(w io.Writer, toolName, filePath, cwd string, result 
 		fmt.Fprintf(w, "\n---\n\n")
 	}
 
+	// Action line uses MaxSev which is based on effective severity.
 	if result.MaxSev == model.SeverityBlock {
 		blockCount := 0
 		for _, mr := range result.Matched {
-			if mr.Rule.Severity == model.SeverityBlock {
+			if mr.Effective == model.SeverityBlock {
 				blockCount++
 			}
 		}
@@ -511,6 +592,15 @@ func renderPreToolUseOutput(w io.Writer, toolName, filePath, cwd string, result 
 			fmt.Fprintf(w, "s")
 		}
 		fmt.Fprintf(w, " matched (review above).\n")
+		// Inform subagents that some rules are BLOCK for the orchestrator but
+		// were degraded to context-only for this invocation.
+		if degradedCount > 0 {
+			noun := "rule"
+			if degradedCount != 1 {
+				noun = "rules"
+			}
+			fmt.Fprintf(w, "\n**Nota:** %d %s son BLOCK para el orquestador; degradadas a contexto porque esta invocación es de un subagente.\n", degradedCount, noun)
+		}
 	}
 	fmt.Fprintf(w, "<!-- mneme:rules:end -->\n")
 }
