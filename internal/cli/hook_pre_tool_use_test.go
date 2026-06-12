@@ -326,3 +326,258 @@ func TestQueryRulesFromDB_EmptyDB(t *testing.T) {
 		t.Errorf("expected 0 rules for empty DB, got %d", len(rulesList))
 	}
 }
+
+// ---- TestResolveCaller: multi-key agent_id resolution ----------------------
+
+// TestResolveCaller verifies that resolveCaller returns CallerSubagent when any
+// of the five known agent_id fields is non-empty, and CallerOrchestrator when
+// all are empty / absent.
+func TestResolveCaller(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload string // JSON to unmarshal into hookPreToolInput
+		want    rules.Caller
+	}{
+		{
+			name:    "top-level agent_id",
+			payload: `{"agent_id": "abc-123"}`,
+			want:    rules.CallerSubagent,
+		},
+		{
+			name:    "session.agent_id",
+			payload: `{"session": {"agent_id": "sess-456"}}`,
+			want:    rules.CallerSubagent,
+		},
+		{
+			name:    "subagent.agent_id",
+			payload: `{"subagent": {"agent_id": "sub-789"}}`,
+			want:    rules.CallerSubagent,
+		},
+		{
+			name:    "context.agent_id",
+			payload: `{"context": {"agent_id": "ctx-abc"}}`,
+			want:    rules.CallerSubagent,
+		},
+		{
+			name:    "metadata.agent_id",
+			payload: `{"metadata": {"agent_id": "meta-def"}}`,
+			want:    rules.CallerSubagent,
+		},
+		{
+			name:    "empty string in agent_id",
+			payload: `{"agent_id": ""}`,
+			want:    rules.CallerOrchestrator,
+		},
+		{
+			name:    "null agent_id (deserialises to empty string)",
+			payload: `{"agent_id": null}`,
+			want:    rules.CallerOrchestrator,
+		},
+		{
+			name:    "no agent_id fields at all",
+			payload: `{"tool_name": "Edit"}`,
+			want:    rules.CallerOrchestrator,
+		},
+		{
+			name:    "all agent_id fields empty",
+			payload: `{"agent_id":"","session":{"agent_id":""},"subagent":{"agent_id":""},"context":{"agent_id":""},"metadata":{"agent_id":""}}`,
+			want:    rules.CallerOrchestrator,
+		},
+		// First non-empty field wins; verify precedence doesn't matter (any wins).
+		{
+			name:    "multiple fields set, first wins",
+			payload: `{"agent_id": "first", "session": {"agent_id": "second"}}`,
+			want:    rules.CallerSubagent,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var inp hookPreToolInput
+			if err := json.Unmarshal([]byte(tc.payload), &inp); err != nil {
+				t.Fatalf("json.Unmarshal: %v", err)
+			}
+			got := inp.resolveCaller()
+			if got != tc.want {
+				t.Errorf("resolveCaller() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// ---- TestPreToolUse_FilePath_NotebookFallback --------------------------------
+
+// TestPreToolUse_FilePath_NotebookFallback verifies that filePath() returns
+// notebook_path when file_path is absent, and that file_path wins when both
+// are present.
+func TestPreToolUse_FilePath_NotebookFallback(t *testing.T) {
+	t.Run("only notebook_path", func(t *testing.T) {
+		inp := hookPreToolInput{}
+		inp.ToolInput.NotebookPath = "/notebooks/analysis.ipynb"
+		if got := inp.filePath(); got != "/notebooks/analysis.ipynb" {
+			t.Errorf("filePath() = %q, want /notebooks/analysis.ipynb", got)
+		}
+	})
+
+	t.Run("both present — file_path wins", func(t *testing.T) {
+		inp := hookPreToolInput{}
+		inp.ToolInput.FilePath = "/code/main.go"
+		inp.ToolInput.NotebookPath = "/notebooks/analysis.ipynb"
+		if got := inp.filePath(); got != "/code/main.go" {
+			t.Errorf("filePath() = %q, want /code/main.go", got)
+		}
+	})
+
+	t.Run("neither present", func(t *testing.T) {
+		inp := hookPreToolInput{}
+		if got := inp.filePath(); got != "" {
+			t.Errorf("filePath() = %q, want empty", got)
+		}
+	})
+}
+
+// ---- Role-aware enforcement tests -------------------------------------------
+
+// TestPreToolUse_BlockDegradedForSubagent verifies that a block rule without an
+// agent: selector produces [WARN — degraded from BLOCK] output and does NOT
+// trigger exit 2 (MaxSev == warn) when the caller is a subagent.
+func TestPreToolUse_BlockDegradedForSubagent(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+
+	database, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	if insertErr := insertTestRule(database, "r1", "Protect source", "Do not edit source.",
+		model.SeverityBlock, []string{"tool:Edit+internal/**"}); insertErr != nil {
+		t.Fatalf("insertTestRule: %v", insertErr)
+	}
+	database.Close()
+
+	rulesList, err := queryRulesFromDB(dbPath)
+	if err != nil {
+		t.Fatalf("queryRulesFromDB: %v", err)
+	}
+
+	cwd := dir
+	filePath := filepath.Join(dir, "internal", "store", "memory.go")
+
+	// As a subagent — rule should be degraded to warn, NOT block.
+	inv := rules.Invocation{Tool: "Edit", FilePath: filePath, CWD: cwd, Caller: rules.CallerSubagent}
+	result := rules.Match(rulesList, inv)
+
+	if result.MaxSev == model.SeverityBlock {
+		t.Errorf("MaxSev should be warn (degraded), not block for subagent")
+	}
+	if result.MaxSev != model.SeverityWarn {
+		t.Errorf("MaxSev = %q, want warn", result.MaxSev)
+	}
+	if len(result.Matched) != 1 {
+		t.Fatalf("expected 1 matched rule, got %d", len(result.Matched))
+	}
+	if !result.Matched[0].Degraded {
+		t.Errorf("Degraded = false, want true for subagent with no agent: selector")
+	}
+
+	var stdout bytes.Buffer
+	renderPreToolUseOutput(&stdout, "Edit", filePath, cwd, result)
+
+	got := stdout.String()
+	if !strings.Contains(got, "degraded from BLOCK for subagent") {
+		t.Errorf("output missing degradation annotation\nfull:\n%s", got)
+	}
+	if !strings.Contains(got, "Action: ALLOWED") {
+		t.Errorf("output should show ALLOWED (not BLOCKED) for degraded rule\nfull:\n%s", got)
+	}
+	if strings.Contains(got, "Action: BLOCKED") {
+		t.Errorf("output should NOT show BLOCKED when rule is degraded\nfull:\n%s", got)
+	}
+}
+
+// TestPreToolUse_BlockEnforcedForOrchestrator verifies that a block rule without
+// an agent: selector still shows as [BLOCK] and produces the BLOCKED action line
+// when the caller is the orchestrator.
+func TestPreToolUse_BlockEnforcedForOrchestrator(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+
+	database, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	if insertErr := insertTestRule(database, "r1", "Protect source", "Do not edit source.",
+		model.SeverityBlock, []string{"tool:Edit+internal/**"}); insertErr != nil {
+		t.Fatalf("insertTestRule: %v", insertErr)
+	}
+	database.Close()
+
+	rulesList, err := queryRulesFromDB(dbPath)
+	if err != nil {
+		t.Fatalf("queryRulesFromDB: %v", err)
+	}
+
+	cwd := dir
+	filePath := filepath.Join(dir, "internal", "store", "memory.go")
+
+	// As orchestrator — rule should remain block.
+	inv := rules.Invocation{Tool: "Edit", FilePath: filePath, CWD: cwd, Caller: rules.CallerOrchestrator}
+	result := rules.Match(rulesList, inv)
+
+	if result.MaxSev != model.SeverityBlock {
+		t.Errorf("MaxSev = %q, want block for orchestrator", result.MaxSev)
+	}
+	if result.Matched[0].Degraded {
+		t.Errorf("Degraded = true, want false for orchestrator")
+	}
+
+	var stdout bytes.Buffer
+	renderPreToolUseOutput(&stdout, "Edit", filePath, cwd, result)
+
+	got := stdout.String()
+	if !strings.Contains(got, "[BLOCK]") {
+		t.Errorf("output missing [BLOCK] for orchestrator\nfull:\n%s", got)
+	}
+	if !strings.Contains(got, "Action: BLOCKED") {
+		t.Errorf("output missing 'Action: BLOCKED' for orchestrator\nfull:\n%s", got)
+	}
+}
+
+// TestPreToolUse_AgentSelectorNoMatchForWrongCaller verifies that a rule with
+// agent:orchestrator in its applies_to does NOT appear in Matched when the
+// caller is a subagent, and vice versa.
+func TestPreToolUse_AgentSelectorNoMatchForWrongCaller(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+
+	database, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	// Rule only targets orchestrator.
+	if insertErr := insertTestRule(database, "r1", "Orch only", "Orchestrator only.",
+		model.SeverityBlock, []string{"agent:orchestrator+internal/**"}); insertErr != nil {
+		t.Fatalf("insertTestRule: %v", insertErr)
+	}
+	database.Close()
+
+	rulesList, err := queryRulesFromDB(dbPath)
+	if err != nil {
+		t.Fatalf("queryRulesFromDB: %v", err)
+	}
+
+	cwd := dir
+	filePath := filepath.Join(dir, "internal", "store", "memory.go")
+
+	// Subagent: rule with agent:orchestrator should NOT match.
+	subResult := rules.Match(rulesList, rules.Invocation{Tool: "Edit", FilePath: filePath, CWD: cwd, Caller: rules.CallerSubagent})
+	if len(subResult.Matched) != 0 {
+		t.Errorf("agent:orchestrator rule should not match for subagent, got %d matches", len(subResult.Matched))
+	}
+
+	// Orchestrator: rule with agent:orchestrator SHOULD match.
+	orchResult := rules.Match(rulesList, rules.Invocation{Tool: "Edit", FilePath: filePath, CWD: cwd, Caller: rules.CallerOrchestrator})
+	if len(orchResult.Matched) != 1 {
+		t.Errorf("agent:orchestrator rule should match for orchestrator, got %d matches", len(orchResult.Matched))
+	}
+}
