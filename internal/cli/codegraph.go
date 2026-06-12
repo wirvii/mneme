@@ -34,6 +34,7 @@ func newCodegraphCmd() *cobra.Command {
 		newCodegraphNodeCmd(),
 		newCodegraphTraceCmd(),
 		newCodegraphFilesCmd(),
+		newCodegraphHooksCmd(),
 	)
 	return cmd
 }
