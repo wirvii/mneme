@@ -14,6 +14,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/juanftp/mneme/internal/codegraph"
 	"github.com/juanftp/mneme/internal/config"
 	"github.com/juanftp/mneme/internal/db"
 	"github.com/juanftp/mneme/internal/model"
@@ -32,7 +33,9 @@ import (
 //   - session-end: prints a reminder prompt that instructs the agent to call the
 //     mem_session_end MCP tool before the session is closed
 //   - pre-tool-use: evaluates active rules against the current tool invocation
-//     (stdin JSON) and emits markdown to stdout; exits with code 2 to block
+//     (stdin JSON) and emits markdown to stdout; exits with code 2 to block.
+//     Also emits a context-only codegraph nudge (SPEC-044) for Read/Grep/Glob
+//     when the project has an indexed code graph — fail-open, exit 0 always.
 //   - enforce-delegation: legacy config-based delegation enforcement (deprecated)
 //   - tokenize: parse a shell command from stdin and write structured JSON tokens
 //     to stdout; used by enforce_delegation.sh as a robust tokenizer backend
@@ -283,8 +286,9 @@ func runHookSessionEnd() error {
 
 // hookPreToolInput is the JSON payload that Claude Code sends to a PreToolUse
 // hook via stdin. It captures the fields used by the hook: the tool name, the
-// target file path, the notebook path (NotebookEdit), and the five known
-// locations where agent_id may appear to signal a subagent invocation.
+// target file path, the notebook path (NotebookEdit), the five known locations
+// where agent_id may appear to signal a subagent invocation, and (SPEC-044)
+// the session_id used for per-session nudge deduplication.
 //
 // Note: null JSON values deserialise to "" for string fields, which matches the
 // desired semantics — an absent or null agent_id means orchestrator.
@@ -293,7 +297,14 @@ type hookPreToolInput struct {
 	ToolInput struct {
 		FilePath     string `json:"file_path"`
 		NotebookPath string `json:"notebook_path"`
+		// Path is the directory / glob path sent by Grep and Glob tools (SPEC-044).
+		Path string `json:"path"`
 	} `json:"tool_input"`
+
+	// SessionID is the per-session identifier injected by Claude Code (SPEC-044).
+	// When present it is used as the statefile key so the nudge fires at most once
+	// per session. Absent or empty falls back to a project-keyed TTL entry.
+	SessionID string `json:"session_id"`
 
 	// The five paths where Claude Code may inject agent_id (SPEC-042 / SPEC-043).
 	// Any non-empty value signals a subagent; all empty / absent means orchestrator.
@@ -386,6 +397,10 @@ func runHookPreToolUse(r io.Reader, w, errW io.Writer) error {
 		}
 		return nil
 	}
+
+	// C1: nudge agents toward codegraph_* for read/search tools (SPEC-044).
+	// Context-only, fail-open, exit 0. Independent of the rules engine.
+	maybeEmitCodegraphNudge(input, cwd, w, errW)
 
 	// Only intercept file-mutating tools; everything else is allowed immediately.
 	if !mutatingTools[input.ToolName] {
@@ -603,6 +618,214 @@ func renderPreToolUseOutput(w io.Writer, toolName, filePath, cwd string, result 
 		}
 	}
 	fmt.Fprintf(w, "<!-- mneme:rules:end -->\n")
+}
+
+// ---- Codegraph nudge (SPEC-044, Workstream C1) ------------------------------
+
+// nudgeTools is the set of tool names that trigger the codegraph nudge. These
+// are read/search tools that an agent uses to explore code structure — exactly
+// the cases where an indexed code graph can substitute for token-heavy rereads.
+var nudgeTools = map[string]bool{
+	"Read": true,
+	"Grep": true,
+	"Glob": true,
+}
+
+// nudgeStateFilename is the name of the JSON file that persists per-session /
+// per-project nudge state under cfg.Storage.DataDir (SPEC-044 D4).
+const nudgeStateFilename = "codegraph-nudge-state.json"
+
+// nudgeTTL4h is the TTL applied to project-keyed fallback entries (no session_id).
+const nudgeTTL4h = 4 * time.Hour
+
+// nudgePruneAge is the maximum age of a statefile entry before it is pruned on
+// the next write. This prevents the statefile from growing without bound.
+const nudgePruneAge = 24 * time.Hour
+
+// nudgeStalenessThreshold is the elapsed time after which a code graph is
+// considered stale and the refresh recommendation is included in the nudge.
+const nudgeStalenessThreshold = 24 * time.Hour
+
+// maybeEmitCodegraphNudge checks whether the current tool invocation warrants
+// a nudge toward the codegraph_* tools and, if so, writes the nudge block to w.
+// It is fail-open and never returns an error or calls os.Exit.
+//
+// Order of checks (cheapest-to-costliest, abort early):
+//  1. Tool filter: only Read, Grep, Glob.
+//  2. Config / opt-out: [codegraph] hook_nudge_enabled.
+//  3. Resolve suppression key from session_id (no git/DB needed).
+//  4. Statefile check: already injected for this key → return (hot path, <1ms).
+//  5. Anti-loop: path under cfg.Storage.DataDir → return.
+//  6. Project detection + os.Stat(dbPath).
+//  7. ProbeGraph: 0 nodes → return; staleness check.
+//  8. Emit nudge + mark statefile.
+func maybeEmitCodegraphNudge(input hookPreToolInput, cwd string, w, errW io.Writer) {
+	// 1. Tool filter.
+	if !nudgeTools[input.ToolName] {
+		return
+	}
+
+	// 2. Config / opt-out.
+	cfg, cfgErr := config.Load(config.DefaultPath())
+	if cfgErr != nil {
+		// Fail-open: cannot load config, skip nudge silently.
+		return
+	}
+	if !cfg.Codegraph.HookNudgeEnabled {
+		return
+	}
+
+	// 3. Resolve suppression key (cheap: just string from session_id).
+	var key string
+	var useProjectKey bool
+	if input.SessionID != "" {
+		key = "sid:" + input.SessionID
+	}
+	// key is empty when no session_id; we'll fill it after project detection below.
+
+	// 4. If we have a key already (session_id path), check statefile early.
+	stateFilePath := filepath.Join(cfg.Storage.DataDir, nudgeStateFilename)
+	if key != "" {
+		state := loadNudgeState(stateFilePath)
+		if _, alreadyInjected := state[key]; alreadyInjected {
+			// Hot path: already nudged this session, skip everything else.
+			return
+		}
+	}
+
+	// 5. Anti-loop: skip when the path being read is inside DataDir (mneme's own files).
+	candidate := input.ToolInput.FilePath
+	if candidate == "" {
+		candidate = input.ToolInput.Path
+	}
+	if candidate != "" && isMnemeInternalPath(candidate, cfg.Storage.DataDir) {
+		return
+	}
+
+	// 6. Project detection + codegraph DB stat.
+	det := project.NewDetector(cwd)
+	slug, _ := det.DetectProject()
+	if slug == "" {
+		return
+	}
+
+	projectsDir := filepath.Join(cfg.Storage.DataDir, "projects")
+	dbPath := codegraph.DBPath(projectsDir, slug)
+	if _, statErr := os.Stat(dbPath); os.IsNotExist(statErr) {
+		return
+	}
+
+	// Resolve the project-keyed fallback if we don't have a session key yet.
+	if key == "" {
+		key = "proj:" + slug
+		useProjectKey = true
+	}
+
+	// 4b. Statefile check for the project-key path (we skipped it above for empty key).
+	if useProjectKey {
+		state := loadNudgeState(stateFilePath)
+		if storedMs, found := state[key]; found {
+			elapsed := time.Duration(time.Now().UnixMilli()-storedMs) * time.Millisecond
+			if elapsed < nudgeTTL4h {
+				return
+			}
+			// TTL expired: fall through to re-inject.
+		}
+	}
+
+	// 7. ProbeGraph: existence + staleness.
+	hasNodes, lastUpdatedMs, probeErr := codegraph.ProbeGraph(dbPath)
+	if probeErr != nil || !hasNodes {
+		// Fail-open: error or empty graph → no nudge.
+		return
+	}
+
+	stale := false
+	var hoursStale int
+	if lastUpdatedMs > 0 {
+		elapsed := time.Since(time.UnixMilli(lastUpdatedMs))
+		if elapsed > nudgeStalenessThreshold {
+			stale = true
+			hoursStale = int(elapsed.Hours())
+		}
+	}
+
+	// 8. Emit nudge + mark statefile.
+	renderCodegraphNudge(w, stale, hoursStale)
+	markNudgeState(stateFilePath, key)
+}
+
+// isMnemeInternalPath reports whether path (after best-effort cleaning) is
+// located inside dataDir (the mneme data directory, e.g. ~/.mneme). This is
+// used to prevent the hook from nudging the agent when it is reading mneme's
+// own database files, statefiles, or workflow outputs.
+func isMnemeInternalPath(path, dataDir string) bool {
+	// Best-effort: if Abs fails we compare the clean paths directly.
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		abs = filepath.Clean(path)
+	}
+	cleanData := filepath.Clean(dataDir)
+	return strings.HasPrefix(abs, cleanData+string(filepath.Separator)) || abs == cleanData
+}
+
+// nudgeState is the in-memory representation of the statefile.
+// Keys are "sid:<session_id>" or "proj:<slug>"; values are Unix epoch ms.
+type nudgeState map[string]int64
+
+// loadNudgeState reads the statefile at path and returns the parsed map.
+// On any read or parse error it returns an empty map (fail-open: treat as
+// "never injected").
+func loadNudgeState(path string) nudgeState {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nudgeState{}
+	}
+	var state nudgeState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return nudgeState{}
+	}
+	return state
+}
+
+// markNudgeState writes key=now to the statefile at path, pruning entries
+// older than nudgePruneAge. Write errors are silently ignored (fail-open).
+func markNudgeState(path, key string) {
+	state := loadNudgeState(path)
+	now := time.Now().UnixMilli()
+	state[key] = now
+
+	// Prune entries older than nudgePruneAge to prevent unbounded growth.
+	cutoff := now - nudgePruneAge.Milliseconds()
+	for k, v := range state {
+		if v < cutoff {
+			delete(state, k)
+		}
+	}
+
+	data, err := json.Marshal(state)
+	if err != nil {
+		return // fail-open
+	}
+	_ = os.WriteFile(path, data, 0o600) // errors ignored (fail-open)
+}
+
+// renderCodegraphNudge writes the codegraph nudge markdown block to w.
+// When stale is true, a recommendation to run "mneme codegraph index" is
+// appended before the closing delimiter, with the approximate hours since
+// the last index in the message.
+func renderCodegraphNudge(w io.Writer, stale bool, hoursStale int) {
+	fmt.Fprintf(w, "<!-- mneme:codegraph-nudge:start -->\n")
+	fmt.Fprintf(w, "## mneme — code graph available\n\n")
+	fmt.Fprintf(w, "This project has an indexed code graph. Before reading or grepping source to\n")
+	fmt.Fprintf(w, "understand structure, prefer the codegraph tools (far fewer tokens):\n")
+	fmt.Fprintf(w, "`codegraph_search` (find a symbol), `codegraph_context` / `codegraph_callers` /\n")
+	fmt.Fprintf(w, "`codegraph_callees` (relationships), `codegraph_impact` (blast radius).\n")
+	fmt.Fprintf(w, "Use Read/Grep only for exact source text the graph can't provide.\n")
+	if stale {
+		fmt.Fprintf(w, "Note: the graph may be stale (last indexed %dh ago). Run `mneme codegraph index` to refresh.\n", hoursStale)
+	}
+	fmt.Fprintf(w, "<!-- mneme:codegraph-nudge:end -->\n")
 }
 
 // runHookEnforceDelegation checks whether the current tool invocation targets

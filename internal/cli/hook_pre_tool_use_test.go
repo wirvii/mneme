@@ -203,7 +203,10 @@ func TestPreToolUse_NoMatch(t *testing.T) {
 }
 
 // TestPreToolUse_NonMutatingTool verifies that runHookPreToolUse returns nil
-// with empty stdout for non-mutating tools (e.g. "Read").
+// and does not produce any rules-engine output for non-mutating tools (e.g.
+// "Read"). The tool may still emit a codegraph nudge block when an indexed
+// code graph is present for the current project (SPEC-044), so we verify the
+// absence of the rules block rather than requiring an empty stdout.
 func TestPreToolUse_NonMutatingTool(t *testing.T) {
 	stdin := buildPreToolStdin("Read", "/some/file.go")
 	var stdout, stderr bytes.Buffer
@@ -211,8 +214,10 @@ func TestPreToolUse_NonMutatingTool(t *testing.T) {
 	if err := runHookPreToolUse(stdin, &stdout, &stderr); err != nil {
 		t.Fatalf("runHookPreToolUse returned error: %v", err)
 	}
-	if stdout.Len() != 0 {
-		t.Errorf("expected empty stdout for non-mutating tool, got: %s", stdout.String())
+	// The rules engine must not produce a rules block for non-mutating tools.
+	out := stdout.String()
+	if strings.Contains(out, "<!-- mneme:rules:start -->") {
+		t.Errorf("rules block must not appear for non-mutating tool, got: %s", out)
 	}
 }
 
