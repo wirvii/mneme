@@ -65,14 +65,28 @@ tool:Write           Cualquier llamada a Write
 tool:MultiEdit       Cualquier llamada a MultiEdit
 ```
 
-### Combined selectors (AND)
+### Agent selectors (role-aware, SPEC-043)
 
-Tool + path separados por `+`. Ambos deben matchear.
+Matchean contra el **rol del invocador** del hook: orquestador (sesion principal, sin `agent_id`) o subagente (Task/Agent spawned, `agent_id` presente).
 
 ```
-tool:Edit+internal/**        Edit Y path dentro de internal/
-tool:Write+**/*.sql          Write Y archivos .sql
-tool:MultiEdit+cmd/**/*.go   MultiEdit Y archivos Go en cmd/
+agent:orchestrator   Solo aplica al orquestador (sesion principal)
+agent:subagent       Solo aplica a subagentes (Task/Agent calls)
+agent:*              Aplica a todos los roles (wildcard)
+agent:<otro>         Reservado — no matchea (DIFERIDO, forward-compat)
+```
+
+**`agent:<agent_type>` DIFERIDO:** El formato `agent:backend`, `agent:frontend`, etc. se reserva para cuando Claude Code exponga el campo `agent_type` en el payload. Por ahora, cualquier nombre distinto de `orchestrator`, `subagent` y `*` no matchea en ninguno de los dos roles.
+
+### Combined selectors (AND)
+
+Partes separadas por `+`. **Todas** las partes deben matchear (AND). Soporta N partes, no solo 2.
+
+```
+tool:Edit+internal/**                              Edit Y path en internal/
+tool:Write+**/*.sql                                Write Y archivos .sql
+agent:orchestrator+tool:Edit+internal/**           Edit Y path en internal/ Y caller es orquestador
+agent:*+tool:Write+cmd/**                          Write Y path en cmd/ Y cualquier caller
 ```
 
 ### Negaciones
@@ -82,13 +96,13 @@ Prefijo `!` veta la regla cuando el patron matchea. Util para excepciones.
 ```
 !docs/**             No aplica si el path esta en docs/
 !*.md                No aplica para archivos markdown
-!test/**             No aplica para archivos de test
+!agent:subagent      Veta la regla cuando el invocador es subagente
 ```
 
 ### Wildcard global
 
 ```
-**                   Aplica a todo: cualquier tool, cualquier path
+**                   Aplica a todo: cualquier tool, cualquier path, cualquier caller
 ```
 
 ### Combinaciones
@@ -106,8 +120,10 @@ Esto significa: "aplica a Go files en internal/ O cmd/, EXCEPTO test files".
 - Tool selectors son **case-sensitive**: `tool:Edit` no es `tool:edit`
 - La negacion (`!`) solo funciona como entry de top-level, no dentro de un `+` combined
 - Paths son relativos al directorio de trabajo del proyecto
-- Paths fuera del arbol del proyecto solo matchean tool selectors y `**`
+- Paths fuera del arbol del proyecto solo matchean tool selectors, agent selectors y `**`
 - Los symlinks no se resuelven; el matching usa el path literal
+- `tool:Bash` es **contexto-only** en el motor Go de reglas: Bash no esta en `mutatingTools`, por lo que una regla con `tool:Bash` jamas dispara desde `pre-tool-use` Go. El enforcement de Bash es territorio exclusivo de `enforce_delegation.sh` (Layer 2). Ver [HOOKS.md](HOOKS.md).
+- En el `session-start` hook (`mem_context`), las entries `agent:` se muestran literalmente como informativas — no hay un caller concreto contra quien evaluar en ese momento.
 
 ---
 
@@ -117,7 +133,34 @@ Esto significa: "aplica a Go files en internal/ O cmd/, EXCEPTO test files".
 |----------|---------------|-------------------|---------------|
 | `info` | Exit 0, stdout con reminder | Inyectada con tag `[INFO]` | Guias suaves, buenas practicas, recordatorios |
 | `warn` | Exit 0, stdout con warning | Inyectada con tag `[WARN]` | Reglas que el agente debe considerar pero puede overridear |
-| `block` | **Exit 2** (tool call rechazado) | Inyectada con tag `[BLOCK]` | Prohibiciones absolutas, delegation enforcement |
+| `block` | **Exit 2** para el orquestador; **degradada a warn** para subagentes (sin selector `agent:`) | Inyectada con tag `[BLOCK]` u `[WARN — degraded from BLOCK]` | Prohibiciones absolutas, delegation enforcement |
+
+### Degradacion block→warn para subagentes (SPEC-043)
+
+Una regla `block` **sin** selector `agent:` se **degrada automaticamente a warn** cuando el invocador es un subagente:
+
+- La regla **sigue apareciendo** en el output — no es un skip silencioso.
+- El tag se muestra como `[WARN — degraded from BLOCK for subagent]`.
+- La accion final muestra `ALLOWED` (no `BLOCKED`).
+- Una nota informativa indica cuantas reglas son `BLOCK` para el orquestador y fueron degradadas.
+- El hook **no sale con exit 2** para el subagente.
+
+**Razon:** el orquestador nunca debe editar codigo directamente (delegation); los subagentes (backend, frontend, etc.) son los implementadores legales. La degradacion permite que las reglas de proteccion de paths bloqueen al orquestador **sin interferir con el trabajo legitimo de los subagentes**.
+
+Para bloquear a un subagente especificamente, usa un selector `agent:` explicito:
+```bash
+mneme rule add -t "Subagent cannot touch migrations" \
+  -c "Use only dbmate to modify migrations." \
+  -a "agent:subagent+internal/db/migrations/**" \
+  -s block
+```
+
+Para bloquear a todos (orquestador Y subagentes), usa `agent:*`:
+```bash
+mneme rule add -t "Never edit vendor" \
+  -c "Files in vendor/ are managed by go mod." \
+  -a "agent:*+vendor/**" -s block
+```
 
 ### Cuando usar block
 
@@ -378,12 +421,25 @@ mneme rule add -t "Do not edit migrations manually" \
 ### Delegation (multi-agent)
 
 ```bash
-# Protect source code from orchestrator
+# Protect source code from orchestrator — subagentes pueden editar (se degrada a warn para ellos)
 mneme rule add -t "Delegation: protect source paths" \
   -c "Delegate code edits in protected paths to the appropriate subagent." \
   -a "tool:Edit+cmd/**" -a "tool:Write+cmd/**" -a "tool:MultiEdit+cmd/**" \
   -a "tool:Edit+internal/**" -a "tool:Write+internal/**" -a "tool:MultiEdit+internal/**" \
   -s block
+
+# Con selector explicito: solo bloquea al orquestador (semanticamente identico al anterior)
+mneme rule add -t "Delegation: protect source paths (explicit)" \
+  -c "Delegate code edits in protected paths to the appropriate subagent." \
+  -a "agent:orchestrator+tool:Edit+internal/**" \
+  -a "agent:orchestrator+tool:Write+internal/**" \
+  -a "agent:orchestrator+tool:MultiEdit+internal/**" \
+  -s block
+
+# Proteger archivos generados de TODOS (incluyendo subagentes)
+mneme rule add -t "Do not edit generated files" \
+  -c "Files matching *_gen.go are auto-generated. Run go generate instead." \
+  -a "agent:*+**/*_gen.go" -s block
 ```
 
 ---
@@ -397,7 +453,7 @@ A: Las reglas se inyectan en `mem_context` al inicio de la sesion (via `session-
 A: Las reglas `info` y `warn` son advisory -- el agente las recibe pero puede proceder. Las reglas `block` son absolutas: el hook rechaza el tool call con exit code 2 y Claude Code cancela la accion. No hay override en runtime; para deshabilitar una regla, usa `mem_forget` o `mem_update`.
 
 **Q: Bloquean al architect/backend subagent?**
-A: Si. El hook evalua reglas sin importar quien ejecuta. Para permitir que un subagent edite paths protegidos, crea las reglas con negaciones que lo permitan, o usa `severity: warn` en lugar de `block` para esos paths.
+A: Depende. Reglas `block` **sin** selector `agent:` se degradan automaticamente a `warn` para subagentes — el subagente las ve como contexto pero no queda bloqueado (exit 0). Reglas con `agent:*+...` o `agent:subagent+...` SÍ bloquean a subagentes (exit 2). Reglas con `agent:orchestrator+...` nunca se aplican a subagentes. Ver seccion "Degradacion block→warn para subagentes".
 
 **Q: Que pasa si no hay reglas en la DB?**
 A: `pre-tool-use` sale con code 0 (allow) -- no hace nada. `mem_context` omite la seccion "Active Rules".

@@ -38,12 +38,30 @@ it, regardless of what the prompt says.
 | `frontend` | `Read, Grep, Glob, NotebookRead, NotebookEdit, BashOutput, Edit, Write, MultiEdit, Bash, mcp__mneme__*` |
 | `bug-hunter` | `Read, Grep, Glob, NotebookRead, NotebookEdit, BashOutput, Edit, Write, MultiEdit, Bash, mcp__mneme__*` |
 
-### Layer 2 — Bash hook (defense in depth, orchestrator-only)
+### Layer 2a — Go rules engine (role-aware, SPEC-043)
+
+`mneme hook pre-tool-use` (Go binary) evaluates **DB rules** against every
+`Edit`, `Write`, `MultiEdit`, and `NotebookEdit` call. Since SPEC-043 the engine
+is **role-aware**:
+
+- Resolves the caller role from the payload's five `agent_id` locations
+  (multi-key, same logic as the bash hook).
+- Supports `agent:orchestrator|subagent|*` selectors in `applies_to`.
+- **Degrades block→warn** for subagents on rules without an explicit `agent:`
+  selector: the rule appears as context but does not exit 2.
+- `tool:Bash` is **context-only** in this layer — Bash does not appear in
+  `mutatingTools`; a rule with `tool:Bash` never triggers from pre-tool-use Go.
+
+This means `block` delegation rules (e.g. the historic `019e4261` rule) now
+correctly block only the orchestrator and degrade for legitimate subagent
+implementers, eliminating the need to keep them at `warn` permanently.
+
+### Layer 2b — Bash hook (defense in depth, orchestrator-only)
 
 `~/.claude/hooks/enforce_delegation.sh` is a `PreToolUse` hook that inspects
 the Claude Code hook payload from stdin. It detects whether the caller is the
-orchestrator by the absence of the `agent_id` field (subagents dispatched via
-the Task tool always have `agent_id`).
+orchestrator by the multi-key `agent_id` resolution (introduced in SPEC-042)
+and checks all five known payload locations.
 
 When the orchestrator attempts a file-mutating tool (`Write`, `Edit`,
 `MultiEdit`, `NotebookEdit`, or a protected `Bash` command) against a path
@@ -130,9 +148,27 @@ because their capability boundary is the `tools:` allowlist.
 
 ## How the hook decides
 
+### Go rules engine (Layer 2a)
+
 ```
 read stdin (PreToolUse JSON payload)
-  if agent_id present → exit 0  (subagent, not our concern — Layer 1 handles it)
+  resolve caller: check agent_id, session.agent_id, subagent.agent_id,
+                  context.agent_id, metadata.agent_id
+    → any non-empty = subagent; all empty = orchestrator
+  if tool not in {Edit, Write, MultiEdit, NotebookEdit} → exit 0
+  load rules from project + global DB (read-only)
+  match rules against tool + path + caller role
+    → rules with agent: selector: evaluated as-is
+    → rules without agent: selector + block + caller=subagent: Effective=warn
+  if MaxSev(effective) == block → exit 2
+  else emit markdown context → exit 0
+```
+
+### Bash hook (Layer 2b — orchestrator only)
+
+```
+read stdin (PreToolUse JSON payload)
+  if agent_id present (any of 5 locations) → exit 0  (subagent)
   if tool not in {Write, Edit, MultiEdit, NotebookEdit, Bash} → exit 0
   if Bash → check command for protected paths/patterns
   if file_path in whitelist → exit 0
@@ -142,5 +178,5 @@ read stdin (PreToolUse JSON payload)
     exit 2
 ```
 
-Whitelist: `.claude/**`, `~/.claude/**`, `CLAUDE.md` (any location),
-`**/docs/*.md`, `.claudeignore`.
+Whitelist: `.claude/**`, `~/.claude/**`, `~/.mneme/**`, `CLAUDE.md` (any
+location), `**/docs/*.md`, `.claudeignore`, `/tmp/**`, `/private/tmp/**`.

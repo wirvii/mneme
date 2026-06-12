@@ -64,30 +64,82 @@ Fires at `Stop`. Prints a reminder prompt that instructs the agent to call
 
 ### What it does
 
-The `pre-tool-use` hook fires before every `Edit`, `Write`, and `MultiEdit`
-tool call. It:
+The `pre-tool-use` hook fires before every `Edit`, `Write`, `MultiEdit`, and
+`NotebookEdit` tool call. It:
 
 1. Reads the tool invocation JSON from stdin (Claude Code provides this).
-2. Queries active rules from the mneme databases (project + global) in read-only
+2. Resolves the **invoking role** (orchestrator vs subagent) from the five known
+   `agent_id` payload fields (see "Role resolution" below).
+3. Queries active rules from the mneme databases (project + global) in read-only
    mode.
-3. Matches rules against the current tool name and file path.
-4. Emits a markdown reminder to stdout for Claude Code to inject as a system
-   reminder (info/warn/block rules all appear).
-5. Exits with code 2 if any `block`-severity rule matched, causing Claude Code
-   to reject the tool call.
+4. Matches rules against the tool name, file path, and caller role.
+5. Emits a markdown reminder to stdout for Claude Code to inject as a system
+   reminder (info/warn/block rules all appear; degraded rules show as WARN).
+6. Exits with code 2 **only if an effective block** rule matched — block rules
+   are automatically degraded to warn for subagents unless an explicit `agent:`
+   selector targets them.
 
-### Stdin format
+### Role resolution (SPEC-043)
 
-Claude Code passes the following JSON to the hook:
+Claude Code may inject `agent_id` in different payload locations depending on
+version. The hook checks all five known locations (first non-empty wins):
 
 ```json
 {
-  "tool_name": "Edit",
-  "tool_input": {
-    "file_path": "/absolute/path/to/file.go"
-  }
+  "agent_id": "...",
+  "session":  { "agent_id": "..." },
+  "subagent": { "agent_id": "..." },
+  "context":  { "agent_id": "..." },
+  "metadata": { "agent_id": "..." }
 }
 ```
+
+- Any non-empty value → **subagent** (exit 0 for block rules degraded to warn).
+- All empty / null / absent → **orchestrator** (block rules exit 2 as usual).
+
+### Role-aware degradation (SPEC-043)
+
+A `block`-severity rule **without** an `agent:` selector is automatically
+degraded to `warn` for subagents:
+
+| Rule | Caller | Effective | Exit |
+|------|--------|-----------|------|
+| `block`, no agent: selector | orchestrator | block | 2 |
+| `block`, no agent: selector | subagent | warn (degraded) | 0 |
+| `block`, `agent:*` | subagent | block | 2 |
+| `block`, `agent:orchestrator` | subagent | (no match) | — |
+
+The degraded rule still appears in stdout with a `[WARN — degraded from BLOCK
+for subagent]` annotation so the subagent has full context.
+
+### tool:Bash is context-only
+
+`Bash` is **not** in `mutatingTools`. A rule with `tool:Bash` never triggers in
+the Go pre-tool-use engine. Bash enforcement is the exclusive responsibility of
+`enforce_delegation.sh` (Layer 2). Adding Bash to the Go engine is out of scope.
+
+### Stdin format
+
+Claude Code passes the following JSON to the hook (all five `agent_id` locations
+may appear simultaneously; only one needs to be non-empty to signal a subagent):
+
+```json
+{
+  "tool_name": "Edit|Write|MultiEdit|NotebookEdit|Bash",
+  "tool_input": {
+    "file_path": "/absolute/path/to/file.go",
+    "notebook_path": "/absolute/path/to/notebook.ipynb"
+  },
+  "agent_id":  "abc-123",
+  "session":   { "agent_id": "..." },
+  "subagent":  { "agent_id": "..." },
+  "context":   { "agent_id": "..." },
+  "metadata":  { "agent_id": "..." }
+}
+```
+
+For `NotebookEdit`, `tool_input.file_path` may be absent; the hook falls back to
+`tool_input.notebook_path`.
 
 ### Stdout format (when rules match)
 
@@ -146,21 +198,27 @@ mneme save --type rule --severity block \
 
 ### Pattern syntax
 
-| Pattern                   | Matches                                           |
-|---------------------------|---------------------------------------------------|
-| `**`                      | Everything — any tool, any path                   |
-| `tool:Edit`               | Any Edit call, regardless of path                 |
-| `internal/**/*.go`        | Any Go file under internal/, regardless of tool   |
-| `tool:Edit+internal/**`   | Edit AND path inside internal/ (AND logic)        |
-| `!docs/**`                | Negation: excludes paths in docs/                 |
-| `["**", "!docs/**"]`      | Everything except docs/ paths                     |
+| Pattern                                    | Matches                                                   |
+|--------------------------------------------|-----------------------------------------------------------|
+| `**`                                       | Everything — any tool, any path, any caller               |
+| `tool:Edit`                                | Any Edit call, regardless of path or caller               |
+| `agent:orchestrator`                       | Only when caller is the orchestrator (no agent_id)        |
+| `agent:subagent`                           | Only when caller is a subagent (agent_id present)         |
+| `agent:*`                                  | Any caller (orchestrator or subagent)                     |
+| `internal/**/*.go`                         | Any Go file under internal/, regardless of tool           |
+| `tool:Edit+internal/**`                    | Edit AND path inside internal/                            |
+| `agent:orchestrator+tool:Edit+internal/**` | Edit AND internal/ AND caller is orchestrator (3 parts)   |
+| `!docs/**`                                 | Negation: excludes paths in docs/                         |
+| `["**", "!agent:subagent"]`                | Applies to all callers except subagents                   |
 
 **Notes:**
 - Tool selectors are case-sensitive (`tool:Edit` ≠ `tool:edit`).
+- Combined entries support N parts separated by `+` (not limited to 2).
 - Negation (`!`) only works at the top-level array entry, not inside a `+` combined entry.
 - Paths are relative to the project working directory.
-- Paths outside the project tree (e.g. `/etc/hosts`) only match tool selectors and `**`, not path globs.
+- Paths outside the project tree only match tool selectors, agent selectors, and `**`.
 - Symlinks are not resolved; matching uses the literal path from `tool_input.file_path`.
+- `agent:<other>` (e.g. `agent:backend`) is reserved / deferred — never matches.
 
 ### Performance
 
@@ -211,6 +269,15 @@ subagent (Task/Agent tool call). The hook reads this field:
 | `**/docs/*.md` | Markdown files under any `docs/` directory |
 | `.claude/**` | Project-local Claude config directory |
 | `~/.claude/**` | Global Claude config directory (absolute path check) |
+| `~/.mneme/**` | mneme workflow and spec files (SDD scratch) |
+| `/tmp/**` | Temporary scratch files (orchestrator planning, etc.) |
+| `/private/tmp/**` | macOS equivalent of `/tmp` |
+
+**CONDICIÓN 2 — `/tmp` is not a bridge to the repo:** the whitelist allows
+writing TO `/tmp`. However, `cp /tmp/x.go internal/store/x.go` is still
+BLOCKED because the destination (`internal/store/x.go`) is a protected path.
+The hook's `_find_last_word_target` heuristic takes the **last** non-flag word
+as the target of `cp`/`mv`, so the destination is what is checked.
 
 ### Tools intercepted
 
