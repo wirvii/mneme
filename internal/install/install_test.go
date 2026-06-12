@@ -1537,6 +1537,130 @@ func TestDelegationHook_SmokeTests(t *testing.T) {
 			payload:  `{"tool_name":"Bash","tool_input":{"command":"python3 -c \"open('.claude/x','w')\""}}`,
 			wantExit: 0,
 		},
+
+		// --- F-cases: SPEC-043 regression — 4 fixes (Fix 1..4) ---
+
+		// Fix 1 — strip redirect operator pegado al candidato (2>/dev/null).
+
+		// F1: python with 2>/dev/null and no protected path → allow.
+		// Previously '2>/dev/null' was treated as a path candidate, producing a
+		// false positive for any python/node inline with stderr redirect.
+		{
+			name:     "F1_python_redirect_2devnull_no_path",
+			payload:  `{"tool_name":"Bash","tool_input":{"command":"python3 -c \"print(2+2)\" 2>/dev/null"}}`,
+			wantExit: 0,
+		},
+		// F2: python opens whitelisted CLAUDE.md with stderr redirect → allow.
+		{
+			name:     "F2_python_open_CLAUDE_md_with_redirect",
+			payload:  `{"tool_name":"Bash","tool_input":{"command":"python3 -c \"open('CLAUDE.md')\" 2>/dev/null"}}`,
+			wantExit: 0,
+		},
+		// F3: python opens protected path with stderr redirect → still block (exit 2).
+		// The strip fix must not relax protection against real protected paths.
+		{
+			name:     "F3_python_open_protected_path_with_redirect",
+			payload:  `{"tool_name":"Bash","tool_input":{"command":"python3 -c \"open('internal/x.go','w')\" 2>/dev/null"}}`,
+			wantExit: 2,
+		},
+		// F4: node with 2>/dev/null and no protected path → allow.
+		{
+			name:     "F4_node_redirect_2devnull_no_path",
+			payload:  `{"tool_name":"Bash","tool_input":{"command":"node -e \"console.log(1)\" 2>/dev/null"}}`,
+			wantExit: 0,
+		},
+
+		// Fix 2 — tilde expansion + whitelist ~/.mneme/** and ~/.claude/**.
+
+		// F5: Write to ~/.mneme/... with literal tilde → allow (SDD workflow dir).
+		{
+			name:     "F5_write_tilde_mneme",
+			payload:  `{"tool_name":"Write","tool_input":{"file_path":"~/.mneme/workflows/x/specs/SPEC-043/spec.md"}}`,
+			wantExit: 0,
+		},
+		// F6: Write to ~/.claude/... with literal tilde → allow.
+		{
+			name:     "F6_write_tilde_dotclaude",
+			payload:  `{"tool_name":"Write","tool_input":{"file_path":"~/.claude/settings.json"}}`,
+			wantExit: 0,
+		},
+		// F7: Bash redirect to ~/.mneme/... with literal tilde → allow.
+		{
+			name:     "F7_redirect_tilde_mneme",
+			payload:  `{"tool_name":"Bash","tool_input":{"command":"echo x > ~/.mneme/scratch.txt"}}`,
+			wantExit: 0,
+		},
+		// F8: Write to ~/.config/foo (tilde, NOT in whitelist) → block.
+		{
+			name:     "F8_write_tilde_config_not_whitelisted",
+			payload:  `{"tool_name":"Write","tool_input":{"file_path":"~/.config/foo"}}`,
+			wantExit: 2,
+		},
+
+		// Fix 3 — /tmp/** and /private/tmp/** scratch.
+
+		// F9: Write to /tmp/... → allow (orchestrator scratch).
+		{
+			name:     "F9_write_tmp",
+			payload:  `{"tool_name":"Write","tool_input":{"file_path":"/tmp/hook_smoke.sh"}}`,
+			wantExit: 0,
+		},
+		// F10: Bash redirect to /tmp/... → allow.
+		{
+			name:     "F10_redirect_tmp",
+			payload:  `{"tool_name":"Bash","tool_input":{"command":"echo x > /tmp/out.log"}}`,
+			wantExit: 0,
+		},
+		// F11: Write to /private/tmp/... (macOS real path) → allow.
+		{
+			name:     "F11_write_private_tmp",
+			payload:  `{"tool_name":"Write","tool_input":{"file_path":"/private/tmp/x"}}`,
+			wantExit: 0,
+		},
+		// F12: Bash redirect to /var/foo (NOT tmp, NOT whitelist) → block.
+		{
+			name:     "F12_redirect_var_not_whitelisted",
+			payload:  `{"tool_name":"Bash","tool_input":{"command":"echo x > /var/foo"}}`,
+			wantExit: 2,
+		},
+
+		// Fix 4 — process substitution < <(cmd) excluded.
+
+		// F13: < <(jq ...) is not a redirect to a file path → allow.
+		// Previously the regex matched '< <(jq' and treated the content as a path.
+		{
+			name:     "F13_process_substitution_not_redirect",
+			payload:  `{"tool_name":"Bash","tool_input":{"command":"while read l; do echo $l; done < <(jq -r .x /tmp/a.json)"}}`,
+			wantExit: 0,
+		},
+
+		// --- S-cases: SPEC-043 scratch / CONDICIÓN 2 — /tmp is not a repo bridge ---
+
+		// S1: cp from /tmp TOWARD protected path → block (destination is protected).
+		// _find_last_word_target takes the last non-flag word (the destination).
+		{
+			name:     "S1_cp_tmp_to_protected",
+			payload:  `{"tool_name":"Bash","tool_input":{"command":"cp /tmp/x.go internal/store/x.go"}}`,
+			wantExit: 2,
+		},
+		// S2: mv from /tmp TOWARD apps/ → block (destination is protected).
+		{
+			name:     "S2_mv_tmp_to_apps",
+			payload:  `{"tool_name":"Bash","tool_input":{"command":"mv /tmp/x apps/web/x.ts"}}`,
+			wantExit: 2,
+		},
+		// S3: cp TOWARD /tmp (destination is scratch) → allow.
+		{
+			name:     "S3_cp_to_tmp",
+			payload:  `{"tool_name":"Bash","tool_input":{"command":"cp internal/x.go /tmp/x.go"}}`,
+			wantExit: 0,
+		},
+		// S4: tee to /tmp/... → allow.
+		{
+			name:     "S4_tee_tmp",
+			payload:  `{"tool_name":"Bash","tool_input":{"command":"echo x | tee /tmp/out"}}`,
+			wantExit: 0,
+		},
 	}
 
 	for _, tc := range cases {
