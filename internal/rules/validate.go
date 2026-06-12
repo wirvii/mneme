@@ -12,18 +12,21 @@ import (
 // immediate feedback rather than discovering broken patterns at hook runtime.
 //
 // Accepted forms:
-//   - "**"                    — global wildcard
-//   - "tool:Name"             — tool selector (Name must be non-empty)
-//   - "path/glob/**"          — doublestar path glob
-//   - "tool:Name+path/glob"   — combined (AND) selector
-//   - "!pattern"              — negation of any valid positive pattern
+//   - "**"                          — global wildcard
+//   - "tool:Name"                   — tool selector (Name must be non-empty)
+//   - "agent:orchestrator|subagent|*|<other>" — agent selector (empty name invalid)
+//   - "path/glob/**"                — doublestar path glob
+//   - "part1+part2+..."             — N-part combined (AND) selector
+//   - "!pattern"                    — negation of any valid positive pattern
 //
 // Rejected forms:
 //   - "" (empty string)
 //   - "tool:X+tool:Y" (two tool selectors — logically impossible AND)
+//   - "agent:X+agent:Y" (two agent selectors — logically ambiguous AND)
 //   - "tool:" (empty tool name)
+//   - "agent:" (empty agent name)
 //   - any path with an invalid doublestar glob syntax
-//   - "tool:Edit+" (empty path after the plus)
+//   - "tool:Edit+" (empty part after the plus)
 func ValidatePattern(entry string) error {
 	if entry == "" {
 		return fmt.Errorf("pattern must not be empty")
@@ -54,6 +57,10 @@ func validatePositiveEntry(entry, rawEntry string) error {
 		return validateCombinedEntry(entry, rawEntry)
 	}
 
+	if strings.HasPrefix(entry, "agent:") {
+		return validateAgentSelector(entry, rawEntry)
+	}
+
 	if strings.HasPrefix(entry, "tool:") {
 		return validateToolSelector(entry, rawEntry)
 	}
@@ -62,36 +69,66 @@ func validatePositiveEntry(entry, rawEntry string) error {
 	return validatePathGlob(entry, rawEntry)
 }
 
-// validateCombinedEntry validates "tool:Name+path/glob" entries.
+// validateCombinedEntry validates N-part "part1+part2+..." entries.
+//
+// Rules:
+//   - No part may be empty.
+//   - No two parts may both be tool: selectors (logically impossible AND).
+//   - No two parts may both be agent: selectors (logically ambiguous AND).
+//   - Each part must be individually valid.
 func validateCombinedEntry(entry, rawEntry string) error {
-	parts := strings.SplitN(entry, "+", 2)
-	left, right := parts[0], parts[1]
+	parts := strings.Split(entry, "+")
 
-	if right == "" {
-		return fmt.Errorf("invalid pattern %q: path is empty after '+'", rawEntry)
+	toolCount := 0
+	agentCount := 0
+
+	for i, part := range parts {
+		if part == "" {
+			if i == len(parts)-1 {
+				// Trailing + — the common "tool:Edit+" mistake.
+				return fmt.Errorf("invalid pattern %q: path is empty after '+'", rawEntry)
+			}
+			return fmt.Errorf("invalid pattern %q: empty part in combined entry", rawEntry)
+		}
+
+		if strings.HasPrefix(part, "tool:") {
+			toolCount++
+		}
+		if strings.HasPrefix(part, "agent:") {
+			agentCount++
+		}
 	}
 
-	// Both sides must be valid independently, but two tool selectors are not allowed.
-	leftIsTool := strings.HasPrefix(left, "tool:")
-	rightIsTool := strings.HasPrefix(right, "tool:")
-
-	if leftIsTool && rightIsTool {
+	if toolCount >= 2 {
 		return fmt.Errorf("invalid pattern %q: combined entries cannot have two tool selectors", rawEntry)
 	}
+	if agentCount >= 2 {
+		return fmt.Errorf("invalid pattern %q: combined entries cannot have two agent selectors", rawEntry)
+	}
 
-	if leftIsTool {
-		if err := validateToolSelector(left, rawEntry); err != nil {
+	// Validate each part individually.
+	for _, part := range parts {
+		if err := validatePositiveEntry(part, rawEntry); err != nil {
 			return err
 		}
-		return validatePathGlob(right, rawEntry)
 	}
+	return nil
+}
 
-	// Non-tool left side: both are treated as path globs (unusual but not prohibited
-	// by the matching engine — entryMatch handles it via doublestar).
-	if err := validatePathGlob(left, rawEntry); err != nil {
-		return err
+// validateAgentSelector validates an "agent:Name" entry.
+//
+// Name must be non-empty. Known values (orchestrator, subagent, *) are
+// accepted without warning. Unknown values (e.g. agent:backend) are accepted
+// without error for forward-compatibility — the matching engine currently
+// returns no-match for unknown agent types, which is the correct DEFERRED
+// behaviour. This mirrors the "unknown model alias" policy in model set.
+func validateAgentSelector(entry, rawEntry string) error {
+	name := strings.TrimPrefix(entry, "agent:")
+	if name == "" {
+		return fmt.Errorf("invalid pattern %q: agent name must not be empty after 'agent:'", rawEntry)
 	}
-	return validatePathGlob(right, rawEntry)
+	// All non-empty names are accepted (unknown names are forward-compat).
+	return nil
 }
 
 // validateToolSelector validates a "tool:Name" entry.

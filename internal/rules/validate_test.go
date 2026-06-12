@@ -11,7 +11,7 @@ func TestValidatePattern(t *testing.T) {
 		wantErr bool
 		errFrag string // substring expected in error message
 	}{
-		// Valid patterns
+		// Valid patterns — existing
 		{name: "global_wildcard", entry: "**", wantErr: false},
 		{name: "tool_selector", entry: "tool:Edit", wantErr: false},
 		{name: "tool_selector_write", entry: "tool:Write", wantErr: false},
@@ -23,7 +23,16 @@ func TestValidatePattern(t *testing.T) {
 		{name: "negation_specific", entry: "!internal/**/*_test.go", wantErr: false},
 		{name: "negation_global_wildcard", entry: "!**", wantErr: false},
 
-		// Invalid patterns
+		// Valid patterns — agent: selectors (A2)
+		{name: "agent_orchestrator", entry: "agent:orchestrator", wantErr: false},
+		{name: "agent_subagent", entry: "agent:subagent", wantErr: false},
+		{name: "agent_wildcard", entry: "agent:*", wantErr: false},
+		// Unknown agent type is accepted without error (forward-compat / D7).
+		{name: "agent_unknown_type", entry: "agent:backend", wantErr: false},
+		{name: "agent_combined_3parts", entry: "agent:orchestrator+tool:Edit+internal/**", wantErr: false},
+		{name: "negation_agent_subagent", entry: "!agent:subagent", wantErr: false},
+
+		// Invalid patterns — existing
 		{
 			name:    "empty_string",
 			entry:   "",
@@ -64,6 +73,20 @@ func TestValidatePattern(t *testing.T) {
 			entry:   "!",
 			wantErr: true,
 			errFrag: "negation requires a non-empty pattern",
+		},
+
+		// Invalid patterns — agent: selectors (A2)
+		{
+			name:    "agent_empty_name",
+			entry:   "agent:",
+			wantErr: true,
+			errFrag: "agent name must not be empty",
+		},
+		{
+			name:    "two_agent_selectors",
+			entry:   "agent:orchestrator+agent:subagent",
+			wantErr: true,
+			errFrag: "cannot have two agent selectors",
 		},
 	}
 
