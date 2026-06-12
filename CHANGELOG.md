@@ -6,6 +6,91 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [v1.13.0] — 2026-06-12
+
+### Added
+
+- **Adoption nudge** (SPEC-044, C1): `internal/cli/hook.go` — `maybeEmitCodegraphNudge()`
+  is called inside `runHookPreToolUse` before the mutating-tools early-return, so it
+  fires for `Read`, `Grep`, and `Glob` invocations. When the project has an indexed code
+  graph with at least one node, the hook writes a context-only markdown block
+  (`<!-- mneme:codegraph-nudge:start/end -->`) to stdout recommending the
+  `codegraph_*` MCP tools over token-heavy re-reads. The nudge is **never blocking**
+  (exit 0 always, no new non-zero exit path).
+
+  Suppression and anti-noise:
+
+  - **Per-session deduplication** via `session_id`: the statefile key `sid:<session_id>`
+    is written to `~/.mneme/codegraph-nudge-state.json` after the first injection;
+    subsequent invocations in the same session skip the nudge without any I/O to the
+    code graph DB.
+  - **Project-keyed TTL fallback** (`proj:<slug>`, 4 h TTL via `nudgeTTL4h`) when no
+    `session_id` is present in the hook payload.
+  - **Empty-graph guard**: `codegraph.ProbeGraph` returns `hasNodes=false` → no nudge.
+  - **Staleness notice**: when `MAX(nodes.updated_at)` is more than 24 h ago
+    (`nudgeStalenessThreshold`), a one-line note is appended to the nudge block
+    recommending `mneme codegraph index` to refresh, with the approximate elapsed hours.
+  - **Opt-out**: set `hook_nudge_enabled = false` under `[codegraph]` in `config.toml`,
+    or set the environment variable `MNEME_CODEGRAPH_HOOK_NUDGE=false` (or `0`); env
+    wins over TOML. Default is `true`.
+  - **Anti-loop**: if the path being read is inside `cfg.Storage.DataDir` (mneme's own
+    data directory) the nudge is skipped, preventing feedback loops when the agent
+    reads mneme's own statefiles or DB files.
+
+- **`mneme codegraph hooks install|remove`** (SPEC-044, C2):
+  `internal/cli/codegraph_hooks.go` — new `codegraph hooks` subcommand with three
+  children.
+
+  - **`install`**: appends the mneme-managed re-index block (delimited by
+    `# >>> mneme codegraph (SPEC-044) >>>` / `# <<< mneme codegraph (SPEC-044) <<<`
+    markers) to the `post-commit` and `post-checkout` git hooks of the current
+    repository. Creates the hook file with a `#!/bin/sh` shebang and `0755`
+    permissions when absent. Idempotent: running `install` a second time is a no-op
+    (the block is not duplicated). Hook location is resolved via
+    `git rev-parse --git-path hooks` so `core.hooksPath` overrides and worktrees are
+    respected. Any pre-existing hook content is preserved.
+
+  - **`remove`**: strips only the mneme-managed block (from begin-marker to
+    end-marker inclusive) from `post-commit` and `post-checkout`. All other hook
+    content is untouched. Exits successfully when no block is present.
+
+  - **`run-reindex`** (hidden): invoked by the installed git hooks; runs an
+    incremental re-index (`Force=false`) in the foreground but is always launched
+    detached with `&` from the hook script, so the triggering git operation is never
+    blocked. Always exits 0 — index errors are appended to
+    `~/.mneme/codegraph-hooks.log` with a timestamp and repo path, and are not
+    propagated. The command skips the re-index when any of the following git
+    in-progress state files are detected inside the git directory: `rebase-merge`,
+    `rebase-apply`, `MERGE_HEAD`, `CHERRY_PICK_HEAD` (interactive/non-interactive
+    rebase, merge, and cherry-pick), preventing storms of redundant runs.
+
+- **`codegraph.ProbeGraph`** (SPEC-044): `internal/codegraph/probe.go` — read-only
+  probe that opens the code graph SQLite DB at a given path, executes
+  `SELECT 1 FROM nodes LIMIT 1` and `SELECT MAX(updated_at) FROM nodes`, and returns
+  `(hasNodes bool, lastUpdatedUnixMs int64, err error)`. Opens the file with
+  `mode=ro` and closes it immediately. Returns `hasNodes=false, err=nil` when the
+  file is absent (fail-open). Used by the nudge hook to avoid emitting a reminder
+  when the graph is empty.
+
+### Docs
+
+- `docs/codegraph.md` (new): full reference for the code graph subsystem. Covers
+  quick-start, storage layout, indexing, the adoption nudge (C1) — what it is, when
+  it fires, once-per-session anti-noise, empty/stale graph behaviour, opt-out, and
+  anti-loop. Auto-reindex git hooks (C2) — install/remove, block format with markers,
+  skip-during-rebase/merge/cherry-pick, failure logging, idempotence. MCP tools
+  table, CLI subcommands table, config reference.
+- `CLAUDE.md`: `mneme codegraph hooks install|remove` added to the CLI description;
+  `[codegraph]` config section and pointer to `docs/codegraph.md` added under the
+  pre-tool-use hook section.
+
+### Upgrade path
+
+Run `mneme codegraph hooks install` inside each repository where you want the code
+graph to stay fresh automatically. To enable the adoption nudge, ensure
+`hook_nudge_enabled` is `true` (the default) in `~/.mneme/config.toml` and that the
+project has been indexed at least once (`mneme codegraph index`).
+
 ## [v1.12.0] — 2026-06-12
 
 ### Added
