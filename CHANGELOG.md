@@ -6,6 +6,89 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [v1.12.0] — 2026-06-12
+
+### Added
+
+- **Role-aware enforcement** (SPEC-043): `internal/rules/match.go` — the Go match
+  engine now receives a typed `Invocation` struct with a `Caller Caller` field
+  (type `Caller`, constants `CallerOrchestrator` / `CallerSubagent`) derived from
+  the hook payload.
+
+  - **`agent:` selector** in `applies_to` patterns: rules can now target
+    `agent:orchestrator`, `agent:subagent`, or `agent:*` (wildcard). Selectors
+    are combinable with `+` in multi-part entries alongside tool selectors and
+    path globs (e.g. `tool:Edit+agent:orchestrator+internal/**`).
+
+  - **Block→warn degradation for subagents**: a `block`-severity rule without an
+    `agent:` selector continues to block the orchestrator but is degraded to
+    `warn` for subagents. The degradation is visible: the rendered output tags the
+    rule as `[WARN — degraded from BLOCK for subagent]` and appends an
+    informational note so the subagent has full context; legitimate implementer
+    work is not blocked.
+
+  - **Multi-key `agent_id` resolution** (5 routes): `internal/cli/hook.go` resolves
+    caller identity from `.agent_id`, `.session.agent_id`, `.subagent.agent_id`,
+    `.context.agent_id`, and `.metadata.agent_id`. Empty string and `null` are
+    treated as orchestrator. Aligns `hook.go` resolution with the bash-layer logic
+    introduced in v1.11.0.
+
+  - **`NotebookEdit` support**: added to `mutatingTools` in `hook.go` with
+    `file_path` as the primary path key and a `notebook_path` fallback, consistent
+    with how `Edit`/`Write` extract their target paths.
+
+  - **Validation** (`internal/rules/validate.go`): `agent:` selector values are
+    validated at rule-save time. Empty agent names (`agent:`) and multi-part
+    entries with duplicate selector kinds (two `tool:` parts or two `agent:`
+    parts) are rejected with a descriptive error. Unknown agent names such as
+    `agent:backend` are accepted without error for forward-compatibility — the
+    matching engine returns no-match for unrecognised agent types.
+
+### Fixed
+
+- **Asset sync** (SPEC-043): `internal/install/assets/hooks/enforce_delegation.sh`
+  is now byte-identical to the copy installed at `~/.claude/hooks/`. Four fixes
+  backported:
+
+  - **Strip redirect operators** from path candidates: the legacy bash path
+    extractor (`command_mentions_protected_path`) now strips leading redirect
+    operator prefixes (`>`, `>>`, `2>`, `&>`, etc.) from each candidate before
+    whitelist matching, eliminating false positives for python/node inline
+    commands whose redirects (e.g. `2>/dev/null`) were not being recognised as
+    `/dev/` paths because the operator prefix remained attached.
+
+  - **Tilde expansion**: `~/` prefixes are expanded to `$HOME/` before whitelist
+    matching so `~/.mneme/**` and `~/.claude/**` resolve correctly regardless of
+    the shell context.
+
+  - **`/tmp` and `/private/tmp` scratch space**: both paths are added to the
+    whitelist as legitimate scratch space, unblocking common tool patterns that
+    write temporary files (e.g. `mktemp`, `go test -coverprofile`).
+
+  - **Process substitution exclusion**: `<(...)` and `>(...)` command-substitution
+    tokens are excluded from path candidate extraction, preventing false positives
+    from process-substitution syntax.
+
+  Regression battery extended from 17 to 34 cases
+  (`internal/install/install_test.go`, `enforce_delegation_test.sh`).
+
+### Docs
+
+- `docs/RULES.md`: documents `agent:` selector syntax, multi-part combinability,
+  and degradation semantics.
+- `docs/HOOKS.md`: documents `tool:Bash` as context-only (reads are allowed;
+  write detection is heuristic), `/tmp` as legitimate scratch, and the
+  block→warn degradation behaviour for subagents.
+- `docs/enforcement-model.md`: updated allowlist table and agent identity
+  resolution to reflect the five `agent_id` lookup keys and the new
+  `agent:` selector capability.
+
+### Upgrade path
+
+Run `mneme install claude-code` (or `--reinstall-hooks`) and restart Claude Code
+to deploy the updated `enforce_delegation.sh` and pick up the role-aware match
+engine.
+
 ## [v1.11.0] — 2026-05-30
 
 ### Changed
