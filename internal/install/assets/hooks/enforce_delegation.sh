@@ -17,6 +17,7 @@
 # Whitelist (lo que el orquestador SÍ puede tocar):
 #   - .claude/**         (config local del proyecto)
 #   - ~/.claude/**       (config global)
+#   - ~/.mneme/**        (workflow dir de mneme: specs/qa-reports/docs del SDD)
 #   - CLAUDE.md          (en cualquier ubicación)
 #   - **/docs/*.md       (documentación)
 #   - .claudeignore      (en la raíz)
@@ -108,6 +109,12 @@ is_allowed_path() {
   path="${path//\'/}"
   path="${path//\"/}"
 
+  # Expandir ~ al inicio (fix 2026-06-12: la whitelist promete ~/.claude/** y
+  # ~/.mneme/** pero el matcher no reconocía menciones literales con tilde).
+  if [[ "$path" == "~/"* ]]; then
+    path="${HOME}/${path#\~/}"
+  fi
+
   local basename="${path##*/}"
 
   [[ "$basename" == "CLAUDE.md" ]] && return 0
@@ -118,14 +125,19 @@ is_allowed_path() {
     return 0
   fi
 
-  # Path absoluto: debe contener /.claude/
+  # Path absoluto: debe contener /.claude/ o /.mneme/, o ser scratch de /tmp
   if [[ "$path" == /* ]]; then
     [[ "$path" == */.claude/* ]] && return 0
+    [[ "$path" == */.mneme/* ]] && return 0
+    # /tmp y /private/tmp (macOS): scratch del orquestador, no toca el repo
+    # (fix 2026-06-12: los redirects a /tmp se bloqueaban sin ganancia de seguridad).
+    [[ "$path" == /tmp/* || "$path" == /private/tmp/* ]] && return 0
     return 1
   fi
 
-  # Path relativo: debe empezar con .claude/
+  # Path relativo: debe empezar con .claude/ o .mneme/
   [[ "$path" == .claude/* || "$path" == ".claude" ]] && return 0
+  [[ "$path" == .mneme/* || "$path" == ".mneme" ]] && return 0
 
   return 1
 }
@@ -161,6 +173,13 @@ command_mentions_protected_path() {
     [[ -z "$candidate" ]] && continue
     [[ "$candidate" == http://* || "$candidate" == https://* ]] && continue
     [[ "$candidate" == -* ]] && continue
+    # Strip de operadores de redirect pegados al target: 2>/dev/null, >>/x, &>/y
+    # (fix 2026-06-12: '2>/dev/null' no matcheaba la exclusión /dev/* por el
+    # prefijo '2>' y producía falsos positivos en cualquier python/node inline).
+    while [[ "$candidate" =~ ^[0-9]*\&?\>{1,2}\|? ]]; do
+      candidate="${candidate#"${BASH_REMATCH[0]}"}"
+    done
+    [[ -z "$candidate" ]] && continue
     # Ignorar /dev/ especial
     [[ "$candidate" == /dev/* ]] && continue
     # Si parece una ruta (comienza con /, ./, ~/, o contiene /)
@@ -198,7 +217,7 @@ block() {
   local reason="$1"
   printf 'BLOQUEADO: El orquestador NO puede modificar archivos fuera de la whitelist.\n' >&2
   printf 'Razón: %s\n' "$reason" >&2
-  printf 'Whitelist: .claude/**, ~/.claude/**, CLAUDE.md, **/docs/*.md, .claudeignore\n' >&2
+  printf 'Whitelist: .claude/**, ~/.claude/**, ~/.mneme/**, /tmp/**, CLAUDE.md, **/docs/*.md, .claudeignore\n' >&2
   printf 'ACCIÓN: Delegá al subagente correspondiente (Agent tool con subagent_type=backend|frontend|architect|...).\n' >&2
   printf 'Tu trabajo es coordinar y conversar, NO implementar código.\n' >&2
   if command -v mneme >/dev/null 2>&1; then
@@ -274,6 +293,9 @@ check_bash_go() {
   while IFS=$'\t' read -r tok_value tok_type tok_quoted; do
     case "$tok_type" in
       redirect_target)
+        # Process substitution <(cmd) / >(cmd) no es una ruta de archivo
+        # (fix 2026-06-12: '< <(jq ...)' se bloqueaba como redirect a ruta protegida).
+        [[ "$tok_value" == "("* || "$tok_value" == "<("* || "$tok_value" == ">("* ]] && { i=$((i+1)); continue; }
         # Validar redirect targets (excepto /dev/*)
         if [[ "$tok_value" != /dev/* ]]; then
           if ! is_allowed_path "$tok_value"; then
@@ -453,12 +475,17 @@ last_arg_after_cmd_legacy() {
 # check_bash_legacy: parser original basado en awk/regex.
 # Se usa cuando mneme hook tokenize no está disponible.
 check_bash_legacy() {
-  # --- 8.1 Redirects: >, >>, 2>, &>, >| (excepto /dev/*)
+  # --- 8.1 Redirects: >, >>, 2>, &>, >| (excepto /dev/* y process substitution)
   local rest="$command"
   while [[ "$rest" =~ ([012\&]?\>\>?\|?)[[:space:]]*([^[:space:]\;\|\&\<]+) ]]; do
     local target="${BASH_REMATCH[2]}"
     target="${target//\'/}"
     target="${target//\"/}"
+    # Process substitution: target que empieza con ( no es ruta
+    if [[ "$target" == "("* ]]; then
+      rest="${rest#*"${BASH_REMATCH[0]}"}"
+      continue
+    fi
     if [[ "$target" != /dev/* ]]; then
       if ! is_allowed_path "$target"; then
         TARGET_PATH="$target"
