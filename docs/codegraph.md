@@ -319,6 +319,17 @@ The following 10 MCP tools expose the code graph to agents:
 | `codegraph_status` | Aggregate node/edge/file counts |
 | `codegraph_files` | List indexed files (with optional glob/language filter) |
 
+> **Recall limitation — `codegraph_impact` / `codegraph_callees`:** these tools
+> rely on the call-edge graph, which currently captures ~43% of callable
+> relationships in a typical Go codebase. Method-calls (`x.Foo()`),
+> cross-package calls, and stdlib calls are often not recorded as edges.
+> `codegraph_search`, `codegraph_context`, and `codegraph_callers` are reliable
+> for locating symbols. For an **exhaustive** impact analysis before a refactor,
+> complement with `Grep`/`Read` — do not assume "nobody calls X" just because
+> the graph does not show it. Stale noise from generated directories (`.next`,
+> etc.) can be purged by running `mneme codegraph index` after upgrading to a
+> build that includes the SPEC-046 indexer fix.
+
 ---
 
 ## CLI subcommands
