@@ -47,13 +47,13 @@ func (s *Store) UpsertNode(n Node) error {
 			start_line, end_line, start_column, end_column,
 			docstring, signature, visibility,
 			is_exported, is_async, is_static, is_abstract,
-			decorators, type_parameters, updated_at
+			decorators, type_parameters, updated_at, import_alias
 		) VALUES (
 			?, ?, ?, ?, ?, ?,
 			?, ?, ?, ?,
 			?, ?, ?,
 			?, ?, ?, ?,
-			?, ?, ?
+			?, ?, ?, ?
 		)`
 
 	_, err = s.db.DB.Exec(q,
@@ -61,7 +61,7 @@ func (s *Store) UpsertNode(n Node) error {
 		n.StartLine, n.EndLine, n.StartColumn, n.EndColumn,
 		nullableString(n.Docstring), nullableString(n.Signature), nullableString(n.Visibility),
 		boolToInt(n.IsExported), boolToInt(n.IsAsync), boolToInt(n.IsStatic), boolToInt(n.IsAbstract),
-		decorators, typeParams, n.UpdatedAt,
+		decorators, typeParams, n.UpdatedAt, nullableString(n.ImportAlias),
 	)
 	if err != nil {
 		return fmt.Errorf("codegraph: store: upsert node: %w", err)
@@ -77,7 +77,7 @@ func (s *Store) GetNode(id string) (*Node, error) {
 		       start_line, end_line, start_column, end_column,
 		       docstring, signature, visibility,
 		       is_exported, is_async, is_static, is_abstract,
-		       decorators, type_parameters, updated_at
+		       decorators, type_parameters, updated_at, import_alias
 		FROM nodes
 		WHERE id = ?`
 
@@ -219,7 +219,7 @@ func (s *Store) SearchNodes(query string, kinds []NodeKind, languages []string, 
 		       n.start_line, n.end_line, n.start_column, n.end_column,
 		       n.docstring, n.signature, n.visibility,
 		       n.is_exported, n.is_async, n.is_static, n.is_abstract,
-		       n.decorators, n.type_parameters, n.updated_at
+		       n.decorators, n.type_parameters, n.updated_at, n.import_alias
 		FROM nodes n
 		JOIN nodes_fts ON n.rowid = nodes_fts.rowid
 		WHERE %s
@@ -507,13 +507,13 @@ func (s *Store) BatchUpsertNodes(nodes []Node) error {
 			start_line, end_line, start_column, end_column,
 			docstring, signature, visibility,
 			is_exported, is_async, is_static, is_abstract,
-			decorators, type_parameters, updated_at
+			decorators, type_parameters, updated_at, import_alias
 		) VALUES (
 			?, ?, ?, ?, ?, ?,
 			?, ?, ?, ?,
 			?, ?, ?,
 			?, ?, ?, ?,
-			?, ?, ?
+			?, ?, ?, ?
 		)`)
 	if err != nil {
 		return fmt.Errorf("codegraph: store: batch upsert nodes: prepare: %w", err)
@@ -537,7 +537,7 @@ func (s *Store) BatchUpsertNodes(nodes []Node) error {
 			n.StartLine, n.EndLine, n.StartColumn, n.EndColumn,
 			nullableString(n.Docstring), nullableString(n.Signature), nullableString(n.Visibility),
 			boolToInt(n.IsExported), boolToInt(n.IsAsync), boolToInt(n.IsStatic), boolToInt(n.IsAbstract),
-			decorators, typeParams, n.UpdatedAt,
+			decorators, typeParams, n.UpdatedAt, nullableString(n.ImportAlias),
 		)
 		if serr != nil {
 			_ = stmt.Close()
@@ -627,6 +627,7 @@ func scanNodeRow(s scannable) (*Node, error) {
 	var n Node
 	var docstring, signature, visibility sql.NullString
 	var decoratorsJSON, typeParamsJSON sql.NullString
+	var importAlias sql.NullString
 	var isExported, isAsync, isStatic, isAbstract int
 
 	err := s.Scan(
@@ -634,7 +635,7 @@ func scanNodeRow(s scannable) (*Node, error) {
 		&n.StartLine, &n.EndLine, &n.StartColumn, &n.EndColumn,
 		&docstring, &signature, &visibility,
 		&isExported, &isAsync, &isStatic, &isAbstract,
-		&decoratorsJSON, &typeParamsJSON, &n.UpdatedAt,
+		&decoratorsJSON, &typeParamsJSON, &n.UpdatedAt, &importAlias,
 	)
 	if err != nil {
 		return nil, err
@@ -647,6 +648,7 @@ func scanNodeRow(s scannable) (*Node, error) {
 	n.IsAsync = isAsync != 0
 	n.IsStatic = isStatic != 0
 	n.IsAbstract = isAbstract != 0
+	n.ImportAlias = importAlias.String
 
 	if decoratorsJSON.Valid && decoratorsJSON.String != "" && decoratorsJSON.String != "null" {
 		if err := json.Unmarshal([]byte(decoratorsJSON.String), &n.Decorators); err != nil {
@@ -824,7 +826,7 @@ func (s *Store) FindNodeByQualifiedName(qualifiedName string) (*Node, error) {
 		       start_line, end_line, start_column, end_column,
 		       docstring, signature, visibility,
 		       is_exported, is_async, is_static, is_abstract,
-		       decorators, type_parameters, updated_at
+		       decorators, type_parameters, updated_at, import_alias
 		FROM nodes
 		WHERE qualified_name = ?
 		LIMIT 1`
@@ -850,7 +852,7 @@ func (s *Store) FindNodeByName(name string) (*Node, error) {
 		       start_line, end_line, start_column, end_column,
 		       docstring, signature, visibility,
 		       is_exported, is_async, is_static, is_abstract,
-		       decorators, type_parameters, updated_at
+		       decorators, type_parameters, updated_at, import_alias
 		FROM nodes
 		WHERE name = ?
 		LIMIT 1`
@@ -876,7 +878,7 @@ func (s *Store) FindNodeBySuffix(suffix string) (*Node, error) {
 		       start_line, end_line, start_column, end_column,
 		       docstring, signature, visibility,
 		       is_exported, is_async, is_static, is_abstract,
-		       decorators, type_parameters, updated_at
+		       decorators, type_parameters, updated_at, import_alias
 		FROM nodes
 		WHERE qualified_name LIKE ?
 		LIMIT 1`
@@ -901,7 +903,7 @@ func (s *Store) GetNodesByFilePath(filePath string) ([]Node, error) {
 		       start_line, end_line, start_column, end_column,
 		       docstring, signature, visibility,
 		       is_exported, is_async, is_static, is_abstract,
-		       decorators, type_parameters, updated_at
+		       decorators, type_parameters, updated_at, import_alias
 		FROM nodes
 		WHERE file_path = ? AND kind != 'file'
 		ORDER BY start_line`
@@ -955,4 +957,130 @@ func (s *Store) EdgeExists(source, target string, kind EdgeKind) (bool, error) {
 		return false, fmt.Errorf("codegraph: store: edge exists: %w", err)
 	}
 	return count > 0, nil
+}
+
+// ---------------------------------------------------------------------------
+// Import-guided resolution (SPEC-047 C3)
+// ---------------------------------------------------------------------------
+
+// ListImportNodes returns all nodes with kind=import. The returned slice is
+// used by the Resolver to build the per-file import index (fileImports map)
+// once before iterating over unresolved refs, avoiding per-ref DB queries.
+func (s *Store) ListImportNodes() ([]Node, error) {
+	const q = `
+		SELECT id, kind, name, qualified_name, file_path, language,
+		       start_line, end_line, start_column, end_column,
+		       docstring, signature, visibility,
+		       is_exported, is_async, is_static, is_abstract,
+		       decorators, type_parameters, updated_at, import_alias
+		FROM nodes
+		WHERE kind = 'import'
+		ORDER BY file_path, id`
+
+	rows, err := s.db.DB.Query(q)
+	if err != nil {
+		return nil, fmt.Errorf("codegraph: store: list import nodes: %w", err)
+	}
+	defer rows.Close()
+
+	var results []Node
+	for rows.Next() {
+		n, err := scanNodeRow(rows)
+		if err != nil {
+			return nil, fmt.Errorf("codegraph: store: list import nodes: scan: %w", err)
+		}
+		results = append(results, *n)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("codegraph: store: list import nodes: rows: %w", err)
+	}
+	return results, nil
+}
+
+// FindNodesByNameInDir returns ALL nodes (no LIMIT) whose name equals the
+// given name and whose file_path directory suffix-matches dirSuffix. This is
+// the Go import-guided candidate lookup: dirSuffix is derived from the Go
+// importPath (e.g. "internal/store") and is compared against the directory
+// portion of each node's file_path.
+//
+// The caller applies the candidato-único-o-nada rule: only bind when len==1.
+func (s *Store) FindNodesByNameInDir(name, dirSuffix string) ([]Node, error) {
+	// We match nodes whose directory suffix-matches the import path.
+	// file_path is "dir/file.go"; dir = everything before the last '/'.
+	// SQLite does not have a built-in dirname function, so we use the pattern:
+	//   (file_path LIKE '%/<dirSuffix>/%' OR file_path LIKE '<dirSuffix>/%')
+	// to match nodes in the target package directory.
+	const q = `
+		SELECT id, kind, name, qualified_name, file_path, language,
+		       start_line, end_line, start_column, end_column,
+		       docstring, signature, visibility,
+		       is_exported, is_async, is_static, is_abstract,
+		       decorators, type_parameters, updated_at, import_alias
+		FROM nodes
+		WHERE name = ?
+		  AND kind NOT IN ('file','import','export')
+		  AND (file_path LIKE ? OR file_path LIKE ?)`
+
+	// Two patterns:
+	//   - "%/<dirSuffix>/%" matches files anywhere under the dir
+	//   - "<dirSuffix>/%" matches files at repo root under the dir
+	patternDeep := "%/" + dirSuffix + "/%"
+	patternRoot := dirSuffix + "/%"
+
+	rows, err := s.db.DB.Query(q, name, patternDeep, patternRoot)
+	if err != nil {
+		return nil, fmt.Errorf("codegraph: store: find nodes by name in dir %q: %w", dirSuffix, err)
+	}
+	defer rows.Close()
+
+	var results []Node
+	for rows.Next() {
+		n, err := scanNodeRow(rows)
+		if err != nil {
+			return nil, fmt.Errorf("codegraph: store: find nodes by name in dir: scan: %w", err)
+		}
+		results = append(results, *n)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("codegraph: store: find nodes by name in dir: rows: %w", err)
+	}
+	return results, nil
+}
+
+// FindNodesByNameInFile returns ALL nodes (no LIMIT) whose name equals the
+// given name and whose file_path equals the given filePath. This is the TS
+// import-guided candidate lookup: filePath is the resolved absolute-or-relative
+// source file for the imported module.
+//
+// The caller applies the candidato-único-o-nada rule: only bind when len==1.
+func (s *Store) FindNodesByNameInFile(name, filePath string) ([]Node, error) {
+	const q = `
+		SELECT id, kind, name, qualified_name, file_path, language,
+		       start_line, end_line, start_column, end_column,
+		       docstring, signature, visibility,
+		       is_exported, is_async, is_static, is_abstract,
+		       decorators, type_parameters, updated_at, import_alias
+		FROM nodes
+		WHERE name = ?
+		  AND file_path = ?
+		  AND kind NOT IN ('file','import','export')`
+
+	rows, err := s.db.DB.Query(q, name, filePath)
+	if err != nil {
+		return nil, fmt.Errorf("codegraph: store: find nodes by name in file %q: %w", filePath, err)
+	}
+	defer rows.Close()
+
+	var results []Node
+	for rows.Next() {
+		n, err := scanNodeRow(rows)
+		if err != nil {
+			return nil, fmt.Errorf("codegraph: store: find nodes by name in file: scan: %w", err)
+		}
+		results = append(results, *n)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("codegraph: store: find nodes by name in file: rows: %w", err)
+	}
+	return results, nil
 }
