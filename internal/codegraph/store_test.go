@@ -658,6 +658,71 @@ func TestStore_BatchUpsertNodes(t *testing.T) {
 	}
 }
 
+// TestStore_ImportAliasPersistence verifies that Node.ImportAlias round-trips
+// through UpsertNode / GetNode correctly (SPEC-047 D-GO2).
+func TestStore_ImportAliasPersistence(t *testing.T) {
+	s := newTestStore(t)
+
+	n := sampleNode("impaliasnode0001", "import", "internal/store", "cmd/main.go")
+	n.Kind = NodeKindImport
+	n.ImportAlias = "store"
+
+	if err := s.UpsertNode(n); err != nil {
+		t.Fatalf("UpsertNode: %v", err)
+	}
+
+	got, err := s.GetNode(n.ID)
+	if err != nil {
+		t.Fatalf("GetNode: %v", err)
+	}
+	if got == nil {
+		t.Fatal("GetNode: nil result")
+	}
+	if got.ImportAlias != "store" {
+		t.Errorf("ImportAlias = %q; want %q", got.ImportAlias, "store")
+	}
+}
+
+// TestStore_OpenDBIdempotent verifies that opening an on-disk database twice
+// (simulating a binary upgrade that adds import_alias) does not fail. This
+// covers SPEC-047 AC8 risk R3.
+func TestStore_OpenDBIdempotent(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := dir + "/test-codegraph.db"
+
+	// First open: creates schema with import_alias column.
+	cdb1, err := OpenDB(dbPath)
+	if err != nil {
+		t.Fatalf("first OpenDB: %v", err)
+	}
+	s1 := NewStore(cdb1)
+
+	n := sampleNode("idemp000000001", "function", "Hello", "pkg/a.go")
+	n.ImportAlias = ""
+	if err := s1.UpsertNode(n); err != nil {
+		t.Fatalf("UpsertNode: %v", err)
+	}
+	if err := cdb1.Close(); err != nil {
+		t.Fatalf("Close first DB: %v", err)
+	}
+
+	// Second open: must succeed even though import_alias already exists.
+	cdb2, err := OpenDB(dbPath)
+	if err != nil {
+		t.Fatalf("second OpenDB: %v", err)
+	}
+	s2 := NewStore(cdb2)
+	defer cdb2.Close()
+
+	got, err := s2.GetNode(n.ID)
+	if err != nil {
+		t.Fatalf("GetNode after second open: %v", err)
+	}
+	if got == nil {
+		t.Fatal("GetNode after second open: nil result")
+	}
+}
+
 // TestStore_BatchUpsertEdges verifies that BatchUpsertEdges inserts all edges
 // within a single transaction and they are queryable afterward.
 func TestStore_BatchUpsertEdges(t *testing.T) {

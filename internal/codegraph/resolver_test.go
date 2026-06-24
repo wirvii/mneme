@@ -5,6 +5,30 @@ import (
 	"time"
 )
 
+// insertImportNode inserts a NodeKindImport node representing an import
+// declaration, with the given importPath as Name/QualifiedName and alias as
+// ImportAlias. Returns the inserted node.
+func insertImportNode(t *testing.T, s *Store, filePath, importPath, alias string) Node {
+	t.Helper()
+	id := NodeID(filePath, importPath)
+	n := Node{
+		ID:            id,
+		Kind:          NodeKindImport,
+		Name:          importPath,
+		QualifiedName: importPath,
+		FilePath:      filePath,
+		Language:      "go",
+		StartLine:     1,
+		EndLine:       1,
+		UpdatedAt:     time.Now().Unix(),
+		ImportAlias:   alias,
+	}
+	if err := s.UpsertNode(n); err != nil {
+		t.Fatalf("insertImportNode(%s): %v", importPath, err)
+	}
+	return n
+}
+
 // sampleUnresolvedRef returns a minimal UnresolvedRef for test setup.
 func sampleUnresolvedRef(fromNodeID, referenceName string, kind EdgeKind) UnresolvedRef {
 	return UnresolvedRef{
@@ -297,5 +321,315 @@ func TestResolver_DoesNotCreateDuplicateEdges(t *testing.T) {
 	}
 	if edges[0].Target != callee.ID {
 		t.Errorf("edge target = %q, want %q", edges[0].Target, callee.ID)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SPEC-047 C3 — import-guided cross-package resolution (AC4–AC7)
+// ---------------------------------------------------------------------------
+
+// TestResolver_ImportGuidedGoUnique verifies AC4: when package a imports
+// package b and calls b.Foo(), and exactly one Foo exists in b's directory,
+// the resolver creates a calls edge with provenance="import".
+func TestResolver_ImportGuidedGoUnique(t *testing.T) {
+	s := newTestStore(t)
+
+	// Caller in package a.
+	caller := insertNode(t, s, "aaaa1001", "Run", "Run", "internal/a/a.go")
+
+	// Callee: unique Foo in internal/b.
+	callee := insertNode(t, s, "bbbb1002", "Foo", "Foo", "internal/b/b.go")
+
+	// Import node: file a.go imports "internal/b" with binding "b".
+	insertImportNode(t, s, "internal/a/a.go", "internal/b", "b")
+
+	// Unresolved ref: caller calls b.Foo.
+	ref := UnresolvedRef{
+		FromNodeID:    caller.ID,
+		ReferenceName: "b.Foo",
+		ReferenceKind: EdgeKindCalls,
+		Line:          5,
+		Col:           0,
+		FilePath:      "internal/a/a.go",
+		Language:      "go",
+	}
+	if err := s.UpsertUnresolvedRef(ref); err != nil {
+		t.Fatalf("UpsertUnresolvedRef: %v", err)
+	}
+
+	r := NewResolver(s)
+	result, err := r.Resolve()
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	if result.Resolved != 1 {
+		t.Errorf("Resolved = %d, want 1", result.Resolved)
+	}
+	if result.Unresolved != 0 {
+		t.Errorf("Unresolved = %d, want 0", result.Unresolved)
+	}
+
+	edges, err := s.GetEdgesFrom(caller.ID, string(EdgeKindCalls))
+	if err != nil {
+		t.Fatalf("GetEdgesFrom: %v", err)
+	}
+	if len(edges) != 1 {
+		t.Fatalf("want 1 calls edge, got %d", len(edges))
+	}
+	if edges[0].Target != callee.ID {
+		t.Errorf("edge target = %q, want %q", edges[0].Target, callee.ID)
+	}
+	if edges[0].Provenance != "import" {
+		t.Errorf("provenance = %q, want \"import\"", edges[0].Provenance)
+	}
+}
+
+// TestResolver_ImportGuidedGoAmbiguous verifies AC5: when two functions named
+// Foo exist in the target package's directory, the import-guided tier does NOT
+// create an edge with provenance="import" (candidato-único-o-nada). A later tier
+// may still resolve the reference — the key invariant is that no import-guided
+// edge is created when there are 2+ candidates.
+func TestResolver_ImportGuidedGoAmbiguous(t *testing.T) {
+	s := newTestStore(t)
+
+	caller := insertNode(t, s, "aaaa1010", "Run", "Run", "internal/a/a.go")
+
+	// Two Foo nodes in internal/b — ambiguous for import-guided resolution.
+	if err := s.UpsertNode(Node{
+		ID: "bbbb1011", Kind: NodeKindFunction, Name: "Foo",
+		QualifiedName: "b1.Foo", FilePath: "internal/b/b1.go",
+		Language: "go", StartLine: 1, EndLine: 5, UpdatedAt: time.Now().Unix(),
+	}); err != nil {
+		t.Fatalf("UpsertNode b1.Foo: %v", err)
+	}
+	if err := s.UpsertNode(Node{
+		ID: "cccc1012", Kind: NodeKindFunction, Name: "Foo",
+		QualifiedName: "b2.Foo", FilePath: "internal/b/b2.go",
+		Language: "go", StartLine: 1, EndLine: 5, UpdatedAt: time.Now().Unix(),
+	}); err != nil {
+		t.Fatalf("UpsertNode b2.Foo: %v", err)
+	}
+
+	insertImportNode(t, s, "internal/a/a.go", "internal/b", "b")
+
+	ref := UnresolvedRef{
+		FromNodeID:    caller.ID,
+		ReferenceName: "b.Foo",
+		ReferenceKind: EdgeKindCalls,
+		Line:          5,
+		Col:           0,
+		FilePath:      "internal/a/a.go",
+		Language:      "go",
+	}
+	if err := s.UpsertUnresolvedRef(ref); err != nil {
+		t.Fatalf("UpsertUnresolvedRef: %v", err)
+	}
+
+	r := NewResolver(s)
+	if _, err := r.Resolve(); err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	// The key invariant: no edge created with provenance="import" (ambiguous).
+	allEdges, err := s.GetEdgesFrom(caller.ID, string(EdgeKindCalls))
+	if err != nil {
+		t.Fatalf("GetEdgesFrom: %v", err)
+	}
+	for _, e := range allEdges {
+		if e.Provenance == "import" {
+			t.Errorf("found edge with provenance=import despite ambiguous candidates (want none)")
+		}
+	}
+}
+
+// TestResolver_ImportGuidedGoAlias verifies AC6: an explicit import alias
+// (e.g. `import p "path/pkg"`) is used as the qualifier in the reference name.
+func TestResolver_ImportGuidedGoAlias(t *testing.T) {
+	s := newTestStore(t)
+
+	caller := insertNode(t, s, "aaaa1020", "Init", "Init", "cmd/main.go")
+	callee := insertNode(t, s, "bbbb1021", "New", "New", "internal/store/store.go")
+
+	// Alias import: import p "internal/store" → binding = "p".
+	insertImportNode(t, s, "cmd/main.go", "internal/store", "p")
+
+	ref := UnresolvedRef{
+		FromNodeID:    caller.ID,
+		ReferenceName: "p.New",
+		ReferenceKind: EdgeKindCalls,
+		Line:          10,
+		Col:           0,
+		FilePath:      "cmd/main.go",
+		Language:      "go",
+	}
+	if err := s.UpsertUnresolvedRef(ref); err != nil {
+		t.Fatalf("UpsertUnresolvedRef: %v", err)
+	}
+
+	r := NewResolver(s)
+	result, err := r.Resolve()
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	if result.Resolved != 1 {
+		t.Errorf("Resolved = %d, want 1", result.Resolved)
+	}
+
+	edges, err := s.GetEdgesFrom(caller.ID, string(EdgeKindCalls))
+	if err != nil {
+		t.Fatalf("GetEdgesFrom: %v", err)
+	}
+	if len(edges) != 1 {
+		t.Fatalf("want 1 edge, got %d", len(edges))
+	}
+	if edges[0].Target != callee.ID {
+		t.Errorf("edge target = %q, want %q", edges[0].Target, callee.ID)
+	}
+	if edges[0].Provenance != "import" {
+		t.Errorf("provenance = %q, want \"import\"", edges[0].Provenance)
+	}
+}
+
+// TestResolver_ImportGuidedTSNamespace verifies AC7a: a TS namespace import
+// (`import * as ns from './m'`) resolves ns.foo() to the foo symbol in ./m.
+func TestResolver_ImportGuidedTSNamespace(t *testing.T) {
+	s := newTestStore(t)
+
+	caller := insertNode(t, s, "aaaa1030", "handler", "handler", "src/routes/index.ts")
+	callee := Node{
+		ID:            NodeID("src/lib/utils.ts", "formatDate"),
+		Kind:          NodeKindFunction,
+		Name:          "formatDate",
+		QualifiedName: "formatDate",
+		FilePath:      "src/lib/utils.ts",
+		Language:      "typescript",
+		StartLine:     1,
+		EndLine:       5,
+		UpdatedAt:     time.Now().Unix(),
+	}
+	if err := s.UpsertNode(callee); err != nil {
+		t.Fatalf("UpsertNode callee: %v", err)
+	}
+
+	// Namespace import node: import * as utils from '../lib/utils'
+	// QualifiedName format: "import:<name>:<source>"
+	// refFile is "src/routes/index.ts"; callee is in "src/lib/utils.ts"
+	// so the relative path from src/routes/ to src/lib/ is "../lib/utils".
+	importQN := "import:utils:../lib/utils"
+	importNode := Node{
+		ID:            NodeID("src/routes/index.ts", importQN),
+		Kind:          NodeKindImport,
+		Name:          "utils",
+		QualifiedName: importQN,
+		FilePath:      "src/routes/index.ts",
+		Language:      "typescript",
+		StartLine:     1,
+		EndLine:       1,
+		UpdatedAt:     time.Now().Unix(),
+		ImportAlias:   "utils",
+	}
+	if err := s.UpsertNode(importNode); err != nil {
+		t.Fatalf("UpsertNode import: %v", err)
+	}
+
+	ref := UnresolvedRef{
+		FromNodeID:    caller.ID,
+		ReferenceName: "utils.formatDate",
+		ReferenceKind: EdgeKindCalls,
+		Line:          8,
+		Col:           2,
+		FilePath:      "src/routes/index.ts",
+		Language:      "typescript",
+	}
+	if err := s.UpsertUnresolvedRef(ref); err != nil {
+		t.Fatalf("UpsertUnresolvedRef: %v", err)
+	}
+
+	r := NewResolver(s)
+	result, err := r.Resolve()
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	if result.Resolved != 1 {
+		t.Errorf("Resolved = %d, want 1", result.Resolved)
+	}
+
+	edges, err := s.GetEdgesFrom(caller.ID, string(EdgeKindCalls))
+	if err != nil {
+		t.Fatalf("GetEdgesFrom: %v", err)
+	}
+	if len(edges) != 1 {
+		t.Fatalf("want 1 edge, got %d", len(edges))
+	}
+	if edges[0].Target != callee.ID {
+		t.Errorf("edge target = %q, want %q", edges[0].Target, callee.ID)
+	}
+	if edges[0].Provenance != "import" {
+		t.Errorf("provenance = %q, want \"import\"", edges[0].Provenance)
+	}
+}
+
+// TestResolver_ImportGuidedTSBareDoesNotBreak verifies AC7b: a bare/npm import
+// (e.g. `import x from 'react'`) does not cause an error and leaves the ref
+// unresolved (no edge created, no panic).
+func TestResolver_ImportGuidedTSBareDoesNotBreak(t *testing.T) {
+	s := newTestStore(t)
+
+	caller := insertNode(t, s, "aaaa1040", "App", "App", "src/app.tsx")
+
+	// Bare import node: import React from 'react'
+	importQN := "import:React:react"
+	importNode := Node{
+		ID:            NodeID("src/app.tsx", importQN),
+		Kind:          NodeKindImport,
+		Name:          "React",
+		QualifiedName: importQN,
+		FilePath:      "src/app.tsx",
+		Language:      "typescript",
+		StartLine:     1,
+		EndLine:       1,
+		UpdatedAt:     time.Now().Unix(),
+		ImportAlias:   "React",
+	}
+	if err := s.UpsertNode(importNode); err != nil {
+		t.Fatalf("UpsertNode import: %v", err)
+	}
+
+	ref := UnresolvedRef{
+		FromNodeID:    caller.ID,
+		ReferenceName: "React.useState",
+		ReferenceKind: EdgeKindCalls,
+		Line:          5,
+		Col:           4,
+		FilePath:      "src/app.tsx",
+		Language:      "typescript",
+	}
+	if err := s.UpsertUnresolvedRef(ref); err != nil {
+		t.Fatalf("UpsertUnresolvedRef: %v", err)
+	}
+
+	r := NewResolver(s)
+	result, err := r.Resolve()
+	if err != nil {
+		t.Fatalf("Resolve must not error on bare npm imports: %v", err)
+	}
+
+	// Bare import → external package → no node in repo → stays unresolved.
+	if result.Resolved != 0 {
+		t.Errorf("Resolved = %d, want 0 (bare import has no repo node)", result.Resolved)
+	}
+	if result.Unresolved != 1 {
+		t.Errorf("Unresolved = %d, want 1", result.Unresolved)
+	}
+
+	edges, err := s.GetEdgesFrom(caller.ID, string(EdgeKindCalls))
+	if err != nil {
+		t.Fatalf("GetEdgesFrom: %v", err)
+	}
+	if len(edges) != 0 {
+		t.Errorf("want 0 edges for bare import, got %d", len(edges))
 	}
 }
