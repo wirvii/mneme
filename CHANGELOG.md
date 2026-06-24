@@ -53,9 +53,48 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `TestStore_ImportAliasPersistence`, `TestStore_OpenDBIdempotent`.
 
   **Limitations (out of scope):** method calls on variables (`x.Foo()` where
-  `x` is a local variable), `tsconfig` `paths` aliases, re-exports, and
-  external npm packages. Re-indexing is required to populate `import_alias`
-  and generate new `provenance="import"` edges in existing databases.
+  `x` is a local variable), re-exports, and external npm packages.
+  Re-indexing is required to populate `import_alias` and generate new
+  `provenance="import"` edges in existing databases.
+
+- **TypeScript `tsconfig` `paths` alias resolution in T2** (SPEC-047 ampliación):
+  TS projects using `@/*` or other `compilerOptions.paths` aliases now have
+  those aliases resolved during the import-guided pass.
+
+  **Implementation:**
+  - `internal/codegraph/js/extract.js` — new `parseTsconfigs(rootDir)` function
+    sends a discriminated `{op:"tsconfig",root}` message to the Node.js
+    subprocess; the subprocess walks all directories, parses each `tsconfig.json`
+    via `ts.parseJsonConfigFileContent`, and returns `{dir, baseUrl, paths}` for
+    every valid config. Category-1 warnings (e.g. "No inputs found") do not block
+    parsing — only category-0 fatal errors skip a config.
+  - `internal/codegraph/extractor_ts.go` — new `LoadTSConfigAliases(rootDir)`
+    method on `*TSExtractor` sends the op message and deserialises the response.
+  - `internal/codegraph/tsconfig.go` — `TSAliasMap` type + `LoadTSAliases()` +
+    `ResolveAlias(moduleSource, refFilePath)`. For monorepos with multiple
+    tsconfigs, `ResolveAlias` picks the entry whose `TsconfigDir` is the closest
+    ancestor of the importing file (longest path prefix match).
+  - `internal/codegraph/resolver.go` — `Resolve(rootDir)` loads the alias map
+    when `rootDir` is non-empty and TS nodes are present; `resolveTSImport` tries
+    alias expansion before the bare-import gate.
+
+  **Back-compat:** the file-extraction JSONL protocol is unchanged. The
+  `{op:"tsconfig"}` control message is discriminated by the presence of `op`.
+  Fail-open: if Node.js is absent or TypeScript is not installed, the alias map
+  is empty and the resolver skips alias expansion silently.
+
+  **Tests:** AC-T5 (`TestTSAliasMap_ResolveAlias_MonorepoPicksClosestTSConfig` —
+  temp monorepo, 2 tsconfigs, verifies ancestor selection for each app) and
+  AC-T6 (`TestResolver_TSAliasEmptyMap_NoBreak` — empty rootDir, no panic).
+
+  **Recall on TS repos:** `quantium` and `site` repos show 0 new import-guided
+  edges from the tsconfig pass. Investigation: the TS extractor already creates
+  `ast` edges for all direct calls to `@/`-imported functions (linking to the
+  import node in the same file). The remaining `unresolved_refs` are all
+  method calls on objects (`payload.find`) or builtins (`Array.isArray`) —
+  neither resolves via tsconfig paths. The feature has full correctness (AC-T5/T6
+  pass) and fires correctly when the pattern is present; the test repos happen to
+  have all direct named calls pre-resolved by the extractor.
 
 ### Fixed
 
