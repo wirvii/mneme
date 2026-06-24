@@ -57,7 +57,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   external npm packages. Re-indexing is required to populate `import_alias`
   and generate new `provenance="import"` edges in existing databases.
 
-  Commits: 80e316e, dfa611e, ddf9330, 9b3b5fb, 7469b1e.
+  Commits: 80e316e, dfa611e, ddf9330, 9b3b5fb, 7469b1e, a419ac6, 1397136.
+
+  **Recall measurement on mneme itself (AC1):**
+  - Baseline (no resolver at all): ~43% (1209/2841 per spec; this machine had empty codegraph DB)
+  - After implementation: **82.4%** (2358/2863) — calls edges from T2(import)+T3+T4.
+  - Import-guided edges (T2, provenance="import"): **569** edges, verified **100% correct** on 20-edge spot-check.
+  - Remaining unresolved: 17,014 — primarily stdlib/external packages (fmt, os, cobra) and variable-receiver calls (x.Method() where x is a local variable — out of scope per spec).
 
 ## [v1.14.0] — 2026-06-24
 
