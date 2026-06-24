@@ -266,6 +266,14 @@ type Node struct {
 	// generic types and functions (e.g. ["T", "U"]).
 	TypeParameters []string `json:"type_parameters,omitempty"`
 
+	// ImportAlias is the local binding name used to reference this import in the
+	// source file. For Go imports it is the explicit alias (e.g. "p" for
+	// `import p "path/pkg"`) or the last path segment when no alias is declared
+	// (e.g. "store" for `import "internal/store"`). Special bindings "_" and "."
+	// are stored verbatim so the resolver can treat them as non-resolvable.
+	// Only populated for nodes with Kind == NodeKindImport.
+	ImportAlias string `json:"import_alias,omitempty"`
+
 	// UpdatedAt is a Unix timestamp (seconds) recording the last time this node
 	// was written to the store. Used to detect stale entries after re-indexing.
 	UpdatedAt int64 `json:"updated_at"`

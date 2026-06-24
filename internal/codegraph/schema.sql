@@ -38,7 +38,8 @@ CREATE TABLE IF NOT EXISTS nodes (
     is_abstract    INTEGER DEFAULT 0,
     decorators     TEXT,
     type_parameters TEXT,
-    updated_at     INTEGER NOT NULL
+    updated_at     INTEGER NOT NULL,
+    import_alias   TEXT    DEFAULT NULL
 );
 
 -- edges stores directed relationships between nodes. The (source, target, kind)

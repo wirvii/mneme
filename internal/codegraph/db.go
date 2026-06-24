@@ -92,7 +92,55 @@ func OpenDB(path string) (*CodeGraphDB, error) {
 		return nil, fmt.Errorf("codegraph: open db: apply schema: %w", err)
 	}
 
+	// Idempotent column migrations for databases created before schema changes.
+	// Each ALTER TABLE is executed individually so we can suppress the
+	// "duplicate column name" error that SQLite raises when the column already
+	// exists (e.g. because the DB was created by a newer binary with the column
+	// in the CREATE TABLE, and the older ALTER path is now redundant).
+	if err := applyAlterIdempotent(sqlDB, "nodes", "import_alias", "TEXT DEFAULT NULL"); err != nil {
+		_ = sqlDB.Close()
+		return nil, fmt.Errorf("codegraph: open db: alter nodes add import_alias: %w", err)
+	}
+
 	return &CodeGraphDB{DB: sqlDB, Path: path}, nil
+}
+
+// applyAlterIdempotent adds a column to tableName when it does not already
+// exist. It uses PRAGMA table_info to check column existence before issuing the
+// ALTER TABLE so that the operation is fully idempotent across all SQLite
+// versions (including those that do not distinguish "duplicate column" errors).
+func applyAlterIdempotent(db *sql.DB, tableName, columnName, columnDef string) error {
+	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", tableName))
+	if err != nil {
+		return fmt.Errorf("pragma table_info: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		// PRAGMA table_info columns: cid, name, type, notnull, dflt_value, pk
+		var cid int
+		var name, colType string
+		var notnull int
+		var dfltValue sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &colType, &notnull, &dfltValue, &pk); err != nil {
+			return fmt.Errorf("scan table_info: %w", err)
+		}
+		if name == columnName {
+			// Column already exists — nothing to do.
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("rows error: %w", err)
+	}
+
+	// Column is absent — add it.
+	_, err = db.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", tableName, columnName, columnDef))
+	if err != nil {
+		return fmt.Errorf("alter table: %w", err)
+	}
+	return nil
 }
 
 // Close closes the underlying database connection and releases all associated
