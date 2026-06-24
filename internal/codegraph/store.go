@@ -750,6 +750,57 @@ func marshalStringSlice(ss []string) (sql.NullString, error) {
 // Unresolved reference operations
 // ---------------------------------------------------------------------------
 
+// BatchUpsertUnresolvedRefs inserts all UnresolvedRef rows in a single
+// transaction. This is significantly faster than individual UpsertUnresolvedRef
+// calls when indexing a large file.
+func (s *Store) BatchUpsertUnresolvedRefs(refs []UnresolvedRef) error {
+	if len(refs) == 0 {
+		return nil
+	}
+
+	tx, err := s.db.DB.Begin()
+	if err != nil {
+		return fmt.Errorf("codegraph: store: batch upsert unresolved refs: begin tx: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	stmt, err := tx.Prepare(`
+		INSERT INTO unresolved_refs (
+			from_node_id, reference_name, reference_kind,
+			line, col, candidates, file_path, language
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return fmt.Errorf("codegraph: store: batch upsert unresolved refs: prepare: %w", err)
+	}
+	for _, ref := range refs {
+		_, serr := stmt.Exec(
+			ref.FromNodeID, ref.ReferenceName, string(ref.ReferenceKind),
+			ref.Line, ref.Col,
+			nullableString(ref.Candidates),
+			ref.FilePath, ref.Language,
+		)
+		if serr != nil {
+			_ = stmt.Close()
+			err = fmt.Errorf("codegraph: store: batch upsert unresolved refs: exec: %w", serr)
+			return err
+		}
+	}
+
+	if cerr := stmt.Close(); cerr != nil {
+		err = fmt.Errorf("codegraph: store: batch upsert unresolved refs: close stmt: %w", cerr)
+		return err
+	}
+
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("codegraph: store: batch upsert unresolved refs: commit: %w", err)
+	}
+	return nil
+}
+
 // UpsertUnresolvedRef inserts an UnresolvedRef row into the unresolved_refs
 // table. It does not enforce uniqueness beyond the FK on from_node_id; callers
 // should avoid inserting identical refs. Used primarily in tests and by the

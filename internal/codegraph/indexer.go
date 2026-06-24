@@ -227,6 +227,8 @@ func (ix *Indexer) indexFile(absPath, relPath, lang string, opts IndexOptions, r
 	}
 
 	// Persist: delete stale nodes for this file, then batch-insert the new set.
+	// DeleteNodesByFile cascades to edges and unresolved_refs via FK constraints,
+	// so stale cross-file unresolved refs originating from this file are cleaned up.
 	if _, delErr := ix.store.DeleteNodesByFile(relPath); delErr != nil {
 		return fmt.Errorf("delete nodes for %s: %w", relPath, delErr)
 	}
@@ -235,6 +237,9 @@ func (ix *Indexer) indexFile(absPath, relPath, lang string, opts IndexOptions, r
 	}
 	if uErr := ix.store.BatchUpsertEdges(extraction.Edges); uErr != nil {
 		return fmt.Errorf("batch upsert edges for %s: %w", relPath, uErr)
+	}
+	if uErr := ix.store.BatchUpsertUnresolvedRefs(extraction.UnresolvedRefs); uErr != nil {
+		return fmt.Errorf("batch upsert unresolved refs for %s: %w", relPath, uErr)
 	}
 
 	errMsg := ""
