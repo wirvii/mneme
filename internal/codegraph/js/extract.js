@@ -596,7 +596,11 @@ function parseTsconfigs(rootDir) {
           ts.sys,
           dir,
         );
-        if (parsed.errors && parsed.errors.length > 0) continue;
+        // Only skip on error-category diagnostics (category 0 = error).
+        // Category 1 = warning (e.g. "No inputs found") is harmless — we
+        // only need options.baseUrl and options.paths.
+        const hasErrors = parsed.errors && parsed.errors.some(e => e.category === 0 /* error */);
+        if (hasErrors) continue;
 
         const co = parsed.options;
         results.push({
