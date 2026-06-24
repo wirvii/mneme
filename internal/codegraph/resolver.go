@@ -37,7 +37,8 @@ type ResolveResult struct {
 // node to the matched node with the stored reference kind, then deletes the ref.
 // Refs that cannot be matched are left in the table and counted as Unresolved.
 type Resolver struct {
-	store *Store
+	store     *Store
+	tsAliases TSAliasMap // loaded once per Resolve(rootDir) call; nil = no aliases
 }
 
 // NewResolver constructs a Resolver backed by the given Store.
@@ -106,12 +107,29 @@ func tsImportSource(qualifiedName string) string {
 // promote each to a real edge. It returns a ResolveResult summarising how many
 // refs were resolved versus how many remain unresolvable with the current graph.
 //
+// rootDir is the absolute path of the indexed repository root. When non-empty
+// and TS/JS nodes are present, Resolve will attempt to load tsconfig.json path
+// aliases (via the TSExtractor subprocess) so that imports like "@/lib/utils"
+// can be resolved. If Node.js is unavailable, no tsconfig is found, or rootDir
+// is empty, resolution falls back gracefully to relative-only TS imports.
+//
 // Resolve is safe to call multiple times; already-resolved refs will not produce
 // duplicate edges because EdgeExists is consulted before each insertion.
-func (r *Resolver) Resolve() (*ResolveResult, error) {
+func (r *Resolver) Resolve(rootDir string) (*ResolveResult, error) {
 	refs, err := r.store.ListUnresolvedRefs()
 	if err != nil {
 		return nil, fmt.Errorf("resolver: list unresolved refs: %w", err)
+	}
+
+	// Load tsconfig aliases once if rootDir is known and there are TS/JS nodes.
+	// Fail-open: any error leaves r.tsAliases nil → resolveTSImport behaves as before.
+	if rootDir != "" {
+		hasTSNodes, nodeErr := r.store.HasNodesForLanguage("typescript")
+		if nodeErr == nil && hasTSNodes {
+			ex := NewTSExtractor()
+			defer ex.Close() //nolint:errcheck
+			r.tsAliases = LoadTSAliases(ex, rootDir)
+		}
 	}
 
 	// Build the per-file import index once, before iterating refs.
@@ -317,8 +335,40 @@ func (r *Resolver) resolveTSImport(referenceName, refFilePath string, bindings m
 		return nil
 	}
 
-	// Only resolve relative imports — bare module names are external packages.
+	// Try tsconfig path aliases for non-relative imports (e.g. "@/lib/utils").
+	// Only attempted when the resolver has a loaded alias map (rootDir was
+	// provided and at least one tsconfig was found). Candidato-único-o-nada.
 	if !strings.HasPrefix(moduleSource, ".") {
+		if len(r.tsAliases) == 0 {
+			// No aliases loaded — bare imports stay unresolved (as before).
+			return nil
+		}
+		basePaths := r.tsAliases.ResolveAlias(moduleSource, refFilePath)
+		if len(basePaths) == 0 {
+			// Alias prefix did not match any entry in the map.
+			return nil
+		}
+		// For each resolved base path, probe extensions via tsCandidatePaths.
+		// tsCandidatePaths treats the second arg as a module specifier relative
+		// to the importer directory, but here we already have an absolute-ish
+		// candidate directory.  Use an empty importer dir and the base path as a
+		// pseudo-relative spec so tsCandidatePaths appends extensions correctly.
+		for _, basePath := range basePaths {
+			for _, candidate := range tsCandidatePaths("", basePath) {
+				// tsCandidatePaths("", basePath) calls path.Join(".", basePath)
+				// which equals basePath — correct.
+				nodes, err := r.store.FindNodesByNameInFile(symbol, candidate)
+				if err != nil {
+					continue
+				}
+				if len(nodes) == 1 {
+					return &resolvedNode{Node: &nodes[0], importGuided: true}
+				}
+				if len(nodes) > 1 {
+					return nil // ambiguous
+				}
+			}
+		}
 		return nil
 	}
 

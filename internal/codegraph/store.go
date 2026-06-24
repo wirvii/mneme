@@ -1066,6 +1066,25 @@ func (s *Store) NodeExistsForPath(path string) (bool, error) {
 	return true, nil
 }
 
+// HasNodesForLanguage reports whether any non-file/import/export node exists for
+// the given language. Used by the Resolver to decide whether to load tsconfig
+// aliases — skipping the Node.js subprocess call for pure-Go repos.
+func (s *Store) HasNodesForLanguage(language string) (bool, error) {
+	const q = `
+		SELECT 1 FROM nodes
+		WHERE language = ? AND kind NOT IN ('file','import','export')
+		LIMIT 1`
+	var dummy int
+	err := s.db.DB.QueryRow(q, language).Scan(&dummy)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, fmt.Errorf("codegraph: store: has nodes for language: %w", err)
+	}
+	return true, nil
+}
+
 // EdgeExists reports whether an edge with the given source, target, and kind
 // already exists in the edges table. Used by the Resolver to prevent creating
 // duplicate edges when Resolve is called more than once.

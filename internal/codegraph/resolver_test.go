@@ -80,7 +80,7 @@ func TestResolver_ResolvesCallByQualifiedName(t *testing.T) {
 	}
 
 	r := NewResolver(s)
-	result, err := r.Resolve()
+	result, err := r.Resolve("")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -130,7 +130,7 @@ func TestResolver_ResolvesCallByNameFallback(t *testing.T) {
 	}
 
 	r := NewResolver(s)
-	result, err := r.Resolve()
+	result, err := r.Resolve("")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -167,7 +167,7 @@ func TestResolver_ResolvesCallBySuffixMatch(t *testing.T) {
 	}
 
 	r := NewResolver(s)
-	result, err := r.Resolve()
+	result, err := r.Resolve("")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -202,7 +202,7 @@ func TestResolver_UnresolvableStays(t *testing.T) {
 	}
 
 	r := NewResolver(s)
-	result, err := r.Resolve()
+	result, err := r.Resolve("")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -245,7 +245,7 @@ func TestResolver_MultipleRefs(t *testing.T) {
 	}
 
 	r := NewResolver(s)
-	result, err := r.Resolve()
+	result, err := r.Resolve("")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -288,7 +288,7 @@ func TestResolver_DoesNotCreateDuplicateEdges(t *testing.T) {
 	r := NewResolver(s)
 
 	// First resolve — should create 1 edge.
-	result1, err := r.Resolve()
+	result1, err := r.Resolve("")
 	if err != nil {
 		t.Fatalf("first Resolve: %v", err)
 	}
@@ -303,7 +303,7 @@ func TestResolver_DoesNotCreateDuplicateEdges(t *testing.T) {
 	}
 
 	// Second resolve — should resolve again but NOT create a duplicate edge.
-	result2, err := r.Resolve()
+	result2, err := r.Resolve("")
 	if err != nil {
 		t.Fatalf("second Resolve: %v", err)
 	}
@@ -358,7 +358,7 @@ func TestResolver_ImportGuidedGoUnique(t *testing.T) {
 	}
 
 	r := NewResolver(s)
-	result, err := r.Resolve()
+	result, err := r.Resolve("")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -427,7 +427,7 @@ func TestResolver_ImportGuidedGoAmbiguous(t *testing.T) {
 	}
 
 	r := NewResolver(s)
-	if _, err := r.Resolve(); err != nil {
+	if _, err := r.Resolve(""); err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
 
@@ -468,7 +468,7 @@ func TestResolver_ImportGuidedGoAlias(t *testing.T) {
 	}
 
 	r := NewResolver(s)
-	result, err := r.Resolve()
+	result, err := r.Resolve("")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -548,7 +548,7 @@ func TestResolver_ImportGuidedTSNamespace(t *testing.T) {
 	}
 
 	r := NewResolver(s)
-	result, err := r.Resolve()
+	result, err := r.Resolve("")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -612,7 +612,7 @@ func TestResolver_ImportGuidedTSBareDoesNotBreak(t *testing.T) {
 	}
 
 	r := NewResolver(s)
-	result, err := r.Resolve()
+	result, err := r.Resolve("")
 	if err != nil {
 		t.Fatalf("Resolve must not error on bare npm imports: %v", err)
 	}
@@ -651,7 +651,7 @@ func TestResolver_ShortNameAmbiguousStaysUnresolved(t *testing.T) {
 	}
 
 	r := NewResolver(s)
-	result, err := r.Resolve()
+	result, err := r.Resolve("")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -686,7 +686,7 @@ func TestResolver_ShortNameUniqueResolves(t *testing.T) {
 	}
 
 	r := NewResolver(s)
-	result, err := r.Resolve()
+	result, err := r.Resolve("")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -725,7 +725,7 @@ func TestResolver_SuffixAmbiguousStaysUnresolved(t *testing.T) {
 	}
 
 	r := NewResolver(s)
-	result, err := r.Resolve()
+	result, err := r.Resolve("")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -760,7 +760,7 @@ func TestResolver_SuffixUniqueResolves(t *testing.T) {
 	}
 
 	r := NewResolver(s)
-	result, err := r.Resolve()
+	result, err := r.Resolve("")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}

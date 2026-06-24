@@ -62,7 +62,7 @@ func (s *CodeGraphService) Index(opts codegraph.IndexOptions) (*codegraph.IndexR
 	}
 	if !opts.DryRun {
 		resolver := codegraph.NewResolver(s.store)
-		_, _ = resolver.Resolve() // best-effort: resolution errors are non-fatal
+		_, _ = resolver.Resolve(opts.RootDir) // best-effort: resolution errors are non-fatal
 	}
 	return result, nil
 }
