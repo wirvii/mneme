@@ -57,13 +57,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   external npm packages. Re-indexing is required to populate `import_alias`
   and generate new `provenance="import"` edges in existing databases.
 
-  Commits: 80e316e, dfa611e, ddf9330, 9b3b5fb, 7469b1e, a419ac6, 1397136.
+### Fixed
 
-  **Recall measurement on mneme itself (AC1):**
-  - Baseline (no resolver at all): ~43% (1209/2841 per spec; this machine had empty codegraph DB)
-  - After implementation: **82.4%** (2358/2863) — calls edges from T2(import)+T3+T4.
-  - Import-guided edges (T2, provenance="import"): **569** edges, verified **100% correct** on 20-edge spot-check.
-  - Remaining unresolved: 17,014 — primarily stdlib/external packages (fmt, os, cobra) and variable-receiver calls (x.Method() where x is a local variable — out of scope per spec).
+- **T3 (suffix) and T4 (short-name) hardened to candidato-único-o-nada** (SPEC-047 precision fix):
+  `FindNodesByName` and `FindNodesBySuffix` (plural, no LIMIT) added to the store;
+  `resolveRef` in `Resolver` updated so both tiers bind only when `len(candidates)==1`.
+  When two or more nodes share the same name or qualified_name suffix, the ref is
+  left unresolved rather than linked to an arbitrary node (was: LIMIT 1 caused
+  ~1212 false-positive edges — e.g. `writeMemory→CodeGraphDB.Close`, `TestMemoryTypeValid→NodeKind.Valid`).
+  Four new tests: `TestResolver_ShortNameAmbiguousStaysUnresolved`,
+  `TestResolver_ShortNameUniqueResolves`, `TestResolver_SuffixAmbiguousStaysUnresolved`,
+  `TestResolver_SuffixUniqueResolves`.
+
+  Commits: 80e316e, dfa611e, ddf9330, 9b3b5fb, 7469b1e, a419ac6, 1397136, 2ba561e, 3865df9.
+
+  **Recall measurement on mneme itself (AC1, honest post-precision-fix):**
+  - Baseline (no resolver at all): ~43% (1209/2841 per spec)
+  - After SPEC-047 (all tiers candidato-único): **80.2%** (2300/2869)
+  - Import-guided edges (T2, provenance="import"): **569** edges, 100% spot-check correct.
+  - Ambiguous resolver edges eliminated: **1212 → 314** (remaining 314 are T1 exact-match
+    false positives caused by extractors emitting bare `qualified_name` without package prefix
+    for test helpers — pre-existing issue, not in scope of SPEC-047).
+  - Remaining unresolved: ~17 000 — stdlib/external packages and variable-receiver calls.
 
 ## [v1.14.0] — 2026-06-24
 
