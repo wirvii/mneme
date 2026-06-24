@@ -6,6 +6,87 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [v1.14.0] — 2026-06-24
+
+### Added
+
+- **Codegraph-first exploration policy in agent system prompts** (SPEC-045, C8):
+  `internal/install/assets/agents/{architect,backend,frontend,qa-tester,bug-hunter,diagnostician}.md`
+  — each of the 6 bundled agent assets now embeds a permanent
+  `## Exploracion de codigo: grafo primero` section delimited by
+  `<!-- mneme:codegraph-policy:start/end -->` markers. The section instructs
+  agents to use `codegraph_*` tools as the first line for code exploration and
+  to fall back to Read/Grep only when the graph does not cover the question,
+  is stale, or the repo is not indexed.
+
+  Two canonical variants:
+
+  - **Without Bash clause** (`architect`, `qa-tester`): neither agent has `Bash`
+    in its tool allowlist; the section states the codegraph-first policy and
+    fallback rules without Bash-specific guidance.
+
+  - **With Bash clause** (`backend`, `frontend`, `bug-hunter`): adds an explicit
+    prohibition on using `Bash` (grep/cat/find/rg/head/tail) for code navigation
+    — that need is covered by codegraph tools and native Read/Grep. Bash is
+    reserved for build, test, git, and operational tasks.
+
+  - **Diagnostician variant**: same Bash prohibition for code navigation, plus
+    an explicit sentence preserving Bash for reading logs, infra, and operational
+    diagnostics (consistent with the agent's own `## Permisos de Bash` section).
+
+  Commits: c697d77, 61fc434, 6331d28.
+
+  The policy takes effect after `mneme install claude-code` (no flags needed —
+  `WriteAgents` always rewrites agent files from the embed) and a Claude Code
+  restart. Relationship with the runtime nudge (C1/SPEC-044): these are
+  complementary layers — the prompt policy is always present and imperative;
+  the nudge fires once per session with real-time graph freshness data.
+
+- **`TestAgentsCodegraphPolicy`** anti-drift test
+  (`internal/install/assets_test.go`): verifies that all 6 agent assets contain
+  the exact canonical policy block for their variant. Uses three authoritative
+  constants (`codegraphPolicyNoBash`, `codegraphPolicyWithBash`,
+  `codegraphPolicyDiagnostician`) as the source of truth. Follows the pattern of
+  `TestAgentsMnemeAware`. Fails immediately on any textual drift.
+
+### Fixed
+
+- **Codegraph indexer no longer indexes generated/hidden directories** (SPEC-046, C10):
+  `internal/codegraph/indexer.go` — the `WalkDir` branch for directories now skips
+  any directory whose name starts with `"."` (hidden directories), in addition to
+  the existing `ignoredDirs` map lookup. This fixes the root cause that allowed
+  `.next`, `.turbo`, `.svelte-kit`, `.nuxt`, `.cache`, `.angular`, and similar
+  toolchain directories to be recursed into and indexed, producing thousands of
+  "errored" file records from transpiled/minified bundles. New explicit entries
+  added to `ignoredDirs` for documentation and defense-in-depth: `.next`,
+  `.turbo`, `.svelte-kit`, `.nuxt`, `.cache`, `coverage`. `dist` and `build`
+  were already present. Obsolete nodes (e.g. from a previously indexed `.next`
+  directory) are pruned from the store on the **next** `mneme codegraph index`
+  run via `pruneDeleted` — no `--force` flag needed. Test coverage extended in
+  `TestIndexer_RespectsIgnoreDirs` to cover `.next`, `.turbo`, `coverage`, and
+  an arbitrary hidden directory (`.foo`).
+
+### Changed
+
+- **Agent codegraph policy now warns that `codegraph_impact` / `codegraph_callees`
+  may be incomplete** (SPEC-046, C10): all 6 agent assets and the 3 canonical
+  test constants in `internal/install/assets_test.go` include a new
+  "Aviso de cobertura" paragraph (identical across variants). The notice explains
+  that the call-edge graph captures ~43% of callable relationships in practice —
+  method-calls (`x.Foo()`) and cross-package/stdlib calls are often not recorded.
+  `codegraph_search`, `codegraph_context`, and `codegraph_callers` remain
+  reliable for symbol location. The imperative to prefer codegraph tools over
+  Read/Grep for code exploration is unchanged. `docs/codegraph.md` updated with a
+  matching recall-limitation note near the MCP tools table.
+
+### Docs
+
+- `docs/codegraph.md`: new "Adoption by prompt (C8) — SPEC-045" section
+  documenting the policy block, two canonical variants, the anti-drift test,
+  deployment procedure, and the complementary relationship with the C1 runtime
+  nudge. Recall-limitation note added for `codegraph_impact`/`codegraph_callees`
+  (SPEC-046).
+
 ## [v1.13.0] — 2026-06-12
 
 ### Added
