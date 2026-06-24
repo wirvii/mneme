@@ -271,6 +271,65 @@ func convertTSResult(raw *tsExtractionResult) *ExtractionResult {
 	return result
 }
 
+// tsconfigOp is the control message sent to the Node.js subprocess when
+// requesting tsconfig parsing.
+type tsconfigOp struct {
+	Op   string `json:"op"`
+	Root string `json:"root"`
+}
+
+// tsconfigEntry is one tsconfig descriptor returned by the subprocess.
+type tsconfigEntry struct {
+	// Dir is the absolute path of the directory containing the tsconfig.json.
+	Dir string `json:"dir"`
+	// BaseURL is the resolved absolute base URL, or empty string if absent.
+	BaseURL string `json:"baseUrl"`
+	// Paths is the compilerOptions.paths map. Keys are patterns (e.g. "@/*"),
+	// values are arrays of replacement patterns (e.g. ["./src/*"]).
+	Paths map[string][]string `json:"paths"`
+}
+
+// tsconfigOpResult is the full response from the subprocess for the tsconfig op.
+type tsconfigOpResult struct {
+	Tsconfigs []tsconfigEntry `json:"tsconfigs"`
+}
+
+// LoadTSConfigAliases sends the tsconfig op to the Node.js subprocess and
+// returns all tsconfig descriptors found under rootDir. On any error (Node.js
+// unavailable, no tsconfig, parse failure) it returns an empty slice so callers
+// degrade gracefully.
+func (e *TSExtractor) LoadTSConfigAliases(rootDir string) ([]tsconfigEntry, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if err := e.ensureStarted(); err != nil {
+		return nil, fmt.Errorf("codegraph: ts extractor: load tsconfig: start: %w", err)
+	}
+
+	msg := tsconfigOp{Op: "tsconfig", Root: rootDir}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return nil, fmt.Errorf("codegraph: ts extractor: load tsconfig: marshal: %w", err)
+	}
+	data = append(data, '\n')
+	if _, err := e.stdin.Write(data); err != nil {
+		return nil, fmt.Errorf("codegraph: ts extractor: load tsconfig: write: %w", err)
+	}
+
+	if !e.stdout.Scan() {
+		if scanErr := e.stdout.Err(); scanErr != nil {
+			return nil, fmt.Errorf("codegraph: ts extractor: load tsconfig: read stdout: %w", scanErr)
+		}
+		return nil, fmt.Errorf("codegraph: ts extractor: load tsconfig: no response")
+	}
+
+	var result tsconfigOpResult
+	if err := json.Unmarshal(e.stdout.Bytes(), &result); err != nil {
+		return nil, fmt.Errorf("codegraph: ts extractor: load tsconfig: decode: %w", err)
+	}
+	return result.Tsconfigs, nil
+}
+
 // Close terminates the Node.js subprocess and cleans up temporary files.
 // It is safe to call Close multiple times.
 func (e *TSExtractor) Close() error {

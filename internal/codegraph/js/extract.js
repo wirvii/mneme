@@ -549,13 +549,90 @@ function extractFile(filePath, content) {
   return {nodes, edges, unresolved_refs: unresolvedRefs, errors, duration_ms: Date.now() - start};
 }
 
-// JSONL protocol: read from stdin, write to stdout
+// parseTsconfigs discovers and parses all tsconfig.json files under rootDir
+// using the TypeScript compiler API. Returns an array of tsconfig descriptors,
+// each with { dir, baseUrl, paths } where dir is the directory containing the
+// tsconfig (absolute), baseUrl is the resolved base URL (absolute path or null),
+// and paths is the compilerOptions.paths map (may be null/undefined).
+//
+// Called by the op:"tsconfig" control message. Uses ts.readConfigFile and
+// ts.parseJsonConfigFileContent which correctly handle extends chains.
+function parseTsconfigs(rootDir) {
+  const fs = require('fs');
+  const nodePath = require('path');
+
+  // Directories to skip (mirrors ignoredDirs in indexer.go).
+  const ignoredDirs = new Set([
+    'node_modules', 'vendor', '.git', '.svn', '.hg',
+    '.next', 'dist', 'build', '.turbo', 'out', 'coverage',
+    '.yarn', '.pnp',
+  ]);
+
+  const results = [];
+
+  function walk(dir) {
+    let entries;
+    try { entries = fs.readdirSync(dir, {withFileTypes: true}); }
+    catch (e) { return; }
+
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        if (!ignoredDirs.has(entry.name) && !entry.name.startsWith('.')) {
+          walk(nodePath.join(dir, entry.name));
+        }
+        continue;
+      }
+      if (entry.name !== 'tsconfig.json') continue;
+
+      const tsconfigPath = nodePath.join(dir, entry.name);
+      try {
+        // Read and parse the tsconfig using the TS compiler API so that
+        // extends chains and path resolution are handled correctly.
+        const readResult = ts.readConfigFile(tsconfigPath, ts.sys.readFile);
+        if (readResult.error) continue;
+
+        const parsed = ts.parseJsonConfigFileContent(
+          readResult.config,
+          ts.sys,
+          dir,
+        );
+        if (parsed.errors && parsed.errors.length > 0) continue;
+
+        const co = parsed.options;
+        results.push({
+          dir: dir,
+          // baseUrl is already an absolute path after parseJsonConfigFileContent.
+          baseUrl: co.baseUrl || null,
+          // paths values are arrays of glob patterns; we keep them as-is.
+          paths: co.paths || null,
+        });
+      } catch (e) {
+        // Skip unparseable tsconfigs — fail open.
+      }
+    }
+  }
+
+  walk(rootDir);
+  return results;
+}
+
+// JSONL protocol: read from stdin, write to stdout.
+// Two message kinds:
+//   {op:"tsconfig", root:"<absPath>"}  → tsconfig op (control)
+//   {path:"...", content:"..."}        → file extraction (original protocol, back-compat)
 const rl = readline.createInterface({input: process.stdin, terminal: false});
 rl.on('line', (line) => {
   try {
-    const {path, content} = JSON.parse(line);
-    const result = extractFile(path, content);
-    process.stdout.write(JSON.stringify(result) + '\n');
+    const msg = JSON.parse(line);
+    if (msg.op === 'tsconfig') {
+      // Control op: parse tsconfig paths for the given rootDir.
+      const tsconfigs = parseTsconfigs(msg.root);
+      process.stdout.write(JSON.stringify({tsconfigs}) + '\n');
+    } else {
+      // Original file-extraction protocol: {path, content}.
+      const result = extractFile(msg.path, msg.content);
+      process.stdout.write(JSON.stringify(result) + '\n');
+    }
   } catch (e) {
     process.stdout.write(JSON.stringify({nodes: [], edges: [], unresolved_refs: [], errors: [{message: e.message, severity: 'error'}], duration_ms: 0}) + '\n');
   }
