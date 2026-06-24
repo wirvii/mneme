@@ -35,6 +35,13 @@ impacto de un cambio, o donde vive un simbolo— usa PRIMERO las tools del grafo
 Cae a Read/Grep SOLO si: el grafo no cubre la pregunta, esta desactualizado
 (stale), o el repo no esta indexado. Para leer el contenido literal de un archivo
 que YA localizaste, Read es lo correcto.
+
+Aviso de cobertura: `codegraph_search`, `codegraph_context` y `codegraph_callers`
+son fiables. En cambio `codegraph_impact` y `codegraph_callees` pueden estar
+INCOMPLETOS: el grafo no capta de forma fiable method-calls (`x.Foo()`) ni
+llamadas cross-package/stdlib. Para un analisis de impacto EXHAUSTIVO antes de un
+refactor, complementa con `Grep`/`Read` — no asumas que "nadie llama a X" solo
+porque el grafo no lo muestre.
 <!-- mneme:codegraph-policy:end -->
 
 ## Integracion con mneme
