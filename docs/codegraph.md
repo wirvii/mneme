@@ -30,9 +30,50 @@ and writes them to the project database.
 - **Incremental:** files are skipped when their content hash matches the
   stored record. Use `--force` to re-index all files regardless.
 - **Resolution pass:** after indexing, a best-effort second pass resolves
-  cross-file symbol references.
+  cross-file symbol references using a four-tier strategy (see below).
 - **Languages:** Go (via `go/ast`) and TypeScript/JavaScript (via a Node.js
   subprocess that uses the TypeScript compiler API).
+
+## Symbol resolution strategy (v1.15.0+)
+
+Cross-file references are resolved in four tiers, in order. The first match wins.
+
+| Tier | Name | Description |
+|------|------|-------------|
+| T1 | Exact | `qualified_name == referenceName` — same-file and fully qualified cross-file calls. |
+| T2 | Import-guided (C3) | Uses the file's import declarations to locate the target package/file, then finds all candidates with that symbol name. Only links when **exactly one** candidate exists (candidato-único-o-nada). |
+| T3 | Suffix | `qualified_name LIKE '%.' + referenceName` — partial qualification. |
+| T4 | Short-name | `name == lastComponent(referenceName)` — unqualified fallback. |
+
+**T2 — Import-guided detail (SPEC-047):**
+
+- **Go**: `"pkg.Func"` → splits into qualifier (`"pkg"`) and symbol (`"Func"`).
+  Looks up qualifier in the file's import bindings (the `import_alias` column)
+  to get the import path (e.g. `"internal/store"`). Finds all nodes with
+  `name="Func"` whose `file_path` directory suffix-matches the import path.
+- **TS/JS**: namespace imports (`"utils.formatDate"` from `import * as utils from './lib/utils'`)
+  and named/default imports (`"formatDate"` from `import { formatDate } from './lib/utils'`)
+  are resolved by mapping the binding to the module source, then probing
+  `.ts`, `.tsx`, `.js`, `.jsx`, and `index.*` file extensions.
+- **Bare/external imports** (npm packages, Go stdlib): no node in the repo →
+  silently left unresolved (no error, no false edge).
+- **Provenance**: edges created by T2 carry `provenance="import"` (distinct
+  from `"ast"` for same-file edges and `"resolver"` for T3/T4 edges).
+
+**Limitations:**
+- Method calls on variables (`x.Foo()` where `x` is a typed local variable)
+  require type inference — out of scope. Tracked as BL future item.
+- TypeScript `tsconfig` `paths` aliases and re-exports (`export { X } from './y'`)
+  are not resolved. Use explicit relative imports in the import source.
+- Go: package names that differ from the last path segment
+  (e.g. `gopkg.in/yaml.v3` → package name `yaml`) require an explicit import
+  alias to resolve (e.g. `import yaml "gopkg.in/yaml.v3"`). Without an alias
+  the heuristic uses the last path segment (`v3`), which may not match.
+
+**Re-indexing required:** existing databases must be re-indexed to populate
+`import_alias` values and generate `provenance="import"` edges. The
+`import_alias` schema column is added automatically on the next binary open
+(no manual migration needed); re-index is needed only for the new edge data.
 
 ---
 

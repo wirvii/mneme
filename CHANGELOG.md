@@ -6,6 +6,59 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **CodeGraph C3: import-guided cross-package resolver** (SPEC-047):
+  `internal/codegraph/resolver.go` — adds a new Tier 2 (T2) to the four-tier
+  resolution strategy that uses each file's import declarations to resolve
+  `pkg.Func()` cross-package calls to the correct node.
+
+  **Design highlights:**
+  - `Resolver.buildFileImports()` reads all `kind=import` nodes once per
+    `Resolve()` call and builds a `fileImports` index
+    (`filePath → (binding → importPath/moduleSource)`), eliminating per-ref
+    DB queries.
+  - **Go**: splits `"pkg.Func"` into qualifier + symbol; looks up qualifier in
+    `fileImports[ref.FilePath]` to get the import path; finds candidate nodes
+    via `FindNodesByNameInDir` (directory suffix-match against the import path).
+  - **TS/JS**: supports namespace imports (`"ns.member"`), named/default
+    imports (`"member"`), and relative module specifiers; probes `.ts`, `.tsx`,
+    `.js`, `.jsx`, and `index.*` extensions; bare npm imports (external
+    packages) are silently skipped — no node in repo → stays unresolved.
+  - **Candidato-único-o-nada**: links only when `len(candidates) == 1`.
+    Zero candidates → unresolved; two or more → unresolved (no false positives).
+  - **Provenance**: import-guided edges carry `Provenance="import"` (distinct
+    from `"ast"` and `"resolver"`) for future confidence scoring (BL-044).
+
+  **Schema change** (`internal/codegraph/schema.sql` + `db.go`):
+  New nullable column `import_alias` on the `nodes` table records the local
+  binding name for import nodes (alias, last segment, `.`, or `_`).
+  `OpenDB` runs an idempotent `ALTER TABLE` via `applyAlterIdempotent` (uses
+  `PRAGMA table_info` to check existence before issuing the statement) so
+  existing codegraph databases are upgraded transparently on the next binary
+  run — no re-index required for the schema migration itself.
+
+  **Extractor change** (`internal/codegraph/extractor_go.go`):
+  `extractImportSpec` now captures the local binding in `Node.ImportAlias`:
+  explicit alias → verbatim; no alias → last path segment; dot/blank imports
+  stored as `"."` / `"_"` and skipped by the resolver as non-resolvable.
+
+  **New store methods** (`internal/codegraph/store.go`):
+  `ListImportNodes()`, `FindNodesByNameInDir(name, dirSuffix)`,
+  `FindNodesByNameInFile(name, filePath)`.
+
+  **Tests** (AC4–AC8): `TestResolver_ImportGuidedGoUnique`,
+  `TestResolver_ImportGuidedGoAmbiguous`, `TestResolver_ImportGuidedGoAlias`,
+  `TestResolver_ImportGuidedTSNamespace`, `TestResolver_ImportGuidedTSBareDoesNotBreak`,
+  `TestStore_ImportAliasPersistence`, `TestStore_OpenDBIdempotent`.
+
+  **Limitations (out of scope):** method calls on variables (`x.Foo()` where
+  `x` is a local variable), `tsconfig` `paths` aliases, re-exports, and
+  external npm packages. Re-indexing is required to populate `import_alias`
+  and generate new `provenance="import"` edges in existing databases.
+
+  Commits: 80e316e, dfa611e, ddf9330, 9b3b5fb, 7469b1e.
+
 ## [v1.14.0] — 2026-06-24
 
 ### Added
