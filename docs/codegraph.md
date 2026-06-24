@@ -55,6 +55,11 @@ Cross-file references are resolved in four tiers, in order. The first match wins
   and named/default imports (`"formatDate"` from `import { formatDate } from './lib/utils'`)
   are resolved by mapping the binding to the module source, then probing
   `.ts`, `.tsx`, `.js`, `.jsx`, and `index.*` file extensions.
+- **tsconfig `paths` aliases** (`@/*`, `~/*`, etc.): when the module source is
+  a non-relative bare specifier, the resolver first tries to expand it using
+  path alias mappings loaded from `tsconfig.json` files in the project (see
+  [tsconfig paths](#tsconfig-paths-aliases--spec-047) below). Requires Node.js +
+  TypeScript in the project.
 - **Bare/external imports** (npm packages, Go stdlib): no node in the repo →
   silently left unresolved (no error, no false edge).
 - **Provenance**: edges created by T2 carry `provenance="import"` (distinct
@@ -63,8 +68,8 @@ Cross-file references are resolved in four tiers, in order. The first match wins
 **Limitations:**
 - Method calls on variables (`x.Foo()` where `x` is a typed local variable)
   require type inference — out of scope. Tracked as BL future item.
-- TypeScript `tsconfig` `paths` aliases and re-exports (`export { X } from './y'`)
-  are not resolved. Use explicit relative imports in the import source.
+- Re-exports (`export { X } from './y'`) are not resolved — the target of the
+  re-export is not followed.
 - Go: package names that differ from the last path segment
   (e.g. `gopkg.in/yaml.v3` → package name `yaml`) require an explicit import
   alias to resolve (e.g. `import yaml "gopkg.in/yaml.v3"`). Without an alias
@@ -74,6 +79,45 @@ Cross-file references are resolved in four tiers, in order. The first match wins
 `import_alias` values and generate `provenance="import"` edges. The
 `import_alias` schema column is added automatically on the next binary open
 (no manual migration needed); re-index is needed only for the new edge data.
+
+### tsconfig paths aliases — SPEC-047
+
+TypeScript projects often use `tsconfig.json` `compilerOptions.paths` to define
+module aliases such as `@/*` pointing to `src/*`. Without resolving these, any
+import like `import { getDB } from "@/lib/db"` leaves an unresolved ref.
+
+**How it works:**
+
+1. After indexing, when TS nodes are present and a `rootDir` is known, the
+   resolver calls the existing Node.js subprocess with a one-time control
+   message `{op:"tsconfig",root:"<rootDir>"}`.
+2. The subprocess walks all directories under `rootDir` (respecting
+   `node_modules`, `.git`, etc.), parses each `tsconfig.json` found using
+   `ts.parseJsonConfigFileContent`, and returns the resolved `baseUrl` +
+   `paths` mapping for each config file.
+3. The Go side builds a `TSAliasMap` — a mapping from alias prefix (e.g.
+   `"@/"`) to a list of `TSAliasEntry` values carrying the tsconfig directory
+   and the candidate base directories.
+4. For each non-relative TS import ref, `ResolveAlias` picks the `TSAliasEntry`
+   whose `TsconfigDir` is the **closest ancestor** of the importing file (longest
+   path match). This ensures that in a monorepo with multiple tsconfigs defining
+   the same alias, each file uses its own app's mapping.
+5. The expanded candidates are fed to `tsCandidatePaths` (probing `.ts`, `.tsx`,
+   etc.) and resolved with candidato-único-o-nada.
+
+**Requirements:**
+- Node.js must be available on `PATH`.
+- `typescript` must be installed in the project (local `node_modules/typescript`
+  or a globally resolvable package).
+
+**Fail-open:** if Node.js is absent, TypeScript is unavailable, or no tsconfigs
+define `paths`, the alias map is empty and the resolver skips alias expansion
+silently — no error, no broken edges.
+
+**The `{op:"tsconfig"}` message is back-compat:** the existing file-extraction
+protocol (`{path,content}` → JSONL result) is unchanged. The subprocess
+discriminates on the presence of `op` to distinguish control messages from file
+extraction requests.
 
 ---
 
