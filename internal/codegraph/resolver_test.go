@@ -633,3 +633,150 @@ func TestResolver_ImportGuidedTSBareDoesNotBreak(t *testing.T) {
 		t.Errorf("want 0 edges for bare import, got %d", len(edges))
 	}
 }
+
+// TestResolver_ShortNameAmbiguousStaysUnresolved verifies that T4 (short-name)
+// does NOT link when two or more nodes share the same name. The ref must
+// remain unresolved (candidato-único-o-nada).
+func TestResolver_ShortNameAmbiguousStaysUnresolved(t *testing.T) {
+	s := newTestStore(t)
+
+	// Two distinct nodes that share the short name "Close" — different packages.
+	insertNode(t, s, "aa000001", "Close", "internal/db.Close", "internal/db/db.go")
+	insertNode(t, s, "aa000002", "Close", "internal/codegraph.Close", "internal/codegraph/db.go")
+	caller := insertNode(t, s, "aa000003", "writeMemory", "internal/vault.writeMemory", "internal/vault/writer.go")
+
+	ref := sampleUnresolvedRef(caller.ID, "Close", EdgeKindCalls)
+	if err := s.UpsertUnresolvedRef(ref); err != nil {
+		t.Fatalf("UpsertUnresolvedRef: %v", err)
+	}
+
+	r := NewResolver(s)
+	result, err := r.Resolve()
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	if result.Resolved != 0 {
+		t.Errorf("Resolved = %d, want 0 (ambiguous short name must not be linked)", result.Resolved)
+	}
+	if result.Unresolved != 1 {
+		t.Errorf("Unresolved = %d, want 1", result.Unresolved)
+	}
+
+	edges, err := s.GetEdgesFrom(caller.ID, string(EdgeKindCalls))
+	if err != nil {
+		t.Fatalf("GetEdgesFrom: %v", err)
+	}
+	if len(edges) != 0 {
+		t.Errorf("want 0 edges (ambiguous), got %d", len(edges))
+	}
+}
+
+// TestResolver_ShortNameUniqueResolves verifies that T4 (short-name) DOES link
+// when exactly one node has the given name (candidato-único).
+func TestResolver_ShortNameUniqueResolves(t *testing.T) {
+	s := newTestStore(t)
+
+	callee := insertNode(t, s, "bb000001", "UniqueFunc", "internal/pkg.UniqueFunc", "internal/pkg/func.go")
+	caller := insertNode(t, s, "bb000002", "callsite", "main.callsite", "cmd/main.go")
+
+	ref := sampleUnresolvedRef(caller.ID, "UniqueFunc", EdgeKindCalls)
+	if err := s.UpsertUnresolvedRef(ref); err != nil {
+		t.Fatalf("UpsertUnresolvedRef: %v", err)
+	}
+
+	r := NewResolver(s)
+	result, err := r.Resolve()
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	if result.Resolved != 1 {
+		t.Errorf("Resolved = %d, want 1", result.Resolved)
+	}
+
+	edges, err := s.GetEdgesFrom(caller.ID, string(EdgeKindCalls))
+	if err != nil {
+		t.Fatalf("GetEdgesFrom: %v", err)
+	}
+	if len(edges) != 1 {
+		t.Fatalf("want 1 edge, got %d", len(edges))
+	}
+	if edges[0].Target != callee.ID {
+		t.Errorf("edge target = %q, want %q", edges[0].Target, callee.ID)
+	}
+}
+
+// TestResolver_SuffixAmbiguousStaysUnresolved verifies that T3 (suffix match)
+// does NOT link when two or more nodes share the same qualified_name suffix.
+// The ref must remain unresolved (candidato-único-o-nada).
+func TestResolver_SuffixAmbiguousStaysUnresolved(t *testing.T) {
+	s := newTestStore(t)
+
+	// Two nodes whose qualified_name both end in ".pkg.Valid" — different roots.
+	insertNode(t, s, "cc000001", "Valid", "internal/a/pkg.Valid", "internal/a/pkg/v.go")
+	insertNode(t, s, "cc000002", "Valid", "internal/b/pkg.Valid", "internal/b/pkg/v.go")
+	caller := insertNode(t, s, "cc000003", "caller", "main.caller", "cmd/main.go")
+
+	// The ref "pkg.Valid" suffix-matches both nodes.
+	ref := sampleUnresolvedRef(caller.ID, "pkg.Valid", EdgeKindCalls)
+	if err := s.UpsertUnresolvedRef(ref); err != nil {
+		t.Fatalf("UpsertUnresolvedRef: %v", err)
+	}
+
+	r := NewResolver(s)
+	result, err := r.Resolve()
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	if result.Resolved != 0 {
+		t.Errorf("Resolved = %d, want 0 (ambiguous suffix must not be linked)", result.Resolved)
+	}
+	if result.Unresolved != 1 {
+		t.Errorf("Unresolved = %d, want 1", result.Unresolved)
+	}
+
+	edges, err := s.GetEdgesFrom(caller.ID, string(EdgeKindCalls))
+	if err != nil {
+		t.Fatalf("GetEdgesFrom: %v", err)
+	}
+	if len(edges) != 0 {
+		t.Errorf("want 0 edges (ambiguous suffix), got %d", len(edges))
+	}
+}
+
+// TestResolver_SuffixUniqueResolves verifies that T3 (suffix match) DOES link
+// when exactly one node has the given qualified_name suffix (candidato-único).
+func TestResolver_SuffixUniqueResolves(t *testing.T) {
+	s := newTestStore(t)
+
+	callee := insertNode(t, s, "dd000001", "Create", "internal/store.Create", "internal/store/store.go")
+	caller := insertNode(t, s, "dd000002", "handler", "http.handler", "internal/http/handler.go")
+
+	ref := sampleUnresolvedRef(caller.ID, "store.Create", EdgeKindCalls)
+	if err := s.UpsertUnresolvedRef(ref); err != nil {
+		t.Fatalf("UpsertUnresolvedRef: %v", err)
+	}
+
+	r := NewResolver(s)
+	result, err := r.Resolve()
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	if result.Resolved != 1 {
+		t.Errorf("Resolved = %d, want 1", result.Resolved)
+	}
+
+	edges, err := s.GetEdgesFrom(caller.ID, string(EdgeKindCalls))
+	if err != nil {
+		t.Fatalf("GetEdgesFrom: %v", err)
+	}
+	if len(edges) != 1 {
+		t.Fatalf("want 1 edge, got %d", len(edges))
+	}
+	if edges[0].Target != callee.ID {
+		t.Errorf("edge target = %q, want %q", edges[0].Target, callee.ID)
+	}
+}

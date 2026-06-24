@@ -946,6 +946,76 @@ func (s *Store) FindNodeBySuffix(suffix string) (*Node, error) {
 	return n, nil
 }
 
+// FindNodesByName returns ALL nodes whose name field exactly matches name,
+// excluding structural kinds (file, import, export). No LIMIT is applied so
+// the caller can implement the candidato-único-o-nada rule: bind only when
+// len == 1; skip when 0 or >= 2 (ambiguous).
+func (s *Store) FindNodesByName(name string) ([]Node, error) {
+	const q = `
+		SELECT id, kind, name, qualified_name, file_path, language,
+		       start_line, end_line, start_column, end_column,
+		       docstring, signature, visibility,
+		       is_exported, is_async, is_static, is_abstract,
+		       decorators, type_parameters, updated_at, import_alias
+		FROM nodes
+		WHERE name = ?
+		  AND kind NOT IN ('file','import','export')`
+
+	rows, err := s.db.DB.Query(q, name)
+	if err != nil {
+		return nil, fmt.Errorf("codegraph: store: find nodes by name %q: %w", name, err)
+	}
+	defer rows.Close()
+
+	var results []Node
+	for rows.Next() {
+		n, err := scanNodeRow(rows)
+		if err != nil {
+			return nil, fmt.Errorf("codegraph: store: find nodes by name: scan: %w", err)
+		}
+		results = append(results, *n)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("codegraph: store: find nodes by name: rows: %w", err)
+	}
+	return results, nil
+}
+
+// FindNodesBySuffix returns ALL nodes whose qualified_name ends with
+// "." + suffix, excluding structural kinds (file, import, export). No LIMIT is
+// applied so the caller can implement the candidato-único-o-nada rule: bind
+// only when len == 1; skip when 0 or >= 2 (ambiguous).
+func (s *Store) FindNodesBySuffix(suffix string) ([]Node, error) {
+	const q = `
+		SELECT id, kind, name, qualified_name, file_path, language,
+		       start_line, end_line, start_column, end_column,
+		       docstring, signature, visibility,
+		       is_exported, is_async, is_static, is_abstract,
+		       decorators, type_parameters, updated_at, import_alias
+		FROM nodes
+		WHERE qualified_name LIKE ?
+		  AND kind NOT IN ('file','import','export')`
+
+	rows, err := s.db.DB.Query(q, "%."+suffix)
+	if err != nil {
+		return nil, fmt.Errorf("codegraph: store: find nodes by suffix %q: %w", suffix, err)
+	}
+	defer rows.Close()
+
+	var results []Node
+	for rows.Next() {
+		n, err := scanNodeRow(rows)
+		if err != nil {
+			return nil, fmt.Errorf("codegraph: store: find nodes by suffix: scan: %w", err)
+		}
+		results = append(results, *n)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("codegraph: store: find nodes by suffix: rows: %w", err)
+	}
+	return results, nil
+}
+
 // GetNodesByFilePath returns all nodes whose file_path equals filePath and whose
 // kind is not NodeKindFile, ordered by start_line ascending. This is used by the
 // Bridge to list the symbols defined in a specific source file.

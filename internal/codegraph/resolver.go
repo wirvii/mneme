@@ -203,17 +203,21 @@ func (r *Resolver) resolveRef(ref UnresolvedRef, fi fileImports) (*resolvedNode,
 	// Tier 3: suffix match — qualified_name LIKE '%.' + referenceName.
 	// Only attempted when the name contains a dot (otherwise it is a plain
 	// short name and tier 4 is the right strategy).
+	// Candidato-único-o-nada: only bind when exactly one node matches;
+	// 0 or >=2 candidates leave the ref unresolved to preserve precision.
 	if strings.Contains(ref.ReferenceName, ".") {
-		node, err = r.store.FindNodeBySuffix(ref.ReferenceName)
+		candidates, err := r.store.FindNodesBySuffix(ref.ReferenceName)
 		if err != nil {
 			return nil, err
 		}
-		if node != nil {
-			return &resolvedNode{Node: node}, nil
+		if len(candidates) == 1 {
+			return &resolvedNode{Node: &candidates[0]}, nil
 		}
 	}
 
 	// Tier 4: match on the short name (last component after the final dot).
+	// Candidato-único-o-nada: only bind when exactly one node matches;
+	// 0 or >=2 candidates leave the ref unresolved to preserve precision.
 	shortName := ref.ReferenceName
 	if idx := strings.LastIndex(ref.ReferenceName, "."); idx >= 0 {
 		shortName = ref.ReferenceName[idx+1:]
@@ -221,12 +225,12 @@ func (r *Resolver) resolveRef(ref UnresolvedRef, fi fileImports) (*resolvedNode,
 	if shortName == "" {
 		return nil, nil
 	}
-	node, err = r.store.FindNodeByName(shortName)
+	nameCandidates, err := r.store.FindNodesByName(shortName)
 	if err != nil {
 		return nil, err
 	}
-	if node != nil {
-		return &resolvedNode{Node: node}, nil
+	if len(nameCandidates) == 1 {
+		return &resolvedNode{Node: &nameCandidates[0]}, nil
 	}
 	return nil, nil
 }
