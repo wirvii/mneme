@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path"
 	"strings"
 )
 
@@ -1049,18 +1050,22 @@ func (s *Store) ListImportNodes() ([]Node, error) {
 }
 
 // FindNodesByNameInDir returns ALL nodes (no LIMIT) whose name equals the
-// given name and whose file_path directory suffix-matches dirSuffix. This is
-// the Go import-guided candidate lookup: dirSuffix is derived from the Go
-// importPath (e.g. "internal/store") and is compared against the directory
-// portion of each node's file_path.
+// given name and whose file_path directory suffix-matches importPath. This is
+// the Go import-guided candidate lookup.
+//
+// The match direction is: importPath (e.g. "github.com/foo/internal/store" or
+// "internal/store") must HAVE the node's directory as a suffix. This handles
+// the common case where file_path is repo-relative ("internal/store/store.go")
+// while the Go importPath may carry the full module prefix
+// ("github.com/foo/internal/store"). Specifically, the node's directory
+// ("internal/store") must be a suffix of the importPath.
+//
+// The query fetches all nodes named `name` (excluding file/import/export kinds),
+// and suffix-matching is done in Go after scanning (avoids complex SQL dirname
+// emulation).
 //
 // The caller applies the candidato-único-o-nada rule: only bind when len==1.
-func (s *Store) FindNodesByNameInDir(name, dirSuffix string) ([]Node, error) {
-	// We match nodes whose directory suffix-matches the import path.
-	// file_path is "dir/file.go"; dir = everything before the last '/'.
-	// SQLite does not have a built-in dirname function, so we use the pattern:
-	//   (file_path LIKE '%/<dirSuffix>/%' OR file_path LIKE '<dirSuffix>/%')
-	// to match nodes in the target package directory.
+func (s *Store) FindNodesByNameInDir(name, importPath string) ([]Node, error) {
 	const q = `
 		SELECT id, kind, name, qualified_name, file_path, language,
 		       start_line, end_line, start_column, end_column,
@@ -1069,18 +1074,11 @@ func (s *Store) FindNodesByNameInDir(name, dirSuffix string) ([]Node, error) {
 		       decorators, type_parameters, updated_at, import_alias
 		FROM nodes
 		WHERE name = ?
-		  AND kind NOT IN ('file','import','export')
-		  AND (file_path LIKE ? OR file_path LIKE ?)`
+		  AND kind NOT IN ('file','import','export')`
 
-	// Two patterns:
-	//   - "%/<dirSuffix>/%" matches files anywhere under the dir
-	//   - "<dirSuffix>/%" matches files at repo root under the dir
-	patternDeep := "%/" + dirSuffix + "/%"
-	patternRoot := dirSuffix + "/%"
-
-	rows, err := s.db.DB.Query(q, name, patternDeep, patternRoot)
+	rows, err := s.db.DB.Query(q, name)
 	if err != nil {
-		return nil, fmt.Errorf("codegraph: store: find nodes by name in dir %q: %w", dirSuffix, err)
+		return nil, fmt.Errorf("codegraph: store: find nodes by name in dir %q: %w", importPath, err)
 	}
 	defer rows.Close()
 
@@ -1090,7 +1088,28 @@ func (s *Store) FindNodesByNameInDir(name, dirSuffix string) ([]Node, error) {
 		if err != nil {
 			return nil, fmt.Errorf("codegraph: store: find nodes by name in dir: scan: %w", err)
 		}
-		results = append(results, *n)
+		// The node's directory must be a suffix of the importPath.
+		// Examples:
+		//   importPath = "github.com/foo/internal/store"
+		//   nodeDir    = "internal/store"   → strings.HasSuffix(importPath, nodeDir) ✓
+		//
+		//   importPath = "internal/store"
+		//   nodeDir    = "internal/store"   → exact match → HasSuffix ✓
+		nodeDir := strings.TrimSuffix(n.FilePath, "/"+path.Base(n.FilePath))
+		if nodeDir == n.FilePath {
+			// FilePath has no directory component (flat file).
+			nodeDir = "."
+		}
+		if nodeDir == "." || nodeDir == "" {
+			// Root-level files: only match if importPath has no slash (unlikely for Go).
+			if !strings.Contains(importPath, "/") {
+				results = append(results, *n)
+			}
+			continue
+		}
+		if strings.HasSuffix(importPath, "/"+nodeDir) || importPath == nodeDir {
+			results = append(results, *n)
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("codegraph: store: find nodes by name in dir: rows: %w", err)
