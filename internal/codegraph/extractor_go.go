@@ -280,6 +280,12 @@ func (ex *goExtraction) extractValueSpec(vs *ast.ValueSpec, kind NodeKind, group
 }
 
 // extractImportSpec handles a single *ast.ImportSpec (one import path).
+// It captures the local binding name (alias) so the resolver can map
+// qualifier.Symbol references to the correct package:
+//   - Explicit alias:  import p "path/pkg"  → binding = "p"
+//   - No alias:        import "path/pkg"    → binding = last segment of path ("pkg")
+//   - Dot import:      import . "path/pkg"  → binding = "."  (non-resolvable by alias)
+//   - Blank import:    import _ "path/pkg"  → binding = "_"  (non-resolvable by alias)
 func (ex *goExtraction) extractImportSpec(is *ast.ImportSpec) {
 	if is.Path == nil {
 		return
@@ -287,6 +293,23 @@ func (ex *goExtraction) extractImportSpec(is *ast.ImportSpec) {
 	// Strip surrounding quotes from the import path string literal.
 	importPath := strings.Trim(is.Path.Value, `"`)
 	id := NodeID(ex.filePath, importPath)
+
+	// Determine the local binding name for this import.
+	var binding string
+	if is.Name != nil {
+		// Explicit alias, dot, or blank import.
+		binding = is.Name.Name
+	} else {
+		// No explicit alias — derive from last path segment.
+		// For "gopkg.in/yaml.v3" this yields "yaml.v3"; the resolver uses
+		// suffix-match which handles names that differ from the import path.
+		// For the common case ("internal/store" → "store") this is exact.
+		if idx := strings.LastIndex(importPath, "/"); idx >= 0 {
+			binding = importPath[idx+1:]
+		} else {
+			binding = importPath
+		}
+	}
 
 	pos := ex.fset.Position(is.Pos())
 	end := ex.fset.Position(is.End())
@@ -302,6 +325,7 @@ func (ex *goExtraction) extractImportSpec(is *ast.ImportSpec) {
 		EndLine:       end.Line,
 		StartColumn:   pos.Column - 1,
 		EndColumn:     end.Column - 1,
+		ImportAlias:   binding,
 	}
 	ex.result.Nodes = append(ex.result.Nodes, node)
 
