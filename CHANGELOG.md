@@ -66,6 +66,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `TestIndexer_RespectsIgnoreDirs` to cover `.next`, `.turbo`, `coverage`, and
   an arbitrary hidden directory (`.foo`).
 
+- **`pruneDeleted` now removes orphan nodes from now-ignored directories** (SPEC-046, bug fix):
+  `pruneDeleted` previously only iterated the `files` table, so nodes whose
+  `file_path` had no corresponding `files`-table entry were never cleaned up.
+  This occurred when (1) a directory was added to `ignoredDirs` after an initial
+  index — a prior `pruneDeleted` pass had removed the `files` entry but the
+  associated nodes were left behind as permanent orphans — or (2) `indexFile`
+  wrote nodes successfully but `UpsertFile` failed, leaving nodes with no anchor.
+  A new second pass iterates the distinct `file_path` values in the `nodes` table
+  (via `Store.ListDistinctNodeFilePaths`) and deletes nodes for any path absent
+  from both `onDisk` and the `files` table. New test:
+  `TestIndexer_PrunesNodesFromNowIgnoredDir`. Smoke on migratio: `.next` and
+  `.claude/worktrees` orphan nodes dropped from 79 762 and 38 557 to **0** on
+  the next `mneme codegraph index` run.
+
 ### Changed
 
 - **Agent codegraph policy now warns that `codegraph_impact` / `codegraph_callees`
