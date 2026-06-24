@@ -244,6 +244,64 @@ content (`post-commit`, `post-checkout` in `$(git rev-parse --git-path hooks)`).
 
 ---
 
+## Adoption by prompt (C8) — SPEC-045
+
+### What it is
+
+In addition to the runtime nudge (C1, above), each of the 6 bundled agent assets
+embeds a permanent `## Exploracion de codigo: grafo primero` section in its system
+prompt. Unlike the nudge — which fires once per session and only when the graph is
+indexed — this block is always present and states the policy imperatively.
+
+The block is delimited by markers:
+
+```
+<!-- mneme:codegraph-policy:start -->
+## Exploracion de codigo: grafo primero
+...
+<!-- mneme:codegraph-policy:end -->
+```
+
+The markers exist so `TestAgentsCodegraphPolicy` (`internal/install/assets_test.go`)
+can verify all 6 assets carry the canonical block and fail fast on any drift.
+
+### Two canonical variants
+
+**Without Bash clause** (`architect`, `qa-tester`):
+These agents do not have `Bash` in their tool allowlist, so no Bash-specific
+guidance is needed.
+
+**With Bash clause** (`backend`, `frontend`, `bug-hunter`):
+Adds an explicit prohibition on using `Bash` (grep/cat/find/rg/head/tail) for
+code navigation, since codegraph tools and native Read/Grep cover that need.
+Bash is reserved for build, test, git, and operational tasks.
+
+**Diagnostician variant** (`diagnostician`):
+Same Bash prohibition for code navigation, but adds a sentence that explicitly
+preserves Bash for reading logs, infra, and operational diagnostics
+(so it does not contradict the agent's own `## Permisos de Bash` section).
+
+### How it is deployed
+
+The policy is embedded directly in the agent `.md` assets under
+`internal/install/assets/agents/`. `WriteAgents` (`internal/install/install.go`)
+rewrites each file entirely from the embed on every `mneme install claude-code` —
+no flags required. After a `mneme upgrade`, run `mneme install claude-code` and
+restart Claude Code for the policy to take effect.
+
+### Relationship with the runtime nudge (C1)
+
+The two mechanisms are complementary, not redundant:
+
+| | C8 (prompt, this section) | C1 (runtime nudge, SPEC-044) |
+|---|---|---|
+| Trigger | Always — static system prompt | Once per session when Read/Grep/Glob fires |
+| Content | Imperativ policy + tools list + fallback rules | Short reminder with graph freshness info |
+| Bash gap | Yes — explicit prohibition for agents with Bash | No |
+| Staleness info | No | Yes — warns when graph is >24h stale |
+
+---
+
 ## MCP tools
 
 The following 10 MCP tools expose the code graph to agents:
