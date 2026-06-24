@@ -13,6 +13,12 @@ import (
 // ignoredDirs is the set of directory names the indexer always skips.
 // External gitignore parsing is intentionally omitted to keep dependencies
 // minimal; these cover the vast majority of generated/vendor/tool directories.
+//
+// Hidden directories (names starting with ".") are skipped unconditionally in
+// the WalkDir branch — see the inline comment inside Index. The entries below
+// that start with "." are kept for documentation of intent and defense-in-depth;
+// they would be skipped even without the explicit map lookup. The only entry
+// here that is NOT covered by the hidden-dir skip is "coverage".
 var ignoredDirs = map[string]struct{}{
 	".git":        {},
 	"vendor":      {},
@@ -21,6 +27,13 @@ var ignoredDirs = map[string]struct{}{
 	"build":       {},
 	".codegraph":  {},
 	"testdata":    {},
+	// Framework/toolchain build and cache directories — inequivocally generated.
+	".next":        {}, // Next.js build output
+	".turbo":       {}, // Turborepo cache
+	".svelte-kit":  {}, // SvelteKit build output
+	".nuxt":        {}, // Nuxt build output
+	".cache":       {}, // generic tool cache (Babel, ESLint, Parcel, etc.)
+	"coverage":     {}, // test coverage output (not hidden; needs explicit entry)
 }
 
 // maxFileSize is the upper bound on file size the indexer will attempt to
@@ -91,7 +104,16 @@ func (ix *Indexer) Index(opts IndexOptions) (*IndexResult, error) {
 		}
 
 		if d.IsDir() {
-			if _, skip := ignoredDirs[d.Name()]; skip {
+			name := d.Name()
+			// Skip hidden directories (tooling/VCS/build caches: .next, .turbo,
+			// .svelte-kit, .git, .codegraph, etc.). The guard "name != '.'"
+			// is defensive: filepath.WalkDir does not deliver "." as Name() for
+			// the walk root itself when the root is the supplied path, but we
+			// keep it to be safe in case the root directory itself starts with ".".
+			if name != "." && strings.HasPrefix(name, ".") {
+				return filepath.SkipDir
+			}
+			if _, skip := ignoredDirs[name]; skip {
 				return filepath.SkipDir
 			}
 			return nil

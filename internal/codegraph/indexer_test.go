@@ -144,6 +144,9 @@ func Modified() {}
 }
 
 // TestIndexer_RespectsIgnoreDirs verifies that ignored directories are not indexed.
+// It covers both the explicit ignoredDirs map (vendor, node_modules, dist, build,
+// testdata, .codegraph) and the hidden-directory skip (.next, .turbo, coverage/.foo
+// are representative of the new entries added in SPEC-046).
 func TestIndexer_RespectsIgnoreDirs(t *testing.T) {
 	dir := t.TempDir()
 
@@ -153,8 +156,23 @@ func TestIndexer_RespectsIgnoreDirs(t *testing.T) {
 func Real() {}
 `)
 
-	// Create files inside each ignored directory.
+	// Create files inside each ignored directory (pre-existing set).
 	for _, ignored := range []string{"vendor", "node_modules", ".git", "dist", "build", "testdata", ".codegraph"} {
+		subDir := filepath.Join(dir, ignored)
+		if err := os.MkdirAll(subDir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", subDir, err)
+		}
+		writeGoFile(t, subDir, "ignored.go", `package ignored
+
+func Ignored() {}
+`)
+	}
+
+	// SPEC-046: also verify that hidden dirs and explicitly added entries are skipped.
+	// .next and .turbo are covered by the hidden-dir skip AND ignoredDirs.
+	// coverage is a non-hidden dir that requires an explicit ignoredDirs entry.
+	// .foo is an arbitrary hidden dir — tests that the generic hidden-dir skip works.
+	for _, ignored := range []string{".next", ".turbo", "coverage", ".foo"} {
 		subDir := filepath.Join(dir, ignored)
 		if err := os.MkdirAll(subDir, 0o755); err != nil {
 			t.Fatalf("mkdir %s: %v", subDir, err)
