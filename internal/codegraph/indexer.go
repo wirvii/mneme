@@ -268,14 +268,33 @@ func (ix *Indexer) indexFile(absPath, relPath, lang string, opts IndexOptions, r
 
 // pruneDeleted removes store records (file + nodes) for paths that exist in the
 // database but no longer exist on disk. This keeps the graph consistent after
-// files are renamed or deleted.
+// files are renamed, deleted, or moved into a directory that is now ignored.
+//
+// Two passes are performed:
+//
+//  1. Files pass: iterates the files table and removes both the file record and
+//     all associated nodes for any path that is no longer on disk. This is the
+//     normal case for deleted or renamed files.
+//
+//  2. Orphan-nodes pass: iterates the distinct file_path values in the nodes
+//     table and removes nodes whose path is not in onDisk and has no entry in
+//     the files table. These orphan nodes arise when a directory is added to
+//     ignoredDirs after it was indexed (so the files table entry was already
+//     pruned by a previous run but the nodes were not cleaned up), or when a
+//     prior indexFile call succeeded in writing nodes but failed before writing
+//     the file record.
 func (ix *Indexer) pruneDeleted(onDisk map[string]struct{}) error {
+	// Pass 1: clean up via files table (normal deleted-file flow).
 	stored, err := ix.store.ListFiles()
 	if err != nil {
 		return fmt.Errorf("codegraph: indexer: list files: %w", err)
 	}
 
+	// Build the set of paths still present in the files table so the orphan
+	// pass can skip them (they are already handled here).
+	inFilesTable := make(map[string]struct{}, len(stored))
 	for _, fr := range stored {
+		inFilesTable[fr.Path] = struct{}{}
 		if _, exists := onDisk[fr.Path]; !exists {
 			if _, err := ix.store.DeleteNodesByFile(fr.Path); err != nil {
 				return fmt.Errorf("codegraph: indexer: delete nodes for deleted file %s: %w", fr.Path, err)
@@ -285,5 +304,29 @@ func (ix *Indexer) pruneDeleted(onDisk map[string]struct{}) error {
 			}
 		}
 	}
+
+	// Pass 2: purge orphan nodes — nodes whose file_path is absent from both
+	// onDisk and the files table. This covers directories that were added to
+	// ignoredDirs after an initial index (the files table entry is gone, but
+	// the nodes linger) and atomicity gaps where nodes were written but the
+	// file record was not.
+	nodePaths, err := ix.store.ListDistinctNodeFilePaths()
+	if err != nil {
+		return fmt.Errorf("codegraph: indexer: list node file paths: %w", err)
+	}
+
+	for _, p := range nodePaths {
+		if _, onDiskNow := onDisk[p]; onDiskNow {
+			continue // file is still being indexed — leave it alone
+		}
+		if _, inFiles := inFilesTable[p]; inFiles {
+			continue // already handled in pass 1
+		}
+		// Orphan: node path not on disk and not in files table.
+		if _, err := ix.store.DeleteNodesByFile(p); err != nil {
+			return fmt.Errorf("codegraph: indexer: delete orphan nodes for %s: %w", p, err)
+		}
+	}
+
 	return nil
 }

@@ -252,6 +252,35 @@ func (s *Store) SearchNodes(query string, kinds []NodeKind, languages []string, 
 // File operations
 // ---------------------------------------------------------------------------
 
+// ListDistinctNodeFilePaths returns the set of all distinct file_path values
+// that appear in the nodes table. This is used by pruneDeleted to detect orphan
+// nodes — nodes whose file_path has no corresponding entry in the files table
+// (e.g. because the file record was lost due to an earlier write failure, or
+// because the file was indexed in a prior run before the directory was added to
+// ignoredDirs). Returning only the distinct paths keeps the result small even
+// for large codegraphs.
+func (s *Store) ListDistinctNodeFilePaths() ([]string, error) {
+	const q = `SELECT DISTINCT file_path FROM nodes ORDER BY file_path`
+	rows, err := s.db.DB.Query(q)
+	if err != nil {
+		return nil, fmt.Errorf("codegraph: store: list distinct node file paths: %w", err)
+	}
+	defer rows.Close()
+
+	var paths []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil, fmt.Errorf("codegraph: store: list distinct node file paths: scan: %w", err)
+		}
+		paths = append(paths, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("codegraph: store: list distinct node file paths: rows: %w", err)
+	}
+	return paths, nil
+}
+
 // DeleteNodesByFile deletes all nodes whose file_path equals filePath. Because
 // the edges table has ON DELETE CASCADE foreign keys on both source and target,
 // all edges referencing those nodes are removed automatically by SQLite.

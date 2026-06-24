@@ -247,6 +247,116 @@ func Permanent() {}
 	}
 }
 
+// TestIndexer_PrunesNodesFromNowIgnoredDir verifies AC3/AC8 of SPEC-046: nodes
+// for files that were indexed in a prior run but now fall under an ignored
+// directory must be purged from the store on the next index run.
+//
+// This test reproduces the production failure observed in migratio: the indexer
+// skipped .claude/worktrees/... on re-index (hidden-dir skip), but pruneDeleted
+// only iterated the files table. Because those paths had no files-table entry
+// (removed by an earlier pruneDeleted pass that cleaned the files record but
+// missed the nodes), the nodes accumulated as permanent orphans.
+func TestIndexer_PrunesNodesFromNowIgnoredDir(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create a permanent file that should always be indexed.
+	writeGoFile(t, dir, "real.go", `package main
+
+func Permanent() {}
+`)
+
+	// Create a file inside a subdirectory that is not yet ignored.
+	// We simulate the "before ignoredDirs was updated" state by placing the
+	// file in a directory that does NOT match any ignored-dir name.
+	tempSubDir := filepath.Join(dir, "willbeignored")
+	if err := os.MkdirAll(tempSubDir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", tempSubDir, err)
+	}
+	writeGoFile(t, tempSubDir, "stale.go", `package stale
+
+func Stale() {}
+`)
+
+	ix, s := newTestIndexer(t)
+
+	// First index: both real.go and willbeignored/stale.go are indexed.
+	first, err := ix.Index(IndexOptions{RootDir: dir})
+	if err != nil {
+		t.Fatalf("first Index: %v", err)
+	}
+	if first.FilesIndexed != 2 {
+		t.Errorf("first pass FilesIndexed = %d, want 2", first.FilesIndexed)
+	}
+
+	statsFirst, err := s.GetStats()
+	if err != nil {
+		t.Fatalf("GetStats after first index: %v", err)
+	}
+	if statsFirst.FileCount != 2 {
+		t.Errorf("FileCount after first index = %d, want 2", statsFirst.FileCount)
+	}
+	if statsFirst.NodeCount == 0 {
+		t.Fatalf("NodeCount after first index = 0, expected > 0")
+	}
+
+	// Simulate the dir becoming ignored: remove the files-table entry manually
+	// (as if a previous pruneDeleted pass removed it but left the nodes behind,
+	// which is exactly the production bug). The nodes for willbeignored/stale.go
+	// must still exist at this point.
+	if err := s.DeleteFile("willbeignored/stale.go"); err != nil {
+		t.Fatalf("DeleteFile (simulate partial prune): %v", err)
+	}
+
+	// Verify the orphan state: stale.go has nodes but no files entry.
+	nodesBeforeReindex, err := s.ListDistinctNodeFilePaths()
+	if err != nil {
+		t.Fatalf("ListDistinctNodeFilePaths: %v", err)
+	}
+	foundOrphan := false
+	for _, p := range nodesBeforeReindex {
+		if p == "willbeignored/stale.go" {
+			foundOrphan = true
+			break
+		}
+	}
+	if !foundOrphan {
+		t.Fatal("expected orphan node for willbeignored/stale.go after simulated partial prune, not found")
+	}
+
+	// Now remove the physical dir so the walk skips it (mirrors the ignored-dir
+	// behaviour: the walk simply never visits those paths).
+	if err := os.RemoveAll(tempSubDir); err != nil {
+		t.Fatalf("remove willbeignored dir: %v", err)
+	}
+
+	// Second index: real.go is skipped (unchanged hash), willbeignored/ is gone.
+	// pruneDeleted must detect the orphan node and remove it.
+	second, err := ix.Index(IndexOptions{RootDir: dir})
+	if err != nil {
+		t.Fatalf("second Index: %v", err)
+	}
+	_ = second // result details are not the focus; node cleanup is
+
+	statsSecond, err := s.GetStats()
+	if err != nil {
+		t.Fatalf("GetStats after second index: %v", err)
+	}
+	if statsSecond.FileCount != 1 {
+		t.Errorf("FileCount after second index = %d, want 1 (only real.go)", statsSecond.FileCount)
+	}
+
+	// All nodes for willbeignored/stale.go must be gone.
+	allPaths, err := s.ListDistinctNodeFilePaths()
+	if err != nil {
+		t.Fatalf("ListDistinctNodeFilePaths after second index: %v", err)
+	}
+	for _, p := range allPaths {
+		if p == "willbeignored/stale.go" {
+			t.Errorf("orphan nodes for willbeignored/stale.go still present after reindex — pruneDeleted did not clean them up")
+		}
+	}
+}
+
 // TestIndexer_DryRun verifies that DryRun=true produces counts but writes nothing.
 func TestIndexer_DryRun(t *testing.T) {
 	dir := t.TempDir()
