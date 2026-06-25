@@ -326,13 +326,16 @@ func (a *Agent) installSteps(opts InstallOptions) []installStep {
 		})
 	}
 
-	// Step 4: Slash commands.
-	steps = append(steps, installStep{
-		Name: "Slash commands",
-		Run: func() (string, error) {
-			return "", WriteCommands(a)
-		},
-	})
+	// Step 4: Slash commands. Optional — agents without slash commands (e.g.
+	// Codex, which deprecated prompts in favour of skills) leave Commands nil.
+	if a.Commands != nil {
+		steps = append(steps, installStep{
+			Name: "Slash commands",
+			Run: func() (string, error) {
+				return "", WriteCommands(a)
+			},
+		})
+	}
 
 	// Step 5: Agent profiles.
 	if a.Agents != nil {
