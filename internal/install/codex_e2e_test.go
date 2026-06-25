@@ -112,6 +112,11 @@ func TestCodexInstall_Artefacts(t *testing.T) {
 	if mneme["command"] != binPath {
 		t.Errorf("config.toml: mcp_servers.mneme.command = %q, want %q", mneme["command"], binPath)
 	}
+	// Verify args match exactly ["mcp", "--tools=agent"] (AC-1, mirrors install_test.go:598-600).
+	args := toStringSlice(mneme["args"])
+	if len(args) != 2 || args[0] != "mcp" || args[1] != "--tools=agent" {
+		t.Errorf("config.toml: mcp_servers.mneme.args = %v, want [mcp --tools=agent]", args)
+	}
 	fallbacks := toStringSlice(cfg["project_doc_fallback_filenames"])
 	foundClaude := false
 	for _, f := range fallbacks {

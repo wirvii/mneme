@@ -153,6 +153,102 @@ func TestWriteCodexConfig_NoDuplicateCLAUDE(t *testing.T) {
 	}
 }
 
+// TestWriteCodexConfig_IdempotentWithForeignKeys is the literal AC-2 scenario:
+// a config.toml with pre-existing foreign keys is passed through WriteCodexConfig
+// twice, and the test verifies (a) byte-identity between 1st and 2nd output,
+// (b) foreign keys are preserved, (c) "CLAUDE.md" is not duplicated.
+func TestWriteCodexConfig_IdempotentWithForeignKeys(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	// Seed with foreign keys: a root-level model, an unrelated project_doc
+	// fallback, and an unrelated MCP server entry. Root-level keys must appear
+	// before any [section] headers in TOML — keys after a section header belong
+	// to that section, not to the root.
+	seed := `model = "gpt-5.5"
+project_doc_fallback_filenames = ["AGENTS.override.md"]
+
+[mcp_servers.another]
+command = "another-server"
+args = ["serve"]
+`
+	if err := os.WriteFile(path, []byte(seed), 0o644); err != nil {
+		t.Fatalf("seed file: %v", err)
+	}
+
+	// First run.
+	if err := WriteCodexConfig(path, testBinary); err != nil {
+		t.Fatalf("first run: %v", err)
+	}
+	first, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile after first run: %v", err)
+	}
+
+	// Second run.
+	if err := WriteCodexConfig(path, testBinary); err != nil {
+		t.Fatalf("second run: %v", err)
+	}
+	second, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile after second run: %v", err)
+	}
+
+	// (a) Byte-identity between 1st and 2nd output.
+	if string(first) != string(second) {
+		t.Errorf("not idempotent with foreign keys.\nFirst:\n%s\nSecond:\n%s", first, second)
+	}
+
+	// Parse for further assertions.
+	var cfg map[string]any
+	if err := toml.Unmarshal(second, &cfg); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	// (b) Foreign keys preserved.
+	if cfg["model"] != "gpt-5.5" {
+		t.Errorf("foreign key model was clobbered: got %v", cfg["model"])
+	}
+	mcpServers, ok := cfg["mcp_servers"].(map[string]any)
+	if !ok {
+		t.Fatal("mcp_servers missing")
+	}
+	if _, ok := mcpServers["another"]; !ok {
+		t.Error("mcp_servers.another was removed")
+	}
+	mneme, ok := mcpServers["mneme"].(map[string]any)
+	if !ok {
+		t.Fatal("mcp_servers.mneme missing")
+	}
+	if mneme["command"] != testBinary {
+		t.Errorf("mcp_servers.mneme.command = %q, want %q", mneme["command"], testBinary)
+	}
+	// Verify args alongside command (AC-1 mirror).
+	mnemeArgs := toStringSlice(mneme["args"])
+	if len(mnemeArgs) != 2 || mnemeArgs[0] != "mcp" || mnemeArgs[1] != "--tools=agent" {
+		t.Errorf("mcp_servers.mneme.args = %v, want [mcp --tools=agent]", mnemeArgs)
+	}
+
+	// (c) "CLAUDE.md" appears exactly once; "AGENTS.override.md" is preserved.
+	fallbacks := toStringSlice(cfg["project_doc_fallback_filenames"])
+	claudeCount := 0
+	foundOverride := false
+	for _, f := range fallbacks {
+		if f == "CLAUDE.md" {
+			claudeCount++
+		}
+		if f == "AGENTS.override.md" {
+			foundOverride = true
+		}
+	}
+	if claudeCount != 1 {
+		t.Errorf("CLAUDE.md appears %d times in project_doc_fallback_filenames, want exactly 1: %v", claudeCount, fallbacks)
+	}
+	if !foundOverride {
+		t.Errorf("pre-existing AGENTS.override.md was removed from project_doc_fallback_filenames: %v", fallbacks)
+	}
+}
+
 // TestWriteCodexConfig_PreservesOtherMCPServers verifies that an existing
 // MCP server entry (not "mneme") is preserved after WriteCodexConfig.
 func TestWriteCodexConfig_PreservesOtherMCPServers(t *testing.T) {
