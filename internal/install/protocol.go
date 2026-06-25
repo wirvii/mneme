@@ -20,6 +20,22 @@ func OperatingManual() string {
 	return operatingManual()
 }
 
+// operatingManualCodex returns the mneme operating manual markdown for Codex,
+// injected into ~/.codex/AGENTS.md via upsertManagedBlock. The content is
+// written for a single-agent setup (no role separation, no delegation hook).
+//
+// The content is embedded from assets/operating-manual-codex.md at build time.
+// Edit that file to change the manual; this function is only the accessor.
+func operatingManualCodex() string {
+	return string(operatingManualCodexAsset)
+}
+
+// OperatingManualCodex is the exported version of operatingManualCodex for use
+// by callers outside this package that need the Codex variant of the manual.
+func OperatingManualCodex() string {
+	return operatingManualCodex()
+}
+
 // UpsertManagedBlock is the exported version of upsertManagedBlock for use by
 // callers outside this package (e.g. the CLI init command) that need to wire
 // the real managed-block primitive into service.InitService.
