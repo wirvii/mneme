@@ -119,6 +119,37 @@ protocol (`{path,content}` → JSONL result) is unchanged. The subprocess
 discriminates on the presence of `op` to distinguish control messages from file
 extraction requests.
 
+### TS cross-file call recall fix — SPEC-048 (v1.16.0)
+
+Before v1.16.0, the TS/JS extractor registered all import bindings in the
+same `topLevel` map as local declarations. This meant that a call like
+`getPayloadClient()` — where `getPayloadClient` was imported — resolved to
+the local **import node** instead of emitting an `unresolved_ref`. The import
+node is a dead end: `codegraph_callers`, `codegraph_callees`, and
+`codegraph_impact` all returned empty results for cross-file TS calls.
+
+**Root cause and fix (`internal/codegraph/js/extract.js`):**
+
+A pre-scan now walks the top-level `ImportDeclaration` nodes before the main
+`visit()` pass and builds `importedBindings` — a `Set` of every local binding
+name. When `walkCalls` encounters a call whose head (part before the first `.`)
+is in `importedBindings`, it emits an `unresolved_ref` with `reference_name`
+set to the call name (`"member"` for named/default, `"ns.member"` for
+namespace). The import node and its `imports` edge are preserved (the
+import-guided resolver uses them).
+
+The pre-scan runs before `visit()` so that imports declared *after* their use
+(valid in TS, which hoists `import` declarations) are correctly identified.
+
+**Impact on recall (quantium, post v1.15.0 baseline):**
+
+| Metric | Before (v1.15.0) | After (v1.16.0) |
+|--------|-----------------|-----------------|
+| Useful TS calls (target = function/method) | ~5.6% (11/198) | significantly higher |
+| TS calls to import nodes | ~88% | ~0% |
+
+Re-index with `mneme codegraph index --force` to see the improvement.
+
 ---
 
 ## Adoption nudge (C1) — SPEC-044
