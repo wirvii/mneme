@@ -131,6 +131,37 @@ function extractFile(filePath, content) {
     // Track top-level declarations for call resolution
     const topLevel = {}; // name -> nodeID
 
+    // importedBindings holds the local binding names of every ImportDeclaration
+    // in this file. Populated by a pre-scan of top-level statements BEFORE
+    // visit() runs, so that hoisted imports (declared after their use) are
+    // correctly identified when walkCalls runs inline for class methods and arrow
+    // functions during the first pass.
+    const importedBindings = new Set();
+
+    // Pre-scan: collect all imported binding names before the main visit().
+    // This covers the hoisting case: TS allows calling an imported symbol before
+    // its import declaration appears in the source.
+    ts.forEachChild(sourceFile, function preScan(node) {
+      if (!ts.isImportDeclaration(node)) return;
+      if (!node.importClause) return;
+      const clause = node.importClause;
+      // Default import: import foo from 'module'
+      if (clause.name) {
+        importedBindings.add(clause.name.text);
+      }
+      if (clause.namedBindings) {
+        if (ts.isNamespaceImport(clause.namedBindings)) {
+          // Namespace import: import * as ns from 'module'
+          importedBindings.add(clause.namedBindings.name.text);
+        } else if (ts.isNamedImports(clause.namedBindings)) {
+          // Named imports: import { A, B as C } from 'module'
+          for (const element of clause.namedBindings.elements) {
+            importedBindings.add(element.name.text);
+          }
+        }
+      }
+    });
+
     // Current class context for method extraction
     let currentClassName = '';
 
@@ -161,7 +192,33 @@ function extractFile(filePath, content) {
           }
           if (callName) {
             const pos = sourceFile.getLineAndCharacterOfPosition(n.getStart(sourceFile));
-            if (topLevel[callName]) {
+
+            // Compute the "head" of the call name: the part before the first dot
+            // (or the whole name if there is no dot). This is the local binding
+            // that appears in import declarations.
+            //   "ns.member"   → head = "ns"
+            //   "member"      → head = "member"
+            const dotIdx = callName.indexOf('.');
+            const head = dotIdx >= 0 ? callName.slice(0, dotIdx) : callName;
+
+            if (importedBindings.has(head)) {
+              // The call target is an imported binding. Do NOT create an edge to
+              // the local import node — emit an unresolved_ref so the Go resolver
+              // (resolveTSImport in resolver.go) can link it cross-file.
+              // For namespace calls the reference_name is "ns.member"; for
+              // named/default calls it is just "member" — exactly what
+              // resolveTSImport expects.
+              unresolvedRefs.push({
+                from_node_id: fromNodeId,
+                reference_name: callName,
+                reference_kind: 'calls',
+                line: pos.line + 1,
+                col: pos.character,
+                file_path: fromFilePath,
+                language: language,
+              });
+            } else if (topLevel[callName]) {
+              // Same-file call: emit a direct edge.
               edges.push({
                 source: fromNodeId,
                 target: topLevel[callName],
@@ -170,6 +227,7 @@ function extractFile(filePath, content) {
                 col: pos.character,
               });
             } else {
+              // Unknown symbol: emit an unresolved_ref for the resolver to handle.
               unresolvedRefs.push({
                 from_node_id: fromNodeId,
                 reference_name: callName,

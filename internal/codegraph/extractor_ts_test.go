@@ -479,6 +479,278 @@ export function greet(name: string): string {
 	t.Error("function 'greet' not found")
 }
 
+// ---------------------------------------------------------------------------
+// SPEC-048 C11 — imported-binding calls emit unresolved_ref, not calls→import
+// ---------------------------------------------------------------------------
+
+// TestTSExtractor_ImportedNamedCallEmitsUnresolvedRef verifies AC1 (named import):
+// a call to a named imported binding must NOT produce an edge to the import node;
+// instead it must produce an unresolved_ref with reference_name equal to the
+// binding name and reference_kind='calls'. The import node and its imports edge
+// must still exist.
+func TestTSExtractor_ImportedNamedCallEmitsUnresolvedRef(t *testing.T) {
+	skipIfNoTS(t)
+
+	ext := NewTSExtractor()
+	defer ext.Close()
+
+	source := `import { getUser } from './users';
+
+export function handler() {
+    const u = getUser('123');
+    return u;
+}
+`
+	result, err := ext.Extract("handler.ts", []byte(source))
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+
+	// Import node must still exist.
+	imports := filterNodes(result.Nodes, NodeKindImport)
+	if len(imports) == 0 {
+		t.Fatal("expected import node for getUser")
+	}
+	var importNodeID string
+	for _, n := range imports {
+		if n.Name == "getUser" {
+			importNodeID = n.ID
+		}
+	}
+	if importNodeID == "" {
+		t.Fatal("import node for 'getUser' not found")
+	}
+
+	// imports edge (file → import node) must still exist.
+	importsEdges := filterEdges(result.Edges, EdgeKindImports)
+	if len(importsEdges) == 0 {
+		t.Error("expected at least one imports edge (file → import node)")
+	}
+
+	// NO calls edge to the import node.
+	for _, e := range result.Edges {
+		if e.Kind == EdgeKindCalls && e.Target == importNodeID {
+			t.Errorf("found calls edge to import node %q — must not exist (should be unresolved_ref instead)", importNodeID)
+		}
+	}
+
+	// Must have an unresolved_ref for 'getUser'.
+	var found bool
+	for _, ref := range result.UnresolvedRefs {
+		if ref.ReferenceName == "getUser" && ref.ReferenceKind == EdgeKindCalls {
+			found = true
+			if ref.FilePath == "" {
+				t.Error("unresolved_ref.file_path must not be empty")
+			}
+			if ref.Language == "" {
+				t.Error("unresolved_ref.language must not be empty")
+			}
+		}
+	}
+	if !found {
+		t.Errorf("no unresolved_ref with reference_name='getUser' found; got: %+v", result.UnresolvedRefs)
+	}
+}
+
+// TestTSExtractor_ImportedDefaultCallEmitsUnresolvedRef verifies AC1 (default import):
+// a call to a default imported binding emits an unresolved_ref, not a calls→import edge.
+func TestTSExtractor_ImportedDefaultCallEmitsUnresolvedRef(t *testing.T) {
+	skipIfNoTS(t)
+
+	ext := NewTSExtractor()
+	defer ext.Close()
+
+	source := `import getPayloadClient from './payload';
+
+export async function page() {
+    const payload = await getPayloadClient();
+    return payload;
+}
+`
+	result, err := ext.Extract("page.ts", []byte(source))
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+
+	// import node must still exist.
+	imports := filterNodes(result.Nodes, NodeKindImport)
+	if len(imports) == 0 {
+		t.Fatal("expected import node for default import")
+	}
+	var importNodeID string
+	for _, n := range imports {
+		if n.Name == "getPayloadClient" {
+			importNodeID = n.ID
+		}
+	}
+	if importNodeID == "" {
+		t.Fatal("import node for 'getPayloadClient' not found")
+	}
+
+	// NO calls edge to import node.
+	for _, e := range result.Edges {
+		if e.Kind == EdgeKindCalls && e.Target == importNodeID {
+			t.Errorf("found calls edge to import node %q — must not exist", importNodeID)
+		}
+	}
+
+	// Must have unresolved_ref for 'getPayloadClient'.
+	var found bool
+	for _, ref := range result.UnresolvedRefs {
+		if ref.ReferenceName == "getPayloadClient" && ref.ReferenceKind == EdgeKindCalls {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("no unresolved_ref with reference_name='getPayloadClient'; got: %+v", result.UnresolvedRefs)
+	}
+}
+
+// TestTSExtractor_ImportedNamespaceCallEmitsUnresolvedRef verifies AC1 (namespace import):
+// a call via a namespace binding (ns.member) emits an unresolved_ref with
+// reference_name="ns.member", not a calls→import edge.
+func TestTSExtractor_ImportedNamespaceCallEmitsUnresolvedRef(t *testing.T) {
+	skipIfNoTS(t)
+
+	ext := NewTSExtractor()
+	defer ext.Close()
+
+	source := `import * as utils from './utils';
+
+export function run() {
+    return utils.formatDate(new Date());
+}
+`
+	result, err := ext.Extract("run.ts", []byte(source))
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+
+	// import node for 'utils' must still exist.
+	imports := filterNodes(result.Nodes, NodeKindImport)
+	var importNodeID string
+	for _, n := range imports {
+		if n.Name == "utils" {
+			importNodeID = n.ID
+		}
+	}
+	if importNodeID == "" {
+		t.Fatal("import node for namespace 'utils' not found")
+	}
+
+	// NO calls edge to import node.
+	for _, e := range result.Edges {
+		if e.Kind == EdgeKindCalls && e.Target == importNodeID {
+			t.Errorf("found calls edge to namespace import node %q — must not exist", importNodeID)
+		}
+	}
+
+	// Must have unresolved_ref with reference_name="utils.formatDate".
+	var found bool
+	for _, ref := range result.UnresolvedRefs {
+		if ref.ReferenceName == "utils.formatDate" && ref.ReferenceKind == EdgeKindCalls {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("no unresolved_ref with reference_name='utils.formatDate'; got: %+v", result.UnresolvedRefs)
+	}
+}
+
+// TestTSExtractor_ImportedHoistingCoverage verifies R1 (hoisting): when an import
+// declaration appears AFTER the function that uses it (valid TS hoisting), the
+// pre-scan still identifies the binding and the call emits an unresolved_ref
+// (not a calls→import edge).
+func TestTSExtractor_ImportedHoistingCoverage(t *testing.T) {
+	skipIfNoTS(t)
+
+	ext := NewTSExtractor()
+	defer ext.Close()
+
+	// NOTE: In TS, class method bodies are walked during the first visit() pass.
+	// The import appears AFTER the class declaration — the pre-scan must catch it
+	// before visit() processes the class body.
+	source := `export class Service {
+    doWork() {
+        return helper();
+    }
+}
+
+import { helper } from './helpers';
+`
+	result, err := ext.Extract("service.ts", []byte(source))
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+
+	// import node must still exist.
+	imports := filterNodes(result.Nodes, NodeKindImport)
+	var importNodeID string
+	for _, n := range imports {
+		if n.Name == "helper" {
+			importNodeID = n.ID
+		}
+	}
+	if importNodeID == "" {
+		t.Fatal("import node for 'helper' not found")
+	}
+
+	// NO calls edge to the import node.
+	for _, e := range result.Edges {
+		if e.Kind == EdgeKindCalls && e.Target == importNodeID {
+			t.Errorf("found calls edge to import node %q (hoisting case) — must not exist", importNodeID)
+		}
+	}
+
+	// Must have unresolved_ref for 'helper'.
+	var found bool
+	for _, ref := range result.UnresolvedRefs {
+		if ref.ReferenceName == "helper" && ref.ReferenceKind == EdgeKindCalls {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("no unresolved_ref for 'helper' in hoisting case; got: %+v", result.UnresolvedRefs)
+	}
+}
+
+// TestTSExtractor_SameFileCallStillUsesEdge verifies that calls to symbols
+// declared in the SAME file (not imported) still produce direct calls edges,
+// not unresolved_refs — the new importedBindings check must not affect same-file resolution.
+func TestTSExtractor_SameFileCallStillUsesEdge(t *testing.T) {
+	skipIfNoTS(t)
+
+	ext := NewTSExtractor()
+	defer ext.Close()
+
+	source := `function helper(): number { return 42; }
+
+function main() {
+    const x = helper();
+    return x;
+}
+`
+	result, err := ext.Extract("same.ts", []byte(source))
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+
+	callEdges := filterEdges(result.Edges, EdgeKindCalls)
+	if len(callEdges) == 0 {
+		t.Error("expected a direct calls edge for same-file call to helper()")
+	}
+
+	// Verify the calls edge points to the helper function, not an import node.
+	for _, e := range callEdges {
+		// Find the target node.
+		for _, n := range result.Nodes {
+			if n.ID == e.Target && n.Kind == NodeKindImport {
+				t.Errorf("calls edge target %q is an import node — expected a function node", e.Target)
+			}
+		}
+	}
+}
+
 // TestTSExtractor_MultipleFiles verifies that the subprocess can handle
 // multiple sequential extractions without restarting.
 func TestTSExtractor_MultipleFiles(t *testing.T) {
