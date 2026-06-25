@@ -84,6 +84,31 @@ type Agent struct {
 	// Each entry carries a relative path, raw content, and an executable flag.
 	// When nil, the skills installation step is skipped.
 	Skills func() ([]SkillEntry, error)
+
+	// MCPConfigWriter, when non-nil, is called by the "MCP server" step instead
+	// of WriteMCPConfig. Use this for agents whose MCP config is not JSON
+	// (e.g. Codex uses TOML). When nil, the step falls back to WriteMCPConfig,
+	// preserving the Claude Code behaviour unchanged.
+	MCPConfigWriter func() error
+
+	// HooksWriter, when non-nil, is called by the "Session hooks" step instead
+	// of PatchHooks. Use this for agents whose hooks file has a different schema
+	// than Claude's settings.json (e.g. Codex uses a dedicated hooks.json).
+	// When nil, the step falls back to PatchHooks, preserving the Claude Code
+	// behaviour unchanged.
+	HooksWriter func() error
+
+	// AgentsDir, when non-empty, overrides the directory used by the "Agent models"
+	// step. When empty, the step is skipped entirely — appropriate for agents
+	// that do not use per-agent profile files (e.g. Codex in single-agent mode).
+	// When unset (empty string), Claude Code falls back to ~/.claude/agents.
+	AgentsDir string
+
+	// SkillsDir, when non-empty, overrides the target directory for the "Skills"
+	// step. When empty, the step uses the default ~/.claude/skills path.
+	// Set this for agents that discover skills in a different location
+	// (e.g. Codex uses $HOME/.agents/skills).
+	SkillsDir string
 }
 
 // ClaudeCode returns a fully configured *Agent for Claude Code using binaryPath
@@ -251,21 +276,45 @@ type installStep struct {
 func (a *Agent) installSteps(opts InstallOptions) []installStep {
 	var steps []installStep
 
-	// Step 1: MCP server.
-	steps = append(steps, installStep{
-		Name: "MCP server",
-		Run: func() (string, error) {
-			return "", WriteMCPConfig(a, opts.BinaryPath)
-		},
-	})
+	// Step 1: MCP server. If the agent provides a custom writer (e.g. for TOML
+	// configs), use it; otherwise fall back to the JSON-based WriteMCPConfig
+	// which is the Claude Code default.
+	if a.MCPConfigWriter != nil {
+		mcpWriter := a.MCPConfigWriter
+		steps = append(steps, installStep{
+			Name: "MCP server",
+			Run: func() (string, error) {
+				return "", mcpWriter()
+			},
+		})
+	} else {
+		steps = append(steps, installStep{
+			Name: "MCP server",
+			Run: func() (string, error) {
+				return "", WriteMCPConfig(a, opts.BinaryPath)
+			},
+		})
+	}
 
-	// Step 2: Session hooks.
-	steps = append(steps, installStep{
-		Name: "Session hooks",
-		Run: func() (string, error) {
-			return "", PatchHooks(a)
-		},
-	})
+	// Step 2: Session hooks. If the agent provides a custom writer (e.g. for a
+	// hooks.json with a different schema), use it; otherwise fall back to
+	// PatchHooks which targets Claude's settings.json.
+	if a.HooksWriter != nil {
+		hooksWriter := a.HooksWriter
+		steps = append(steps, installStep{
+			Name: "Session hooks",
+			Run: func() (string, error) {
+				return "", hooksWriter()
+			},
+		})
+	} else {
+		steps = append(steps, installStep{
+			Name: "Session hooks",
+			Run: func() (string, error) {
+				return "", PatchHooks(a)
+			},
+		})
+	}
 
 	// Step 3: Operating manual injection (replaces legacy Protocol step).
 	if a.Manual != nil {
@@ -296,22 +345,43 @@ func (a *Agent) installSteps(opts InstallOptions) []installStep {
 	}
 
 	// Step 6: Agent models — always after agent profiles.
-	steps = append(steps, installStep{
-		Name: "Agent models",
-		Run: func() (string, error) {
-			home, err := os.UserHomeDir()
-			if err != nil {
-				return "", fmt.Errorf("install: agent models: home dir: %w", err)
-			}
-			agentsDir := filepath.Join(home, ".claude", "agents")
-			cfg, cfgErr := config.Load(config.DefaultPath())
-			var overrides map[string]string
-			if cfgErr == nil {
-				overrides = cfg.Models.Overrides
-			}
-			return "", ApplyAgentModels(agentsDir, overrides)
-		},
-	})
+	// When AgentsDir is empty, the agent does not use per-profile files
+	// (e.g. Codex in single-agent mode); skip the step cleanly.
+	// When AgentsDir is non-empty, use it; Claude Code leaves AgentsDir empty
+	// and falls back to ~/.claude/agents, preserving existing behaviour.
+	if a.AgentsDir != "" {
+		agentsDir := a.AgentsDir
+		steps = append(steps, installStep{
+			Name: "Agent models",
+			Run: func() (string, error) {
+				cfg, cfgErr := config.Load(config.DefaultPath())
+				var overrides map[string]string
+				if cfgErr == nil {
+					overrides = cfg.Models.Overrides
+				}
+				return "", ApplyAgentModels(agentsDir, overrides)
+			},
+		})
+	} else if a.Agents != nil {
+		// Claude Code path: AgentsDir is empty but Agents func is set →
+		// default to ~/.claude/agents (backwards compatible).
+		steps = append(steps, installStep{
+			Name: "Agent models",
+			Run: func() (string, error) {
+				home, err := os.UserHomeDir()
+				if err != nil {
+					return "", fmt.Errorf("install: agent models: home dir: %w", err)
+				}
+				agentsDir := filepath.Join(home, ".claude", "agents")
+				cfg, cfgErr := config.Load(config.DefaultPath())
+				var overrides map[string]string
+				if cfgErr == nil {
+					overrides = cfg.Models.Overrides
+				}
+				return "", ApplyAgentModels(agentsDir, overrides)
+			},
+		})
+	}
 
 	// Step 7: Workflow templates.
 	if a.Templates != nil {
@@ -324,16 +394,23 @@ func (a *Agent) installSteps(opts InstallOptions) []installStep {
 	}
 
 	// Step 8: Skills.
+	// Step 8: Skills. When SkillsDir is non-empty, use it as the target
+	// directory (e.g. $HOME/.agents/skills for Codex). Otherwise fall back to
+	// ~/.claude/skills, preserving the Claude Code default.
 	if a.Skills != nil {
 		forceSkills := opts.Force || opts.ReinstallHooks
+		agentSkillsDir := a.SkillsDir
 		steps = append(steps, installStep{
 			Name: "Skills",
 			Run: func() (string, error) {
-				home, err := os.UserHomeDir()
-				if err != nil {
-					return "", fmt.Errorf("install: skills: home dir: %w", err)
+				skillsDir := agentSkillsDir
+				if skillsDir == "" {
+					home, err := os.UserHomeDir()
+					if err != nil {
+						return "", fmt.Errorf("install: skills: home dir: %w", err)
+					}
+					skillsDir = filepath.Join(home, ".claude", "skills")
 				}
-				skillsDir := filepath.Join(home, ".claude", "skills")
 				result, err := WriteSkills(a, skillsDir, forceSkills)
 				if err != nil {
 					return "", err
