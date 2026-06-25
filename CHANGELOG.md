@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [v1.15.0] — 2026-06-24 — CodeGraph C3: import-guided cross-package resolution (Go) + tsconfig paths infrastructure
+
 ### Added
 
 - **CodeGraph C3: import-guided cross-package resolver** (SPEC-047):
@@ -21,31 +23,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - **Go**: splits `"pkg.Func"` into qualifier + symbol; looks up qualifier in
     `fileImports[ref.FilePath]` to get the import path; finds candidate nodes
     via `FindNodesByNameInDir` (directory suffix-match against the import path).
-  - **TS/JS**: supports namespace imports (`"ns.member"`), named/default
-    imports (`"member"`), and relative module specifiers; probes `.ts`, `.tsx`,
-    `.js`, `.jsx`, and `index.*` extensions; bare npm imports (external
-    packages) are silently skipped — no node in repo → stays unresolved.
+  - **TS/JS**: supports namespace imports (`"ns.member"`), named/default imports
+    (`"member"`), and relative module specifiers; probes `.ts`, `.tsx`, `.js`,
+    `.jsx`, and `index.*` extensions; bare npm imports are silently skipped.
   - **Candidato-único-o-nada**: links only when `len(candidates) == 1`.
-    Zero candidates → unresolved; two or more → unresolved (no false positives).
+    Zero or two-or-more candidates → left unresolved (no false positives).
   - **Provenance**: import-guided edges carry `Provenance="import"` (distinct
-    from `"ast"` and `"resolver"`) for future confidence scoring (BL-044).
+    from `"ast"` and `"resolver"`) for future confidence scoring.
 
   **Schema change** (`internal/codegraph/schema.sql` + `db.go`):
   New nullable column `import_alias` on the `nodes` table records the local
   binding name for import nodes (alias, last segment, `.`, or `_`).
   `OpenDB` runs an idempotent `ALTER TABLE` via `applyAlterIdempotent` (uses
-  `PRAGMA table_info` to check existence before issuing the statement) so
-  existing codegraph databases are upgraded transparently on the next binary
-  run — no re-index required for the schema migration itself.
+  `PRAGMA table_info`) so existing databases are upgraded transparently on the
+  next binary run — no re-index required for the schema migration itself.
 
   **Extractor change** (`internal/codegraph/extractor_go.go`):
   `extractImportSpec` now captures the local binding in `Node.ImportAlias`:
   explicit alias → verbatim; no alias → last path segment; dot/blank imports
-  stored as `"."` / `"_"` and skipped by the resolver as non-resolvable.
+  stored as `"."` / `"_"` and skipped by the resolver.
 
   **New store methods** (`internal/codegraph/store.go`):
   `ListImportNodes()`, `FindNodesByNameInDir(name, dirSuffix)`,
-  `FindNodesByNameInFile(name, filePath)`.
+  `FindNodesByNameInFile(name, filePath)`, `FindNodesByName(name)`,
+  `FindNodesBySuffix(suffix)`, `HasNodesForLanguage(language)`.
 
   **Tests** (AC4–AC8): `TestResolver_ImportGuidedGoUnique`,
   `TestResolver_ImportGuidedGoAmbiguous`, `TestResolver_ImportGuidedGoAlias`,
@@ -54,70 +55,61 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
   **Limitations (out of scope):** method calls on variables (`x.Foo()` where
   `x` is a local variable), re-exports, and external npm packages.
-  Re-indexing is required to populate `import_alias` and generate new
+  Re-indexing is required to populate `import_alias` and generate
   `provenance="import"` edges in existing databases.
 
-- **TypeScript `tsconfig` `paths` alias resolution in T2** (SPEC-047 ampliación):
-  TS projects using `@/*` or other `compilerOptions.paths` aliases now have
-  those aliases resolved during the import-guided pass.
+- **TypeScript tsconfig `paths` alias resolution infrastructure** (SPEC-047 ampliación):
+  Implements the plumbing for resolving `@/*` and similar `compilerOptions.paths`
+  aliases in TS import specifiers. This is infrastructure for future TS recall
+  improvement — **the improvement in useful TS recall requires a separate rework
+  of the TS extractor** (tracked in BL-052: the extractor currently links direct
+  function calls to the import node in the same file rather than to the definition
+  in the target file, so `unresolved_refs` does not contain the entries that
+  tsconfig expansion would resolve). The infrastructure is correct and tested.
 
   **Implementation:**
-  - `internal/codegraph/js/extract.js` — new `parseTsconfigs(rootDir)` function
-    sends a discriminated `{op:"tsconfig",root}` message to the Node.js
-    subprocess; the subprocess walks all directories, parses each `tsconfig.json`
-    via `ts.parseJsonConfigFileContent`, and returns `{dir, baseUrl, paths}` for
-    every valid config. Category-1 warnings (e.g. "No inputs found") do not block
-    parsing — only category-0 fatal errors skip a config.
-  - `internal/codegraph/extractor_ts.go` — new `LoadTSConfigAliases(rootDir)`
-    method on `*TSExtractor` sends the op message and deserialises the response.
-  - `internal/codegraph/tsconfig.go` — `TSAliasMap` type + `LoadTSAliases()` +
-    `ResolveAlias(moduleSource, refFilePath)`. For monorepos with multiple
-    tsconfigs, `ResolveAlias` picks the entry whose `TsconfigDir` is the closest
-    ancestor of the importing file (longest path prefix match).
-  - `internal/codegraph/resolver.go` — `Resolve(rootDir)` loads the alias map
-    when `rootDir` is non-empty and TS nodes are present; `resolveTSImport` tries
-    alias expansion before the bare-import gate.
+  - `internal/codegraph/js/extract.js` — new `parseTsconfigs(rootDir)` function;
+    subprocess discriminates on `msg.op === "tsconfig"` vs file-extraction
+    messages (back-compat: `{path,content}` protocol unchanged). Uses
+    `ts.parseJsonConfigFileContent`; skips only category-0 (fatal) errors —
+    category-1 warnings ("No inputs found") do not block a valid tsconfig.
+  - `internal/codegraph/extractor_ts.go` — `LoadTSConfigAliases(rootDir string)`
+    method on `*TSExtractor` sends the control message and deserialises the result.
+  - `internal/codegraph/tsconfig.go` — `TSAliasMap` type, `LoadTSAliases()`,
+    `ResolveAlias(moduleSource, refFilePath string)`. In a monorepo with multiple
+    tsconfigs, the entry whose `TsconfigDir` is the longest-path-match ancestor
+    of the importing file is selected.
+  - `internal/codegraph/resolver.go` — `Resolve(rootDir string)` (signature
+    change from `Resolve()`); loads the alias map when `rootDir` is non-empty
+    and TS nodes are present; `resolveTSImport` tries alias expansion before the
+    bare-import gate. Fail-open: empty alias map → behaviour identical to before.
 
-  **Back-compat:** the file-extraction JSONL protocol is unchanged. The
-  `{op:"tsconfig"}` control message is discriminated by the presence of `op`.
-  Fail-open: if Node.js is absent or TypeScript is not installed, the alias map
-  is empty and the resolver skips alias expansion silently.
-
-  **Tests:** AC-T5 (`TestTSAliasMap_ResolveAlias_MonorepoPicksClosestTSConfig` —
-  temp monorepo, 2 tsconfigs, verifies ancestor selection for each app) and
-  AC-T6 (`TestResolver_TSAliasEmptyMap_NoBreak` — empty rootDir, no panic).
-
-  **Recall on TS repos:** `quantium` and `site` repos show 0 new import-guided
-  edges from the tsconfig pass. Investigation: the TS extractor already creates
-  `ast` edges for all direct calls to `@/`-imported functions (linking to the
-  import node in the same file). The remaining `unresolved_refs` are all
-  method calls on objects (`payload.find`) or builtins (`Array.isArray`) —
-  neither resolves via tsconfig paths. The feature has full correctness (AC-T5/T6
-  pass) and fires correctly when the pattern is present; the test repos happen to
-  have all direct named calls pre-resolved by the extractor.
+  **Tests:** `TestTSAliasMap_ResolveAlias_MonorepoPicksClosestTSConfig` (AC-T5,
+  temp monorepo fixture, 2 tsconfigs, verifies ancestor selection per app) and
+  `TestResolver_TSAliasEmptyMap_NoBreak` (AC-T6, empty rootDir, no panic).
 
 ### Fixed
 
-- **T3 (suffix) and T4 (short-name) hardened to candidato-único-o-nada** (SPEC-047 precision fix):
-  `FindNodesByName` and `FindNodesBySuffix` (plural, no LIMIT) added to the store;
-  `resolveRef` in `Resolver` updated so both tiers bind only when `len(candidates)==1`.
-  When two or more nodes share the same name or qualified_name suffix, the ref is
-  left unresolved rather than linked to an arbitrary node (was: LIMIT 1 caused
-  ~1212 false-positive edges — e.g. `writeMemory→CodeGraphDB.Close`, `TestMemoryTypeValid→NodeKind.Valid`).
+- **T3 (suffix) and T4 (short-name) hardened to candidato-único-o-nada**
+  (SPEC-047 precision fix): `FindNodesByName` and `FindNodesBySuffix` (plural,
+  no LIMIT) added to the store; `resolveRef` updated so both tiers bind only
+  when `len(candidates) == 1`. Previously LIMIT 1 caused ~1212 false-positive
+  edges (e.g. `writeMemory→CodeGraphDB.Close`, `TestMemoryTypeValid→NodeKind.Valid`).
   Four new tests: `TestResolver_ShortNameAmbiguousStaysUnresolved`,
   `TestResolver_ShortNameUniqueResolves`, `TestResolver_SuffixAmbiguousStaysUnresolved`,
   `TestResolver_SuffixUniqueResolves`.
 
-  Commits: 80e316e, dfa611e, ddf9330, 9b3b5fb, 7469b1e, a419ac6, 1397136, 2ba561e, 3865df9.
+- **Indexer now persists unresolved refs** (SPEC-047 recall fix): `indexFile` in
+  `internal/codegraph/indexer.go` was calling `BatchUpsertEdges` but discarding
+  `extraction.UnresolvedRefs`. Added `BatchUpsertUnresolvedRefs` call so T2–T4
+  actually run during the resolution pass.
 
-  **Recall measurement on mneme itself (AC1, honest post-precision-fix):**
-  - Baseline (no resolver at all): ~43% (1209/2841 per spec)
-  - After SPEC-047 (all tiers candidato-único): **80.2%** (2300/2869)
-  - Import-guided edges (T2, provenance="import"): **569** edges, 100% spot-check correct.
-  - Ambiguous resolver edges eliminated: **1212 → 314** (remaining 314 are T1 exact-match
-    false positives caused by extractors emitting bare `qualified_name` without package prefix
-    for test helpers — pre-existing issue, not in scope of SPEC-047).
-  - Remaining unresolved: ~17 000 — stdlib/external packages and variable-receiver calls.
+**Recall measurement on mneme itself (Go, post all fixes):**
+- Baseline (no resolver): ~43%
+- After SPEC-047 (all tiers candidato-único-o-nada): **81.2%** (2335/2877 callables)
+- Import-guided edges (T2, `provenance="import"`): **553** — spot-checked 15/15 correct
+- False-positive edges eliminated: ~1212 (T3/T4 LIMIT 1) → 0 from that source
+- Remaining unresolved: ~18 000 — stdlib/external packages and variable-receiver calls
 
 ## [v1.14.0] — 2026-06-24
 
