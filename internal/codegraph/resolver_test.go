@@ -1,9 +1,21 @@
 package codegraph
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
+
+// writeTSFile creates a .ts source file with the given content under dir.
+func writeTSFile(t *testing.T, dir, name, source string) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte(source), 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+	return path
+}
 
 // insertImportNode inserts a NodeKindImport node representing an import
 // declaration, with the given importPath as Name/QualifiedName and alias as
@@ -778,5 +790,262 @@ func TestResolver_SuffixUniqueResolves(t *testing.T) {
 	}
 	if edges[0].Target != callee.ID {
 		t.Errorf("edge target = %q, want %q", edges[0].Target, callee.ID)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SPEC-048 C11 — end-to-end TS import-guided call resolution (AC2)
+// ---------------------------------------------------------------------------
+
+// TestResolver_TSNamedImportRelativeResolvesEndToEnd verifies AC2 (named import,
+// relative path): after indexing two TS files where A imports foo from './b' and
+// calls it, Resolve() creates a calls edge from the function in A to the
+// definition in B — not to the import node.
+func TestResolver_TSNamedImportRelativeResolvesEndToEnd(t *testing.T) {
+	if !nodeJSAvailable() || !typescriptAvailable() {
+		t.Skip("Node.js / typescript package not available")
+	}
+
+	dir := t.TempDir()
+
+	// b.ts defines the target function.
+	writeTSFile(t, dir, "b.ts", `export function foo(): string { return 'hello'; }`)
+
+	// a.ts imports foo from './b' and calls it.
+	writeTSFile(t, dir, "a.ts", `import { foo } from './b';
+export function caller() { return foo(); }
+`)
+
+	ix, s := newTestIndexer(t)
+	if _, err := ix.Index(IndexOptions{RootDir: dir, Force: true}); err != nil {
+		t.Fatalf("Index: %v", err)
+	}
+
+	r := NewResolver(s)
+	result, err := r.Resolve(dir)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	// At least one ref must be resolved.
+	if result.Resolved == 0 {
+		t.Fatalf("Resolve: 0 refs resolved (want ≥1); unresolved=%d", result.Unresolved)
+	}
+
+	// The indexer stores relative paths from RootDir; NodeID uses the relative
+	// path, not the absolute one.
+	callerID := NodeID("a.ts", "caller")
+	calleeID := NodeID("b.ts", "foo")
+
+	// Verify edge caller → foo (not to any import node).
+	edges, err := s.GetEdgesFrom(callerID, string(EdgeKindCalls))
+	if err != nil {
+		t.Fatalf("GetEdgesFrom caller: %v", err)
+	}
+	var foundEdgeToFoo bool
+	for _, e := range edges {
+		if e.Target == calleeID {
+			foundEdgeToFoo = true
+			// The target must be a function node, not an import node.
+			n, err := s.GetNode(e.Target)
+			if err != nil {
+				t.Fatalf("GetNode: %v", err)
+			}
+			if n != nil && n.Kind == NodeKindImport {
+				t.Errorf("edge target %q is an import node — expected function node", e.Target)
+			}
+		}
+	}
+	if !foundEdgeToFoo {
+		t.Errorf("no calls edge from caller (%s) to foo (%s); edges: %+v", callerID, calleeID, edges)
+	}
+}
+
+// TestResolver_TSDefaultImportRelativeResolvesEndToEnd verifies AC2 (default import):
+// after indexing A (imports getClient from './client') and B (exports getClient),
+// Resolve() creates a calls edge A.handler → B.getClient.
+func TestResolver_TSDefaultImportRelativeResolvesEndToEnd(t *testing.T) {
+	if !nodeJSAvailable() || !typescriptAvailable() {
+		t.Skip("Node.js / typescript package not available")
+	}
+
+	dir := t.TempDir()
+
+	writeTSFile(t, dir, "client.ts", `export default function getClient() { return {}; }`)
+	writeTSFile(t, dir, "handler.ts", `import getClient from './client';
+export async function handler() { const c = getClient(); return c; }
+`)
+
+	ix, s := newTestIndexer(t)
+	if _, err := ix.Index(IndexOptions{RootDir: dir, Force: true}); err != nil {
+		t.Fatalf("Index: %v", err)
+	}
+
+	r := NewResolver(s)
+	result, err := r.Resolve(dir)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	if result.Resolved == 0 {
+		t.Fatalf("Resolve: 0 refs resolved; unresolved=%d", result.Unresolved)
+	}
+
+	callerID := NodeID("handler.ts", "handler")
+	calleeID := NodeID("client.ts", "getClient")
+
+	edges, err := s.GetEdgesFrom(callerID, string(EdgeKindCalls))
+	if err != nil {
+		t.Fatalf("GetEdgesFrom: %v", err)
+	}
+	var found bool
+	for _, e := range edges {
+		if e.Target == calleeID {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("no calls edge from handler to getClient (%s); edges=%+v", calleeID, edges)
+	}
+}
+
+// TestResolver_TSNamespaceImportRelativeResolvesEndToEnd verifies AC2 (namespace import):
+// import * as lib from './lib' → lib.compute() resolves to lib.ts::compute.
+func TestResolver_TSNamespaceImportRelativeResolvesEndToEnd(t *testing.T) {
+	if !nodeJSAvailable() || !typescriptAvailable() {
+		t.Skip("Node.js / typescript package not available")
+	}
+
+	dir := t.TempDir()
+
+	writeTSFile(t, dir, "lib.ts", `export function compute(x: number): number { return x * 2; }`)
+	writeTSFile(t, dir, "main.ts", `import * as lib from './lib';
+export function run() { return lib.compute(5); }
+`)
+
+	ix, s := newTestIndexer(t)
+	if _, err := ix.Index(IndexOptions{RootDir: dir, Force: true}); err != nil {
+		t.Fatalf("Index: %v", err)
+	}
+
+	r := NewResolver(s)
+	result, err := r.Resolve(dir)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	if result.Resolved == 0 {
+		t.Fatalf("Resolve: 0 refs resolved; unresolved=%d", result.Unresolved)
+	}
+
+	callerID := NodeID("main.ts", "run")
+	calleeID := NodeID("lib.ts", "compute")
+
+	edges, err := s.GetEdgesFrom(callerID, string(EdgeKindCalls))
+	if err != nil {
+		t.Fatalf("GetEdgesFrom: %v", err)
+	}
+	var found bool
+	for _, e := range edges {
+		if e.Target == calleeID {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("no calls edge from run to compute (%s); edges=%+v", calleeID, edges)
+	}
+}
+
+// TestResolver_TSAmbiguousImportDoesNotLink verifies AC2 (ambiguous): when two
+// definitions named foo exist in the target file, the resolver does NOT create
+// an edge (candidato-único-o-nada). No panic, no false link.
+func TestResolver_TSAmbiguousImportDoesNotLink(t *testing.T) {
+	if !nodeJSAvailable() || !typescriptAvailable() {
+		t.Skip("Node.js / typescript package not available")
+	}
+
+	dir := t.TempDir()
+
+	// Two functions named foo — one is a class method which shares the short name.
+	// We simulate ambiguity by inserting a second node manually after indexing.
+	writeTSFile(t, dir, "defs.ts", `export function foo(): string { return 'a'; }`)
+	writeTSFile(t, dir, "caller.ts", `import { foo } from './defs';
+export function doIt() { return foo(); }
+`)
+
+	ix, s := newTestIndexer(t)
+	if _, err := ix.Index(IndexOptions{RootDir: dir, Force: true}); err != nil {
+		t.Fatalf("Index: %v", err)
+	}
+
+	// Inject a second 'foo' node in defs.ts to make it ambiguous.
+	// Use relative path (same as what the indexer stores).
+	extra := Node{
+		ID:            "ambi0001",
+		Kind:          NodeKindFunction,
+		Name:          "foo",
+		QualifiedName: "foo2",
+		FilePath:      "defs.ts",
+		Language:      "typescript",
+		StartLine:     1,
+		EndLine:       1,
+		UpdatedAt:     time.Now().Unix(),
+	}
+	if err := s.UpsertNode(extra); err != nil {
+		t.Fatalf("UpsertNode extra foo: %v", err)
+	}
+
+	r := NewResolver(s)
+	if _, err := r.Resolve(dir); err != nil {
+		t.Fatalf("Resolve must not error on ambiguous: %v", err)
+	}
+
+	callerID := NodeID("caller.ts", "doIt")
+	edges, err := s.GetEdgesFrom(callerID, string(EdgeKindCalls))
+	if err != nil {
+		t.Fatalf("GetEdgesFrom: %v", err)
+	}
+	for _, e := range edges {
+		if e.Provenance == "import" {
+			t.Errorf("found import-guided edge despite ambiguous candidates — must not link")
+		}
+	}
+}
+
+// TestResolver_TSBareImportDoesNotBreak verifies AC2 (bare npm import): importing
+// from a bare specifier (e.g. 'react') does not error and does not create a false edge.
+func TestResolver_TSBareImportDoesNotBreak(t *testing.T) {
+	if !nodeJSAvailable() || !typescriptAvailable() {
+		t.Skip("Node.js / typescript package not available")
+	}
+
+	dir := t.TempDir()
+
+	writeTSFile(t, dir, "app.tsx", `import React from 'react';
+export function App() { return React.createElement('div', null); }
+`)
+
+	ix, s := newTestIndexer(t)
+	if _, err := ix.Index(IndexOptions{RootDir: dir, Force: true}); err != nil {
+		t.Fatalf("Index: %v", err)
+	}
+
+	r := NewResolver(s)
+	_, err := r.Resolve(dir)
+	if err != nil {
+		t.Fatalf("Resolve must not error on bare imports: %v", err)
+	}
+
+	appID := NodeID("app.tsx", "App")
+	edges, err := s.GetEdgesFrom(appID, string(EdgeKindCalls))
+	if err != nil {
+		t.Fatalf("GetEdgesFrom: %v", err)
+	}
+	// Any edge that exists must not point to an import node with provenance=import
+	// from a bare specifier (react has no repo node).
+	for _, e := range edges {
+		if e.Provenance == "import" {
+			t.Errorf("found import-guided edge for bare 'react' import — must not link: %+v", e)
+		}
 	}
 }
