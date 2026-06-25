@@ -40,14 +40,17 @@ memory system. This command:
   1. Registers the mneme MCP server in the agent's MCP config
   2. Installs session-start and session-end hooks
   3. Injects the memory protocol into the agent's system prompt file
-  4. Installs the /mneme-init slash command
-  5. Applies per-agent model assignments (from config or defaults)
+  4. Installs workflow templates and bundled skills
+  5. Applies per-agent model assignments (from config or defaults, Claude only)
 
 Optionally, pass --personal to also copy your personal Claude Code ecosystem
 (agents, commands, templates, hooks, CLAUDE.md, settings.json) from a git
 repository or local directory configured in ~/.mneme/config.toml.
+The --personal flag has no effect when installing for codex.
 
-Supported agents: claude-code
+Supported agents:
+  claude-code  — Claude Code (full multi-agent setup with delegation hook)
+  codex        — OpenAI Codex CLI (single-agent, no delegation enforcement)
 
 The install is non-destructive and idempotent — running it multiple times
 produces the same result without clobbering existing configuration.`,
@@ -56,7 +59,9 @@ produces the same result without clobbering existing configuration.`,
   mneme install claude-code --reinstall-hooks
   mneme install claude-code --personal
   mneme install claude-code --personal --source /path/to/my/dotfiles
-  mneme install claude-code --personal --force`,
+  mneme install claude-code --personal --force
+  mneme install codex
+  mneme install codex --dry-run`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			slug := args[0]
@@ -140,6 +145,17 @@ produces the same result without clobbering existing configuration.`,
 
 				// Post-step side effects for user experience.
 				switch name {
+				case "Session hooks":
+					// D3b (SPEC-049): Codex hooks require explicit trust from the user.
+					// If they have not been trusted via /hooks in the Codex TUI, the
+					// session-lifecycle discipline in AGENTS.md (§5) covers memory hygiene
+					// without automation. Emit a reminder only for the codex slug.
+					if slug == "codex" {
+						fmt.Fprintln(os.Stdout, "")
+						fmt.Fprintln(os.Stdout, "  [info] Codex hooks require trust before they run automatically.")
+						fmt.Fprintln(os.Stdout, "  [info] Open the Codex TUI and run /hooks to review and trust them.")
+						fmt.Fprintln(os.Stdout, "  [info] Until then, follow the memory lifecycle in ~/.codex/AGENTS.md §5.")
+					}
 				case "Delegation hook (reinstall)":
 					if _, jqErr := exec.LookPath("jq"); jqErr != nil {
 						fmt.Fprintln(os.Stderr, "  [warn] jq not found in PATH; the delegation hook will fail-open until jq is installed")
@@ -224,7 +240,9 @@ func agentBySlug(slug, binaryPath string) (*install.Agent, error) {
 	switch slug {
 	case "claude-code":
 		return install.ClaudeCode(binaryPath), nil
+	case "codex":
+		return install.Codex(binaryPath), nil
 	default:
-		return nil, fmt.Errorf("install: unknown agent %q — supported agents: claude-code", slug)
+		return nil, fmt.Errorf("install: unknown agent %q — supported agents: claude-code, codex", slug)
 	}
 }
