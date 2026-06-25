@@ -6,34 +6,47 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [v1.16.0] — 2026-06-25 — CodeGraph C11: TS cross-file call resolution
+
 ### Fixed
 
-- **CodeGraph C11: TS extractor emits cross-file refs for imported-symbol calls**
-  (SPEC-048): `internal/codegraph/js/extract.js` — fixes a root-cause bug where
-  calls to imported bindings (named, default, namespace) resolved to the local
-  **import node** instead of emitting an `unresolved_ref` for the import-guided
-  resolver. As a result, ~88% of TS `calls` edges pointed to dead-end import
-  nodes and `codegraph_callers`/`codegraph_callees`/`codegraph_impact` returned
-  empty results for cross-file TypeScript calls.
+- **CodeGraph C11: TS extractor now emits cross-file refs for imported-symbol
+  calls** (SPEC-048): `internal/codegraph/js/extract.js` — fixes a root-cause
+  bug where calls to imported bindings (named, default, namespace) resolved to
+  the local **import node** instead of emitting an `unresolved_ref` for the
+  import-guided resolver (`resolveTSImport`, SPEC-047). The result was that
+  ~88% of TS `calls` edges pointed to dead-end import nodes, making
+  `codegraph_callers`, `codegraph_callees`, and `codegraph_impact` return empty
+  results for cross-file TypeScript calls.
 
   **Root cause:** import bindings were registered in the same `topLevel` map as
-  local declarations. `walkCalls` found them there and emitted a direct
-  `calls → import_node` edge instead of leaving them for `resolveTSImport`.
+  local declarations. `walkCalls` found them there and emitted
+  `calls → import_node` instead of leaving them for the resolver.
 
   **Fix:** a pre-scan of `ImportDeclaration` nodes (before `visit()` runs)
-  populates `importedBindings` — a `Set` of every local binding name, including
-  hoisted imports (declared after their use). `walkCalls` checks the call head
-  against `importedBindings`; if matched, it emits an `unresolved_ref` with
-  `reference_name = callName` (e.g. `"member"` or `"ns.member"`). Import nodes
-  and their `imports` edges are preserved — the import-guided resolver needs them.
+  builds `importedBindings` — a `Set` of every local binding name — covering the
+  hoisting case (import declared after its use in a class method body).
+  `walkCalls` now checks the call head against this set: if matched, it emits an
+  `unresolved_ref` with `reference_name = callName` (`"member"` for
+  named/default, `"ns.member"` for namespace). Import nodes and their
+  `file → import` edges are preserved — the resolver needs them.
 
-  **Recall impact:** useful TS call edges (target = function/method node, not
-  import node) increase dramatically from the ~5.6% baseline. Re-index with
-  `mneme codegraph index --force` to apply the fix to existing databases.
+  **Measured recall improvement** (re-index with `--force` to apply):
 
-  The import-guided resolver (`resolveTSImport`, SPEC-047) requires no changes —
-  it already handles named/default and namespace imports with
-  candidato-único-o-nada semantics for `@/` aliases and relative paths.
+  | Repo | Useful TS call edges (target = function/method) |
+  |------|------------------------------------------------|
+  | quantium (before) | 11 / 198 = **5.6%** |
+  | quantium (after) | 69 / 198 = **34.8%** |
+  | site (before) | 0 / 35 = **0%** |
+  | site (after) | 19 / 35 = **54.3%** |
+
+  Precision spot-check: 30/30 cross-file TS edges verified correct (100%).
+
+  **Known ceiling (out of scope):** method-calls on typed variables
+  (`payload.find(...)`, `res.docs.map(...)`) require type inference; re-exports
+  and barrel files (`export { X } from './y'`) are not followed; bare npm
+  imports (`react`, `next`) stay unresolved without error. These are tracked as
+  future backlog items.
 
 ## [v1.15.0] — 2026-06-24 — CodeGraph C3: import-guided cross-package resolution (Go) + tsconfig paths infrastructure
 
