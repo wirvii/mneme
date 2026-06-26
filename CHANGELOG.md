@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [v1.17.0] — 2026-06-25 — Codex CLI support: `mneme install codex` (SPEC-049)
+
+### Added
+
+- **`mneme install codex` — OpenAI Codex CLI support (single-agent model)**
+  (SPEC-049): configura Codex CLI para usar mneme como memoria persistente y
+  motor SDD. A diferencia de `claude-code` (multi-agente con delegación), Codex
+  usa un modelo single-agent: un solo agente lee memoria, sigue el ciclo SDD e
+  implementa — sin subagentes, sin hook de delegación, sin bloqueo de edición.
+
+  Artefactos que instala:
+  - `~/.codex/config.toml`: `[mcp_servers.mneme]` (`command` + `args=["mcp","--tools=agent"]`) y `"CLAUDE.md"` en `project_doc_fallback_filenames` (merge TOML no destructivo, idempotente).
+  - `~/.codex/hooks.json`: `SessionStart`→`mneme hook session-start`, `Stop`→`mneme hook session-end` (schema Codex, idempotente).
+  - `~/.codex/AGENTS.md`: operating manual single-agent como managed block (< 32 KiB).
+  - `$HOME/.agents/skills`: skills bundled para descubrimiento por la CLI.
+
+  Reusa el runner de install agnóstico (`installSteps`/`DryRun`/`upsertManagedBlock`/`WriteSkills`); el path de `claude-code` no cambia de comportamiento. Las MCP tools `skills_*` siguen gobernando `~/.claude/skills`. Ver `docs/codex.md`.
+
 ## [v1.16.0] — 2026-06-25 — CodeGraph C11: TS cross-file call resolution
 
 ### Fixed
