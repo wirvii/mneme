@@ -473,3 +473,4 @@ Combining them would muddle the semantics and hurt performance.
 - [Rules System](RULES.md) — applies_to syntax, severity levels, examples by stack
 - [Architecture](ARCHITECTURE.md) — overall system design and graph layer
 - [Knowledge Graph](GRAPH.md) — weighted relations, Hebbian learning, decay
+- [API reference: CLI](api/cli.md) → — full flag reference for `mneme hook <event>`

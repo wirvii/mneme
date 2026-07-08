@@ -121,3 +121,10 @@ re-judging the same pair.
 - No embeddings/vector similarity.
 - No metered API calls. CLI absent → report and skip.
 - No changes to allowlists, hooks, SDD, lane, skills, or models.
+
+---
+
+## API reference
+
+Full contract (params, returns, errors, examples) for the 5 `conflicts_*` MCP
+tools: [docs/api/conflicts.md](api/conflicts.md) →

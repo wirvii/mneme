@@ -797,7 +797,7 @@ Re-correr el comando despues de un `--apply` exitoso reporta 0 candidatos. Es se
 | `mem_explore` (MCP) | Exploracion del grafo desde MCP |
 | `mem_gaps` (MCP) | Listar knowledge gaps |
 
-Referencia completa de todos los endpoints: [API.md](API.md).
+Referencia completa de todos los endpoints: [docs/api/memory.md](api/memory.md).
 
 ---
 
@@ -860,3 +860,11 @@ Para inspeccionar la configuracion activa con proveniencia (default/file/env):
 mneme config show graph
 mneme config show context
 ```
+
+---
+
+## See also
+
+- [API reference: Memory tools](api/memory.md) → -- full contract for `mem_relate`, `mem_explore`, and graph-aware fields on `mem_search`/`mem_context`
+- [HOOKS.md](HOOKS.md) -- pre-tool-use hook and session hooks
+- [CONFIG.md](CONFIG.md) -- full config reference including `[graph]` and `[context]`

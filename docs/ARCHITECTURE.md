@@ -36,7 +36,7 @@ mneme is a persistent memory system for AI coding agents. A single Go binary (no
 
 ### The solution
 
-A local SQLite database with FTS5 full-text search, a weighted knowledge graph with Hebbian learning and Personalized PageRank, community detection via Louvain, and automatic synthesis -- all exposed through 24 MCP tools. Agents call `mem_save`, `mem_search`, `mem_context`, `mem_explore`, and `mem_gaps` to manage structured knowledge. Rules are injected automatically and enforced via hooks.
+A local SQLite database with FTS5 full-text search, a weighted knowledge graph with Hebbian learning and Personalized PageRank, community detection via Louvain, and automatic synthesis -- all exposed through 57 MCP tools. Agents call `mem_save`, `mem_search`, `mem_context`, `mem_explore`, and `mem_gaps` to manage structured knowledge. Rules are injected automatically and enforced via hooks.
 
 ---
 
@@ -78,7 +78,7 @@ graph TB
 
     subgraph "Layer 1 — Storage"
         STORE["store/<br/>Repository Pattern"]
-        DB["SQLite + FTS5<br/>(schema v10)"]
+        DB["SQLite + FTS5<br/>(schema v13)"]
     end
 
     CLI --> SVC
@@ -146,7 +146,7 @@ internal/
                            8 relation types, request/response structs). Zero deps.
   project/              -- git remote / project slug detection
   config/               -- TOML config + defaults + env overrides
-  db/                   -- SQLite + FTS5 + embedded migrations (schema v10)
+  db/                   -- SQLite + FTS5 + embedded migrations (schema v13)
   store/                -- repository pattern (CRUD, FTS5, vectors, entities, relations,
                            communities, sessions, unresolved refs)
   scoring/              -- importance, decay (Ebbinghaus), BM25 re-rank, RRF fusion,
@@ -161,10 +161,10 @@ internal/
   embed/                -- TF-IDF baseline embedder
   sync/                 -- JSONL.gz + Memory Manifest (tar.gz) export/import
   vault/                -- markdown vault: path mapping, frontmatter, writer, reader
-  mcp/                  -- MCP server (JSON-RPC 2.0 over stdio, 24 tools)
-  http/                 -- REST API (stdlib net/http, 8 endpoints under /v1/)
-  cli/                  -- Cobra commands (27+ top-level commands)
-  install/              -- agent profile installer (5 subagent profiles + slash commands)
+  mcp/                  -- MCP server (JSON-RPC 2.0 over stdio, 57 tools)
+  http/                 -- REST API (stdlib net/http, 10 endpoints under /v1/)
+  cli/                  -- Cobra commands (33 top-level commands)
+  install/              -- agent profile installer (7 subagent profiles + slash commands)
   tui/                  -- Bubble Tea interface (list, stats)
   upgrade/              -- self-upgrade checker
   export/               -- markdown export (rendering only, no filesystem)
@@ -188,7 +188,7 @@ The persistence foundation. SQLite with WAL mode, foreign keys, 5s busy timeout.
 
 **Scopes never leak between projects.** The service layer routes reads/writes via `storeFor(scope)`.
 
-#### Schema v10 (migrations 001-010)
+#### Schema v13 (migrations 001-013)
 
 ```mermaid
 erDiagram
@@ -284,6 +284,9 @@ erDiagram
 | 008 | `graph_expansion` | SPEC-007 | Index on `memory_entities(entity_id)` for O(log n) entity lookups |
 | 009 | `unresolved_references` | SPEC-012 | `unresolved_references` table for wikilink gaps + auto-resolve |
 | 010 | `communities` | SPEC-020 | `communities` + `community_members` tables for Louvain persistence |
+| 011 | `add_lane` | SPEC-035 | `lane` + `scope` columns on `backlog_items` and `specs` for graduated (trivial/standard) lanes |
+| 012 | `add_spec_base_sha_and_audits` | SPEC-036 | `base_sha` column on `specs`; `lane_audits` table for structured post-implementation audit records |
+| 013 | `memory_relations` | SPEC-039 | `memory_relations` table for `conflicts_with`/`unrelated` memory-to-memory edges (`supersedes` reuses `memories.superseded_by`) |
 
 #### Memory types (11)
 
@@ -643,39 +646,53 @@ mneme sync import backup.manifest.tar.gz   # auto-detects format
 
 ### MCP (primary) -- `mneme mcp`
 
-JSON-RPC 2.0 over stdio. ProtocolVersion `2024-11-05`. 24 tools with JSON schemas:
+JSON-RPC 2.0 over stdio. ProtocolVersion `2024-11-05`. 57 tools with JSON schemas, grouped by family:
 
-| Group | Tools |
+| Group | Count |
 |-------|-------|
-| **Memory (14)** | `mem_save`, `mem_search`, `mem_get`, `mem_context`, `mem_update`, `mem_session_end`, `mem_suggest_topic_key`, `mem_relate`, `mem_timeline`, `mem_stats`, `mem_checkpoint`, `mem_forget`, `mem_gaps`, `mem_explore` |
-| **Backlog (4)** | `backlog_add`, `backlog_list`, `backlog_refine`, `backlog_promote` |
-| **Spec (6)** | `spec_new`, `spec_status`, `spec_advance`, `spec_pushback`, `spec_resolve`, `spec_list` |
+| **Memory** (`mem_*`) | 14 |
+| **Backlog** (`backlog_*`) | 4 |
+| **Spec** (`spec_*`, incl. `spec_quick`/`spec_reject`) | 8 |
+| **Lane** (`lane_*`) | 5 |
+| **CodeGraph** (`codegraph_*`) | 10 |
+| **Skills** (`skills_*`) | 7 |
+| **Model** (`model_*`) | 3 |
+| **Conflicts** (`conflicts_*`) | 5 |
+| **init** | 1 |
+
+Full per-tool contracts (params, returns, errors, examples) live in [docs/api/](api/), one file per family.
 
 `handleMessage()` is exposed separately from `Run()` for unit testing without I/O loops (D007).
 
 ### HTTP API -- `mneme serve --addr :7437`
 
-Stdlib `net/http`, graceful shutdown 10s. 8+ endpoints under `/v1/`:
+Stdlib `net/http`, graceful shutdown 10s. 10 route registrations under `/v1/`
+(`internal/http/server.go:90-116`); one of them (`/v1/memories/{id}`) also
+serves the `/explore` suffix, so it handles four distinct request shapes:
 
-| Method | Endpoint | Status |
-|--------|----------|--------|
-| GET | `/v1/health` | 200 |
-| POST | `/v1/memories` | 201 |
-| GET | `/v1/memories/{id}` | 200 |
-| PATCH | `/v1/memories/{id}` | 200 |
-| DELETE | `/v1/memories/{id}` | 200 |
-| GET | `/v1/memories/search` | 200 |
-| GET | `/v1/memories/context` | 200 |
-| POST | `/v1/sessions/end` | 200 |
-| POST | `/v1/entities/relate` | 201/200 |
-| GET | `/v1/stats` | 200 |
-| POST | `/v1/consolidate` | 200 |
+| Route registration | Methods handled | Status |
+|---------------------|------------------|--------|
+| `/v1/health` | GET | 200 |
+| `/v1/memories` | POST | 201 |
+| `/v1/memories/search` | GET | 200 |
+| `/v1/memories/context` | GET | 200 |
+| `/v1/memories/{id}` (+ `/explore` suffix) | GET, PATCH, DELETE, GET `.../explore` | 200 |
+| `/v1/sessions/end` | POST | 200 |
+| `/v1/entities/relate` | POST | 201/200 |
+| `/v1/stats` | GET | 200 |
+| `/v1/gaps` | GET | 200 |
+| `/v1/consolidate` | POST | 200 |
 
-**HTTP gap:** No SDD endpoints (`/v1/specs/*`, `/v1/backlog/*`), no `mem_checkpoint`, no `mem_timeline`, no `mem_suggest_topic_key`, no `mem_gaps`, no `mem_explore`. No auth, no rate limiting.
+Full contract for every route: [docs/api/http.md](api/http.md).
+
+**HTTP gap:** no SDD/lane/codegraph/skills/model/conflicts endpoints at all,
+and no `mem_checkpoint`, `mem_timeline`, or `mem_suggest_topic_key`. (`mem_gaps`
+and `mem_explore` **are** exposed -- via `/v1/gaps` and the `/explore` suffix
+above, respectively; they are not part of the gap.) No auth, no rate limiting.
 
 ### CLI -- Cobra
 
-27+ top-level commands: `save`, `search`, `get`, `forget`, `status`, `stats`, `consolidate`, `serve`, `mcp`, `init`, `install`, `upgrade`, `version`, `sync export|import|status`, `rule add|list|test`, `explore`, `graph rebuild`, `vault export|import`, `spec`, `backlog`, `hook`, `tui`, `embed backfill`.
+33 top-level commands: `save`, `search`, `get`, `update`, `forget`, `status`, `stats`, `consolidate`, `serve`, `mcp`, `init`, `install`, `upgrade`, `version`, `completion`, `sync export|import|status`, `rule add|list|test`, `explore`, `graph rebuild|cleanup-orphan-relations`, `gaps`, `vault export|import`, `embed backfill`, `export markdown`, `config show`, `hook`, `tui`, `backlog add|list|refine|promote|archive`, `spec new|advance|pushback|resolve|quick|reject|list|status|history`, `lane audit|reclassify|override|status|stats`, `codegraph index|search|node|callers|callees|impact|trace|files|status|hooks`, `skills list|install|pin|unpin|remove|lint|validate`, `model list|set|reset`, `conflicts candidates|scan|link|unlink|list`. Full flag reference: [docs/api/cli.md](api/cli.md).
 
 ### Hooks (`internal/cli/hook.go`)
 

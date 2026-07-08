@@ -111,3 +111,10 @@ The file intentionally contains zero process content. A subsequent call to
 The `init` MCP tool (57th tool) exposes the same idempotent managed-block steps.
 It accepts `repo_root` (defaults to cwd) and `check` (boolean). The destructive
 legacy migration is NOT exposed via MCP — it remains CLI-only behind `--apply`.
+
+---
+
+## API reference
+
+Full contract for `init` (alongside `backlog_*`, `spec_*`, and `lane_*`):
+[docs/api/sdd.md](api/sdd.md) →

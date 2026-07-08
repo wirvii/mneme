@@ -681,7 +681,7 @@ mneme sync import .mneme/sync/wirvii-mneme.jsonl.gz
 
 ## 11. Agent Ecosystem
 
-`mneme install claude-code` configures five subagent profiles and four slash commands.
+`mneme install claude-code` configures seven subagent profiles and four slash commands.
 
 ### Subagent profiles
 
@@ -803,7 +803,9 @@ spec_advance({ "id": "SPEC-042", "by": "architect" })
 
 ## 13. MCP Tools Cheatsheet
 
-The MCP server (`mneme mcp`) exposes 24 tools over JSON-RPC 2.0 stdio.
+The MCP server (`mneme mcp`) exposes 57 tools over JSON-RPC 2.0 stdio. This
+cheatsheet covers the original memory-tool surface; for the complete set
+(SDD, lane, codegraph, skills, model, conflicts) see [docs/api/](api/).
 
 ### Memory tools (14)
 
@@ -833,7 +835,7 @@ The MCP server (`mneme mcp`) exposes 24 tools over JSON-RPC 2.0 stdio.
 | `backlog_refine` | `id`, `refinement` | -- | Refine a raw item |
 | `backlog_promote` | `id` | -- | Promote to spec |
 
-### Spec tools (6)
+### Spec tools (8)
 
 | Tool | Required params | Key optional params | Purpose |
 |------|-----------------|---------------------|---------|
@@ -843,6 +845,8 @@ The MCP server (`mneme mcp`) exposes 24 tools over JSON-RPC 2.0 stdio.
 | `spec_pushback` | `id`, `from_agent`, `questions` | -- | Register blocking questions |
 | `spec_resolve` | `id`, `resolution` | -- | Resolve a pushback |
 | `spec_list` | -- | `status`, `project` | List specs |
+| `spec_quick` | `id`, `rationale`, `by` | -- | Trivial lane: draft -> implementing in one step |
+| `spec_reject` | `id`, `reason`, `by` | -- | Reject from qa/audit back to implementing |
 
 ---
 
@@ -974,4 +978,4 @@ No. mneme is 100% local. All data stays in SQLite files under `~/.mneme/`. There
 
 ---
 
-*Last updated: 2026-04-30. Covers mneme after EPIC-1 through EPIC-6 (v0.8.0, schema v10, 24 MCP tools).*
+*Originally written 2026-04-30, covering mneme after EPIC-1 through EPIC-6. See [CHANGELOG.md](../CHANGELOG.md) for the full version history and [docs/api/](api/) for the complete, current tool/command/endpoint reference; current release is v1.17.0.*
