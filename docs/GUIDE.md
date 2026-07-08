@@ -835,7 +835,7 @@ cheatsheet covers the original memory-tool surface; for the complete set
 | `backlog_refine` | `id`, `refinement` | -- | Refine a raw item |
 | `backlog_promote` | `id` | -- | Promote to spec |
 
-### Spec tools (6)
+### Spec tools (8)
 
 | Tool | Required params | Key optional params | Purpose |
 |------|-----------------|---------------------|---------|
@@ -845,6 +845,8 @@ cheatsheet covers the original memory-tool surface; for the complete set
 | `spec_pushback` | `id`, `from_agent`, `questions` | -- | Register blocking questions |
 | `spec_resolve` | `id`, `resolution` | -- | Resolve a pushback |
 | `spec_list` | -- | `status`, `project` | List specs |
+| `spec_quick` | `id`, `rationale`, `by` | -- | Trivial lane: draft -> implementing in one step |
+| `spec_reject` | `id`, `reason`, `by` | -- | Reject from qa/audit back to implementing |
 
 ---
 
