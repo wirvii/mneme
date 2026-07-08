@@ -16,6 +16,10 @@ Persistent memory for AI coding agents -- with a spec-driven workflow engine, se
 - [The 4 Layers](#the-4-layers)
 - [Quickstart](#quickstart)
 - [Features](#features)
+- [CodeGraph](#codegraph)
+- [Skills](#skills)
+- [Enforcement](#enforcement)
+- [Models & Conflicts](#models--conflicts)
 - [Commands](#commands)
 - [MCP Tools](#mcp-tools)
 - [Comparison](#comparison)
@@ -169,6 +173,97 @@ mneme sync import <file>              # auto-detects format
 
 ---
 
+## CodeGraph
+
+A semantic code graph, separate from the memory graph, that indexes source files
+into symbols (functions, types, methods) and relations (`calls`, `imports`,
+`extends`, `implements`). It answers questions memory alone cannot: *who calls
+this function*, *what breaks if I change this type*, *what's the shortest path
+between these two symbols*.
+
+```bash
+mneme codegraph index                          # walk cwd, extract symbols (incremental)
+mneme codegraph search "MemoryService"         # find symbols by name
+mneme codegraph callers SaveMemory --depth 2   # who calls this?
+mneme codegraph impact Memory --limit 50       # blast radius of a change
+mneme codegraph trace Handler ServiceCall      # shortest call path
+mneme codegraph hooks install                  # auto re-index on commit/checkout
+```
+
+10 MCP tools (`codegraph_search`, `codegraph_context`, `codegraph_callers`,
+`codegraph_callees`, `codegraph_impact`, `codegraph_trace`, `codegraph_explore`,
+`codegraph_files`, `codegraph_node`, `codegraph_status`) let agents explore code
+structure before falling back to `Read`/`Grep`. A `PreToolUse` nudge reminds
+agents to prefer the graph when one is indexed. See
+[docs/codegraph.md](docs/codegraph.md) (concepts, coverage caveats, git hooks)
+and [docs/api/codegraph.md](docs/api/codegraph.md) (full tool contracts).
+
+---
+
+## Skills
+
+mneme is the **package manager for Claude Code skills** -- it embeds a bundle of
+skills and installs them to `~/.claude/skills/`. It does not implement the skill
+runtime itself.
+
+```bash
+mneme skills list                       # bundled + installed, with lint status
+mneme skills install example-skill      # copy to ~/.claude/skills/
+mneme skills pin example-skill          # protect from overwrite/removal
+mneme skills lint example-skill         # deterministic structural check
+mneme skills validate example-skill     # run validation/run.sh (120s timeout)
+```
+
+See [docs/skills.md](docs/skills.md) (SKILL.md format, pin semantics) and
+[docs/api/skills.md](docs/api/skills.md) (the 7 `skills_*` MCP tools).
+
+---
+
+## Enforcement
+
+Two independent layers keep agent roles honest:
+
+1. **Capability allowlist (primary).** Every subagent declares an explicit
+   `tools:` allowlist in its YAML frontmatter. Read-only agents physically
+   cannot call `Edit`/`Write`/`MultiEdit`/`NotebookEdit` -- Claude Code enforces
+   this natively, independent of what the prompt says.
+2. **`PreToolUse` hook (defense in depth).** `mneme hook pre-tool-use` evaluates
+   role-aware rules against every mutating tool call; a bash hook additionally
+   blocks the orchestrator from editing protected paths directly, by detecting
+   the absence of an `agent_id` in the hook payload.
+
+| Role | Edits code? | Notes |
+|------|-------------|-------|
+| `orchestrator` | ❌ Never | Routes work, manages the SDD lifecycle; blocked by the bash hook even if a rule doesn't cover the path |
+| `architect` | ❌ Read-only | Designs, writes specs |
+| `backend` | ✅ Full toolset | Implements server-side logic |
+| `frontend` | ✅ Full toolset | Implements client-side logic |
+| `bug-hunter` | ✅ Full toolset | Investigates and fixes bugs |
+| `qa-tester` | ❌ Read-only | Verifies implementation against the spec |
+| `diagnostician` | ⚠️ Bash only, no Edit/Write | Reads logs/infra, triages, proposes -- never mutates code |
+
+See [docs/enforcement-model.md](docs/enforcement-model.md) for the full
+allowlist table, the role-aware rules engine, and how to add a new subagent.
+
+---
+
+## Models & Conflicts
+
+**Models** -- each bundled subagent gets a model alias (`architect` defaults to
+`opus`; the rest default to `sonnet`), stored in `~/.mneme/config.toml` and
+applied to agent files on every `mneme install claude-code`. Override with
+`mneme model set <agent> <alias>`. See [docs/models.md](docs/models.md) and
+[docs/api/models.md](docs/api/models.md).
+
+**Conflicts** -- a two-phase workflow surfaces contradictions between memories:
+deterministic FTS5 candidate detection (`mneme conflicts candidates`, no LLM),
+then optional LLM judgment via a `claude` CLI subprocess ($0 cost on
+subscription, dry-run by default -- `mneme conflicts scan --apply` to persist).
+See [docs/conflicts.md](docs/conflicts.md) and
+[docs/api/conflicts.md](docs/api/conflicts.md).
+
+---
+
 ## Commands
 
 33 top-level commands (`mneme --help` is the source of truth for flags; full flag reference in [docs/api/cli.md](docs/api/cli.md)):
@@ -213,46 +308,23 @@ mneme sync import <file>              # auto-detects format
 
 ## MCP Tools
 
-The MCP server (`mneme mcp`) exposes 24 tools over JSON-RPC 2.0 stdio:
+The MCP server (`mneme mcp`) exposes **57 tools** over JSON-RPC 2.0 stdio,
+grouped by family. Each family has a full contract reference (params, returns,
+errors, examples) under [docs/api/](docs/api/):
 
-### Memory Tools (14)
+| Family | Count | What it covers | Reference |
+|--------|-------|-----------------|-----------|
+| `mem_*` | 14 | Save, search, update, relate, explore, and time-travel through memories | [docs/api/memory.md](docs/api/memory.md) |
+| `backlog_*` | 4 | Raw idea → refined → promoted-to-spec lifecycle | [docs/api/sdd.md](docs/api/sdd.md) |
+| `spec_*` | 8 | Spec lifecycle: draft → speccing → ... → done, plus `quick`/`reject` shortcuts | [docs/api/sdd.md](docs/api/sdd.md) |
+| `lane_*` | 5 | Trivial-lane audit, reclassify, override, status, stats | [docs/api/sdd.md](docs/api/sdd.md) |
+| `codegraph_*` | 10 | Symbol search, callers/callees, impact analysis, call tracing | [docs/api/codegraph.md](docs/api/codegraph.md) |
+| `skills_*` | 7 | Install/pin/lint/validate skills in `~/.claude/skills/` | [docs/api/skills.md](docs/api/skills.md) |
+| `model_*` | 3 | Per-agent model alias assignment | [docs/api/models.md](docs/api/models.md) |
+| `conflicts_*` | 5 | Detect and manage memory conflict relations | [docs/api/conflicts.md](docs/api/conflicts.md) |
+| `init` | 1 | Apply managed blocks + drift report (project bootstrap) | [docs/api/sdd.md](docs/api/sdd.md) |
 
-| Tool | Description |
-|------|-------------|
-| `mem_save` | Save a memory (supports `rule` type with `applies_to` and `severity`) |
-| `mem_search` | Hybrid search with optional graph expansion (`include_graph` flag) |
-| `mem_get` | Retrieve full content by ID |
-| `mem_context` | Curated context bundle with rules always injected first |
-| `mem_update` | Partial update of an existing memory |
-| `mem_session_end` | End session and save summary |
-| `mem_suggest_topic_key` | Suggest a topic_key for dedup |
-| `mem_relate` | Create/update entity relations (with explicit weight override) |
-| `mem_timeline` | Chronological neighborhood around a point in time |
-| `mem_stats` | Aggregate statistics |
-| `mem_checkpoint` | Save work-in-progress checkpoint |
-| `mem_forget` | Mark a memory for accelerated decay |
-| `mem_explore` | BFS graph traversal from a seed (depth/budget/threshold) |
-| `mem_gaps` | List unresolved wikilink references (knowledge gaps) |
-
-### Backlog Tools (4)
-
-| Tool | Description |
-|------|-------------|
-| `backlog_add` | Add item to backlog |
-| `backlog_list` | List backlog items |
-| `backlog_refine` | Refine a raw backlog item |
-| `backlog_promote` | Promote refined item to spec |
-
-### Spec Tools (6)
-
-| Tool | Description |
-|------|-------------|
-| `spec_new` | Create a new spec in draft status |
-| `spec_status` | Get full spec status with history and pushbacks |
-| `spec_advance` | Advance spec to next lifecycle state |
-| `spec_pushback` | Register blocking questions on a spec |
-| `spec_resolve` | Resolve a pushback |
-| `spec_list` | List specs (filterable by status) |
+14 + 4 + 8 + 5 + 10 + 7 + 3 + 5 + 1 = **57**.
 
 ---
 
@@ -339,19 +411,26 @@ The MCP server (`mneme mcp`) exposes 24 tools over JSON-RPC 2.0 stdio:
 
 ## Status & Roadmap
 
-**Current: v0.8.0** -- 6 EPICs delivered across 198 commits, schema v10, 24 MCP tools.
+**Current: v1.17.0** -- schema v13, 57 MCP tools, 33 CLI commands, 10 HTTP endpoints.
+Full history in [CHANGELOG.md](CHANGELOG.md).
 
-| EPIC | Theme | Status |
-|------|-------|--------|
-| EPIC-1 | Rules as first-class citizens | Done |
-| EPIC-2 | Weighted graph + 1-hop expansion | Done |
-| EPIC-3 | Wikilinks + knowledge gaps | Done |
-| EPIC-4 | Personalized PageRank | Done |
-| EPIC-5 | Community detection (Louvain) | Done |
-| EPIC-6 | Vault mirror + Memory Manifest | Done |
-| EPIC-7 | Documentation & discoverability | In progress |
+**Shipped:**
 
-**Follow-ups:** fsnotify vault watcher, MCP vault tools, query DSL, plugin model for subagents, HTTP SDD parity.
+| Milestone | Theme | Status |
+|-----------|-------|--------|
+| EPIC-1..6 (v0.2.0-v0.8.0) | Rules, weighted graph, wikilinks, PPR, communities, vault mirror | Done |
+| SDD engine + lanes (v0.9.0-v1.5.0) | Backlog → spec lifecycle, trivial/standard lanes, deterministic audit | Done |
+| CodeGraph C1-C11 (v1.10.0-v1.16.0) | Semantic code graph: Go + TypeScript/JS extraction, cross-file resolution, hook nudges, auto-reindex hooks | Done |
+| Skills package manager (v1.7.0) | Bundled skill install/pin/lint/validate | Done |
+| Models (v1.8.0) | Per-agent model alias assignment | Done |
+| Conflicts (v1.9.0) | FTS5 candidate detection + LLM judgment via `claude` CLI | Done |
+| `mneme install codex` (v1.17.0) | Single-agent OpenAI Codex CLI support | Done |
+
+**Roadmap (honest gaps):**
+
+- **CodeGraph C4-C7** -- remaining backlog items (further language coverage, deeper cross-package resolution beyond the current best-effort pass).
+- **HTTP parity** -- the REST API has no SDD/codegraph/skills/model/conflicts routes; MCP and CLI are ahead. Tracked as a deliberate gap, not an oversight (see [docs/api/http.md](docs/api/http.md) "HTTP parity gaps").
+- **TypeScript/JS type-inference ceiling** -- the CodeGraph JS/TS extractor resolves calls and imports but does not do full type inference; some dynamically-typed or heavily-generic call sites are not tracked. `codegraph_impact`/`codegraph_callees` are documented as best-effort, not exhaustive.
 
 ---
 
