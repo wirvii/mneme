@@ -474,6 +474,7 @@ A: `enforce-delegation` usa paths estaticos definidos en `config.toml`. El nuevo
 
 ## See also
 
-- [API.md](API.md) -- Full API reference for `mem_save` (type `rule`), `mem_context` (rule injection), CLI `mneme rule` commands
+- [API reference: Memory tools](api/memory.md) → -- Full contract for `mem_save` (type `rule`), `mem_context` (rule injection)
+- [API reference: CLI](api/cli.md) → -- `mneme rule add/list/test` flags
 - [HOOKS.md](HOOKS.md) -- Hook system details (`session-start`, `session-end`, `pre-tool-use`)
 - [CONFIG.md](CONFIG.md) -- Configuration reference including rule-related settings

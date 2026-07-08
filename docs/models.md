@@ -74,3 +74,10 @@ model_reset(agent?)                  # optional agent; omit to reset all
 mneme does NOT support proxy, base-url, or cross-provider routing. The `model:`
 field is a hint to Claude Code's agent runner — its semantics are defined by
 Claude Code, not by mneme. Provider-agnostic support is deferred to a future spec.
+
+---
+
+## API reference
+
+Full contract (params, returns, errors, examples) for the 3 `model_*` MCP
+tools: [docs/api/models.md](api/models.md) →

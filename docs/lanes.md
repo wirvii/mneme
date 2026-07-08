@@ -142,3 +142,10 @@ A discovery memory is saved with the reason. The spec advances to `done`.
 - Declare a tight `scope` at creation time. If you need to touch more files than the scope allows, the spec should be standard.
 - Keep trivial items genuinely small. If the implementation expands, use `lane reclassify` before advancing to `implementing`.
 - Never add, remove, or rename exported Go symbols in a trivial item. Even renaming a constant is a public API change.
+
+---
+
+## API reference
+
+Full contract (params, returns, errors, examples) for the 5 `lane_*` MCP
+tools: [docs/api/sdd.md](api/sdd.md) →

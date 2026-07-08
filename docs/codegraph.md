@@ -481,3 +481,10 @@ hook_nudge_enabled = true
 
 Environment override: `MNEME_CODEGRAPH_HOOK_NUDGE=false` disables the nudge
 regardless of the config file value.
+
+---
+
+## API reference
+
+Full contract (params, returns, errors, examples) for the 10 `codegraph_*`
+MCP tools: [docs/api/codegraph.md](api/codegraph.md) →

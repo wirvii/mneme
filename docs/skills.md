@@ -241,3 +241,10 @@ contains no real architectural guidance. Do not cite its content as a project
 convention or decision.
 
 See `internal/install/assets/skills/example-skill/` for the source.
+
+---
+
+## API reference
+
+Full contract (params, returns, errors, examples) for the 7 `skills_*` MCP
+tools: [docs/api/skills.md](api/skills.md) →
