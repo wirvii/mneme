@@ -203,7 +203,7 @@ func printContextHook(w io.Writer, resp *model.ContextResponse) {
 			}
 		} else if resp.TotalAvailable == 0 && len(resp.Rules) == 0 && len(resp.ClusterOverviews) == 0 {
 			fmt.Fprintf(w, "## No Memories Found\n\n")
-			fmt.Fprintf(w, "This project has no memories yet. Run `/mneme-init` to seed foundational knowledge.\n\n")
+			fmt.Fprintf(w, "This project has no memories yet. Use the `mneme-init` skill to seed foundational knowledge.\n\n")
 		}
 	} else {
 		// Flat mode: original "Loaded Memories" output (pre-SPEC-022).
@@ -214,7 +214,7 @@ func printContextHook(w io.Writer, resp *model.ContextResponse) {
 			}
 		} else if resp.TotalAvailable == 0 && len(resp.Rules) == 0 {
 			fmt.Fprintf(w, "## No Memories Found\n\n")
-			fmt.Fprintf(w, "This project has no memories yet. Run `/mneme-init` to seed foundational knowledge.\n\n")
+			fmt.Fprintf(w, "This project has no memories yet. Use the `mneme-init` skill to seed foundational knowledge.\n\n")
 		}
 	}
 

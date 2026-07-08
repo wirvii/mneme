@@ -699,7 +699,7 @@ All agents integrate with mneme memory at start (search + spec_status) and end (
 
 | Command | What it does |
 |---------|--------------|
-| `/mneme-init` | Scan the project, seed mneme with foundational knowledge from CLAUDE.md, package.json, go.mod, etc. |
+| `mneme-init` skill (invoke via the `mneme-init` skill, not a slash command) | Scan the project, seed mneme with foundational knowledge from CLAUDE.md, package.json, go.mod, etc. |
 | `/grill-me` | Interview you relentlessly about a design, walking down every branch of the decision tree. |
 | `/hunt-bug` | Orchestrate the bug-hunter subagent against a bug report. |
 | `/bug-to-issue` | Convert a bug diagnosis into a spec via the architect. |
