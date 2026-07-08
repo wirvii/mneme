@@ -1278,6 +1278,148 @@ func allTools() []ToolDefinition {
 				},
 			},
 		},
+
+		// --- SUBAGENT TOOLS (SPEC-057 / EPIC agnostic-agents SS-4) ---
+		{
+			Name:        "subagent_fingerprint",
+			Description: "Deterministic, read-only detection of a project's root, apps/packages, and stack markers, plus which subagents typed-memory records (project-profile/manifest) already exist. Phase 0 of the subagents grill.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"repo_root": map[string]any{
+						"type":        "string",
+						"description": "Absolute path to start the project-root search from. Defaults to the current working directory.",
+					},
+				},
+			},
+		},
+		{
+			Name:        "subagent_profile_get",
+			Description: "Read the project-profile (repo/org knowledge + app->role mapping) elicited by the subagents grill. Returns an empty profile when none has been saved yet.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"project": map[string]any{
+						"type":        "string",
+						"description": "Project slug. Defaults to the detected project.",
+					},
+				},
+			},
+		},
+		{
+			Name:        "subagent_profile_save",
+			Description: "Upsert the project-profile (repo/org knowledge + app->role mapping) elicited by the subagents grill.",
+			InputSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"profile_json"},
+				"properties": map[string]any{
+					"project": map[string]any{
+						"type":        "string",
+						"description": "Project slug. Defaults to the detected project.",
+					},
+					"profile_json": map[string]any{
+						"type":        "object",
+						"description": "The project profile payload: {schema_version, repo:{commits,lang,layout,cross_rules[]}, org, mapping:[{app,role}]}.",
+					},
+				},
+			},
+		},
+		{
+			Name: "subagent_compose",
+			Description: "Assemble a subagent profile preview: Go-authored frontmatter+permissions (selected via archetype) and layer-1 managed block, plus layer-2 (profile_json) and layer-3 (areas_layer3_md) content. " +
+				"areas_layer3_md is treated as untrusted grill-provided data: it is wrapped and escaped against prompt injection before being embedded, since the composed file becomes the subagent's own system prompt. " +
+				"Validates the result and returns it WITHOUT writing to disk.",
+			InputSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"role", "archetype", "areas_layer3_md"},
+				"properties": map[string]any{
+					"role": map[string]any{
+						"type":        "string",
+						"description": "Subagent role name used for the frontmatter `name:` and destination filename (may differ from archetype for custom roles). Must match ^[a-z][a-z0-9-]*$.",
+					},
+					"archetype": map[string]any{
+						"type":        "string",
+						"description": "Built-in role whose Go-authored permission envelope and agent-fixed sections this profile inherits. An LLM never generates permissions directly — custom roles must map to one of these.",
+						"enum":        []string{"architect", "backend", "frontend", "qa-tester", "bug-hunter", "diagnostician"},
+					},
+					"model": map[string]any{
+						"type":        "string",
+						"description": "Frontmatter `model:` alias (e.g. sonnet, opus). Defaults to sonnet.",
+					},
+					"description": map[string]any{
+						"type":        "string",
+						"description": "Frontmatter `description:` value. Defaults to a generic one-liner when omitted. Must not contain newlines.",
+					},
+					"areas_layer3_md": map[string]any{
+						"type":        "string",
+						"description": "Layer-3 (role x area x stack) markdown content drafted during the grill. Treated as untrusted data — wrapped and escaped before embedding.",
+					},
+					"profile_json": map[string]any{
+						"type":        "object",
+						"description": "The project profile (layer-2 repo/org knowledge) to render into the profile body.",
+					},
+				},
+			},
+		},
+		{
+			Name: "subagent_write",
+			Description: "Atomically write a composed subagent profile to .claude/agents/<role>.md and update the manifest. Rolls back the file write if the manifest update fails. " +
+				"role must be a safe slug (lowercase letters/digits/hyphens) — rejects path traversal. composed_md is re-validated against archetype's Go-authored permission envelope before anything is written, " +
+				"so a hand-crafted composed_md can never grant a role more capability than its archetype allows.",
+			InputSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"role", "archetype", "composed_md"},
+				"properties": map[string]any{
+					"role": map[string]any{
+						"type":        "string",
+						"description": "Subagent role name; determines the destination filename .claude/agents/<role>.md. Must match ^[a-z][a-z0-9-]*$.",
+					},
+					"archetype": map[string]any{
+						"type":        "string",
+						"description": "Built-in role whose Go-authored permission envelope composed_md is validated against before writing.",
+						"enum":        []string{"architect", "backend", "frontend", "qa-tester", "bug-hunter", "diagnostician"},
+					},
+					"composed_md": map[string]any{
+						"type":        "string",
+						"description": "Full composed profile content, as returned by subagent_compose's preview.",
+					},
+					"enforcement_hook": map[string]any{
+						"type":        "boolean",
+						"description": "Whether the project's delegation-enforcement hook is enabled. Recorded in the manifest.",
+					},
+					"project": map[string]any{
+						"type":        "string",
+						"description": "Project slug. Defaults to the detected project.",
+					},
+					"repo_root": map[string]any{
+						"type":        "string",
+						"description": "Absolute repo root the profile is written under. Defaults to the current working directory.",
+					},
+					"engine": map[string]any{
+						"type":        "string",
+						"description": "GenerationEngine identifier used to draft layer-3 content (e.g. passthrough, cli-claude). Defaults to passthrough.",
+					},
+					"areas": map[string]any{
+						"type":        "array",
+						"description": "App/package paths this profile's role/area sections cover.",
+						"items":       map[string]any{"type": "string"},
+					},
+				},
+			},
+		},
+		{
+			Name:        "subagent_manifest_list",
+			Description: "List the current subagent manifest (generated profile files and their metadata) for drift/status reporting.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"project": map[string]any{
+						"type":        "string",
+						"description": "Project slug. Defaults to the detected project.",
+					},
+				},
+			},
+		},
 	}
 }
 
