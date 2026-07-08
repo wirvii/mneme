@@ -116,7 +116,9 @@ type Agent struct {
 //   - MCP server registration in ~/.claude.json under mcpServers.mneme
 //   - Hook entries merged into ~/.claude/settings.json
 //   - Protocol injection into ~/.claude/CLAUDE.md
-//   - /mneme-init slash command at ~/.claude/commands/mneme-init.md
+//   - mneme-init skill installed to ~/.claude/skills/mneme-init (project-level
+//     orchestrator entry point; replaces the former /mneme-init slash command,
+//     see SPEC-058 / EPIC agnostic-agents SS-5)
 func ClaudeCode(binaryPath string) *Agent {
 	return &Agent{
 		Name: "Claude Code",
@@ -169,13 +171,12 @@ func ClaudeCode(binaryPath string) *Agent {
 			return path, []byte(operatingManual()), nil
 		},
 
-		Commands: func() ([]CommandFile, error) {
-			cmd, err := mnemeInitCommand()
-			if err != nil {
-				return nil, fmt.Errorf("install: claude-code: commands: %w", err)
-			}
-			return []CommandFile{cmd}, nil
-		},
+		// Commands is nil — the project-init workflow moved from a slash
+		// command to the mneme-init SKILL (SPEC-058 / EPIC agnostic-agents
+		// SS-5). The skill ships via the Skills field below
+		// (assets/skills/mneme-init), which the generic "Skills" install
+		// step already deploys; no dedicated slash-command step is needed.
+		Commands: nil,
 
 		Agents: func() ([]CommandFile, error) {
 			home, err := os.UserHomeDir()

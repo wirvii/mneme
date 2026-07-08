@@ -190,6 +190,67 @@ func TestBundledSkillEntries(t *testing.T) {
 	}
 }
 
+// TestBundledSkillEntries_IncludesMnemeInit verifies the mneme-init skill
+// (SPEC-058 / EPIC agnostic-agents SS-5) ships as a bundled skill, replacing
+// the former /mneme-init slash command.
+func TestBundledSkillEntries_IncludesMnemeInit(t *testing.T) {
+	entries, err := install.BundledSkillEntries()
+	if err != nil {
+		t.Fatalf("BundledSkillEntries: %v", err)
+	}
+
+	found := false
+	for _, e := range entries {
+		if filepath.ToSlash(e.RelPath) == "mneme-init/SKILL.md" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("mneme-init/SKILL.md not found in BundledSkillEntries")
+	}
+}
+
+// TestBundledSkills_AllLintClean verifies every bundled skill's SKILL.md
+// passes the structural linter directly from the embedded source, without
+// requiring `mneme skills install` to run first (per constraint-no-local-install).
+func TestBundledSkills_AllLintClean(t *testing.T) {
+	names, err := install.BundledSkillNames()
+	if err != nil {
+		t.Fatalf("BundledSkillNames: %v", err)
+	}
+	entries, err := install.BundledSkillEntries()
+	if err != nil {
+		t.Fatalf("BundledSkillEntries: %v", err)
+	}
+
+	for _, name := range names {
+		var content []byte
+		for _, e := range entries {
+			if filepath.ToSlash(e.RelPath) == name+"/SKILL.md" {
+				content = e.Content
+				break
+			}
+		}
+		if content == nil {
+			t.Fatalf("%s: SKILL.md not found among bundled entries", name)
+		}
+
+		parsed, err := skill.Parse(content)
+		if err != nil {
+			t.Fatalf("%s: parse SKILL.md: %v", name, err)
+		}
+
+		result := skill.Lint(parsed, name)
+		if !result.Passed {
+			for _, f := range result.Errors {
+				t.Errorf("%s: lint error: %s", name, f.Message)
+			}
+			t.Fatalf("%s: expected lint to pass with zero errors", name)
+		}
+	}
+}
+
 // TestInstall_DeploysSkills verifies that Install writes skills to the skills
 // directory. This is the regression test for the C1 bug where the CLI install
 // command omitted the WriteSkills step (only Install() included it).

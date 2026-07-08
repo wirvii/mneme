@@ -234,37 +234,15 @@ func TestInjectManual_Nil(t *testing.T) {
 	}
 }
 
-// TestClaudeCode_Commands verifies that the commands list contains the
-// mneme-init command with non-empty content at the expected path.
-func TestClaudeCode_Commands(t *testing.T) {
+// TestClaudeCode_Commands_Nil verifies that Claude Code no longer ships a
+// dedicated slash command: the project-init workflow moved to the mneme-init
+// SKILL (SPEC-058 / EPIC agnostic-agents SS-5), so Commands must be nil and
+// the "Slash commands" install step must not appear.
+func TestClaudeCode_Commands_Nil(t *testing.T) {
 	agent := ClaudeCode("")
 
-	cmds, err := agent.Commands()
-	if err != nil {
-		t.Fatalf("Commands returned error: %v", err)
-	}
-	if len(cmds) == 0 {
-		t.Fatal("Commands must return at least one command file")
-	}
-
-	var found bool
-	for _, cmd := range cmds {
-		if strings.HasSuffix(cmd.Path, "mneme-init.md") {
-			found = true
-			if len(cmd.Content) == 0 {
-				t.Error("mneme-init.md content must not be empty")
-			}
-			content := string(cmd.Content)
-			if !strings.Contains(content, "mem_save") {
-				t.Error("mneme-init.md should reference mem_save")
-			}
-			if !strings.Contains(content, "mem_context") {
-				t.Error("mneme-init.md should reference mem_context")
-			}
-		}
-	}
-	if !found {
-		t.Error("Commands did not return a mneme-init.md file")
+	if agent.Commands != nil {
+		t.Error("ClaudeCode agent.Commands must be nil — /mneme-init moved to the mneme-init skill (SPEC-058)")
 	}
 }
 
@@ -1170,7 +1148,7 @@ func TestInstallSteps_DefaultSequence(t *testing.T) {
 		t.Errorf("'Agent models' must immediately follow 'Agent profiles'; got indices %d and %d", agentProfilesIdx, agentModelsIdx)
 	}
 
-	required := []string{"MCP server", "Session hooks", "Operating manual", "Slash commands", "Workflow directories"}
+	required := []string{"MCP server", "Session hooks", "Operating manual", "Skills", "Workflow directories"}
 	for _, req := range required {
 		found := false
 		for _, n := range names {
@@ -1181,6 +1159,15 @@ func TestInstallSteps_DefaultSequence(t *testing.T) {
 		}
 		if !found {
 			t.Errorf("missing required step %q", req)
+		}
+	}
+
+	// "Slash commands" must NOT appear for Claude Code anymore — the
+	// project-init workflow moved from a slash command to the mneme-init
+	// SKILL (SPEC-058 / EPIC agnostic-agents SS-5), and Commands is now nil.
+	for _, n := range names {
+		if n == "Slash commands" {
+			t.Errorf("'Slash commands' step must not be present; /mneme-init moved to the mneme-init skill (SPEC-058); got %v", names)
 		}
 	}
 }
