@@ -1,102 +1,102 @@
 # mneme -- Knowledge Graph
 
-El grafo de conocimiento de mneme conecta memorias a traves de entidades y relaciones pesadas. Permite descubrir conexiones que la busqueda textual no encuentra: "que memorias estan relacionadas con el modulo de auth?" se resuelve siguiendo aristas del grafo, no buscando la palabra "auth".
+mneme's knowledge graph connects memories through entities and weighted relations. It enables discovering connections that text search cannot find: "which memories are related to the auth module?" is resolved by following graph edges, not by searching for the word "auth".
 
-Introducido en SPEC-005..009 (EPIC-2).
+Introduced in SPEC-005..009 (EPIC-2).
 
 ---
 
 ## Table of Contents
 
-1. [Modelo del grafo](#modelo-del-grafo)
-2. [Pesos por tipo](#pesos-por-tipo)
+1. [Graph model](#graph-model)
+2. [Weights by type](#weights-by-type)
 3. [Wikilinks](#wikilinks)
 4. [Hebbian auto-strengthening](#hebbian-auto-strengthening)
 5. [Edge decay](#edge-decay)
-6. [Retrieval con grafo](#retrieval-con-grafo)
+6. [Retrieval with the graph](#retrieval-with-the-graph)
 7. [Personalized PageRank (PPR)](#personalized-pagerank-ppr)
 8. [Community detection](#community-detection)
 9. [Synthesis (community summaries)](#synthesis-community-summaries)
-10. [Context packing por comunidades](#context-packing-por-comunidades)
+10. [Context packing by community](#context-packing-by-community)
 11. [mem_explore](#mem_explore)
 12. [graph rebuild](#graph-rebuild)
-13. [Comandos relacionados](#comandos-relacionados)
-14. [Configuracion](#configuracion)
+13. [Related commands](#related-commands)
+14. [Configuration](#configuration)
 
 ---
 
-## Modelo del grafo
+## Graph model
 
-El grafo tiene dos tipos de nodos y un tipo de arista:
+The graph has two node types and one edge type:
 
-### Entities (nodos)
+### Entities (nodes)
 
-Conceptos nombrados que las memorias referencian. Cada entity es unica dentro de `(name, project)`.
+Named concepts that memories reference. Each entity is unique within `(name, project)`.
 
-| Kind | Descripcion | Ejemplo |
+| Kind | Description | Example |
 |------|-------------|---------|
-| `module` | Paquete o modulo de codigo | `internal/store` |
-| `service` | Servicio desplegado | `auth-service` |
-| `library` | Dependencia externa | `mattn/go-sqlite3` |
-| `concept` | Concepto o idea abstracta | `auth-model` |
-| `person` | Persona o contributor | `juan` |
-| `pattern` | Patron de diseno | `repository-pattern` |
-| `file` | Path de archivo fuente | `internal/store/entity.go` |
+| `module` | Code package or module | `internal/store` |
+| `service` | Deployed service | `auth-service` |
+| `library` | External dependency | `mattn/go-sqlite3` |
+| `concept` | Abstract concept or idea | `auth-model` |
+| `person` | Person or contributor | `juan` |
+| `pattern` | Design pattern | `repository-pattern` |
+| `file` | Source file path | `internal/store/entity.go` |
 
-### Relations (aristas)
+### Relations (edges)
 
-Aristas dirigidas y pesadas entre entities. El peso esta normalizado a `[0.0, 1.0]`.
+Directed, weighted edges between entities. The weight is normalized to `[0.0, 1.0]`.
 
 ```
 Entity A ──[type, weight]──> Entity B
 ```
 
-Cada relacion tiene:
-- `type`: uno de 8 tipos reconocidos
-- `weight`: fuerza de la relacion en [0.0, 1.0]
-- `last_traversed_at`: timestamp de ultima navegacion
-- `metadata`: JSON opcional para atributos extra
+Each relation has:
+- `type`: one of 8 recognized types
+- `weight`: relation strength in [0.0, 1.0]
+- `last_traversed_at`: timestamp of last traversal
+- `metadata`: optional JSON for extra attributes
 
 ### memory_entities (junction)
 
-Tabla de union que conecta memorias con entidades:
+Junction table that connects memories to entities:
 
 ```
 Memory M ──[role: subject|object|mention]──> Entity E
 ```
 
-Una memoria puede estar vinculada a multiples entidades, y una entidad a multiples memorias.
+A memory can be linked to multiple entities, and an entity to multiple memories.
 
 ---
 
-## Pesos por tipo
+## Weights by type
 
-Cada `RelationType` tiene un peso default que refleja su importancia estructural para la navegacion del grafo:
+Each `RelationType` has a default weight that reflects its structural importance for graph navigation:
 
-| Tipo | Peso default | Cuando usarla |
+| Type | Default weight | When to use it |
 |------|-------------|---------------|
-| `depends_on` | **0.9** | A depende de B (dependencia fuerte, critica para entender el sistema) |
-| `part_of` | **0.85** | A es un componente de B (relacion composicional) |
-| `implements` | **0.8** | A implementa B (interface, contrato) |
-| `uses` | **0.7** | A usa o llama a B (relacion de uso) |
-| `conflicts_with` | **0.7** | A conflicta con B (incompatibilidad) |
-| `supersedes` | **0.6** | A reemplaza a B (evolucion) |
-| `related_to` | **0.5** | Relacion generica (co-mencion, tematica) |
-| `references` | **0.4** | A referencia a B (wikilink, mencion debil) |
+| `depends_on` | **0.9** | A depends on B (strong dependency, critical to understanding the system) |
+| `part_of` | **0.85** | A is a component of B (compositional relation) |
+| `implements` | **0.8** | A implements B (interface, contract) |
+| `uses` | **0.7** | A uses or calls B (usage relation) |
+| `conflicts_with` | **0.7** | A conflicts with B (incompatibility) |
+| `supersedes` | **0.6** | A replaces B (evolution) |
+| `related_to` | **0.5** | Generic relation (co-mention, thematic) |
+| `references` | **0.4** | A references B (wikilink, weak mention) |
 
-Se puede pasar un `weight` explicito al crear una relacion via `mem_relate`. Si no se pasa, se usa el default del tipo.
+An explicit `weight` can be passed when creating a relation via `mem_relate`. If not passed, the type's default is used.
 
-**Intuicion sobre los pesos:** Un path de 2 hops con pesos 0.9 * 0.9 = 0.81 es muy fuerte (dependencia transitiva). Un path de 2 hops con pesos 0.4 * 0.4 = 0.16 es debil (referencia indirecta). El producto penaliza naturalmente caminos largos con aristas debiles.
+**Intuition about weights:** A 2-hop path with weights 0.9 * 0.9 = 0.81 is very strong (transitive dependency). A 2-hop path with weights 0.4 * 0.4 = 0.16 is weak (indirect reference). The product naturally penalizes long paths with weak edges.
 
 ---
 
 ## Wikilinks
 
-`[[topic_key]]` en el contenido de una memoria se parsean automaticamente al final de `mem_save` y `mem_update`. Cada wikilink resuelto crea una relacion `references` entre la memoria origen y la memoria target. Introducido en SPEC-011 (EPIC-3).
+`[[topic_key]]` in a memory's content is automatically parsed at the end of `mem_save` and `mem_update`. Each resolved wikilink creates a `references` relation between the source memory and the target memory. Introduced in SPEC-011 (EPIC-3).
 
-### Sintaxis soportada
+### Supported syntax
 
-| Forma | Topic | Anchor | Alias |
+| Form | Topic | Anchor | Alias |
 |-------|-------|--------|-------|
 | `[[topic]]` | `topic` | - | - |
 | `[[a/b/c]]` | `a/b/c` | - | - |
@@ -104,40 +104,40 @@ Se puede pasar un `weight` explicito al crear una relacion via `mem_relate`. Si 
 | `[[topic|Display]]` | `topic` | - | `Display` |
 | `[[topic#sec|Lbl]]` | `topic` | `sec` | `Lbl` |
 
-Solo el **topic** se usa para resolver la memoria target. El **anchor** se almacena en `relation.metadata` como `{"anchor": "section"}` para referencia futura. El **alias** es solo display, no se persiste.
+Only the **topic** is used to resolve the target memory. The **anchor** is stored in `relation.metadata` as `{"anchor": "section"}` for future reference. The **alias** is display-only and is not persisted.
 
-### Comportamiento
+### Behavior
 
-- **Automatico y sincrono:** parser O(n) sobre lineas, procesamiento <25ms para 5 wikilinks tipicos.
-- **Code blocks ignorados:** wikilinks dentro de bloques ` ``` ` o `~~~` no se parsean (CommonMark 4.5).
-- **Inline code ignorado:** wikilinks dentro de backticks no se parsean.
-- **Idempotente:** si la relacion ya existe, se llama `TouchRelation` (refresca `last_traversed_at`).
-- **Self-loop guard:** `[[mismo-topic_key]]` de la memoria origen se ignora.
-- **Append-only en updates:** wikilinks removidos en un `mem_update` NO borran relaciones existentes.
-- **TypeSessionSummary excluido:** session summaries no activan el parser.
+- **Automatic and synchronous:** O(n) parser over lines, processing <25ms for 5 typical wikilinks.
+- **Code blocks ignored:** wikilinks inside ` ``` ` or `~~~` blocks are not parsed (CommonMark 4.5).
+- **Inline code ignored:** wikilinks inside backticks are not parsed.
+- **Idempotent:** if the relation already exists, `TouchRelation` is called (refreshes `last_traversed_at`).
+- **Self-loop guard:** `[[same-topic_key]]` of the source memory is ignored.
+- **Append-only on updates:** wikilinks removed in a `mem_update` do NOT delete existing relations.
+- **TypeSessionSummary excluded:** session summaries do not trigger the parser.
 
-### Resolucion de scope
+### Scope resolution
 
-| Scope origen | Busca en | Fallback |
+| Source scope | Looks in | Fallback |
 |--------------|----------|----------|
-| `project` | projectStore (mismo proyecto) | globalStore (mismo proyecto) |
-| `global` / `org` | globalStore (mismo proyecto) | ninguno |
+| `project` | projectStore (same project) | globalStore (same project) |
+| `global` / `org` | globalStore (same project) | none |
 
-Una memoria global NO puede crear relaciones hacia memorias project-scoped (invariante de cross-scope isolation, identico a Hebbian).
+A global memory CANNOT create relations to project-scoped memories (cross-scope isolation invariant, identical to Hebbian).
 
-### Peso de la relacion
+### Relation weight
 
-El peso de las relaciones creadas por wikilinks es `wikilink_relation_weight` (default **0.6**), superior al default de `references` (0.4 para rebuild inference) porque un wikilink explicito escrito por el agente es una senal mas fuerte que una inferencia heuristica.
+The weight of relations created by wikilinks is `wikilink_relation_weight` (default **0.6**), higher than the `references` default (0.4 for rebuild inference) because an explicit wikilink written by the agent is a stronger signal than a heuristic inference.
 
-### Configuracion
+### Configuration
 
 ```toml
 [graph]
-wikilinks_enabled = true         # false = tratar [[...]] como texto plano
+wikilinks_enabled = true         # false = treat [[...]] as plain text
 wikilink_relation_weight = 0.6   # [0.0, 1.0]
 ```
 
-### Ejemplo
+### Example
 
 ```
 mem_save({
@@ -148,51 +148,51 @@ mem_save({
 })
 ```
 
-Despues del save, `mem_explore("impl/auth-middleware")` retorna `architecture/auth-model` y `convention/error-codes` a distancia 1 con weight=0.6.
+After the save, `mem_explore("impl/auth-middleware")` returns `architecture/auth-model` and `convention/error-codes` at distance 1 with weight=0.6.
 
 ---
 
 ## Knowledge gaps: unresolved references
 
-Cuando un wikilink `[[topic_key]]` no puede resolverse (la memoria target no existe aun), mneme persiste la referencia en la tabla `unresolved_references` en lugar de descartarla silenciosamente. Introducido en SPEC-012 (EPIC-3).
+When a wikilink `[[topic_key]]` cannot be resolved (the target memory doesn't exist yet), mneme persists the reference in the `unresolved_references` table instead of silently discarding it. Introduced in SPEC-012 (EPIC-3).
 
-### Por que importa
+### Why it matters
 
-El agente puede escribir `[[decision/retry-strategy]]` antes de que esa memoria exista. Sin tracking de gaps, este wikilink se perderia en silencio. Con `unresolved_references`, el grafo sabe que hay un gap y puede exponerlo via `mem_gaps` (SPEC-W3, proximo).
+The agent can write `[[decision/retry-strategy]]` before that memory exists. Without gap tracking, this wikilink would be silently lost. With `unresolved_references`, the graph knows there's a gap and can expose it via `mem_gaps` (SPEC-W3, upcoming).
 
-### Esquema
+### Schema
 
 ```
 unresolved_references
 ├── id                  UUIDv7 PK
 ├── source_memory_id    FK → memories(id) ON DELETE CASCADE
-├── target_topic_key    el topic_key que no pudo resolverse
-├── project             slug del proyecto origen
-├── mention_count       cuantas veces se ha visto este par (source, target)
-├── first_seen_at       primera deteccion
-└── last_seen_at        ultima deteccion
+├── target_topic_key    the topic_key that could not be resolved
+├── project             source project slug
+├── mention_count       how many times this (source, target) pair has been seen
+├── first_seen_at       first detection
+└── last_seen_at        last detection
 ```
 
-`mention_count` es el indicador de criticidad: un gap mencionado 10 veces es mas urgente de cerrar que uno mencionado 1 vez.
+`mention_count` is the criticality indicator: a gap mentioned 10 times is more urgent to close than one mentioned once.
 
 ### Auto-resolve
 
-Cuando se guarda una memoria nueva con `topic_key=X`, mneme busca automaticamente todos los `unresolved_references` cuyo `target_topic_key=X` y:
+When a new memory is saved with `topic_key=X`, mneme automatically searches for all `unresolved_references` whose `target_topic_key=X` and:
 
-1. Carga la memoria origen de cada ref.
-2. Aplica el cross-scope guard (global source → project target = skip).
-3. Llama `createWikilinkRelation` (la misma logica que el resolve en vivo).
-4. Elimina la fila de `unresolved_references`.
+1. Loads the source memory of each ref.
+2. Applies the cross-scope guard (global source → project target = skip).
+3. Calls `createWikilinkRelation` (the same logic as live resolve).
+4. Deletes the row from `unresolved_references`.
 
-Es **best-effort**: si falla parcialmente, las refs no resueltas persisten y se intentan de nuevo la proxima vez que se guarde una memoria con el mismo topic_key. Es self-healing.
+It is **best-effort**: if it fails partially, unresolved refs persist and are retried the next time a memory with the same topic_key is saved. It is self-healing.
 
 ### Cascade cleanup
 
-`ON DELETE CASCADE` en `source_memory_id`: si la memoria origen se **hard-delete** (expira de la consolidacion), sus gaps se limpian automaticamente. Un **soft-forget** no triggerea el cascade — la memoria sigue existiendo con decay_rate=1.0, y sus gaps siguen siendo validos.
+`ON DELETE CASCADE` on `source_memory_id`: if the source memory is **hard-deleted** (expires from consolidation), its gaps are cleaned up automatically. A **soft-forget** does not trigger the cascade — the memory still exists with decay_rate=1.0, and its gaps remain valid.
 
-### Comportamiento con updates
+### Behavior with updates
 
-`mem_update` que cambia content puede registrar nuevos gaps (via `processWikilinks`). No triggerea auto-resolve porque `topic_key` no es parte de `UpdateRequest` — el auto-resolve solo ocurre cuando una nueva memoria con topic_key se guarda via `mem_save` / upsert.
+A `mem_update` that changes content can register new gaps (via `processWikilinks`). It does not trigger auto-resolve because `topic_key` is not part of `UpdateRequest` — auto-resolve only happens when a new memory with a topic_key is saved via `mem_save` / upsert.
 
 ---
 
@@ -200,59 +200,59 @@ Es **best-effort**: si falla parcialmente, las refs no resueltas persisten y se 
 
 "Cells that fire together, wire together."
 
-Cuando el agente accede a memoria A y despues a memoria B en la misma ventana temporal, mneme refuerza automaticamente las aristas entre las entidades de A y las entidades de B.
+When the agent accesses memory A and then memory B within the same time window, mneme automatically strengthens the edges between A's entities and B's entities.
 
-### Como funciona
+### How it works
 
-1. **`mem_get(A)`** o **`mem_search` top-3**: el servicio llama `recordHebbianAccess(A, entities_of_A)`
-2. El **AccessTracker** mantiene un ring buffer de tamano `hebbian_window` (default: 5) con las memorias recientes
-3. Para cada memoria previamente en el buffer, se generan **pares de co-acceso** entre entidades
-4. Cada par se envia como `StrengtheningEvent` al **HebbianWorkerPool**
-5. El worker (goroutine unica, async) aplica el cambio:
-   - Si la relacion existe: `weight += hebbian_increment` (default: 0.05)
-   - Si no existe: crea una nueva con `weight = hebbian_initial_weight` (default: 0.1)
+1. **`mem_get(A)`** or **`mem_search` top-3**: the service calls `recordHebbianAccess(A, entities_of_A)`
+2. The **AccessTracker** keeps a ring buffer of size `hebbian_window` (default: 5) with recent memories
+3. For each memory previously in the buffer, **co-access pairs** between entities are generated
+4. Each pair is sent as a `StrengtheningEvent` to the **HebbianWorkerPool**
+5. The worker (single async goroutine) applies the change:
+   - If the relation exists: `weight += hebbian_increment` (default: 0.05)
+   - If it doesn't exist: creates a new one with `weight = hebbian_initial_weight` (default: 0.1)
 
-### Ejemplo intuitivo
+### Intuitive example
 
 ```
-Sesion del agente:
-  1. Busca "database connection"    → obtiene memoria sobre db.Open
-  2. Busca "migration strategy"     → obtiene memoria sobre db/migrations
-  3. Busca "FTS5 configuration"     → obtiene memoria sobre FTS5 setup
+Agent session:
+  1. Searches "database connection"    → gets a memory about db.Open
+  2. Searches "migration strategy"     → gets a memory about db/migrations
+  3. Searches "FTS5 configuration"     → gets a memory about FTS5 setup
 
-Resultado Hebbian:
+Hebbian result:
   Entity(db.Open) ←→ Entity(migrations)     weight += 0.05
   Entity(db.Open) ←→ Entity(FTS5-setup)     weight += 0.05
   Entity(migrations) ←→ Entity(FTS5-setup)  weight += 0.05
 ```
 
-Despues de varias sesiones donde estas 3 memorias se co-acceden, las aristas entre sus entidades se vuelven fuertes (>0.3, elegibles para expansion en busquedas).
+After several sessions where these 3 memories are co-accessed, the edges between their entities become strong (>0.3, eligible for expansion in searches).
 
-### Guardas de seguridad
+### Safety guards
 
-| Guardia | Que previene |
+| Guard | What it prevents |
 |---------|-------------|
-| **D1: Cross-scope** | Pares entre project y global descartados (distintas DBs) |
-| **D4: Self-loop** | Acceso consecutivo al mismo ID no genera pares |
-| **D5: Noise types** | Tipos `rule` y `session_summary` excluidos |
-| **Drop policy** | Si el buffer async esta lleno (1000 default), los eventos se dropean silenciosamente |
-| **Same entity** | Pares donde source == target se ignoran (edge case 8.9) |
+| **D1: Cross-scope** | Pairs between project and global discarded (different DBs) |
+| **D4: Self-loop** | Consecutive access to the same ID does not generate pairs |
+| **D5: Noise types** | `rule` and `session_summary` types excluded |
+| **Drop policy** | If the async buffer is full (1000 default), events are silently dropped |
+| **Same entity** | Pairs where source == target are ignored (edge case 8.9) |
 
-### El peso crece pero no sin limite
+### Weight grows but not without limit
 
-- Los pesos estan clamped a `[0.0, 1.0]`
-- El increment de 0.05 por co-acceso es conservador: se necesitan ~6 co-accesos para ir de 0.1 (initial) a 0.4 (fuerte)
-- El edge decay (0.02/dia despues de 30d sin traversar) previene que aristas antiguas se acumulen indefinidamente
+- Weights are clamped to `[0.0, 1.0]`
+- The 0.05 increment per co-access is conservative: ~6 co-accesses are needed to go from 0.1 (initial) to 0.4 (strong)
+- Edge decay (0.02/day after 30 days without traversal) prevents old edges from accumulating indefinitely
 
 ---
 
 ## Edge decay
 
-Las relaciones del grafo decaen si no se usan. Esto previene que el grafo se llene de aristas historicas irrelevantes.
+Graph relations decay if not used. This prevents the graph from filling up with irrelevant historical edges.
 
-### Mecanismo
+### Mechanism
 
-Durante el ciclo de consolidacion (cada 6h por default), se evalua cada relacion:
+During the consolidation cycle (every 6h by default), each relation is evaluated:
 
 ```
 excess_days = days_since_last_traversed - edge_decay_after_days
@@ -260,34 +260,34 @@ if excess_days > 0:
     new_weight = weight * exp(-edge_decay_rate * excess_days)
 ```
 
-### Parametros
+### Parameters
 
-| Parametro | Default | Efecto |
+| Parameter | Default | Effect |
 |-----------|---------|--------|
-| `edge_decay_rate` | 0.02/dia | Velocidad del decaimiento exponencial |
-| `edge_decay_after_days` | 30 | Grace period antes de que empiece el decay |
+| `edge_decay_rate` | 0.02/day | Speed of exponential decay |
+| `edge_decay_after_days` | 30 | Grace period before decay starts |
 
-### Ejemplo
+### Example
 
-Una relacion con weight=0.5 que no se traversa por 60 dias:
+A relation with weight=0.5 that is not traversed for 60 days:
 - Excess days: 60 - 30 = 30
 - New weight: 0.5 * exp(-0.02 * 30) = 0.5 * 0.549 = 0.274
-- Despues de 90 dias sin uso: 0.5 * exp(-0.02 * 60) = 0.151
-- La relacion se vuelve demasiado debil para expansion (threshold 0.3) despues de ~45 dias de inactividad
+- After 90 days without use: 0.5 * exp(-0.02 * 60) = 0.151
+- The relation becomes too weak for expansion (threshold 0.3) after ~45 days of inactivity
 
-### Notas
+### Notes
 
-- Relaciones con `last_traversed_at = NULL` (nunca traversadas desde la migracion) son **excluidas** del decay
-- Poner `edge_decay_rate = 0` en config desactiva el edge decay completamente
-- Las relaciones creadas por Hebbian tienen `last_traversed_at` seteado al momento de creacion, por lo que si son elegibles para decay futuro
+- Relations with `last_traversed_at = NULL` (never traversed since the migration) are **excluded** from decay
+- Setting `edge_decay_rate = 0` in config disables edge decay entirely
+- Relations created by Hebbian have `last_traversed_at` set at creation time, so they ARE eligible for future decay
 
 ---
 
-## Retrieval con grafo
+## Retrieval with the graph
 
-### 1-hop expansion en mem_search (SPEC-007)
+### 1-hop expansion in mem_search (SPEC-007)
 
-Cuando `expansion_enabled = true` (default) y `graph_mode = "1hop"`, `mem_search` fusiona 3 canales via RRF. (Para `graph_mode = "ppr"`, el tercer canal usa Personalized PageRank — ver [PPR](#personalized-pagerank-ppr).)
+When `expansion_enabled = true` (default) and `graph_mode = "1hop"`, `mem_search` fuses 3 channels via RRF. (For `graph_mode = "ppr"`, the third channel uses Personalized PageRank — see [PPR](#personalized-pagerank-ppr).)
 
 ```
 Query ──┬──> FTS5 BM25 ────────────> Channel A (weight 1.0)
@@ -299,26 +299,26 @@ Query ──┬──> FTS5 BM25 ────────────> Channel A
         └──> RRF Fusion (k=60) ─────> Final ranking
 ```
 
-**Proceso de expansion:**
+**Expansion process:**
 
-1. Fusion preliminar 2-channel (FTS5 + vector) para identificar top-K seeds (default K=10)
-2. Para cada seed:
-   - Obtener entidades vinculadas
-   - Obtener relaciones fuertes (`weight > expansion_threshold`, default 0.3)
-   - Mapear entidades vecinas a memory IDs
-   - Score: `max(rel_weight * 1/seed_rank)` -- max en lugar de sum para evitar inflacion de hub nodes
-3. Los resultados del grafo entran como tercer canal RRF con peso 0.6
+1. Preliminary 2-channel fusion (FTS5 + vector) to identify top-K seeds (default K=10)
+2. For each seed:
+   - Get linked entities
+   - Get strong relations (`weight > expansion_threshold`, default 0.3)
+   - Map neighboring entities to memory IDs
+   - Score: `max(rel_weight * 1/seed_rank)` -- max instead of sum to avoid hub-node inflation
+3. Graph results enter as the third RRF channel with weight 0.6
 
-**Parametros de expansion:**
+**Expansion parameters:**
 
-| Parametro | Default | Descripcion |
+| Parameter | Default | Description |
 |-----------|---------|-------------|
-| `expansion_enabled` | `true` | Activa/desactiva expansion |
-| `expansion_threshold` | `0.3` | Peso minimo para seguir una relacion |
-| `expansion_fan_out_cap` | `50` | Max relaciones por entidad |
-| `expansion_seed_top_k` | `10` | Seeds para expansion |
+| `expansion_enabled` | `true` | Toggles expansion |
+| `expansion_threshold` | `0.3` | Minimum weight to follow a relation |
+| `expansion_fan_out_cap` | `50` | Max relations per entity |
+| `expansion_seed_top_k` | `10` | Seeds for expansion |
 
-**Per-request toggle:** El parametro `include_graph` en `mem_search` permite deshabilitar la expansion para una busqueda especifica:
+**Per-request toggle:** the `include_graph` parameter in `mem_search` allows disabling expansion for a specific search:
 
 ```json
 mem_search({
@@ -329,35 +329,35 @@ mem_search({
 
 ### Hebbian tracking post-search
 
-Los top-3 resultados de cada `mem_search` se registran en el AccessTracker para Hebbian auto-strengthening. Esto significa que memorias frecuentemente co-recuperadas por las mismas queries refuerzan sus conexiones automaticamente.
+The top-3 results of each `mem_search` are recorded in the AccessTracker for Hebbian auto-strengthening. This means memories frequently co-retrieved by the same queries automatically strengthen their connections.
 
 ---
 
 ## Personalized PageRank (PPR)
 
-Personalized PageRank es un algoritmo de ranking sobre grafos que propaga importancia desde un conjunto de "seed nodes" a traves de la topologia del grafo. mneme lo usa como tercer canal de retrieval (ademas de BM25 y vector similarity). Introducido en SPEC-017..018 (EPIC-4).
+Personalized PageRank is a graph ranking algorithm that propagates importance from a set of "seed nodes" through the graph's topology. mneme uses it as the third retrieval channel (in addition to BM25 and vector similarity). Introduced in SPEC-017..018 (EPIC-4).
 
-### Algoritmo
+### Algorithm
 
-mneme implementa PPR via power iteration sobre la matriz de adyacencia del grafo:
+mneme implements PPR via power iteration over the graph's adjacency matrix:
 
-1. Construir la matriz de adyacencia en memoria desde `entities` + `relations` (solo relaciones con `weight > threshold`)
-2. Seed vector: los entity IDs correspondientes a los top-K resultados de la fusion BM25+vector
-3. Iterar `max_iterations` veces (default: 20) con damping factor `alpha` (default: 0.85)
-4. Convergir cuando `||v_new - v_old|| < epsilon` (default: 1e-6)
-5. Mapear entity scores de vuelta a memory IDs via `memory_entities`
+1. Build the adjacency matrix in memory from `entities` + `relations` (only relations with `weight > threshold`)
+2. Seed vector: the entity IDs corresponding to the top-K results of the BM25+vector fusion
+3. Iterate `max_iterations` times (default: 20) with damping factor `alpha` (default: 0.85)
+4. Converge when `||v_new - v_old|| < epsilon` (default: 1e-6)
+5. Map entity scores back to memory IDs via `memory_entities`
 
-### Modos de grafo
+### Graph modes
 
-El parametro `graph_mode` controla que algoritmo se usa para la expansion:
+The `graph_mode` parameter controls which algorithm is used for expansion:
 
-| Mode | Algoritmo | Cuando usarlo |
+| Mode | Algorithm | When to use it |
 |------|-----------|---------------|
-| `ppr` | Personalized PageRank | Default. Mejor ranking para grafos grandes (>100 entities) |
-| `1hop` | 1-hop BFS expansion | Rapido, predecible. Mejor para grafos chicos |
-| `off` | Sin expansion | Solo BM25 + vector. Para debugging o DBs sin grafo |
+| `ppr` | Personalized PageRank | Default. Better ranking for large graphs (>100 entities) |
+| `1hop` | 1-hop BFS expansion | Fast, predictable. Better for small graphs |
+| `off` | No expansion | BM25 + vector only. For debugging or graph-less DBs |
 
-### RRF de 3 canales (con PPR)
+### 3-channel RRF (with PPR)
 
 ```
 Query ──┬──> FTS5 BM25 ────────────> Channel A (weight 1.0)
@@ -369,37 +369,37 @@ Query ──┬──> FTS5 BM25 ────────────> Channel A
         └──> RRF Fusion (k=60) ─────> Final ranking
 ```
 
-En modo `ppr`, Channel C usa PPR en lugar de 1-hop BFS. El RRF weight (0.6) es el mismo para ambos modos.
+In `ppr` mode, Channel C uses PPR instead of 1-hop BFS. The RRF weight (0.6) is the same for both modes.
 
 ### Cache
 
-La matriz de adyacencia se construye una vez por llamada a `mem_search`/`mem_context`. No se cachea entre llamadas porque el grafo puede cambiar entre invocaciones (Hebbian, nuevas relaciones). El costo tipico de construccion es <15ms para grafos de 5K entities.
+The adjacency matrix is built once per call to `mem_search`/`mem_context`. It is not cached between calls because the graph can change between invocations (Hebbian, new relations). Typical build cost is <15ms for graphs of 5K entities.
 
 ---
 
 ## Community detection
 
-mneme usa el algoritmo Louvain para detectar comunidades de memorias densamente conectadas en el grafo. Las comunidades agrupan memorias que comparten muchas entidades y relaciones fuertes, formando "clusters tematicos" naturales. Introducido en SPEC-019..020 (EPIC-5).
+mneme uses the Louvain algorithm to detect communities of densely connected memories in the graph. Communities group memories that share many entities and strong relations, forming natural "thematic clusters". Introduced in SPEC-019..020 (EPIC-5).
 
-### Algoritmo Louvain
+### Louvain algorithm
 
-1. **Input:** Grafo de entidades conectadas por relaciones pesadas
-2. **Fase 1 (local moves):** Cada entidad se mueve a la comunidad vecina que maximiza la ganancia de modularidad, iterando hasta convergencia
-3. **Fase 2 (aggregation):** Las comunidades se colapsan en super-nodos y se repite Fase 1 sobre el grafo reducido
-4. **Output:** Asignacion de cada entidad a una comunidad, con un hash de membership para deteccion de cambios
+1. **Input:** Graph of entities connected by weighted relations
+2. **Phase 1 (local moves):** Each entity moves to the neighboring community that maximizes modularity gain, iterating until convergence
+3. **Phase 2 (aggregation):** Communities collapse into super-nodes and Phase 1 repeats over the reduced graph
+4. **Output:** Assignment of each entity to a community, with a membership hash for change detection
 
-### Persistencia
+### Persistence
 
-Las comunidades se persisten en dos tablas (migracion 010):
+Communities are persisted in two tables (migration 010):
 
 ```
 communities
 ├── id              UUIDv7 PK
 ├── project         slug
-├── label           titulo generado (actualizado por synthesis)
-├── membership_hash SHA256 del sorted set de entity IDs
-├── modularity      score de modularidad (0.0-1.0)
-├── member_count    numero de entidades
+├── label           generated title (updated by synthesis)
+├── membership_hash SHA256 of the sorted set of entity IDs
+├── modularity      modularity score (0.0-1.0)
+├── member_count    number of entities
 ├── created_at
 ├── updated_at
 └── deleted_at      soft-delete
@@ -410,24 +410,24 @@ community_members
 └── PRIMARY KEY (community_id, entity_id)
 ```
 
-### Deteccion de cambios
+### Change detection
 
-Cada comunidad tiene un `membership_hash` que es el SHA256 de los entity IDs ordenados. En cada ciclo de consolidacion:
+Each community has a `membership_hash` that is the SHA256 of the sorted entity IDs. On each consolidation cycle:
 
-- **Hash igual:** Comunidad estable, no se modifica
-- **Hash diferente:** Comunidad cambio, se actualiza con los nuevos miembros
-- **Comunidad nueva:** Se crea con los nuevos miembros
-- **Comunidad desaparecida:** Se soft-deleta
+- **Same hash:** Community stable, not modified
+- **Different hash:** Community changed, updated with new members
+- **New community:** Created with the new members
+- **Vanished community:** Soft-deleted
 
 ### Pipeline
 
-La deteccion de comunidades corre como parte del pipeline de consolidacion, despues del edge decay y antes de la generacion de synthesis:
+Community detection runs as part of the consolidation pipeline, after edge decay and before synthesis generation:
 
 ```
 sweep → edgeDecay → detectCommunities → generateSyntheses → hardDelete → dedup → budget
 ```
 
-### Output en CLI
+### CLI output
 
 ```
 Consolidation complete: 3 swept, 1 hard-deleted, 0 duplicates merged, 2 evicted,
@@ -439,58 +439,58 @@ synthesis: 2 created, 1 updated, 0 deleted, 5 skipped
 
 ## Synthesis (community summaries)
 
-El tipo `synthesis` es un tipo especial de memoria que resume automaticamente el contenido de una comunidad. Cada comunidad activa tiene exactamente un synthesis, generado de forma deterministica (sin LLM). Introducido en SPEC-021 (EPIC-5).
+The `synthesis` type is a special memory type that automatically summarizes a community's content. Each active community has exactly one synthesis, generated deterministically (no LLM). Introduced in SPEC-021 (EPIC-5).
 
-### Generacion deterministica
+### Deterministic generation
 
-El generador toma los miembros de una comunidad y produce:
+The generator takes a community's members and produces:
 
-1. **Titulo:** De los top-3 miembros por importancia, truncado a 80 chars
-2. **Content (4 secciones):**
-   - Overview: resumen cuantitativo (N memorias, tipos, importancia promedio)
-   - Top members: las 3 memorias mas importantes con titulo y extracto
-   - All members: tabla con ID, titulo, tipo, importancia (max 50 filas)
-   - Aggregate metadata: estadisticas de tipos, archivos referenciados
-3. **Wikilinks:** `[[topic_key]]` para cada miembro con topic_key, creando relaciones `references` automaticamente
+1. **Title:** From the top-3 members by importance, truncated to 80 chars
+2. **Content (4 sections):**
+   - Overview: quantitative summary (N memories, types, average importance)
+   - Top members: the 3 most important memories with title and excerpt
+   - All members: table with ID, title, type, importance (max 50 rows)
+   - Aggregate metadata: type statistics, referenced files
+3. **Wikilinks:** `[[topic_key]]` for each member with a topic_key, automatically creating `references` relations
 
 ### topic_key
 
-Formato: `synthesis/community-{uuid7}` donde uuid7 es el ID de la comunidad. Esto permite upserts idempotentes.
+Format: `synthesis/community-{uuid7}` where uuid7 is the community's ID. This allows idempotent upserts.
 
 ### Lifecycle
 
-| Situacion | Accion |
+| Situation | Action |
 |-----------|--------|
-| Comunidad nueva | Crear synthesis |
-| Comunidad estable, mismo contenido | Skip (no-op) |
-| Comunidad estable, contenido cambio | Update synthesis |
-| Comunidad eliminada | Forget synthesis (decay_rate = 1.0) |
+| New community | Create synthesis |
+| Stable community, same content | Skip (no-op) |
+| Stable community, content changed | Update synthesis |
+| Deleted community | Forget synthesis (decay_rate = 1.0) |
 
-### Propiedades especiales
+### Special properties
 
-| Propiedad | Valor | Razon |
+| Property | Value | Reason |
 |-----------|-------|-------|
-| `importance` | 0.85 | Alto para aparecer en context |
-| `decay_rate` | 0.0 | Inmune a decay (como rules) |
-| Hebbian | Excluido | Previene loops de auto-refuerzo |
-| Seeds (Louvain) | Excluido | Previene synthesis-of-synthesis |
-| Wikilinks | Procesado | Crea relaciones `references` a miembros |
+| `importance` | 0.85 | High so it appears in context |
+| `decay_rate` | 0.0 | Immune to decay (like rules) |
+| Hebbian | Excluded | Prevents auto-reinforcement loops |
+| Seeds (Louvain) | Excluded | Prevents synthesis-of-synthesis |
+| Wikilinks | Processed | Creates `references` relations to members |
 
 ---
 
-## Context packing por comunidades
+## Context packing by community
 
-Cuando hay comunidades detectadas, `mem_context` puede organizar las memorias por clusters tematicos en lugar de un ranking plano. Esto produce contextos mas coherentes y navegables para el agente. Introducido en SPEC-022 (EPIC-5).
+When communities are detected, `mem_context` can organize memories by thematic clusters instead of a flat ranking. This produces more coherent and navigable contexts for the agent. Introduced in SPEC-022 (EPIC-5).
 
-### Modos de packing
+### Packing modes
 
-| Mode | Comportamiento |
+| Mode | Behavior |
 |------|---------------|
-| `auto` (default) | Detecta comunidades; si hay > 0, usa community packing; si no, flat |
-| `communities` | Fuerza community packing (falla silenciosamente a flat si no hay comunidades) |
-| `flat` | Ranking plano pre-SPEC-022 (backward compatible) |
+| `auto` (default) | Detects communities; if > 0, uses community packing; otherwise flat |
+| `communities` | Forces community packing (silently falls back to flat if there are no communities) |
+| `flat` | Flat ranking, pre-SPEC-022 (backward compatible) |
 
-### Algoritmo de 4 fases
+### 4-phase algorithm
 
 ```
 Phase 1: Community ranking
@@ -508,9 +508,9 @@ Phase 4: Fill remaining budget
   └── Dedup: exclude memories already packed in Phases 2 and 3
 ```
 
-### Sections en el output
+### Sections in the output
 
-| # | Section | Presente en |
+| # | Section | Present in |
 |---|---------|-------------|
 | 1 | Last Session | flat + community |
 | 2 | Active Rules | flat + community |
@@ -518,7 +518,7 @@ Phase 4: Fill remaining budget
 | 4 | Top Cluster Detail | community only |
 | 5 | Other Memories / Loaded Memories | both (renamed) |
 
-### Configuracion
+### Configuration
 
 ```toml
 [context]
@@ -527,51 +527,51 @@ cluster_overviews_budget = 1500     # tokens for Phase 2
 top_cluster_max_members = 10        # max memories in Phase 3
 ```
 
-### Fallback silencioso
+### Silent fallback
 
-Cualquier error durante el community packing (ListCommunities, PPR, etc.) se logea como warning y el sistema cae a flat mode. `mem_context` nunca falla por culpa del packing.
+Any error during community packing (ListCommunities, PPR, etc.) is logged as a warning and the system falls back to flat mode. `mem_context` never fails because of packing.
 
 ---
 
 ## mem_explore
 
-`mem_explore` es una herramienta de exploracion interactiva del grafo. Desde una memoria seed, hace un BFS priorizado y retorna las memorias conectadas con sus distancias y pesos acumulados.
+`mem_explore` is an interactive graph exploration tool. Starting from a seed memory, it performs a prioritized BFS and returns connected memories with their distances and accumulated weights.
 
-### Cuando usarlo
+### When to use it
 
-- **Debugging:** "que esta conectado a esta memoria?"
-- **Discovery:** "que otros modulos dependen del servicio de auth?"
-- **Context building:** "dame todo lo relacionado con el pipeline de consolidation"
-- **Graph health:** "esta memoria tiene conexiones? El grafo esta bien formado?"
+- **Debugging:** "what is connected to this memory?"
+- **Discovery:** "what other modules depend on the auth service?"
+- **Context building:** "give me everything related to the consolidation pipeline"
+- **Graph health:** "does this memory have connections? Is the graph well-formed?"
 
 ### Seed resolution
 
-El seed puede ser:
-- **UUID completo:** `019de100-abcd-7fff-8000-000000000001`
-- **Prefijo hex (8+ chars):** `019de100`
+The seed can be:
+- **Full UUID:** `019de100-abcd-7fff-8000-000000000001`
+- **Hex prefix (8+ chars):** `019de100`
 - **topic_key:** `architecture/auth-model`
 
-### Algoritmo BFS priorizado
+### Prioritized BFS algorithm
 
-1. Resolver seed -> cargar entidades vinculadas
-2. Encolar vecinos a distancia 1 en un max-heap por `accumulatedWeight`
+1. Resolve seed -> load linked entities
+2. Enqueue distance-1 neighbors into a max-heap by `accumulatedWeight`
 3. Loop:
-   - Pop del max-heap
-   - Si ya visitado con peso mayor, skip
-   - Token budget check (skip si excede)
-   - Registrar nodo
-   - Si hay depth restante, expandir sus vecinos con `accumulatedWeight = parent_weight * edge_weight`
-4. Ordenar resultado: `(distance ASC, accumulated_weight DESC)`
+   - Pop from the max-heap
+   - If already visited with a higher weight, skip
+   - Token budget check (skip if exceeded)
+   - Register node
+   - If depth remains, expand its neighbors with `accumulatedWeight = parent_weight * edge_weight`
+4. Sort result: `(distance ASC, accumulated_weight DESC)`
 
-### Parametros
+### Parameters
 
-| Parametro | Default | Rango | Descripcion |
+| Parameter | Default | Range | Description |
 |-----------|---------|-------|-------------|
-| `depth` | 2 | 0-5 | Hops maximos desde seed |
-| `budget` | 4000 | >0 | Token budget para memorias retornadas |
-| `threshold` | 0.3 | 0.0-1.0 | Peso minimo para seguir una relacion |
+| `depth` | 2 | 0-5 | Maximum hops from seed |
+| `budget` | 4000 | >0 | Token budget for returned memories |
+| `threshold` | 0.3 | 0.0-1.0 | Minimum weight to follow a relation |
 
-### CLI output: arbol ASCII
+### CLI output: ASCII tree
 
 ```bash
 $ mneme explore "architecture/auth-model" --depth 2
@@ -615,74 +615,74 @@ $ mneme explore "architecture/auth-model" --json
 }
 ```
 
-### Notas
+### Notes
 
-- Las relaciones traversadas durante la exploracion actualizan `last_traversed_at` async (previene edge decay)
-- El seed no se incluye en la lista de nodos retornados
-- Si el seed no tiene entidades vinculadas, retorna una lista vacia
-- El max-heap garantiza que los caminos mas fuertes se exploran primero, incluso con budget limitado
+- Relations traversed during exploration update `last_traversed_at` asynchronously (prevents edge decay)
+- The seed is not included in the list of returned nodes
+- If the seed has no linked entities, an empty list is returned
+- The max-heap guarantees the strongest paths are explored first, even with a limited budget
 
 ---
 
 ## graph rebuild
 
-`mneme graph rebuild` es un comando de backfill que extrae entidades de memorias existentes y crea relaciones de co-mencion. Es el punto de entrada para proyectos legacy con muchas memorias pero sin grafo.
+`mneme graph rebuild` is a backfill command that extracts entities from existing memories and creates co-mention relations. It is the entry point for legacy projects with many memories but no graph.
 
-### Cuando correrlo
+### When to run it
 
-- **Proyecto nuevo con memorias existentes:** despues de migrar con `mneme init`
-- **Despues de importar memorias:** `mneme sync import` trae memorias sin grafo
-- **Periodicamente:** para incorporar nuevas memorias al grafo (es idempotente)
-- **Debugging:** `--dry-run` para ver que se extraeria sin modificar nada
+- **New project with existing memories:** after migrating with `mneme init`
+- **After importing memories:** `mneme sync import` brings in memories without a graph
+- **Periodically:** to incorporate new memories into the graph (it's idempotent)
+- **Debugging:** `--dry-run` to see what would be extracted without modifying anything
 
-### 4 heuristicas de extraccion
+### 4 extraction heuristics
 
-| # | Heuristica | Que detecta | Entity kind |
+| # | Heuristic | What it detects | Entity kind |
 |---|-----------|-------------|-------------|
-| H1 | **topic_key** | Cada memoria con topic_key genera un concept entity | `concept` |
-| H2 | **file paths** | Paths reconocidos en content (e.g. `internal/store/entity.go`) | `file` |
-| H3 | **code symbols** | Declaraciones `func`/`type`/`struct` en code blocks | `concept` |
-| H4 | **wikilinks** | `[[topic_key]]` references en content | `concept` |
+| H1 | **topic_key** | Each memory with a topic_key generates a concept entity | `concept` |
+| H2 | **file paths** | Recognized paths in content (e.g. `internal/store/entity.go`) | `file` |
+| H3 | **code symbols** | `func`/`type`/`struct` declarations in code blocks | `concept` |
+| H4 | **wikilinks** | `[[topic_key]]` references in content | `concept` |
 
-### Generacion de relaciones
+### Relation generation
 
-Memorias que comparten >= K entidades (default K=2) reciben una relacion `related_to` con:
+Memories that share >= K entities (default K=2) receive a `related_to` relation with:
 
 ```
 weight = min(0.5, shared_count * 0.1)
 ```
 
-Esto significa:
-- 2 entidades compartidas: weight = 0.2
-- 3 entidades: weight = 0.3
-- 5+ entidades: weight = 0.5 (cap)
+This means:
+- 2 shared entities: weight = 0.2
+- 3 entities: weight = 0.3
+- 5+ entities: weight = 0.5 (cap)
 
-### Uso
+### Usage
 
 ```bash
 # Preview (dry run)
 mneme graph rebuild --dry-run
 
-# Rebuild normal
+# Normal rebuild
 mneme graph rebuild
 
-# Force: borra related_to existentes y regenera
+# Force: deletes existing related_to and regenerates
 mneme graph rebuild --force
 
-# Ajustar threshold
+# Adjust threshold
 mneme graph rebuild --min-shared 3
 ```
 
 ### Flags
 
-| Flag | Short | Default | Descripcion |
+| Flag | Short | Default | Description |
 |------|-------|---------|-------------|
-| `--scope` | `-s` | `project` | project, global, o all |
-| `--min-shared` | `-k` | `2` | Minimo entidades compartidas para crear relacion |
-| `--max-relations` | | `50` | Cap de relaciones por memoria |
-| `--batch-size` | `-b` | `500` | Memorias por transaccion |
-| `--force` | `-f` | false | Borrar related_to existentes antes de regenerar |
-| `--dry-run` | `-n` | false | Preview sin escribir |
+| `--scope` | `-s` | `project` | project, global, or all |
+| `--min-shared` | `-k` | `2` | Minimum shared entities required to create a relation |
+| `--max-relations` | | `50` | Cap of relations per memory |
+| `--batch-size` | `-b` | `500` | Memories per transaction |
+| `--force` | `-f` | false | Delete existing related_to relations before regenerating |
+| `--dry-run` | `-n` | false | Preview without writing |
 
 ### Output
 
@@ -708,61 +708,61 @@ Rebuild complete in 1.234s:
   Relations created:        45
 ```
 
-### Idempotencia
+### Idempotency
 
-- Entidades existentes se reutilizan (match por `(name, project)`)
-- Links memory-entity existentes se saltan
-- Relaciones `related_to` existentes se saltan (a menos que `--force`)
-- Relaciones de otros tipos (`depends_on`, `implements`, etc.) **nunca** se tocan
+- Existing entities are reused (matched by `(name, project)`)
+- Existing memory-entity links are skipped
+- Existing `related_to` relations are skipped (unless `--force`)
+- Relations of other types (`depends_on`, `implements`, etc.) are **never** touched
 
 ---
 
 ## graph cleanup-orphan-relations
 
-`mneme graph cleanup-orphan-relations` detecta y opcionalmente borra **relations huerfanas**: aquellas cuyas entities no tienen ningun row en `memory_entities` y por lo tanto no son alcanzables desde `mem_explore`. Introducido en SPEC-031.
+`mneme graph cleanup-orphan-relations` detects and optionally deletes **orphan relations**: those whose entities have no row in `memory_entities` and are therefore unreachable from `mem_explore`. Introduced in SPEC-031.
 
-### Por que existe
+### Why it exists
 
-Antes de SPEC-031, `mem_relate` no resolvia `topic_key` a memoria y nunca llamaba `LinkMemoryEntity`. Resultado: relations creadas via `mem_relate` quedaban desconectadas del puente memory_entities y eran invisibles para `mem_explore`. El comando permite limpiar el residual.
+Before SPEC-031, `mem_relate` did not resolve `topic_key` to a memory and never called `LinkMemoryEntity`. Result: relations created via `mem_relate` were disconnected from the memory_entities bridge and invisible to `mem_explore`. This command allows cleaning up the residue.
 
-### Flujo recomendado de recuperacion
+### Recommended recovery flow
 
-Para un proyecto victima del bug (relations existentes pero `mem_explore` retorna 0 hops):
+For a project affected by the bug (relations exist but `mem_explore` returns 0 hops):
 
 ```bash
-# 1) Ver que se borraria (dry-run, default)
+# 1) See what would be deleted (dry-run, default)
 mneme graph cleanup-orphan-relations
 
-# 2) Borrar relations huerfanas
+# 2) Delete orphan relations
 mneme graph cleanup-orphan-relations --apply --yes
 
-# 3) Reconstruir grafo desde wikilinks/heuristicas
+# 3) Rebuild graph from wikilinks/heuristics
 mneme graph rebuild --force
 
-# 4) Verificar
+# 4) Verify
 mneme explore <topic_key>
 ```
 
-### Resolucion de mem_relate post-fix
+### mem_relate resolution post-fix
 
-Despues de SPEC-031, `mem_relate` resuelve cada endpoint en este orden:
+After SPEC-031, `mem_relate` resolves each endpoint in this order:
 
-1. UUID full o prefix de 8+ hex de memoria existente → memoria
-2. Si `*_kind` esta omitido (default `concept`): `topic_key` exacto en project store o global store → memoria
-3. Entity con `name == string` en project (reusar)
-4. Crear entity nueva con `kind` (default `concept`)
+1. Full UUID or 8+ hex prefix of an existing memory → memory
+2. If `*_kind` is omitted (default `concept`): exact `topic_key` in project store or global store → memory
+3. Entity with `name == string` in project (reuse)
+4. Create new entity with `kind` (default `concept`)
 
-Cuando la resolucion termina en una memoria, se llama `LinkMemoryEntity(memory.ID, proxy_entity.ID, "relate")` automaticamente para que la relation sea alcanzable por BFS de `mem_explore`. Pasar un `*_kind` explicito distinto de `concept` (e.g. `"service"`, `"library"`) preserva la semantica legacy entity-only.
+When resolution lands on a memory, `LinkMemoryEntity(memory.ID, proxy_entity.ID, "relate")` is called automatically so the relation is reachable by `mem_explore`'s BFS. Passing an explicit `*_kind` other than `concept` (e.g. `"service"`, `"library"`) preserves the legacy entity-only semantics.
 
 ### Flags
 
-| Flag | Short | Default | Descripcion |
+| Flag | Short | Default | Description |
 |------|-------|---------|-------------|
-| `--scope` | `-s` | `project` | project, global, o all |
-| `--apply` | | false | Default es dry-run; usar `--apply` para borrar |
-| `--also-delete-entities` | | false | Borra entities que quedan totalmente sin referencias |
-| `--output` | `-o` | `text` | text o json |
-| `--yes` | `-y` | false | Confirma borrado destructivo (requerido con `--apply`) |
+| `--scope` | `-s` | `project` | project, global, or all |
+| `--apply` | | false | Default is dry-run; use `--apply` to delete |
+| `--also-delete-entities` | | false | Deletes entities left with no references at all |
+| `--output` | `-o` | `text` | text or json |
+| `--yes` | `-y` | false | Confirms destructive deletion (required with `--apply`) |
 
 ### Output
 
@@ -777,36 +777,35 @@ Examples:
   ...
 ```
 
-### Idempotencia
+### Idempotency
 
-Re-correr el comando despues de un `--apply` exitoso reporta 0 candidatos. Es seguro ejecutar repetidamente.
+Re-running the command after a successful `--apply` reports 0 candidates. It is safe to run repeatedly.
 
 ---
 
-## Comandos relacionados
+## Related commands
 
-| Comando | Descripcion |
+| Command | Description |
 |---------|-------------|
-| `mneme explore <seed>` | BFS desde seed (arbol ASCII o JSON) |
-| `mneme graph rebuild` | Backfill grafo desde memorias existentes |
-| `mneme graph cleanup-orphan-relations` | Limpiar relations huerfanas (SPEC-031) |
-| `mneme gaps` | Listar knowledge gaps (wikilinks no resueltos) |
-| `mneme search --no-graph` | Busqueda sin expansion de grafo |
-| `mneme consolidate` | Run pipeline incluyendo community detection + synthesis |
-| `mem_relate` (MCP) | Crear/actualizar relacion entre entidades |
-| `mem_explore` (MCP) | Exploracion del grafo desde MCP |
-| `mem_gaps` (MCP) | Listar knowledge gaps |
+| `mneme explore <seed>` | BFS from seed (ASCII tree or JSON) |
+| `mneme graph rebuild` | Backfill graph from existing memories |
+| `mneme graph cleanup-orphan-relations` | Clean up orphan relations (SPEC-031) |
+| `mneme gaps` | List knowledge gaps (unresolved wikilinks) |
+| `mneme search --no-graph` | Search without graph expansion |
+| `mneme consolidate` | Run pipeline including community detection + synthesis |
+| `mem_relate` (MCP) | Create/update a relation between entities |
+| `mem_explore` (MCP) | Graph exploration from MCP |
+| `mem_gaps` (MCP) | List knowledge gaps |
 
-Referencia completa de todos los endpoints: [docs/api/memory.md](api/memory.md).
+Full reference for all endpoints: [docs/api/memory.md](api/memory.md).
 
 ---
 
-## Configuracion
+## Configuration
 
-La referencia completa de todos los parametros del grafo con tipos, rangos y variables de entorno
-esta en [CONFIG.md](CONFIG.md#graph).
+The full reference for all graph parameters with types, ranges, and environment variables is in [CONFIG.md](CONFIG.md#graph).
 
-Resumen rapido de los parametros disponibles en `~/.mneme/config.toml`:
+Quick summary of the parameters available in `~/.mneme/config.toml`:
 
 ```toml
 [graph]
@@ -854,7 +853,7 @@ cluster_overviews_budget = 1500     # Tokens for cluster overview phase
 top_cluster_max_members = 10        # Max memories in top cluster deep-dive
 ```
 
-Para inspeccionar la configuracion activa con proveniencia (default/file/env):
+To inspect the active configuration with provenance (default/file/env):
 
 ```bash
 mneme config show graph
