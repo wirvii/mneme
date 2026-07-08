@@ -1335,7 +1335,7 @@ func allTools() []ToolDefinition {
 				"properties": map[string]any{
 					"role": map[string]any{
 						"type":        "string",
-						"description": "Subagent role name used for the frontmatter `name:` and destination filename (may differ from archetype for custom roles).",
+						"description": "Subagent role name used for the frontmatter `name:` and destination filename (may differ from archetype for custom roles). Must match ^[a-z][a-z0-9-]*$.",
 					},
 					"archetype": map[string]any{
 						"type":        "string",
@@ -1348,7 +1348,7 @@ func allTools() []ToolDefinition {
 					},
 					"description": map[string]any{
 						"type":        "string",
-						"description": "Frontmatter `description:` value. Defaults to a generic one-liner when omitted.",
+						"description": "Frontmatter `description:` value. Defaults to a generic one-liner when omitted. Must not contain newlines.",
 					},
 					"areas_layer3_md": map[string]any{
 						"type":        "string",
@@ -1362,15 +1362,22 @@ func allTools() []ToolDefinition {
 			},
 		},
 		{
-			Name:        "subagent_write",
-			Description: "Atomically write a composed subagent profile to .claude/agents/<role>.md and update the manifest. Rolls back the file write if the manifest update fails.",
+			Name: "subagent_write",
+			Description: "Atomically write a composed subagent profile to .claude/agents/<role>.md and update the manifest. Rolls back the file write if the manifest update fails. " +
+				"role must be a safe slug (lowercase letters/digits/hyphens) — rejects path traversal. composed_md is re-validated against archetype's Go-authored permission envelope before anything is written, " +
+				"so a hand-crafted composed_md can never grant a role more capability than its archetype allows.",
 			InputSchema: map[string]any{
 				"type":     "object",
-				"required": []string{"role", "composed_md"},
+				"required": []string{"role", "archetype", "composed_md"},
 				"properties": map[string]any{
 					"role": map[string]any{
 						"type":        "string",
-						"description": "Subagent role name; determines the destination filename .claude/agents/<role>.md.",
+						"description": "Subagent role name; determines the destination filename .claude/agents/<role>.md. Must match ^[a-z][a-z0-9-]*$.",
+					},
+					"archetype": map[string]any{
+						"type":        "string",
+						"description": "Built-in role whose Go-authored permission envelope composed_md is validated against before writing.",
+						"enum":        []string{"architect", "backend", "frontend", "qa-tester", "bug-hunter", "diagnostician"},
 					},
 					"composed_md": map[string]any{
 						"type":        "string",

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -16,6 +17,25 @@ import (
 	"github.com/juanftp/mneme/internal/service"
 	"github.com/juanftp/mneme/internal/subagents"
 )
+
+// roleNamePattern is the safe-slug pattern every role name (whether one of
+// the six built-in archetypes or a grill-invented custom role) must match:
+// lowercase letters, digits, and hyphens, starting with a letter. This is
+// deliberately restrictive — it is the primary defense against path
+// traversal in subagent_write (a role like "../../../etc/cron.d/evil" must
+// never reach filepath.Join) and against embedded-newline frontmatter
+// injection in subagent_compose (Go's RE2 anchors "^"/"$" to the whole text
+// by default, so a role containing "\n" can never match).
+var roleNamePattern = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
+
+// validateRoleName rejects role names that are empty or don't match
+// roleNamePattern.
+func validateRoleName(role string) error {
+	if !roleNamePattern.MatchString(role) {
+		return fmt.Errorf("invalid role name %q: must match %s", role, roleNamePattern.String())
+	}
+	return nil
+}
 
 // --- SUBAGENT HANDLERS (SPEC-057 / EPIC agnostic-agents SS-4) ---
 //
@@ -203,8 +223,22 @@ func (h *handlers) handleSubagentCompose(_ context.Context, raw json.RawMessage)
 	if req.Role == "" {
 		return nil, &JSONRPCError{Code: CodeInvalidParams, Message: "mcp: handle subagent_compose: role is required"}
 	}
+	if err := validateRoleName(req.Role); err != nil {
+		return nil, &JSONRPCError{Code: CodeInvalidParams, Message: fmt.Sprintf("mcp: handle subagent_compose: %s", err)}
+	}
 	if req.Archetype == "" {
 		return nil, &JSONRPCError{Code: CodeInvalidParams, Message: "mcp: handle subagent_compose: archetype is required"}
+	}
+	// I1: description is embedded verbatim as a frontmatter value
+	// ("description: <value>") by frontmatter.SetFrontmatter, which does not
+	// escape newlines. An embedded "\n" could inject a forged frontmatter
+	// line (e.g. a fake "tools:"/"permissionMode:" key). Reject rather than
+	// silently strip, so the caller notices and resubmits clean input.
+	if strings.ContainsAny(req.Description, "\n\r") {
+		return nil, &JSONRPCError{
+			Code:    CodeInvalidParams,
+			Message: "mcp: handle subagent_compose: description must not contain newlines",
+		}
 	}
 
 	archetype := subagents.Role(req.Archetype)
@@ -338,6 +372,7 @@ func escapeManagedBlockMarkers(s string) string {
 // subagentWriteRequest is the input to subagent_write.
 type subagentWriteRequest struct {
 	Role            string   `json:"role"`
+	Archetype       string   `json:"archetype"`
 	ComposedMD      string   `json:"composed_md"`
 	EnforcementHook bool     `json:"enforcement_hook"`
 	Project         string   `json:"project"`
@@ -360,6 +395,22 @@ type subagentWriteResponse struct {
 // fails AFTER the file write already succeeded, the file write is manually
 // rolled back to its exact pre-call state so the two steps together remain
 // atomic from the caller's perspective.
+//
+// Two hard security invariants are enforced BEFORE anything is written:
+//
+//   - C1 (path traversal): role must match roleNamePattern (rejects "..",
+//     "/", and any other character that could escape the destination
+//     .claude/agents/ directory), and the final resolved path is additionally
+//     confirmed to still live inside that directory via filepath.Rel — belt
+//     and suspenders against any future change to how the path is built.
+//   - C2 (permission-envelope tampering): composed_md is validated against
+//     archetype's Go-authored PermissionTable entry via subagents.Validate,
+//     the SAME check subagent_compose itself runs. A hand-crafted composed_md
+//     whose "tools:"/"permissionMode:" exceed the archetype's allowlist (e.g.
+//     granting Edit/Write/Bash + bypassPermissions to a role that should map
+//     to the read-only "qa-tester"/"architect" archetype) is rejected —
+//     subagent_write must never trust that a caller-supplied composed_md
+//     actually came from subagent_compose.
 func (h *handlers) handleSubagentWrite(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
 	var req subagentWriteRequest
 	if err := json.Unmarshal(raw, &req); err != nil {
@@ -371,13 +422,27 @@ func (h *handlers) handleSubagentWrite(ctx context.Context, raw json.RawMessage)
 	if req.Role == "" {
 		return nil, &JSONRPCError{Code: CodeInvalidParams, Message: "mcp: handle subagent_write: role is required"}
 	}
+	if err := validateRoleName(req.Role); err != nil {
+		return nil, &JSONRPCError{Code: CodeInvalidParams, Message: fmt.Sprintf("mcp: handle subagent_write: %s", err)}
+	}
+	if req.Archetype == "" {
+		return nil, &JSONRPCError{Code: CodeInvalidParams, Message: "mcp: handle subagent_write: archetype is required"}
+	}
+	archetype := subagents.Role(req.Archetype)
+	if _, ok := subagents.PermissionTable[archetype]; !ok {
+		return nil, &JSONRPCError{
+			Code:    CodeInvalidParams,
+			Message: fmt.Sprintf("mcp: handle subagent_write: unknown archetype %q (must be one of the built-in roles)", req.Archetype),
+		}
+	}
 	if strings.TrimSpace(req.ComposedMD) == "" {
 		return nil, &JSONRPCError{Code: CodeInvalidParams, Message: "mcp: handle subagent_write: composed_md is required"}
 	}
-	if !hasFrontmatterDelimiter(req.ComposedMD) {
+	if validation := subagents.Validate(req.ComposedMD, archetype); !validation.Valid {
 		return nil, &JSONRPCError{
-			Code:    CodeInvalidParams,
-			Message: "mcp: handle subagent_write: composed_md must start with a --- frontmatter delimiter",
+			Code: CodeInvalidParams,
+			Message: fmt.Sprintf("mcp: handle subagent_write: composed_md failed validation against archetype %q: %s",
+				req.Archetype, strings.Join(validation.Errors, "; ")),
 		}
 	}
 
@@ -385,7 +450,14 @@ func (h *handlers) handleSubagentWrite(ctx context.Context, raw json.RawMessage)
 	if rpcErr != nil {
 		return nil, rpcErr
 	}
-	path := filepath.Join(root, ".claude", "agents", req.Role+".md")
+	agentsDir := filepath.Join(root, ".claude", "agents")
+	path := filepath.Join(agentsDir, req.Role+".md")
+	if rel, err := filepath.Rel(agentsDir, path); err != nil || rel != req.Role+".md" {
+		return nil, &JSONRPCError{
+			Code:    CodeInvalidParams,
+			Message: fmt.Sprintf("mcp: handle subagent_write: role %q resolves outside the agents directory", req.Role),
+		}
+	}
 
 	originalBytes, readErr := os.ReadFile(path)
 	existed := readErr == nil
@@ -445,13 +517,6 @@ func (h *handlers) handleSubagentWrite(ctx context.Context, raw json.RawMessage)
 		Checksum: checksum,
 		Version:  version,
 	})
-}
-
-// hasFrontmatterDelimiter reports whether content's first line is the "---"
-// frontmatter opening delimiter.
-func hasFrontmatterDelimiter(content string) bool {
-	firstLine, _, _ := strings.Cut(content, "\n")
-	return strings.TrimSpace(firstLine) == "---"
 }
 
 // rollbackAgentFile restores path to its exact pre-write state: rewritten
