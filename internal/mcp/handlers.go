@@ -21,17 +21,25 @@ import (
 // Each handler is responsible for deserializing arguments, calling the service,
 // and packaging the result into a ToolCallResult with a JSON text content block.
 type handlers struct {
-	svc       *service.MemoryService
-	sdd       *service.SDDService
-	cgSvc     *service.CodeGraphService // lazy-initialized on first codegraph tool call
-	skillsSvc *service.SkillsService    // optional; nil disables skills tools
-	modelsSvc *service.ModelsService    // optional; nil disables model tools
-	logger    *slog.Logger
+	svc         *service.MemoryService
+	sdd         *service.SDDService
+	cgSvc       *service.CodeGraphService  // lazy-initialized on first codegraph tool call
+	skillsSvc   *service.SkillsService     // optional; nil disables skills tools
+	modelsSvc   *service.ModelsService     // optional; nil disables model tools
+	subagentSvc *service.SubagentService   // wraps svc; always available (SPEC-057/SS-4)
+	logger      *slog.Logger
 }
 
 // newHandlers constructs a handlers bound to the given services and logger.
 func newHandlers(svc *service.MemoryService, sdd *service.SDDService, skillsSvc *service.SkillsService, modelsSvc *service.ModelsService, logger *slog.Logger) *handlers {
-	return &handlers{svc: svc, sdd: sdd, skillsSvc: skillsSvc, modelsSvc: modelsSvc, logger: logger}
+	return &handlers{
+		svc:         svc,
+		sdd:         sdd,
+		skillsSvc:   skillsSvc,
+		modelsSvc:   modelsSvc,
+		subagentSvc: service.NewSubagentService(svc),
+		logger:      logger,
+	}
 }
 
 // handleToolCall dispatches the tool call to the correct handler method.
@@ -162,6 +170,20 @@ func (h *handlers) handleToolCall(ctx context.Context, params ToolCallParams) (*
 
 	case "init":
 		return h.handleInit(ctx, params.Arguments)
+
+	// --- SUBAGENT TOOLS (SPEC-057 / EPIC agnostic-agents SS-4) ---
+	case "subagent_fingerprint":
+		return h.handleSubagentFingerprint(ctx, params.Arguments)
+	case "subagent_profile_get":
+		return h.handleSubagentProfileGet(ctx, params.Arguments)
+	case "subagent_profile_save":
+		return h.handleSubagentProfileSave(ctx, params.Arguments)
+	case "subagent_compose":
+		return h.handleSubagentCompose(ctx, params.Arguments)
+	case "subagent_write":
+		return h.handleSubagentWrite(ctx, params.Arguments)
+	case "subagent_manifest_list":
+		return h.handleSubagentManifestList(ctx, params.Arguments)
 
 	default:
 		return nil, &JSONRPCError{
