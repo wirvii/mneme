@@ -197,6 +197,9 @@ func TestToolsList(t *testing.T) {
 		"conflicts_candidates", "conflicts_scan", "conflicts_link", "conflicts_unlink", "conflicts_list",
 		// Init tool (SPEC-041)
 		"init",
+		// Subagent tools (SPEC-057 / EPIC agnostic-agents SS-4)
+		"subagent_fingerprint", "subagent_profile_get", "subagent_profile_save",
+		"subagent_compose", "subagent_write", "subagent_manifest_list",
 	}
 	if len(result.Tools) != len(wantNames) {
 		t.Fatalf("got %d tools, want %d", len(result.Tools), len(wantNames))
