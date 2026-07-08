@@ -41,7 +41,7 @@ Cross-file references are resolved in four tiers, in order. The first match wins
 | Tier | Name | Description |
 |------|------|-------------|
 | T1 | Exact | `qualified_name == referenceName` — same-file and fully qualified cross-file calls. |
-| T2 | Import-guided (C3) | Uses the file's import declarations to locate the target package/file, then finds all candidates with that symbol name. Only links when **exactly one** candidate exists (candidato-único-o-nada). |
+| T2 | Import-guided (C3) | Uses the file's import declarations to locate the target package/file, then finds all candidates with that symbol name. Only links when **exactly one** candidate exists (single-candidate-or-nothing). |
 | T3 | Suffix | `qualified_name LIKE '%.' + referenceName` — partial qualification. |
 | T4 | Short-name | `name == lastComponent(referenceName)` — unqualified fallback. |
 
@@ -103,7 +103,7 @@ import like `import { getDB } from "@/lib/db"` leaves an unresolved ref.
    path match). This ensures that in a monorepo with multiple tsconfigs defining
    the same alias, each file uses its own app's mapping.
 5. The expanded candidates are fed to `tsCandidatePaths` (probing `.ts`, `.tsx`,
-   etc.) and resolved with candidato-único-o-nada.
+   etc.) and resolved with single-candidate-or-nothing.
 
 **Requirements:**
 - Node.js must be available on `PATH`.
