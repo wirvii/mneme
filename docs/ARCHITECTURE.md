@@ -78,7 +78,7 @@ graph TB
 
     subgraph "Layer 1 — Storage"
         STORE["store/<br/>Repository Pattern"]
-        DB["SQLite + FTS5<br/>(schema v10)"]
+        DB["SQLite + FTS5<br/>(schema v13)"]
     end
 
     CLI --> SVC
@@ -146,7 +146,7 @@ internal/
                            8 relation types, request/response structs). Zero deps.
   project/              -- git remote / project slug detection
   config/               -- TOML config + defaults + env overrides
-  db/                   -- SQLite + FTS5 + embedded migrations (schema v10)
+  db/                   -- SQLite + FTS5 + embedded migrations (schema v13)
   store/                -- repository pattern (CRUD, FTS5, vectors, entities, relations,
                            communities, sessions, unresolved refs)
   scoring/              -- importance, decay (Ebbinghaus), BM25 re-rank, RRF fusion,
@@ -161,10 +161,10 @@ internal/
   embed/                -- TF-IDF baseline embedder
   sync/                 -- JSONL.gz + Memory Manifest (tar.gz) export/import
   vault/                -- markdown vault: path mapping, frontmatter, writer, reader
-  mcp/                  -- MCP server (JSON-RPC 2.0 over stdio, 24 tools)
-  http/                 -- REST API (stdlib net/http, 8 endpoints under /v1/)
-  cli/                  -- Cobra commands (27+ top-level commands)
-  install/              -- agent profile installer (5 subagent profiles + slash commands)
+  mcp/                  -- MCP server (JSON-RPC 2.0 over stdio, 57 tools)
+  http/                 -- REST API (stdlib net/http, 10 endpoints under /v1/)
+  cli/                  -- Cobra commands (33 top-level commands)
+  install/              -- agent profile installer (7 subagent profiles + slash commands)
   tui/                  -- Bubble Tea interface (list, stats)
   upgrade/              -- self-upgrade checker
   export/               -- markdown export (rendering only, no filesystem)
@@ -643,13 +643,21 @@ mneme sync import backup.manifest.tar.gz   # auto-detects format
 
 ### MCP (primary) -- `mneme mcp`
 
-JSON-RPC 2.0 over stdio. ProtocolVersion `2024-11-05`. 24 tools with JSON schemas:
+JSON-RPC 2.0 over stdio. ProtocolVersion `2024-11-05`. 57 tools with JSON schemas, grouped by family:
 
-| Group | Tools |
+| Group | Count |
 |-------|-------|
-| **Memory (14)** | `mem_save`, `mem_search`, `mem_get`, `mem_context`, `mem_update`, `mem_session_end`, `mem_suggest_topic_key`, `mem_relate`, `mem_timeline`, `mem_stats`, `mem_checkpoint`, `mem_forget`, `mem_gaps`, `mem_explore` |
-| **Backlog (4)** | `backlog_add`, `backlog_list`, `backlog_refine`, `backlog_promote` |
-| **Spec (6)** | `spec_new`, `spec_status`, `spec_advance`, `spec_pushback`, `spec_resolve`, `spec_list` |
+| **Memory** (`mem_*`) | 14 |
+| **Backlog** (`backlog_*`) | 4 |
+| **Spec** (`spec_*`, incl. `spec_quick`/`spec_reject`) | 8 |
+| **Lane** (`lane_*`) | 5 |
+| **CodeGraph** (`codegraph_*`) | 10 |
+| **Skills** (`skills_*`) | 7 |
+| **Model** (`model_*`) | 3 |
+| **Conflicts** (`conflicts_*`) | 5 |
+| **init** | 1 |
+
+Full per-tool contracts (params, returns, errors, examples) live in [docs/api/](api/), one file per family.
 
 `handleMessage()` is exposed separately from `Run()` for unit testing without I/O loops (D007).
 
