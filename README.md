@@ -1,11 +1,11 @@
 # mneme
 
-Persistent memory for AI coding agents. One binary, zero runtime dependencies.
+Persistent memory for AI coding agents -- with a spec-driven workflow engine, semantic code graph, and role enforcement built on top. One binary, zero runtime dependencies.
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.24+-00ADD8.svg)](https://go.dev)
-[![Schema](https://img.shields.io/badge/schema-v10-purple.svg)](#architecture)
-[![MCP Tools](https://img.shields.io/badge/MCP%20tools-24-green.svg)](#mcp-tools)
+[![Release](https://img.shields.io/github/v/release/wirvii/mneme?label=release)](https://github.com/wirvii/mneme/releases)
+[![MCP Tools](https://img.shields.io/badge/MCP%20tools-57-green.svg)](#mcp-tools)
 
 ---
 
@@ -29,7 +29,7 @@ Persistent memory for AI coding agents. One binary, zero runtime dependencies.
 
 ## What is mneme?
 
-mneme gives AI coding agents a brain that survives between sessions. It stores structured knowledge -- decisions, patterns, rules, conventions, architecture -- in a local SQLite database with full-text search, a weighted knowledge graph, and automatic consolidation. Any MCP-compatible agent (Claude Code, Cursor, Windsurf, OpenCode, Gemini CLI) can save and retrieve persistent memory through 24 tools over JSON-RPC stdio.
+mneme gives AI coding agents a brain that survives between sessions. It stores structured knowledge -- decisions, patterns, rules, conventions, architecture -- in a local SQLite database with full-text search, a weighted knowledge graph, and automatic consolidation. Any MCP-compatible agent (Claude Code, Cursor, Windsurf, OpenCode, Gemini CLI) can save and retrieve persistent memory through 57 tools over JSON-RPC stdio.
 
 ## Why mneme?
 
@@ -76,15 +76,17 @@ make install
 
 # 2. Wire into your agent
 mneme install claude-code
+# or, for OpenAI Codex CLI (single-agent, no delegation enforcement):
+mneme install codex
 
 # 3. Start using it
 mneme save --type decision --title "Auth uses JWT RS256" \
   --content "Switched to RS256 for asymmetric key verification."
 mneme search "authentication"
-mneme context --budget 4000
+mneme status
 ```
 
-`mneme install claude-code` registers MCP tools, session hooks, and the rules enforcement hook in `~/.claude/settings.json`. After install, the agent automatically loads context at session start, saves session summaries at end, and evaluates rules before every file edit.
+`mneme install claude-code` registers MCP tools, session hooks, and the rules enforcement hook in `~/.claude/settings.json`, plus the seven bundled subagent profiles. After install, the agent automatically loads context at session start, saves session summaries at end, and evaluates rules before every file edit. `mneme install codex` wires the same MCP server and memory protocol into OpenAI Codex CLI's single-agent model -- see [docs/codex.md](docs/codex.md) for the differences.
 
 ---
 
@@ -153,7 +155,7 @@ backlog_add -> backlog_refine -> backlog_promote -> spec_new
   -> spec_advance (draft -> speccing -> specced -> implementing -> qa -> done)
 ```
 
-Five pre-configured subagent profiles (architect, backend, frontend, qa-tester, bug-hunter) ship with `mneme install claude-code` and integrate with the SDD lifecycle.
+Seven pre-configured subagent profiles (architect, backend, frontend, qa-tester, bug-hunter, diagnostician, orchestrator) ship with `mneme install claude-code` and integrate with the SDD lifecycle. See [Enforcement](#enforcement) for the role/capability model.
 
 ### Memory Manifest
 
@@ -169,35 +171,43 @@ mneme sync import <file>              # auto-detects format
 
 ## Commands
 
+33 top-level commands (`mneme --help` is the source of truth for flags; full flag reference in [docs/api/cli.md](docs/api/cli.md)):
+
 | Command | Description |
 |---------|-------------|
 | `mneme save` | Save a memory |
 | `mneme search` | Search memories (BM25 + vector + graph) |
 | `mneme get` | Retrieve a memory by ID |
-| `mneme context` | Get project context (agent session start) |
 | `mneme update` | Update an existing memory |
 | `mneme forget` | Mark a memory for accelerated decay |
-| `mneme stats` | Detailed statistics |
-| `mneme status` | Project and memory status |
-| `mneme consolidate` | Run consolidation pipeline manually |
-| `mneme rule add` | Create a rule with applies_to + severity |
-| `mneme rule list` | List active rules (colour-coded by severity) |
-| `mneme rule test` | Evaluate rules against a simulated invocation |
-| `mneme explore` | BFS graph traversal from a seed memory |
-| `mneme graph rebuild` | Backfill graph from existing memories |
-| `mneme mcp` | Start MCP server (stdio, JSON-RPC 2.0) |
-| `mneme serve` | Start HTTP API server (:7437) |
-| `mneme install` | Configure agent profiles (claude-code) |
-| `mneme init` | Migrate legacy projects to SDD engine |
-| `mneme backlog` | Manage backlog items (add/list) |
-| `mneme spec` | Manage specs (status/advance/list) |
-| `mneme sync` | Export/import -- JSONL.gz or Memory Manifest |
-| `mneme vault export` | Export memories as Markdown vault |
-| `mneme vault import` | Import Markdown vault back to SQLite |
-| `mneme hook` | Session and rules hooks (session-start, session-end, pre-tool-use) |
-| `mneme tui` | Interactive terminal UI |
-| `mneme upgrade` | Check for and install updates |
-| `mneme version` | Print version |
+| `mneme stats` | Show memory store statistics |
+| `mneme status` | Show mneme status and project dashboard |
+| `mneme consolidate` | Run the memory consolidation pipeline |
+| `mneme rule` | Manage rules (`add`, `list`, `test`) |
+| `mneme explore` | Explore the knowledge graph from a seed memory |
+| `mneme graph` | Manage the knowledge graph (`rebuild`, `cleanup-orphan-relations`) |
+| `mneme gaps` | List knowledge gaps (unresolved `[[wikilinks]]`) |
+| `mneme mcp` | Start the MCP server over stdio |
+| `mneme serve` | Start the HTTP API server |
+| `mneme install` | Configure an AI coding agent to use mneme (`claude-code`, `codex`) |
+| `mneme init` | Initialise a project with mneme managed blocks and show drift report |
+| `mneme backlog` | Manage the project backlog (`add`, `list`, `refine`, `promote`, `archive`) |
+| `mneme spec` | Manage specs in the SDD lifecycle (`new`, `advance`, `pushback`, `resolve`, `quick`, `reject`, `list`, `status`, `history`) |
+| `mneme lane` | Manage trivial-lane SDD classification and auditing (`audit`, `reclassify`, `override`, `status`, `stats`) |
+| `mneme codegraph` | Semantic code graph -- index and query code structure (`index`, `search`, `node`, `callers`, `callees`, `impact`, `trace`, `files`, `status`, `hooks`) |
+| `mneme skills` | Manage mneme skills in `~/.claude/skills/` (`list`, `install`, `pin`, `unpin`, `remove`, `lint`, `validate`) |
+| `mneme model` | Manage per-agent model assignments (`list`, `set`, `reset`) |
+| `mneme conflicts` | Detect and manage memory conflict relations (`candidates`, `scan`, `link`, `unlink`, `list`) |
+| `mneme sync` | Sync memories via git (`export`, `import`, `status`) |
+| `mneme vault` | Manage the filesystem vault mirror (`export`, `import`) |
+| `mneme embed` | Manage memory embeddings for semantic search (`backfill`) |
+| `mneme export` | Export memories in various formats (`markdown`) |
+| `mneme config` | Inspect resolved configuration (`show`) |
+| `mneme hook` | Run a mneme hook handler (invoked by agent hooks) |
+| `mneme tui` | Launch interactive terminal UI |
+| `mneme upgrade` | Upgrade mneme to the latest release |
+| `mneme version` | Print the mneme version |
+| `mneme completion` | Generate the autocompletion script for the specified shell |
 
 ---
 
@@ -258,9 +268,13 @@ The MCP server (`mneme mcp`) exposes 24 tools over JSON-RPC 2.0 stdio:
 | Rules enforcement | ✅ JIT hook + severity | ❌ Static text | ❌ | ❌ |
 | Wikilinks + gap tracking | ✅ Auto-resolve | ❌ | ❌ | ✅ Links only |
 | Community detection | ✅ Louvain | ❌ | ❌ | ❌ |
+| Semantic code graph | ✅ Symbols, callers, impact | ❌ | ❌ | ❌ |
+| Skills package manager | ✅ install/pin/lint/validate | ❌ | ❌ | ❌ |
+| Role enforcement | ✅ Capability + hook, 2 layers | ❌ | ❌ | ❌ |
+| Per-agent model assignment | ✅ `mneme model` | ❌ | N/A | N/A |
 | Agent-agnostic | ✅ MCP + HTTP + CLI | Claude only | Varies | Manual |
 | Local-only / no cloud | ✅ SQLite | ✅ File | Usually cloud | ✅ Files |
-| SDD lifecycle | ✅ Built-in | ❌ | ❌ | ❌ |
+| SDD lifecycle | ✅ Built-in, with lanes | ❌ | ❌ | ❌ |
 | Obsidian integration | ✅ Vault mirror | ❌ | ❌ | N/A |
 
 ---
@@ -317,9 +331,9 @@ The MCP server (`mneme mcp`) exposes 24 tools over JSON-RPC 2.0 stdio:
 
 **Dependency rule:** imports flow inward only. `model` (zero external deps) is the leaf. Frontends (`cli`, `mcp`, `http`) call `service`, which orchestrates `store`, `scoring`, `graph`, and `rules`. No frontend calls `store` or `db` directly.
 
-**Persistence:** two SQLite databases per host -- `~/.mneme/global.db` (global + org scope) and `~/.mneme/projects/<slug>.db` (project scope, slug from git remote). Schema v10 with 10 embedded migrations.
+**Persistence:** two SQLite databases per host -- `~/.mneme/global.db` (global + org scope) and `~/.mneme/projects/<slug>.db` (project scope, slug from git remote). Schema v13 with 13 embedded migrations.
 
-**Three frontends:** MCP (primary, 24 tools over stdio), HTTP (REST API at `:7437`, 8 endpoints under `/v1/`), and CLI (Cobra, 27+ commands).
+**Three frontends:** MCP (primary, 57 tools over stdio), HTTP (REST API at `:7437`, 10 endpoints under `/v1/` -- no SDD/codegraph/skills/model/conflicts parity yet), and CLI (Cobra, 33 commands).
 
 ---
 
