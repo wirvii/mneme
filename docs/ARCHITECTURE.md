@@ -36,7 +36,7 @@ mneme is a persistent memory system for AI coding agents. A single Go binary (no
 
 ### The solution
 
-A local SQLite database with FTS5 full-text search, a weighted knowledge graph with Hebbian learning and Personalized PageRank, community detection via Louvain, and automatic synthesis -- all exposed through 57 MCP tools. Agents call `mem_save`, `mem_search`, `mem_context`, `mem_explore`, and `mem_gaps` to manage structured knowledge. Rules are injected automatically and enforced via hooks.
+A local SQLite database with FTS5 full-text search, a weighted knowledge graph with Hebbian learning and Personalized PageRank, community detection via Louvain, and automatic synthesis -- all exposed through 64 MCP tools. Agents call `mem_save`, `mem_search`, `mem_context`, `mem_explore`, and `mem_gaps` to manage structured knowledge. Rules are injected automatically and enforced via hooks.
 
 ---
 
@@ -78,7 +78,7 @@ graph TB
 
     subgraph "Layer 1 — Storage"
         STORE["store/<br/>Repository Pattern"]
-        DB["SQLite + FTS5<br/>(schema v13)"]
+        DB["SQLite + FTS5<br/>(schema v14)"]
     end
 
     CLI --> SVC
@@ -146,7 +146,7 @@ internal/
                            8 relation types, request/response structs). Zero deps.
   project/              -- git remote / project slug detection
   config/               -- TOML config + defaults + env overrides
-  db/                   -- SQLite + FTS5 + embedded migrations (schema v13)
+  db/                   -- SQLite + FTS5 + embedded migrations (schema v14)
   store/                -- repository pattern (CRUD, FTS5, vectors, entities, relations,
                            communities, sessions, unresolved refs)
   scoring/              -- importance, decay (Ebbinghaus), BM25 re-rank, RRF fusion,
@@ -161,14 +161,28 @@ internal/
   embed/                -- TF-IDF baseline embedder
   sync/                 -- JSONL.gz + Memory Manifest (tar.gz) export/import
   vault/                -- markdown vault: path mapping, frontmatter, writer, reader
-  mcp/                  -- MCP server (JSON-RPC 2.0 over stdio, 57 tools)
+  subagents/            -- per-project subagent generation building blocks: stack
+                           fingerprinting, Go-authored permission envelopes per
+                           archetype, profile compose/validate (EPIC agnostic-agents,
+                           SPEC-052)
+  gitident/             -- leaf: resolves local git identity ("Name <email>") to
+                           attribute team-memory notes (SPEC-053 D7)
+  managedblock/         -- marker-fenced idempotent block upsert primitive shared by
+                           mneme's installers (agent profiles, hooks, CLAUDE.md blocks)
+  frontmatter/          -- surgical YAML frontmatter editor for agent .md files;
+                           fixes known keys (name, description, model, tools,
+                           permissionMode), preserves every other byte verbatim
+  mcp/                  -- MCP server (JSON-RPC 2.0 over stdio, 64 tools)
   http/                 -- REST API (stdlib net/http, 10 endpoints under /v1/)
-  cli/                  -- Cobra commands (35 top-level commands)
-  install/              -- agent profile installer (7 subagent profiles + slash commands)
+  cli/                  -- Cobra commands (36 top-level commands)
+  install/              -- global agent profile installer (6 subagent profiles,
+                           transitional -- see docs/enforcement-model.md) + slash
+                           commands + skills embed
   tui/                  -- Bubble Tea interface (list, stats)
   upgrade/              -- self-upgrade checker
   export/               -- markdown export (rendering only, no filesystem)
-docs/                   -- ARCHITECTURE.md, HOOKS.md, VAULT.md, MEMORY-MANIFEST.md, etc.
+docs/                   -- ARCHITECTURE.md, HOOKS.md, VAULT.md, MEMORY-MANIFEST.md,
+                           team-memory.md, enforcement-model.md, etc.
 ```
 
 ---
@@ -188,7 +202,7 @@ The persistence foundation. SQLite with WAL mode, foreign keys, 5s busy timeout.
 
 **Scopes never leak between projects.** The service layer routes reads/writes via `storeFor(scope)`.
 
-#### Schema v13 (migrations 001-013)
+#### Schema v14 (migrations 001-014)
 
 ```mermaid
 erDiagram
@@ -205,6 +219,8 @@ erDiagram
         real decay_rate
         text applies_to "JSON array (rules)"
         text severity "info|warn|block (rules)"
+        int shared "0=local 1=auto-shared 2=team-curated (v14)"
+        text author "git identity, team-memory attribution (v14)"
         text created_at
         text updated_at
         text deleted_at "soft delete"
@@ -287,6 +303,7 @@ erDiagram
 | 011 | `add_lane` | SPEC-035 | `lane` + `scope` columns on `backlog_items` and `specs` for graduated (trivial/standard) lanes |
 | 012 | `add_spec_base_sha_and_audits` | SPEC-036 | `base_sha` column on `specs`; `lane_audits` table for structured post-implementation audit records |
 | 013 | `memory_relations` | SPEC-039 | `memory_relations` table for `conflicts_with`/`unrelated` memory-to-memory edges (`supersedes` reuses `memories.superseded_by`) |
+| 014 | `team_memory` | SPEC-061 | `shared` (0/1/2) and `author` columns on `memories`, layered on `scope=project` rather than a new scope. Inert by default -- see [docs/team-memory.md](team-memory.md) |
 
 #### Memory types (11)
 
@@ -617,6 +634,17 @@ The vault is a filesystem mirror of the SQLite database in human-readable Markdo
 
 **Import:** Two strategies -- `merge` (default, file wins when `updated_at > DB`) and `overwrite` (file always wins). Marker file mandatory (prevents cross-project injection). Per-memory `service.Save()`/`Update()` calls (crash-safe, re-runnable).
 
+### Team Memory -- git-native shared vault (SPEC-053, schema v14)
+
+A second, distinct vault from the personal one above: `.mneme/shared/` inside
+a project's own git repository, opt-in via `mneme team-memory enable`.
+Sharing is a per-memory `shared` level (0 local / 1 auto-shared by durable
+type / 2 team-curated via `mem_promote`) layered on `scope=project` -- not a
+new scope. Writes are synchronous write-through (`service.Save`/`Update`
+materialize immediately, no watcher); reads happen via `post-merge`/
+`post-checkout` git hooks that import the vault in the background. Full
+model, privacy notes, and conflict handling: [docs/team-memory.md](team-memory.md).
+
 ### Memory Manifest -- Open spec (SPEC-026)
 
 A portable archive format for cross-tool memory interchange. Modeled after Obsidian's JSON Canvas -- a neutral, open specification.
@@ -646,11 +674,11 @@ mneme sync import backup.manifest.tar.gz   # auto-detects format
 
 ### MCP (primary) -- `mneme mcp`
 
-JSON-RPC 2.0 over stdio. ProtocolVersion `2024-11-05`. 57 tools with JSON schemas, grouped by family:
+JSON-RPC 2.0 over stdio. ProtocolVersion `2024-11-05`. 64 tools with JSON schemas, grouped by family:
 
 | Group | Count |
 |-------|-------|
-| **Memory** (`mem_*`) | 14 |
+| **Memory** (`mem_*`, incl. `mem_promote`) | 15 |
 | **Backlog** (`backlog_*`) | 4 |
 | **Spec** (`spec_*`, incl. `spec_quick`/`spec_reject`) | 8 |
 | **Lane** (`lane_*`) | 5 |
@@ -659,6 +687,7 @@ JSON-RPC 2.0 over stdio. ProtocolVersion `2024-11-05`. 57 tools with JSON schema
 | **Model** (`model_*`) | 3 |
 | **Conflicts** (`conflicts_*`) | 5 |
 | **init** | 1 |
+| **Subagent** (`subagent_*`) | 6 |
 
 Full per-tool contracts (params, returns, errors, examples) live in [docs/api/](api/), one file per family.
 
@@ -685,14 +714,30 @@ serves the `/explore` suffix, so it handles four distinct request shapes:
 
 Full contract for every route: [docs/api/http.md](api/http.md).
 
-**HTTP gap:** no SDD/lane/codegraph/skills/model/conflicts endpoints at all,
-and no `mem_checkpoint`, `mem_timeline`, or `mem_suggest_topic_key`. (`mem_gaps`
-and `mem_explore` **are** exposed -- via `/v1/gaps` and the `/explore` suffix
-above, respectively; they are not part of the gap.) No auth, no rate limiting.
+**HTTP gap:** no SDD/lane/codegraph/skills/model/conflicts/subagent endpoints
+at all, and no `mem_checkpoint`, `mem_timeline`, `mem_suggest_topic_key`, or
+`mem_promote`. (`mem_gaps` and `mem_explore` **are** exposed -- via
+`/v1/gaps` and the `/explore` suffix above, respectively; they are not part
+of the gap.) No auth, no rate limiting.
 
 ### CLI -- Cobra
 
-35 top-level commands: `save`, `search`, `get`, `update`, `forget`, `status`, `stats`, `consolidate`, `serve`, `mcp`, `init`, `install`, `upgrade`, `version`, `completion`, `sync export|import|status`, `rule add|list|test`, `explore`, `graph rebuild|cleanup-orphan-relations`, `gaps`, `vault export|import`, `embed backfill`, `export markdown`, `config show`, `hook`, `tui`, `backlog add|list|refine|promote|archive`, `spec new|advance|pushback|resolve|quick|reject|list|status|history`, `lane audit|reclassify|override|status|stats`, `codegraph index|search|node|callers|callees|impact|trace|files|status|hooks`, `skills list|install|pin|unpin|remove|lint|validate`, `model list|set|reset`, `conflicts candidates|scan|link|unlink|list`, `subagents fingerprint|profile|compose|write|manifest-list`, `delegation-hook enable|disable|status`. Full flag reference: [docs/api/cli.md](api/cli.md).
+36 top-level commands (`completion` is Cobra's auto-generated shell-completion
+command and is not counted in this figure, matching `mneme --help`'s own
+distinction): `save`, `search`, `get`, `update`, `forget`, `promote`,
+`status`, `stats`, `consolidate`, `serve`, `mcp`, `init`, `install`,
+`upgrade`, `version`, `sync export|import|status`, `rule add|list|test`,
+`explore`, `graph rebuild|cleanup-orphan-relations`, `gaps`, `vault
+export|import`, `embed backfill`, `export markdown`, `config show`, `hook`,
+`tui`, `backlog add|list|refine|promote|archive`, `spec
+new|advance|pushback|resolve|quick|reject|list|status|history`, `lane
+audit|reclassify|override|status|stats`, `codegraph
+index|search|node|callers|callees|impact|trace|files|status|hooks`, `skills
+list|install|pin|unpin|remove|lint|validate`, `model list|set|reset`,
+`conflicts candidates|scan|link|unlink|list`, `subagents
+fingerprint|profile|compose|write|manifest-list`, `delegation-hook
+enable|disable|status`, `team-memory enable|hooks`. Full flag reference:
+[docs/api/cli.md](api/cli.md).
 
 ### Hooks (`internal/cli/hook.go`)
 
@@ -1005,4 +1050,4 @@ Verified against benchmarks in `internal/service/bench_test.go`.
 
 ---
 
-*Last updated: 2026-04-30. Reflects the state of mneme after EPIC-1 through EPIC-6 (SPEC-001 through SPEC-026).*
+*Originally written 2026-04-30 for EPIC-1 through EPIC-6 (SPEC-001 through SPEC-026); updated for schema v14 / 64 MCP tools / 36 CLI commands after the SDD+lanes, CodeGraph, Skills, Models, Conflicts, agnostic-agents (per-project subagents), and Team Memory EPICs. See [CHANGELOG.md](../CHANGELOG.md) for the full release history.*

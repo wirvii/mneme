@@ -681,25 +681,60 @@ mneme sync import .mneme/sync/wirvii-mneme.jsonl.gz
 
 ## 11. Agent Ecosystem
 
-`mneme install claude-code` configures seven subagent profiles and four slash commands.
+`mneme install claude-code` still ships **six global subagent profiles** and
+four slash commands, as it always has. As of the agnostic-agents EPIC
+(SPEC-052, SS-1..SS-6), this is a **transitional** state: subagents are now
+meant to be generated **per-project** by the `mneme-init` skill's grill
+instead, so a project's agents actually match its own stack rather than a
+fixed Go/hexagonal/sqlc template. The global six keep shipping unconditionally
+"every release" until SS-7 (a future, separate release) retires that global
+registration in favor of the per-project model exclusively — see
+[docs/enforcement-model.md](enforcement-model.md#project-scoped-opt-in-registration-epic-agnostic-agents-ss-6)
+for the transition detail and the `subagent_*` MCP tools /
+[docs/api/subagents.md](api/subagents.md) for the generation API.
 
-### Subagent profiles
+### Subagent profiles (global, transitional)
 
 | Agent | Model | Role | Writes |
 |-------|-------|------|--------|
-| **architect** | claude-opus-4-6 | Design specs, never implement | `spec.md`, `decisions.md` |
-| **backend** | claude-sonnet-4-6 | Backend implementation (Go, sqlc, ports/adapters) | code, `api-contracts.md` |
-| **frontend** | claude-sonnet-4-6 | Frontend (Next.js, Server Components, Zod, i18n) | code |
-| **qa-tester** | claude-opus-4-6 | End-to-end testing, "default state is REQUIRES CHANGES" | `qa-report.md` |
-| **bug-hunter** | claude-sonnet-4-6 | READ-ONLY investigation, never modifies code | `diagnosis.md` |
+| **architect** | opus | Design specs, never implement | `spec.md`, `decisions.md` |
+| **backend** | sonnet | Backend implementation (Go, sqlc, ports/adapters) | code, `api-contracts.md` |
+| **frontend** | sonnet | Frontend (Next.js, Server Components, Zod, i18n) | code |
+| **qa-tester** | sonnet | End-to-end testing, "default state is REQUIRES CHANGES" | `qa-report.md` |
+| **bug-hunter** | sonnet | READ-ONLY investigation, never modifies code | `diagnosis.md` |
+| **diagnostician** | sonnet | Reads logs/infra, triages, proposes; `Bash` for reading only, no Edit/Write | `diagnosis` notes |
 
-All agents integrate with mneme memory at start (search + spec_status) and end (save discoveries + spec_advance).
+All agents integrate with mneme memory at start (search + spec_status) and end (save discoveries + spec_advance). Per-agent model overrides: `mneme model set <agent> <alias>` (see [docs/models.md](models.md)).
+
+### Per-project subagents (mneme-init grill)
+
+Instead of the fixed global six, a project can run the `mneme-init` skill and
+walk its grill to generate subagents tailored to its own stack: one profile
+per role (`backend`, `frontend`, ...), each covering every app/area that role
+owns, written to `<repo>/.claude/agents/<role>.md`. Permissions (the
+`tools:` allowlist) are always inherited from a fixed Go-authored archetype —
+never LLM-generated — so a generated `backend` subagent has exactly the same
+capability boundary as the global one, just a project-specific prompt. See
+[docs/api/subagents.md](api/subagents.md) for the six `subagent_*` tools and
+`mneme subagents` for their CLI counterpart.
+
+### Team memory (git-native, opt-in)
+
+A project can also opt into sharing durable knowledge (decisions,
+conventions, architecture, patterns, bugfixes, rules) between teammates
+through the repository itself — no server, no account, no network call. See
+[docs/team-memory.md](team-memory.md) for the full model; the short version:
+
+```bash
+mneme team-memory enable      # activate: marker + bake/export + import hooks
+mneme promote <id>            # explicitly share one memory regardless of type
+```
 
 ### Slash commands
 
 | Command | What it does |
 |---------|--------------|
-| `mneme-init` skill (invoke via the `mneme-init` skill, not a slash command) | Scan the project, seed mneme with foundational knowledge from CLAUDE.md, package.json, go.mod, etc. |
+| `mneme-init` skill (invoke via the `mneme-init` skill, not a slash command) | Scan the project, seed mneme with foundational knowledge from CLAUDE.md, package.json, go.mod, etc., and offer the per-project subagent + team-memory grills. |
 | `/grill-me` | Interview you relentlessly about a design, walking down every branch of the decision tree. |
 | `/hunt-bug` | Orchestrate the bug-hunter subagent against a bug report. |
 | `/bug-to-issue` | Convert a bug diagnosis into a spec via the architect. |
@@ -799,13 +834,24 @@ spec_advance({ "id": "SPEC-042", "by": "architect" })
 | `mneme upgrade` | Check for and install updates |
 | `mneme version` | Print version |
 
+### Per-project subagents & team memory
+
+| Command | Description |
+|---------|-------------|
+| `mneme subagents fingerprint` | Detect project root, apps, stack markers |
+| `mneme subagents compose --role <r> --archetype <a> ...` | Preview a composed subagent profile |
+| `mneme subagents write --role <r> --archetype <a> ...` | Write the profile to `.claude/agents/<r>.md` |
+| `mneme delegation-hook enable` | Register the project-scoped opt-in delegation hook |
+| `mneme team-memory enable` | Activate git-native shared memory for this repo |
+| `mneme promote <id>` | Mark one memory as team-curated (`shared=2`) |
+
 ---
 
 ## 13. MCP Tools Cheatsheet
 
-The MCP server (`mneme mcp`) exposes 57 tools over JSON-RPC 2.0 stdio. This
+The MCP server (`mneme mcp`) exposes 64 tools over JSON-RPC 2.0 stdio. This
 cheatsheet covers the original memory-tool surface; for the complete set
-(SDD, lane, codegraph, skills, model, conflicts) see [docs/api/](api/).
+(SDD, lane, codegraph, skills, model, conflicts, subagents) see [docs/api/](api/).
 
 ### Memory tools (14)
 
