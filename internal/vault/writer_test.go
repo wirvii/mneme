@@ -353,3 +353,89 @@ func TestWriter_DryRun_Paths(t *testing.T) {
 	}
 }
 
+// TestWriter_PathModeUUID_FlatByID verifies that a Writer configured with
+// PathModeUUID writes to notes/<uuid>.md regardless of topic_key, and that
+// two distinct memories (even with the same topic_key) land in two distinct
+// files — the git-native team-memory shared vault layout (SPEC-053 D1).
+func TestWriter_PathModeUUID_FlatByID(t *testing.T) {
+	root := t.TempDir()
+	w := NewWriter(ExportOptions{
+		VaultRoot: root,
+		Project:   "test/project",
+		Scope:     "shared",
+		PathMode:  PathModeUUID,
+	})
+
+	ts := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	m1 := newTestMemory("019ddc45-0000-0000-0000-000000000101", "same/topic-key", "first memory", ts)
+	m2 := newTestMemory("019ddc45-0000-0000-0000-000000000102", "same/topic-key", "second memory", ts)
+
+	written1, path1, err1 := w.WriteMemory(m1)
+	written2, path2, err2 := w.WriteMemory(m2)
+	if err1 != nil || err2 != nil {
+		t.Fatalf("WriteMemory errors: %v, %v", err1, err2)
+	}
+	if !written1 || !written2 {
+		t.Error("both memories should be written")
+	}
+
+	wantPath1 := "notes/019ddc45-0000-0000-0000-000000000101.md"
+	wantPath2 := "notes/019ddc45-0000-0000-0000-000000000102.md"
+	if path1 != wantPath1 {
+		t.Errorf("path1 = %q, want %q", path1, wantPath1)
+	}
+	if path2 != wantPath2 {
+		t.Errorf("path2 = %q, want %q", path2, wantPath2)
+	}
+	if path1 == path2 {
+		t.Fatal("distinct memories must never share a PathModeUUID path")
+	}
+
+	for _, p := range []string{path1, path2} {
+		if _, err := os.Stat(filepath.Join(root, p)); err != nil {
+			t.Errorf("file %s not found: %v", p, err)
+		}
+	}
+}
+
+// TestWriter_PathModeUUID_ResaveRewritesSameFile verifies that writing the
+// same memory ID twice (e.g. a re-save after edits) targets the same file
+// path both times, and the second write updates its content.
+func TestWriter_PathModeUUID_ResaveRewritesSameFile(t *testing.T) {
+	root := t.TempDir()
+
+	id := "019ddc45-0000-0000-0000-000000000201"
+	ts1 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	ts2 := ts1.Add(time.Hour)
+
+	w1 := NewWriter(ExportOptions{VaultRoot: root, Project: "test/project", Scope: "shared", PathMode: PathModeUUID})
+	m1 := newTestMemory(id, "spec/decision", "original content", ts1)
+	if _, path1, err := w1.WriteMemory(m1); err != nil {
+		t.Fatalf("first write failed: %v", err)
+	} else if path1 != "notes/"+id+".md" {
+		t.Fatalf("unexpected first path: %q", path1)
+	}
+
+	// Simulate a fresh Writer per Save call (mirrors how MemoryService
+	// constructs a new vault.Writer for each write-through materialization).
+	w2 := NewWriter(ExportOptions{VaultRoot: root, Project: "test/project", Scope: "shared", PathMode: PathModeUUID})
+	m2 := newTestMemory(id, "spec/decision", "updated content", ts2)
+	written, path2, err := w2.WriteMemory(m2)
+	if err != nil {
+		t.Fatalf("second write failed: %v", err)
+	}
+	if !written {
+		t.Error("second write should have updated the file (newer updated_at)")
+	}
+	if path2 != "notes/"+id+".md" {
+		t.Fatalf("resave must target the same path; got %q", path2)
+	}
+
+	data, err := os.ReadFile(filepath.Join(root, path2))
+	if err != nil {
+		t.Fatalf("read rewritten file: %v", err)
+	}
+	if !strings.Contains(string(data), "updated content") {
+		t.Error("rewritten file should contain updated content")
+	}
+}

@@ -186,6 +186,17 @@ func TestTruncateID(t *testing.T) {
 	}
 }
 
+// TestUUIDPath verifies the flat notes/<uuid>.md layout used by PathModeUUID
+// (SPEC-053 D1), independent of topic_key.
+func TestUUIDPath(t *testing.T) {
+	id := "019ddc45-0000-0000-0000-000000000001"
+	got := UUIDPath(id)
+	want := "notes/019ddc45-0000-0000-0000-000000000001.md"
+	if got != want {
+		t.Errorf("UUIDPath(%q) = %q; want %q", id, got, want)
+	}
+}
+
 // TestMemoryPath_SpecExamples verifies the exact paths shown in spec section 3.
 func TestMemoryPath_SpecExamples(t *testing.T) {
 	ts := time.Now()

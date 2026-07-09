@@ -12,6 +12,24 @@ import (
 	"github.com/juanftp/mneme/internal/model"
 )
 
+// PathMode selects the layout strategy WriteMemory/Export use to compute a
+// memory's file path within the vault.
+type PathMode int
+
+const (
+	// PathModeTopicKey is the default: MemoryPath mirrors topic_key segments
+	// as nested directories (notes/<topic/key/segments>.md), falling back to
+	// notes/_no-topic/<id8>.md when there is no topic_key. Used by the
+	// personal vault (mneme vault export).
+	PathModeTopicKey PathMode = iota
+
+	// PathModeUUID writes every memory to notes/<uuid>.md regardless of
+	// topic_key (see UUIDPath). Used by the git-native team-memory shared
+	// vault (SPEC-053 D1) so concurrent creations by different team members
+	// never collide at the git level.
+	PathModeUUID
+)
+
 // ExportOptions controls how memories are written to the vault.
 type ExportOptions struct {
 	// VaultRoot is the root directory of the vault
@@ -21,8 +39,9 @@ type ExportOptions struct {
 	// Project is the project slug recorded in the marker file.
 	Project string
 
-	// Scope identifies whether this is a "project" or "global" vault.
-	// Used in the marker file; does not affect path layout.
+	// Scope identifies whether this is a "project", "global", or "shared"
+	// (git-native team-memory) vault. Used in the marker file; does not
+	// affect path layout — PathMode does that.
 	Scope string
 
 	// DryRun performs full analysis but writes nothing when true.
@@ -31,6 +50,10 @@ type ExportOptions struct {
 	// IncludeSuperseded exports superseded memories when true.
 	// Soft-deleted memories are never exported regardless of this flag.
 	IncludeSuperseded bool
+
+	// PathMode selects the file layout strategy. Zero value (PathModeTopicKey)
+	// preserves the original SPEC-023 behaviour for existing callers.
+	PathMode PathMode
 }
 
 // ExportResult summarises a vault export operation.
@@ -70,6 +93,12 @@ type VaultMarker struct {
 
 // markerFile is the name of the marker file at the vault root.
 const markerFile = ".mneme-vault"
+
+// MarkerFileName exports markerFile so other packages (e.g. internal/service's
+// team-memory enablement check, SPEC-053 D3) can build a marker path without
+// duplicating the literal — a single source of truth for the vault marker's
+// name.
+const MarkerFileName = markerFile
 
 // Writer writes memory files into a vault directory using atomic tmp+rename
 // writes and updated_at-based idempotency checks.
@@ -160,7 +189,11 @@ func (w *Writer) WriteMarker(result *ExportResult) error {
 
 // writeMemory is the internal implementation of WriteMemory.
 func (w *Writer) writeMemory(m *model.Memory) (written bool, relPath string, err error) {
-	relPath = w.resolveCollision(MemoryPath(m), m.ID)
+	path := MemoryPath(m)
+	if w.opts.PathMode == PathModeUUID {
+		path = UUIDPath(m.ID)
+	}
+	relPath = w.resolveCollision(path, m.ID)
 
 	if w.opts.DryRun {
 		// In dry-run mode, register the path as used and report written=true
