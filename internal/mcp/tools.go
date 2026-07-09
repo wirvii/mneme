@@ -382,6 +382,20 @@ func allTools() []ToolDefinition {
 				},
 			},
 		},
+		{
+			Name:        "mem_promote",
+			Description: "Mark a memory as team-curated (shared=2) and persist it in the database. Materializes it to the shared git vault immediately when team-memory is active. Idempotent.",
+			InputSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"id"},
+				"properties": map[string]any{
+					"id": map[string]any{
+						"type":        "string",
+						"description": "UUIDv7 of the memory to promote.",
+					},
+				},
+			},
+		},
 
 		// --- BACKLOG TOOLS ---
 
