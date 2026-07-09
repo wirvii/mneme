@@ -48,6 +48,41 @@ func TestFilesFromEmbed_Commands(t *testing.T) {
 	}
 }
 
+// TestMnemeInitCommandAsset_ThinWrapper verifies the shape of the embedded
+// assets/commands/mneme-init.md asset (SPEC-067): it must be readable
+// directly (the wiring in ClaudeCode().Commands reads this exact file, not
+// the whole assets/commands dir), carry the expected frontmatter (name +
+// description, matching the shape of the other command assets such as
+// grill-me.md), and stay a thin wrapper that only points at the mneme-init
+// skill — never reintroducing the obsolete 5-phase project-init markdown.
+func TestMnemeInitCommandAsset_ThinWrapper(t *testing.T) {
+	content, err := builtinCommands.ReadFile("assets/commands/mneme-init.md")
+	if err != nil {
+		t.Fatalf("read embedded assets/commands/mneme-init.md: %v", err)
+	}
+
+	text := string(content)
+
+	if !strings.HasPrefix(text, "---\nname: mneme-init\n") {
+		t.Errorf("mneme-init.md must start with frontmatter beginning 'name: mneme-init', got: %.80s", text)
+	}
+	if !strings.Contains(text, "description:") {
+		t.Error("mneme-init.md frontmatter is missing 'description:'")
+	}
+	if !strings.Contains(text, "mneme-init") || !strings.Contains(strings.ToLower(text), "skill") {
+		t.Error("mneme-init.md must reference the mneme-init skill")
+	}
+
+	// Anti-drift: must not reintroduce the obsolete 5-phase workflow markdown
+	// that this wrapper replaces (SPEC-067 restores a THIN wrapper only).
+	forbidden := []string{"subagent_fingerprint", "Phase 0", "Phase 1", "Phase 2", "Phase 3", "Phase 4"}
+	for _, marker := range forbidden {
+		if strings.Contains(text, marker) {
+			t.Errorf("mneme-init.md contains obsolete 5-phase marker %q — must stay a thin wrapper", marker)
+		}
+	}
+}
+
 // TestFilesFromEmbed_Templates checks that template files are returned correctly.
 func TestFilesFromEmbed_Templates(t *testing.T) {
 	destDir := t.TempDir()

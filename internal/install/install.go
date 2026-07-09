@@ -117,8 +117,10 @@ type Agent struct {
 //   - Hook entries merged into ~/.claude/settings.json
 //   - Protocol injection into ~/.claude/CLAUDE.md
 //   - mneme-init skill installed to ~/.claude/skills/mneme-init (project-level
-//     orchestrator entry point; replaces the former /mneme-init slash command,
-//     see SPEC-058 / EPIC agnostic-agents SS-5)
+//     orchestrator entry point; see SPEC-058 / EPIC agnostic-agents SS-5)
+//   - /mneme-init slash command installed to ~/.claude/commands/mneme-init.md,
+//     a thin wrapper that only invokes the mneme-init skill above (restored
+//     by SPEC-067 after SPEC-058 dropped it)
 func ClaudeCode(binaryPath string) *Agent {
 	return &Agent{
 		Name: "Claude Code",
@@ -171,12 +173,29 @@ func ClaudeCode(binaryPath string) *Agent {
 			return path, []byte(operatingManual()), nil
 		},
 
-		// Commands is nil — the project-init workflow moved from a slash
-		// command to the mneme-init SKILL (SPEC-058 / EPIC agnostic-agents
-		// SS-5). The skill ships via the Skills field below
-		// (assets/skills/mneme-init), which the generic "Skills" install
-		// step already deploys; no dedicated slash-command step is needed.
-		Commands: nil,
+		// Commands installs a single thin wrapper slash command,
+		// /mneme-init, that only invokes the mneme-init SKILL (SPEC-058 /
+		// EPIC agnostic-agents SS-5, restored by SPEC-067). The skill itself
+		// ships via the Skills field below (assets/skills/mneme-init), which
+		// the generic "Skills" install step already deploys; the wrapper
+		// exists solely to preserve the slash-command entry point in Claude
+		// Code. It reads exactly one embedded file — NOT filesFromEmbed over
+		// the whole assets/commands dir — so the vestigial grill-me/hunt-bug/
+		// bug-to-issue command assets remain uninstalled.
+		Commands: func() ([]CommandFile, error) {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return nil, fmt.Errorf("install: claude-code: commands: home dir: %w", err)
+			}
+			content, err := builtinCommands.ReadFile("assets/commands/mneme-init.md")
+			if err != nil {
+				return nil, fmt.Errorf("install: claude-code: commands: read wrapper: %w", err)
+			}
+			return []CommandFile{{
+				Path:    filepath.Join(home, ".claude", "commands", "mneme-init.md"),
+				Content: content,
+			}}, nil
+		},
 
 		Agents: func() ([]CommandFile, error) {
 			home, err := os.UserHomeDir()

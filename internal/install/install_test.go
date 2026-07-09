@@ -234,15 +234,43 @@ func TestInjectManual_Nil(t *testing.T) {
 	}
 }
 
-// TestClaudeCode_Commands_Nil verifies that Claude Code no longer ships a
-// dedicated slash command: the project-init workflow moved to the mneme-init
-// SKILL (SPEC-058 / EPIC agnostic-agents SS-5), so Commands must be nil and
-// the "Slash commands" install step must not appear.
-func TestClaudeCode_Commands_Nil(t *testing.T) {
+// TestClaudeCode_Commands_MnemeInitWrapper verifies that Claude Code ships
+// exactly one slash command, /mneme-init, restored as a thin wrapper that
+// only invokes the mneme-init SKILL (SPEC-058 / EPIC agnostic-agents SS-5;
+// wrapper restored by SPEC-067). The wrapper must reference the skill and
+// must NOT reintroduce the obsolete 5-phase markdown workflow.
+func TestClaudeCode_Commands_MnemeInitWrapper(t *testing.T) {
 	agent := ClaudeCode("")
 
-	if agent.Commands != nil {
-		t.Error("ClaudeCode agent.Commands must be nil — /mneme-init moved to the mneme-init skill (SPEC-058)")
+	if agent.Commands == nil {
+		t.Fatal("ClaudeCode agent.Commands must not be nil — /mneme-init is restored as a skill wrapper (SPEC-067)")
+	}
+
+	files, err := agent.Commands()
+	if err != nil {
+		t.Fatalf("agent.Commands() returned error: %v", err)
+	}
+
+	if len(files) != 1 {
+		t.Fatalf("expected exactly 1 CommandFile, got %d", len(files))
+	}
+
+	f := files[0]
+	if !strings.HasSuffix(filepath.ToSlash(f.Path), "/.claude/commands/mneme-init.md") {
+		t.Errorf("unexpected command path: %q", f.Path)
+	}
+
+	content := string(f.Content)
+	if !strings.Contains(content, "mneme-init") || !strings.Contains(content, "skill") {
+		t.Errorf("wrapper content does not reference the mneme-init skill: %q", content)
+	}
+
+	// Anti-drift: must not contain markers of the obsolete 5-phase workflow.
+	forbidden := []string{"subagent_fingerprint", "Phase 0", "Phase 1"}
+	for _, marker := range forbidden {
+		if strings.Contains(content, marker) {
+			t.Errorf("wrapper content contains obsolete 5-phase marker %q", marker)
+		}
 	}
 }
 
@@ -1148,7 +1176,10 @@ func TestInstallSteps_DefaultSequence(t *testing.T) {
 		t.Errorf("'Agent models' must immediately follow 'Agent profiles'; got indices %d and %d", agentProfilesIdx, agentModelsIdx)
 	}
 
-	required := []string{"MCP server", "Session hooks", "Operating manual", "Skills", "Workflow directories"}
+	// "Slash commands" is required again — /mneme-init is restored as a thin
+	// wrapper around the mneme-init SKILL (SPEC-058 / EPIC agnostic-agents
+	// SS-5 dropped it; SPEC-067 restored it), so Commands is no longer nil.
+	required := []string{"MCP server", "Session hooks", "Operating manual", "Slash commands", "Skills", "Workflow directories"}
 	for _, req := range required {
 		found := false
 		for _, n := range names {
@@ -1159,15 +1190,6 @@ func TestInstallSteps_DefaultSequence(t *testing.T) {
 		}
 		if !found {
 			t.Errorf("missing required step %q", req)
-		}
-	}
-
-	// "Slash commands" must NOT appear for Claude Code anymore — the
-	// project-init workflow moved from a slash command to the mneme-init
-	// SKILL (SPEC-058 / EPIC agnostic-agents SS-5), and Commands is now nil.
-	for _, n := range names {
-		if n == "Slash commands" {
-			t.Errorf("'Slash commands' step must not be present; /mneme-init moved to the mneme-init skill (SPEC-058); got %v", names)
 		}
 	}
 }
