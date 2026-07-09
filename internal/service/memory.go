@@ -98,25 +98,22 @@ func (svc *MemoryService) storeFor(scope model.Scope) *store.MemoryStore {
 	return svc.projectStore
 }
 
-// Save persists a new memory or updates an existing one via topic key upsert.
+// validateAndBuildMemory validates req — applying the exact same defaulting
+// and validation rules Save documents (mutating req in place, matching
+// Save's historical behaviour) — and constructs the model.Memory that would
+// be persisted, without touching the store.
 //
-// Validation rules (applied in order):
-//   - Title must not be empty (ErrTitleRequired)
-//   - Content must not be empty (ErrContentRequired)
-//   - Type defaults to TypeDiscovery when omitted
-//   - Scope defaults to ScopeProject when omitted
-//   - Validated Type and Scope must be known values (ErrInvalidType / ErrInvalidScope)
-//   - Project defaults to the service's project when omitted
-//
-// When TopicKey is non-empty and a memory with the same (topic_key, project,
-// scope) triple already exists, Save updates the existing record and returns
-// action "updated". Otherwise it creates a new record and returns action "created".
-func (svc *MemoryService) Save(ctx context.Context, req model.SaveRequest) (*model.SaveResponse, error) {
+// Extracted so callers that need Save's validation/defaulting semantics but
+// a different persistence strategy can reuse it instead of duplicating the
+// rules. The only current such caller is service.ImportFromShared (SPEC-053
+// SS-D), which must preserve a caller-supplied id via store.CreateWithID
+// instead of letting store.Upsert decide the id.
+func (svc *MemoryService) validateAndBuildMemory(req *model.SaveRequest) (*model.Memory, error) {
 	if req.Title == "" {
-		return nil, fmt.Errorf("service: save: %w", model.ErrTitleRequired)
+		return nil, model.ErrTitleRequired
 	}
 	if req.Content == "" {
-		return nil, fmt.Errorf("service: save: %w", model.ErrContentRequired)
+		return nil, model.ErrContentRequired
 	}
 
 	if req.Type == "" {
@@ -127,10 +124,10 @@ func (svc *MemoryService) Save(ctx context.Context, req model.SaveRequest) (*mod
 	}
 
 	if !req.Type.Valid() {
-		return nil, fmt.Errorf("service: save: %w", model.ErrInvalidType)
+		return nil, model.ErrInvalidType
 	}
 	if !req.Scope.Valid() {
-		return nil, fmt.Errorf("service: save: %w", model.ErrInvalidScope)
+		return nil, model.ErrInvalidScope
 	}
 
 	// Validate and normalise rule-specific fields. Rules require a non-empty
@@ -138,22 +135,22 @@ func (svc *MemoryService) Save(ctx context.Context, req model.SaveRequest) (*mod
 	// to "warn" when omitted for rules; non-rules always get empty severity.
 	if req.Type == model.TypeRule {
 		if len(req.AppliesTo) == 0 {
-			return nil, fmt.Errorf("service: save: %w", model.ErrAppliesToRequired)
+			return nil, model.ErrAppliesToRequired
 		}
 		for _, p := range req.AppliesTo {
 			if p == "" {
-				return nil, fmt.Errorf("service: save: %w", model.ErrEmptyPattern)
+				return nil, model.ErrEmptyPattern
 			}
 		}
 		if req.Severity == "" {
 			req.Severity = model.SeverityWarn
 		}
 		if !req.Severity.Valid() {
-			return nil, fmt.Errorf("service: save: %w", model.ErrInvalidSeverity)
+			return nil, model.ErrInvalidSeverity
 		}
 	} else {
 		if len(req.AppliesTo) > 0 {
-			return nil, fmt.Errorf("service: save: %w", model.ErrAppliesToForbidden)
+			return nil, model.ErrAppliesToForbidden
 		}
 		// Normalise severity to empty for non-rules so it is stored as ''
 		// in the database, consistent with the CHECK constraint default.
@@ -167,7 +164,7 @@ func (svc *MemoryService) Save(ctx context.Context, req model.SaveRequest) (*mod
 	importance := scoring.InitialImportance(req.Type, req.Importance)
 	decayRate := scoring.DecayRateForType(req.Type)
 
-	m := &model.Memory{
+	return &model.Memory{
 		Type:       req.Type,
 		Scope:      req.Scope,
 		Title:      req.Title,
@@ -182,6 +179,26 @@ func (svc *MemoryService) Save(ctx context.Context, req model.SaveRequest) (*mod
 		DecayRate:  decayRate,
 		AppliesTo:  req.AppliesTo,
 		Severity:   req.Severity,
+	}, nil
+}
+
+// Save persists a new memory or updates an existing one via topic key upsert.
+//
+// Validation rules (applied in order):
+//   - Title must not be empty (ErrTitleRequired)
+//   - Content must not be empty (ErrContentRequired)
+//   - Type defaults to TypeDiscovery when omitted
+//   - Scope defaults to ScopeProject when omitted
+//   - Validated Type and Scope must be known values (ErrInvalidType / ErrInvalidScope)
+//   - Project defaults to the service's project when omitted
+//
+// When TopicKey is non-empty and a memory with the same (topic_key, project,
+// scope) triple already exists, Save updates the existing record and returns
+// action "updated". Otherwise it creates a new record and returns action "created".
+func (svc *MemoryService) Save(ctx context.Context, req model.SaveRequest) (*model.SaveResponse, error) {
+	m, err := svc.validateAndBuildMemory(&req)
+	if err != nil {
+		return nil, fmt.Errorf("service: save: %w", err)
 	}
 
 	// SPEC-053 D2/D7: when team-memory is active, bake the Shared level and
