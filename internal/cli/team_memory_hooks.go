@@ -16,8 +16,8 @@ import (
 // remove subcommand only strips the region between these two lines
 // (inclusive), so any other content in the hook is preserved.
 const (
-	teamMemoryHooksMarkerBegin = "# >>> mneme team-memory (SPEC-064) >>>"
-	teamMemoryHooksMarkerEnd   = "# <<< mneme team-memory (SPEC-064) <<<"
+	teamMemoryHooksMarkerBegin = "# >>> mneme team-memory (SPEC-053) >>>"
+	teamMemoryHooksMarkerEnd   = "# <<< mneme team-memory (SPEC-053) <<<"
 )
 
 // teamMemoryHooksManagedBlock is the exact content injected between the
