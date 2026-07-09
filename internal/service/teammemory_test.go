@@ -384,3 +384,83 @@ func TestUpdate_TeamMemoryActive_RematerializesSharedMemory(t *testing.T) {
 		t.Errorf("re-materialized file should reflect the Update, got:\n%s", data)
 	}
 }
+
+// TestSave_SuppressedContext_NeverMaterializes is the regression guard for the
+// SPEC-053 D5 anti-loop guard: WithSuppressMaterialize must still allow
+// Shared to be baked (a suppressed Save is still a normal Save from the
+// caller's point of view) but must prevent the write-through disk write.
+// This is the exact mechanism the future vault-import path (SS-D) depends on
+// to replay shared memories through Save/Update without re-triggering
+// materialization back into the vault it just read from.
+func TestSave_SuppressedContext_NeverMaterializes(t *testing.T) {
+	svc, repoDir := newRepoTestService(t, true)
+	ctx := service.WithSuppressMaterialize(context.Background())
+
+	resp, err := svc.Save(ctx, model.SaveRequest{
+		Title:   "Imported from a peer's shared vault",
+		Content: "Content",
+		Type:    model.TypeDecision,
+	})
+	if err != nil {
+		t.Fatalf("Save: unexpected error: %v", err)
+	}
+
+	// Shared must still be baked — suppression only affects the disk write,
+	// not the in-DB resolution of the sharing level.
+	mem, err := svc.Get(context.Background(), resp.ID)
+	if err != nil {
+		t.Fatalf("Get: unexpected error: %v", err)
+	}
+	if mem.Shared != 1 {
+		t.Errorf("expected Shared=1 to still be baked under a suppressed context, got %d", mem.Shared)
+	}
+
+	path := sharedVaultFile(repoDir, resp.ID)
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("WithSuppressMaterialize must prevent the write-through disk write, but found %s", path)
+	}
+}
+
+// TestUpdate_SuppressedContext_NeverMaterializes mirrors the Save guard test
+// for Update: an already-shared memory re-materializes normally, but not when
+// the call is made under a suppressed context.
+func TestUpdate_SuppressedContext_NeverMaterializes(t *testing.T) {
+	svc, repoDir := newRepoTestService(t, true)
+	bg := context.Background()
+
+	resp, err := svc.Save(bg, model.SaveRequest{
+		Title:   "Original title",
+		Content: "Original content",
+		Type:    model.TypeDecision,
+	})
+	if err != nil {
+		t.Fatalf("Save: unexpected error: %v", err)
+	}
+
+	// Sanity check: materialization did happen for the initial (non-suppressed) Save.
+	path := sharedVaultFile(repoDir, resp.ID)
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("expected the initial Save to materialize %s: %v", path, err)
+	}
+	initialData, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read initial materialized file: %v", err)
+	}
+
+	suppressedCtx := service.WithSuppressMaterialize(bg)
+	newContent := "Content changed under a suppressed context"
+	if _, err := svc.Update(suppressedCtx, resp.ID, model.UpdateRequest{Content: &newContent}); err != nil {
+		t.Fatalf("Update: unexpected error: %v", err)
+	}
+
+	afterData, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read file after suppressed Update: %v", err)
+	}
+	if string(afterData) != string(initialData) {
+		t.Errorf("suppressed Update must not rewrite the materialized file, but content changed:\nbefore:\n%s\nafter:\n%s", initialData, afterData)
+	}
+	if strings.Contains(string(afterData), newContent) {
+		t.Error("suppressed Update must not propagate its content change into the vault file")
+	}
+}
