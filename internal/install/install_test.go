@@ -1429,6 +1429,17 @@ func TestDelegationHook_SmokeTests(t *testing.T) {
 		t.Fatalf("write hook to temp: %v", err)
 	}
 
+	// SPEC-068 D6/D9: every case below runs "mneme hook path-owned" for any
+	// non-whitelisted target the hook would otherwise block directly. Isolate
+	// $HOME (no config.toml, no databases) and the working directory (a
+	// fresh, non-git temp dir — no project can be detected) so that call
+	// always misses and deterministically resolves to "manifest absent ->
+	// BLOCK legacy" (D8), reproducing this test's pre-SPEC-068 assumption
+	// that every non-whitelisted path blocks — regardless of whatever real
+	// project/manifest the machine running this test happens to have.
+	isoHome := t.TempDir()
+	isoCWD := t.TempDir()
+
 	cases := []hookSmokeCase{
 		// --- B-cases: subagent detection (AC1) ---
 
@@ -1680,6 +1691,8 @@ func TestDelegationHook_SmokeTests(t *testing.T) {
 			// Discard hook stdout/stderr — we only care about exit code.
 			cmd.Stdout = nil
 			cmd.Stderr = nil
+			cmd.Dir = isoCWD
+			cmd.Env = append(os.Environ(), "HOME="+isoHome)
 
 			runErr := cmd.Run()
 

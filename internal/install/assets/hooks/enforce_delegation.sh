@@ -14,13 +14,22 @@
 #   binarios arbitrarios, pipe a intérpretes no listados. La defensa real de
 #   subagentes maliciosos/accidentales es Layer 1 (capability allowlist).
 #
-# Whitelist (lo que el orquestador SÍ puede tocar):
+# Whitelist (lo que el orquestador SÍ puede tocar sin consultar a Go):
 #   - .claude/**         (config local del proyecto)
 #   - ~/.claude/**       (config global)
 #   - ~/.mneme/**        (workflow dir de mneme: specs/qa-reports/docs del SDD)
 #   - CLAUDE.md          (en cualquier ubicación)
 #   - **/docs/*.md       (documentación)
 #   - .claudeignore      (en la raíz)
+#
+# Rutas NO whitelisted (SPEC-068 D6/D9): ya no se bloquean directo. Se consulta
+# "mneme hook path-owned <path>", que decide contra el manifest de subagentes
+# del proyecto (memoria subagents/manifest): exit 2 = BLOCK (path poseído por
+# un subagente implementador, o manifest ausente/vacío = legacy deny-by-default
+# durante la ventana de migración); exit 0 = ALLOW (path sin subagente que lo
+# posea = fallback legítimo del orquestador). Si "mneme" no está en PATH no hay
+# forma de preguntarle a Go: se mantiene el bloqueo (ver check_target_or_block)
+# para no abrir un bypass. Ver docs/HOOKS.md para el contrato completo.
 #
 # Cobertura:
 #   - Write, Edit, MultiEdit, NotebookEdit (file_path directo)
@@ -233,6 +242,47 @@ block() {
 }
 
 # ---------------------------------------------------------------------------
+# 5b. path-owned bridge (SPEC-068 D6/D9)
+#
+# Every point below that used to call block() directly for a resolved
+# non-whitelisted target now calls check_target_or_block instead. It asks
+# "mneme hook path-owned <target>" whether an implementer subagent owns the
+# path (per the project's manifest) and blocks SII that subcommand exits 2 —
+# reusing the exit-code contract described in the header. When it exits 0
+# (not owned / fallback, or path-owned itself failed open) this function
+# returns normally and the caller keeps evaluating the rest of the command —
+# exactly like a would-be is_allowed_path "true" branch, just resolved by Go
+# instead of the static allowlist.
+#
+# Guard (D9): if "mneme" is not on PATH there is no way to ask Go at all —
+# block unconditionally rather than silently downgrading every non-whitelisted
+# write to "allowed" the moment the binary is missing.
+# ---------------------------------------------------------------------------
+check_target_or_block() {
+  local target="$1"
+  local reason="$2"
+
+  TARGET_PATH="$target"
+
+  if ! command -v mneme >/dev/null 2>&1; then
+    block "$reason"
+  fi
+
+  local owner
+  owner="$(mneme hook path-owned "$target" 2>/dev/null)"
+  local status=$?
+
+  if [[ "$status" -eq 2 ]]; then
+    if [[ -n "$owner" && "$owner" != "legacy" ]]; then
+      block "$reason (delega a @$owner)"
+    fi
+    block "$reason"
+  fi
+  # status == 0 (allowed) or any other exit (path-owned itself fails open):
+  # fall through, i.e. treat as allowed. Caller continues normally.
+}
+
+# ---------------------------------------------------------------------------
 # 6. Checker para herramientas de archivo (file_path en tool_input)
 # ---------------------------------------------------------------------------
 check_file_tool() {
@@ -246,8 +296,7 @@ check_file_tool() {
     exit 0
   fi
 
-  TARGET_PATH="$file_path"
-  block "Ruta bloqueada: '$file_path'"
+  check_target_or_block "$file_path" "Ruta bloqueada: '$file_path'"
 }
 
 # ---------------------------------------------------------------------------
@@ -299,8 +348,7 @@ check_bash_go() {
         # Validar redirect targets (excepto /dev/*)
         if [[ "$tok_value" != /dev/* ]]; then
           if ! is_allowed_path "$tok_value"; then
-            TARGET_PATH="$tok_value"
-            block "Redirect a ruta protegida: '$tok_value'"
+            check_target_or_block "$tok_value" "Redirect a ruta protegida: '$tok_value'"
           fi
         fi
         ;;
@@ -329,8 +377,7 @@ check_bash_go() {
               target="$(_find_last_word_target "$tokens_json" "$i")"
               if [[ -n "$target" && "$target" != -* ]]; then
                 if ! is_allowed_path "$target"; then
-                  TARGET_PATH="$target"
-                  block "'$tok_value' a ruta protegida: '$target'"
+                  check_target_or_block "$target" "'$tok_value' a ruta protegida: '$target'"
                 fi
               fi
               ;;
@@ -372,8 +419,7 @@ check_bash_go() {
                 dd_target="${dd_target//\'/}"
                 dd_target="${dd_target//\"/}"
                 if ! is_allowed_path "$dd_target"; then
-                  TARGET_PATH="$dd_target"
-                  block "'dd' a ruta protegida: '$dd_target'"
+                  check_target_or_block "$dd_target" "'dd' a ruta protegida: '$dd_target'"
                 fi
               fi
               ;;
@@ -488,8 +534,7 @@ check_bash_legacy() {
     fi
     if [[ "$target" != /dev/* ]]; then
       if ! is_allowed_path "$target"; then
-        TARGET_PATH="$target"
-        block "Redirect a ruta protegida: '$target'"
+        check_target_or_block "$target" "Redirect a ruta protegida: '$target'"
       fi
     fi
     # avanzar el cursor para el próximo match
@@ -522,8 +567,7 @@ check_bash_legacy() {
       target="${target//\"/}"
       # Filtrar flags que pudieran quedar como último arg
       if [[ -n "$target" && "$target" != -* ]] && ! is_allowed_path "$target"; then
-        TARGET_PATH="$target"
-        block "'$cmd_name' a ruta protegida: '$target'"
+        check_target_or_block "$target" "'$cmd_name' a ruta protegida: '$target'"
       fi
     fi
   done
@@ -534,8 +578,7 @@ check_bash_legacy() {
     target="${target//\'/}"
     target="${target//\"/}"
     if ! is_allowed_path "$target"; then
-      TARGET_PATH="$target"
-      block "'dd' a ruta protegida: '$target'"
+      check_target_or_block "$target" "'dd' a ruta protegida: '$target'"
     fi
   fi
 
@@ -545,8 +588,7 @@ check_bash_legacy() {
     target="${target//\'/}"
     target="${target//\"/}"
     if ! is_allowed_path "$target"; then
-      TARGET_PATH="$target"
-      block "Heredoc a ruta protegida: '$target'"
+      check_target_or_block "$target" "Heredoc a ruta protegida: '$target'"
     fi
   fi
 

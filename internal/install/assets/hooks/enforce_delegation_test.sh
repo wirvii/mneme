@@ -17,9 +17,32 @@ fi
 if [[ ! -x "$HOOK" ]]; then
   chmod +x "$HOOK"
 fi
+# Resolve to an absolute path: run_case/run_ac10_case cd into isolated
+# directories before invoking "$HOOK", which would break a relative path.
+HOOK="$(cd "$(dirname "$HOOK")" && pwd)/$(basename "$HOOK")"
 
 PASS=0
 FAIL=0
+
+# ---------------------------------------------------------------------------
+# Environment isolation (SPEC-068 D6/D9): non-AC10 cases below predate
+# manifest-awareness and assert the pre-existing "block everything outside
+# the static whitelist" behaviour. Since is_allowed_path already resolves
+# every genuinely-allowed case before the hook ever calls
+# "mneme hook path-owned", the only way that call can change these cases'
+# expected exit codes is if it resolves against a REAL project that happens
+# to have a manifest on the machine running this script (e.g. mneme's own
+# repo, once it self-hosts SPEC-068). ISO_HOME/ISO_CWD force every run_case
+# invocation into an isolated $HOME (no config.toml, no databases) and a
+# non-git working directory (no project can be detected, so path-owned's
+# manifest lookup always misses) — deterministically reproducing "manifest
+# absent -> BLOCK legacy" (D8) regardless of the host machine's real state.
+# AC10 cases below opt out of this isolation to exercise the real
+# manifest-aware path (see run_ac10_case).
+# ---------------------------------------------------------------------------
+ISO_HOME="$(mktemp -d)"
+ISO_CWD="$(mktemp -d)"
+trap 'rm -rf "$ISO_HOME" "$ISO_CWD"' EXIT
 
 # run_case NAME JSON WANT_EXIT
 run_case() {
@@ -28,10 +51,8 @@ run_case() {
   local want="$3"
 
   local got
-  got="$(printf '%s' "$json" | bash "$HOOK" 2>/dev/null; printf '%s' "$?")"
-  # bash exits with last command; capture exit code via $?
   set +e
-  printf '%s' "$json" | bash "$HOOK" >/dev/null 2>/dev/null
+  printf '%s' "$json" | HOME="$ISO_HOME" bash -c "cd '$ISO_CWD' && bash '$HOOK'" >/dev/null 2>/dev/null
   got=$?
   set -e
 
@@ -244,6 +265,96 @@ run_case "S3_cp_to_tmp" \
 run_case "S4_tee_tmp" \
   '{"tool_name":"Bash","tool_input":{"command":"echo x | tee /tmp/out"}}' \
   0
+
+# ---------------------------------------------------------------------------
+# AC10-cases: manifest-aware path-owned integration (SPEC-068)
+#
+# These cases need a REAL "mneme" on PATH that understands
+# "mneme hook path-owned" and a seeded subagents/manifest memory — unlike the
+# cases above, they deliberately do NOT use the isolated ISO_HOME/ISO_CWD.
+# Skipped (not failed) when "mneme" is unavailable, matching this file's
+# existing bash/jq skip convention (see the caller — currently there is none
+# for mneme, so we skip inline here instead).
+# ---------------------------------------------------------------------------
+if ! command -v mneme >/dev/null 2>&1; then
+  printf '[SKIP] AC10 manifest-aware cases — "mneme" not found in PATH\n'
+else
+  AC10_HOME="$(mktemp -d)"
+  AC10_REPO="$(mktemp -d)"
+  trap 'rm -rf "$ISO_HOME" "$ISO_CWD" "$AC10_HOME" "$AC10_REPO"' EXIT
+
+  git -C "$AC10_REPO" init -q
+  AC10_SLUG="$(basename "$AC10_REPO" | tr '[:upper:]' '[:lower:]')"
+
+  # Seed a manifest owning internal/** for "backend" in the isolated project
+  # DB path-owned will read back (same HOME, same detected slug — the repo
+  # has no "origin" remote, so DetectProject falls back to the lowercased
+  # repo-root basename, exactly AC10_SLUG).
+  HOME="$AC10_HOME" mneme --project "$AC10_SLUG" save \
+    --type config \
+    --topic-key subagents/manifest \
+    --scope project \
+    --title "Subagent manifest" \
+    --content '[{"role":"backend","path":"/repo/.claude/agents/backend.md","areas":["internal/**"]}]' \
+    >/dev/null 2>&1
+
+  # run_ac10_case NAME JSON WANT_EXIT [WANT_STDERR_SUBSTR]
+  run_ac10_case() {
+    local name="$1"
+    local json="$2"
+    local want="$3"
+    local want_substr="${4:-}"
+
+    local stderr_file
+    stderr_file="$(mktemp)"
+
+    set +e
+    printf '%s' "$json" | HOME="$AC10_HOME" bash -c "cd '$AC10_REPO' && bash '$HOOK'" >/dev/null 2>"$stderr_file"
+    local got=$?
+    set -e
+
+    local ok=1
+    [[ "$got" -eq "$want" ]] || ok=0
+    if [[ -n "$want_substr" ]] && ! grep -q "$want_substr" "$stderr_file"; then
+      ok=0
+    fi
+
+    if [[ "$ok" -eq 1 ]]; then
+      printf '[PASS] %s (exit %d)\n' "$name" "$got"
+      PASS=$((PASS+1))
+    else
+      printf '[FAIL] %s — want exit %d%s, got exit %d (stderr: %s)\n' \
+        "$name" "$want" "${want_substr:+ containing '$want_substr'}" "$got" "$(cat "$stderr_file")"
+      FAIL=$((FAIL+1))
+    fi
+    rm -f "$stderr_file"
+  }
+
+  # AC10.1: Edit to internal/foo.go, no agent_id, manifest owns internal/** as
+  # backend → block (exit 2), message names backend.
+  run_ac10_case "AC10_1_edit_owned_by_backend_blocks" \
+    '{"tool_name":"Edit","tool_input":{"file_path":"internal/foo.go"}}' \
+    2 \
+    "backend"
+
+  # AC10.2: same payload shape but file_path=notes.txt (not owned by any
+  # implementer area) → allow (exit 0), fallback to the orchestrator.
+  run_ac10_case "AC10_2_edit_unowned_path_allows" \
+    '{"tool_name":"Edit","tool_input":{"file_path":"notes.txt"}}' \
+    0
+
+  # AC10.3: same owned path, but agent_id present (subagent) → always allow,
+  # the manifest is never even consulted.
+  run_ac10_case "AC10_3_subagent_always_allowed" \
+    '{"agent_id":"abc-123","tool_name":"Edit","tool_input":{"file_path":"internal/foo.go"}}' \
+    0
+
+  # AC10.4: Bash redirect to the owned path (orchestrator) → block (exit 2).
+  run_ac10_case "AC10_4_bash_redirect_owned_path_blocks" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo x > internal/foo.go"}}' \
+    2 \
+    "backend"
+fi
 
 # ---------------------------------------------------------------------------
 # Summary
