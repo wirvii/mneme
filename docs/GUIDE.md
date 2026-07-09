@@ -853,7 +853,7 @@ The MCP server (`mneme mcp`) exposes 64 tools over JSON-RPC 2.0 stdio. This
 cheatsheet covers the original memory-tool surface; for the complete set
 (SDD, lane, codegraph, skills, model, conflicts, subagents) see [docs/api/](api/).
 
-### Memory tools (14)
+### Memory tools (15)
 
 | Tool | Required params | Key optional params | Purpose |
 |------|-----------------|---------------------|---------|
@@ -869,6 +869,7 @@ cheatsheet covers the original memory-tool surface; for the complete set
 | `mem_stats` | -- | `project` | Aggregate statistics |
 | `mem_checkpoint` | `summary` | `decisions`, `next_steps`, `project` | Save work-in-progress state |
 | `mem_forget` | `id` | `reason` | Mark for accelerated decay |
+| `mem_promote` | `id` | -- | Mark a memory as team-curated (`shared=2`) |
 | `mem_explore` | `seed` | `depth`, `budget`, `threshold`, `project` | BFS graph traversal |
 | `mem_gaps` | -- | `scope`, `limit`, `min_mentions`, `include_samples` | List unresolved wikilinks |
 
