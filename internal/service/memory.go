@@ -46,6 +46,11 @@ type MemoryService struct {
 	embedder     embed.Embedder // generates vector representations for semantic search
 	hebbianPool  *graph.HebbianWorkerPool
 	tracker      *graph.AccessTracker
+
+	// teamMemory caches whether the git-native team-memory vault is active for
+	// this process and, when so, its root directory (SPEC-053 D3). Resolved
+	// once at construction time in NewMemoryService.
+	teamMemory teamMemoryState
 }
 
 // NewMemoryService constructs a MemoryService. The caller must provide fully
@@ -60,6 +65,13 @@ type MemoryService struct {
 // The Hebbian worker pool is created here but not started. Call Start(ctx) to
 // launch the worker goroutine. For CLI commands call DrainHebbian after the
 // command completes to flush pending strengthening events.
+//
+// NewMemoryService also resolves team-memory state (SPEC-053 D3): it checks
+// whether the current process working directory is inside a git repository
+// with an active shared vault marker (<repoRoot>/.mneme/shared/.mneme-vault)
+// and caches the result for the service's lifetime. This is best-effort and
+// never fails construction — outside a git repository, or without the
+// marker, team-memory is simply inactive.
 func NewMemoryService(projectStore, globalStore *store.MemoryStore, cfg *config.Config, project string, embedder embed.Embedder) *MemoryService {
 	logger := slog.Default()
 	pool := graph.NewHebbianWorkerPool(projectStore, cfg.Graph, logger)
@@ -73,6 +85,7 @@ func NewMemoryService(projectStore, globalStore *store.MemoryStore, cfg *config.
 		embedder:     embedder,
 		hebbianPool:  pool,
 		tracker:      tracker,
+		teamMemory:   detectTeamMemory(),
 	}
 }
 
@@ -171,11 +184,26 @@ func (svc *MemoryService) Save(ctx context.Context, req model.SaveRequest) (*mod
 		Severity:   req.Severity,
 	}
 
+	// SPEC-053 D2/D7: when team-memory is active, bake the Shared level and
+	// Author identity onto m before it is first persisted. Inert (Shared=0,
+	// Author="") when team-memory is not active — matches Save's behaviour
+	// before this feature existed (SPEC-061 SS-A).
+	svc.bakeTeamMemoryFields(m, req.Shared)
+
 	targetStore := svc.storeFor(m.Scope)
 	result, created, err := targetStore.Upsert(ctx, m)
 	if err != nil {
 		return nil, fmt.Errorf("service: save: %w", err)
 	}
+
+	// SPEC-053 D3/D5: write-through materialization to the shared git vault.
+	// Best-effort — never fails Save. result reflects the row actually
+	// persisted: for a fresh Create this carries the just-baked Shared/Author;
+	// for a topic_key upsert-update it carries whatever was set when the
+	// memory was first created (store.Upsert's update branch intentionally
+	// never touches shared/author, see SPEC-061 SS-A), so a re-save of an
+	// already-shared memory still rewrites the same vault file.
+	svc.materializeTeamMemory(ctx, result)
 
 	// Generate and persist the embedding synchronously (best-effort).
 	// TF-IDF embed takes <1 ms so there is no value in deferring it to a
@@ -314,6 +342,14 @@ func (svc *MemoryService) Update(ctx context.Context, id string, req model.Updat
 	if req.Content != nil {
 		svc.processWikilinks(ctx, updated, targetStore)
 	}
+
+	// SPEC-053 D3/D5/D7: re-materialize to the shared git vault when this
+	// memory is already marked shared. Update cannot bake a new Shared value
+	// (the store's partial-update path never touches shared/author — SPEC-061
+	// SS-A), so only an already-persisted Shared>0 triggers this; author is
+	// filled in-memory when still empty. Best-effort — never fails Update.
+	svc.applyTeamMemoryAuthor(updated)
+	svc.materializeTeamMemory(ctx, updated)
 
 	return &model.SaveResponse{
 		ID:            updated.ID,

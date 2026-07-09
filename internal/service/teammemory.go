@@ -1,0 +1,213 @@
+package service
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+
+	"github.com/juanftp/mneme/internal/gitident"
+	"github.com/juanftp/mneme/internal/model"
+	"github.com/juanftp/mneme/internal/vault"
+)
+
+// sharedVaultRelDir is the path, relative to a git repository root, where the
+// git-native team-memory vault lives (SPEC-053 D1). Its marker file's
+// presence there is what turns write-through materialization on for the
+// current process (SPEC-053 D3) — there is no other config flag.
+const sharedVaultRelDir = "shared"
+
+// durableSharedTypes is the set of memory types that are auto-shared
+// (Shared=1) when team-memory is active and the caller does not explicitly
+// override SaveRequest.Shared (SPEC-053 D2). Ephemeral types
+// (session_summary, synthesis) and everyday working notes (discovery, config)
+// are excluded — durability of the knowledge is the bar for defaulting to
+// "share this with the team automatically". discovery/config/session_summary
+// are effectively never auto-shared; a human can still opt one in explicitly
+// via SaveRequest.Shared (team-curated promotion is SS-C scope).
+var durableSharedTypes = map[model.MemoryType]bool{
+	model.TypeDecision:     true,
+	model.TypeConvention:   true,
+	model.TypeArchitecture: true,
+	model.TypePattern:      true,
+	model.TypeBugfix:       true,
+	model.TypeRule:         true,
+}
+
+// teamMemoryState is resolved once at MemoryService construction time (D3)
+// and cached for the process lifetime — repeated Save/Update calls never
+// re-run "git rev-parse" or re-stat the marker.
+type teamMemoryState struct {
+	// enabled is true when the current repository has opted into team-memory
+	// (the shared vault marker exists). When false, Shared is always baked to
+	// 0 and nothing is ever materialized, regardless of memory type.
+	enabled bool
+
+	// vaultRoot is the absolute path to <repoRoot>/.mneme/shared. Only
+	// meaningful when enabled is true.
+	vaultRoot string
+}
+
+// detectTeamMemory resolves the git repository root for the current process
+// working directory and checks whether the team-memory marker file exists
+// inside <repoRoot>/.mneme/shared/. Both steps are best-effort: any failure
+// (not a git repository, git not installed, marker unreadable) simply yields
+// a disabled state — team-memory is opt-in, never a hard requirement for
+// mneme to function (SPEC-053 D3).
+func detectTeamMemory() teamMemoryState {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return teamMemoryState{}
+	}
+
+	root, err := gitRepoRoot(cwd)
+	if err != nil {
+		return teamMemoryState{}
+	}
+
+	vaultRoot := filepath.Join(root, ".mneme", sharedVaultRelDir)
+	markerPath := filepath.Join(vaultRoot, vault.MarkerFileName)
+
+	if _, statErr := os.Stat(markerPath); statErr != nil {
+		return teamMemoryState{vaultRoot: vaultRoot}
+	}
+
+	return teamMemoryState{enabled: true, vaultRoot: vaultRoot}
+}
+
+// gitRepoRoot runs "git rev-parse --show-toplevel" in cwd and returns the
+// absolute repository root. Returns an error when cwd is not inside a git
+// repository or git is not on PATH — the caller treats this as "team-memory
+// not applicable here", not a fatal condition.
+func gitRepoRoot(cwd string) (string, error) {
+	//nolint:gosec // fixed subcommand, no user input reaches exec.Command here.
+	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
+	cmd.Dir = cwd
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("gitRepoRoot: not a git repository: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// suppressMaterializeKey is the context key used by WithSuppressMaterialize.
+// A dedicated unexported type avoids collisions with keys from other packages
+// (the standard Go context-key idiom).
+type suppressMaterializeKey struct{}
+
+// WithSuppressMaterialize returns a context that instructs Save/Update to
+// skip team-memory write-through materialization for the duration of the
+// call it decorates.
+//
+// This is the base of the anti-loop guard (SPEC-053 D5): the future
+// vault-import path (SS-D) will call Save/Update while replaying memories
+// read from the shared vault, and must not re-materialize them back into the
+// very vault it just read from — an infinite write loop. SS-D is expected to
+// wrap its Save/Update calls as:
+//
+//	ctx = service.WithSuppressMaterialize(ctx)
+//	svc.Save(ctx, req) // or svc.Update(ctx, id, req)
+func WithSuppressMaterialize(ctx context.Context) context.Context {
+	return context.WithValue(ctx, suppressMaterializeKey{}, true)
+}
+
+// materializeSuppressed reports whether ctx carries the suppress-materialize
+// marker set by WithSuppressMaterialize.
+func materializeSuppressed(ctx context.Context) bool {
+	v, _ := ctx.Value(suppressMaterializeKey{}).(bool)
+	return v
+}
+
+// bakeSharedDefault computes the auto-share default (SPEC-053 D2) for a
+// memory of the given type and scope, used when the caller does not
+// explicitly set SaveRequest.Shared. Global- and org-scoped memories
+// (personal preferences, cross-project config) are never auto-shared
+// regardless of type — team-memory only concerns project knowledge.
+func bakeSharedDefault(t model.MemoryType, scope model.Scope) int {
+	if scope == model.ScopeGlobal || scope == model.ScopeOrg {
+		return 0
+	}
+	if durableSharedTypes[t] {
+		return 1
+	}
+	return 0
+}
+
+// bakeTeamMemoryFields mutates m in place to resolve its Shared level and
+// Author identity before the first persistence of a new memory (SPEC-053
+// D2/D7). It is a no-op when team-memory is not active for this process —
+// m.Shared/m.Author are left at their zero values, matching Save's behaviour
+// before this feature existed (SPEC-061 SS-A's inertness guarantee).
+//
+// reqShared mirrors SaveRequest.Shared: nil defers to the type-based default;
+// a non-nil pointer is an explicit override (opt-out of an auto-shared type,
+// or opt-in of one that would otherwise default to local-only).
+func (svc *MemoryService) bakeTeamMemoryFields(m *model.Memory, reqShared *int) {
+	if !svc.teamMemory.enabled {
+		return
+	}
+
+	if reqShared != nil {
+		m.Shared = *reqShared
+	} else {
+		m.Shared = bakeSharedDefault(m.Type, m.Scope)
+	}
+
+	if m.Shared > 0 && m.Author == "" {
+		m.Author = gitident.Author()
+	}
+}
+
+// applyTeamMemoryAuthor assigns the local git identity to m.Author when
+// team-memory is active, m is marked shared, and it does not already carry an
+// author (SPEC-053 D7 "solo si vacío"). Used by Update, which — unlike
+// Save/Create — cannot persist a freshly baked Shared value (the store's
+// partial-update path intentionally never touches shared/author, see
+// SPEC-061 SS-A), so only the already-persisted Shared level is honoured
+// here; this only affects the in-memory snapshot handed to materialization,
+// not a second bake of Shared itself.
+func (svc *MemoryService) applyTeamMemoryAuthor(m *model.Memory) {
+	if !svc.teamMemory.enabled || m.Shared <= 0 {
+		return
+	}
+	if m.Author == "" {
+		m.Author = gitident.Author()
+	}
+}
+
+// materializeTeamMemory writes m to the shared git-native vault when
+// team-memory is active, m is marked shared (Shared > 0), and materialization
+// has not been suppressed by WithSuppressMaterialize (the SS-D anti-loop
+// guard). It is a no-op otherwise.
+//
+// Best-effort, matching the embedMemory/processWikilinks pattern already
+// established in this package: any failure (marker unreadable, disk full,
+// permission denied, .mneme/shared/notes not a directory) is logged via slog
+// and never propagated — a materialization failure must never fail the
+// caller's Save or Update.
+func (svc *MemoryService) materializeTeamMemory(ctx context.Context, m *model.Memory) {
+	if !svc.teamMemory.enabled || m == nil || m.Shared <= 0 {
+		return
+	}
+	if materializeSuppressed(ctx) {
+		return
+	}
+
+	writer := vault.NewWriter(vault.ExportOptions{
+		VaultRoot: svc.teamMemory.vaultRoot,
+		Project:   svc.project,
+		Scope:     "shared",
+		PathMode:  vault.PathModeUUID,
+	})
+
+	if _, _, err := writer.WriteMemory(m); err != nil {
+		slog.ErrorContext(ctx, "team_memory_materialize_error",
+			"memory_id", m.ID,
+			"shared", m.Shared,
+			"error", err,
+		)
+	}
+}
