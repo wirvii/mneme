@@ -54,9 +54,9 @@ Supporting packages: `scoring/` (decay, BM25 re-ranking, RRF fusion), `consolida
 
 ### The three frontends
 
-- **MCP** (`internal/mcp`, primary) — JSON-RPC 2.0 over stdio, ProtocolVersion `2024-11-05`. Surface: 57 tools (14 `mem_*`, 4 `backlog_*`, 8 `spec_*`, 5 `lane_*`, 10 `codegraph_*`, 7 `skills_*`, 3 `model_*`, 5 `conflicts_*`, 1 `init`). `spec_*`: spec_new, spec_status, spec_advance, spec_pushback, spec_resolve, spec_list, spec_quick, spec_reject. `lane_*`: lane_audit, lane_reclassify, lane_override, lane_status, lane_stats. `skills_*`: skills_list, skills_install, skills_pin, skills_unpin, skills_remove, skills_lint, skills_validate. `model_*`: model_list, model_set, model_reset. `conflicts_*`: conflicts_candidates, conflicts_scan, conflicts_link, conflicts_unlink, conflicts_list. `init`: applies managed blocks + drift report (see `docs/init.md`). `handleMessage()` is exposed separately from `Run()` so unit tests can drive it without I/O loops.
+- **MCP** (`internal/mcp`, primary) — JSON-RPC 2.0 over stdio, ProtocolVersion `2024-11-05`. Surface: 64 tools (15 `mem_*`, 4 `backlog_*`, 8 `spec_*`, 5 `lane_*`, 10 `codegraph_*`, 7 `skills_*`, 3 `model_*`, 5 `conflicts_*`, 6 `subagent_*`, 1 `init`). `mem_*`: mem_save, mem_search, mem_get, mem_context, mem_update, mem_session_end, mem_suggest_topic_key, mem_relate, mem_timeline, mem_stats, mem_checkpoint, mem_forget, mem_promote, mem_gaps, mem_explore. `spec_*`: spec_new, spec_status, spec_advance, spec_pushback, spec_resolve, spec_list, spec_quick, spec_reject. `lane_*`: lane_audit, lane_reclassify, lane_override, lane_status, lane_stats. `skills_*`: skills_list, skills_install, skills_pin, skills_unpin, skills_remove, skills_lint, skills_validate. `model_*`: model_list, model_set, model_reset. `conflicts_*`: conflicts_candidates, conflicts_scan, conflicts_link, conflicts_unlink, conflicts_list. `subagent_*`: subagent_fingerprint, subagent_profile_get, subagent_profile_save, subagent_compose, subagent_write, subagent_manifest_list. `init`: applies managed blocks + drift report (see `docs/init.md`). `handleMessage()` is exposed separately from `Run()` so unit tests can drive it without I/O loops.
 - **HTTP** (`internal/http`, `mneme serve --addr :7437`) — stdlib `net/http`, graceful shutdown 10s, 8 endpoints under `/v1/`. Currently lacks SDD endpoints and a few mem tools (`mem_checkpoint`, `mem_timeline`, `mem_suggest_topic_key`); when adding service capabilities, decide explicitly whether HTTP gets parity.
-- **CLI** (`internal/cli`, Cobra) — 32 top-level commands. Notable: `sync export|import|status` is the backup/restore path (no dedicated `restore` command); `mneme init` sets up managed blocks, reports drift, and (with `--apply`) migrates legacy projects to the SDD engine (see `docs/init.md`); `mneme install <agent>` writes agent profiles — supported agents: `claude-code` (multi-agent, full delegation) and `codex` (single-agent, no delegation; see `docs/codex.md`); `mneme skills` manages skills in `~/.claude/skills/`; `mneme model` manages per-agent model assignments; `mneme conflicts` detects and manages memory conflict relations; `mneme codegraph hooks install|remove` installs/removes git hooks that auto-reindex the code graph after commits and checkouts (see `docs/codegraph.md`).
+- **CLI** (`internal/cli`, Cobra) — 35 top-level commands. Notable: `sync export|import|status` is the backup/restore path (no dedicated `restore` command); `mneme init` sets up managed blocks, reports drift, and (with `--apply`) migrates legacy projects to the SDD engine (see `docs/init.md`); `mneme install <agent>` writes agent profiles — supported agents: `claude-code` (multi-agent, full delegation) and `codex` (single-agent, no delegation; see `docs/codex.md`); `mneme skills` manages skills in `~/.claude/skills/`; `mneme model` manages per-agent model assignments; `mneme conflicts` detects and manages memory conflict relations; `mneme subagents` composes/writes per-project subagent profiles; `mneme delegation-hook` toggles the project-scoped opt-in enforcement hook; `mneme codegraph hooks install|remove` installs/removes git hooks that auto-reindex the code graph after commits and checkouts (see `docs/codegraph.md`); `mneme team-memory enable` activates the git-native shared-knowledge vault (marker + bake/export existing durables + import hooks) and `mneme promote <id>` explicitly shares one memory regardless of type (see `docs/team-memory.md`).
 
 ### Persistence
 
@@ -238,6 +238,48 @@ mneme conflicts list
 - No auto-delete/edit of memories. No embeddings. No metered API.
 
 Full reference: `docs/conflicts.md`.
+
+## Team Memory (SPEC-053)
+
+mneme lets a repository's durable knowledge flow between teammates entirely
+through git — no server, no account, no network call.
+
+**Activation is opt-in per repository:** the presence of
+`<repo>/.mneme/shared/.mneme-vault` is the only flag; there is no other
+config. `mneme team-memory enable` creates it, bakes/exports pre-existing
+durable memories, and installs the import hooks in one idempotent step.
+
+**Sharing levels** (`shared` column, layered on `scope=project`, not a new
+scope): `0` local-only (default) · `1` auto-shared (durable type: decision,
+convention, architecture, pattern, bugfix, rule) · `2` team-curated
+(`mneme promote <id>` / `mem_promote`, any type).
+
+**Key commands:**
+```bash
+mneme team-memory enable          # activate: marker + bake/export + hooks
+mneme team-memory hooks install   # install only the import hooks
+mneme team-memory hooks remove    # remove only the mneme-managed hook block
+mneme promote <id>                # explicitly share one memory (shared=2)
+```
+
+**Rules:**
+- WRITE is synchronous write-through inside `service.Save`/`Update` — no
+  filesystem watcher exists between the vault and SQLite (see
+  `docs/VAULT.md`). Best-effort: a materialization failure is logged, never
+  fails the save.
+- READ is a `post-merge`/`post-checkout` git hook (`mneme team-memory hooks
+  run-import`, exit-0-always) that imports `.mneme/shared/` in the
+  background after every pull/checkout.
+- Every shared memory is its own file (`notes/<uuid>.md`) — concurrent
+  creations by different teammates never collide at the git level.
+- Conflict detection after import is the same deterministic FTS5 candidate
+  count `mneme conflicts` uses — judgment is always a separate, manual
+  `mneme conflicts scan` step, never automatic.
+- `mneme team-memory enable` always prints a privacy notice: this feature is
+  offline/git-native, so mneme can never determine whether a remote is
+  public without a network call it deliberately never makes.
+
+Full reference: `docs/team-memory.md`.
 
 <!-- mneme:managed:start v=1 -->
 Process and operating instructions are managed globally via mneme.
