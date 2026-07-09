@@ -178,6 +178,67 @@ func (svc *MemoryService) applyTeamMemoryAuthor(m *model.Memory) {
 	}
 }
 
+// sharedTeamCurated is the Shared level Promote assigns (SPEC-053 D2/D8):
+// explicit, human-curated sharing, as opposed to 1 (type-based auto-share).
+const sharedTeamCurated = 2
+
+// Promote marks the memory identified by id as team-curated (Shared=2,
+// SPEC-053 D8) and persists the change directly onto its existing row via
+// store.SetTeamMemoryFields — the dedicated write path SS-C adds because
+// Update/Upsert intentionally never rewrite shared/author on an existing
+// memory (SPEC-061 SS-A, carried forward as the critical design constraint
+// documented in SS-B). This makes shared=2 durable in the database itself,
+// not just materialized to the vault.
+//
+// Author is assigned from the local git identity only when the memory does
+// not already carry one, matching bakeTeamMemoryFields/applyTeamMemoryAuthor's
+// "solo si vacío" rule (SPEC-053 D7) — Promote never overwrites an existing
+// author (e.g. one that arrived via SS-D's future vault import).
+//
+// Promote is idempotent: calling it again on an already-promoted memory
+// re-persists shared=2 (harmless) and leaves author untouched.
+//
+// When team-memory is active for this process, Promote also immediately
+// (re)materializes the memory to the shared git vault by reusing
+// materializeTeamMemory — the caller does not need to wait for a subsequent
+// Save/Update to see the promoted memory appear as a file. When team-memory
+// is inactive, shared=2 is still persisted in the database but nothing is
+// written to disk, matching Save/Update's existing inert-when-disabled
+// behaviour (SPEC-053 D3).
+//
+// Returns model.ErrNotFound when no active memory exists with that id in
+// either store.
+func (svc *MemoryService) Promote(ctx context.Context, id string) (*model.Memory, error) {
+	m, targetStore, err := svc.getFromEitherStore(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("service: promote: %w", err)
+	}
+	if targetStore == nil {
+		return nil, fmt.Errorf("service: promote: %w", model.ErrNotFound)
+	}
+
+	author := m.Author
+	if author == "" {
+		author = gitident.Author()
+	}
+
+	if err := targetStore.SetTeamMemoryFields(ctx, id, sharedTeamCurated, author); err != nil {
+		return nil, fmt.Errorf("service: promote: %w", err)
+	}
+
+	updated, err := targetStore.Get(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("service: promote: reload: %w", err)
+	}
+	if updated == nil {
+		return nil, fmt.Errorf("service: promote: reload: %w", model.ErrNotFound)
+	}
+
+	svc.materializeTeamMemory(ctx, updated)
+
+	return updated, nil
+}
+
 // materializeTeamMemory writes m to the shared git-native vault when
 // team-memory is active, m is marked shared (Shared > 0), and materialization
 // has not been suppressed by WithSuppressMaterialize (the SS-D anti-loop

@@ -2,6 +2,7 @@ package service_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -418,6 +419,184 @@ func TestSave_SuppressedContext_NeverMaterializes(t *testing.T) {
 	path := sharedVaultFile(repoDir, resp.ID)
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Errorf("WithSuppressMaterialize must prevent the write-through disk write, but found %s", path)
+	}
+}
+
+// TestPromote_TeamMemoryActive_PersistsAndMaterializes verifies the SPEC-063
+// SS-C contract: promoting a non-durable memory (config, which never
+// auto-shares) sets shared=2 durably in the database — reloaded via a fresh
+// Get, not just held in memory — and, because team-memory is active,
+// materializes it to the shared vault immediately.
+func TestPromote_TeamMemoryActive_PersistsAndMaterializes(t *testing.T) {
+	svc, repoDir := newRepoTestService(t, true)
+	ctx := context.Background()
+
+	resp, err := svc.Save(ctx, model.SaveRequest{
+		Title:   "A config note that would never auto-share",
+		Content: "Non-durable types never bake to Shared=1.",
+		Type:    model.TypeConfig,
+	})
+	if err != nil {
+		t.Fatalf("Save: unexpected error: %v", err)
+	}
+
+	// Precondition: config is not a durable type, so it must not have been
+	// auto-shared or materialized by Save.
+	pre, err := svc.Get(ctx, resp.ID)
+	if err != nil {
+		t.Fatalf("Get before Promote: unexpected error: %v", err)
+	}
+	if pre.Shared != 0 {
+		t.Fatalf("precondition failed: expected Shared=0 before Promote, got %d", pre.Shared)
+	}
+
+	promoted, err := svc.Promote(ctx, resp.ID)
+	if err != nil {
+		t.Fatalf("Promote: unexpected error: %v", err)
+	}
+	if promoted.Shared != 2 {
+		t.Errorf("Promote return value: Shared = %d, want 2", promoted.Shared)
+	}
+	if promoted.Author == "" {
+		t.Error("Promote return value: expected Author to be baked from git identity")
+	}
+
+	// Reload independently to prove shared=2 was PERSISTED in the DB, not
+	// just returned in-memory by Promote.
+	reloaded, err := svc.Get(ctx, resp.ID)
+	if err != nil {
+		t.Fatalf("Get after Promote: unexpected error: %v", err)
+	}
+	if reloaded.Shared != 2 {
+		t.Errorf("reloaded Shared = %d, want 2 (persisted)", reloaded.Shared)
+	}
+	if reloaded.Author != promoted.Author {
+		t.Errorf("reloaded Author = %q, want %q", reloaded.Author, promoted.Author)
+	}
+
+	path := sharedVaultFile(repoDir, resp.ID)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("expected materialized vault file at %s: %v", path, err)
+	}
+	if !strings.Contains(string(data), "shared: 2") {
+		t.Errorf("materialized file should contain shared: 2, got:\n%s", data)
+	}
+}
+
+// TestPromote_TeamMemoryInactive_PersistsButNeverMaterializes verifies that
+// Promote still durably persists shared=2 even when team-memory is not
+// active for this process (no vault marker) — but never writes to disk,
+// matching Save/Update's existing inert-when-disabled behaviour.
+func TestPromote_TeamMemoryInactive_PersistsButNeverMaterializes(t *testing.T) {
+	svc, repoDir := newRepoTestService(t, false)
+	ctx := context.Background()
+
+	resp, err := svc.Save(ctx, model.SaveRequest{
+		Title:   "A note saved without team-memory active",
+		Content: "Content",
+		Type:    model.TypeDiscovery,
+	})
+	if err != nil {
+		t.Fatalf("Save: unexpected error: %v", err)
+	}
+
+	promoted, err := svc.Promote(ctx, resp.ID)
+	if err != nil {
+		t.Fatalf("Promote: unexpected error: %v", err)
+	}
+	if promoted.Shared != 2 {
+		t.Errorf("Shared = %d, want 2", promoted.Shared)
+	}
+
+	reloaded, err := svc.Get(ctx, resp.ID)
+	if err != nil {
+		t.Fatalf("Get after Promote: unexpected error: %v", err)
+	}
+	if reloaded.Shared != 2 {
+		t.Errorf("reloaded Shared = %d, want 2 (persisted even without an active vault)", reloaded.Shared)
+	}
+
+	if _, err := os.Stat(filepath.Join(repoDir, ".mneme", "shared")); !os.IsNotExist(err) {
+		t.Errorf("expected .mneme/shared to not exist when team-memory is inactive, stat err: %v", err)
+	}
+}
+
+// TestPromote_NotFound verifies that Promote returns model.ErrNotFound for an
+// unknown id.
+func TestPromote_NotFound(t *testing.T) {
+	svc, _ := newRepoTestService(t, true)
+	ctx := context.Background()
+
+	_, err := svc.Promote(ctx, "01938f1b-0000-7000-8000-000000000000")
+	if !errors.Is(err, model.ErrNotFound) {
+		t.Errorf("expected model.ErrNotFound, got %v", err)
+	}
+}
+
+// TestPromote_Idempotent verifies that calling Promote twice on the same
+// memory yields the same persisted result (shared=2, same author).
+func TestPromote_Idempotent(t *testing.T) {
+	svc, _ := newRepoTestService(t, true)
+	ctx := context.Background()
+
+	resp, err := svc.Save(ctx, model.SaveRequest{
+		Title:   "Promote me twice",
+		Content: "Content",
+		Type:    model.TypeDiscovery,
+	})
+	if err != nil {
+		t.Fatalf("Save: unexpected error: %v", err)
+	}
+
+	first, err := svc.Promote(ctx, resp.ID)
+	if err != nil {
+		t.Fatalf("first Promote: unexpected error: %v", err)
+	}
+	second, err := svc.Promote(ctx, resp.ID)
+	if err != nil {
+		t.Fatalf("second Promote: unexpected error: %v", err)
+	}
+
+	if first.Shared != second.Shared || first.Author != second.Author {
+		t.Errorf("Promote is not idempotent: first={shared=%d author=%q} second={shared=%d author=%q}",
+			first.Shared, first.Author, second.Shared, second.Author)
+	}
+}
+
+// TestPromote_PreservesExistingAuthor verifies that Promote never overwrites
+// an author that is already set (SPEC-053 D7 "solo si vacío") — e.g. one
+// baked in by Save's auto-share path for a durable type.
+func TestPromote_PreservesExistingAuthor(t *testing.T) {
+	svc, _ := newRepoTestService(t, true)
+	ctx := context.Background()
+
+	resp, err := svc.Save(ctx, model.SaveRequest{
+		Title:   "Already auto-shared decision",
+		Content: "Content",
+		Type:    model.TypeDecision,
+	})
+	if err != nil {
+		t.Fatalf("Save: unexpected error: %v", err)
+	}
+
+	before, err := svc.Get(ctx, resp.ID)
+	if err != nil {
+		t.Fatalf("Get before Promote: unexpected error: %v", err)
+	}
+	if before.Author == "" {
+		t.Fatal("precondition failed: expected auto-share to have baked an author")
+	}
+
+	promoted, err := svc.Promote(ctx, resp.ID)
+	if err != nil {
+		t.Fatalf("Promote: unexpected error: %v", err)
+	}
+	if promoted.Author != before.Author {
+		t.Errorf("Promote must preserve an existing author: got %q, want %q", promoted.Author, before.Author)
+	}
+	if promoted.Shared != 2 {
+		t.Errorf("Shared = %d, want 2", promoted.Shared)
 	}
 }
 
