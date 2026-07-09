@@ -40,9 +40,43 @@ func (s *MemoryStore) Create(ctx context.Context, m *model.Memory) (*model.Memor
 	if err != nil {
 		return nil, fmt.Errorf("store: create memory: generate id: %w", err)
 	}
-
-	now := time.Now().UTC()
 	m.ID = id.String()
+
+	return s.insertMemory(ctx, m, "store: create memory")
+}
+
+// CreateWithID persists a new memory using the caller-supplied m.ID instead
+// of generating a fresh UUIDv7 (SPEC-053 SS-D). This is the capability the
+// team-memory import path needs: every peer must land the same piece of
+// shared knowledge under the same id so the git-native vault's one-file-
+// per-UUID layout (SPEC-053 D1) round-trips identically across clones, and
+// so a re-import of the same note is recognized by id — without depending
+// on an optional topic_key, which service.Save's Upsert dedup requires.
+//
+// m.ID MUST already be a non-empty, syntactically valid UUID; CreateWithID
+// does not generate or validate its format (the caller — vault.IsValidUUID
+// in service.ImportFromShared — is responsible for that). CreatedAt and
+// UpdatedAt are set to the current time exactly like Create, matching the
+// existing vault-import precedent of not preserving the original
+// created_at (SPEC-024 D "open question").
+//
+// Returns an error (SQLite UNIQUE constraint violation, wrapped) if a
+// memory with this id already exists — callers should already have
+// verified its absence via Get before calling CreateWithID.
+func (s *MemoryStore) CreateWithID(ctx context.Context, m *model.Memory) (*model.Memory, error) {
+	if m.ID == "" {
+		return nil, fmt.Errorf("store: create memory with id: id is required")
+	}
+
+	return s.insertMemory(ctx, m, "store: create memory with id")
+}
+
+// insertMemory is the shared implementation behind Create and CreateWithID.
+// It assumes m.ID is already populated by the caller, stamps CreatedAt/
+// UpdatedAt to the current UTC time, and performs the INSERT plus the
+// associated memory_files rows.
+func (s *MemoryStore) insertMemory(ctx context.Context, m *model.Memory, errPrefix string) (*model.Memory, error) {
+	now := time.Now().UTC()
 	m.CreatedAt = now
 	m.UpdatedAt = now
 
@@ -80,7 +114,7 @@ func (s *MemoryStore) Create(ctx context.Context, m *model.Memory) (*model.Memor
 
 	appliesTo, err := marshalAppliesTo(m.AppliesTo)
 	if err != nil {
-		return nil, fmt.Errorf("store: create memory: marshal applies_to: %w", err)
+		return nil, fmt.Errorf("%s: marshal applies_to: %w", errPrefix, err)
 	}
 
 	_, err = s.db.ExecContext(ctx, q,
@@ -94,7 +128,7 @@ func (s *MemoryStore) Create(ctx context.Context, m *model.Memory) (*model.Memor
 		appliesTo, string(m.Severity), m.Shared, m.Author,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("store: create memory: insert: %w", err)
+		return nil, fmt.Errorf("%s: insert: %w", errPrefix, err)
 	}
 
 	if err := s.insertFiles(ctx, m.ID, m.Files); err != nil {
