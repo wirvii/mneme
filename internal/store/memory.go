@@ -300,6 +300,36 @@ func (s *MemoryStore) SetDecayRate(ctx context.Context, id string, rate float64)
 	return nil
 }
 
+// SetTeamMemoryFields persists an explicit shared level and author identity
+// on an existing memory row (SPEC-063 SS-C). This is the dedicated capability
+// service.Promote needs: Update's partial-update path and Upsert's
+// existing-record UPDATE branch both intentionally never touch the
+// shared/author columns (SPEC-061 SS-A) — by design, those flows only bake
+// shared/author into a *new* row at Create time. Promote's whole point is to
+// change shared (to team-curated, 2) and fill in author on a memory that may
+// already exist, so it needs a write path Update/Upsert do not provide.
+// Returns model.ErrNotFound when no active memory with that id exists.
+func (s *MemoryStore) SetTeamMemoryFields(ctx context.Context, id string, shared int, author string) error {
+	const q = `
+		UPDATE memories SET shared = ?, author = ?, updated_at = ?
+		WHERE id = ? AND deleted_at IS NULL`
+
+	res, err := s.db.ExecContext(ctx, q, shared, author, time.Now().UTC().Format(time.RFC3339Nano), id)
+	if err != nil {
+		return fmt.Errorf("store: set team memory fields: %w", err)
+	}
+
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("store: set team memory fields: rows affected: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("store: set team memory fields: %w", model.ErrNotFound)
+	}
+
+	return nil
+}
+
 // SoftDelete marks a memory as deleted by setting deleted_at to the current
 // UTC time. The record remains in the database for audit and decay purposes.
 // Returns model.ErrNotFound when no active memory with that id exists.

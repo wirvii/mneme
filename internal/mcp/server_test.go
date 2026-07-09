@@ -174,7 +174,7 @@ func TestToolsList(t *testing.T) {
 	wantNames := []string{
 		"mem_save", "mem_search", "mem_get", "mem_context",
 		"mem_update", "mem_session_end", "mem_suggest_topic_key",
-		"mem_relate", "mem_timeline", "mem_stats", "mem_checkpoint", "mem_forget",
+		"mem_relate", "mem_timeline", "mem_stats", "mem_checkpoint", "mem_forget", "mem_promote",
 		// SDD tools
 		"backlog_add", "backlog_list", "backlog_refine", "backlog_promote",
 		"spec_new", "spec_status", "spec_advance", "spec_pushback", "spec_resolve", "spec_list",
@@ -379,6 +379,92 @@ func TestMemUpdate(t *testing.T) {
 	}
 	if updateResp.Title != newTitle {
 		t.Errorf("title = %q, want %q", updateResp.Title, newTitle)
+	}
+}
+
+// TestMemPromote verifies the mem_promote tool marks a memory as
+// team-curated (shared=2), that the change is durably persisted (verified by
+// a fresh mem_get, not just the promote response), and that calling it twice
+// is idempotent (SPEC-063 SS-C).
+func TestMemPromote(t *testing.T) {
+	srv := newTestServer(t)
+
+	saveResp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name: "mem_save",
+		Arguments: mustMarshal(t, map[string]any{
+			"title":   "A note to promote",
+			"content": "This starts out local-only.",
+			"type":    "discovery",
+		}),
+	})
+	var saved struct {
+		ID string `json:"id"`
+	}
+	unmarshalToolText(t, saveResp, &saved)
+
+	resp := process(t, srv, "tools/call", 2, ToolCallParams{
+		Name:      "mem_promote",
+		Arguments: mustMarshal(t, map[string]any{"id": saved.ID}),
+	})
+
+	var promoteResp struct {
+		ID     string `json:"id"`
+		Shared int    `json:"shared"`
+		Status string `json:"status"`
+	}
+	unmarshalToolText(t, resp, &promoteResp)
+
+	if promoteResp.Shared != 2 {
+		t.Errorf("shared = %d, want 2", promoteResp.Shared)
+	}
+	if promoteResp.Status != "promoted" {
+		t.Errorf("status = %q, want %q", promoteResp.Status, "promoted")
+	}
+
+	// Reload via mem_get to prove the change was persisted in the DB, not
+	// just returned in-memory by mem_promote.
+	getResp := process(t, srv, "tools/call", 3, ToolCallParams{
+		Name:      "mem_get",
+		Arguments: mustMarshal(t, map[string]any{"id": saved.ID}),
+	})
+	var got struct {
+		Shared int `json:"shared"`
+	}
+	unmarshalToolText(t, getResp, &got)
+	if got.Shared != 2 {
+		t.Errorf("reloaded shared = %d, want 2 (persisted)", got.Shared)
+	}
+
+	// Second call must be idempotent — same shared level, no error.
+	resp2 := process(t, srv, "tools/call", 4, ToolCallParams{
+		Name:      "mem_promote",
+		Arguments: mustMarshal(t, map[string]any{"id": saved.ID}),
+	})
+	var promoteResp2 struct {
+		Shared int `json:"shared"`
+	}
+	unmarshalToolText(t, resp2, &promoteResp2)
+	if promoteResp2.Shared != promoteResp.Shared {
+		t.Errorf("mem_promote is not idempotent: first shared=%d, second shared=%d", promoteResp.Shared, promoteResp2.Shared)
+	}
+}
+
+// TestMemPromote_NotFound verifies that mem_promote with an unknown id
+// returns CodeInvalidParams (not CodeMemoryNotFound — SPEC-063 SS-C contract:
+// the caller supplied a bad argument).
+func TestMemPromote_NotFound(t *testing.T) {
+	srv := newTestServer(t)
+
+	resp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name:      "mem_promote",
+		Arguments: mustMarshal(t, map[string]any{"id": "01938f1b-0000-7000-8000-000000000000"}),
+	})
+
+	if resp.Error == nil {
+		t.Fatal("expected an error response for a non-existent id")
+	}
+	if resp.Error.Code != CodeInvalidParams {
+		t.Errorf("error code = %d, want %d (CodeInvalidParams)", resp.Error.Code, CodeInvalidParams)
 	}
 }
 

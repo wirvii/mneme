@@ -188,6 +188,67 @@ func TestUpdate_NotFound(t *testing.T) {
 	}
 }
 
+// TestSetTeamMemoryFields verifies that SetTeamMemoryFields persists shared
+// and author on an existing row — the write path Update/Upsert intentionally
+// lack (SPEC-061 SS-A), which SPEC-063 SS-C's Promote depends on.
+func TestSetTeamMemoryFields(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	// Created with team-memory inert (Shared=0, Author="") — the common case
+	// for a memory saved before team-memory was ever active for this process.
+	m, err := s.Create(ctx, makeMemory())
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if m.Shared != 0 || m.Author != "" {
+		t.Fatalf("precondition failed: expected inert shared/author, got shared=%d author=%q", m.Shared, m.Author)
+	}
+
+	if err := s.SetTeamMemoryFields(ctx, m.ID, 2, "Jane Doe <jane@example.com>"); err != nil {
+		t.Fatalf("SetTeamMemoryFields: %v", err)
+	}
+
+	got, err := s.Get(ctx, m.ID)
+	if err != nil {
+		t.Fatalf("Get after SetTeamMemoryFields: %v", err)
+	}
+	if got.Shared != 2 {
+		t.Errorf("Shared: got %d, want 2", got.Shared)
+	}
+	if got.Author != "Jane Doe <jane@example.com>" {
+		t.Errorf("Author: got %q, want %q", got.Author, "Jane Doe <jane@example.com>")
+	}
+
+	// Idempotent: calling it again with the same values must not error and
+	// must leave the row unchanged.
+	if err := s.SetTeamMemoryFields(ctx, m.ID, 2, "Jane Doe <jane@example.com>"); err != nil {
+		t.Fatalf("SetTeamMemoryFields (second call): %v", err)
+	}
+	got2, err := s.Get(ctx, m.ID)
+	if err != nil {
+		t.Fatalf("Get after second SetTeamMemoryFields: %v", err)
+	}
+	if got2.Shared != 2 || got2.Author != "Jane Doe <jane@example.com>" {
+		t.Errorf("expected unchanged shared/author after idempotent call, got shared=%d author=%q", got2.Shared, got2.Author)
+	}
+}
+
+// TestSetTeamMemoryFields_NotFound verifies that SetTeamMemoryFields returns
+// ErrNotFound for a missing id.
+func TestSetTeamMemoryFields_NotFound(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	err := s.SetTeamMemoryFields(ctx, "nonexistent-id", 2, "Jane Doe <jane@example.com>")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !isNotFound(err) {
+		t.Errorf("expected ErrNotFound, got %v", err)
+	}
+}
+
 // TestUpsert_Create verifies that upsert with a new topic_key creates and returns created=true.
 func TestUpsert_Create(t *testing.T) {
 	s := newTestStore(t)

@@ -69,6 +69,8 @@ func (h *handlers) handleToolCall(ctx context.Context, params ToolCallParams) (*
 		return h.handleMemStats(ctx, params.Arguments)
 	case "mem_forget":
 		return h.handleMemForget(ctx, params.Arguments)
+	case "mem_promote":
+		return h.handleMemPromote(ctx, params.Arguments)
 	case "mem_checkpoint":
 		return h.handleMemCheckpoint(ctx, params.Arguments)
 	case "mem_explore":
@@ -507,6 +509,51 @@ func (h *handlers) handleMemForget(ctx context.Context, raw json.RawMessage) (*T
 	return resultFromAny(map[string]string{
 		"id":     args.ID,
 		"status": "marked_for_decay",
+	})
+}
+
+// handleMemPromote processes a mem_promote tool call. The arguments object
+// must contain an "id" field. Unlike other not-found mappings routed through
+// mapServiceError (CodeMemoryNotFound), an unknown id here is reported as
+// CodeInvalidParams — the caller supplied a bad argument, not a query that
+// legitimately found nothing (SPEC-063 SS-C contract).
+func (h *handlers) handleMemPromote(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	var args struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return nil, &JSONRPCError{
+			Code:    CodeInvalidParams,
+			Message: fmt.Sprintf("mcp: handle mem_promote: invalid arguments: %s", err),
+		}
+	}
+	if args.ID == "" {
+		return nil, &JSONRPCError{
+			Code:    CodeInvalidParams,
+			Message: "mcp: handle mem_promote: id is required",
+		}
+	}
+
+	m, err := h.svc.Promote(ctx, args.ID)
+	if err != nil {
+		if errors.Is(err, model.ErrNotFound) {
+			return nil, &JSONRPCError{
+				Code:    CodeInvalidParams,
+				Message: fmt.Sprintf("mcp: handle mem_promote: %s", err),
+			}
+		}
+		h.logger.Error("mcp: internal error", "method", "mem_promote", "error", err)
+		return nil, &JSONRPCError{
+			Code:    CodeInternalError,
+			Message: fmt.Sprintf("mcp: handle mem_promote: %v", err),
+		}
+	}
+
+	return resultFromAny(map[string]any{
+		"id":     m.ID,
+		"shared": m.Shared,
+		"author": m.Author,
+		"status": "promoted",
 	})
 }
 
