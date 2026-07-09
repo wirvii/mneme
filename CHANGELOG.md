@@ -43,7 +43,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     placeholder. See `docs/team-memory.md`.
 
   MCP surface grows to 64 tools (`mem_promote` joins `mem_*`; `subagent_*`
-  from the parallel agnostic-agents EPIC also now counted). CLI grows to 35
+  from the parallel agnostic-agents EPIC also now counted). CLI grows to 36
   top-level commands (`mneme team-memory`, `mneme promote`).
 
 ## [v1.17.0] — 2026-06-25 — Codex CLI support: `mneme install codex` (SPEC-049)
