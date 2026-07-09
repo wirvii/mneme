@@ -1,0 +1,379 @@
+package cli
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/juanftp/mneme/internal/db"
+	"github.com/juanftp/mneme/internal/service"
+)
+
+// insertTestManifest inserts a subagents/manifest memory row into database
+// with the given raw JSON content, mirroring insertTestRule's helper style
+// (hook_pre_tool_use_test.go).
+func insertTestManifest(database *db.DB, content string) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := database.Exec(
+		`INSERT INTO memories
+		 (id, type, scope, topic_key, title, content, created_at, updated_at, importance, confidence, decay_rate)
+		 VALUES (?, 'config', 'project', ?, 'Subagent manifest', ?, ?, ?, 0.9, 0.8, 0.02)`,
+		"m1", manifestTopicKey, content, now, now,
+	)
+	return err
+}
+
+// --- queryManifestContent (D8 last row: DB-level fail-open / not-found) ----
+
+// TestQueryManifestContent_Found verifies the happy path: a manifest row
+// present in the DB is returned verbatim.
+func TestQueryManifestContent_Found(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+
+	database, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	want := `[{"role":"backend","areas":["internal/**"]}]`
+	if insertErr := insertTestManifest(database, want); insertErr != nil {
+		t.Fatalf("insertTestManifest: %v", insertErr)
+	}
+	database.Close()
+
+	content, found, err := queryManifestContent(dbPath)
+	if err != nil {
+		t.Fatalf("queryManifestContent: %v", err)
+	}
+	if !found {
+		t.Fatal("found = false, want true")
+	}
+	if content != want {
+		t.Errorf("content = %q, want %q", content, want)
+	}
+}
+
+// TestQueryManifestContent_NoRow verifies that an existing, empty database
+// (no manifest memory saved) reports found=false with a nil error — the D8
+// "manifest absent" branch, not a hard error.
+func TestQueryManifestContent_NoRow(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+
+	database, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	database.Close()
+
+	_, found, err := queryManifestContent(dbPath)
+	if err != nil {
+		t.Fatalf("queryManifestContent: %v", err)
+	}
+	if found {
+		t.Error("found = true, want false")
+	}
+}
+
+// TestQueryManifestContent_DBFileMissing verifies that a non-existent
+// database file reports found=false with a nil error, matching
+// queryRulesFromDB's "new project" convention.
+func TestQueryManifestContent_DBFileMissing(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "does-not-exist.db")
+
+	_, found, err := queryManifestContent(dbPath)
+	if err != nil {
+		t.Fatalf("queryManifestContent: %v", err)
+	}
+	if found {
+		t.Error("found = true, want false")
+	}
+}
+
+// TestQueryManifestContent_CorruptDBFile verifies AC9's fail-open branch: a
+// file that exists but is not a valid SQLite database produces a non-nil
+// error (which runHookPathOwned/resolvePathOwnership callers must treat as
+// ALLOW, per D8's last row).
+func TestQueryManifestContent_CorruptDBFile(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "corrupt.db")
+	if err := os.WriteFile(dbPath, []byte("not a sqlite database"), 0o600); err != nil {
+		t.Fatalf("write corrupt db: %v", err)
+	}
+
+	_, _, err := queryManifestContent(dbPath)
+	if err == nil {
+		t.Fatal("expected a hard error for a corrupt database file, got nil")
+	}
+}
+
+// --- resolvePathOwnership (D7/D8 decision table) ----------------------------
+
+const testCWD = "/repo"
+
+// TestResolvePathOwnership_BlockedByImplementer covers AC7: a path matching
+// an implementer's area is blocked, reporting that role.
+func TestResolvePathOwnership_BlockedByImplementer(t *testing.T) {
+	manifest := `[{"role":"backend","areas":["internal/**"]}]`
+
+	got := resolvePathOwnership("internal/foo.go", testCWD, true, manifest)
+
+	if got.ExitCode != 2 {
+		t.Fatalf("ExitCode = %d, want 2", got.ExitCode)
+	}
+	if got.Owner != "backend" {
+		t.Errorf("Owner = %q, want backend", got.Owner)
+	}
+}
+
+// TestResolvePathOwnership_AllowedWhenNotOwned covers AC8: a path outside
+// every implementer's areas is allowed.
+func TestResolvePathOwnership_AllowedWhenNotOwned(t *testing.T) {
+	manifest := `[{"role":"backend","areas":["internal/**"]}]`
+
+	got := resolvePathOwnership("README.md", testCWD, true, manifest)
+
+	if got.ExitCode != 0 {
+		t.Fatalf("ExitCode = %d, want 0", got.ExitCode)
+	}
+}
+
+// TestResolvePathOwnership_ManifestAbsent_LegacyBlock covers AC9's first
+// half: no manifest row at all blocks with owner "legacy".
+func TestResolvePathOwnership_ManifestAbsent_LegacyBlock(t *testing.T) {
+	got := resolvePathOwnership("internal/foo.go", testCWD, false, "")
+
+	if got.ExitCode != 2 {
+		t.Fatalf("ExitCode = %d, want 2", got.ExitCode)
+	}
+	if got.Owner != "legacy" {
+		t.Errorf("Owner = %q, want legacy", got.Owner)
+	}
+}
+
+// TestResolvePathOwnership_ManifestEmptyArray_LegacyBlock verifies D8's
+// "manifest present but empty []" row also blocks as legacy.
+func TestResolvePathOwnership_ManifestEmptyArray_LegacyBlock(t *testing.T) {
+	got := resolvePathOwnership("internal/foo.go", testCWD, true, "[]")
+
+	if got.ExitCode != 2 || got.Owner != "legacy" {
+		t.Errorf("got %+v, want ExitCode=2 Owner=legacy", got)
+	}
+}
+
+// TestResolvePathOwnership_CorruptManifestJSON_FailOpen covers AC9's second
+// half: a manifest row whose content fails to parse as JSON fails open.
+func TestResolvePathOwnership_CorruptManifestJSON_FailOpen(t *testing.T) {
+	got := resolvePathOwnership("internal/foo.go", testCWD, true, "{not valid json")
+
+	if got.ExitCode != 0 {
+		t.Errorf("ExitCode = %d, want 0 (fail-open on corrupt manifest JSON)", got.ExitCode)
+	}
+}
+
+// TestResolvePathOwnership_OutOfTreePath_Allow verifies D7 point 4: a path
+// outside the project tree cannot be owned, so it is allowed even with a
+// matching-looking manifest.
+func TestResolvePathOwnership_OutOfTreePath_Allow(t *testing.T) {
+	manifest := `[{"role":"backend","areas":["**"]}]`
+
+	got := resolvePathOwnership("/etc/passwd", testCWD, true, manifest)
+
+	if got.ExitCode != 0 {
+		t.Errorf("ExitCode = %d, want 0 for an out-of-tree path", got.ExitCode)
+	}
+}
+
+// TestResolvePathOwnership_NonImplementerRoleIgnored verifies D7 point 3:
+// only implementer roles (subagents.IsImplementer) can own a path — an
+// architect-only manifest never blocks, even with a matching area.
+func TestResolvePathOwnership_NonImplementerRoleIgnored(t *testing.T) {
+	manifest := `[{"role":"architect","areas":["internal/**"]}]`
+
+	got := resolvePathOwnership("internal/foo.go", testCWD, true, manifest)
+
+	if got.ExitCode != 0 {
+		t.Errorf("ExitCode = %d, want 0 — architect is not an implementer role", got.ExitCode)
+	}
+}
+
+// TestResolvePathOwnership_OverlapReportsFirstManifestMatch verifies D7
+// point 6: when multiple implementer entries could own the path, the
+// reported owner is the first match in manifest order — overlap never
+// changes the block decision, only which role is named.
+func TestResolvePathOwnership_OverlapReportsFirstManifestMatch(t *testing.T) {
+	manifest := `[
+		{"role":"frontend","areas":["internal/**"]},
+		{"role":"backend","areas":["internal/**"]}
+	]`
+
+	got := resolvePathOwnership("internal/foo.go", testCWD, true, manifest)
+
+	if got.ExitCode != 2 || got.Owner != "frontend" {
+		t.Errorf("got %+v, want ExitCode=2 Owner=frontend (first manifest match)", got)
+	}
+}
+
+// TestResolvePathOwnership_AbsolutePathUnderCWD verifies R4: an absolute
+// path inside the project tree normalises the same as its relative form.
+func TestResolvePathOwnership_AbsolutePathUnderCWD(t *testing.T) {
+	manifest := `[{"role":"backend","areas":["internal/**"]}]`
+
+	got := resolvePathOwnership(filepath.Join(testCWD, "internal", "foo.go"), testCWD, true, manifest)
+
+	if got.ExitCode != 2 || got.Owner != "backend" {
+		t.Errorf("got %+v, want ExitCode=2 Owner=backend for an absolute in-tree path", got)
+	}
+}
+
+// --- runHookPathOwned wrapper (ALLOW branches only — see comment) ----------
+//
+// Any branch of runHookPathOwned that reaches ExitCode==2 calls os.Exit(2),
+// which would kill the test binary — exactly the same constraint that keeps
+// runHookPreToolUse's block path tested only through its components
+// (queryRulesFromDB + rules.Match + renderPreToolUseOutput), never
+// end-to-end (see hook_pre_tool_use_test.go). AC7-AC9's exit-code/stdout
+// contract is covered directly by TestResolvePathOwnership_* and
+// TestQueryManifestContent_* above. The tests below only exercise
+// runHookPathOwned's ALLOW paths, isolating $HOME (via t.Setenv) so they
+// never touch the real ~/.mneme databases.
+
+// chdirTemp changes the working directory to dir for the duration of the
+// test and restores the original directory in a cleanup func.
+func chdirTemp(t *testing.T, dir string) {
+	t.Helper()
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if chErr := os.Chdir(dir); chErr != nil {
+		t.Fatalf("chdir: %v", chErr)
+	}
+	t.Cleanup(func() { _ = os.Chdir(oldWD) })
+}
+
+// TestRunHookPathOwned_UnreadableConfig_AllowsWithoutExit verifies the D8
+// hard-error fail-open branch closest to the process boundary: when
+// config.Load(config.DefaultPath()) itself fails (malformed TOML), the
+// function must return nil without ever reaching the manifest query, and
+// therefore never call os.Exit.
+func TestRunHookPathOwned_UnreadableConfig_AllowsWithoutExit(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".mneme"), 0o755); err != nil {
+		t.Fatalf("mkdir .mneme: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".mneme", "config.toml"), []byte("not = [valid toml"), 0o600); err != nil {
+		t.Fatalf("write malformed config.toml: %v", err)
+	}
+
+	if runErr := runHookPathOwned("internal/foo.go"); runErr != nil {
+		t.Fatalf("runHookPathOwned returned error: %v", runErr)
+	}
+}
+
+// TestRunHookPathOwned_ManifestExistsButPathNotOwned_AllowsWithoutExit
+// exercises the full runHookPathOwned wiring (config, project detection,
+// manifest DB read, ownership match) end-to-end for the ALLOW case: a real
+// manifest exists for the detected project, but it does not own the target
+// path (AC8, exercised through the actual CLI entrypoint rather than only
+// through resolvePathOwnership).
+func TestRunHookPathOwned_ManifestExistsButPathNotOwned_AllowsWithoutExit(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	repoDir := t.TempDir()
+	initGitRepo(t, repoDir)
+	chdirTemp(t, repoDir)
+
+	slug := strings.ToLower(filepath.Base(repoDir))
+	dbPath := filepath.Join(home, ".mneme", "projects", slug+".db")
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+		t.Fatalf("mkdir projects dir: %v", err)
+	}
+	database, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	if insertErr := insertTestManifest(database, `[{"role":"backend","areas":["internal/**"]}]`); insertErr != nil {
+		t.Fatalf("insertTestManifest: %v", insertErr)
+	}
+	database.Close()
+
+	if runErr := runHookPathOwned("README.md"); runErr != nil {
+		t.Fatalf("runHookPathOwned returned error: %v", runErr)
+	}
+}
+
+// --- AC11: guardian tests against internal/service drift -------------------
+
+// TestManifestTopicKey_MatchesService guards against drift between the
+// hook's locally-defined manifestTopicKey (SPEC-068 D13, kept local to avoid
+// importing internal/service into a per-tool-call hook) and the real
+// service.SubagentManifestTopicKey constant.
+func TestManifestTopicKey_MatchesService(t *testing.T) {
+	if manifestTopicKey != service.SubagentManifestTopicKey {
+		t.Errorf("manifestTopicKey = %q, want %q (service.SubagentManifestTopicKey)", manifestTopicKey, service.SubagentManifestTopicKey)
+	}
+}
+
+// TestHookManifestEntry_RoundTripsServiceManifestEntry guards against shape
+// drift: a real service.ManifestEntry (as persisted by SaveManifest, the
+// shape path-owned actually reads off disk) must deserialise into
+// hookManifestEntry with Role and Areas intact.
+func TestHookManifestEntry_RoundTripsServiceManifestEntry(t *testing.T) {
+	full := []service.ManifestEntry{
+		{Role: "backend", Path: "/repo/.claude/agents/backend.md", Areas: []string{"internal/**", "cmd/**"}},
+	}
+	data, err := json.Marshal(full)
+	if err != nil {
+		t.Fatalf("marshal service.ManifestEntry: %v", err)
+	}
+
+	var lite []hookManifestEntry
+	if err := json.Unmarshal(data, &lite); err != nil {
+		t.Fatalf("unmarshal into hookManifestEntry: %v", err)
+	}
+
+	if len(lite) != 1 {
+		t.Fatalf("len(lite) = %d, want 1", len(lite))
+	}
+	if lite[0].Role != string(full[0].Role) {
+		t.Errorf("Role = %q, want %q", lite[0].Role, full[0].Role)
+	}
+	if strings.Join(lite[0].Areas, ",") != strings.Join(full[0].Areas, ",") {
+		t.Errorf("Areas = %v, want %v", lite[0].Areas, full[0].Areas)
+	}
+}
+
+// --- normalisePathForOwnership -----------------------------------------------
+
+// TestNormalisePathForOwnership covers R4: relative, absolute in-tree, and
+// out-of-tree paths.
+func TestNormalisePathForOwnership(t *testing.T) {
+	tests := []struct {
+		name          string
+		path          string
+		wantRel       string
+		wantOutOfTree bool
+	}{
+		{"empty path", "", "", false},
+		{"relative in-tree", "internal/foo.go", "internal/foo.go", false},
+		{"absolute in-tree", filepath.Join(testCWD, "internal", "foo.go"), "internal/foo.go", false},
+		{"absolute out-of-tree", "/etc/passwd", "", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rel, outOfTree := normalisePathForOwnership(tt.path, testCWD)
+			if rel != tt.wantRel || outOfTree != tt.wantOutOfTree {
+				t.Errorf("normalisePathForOwnership(%q, %q) = (%q, %v), want (%q, %v)",
+					tt.path, testCWD, rel, outOfTree, tt.wantRel, tt.wantOutOfTree)
+			}
+		})
+	}
+}

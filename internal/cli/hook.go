@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bmatcuk/doublestar/v4"
 	"github.com/spf13/cobra"
 
 	"github.com/juanftp/mneme/internal/codegraph"
@@ -21,6 +23,7 @@ import (
 	"github.com/juanftp/mneme/internal/project"
 	"github.com/juanftp/mneme/internal/rules"
 	"github.com/juanftp/mneme/internal/shell"
+	"github.com/juanftp/mneme/internal/subagents"
 )
 
 // newHookCmd returns the "mneme hook" subcommand. Hook handlers are invoked by
@@ -39,9 +42,15 @@ import (
 //   - enforce-delegation: legacy config-based delegation enforcement (deprecated)
 //   - tokenize: parse a shell command from stdin and write structured JSON tokens
 //     to stdout; used by enforce_delegation.sh as a robust tokenizer backend
+//   - path-owned: manifest-aware ownership check for a single target path
+//     (SPEC-068 D6/D7/D8); invoked by enforce_delegation.sh in place of its
+//     static allowlist for non-whitelisted paths. Exits 2 (path owned by an
+//     implementer subagent, or manifest absent/empty = legacy deny-by-default)
+//     or 0 (not owned, or any hard failure = fail-open). Prints the owning
+//     role (or "legacy") to stdout when it exits 2.
 func newHookCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "hook <event>",
+		Use:   "hook <event> [args...]",
 		Short: "Run a mneme hook handler (invoked by agent hooks)",
 		Long: `Run a mneme lifecycle hook handler. These commands are invoked
 automatically by the agent's hook system — they are not intended for direct
@@ -52,8 +61,11 @@ Events:
   session-end       Print a reminder for the agent to call mem_session_end
   pre-tool-use      Evaluate rules against the current tool invocation (PreToolUse hook)
   enforce-delegation  Legacy config-based delegation enforcement (deprecated)
-  tokenize          Parse a shell command from stdin and emit structured JSON tokens`,
-		Args: cobra.ExactArgs(1),
+  tokenize          Parse a shell command from stdin and emit structured JSON tokens
+  path-owned <path> Manifest-aware ownership check: exit 2 (block) if <path> is owned
+                    by an implementer subagent or no manifest exists (legacy), exit 0
+                    (allow) otherwise`,
+		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			event := args[0]
 			switch event {
@@ -67,8 +79,13 @@ Events:
 				return runHookEnforceDelegation()
 			case "tokenize":
 				return runHookTokenize(os.Stdin, os.Stdout)
+			case "path-owned":
+				if len(args) < 2 {
+					return fmt.Errorf("hook path-owned: requires a target path argument")
+				}
+				return runHookPathOwned(args[1])
 			default:
-				return fmt.Errorf("hook: unknown event %q — supported events: session-start, session-end, pre-tool-use, enforce-delegation, tokenize", event)
+				return fmt.Errorf("hook: unknown event %q — supported events: session-start, session-end, pre-tool-use, enforce-delegation, tokenize, path-owned", event)
 			}
 		},
 	}
@@ -551,6 +568,179 @@ func queryRulesFromDB(path string) ([]model.Memory, error) {
 		return nil, fmt.Errorf("iterate rule rows: %w", err)
 	}
 	return result, nil
+}
+
+// ---- path-owned (SPEC-068 D6/D7/D8) -----------------------------------------
+
+// manifestTopicKey mirrors service.SubagentManifestTopicKey. It is defined
+// locally rather than importing internal/service (SPEC-068 D13): the hook
+// must stay lightweight (one process spawn per non-whitelisted target, see
+// D10) and internal/service pulls in the full memory store / embedding
+// stack for two fields this hook never needs. TestManifestTopicKey_MatchesService
+// (a guardian test that may import internal/service) prevents this constant
+// from drifting out of sync with the real topic key.
+const manifestTopicKey = "subagents/manifest"
+
+// hookManifestEntry is a minimal local mirror of service.ManifestEntry
+// (SPEC-068 D13): path-owned only ever reads Role and Areas, so it defines
+// its own lightweight struct rather than depending on internal/service.
+// TestHookManifestEntry_RoundTripsServiceManifestEntry guards the shape
+// against drift by round-tripping a real service.ManifestEntry through it.
+type hookManifestEntry struct {
+	Role  string   `json:"role"`
+	Areas []string `json:"areas"`
+}
+
+// manifestQuery selects the single manifest memory's content for a project,
+// mirroring rulesQuery/queryRulesFromDB's read-only access pattern.
+const manifestQuery = `
+SELECT content
+FROM memories
+WHERE topic_key = ? AND deleted_at IS NULL
+LIMIT 1`
+
+// queryManifestContent opens the database at path read-only and returns the
+// raw JSON content of the subagents/manifest memory.
+//
+// found is false — with a nil error — both when the database file itself
+// does not exist and when the file exists but has no manifest row yet; D8
+// treats "no manifest" as the legacy deny-by-default branch, not an error.
+// A non-nil error indicates a hard failure (cannot open/ping, scan error)
+// which callers must treat as fail-open (D8's last row).
+func queryManifestContent(path string) (content string, found bool, err error) {
+	database, openErr := db.OpenReadOnly(path)
+	if openErr != nil {
+		if strings.Contains(openErr.Error(), "file does not exist") {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("open %s: %w", path, openErr)
+	}
+	defer database.Close() //nolint:errcheck // cleanup path; error is not actionable
+
+	row := database.QueryRow(manifestQuery, manifestTopicKey)
+	if scanErr := row.Scan(&content); scanErr != nil {
+		if errors.Is(scanErr, sql.ErrNoRows) {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("scan manifest row: %w", scanErr)
+	}
+	return content, true, nil
+}
+
+// normalisePathForOwnership converts targetPath to a cwd-relative,
+// forward-slash path, replicating internal/rules.normalisePath's logic
+// (unexported there, so it is replicated rather than imported — SPEC-068
+// D7/D13 deliberately keeps this hook's dependency surface minimal rather
+// than growing internal/rules' public API for a single extra caller).
+func normalisePathForOwnership(targetPath, cwd string) (rel string, outOfTree bool) {
+	if targetPath == "" {
+		return "", false
+	}
+	if !filepath.IsAbs(targetPath) {
+		targetPath = filepath.Join(cwd, targetPath)
+	}
+	r, err := filepath.Rel(cwd, targetPath)
+	if err != nil || strings.HasPrefix(r, "..") {
+		return "", true
+	}
+	return filepath.ToSlash(r), false
+}
+
+// pathOwnershipDecision is the outcome of evaluating an orchestrator write
+// target against a project's subagent manifest. It is a pure result object
+// so the exit-code/os.Exit split needed for a testable CLI subcommand does
+// not require spawning a subprocess in tests (mirrors how queryRulesFromDB /
+// rules.Match / renderPreToolUseOutput are tested independently of
+// runHookPreToolUse's os.Exit call).
+type pathOwnershipDecision struct {
+	// ExitCode is 2 for BLOCK, 0 for ALLOW — mirrors the mneme hook exit code
+	// contract (D9): callers (enforce_delegation.sh) treat any non-2 exit as
+	// allow, including a crash.
+	ExitCode int
+
+	// Owner is the role printed to stdout when ExitCode is 2: the manifest
+	// role that owns the path (first match in manifest order, D7 point 6),
+	// or "legacy" when no manifest exists.
+	Owner string
+}
+
+// resolvePathOwnership implements the D7/D8 decision table for a single
+// target path, given the manifest lookup the caller already performed
+// (queryManifestContent). It performs no I/O itself, so it is directly unit
+// testable:
+//
+//   - manifest absent (found=false) or an empty array -> BLOCK, "legacy" (D8).
+//   - manifest JSON fails to parse -> ALLOW (fail-open, D8's hard-error row).
+//   - target path is empty or falls outside the project tree -> ALLOW (D7
+//     point 4: a path that cannot be owned is not owned).
+//   - otherwise: BLOCK with the role of the first implementer manifest entry
+//     (subagents.IsImplementer) whose Areas contains a doublestar glob
+//     matching the path (D7 point 5/6); ALLOW if none does.
+func resolvePathOwnership(targetPath, cwd string, manifestFound bool, manifestJSON string) pathOwnershipDecision {
+	if !manifestFound {
+		return pathOwnershipDecision{ExitCode: 2, Owner: "legacy"}
+	}
+
+	var entries []hookManifestEntry
+	if err := json.Unmarshal([]byte(manifestJSON), &entries); err != nil {
+		return pathOwnershipDecision{ExitCode: 0}
+	}
+	if len(entries) == 0 {
+		return pathOwnershipDecision{ExitCode: 2, Owner: "legacy"}
+	}
+
+	pathRel, outOfTree := normalisePathForOwnership(targetPath, cwd)
+	if outOfTree || pathRel == "" {
+		return pathOwnershipDecision{ExitCode: 0}
+	}
+
+	for _, entry := range entries {
+		if !subagents.IsImplementer(subagents.Role(entry.Role)) {
+			continue
+		}
+		for _, area := range entry.Areas {
+			if matched, _ := doublestar.Match(area, pathRel); matched {
+				return pathOwnershipDecision{ExitCode: 2, Owner: entry.Role}
+			}
+		}
+	}
+
+	return pathOwnershipDecision{ExitCode: 0}
+}
+
+// runHookPathOwned implements the "mneme hook path-owned <path>" subcommand
+// (SPEC-068 D6/D7/D8): it decides whether the orchestrator should be blocked
+// from editing targetPath by consulting the project's subagent manifest, and
+// exits with the contract enforce_delegation.sh expects (D9): exit 2 with the
+// owning role (or "legacy") on stdout to block, exit 0 to allow. Any hard
+// failure resolving cwd/project/manifest fails open (exit 0) — D8's last row,
+// consistent with the rest of this hook's fail-open philosophy.
+func runHookPathOwned(targetPath string) error {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil // fail-open: cannot resolve cwd.
+	}
+
+	cfg, err := config.Load(config.DefaultPath())
+	if err != nil {
+		return nil // fail-open: cannot load config.
+	}
+
+	det := project.NewDetector(cwd)
+	slug, _ := det.DetectProject() // detection failure is non-fatal; slug stays ""
+
+	content, found, err := queryManifestContent(cfg.ProjectDBPath(slug))
+	if err != nil {
+		return nil // fail-open: hard DB error (D8).
+	}
+
+	decision := resolvePathOwnership(targetPath, cwd, found, content)
+	if decision.ExitCode == 2 {
+		fmt.Fprint(os.Stdout, decision.Owner)
+		//nolint:gocritic // os.Exit(2) is the documented hook exit code for rejection
+		os.Exit(2)
+	}
+	return nil
 }
 
 // renderPreToolUseOutput writes the markdown block that the agent sees as a
