@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime/debug"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -18,8 +20,51 @@ import (
 	"github.com/wirvii/mneme/internal/store"
 )
 
-// Version is set at build time via ldflags.
+// Version is set at build time via ldflags (-X …/internal/cli.Version=vX.Y.Z),
+// the mechanism release builds use (Makefile release-local, .github/workflows/
+// release.yml). It must remain a plain literal-initialized var — -X can only
+// overwrite a package-level string variable, not one computed by an init().
+//
+// `go install …@vX.Y.Z` does not pass -ldflags, so a plain `go install` build
+// would otherwise report "dev" forever, and mneme upgrade would refuse to run
+// (see the Version == "dev" guard in runUpgrade). resolveVersionFromBuildInfo,
+// invoked from init() below, closes that gap without touching this literal.
 var Version = "dev"
+
+func init() {
+	Version = resolveVersionFromBuildInfo(Version, debug.ReadBuildInfo)
+}
+
+// resolveVersionFromBuildInfo returns a resolved version string for a `go
+// install`-built binary that received no -ldflags injection. It leaves
+// current untouched unless ALL of the following hold:
+//
+//   - current is exactly "dev" (ldflags already won otherwise — release
+//     builds must always take priority over build-info, per SPEC-070 AC11).
+//   - readBuildInfo succeeds and returns ok=true.
+//   - bi.Main.Version is neither empty nor the placeholder Go uses for
+//     non-tagged builds ("(devel)", e.g. `go run`/`go build` without a
+//     version tag), so a local development build still reports "dev".
+//
+// When those hold, the returned version has its leading "v" stripped —
+// mneme's version strings are stored without it everywhere else (ldflags
+// injection uses VERSION=${GITHUB_REF_NAME#v} in release.yml).
+func resolveVersionFromBuildInfo(current string, readBuildInfo func() (*debug.BuildInfo, bool)) string {
+	if current != "dev" {
+		return current
+	}
+
+	bi, ok := readBuildInfo()
+	if !ok || bi == nil {
+		return current
+	}
+
+	if bi.Main.Version == "" || bi.Main.Version == "(devel)" {
+		return current
+	}
+
+	return strings.TrimPrefix(bi.Main.Version, "v")
+}
 
 // Global flags — populated by cobra's flag binding before any RunE is called.
 var (
