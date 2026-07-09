@@ -279,6 +279,45 @@ BLOCKED because the destination (`internal/store/x.go`) is a protected path.
 The hook's `_find_last_word_target` heuristic takes the **last** non-flag word
 as the target of `cp`/`mv`, so the destination is what is checked.
 
+### `mneme hook path-owned <path>` (SPEC-068)
+
+The whitelist above is only the **fast-path**: paths matching it never invoke
+Go at all. For everything else, the bash hook no longer blocks unconditionally
+— it delegates the decision to `mneme hook path-owned <path>`, a Go subcommand
+that consults the project's `subagents/manifest` memory (read-only, opened
+directly — no service layer) and answers whether an **implementer** subagent
+(`backend`, `frontend`, `bug-hunter`) owns `<path>` via its declared `areas`
+globs.
+
+**Contract:**
+
+| `path-owned` exit code | stdout | Bash hook action |
+|---|---|---|
+| `2` | owning role, or `legacy` when no manifest exists | BLOCK (exit 2) |
+| `0` | (empty) | ALLOW — path falls through to the rest of the command |
+| anything else (crash, unknown subcommand on an old binary) | — | ALLOW — fail-open, same philosophy as the rest of this hook |
+
+**Decision table** (`resolvePathOwnership`, `internal/cli/hook.go`):
+
+| Manifest state | Path state | Result |
+|---|---|---|
+| Present, non-empty | Matches an implementer's `areas` glob (`doublestar.Match`) | **BLOCK**, names the first matching role in manifest order |
+| Present, non-empty | No implementer's `areas` matches | **ALLOW** |
+| Absent (no row), or present but `[]` | any | **BLOCK**, stdout `legacy` — deny-by-default so projects that have not run the `mneme-init` grill keep today's protection |
+| Path is empty or falls outside the project tree | any | **ALLOW** — a path that cannot be normalised relative to the project cannot be owned |
+| Hard failure: config unreadable, DB unreadable/corrupt, manifest JSON unparsable | — | **ALLOW** — fail-open |
+
+**If `mneme` is not on PATH at all**, the bash hook cannot ask Go anything and
+blocks unconditionally (same as if `path-owned` had returned exit 2) — this is
+the one case where the bash side does not fail open, precisely to avoid a
+silent bypass the moment the binary goes missing.
+
+**Cost:** one subprocess spawn + one read-only SQLite open + one indexed
+`SELECT` by `topic_key`, per non-whitelisted target — the same order of
+magnitude as the existing `mneme hook tokenize` spawn. Most orchestrator
+writes never reach this path at all (they land in `.claude/`, `~/.mneme/`, or
+`docs/*.md`, all covered by the static whitelist).
+
 ### Tools intercepted
 
 - `Write`, `Edit`, `MultiEdit`, `NotebookEdit` — file path extracted from

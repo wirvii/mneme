@@ -18,7 +18,10 @@
 4. All subagents MUST include `mcp__mneme__*` (wildcard) to retain access to
    mneme memory tools (`mem_save`, `mem_search`, `mem_context`, etc.).
 5. The orchestrator (principal) MUST NOT edit source paths directly. The bash
-   hook blocks this at the capability level and logs every attempt.
+   hook blocks this at the capability level and logs every attempt — except a
+   non-whitelisted path with no implementer subagent to own it, which the
+   manifest-aware `path-owned` check (SPEC-068) allows through as a conscious
+   fallback. See "Manifest-aware path ownership (SPEC-068)" below.
 
 ## Two-Layer Enforcement
 
@@ -65,15 +68,46 @@ and checks all five known payload locations.
 
 When the orchestrator attempts a file-mutating tool (`Write`, `Edit`,
 `MultiEdit`, `NotebookEdit`, or a protected `Bash` command) against a path
-outside the whitelist, the hook:
+outside the static whitelist, the hook no longer blocks unconditionally
+(SPEC-068 D6/D9): it calls `mneme hook path-owned <target>` (see "Manifest-aware
+path ownership" below) and only blocks when that subcommand exits 2. When it
+blocks, the hook:
 
-1. Prints a BLOQUEADO message to stderr.
+1. Prints a BLOQUEADO message to stderr, naming the owning subagent role when
+   `path-owned` reported one.
 2. If `mneme` is on PATH, calls `mneme save --type discovery` to log the
    attempt as a queryable discovery memory.
 3. Exits with code 2, which causes Claude Code to reject the tool call.
 
 The hook does NOT discriminate by agent role (only by the presence of
 `agent_id`). Role boundaries for subagents are enforced entirely by Layer 1.
+
+### Manifest-aware path ownership (SPEC-068)
+
+`mneme hook path-owned <path>` is the Go subcommand the bash hook now
+consults for every non-whitelisted target instead of blocking directly. It
+reads the project's `subagents/manifest` memory (read-only, same lightweight
+pattern as the Go rules engine's DB access) and decides:
+
+| Manifest state | Path state | Result |
+|---|---|---|
+| Present, non-empty | Owned by an implementer subagent's `areas` glob | **BLOCK** (exit 2) — names the owning role |
+| Present, non-empty | Not owned by any implementer | **ALLOW** (exit 0) — legitimate orchestrator fallback |
+| Absent, or present but empty `[]` | (any) | **BLOCK** (exit 2, "legacy") — deny-by-default, protects projects that have not run the `mneme-init` grill yet |
+| Hard failure (config/DB unreadable, corrupt JSON) | (any) | **ALLOW** (exit 0) — fail-open, consistent with the rest of this hook |
+
+The bash side (`check_target_or_block` in `enforce_delegation.sh`) treats any
+exit code other than 2 as allow — including a crash, or `mneme` predating this
+subcommand — which is why the contract is exit-code-based rather than parsing
+output. If `mneme` is not on PATH at all, the bash hook cannot ask Go anything
+and blocks unconditionally rather than opening a silent bypass.
+
+This makes retiring the six global subagents (a future release) non-destructive:
+a project that never ran the grill has no manifest, so every non-whitelisted
+edit keeps blocking exactly as it does today; a project with a partial manifest
+only blocks the areas that actually have a delegate, letting the orchestrator
+supply the rest as a documented fallback (see the operating manual's
+"Orchestrator fallback" section).
 
 Note on `agent_type`: Claude Code injects `agent_id` into the hook payload for
 subagents but does NOT inject `agent_type`. The hook therefore cannot identify
@@ -244,9 +278,13 @@ read stdin (PreToolUse JSON payload)
   if file_path in whitelist → exit 0
   else:
     set TARGET_PATH
-    log to mneme (if mneme on PATH)
-    exit 2
+    if mneme not on PATH → log + exit 2  (D9 guard: no bypass)
+    else:
+      run `mneme hook path-owned $TARGET_PATH`
+      if exit code == 2 → log (naming the owning role) + exit 2
+      else → allow (fall through)
 ```
 
-Whitelist: `.claude/**`, `~/.claude/**`, `~/.mneme/**`, `CLAUDE.md` (any
-location), `**/docs/*.md`, `.claudeignore`, `/tmp/**`, `/private/tmp/**`.
+Whitelist (always-allow fast-path, never reaches `path-owned`): `.claude/**`,
+`~/.claude/**`, `~/.mneme/**`, `CLAUDE.md` (any location), `**/docs/*.md`,
+`.claudeignore`, `/tmp/**`, `/private/tmp/**`.

@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **SDD executor resolution + manifest-aware delegation hook (SPEC-068)**:
+  `spec_advance` now returns `{spec, executor}` — `executor` is an advisory
+  `ResolveStageExecutor` recommendation (delegate to a manifest subagent, or
+  let the orchestrator supply the stage as a conscious fallback) for the
+  stage the spec just entered. `mneme hook path-owned <path>` is a new
+  subcommand `enforce_delegation.sh` invokes instead of blocking directly for
+  every non-whitelisted write target: it blocks only when an implementer
+  subagent's manifest `areas` own the path, allows an unowned path through as
+  a legitimate fallback, and keeps today's deny-by-default behaviour when no
+  manifest exists yet (protects projects mid-migration to per-project
+  subagents). This closes the gap SS-7 (retiring the six global subagents)
+  would otherwise open for projects that never ran the `mneme-init` grill.
+  See `docs/enforcement-model.md` and `docs/HOOKS.md`.
+
 ## [v1.19.0] — 2026-07-09 — Fix: `mneme upgrade` provisions incoming-version assets (SPEC-067)
 
 ### Fixed
