@@ -2,6 +2,7 @@ package vault
 
 import (
 	"bytes"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -114,7 +115,7 @@ func TestFrontmatter_OmitEmpty(t *testing.T) {
 	out := buf.String()
 
 	// Optional fields should be absent.
-	absent := []string{"topic_key:", "project:", "created_by:", "files:", "applies_to:", "severity:", "superseded_by:"}
+	absent := []string{"topic_key:", "project:", "created_by:", "files:", "applies_to:", "severity:", "superseded_by:", "shared:", "author:"}
 	for _, f := range absent {
 		if strings.Contains(out, f) {
 			t.Errorf("frontmatter should not contain %q for memory with no value\nGot:\n%s", f, out)
@@ -228,6 +229,78 @@ func TestParseUpdatedAt_NotFound(t *testing.T) {
 	if ok {
 		t.Error("parseUpdatedAt should return ok=false when updated_at is missing")
 	}
+}
+
+// TestFrontmatter_SharedAuthor_RoundTrip verifies that FromMemory + WriteTo +
+// parseFrontmatter round-trips the shared and author fields, and that
+// shared=0 (the local/inert default, SPEC-053 D2) is omitted from the YAML so
+// notes written before team-memory existed stay byte-identical.
+func TestFrontmatter_SharedAuthor_RoundTrip(t *testing.T) {
+	cases := []struct {
+		name       string
+		shared     int
+		author     string
+		wantOmit   bool // whether "shared:" must be absent from the YAML
+		wantAuthor bool // whether "author:" must be present
+	}{
+		{name: "local default omitted", shared: 0, author: "", wantOmit: true, wantAuthor: false},
+		{name: "auto-shared with author", shared: 1, author: "Jane Doe <jane@example.com>", wantOmit: false, wantAuthor: true},
+		{name: "team-curated with author", shared: 2, author: "John Doe <john@example.com>", wantOmit: false, wantAuthor: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := &model.Memory{
+				ID:        "019ddc45-0000-0000-0000-000000000010",
+				Type:      model.TypeDecision,
+				Scope:     model.ScopeProject,
+				Title:     "Shared decision",
+				CreatedAt: mustParseTime("2026-01-01T00:00:00Z"),
+				UpdatedAt: mustParseTime("2026-01-01T00:00:00Z"),
+				Shared:    tc.shared,
+				Author:    tc.author,
+			}
+
+			fm := FromMemory(m)
+			var buf bytes.Buffer
+			if _, err := fm.WriteTo(&buf); err != nil {
+				t.Fatalf("WriteTo returned error: %v", err)
+			}
+			out := buf.String()
+
+			if tc.wantOmit && strings.Contains(out, "shared:") {
+				t.Errorf("shared=0 should be omitted from frontmatter\nGot:\n%s", out)
+			}
+			if !tc.wantOmit && !strings.Contains(out, "shared: "+itoa(tc.shared)) {
+				t.Errorf("expected shared: %d in frontmatter\nGot:\n%s", tc.shared, out)
+			}
+			if tc.wantAuthor && !strings.Contains(out, "author: "+tc.author) {
+				t.Errorf("expected author: %s in frontmatter\nGot:\n%s", tc.author, out)
+			}
+			if !tc.wantAuthor && strings.Contains(out, "author:") {
+				t.Errorf("author should be omitted when empty\nGot:\n%s", out)
+			}
+
+			// Round-trip: parse the written frontmatter back and verify the
+			// values match what was written (parseFrontmatter lives in reader.go).
+			parsed, _, err := parseFrontmatter(buf.Bytes())
+			if err != nil {
+				t.Fatalf("parseFrontmatter returned error: %v", err)
+			}
+			if parsed.Shared != tc.shared {
+				t.Errorf("round-trip Shared: got %d, want %d", parsed.Shared, tc.shared)
+			}
+			if parsed.Author != tc.author {
+				t.Errorf("round-trip Author: got %q, want %q", parsed.Author, tc.author)
+			}
+		})
+	}
+}
+
+// itoa is a tiny local helper avoiding an extra strconv import just for this
+// test's string-building.
+func itoa(n int) string {
+	return fmt.Sprintf("%d", n)
 }
 
 func TestFrontmatter_SupersededBy(t *testing.T) {

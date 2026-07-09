@@ -18,7 +18,9 @@ import (
 //   - id, type, scope, title, importance, confidence, decay_rate,
 //     created_at, updated_at, revision_count — always present.
 //   - topic_key, project, created_by, files, applies_to, severity,
-//     superseded_by — present only when non-empty.
+//     superseded_by, shared, author — present only when non-empty
+//     (shared is additionally omitted when it is the default/local value 0,
+//     per SPEC-053 D2/D7 so peers without team-memory never see the field).
 //
 // Excluded: access_count, last_accessed, deleted_at, session_id.
 type Frontmatter struct {
@@ -39,6 +41,8 @@ type Frontmatter struct {
 	AppliesTo     []string `yaml:"applies_to,omitempty"`
 	Severity      string   `yaml:"severity,omitempty"`
 	SupersededBy  string   `yaml:"superseded_by,omitempty"`
+	Shared        int      `yaml:"shared,omitempty"`
+	Author        string   `yaml:"author,omitempty"`
 }
 
 // FromMemory builds a Frontmatter from m, applying the inclusion rules from
@@ -81,6 +85,15 @@ func FromMemory(m *model.Memory) Frontmatter {
 	}
 	if m.SupersededBy != "" {
 		fm.SupersededBy = m.SupersededBy
+	}
+	// shared=0 is the local/inert default (SPEC-053 D2) — omit it so notes
+	// written before team-memory existed, or by peers without it enabled,
+	// stay byte-identical. Only auto-shared (1) and team-curated (2) surface.
+	if m.Shared > 0 {
+		fm.Shared = m.Shared
+	}
+	if m.Author != "" {
+		fm.Author = m.Author
 	}
 
 	return fm
@@ -190,6 +203,18 @@ func (fm Frontmatter) WriteTo(w io.Writer) (int64, error) {
 	if fm.SupersededBy != "" {
 		if err := write("superseded_by: %s\n", fm.SupersededBy); err != nil {
 			return total, fmt.Errorf("vault: frontmatter: write superseded_by: %w", err)
+		}
+	}
+
+	if fm.Shared != 0 {
+		if err := write("shared: %d\n", fm.Shared); err != nil {
+			return total, fmt.Errorf("vault: frontmatter: write shared: %w", err)
+		}
+	}
+
+	if fm.Author != "" {
+		if err := write("author: %s\n", fm.Author); err != nil {
+			return total, fmt.Errorf("vault: frontmatter: write author: %w", err)
 		}
 	}
 
