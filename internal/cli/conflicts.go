@@ -8,8 +8,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/juanftp/mneme/internal/model"
-	"github.com/juanftp/mneme/internal/service"
+	"github.com/wirvii/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/service"
 )
 
 // newConflictsCmd returns the "mneme conflicts" subcommand group.

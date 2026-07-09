@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/juanftp/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/model"
 )
 
 // MemoryRelation represents a directed edge in the memory_relations table.

@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/juanftp/mneme/internal/managedblock"
+	"github.com/wirvii/mneme/internal/managedblock"
 )
 
 // managedBlockMarker identifies the mneme managed block used in CLAUDE.md /

@@ -4,7 +4,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 
-	"github.com/juanftp/mneme/internal/tui"
+	"github.com/wirvii/mneme/internal/tui"
 )
 
 // newTUICmd returns the "mneme tui" subcommand. It launches the interactive

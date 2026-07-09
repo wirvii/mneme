@@ -8,7 +8,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/juanftp/mneme/internal/service"
+	"github.com/wirvii/mneme/internal/service"
 )
 
 // AppModel is the top-level tea.Model for the mneme TUI. It owns the service

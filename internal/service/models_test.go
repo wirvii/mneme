@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/juanftp/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/model"
 )
 
 // newTestModelsService creates a ModelsService with a config file in a temp dir.

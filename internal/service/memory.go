@@ -14,14 +14,14 @@ import (
 	"os"
 	"time"
 
-	"github.com/juanftp/mneme/internal/config"
-	"github.com/juanftp/mneme/internal/embed"
-	"github.com/juanftp/mneme/internal/graph"
-	"github.com/juanftp/mneme/internal/model"
-	"github.com/juanftp/mneme/internal/scoring"
-	"github.com/juanftp/mneme/internal/store"
-	syncpkg "github.com/juanftp/mneme/internal/sync"
-	"github.com/juanftp/mneme/internal/wikilink"
+	"github.com/wirvii/mneme/internal/config"
+	"github.com/wirvii/mneme/internal/embed"
+	"github.com/wirvii/mneme/internal/graph"
+	"github.com/wirvii/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/scoring"
+	"github.com/wirvii/mneme/internal/store"
+	syncpkg "github.com/wirvii/mneme/internal/sync"
+	"github.com/wirvii/mneme/internal/wikilink"
 )
 
 // MemoryService orchestrates memory operations. It owns the business rules for

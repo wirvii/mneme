@@ -6,7 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/juanftp/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/model"
 )
 
 // newBacklogCmd returns the "mneme backlog" subcommand group.

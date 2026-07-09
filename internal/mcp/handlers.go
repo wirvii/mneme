@@ -10,11 +10,11 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/juanftp/mneme/internal/codegraph"
-	"github.com/juanftp/mneme/internal/config"
-	"github.com/juanftp/mneme/internal/install"
-	"github.com/juanftp/mneme/internal/model"
-	"github.com/juanftp/mneme/internal/service"
+	"github.com/wirvii/mneme/internal/codegraph"
+	"github.com/wirvii/mneme/internal/config"
+	"github.com/wirvii/mneme/internal/install"
+	"github.com/wirvii/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/service"
 )
 
 // handlers dispatches tools/call requests to the appropriate MemoryService method.

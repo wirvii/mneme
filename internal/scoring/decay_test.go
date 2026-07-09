@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/juanftp/mneme/internal/scoring"
+	"github.com/wirvii/mneme/internal/scoring"
 )
 
 // approxEqual reports whether a and b are within epsilon of each other.

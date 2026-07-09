@@ -5,7 +5,7 @@ import (
 	"context"
 	"testing"
 
-	mnemeSync "github.com/juanftp/mneme/internal/sync"
+	mnemeSync "github.com/wirvii/mneme/internal/sync"
 )
 
 // TestDetectFormat_Extension verifies that the file name alone is sufficient

@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/juanftp/mneme/internal/model"
-	"github.com/juanftp/mneme/internal/service"
-	"github.com/juanftp/mneme/internal/vault"
+	"github.com/wirvii/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/service"
+	"github.com/wirvii/mneme/internal/vault"
 )
 
 // --- helpers ---

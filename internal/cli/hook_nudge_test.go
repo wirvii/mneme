@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/juanftp/mneme/internal/codegraph"
-	"github.com/juanftp/mneme/internal/db"
-	"github.com/juanftp/mneme/internal/model"
-	"github.com/juanftp/mneme/internal/rules"
+	"github.com/wirvii/mneme/internal/codegraph"
+	"github.com/wirvii/mneme/internal/db"
+	"github.com/wirvii/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/rules"
 )
 
 // mnemeRepoRoot returns the absolute path of the mneme repository root.

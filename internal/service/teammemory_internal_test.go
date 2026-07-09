@@ -3,7 +3,7 @@ package service
 import (
 	"testing"
 
-	"github.com/juanftp/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/model"
 )
 
 // TestBakeSharedDefault covers the full SPEC-053 D2 auto-share table: durable

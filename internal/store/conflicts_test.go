@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/juanftp/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/model"
 )
 
 // insertTestMemory creates a minimal active memory in the store for testing.

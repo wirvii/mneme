@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/juanftp/mneme/internal/codegraph"
+	"github.com/wirvii/mneme/internal/codegraph"
 )
 
 // CodeGraphService orchestrates code graph operations. It owns the DB lifecycle

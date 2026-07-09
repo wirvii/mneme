@@ -1,4 +1,4 @@
-module github.com/juanftp/mneme
+module github.com/wirvii/mneme
 
 go 1.25.8
 

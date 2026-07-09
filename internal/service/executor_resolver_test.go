@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/juanftp/mneme/internal/model"
-	"github.com/juanftp/mneme/internal/subagents"
+	"github.com/wirvii/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/subagents"
 )
 
 // manifestWith builds a minimal manifest slice from role/path pairs for test

@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/juanftp/mneme/internal/model"
-	"github.com/juanftp/mneme/internal/service"
+	"github.com/wirvii/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/service"
 )
 
 // newTestServiceWithVaultDir creates a service whose data dir is rooted at tmp

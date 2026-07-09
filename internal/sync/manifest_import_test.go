@@ -9,9 +9,9 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/juanftp/mneme/internal/model"
-	"github.com/juanftp/mneme/internal/store"
-	mnemeSync "github.com/juanftp/mneme/internal/sync"
+	"github.com/wirvii/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/store"
+	mnemeSync "github.com/wirvii/mneme/internal/sync"
 )
 
 // marshalManifestTarGz builds a minimal .manifest.tar.gz from a ManifestRoot.

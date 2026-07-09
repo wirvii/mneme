@@ -8,7 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	mnemeSync "github.com/juanftp/mneme/internal/sync"
+	mnemeSync "github.com/wirvii/mneme/internal/sync"
 )
 
 // newSyncCmd returns the "mneme sync" subcommand group. Child commands handle

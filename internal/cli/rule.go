@@ -13,9 +13,9 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 
-	"github.com/juanftp/mneme/internal/model"
-	"github.com/juanftp/mneme/internal/rules"
-	"github.com/juanftp/mneme/internal/service"
+	"github.com/wirvii/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/rules"
+	"github.com/wirvii/mneme/internal/service"
 )
 
 // Adaptive colors for severity levels in the rule list table.

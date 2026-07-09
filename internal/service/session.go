@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/gofrs/uuid/v5"
-	"github.com/juanftp/mneme/internal/model"
-	"github.com/juanftp/mneme/internal/scoring"
+	"github.com/wirvii/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/scoring"
 )
 
 // SessionEnd closes the current agent session and persists a session_summary

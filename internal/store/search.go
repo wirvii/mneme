@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/juanftp/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/model"
 )
 
 // SearchOptions parameterises a full-text search query.

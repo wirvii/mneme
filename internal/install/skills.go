@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/juanftp/mneme/internal/skill"
+	"github.com/wirvii/mneme/internal/skill"
 )
 
 // SkillsResult summarises the outcome of a WriteSkills call.

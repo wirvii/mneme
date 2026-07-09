@@ -23,5 +23,5 @@ setup: install
 
 release-local:
 	CGO_ENABLED=1 go build -tags fts5 \
-		-ldflags "-s -w -X github.com/juanftp/mneme/internal/cli.Version=local" \
+		-ldflags "-s -w -X github.com/wirvii/mneme/internal/cli.Version=local" \
 		-o mneme ./cmd/mneme

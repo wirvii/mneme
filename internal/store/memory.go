@@ -14,8 +14,8 @@ import (
 	"time"
 
 	"github.com/gofrs/uuid/v5"
-	"github.com/juanftp/mneme/internal/db"
-	"github.com/juanftp/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/db"
+	"github.com/wirvii/mneme/internal/model"
 )
 
 // MemoryStore provides CRUD, list, search, and session operations against the

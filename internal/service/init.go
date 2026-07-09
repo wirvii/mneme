@@ -18,8 +18,8 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/juanftp/mneme/internal/config"
-	"github.com/juanftp/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/config"
+	"github.com/wirvii/mneme/internal/model"
 )
 
 // ArtifactKind classifies the type of a legacy workflow artifact.

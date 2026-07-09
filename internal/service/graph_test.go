@@ -6,7 +6,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/juanftp/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/model"
 )
 
 // TestRelate_CreatesNewRelation verifies that Relate creates entities and a

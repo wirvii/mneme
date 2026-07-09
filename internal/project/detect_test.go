@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/juanftp/mneme/internal/project"
+	"github.com/wirvii/mneme/internal/project"
 )
 
 func TestNormalizeRemoteURL(t *testing.T) {

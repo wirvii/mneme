@@ -7,9 +7,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/juanftp/mneme/internal/config"
-	"github.com/juanftp/mneme/internal/mcp"
-	"github.com/juanftp/mneme/internal/service"
+	"github.com/wirvii/mneme/internal/config"
+	"github.com/wirvii/mneme/internal/mcp"
+	"github.com/wirvii/mneme/internal/service"
 )
 
 // newMCPCmd returns the "mneme mcp" subcommand. It starts the MCP server over

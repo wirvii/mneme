@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/juanftp/mneme/internal/frontmatter"
-	"github.com/juanftp/mneme/internal/managedblock"
+	"github.com/wirvii/mneme/internal/frontmatter"
+	"github.com/wirvii/mneme/internal/managedblock"
 )
 
 // agentFixedMarker is the managedblock marker identifying the layer-1 block

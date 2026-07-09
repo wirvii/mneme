@@ -8,7 +8,7 @@ import (
 	"io"
 	"log/slog"
 
-	"github.com/juanftp/mneme/internal/service"
+	"github.com/wirvii/mneme/internal/service"
 )
 
 // Server is a Model Context Protocol server that speaks JSON-RPC 2.0 over stdio.

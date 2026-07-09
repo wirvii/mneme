@@ -3,7 +3,7 @@ package store
 import (
 	"testing"
 
-	"github.com/juanftp/mneme/internal/db"
+	"github.com/wirvii/mneme/internal/db"
 )
 
 // newTestStore opens a fresh in-memory SQLite database, applies all migrations,

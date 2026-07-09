@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/juanftp/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/model"
 )
 
 // CountByType returns the number of active (non-deleted, non-superseded) memories

@@ -10,12 +10,12 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/juanftp/mneme/internal/config"
-	"github.com/juanftp/mneme/internal/db"
-	"github.com/juanftp/mneme/internal/embed"
-	"github.com/juanftp/mneme/internal/project"
-	"github.com/juanftp/mneme/internal/service"
-	"github.com/juanftp/mneme/internal/store"
+	"github.com/wirvii/mneme/internal/config"
+	"github.com/wirvii/mneme/internal/db"
+	"github.com/wirvii/mneme/internal/embed"
+	"github.com/wirvii/mneme/internal/project"
+	"github.com/wirvii/mneme/internal/service"
+	"github.com/wirvii/mneme/internal/store"
 )
 
 // Version is set at build time via ldflags.

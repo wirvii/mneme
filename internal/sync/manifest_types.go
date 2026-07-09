@@ -3,7 +3,7 @@ package sync
 import (
 	"time"
 
-	"github.com/juanftp/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/model"
 )
 
 // ManifestVersion is the only manifest specification version this implementation

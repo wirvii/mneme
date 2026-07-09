@@ -11,10 +11,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/juanftp/mneme/internal/config"
-	"github.com/juanftp/mneme/internal/model"
-	"github.com/juanftp/mneme/internal/scoring"
-	"github.com/juanftp/mneme/internal/store"
+	"github.com/wirvii/mneme/internal/config"
+	"github.com/wirvii/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/scoring"
+	"github.com/wirvii/mneme/internal/store"
 )
 
 // sweepThreshold is the effective-importance value below which a memory is

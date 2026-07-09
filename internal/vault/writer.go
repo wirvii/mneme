@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/juanftp/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/model"
 )
 
 // PathMode selects the layout strategy WriteMemory/Export use to compute a

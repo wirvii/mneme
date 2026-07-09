@@ -24,8 +24,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/juanftp/mneme/internal/model"
-	"github.com/juanftp/mneme/internal/store"
+	"github.com/wirvii/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/store"
 )
 
 // ExportResult summarises a completed export operation.

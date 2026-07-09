@@ -3,7 +3,7 @@ package service
 import (
 	"testing"
 
-	"github.com/juanftp/mneme/internal/store"
+	"github.com/wirvii/mneme/internal/store"
 )
 
 // TestFindCandidatePairsInMemory_Basic verifies that two memories sharing

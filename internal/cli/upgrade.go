@@ -12,7 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/juanftp/mneme/internal/upgrade"
+	"github.com/wirvii/mneme/internal/upgrade"
 )
 
 // newUpgradeCmd returns the "mneme upgrade" subcommand. It checks for a newer

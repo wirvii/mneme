@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/juanftp/mneme/internal/model"
-	"github.com/juanftp/mneme/internal/store"
-	"github.com/juanftp/mneme/internal/wikilink"
+	"github.com/wirvii/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/store"
+	"github.com/wirvii/mneme/internal/wikilink"
 )
 
 // rebuildBatchSize is the default number of memories processed per transaction

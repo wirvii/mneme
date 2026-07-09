@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/juanftp/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/model"
 )
 
 // TestTruncateTitle verifies that truncate shortens long strings correctly and

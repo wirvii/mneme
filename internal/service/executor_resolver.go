@@ -3,8 +3,8 @@ package service
 import (
 	"fmt"
 
-	"github.com/juanftp/mneme/internal/model"
-	"github.com/juanftp/mneme/internal/subagents"
+	"github.com/wirvii/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/subagents"
 )
 
 // Executor values identify who should execute a stage: a delegated subagent

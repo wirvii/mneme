@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/juanftp/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/model"
 )
 
 // Relate creates a relationship between two graph endpoints in the knowledge

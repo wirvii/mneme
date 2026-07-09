@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/juanftp/mneme/internal/db"
-	"github.com/juanftp/mneme/internal/enforcement"
-	"github.com/juanftp/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/db"
+	"github.com/wirvii/mneme/internal/enforcement"
+	"github.com/wirvii/mneme/internal/model"
 )
 
 // --- evaluateDelegation (config/project/manifest wiring, DB-backed) --------

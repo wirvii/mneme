@@ -7,7 +7,7 @@ import (
 
 	"github.com/gofrs/uuid/v5"
 
-	"github.com/juanftp/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/model"
 )
 
 // RegisterUnresolved records or updates an unresolved wikilink reference.

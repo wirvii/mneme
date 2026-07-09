@@ -9,8 +9,8 @@ import (
 	"sort"
 	"unicode/utf8"
 
-	"github.com/juanftp/mneme/internal/model"
-	"github.com/juanftp/mneme/internal/store"
+	"github.com/wirvii/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/store"
 )
 
 // seedKind classifies the format of a seed parameter supplied to Explore.

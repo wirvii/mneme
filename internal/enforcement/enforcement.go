@@ -24,7 +24,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/juanftp/mneme/internal/shell"
+	"github.com/wirvii/mneme/internal/shell"
 )
 
 // Decision is the result of evaluating a single tool invocation (a file path

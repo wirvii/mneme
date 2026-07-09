@@ -8,9 +8,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/juanftp/mneme/internal/install"
-	"github.com/juanftp/mneme/internal/model"
-	"github.com/juanftp/mneme/internal/skill"
+	"github.com/wirvii/mneme/internal/install"
+	"github.com/wirvii/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/skill"
 )
 
 // SkillsService manages the lifecycle of mneme skills: listing, installing,

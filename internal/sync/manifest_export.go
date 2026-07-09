@@ -12,8 +12,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/juanftp/mneme/internal/model"
-	"github.com/juanftp/mneme/internal/store"
+	"github.com/wirvii/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/store"
 )
 
 // ManifestExporter writes a Memory Manifest v1.0 tarball. It queries a

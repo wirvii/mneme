@@ -7,7 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/juanftp/mneme/internal/vault"
+	"github.com/wirvii/mneme/internal/vault"
 )
 
 // TeamMemoryImportResult summarises an ImportFromShared run (SPEC-053 SS-D).

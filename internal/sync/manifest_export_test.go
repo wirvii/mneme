@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/gofrs/uuid/v5"
-	"github.com/juanftp/mneme/internal/model"
-	mnemeSync "github.com/juanftp/mneme/internal/sync"
+	"github.com/wirvii/mneme/internal/model"
+	mnemeSync "github.com/wirvii/mneme/internal/sync"
 )
 
 // makeEntityInStore creates a named entity in the store for tests.

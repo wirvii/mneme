@@ -8,7 +8,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/juanftp/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/model"
 )
 
 // MigrateResult holds the outcome of a MigrateWorkflowDir call. It reports

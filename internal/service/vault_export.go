@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"github.com/juanftp/mneme/internal/model"
-	"github.com/juanftp/mneme/internal/store"
-	"github.com/juanftp/mneme/internal/vault"
+	"github.com/wirvii/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/store"
+	"github.com/wirvii/mneme/internal/vault"
 )
 
 // VaultExportOptions parameterises a vault export operation.

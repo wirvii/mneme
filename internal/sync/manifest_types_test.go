@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/juanftp/mneme/internal/model"
-	mnemeSync "github.com/juanftp/mneme/internal/sync"
+	"github.com/wirvii/mneme/internal/model"
+	mnemeSync "github.com/wirvii/mneme/internal/sync"
 )
 
 // TestManifestRoot_JSONRoundtrip verifies that a fully-populated ManifestRoot

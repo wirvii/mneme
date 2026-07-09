@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/juanftp/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/model"
 )
 
 // TestFTS5Search verifies that FTS5 returns the correct memories for a query.

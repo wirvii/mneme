@@ -9,7 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/juanftp/mneme/internal/config"
+	"github.com/wirvii/mneme/internal/config"
 )
 
 // validConfigSections is the ordered list of all recognised section names.

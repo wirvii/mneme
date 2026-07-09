@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/juanftp/mneme/internal/model"
-	"github.com/juanftp/mneme/internal/rules"
-	"github.com/juanftp/mneme/internal/service"
+	"github.com/wirvii/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/rules"
+	"github.com/wirvii/mneme/internal/service"
 )
 
 // ─── slugifyTitle tests ────────────────────────────────────────────────────

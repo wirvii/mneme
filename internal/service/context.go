@@ -8,9 +8,9 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/juanftp/mneme/internal/model"
-	"github.com/juanftp/mneme/internal/scoring"
-	"github.com/juanftp/mneme/internal/store"
+	"github.com/wirvii/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/scoring"
+	"github.com/wirvii/mneme/internal/store"
 )
 
 // Context assembles a curated memory bundle for an agent at session start.

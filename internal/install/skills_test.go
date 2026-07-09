@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/juanftp/mneme/internal/install"
-	"github.com/juanftp/mneme/internal/skill"
+	"github.com/wirvii/mneme/internal/install"
+	"github.com/wirvii/mneme/internal/skill"
 )
 
 // fakeSkillEntry builds a minimal SkillEntry for testing.

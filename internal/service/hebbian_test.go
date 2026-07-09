@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/juanftp/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/model"
 )
 
 // TestService_Start_InitializesWorkerPool verifies that Start can be called

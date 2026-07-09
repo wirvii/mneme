@@ -3,7 +3,7 @@ package rules
 import (
 	"testing"
 
-	"github.com/juanftp/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/model"
 )
 
 // cwd is the synthetic working directory used throughout the test suite.

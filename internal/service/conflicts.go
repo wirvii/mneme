@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/juanftp/mneme/internal/conflicts"
-	"github.com/juanftp/mneme/internal/model"
-	"github.com/juanftp/mneme/internal/store"
+	"github.com/wirvii/mneme/internal/conflicts"
+	"github.com/wirvii/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/store"
 )
 
 // ConflictScanRequest parameterises a conflicts scan operation.

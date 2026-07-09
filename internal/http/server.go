@@ -14,8 +14,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/juanftp/mneme/internal/model"
-	"github.com/juanftp/mneme/internal/service"
+	"github.com/wirvii/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/service"
 )
 
 // Server is the mneme HTTP API server. It owns the routing, middleware, and

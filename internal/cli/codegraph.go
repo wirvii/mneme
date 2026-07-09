@@ -9,10 +9,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/juanftp/mneme/internal/codegraph"
-	"github.com/juanftp/mneme/internal/config"
-	"github.com/juanftp/mneme/internal/project"
-	"github.com/juanftp/mneme/internal/service"
+	"github.com/wirvii/mneme/internal/codegraph"
+	"github.com/wirvii/mneme/internal/config"
+	"github.com/wirvii/mneme/internal/project"
+	"github.com/wirvii/mneme/internal/service"
 )
 
 // newCodegraphCmd returns the "mneme codegraph" parent command. It groups

@@ -39,7 +39,7 @@ jobs:
         run: |
           CGO_ENABLED=1 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
             go build -tags fts5 \
-            -ldflags "-s -w -X github.com/juanftp/mneme/internal/cli.Version=${{ steps.version.outputs.VERSION }}" \
+            -ldflags "-s -w -X github.com/wirvii/mneme/internal/cli.Version=${{ steps.version.outputs.VERSION }}" \
             -o mneme ./cmd/mneme
 
       - name: Create archive

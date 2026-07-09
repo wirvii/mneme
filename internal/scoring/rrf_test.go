@@ -3,7 +3,7 @@ package scoring_test
 import (
 	"testing"
 
-	"github.com/juanftp/mneme/internal/scoring"
+	"github.com/wirvii/mneme/internal/scoring"
 )
 
 func TestRRFScore(t *testing.T) {

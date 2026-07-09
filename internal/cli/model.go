@@ -8,8 +8,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/juanftp/mneme/internal/config"
-	"github.com/juanftp/mneme/internal/service"
+	"github.com/wirvii/mneme/internal/config"
+	"github.com/wirvii/mneme/internal/service"
 )
 
 // newModelCmd returns the "mneme model" command group with list/set/reset

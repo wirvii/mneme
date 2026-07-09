@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/juanftp/mneme/internal/service"
-	"github.com/juanftp/mneme/internal/subagents"
+	"github.com/wirvii/mneme/internal/service"
+	"github.com/wirvii/mneme/internal/subagents"
 )
 
 func newSubagentTestService(t *testing.T) *service.SubagentService {

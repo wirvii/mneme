@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/juanftp/mneme/internal/managedblock"
+	"github.com/wirvii/mneme/internal/managedblock"
 )
 
 func TestCompose_FreshProfile(t *testing.T) {

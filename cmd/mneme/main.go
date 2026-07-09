@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/juanftp/mneme/internal/cli"
+	"github.com/wirvii/mneme/internal/cli"
 )
 
 func main() {

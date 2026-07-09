@@ -13,7 +13,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/juanftp/mneme/internal/store"
+	"github.com/wirvii/mneme/internal/store"
 )
 
 // MemoryService orchestrates memory operations.

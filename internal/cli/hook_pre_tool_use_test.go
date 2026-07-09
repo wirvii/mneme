@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/juanftp/mneme/internal/db"
-	"github.com/juanftp/mneme/internal/model"
-	"github.com/juanftp/mneme/internal/rules"
+	"github.com/wirvii/mneme/internal/db"
+	"github.com/wirvii/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/rules"
 )
 
 // insertTestRule inserts a rule into the given database for test purposes.

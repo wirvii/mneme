@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/juanftp/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/model"
 )
 
 // TestExploreCmd_TreeOutput verifies that renderExploreTree produces the

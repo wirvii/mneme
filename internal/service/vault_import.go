@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/juanftp/mneme/internal/vault"
+	"github.com/wirvii/mneme/internal/vault"
 )
 
 // VaultImportOptions parameterises a vault import operation.

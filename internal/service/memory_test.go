@@ -5,12 +5,12 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/juanftp/mneme/internal/config"
-	"github.com/juanftp/mneme/internal/db"
-	"github.com/juanftp/mneme/internal/embed"
-	"github.com/juanftp/mneme/internal/model"
-	"github.com/juanftp/mneme/internal/service"
-	"github.com/juanftp/mneme/internal/store"
+	"github.com/wirvii/mneme/internal/config"
+	"github.com/wirvii/mneme/internal/db"
+	"github.com/wirvii/mneme/internal/embed"
+	"github.com/wirvii/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/service"
+	"github.com/wirvii/mneme/internal/store"
 )
 
 func TestSave_Success(t *testing.T) {

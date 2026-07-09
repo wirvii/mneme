@@ -7,7 +7,7 @@ package tui
 import (
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/juanftp/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/model"
 )
 
 // Adaptive colors work on both light and dark terminal themes. lipgloss /

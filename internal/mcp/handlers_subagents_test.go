@@ -7,13 +7,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/juanftp/mneme/internal/config"
-	"github.com/juanftp/mneme/internal/db"
-	"github.com/juanftp/mneme/internal/embed"
-	"github.com/juanftp/mneme/internal/managedblock"
-	"github.com/juanftp/mneme/internal/service"
-	"github.com/juanftp/mneme/internal/store"
-	"github.com/juanftp/mneme/internal/subagents"
+	"github.com/wirvii/mneme/internal/config"
+	"github.com/wirvii/mneme/internal/db"
+	"github.com/wirvii/mneme/internal/embed"
+	"github.com/wirvii/mneme/internal/managedblock"
+	"github.com/wirvii/mneme/internal/service"
+	"github.com/wirvii/mneme/internal/store"
+	"github.com/wirvii/mneme/internal/subagents"
 )
 
 // TestMCP_AllSubagentToolsRegistered verifies that all 6 subagent tools

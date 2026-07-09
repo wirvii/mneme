@@ -22,7 +22,7 @@ import (
 	"math"
 	"sort"
 
-	"github.com/juanftp/mneme/internal/scoring"
+	"github.com/wirvii/mneme/internal/scoring"
 )
 
 // LouvainOptions configures the Louvain community detection algorithm.

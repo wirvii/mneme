@@ -17,7 +17,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/juanftp/mneme/internal/config"
+	"github.com/wirvii/mneme/internal/config"
 )
 
 // HookPatch describes a single hook entry that should be merged into the agent's

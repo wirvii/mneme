@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/juanftp/mneme/internal/model"
-	"github.com/juanftp/mneme/internal/store"
+	"github.com/wirvii/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/store"
 )
 
 // CleanupOrphanRelationsRequest configures a cleanup pass over the entity

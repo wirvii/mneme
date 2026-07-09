@@ -8,7 +8,7 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/juanftp/mneme/internal/scoring"
+	"github.com/wirvii/mneme/internal/scoring"
 )
 
 // GraphBuildOptions configures the BFS traversal used by BuildGraphForSeeds

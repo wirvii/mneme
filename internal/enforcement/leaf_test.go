@@ -24,7 +24,7 @@ func TestLeafPackage_OnlyImportsStdlibAndShell(t *testing.T) {
 		t.Fatalf("build.ImportDir: %v", err)
 	}
 
-	const allowedNonStdlib = "github.com/juanftp/mneme/internal/shell"
+	const allowedNonStdlib = "github.com/wirvii/mneme/internal/shell"
 
 	for _, imp := range append(append([]string{}, pkg.Imports...), pkg.TestImports...) {
 		if imp == allowedNonStdlib {

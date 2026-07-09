@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/juanftp/mneme/internal/model"
-	"github.com/juanftp/mneme/internal/store"
+	"github.com/wirvii/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/store"
 )
 
 // writeSharedNote writes a minimal, valid team-memory vault note (UUID-flat

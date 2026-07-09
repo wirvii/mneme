@@ -6,8 +6,8 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/juanftp/mneme/internal/consolidation"
-	"github.com/juanftp/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/consolidation"
+	"github.com/wirvii/mneme/internal/model"
 )
 
 // RunConsolidation executes one full consolidation cycle against the project

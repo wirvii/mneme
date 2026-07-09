@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/juanftp/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/model"
 )
 
 // TestEnableTeamMemory_CreatesMarkerAndBakesExistingDurables verifies the

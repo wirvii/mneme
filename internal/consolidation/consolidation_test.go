@@ -8,11 +8,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/juanftp/mneme/internal/config"
-	"github.com/juanftp/mneme/internal/consolidation"
-	"github.com/juanftp/mneme/internal/db"
-	"github.com/juanftp/mneme/internal/model"
-	"github.com/juanftp/mneme/internal/store"
+	"github.com/wirvii/mneme/internal/config"
+	"github.com/wirvii/mneme/internal/consolidation"
+	"github.com/wirvii/mneme/internal/db"
+	"github.com/wirvii/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/store"
 )
 
 // discardLogger returns a slog.Logger that throws away all output, keeping

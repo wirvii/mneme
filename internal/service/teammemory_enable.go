@@ -7,10 +7,10 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/juanftp/mneme/internal/gitident"
-	"github.com/juanftp/mneme/internal/model"
-	"github.com/juanftp/mneme/internal/store"
-	"github.com/juanftp/mneme/internal/vault"
+	"github.com/wirvii/mneme/internal/gitident"
+	"github.com/wirvii/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/store"
+	"github.com/wirvii/mneme/internal/vault"
 )
 
 // TeamMemoryEnableResult summarises a "mneme team-memory enable" run

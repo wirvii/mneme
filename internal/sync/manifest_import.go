@@ -11,8 +11,8 @@ import (
 	"log"
 	"os"
 
-	"github.com/juanftp/mneme/internal/model"
-	"github.com/juanftp/mneme/internal/store"
+	"github.com/wirvii/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/store"
 )
 
 // ErrUnsupportedManifestVersion is returned when a manifest archive declares a

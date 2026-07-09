@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/juanftp/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/model"
 )
 
 // makeTestGap is a helper for constructing a Gap with sensible defaults.

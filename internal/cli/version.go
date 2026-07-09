@@ -8,7 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/juanftp/mneme/internal/db"
+	"github.com/wirvii/mneme/internal/db"
 )
 
 // newVersionCmd returns the "mneme version" subcommand. It prints the binary

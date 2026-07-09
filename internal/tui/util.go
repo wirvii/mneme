@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/juanftp/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/model"
 )
 
 // truncate shortens s to maxLen runes, appending "..." if truncation occurred.

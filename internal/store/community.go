@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/juanftp/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/model"
 )
 
 // ListActiveMemoryIDs returns the IDs of all active (non-deleted,

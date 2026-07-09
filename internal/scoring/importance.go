@@ -4,7 +4,7 @@
 // are candidates for consolidation and eviction.
 package scoring
 
-import "github.com/juanftp/mneme/internal/model"
+import "github.com/wirvii/mneme/internal/model"
 
 // InitialImportance returns the starting importance score for a memory of the
 // given type. When override is non-nil its value is used (clamped to [0.0,

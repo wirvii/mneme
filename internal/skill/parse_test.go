@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/juanftp/mneme/internal/skill"
+	"github.com/wirvii/mneme/internal/skill"
 )
 
 // conformantSKILLMD is a fully valid SKILL.md for use across test cases.

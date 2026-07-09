@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/juanftp/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/model"
 )
 
 // Frontmatter holds the metadata serialized as YAML between the --- delimiters

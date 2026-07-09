@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/juanftp/mneme/internal/config"
+	"github.com/wirvii/mneme/internal/config"
 )
 
 // runConfigShow is a test helper that invokes the config show command with the

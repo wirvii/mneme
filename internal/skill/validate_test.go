@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/juanftp/mneme/internal/skill"
+	"github.com/wirvii/mneme/internal/skill"
 )
 
 func TestValidate_Pass(t *testing.T) {

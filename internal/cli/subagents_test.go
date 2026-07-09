@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/juanftp/mneme/internal/service"
+	"github.com/wirvii/mneme/internal/service"
 )
 
 // runSubagentsCmd executes "mneme subagents <argv...>" against an isolated

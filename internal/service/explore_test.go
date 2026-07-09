@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/juanftp/mneme/internal/model"
-	"github.com/juanftp/mneme/internal/store"
+	"github.com/wirvii/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/store"
 )
 
 // depthPtr converts an int to *int for use in ExploreRequest.Depth.

@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/gofrs/uuid/v5"
-	"github.com/juanftp/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/model"
 )
 
 // CreateEntity persists a new entity in the knowledge graph. A UUIDv7 ID is

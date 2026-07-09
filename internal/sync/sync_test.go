@@ -10,10 +10,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/juanftp/mneme/internal/db"
-	"github.com/juanftp/mneme/internal/model"
-	"github.com/juanftp/mneme/internal/store"
-	mnememesync "github.com/juanftp/mneme/internal/sync"
+	"github.com/wirvii/mneme/internal/db"
+	"github.com/wirvii/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/store"
+	mnememesync "github.com/wirvii/mneme/internal/sync"
 )
 
 // newTestStore opens a fresh in-memory SQLite database, applies all migrations,

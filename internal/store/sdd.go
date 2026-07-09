@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/gofrs/uuid/v5"
-	"github.com/juanftp/mneme/internal/db"
-	"github.com/juanftp/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/db"
+	"github.com/wirvii/mneme/internal/model"
 )
 
 // SDDStore provides CRUD and query operations for the SDD engine:

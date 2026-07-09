@@ -20,8 +20,8 @@ import (
 	"time"
 
 	"github.com/gofrs/uuid/v5"
-	"github.com/juanftp/mneme/internal/graph"
-	"github.com/juanftp/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/graph"
+	"github.com/wirvii/mneme/internal/model"
 )
 
 // communityMembershipHash computes a stable SHA-256 digest of a community's

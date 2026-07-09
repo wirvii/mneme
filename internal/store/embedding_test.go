@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/juanftp/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/model"
 )
 
 // ─── helpers ─────────────────────────────────────────────────────────────────

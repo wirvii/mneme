@@ -6,7 +6,7 @@ import (
 	"math/rand"
 	"testing"
 
-	"github.com/juanftp/mneme/internal/scoring"
+	"github.com/wirvii/mneme/internal/scoring"
 )
 
 // ---------------------------------------------------------------------------

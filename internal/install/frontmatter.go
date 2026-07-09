@@ -1,6 +1,6 @@
 package install
 
-import "github.com/juanftp/mneme/internal/frontmatter"
+import "github.com/wirvii/mneme/internal/frontmatter"
 
 // SetModelInFrontmatter replaces (or inserts) the `model: <x>` line in the
 // YAML frontmatter of a Claude agent markdown file with `model: <newModel>`.

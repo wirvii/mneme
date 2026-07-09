@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/juanftp/mneme/internal/db"
-	"github.com/juanftp/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/db"
+	"github.com/wirvii/mneme/internal/model"
 )
 
 // newTestSDDStore opens a fresh in-memory SQLite database, applies all migrations,

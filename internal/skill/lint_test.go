@@ -3,7 +3,7 @@ package skill_test
 import (
 	"testing"
 
-	"github.com/juanftp/mneme/internal/skill"
+	"github.com/wirvii/mneme/internal/skill"
 )
 
 // TestLint_FixturePasses verifies that a fully conformant skill passes without

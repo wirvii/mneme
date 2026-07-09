@@ -9,7 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	mnhttp "github.com/juanftp/mneme/internal/http"
+	mnhttp "github.com/wirvii/mneme/internal/http"
 )
 
 // newServeCmd returns the "mneme serve" subcommand. It starts the mneme HTTP

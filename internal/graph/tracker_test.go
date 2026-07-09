@@ -4,8 +4,8 @@ import (
 	"log/slog"
 	"testing"
 
-	"github.com/juanftp/mneme/internal/config"
-	"github.com/juanftp/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/config"
+	"github.com/wirvii/mneme/internal/model"
 )
 
 // newTestTrackerAndPool builds an AccessTracker backed by a buffered-channel

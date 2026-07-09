@@ -8,9 +8,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/juanftp/mneme/internal/model"
-	"github.com/juanftp/mneme/internal/scoring"
-	"github.com/juanftp/mneme/internal/store"
+	"github.com/wirvii/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/scoring"
+	"github.com/wirvii/mneme/internal/store"
 )
 
 // nonAlphanumRe matches any character that is not a lowercase letter, digit,

@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/juanftp/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/model"
 )
 
 func TestSessionEnd_Success(t *testing.T) {

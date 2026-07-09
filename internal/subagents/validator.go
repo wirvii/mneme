@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/juanftp/mneme/internal/managedblock"
+	"github.com/wirvii/mneme/internal/managedblock"
 )
 
 // ValidationResult reports whether a composed subagent profile passes all

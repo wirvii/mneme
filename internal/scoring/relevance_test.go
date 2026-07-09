@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/juanftp/mneme/internal/scoring"
+	"github.com/wirvii/mneme/internal/scoring"
 )
 
 func TestFinalScoreAt(t *testing.T) {

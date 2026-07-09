@@ -7,8 +7,8 @@ import (
 	"sort"
 	"time"
 
-	"github.com/juanftp/mneme/internal/model"
-	"github.com/juanftp/mneme/internal/scoring"
+	"github.com/wirvii/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/scoring"
 )
 
 // FindDuplicateTitles returns pairs of memory IDs that share the same title

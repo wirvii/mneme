@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/juanftp/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/model"
 )
 
 // CreateSession inserts a new session record. The caller is responsible for

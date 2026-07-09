@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/juanftp/mneme/internal/model"
-	"github.com/juanftp/mneme/internal/service"
-	"github.com/juanftp/mneme/internal/store"
+	"github.com/wirvii/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/service"
+	"github.com/wirvii/mneme/internal/store"
 )
 
 // SPEC-031 tests: hybrid resolution + auto-link in mem_relate.

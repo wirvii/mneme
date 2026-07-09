@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/juanftp/mneme/internal/config"
-	"github.com/juanftp/mneme/internal/install"
-	"github.com/juanftp/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/config"
+	"github.com/wirvii/mneme/internal/install"
+	"github.com/wirvii/mneme/internal/model"
 )
 
 // ModelsService manages per-agent model configuration. It provides

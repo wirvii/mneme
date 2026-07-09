@@ -14,8 +14,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/juanftp/mneme/internal/model"
-	"github.com/juanftp/mneme/internal/store"
+	"github.com/wirvii/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/store"
 )
 
 // SynthesisResult summarises the outcome of a single synthesis generation cycle.

@@ -4,7 +4,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/juanftp/mneme/internal/embed"
+	"github.com/wirvii/mneme/internal/embed"
 )
 
 // cosineSimilarity computes the dot product of two L2-normalised vectors.

@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/juanftp/mneme/internal/codegraph"
+	"github.com/wirvii/mneme/internal/codegraph"
 )
 
 // newTestCodeGraphService opens an in-memory codegraph DB, creates a temp dir

@@ -37,10 +37,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/juanftp/mneme/internal/frontmatter"
-	"github.com/juanftp/mneme/internal/managedblock"
-	"github.com/juanftp/mneme/internal/service"
-	"github.com/juanftp/mneme/internal/subagents"
+	"github.com/wirvii/mneme/internal/frontmatter"
+	"github.com/wirvii/mneme/internal/managedblock"
+	"github.com/wirvii/mneme/internal/service"
+	"github.com/wirvii/mneme/internal/subagents"
 )
 
 // newSubagentsCmd returns the "mneme subagents" subcommand group.

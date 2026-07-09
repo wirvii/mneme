@@ -7,9 +7,9 @@ import (
 	"sort"
 	"time"
 
-	"github.com/juanftp/mneme/internal/model"
-	"github.com/juanftp/mneme/internal/scoring"
-	"github.com/juanftp/mneme/internal/store"
+	"github.com/wirvii/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/scoring"
+	"github.com/wirvii/mneme/internal/store"
 )
 
 // weightFTS5 is the RRF contribution weight for the FTS5 BM25 ranked list.

@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/juanftp/mneme/internal/model"
-	"github.com/juanftp/mneme/internal/subagents"
+	"github.com/wirvii/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/subagents"
 )
 
 // Topic keys for the two typed-memory records the agnostic-agents EPIC

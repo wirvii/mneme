@@ -3,8 +3,8 @@ package scoring_test
 import (
 	"testing"
 
-	"github.com/juanftp/mneme/internal/model"
-	"github.com/juanftp/mneme/internal/scoring"
+	"github.com/wirvii/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/scoring"
 )
 
 func ptr(v float64) *float64 { return &v }

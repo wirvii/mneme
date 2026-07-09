@@ -7,7 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/juanftp/mneme/internal/install"
+	"github.com/wirvii/mneme/internal/install"
 )
 
 // newDelegationHookCmd returns the "mneme delegation-hook" subcommand group.

@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/juanftp/mneme/internal/db"
-	"github.com/juanftp/mneme/internal/service"
+	"github.com/wirvii/mneme/internal/db"
+	"github.com/wirvii/mneme/internal/service"
 )
 
 // insertTestManifest inserts a subagents/manifest memory row into database

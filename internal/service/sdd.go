@@ -14,11 +14,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/juanftp/mneme/internal/config"
-	"github.com/juanftp/mneme/internal/install"
-	"github.com/juanftp/mneme/internal/lane"
-	"github.com/juanftp/mneme/internal/model"
-	"github.com/juanftp/mneme/internal/store"
+	"github.com/wirvii/mneme/internal/config"
+	"github.com/wirvii/mneme/internal/install"
+	"github.com/wirvii/mneme/internal/lane"
+	"github.com/wirvii/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/store"
 )
 
 // SDDService orchestrates the SDD lifecycle: backlog management, spec state
