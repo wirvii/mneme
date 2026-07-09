@@ -130,6 +130,79 @@ func TestCreate_SharedAuthorRoundTrip(t *testing.T) {
 	}
 }
 
+// TestCreateWithID verifies that CreateWithID persists the memory using the
+// caller-supplied id instead of generating a fresh UUIDv7 (SPEC-053 SS-D).
+func TestCreateWithID(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	wantID := "01938f1b-abcd-7abc-8def-000000000042"
+	m := makeMemory()
+	m.ID = wantID
+	m.Shared = 1
+	m.Author = "Alice <alice@example.com>"
+
+	created, err := s.CreateWithID(ctx, m)
+	if err != nil {
+		t.Fatalf("CreateWithID: %v", err)
+	}
+	if created.ID != wantID {
+		t.Errorf("ID: got %s, want %s (caller-supplied id must be preserved)", created.ID, wantID)
+	}
+	if created.CreatedAt.IsZero() || created.UpdatedAt.IsZero() {
+		t.Error("CreatedAt/UpdatedAt should still be stamped to the current time")
+	}
+
+	got, err := s.Get(ctx, wantID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected memory, got nil")
+	}
+	if got.ID != wantID {
+		t.Errorf("Get ID: got %s, want %s", got.ID, wantID)
+	}
+	if got.Shared != 1 || got.Author != "Alice <alice@example.com>" {
+		t.Errorf("Shared/Author not preserved: got shared=%d author=%q", got.Shared, got.Author)
+	}
+}
+
+// TestCreateWithID_EmptyID verifies that CreateWithID rejects an empty id
+// rather than silently falling back to a generated one.
+func TestCreateWithID_EmptyID(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	m := makeMemory()
+	m.ID = ""
+
+	if _, err := s.CreateWithID(ctx, m); err == nil {
+		t.Fatal("expected an error for an empty id, got nil")
+	}
+}
+
+// TestCreateWithID_DuplicateID verifies that CreateWithID surfaces an error
+// (rather than silently overwriting) when the id already exists.
+func TestCreateWithID_DuplicateID(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	id := "01938f1b-abcd-7abc-8def-000000000043"
+
+	first := makeMemory()
+	first.ID = id
+	if _, err := s.CreateWithID(ctx, first); err != nil {
+		t.Fatalf("first CreateWithID: %v", err)
+	}
+
+	second := makeMemory()
+	second.ID = id
+	if _, err := s.CreateWithID(ctx, second); err == nil {
+		t.Fatal("expected an error when creating a second memory with a duplicate id, got nil")
+	}
+}
+
 // TestGet_NotFound verifies that Get returns nil, nil for a missing id.
 func TestGet_NotFound(t *testing.T) {
 	s := newTestStore(t)
