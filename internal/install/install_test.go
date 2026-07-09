@@ -1569,4 +1569,3 @@ func TestDryRun_MatchesInstallSteps(t *testing.T) {
 		})
 	}
 }
-
