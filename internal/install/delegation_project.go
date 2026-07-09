@@ -8,9 +8,9 @@ import (
 )
 
 // ProjectDelegationHookPatches returns the two PreToolUse hook entries used
-// for delegation enforcement (the Go rules hook + the bash
-// enforce_delegation.sh script) — identical to what ClaudeCode().DelegationHook
-// registers globally.
+// for delegation enforcement (the Go rules hook + the enforce-delegation
+// orchestrator-guard subcommand) — identical to what
+// ClaudeCode().DelegationHook registers globally.
 //
 // SPEC-052 §5.2/§8.2 (EPIC agnostic-agents SS-6) adds a PROJECT-scoped,
 // opt-in path to register these SAME entries into
@@ -22,23 +22,18 @@ import (
 // bug-hunter) can opt in without touching every other project's
 // configuration.
 //
-// The bash script itself is NOT duplicated per project: the command still
-// points at the global ~/.claude/hooks/enforce_delegation.sh, written once
-// by `mneme install claude-code`. Only the REGISTRATION (the settings.json
-// PreToolUse entry) becomes project-scoped. Claude Code reads
-// PreToolUse hooks from `.claude/settings.json` at project scope exactly
-// like it does from `~/.claude/settings.json` at user scope (see
-// docs/enforcement-model.md for the verification evidence) — no
-// self-disabling global-hook fallback is needed.
+// Both entries are portable mneme subcommands (SPEC-069) — neither carries a
+// path to the home directory, so a committed .claude/settings.json works on
+// any machine with `mneme` on PATH, without requiring `mneme install` to have
+// run there first. Claude Code reads PreToolUse hooks from
+// `.claude/settings.json` at project scope exactly like it does from
+// `~/.claude/settings.json` at user scope (see docs/enforcement-model.md for
+// the verification evidence) — no self-disabling global-hook fallback is
+// needed.
 func ProjectDelegationHookPatches() ([]HookPatch, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, fmt.Errorf("install: project delegation hook: home dir: %w", err)
-	}
-	hookScript := filepath.Join(home, ".claude", "hooks", "enforce_delegation.sh")
 	return []HookPatch{
 		{Event: "PreToolUse", Command: "mneme hook pre-tool-use"},
-		{Event: "PreToolUse", Command: hookScript},
+		{Event: "PreToolUse", Command: "mneme hook enforce-delegation"},
 	}, nil
 }
 
@@ -47,12 +42,21 @@ func ProjectDelegationHookPatches() ([]HookPatch, error) {
 // append-if-absent merge via a temporary proxy Agent — the same pattern
 // PatchDelegationHook already uses for the global settings path — so the
 // result is idempotent and never duplicates entries.
+//
+// SPEC-069 D3: before appending, it strips any legacy
+// enforce_delegation.sh absolute-path registration
+// (stripLegacyDelegationHookEntries) that may already be present in this
+// repo's settings.json from an install performed before the migration.
 func EnableProjectDelegationHook(repoRoot string) (string, error) {
 	patches, err := ProjectDelegationHookPatches()
 	if err != nil {
 		return "", err
 	}
 	settingsPath := filepath.Join(repoRoot, ".claude", "settings.json")
+
+	if err := stripLegacyDelegationHookEntries(settingsPath); err != nil {
+		return "", fmt.Errorf("install: enable project delegation hook: strip legacy: %w", err)
+	}
 
 	proxy := &Agent{
 		Hooks: func() (string, []HookPatch, error) {

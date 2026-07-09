@@ -3,7 +3,6 @@ package cli
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -157,9 +156,6 @@ produces the same result without clobbering existing configuration.`,
 						fmt.Fprintln(os.Stdout, "  [info] Until then, follow the memory lifecycle in ~/.codex/AGENTS.md §5.")
 					}
 				case "Delegation hook (reinstall)":
-					if _, jqErr := exec.LookPath("jq"); jqErr != nil {
-						fmt.Fprintln(os.Stderr, "  [warn] jq not found in PATH; the delegation hook will fail-open until jq is installed")
-					}
 					fmt.Fprintln(os.Stdout, "")
 					fmt.Fprintln(os.Stdout, "Migration complete. Your hooks have been updated.")
 					fmt.Fprintln(os.Stdout, "")
@@ -173,10 +169,6 @@ produces the same result without clobbering existing configuration.`,
 					fmt.Fprintln(os.Stdout, "")
 					fmt.Fprintln(os.Stdout, "Your old config.toml [delegation] section is still active for the legacy hook.")
 					fmt.Fprintln(os.Stdout, "Once you've created rules and verified they work, you can set delegation.enabled=false in config.toml.")
-				case "Delegation hook":
-					if _, jqErr := exec.LookPath("jq"); jqErr != nil {
-						fmt.Fprintln(os.Stderr, "  [warn] jq not found in PATH; the delegation hook will fail-open until jq is installed")
-					}
 				}
 			}
 

@@ -245,6 +245,53 @@ func TestProjectDelegationHookStatus(t *testing.T) {
 	}
 }
 
+// TestEnableProjectDelegationHook_StripsLegacyScriptEntry covers AC10
+// (per-repo): a repo settings.json with a pre-existing legacy absolute-path
+// enforce_delegation.sh entry has that entry removed and the portable
+// subcommand added, with no duplicates, when EnableProjectDelegationHook
+// runs (`mneme delegation-hook enable`).
+func TestEnableProjectDelegationHook_StripsLegacyScriptEntry(t *testing.T) {
+	repoRoot := t.TempDir()
+	settingsDir := filepath.Join(repoRoot, ".claude")
+	if err := os.MkdirAll(settingsDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	settingsPath := filepath.Join(settingsDir, "settings.json")
+	legacyCommand := "/Users/alice/.claude/hooks/enforce_delegation.sh"
+	existing := `{
+  "hooks": {
+    "PreToolUse": [
+      {"matcher": "", "hooks": [{"type": "command", "command": "` + legacyCommand + `"}]}
+    ],
+    "SessionStart": [
+      {"matcher": "", "hooks": [{"type": "command", "command": "mneme hook session-start"}]}
+    ]
+  }
+}`
+	if err := os.WriteFile(settingsPath, []byte(existing), 0o644); err != nil {
+		t.Fatalf("write initial settings: %v", err)
+	}
+
+	if _, err := EnableProjectDelegationHook(repoRoot); err != nil {
+		t.Fatalf("EnableProjectDelegationHook: %v", err)
+	}
+
+	data, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("read settings: %v", err)
+	}
+	var settings map[string]any
+	if err := json.Unmarshal(data, &settings); err != nil {
+		t.Fatalf("unmarshal settings: %v", err)
+	}
+	hooks := settings["hooks"].(map[string]any)
+
+	assertHookCount(t, hooks, "PreToolUse", legacyCommand, 0)
+	assertHookCount(t, hooks, "PreToolUse", "mneme hook enforce-delegation", 1)
+	assertHookCount(t, hooks, "PreToolUse", "mneme hook pre-tool-use", 1)
+	assertHookEntry(t, hooks, "SessionStart", "mneme hook session-start")
+}
+
 // TestProjectDelegationHookPatches_MatchGlobal verifies the project patches
 // carry the exact same commands as the global ClaudeCode().DelegationHook
 // registers, so opting in at project scope gives byte-identical enforcement

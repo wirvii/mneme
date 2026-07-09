@@ -219,11 +219,14 @@ func ClaudeCode(binaryPath string) *Agent {
 				return "", nil, fmt.Errorf("install: claude-code: delegation hook: home dir: %w", err)
 			}
 			path := filepath.Join(home, ".claude", "settings.json")
-			hookScript := filepath.Join(home, ".claude", "hooks", "enforce_delegation.sh")
-			// Register both the rules-based Go hook and the bash delegation hook.
-			// Both coexist in PreToolUse: the Go hook provides context injection
-			// (warn/info rules), the bash hook blocks the orchestrator from editing
-			// source files directly.
+			// Both entries are portable mneme subcommands — no path to the
+			// home directory (SPEC-069). The rules-based Go hook provides
+			// context injection (warn/info rules); the enforce-delegation
+			// subcommand is the orchestrator-guard that blocks the
+			// orchestrator from editing/running Bash against protected
+			// source paths. It replaces the legacy absolute-path
+			// registration of enforce_delegation.sh — see
+			// PatchDelegationHook's strip-then-add migration.
 			patches := []HookPatch{
 				{
 					Event:   "PreToolUse",
@@ -231,7 +234,7 @@ func ClaudeCode(binaryPath string) *Agent {
 				},
 				{
 					Event:   "PreToolUse",
-					Command: hookScript,
+					Command: "mneme hook enforce-delegation",
 				},
 			}
 			return path, patches, nil
@@ -899,6 +902,13 @@ func WriteTemplates(agent *Agent) error {
 
 // PatchDelegationHook merges the delegation enforcement hook into the agent's
 // settings file. It reuses PatchHooks logic but driven by agent.DelegationHook.
+//
+// SPEC-069 D3: before appending the new portable subcommand entries, it first
+// strips any legacy enforce_delegation.sh absolute-path registration
+// (stripLegacyDelegationHookEntries) — this is the default (non
+// --reinstall-hooks) code path, and therefore the one `mneme upgrade`'s
+// post-upgrade install actually runs, so the strip must live here rather
+// than only in ReinstallHooks.
 func PatchDelegationHook(agent *Agent) error {
 	if agent.DelegationHook == nil {
 		return nil
@@ -908,6 +918,10 @@ func PatchDelegationHook(agent *Agent) error {
 		return fmt.Errorf("install: patch delegation hook: %w", err)
 	}
 
+	if err := stripLegacyDelegationHookEntries(path); err != nil {
+		return fmt.Errorf("install: patch delegation hook: strip legacy: %w", err)
+	}
+
 	// Reuse PatchHooks by building a temporary proxy Agent.
 	proxy := &Agent{
 		Hooks: func() (string, []HookPatch, error) {
@@ -915,6 +929,104 @@ func PatchDelegationHook(agent *Agent) error {
 		},
 	}
 	return PatchHooks(proxy)
+}
+
+// isLegacyDelegationScriptCommand reports whether command is a legacy
+// enforce_delegation.sh hook registration: an absolute path (any machine's
+// $HOME) ending in "enforce_delegation.sh". SPEC-069 replaces that
+// registration with the portable "mneme hook enforce-delegation" subcommand;
+// this predicate identifies entries left over from installs performed before
+// the migration (R6: the suffix is specific enough to mneme's own asset name
+// that a false-positive match against an unrelated user hook is considered
+// extremely unlikely).
+func isLegacyDelegationScriptCommand(command string) bool {
+	return strings.HasSuffix(command, "enforce_delegation.sh")
+}
+
+// stripLegacyDelegationHookEntries removes every PreToolUse command entry
+// matching isLegacyDelegationScriptCommand from settingsPath, mirroring
+// removeHookCommands's matcher-group pruning (empty matcher-groups and empty
+// event arrays are dropped) but driven by a predicate rather than an exact
+// command list — the legacy command embeds a host-specific absolute path, so
+// there is no single string to match against. A missing settings file, or
+// one with no matching legacy entry, is a no-op success (no write
+// performed). Every other hook event and every other top-level setting is
+// left untouched.
+func stripLegacyDelegationHookEntries(settingsPath string) error {
+	data, err := os.ReadFile(settingsPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read settings: %w", err)
+	}
+
+	settings := map[string]any{}
+	if len(data) > 0 {
+		if err := json.Unmarshal(data, &settings); err != nil {
+			return fmt.Errorf("parse settings: %w", err)
+		}
+	}
+
+	hooksRaw, ok := settings["hooks"]
+	if !ok || hooksRaw == nil {
+		return nil
+	}
+	hooks, ok := hooksRaw.(map[string]any)
+	if !ok {
+		return fmt.Errorf("settings.hooks is not an object")
+	}
+
+	eventListRaw, ok := hooks["PreToolUse"]
+	if !ok {
+		return nil
+	}
+	eventList, ok := eventListRaw.([]any)
+	if !ok {
+		return nil
+	}
+
+	var legacyCommands []string
+	for _, item := range eventList {
+		group, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		inner, ok := group["hooks"].([]any)
+		if !ok {
+			continue
+		}
+		for _, h := range inner {
+			entry, ok := h.(map[string]any)
+			if !ok {
+				continue
+			}
+			cmd, _ := entry["command"].(string)
+			if isLegacyDelegationScriptCommand(cmd) {
+				legacyCommands = append(legacyCommands, cmd)
+			}
+		}
+	}
+	if len(legacyCommands) == 0 {
+		return nil
+	}
+
+	filtered := filterOutHookCommands(eventList, legacyCommands)
+	if len(filtered) == 0 {
+		delete(hooks, "PreToolUse")
+	} else {
+		hooks["PreToolUse"] = filtered
+	}
+	settings["hooks"] = hooks
+
+	out, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal: %w", err)
+	}
+	if err := os.WriteFile(settingsPath, append(out, '\n'), 0o644); err != nil {
+		return fmt.Errorf("write: %w", err)
+	}
+	return nil
 }
 
 // ReinstallHooks removes all existing hook entries for the events in patches and

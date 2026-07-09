@@ -955,7 +955,9 @@ func TestWriteDelegationHook_ForceReinstall(t *testing.T) {
 }
 
 // TestClaudeCode_DelegationHook_IncludesBashHook verifies that DelegationHook
-// returns exactly 2 PreToolUse patches: the mneme Go hook and the bash script.
+// returns exactly 2 PreToolUse patches, both portable mneme subcommands
+// (SPEC-069): "mneme hook pre-tool-use" and "mneme hook enforce-delegation".
+// Neither carries a path to the home directory (AC9).
 func TestClaudeCode_DelegationHook_IncludesBashHook(t *testing.T) {
 	agent := ClaudeCode("/usr/local/bin/mneme")
 
@@ -979,9 +981,185 @@ func TestClaudeCode_DelegationHook_IncludesBashHook(t *testing.T) {
 		t.Errorf("patches[0].Command = %q, want mneme hook pre-tool-use", patches[0].Command)
 	}
 
-	// Second patch must be the bash hook path.
-	if !strings.HasSuffix(patches[1].Command, "enforce_delegation.sh") {
-		t.Errorf("patches[1].Command = %q, expected path ending with enforce_delegation.sh", patches[1].Command)
+	// Second patch must be the portable enforce-delegation subcommand —
+	// no absolute path to enforce_delegation.sh, and no home-directory path.
+	if patches[1].Command != "mneme hook enforce-delegation" {
+		t.Errorf("patches[1].Command = %q, want %q", patches[1].Command, "mneme hook enforce-delegation")
+	}
+	if strings.HasSuffix(patches[1].Command, ".sh") {
+		t.Error("patches[1].Command must not be a script path")
+	}
+}
+
+// TestClaudeCode_DelegationHook_NoHomePathInEitherPatch guards AC9 directly:
+// neither PreToolUse command may embed a filesystem path at all (portable
+// registration assumes only that "mneme" is on PATH).
+func TestClaudeCode_DelegationHook_NoHomePathInEitherPatch(t *testing.T) {
+	agent := ClaudeCode("/usr/local/bin/mneme")
+
+	_, patches, err := agent.DelegationHook()
+	if err != nil {
+		t.Fatalf("DelegationHook error: %v", err)
+	}
+	for _, p := range patches {
+		if strings.Contains(p.Command, "/") {
+			t.Errorf("patch command %q contains a path separator — expected a portable subcommand string", p.Command)
+		}
+	}
+}
+
+// TestPatchDelegationHook_StripsLegacyScriptEntry covers AC10 (global): a
+// settings.json with a pre-existing legacy absolute-path
+// enforce_delegation.sh entry has that entry removed and the portable
+// subcommand added, with no duplicates, when PatchDelegationHook runs (the
+// default, non---reinstall-hooks install path — the one `mneme upgrade`
+// actually exercises).
+func TestPatchDelegationHook_StripsLegacyScriptEntry(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	settingsDir := filepath.Join(tmpHome, ".claude")
+	if err := os.MkdirAll(settingsDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	settingsPath := filepath.Join(settingsDir, "settings.json")
+	legacyCommand := filepath.Join(tmpHome, ".claude", "hooks", "enforce_delegation.sh")
+	existing := fmt.Sprintf(`{
+  "hooks": {
+    "PreToolUse": [
+      {"matcher": "", "hooks": [{"type": "command", "command": %q}]}
+    ],
+    "SessionStart": [
+      {"matcher": "", "hooks": [{"type": "command", "command": "mneme hook session-start"}]}
+    ]
+  }
+}`, legacyCommand)
+	if err := os.WriteFile(settingsPath, []byte(existing), 0o644); err != nil {
+		t.Fatalf("write initial settings: %v", err)
+	}
+
+	agent := ClaudeCode("/usr/local/bin/mneme")
+	if err := PatchDelegationHook(agent); err != nil {
+		t.Fatalf("PatchDelegationHook: %v", err)
+	}
+
+	data, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("read settings: %v", err)
+	}
+	var settings map[string]any
+	if err := json.Unmarshal(data, &settings); err != nil {
+		t.Fatalf("unmarshal settings: %v", err)
+	}
+	hooks := settings["hooks"].(map[string]any)
+
+	assertHookCount(t, hooks, "PreToolUse", legacyCommand, 0)
+	assertHookCount(t, hooks, "PreToolUse", "mneme hook enforce-delegation", 1)
+	assertHookCount(t, hooks, "PreToolUse", "mneme hook pre-tool-use", 1)
+	// Untouched event.
+	assertHookEntry(t, hooks, "SessionStart", "mneme hook session-start")
+}
+
+// TestPatchDelegationHook_NoLegacyEntry_IsNoOpBeyondAppend verifies that
+// stripLegacyDelegationHookEntries is a no-op (no spurious write/error) when
+// there is nothing legacy to strip — PatchDelegationHook must still succeed
+// and register the portable entries normally.
+func TestPatchDelegationHook_NoLegacyEntry_IsNoOpBeyondAppend(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	agent := ClaudeCode("/usr/local/bin/mneme")
+	if err := PatchDelegationHook(agent); err != nil {
+		t.Fatalf("PatchDelegationHook: %v", err)
+	}
+
+	settingsPath := filepath.Join(tmpHome, ".claude", "settings.json")
+	data, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("read settings: %v", err)
+	}
+	var settings map[string]any
+	if err := json.Unmarshal(data, &settings); err != nil {
+		t.Fatalf("unmarshal settings: %v", err)
+	}
+	hooks := settings["hooks"].(map[string]any)
+
+	assertHookCount(t, hooks, "PreToolUse", "mneme hook enforce-delegation", 1)
+	assertHookCount(t, hooks, "PreToolUse", "mneme hook pre-tool-use", 1)
+}
+
+// TestIsLegacyDelegationScriptCommand covers R6: only commands ending in
+// "enforce_delegation.sh" match, regardless of the home directory that wrote
+// them; portable subcommands and unrelated hooks never match.
+func TestIsLegacyDelegationScriptCommand(t *testing.T) {
+	tests := []struct {
+		command string
+		want    bool
+	}{
+		{"/Users/alice/.claude/hooks/enforce_delegation.sh", true},
+		{"/home/bob/.claude/hooks/enforce_delegation.sh", true},
+		{"mneme hook enforce-delegation", false},
+		{"mneme hook pre-tool-use", false},
+		{"some-other-hook.sh", false},
+	}
+	for _, tt := range tests {
+		if got := isLegacyDelegationScriptCommand(tt.command); got != tt.want {
+			t.Errorf("isLegacyDelegationScriptCommand(%q) = %v, want %v", tt.command, got, tt.want)
+		}
+	}
+}
+
+// TestReinstallHooks_LeavesOnlyPortableSubcommands covers AC11: after
+// --reinstall-hooks, PreToolUse contains exactly the two subcommand entries
+// and no leftover ".sh" path, even when a legacy entry pre-existed.
+func TestReinstallHooks_LeavesOnlyPortableSubcommands(t *testing.T) {
+	dir := t.TempDir()
+	settingsPath := filepath.Join(dir, "settings.json")
+
+	existing := `{
+  "hooks": {
+    "PreToolUse": [
+      {"matcher": "", "hooks": [{"type": "command", "command": "/Users/alice/.claude/hooks/enforce_delegation.sh"}]}
+    ]
+  }
+}`
+	if err := os.WriteFile(settingsPath, []byte(existing), 0o644); err != nil {
+		t.Fatalf("write initial settings: %v", err)
+	}
+
+	patches := []HookPatch{
+		{Event: "PreToolUse", Command: "mneme hook pre-tool-use"},
+		{Event: "PreToolUse", Command: "mneme hook enforce-delegation"},
+	}
+	if err := ReinstallHooks(settingsPath, patches); err != nil {
+		t.Fatalf("ReinstallHooks: %v", err)
+	}
+
+	data, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("read settings: %v", err)
+	}
+	var settings map[string]any
+	if err := json.Unmarshal(data, &settings); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	hooks := settings["hooks"].(map[string]any)
+
+	assertHookCount(t, hooks, "PreToolUse", "/Users/alice/.claude/hooks/enforce_delegation.sh", 0)
+	assertHookCount(t, hooks, "PreToolUse", "mneme hook pre-tool-use", 1)
+	assertHookCount(t, hooks, "PreToolUse", "mneme hook enforce-delegation", 1)
+
+	eventList := hooks["PreToolUse"].([]any)
+	for _, item := range eventList {
+		group := item.(map[string]any)
+		inner := group["hooks"].([]any)
+		for _, h := range inner {
+			entry := h.(map[string]any)
+			cmd, _ := entry["command"].(string)
+			if strings.HasSuffix(cmd, ".sh") {
+				t.Errorf("unexpected .sh command left in PreToolUse: %q", cmd)
+			}
+		}
 	}
 }
 
