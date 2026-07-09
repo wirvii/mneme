@@ -6,7 +6,60 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [v1.18.0] — 2026-07-08 — Per-project subagents + git-native team memory
+
 ### Added
+
+- **Per-project subagents (EPIC SPEC-052, SS-1..SS-6)**: subagent profiles are
+  now generated **per project** through a grill run by the `mneme-init` skill,
+  instead of being 6 global profiles hard-wired to a single stack. The 6
+  global profiles installed by `mneme install claude-code` **remain in place
+  during this release as a transition path** — retiring them is a follow-up
+  (SS-7, not part of this release).
+
+  - **`internal/managedblock` + `internal/frontmatter` leaves (SS-1 /
+    SPEC-054)**: the marker-fenced idempotent block-upsert primitive and the
+    agent-frontmatter editor, previously private to `internal/install`, are
+    now standalone leaf packages so the new subagent-generation code can
+    reuse them without a dependency on `install`.
+  - **`internal/subagents` leaf (SS-2 / SPEC-055)**: `StackFingerprinter`
+    (project-root/apps/stack detection), a Go-authored `PermissionTable`
+    (role → tool allowlist — never LLM-generated), `ProfileComposer` +
+    `Validator` + `ParseGenerated`, and a `GenerationEngine` interface with
+    two implementations — `PassthroughEngine` (the skill's own LLM drafts the
+    profile body, no subprocess) and `CLIEngine` (subprocess `claude -p` /
+    `codex exec`, with an anti-injection prompt envelope).
+  - **`SubagentService` + persistence (SS-3 / SPEC-056)**: orchestrates
+    `internal/subagents` on top of typed memories — no new store or
+    migration. A project's subagent profile and its manifest of generated
+    files are persisted as regular memories (`project-profile/*`,
+    `subagents/manifest`), so they're queryable and self-healing like any
+    other mneme memory.
+  - **6 `subagent_*` MCP tools (SS-4 / SPEC-057)**: `subagent_fingerprint`,
+    `subagent_profile_get`, `subagent_profile_save`, `subagent_compose`,
+    `subagent_write`, `subagent_manifest_list`. `subagent_write` validates the
+    composed profile's `tools:`/`permissionMode` against the Go-authored
+    `PermissionTable` for the declared archetype **before** writing anything
+    to disk — a profile can never be written with more permissions than its
+    role allows, even from adversarial input (hardened against path
+    traversal and frontmatter injection during QA).
+  - **`mneme-init` becomes an opt-in orchestrator skill (SS-5 / SPEC-058,
+    SS-5b / SPEC-059)**: the former `/mneme-init` slash command is retired in
+    favour of a skill that runs the core managed-blocks + memory-seeding step
+    always, then offers three independent opt-in steps: the subagent grill,
+    codegraph indexing, and shared team memory.
+  - **`mneme install` split + project-scoped delegation hook (SS-6 /
+    SPEC-060)**: `mneme subagents fingerprint|profile|compose|write|
+    manifest-list` CLI commands (mirroring the MCP tools, with `--engine
+    claude|codex` for `CLIEngine`); the delegation-enforcement hook is now
+    **opt-in per project** via `mneme delegation-hook enable|disable|status`,
+    tied to whether the project actually has implementer subagents — a
+    project with no generated subagents runs single-agent (no hook, no
+    edit-blocking), matching the existing Codex precedent.
+
+  Surface: +6 `subagent_*` MCP tools; new CLI commands `mneme subagents`
+  (`fingerprint`, `profile get/save`, `compose`, `write`, `manifest-list`) and
+  `mneme delegation-hook` (`enable`/`disable`/`status`).
 
 - **Team Memory — git-native shared knowledge (EPIC SPEC-053, SS-A..SS-F)**:
   durable memories (decisions, conventions, architecture, patterns, bugfixes,
