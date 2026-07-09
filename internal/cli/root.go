@@ -81,6 +81,8 @@ in a local SQLite database and exposes them via MCP for agent integration.`,
 		newSkillsCmd(),
 		newModelCmd(),
 		newConflictsCmd(),
+		newSubagentsCmd(),
+		newDelegationHookCmd(),
 	)
 
 	return root

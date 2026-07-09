@@ -1,6 +1,6 @@
 # API Reference — CLI Commands
 
-33 top-level commands (`./mneme --help` and `./mneme <cmd> --help` are the
+35 top-level commands (`./mneme --help` and `./mneme <cmd> --help` are the
 source of truth; this reference mirrors them). Global flags apply to every
 subcommand:
 
@@ -662,6 +662,105 @@ mneme skills validate example-skill --json
 
 ---
 
+## Subagents
+
+CLI counterpart to the `subagent_*` MCP tools (SPEC-057) — non-interactive
+generation/persistence for per-project subagent profiles (EPIC
+agnostic-agents, see [docs/enforcement-model.md](../enforcement-model.md)
+for the delegation-hook enablement these profiles can opt into).
+
+### mneme subagents fingerprint
+
+Read-only, deterministic; never calls an LLM.
+
+```bash
+mneme subagents fingerprint
+mneme subagents fingerprint /path/to/repo --json
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--json` | false | JSON output |
+
+### mneme subagents profile get / save
+
+```bash
+mneme subagents profile get
+mneme subagents profile save --file profile.json
+cat profile.json | mneme subagents profile save --stdin
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--file` | | Path to a project-profile JSON file (`save` only) |
+| `--stdin` | false | Read the project-profile JSON from stdin (`save` only) |
+
+### mneme subagents compose
+
+Never writes to `.claude/agents/` — prints a preview (or writes it to
+`--out`). Layer-3 content comes from exactly one of `--areas-file`/
+`--areas-stdin` (already-drafted) or `--areas-prompt` + `--engine`
+(drafted non-interactively via a `CLIEngine` subprocess: `claude --print -p`
+or `codex exec`).
+
+```bash
+mneme subagents compose --role backend --archetype backend \
+  --description "Implements server-side logic" --areas-file areas.md
+mneme subagents compose --role backend --archetype backend \
+  --areas-prompt "Summarize apps/core-srv's stack" --engine claude
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--role` | | Subagent role / frontmatter name (required) |
+| `--archetype` | | Built-in archetype to inherit the permission envelope from (required) |
+| `--model` | `sonnet` | Frontmatter model value |
+| `--description` | | Frontmatter description (no newlines) |
+| `--profile-file` | saved profile | Project-profile JSON path override |
+| `--areas-file` | | Already-drafted layer-3 markdown path |
+| `--areas-stdin` | false | Read already-drafted layer-3 markdown from stdin |
+| `--areas-prompt` | | Prompt to draft layer-3 content via a CLIEngine subprocess |
+| `--engine` | `claude` | CLIEngine for `--areas-prompt`: `claude` or `codex` |
+| `--out` | stdout | Write the composed preview to this path instead |
+| `--json` | false | JSON output (`composed_md`, `valid`, `errors`) |
+
+### mneme subagents write
+
+Writes composed markdown to `<repo-root>/.claude/agents/<role>.md` and
+updates the manifest. Validates `composed_md` against `--archetype`'s
+Go-authored permission table before writing anything (tools/permissionMode
+can never be widened). Atomic: a manifest-save failure after the file write
+rolls the file back.
+
+```bash
+mneme subagents compose --role backend --archetype backend ... | \
+  mneme subagents write --role backend --archetype backend --composed-stdin
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--role` | | Subagent role / destination filename (required) |
+| `--archetype` | | Built-in archetype to validate against (required) |
+| `--composed-file` | | Path to the composed markdown |
+| `--composed-stdin` | false | Read the composed markdown from stdin |
+| `--enforcement-hook` | false | Record the delegation hook as enabled in the manifest (metadata only — use `mneme delegation-hook enable` to actually register it) |
+| `--repo-root` | cwd | Repository root |
+| `--engine` | `passthrough` | Generation engine label recorded in the manifest |
+| `--areas` | | App/package paths this profile covers (repeatable) |
+| `--json` | false | JSON output |
+
+### mneme subagents manifest-list
+
+```bash
+mneme subagents manifest-list --json
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--json` | false | JSON output |
+
+---
+
 ## Models
 
 ### mneme model list
@@ -890,6 +989,20 @@ mneme install codex --dry-run
 | `--personal` | false | Install personal ecosystem (claude-code only; ignored for codex) |
 | `--source` | config | Personal ecosystem source (git URL or local path) |
 | `--reinstall-hooks` | false | Replace PreToolUse hook entries with `mneme hook pre-tool-use` |
+
+### mneme delegation-hook enable / disable / status
+
+Project-scoped, opt-in registration of the delegation-enforcement hook —
+independent of the global registration `mneme install claude-code` performs.
+See [docs/enforcement-model.md](../enforcement-model.md#project-scoped-opt-in-registration-epic-agnostic-agents-ss-6).
+
+```bash
+mneme delegation-hook enable /path/to/repo
+mneme delegation-hook status /path/to/repo
+mneme delegation-hook disable /path/to/repo
+```
+
+No flags beyond the optional positional `[path]` (default: cwd).
 
 ### mneme init
 

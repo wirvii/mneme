@@ -106,6 +106,76 @@ Every orchestrator block produces a discovery memory. Query them with:
 mneme search "Blocked edit"
 ```
 
+## Project-scoped opt-in registration (EPIC agnostic-agents, SS-6)
+
+Everything above describes the **global** installation: `mneme install
+claude-code` registers both Layer 2 hooks (the Go rules engine and the bash
+script) in `~/.claude/settings.json`, and — during the agnostic-agents
+transition (SPEC-052 §9) — it still does so **unconditionally, every
+release**, so the repos that have not migrated to per-project subagents keep
+working exactly as before.
+
+SPEC-052 (§5.2/§8.2) also introduces a second, **independent, opt-in**
+registration path at **project scope**, for repos that generate per-project
+subagents via the `mneme-init` skill (SPEC-058):
+
+- If `mneme-init` generates **implementer** subagents (`backend`, `frontend`,
+  `bug-hunter` archetypes), it **offers** the delegation hook. If the user
+  accepts, the skill runs `mneme delegation-hook enable`, which merges the
+  same two PreToolUse commands into **`<repo>/.claude/settings.json`**
+  instead of the global file.
+- If no implementer subagents exist, the hook is **not** offered — the
+  project operates single-agent (same precedent as Codex/SPEC-049, which
+  never installs this hook).
+- The choice is recorded per role in the subagent manifest's
+  `enforcement_hook` field (`subagent_write`'s `enforcement_hook` parameter),
+  independent of whether the project-level registration command was actually
+  run.
+
+### Verification: does Claude Code respect project-scope `PreToolUse` hooks?
+
+**Yes — confirmed against the official Claude Code docs (`hooks` and
+`settings` reference pages, fetched 2026-07-08).** The hook-locations table
+states plainly:
+
+| Location | Scope | Shareable |
+|---|---|---|
+| `~/.claude/settings.json` | All your projects | No, local to your machine |
+| `.claude/settings.json` | Single project | **Yes, can be committed to the repo** |
+| `.claude/settings.local.json` | Single project | No, gitignored |
+
+The settings-precedence page confirms the same location is used for
+"Settings" (which include hooks) at Project scope, distinct from User scope
+(`~/.claude/settings.json`) and Local scope
+(`.claude/settings.local.json`). No additional per-hook trust gate beyond
+Claude Code's normal folder-trust onboarding is documented for committed
+project hooks (unlike, e.g., `allow` permission rules or
+`autoMemoryDirectory`, which the docs explicitly call out as requiring the
+workspace-trust step).
+
+Given this, **no self-disabling global-hook fallback was needed** — the
+opt-in mechanism is a straightforward project-scoped `settings.json` patch,
+using the exact same append-if-absent merge logic (`PatchHooks`) the global
+path already uses.
+
+### `mneme delegation-hook` commands
+
+```bash
+mneme delegation-hook enable [path]   # register both PreToolUse entries in <path>/.claude/settings.json (default: cwd)
+mneme delegation-hook disable [path]  # remove them, leaving every other setting untouched
+mneme delegation-hook status [path]   # report whether both entries are currently registered
+```
+
+The bash script itself is **not** duplicated per project — the project-scope
+entry still points at the global `~/.claude/hooks/enforce_delegation.sh`,
+written once by `mneme install claude-code`. Only the *registration* (the
+`settings.json` PreToolUse entry) becomes project-scoped.
+
+Retiring the *global* registration entirely (so `mneme install claude-code`
+stops shipping it by default) is **SS-7**, a separate release — not done
+here, to avoid breaking the repos that have not yet migrated to per-project
+subagents.
+
 ## Automated Checks
 
 | Check | What it verifies | How to fix |

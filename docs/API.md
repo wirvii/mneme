@@ -2,7 +2,7 @@
 
 mneme exposes the same service layer through three frontends: **MCP** (57
 tools over JSON-RPC 2.0 stdio, primary), **HTTP** (10 REST endpoints under
-`/v1/`), and **CLI** (33 top-level commands, Cobra). This page is an index --
+`/v1/`), and **CLI** (35 top-level commands, Cobra). This page is an index --
 the full contract for every tool, endpoint, and command lives in
 [docs/api/](api/).
 

@@ -163,7 +163,7 @@ internal/
   vault/                -- markdown vault: path mapping, frontmatter, writer, reader
   mcp/                  -- MCP server (JSON-RPC 2.0 over stdio, 57 tools)
   http/                 -- REST API (stdlib net/http, 10 endpoints under /v1/)
-  cli/                  -- Cobra commands (33 top-level commands)
+  cli/                  -- Cobra commands (35 top-level commands)
   install/              -- agent profile installer (7 subagent profiles + slash commands)
   tui/                  -- Bubble Tea interface (list, stats)
   upgrade/              -- self-upgrade checker
@@ -692,7 +692,7 @@ above, respectively; they are not part of the gap.) No auth, no rate limiting.
 
 ### CLI -- Cobra
 
-33 top-level commands: `save`, `search`, `get`, `update`, `forget`, `status`, `stats`, `consolidate`, `serve`, `mcp`, `init`, `install`, `upgrade`, `version`, `completion`, `sync export|import|status`, `rule add|list|test`, `explore`, `graph rebuild|cleanup-orphan-relations`, `gaps`, `vault export|import`, `embed backfill`, `export markdown`, `config show`, `hook`, `tui`, `backlog add|list|refine|promote|archive`, `spec new|advance|pushback|resolve|quick|reject|list|status|history`, `lane audit|reclassify|override|status|stats`, `codegraph index|search|node|callers|callees|impact|trace|files|status|hooks`, `skills list|install|pin|unpin|remove|lint|validate`, `model list|set|reset`, `conflicts candidates|scan|link|unlink|list`. Full flag reference: [docs/api/cli.md](api/cli.md).
+35 top-level commands: `save`, `search`, `get`, `update`, `forget`, `status`, `stats`, `consolidate`, `serve`, `mcp`, `init`, `install`, `upgrade`, `version`, `completion`, `sync export|import|status`, `rule add|list|test`, `explore`, `graph rebuild|cleanup-orphan-relations`, `gaps`, `vault export|import`, `embed backfill`, `export markdown`, `config show`, `hook`, `tui`, `backlog add|list|refine|promote|archive`, `spec new|advance|pushback|resolve|quick|reject|list|status|history`, `lane audit|reclassify|override|status|stats`, `codegraph index|search|node|callers|callees|impact|trace|files|status|hooks`, `skills list|install|pin|unpin|remove|lint|validate`, `model list|set|reset`, `conflicts candidates|scan|link|unlink|list`, `subagents fingerprint|profile|compose|write|manifest-list`, `delegation-hook enable|disable|status`. Full flag reference: [docs/api/cli.md](api/cli.md).
 
 ### Hooks (`internal/cli/hook.go`)
 
