@@ -1,7 +1,7 @@
 ---
 name: mneme-init
 description: "Use once to bootstrap a project with mneme, or to refresh/onboard it later. Single project-level entry point: seeds foundational repo knowledge into memory, applies mneme's managed CLAUDE.md blocks (replacing the native /init), and offers three independent opt-in steps — per-project subagent generation via a 5-phase grill, codegraph indexing, and shared team memory. Trigger keywords: mneme-init, initialize mneme, onboard this repo, generate subagents, set up codegraph."
-version: 1.1.0
+version: 1.2.0
 pinned: false
 ---
 
@@ -24,7 +24,7 @@ Use this skill when:
 5. `subagent_compose` returns a PREVIEW only. Nothing is written to disk until the user confirms and you call `subagent_write`.
 6. Every `role` passed to `subagent_compose`/`subagent_write` must match `^[a-z][a-z0-9-]*$`. `archetype` must be one of `architect, backend, frontend, qa-tester, bug-hunter, diagnostician`.
 7. The codegraph step invokes the EXISTING `mneme codegraph index` / `mneme codegraph hooks install` commands — never reimplement indexing or hook logic yourself.
-8. The shared-memory step is a placeholder until SPEC-053 ships. Say so explicitly; never fabricate a command that does not exist yet.
+8. The shared-memory step invokes the EXISTING `mneme team-memory enable` command (SPEC-053/SPEC-065) — never reimplement vault export or hook-install logic yourself, and always relay its privacy notice to the user verbatim (never paraphrase or suppress it).
 9. ONE fact per `mem_save` call during Phase 0-2 seeding — never dump an entire file as a single memory. Always set `topic_key` so re-runs upsert instead of duplicating.
 10. Never rewrite the user's CLAUDE.md prose directly — only the `init` MCP tool's managed block. Report drift; do not silently edit user content.
 
@@ -46,6 +46,7 @@ Use this skill when:
 - After the subagent grill: `subagent_manifest_list` should list the newly written roles with their `engine`/`areas`/`checksum`.
 - After enabling the delegation hook: `mneme delegation-hook status` should print `enabled: <repo>/.claude/settings.json`.
 - After the codegraph opt-in: `mneme codegraph status` should report a non-zero file/symbol count for the repo.
+- After the shared-memory opt-in: `<repo>/.mneme/shared/.mneme-vault` should exist and `mneme team-memory enable`'s output should report the hooks it installed; re-running the command should report "already enabled" instead of erroring.
 - Before reporting completion, confirm with the user that each opt-in step's outcome (done / skipped / deferred) matches what they asked for.
 
 ## Workflow
@@ -86,14 +87,16 @@ Only if the user opts in. Do not reimplement indexing — invoke the existing co
 
 ### Step 3 — Opt-in: shared team memory
 
-Only if the user opts in. This step is a PLACEHOLDER — the vault/sync mechanism it delegates to (SPEC-053, team-memory) has not shipped yet.
+Only if the user opts in. This wires the git-native team-memory vault (SPEC-053): a `.mneme/shared/` directory committed to the repo that durable memories (decisions, conventions, architecture, patterns, bugfixes, rules) materialize into automatically once enabled, plus git hooks that import teammates' shared knowledge after every pull/checkout. Do not reimplement any of this yourself — invoke the existing command:
 
-14. Tell the user: "Shared team memory (git-synced vault) isn't available yet — it ships in SPEC-053. I'll skip this for now; re-run `mneme-init` once it's released to wire it up."
-15. Do not fabricate a command or write any files for this step.
+14. Before running anything, tell the user: enabling this commits `.mneme/shared/` to the repository — if the remote is (or might become) public, that knowledge becomes publicly visible, including full commit history once pushed. Confirm they still want to proceed.
+15. Run `mneme team-memory enable`. It is idempotent (safe to re-run): it creates `.mneme/shared/` + its marker if absent, bakes/exports existing durable memories, and installs the `post-merge`/`post-checkout` import hooks.
+16. Relay the command's own output verbatim, including its privacy notice — never paraphrase, summarize away, or suppress it.
+17. If the command fails (e.g. not a git repository), report the failure and skip — do not attempt a manual workaround or fabricate a fallback command.
 
 ### Step 4 — Final report
 
-16. Summarize what ran, using this format (core always runs; each opt-in step is done / skipped / not requested / deferred):
+18. Summarize what ran, using this format (core always runs; each opt-in step is done / skipped / not requested / deferred):
 
 ```
 mneme-init complete for {project}
@@ -101,5 +104,5 @@ mneme-init complete for {project}
 Core: memories seeded (N), managed blocks applied, drift findings: N
 Subagents: <done (roles: ...) | skipped | not requested>
 Codegraph: <done | skipped | not requested>
-Shared memory: <deferred (SPEC-053) | not requested>
+Shared memory: <done (vault + hooks installed) | skipped | not requested>
 ```
