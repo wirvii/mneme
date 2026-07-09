@@ -543,7 +543,7 @@ func TestBuildGraphForSeeds_FeedsPPR(t *testing.T) {
 // BenchmarkBuildGraphForSeeds_500Entities measures BuildGraphForSeeds against a
 // corpus of 500 entities and 2000 relations with 5 seeds. Target: <30ms.
 //
-// Run with: CGO_ENABLED=1 go test -tags fts5 -bench=BenchmarkBuildGraphForSeeds_500Entities -benchtime=5s ./internal/service/
+// Run with: go test -bench=BenchmarkBuildGraphForSeeds_500Entities -benchtime=5s ./internal/service/
 func BenchmarkBuildGraphForSeeds_500Entities(b *testing.B) {
 	benchBuildGraph(b, 500, 2000, 5)
 }
@@ -552,7 +552,7 @@ func BenchmarkBuildGraphForSeeds_500Entities(b *testing.B) {
 // corpus of 5000 entities and 20000 relations with 10 seeds. MaxNodes=5000 cap
 // applies. Target: <50ms (SPEC-016 acceptance criterion 5).
 //
-// Run with: CGO_ENABLED=1 go test -tags fts5 -bench=BenchmarkBuildGraphForSeeds_5KEntities -benchtime=5s ./internal/service/
+// Run with: go test -bench=BenchmarkBuildGraphForSeeds_5KEntities -benchtime=5s ./internal/service/
 func BenchmarkBuildGraphForSeeds_5KEntities(b *testing.B) {
 	benchBuildGraph(b, 5000, 20000, 10)
 }

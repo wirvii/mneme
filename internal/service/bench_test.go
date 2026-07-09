@@ -18,7 +18,7 @@ import (
 // memory-entity links. Per SPEC-007 acceptance criterion 3, the graph channel
 // should add <50ms to search latency relative to include_graph=false.
 //
-// Run with: go test -tags fts5 -bench=BenchmarkSearch_GraphExpansion_5K -benchtime=5s ./internal/service/
+// Run with: go test -bench=BenchmarkSearch_GraphExpansion_5K -benchtime=5s ./internal/service/
 func BenchmarkSearch_GraphExpansion_5K(b *testing.B) {
 	projectDB, err := db.OpenMemory()
 	if err != nil {
@@ -129,7 +129,7 @@ func BenchmarkSearch_GraphExpansion_5K(b *testing.B) {
 // memories / 20K memory_entities. At 500 memories the benchmark serves as a
 // baseline; the 5K target can be validated by scaling numMemories to 5000.
 //
-// Run with: go test -tags fts5 -bench=BenchmarkRebuildGraph_5K -benchtime=3x ./internal/service/
+// Run with: go test -bench=BenchmarkRebuildGraph_5K -benchtime=3x ./internal/service/
 func BenchmarkRebuildGraph_5K(b *testing.B) {
 	projectDB, err := db.OpenMemory()
 	if err != nil {
@@ -194,7 +194,7 @@ func BenchmarkRebuildGraph_5K(b *testing.B) {
 // per entity. Per SPEC-008 acceptance criterion 6, the traversal should complete
 // in < 200ms for depth=3 on 5K memories / 10K relations.
 //
-// Run with: go test -tags fts5 -bench=BenchmarkExplore_Depth3_5K -benchtime=5s ./internal/service/
+// Run with: go test -bench=BenchmarkExplore_Depth3_5K -benchtime=5s ./internal/service/
 func BenchmarkExplore_Depth3_5K(b *testing.B) {
 	projectDB, err := db.OpenMemory()
 	if err != nil {
@@ -291,7 +291,7 @@ func BenchmarkExplore_Depth3_5K(b *testing.B) {
 // 500 memories and 100 entities with 5 relations per entity. Per SPEC-017 AC4,
 // the full search (FTS5 + vector + PPR graph) must complete in <100ms total.
 //
-// Run with: go test -tags fts5 -bench=BenchmarkSearch_PPRMode_5K -benchtime=5s ./internal/service/
+// Run with: go test -bench=BenchmarkSearch_PPRMode_5K -benchtime=5s ./internal/service/
 func BenchmarkSearch_PPRMode_5K(b *testing.B) {
 	projectDB, err := db.OpenMemory()
 	if err != nil {
@@ -401,7 +401,7 @@ func BenchmarkSearch_PPRMode_5K(b *testing.B) {
 // with graph-focused expansion (PPR mode). Per SPEC-017 AC4, the total
 // context call should complete in <150ms for 5K memories.
 //
-// Run with: go test -tags fts5 -bench=BenchmarkContext_GraphFocus_5K -benchtime=5s ./internal/service/
+// Run with: go test -bench=BenchmarkContext_GraphFocus_5K -benchtime=5s ./internal/service/
 func BenchmarkContext_GraphFocus_5K(b *testing.B) {
 	projectDB, err := db.OpenMemory()
 	if err != nil {
@@ -488,7 +488,7 @@ func BenchmarkContext_GraphFocus_5K(b *testing.B) {
 // packing enabled against a corpus of ~500 memories across 10 communities.
 // Target: <150ms total per call (SPEC-022 AC-6). Run with:
 //
-//	CGO_ENABLED=1 go test -tags fts5 -bench=BenchmarkContext_CommunityPacking -benchtime=5s ./internal/service/
+//	go test -bench=BenchmarkContext_CommunityPacking -benchtime=5s ./internal/service/
 func BenchmarkContext_CommunityPacking(b *testing.B) {
 	projectDB, err := db.OpenMemory()
 	if err != nil {
@@ -600,7 +600,7 @@ func BenchmarkContext_CommunityPacking(b *testing.B) {
 //
 // Run with:
 //
-//	CGO_ENABLED=1 go test -tags fts5 -bench=BenchmarkContext_FlatMode_Baseline -benchtime=5s ./internal/service/
+//	go test -bench=BenchmarkContext_FlatMode_Baseline -benchtime=5s ./internal/service/
 func BenchmarkContext_FlatMode_Baseline(b *testing.B) {
 	projectDB, err := db.OpenMemory()
 	if err != nil {
