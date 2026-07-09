@@ -61,6 +61,37 @@ func TestSave_Defaults(t *testing.T) {
 	}
 }
 
+// TestSave_SharedAuthorDefaults_Inert verifies that Save leaves shared/author
+// at their inert zero values (0, "") even for an auto-shareable type like
+// TypeDecision. This is a regression guard for SPEC-061 SS-A: the write-through
+// resolution logic that bakes shared/author from team-memory state is SS-B
+// scope and must not exist yet — Save's model.Memory{} literal must not set
+// either field.
+func TestSave_SharedAuthorDefaults_Inert(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+
+	resp, err := svc.Save(ctx, model.SaveRequest{
+		Title:   "A decision worth sharing",
+		Content: "Some content",
+		Type:    model.TypeDecision,
+	})
+	if err != nil {
+		t.Fatalf("Save: unexpected error: %v", err)
+	}
+
+	mem, err := svc.Get(ctx, resp.ID)
+	if err != nil {
+		t.Fatalf("Get: unexpected error: %v", err)
+	}
+	if mem.Shared != 0 {
+		t.Errorf("expected Shared=0 (inert, SS-B not wired), got %d", mem.Shared)
+	}
+	if mem.Author != "" {
+		t.Errorf("expected Author=%q (inert, SS-B not wired), got %q", "", mem.Author)
+	}
+}
+
 func TestSave_Validation(t *testing.T) {
 	svc := newTestService(t)
 	ctx := context.Background()
