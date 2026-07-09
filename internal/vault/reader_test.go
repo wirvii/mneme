@@ -82,6 +82,34 @@ files:
 	}
 }
 
+func TestParseFrontmatter_SharedAuthor(t *testing.T) {
+	input := `---
+id: 019ddc45-0000-0000-0000-000000000006
+type: decision
+scope: project
+title: "Shared decision"
+importance: 0.90
+confidence: 0.80
+decay_rate: 0.005
+created_at: 2026-04-30T02:44:04Z
+updated_at: 2026-04-30T20:41:14Z
+revision_count: 0
+shared: 2
+author: Jane Doe <jane@example.com>
+---
+`
+	fm, _, err := parseFrontmatter([]byte(input))
+	if err != nil {
+		t.Fatalf("parseFrontmatter error: %v", err)
+	}
+	if fm.Shared != 2 {
+		t.Errorf("Shared: got %d, want 2", fm.Shared)
+	}
+	if fm.Author != "Jane Doe <jane@example.com>" {
+		t.Errorf("Author: got %q, want %q", fm.Author, "Jane Doe <jane@example.com>")
+	}
+}
+
 func TestParseFrontmatter_OmittedOptional(t *testing.T) {
 	input := `---
 id: 019ddc45-0000-0000-0000-000000000001
@@ -117,6 +145,12 @@ revision_count: 0
 	}
 	if fm.Severity != "" {
 		t.Errorf("Severity should be empty, got %q", fm.Severity)
+	}
+	if fm.Shared != 0 {
+		t.Errorf("Shared should be 0, got %d", fm.Shared)
+	}
+	if fm.Author != "" {
+		t.Errorf("Author should be empty, got %q", fm.Author)
 	}
 	if fm.SupersededBy != "" {
 		t.Errorf("SupersededBy should be empty, got %q", fm.SupersededBy)

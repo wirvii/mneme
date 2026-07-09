@@ -52,6 +52,43 @@ func TestFTS5Search(t *testing.T) {
 	}
 }
 
+// TestFTS5Search_SharedAuthor verifies that FTS5Search's SELECT includes the
+// shared and author columns (SPEC-061 SS-A: all memory scan sites must
+// return them).
+func TestFTS5Search_SharedAuthor(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	m := &model.Memory{
+		Type:       model.TypeDecision,
+		Scope:      model.ScopeProject,
+		Title:      "Shared search hit",
+		Content:    "Unique searchable content about team memory sharing.",
+		Project:    "fts-shared-author",
+		Importance: 0.8,
+		DecayRate:  0.01,
+		Shared:     1,
+		Author:     "Jane Doe <jane@example.com>",
+	}
+	if _, err := s.Create(ctx, m); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	results, err := s.FTS5Search(ctx, "sharing", SearchOptions{Project: "fts-shared-author"})
+	if err != nil {
+		t.Fatalf("FTS5Search: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Shared != 1 {
+		t.Errorf("Shared: got %d, want 1", results[0].Shared)
+	}
+	if results[0].Author != "Jane Doe <jane@example.com>" {
+		t.Errorf("Author: got %q, want %q", results[0].Author, "Jane Doe <jane@example.com>")
+	}
+}
+
 // TestFTS5Search_Filters verifies that project, scope, and type filters are applied.
 func TestFTS5Search_Filters(t *testing.T) {
 	s := newTestStore(t)

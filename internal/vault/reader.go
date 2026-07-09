@@ -192,6 +192,10 @@ func parseFrontmatter(data []byte) (Frontmatter, int, error) {
 			fm.Severity = value
 		case "superseded_by":
 			fm.SupersededBy = value
+		case "shared":
+			fm.Shared = parseIntField(value)
+		case "author":
+			fm.Author = value
 		case "files":
 			currentList = &fm.Files
 		case "applies_to":

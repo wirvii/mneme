@@ -399,3 +399,41 @@ func TestCountEmbeddings(t *testing.T) {
 		t.Errorf("want 2 embeddings, got %d", n)
 	}
 }
+
+// TestListMemoriesWithoutEmbedding_SharedAuthor verifies that
+// ListMemoriesWithoutEmbedding's SELECT includes the shared and author
+// columns (SPEC-061 SS-A: all memory scan sites must return them).
+func TestListMemoriesWithoutEmbedding_SharedAuthor(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	m := &model.Memory{
+		Type:       model.TypeDiscovery,
+		Scope:      model.ScopeProject,
+		Title:      "no embedding yet",
+		Content:    "content",
+		Project:    "lmwem-shared-author",
+		Importance: 0.5,
+		DecayRate:  0.01,
+		Confidence: 0.8,
+		Shared:     1,
+		Author:     "Jane Doe <jane@example.com>",
+	}
+	if _, err := s.Create(ctx, m); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	memories, err := s.ListMemoriesWithoutEmbedding(ctx, "lmwem-shared-author", 0)
+	if err != nil {
+		t.Fatalf("ListMemoriesWithoutEmbedding: %v", err)
+	}
+	if len(memories) != 1 {
+		t.Fatalf("expected 1 memory, got %d", len(memories))
+	}
+	if memories[0].Shared != 1 {
+		t.Errorf("Shared: got %d, want 1", memories[0].Shared)
+	}
+	if memories[0].Author != "Jane Doe <jane@example.com>" {
+		t.Errorf("Author: got %q, want %q", memories[0].Author, "Jane Doe <jane@example.com>")
+	}
+}

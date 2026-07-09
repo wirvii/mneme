@@ -63,6 +63,73 @@ func TestCreate(t *testing.T) {
 	}
 }
 
+// TestCreate_SharedAuthorDefaults verifies that a memory created without
+// explicitly setting Shared/Author persists the inert defaults (shared=0,
+// author="") — the behaviour mem_save relies on before team-memory (SS-B)
+// wires the resolution logic (SPEC-061 SS-A).
+func TestCreate_SharedAuthorDefaults(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	m, err := s.Create(ctx, makeMemory())
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	got, err := s.Get(ctx, m.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Shared != 0 {
+		t.Errorf("Shared: got %d, want 0", got.Shared)
+	}
+	if got.Author != "" {
+		t.Errorf("Author: got %q, want empty", got.Author)
+	}
+}
+
+// TestCreate_SharedAuthorRoundTrip verifies that explicit non-default
+// Shared/Author values survive a Create → Get round trip across every level
+// of the shared flag (SPEC-053 D2).
+func TestCreate_SharedAuthorRoundTrip(t *testing.T) {
+	cases := []struct {
+		name   string
+		shared int
+		author string
+	}{
+		{"local", 0, ""},
+		{"auto-shared", 1, "Jane Doe <jane@example.com>"},
+		{"team-curated", 2, "John Doe <john@example.com>"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newTestStore(t)
+			ctx := context.Background()
+
+			m := makeMemory()
+			m.Shared = tc.shared
+			m.Author = tc.author
+
+			created, err := s.Create(ctx, m)
+			if err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+
+			got, err := s.Get(ctx, created.ID)
+			if err != nil {
+				t.Fatalf("Get: %v", err)
+			}
+			if got.Shared != tc.shared {
+				t.Errorf("Shared: got %d, want %d", got.Shared, tc.shared)
+			}
+			if got.Author != tc.author {
+				t.Errorf("Author: got %q, want %q", got.Author, tc.author)
+			}
+		})
+	}
+}
+
 // TestGet_NotFound verifies that Get returns nil, nil for a missing id.
 func TestGet_NotFound(t *testing.T) {
 	s := newTestStore(t)
@@ -303,6 +370,35 @@ func TestList(t *testing.T) {
 	}
 	if len(none) != 0 {
 		t.Errorf("expected 0 results, got %d", len(none))
+	}
+}
+
+// TestList_SharedAuthor verifies that List's SELECT includes the shared and
+// author columns (SPEC-061 SS-A: all memory scan sites must return them).
+func TestList_SharedAuthor(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	m := makeMemory()
+	m.Project = "list-shared-author"
+	m.Shared = 2
+	m.Author = "Jane Doe <jane@example.com>"
+	if _, err := s.Create(ctx, m); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	results, err := s.List(ctx, ListOptions{Project: "list-shared-author"})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Shared != 2 {
+		t.Errorf("Shared: got %d, want 2", results[0].Shared)
+	}
+	if results[0].Author != "Jane Doe <jane@example.com>" {
+		t.Errorf("Author: got %q, want %q", results[0].Author, "Jane Doe <jane@example.com>")
 	}
 }
 

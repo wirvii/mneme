@@ -78,7 +78,7 @@ func (s *MemoryStore) FTS5Search(ctx context.Context, query string, opts SearchO
 		       m.session_id, m.created_by, m.created_at, m.updated_at,
 		       m.importance, m.confidence, m.access_count, m.last_accessed,
 		       m.decay_rate, m.revision_count, m.superseded_by, m.deleted_at,
-		       m.applies_to, m.severity,
+		       m.applies_to, m.severity, m.shared, m.author,
 		       bm25(memories_fts) AS bm25_score
 		FROM memories m
 		JOIN memories_fts ON m.rowid = memories_fts.rowid
@@ -260,7 +260,7 @@ func bm25ToRelevance(bm25 float64) float64 {
 }
 
 // scanMemoryWithExtra scans a row that has extra trailing columns (e.g. bm25 score)
-// beyond the standard 21 memory columns. The caller appends destinations for the
+// beyond the standard 23 memory columns. The caller appends destinations for the
 // extra columns to the standard memory column destinations.
 func scanMemoryWithExtra(rows scannerRow, extra ...any) (*model.Memory, error) {
 	var m model.Memory
@@ -287,7 +287,7 @@ func scanMemoryWithExtra(rows scannerRow, extra ...any) (*model.Memory, error) {
 		&createdAt, &updatedAt,
 		&m.Importance, &m.Confidence, &m.AccessCount, &lastAccessed,
 		&m.DecayRate, &m.RevisionCount, &supersededBy, &deletedAt,
-		&appliesTo, &severityStr,
+		&appliesTo, &severityStr, &m.Shared, &m.Author,
 	}
 	dests = append(dests, extra...)
 
