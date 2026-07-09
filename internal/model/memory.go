@@ -260,6 +260,24 @@ type Memory struct {
 	// "block" (reject the action). Only meaningful when Type is TypeRule.
 	// Stored as a TEXT column in SQLite with a CHECK constraint.
 	Severity Severity `json:"severity,omitempty"`
+
+	// Shared is the team-memory sharing level (SPEC-053/SPEC-061), a 2-level
+	// flag layered on top of ScopeProject — it does not introduce a new scope:
+	//   0 = local — never materialized to the shared git vault (default).
+	//   1 = auto-shared — durable memory types, when team-memory is active.
+	//   2 = team-curated — explicitly promoted (mneme promote).
+	// Stored as an INTEGER column with a CHECK constraint restricting it to
+	// {0,1,2}. Defaults to 0 so memory saved before team-memory is enabled (or
+	// with team-memory never enabled) behaves exactly as before this field
+	// existed.
+	Shared int `json:"shared,omitempty"`
+
+	// Author is the human git identity ("Name <email>") that authored this
+	// memory, distinct from CreatedBy (the saving agent, e.g. "claude-code").
+	// Empty until the write-through materialisation path (SS-B) populates it
+	// from the local git config. Round-trips through the vault frontmatter so
+	// peers preserve the original author on import.
+	Author string `json:"author,omitempty"`
 }
 
 // SaveRequest carries the agent's intent to persist a memory. Title and Content
@@ -308,6 +326,13 @@ type SaveRequest struct {
 	// TypeRule; ignored for all other types. Defaults to SeverityWarn
 	// when omitted for a rule.
 	Severity Severity `json:"severity,omitempty"`
+
+	// Shared is a pointer so the service can distinguish "not provided" (bake
+	// a type-based default when team-memory is active, resolved in SS-B) from
+	// "explicitly set". A nil value together with team-memory inactive always
+	// resolves to 0 (local, not shared) — the behaviour before this field
+	// existed.
+	Shared *int `json:"shared,omitempty"`
 }
 
 // UpdateRequest carries the fields an agent wants to change on an existing memory.
