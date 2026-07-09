@@ -1,11 +1,9 @@
 package install
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -807,9 +805,13 @@ func assertHookCount(t *testing.T, hooks map[string]any, event, command string, 
 // Delegation hook tests (SPEC-032)
 // ---------------------------------------------------------------------------
 
-// TestDelegationHookContent_ValidBash verifies that the embedded hook asset is
-// non-empty, starts with the expected shebang, and contains the key functions
-// that make the hook work: is_allowed_path and agent_id detection.
+// TestDelegationHookContent_ValidBash verifies that the embedded hook asset
+// is now a thin compat shim (SPEC-069 D4/AC12): non-empty, starts with the
+// expected shebang, and its only job is to exec the portable
+// "mneme hook enforce-delegation" subcommand — all the decision logic that
+// used to live here (is_allowed_path, agent_id detection,
+// command_mentions_protected_path, ...) has moved to internal/enforcement +
+// internal/cli, and is covered by their own test suites instead.
 func TestDelegationHookContent_ValidBash(t *testing.T) {
 	content, err := DelegationHookContent()
 	if err != nil {
@@ -822,20 +824,15 @@ func TestDelegationHookContent_ValidBash(t *testing.T) {
 	if !strings.HasPrefix(text, "#!/usr/bin/env bash") {
 		t.Errorf("hook script shebang mismatch: first line = %q", strings.SplitN(text, "\n", 2)[0])
 	}
-	// Base markers (SPEC-032) + SPEC-042 hardening markers.
-	for _, marker := range []string{
-		"is_allowed_path",
-		"agent_id",
-		// D1: multi-key subagent detection
-		"session.agent_id",
-		// D2: explicit jq guard
-		"command -v jq",
-		// D3: protected-path helper for python/node
-		"command_mentions_protected_path",
-	} {
-		if !strings.Contains(text, marker) {
-			t.Errorf("hook script is missing expected marker: %q", marker)
-		}
+	if !strings.Contains(text, "exec mneme hook enforce-delegation") {
+		t.Errorf("shim must exec \"mneme hook enforce-delegation\"; got:\n%s", text)
+	}
+	// The shim must be small — a handful of lines, not the ~640-line script it
+	// replaces. A generous upper bound catches an accidental re-inflation of
+	// the asset (e.g. a future edit pasting the old logic back in) without
+	// being brittle about the exact line count.
+	if lines := strings.Count(text, "\n"); lines > 15 {
+		t.Errorf("shim has %d lines, expected a small compat shim (~6 lines)", lines)
 	}
 }
 
@@ -1201,9 +1198,16 @@ func TestPatchSettings_DelegationBashIdempotent(t *testing.T) {
 // SPEC-034: permission enforcement by capability
 // ---------------------------------------------------------------------------
 
-// TestDelegationHookContent_LogsBlockedAttempts verifies that the embedded hook
-// script contains the mneme discovery-memory logging block and that the exit 2
-// guarantee is preserved.
+// TestDelegationHookContent_LogsBlockedAttempts previously verified that the
+// embedded bash script contained the discovery-memory logging block
+// (mneme save --type discovery ...). SPEC-069 ports that logging to
+// logBlockedEditDiscovery in internal/cli (see
+// TestLogBlockedEditDiscovery_SuccessfulSave_ReceivesExpectedRequest and
+// TestLogBlockedEditDiscovery_SaveFailure_WritesWarningOnly in
+// internal/cli/hook_enforce_delegation_test.go), so this asset no longer
+// carries that logic. This test now guards the inverse: the shim must NOT
+// contain any of the old logging markers, i.e. the port is complete and
+// nothing was left duplicated in both places.
 func TestDelegationHookContent_LogsBlockedAttempts(t *testing.T) {
 	content, err := DelegationHookContent()
 	if err != nil {
@@ -1211,17 +1215,14 @@ func TestDelegationHookContent_LogsBlockedAttempts(t *testing.T) {
 	}
 	text := string(content)
 
-	markers := []string{
+	staleMarkers := []string{
 		"mneme save",
 		"--type discovery",
 		"Blocked edit: principal",
-		"command -v mneme",
-		"|| ",
-		"exit 2",
 	}
-	for _, m := range markers {
-		if !strings.Contains(text, m) {
-			t.Errorf("hook script missing expected marker: %q", m)
+	for _, m := range staleMarkers {
+		if strings.Contains(text, m) {
+			t.Errorf("shim should not contain the old bash logging marker %q — logic has moved to internal/cli", m)
 		}
 	}
 }
@@ -1569,323 +1570,3 @@ func TestDryRun_MatchesInstallSteps(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// SPEC-042: enforce_delegation.sh smoke tests (D6)
-// ---------------------------------------------------------------------------
-
-// hookSmokeCase describes a single PreToolUse JSON payload and its expected
-// exit code when passed to enforce_delegation.sh.
-type hookSmokeCase struct {
-	name     string
-	payload  string
-	wantExit int
-}
-
-// TestDelegationHook_SmokeTests runs table-driven bash invocations of the
-// embedded enforce_delegation.sh hook against synthetic PreToolUse JSON
-// payloads and verifies the correct exit code for each case.
-//
-// The test is skipped (not failed) when bash or jq are absent from PATH so
-// it does not break CI environments that lack these tools.
-func TestDelegationHook_SmokeTests(t *testing.T) {
-	// Require bash.
-	if _, err := exec.LookPath("bash"); err != nil {
-		t.Skip("bash not found in PATH — skipping smoke test")
-	}
-	// Require jq (hook uses jq for all JSON parsing).
-	if _, err := exec.LookPath("jq"); err != nil {
-		t.Skip("jq not found in PATH — skipping smoke test")
-	}
-
-	// Write the embedded hook to a temp file so we invoke the asset directly.
-	hookContent, err := DelegationHookContent()
-	if err != nil {
-		t.Fatalf("DelegationHookContent: %v", err)
-	}
-	hookFile := filepath.Join(t.TempDir(), "enforce_delegation.sh")
-	if err := os.WriteFile(hookFile, hookContent, 0o755); err != nil {
-		t.Fatalf("write hook to temp: %v", err)
-	}
-
-	// SPEC-068 D6/D9: every case below runs "mneme hook path-owned" for any
-	// non-whitelisted target the hook would otherwise block directly. Isolate
-	// $HOME (no config.toml, no databases) and the working directory (a
-	// fresh, non-git temp dir — no project can be detected) so that call
-	// always misses and deterministically resolves to "manifest absent ->
-	// BLOCK legacy" (D8), reproducing this test's pre-SPEC-068 assumption
-	// that every non-whitelisted path blocks — regardless of whatever real
-	// project/manifest the machine running this test happens to have.
-	isoHome := t.TempDir()
-	isoCWD := t.TempDir()
-
-	cases := []hookSmokeCase{
-		// --- B-cases: subagent detection (AC1) ---
-
-		// B1: agent_id at root (non-empty) → subagent → allow.
-		{
-			name:     "B1_agent_id_root_nonempty",
-			payload:  `{"agent_id":"abc-123","tool_name":"Edit","tool_input":{"file_path":"internal/foo.go"}}`,
-			wantExit: 0,
-		},
-		// B2: agent_id empty string at root → treated as orchestrator → block.
-		{
-			name:     "B2_agent_id_root_empty",
-			payload:  `{"agent_id":"","tool_name":"Edit","tool_input":{"file_path":"internal/foo.go"}}`,
-			wantExit: 2,
-		},
-		// B3: agent_id null at root → treated as orchestrator → block.
-		{
-			name:     "B3_agent_id_root_null",
-			payload:  `{"agent_id":null,"tool_name":"Edit","tool_input":{"file_path":"internal/foo.go"}}`,
-			wantExit: 2,
-		},
-		// B4: agent_id nested in session → D1 multi-key reads it → allow.
-		{
-			name:     "B4_agent_id_session_nested",
-			payload:  `{"session":{"agent_id":"abc-456"},"tool_name":"Edit","tool_input":{"file_path":"internal/foo.go"}}`,
-			wantExit: 0,
-		},
-		// B5: agent_id nested in context → D1 multi-key reads it → allow.
-		{
-			name:     "B5_agent_id_context_nested",
-			payload:  `{"context":{"agent_id":"abc-789"},"tool_name":"Edit","tool_input":{"file_path":"internal/foo.go"}}`,
-			wantExit: 0,
-		},
-
-		// --- A-cases: orchestrator bypass hardening (AC2) ---
-
-		// A1: python shutil.copy to protected path → block.
-		{
-			name:     "A1_python_shutil_copy",
-			payload:  `{"tool_name":"Bash","tool_input":{"command":"python3 -c \"import shutil; shutil.copy('src.go', 'internal/dst.go')\""}}`,
-			wantExit: 2,
-		},
-		// A2: python subprocess.run(['cp', ...]) to protected path → block.
-		{
-			name:     "A2_python_subprocess_cp",
-			payload:  `{"tool_name":"Bash","tool_input":{"command":"python3 -c \"import subprocess; subprocess.run(['cp', 'src', 'internal/dst.go'])\""}}`,
-			wantExit: 2,
-		},
-		// A3: python os.rename to protected path → block.
-		{
-			name:     "A3_python_os_rename",
-			payload:  `{"tool_name":"Bash","tool_input":{"command":"python3 -c \"import os; os.rename('src.go', 'internal/dst.go')\""}}`,
-			wantExit: 2,
-		},
-
-		// --- Non-regression (AC3) ---
-
-		// NR1: python print(2+2) — no paths → allow.
-		{
-			name:     "NR1_python_print_only",
-			payload:  `{"tool_name":"Bash","tool_input":{"command":"python3 -c \"print(2+2)\""}}`,
-			wantExit: 0,
-		},
-		// NR2: Edit to .claude/ path → allow (in whitelist).
-		{
-			name:     "NR2_edit_dotclaude",
-			payload:  `{"tool_name":"Edit","tool_input":{"file_path":".claude/settings.json"}}`,
-			wantExit: 0,
-		},
-		// NR3: Non-mutating tool (Read) → allow.
-		{
-			name:     "NR3_non_mutating_tool",
-			payload:  `{"tool_name":"Read","tool_input":{"file_path":"internal/foo.go"}}`,
-			wantExit: 0,
-		},
-		// NR4: Edit to docs/*.md → allow (in whitelist).
-		{
-			name:     "NR4_edit_docs_md",
-			payload:  `{"tool_name":"Edit","tool_input":{"file_path":"docs/ARCHITECTURE.md"}}`,
-			wantExit: 0,
-		},
-		// NR5: SPEC-033/040 non-regression: redirect to internal/ → block.
-		{
-			name:     "NR5_redirect_to_internal",
-			payload:  `{"tool_name":"Bash","tool_input":{"command":"echo hello > internal/foo.go"}}`,
-			wantExit: 2,
-		},
-		// NR6: SPEC-033/040 non-regression: redirect to .claude/ → allow.
-		{
-			name:     "NR6_redirect_to_dotclaude",
-			payload:  `{"tool_name":"Bash","tool_input":{"command":"echo hello > .claude/settings.json"}}`,
-			wantExit: 0,
-		},
-
-		// SPEC-042 I-1 fix: API-keyword fallback elif removed. Whitelisted paths
-		// (CLAUDE.md, docs/*.md) must not be blocked by the write-API heuristic.
-
-		// NR7: node writeFileSync to CLAUDE.md (whitelist) → allow.
-		// The removed elif only exempted .claude/, so CLAUDE.md was blocked.
-		{
-			name:     "NR7_node_write_CLAUDE_md",
-			payload:  `{"tool_name":"Bash","tool_input":{"command":"node -e \"fs.writeFileSync('CLAUDE.md','x')\""}}`,
-			wantExit: 0,
-		},
-		// NR8: python open to docs/x.md (whitelist) → allow.
-		// The removed elif only exempted .claude/, so docs/*.md was blocked.
-		{
-			name:     "NR8_python_open_docs_md",
-			payload:  `{"tool_name":"Bash","tool_input":{"command":"python3 -c \"open('docs/x.md','w')\""}}`,
-			wantExit: 0,
-		},
-		// NR9: python open('.claude/x','w') → allow (existing behavior preserved).
-		{
-			name:     "NR9_python_open_dotclaude",
-			payload:  `{"tool_name":"Bash","tool_input":{"command":"python3 -c \"open('.claude/x','w')\""}}`,
-			wantExit: 0,
-		},
-
-		// --- F-cases: SPEC-043 regression — 4 fixes (Fix 1..4) ---
-
-		// Fix 1 — strip redirect operator pegado al candidato (2>/dev/null).
-
-		// F1: python with 2>/dev/null and no protected path → allow.
-		// Previously '2>/dev/null' was treated as a path candidate, producing a
-		// false positive for any python/node inline with stderr redirect.
-		{
-			name:     "F1_python_redirect_2devnull_no_path",
-			payload:  `{"tool_name":"Bash","tool_input":{"command":"python3 -c \"print(2+2)\" 2>/dev/null"}}`,
-			wantExit: 0,
-		},
-		// F2: python opens whitelisted CLAUDE.md with stderr redirect → allow.
-		{
-			name:     "F2_python_open_CLAUDE_md_with_redirect",
-			payload:  `{"tool_name":"Bash","tool_input":{"command":"python3 -c \"open('CLAUDE.md')\" 2>/dev/null"}}`,
-			wantExit: 0,
-		},
-		// F3: python opens protected path with stderr redirect → still block (exit 2).
-		// The strip fix must not relax protection against real protected paths.
-		{
-			name:     "F3_python_open_protected_path_with_redirect",
-			payload:  `{"tool_name":"Bash","tool_input":{"command":"python3 -c \"open('internal/x.go','w')\" 2>/dev/null"}}`,
-			wantExit: 2,
-		},
-		// F4: node with 2>/dev/null and no protected path → allow.
-		{
-			name:     "F4_node_redirect_2devnull_no_path",
-			payload:  `{"tool_name":"Bash","tool_input":{"command":"node -e \"console.log(1)\" 2>/dev/null"}}`,
-			wantExit: 0,
-		},
-
-		// Fix 2 — tilde expansion + whitelist ~/.mneme/** and ~/.claude/**.
-
-		// F5: Write to ~/.mneme/... with literal tilde → allow (SDD workflow dir).
-		{
-			name:     "F5_write_tilde_mneme",
-			payload:  `{"tool_name":"Write","tool_input":{"file_path":"~/.mneme/workflows/x/specs/SPEC-043/spec.md"}}`,
-			wantExit: 0,
-		},
-		// F6: Write to ~/.claude/... with literal tilde → allow.
-		{
-			name:     "F6_write_tilde_dotclaude",
-			payload:  `{"tool_name":"Write","tool_input":{"file_path":"~/.claude/settings.json"}}`,
-			wantExit: 0,
-		},
-		// F7: Bash redirect to ~/.mneme/... with literal tilde → allow.
-		{
-			name:     "F7_redirect_tilde_mneme",
-			payload:  `{"tool_name":"Bash","tool_input":{"command":"echo x > ~/.mneme/scratch.txt"}}`,
-			wantExit: 0,
-		},
-		// F8: Write to ~/.config/foo (tilde, NOT in whitelist) → block.
-		{
-			name:     "F8_write_tilde_config_not_whitelisted",
-			payload:  `{"tool_name":"Write","tool_input":{"file_path":"~/.config/foo"}}`,
-			wantExit: 2,
-		},
-
-		// Fix 3 — /tmp/** and /private/tmp/** scratch.
-
-		// F9: Write to /tmp/... → allow (orchestrator scratch).
-		{
-			name:     "F9_write_tmp",
-			payload:  `{"tool_name":"Write","tool_input":{"file_path":"/tmp/hook_smoke.sh"}}`,
-			wantExit: 0,
-		},
-		// F10: Bash redirect to /tmp/... → allow.
-		{
-			name:     "F10_redirect_tmp",
-			payload:  `{"tool_name":"Bash","tool_input":{"command":"echo x > /tmp/out.log"}}`,
-			wantExit: 0,
-		},
-		// F11: Write to /private/tmp/... (macOS real path) → allow.
-		{
-			name:     "F11_write_private_tmp",
-			payload:  `{"tool_name":"Write","tool_input":{"file_path":"/private/tmp/x"}}`,
-			wantExit: 0,
-		},
-		// F12: Bash redirect to /var/foo (NOT tmp, NOT whitelist) → block.
-		{
-			name:     "F12_redirect_var_not_whitelisted",
-			payload:  `{"tool_name":"Bash","tool_input":{"command":"echo x > /var/foo"}}`,
-			wantExit: 2,
-		},
-
-		// Fix 4 — process substitution < <(cmd) excluded.
-
-		// F13: < <(jq ...) is not a redirect to a file path → allow.
-		// Previously the regex matched '< <(jq' and treated the content as a path.
-		{
-			name:     "F13_process_substitution_not_redirect",
-			payload:  `{"tool_name":"Bash","tool_input":{"command":"while read l; do echo $l; done < <(jq -r .x /tmp/a.json)"}}`,
-			wantExit: 0,
-		},
-
-		// --- S-cases: SPEC-043 scratch / CONDICIÓN 2 — /tmp is not a repo bridge ---
-
-		// S1: cp from /tmp TOWARD protected path → block (destination is protected).
-		// _find_last_word_target takes the last non-flag word (the destination).
-		{
-			name:     "S1_cp_tmp_to_protected",
-			payload:  `{"tool_name":"Bash","tool_input":{"command":"cp /tmp/x.go internal/store/x.go"}}`,
-			wantExit: 2,
-		},
-		// S2: mv from /tmp TOWARD apps/ → block (destination is protected).
-		{
-			name:     "S2_mv_tmp_to_apps",
-			payload:  `{"tool_name":"Bash","tool_input":{"command":"mv /tmp/x apps/web/x.ts"}}`,
-			wantExit: 2,
-		},
-		// S3: cp TOWARD /tmp (destination is scratch) → allow.
-		{
-			name:     "S3_cp_to_tmp",
-			payload:  `{"tool_name":"Bash","tool_input":{"command":"cp internal/x.go /tmp/x.go"}}`,
-			wantExit: 0,
-		},
-		// S4: tee to /tmp/... → allow.
-		{
-			name:     "S4_tee_tmp",
-			payload:  `{"tool_name":"Bash","tool_input":{"command":"echo x | tee /tmp/out"}}`,
-			wantExit: 0,
-		},
-	}
-
-	for _, tc := range cases {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			cmd := exec.Command("bash", hookFile)
-			cmd.Stdin = bytes.NewBufferString(tc.payload)
-			// Discard hook stdout/stderr — we only care about exit code.
-			cmd.Stdout = nil
-			cmd.Stderr = nil
-			cmd.Dir = isoCWD
-			cmd.Env = append(os.Environ(), "HOME="+isoHome)
-
-			runErr := cmd.Run()
-
-			var gotExit int
-			if runErr != nil {
-				if exitErr, ok := runErr.(*exec.ExitError); ok {
-					gotExit = exitErr.ExitCode()
-				} else {
-					t.Fatalf("unexpected exec error: %v", runErr)
-				}
-			}
-
-			if gotExit != tc.wantExit {
-				t.Errorf("exit code = %d, want %d (payload: %s)", gotExit, tc.wantExit, tc.payload)
-			}
-		})
-	}
-}

@@ -14,6 +14,18 @@ const delegationHookFileName = "enforce_delegation.sh"
 // WriteDelegationHook writes the embedded enforce_delegation.sh bash hook to
 // destDir/enforce_delegation.sh with executable permissions (0755).
 //
+// SPEC-069 D4: the embedded asset is now a ~6-line compat shim that execs
+// "mneme hook enforce-delegation" — all of the decision logic that used to
+// live in this script has moved to internal/enforcement + internal/cli. The
+// shim is retained (rather than deleting the physical file) because
+// per-repo registrations with an absolute path to this script cannot be
+// auto-migrated during `mneme upgrade` (upgrade never enumerates other
+// repos); the shim keeps any such stale entry functional by forwarding to
+// the same in-process Go logic. New registrations (global and per-repo)
+// write the portable "mneme hook enforce-delegation" command string
+// directly and never invoke this script at all — see
+// PatchDelegationHook / EnableProjectDelegationHook.
+//
 // The function implements a checksum-based idempotency strategy:
 //   - If the destination does not exist, the hook is written and "created" is returned.
 //   - If the destination exists and its content is identical to the embedded asset
