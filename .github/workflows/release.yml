@@ -37,8 +37,8 @@ jobs:
 
       - name: Build binary
         run: |
-          CGO_ENABLED=1 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
-            go build -tags fts5 \
+          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
+            go build \
             -ldflags "-s -w -X github.com/wirvii/mneme/internal/cli.Version=${{ steps.version.outputs.VERSION }}" \
             -o mneme ./cmd/mneme
 

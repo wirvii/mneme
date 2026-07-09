@@ -1,6 +1,7 @@
 #!/bin/sh
 # pre-push hook — bloquea el push si build, tests o lint fallan.
-# Requiere CGO_ENABLED=1 y las tags fts5 (mneme usa mattn/go-sqlite3 con FTS5).
+# Build puro-Go: no requiere CGO ni build tags (mneme usa modernc.org/sqlite,
+# que compila FTS5 por defecto).
 
 set -e
 
@@ -19,7 +20,7 @@ fail() {
 # 1. Build
 # ------------------------------------------------------------
 printf "${BOLD}pre-push: build...${RESET}\n"
-CGO_ENABLED=1 go build -tags fts5 -o /dev/null ./cmd/mneme \
+go build -o /dev/null ./cmd/mneme \
     || fail "build fallo — corrige los errores antes de hacer push"
 printf "${GREEN}✓ build${RESET}\n"
 
@@ -27,7 +28,7 @@ printf "${GREEN}✓ build${RESET}\n"
 # 2. Tests
 # ------------------------------------------------------------
 printf "${BOLD}pre-push: tests...${RESET}\n"
-CGO_ENABLED=1 go test -tags fts5 ./... \
+go test ./... \
     || fail "tests fallaron — corrige los errores antes de hacer push"
 printf "${GREEN}✓ tests${RESET}\n"
 
@@ -36,7 +37,7 @@ printf "${GREEN}✓ tests${RESET}\n"
 # ------------------------------------------------------------
 if command -v golangci-lint >/dev/null 2>&1; then
     printf "${BOLD}pre-push: lint...${RESET}\n"
-    CGO_ENABLED=1 golangci-lint run --timeout 5m \
+    golangci-lint run --timeout 5m \
         || fail "lint fallo — corrige los warnings antes de hacer push"
     printf "${GREEN}✓ lint${RESET}\n"
 else

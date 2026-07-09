@@ -1,19 +1,19 @@
-# Makefile for mneme — Go CLI with CGO enabled (SQLite FTS5).
-# Requires CGO_ENABLED=1. Supported platforms: Linux and macOS.
+# Makefile for mneme — pure-Go CLI (SQLite via modernc.org/sqlite, FTS5 built
+# in by default). No CGO, no C compiler, no build tags required.
 
 .PHONY: build install test test-race clean setup release-local
 
 build:
-	CGO_ENABLED=1 go build -tags fts5 -o mneme ./cmd/mneme
+	go build -o mneme ./cmd/mneme
 
 install: build
 	sudo cp mneme /usr/local/bin/
 
 test:
-	CGO_ENABLED=1 go test -tags fts5 ./...
+	go test ./...
 
 test-race:
-	CGO_ENABLED=1 go test -tags fts5 -race ./...
+	go test -race ./...
 
 clean:
 	rm -f mneme
@@ -22,6 +22,6 @@ setup: install
 	mneme install claude-code
 
 release-local:
-	CGO_ENABLED=1 go build -tags fts5 \
+	go build \
 		-ldflags "-s -w -X github.com/wirvii/mneme/internal/cli.Version=local" \
 		-o mneme ./cmd/mneme
