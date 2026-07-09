@@ -19,6 +19,7 @@ import (
 	"github.com/juanftp/mneme/internal/codegraph"
 	"github.com/juanftp/mneme/internal/config"
 	"github.com/juanftp/mneme/internal/db"
+	"github.com/juanftp/mneme/internal/enforcement"
 	"github.com/juanftp/mneme/internal/model"
 	"github.com/juanftp/mneme/internal/project"
 	"github.com/juanftp/mneme/internal/rules"
@@ -39,15 +40,24 @@ import (
 //     (stdin JSON) and emits markdown to stdout; exits with code 2 to block.
 //     Also emits a context-only codegraph nudge (SPEC-044) for Read/Grep/Glob
 //     when the project has an indexed code graph — fail-open, exit 0 always.
-//   - enforce-delegation: legacy config-based delegation enforcement (deprecated)
+//   - enforce-delegation: orchestrator-guard (Layer 2). In-process port of
+//     enforce_delegation.sh (SPEC-069): blocks the orchestrator (never a
+//     subagent) from writing to, or running a Bash command against, a path
+//     outside the static whitelist and owned by an implementer subagent (or
+//     no manifest at all — legacy deny-by-default). Exits 2 to block, 0 to
+//     allow. Registered as a portable subcommand (no path to the home
+//     directory) instead of the legacy enforce_delegation.sh script.
 //   - tokenize: parse a shell command from stdin and write structured JSON tokens
-//     to stdout; used by enforce_delegation.sh as a robust tokenizer backend
+//     to stdout; retained as general-purpose surface / backward compatibility —
+//     enforce-delegation no longer shells out to this subcommand (SPEC-069).
 //   - path-owned: manifest-aware ownership check for a single target path
-//     (SPEC-068 D6/D7/D8); invoked by enforce_delegation.sh in place of its
-//     static allowlist for non-whitelisted paths. Exits 2 (path owned by an
-//     implementer subagent, or manifest absent/empty = legacy deny-by-default)
-//     or 0 (not owned, or any hard failure = fail-open). Prints the owning
-//     role (or "legacy") to stdout when it exits 2.
+//     (SPEC-068 D6/D7/D8); retained as general-purpose surface / backward
+//     compatibility — enforce-delegation now calls resolvePathOwnership
+//     in-process rather than invoking this subcommand as a subprocess
+//     (SPEC-069). Exits 2 (path owned by an implementer subagent, or manifest
+//     absent/empty = legacy deny-by-default) or 0 (not owned, or any hard
+//     failure = fail-open). Prints the owning role (or "legacy") to stdout
+//     when it exits 2.
 func newHookCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "hook <event> [args...]",
@@ -60,7 +70,10 @@ Events:
   session-start     Load and print project context for the agent to consume
   session-end       Print a reminder for the agent to call mem_session_end
   pre-tool-use      Evaluate rules against the current tool invocation (PreToolUse hook)
-  enforce-delegation  Legacy config-based delegation enforcement (deprecated)
+  enforce-delegation  Orchestrator-guard (Layer 2): blocks the orchestrator from
+                    writing to, or running Bash against, a path outside the static
+                    whitelist and owned by an implementer subagent (or legacy
+                    deny-by-default when no manifest exists)
   tokenize          Parse a shell command from stdin and emit structured JSON tokens
   path-owned <path> Manifest-aware ownership check: exit 2 (block) if <path> is owned
                     by an implementer subagent or no manifest exists (legacy), exit 0
@@ -76,7 +89,7 @@ Events:
 			case "pre-tool-use":
 				return runHookPreToolUse(os.Stdin, os.Stdout, os.Stderr)
 			case "enforce-delegation":
-				return runHookEnforceDelegation()
+				return runHookEnforceDelegation(os.Stdin, os.Stderr)
 			case "tokenize":
 				return runHookTokenize(os.Stdin, os.Stdout)
 			case "path-owned":
@@ -316,6 +329,10 @@ type hookPreToolInput struct {
 		NotebookPath string `json:"notebook_path"`
 		// Path is the directory / glob path sent by Grep and Glob tools (SPEC-044).
 		Path string `json:"path"`
+		// Command is the shell command sent by the Bash tool. Used only by
+		// the enforce-delegation guard (SPEC-069) — the rules-engine
+		// pre-tool-use hook never intercepts Bash (see mutatingTools).
+		Command string `json:"command"`
 	} `json:"tool_input"`
 
 	// SessionID is the per-session identifier injected by Claude Code (SPEC-044).
@@ -1018,83 +1035,175 @@ func renderCodegraphNudge(w io.Writer, stale bool, hoursStale int) {
 	fmt.Fprintf(w, "<!-- mneme:codegraph-nudge:end -->\n")
 }
 
-// runHookEnforceDelegation checks whether the current tool invocation targets
-// a protected source-code path. It reads the tool input JSON from stdin
-// (Claude Code passes it via the PreToolUse hook mechanism) and validates
-// the file_path field against the configured delegation rules.
+// delegationTools is the set of tool names the orchestrator-guard (Layer 2)
+// intercepts. Unlike mutatingTools (used by the rules-engine pre-tool-use
+// hook, which never intercepts Bash — see its own doc comment), Bash IS
+// included here: the delegation guard evaluates Bash commands for redirects,
+// destructive commands, and inline scripts, exactly like the bash
+// enforce_delegation.sh it replaces (SPEC-069 D1/D5).
+var delegationTools = map[string]bool{
+	"Write":        true,
+	"Edit":         true,
+	"MultiEdit":    true,
+	"NotebookEdit": true,
+	"Bash":         true,
+}
+
+// runHookEnforceDelegation implements the "mneme hook enforce-delegation"
+// subcommand: mneme's orchestrator-guard (Layer 2 of the two-layer
+// enforcement model). This is an in-process Go port of
+// enforce_delegation.sh (SPEC-069) — the bash script is now a thin compat
+// shim that exec's this subcommand (see internal/install/hooks.go).
 //
-// The function loads the project config so that DelegationConfig overrides in
-// the project's config.toml are respected.
+// It reads the tool invocation JSON from r, short-circuits for subagents
+// (resolveCaller) and unrelated tools (delegationTools), then delegates the
+// actual decision to internal/enforcement via evaluateDelegation, which
+// injects an in-process OwnershipFunc closure over resolvePathOwnership
+// (SPEC-068) — no subprocess round-trip to "mneme hook path-owned" or
+// "mneme hook tokenize".
 //
-// Exit codes:
-//   - 0: allowed (delegation disabled, unrecognised tool, or path is safe)
-//   - 2: blocked — a human-readable message is printed to stdout so the agent
-//     sees it as the hook output
-func runHookEnforceDelegation() error {
-	// Deprecation warning: users should migrate to "mneme hook pre-tool-use"
-	// which reads rules from the DB rather than static config.
-	fmt.Fprintln(os.Stderr, `[mneme] WARNING: "mneme hook enforce-delegation" is deprecated. Use "mneme hook pre-tool-use" instead.`)
-	fmt.Fprintln(os.Stderr, `[mneme] Run "mneme install claude-code --reinstall-hooks" to update your settings.json.`)
+// On a block: prints the delegation message to errW, logs a best-effort
+// discovery memory (logBlockedEditDiscovery), and exits 2. Every other path —
+// subagent, unrelated tool, allowed path, or any fail-open branch inside
+// evaluateDelegation — returns nil (exit 0).
+func runHookEnforceDelegation(r io.Reader, errW io.Writer) error {
+	var input hookPreToolInput
+	if err := json.NewDecoder(r).Decode(&input); err != nil {
+		return nil // fail-open: empty/invalid stdin (e.g. io.EOF).
+	}
+
+	if input.resolveCaller() == rules.CallerSubagent {
+		return nil
+	}
+	if !delegationTools[input.ToolName] {
+		return nil
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil // fail-open: cannot resolve cwd.
+	}
+
+	decision := evaluateDelegation(input, cwd)
+	if !decision.Block {
+		return nil
+	}
+
+	printDelegationBlock(errW, decision)
+	logBlockedEditDiscovery(errW, saveBlockedEditDiscovery, input.ToolName, decision.Target, decision.Reason)
+	//nolint:gocritic // os.Exit(2) is the documented hook exit code for rejection
+	os.Exit(2)
+	return nil
+}
+
+// evaluateDelegation resolves config/project/manifest state once — mirroring
+// runHookPathOwned's own resolution — and delegates to
+// internal/enforcement's pure Evaluate* functions via an in-process
+// OwnershipFunc closure over resolvePathOwnership (SPEC-068), never a
+// subprocess. Any hard failure resolving the home directory, config, or the
+// manifest fails open (returns a zero enforcement.Decision, Block=false),
+// consistent with the rest of this hook family's fail-open philosophy
+// (D8/D9).
+func evaluateDelegation(input hookPreToolInput, cwd string) enforcement.Decision {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return enforcement.Decision{}
+	}
 
 	cfg, err := config.Load(config.DefaultPath())
 	if err != nil {
-		// Config unreadable — allow rather than block to avoid false positives.
-		return nil
+		return enforcement.Decision{}
 	}
 
-	if !cfg.Delegation.Enabled {
-		return nil
+	det := project.NewDetector(cwd)
+	slug, _ := det.DetectProject() // detection failure is non-fatal; slug stays ""
+
+	content, found, err := queryManifestContent(cfg.ProjectDBPath(slug))
+	if err != nil {
+		return enforcement.Decision{}
 	}
 
-	// Claude Code PreToolUse hooks receive JSON on stdin:
-	// {"tool_name": "Edit", "tool_input": {"file_path": "..."}}
-	var hookInput struct {
-		ToolName  string `json:"tool_name"`
-		ToolInput struct {
-			FilePath string `json:"file_path"`
-		} `json:"tool_input"`
-	}
-	if err := json.NewDecoder(os.Stdin).Decode(&hookInput); err != nil {
-		// Malformed input — allow to avoid breaking non-file tools.
-		return nil
+	own := func(target string) (bool, string) {
+		d := resolvePathOwnership(target, cwd, found, content)
+		return d.ExitCode == 2, d.Owner
 	}
 
-	// Only intercept file-mutating tools.
-	switch hookInput.ToolName {
-	case "Edit", "Write", "MultiEdit":
-		// proceed with path check
-	default:
-		return nil
+	if input.ToolName == "Bash" {
+		return enforcement.EvaluateBash(input.ToolInput.Command, home, own)
+	}
+	return enforcement.EvaluateFileTool(input.filePath(), home, own)
+}
+
+// printDelegationBlock writes the delegation-block message to w, mirroring
+// enforce_delegation.sh's block() function verbatim: reason, whitelist
+// reminder, and the delegate-to-a-subagent action line. When decision.Owner
+// names a real implementer role (neither "" nor "legacy"), the reason line is
+// annotated with "(delega a @<owner>)", matching check_target_or_block's
+// enrichment of the block reason in the bash implementation.
+func printDelegationBlock(w io.Writer, decision enforcement.Decision) {
+	reason := decision.Reason
+	if decision.Owner != "" && decision.Owner != "legacy" {
+		reason = fmt.Sprintf("%s (delega a @%s)", reason, decision.Owner)
+	}
+	fmt.Fprintln(w, "BLOQUEADO: El orquestador NO puede modificar archivos fuera de la whitelist.")
+	fmt.Fprintf(w, "Razón: %s\n", reason)
+	fmt.Fprintln(w, "Whitelist: .claude/**, ~/.claude/**, ~/.mneme/**, /tmp/**, CLAUDE.md, **/docs/*.md, .claudeignore")
+	fmt.Fprintln(w, "ACCIÓN: Delegá al subagente correspondiente (Agent tool con subagent_type=backend|frontend|architect|...).")
+	fmt.Fprintln(w, "Tu trabajo es coordinar y conversar, NO implementar código.")
+}
+
+// saveDiscoveryFunc persists a discovery memory. logBlockedEditDiscovery
+// takes this as a parameter (rather than calling initService directly) so
+// tests can inject a failing stub without touching a real database — see
+// AC8 ("a save failure must never change the exit code").
+type saveDiscoveryFunc func(ctx context.Context, req model.SaveRequest) (*model.SaveResponse, error)
+
+// saveBlockedEditDiscovery is the production saveDiscoveryFunc: it opens the
+// shared service via initService for the single Save call and cleans up
+// immediately after. Errors (including initService failing) are returned to
+// the caller, which treats them as best-effort and only logs a warning.
+func saveBlockedEditDiscovery(ctx context.Context, req model.SaveRequest) (*model.SaveResponse, error) {
+	svc, cleanup, err := initService()
+	if err != nil {
+		return nil, fmt.Errorf("enforce-delegation: log discovery: init service: %w", err)
+	}
+	defer cleanup()
+	return svc.Save(ctx, req)
+}
+
+// logBlockedEditDiscovery persists a best-effort discovery memory recording
+// the blocked edit attempt, porting enforce_delegation.sh's block() logging
+// call (mneme save --type discovery ...) to an in-process service.Save. A
+// failure (including save itself being nil-safe-guarded by the caller
+// wiring) is written to errW as a warning and never propagates — the
+// os.Exit(2) that already happened (or is about to happen) is the actual
+// enforcement action; logging is strictly secondary (R3).
+func logBlockedEditDiscovery(errW io.Writer, save saveDiscoveryFunc, tool, targetPath, reason string) {
+	displayTarget := targetPath
+	if displayTarget == "" {
+		displayTarget = "unknown"
+	}
+	basename := filepath.Base(displayTarget)
+
+	content := fmt.Sprintf(`## Blocked edit attempt
+
+**What:** Attempted %s on %s. Agent label: principal. Session: unknown.
+
+**Why:** Capability rule fired: principal is not in implementer allowlist [backend, frontend, bug-hunter]. Edit tools require implementer role.
+
+**Learned:** Pattern to watch: orchestrator attempted to edit directly instead of delegating. Likely cause: agent judged change "trivial" and bypassed SDD. Consider whether the task should have been routed via a lane classifier.
+
+**Reason (hook):** %s`, tool, displayTarget, reason)
+
+	req := model.SaveRequest{
+		Title:   fmt.Sprintf("Blocked edit: principal -> %s -> %s", tool, basename),
+		Content: content,
+		Type:    model.TypeDiscovery,
 	}
 
-	filePath := hookInput.ToolInput.FilePath
-	if filePath == "" {
-		return nil
+	if _, err := save(context.Background(), req); err != nil {
+		fmt.Fprintf(errW, "[mneme] enforce-delegation: log discovery: save failed: %v\n", err)
 	}
-
-	// Allowed paths override protected paths. Check them first.
-	// Patterns are matched against the base name of the path.
-	for _, pattern := range cfg.Delegation.AllowedPaths {
-		if matched, _ := filepath.Match(pattern, filepath.Base(filePath)); matched {
-			return nil
-		}
-		// Also allow exact prefix matches (e.g. "docs/").
-		if strings.HasPrefix(filePath, pattern) {
-			return nil
-		}
-	}
-
-	// Check protected path prefixes.
-	for _, prefix := range cfg.Delegation.ProtectedPaths {
-		if strings.HasPrefix(filePath, prefix) {
-			fmt.Fprintf(os.Stdout, "BLOCKED: Cannot edit %s — this is a protected path.\n", filePath)
-			fmt.Fprintf(os.Stdout, "Delegate this task to the appropriate agent (backend, frontend, etc.).\n")
-			//nolint:gocritic // os.Exit is correct here: hook exit code must be 2
-			os.Exit(2)
-		}
-	}
-
-	return nil
 }
 
 // sessionEndPrompt is the text printed by the session-end hook. It is designed
