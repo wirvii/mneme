@@ -734,7 +734,7 @@ mneme promote <id>            # explicitly share one memory regardless of type
 
 | Command | What it does |
 |---------|--------------|
-| `mneme-init` skill (invoke via the `mneme-init` skill, not a slash command) | Scan the project, seed mneme with foundational knowledge from CLAUDE.md, package.json, go.mod, etc., and offer the per-project subagent + team-memory grills. |
+| `/mneme-init` | Thin wrapper that invokes the `mneme-init` skill — the skill (not this command) is the single source of truth for the project-init workflow: scan the project, seed mneme with foundational knowledge from CLAUDE.md, package.json, go.mod, etc., and offer the per-project subagent + team-memory grills. |
 | `/grill-me` | Interview you relentlessly about a design, walking down every branch of the decision tree. |
 | `/hunt-bug` | Orchestrate the bug-hunter subagent against a bug report. |
 | `/bug-to-issue` | Convert a bug diagnosis into a spec via the architect. |

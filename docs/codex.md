@@ -92,7 +92,7 @@ future spec when the skills service is made agent-aware.
 | Operating manual | `~/.claude/CLAUDE.md` | `~/.codex/AGENTS.md` |
 | Agent profiles | `~/.claude/agents/*.md` | None (single-agent) |
 | Delegation hook | Yes (enforces roles) | None |
-| Slash commands | None (`mneme-init` is now a skill) | None (deprecated in Codex) |
+| Slash commands | `/mneme-init` (thin wrapper invoking the `mneme-init` skill) | None (deprecated in Codex) |
 | Skills path | `~/.claude/skills/` | `$HOME/.agents/skills/` |
 | Model assignments | Applied to agent profiles | Skipped (no profiles) |
 | Role model | Multi-agent (orchestrator + implementers) | Single-agent |
