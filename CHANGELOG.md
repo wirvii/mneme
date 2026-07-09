@@ -6,6 +6,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [v1.19.0] — 2026-07-09 — Fix: `mneme upgrade` provisions incoming-version assets (SPEC-067)
+
+### Fixed
+
+- **`mneme upgrade` now provisions agents with the INCOMING version's assets**
+  (SPEC-067): `postUpgradeHooks` re-executes the newly-written binary as a
+  subprocess (`mneme install <slug>`) instead of calling `install.Install`
+  in-process. Previously the in-process call ran with the code and embedded
+  assets of the OUTGOING binary (the running process can't reload code from
+  the file it just overwrote) — so an upgrade to v1.18.0 kept reinstalling
+  the old `/mneme-init` slash command and never installed the new
+  `mneme-init` skill. Non-fatal: a subprocess failure warns and suggests a
+  manual `mneme install <slug>`, timeout 120s; `mneme upgrade` always
+  finishes with "Done." regardless of the outcome.
+
+### Added / Changed
+
+- **`/mneme-init` restored as a thin slash-command wrapper** around the
+  `mneme-init` skill (Claude Code): invoking it now simply instructs the
+  agent to run the skill, instead of duplicating the old 5-phase logic.
+  Codex continues to use the skill directly (no slash command).
+
+### Upgrade note (IMPORTANT)
+
+This fix only protects upgrades **from v1.19.0 onward**. An installation
+already affected by the v1.18.0 bug must be repaired manually, once:
+`mneme install claude-code` + `rm ~/.claude/commands/mneme-init.md` +
+restart Claude Code.
+
 ## [v1.18.0] — 2026-07-08 — Per-project subagents + git-native team memory
 
 ### Added
