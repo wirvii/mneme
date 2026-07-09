@@ -37,7 +37,7 @@ Named concepts that memories reference. Each entity is unique within `(name, pro
 |------|-------------|---------|
 | `module` | Code package or module | `internal/store` |
 | `service` | Deployed service | `auth-service` |
-| `library` | External dependency | `mattn/go-sqlite3` |
+| `library` | External dependency | `modernc.org/sqlite` |
 | `concept` | Abstract concept or idea | `auth-model` |
 | `person` | Person or contributor | `juan` |
 | `pattern` | Design pattern | `repository-pattern` |

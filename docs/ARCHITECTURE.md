@@ -947,12 +947,12 @@ mneme rule test --tool Edit --path internal/store/memory.go
 
 | ID | Decision | Rationale | SPEC |
 |----|----------|-----------|------|
-| D001 | SQLite with CGO (`mattn/go-sqlite3`) | FTS5 is critical; no pure-Go driver supports it | -- |
+| D001 | SQLite pure-Go (`modernc.org/sqlite`) | FTS5 is critical; modernc.org/sqlite is a pure-Go transpilation of the SQLite engine with FTS5 compiled in by default, no CGO/C toolchain required. Superseded the `mattn/go-sqlite3` CGO driver in SPEC-070 to enable `go install` | SPEC-070 |
 | D002 | UUIDv7 for all IDs | Time-sortable, globally unique without coordination (RFC 9562) | -- |
 | D003 | No ORM -- raw SQL with `database/sql` | Full control, no abstraction leaks | -- |
 | D004 | Tests against real SQLite in-memory | DB is part of the unit under test; no mocks | -- |
 | D005 | `model/` has zero external deps | Leaf package, clean architecture boundary | -- |
-| D006 | Build tag `-tags fts5` mandatory | Prevents accidental builds without FTS5 | -- |
+| D006 | ~~Build tag `-tags fts5` mandatory~~ (superseded) | modernc.org/sqlite compiles FTS5 in by default; no build tag needed since SPEC-070 | SPEC-070 |
 | D009 | `SetMaxOpenConns(1)` in tests | Prevents deadlock with `:memory:` databases | -- |
 | D010 | Rows closed before secondary queries | Avoids SQLite lock contention in shared-cache mode | -- |
 

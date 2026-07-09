@@ -4,12 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Build, test, run
 
-All builds and tests **require CGO and the `fts5` build tag** (SQLite FTS5 full-text search is not optional). The `Makefile` is the canonical entrypoint:
+mneme is a pure-Go build — no CGO, no C compiler, no build tags. SQLite (with FTS5 compiled in by default) is provided by `modernc.org/sqlite`, a pure-Go transpilation of the SQLite engine. `go install github.com/wirvii/mneme/cmd/mneme@latest` works standalone; the `Makefile` is the canonical entrypoint for local development:
 
 ```bash
-make build         # CGO_ENABLED=1 go build -tags fts5 -o mneme ./cmd/mneme
-make test          # go test -tags fts5 ./...
-make test-race     # go test -tags fts5 -race ./...
+make build         # go build -o mneme ./cmd/mneme
+make test          # go test ./...
+make test-race     # go test -race ./...
 make install       # build + sudo cp to /usr/local/bin/
 make setup         # install + `mneme install claude-code` (configures agent profiles)
 make release-local # ldflags-stripped build with Version=local
@@ -18,13 +18,13 @@ make release-local # ldflags-stripped build with Version=local
 Run a single package or test:
 
 ```bash
-CGO_ENABLED=1 go test -tags fts5 ./internal/store/...
-CGO_ENABLED=1 go test -tags fts5 -run TestSaveMemory ./internal/store
+go test ./internal/store/...
+go test -run TestSaveMemory ./internal/store
 ```
 
 Linting must pass with **zero warnings**: `golangci-lint run`. `gofmt` and `goimports` are enforced. A `pre-push` hook lives at `.githooks/pre-push`.
 
-Module path is `github.com/juanftp/mneme`; entrypoint is `cmd/mneme`.
+Module path is `github.com/wirvii/mneme`; entrypoint is `cmd/mneme`.
 
 ## Architecture
 

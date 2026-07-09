@@ -4,6 +4,37 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased] — `go install` support: pure-Go driver + module path aligned (SPEC-070)
+
+### Changed
+
+- **`go install github.com/wirvii/mneme/cmd/mneme@latest` now works** — no
+  clone, no C toolchain, no flags. Two independent blockers are fixed
+  together (SPEC-070):
+  - **SQLite driver: `mattn/go-sqlite3` → `modernc.org/sqlite`** — a pure-Go
+    transpilation of the SQLite engine with FTS5 compiled in by default.
+    `internal/db`, `internal/codegraph/db.go` and
+    `internal/codegraph/probe.go` register the `"sqlite"` driver name and use
+    the modernc pragma DSN dialect (`_pragma=<name>(<val>)`); `mode=ro` is
+    unchanged. No data migration: the on-disk SQLite file format is identical
+    between drivers.
+  - **Module path aligned**: `go.mod` declared a `module` path that 404s on
+    GitHub and the Go proxy (a stale `juanftp` org reference) while the code
+    and releases live at `github.com/wirvii/mneme`. `go install` requires
+    them to match; the `module` directive and all internal imports now use
+    the real path.
+  - **Version resolution without ldflags**: `go install …@vX.Y.Z` does not
+    pass `-ldflags`, so `mneme version`/`mneme upgrade` now fall back to
+    `runtime/debug.ReadBuildInfo()` when `Version` is still the literal
+    `"dev"` default, resolving the real tag. Release builds keep injecting
+    the version via `-ldflags -X`, which always takes priority.
+- **CGO and `-tags fts5` dropped from build and CI** — `Makefile`,
+  `.github/workflows/release.yml`, and `.githooks/pre-push` no longer set
+  `CGO_ENABLED=1` or pass `-tags fts5`; none of it is needed with the
+  pure-Go driver.
+- `install.sh` (pre-built binary download) is unchanged and remains a
+  documented alternative to `go install`.
+
 ## [v1.21.0] — 2026-07-09 — Portable Go delegation hook (SPEC-069)
 
 ### Changed
@@ -963,6 +994,6 @@ to deploy the updated hook to `~/.claude/hooks/enforce_delegation.sh`.
   `mneme install claude-code`. SHA-256 checksum verification with automatic
   backup on update (SPEC-032).
 
-[v1.4.0]: https://github.com/juanftp/mneme/compare/v1.3.0...v1.4.0
-[v1.3.0]: https://github.com/juanftp/mneme/compare/v1.2.0...v1.3.0
-[v1.2.0]: https://github.com/juanftp/mneme/releases/tag/v1.2.0
+[v1.4.0]: https://github.com/wirvii/mneme/compare/v1.3.0...v1.4.0
+[v1.3.0]: https://github.com/wirvii/mneme/compare/v1.2.0...v1.3.0
+[v1.2.0]: https://github.com/wirvii/mneme/releases/tag/v1.2.0

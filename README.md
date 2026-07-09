@@ -76,7 +76,13 @@ mneme gives AI coding agents a brain that survives between sessions. It stores s
 ## Quickstart
 
 ```bash
-# 1. Install
+# 1. Install (recommended — requires Go 1.24+, no C compiler needed)
+go install github.com/wirvii/mneme/cmd/mneme@latest
+
+# Alternative: download a pre-built binary (no Go toolchain required)
+curl -sSL https://raw.githubusercontent.com/wirvii/mneme/main/install.sh | sh
+
+# Alternative: build from source
 git clone https://github.com/wirvii/mneme.git && cd mneme
 make install
 
@@ -523,13 +529,14 @@ See [docs/CONFIG.md](docs/CONFIG.md) for the full reference.
 
 ## Requirements
 
-- Go 1.24+
-- CGO-enabled C compiler (for SQLite FTS5)
-- Build tag: `-tags fts5`
+- Go 1.24+ (`go install github.com/wirvii/mneme/cmd/mneme@latest` is the
+  recommended install path — see [Quickstart](#quickstart))
+- No C compiler, no CGO, no build tags: SQLite (with FTS5) is provided by the
+  pure-Go `modernc.org/sqlite` driver.
 
 ```bash
-make build         # CGO_ENABLED=1 go build -tags fts5 -o mneme ./cmd/mneme
-make test          # go test -tags fts5 ./...
+make build         # go build -o mneme ./cmd/mneme
+make test          # go test ./...
 make install       # build + sudo cp to /usr/local/bin/
 make setup         # install + mneme install claude-code
 ```

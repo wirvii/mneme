@@ -166,7 +166,8 @@ VALUES
 	// bm25() is the FTS5 ranking function used by internal/store/search.go and
 	// internal/store/conflicts.go. Under modernc.org/sqlite this must remain
 	// available and produce a real (non-zero) score, exactly as it did under
-	// mattn/go-sqlite3 — this is the paridad-FTS5 guardrail called out by AC4.
+	// the previous CGO-based driver — this is the paridad-FTS5 guardrail
+	// called out by AC4.
 	var score float64
 	err = db.QueryRow(
 		`SELECT bm25(memories_fts) FROM memories_fts WHERE memories_fts MATCH 'test query'`,

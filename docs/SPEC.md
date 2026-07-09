@@ -82,7 +82,7 @@ Data flow (MCP request):
 
 1. **Single SQLite database per scope** -- `~/.mneme/global.db` for global/org memories, `~/.mneme/projects/{project-slug}.db` for project-specific memories. This avoids cross-project query contamination and makes backup/sync per-project.
 
-2. **CGO required** -- `mattn/go-sqlite3` with FTS5 and JSON1 extensions. Pure-Go SQLite alternatives do not support FTS5 reliably.
+2. **Pure-Go, no CGO** -- `modernc.org/sqlite` with FTS5 and JSON1 extensions compiled in by default. Enables `go install github.com/wirvii/mneme/cmd/mneme@latest` with no C toolchain (SPEC-070; superseded the CGO-only `mattn/go-sqlite3` driver).
 
 3. **Embeddings are optional** -- Phase 1 works with FTS5 only. Phase 2 adds vector search. The retrieval pipeline gracefully degrades when embeddings are unavailable.
 
@@ -337,7 +337,7 @@ internal/service --> internal/store, internal/model, internal/scoring, internal/
 internal/store --> internal/db, internal/model
 internal/scoring --> internal/model
 internal/embed --> internal/model
-internal/db --> (mattn/go-sqlite3)
+internal/db --> (modernc.org/sqlite)
 internal/model --> (no internal deps)
 ```
 
@@ -1666,7 +1666,7 @@ Migrations are embedded in the binary via `go:embed`.
 ## Appendix D: Dependencies
 
 ### Required (Phase 1)
-- `github.com/mattn/go-sqlite3` -- SQLite with CGO (FTS5, JSON1)
+- `modernc.org/sqlite` -- pure-Go SQLite, no CGO (FTS5, JSON1 compiled in by default)
 - `github.com/gofrs/uuid/v5` -- UUIDv7 generation
 - `github.com/spf13/cobra` -- CLI framework
 - `github.com/pelletier/go-toml/v2` -- TOML config parsing

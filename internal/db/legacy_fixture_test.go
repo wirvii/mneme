@@ -9,12 +9,12 @@ import (
 // written by the previous driver generation is opened and queried correctly
 // by the modernc.org/sqlite driver, without recreating the schema or
 // erroring. testdata/legacy-driver-fixture.db was produced with the system
-// sqlite3 CLI (the same reference SQLite C engine that mattn/go-sqlite3
-// binds to via CGO) by replaying every migration file in
-// internal/db/migrations exactly as migrate() would, then inserting one
-// memories row — reproducing the on-disk state a pre-modernc binary would
-// have left behind. The file format is standard SQLite, identical across
-// both drivers, so no data migration is required (D1/AC5).
+// sqlite3 CLI (the same reference SQLite C engine the previous CGO-based
+// driver bound to) by replaying every migration file in internal/db/migrations
+// exactly as migrate() would, then inserting one memories row — reproducing
+// the on-disk state a pre-modernc binary would have left behind. The file
+// format is standard SQLite, identical across both drivers, so no data
+// migration is required (D1/AC5).
 func TestLegacyFixture_OpensWithModernc(t *testing.T) {
 	fixture := filepath.Join("testdata", "legacy-driver-fixture.db")
 

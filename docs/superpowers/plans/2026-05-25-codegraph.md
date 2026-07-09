@@ -853,7 +853,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/juanftp/mneme/internal/store"
+	"github.com/wirvii/mneme/internal/store"
 )
 
 // MemoryService orchestrates memory operations.
@@ -1360,7 +1360,7 @@ func TestCodeGraphService_Status(t *testing.T) {
 // internal/service/codegraph.go
 package service
 
-import "github.com/juanftp/mneme/internal/codegraph"
+import "github.com/wirvii/mneme/internal/codegraph"
 
 // CodeGraphService orchestrates code graph operations.
 type CodeGraphService struct {
