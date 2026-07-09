@@ -123,6 +123,17 @@ func topicKeyToRelPath(key string) string {
 	return strings.Join(sanitized, "/")
 }
 
+// UUIDPath returns the flat, topic_key-independent vault-relative path used by
+// PathModeUUID: notes/<uuid>.md. Every memory gets its own file keyed only by
+// its immutable ID, so concurrent creations by different team members can
+// never collide at the git level (SPEC-053 D1) — only edits to the SAME
+// memory can conflict, and git resolves that the normal way. Unlike
+// noTopicPath, the full UUID is used (not truncated) since collisions here
+// would mean two distinct memories sharing an ID, which cannot happen.
+func UUIDPath(id string) string {
+	return filepath.Join("notes", id+".md")
+}
+
 // noTopicPath returns the vault-relative path for a memory with no topic_key.
 // Uses the first 8 characters of the UUIDv7 ID to keep filenames short while
 // avoiding practical collisions (32 bits of entropy, time-prefix guarantees
