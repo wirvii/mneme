@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased] — `go install` support: pure-Go driver + module path aligned (SPEC-070)
+## [v1.22.0] — 2026-07-09 — `go install` support: pure-Go driver + module path aligned (SPEC-070)
 
 ### Changed
 
