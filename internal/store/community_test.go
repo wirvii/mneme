@@ -518,6 +518,48 @@ func TestStore_GetMemoriesByEntityIDs_Basic(t *testing.T) {
 	}
 }
 
+// TestStore_GetMemoriesByEntityIDs_SharedAuthor verifies that
+// GetMemoriesByEntityIDs' SELECT includes the shared and author columns
+// (SPEC-061 SS-A: all memory scan sites must return them).
+func TestStore_GetMemoriesByEntityIDs_SharedAuthor(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	proj := "proj-get-by-ent-shared-author"
+
+	created, err := s.Create(ctx, &model.Memory{
+		Type:    model.TypeDiscovery,
+		Scope:   model.ScopeProject,
+		Title:   "shared memory",
+		Content: "content",
+		Project: proj,
+		Shared:  1,
+		Author:  "Jane Doe <jane@example.com>",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	ent := insertEntity(t, s, proj)
+	if err := s.LinkMemoryEntity(ctx, created.ID, ent, "mentions"); err != nil {
+		t.Fatalf("LinkMemoryEntity: %v", err)
+	}
+
+	result, err := s.GetMemoriesByEntityIDs(ctx, []string{ent}, proj)
+	if err != nil {
+		t.Fatalf("GetMemoriesByEntityIDs: %v", err)
+	}
+	if len(result) != 1 {
+		t.Fatalf("expected 1 memory, got %d", len(result))
+	}
+	if result[0].Shared != 1 {
+		t.Errorf("Shared: got %d, want 1", result[0].Shared)
+	}
+	if result[0].Author != "Jane Doe <jane@example.com>" {
+		t.Errorf("Author: got %q, want %q", result[0].Author, "Jane Doe <jane@example.com>")
+	}
+}
+
 // TestStore_GetMemoriesByEntityIDs_ExcludesSynthesis verifies that synthesis
 // memories are excluded even when linked to queried entities.
 func TestStore_GetMemoriesByEntityIDs_ExcludesSynthesis(t *testing.T) {

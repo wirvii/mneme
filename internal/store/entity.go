@@ -637,7 +637,7 @@ func (s *MemoryStore) ListMemoriesInRange(ctx context.Context, from, to time.Tim
 		       session_id, created_by, created_at, updated_at,
 		       importance, confidence, access_count, last_accessed,
 		       decay_rate, revision_count, superseded_by, deleted_at,
-		       applies_to, severity
+		       applies_to, severity, shared, author
 		FROM memories
 		WHERE %s
 		ORDER BY created_at ASC
@@ -906,7 +906,7 @@ func (s *MemoryStore) ListMemoriesWithoutEntities(ctx context.Context, project s
 		       m.session_id, m.created_by, m.created_at, m.updated_at,
 		       m.importance, m.confidence, m.access_count, m.last_accessed,
 		       m.decay_rate, m.revision_count, m.superseded_by, m.deleted_at,
-		       m.applies_to, m.severity
+		       m.applies_to, m.severity, m.shared, m.author
 		FROM memories m
 		LEFT JOIN memory_entities me ON me.memory_id = m.id
 		WHERE %s

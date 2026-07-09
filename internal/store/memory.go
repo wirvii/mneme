@@ -52,13 +52,13 @@ func (s *MemoryStore) Create(ctx context.Context, m *model.Memory) (*model.Memor
 			session_id, created_by, created_at, updated_at,
 			importance, confidence, access_count, last_accessed,
 			decay_rate, revision_count, superseded_by, deleted_at,
-			applies_to, severity
+			applies_to, severity, shared, author
 		) VALUES (
 			?, ?, ?, ?, ?, ?, ?,
 			?, ?, ?, ?,
 			?, ?, ?, ?,
 			?, ?, ?, ?,
-			?, ?
+			?, ?, ?, ?
 		)`
 
 	var topicKey, project, sessionID, createdBy, supersededBy sql.NullString
@@ -91,7 +91,7 @@ func (s *MemoryStore) Create(ctx context.Context, m *model.Memory) (*model.Memor
 		m.UpdatedAt.Format(time.RFC3339Nano),
 		m.Importance, m.Confidence, m.AccessCount, lastAccessed,
 		m.DecayRate, m.RevisionCount, supersededBy, deletedAt,
-		appliesTo, string(m.Severity),
+		appliesTo, string(m.Severity), m.Shared, m.Author,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: create memory: insert: %w", err)
@@ -113,7 +113,7 @@ func (s *MemoryStore) Get(ctx context.Context, id string) (*model.Memory, error)
 		       session_id, created_by, created_at, updated_at,
 		       importance, confidence, access_count, last_accessed,
 		       decay_rate, revision_count, superseded_by, deleted_at,
-		       applies_to, severity
+		       applies_to, severity, shared, author
 		FROM memories
 		WHERE id = ? AND deleted_at IS NULL`
 
@@ -405,7 +405,7 @@ func (s *MemoryStore) List(ctx context.Context, opts ListOptions) ([]*model.Memo
 		       session_id, created_by, created_at, updated_at,
 		       importance, confidence, access_count, last_accessed,
 		       decay_rate, revision_count, superseded_by, deleted_at,
-		       applies_to, severity
+		       applies_to, severity, shared, author
 		FROM memories
 		WHERE %s
 		ORDER BY %s
@@ -598,7 +598,7 @@ func (s *MemoryStore) GetByIDPrefix(ctx context.Context, prefix string) (*model.
 		       session_id, created_by, created_at, updated_at,
 		       importance, confidence, access_count, last_accessed,
 		       decay_rate, revision_count, superseded_by, deleted_at,
-		       applies_to, severity
+		       applies_to, severity, shared, author
 		FROM memories
 		WHERE REPLACE(id, '-', '') LIKE ? AND deleted_at IS NULL
 		LIMIT 1`
@@ -627,7 +627,7 @@ func (s *MemoryStore) GetByTopicKey(ctx context.Context, topicKey, project strin
 		       session_id, created_by, created_at, updated_at,
 		       importance, confidence, access_count, last_accessed,
 		       decay_rate, revision_count, superseded_by, deleted_at,
-		       applies_to, severity
+		       applies_to, severity, shared, author
 		FROM memories
 		WHERE topic_key = ? AND project IS ? AND deleted_at IS NULL
 		LIMIT 1`
@@ -693,12 +693,12 @@ func scanMemory(row *sql.Row) (*model.Memory, error) {
 }
 
 // scanMemoryRow scans either a *sql.Row or *sql.Rows into a *model.Memory.
-// The SELECT must include 21 columns in this exact order:
+// The SELECT must include 23 columns in this exact order:
 // id, type, scope, title, content, topic_key, project,
 // session_id, created_by, created_at, updated_at,
 // importance, confidence, access_count, last_accessed,
 // decay_rate, revision_count, superseded_by, deleted_at,
-// applies_to, severity.
+// applies_to, severity, shared, author.
 func scanMemoryRow(row scannerRow) (*model.Memory, error) {
 	var (
 		m            model.Memory
@@ -722,7 +722,7 @@ func scanMemoryRow(row scannerRow) (*model.Memory, error) {
 		&createdAt, &updatedAt,
 		&m.Importance, &m.Confidence, &m.AccessCount, &lastAccessed,
 		&m.DecayRate, &m.RevisionCount, &supersededBy, &deletedAt,
-		&appliesTo, &severityStr,
+		&appliesTo, &severityStr, &m.Shared, &m.Author,
 	)
 	if err != nil {
 		return nil, err

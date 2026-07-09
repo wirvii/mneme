@@ -246,7 +246,7 @@ func (s *MemoryStore) ListMemoriesWithoutEmbedding(ctx context.Context, project 
 		       m.session_id, m.created_by, m.created_at, m.updated_at,
 		       m.importance, m.confidence, m.access_count, m.last_accessed,
 		       m.decay_rate, m.revision_count, m.superseded_by, m.deleted_at,
-		       m.applies_to, m.severity
+		       m.applies_to, m.severity, m.shared, m.author
 		FROM memories m
 		LEFT JOIN embeddings e ON e.memory_id = m.id
 		WHERE %s

@@ -868,6 +868,43 @@ func TestListMemoriesInRange(t *testing.T) {
 	}
 }
 
+// TestListMemoriesInRange_SharedAuthor verifies that ListMemoriesInRange's
+// SELECT includes the shared and author columns (SPEC-061 SS-A).
+func TestListMemoriesInRange_SharedAuthor(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	project := "range-shared-author"
+	if _, err := s.Create(ctx, &model.Memory{
+		Type:    model.TypeDiscovery,
+		Scope:   model.ScopeProject,
+		Title:   "shared range memory",
+		Content: "content",
+		Project: project,
+		Shared:  1,
+		Author:  "Jane Doe <jane@example.com>",
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	from := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	memories, err := s.ListMemoriesInRange(ctx, from, to, project, 0)
+	if err != nil {
+		t.Fatalf("ListMemoriesInRange: %v", err)
+	}
+	if len(memories) != 1 {
+		t.Fatalf("expected 1 memory, got %d", len(memories))
+	}
+	if memories[0].Shared != 1 {
+		t.Errorf("Shared: got %d, want 1", memories[0].Shared)
+	}
+	if memories[0].Author != "Jane Doe <jane@example.com>" {
+		t.Errorf("Author: got %q, want %q", memories[0].Author, "Jane Doe <jane@example.com>")
+	}
+}
+
 // ─── GetStrongRelations tests ─────────────────────────────────────────────────
 
 // TestGetStrongRelations_AboveThreshold verifies that only relations whose
@@ -1399,6 +1436,41 @@ func TestStore_ListMemoriesWithoutEntities_Basic(t *testing.T) {
 	ids := map[string]bool{result[0].ID: true, result[1].ID: true}
 	if !ids[m2.ID] || !ids[m3.ID] {
 		t.Errorf("expected m2 and m3 in result, got IDs %v", ids)
+	}
+}
+
+// TestListMemoriesWithoutEntities_SharedAuthor verifies that
+// ListMemoriesWithoutEntities' SELECT includes the shared and author columns
+// (SPEC-061 SS-A).
+func TestListMemoriesWithoutEntities_SharedAuthor(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	const project = "lmwe-shared-author"
+	if _, err := s.Create(ctx, &model.Memory{
+		Type:    model.TypeDiscovery,
+		Scope:   model.ScopeProject,
+		Title:   "no-entity-shared",
+		Content: "content",
+		Project: project,
+		Shared:  2,
+		Author:  "John Doe <john@example.com>",
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	result, err := s.ListMemoriesWithoutEntities(ctx, project, 0)
+	if err != nil {
+		t.Fatalf("ListMemoriesWithoutEntities: %v", err)
+	}
+	if len(result) != 1 {
+		t.Fatalf("expected 1 memory, got %d", len(result))
+	}
+	if result[0].Shared != 2 {
+		t.Errorf("Shared: got %d, want 2", result[0].Shared)
+	}
+	if result[0].Author != "John Doe <john@example.com>" {
+		t.Errorf("Author: got %q, want %q", result[0].Author, "John Doe <john@example.com>")
 	}
 }
 
