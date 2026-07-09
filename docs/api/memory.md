@@ -1,8 +1,9 @@
 # API Reference — Memory Tools (`mem_*`)
 
-14 MCP tools over JSON-RPC 2.0 stdio (`mneme mcp`). Concept guide:
+15 MCP tools over JSON-RPC 2.0 stdio (`mneme mcp`). Concept guide:
 [docs/GRAPH.md](../GRAPH.md) (graph/relations), [docs/RULES.md](../RULES.md)
-(rule type, `applies_to`, severity). Index: [docs/API.md](../API.md).
+(rule type, `applies_to`, severity), [docs/team-memory.md](../team-memory.md)
+(`mem_promote`, git-native shared vault). Index: [docs/API.md](../API.md).
 
 All responses are returned as a single JSON-encoded `text` content block. See
 [MCP Error Codes](#error-codes) at the bottom for the shared error code table.
@@ -298,6 +299,28 @@ drops to near zero on the next scoring pass.
 **Returns:** `{"id": "019de100-...", "status": "marked_for_decay"}`
 
 **Errors:** `-32000` not found, `-32602` missing `id`.
+
+---
+
+## mem_promote
+
+Mark a memory as team-curated (`shared=2`) and persist it in the database.
+Materializes it to the shared git vault immediately when
+[team-memory](../team-memory.md) is active for the current repository.
+Idempotent — promoting an already-promoted memory is a no-op beyond
+re-confirming `shared=2`.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `id` | string | yes | UUIDv7 of the memory to promote |
+
+**Returns:** `{"id": "019de100-...", "shared": 2, "author": "Jane Dev <jane@example.com>", "status": "promoted"}`
+
+**Errors:** `-32602` missing `id` or unknown `id` (unlike other tools, an
+unresolved ID here is reported as invalid params, not `-32000` — the caller
+supplied a bad argument rather than a query that legitimately found nothing).
+
+**Example:** `mneme promote 019de100-abcd-7fff-8000-000000000001`
 
 ---
 

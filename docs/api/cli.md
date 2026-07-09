@@ -1,6 +1,6 @@
 # API Reference — CLI Commands
 
-35 top-level commands (`./mneme --help` and `./mneme <cmd> --help` are the
+36 top-level commands (`./mneme --help` and `./mneme <cmd> --help` are the
 source of truth; this reference mirrors them). Global flags apply to every
 subcommand:
 
@@ -104,6 +104,18 @@ mneme forget <id> --reason "API changed in v2"
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--reason` | | Reason (informational) |
+
+### mneme promote
+
+Mark a memory as team-curated (`shared=2`, SPEC-053 D8) regardless of its
+type. When [team-memory](../team-memory.md) is active for the current
+repository, also materializes it to the shared vault immediately. Idempotent.
+
+```bash
+mneme promote 019de100-abcd-7fff-8000-000000000001
+```
+
+No flags besides the required positional `<id>`.
 
 ### mneme status
 
@@ -761,6 +773,41 @@ mneme subagents manifest-list --json
 
 ---
 
+## Team Memory
+
+Git-native shared knowledge (SPEC-053, EPIC team-memory) — see
+[docs/team-memory.md](../team-memory.md) for the full model (what gets
+shared, write-through, import hooks, conflicts, privacy).
+
+### mneme team-memory enable
+
+Single opt-in activation command: creates `.mneme/shared/` with its marker if
+absent, bakes `shared=1` onto pre-existing durable memories and exports them,
+installs the import hooks (same as `hooks install`), and always prints a
+privacy notice. Idempotent.
+
+```bash
+mneme team-memory enable
+```
+
+No flags.
+
+### mneme team-memory hooks install / remove
+
+Installs or removes the `post-merge`/`post-checkout` git hooks that import
+`.mneme/shared/` into the local database in the background after every
+pull/checkout. Appends/strips only the mneme-managed block; other hook
+content is preserved. Idempotent.
+
+```bash
+mneme team-memory hooks install
+mneme team-memory hooks remove
+```
+
+No flags.
+
+---
+
 ## Models
 
 ### mneme model list
@@ -1091,3 +1138,5 @@ mneme completion zsh > ~/.zsh/completions/_mneme
 - [docs/skills.md](../skills.md) — `mneme skills` SKILL.md format
 - [docs/models.md](../models.md) — `mneme model` apply-on-install
 - [docs/conflicts.md](../conflicts.md) — `mneme conflicts` two-phase workflow
+- [docs/enforcement-model.md](../enforcement-model.md) — `mneme subagents`/`mneme delegation-hook`, per-project subagent generation
+- [docs/team-memory.md](../team-memory.md) — `mneme team-memory`/`mneme promote`, git-native shared vault
