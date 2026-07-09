@@ -176,6 +176,50 @@ func TestSubagentsCompose_RequiresExactlyOneAreasSource(t *testing.T) {
 	}
 }
 
+// TestSubagentsCompose_UnknownEngine verifies that --areas-prompt with an
+// --engine value other than "claude"/"codex" is rejected before any
+// subprocess is attempted.
+func TestSubagentsCompose_UnknownEngine(t *testing.T) {
+	dataDir := t.TempDir()
+
+	_, _, err := runSubagentsCmd(t, dataDir, "test-subagents-compose-badengine",
+		"subagents", "compose", "--role", "backend", "--archetype", "backend",
+		"--areas-prompt", "draft something", "--engine", "banana")
+	if err == nil {
+		t.Fatal("expected error for unknown --engine value")
+	}
+	if !strings.Contains(err.Error(), `unknown --engine "banana"`) {
+		t.Errorf("expected error to mention unknown --engine, got: %v", err)
+	}
+}
+
+// TestSubagentsCompose_EngineBinaryMissingOnPATH exercises the CLIEngine
+// subprocess path end-to-end (resolveSubagentCLIEngine -> resolveAreasContent
+// -> engine.Available()) without depending on claude/codex actually being
+// installed: PATH is overridden to an empty temp dir (same pattern as
+// internal/conflicts/judge_test.go's TestNewJudgeConfig_CLIAbsent), so
+// exec.LookPath deterministically fails in any environment, including CI.
+func TestSubagentsCompose_EngineBinaryMissingOnPATH(t *testing.T) {
+	for _, engine := range []string{"claude", "codex"} {
+		t.Run(engine, func(t *testing.T) {
+			empty := t.TempDir()
+			t.Setenv("PATH", empty)
+
+			dataDir := t.TempDir()
+			_, _, err := runSubagentsCmd(t, dataDir, "test-subagents-compose-missing-"+engine,
+				"subagents", "compose", "--role", "backend", "--archetype", "backend",
+				"--areas-prompt", "draft something", "--engine", engine)
+			if err == nil {
+				t.Fatalf("expected error when %s is not on PATH", engine)
+			}
+			wantMsg := engine + " CLI not found on PATH"
+			if !strings.Contains(err.Error(), wantMsg) {
+				t.Errorf("expected error to contain %q, got: %v", wantMsg, err)
+			}
+		})
+	}
+}
+
 func TestSubagentsCompose_RejectsInvalidRoleName(t *testing.T) {
 	dataDir := t.TempDir()
 	areasFile := filepath.Join(t.TempDir(), "areas.md")
