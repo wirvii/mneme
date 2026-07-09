@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime/debug"
 	"strings"
 
@@ -42,9 +43,16 @@ func init() {
 //   - current is exactly "dev" (ldflags already won otherwise — release
 //     builds must always take priority over build-info, per SPEC-070 AC11).
 //   - readBuildInfo succeeds and returns ok=true.
-//   - bi.Main.Version is neither empty nor the placeholder Go uses for
-//     non-tagged builds ("(devel)", e.g. `go run`/`go build` without a
-//     version tag), so a local development build still reports "dev".
+//   - bi.Main.Version is a clean, human-published semver tag per
+//     isCleanSemverTag — i.e. a real `go install …@vX.Y.Z`, not a local
+//     `go run`/`go build` from within the module's own working tree. Go's
+//     automatic VCS stamping (default since Go 1.18) embeds a real-looking
+//     Main.Version for those local builds too — a pseudo-version like
+//     "v1.21.1-0.20260709120000-abcdef123456", optionally suffixed
+//     "+dirty" — which is NOT "(devel)" but must still be treated as "dev":
+//     it is not a tag anyone published, and letting it through would make
+//     runUpgrade's `Version == "dev"` guard stop protecting local builds
+//     from attempting a self-update against a non-semver "version".
 //
 // When those hold, the returned version has its leading "v" stripped —
 // mneme's version strings are stored without it everywhere else (ldflags
@@ -59,11 +67,46 @@ func resolveVersionFromBuildInfo(current string, readBuildInfo func() (*debug.Bu
 		return current
 	}
 
-	if bi.Main.Version == "" || bi.Main.Version == "(devel)" {
+	if !isCleanSemverTag(bi.Main.Version) {
 		return current
 	}
 
 	return strings.TrimPrefix(bi.Main.Version, "v")
+}
+
+// pseudoVersionSuffix matches the trailing "<14-digit-timestamp>-<12-hex-hash>"
+// block that Go's module pseudo-versions always end with, regardless of which
+// of the three pseudo-version forms produced them (see
+// https://go.dev/ref/mod#pseudo-versions) — e.g. both
+// "v1.0.0-20260709120000-abcdef123456" (no earlier tag) and
+// "v1.21.1-0.20260709120000-abcdef123456" (chronologically after vX.Y.Z)
+// match, since both end in that exact shape.
+var pseudoVersionSuffix = regexp.MustCompile(`\d{14}-[0-9a-fA-F]{12}$`)
+
+// cleanSemverTag matches a plain "vX.Y.Z" or "vX.Y.Z-prerelease" string —
+// the shape of a real, human-published git tag such as "v1.22.0" or
+// "v1.22.0-rc.1". It intentionally excludes "+" (build metadata) since the
+// char class never includes it.
+var cleanSemverTag = regexp.MustCompile(`^v\d+\.\d+\.\d+(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?$`)
+
+// isCleanSemverTag reports whether v is a real, human-published git tag —
+// i.e. the Main.Version Go's build info reports for a `go install …@vX.Y.Z`
+// build — as opposed to anything Go's automatic VCS stamping synthesizes for
+// a local build from within the module's own working tree ("(devel)", a
+// pseudo-version, or a pseudo-version/tag with "+dirty" build metadata).
+func isCleanSemverTag(v string) bool {
+	if v == "" || v == "(devel)" {
+		return false
+	}
+	if strings.Contains(v, "+") {
+		// Build metadata — most commonly "+dirty", meaning the working tree
+		// had uncommitted changes when built. Never a published release.
+		return false
+	}
+	if pseudoVersionSuffix.MatchString(v) {
+		return false
+	}
+	return cleanSemverTag.MatchString(v)
 }
 
 // Global flags — populated by cobra's flag binding before any RunE is called.

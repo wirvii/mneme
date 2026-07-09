@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"testing"
 )
@@ -158,5 +159,51 @@ func TestRunUpgrade_PostUpgradeFailure_StillPrintsDone(t *testing.T) {
 
 	if !strings.Contains(w.String(), "Done. mneme upgraded to v9.9.9.") {
 		t.Errorf("expected the Done line to still print after a postUpgradeHooks failure, got: %s", w.String())
+	}
+}
+
+// TestRunUpgrade_RefusesDevBuilds covers the QA-flagged regression risk for
+// SPEC-070: runUpgrade's `Version == "dev"` guard must still refuse to
+// self-update — before making any network call — both for the literal "dev"
+// default AND for the case that motivated the fix, a local build whose
+// resolveVersionFromBuildInfo fallback correctly kept Version at "dev"
+// because Go's build info reported a VCS pseudo-version (see
+// TestResolveVersionFromBuildInfo's pseudo-version cases and
+// TestIsCleanSemverTag in root_test.go — this test closes the loop by
+// asserting the guard those functions feed actually fires).
+func TestRunUpgrade_RefusesDevBuilds(t *testing.T) {
+	original := Version
+	t.Cleanup(func() { Version = original })
+
+	// Case 1: the literal "dev" default (no build-info resolution ran, or it
+	// legitimately found nothing to resolve).
+	Version = "dev"
+	var w1 bytes.Buffer
+	err := runUpgrade(&w1, false)
+	if err == nil {
+		t.Fatal("runUpgrade with Version=\"dev\" must return an error, got nil")
+	}
+	if !strings.Contains(err.Error(), "cannot upgrade a development build") {
+		t.Errorf("unexpected error message: %v", err)
+	}
+
+	// Case 2: same outcome after routing a pseudo-version through
+	// resolveVersionFromBuildInfo, exactly as init() does — this is the
+	// regression QA caught: before the fix, a pseudo-version would have been
+	// assigned to Version (since it is not "(devel)"), silently defeating
+	// this guard.
+	Version = resolveVersionFromBuildInfo("dev", func() (*debug.BuildInfo, bool) {
+		return &debug.BuildInfo{Main: debug.Module{Version: "v1.21.1-0.20260709120000-abcdef123456+dirty"}}, true
+	})
+	if Version != "dev" {
+		t.Fatalf("precondition failed: resolveVersionFromBuildInfo should have kept \"dev\" for a dirty pseudo-version, got %q", Version)
+	}
+	var w2 bytes.Buffer
+	err = runUpgrade(&w2, false)
+	if err == nil {
+		t.Fatal("runUpgrade after a dirty-pseudo-version build must still return an error, got nil")
+	}
+	if !strings.Contains(err.Error(), "cannot upgrade a development build") {
+		t.Errorf("unexpected error message: %v", err)
 	}
 }
