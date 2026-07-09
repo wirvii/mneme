@@ -97,6 +97,9 @@ func TestImportFromShared_CreatesAndPreservesSharedAuthor(t *testing.T) {
 	}
 
 	a := findByTopicKey(t, svc, ctx, "test/project", "team/decision-a")
+	if a.ID != "01938f1b-abcd-7abc-8def-000000000001" {
+		t.Errorf("decision-a ID = %q, want the frontmatter id preserved (SPEC-053 D1)", a.ID)
+	}
 	if a.Shared != 1 {
 		t.Errorf("decision-a Shared = %d, want 1 (from frontmatter)", a.Shared)
 	}
@@ -141,6 +144,62 @@ func TestImportFromShared_NeverRematerializes(t *testing.T) {
 	}
 	if len(entries) != 1 {
 		t.Errorf("expected exactly 1 file under notes/ after import (no re-materialization), found %d: %v", len(entries), entries)
+	}
+}
+
+// TestImportFromShared_RerunDoesNotDuplicate_NoTopicKey is the regression
+// test for the QA-flagged C1 defect: a peer's note WITHOUT a topic_key must
+// not duplicate on a second import run. Before the fix, a note not found
+// locally by id was always routed through Save, which assigns a fresh
+// UUIDv7 on every Create — so the second run's lookup by the note's
+// original fm.ID would still fail (the locally-created row has a DIFFERENT
+// id), producing a second row via Save's topic_key-less Upsert-Create path.
+// Preserving fm.ID via store.CreateWithID makes the second run's lookup by
+// id succeed, so it correctly resolves to "skipped" (or "updated") instead
+// of creating a duplicate.
+func TestImportFromShared_RerunDoesNotDuplicate_NoTopicKey(t *testing.T) {
+	svc, repoDir := newRepoTestService(t, true)
+	ctx := context.Background()
+
+	const noteID = "01938f1b-abcd-7abc-8def-0000000000aa"
+	notesDir := filepath.Join(repoDir, ".mneme", "shared", "notes")
+	writeSharedNote(t, notesDir, noteID, "", // no topic_key — the defect's exact trigger condition
+		"Peer note without a topic key", "This must not duplicate on re-import",
+		"1", "Heidi <heidi@example.com>", time.Now().UTC())
+
+	first, err := svc.ImportFromShared(ctx, repoDir)
+	if err != nil {
+		t.Fatalf("first ImportFromShared: %v", err)
+	}
+	if first.Created != 1 {
+		t.Fatalf("first run Created: got %d, want 1", first.Created)
+	}
+
+	second, err := svc.ImportFromShared(ctx, repoDir)
+	if err != nil {
+		t.Fatalf("second ImportFromShared: %v", err)
+	}
+	if second.Created != 0 {
+		t.Errorf("second run Created: got %d, want 0 (must not duplicate)", second.Created)
+	}
+
+	mems, err := svc.List(ctx, store.ListOptions{Project: "test/project", Limit: 100})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	matches := 0
+	var found *model.Memory
+	for _, m := range mems {
+		if m.ID == noteID {
+			matches++
+			found = m
+		}
+	}
+	if matches != 1 {
+		t.Fatalf("expected exactly 1 local memory with id %s after two import runs, found %d", noteID, matches)
+	}
+	if found.Content != "This must not duplicate on re-import" {
+		t.Errorf("unexpected content: %q", found.Content)
 	}
 }
 

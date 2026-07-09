@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/juanftp/mneme/internal/model"
 	"github.com/juanftp/mneme/internal/vault"
 )
 
@@ -149,11 +148,19 @@ func (svc *MemoryService) ImportFromShared(ctx context.Context, repoRoot string)
 }
 
 // importSharedNote resolves the conflict for a single parsed vault note and
-// applies it via the existing Save/Update service methods (ctx is expected
-// to already carry the suppress-materialize marker). It always finishes by
-// forcing the memory's shared/author columns to match the frontmatter
-// exactly, overriding whatever Save/Update's own team-memory bake logic
-// computed (SPEC-053 D5/D7).
+// applies it, always finishing by forcing the memory's shared/author
+// columns to match the frontmatter exactly, overriding whatever the
+// team-memory bake logic would otherwise compute (SPEC-053 D5/D7).
+//
+// Critically, a note not yet present locally is created via
+// store.CreateWithID, preserving fm.ID rather than letting the store assign
+// a fresh UUIDv7. This is required by the vault's one-file-per-UUID design
+// (SPEC-053 D1): every peer must converge on the SAME id for the same piece
+// of shared knowledge, both so concurrent edits merge correctly at the git
+// level and so a later re-import of the same note is recognized by id
+// alone — without depending on an optional topic_key. Before this fix,
+// Save's fresh-id Create meant a note without a topic_key would duplicate
+// on every subsequent post-merge/post-checkout run.
 //
 // Returns the id of the affected memory, the action taken ("created",
 // "updated", or "skipped"), and any error. A note without a syntactically
@@ -189,24 +196,37 @@ func (svc *MemoryService) importSharedNote(ctx context.Context, note *vault.Pars
 		return fm.ID, "updated", nil
 	}
 
-	// Not found locally by id. The public store API always assigns a fresh
-	// UUIDv7 on Create — this is a pre-existing, accepted limitation shared
-	// with the local vault importer and the JSONL sync importer (neither
-	// preserves a caller-supplied id). Save's built-in upsert-by-topic_key
-	// dedups this on every subsequent import when the note carries a
-	// topic_key (the common case for durable, auto-shared memory types).
+	// Not found locally by id — create it, preserving fm.ID (see doc comment
+	// above). validateAndBuildMemory applies the exact same validation and
+	// defaulting rules service.Save uses, so imported notes are held to the
+	// same bar (required title/content, valid type/scope, rule invariants).
 	saveReq := fm.ToSaveRequest(note.Body)
-	resp, saveErr := svc.Save(ctx, saveReq)
-	if saveErr != nil {
-		return "", "", saveErr
+	m, buildErr := svc.validateAndBuildMemory(&saveReq)
+	if buildErr != nil {
+		return "", "", buildErr
+	}
+	m.ID = fm.ID
+
+	newStore := svc.storeFor(m.Scope)
+	created, createErr := newStore.CreateWithID(ctx, m)
+	if createErr != nil {
+		return "", "", fmt.Errorf("create with id %s: %w", fm.ID, createErr)
 	}
 
-	savedStore := svc.storeFor(model.Scope(fm.Scope))
-	if setErr := savedStore.SetTeamMemoryFields(ctx, resp.ID, fm.Shared, fm.Author); setErr != nil {
-		return "", "", fmt.Errorf("preserve shared/author for %s: %w", resp.ID, setErr)
+	if setErr := newStore.SetTeamMemoryFields(ctx, created.ID, fm.Shared, fm.Author); setErr != nil {
+		return "", "", fmt.Errorf("preserve shared/author for %s: %w", created.ID, setErr)
 	}
 
-	return resp.ID, resp.Action, nil
+	// Mirror Save's post-persist best-effort steps (embedding, wikilinks,
+	// deferred-link resolution). Materialization and the async conflict-hint
+	// goroutine are intentionally skipped here: materialization must never
+	// fire during import (the D5 anti-loop guard), and ImportFromShared runs
+	// its own batched conflict-candidate pass after every note (D6).
+	svc.embedMemory(ctx, newStore, created)
+	svc.processWikilinks(ctx, created, newStore)
+	svc.autoResolveUnresolved(ctx, created, newStore)
+
+	return created.ID, "created", nil
 }
 
 // countConflictCandidates runs the deterministic FTS5 conflict-candidate
