@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"github.com/juanftp/mneme/internal/model"
 	"github.com/juanftp/mneme/internal/service"
 	"github.com/juanftp/mneme/internal/store"
+	"github.com/juanftp/mneme/internal/subagents"
 )
 
 // newTestServerWithSDD creates a Server backed by in-memory SQLite databases
@@ -45,6 +47,237 @@ func newTestServerWithSDD(t *testing.T) *Server {
 
 	logger := slog.Default()
 	return NewServer(svc, sddSvc, nil, nil, logger, "all", "test")
+}
+
+// newTestServerWithSDDAndMemSvc mirrors newTestServerWithSDD but additionally
+// returns the underlying *service.MemoryService so tests can seed a subagent
+// manifest directly via service.NewSubagentService (SPEC-068 executor-envelope
+// coverage) without needing a dedicated subagent_manifest_save MCP tool — none
+// exists; manifests are normally only written by subagent_write.
+func newTestServerWithSDDAndMemSvc(t *testing.T) (*Server, *service.MemoryService) {
+	t.Helper()
+
+	projectDB, err := db.OpenMemory()
+	if err != nil {
+		t.Fatalf("open project db: %v", err)
+	}
+	projectDB.SetMaxOpenConns(1)
+	globalDB, err := db.OpenMemory()
+	if err != nil {
+		t.Fatalf("open global db: %v", err)
+	}
+	globalDB.SetMaxOpenConns(1)
+	t.Cleanup(func() { projectDB.Close(); globalDB.Close() })
+
+	projectStore := store.NewMemoryStore(projectDB)
+	globalStore := store.NewMemoryStore(globalDB)
+	cfg := config.Default()
+	svc := service.NewMemoryService(projectStore, globalStore, cfg, "test-project", embed.NopEmbedder{})
+
+	sddStore := store.NewSDDStore(projectDB)
+	sddSvc := service.NewSDDService(sddStore, cfg, "test-project", svc)
+
+	logger := slog.Default()
+	return NewServer(svc, sddSvc, nil, nil, logger, "all", "test"), svc
+}
+
+// specAdvanceTestEnvelope mirrors the {spec, executor} shape handleSpecAdvance
+// returns (SPEC-068 D5), scoped to the fields these tests assert on.
+type specAdvanceTestEnvelope struct {
+	Spec struct {
+		ID     string `json:"id"`
+		Status string `json:"status"`
+	} `json:"spec"`
+	Executor struct {
+		Stage           string `json:"stage"`
+		ResponsibleRole string `json:"responsible_role"`
+		Executor        string `json:"executor"`
+		Delegate        bool   `json:"delegate"`
+		Subagents       []struct {
+			Role string `json:"role"`
+			Path string `json:"path"`
+		} `json:"subagents"`
+		Degraded bool   `json:"degraded"`
+		Hint     string `json:"hint"`
+	} `json:"executor"`
+}
+
+// advanceSpecToPlanned creates a fresh standard-lane spec and advances it
+// from draft to planned (4 transitions: speccing, specced, planning,
+// planned), returning its ID. The caller performs the final planned ->
+// implementing transition itself so it can inspect that specific executor
+// envelope.
+func advanceSpecToPlanned(t *testing.T, srv *Server, title string) string {
+	t.Helper()
+
+	newResp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name: "spec_new",
+		Arguments: mustMarshal(t, map[string]any{
+			"title": title,
+			"lane":  "standard",
+		}),
+	})
+	if newResp.Error != nil {
+		t.Fatalf("spec_new: %v", newResp.Error.Message)
+	}
+	var spec struct {
+		ID string `json:"id"`
+	}
+	unmarshalToolText(t, newResp, &spec)
+
+	for i, by := range []string{"orchestrator", "architect", "architect", "architect"} {
+		advResp := process(t, srv, "tools/call", i+2, ToolCallParams{
+			Name: "spec_advance",
+			Arguments: mustMarshal(t, map[string]any{
+				"id": spec.ID,
+				"by": by,
+			}),
+		})
+		if advResp.Error != nil {
+			t.Fatalf("spec_advance %d (%s): %v", i, by, advResp.Error.Message)
+		}
+	}
+	return spec.ID
+}
+
+// TestHandleSpecAdvance_ExecutorDelegatesToBackend covers AC1: with a backend
+// entry in the manifest, advancing to implementing returns an executor
+// envelope recommending delegation to that subagent.
+func TestHandleSpecAdvance_ExecutorDelegatesToBackend(t *testing.T) {
+	srv, memSvc := newTestServerWithSDDAndMemSvc(t)
+	subagentSvc := service.NewSubagentService(memSvc)
+	if _, err := subagentSvc.SaveManifest(context.Background(), "test-project", []service.ManifestEntry{
+		{Role: subagents.RoleBackend, Path: "/repo/.claude/agents/backend.md"},
+	}); err != nil {
+		t.Fatalf("SaveManifest: %v", err)
+	}
+
+	specID := advanceSpecToPlanned(t, srv, "AC1 executor delegate")
+
+	advResp := process(t, srv, "tools/call", 10, ToolCallParams{
+		Name: "spec_advance",
+		Arguments: mustMarshal(t, map[string]any{
+			"id": specID,
+			"by": "architect",
+		}),
+	})
+	if advResp.Error != nil {
+		t.Fatalf("spec_advance (planned->implementing): %v", advResp.Error.Message)
+	}
+
+	var envelope specAdvanceTestEnvelope
+	unmarshalToolText(t, advResp, &envelope)
+
+	if envelope.Spec.Status != "implementing" {
+		t.Fatalf("spec.status = %q, want implementing", envelope.Spec.Status)
+	}
+	if envelope.Executor.Executor != "subagent" {
+		t.Errorf("executor.executor = %q, want subagent", envelope.Executor.Executor)
+	}
+	if !envelope.Executor.Delegate {
+		t.Error("executor.delegate = false, want true")
+	}
+	if envelope.Executor.Degraded {
+		t.Error("executor.degraded = true, want false")
+	}
+	if len(envelope.Executor.Subagents) != 1 || envelope.Executor.Subagents[0].Role != "backend" {
+		t.Errorf("executor.subagents = %+v, want single backend entry", envelope.Executor.Subagents)
+	}
+}
+
+// TestHandleSpecAdvance_ExecutorDegradesWithoutImplementer covers AC2: a
+// manifest without backend/frontend degrades implementing to the
+// orchestrator, with a hint mentioning the degraded mode and materializing a
+// subagent.
+func TestHandleSpecAdvance_ExecutorDegradesWithoutImplementer(t *testing.T) {
+	srv, memSvc := newTestServerWithSDDAndMemSvc(t)
+	subagentSvc := service.NewSubagentService(memSvc)
+	if _, err := subagentSvc.SaveManifest(context.Background(), "test-project", []service.ManifestEntry{
+		{Role: subagents.RoleQATester, Path: "/repo/.claude/agents/qa-tester.md"},
+	}); err != nil {
+		t.Fatalf("SaveManifest: %v", err)
+	}
+
+	specID := advanceSpecToPlanned(t, srv, "AC2 executor degraded")
+
+	advResp := process(t, srv, "tools/call", 10, ToolCallParams{
+		Name: "spec_advance",
+		Arguments: mustMarshal(t, map[string]any{
+			"id": specID,
+			"by": "architect",
+		}),
+	})
+	if advResp.Error != nil {
+		t.Fatalf("spec_advance (planned->implementing): %v", advResp.Error.Message)
+	}
+
+	var envelope specAdvanceTestEnvelope
+	unmarshalToolText(t, advResp, &envelope)
+
+	if envelope.Executor.Executor != "orchestrator" {
+		t.Errorf("executor.executor = %q, want orchestrator", envelope.Executor.Executor)
+	}
+	if envelope.Executor.Delegate {
+		t.Error("executor.delegate = true, want false")
+	}
+	if !envelope.Executor.Degraded {
+		t.Error("executor.degraded = false, want true")
+	}
+	if len(envelope.Executor.Subagents) != 0 {
+		t.Errorf("executor.subagents = %+v, want empty", envelope.Executor.Subagents)
+	}
+	lowerHint := strings.ToLower(envelope.Executor.Hint)
+	if !strings.Contains(lowerHint, "degradad") || !strings.Contains(lowerHint, "materializ") {
+		t.Errorf("executor.hint = %q, want it to mention degraded mode and materializing a subagent", envelope.Executor.Hint)
+	}
+}
+
+// TestHandleSpecAdvance_NoManifestDoesNotFailAdvance covers AC5: a project
+// that never ran the grill (no manifest memory at all — ReadManifest returns
+// nil, nil) must not fail spec_advance. The spec subfield remains correct and
+// the executor envelope reports an empty subagent list with Degraded=true for
+// a delegable stage.
+func TestHandleSpecAdvance_NoManifestDoesNotFailAdvance(t *testing.T) {
+	srv := newTestServerWithSDD(t) // no manifest ever seeded for "test-project"
+
+	newResp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name: "spec_new",
+		Arguments: mustMarshal(t, map[string]any{
+			"title": "AC5 no manifest",
+			"lane":  "standard",
+		}),
+	})
+	if newResp.Error != nil {
+		t.Fatalf("spec_new: %v", newResp.Error.Message)
+	}
+	var spec struct {
+		ID string `json:"id"`
+	}
+	unmarshalToolText(t, newResp, &spec)
+
+	advResp := process(t, srv, "tools/call", 2, ToolCallParams{
+		Name: "spec_advance",
+		Arguments: mustMarshal(t, map[string]any{
+			"id": spec.ID,
+			"by": "orchestrator",
+		}),
+	})
+	if advResp.Error != nil {
+		t.Fatalf("spec_advance (draft->speccing) must not fail without a manifest: %v", advResp.Error.Message)
+	}
+
+	var envelope specAdvanceTestEnvelope
+	unmarshalToolText(t, advResp, &envelope)
+
+	if envelope.Spec.ID != spec.ID || envelope.Spec.Status != "speccing" {
+		t.Errorf("spec subfield = %+v, want id=%s status=speccing", envelope.Spec, spec.ID)
+	}
+	if len(envelope.Executor.Subagents) != 0 {
+		t.Errorf("executor.subagents = %+v, want empty", envelope.Executor.Subagents)
+	}
+	if !envelope.Executor.Degraded {
+		t.Error("executor.degraded = false, want true for speccing without an architect manifest entry")
+	}
 }
 
 // TestMapServiceError_InternalErrorIncludesMessage is a regression test for the
@@ -1283,7 +1516,14 @@ func TestHandleSpecReject_HappyPath(t *testing.T) {
 	}
 	unmarshalToolText(t, newResp, &spec)
 
-	// Advance to qa (6 advances for standard lane).
+	// Advance to qa (6 advances for standard lane). spec_advance now returns
+	// the {spec, executor} envelope (SPEC-068 D5) rather than a bare Spec.
+	var envelope struct {
+		Spec struct {
+			ID     string `json:"id"`
+			Status string `json:"status"`
+		} `json:"spec"`
+	}
 	for i, by := range []string{"orch", "arch", "arch", "arch", "backend", "backend"} {
 		advResp := process(t, srv, "tools/call", i+2, ToolCallParams{
 			Name: "spec_advance",
@@ -1295,7 +1535,9 @@ func TestHandleSpecReject_HappyPath(t *testing.T) {
 		if advResp.Error != nil {
 			t.Fatalf("spec_advance %d: %v", i, advResp.Error.Message)
 		}
-		unmarshalToolText(t, advResp, &spec)
+		unmarshalToolText(t, advResp, &envelope)
+		spec.ID = envelope.Spec.ID
+		spec.Status = envelope.Spec.Status
 	}
 	if spec.Status != "qa" {
 		t.Fatalf("expected qa status before reject, got %s", spec.Status)

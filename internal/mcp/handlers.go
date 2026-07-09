@@ -841,7 +841,27 @@ func (h *handlers) handleSpecStatus(ctx context.Context, raw json.RawMessage) (*
 	return resultFromAny(resp)
 }
 
-// handleSpecAdvance processes a spec_advance tool call.
+// specAdvanceResponse is the envelope handleSpecAdvance returns (SPEC-068
+// D5): the advanced spec plus an advisory ExecutorResolution for the stage it
+// just entered. The envelope is additive — Spec carries exactly what the bare
+// *model.Spec response used to carry, as its own subfield — so existing
+// callers that only read the spec fields keep working unchanged.
+type specAdvanceResponse struct {
+	Spec     *model.Spec                `json:"spec"`
+	Executor service.ExecutorResolution `json:"executor"`
+}
+
+// handleSpecAdvance processes a spec_advance tool call. After the transition
+// succeeds, it resolves which executor (a delegated subagent, or the
+// orchestrator as a conscious fallback) should carry out the stage the spec
+// just entered (SPEC-068 D2/D5) and returns both in one envelope.
+//
+// Manifest lookup is best-effort: SubagentService.ReadManifest returns
+// (nil, nil) for a project that never ran the grill, and any read error is
+// treated the same way (empty manifest) rather than failing the whole
+// request — spec_advance must never fail because the manifest is
+// unreadable. Either way ResolveStageExecutor still runs and produces a
+// well-formed resolution (typically Degraded for delegable stages, per D3).
 func (h *handlers) handleSpecAdvance(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
 	if h.sdd == nil {
 		return nil, h.sddUnavailable("spec_advance")
@@ -859,7 +879,16 @@ func (h *handlers) handleSpecAdvance(ctx context.Context, raw json.RawMessage) (
 		return nil, h.mapServiceError("spec_advance", err)
 	}
 
-	return resultFromAny(spec)
+	manifest, manifestErr := h.subagentSvc.ReadManifest(ctx, spec.Project)
+	if manifestErr != nil {
+		// Best-effort (D5): an unreadable manifest must not fail an already
+		// -successful advance. Fall back to an empty manifest.
+		manifest = nil
+	}
+
+	executor := service.ResolveStageExecutor(spec.Status, spec.Lane, manifest)
+
+	return resultFromAny(specAdvanceResponse{Spec: spec, Executor: executor})
 }
 
 // handleSpecPushback processes a spec_pushback tool call.

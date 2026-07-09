@@ -535,7 +535,7 @@ func allTools() []ToolDefinition {
 		},
 		{
 			Name:        "spec_advance",
-			Description: "Advance a spec to its next lifecycle state.",
+			Description: "Advance a spec to its next lifecycle state. Returns {spec, executor}: executor is an advisory ExecutorResolution for the stage just entered — delegate to a manifest subagent when executor.delegate is true, or supply the stage yourself as a conscious fallback when executor.degraded is true (SPEC-068).",
 			InputSchema: map[string]any{
 				"type":     "object",
 				"required": []string{"id", "by"},
