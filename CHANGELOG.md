@@ -6,6 +6,46 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Team Memory — git-native shared knowledge (EPIC SPEC-053, SS-A..SS-F)**:
+  durable memories (decisions, conventions, architecture, patterns, bugfixes,
+  rules) can now flow between teammates through the repository itself, with
+  no server, no account, and no network call.
+
+  - **Model + migration (SS-A / SPEC-061)**: `shared` (0/1/2) and `author`
+    columns on `memories` (migration 014), layered on `scope=project` rather
+    than introducing a new scope. Inert by default — nothing changes for an
+    existing project until team-memory is explicitly enabled.
+  - **Write-through materialization (SS-B / SPEC-062)**: `service.Save`/
+    `Update` synchronously materialize shared memories to
+    `.mneme/shared/notes/<uuid>.md` when the current repository has opted
+    in — best-effort, never fails the save. Corrects an earlier assumption
+    that a filesystem watcher existed between the vault and SQLite; it does
+    not, so write-through lives directly in the save/update path.
+  - **`mneme promote <id>` / `mem_promote` (SS-C / SPEC-063)**: explicitly
+    marks any memory as team-curated (`shared=2`) regardless of type and
+    materializes it immediately when team-memory is active.
+  - **Import hooks + conflict detection (SS-D / SPEC-064)**: `mneme
+    team-memory hooks install|remove|run-import` — idempotent
+    `post-merge`/`post-checkout` git hooks (mirroring the codegraph-hooks
+    pattern) that import `.mneme/shared/` in the background after every
+    pull/checkout, merge-by-`updated_at`, and report deterministic FTS5
+    conflict-candidate counts (judgment remains a separate, manual `mneme
+    conflicts scan` step).
+  - **`mneme team-memory enable` + docs (SS-F / SPEC-065)**: the single
+    opt-in activation command — creates `.mneme/shared/` + its marker,
+    bakes/exports pre-existing durable memories, installs the import hooks,
+    and always prints an explicit privacy notice (team-memory is
+    offline/git-native, so remote visibility can never be determined without
+    a network call mneme deliberately never makes). The `mneme-init` skill's
+    shared-memory step now invokes this command instead of the SPEC-053
+    placeholder. See `docs/team-memory.md`.
+
+  MCP surface grows to 64 tools (`mem_promote` joins `mem_*`; `subagent_*`
+  from the parallel agnostic-agents EPIC also now counted). CLI grows to 36
+  top-level commands (`mneme team-memory`, `mneme promote`).
+
 ## [v1.17.0] — 2026-06-25 — Codex CLI support: `mneme install codex` (SPEC-049)
 
 ### Added

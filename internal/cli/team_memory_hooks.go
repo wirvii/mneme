@@ -49,6 +49,7 @@ func newTeamMemoryCmd() *cobra.Command {
 		Long: `Commands for the git-native team-memory vault (SPEC-053): knowledge shared
 between team members through .mneme/shared/ in the repository itself.`,
 	}
+	cmd.AddCommand(newTeamMemoryEnableCmd())
 	cmd.AddCommand(newTeamMemoryHooksCmd())
 	return cmd
 }
