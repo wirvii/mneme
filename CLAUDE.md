@@ -50,7 +50,7 @@ cli/  mcp/  http/        ← three frontends (Cobra, JSON-RPC stdio, REST)
 
 **Dependency rule:** imports flow inward only. `model` has no external deps. Adapters (`store`, `mcp`, `http`, `cli`) sit at the edges and are swappable. Don't let frontends call `store` or `db` directly — go through `service`.
 
-Supporting packages: `scoring/` (decay, BM25 re-ranking, RRF fusion), `consolidation/` (background decay/dedup/budget sweeps + edge decay), `graph/` (Hebbian auto-strengthening: AccessTracker ring buffer + HebbianWorkerPool async worker), `rules/` (applies_to pattern matching engine for pre-tool-use hook), `embed/` (TF-IDF baseline), `sync/` (JSONL.gz git-shareable export/import), `project/` (git-remote slug detection), `config/` (TOML + env overrides), `install/` (agent profile installer + skills embed), `skill/` (leaf: SKILL.md parser, structural linter, validate runner — no internal deps), `conflicts/` (leaf: deterministic FTS5 candidate extraction + LLM judgment via claude CLI subprocess — no internal deps), `tui/` (Bubble Tea), `upgrade/`, `export/`.
+Supporting packages: `scoring/` (decay, BM25 re-ranking, RRF fusion), `consolidation/` (background decay/dedup/budget sweeps + edge decay), `graph/` (Hebbian auto-strengthening: AccessTracker ring buffer + HebbianWorkerPool async worker), `rules/` (applies_to pattern matching engine for pre-tool-use hook), `enforcement/` (leaf: pure orchestrator-guard decision logic for `mneme hook enforce-delegation` — stdlib + `internal/shell` only, no internal deps, SPEC-069), `embed/` (TF-IDF baseline), `sync/` (JSONL.gz git-shareable export/import), `project/` (git-remote slug detection), `config/` (TOML + env overrides), `install/` (agent profile installer + skills embed), `skill/` (leaf: SKILL.md parser, structural linter, validate runner — no internal deps), `conflicts/` (leaf: deterministic FTS5 candidate extraction + LLM judgment via claude CLI subprocess — no internal deps), `tui/` (Bubble Tea), `upgrade/`, `export/`.
 
 ### The three frontends
 
@@ -70,9 +70,9 @@ Scopes (`global` / `org` / `project`) never leak between projects. Migrations ar
 
 `mneme hook pre-tool-use` is the active Claude Code `PreToolUse` hook. It evaluates **rules** from the mneme database against every `Edit`/`Write`/`MultiEdit` call. Rules carry `applies_to` patterns (path globs, tool selectors, negations) and a `severity` level (`info`/`warn`/`block`). When a `block`-severity rule matches, the hook exits with code 2 and Claude Code rejects the tool call. Source: `internal/cli/hook.go:runHookPreToolUse` + `internal/rules/match.go`. If a code edit gets blocked, that's a rule — check `mneme rule list` and delegate or adjust accordingly.
 
-The legacy `mneme hook enforce-delegation` (config-based static paths) is deprecated but still works. Migrate with `mneme install claude-code --reinstall-hooks`. See `docs/HOOKS.md` for details.
+`mneme hook enforce-delegation` (SPEC-069) is the orchestrator-guard (Layer 2): a portable Go subcommand (registered with no path to the home directory) that blocks the orchestrator from editing, or running Bash against, a path outside the static whitelist and owned by an implementer subagent (or legacy deny-by-default when no manifest exists). It replaced the embedded ~640-line `enforce_delegation.sh` bash script — the decision logic now lives in the leaf package `internal/enforcement` (stdlib + `internal/shell` only: `IsWhitelisted`, `EvaluateFileTool`, `EvaluateBash`), wired up by `internal/cli/hook.go:runHookEnforceDelegation`, which injects an in-process `OwnershipFunc` closure over `resolvePathOwnership` — no subprocess spawn. The embedded `enforce_delegation.sh` asset is now a ~6-line compat shim (`exec mneme hook enforce-delegation`), kept only so a pre-existing absolute-path registration keeps working until re-registered. See `docs/HOOKS.md` for details.
 
-`mneme hook path-owned <path>` (SPEC-068) is a manifest-aware ownership check `enforce_delegation.sh` invokes instead of blocking directly for every non-whitelisted write target: exit 2 (block, prints the owning role or `legacy`) when the path is owned by an implementer subagent's manifest `areas`, or when no manifest exists yet (deny-by-default, protects projects mid-migration); exit 0 (allow) when the path has no delegate, or on any hard failure (fail-open). This is the orchestrator-fallback mechanism — see "Enforcement Model" below and `docs/enforcement-model.md`.
+`mneme hook path-owned <path>` (SPEC-068) is the standalone subcommand exposing the same manifest-aware ownership check `resolvePathOwnership` implements (general-purpose surface / backward compatibility — `enforce-delegation` calls the function in-process rather than spawning this subcommand): exit 2 (block, prints the owning role or `legacy`) when the path is owned by an implementer subagent's manifest `areas`, or when no manifest exists yet (deny-by-default, protects projects mid-migration); exit 0 (allow) when the path has no delegate, or on any hard failure (fail-open). This is the orchestrator-fallback mechanism — see "Enforcement Model" below and `docs/enforcement-model.md`.
 
 The hook also emits a context-only reminder (exit 0, never blocking) when an agent calls `Read`/`Grep`/`Glob` on a project with an indexed code graph — see `docs/codegraph.md` for the adoption nudge (C1) and auto-reindex git hooks (C2). The nudge is controlled by:
 
@@ -93,9 +93,9 @@ mneme enforces role boundaries at two layers:
    edit+execution toolset. The `diagnostician` agent has `Bash` for log reading
    but lacks Edit/Write/MultiEdit — it reads infra, never mutates code.
 
-2. **Hook (defense in depth)**: `enforce_delegation.sh` (a bash `PreToolUse`
-   hook) detects the orchestrator by the absence of `agent_id` in the hook
-   payload. Orchestrator edit attempts against protected paths are blocked with
+2. **Hook (defense in depth)**: `mneme hook enforce-delegation` (a Go
+   `PreToolUse` subcommand, SPEC-069) detects the orchestrator by the absence
+   of `agent_id` in the hook payload. Orchestrator edit attempts against protected paths are blocked with
    exit code 2 and logged as `discovery` memories — except a path with no
    implementer subagent to own it (per `mneme hook path-owned`, SPEC-068),
    which is allowed through as a conscious fallback: the orchestrator supplies

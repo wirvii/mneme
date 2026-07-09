@@ -1089,8 +1089,9 @@ Invoked by agent hook systems, not typically run directly.
 | `session-start` | SessionStart | Load and print project context |
 | `session-end` | SessionEnd | Print reminder to call `mem_session_end` |
 | `pre-tool-use` | PreToolUse | Evaluate rules against the tool invocation |
-| `enforce-delegation` | PreToolUse | Legacy config-based delegation (deprecated) |
-| `tokenize` | -- | Parse a shell command from stdin into structured JSON tokens |
+| `enforce-delegation` | PreToolUse | Orchestrator-guard (Layer 2, SPEC-069): blocks the orchestrator from editing/running Bash against a path outside the static whitelist and owned by an implementer subagent |
+| `tokenize` | -- | Parse a shell command from stdin into structured JSON tokens (general-purpose surface; `enforce-delegation` no longer spawns this) |
+| `path-owned <path>` | -- | Manifest-aware ownership check (SPEC-068); general-purpose surface (`enforce-delegation` calls the same logic in-process instead of spawning this) |
 
 ### mneme tui
 

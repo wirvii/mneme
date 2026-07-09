@@ -1,10 +1,12 @@
 # mneme — Claude Code Hooks Integration
 
-mneme integrates with Claude Code's hook system to provide two complementary
+mneme integrates with Claude Code's hook system to provide three complementary
 capabilities:
 
 1. **Session lifecycle hooks** — load/save context at session boundaries.
 2. **Pre-tool-use hook** — evaluate rules just-in-time before file edits.
+3. **Delegation guard (`enforce-delegation`)** — block the orchestrator from
+   editing/running Bash against protected source paths.
 
 ## Quick Setup
 
@@ -35,11 +37,20 @@ This adds the following to `~/.claude/settings.json`:
       {
         "matcher": "",
         "hooks": [{"type": "command", "command": "mneme hook pre-tool-use"}]
+      },
+      {
+        "matcher": "",
+        "hooks": [{"type": "command", "command": "mneme hook enforce-delegation"}]
       }
     ]
   }
 }
 ```
+
+Both `PreToolUse` entries are portable `mneme` subcommands — neither embeds a
+path to the home directory (SPEC-069), so a committed `.claude/settings.json`
+works on any machine with `mneme` on `PATH`, without requiring `mneme install`
+to have run there first.
 
 ---
 
@@ -116,7 +127,8 @@ for subagent]` annotation so the subagent has full context.
 
 `Bash` is **not** in `mutatingTools`. A rule with `tool:Bash` never triggers in
 the Go pre-tool-use engine. Bash enforcement is the exclusive responsibility of
-`enforce_delegation.sh` (Layer 2). Adding Bash to the Go engine is out of scope.
+`mneme hook enforce-delegation` (Layer 2). Adding Bash to the rules engine is
+out of scope.
 
 ### Stdin format
 
@@ -230,25 +242,47 @@ The hook is designed to complete in under 50ms:
 
 ---
 
-## Delegation Enforcement (bash hook)
+## Delegation Guard: `mneme hook enforce-delegation`
 
 ### What it does
 
-`mneme install claude-code` writes an executable bash script to
-`~/.claude/hooks/enforce_delegation.sh` and registers it as a second
-`PreToolUse` hook alongside the Go `pre-tool-use` hook. The two hooks
-complement each other:
+`mneme install claude-code` registers `mneme hook enforce-delegation` — an
+in-process Go subcommand — as a second `PreToolUse` hook alongside the Go
+`pre-tool-use` hook. The two hooks complement each other:
 
-| Hook | Language | Reads | Purpose |
-|------|----------|-------|---------|
-| `mneme hook pre-tool-use` | Go | mneme DB rules | Context injection — warn/block via stored rules |
-| `enforce_delegation.sh` | Bash | stdin JSON | Hard-block orchestrator from editing source files |
+| Hook | Reads | Intercepts | Purpose |
+|------|-------|------------|---------|
+| `mneme hook pre-tool-use` | mneme DB rules | Edit/Write/MultiEdit/NotebookEdit | Context injection — warn/block via stored rules |
+| `mneme hook enforce-delegation` | manifest + static whitelist | Edit/Write/MultiEdit/NotebookEdit/**Bash** | Hard-block orchestrator from editing/running Bash against protected source paths |
 
-### Why a separate bash hook
+### History (SPEC-069)
 
-The bash hook enforces a **structural constraint** that cannot be expressed as a
-DB rule: the orchestrator (main Claude Code session) must never edit source code
-directly — it must delegate that work to a specialised subagent. The hook
+Through v1.20.0 this guard was an embedded bash script
+(`~/.claude/hooks/enforce_delegation.sh`, ~640 lines) registered with an
+**absolute path to the home directory** — not portable, and dependent on
+`mneme install` having already run on that machine. SPEC-069 ported the
+script's decision logic in-process to Go:
+
+- **`internal/enforcement`** (leaf package: stdlib + `internal/shell` only) —
+  the pure decision functions `IsWhitelisted`, `EvaluateFileTool`,
+  `EvaluateBash`. No I/O, no `os.Exit`.
+- **`internal/cli/hook.go`**'s `runHookEnforceDelegation` — the I/O wiring:
+  parses stdin, resolves the caller and the manifest, and injects an
+  in-process `OwnershipFunc` closure over `resolvePathOwnership` (the same
+  function `mneme hook path-owned` uses, SPEC-068) — no subprocess spawn.
+
+The registered command is now the portable `mneme hook enforce-delegation`
+subcommand (no path at all), and the embedded
+`enforce_delegation.sh` asset is a ~6-line compat shim
+(`exec mneme hook enforce-delegation`) kept only so that a pre-existing
+per-repo `settings.json` entry with the old absolute path keeps working until
+it is re-registered — see "Installation and updates" below.
+
+### Why a separate hook
+
+This guard enforces a **structural constraint** that cannot be expressed as a
+DB rule: the orchestrator (main Claude Code session) must never edit source
+code directly — it must delegate that work to a specialised subagent. The hook
 detects the difference via the `agent_id` field that Claude Code injects into
 the PreToolUse JSON payload only when a subagent fires the tool.
 
@@ -279,23 +313,15 @@ BLOCKED because the destination (`internal/store/x.go`) is a protected path.
 The hook's `_find_last_word_target` heuristic takes the **last** non-flag word
 as the target of `cp`/`mv`, so the destination is what is checked.
 
-### `mneme hook path-owned <path>` (SPEC-068)
+### Manifest-aware ownership bridge (SPEC-068, in-process since SPEC-069)
 
-The whitelist above is only the **fast-path**: paths matching it never invoke
-Go at all. For everything else, the bash hook no longer blocks unconditionally
-— it delegates the decision to `mneme hook path-owned <path>`, a Go subcommand
-that consults the project's `subagents/manifest` memory (read-only, opened
-directly — no service layer) and answers whether an **implementer** subagent
-(`backend`, `frontend`, `bug-hunter`) owns `<path>` via its declared `areas`
-globs.
-
-**Contract:**
-
-| `path-owned` exit code | stdout | Bash hook action |
-|---|---|---|
-| `2` | owning role, or `legacy` when no manifest exists | BLOCK (exit 2) |
-| `0` | (empty) | ALLOW — path falls through to the rest of the command |
-| anything else (crash, unknown subcommand on an old binary) | — | ALLOW — fail-open, same philosophy as the rest of this hook |
+The whitelist above is only the **fast-path**: paths matching it never consult
+the manifest at all. For everything else, `runHookEnforceDelegation` calls an
+`OwnershipFunc` closure over `resolvePathOwnership` — the exact same pure
+function `mneme hook path-owned <path>` exposes as a standalone subcommand —
+**in-process**, not as a subprocess. It answers whether an **implementer**
+subagent (`backend`, `frontend`, `bug-hunter`) owns the candidate path via its
+declared `areas` globs.
 
 **Decision table** (`resolvePathOwnership`, `internal/cli/hook.go`):
 
@@ -303,20 +329,18 @@ globs.
 |---|---|---|
 | Present, non-empty | Matches an implementer's `areas` glob (`doublestar.Match`) | **BLOCK**, names the first matching role in manifest order |
 | Present, non-empty | No implementer's `areas` matches | **ALLOW** |
-| Absent (no row), or present but `[]` | any | **BLOCK**, stdout `legacy` — deny-by-default so projects that have not run the `mneme-init` grill keep today's protection |
+| Absent (no row), or present but `[]` | any | **BLOCK**, owner `legacy` — deny-by-default so projects that have not run the `mneme-init` grill keep today's protection |
 | Path is empty or falls outside the project tree | any | **ALLOW** — a path that cannot be normalised relative to the project cannot be owned |
 | Hard failure: config unreadable, DB unreadable/corrupt, manifest JSON unparsable | — | **ALLOW** — fail-open |
 
-**If `mneme` is not on PATH at all**, the bash hook cannot ask Go anything and
-blocks unconditionally (same as if `path-owned` had returned exit 2) — this is
-the one case where the bash side does not fail open, precisely to avoid a
-silent bypass the moment the binary goes missing.
+**Cost:** one read-only SQLite open + one indexed `SELECT` by `topic_key`, per
+invocation — no subprocess spawn at all (the process running the hook already
+**is** `mneme`). Most orchestrator writes never reach this path (they land in
+`.claude/`, `~/.mneme/`, or `docs/*.md`, all covered by the static whitelist).
 
-**Cost:** one subprocess spawn + one read-only SQLite open + one indexed
-`SELECT` by `topic_key`, per non-whitelisted target — the same order of
-magnitude as the existing `mneme hook tokenize` spawn. Most orchestrator
-writes never reach this path at all (they land in `.claude/`, `~/.mneme/`, or
-`docs/*.md`, all covered by the static whitelist).
+The standalone `mneme hook path-owned <path>` subcommand still exists as
+general-purpose surface / backward compatibility, but `enforce-delegation` no
+longer invokes it as a subprocess.
 
 ### Tools intercepted
 
@@ -326,21 +350,15 @@ writes never reach this path at all (they land in `.claude/`, `~/.mneme/`, or
   `rm`, `touch`, `chmod`, `chown`, `ln`, `tee`, `dd of=`, here-docs, and inline
   Python/Node scripts with file writes.
 
-### Shell command tokenizer (added in v1.3.0)
+### Shell command tokenizer
 
-The hook uses `mneme hook tokenize` as its shell command parser. This subcommand
-uses a real bash AST parser (`mvdan.cc/sh/v3`) to tokenize commands into
-structured tokens, eliminating false positives caused by quoted arguments or
-heredoc content.
-
-**Examples fixed by the Go tokenizer:**
-
-| Command | Old parser (awk) | New parser (Go) |
-|---------|-----------------|-----------------|
-| `gh pr create --title "feat(install): X"` | BLOCK (install in title) | ALLOW (quoted) |
-| `echo "rm /tmp"` | BLOCK (rm in quoted arg) | ALLOW (quoted) |
-| `echo content > docs/test.md` | BLOCK or ALLOW (fragile) | ALLOW (whitelisted target) |
-| `rmdir .claude/tmp 2>/dev/null` | Fragile | ALLOW (correct redirect handling) |
+`EvaluateBash` (in `internal/enforcement`) tokenizes commands by calling
+`shell.Tokenize` **in-process** — a real bash AST parser (`mvdan.cc/sh/v3`)
+that eliminates false positives caused by quoted arguments or heredoc content.
+There is no subprocess spawn and no fallback parser: `shell.Tokenize` is
+always available to the guard (the guard's own binary links the package
+directly), so the legacy awk/regex parser and the `USE_GO_TOKENIZER` probe
+from the bash-script era no longer exist.
 
 **Token types:**
 
@@ -352,58 +370,24 @@ heredoc content.
 | `heredoc_body` | Content of a `<<EOF` block | **Skip entirely** — not a command |
 | `command_substitution` | Content of `$(...)` | Re-tokenize 1 level |
 
-#### `mneme hook tokenize`
-
-```bash
-# Usage: read a shell command from stdin, emit JSON tokens to stdout
-printf 'rm $(date +%s).txt' | mneme hook tokenize
-```
-
-Output:
-```json
-{"tokens":[
-  {"value":"rm","type":"word"},
-  {"value":"date +%s","type":"command_substitution"},
-  {"value":".txt","type":"word"}
-]}
-```
-
-The `quoted` field (omitted when false) indicates the token came from a
-single- or double-quoted string and must not be treated as an executable command.
-
-#### Fallback to legacy parser
-
-At startup the hook probes for the Go tokenizer:
-
-```bash
-printf '' | mneme hook tokenize >/dev/null 2>&1
-```
-
-- **Succeeds (exit 0)** → `USE_GO_TOKENIZER=1` — use Go tokenizer.
-- **Fails (exit 1, e.g. old binary without tokenize)** → `USE_GO_TOKENIZER=0` —
-  fall back to the original awk/regex parser with a warning to stderr:
-
-```
-[enforce_delegation] WARNING: mneme hook tokenize not available, using legacy parser (may produce false positives)
-```
-
-The legacy parser (`check_bash_legacy`) is preserved unchanged so the hook
-continues to work after `mneme upgrade` if the binary has not been replaced yet.
+The standalone `mneme hook tokenize` subcommand still exists (general-purpose
+surface / backward compatibility), but `enforce-delegation` no longer invokes
+it as a subprocess — see [`mneme hook tokenize`](api/cli.md) for its own
+usage as a standalone tool.
 
 ### Fail-open behaviour
 
-Any error — malformed JSON, unreadable stdin — causes the hook to exit 0
-(allow). A broken hook must never prevent the agent from working.
-
-**`jq` absent**: when `jq` is not found in PATH the hook emits a WARNING to
-stderr and exits 0 (fail-open). The WARNING is deliberate — jq absent means
-the hook provides **no enforcement at all**. Unlike a silent fail-open, the
-WARNING makes this visible in the agent output stream.
+Any error — malformed JSON, unreadable stdin, unresolvable `cwd`, unreadable
+config, a hard manifest-DB failure — causes the hook to exit 0 (allow). A
+broken hook must never prevent the agent from working. Since SPEC-069 the
+guard runs entirely in-process (no `jq`, no bash interpreter, no subprocess
+round-trip), so there is no longer a runtime-dependency failure mode to
+document — the only prerequisite is that `mneme` itself is on `PATH`.
 
 ### Inherent limits (Layer 2 scope)
 
-`enforce_delegation.sh` is Layer 2: it stops the **cooperative orchestrator**
-from accidentally editing source code. It is **not a sandbox**.
+`mneme hook enforce-delegation` is Layer 2: it stops the **cooperative
+orchestrator** from accidentally editing source code. It is **not a sandbox**.
 
 Bypass patterns that are **out of scope by design**:
 
@@ -417,73 +401,47 @@ Bypass patterns that are **out of scope by design**:
 `tools:` allowlist in `agents/*.md`). Claude Code enforces allowlists natively
 before the hook is invoked.
 
-### Runtime dependency: `jq`
-
-The hook requires `jq` for JSON parsing. macOS ships with `jq`; on Linux install
-it via the system package manager. If `jq` is absent, `mneme install claude-code`
-prints a warning to stderr:
-
-```
-  [warn] jq not found in PATH; the delegation hook will fail-open until jq is installed
-```
-
-The hook itself also emits a richer WARNING at runtime so the gap is visible
-even if installation did not detect the absence.
-
-### Installation and updates
+### Installation, updates, and migration from the legacy `.sh` (SPEC-069)
 
 ```bash
-# Install or update (no-op if content is already identical):
+# Install or update (idempotent; migrates a legacy .sh registration if found):
 mneme install claude-code
 
-# Force reinstall even when content matches (e.g. after a mneme upgrade):
+# Force replace-all of PreToolUse entries (also rewrites the shim on disk):
 mneme install claude-code --reinstall-hooks
 ```
 
-The hook script is embedded in the mneme binary. On upgrade the new version is
-distributed automatically when `mneme install claude-code` is re-run; the old
-script is backed up as `enforce_delegation.sh.bak-YYYYMMDD-HHMMSS`.
+Both the default path and `--reinstall-hooks` perform a **strip-then-add**:
+any pre-existing `PreToolUse` entry whose command ends in
+`enforce_delegation.sh` (any machine's home directory) is removed before the
+portable `mneme hook enforce-delegation` entry is added, so re-running install
+after an upgrade never leaves a stale absolute-path entry alongside the new
+one. `mneme upgrade`'s post-upgrade install re-run uses the default (non
+`--reinstall-hooks`) path, which is why the strip lives there rather than only
+in the reinstall branch.
 
----
+For a **per-repo** registration (`.claude/settings.json` inside a specific
+project instead of the global `~/.claude/settings.json`), the same
+strip-then-add runs in `mneme delegation-hook enable` — see
+[Enforcement Model](enforcement-model.md) for the per-repo opt-in workflow.
 
-## Legacy Hook: `mneme hook enforce-delegation` (deprecated)
-
-The legacy hook uses `DelegationConfig` in `config.toml` (static path lists)
-instead of rules from the database. It continues to work but emits a deprecation
-warning to stderr.
-
-**Migration to `pre-tool-use`:**
-
-```bash
-# Replace the legacy hook with the new one in settings.json:
-mneme install claude-code --reinstall-hooks
-```
-
-This removes all existing `PreToolUse` entries and registers
-`mneme hook pre-tool-use`. After migration, recreate your delegation rules:
-
-```bash
-mneme save --type rule --severity block \
-  --applies-to "tool:Edit+cmd/**" \
-  --applies-to "tool:Write+cmd/**" \
-  --applies-to "tool:MultiEdit+cmd/**" \
-  --applies-to "tool:Edit+internal/**" \
-  --applies-to "tool:Write+internal/**" \
-  --applies-to "tool:MultiEdit+internal/**" \
-  --title "Delegation: protect source paths" \
-  "Delegate code edits in protected paths to the appropriate subagent (backend, frontend, etc.)."
-```
-
-You can keep `delegation.enabled=false` in `config.toml` once the new rules are
-verified.
+The embedded `enforce_delegation.sh` asset itself is still written by
+`WriteDelegationHook` (checksum-based idempotency, `.bak-YYYYMMDD-HHMMSS`
+backup on change) — it is now the ~6-line compat shim described above, kept
+so that any settings.json still pointing at the old absolute path keeps
+working (forwarding to the same in-process Go logic) until it is
+re-registered with the portable command.
 
 ---
 
 ## FAQ
 
 **Q: Can I use both hooks simultaneously?**
-A: Yes. `enforce-delegation` uses `config.toml` and `pre-tool-use` uses DB rules.
-Both run independently. If either exits with code 2, the action is blocked.
+A: Yes — they always run together (both are registered by `mneme install
+claude-code`). `pre-tool-use` evaluates DB rules and never intercepts `Bash`;
+`enforce-delegation` evaluates the static whitelist + subagent manifest and
+does intercept `Bash`. Both run independently. If either exits with code 2,
+the action is blocked.
 
 **Q: What if I have no rules in the DB?**
 A: `pre-tool-use` exits with code 0 (allow) — it does nothing when there are no

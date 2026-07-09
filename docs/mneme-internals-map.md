@@ -41,9 +41,10 @@
 
 ## 4. Hooks / tokenizer
 
-- **Hook CLI** (`internal/cli/hook.go`): `mneme hook <event>` → session-start, session-end, pre-tool-use, enforce-delegation (deprecated), tokenize.
+- **Hook CLI** (`internal/cli/hook.go`): `mneme hook <event>` → session-start, session-end, pre-tool-use, enforce-delegation, tokenize, path-owned.
 - **pre-tool-use**: `runHookPreToolUse` lee JSON de stdin, evalúa reglas (`internal/rules/match.go`), emite markdown a stdout, exit 2 para bloquear.
-- **tokenize**: `runHookTokenize` parsea comandos shell de stdin → JSON estructurado. Lo usa `enforce_delegation.sh` como backend.
+- **enforce-delegation** (SPEC-069): `runHookEnforceDelegation` — orchestrator-guard in-process (Go), reemplaza el bash `enforce_delegation.sh` (ahora un shim de ~6 líneas). Lógica pura portada a `internal/enforcement` (leaf: stdlib + `internal/shell`); wiring de I/O + cierre `OwnershipFunc` sobre `resolvePathOwnership` (SPEC-068) sin subprocess.
+- **tokenize**: `runHookTokenize` parsea comandos shell de stdin → JSON estructurado. Superficie general/retro-compat; `enforce-delegation` ya no lo invoca como subprocess (llama `shell.Tokenize` in-process vía `internal/enforcement`).
 - **Shell pkg** (`internal/shell/`): tokenizer (mvdan.cc/sh/v3/syntax). (Relevante para SPEC-040.)
 - **Rules** (`internal/rules/match.go`): matching sobre `applies_to` (path globs, tool selectors, negaciones); severidades info/warn/block.
 - **Settings registration** (`install.go` `PatchHooks`): hooks en `~/.claude/settings.json` bajo `hooks.{Event}` como matcher-groups; append idempotente (chequea comando existente).

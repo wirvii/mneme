@@ -4,6 +4,31 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Changed
+
+- **Portable delegation guard: `mneme hook enforce-delegation` (SPEC-069)**:
+  the orchestrator-guard (Layer 2) that used to be an embedded ~640-line bash
+  script (`~/.claude/hooks/enforce_delegation.sh`, registered with an
+  absolute path to the home directory — not portable, not self-contained) is
+  now an in-process Go subcommand. A new leaf package, `internal/enforcement`
+  (stdlib + `internal/shell` only), implements the pure decision logic
+  (`IsWhitelisted`, `EvaluateFileTool`, `EvaluateBash`); `internal/cli/hook.go`
+  does the I/O wiring and injects an in-process `OwnershipFunc` closure over
+  `resolvePathOwnership` (SPEC-068) — no subprocess spawn to `mneme hook
+  tokenize` or `mneme hook path-owned` remains. `ClaudeCode().DelegationHook`
+  and `ProjectDelegationHookPatches` now register the portable
+  `mneme hook enforce-delegation` command string instead of the absolute
+  script path; `mneme install claude-code` and `mneme delegation-hook enable`
+  both strip any pre-existing legacy `enforce_delegation.sh` entry before
+  adding the new one, so upgrading or re-enabling migrates cleanly with no
+  duplicates. The embedded `enforce_delegation.sh` asset is now a ~6-line
+  compat shim (`exec mneme hook enforce-delegation`) kept only so a
+  pre-existing absolute-path registration keeps working until it is
+  re-registered — it is never written by new installs. See
+  `docs/HOOKS.md` and `docs/enforcement-model.md`.
+
 ## [v1.20.0] — 2026-07-09 — SDD executor resolution + manifest-aware delegation hook (SPEC-068)
 
 ### Added

@@ -17,11 +17,12 @@
    prompts would interrupt the workflow.
 4. All subagents MUST include `mcp__mneme__*` (wildcard) to retain access to
    mneme memory tools (`mem_save`, `mem_search`, `mem_context`, etc.).
-5. The orchestrator (principal) MUST NOT edit source paths directly. The bash
-   hook blocks this at the capability level and logs every attempt — except a
-   non-whitelisted path with no implementer subagent to own it, which the
-   manifest-aware `path-owned` check (SPEC-068) allows through as a conscious
-   fallback. See "Manifest-aware path ownership (SPEC-068)" below.
+5. The orchestrator (principal) MUST NOT edit source paths directly. The
+   `mneme hook enforce-delegation` guard blocks this and logs every attempt —
+   except a non-whitelisted path with no implementer subagent to own it,
+   which the manifest-aware ownership bridge (SPEC-068, in-process since
+   SPEC-069) allows through as a conscious fallback. See "Manifest-aware path
+   ownership (SPEC-068)" below.
 
 ## Two-Layer Enforcement
 
@@ -48,7 +49,7 @@ it, regardless of what the prompt says.
 is **role-aware**:
 
 - Resolves the caller role from the payload's five `agent_id` locations
-  (multi-key, same logic as the bash hook).
+  (multi-key, same `resolveCaller` logic the enforce-delegation guard uses).
 - Supports `agent:orchestrator|subagent|*` selectors in `applies_to`.
 - **Degrades block→warn** for subagents on rules without an explicit `agent:`
   selector: the rule appears as context but does not exit 2.
@@ -59,48 +60,57 @@ This means `block` delegation rules (e.g. the historic `019e4261` rule) now
 correctly block only the orchestrator and degrade for legitimate subagent
 implementers, eliminating the need to keep them at `warn` permanently.
 
-### Layer 2b — Bash hook (defense in depth, orchestrator-only)
+### Layer 2b — `mneme hook enforce-delegation` guard (defense in depth, orchestrator-only)
 
-`~/.claude/hooks/enforce_delegation.sh` is a `PreToolUse` hook that inspects
-the Claude Code hook payload from stdin. It detects whether the caller is the
-orchestrator by the multi-key `agent_id` resolution (introduced in SPEC-042)
-and checks all five known payload locations.
+`mneme hook enforce-delegation` is a `PreToolUse` hook — a Go subcommand
+registered as `mneme hook enforce-delegation`, portable (no path to the home
+directory) — that reads the Claude Code hook payload from stdin. It detects
+whether the caller is the orchestrator by the multi-key `agent_id` resolution
+(introduced in SPEC-042) and checks all five known payload locations.
+
+Through v1.20.0 this guard was an embedded ~640-line bash script
+(`~/.claude/hooks/enforce_delegation.sh`) registered with an absolute path.
+SPEC-069 ported its decision logic in-process to Go: `internal/enforcement`
+(a leaf package: stdlib + `internal/shell` only) implements the pure decision
+functions (`IsWhitelisted`, `EvaluateFileTool`, `EvaluateBash`);
+`internal/cli/hook.go`'s `runHookEnforceDelegation` does the I/O wiring
+(stdin parsing, caller resolution, manifest lookup) and injects an in-process
+`OwnershipFunc` closure over `resolvePathOwnership` — no subprocess spawn to
+`mneme hook tokenize` or `mneme hook path-owned` remains. The embedded
+`enforce_delegation.sh` asset is now a ~6-line compat shim
+(`exec mneme hook enforce-delegation`), kept only so a pre-existing
+absolute-path registration keeps working until it is re-registered.
 
 When the orchestrator attempts a file-mutating tool (`Write`, `Edit`,
 `MultiEdit`, `NotebookEdit`, or a protected `Bash` command) against a path
-outside the static whitelist, the hook no longer blocks unconditionally
-(SPEC-068 D6/D9): it calls `mneme hook path-owned <target>` (see "Manifest-aware
-path ownership" below) and only blocks when that subcommand exits 2. When it
-blocks, the hook:
+outside the static whitelist, the guard consults the manifest-aware ownership
+bridge (see "Manifest-aware path ownership" below) in-process and only blocks
+when it reports a block. When it blocks, the guard:
 
 1. Prints a BLOQUEADO message to stderr, naming the owning subagent role when
-   `path-owned` reported one.
-2. If `mneme` is on PATH, calls `mneme save --type discovery` to log the
-   attempt as a queryable discovery memory.
+   the ownership bridge reported one.
+2. Calls `service.Save` (in-process, best-effort) to log the attempt as a
+   queryable discovery memory — a logging failure never changes the exit code.
 3. Exits with code 2, which causes Claude Code to reject the tool call.
 
-The hook does NOT discriminate by agent role (only by the presence of
+The guard does NOT discriminate by agent role (only by the presence of
 `agent_id`). Role boundaries for subagents are enforced entirely by Layer 1.
 
 ### Manifest-aware path ownership (SPEC-068)
 
-`mneme hook path-owned <path>` is the Go subcommand the bash hook now
-consults for every non-whitelisted target instead of blocking directly. It
-reads the project's `subagents/manifest` memory (read-only, same lightweight
-pattern as the Go rules engine's DB access) and decides:
+`resolvePathOwnership` (`internal/cli/hook.go`) is the pure decision function
+the enforce-delegation guard consults, in-process, for every non-whitelisted
+target instead of blocking directly. It is the same function the standalone
+`mneme hook path-owned <path>` subcommand exposes. It reads the project's
+`subagents/manifest` memory (read-only, same lightweight pattern as the Go
+rules engine's DB access) and decides:
 
 | Manifest state | Path state | Result |
 |---|---|---|
-| Present, non-empty | Owned by an implementer subagent's `areas` glob | **BLOCK** (exit 2) — names the owning role |
-| Present, non-empty | Not owned by any implementer | **ALLOW** (exit 0) — legitimate orchestrator fallback |
-| Absent, or present but empty `[]` | (any) | **BLOCK** (exit 2, "legacy") — deny-by-default, protects projects that have not run the `mneme-init` grill yet |
-| Hard failure (config/DB unreadable, corrupt JSON) | (any) | **ALLOW** (exit 0) — fail-open, consistent with the rest of this hook |
-
-The bash side (`check_target_or_block` in `enforce_delegation.sh`) treats any
-exit code other than 2 as allow — including a crash, or `mneme` predating this
-subcommand — which is why the contract is exit-code-based rather than parsing
-output. If `mneme` is not on PATH at all, the bash hook cannot ask Go anything
-and blocks unconditionally rather than opening a silent bypass.
+| Present, non-empty | Owned by an implementer subagent's `areas` glob | **BLOCK** — names the owning role |
+| Present, non-empty | Not owned by any implementer | **ALLOW** — legitimate orchestrator fallback |
+| Absent, or present but empty `[]` | (any) | **BLOCK** ("legacy") — deny-by-default, protects projects that have not run the `mneme-init` grill yet |
+| Hard failure (config/DB unreadable, corrupt JSON) | (any) | **ALLOW** — fail-open, consistent with the rest of this hook |
 
 This makes retiring the six global subagents (a future release) non-destructive:
 a project that never ran the grill has no manifest, so every non-whitelisted
@@ -143,11 +153,12 @@ mneme search "Blocked edit"
 ## Project-scoped opt-in registration (EPIC agnostic-agents, SS-6)
 
 Everything above describes the **global** installation: `mneme install
-claude-code` registers both Layer 2 hooks (the Go rules engine and the bash
-script) in `~/.claude/settings.json`, and — during the agnostic-agents
-transition (SPEC-052 §9) — it still does so **unconditionally, every
-release**, so the repos that have not migrated to per-project subagents keep
-working exactly as before.
+claude-code` registers both Layer 2 hooks (`mneme hook pre-tool-use` and
+`mneme hook enforce-delegation`, both portable subcommands since SPEC-069) in
+`~/.claude/settings.json`, and — during the agnostic-agents transition
+(SPEC-052 §9) — it still does so **unconditionally, every release**, so the
+repos that have not migrated to per-project subagents keep working exactly
+as before.
 
 SPEC-052 (§5.2/§8.2) also introduces a second, **independent, opt-in**
 registration path at **project scope**, for repos that generate per-project
@@ -200,10 +211,13 @@ mneme delegation-hook disable [path]  # remove them, leaving every other setting
 mneme delegation-hook status [path]   # report whether both entries are currently registered
 ```
 
-The bash script itself is **not** duplicated per project — the project-scope
-entry still points at the global `~/.claude/hooks/enforce_delegation.sh`,
-written once by `mneme install claude-code`. Only the *registration* (the
-`settings.json` PreToolUse entry) becomes project-scoped.
+Nothing is duplicated per project: both entries are the same portable
+`mneme` subcommand strings the global installation registers (SPEC-069), so
+enabling the project-scope entry only ever patches `settings.json` — there is
+no script to write or keep in sync. `mneme delegation-hook enable` also
+strips any pre-existing legacy `enforce_delegation.sh` absolute-path entry
+from the repo's `settings.json` before adding the portable one (the same
+strip-then-add migration `PatchDelegationHook` performs globally).
 
 Retiring the *global* registration entirely (so `mneme install claude-code`
 stops shipping it by default) is **SS-7**, a separate release — not done
@@ -219,8 +233,8 @@ subagents.
 | **Implementer agents full** | `backend`, `frontend`, `bug-hunter` have the full edit toolset | Add the missing tools |
 | **mcp__mneme__\* present** | Every agent retains mneme memory access | Add `mcp__mneme__*` to the `tools:` line |
 | **No stray bypassPermissions on read-only** | `architect` and `qa-tester` do not set `permissionMode: bypassPermissions` | Remove the line |
-| **Hook installed** | `enforce_delegation.sh` is registered as a `PreToolUse` hook | Run `mneme install claude-code` |
-| **Hook logs to mneme** | Blocked attempts produce a `discovery` memory | Ensure `mneme` is on PATH; check stderr for save errors |
+| **Hook installed** | `mneme hook enforce-delegation` is registered as a `PreToolUse` hook | Run `mneme install claude-code` |
+| **Hook logs to mneme** | Blocked attempts produce a `discovery` memory | Check stderr for a "log discovery: save failed" warning |
 
 ## Adding a new subagent
 
@@ -235,9 +249,9 @@ subagents.
 8. Add tests in `internal/install/install_test.go` following the patterns of
    `TestAgentAssets_ReadOnlyAllowlists` and `TestAgentAssets_ImplementerAllowlists`.
 
-Note: the bash hook blocks the orchestrator by detecting the absence of
-`agent_id`. No change to the hook source is required when adding subagents,
-because their capability boundary is the `tools:` allowlist.
+Note: the enforce-delegation guard blocks the orchestrator by detecting the
+absence of `agent_id`. No change to the hook source is required when adding
+subagents, because their capability boundary is the `tools:` allowlist.
 
 ## Debugging a blocked attempt
 
@@ -268,23 +282,26 @@ read stdin (PreToolUse JSON payload)
   else emit markdown context → exit 0
 ```
 
-### Bash hook (Layer 2b — orchestrator only)
+### `enforce-delegation` guard (Layer 2b — orchestrator only, in-process since SPEC-069)
 
 ```
 read stdin (PreToolUse JSON payload)
   if agent_id present (any of 5 locations) → exit 0  (subagent)
   if tool not in {Write, Edit, MultiEdit, NotebookEdit, Bash} → exit 0
-  if Bash → check command for protected paths/patterns
-  if file_path in whitelist → exit 0
+  resolve config/project/manifest once (fail-open on any hard error)
+  own := closure over resolvePathOwnership(target, cwd, manifest)
+  if Bash:
+    decision := enforcement.EvaluateBash(command, home, own)
   else:
-    set TARGET_PATH
-    if mneme not on PATH → log + exit 2  (D9 guard: no bypass)
-    else:
-      run `mneme hook path-owned $TARGET_PATH`
-      if exit code == 2 → log (naming the owning role) + exit 2
-      else → allow (fall through)
+    decision := enforcement.EvaluateFileTool(file_path, home, own)
+  if decision.Block:
+    print BLOQUEADO message (naming the owning role when known) to stderr
+    log discovery memory (best-effort, in-process service.Save)
+    exit 2
+  else:
+    exit 0
 ```
 
-Whitelist (always-allow fast-path, never reaches `path-owned`): `.claude/**`,
-`~/.claude/**`, `~/.mneme/**`, `CLAUDE.md` (any location), `**/docs/*.md`,
-`.claudeignore`, `/tmp/**`, `/private/tmp/**`.
+Whitelist (always-allow fast-path, never reaches the ownership bridge):
+`.claude/**`, `~/.claude/**`, `~/.mneme/**`, `CLAUDE.md` (any location),
+`**/docs/*.md`, `.claudeignore`, `/tmp/**`, `/private/tmp/**`.
