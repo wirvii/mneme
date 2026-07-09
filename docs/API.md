@@ -1,8 +1,8 @@
 # mneme -- API Reference
 
-mneme exposes the same service layer through three frontends: **MCP** (57
+mneme exposes the same service layer through three frontends: **MCP** (64
 tools over JSON-RPC 2.0 stdio, primary), **HTTP** (10 REST endpoints under
-`/v1/`), and **CLI** (35 top-level commands, Cobra). This page is an index --
+`/v1/`), and **CLI** (36 top-level commands, Cobra). This page is an index --
 the full contract for every tool, endpoint, and command lives in
 [docs/api/](api/).
 
@@ -29,26 +29,27 @@ not a fixed string -- expect it to match `mneme version`.
 
 ---
 
-## MCP tool families (57 tools)
+## MCP tool families (64 tools)
 
 Rule: every MCP tool appears in exactly **one** of these files.
 
 | Family | Count | Reference | Concept guide |
 |--------|-------|-----------|---------------|
-| `mem_*` | 14 | [docs/api/memory.md](api/memory.md) | [docs/GRAPH.md](GRAPH.md), [docs/RULES.md](RULES.md) |
+| `mem_*` (incl. `mem_promote`) | 15 | [docs/api/memory.md](api/memory.md) | [docs/GRAPH.md](GRAPH.md), [docs/RULES.md](RULES.md), [docs/team-memory.md](team-memory.md) |
 | `backlog_*` + `spec_*` + `lane_*` + `init` | 4+8+5+1=18 | [docs/api/sdd.md](api/sdd.md) | [docs/lanes.md](lanes.md), [docs/init.md](init.md) |
 | `codegraph_*` | 10 | [docs/api/codegraph.md](api/codegraph.md) | [docs/codegraph.md](codegraph.md) |
 | `skills_*` | 7 | [docs/api/skills.md](api/skills.md) | [docs/skills.md](skills.md) |
 | `model_*` | 3 | [docs/api/models.md](api/models.md) | [docs/models.md](models.md) |
 | `conflicts_*` | 5 | [docs/api/conflicts.md](api/conflicts.md) | [docs/conflicts.md](conflicts.md) |
+| `subagent_*` | 6 | [docs/api/subagents.md](api/subagents.md) | [docs/enforcement-model.md](enforcement-model.md) |
 
-14 + 18 + 10 + 7 + 3 + 5 = **57**.
+15 + 18 + 10 + 7 + 3 + 5 + 6 = **64**.
 
 ## Transport references
 
 | Reference | Contents |
 |-----------|----------|
-| [docs/api/cli.md](api/cli.md) | All 33 top-level CLI commands, flags verified against `./mneme <cmd> --help` |
+| [docs/api/cli.md](api/cli.md) | All 36 top-level CLI commands, flags verified against `./mneme <cmd> --help` |
 | [docs/api/http.md](api/http.md) | All 10 HTTP routes under `/v1/`, plus the `/explore` suffix and the "HTTP parity gaps" table |
 
 ## MCP error codes

@@ -5,7 +5,7 @@ Persistent memory for AI coding agents -- with a spec-driven workflow engine, se
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.24+-00ADD8.svg)](https://go.dev)
 [![Release](https://img.shields.io/github/v/release/wirvii/mneme?label=release)](https://github.com/wirvii/mneme/releases)
-[![MCP Tools](https://img.shields.io/badge/MCP%20tools-57-green.svg)](#mcp-tools)
+[![MCP Tools](https://img.shields.io/badge/MCP%20tools-64-green.svg)](#mcp-tools)
 
 ---
 
@@ -18,6 +18,8 @@ Persistent memory for AI coding agents -- with a spec-driven workflow engine, se
 - [Features](#features)
 - [CodeGraph](#codegraph)
 - [Skills](#skills)
+- [Subagents](#subagents)
+- [Team Memory](#team-memory)
 - [Enforcement](#enforcement)
 - [Models & Conflicts](#models--conflicts)
 - [Commands](#commands)
@@ -33,7 +35,7 @@ Persistent memory for AI coding agents -- with a spec-driven workflow engine, se
 
 ## What is mneme?
 
-mneme gives AI coding agents a brain that survives between sessions. It stores structured knowledge -- decisions, patterns, rules, conventions, architecture -- in a local SQLite database with full-text search, a weighted knowledge graph, and automatic consolidation. Any MCP-compatible agent (Claude Code, Cursor, Windsurf, OpenCode, Gemini CLI) can save and retrieve persistent memory through 57 tools over JSON-RPC stdio.
+mneme gives AI coding agents a brain that survives between sessions. It stores structured knowledge -- decisions, patterns, rules, conventions, architecture -- in a local SQLite database with full-text search, a weighted knowledge graph, and automatic consolidation. Any MCP-compatible agent (Claude Code, Cursor, Windsurf, OpenCode, Gemini CLI) can save and retrieve persistent memory through 64 tools over JSON-RPC stdio.
 
 ## Why mneme?
 
@@ -90,7 +92,7 @@ mneme search "authentication"
 mneme status
 ```
 
-`mneme install claude-code` registers MCP tools, session hooks, and the rules enforcement hook in `~/.claude/settings.json`, plus the seven bundled subagent profiles. After install, the agent automatically loads context at session start, saves session summaries at end, and evaluates rules before every file edit. `mneme install codex` wires the same MCP server and memory protocol into OpenAI Codex CLI's single-agent model -- see [docs/codex.md](docs/codex.md) for the differences.
+`mneme install claude-code` registers MCP tools, session hooks, and the rules enforcement hook in `~/.claude/settings.json`, plus six bundled subagent profiles (a transitional global set -- see [Subagents](#subagents) below for the per-project model that is replacing them). After install, the agent automatically loads context at session start, saves session summaries at end, and evaluates rules before every file edit. `mneme install codex` wires the same MCP server and memory protocol into OpenAI Codex CLI's single-agent model -- see [docs/codex.md](docs/codex.md) for the differences.
 
 ---
 
@@ -159,7 +161,7 @@ backlog_add -> backlog_refine -> backlog_promote -> spec_new
   -> spec_advance (draft -> speccing -> specced -> implementing -> qa -> done)
 ```
 
-Seven pre-configured subagent profiles (architect, backend, frontend, qa-tester, bug-hunter, diagnostician, orchestrator) ship with `mneme install claude-code` and integrate with the SDD lifecycle. See [Enforcement](#enforcement) for the role/capability model.
+Six pre-configured subagent profiles (architect, backend, frontend, qa-tester, bug-hunter, diagnostician) ship globally with `mneme install claude-code` and integrate with the SDD lifecycle; the orchestrator role is the principal, not an installed profile. See [Subagents](#subagents) for the newer per-project generation model and [Enforcement](#enforcement) for the role/capability model.
 
 ### Memory Manifest
 
@@ -219,6 +221,65 @@ See [docs/skills.md](docs/skills.md) (SKILL.md format, pin semantics) and
 
 ---
 
+## Subagents
+
+Subagents used to be global and fixed: six profiles (architect, backend,
+frontend, qa-tester, bug-hunter, diagnostician), the same Go/hexagonal/sqlc
+template regardless of the project. As of the agnostic-agents EPIC
+(SPEC-052), the `mneme-init` skill can instead **generate subagents
+per-project**, tailored to that project's own stack, through a conversational
+grill:
+
+```bash
+# Invoke the mneme-init skill (not a slash command), then walk its grill:
+#   0. fingerprint the repo (apps, stack markers) -- deterministic, no LLM
+#   1. elicit repo/org knowledge once (commit style, cross-cutting rules)
+#   2. propose roles + app<->role mapping, let the user adjust
+#   3. draft role x area x stack content for each role
+#   4. compose, validate, preview, and write .claude/agents/<role>.md
+```
+
+Every generated profile still inherits its `tools:` permission envelope from
+a fixed, Go-authored archetype (never LLM-generated) -- a generated `backend`
+subagent has exactly the capability boundary of the global one, just a
+project-specific system prompt. Projects that generate implementer subagents
+can additionally opt into the delegation-enforcement hook at **project
+scope** (`mneme delegation-hook enable`), independent of the global
+installation.
+
+The global six keep shipping unconditionally with every `mneme install
+claude-code` during this transition (a future release, SS-7, retires that
+default). See [docs/enforcement-model.md](docs/enforcement-model.md) for the
+two-layer detail and [docs/api/subagents.md](docs/api/subagents.md) for the
+6 `subagent_*` MCP tools (`mneme subagents` is the CLI counterpart).
+
+---
+
+## Team Memory
+
+Git-native, opt-in knowledge sharing between teammates -- no server, no
+account, no network call. Durable memories (decisions, conventions,
+architecture, patterns, bugfixes, rules) flow through the repository itself:
+
+```bash
+mneme team-memory enable      # creates .mneme/shared/, bakes+exports durable
+                               # memories, installs import hooks, prints a
+                               # privacy notice (always -- mneme cannot know
+                               # offline whether your remote is public)
+mneme promote <id>             # explicitly share any single memory (shared=2)
+```
+
+Writes are synchronous write-through (`mem_save`/`mem_update` materialize to
+`.mneme/shared/notes/<uuid>.md` immediately when active); reads happen via
+idempotent `post-merge`/`post-checkout` git hooks that import teammates'
+notes in the background. Semantic conflicts get a deterministic FTS5 count
+on import; judging them stays the same manual `mneme conflicts scan` step.
+See [docs/team-memory.md](docs/team-memory.md) for the full model
+(what's shared, conflicts, privacy) and [docs/api/memory.md](docs/api/memory.md)
+for `mem_promote`.
+
+---
+
 ## Enforcement
 
 Two independent layers keep agent roles honest:
@@ -266,7 +327,10 @@ See [docs/conflicts.md](docs/conflicts.md) and
 
 ## Commands
 
-33 top-level commands (`mneme --help` is the source of truth for flags; full flag reference in [docs/api/cli.md](docs/api/cli.md)):
+36 top-level commands (`mneme --help` is the source of truth for flags; full
+flag reference in [docs/api/cli.md](docs/api/cli.md)). Cobra's
+auto-generated `completion` is listed below for reference but not counted in
+that figure:
 
 | Command | Description |
 |---------|-------------|
@@ -275,6 +339,7 @@ See [docs/conflicts.md](docs/conflicts.md) and
 | `mneme get` | Retrieve a memory by ID |
 | `mneme update` | Update an existing memory |
 | `mneme forget` | Mark a memory for accelerated decay |
+| `mneme promote` | Mark a memory as team-curated (`shared=2`) |
 | `mneme stats` | Show memory store statistics |
 | `mneme status` | Show mneme status and project dashboard |
 | `mneme consolidate` | Run the memory consolidation pipeline |
@@ -293,6 +358,9 @@ See [docs/conflicts.md](docs/conflicts.md) and
 | `mneme skills` | Manage mneme skills in `~/.claude/skills/` (`list`, `install`, `pin`, `unpin`, `remove`, `lint`, `validate`) |
 | `mneme model` | Manage per-agent model assignments (`list`, `set`, `reset`) |
 | `mneme conflicts` | Detect and manage memory conflict relations (`candidates`, `scan`, `link`, `unlink`, `list`) |
+| `mneme subagents` | Generate and manage per-project subagent profiles (`fingerprint`, `profile`, `compose`, `write`, `manifest-list`) |
+| `mneme delegation-hook` | Register/inspect the project-scoped opt-in delegation-enforcement hook (`enable`, `disable`, `status`) |
+| `mneme team-memory` | Manage git-native team memory sharing (`enable`, `hooks install\|remove`) |
 | `mneme sync` | Sync memories via git (`export`, `import`, `status`) |
 | `mneme vault` | Manage the filesystem vault mirror (`export`, `import`) |
 | `mneme embed` | Manage memory embeddings for semantic search (`backfill`) |
@@ -308,13 +376,13 @@ See [docs/conflicts.md](docs/conflicts.md) and
 
 ## MCP Tools
 
-The MCP server (`mneme mcp`) exposes **57 tools** over JSON-RPC 2.0 stdio,
+The MCP server (`mneme mcp`) exposes **64 tools** over JSON-RPC 2.0 stdio,
 grouped by family. Each family has a full contract reference (params, returns,
 errors, examples) under [docs/api/](docs/api/):
 
 | Family | Count | What it covers | Reference |
 |--------|-------|-----------------|-----------|
-| `mem_*` | 14 | Save, search, update, relate, explore, and time-travel through memories | [docs/api/memory.md](docs/api/memory.md) |
+| `mem_*` | 15 | Save, search, update, relate, explore, promote, and time-travel through memories | [docs/api/memory.md](docs/api/memory.md) |
 | `backlog_*` | 4 | Raw idea → refined → promoted-to-spec lifecycle | [docs/api/sdd.md](docs/api/sdd.md) |
 | `spec_*` | 8 | Spec lifecycle: draft → speccing → ... → done, plus `quick`/`reject` shortcuts | [docs/api/sdd.md](docs/api/sdd.md) |
 | `lane_*` | 5 | Trivial-lane audit, reclassify, override, status, stats | [docs/api/sdd.md](docs/api/sdd.md) |
@@ -323,8 +391,9 @@ errors, examples) under [docs/api/](docs/api/):
 | `model_*` | 3 | Per-agent model alias assignment | [docs/api/models.md](docs/api/models.md) |
 | `conflicts_*` | 5 | Detect and manage memory conflict relations | [docs/api/conflicts.md](docs/api/conflicts.md) |
 | `init` | 1 | Apply managed blocks + drift report (project bootstrap) | [docs/api/sdd.md](docs/api/sdd.md) |
+| `subagent_*` | 6 | Fingerprint, compose, validate, and write per-project subagent profiles | [docs/api/subagents.md](docs/api/subagents.md) |
 
-14 + 4 + 8 + 5 + 10 + 7 + 3 + 5 + 1 = **57**.
+15 + 4 + 8 + 5 + 10 + 7 + 3 + 5 + 1 + 6 = **64**.
 
 ---
 
@@ -344,6 +413,8 @@ errors, examples) under [docs/api/](docs/api/):
 | Skills package manager | ✅ install/pin/lint/validate | ❌ | ❌ | ❌ |
 | Role enforcement | ✅ Capability + hook, 2 layers | ❌ | ❌ | ❌ |
 | Per-agent model assignment | ✅ `mneme model` | ❌ | N/A | N/A |
+| Per-project subagent generation | ✅ `mneme-init` grill | ❌ | N/A | N/A |
+| Team memory (git-native sharing) | ✅ Opt-in, no server | ❌ Manual merge | ❌ | ❌ Not designed for teams |
 | Agent-agnostic | ✅ MCP + HTTP + CLI | Claude only | Varies | Manual |
 | Local-only / no cloud | ✅ SQLite | ✅ File | Usually cloud | ✅ Files |
 | SDD lifecycle | ✅ Built-in, with lanes | ❌ | ❌ | ❌ |
@@ -362,6 +433,8 @@ errors, examples) under [docs/api/](docs/api/):
 | [Hooks Integration](docs/HOOKS.md) | Session hooks, pre-tool-use, migration from legacy |
 | [Vault](docs/VAULT.md) | Filesystem mirror, export/import, frontmatter spec |
 | [Obsidian Integration](docs/OBSIDIAN.md) | Using Obsidian as a front-end for mneme |
+| [Team Memory](docs/team-memory.md) | Git-native shared knowledge: what's shared, write-through, import hooks, conflicts, privacy |
+| [Enforcement Model](docs/enforcement-model.md) | Two-layer role enforcement, per-project subagent generation, opt-in delegation-hook |
 | [Configuration](docs/CONFIG.md) | All config sections, env overrides, tuning recipes |
 | [Memory Manifest](docs/MEMORY-MANIFEST.md) | Portable interchange format (JSON Schema 2020-12) |
 | [Technical Spec](docs/SPEC.md) | Original v0.1 specification |
@@ -403,16 +476,16 @@ errors, examples) under [docs/api/](docs/api/):
 
 **Dependency rule:** imports flow inward only. `model` (zero external deps) is the leaf. Frontends (`cli`, `mcp`, `http`) call `service`, which orchestrates `store`, `scoring`, `graph`, and `rules`. No frontend calls `store` or `db` directly.
 
-**Persistence:** two SQLite databases per host -- `~/.mneme/global.db` (global + org scope) and `~/.mneme/projects/<slug>.db` (project scope, slug from git remote). Schema v13 with 13 embedded migrations.
+**Persistence:** two SQLite databases per host -- `~/.mneme/global.db` (global + org scope) and `~/.mneme/projects/<slug>.db` (project scope, slug from git remote). Schema v14 with 14 embedded migrations.
 
-**Three frontends:** MCP (primary, 57 tools over stdio), HTTP (REST API at `:7437`, 10 endpoints under `/v1/` -- no SDD/codegraph/skills/model/conflicts parity yet), and CLI (Cobra, 33 commands).
+**Three frontends:** MCP (primary, 64 tools over stdio), HTTP (REST API at `:7437`, 10 endpoints under `/v1/` -- no SDD/codegraph/skills/model/conflicts/subagent parity yet), and CLI (Cobra, 36 commands).
 
 ---
 
 ## Status & Roadmap
 
-**Current: v1.17.0** -- schema v13, 57 MCP tools, 33 CLI commands, 10 HTTP endpoints.
-Full history in [CHANGELOG.md](CHANGELOG.md).
+**Current (main): schema v14, 64 MCP tools, 36 CLI commands, 10 HTTP endpoints.**
+Last tagged release: **v1.17.0**. Full history in [CHANGELOG.md](CHANGELOG.md).
 
 **Shipped:**
 
@@ -425,11 +498,14 @@ Full history in [CHANGELOG.md](CHANGELOG.md).
 | Models (v1.8.0) | Per-agent model alias assignment | Done |
 | Conflicts (v1.9.0) | FTS5 candidate detection + LLM judgment via `claude` CLI | Done |
 | `mneme install codex` (v1.17.0) | Single-agent OpenAI Codex CLI support | Done |
+| Agnostic agents (EPIC SPEC-052, SS-1..SS-6) | Per-project subagent generation via `mneme-init` grill, `subagent_*` tools, `mneme subagents`, project-scoped opt-in delegation-hook | Done |
+| Team Memory (EPIC SPEC-053, SS-A..SS-F) | Git-native shared knowledge: `shared`/`author` columns (schema v14), write-through, `mneme promote`, import hooks, `mneme team-memory enable` | Done |
 
 **Roadmap (honest gaps):**
 
+- **SS-7 -- retire the global subagent installation.** The six global subagent profiles still ship unconditionally with every `mneme install claude-code` during the agnostic-agents transition. A future release drops that default once per-project generation is the only supported path.
 - **CodeGraph C4-C7** -- remaining backlog items (further language coverage, deeper cross-package resolution beyond the current best-effort pass).
-- **HTTP parity** -- the REST API has no SDD/codegraph/skills/model/conflicts routes; MCP and CLI are ahead. Tracked as a deliberate gap, not an oversight (see [docs/api/http.md](docs/api/http.md) "HTTP parity gaps").
+- **HTTP parity** -- the REST API has no SDD/codegraph/skills/model/conflicts/subagent routes; MCP and CLI are ahead. Tracked as a deliberate gap, not an oversight (see [docs/api/http.md](docs/api/http.md) "HTTP parity gaps").
 - **TypeScript/JS type-inference ceiling** -- the CodeGraph JS/TS extractor resolves calls and imports but does not do full type inference; some dynamically-typed or heavily-generic call sites are not tracked. `codegraph_impact`/`codegraph_callees` are documented as best-effort, not exhaustive.
 
 ---
