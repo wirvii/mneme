@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"os"
 
-	_ "github.com/mattn/go-sqlite3"
+	// Register the sqlite driver. modernc.org/sqlite is a pure-Go transpilation
+	// of SQLite with FTS5 compiled in by default — no CGO, no C compiler, no
+	// build tags required.
+	_ "modernc.org/sqlite"
 )
 
 // ProbeGraph reports whether a codegraph DB at path has at least one node and
@@ -26,11 +29,11 @@ func ProbeGraph(path string) (hasNodes bool, lastUpdatedUnixMs int64, err error)
 	}
 
 	dsn := fmt.Sprintf(
-		"file:%s?mode=ro&_foreign_keys=ON&_busy_timeout=1000",
+		"file:%s?mode=ro&_pragma=foreign_keys(ON)&_pragma=busy_timeout(1000)",
 		path,
 	)
 
-	sqlDB, err := sql.Open("sqlite3", dsn)
+	sqlDB, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return false, 0, fmt.Errorf("codegraph: probe: open: %w", err)
 	}

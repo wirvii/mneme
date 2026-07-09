@@ -3,6 +3,7 @@ package db
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -160,5 +161,53 @@ VALUES
 
 	if title != "Test query title for FTS" {
 		t.Errorf("unexpected title returned by FTS5: %q", title)
+	}
+
+	// bm25() is the FTS5 ranking function used by internal/store/search.go and
+	// internal/store/conflicts.go. Under modernc.org/sqlite this must remain
+	// available and produce a real (non-zero) score, exactly as it did under
+	// mattn/go-sqlite3 — this is the paridad-FTS5 guardrail called out by AC4.
+	var score float64
+	err = db.QueryRow(
+		`SELECT bm25(memories_fts) FROM memories_fts WHERE memories_fts MATCH 'test query'`,
+	).Scan(&score)
+	if err != nil {
+		t.Fatalf("FTS5 bm25() query failed: %v", err)
+	}
+	if score == 0 {
+		t.Errorf("expected a non-zero bm25() score, got %v", score)
+	}
+}
+
+// TestPragmas_Effective verifies that the DSN pragma translation for modernc
+// (`_pragma=<name>(<val>)`) actually takes effect on the connection, not just
+// that sql.Open succeeds. journal_mode and foreign_keys are the two pragmas
+// whose silent failure would be most dangerous (R2 in SPEC-070): a lost WAL
+// mode changes locking behaviour, and lost foreign_keys silently drops
+// referential integrity.
+func TestPragmas_Effective(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "pragma-check.db")
+
+	opened, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open(%q): %v", dbPath, err)
+	}
+	defer opened.Close()
+
+	var journalMode string
+	if err := opened.QueryRow(`PRAGMA journal_mode`).Scan(&journalMode); err != nil {
+		t.Fatalf("PRAGMA journal_mode: %v", err)
+	}
+	if !strings.EqualFold(journalMode, "wal") {
+		t.Errorf("expected journal_mode=WAL, got %q", journalMode)
+	}
+
+	var foreignKeys int
+	if err := opened.QueryRow(`PRAGMA foreign_keys`).Scan(&foreignKeys); err != nil {
+		t.Fatalf("PRAGMA foreign_keys: %v", err)
+	}
+	if foreignKeys != 1 {
+		t.Errorf("expected foreign_keys=1 (ON), got %d", foreignKeys)
 	}
 }

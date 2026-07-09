@@ -7,9 +7,10 @@ import (
 	"os"
 	"path/filepath"
 
-	// Register the sqlite3 driver. CGO_ENABLED=1 is required; mattn/go-sqlite3
-	// is the only SQLite driver that reliably supports FTS5 and JSON1 extensions.
-	_ "github.com/mattn/go-sqlite3"
+	// Register the sqlite driver. modernc.org/sqlite is a pure-Go transpilation
+	// of SQLite with FTS5 compiled in by default — no CGO, no C compiler, no
+	// build tags required.
+	_ "modernc.org/sqlite"
 )
 
 //go:embed schema.sql
@@ -58,18 +59,18 @@ func OpenDB(path string) (*CodeGraphDB, error) {
 	if path == ":memory:" {
 		// In-memory databases need the foreign_keys pragma but not WAL mode or
 		// busy_timeout (no concurrent access is possible for in-memory DBs).
-		dsn = "file::memory:?_foreign_keys=ON"
+		dsn = "file::memory:?_pragma=foreign_keys(ON)"
 	} else {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			return nil, fmt.Errorf("codegraph: open db: create directory: %w", err)
 		}
 		dsn = fmt.Sprintf(
-			"file:%s?_journal_mode=WAL&_foreign_keys=ON&_busy_timeout=5000&_synchronous=NORMAL",
+			"file:%s?_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)",
 			path,
 		)
 	}
 
-	sqlDB, err := sql.Open("sqlite3", dsn)
+	sqlDB, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("codegraph: open db: %w", err)
 	}

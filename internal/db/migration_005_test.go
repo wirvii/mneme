@@ -11,7 +11,7 @@ import (
 // Used to set up controlled schema states for migration tests.
 func openRawMemory(t *testing.T) *sql.DB {
 	t.Helper()
-	sqlDB, err := sql.Open("sqlite3", "file::memory:?_foreign_keys=ON")
+	sqlDB, err := sql.Open("sqlite", "file::memory:?_pragma=foreign_keys(ON)")
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

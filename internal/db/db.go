@@ -15,9 +15,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	// Register the sqlite3 driver. CGO_ENABLED=1 is required; mattn/go-sqlite3
-	// is the only SQLite driver that reliably supports FTS5 and JSON1 extensions.
-	_ "github.com/mattn/go-sqlite3"
+	// Register the sqlite driver. modernc.org/sqlite is a pure-Go transpilation
+	// of SQLite with FTS5 compiled in by default — no CGO, no C compiler, no
+	// build tags required.
+	_ "modernc.org/sqlite"
 )
 
 // DB is a thin wrapper around *sql.DB that guarantees the connection was opened
@@ -44,11 +45,11 @@ func Open(path string) (*DB, error) {
 	}
 
 	dsn := fmt.Sprintf(
-		"file:%s?_journal_mode=WAL&_foreign_keys=ON&_busy_timeout=5000&_synchronous=NORMAL",
+		"file:%s?_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)",
 		path,
 	)
 
-	sqlDB, err := sql.Open("sqlite3", dsn)
+	sqlDB, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("db: open: %w", err)
 	}
@@ -74,7 +75,7 @@ func Open(path string) (*DB, error) {
 // Foreign key enforcement is enabled; WAL mode and busy_timeout are omitted
 // because in-memory databases are inherently single-process.
 func OpenMemory() (*DB, error) {
-	sqlDB, err := sql.Open("sqlite3", "file::memory:?_foreign_keys=ON")
+	sqlDB, err := sql.Open("sqlite", "file::memory:?_pragma=foreign_keys(ON)")
 	if err != nil {
 		return nil, fmt.Errorf("db: open memory: %w", err)
 	}
@@ -121,8 +122,8 @@ func SchemaVersion(path string) (int, error) {
 		return 0, nil
 	}
 
-	dsn := fmt.Sprintf("file:%s?mode=ro&_foreign_keys=ON", path)
-	sqlDB, err := sql.Open("sqlite3", dsn)
+	dsn := fmt.Sprintf("file:%s?mode=ro&_pragma=foreign_keys(ON)", path)
+	sqlDB, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return 0, fmt.Errorf("db: schema version: open: %w", err)
 	}
@@ -160,11 +161,11 @@ func OpenReadOnly(path string) (*DB, error) {
 	}
 
 	dsn := fmt.Sprintf(
-		"file:%s?mode=ro&_foreign_keys=ON&_busy_timeout=1000",
+		"file:%s?mode=ro&_pragma=foreign_keys(ON)&_pragma=busy_timeout(1000)",
 		path,
 	)
 
-	sqlDB, err := sql.Open("sqlite3", dsn)
+	sqlDB, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("db: open read-only: %w", err)
 	}
