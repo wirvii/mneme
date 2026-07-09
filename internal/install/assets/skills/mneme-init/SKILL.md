@@ -1,7 +1,7 @@
 ---
 name: mneme-init
 description: "Use once to bootstrap a project with mneme, or to refresh/onboard it later. Single project-level entry point: seeds foundational repo knowledge into memory, applies mneme's managed CLAUDE.md blocks (replacing the native /init), and offers three independent opt-in steps — per-project subagent generation via a 5-phase grill, codegraph indexing, and shared team memory. Trigger keywords: mneme-init, initialize mneme, onboard this repo, generate subagents, set up codegraph."
-version: 1.0.0
+version: 1.1.0
 pinned: false
 ---
 
@@ -44,6 +44,7 @@ Use this skill when:
 - Run `mneme skills lint mneme-init` to confirm the structural format (5 sections, 3-column Automated Checks table, semver, name==directory).
 - After the core step: `mneme init --check` (or the `init` MCP tool with `check:true`) should report the managed block present and list any drift findings.
 - After the subagent grill: `subagent_manifest_list` should list the newly written roles with their `engine`/`areas`/`checksum`.
+- After enabling the delegation hook: `mneme delegation-hook status` should print `enabled: <repo>/.claude/settings.json`.
 - After the codegraph opt-in: `mneme codegraph status` should report a non-zero file/symbol count for the repo.
 - Before reporting completion, confirm with the user that each opt-in step's outcome (done / skipped / deferred) matches what they asked for.
 
@@ -72,7 +73,7 @@ Only if the user opts in. Uses the `subagent_*` MCP tools exclusively:
 
 7. For each role, call `subagent_compose` with `role`, `archetype`, `areas_layer3_md`, and `profile_json` (from Phases 1-2), then show the user the preview.
 8. On confirmation, call `subagent_write` with the same `role`/`archetype` and the (possibly user-edited) `composed_md`, plus `areas` and `engine` (defaults to `passthrough`).
-9. AFTER at least one implementer role (`backend`, `frontend`, or `bug-hunter` archetype) has been written, OFFER the delegation-enforcement hook: ask the user if they want strict orchestrator/subagent separation for this project. Record the answer via the `enforcement_hook` parameter on `subagent_write` (persisted in the manifest). The two-layer enforcement itself currently ships from the GLOBAL `mneme install claude-code` (transitional, per the agnostic-agents design) — if the user says yes and hasn't run that yet, tell them to.
+9. AFTER at least one implementer role (`backend`, `frontend`, or `bug-hunter` archetype) has been written, OFFER the delegation-enforcement hook: ask the user if they want strict orchestrator/subagent separation for THIS project. If yes, run `mneme delegation-hook enable` (registers the two PreToolUse entries in THIS project's `.claude/settings.json` — requires `~/.claude/hooks/enforce_delegation.sh` to already exist, i.e. the user has run `mneme install claude-code` at least once; if it's missing, tell them to run that first). Record the answer via the `enforcement_hook` parameter on `subagent_write` (persisted in the manifest) regardless of outcome. `mneme delegation-hook status` reports whether it is currently registered; `mneme delegation-hook disable` removes it. Layer 1 (the capability allowlist baked into the generated profile) always applies to the subagents themselves, independent of this opt-in Layer 2 hook.
 10. Call `subagent_manifest_list` at the end to confirm what was written.
 
 ### Step 2 — Opt-in: codegraph indexing
