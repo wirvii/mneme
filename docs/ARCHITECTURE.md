@@ -168,16 +168,17 @@ internal/
   gitident/             -- leaf: resolves local git identity ("Name <email>") to
                            attribute team-memory notes (SPEC-053 D7)
   managedblock/         -- marker-fenced idempotent block upsert primitive shared by
-                           mneme's installers (agent profiles, hooks, CLAUDE.md blocks)
+                           mneme's installers (hooks, CLAUDE.md/operating-manual blocks)
   frontmatter/          -- surgical YAML frontmatter editor for agent .md files;
                            fixes known keys (name, description, model, tools,
                            permissionMode), preserves every other byte verbatim
   mcp/                  -- MCP server (JSON-RPC 2.0 over stdio, 64 tools)
   http/                 -- REST API (stdlib net/http, 10 endpoints under /v1/)
   cli/                  -- Cobra commands (36 top-level commands)
-  install/              -- global agent profile installer (6 subagent profiles,
-                           transitional -- see docs/enforcement-model.md) + slash
-                           commands + skills embed
+  install/              -- agent installer: MCP config, hooks, operating manual,
+                           slash commands, skills embed. Since SPEC-073 it does
+                           NOT install global agent profiles (removes legacy ones);
+                           subagents are per-project via the mneme-init grill
   tui/                  -- Bubble Tea interface (list, stats)
   upgrade/              -- self-upgrade checker
   export/               -- markdown export (rendering only, no filesystem)

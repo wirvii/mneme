@@ -1021,7 +1021,7 @@ mneme serve --addr :8080
 
 ### mneme install
 
-Configures an agent (`claude-code` or `codex`) to use mneme: MCP registration, session hooks, memory protocol, workflow templates, bundled skills, per-agent model assignment (Claude only). Idempotent.
+Configures an agent (`claude-code` or `codex`) to use mneme: MCP registration, session hooks, memory protocol, workflow templates, bundled skills. Since SPEC-073 it does **not** install global agent profiles (and removes any it installed in the past); subagents are generated per-project by the `mneme-init` grill. Idempotent.
 
 ```bash
 mneme install claude-code

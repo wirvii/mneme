@@ -50,7 +50,7 @@ cli/  mcp/  http/        ← three frontends (Cobra, JSON-RPC stdio, REST)
 
 **Dependency rule:** imports flow inward only. `model` has no external deps. Adapters (`store`, `mcp`, `http`, `cli`) sit at the edges and are swappable. Don't let frontends call `store` or `db` directly — go through `service`.
 
-Supporting packages: `scoring/` (decay, BM25 re-ranking, RRF fusion), `consolidation/` (background decay/dedup/budget sweeps + edge decay), `graph/` (Hebbian auto-strengthening: AccessTracker ring buffer + HebbianWorkerPool async worker), `rules/` (applies_to pattern matching engine for pre-tool-use hook), `enforcement/` (leaf: pure orchestrator-guard decision logic for `mneme hook enforce-delegation` — stdlib + `internal/shell` only, no internal deps, SPEC-069), `embed/` (TF-IDF baseline), `sync/` (JSONL.gz git-shareable export/import), `project/` (git-remote slug detection), `config/` (TOML + env overrides), `install/` (agent profile installer + skills embed), `skill/` (leaf: SKILL.md parser, structural linter, validate runner — no internal deps), `conflicts/` (leaf: deterministic FTS5 candidate extraction + LLM judgment via claude CLI subprocess — no internal deps), `tui/` (Bubble Tea), `upgrade/`, `export/`.
+Supporting packages: `scoring/` (decay, BM25 re-ranking, RRF fusion), `consolidation/` (background decay/dedup/budget sweeps + edge decay), `graph/` (Hebbian auto-strengthening: AccessTracker ring buffer + HebbianWorkerPool async worker), `rules/` (applies_to pattern matching engine for pre-tool-use hook), `enforcement/` (leaf: pure orchestrator-guard decision logic for `mneme hook enforce-delegation` — stdlib + `internal/shell` only, no internal deps, SPEC-069), `embed/` (TF-IDF baseline), `sync/` (JSONL.gz git-shareable export/import), `project/` (git-remote slug detection), `config/` (TOML + env overrides), `install/` (agent installer: MCP/hooks/manual/commands/skills — no global agent profiles since SPEC-073), `skill/` (leaf: SKILL.md parser, structural linter, validate runner — no internal deps), `conflicts/` (leaf: deterministic FTS5 candidate extraction + LLM judgment via claude CLI subprocess — no internal deps), `tui/` (Bubble Tea), `upgrade/`, `export/`.
 
 ### The three frontends
 
@@ -203,7 +203,8 @@ mneme model list                    # show effective model + origin for each age
 mneme model set bug-hunter opus     # override one agent
 mneme model reset bug-hunter        # remove override, restore default
 mneme model reset                   # remove all overrides
-mneme install claude-code           # apply current model assignments
+# (since SPEC-073 install no longer writes global agents, so overrides no
+#  longer rewrite ~/.claude/agents; per-project subagents pick model at grill time)
 ```
 
 **Rules:**

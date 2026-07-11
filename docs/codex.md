@@ -90,9 +90,9 @@ future spec when the skills service is made agent-aware.
 | Session hooks file | `~/.claude/settings.json` | `~/.codex/hooks.json` |
 | Hook trust | Automatic | Requires `/hooks` in Codex TUI |
 | Operating manual | `~/.claude/CLAUDE.md` | `~/.codex/AGENTS.md` |
-| Agent profiles | `~/.claude/agents/*.md` | None (single-agent) |
+| Agent profiles | None global (per-project via `mneme-init` grill; SPEC-073) | None (single-agent) |
 | Delegation hook | Yes (enforces roles) | None |
 | Slash commands | `/mneme-init` (thin wrapper invoking the `mneme-init` skill) | None (deprecated in Codex) |
 | Skills path | `~/.claude/skills/` | `$HOME/.agents/skills/` |
-| Model assignments | Applied to agent profiles | Skipped (no profiles) |
+| Model assignments | Per-project at grill time (`subagent_compose`) | Skipped (no profiles) |
 | Role model | Multi-agent (orchestrator + implementers) | Single-agent |

@@ -694,7 +694,12 @@ a fixed Go/hexagonal/sqlc template — see
 for the model and the `subagent_*` MCP tools /
 [docs/api/subagents.md](api/subagents.md) for the generation API.
 
-### Subagent profiles (global, transitional)
+### Built-in role archetypes
+
+These six roles are the canonical archetypes mneme ships as assets
+(`internal/install/assets/agents/*.md`), consumed by per-project subagent
+generation. Since SPEC-073 they are **no longer installed globally** to
+`~/.claude/agents/` — the table below documents the roles, not files on disk.
 
 | Agent | Model | Role | Writes |
 |-------|-------|------|--------|
@@ -705,7 +710,7 @@ for the model and the `subagent_*` MCP tools /
 | **bug-hunter** | sonnet | READ-ONLY investigation, never modifies code | `diagnosis.md` |
 | **diagnostician** | sonnet | Reads logs/infra, triages, proposes; `Bash` for reading only, no Edit/Write | `diagnosis` notes |
 
-All agents integrate with mneme memory at start (search + spec_status) and end (save discoveries + spec_advance). Per-agent model overrides: `mneme model set <agent> <alias>` (see [docs/models.md](models.md)).
+All agents integrate with mneme memory at start (search + spec_status) and end (save discoveries + spec_advance). Model per role is chosen when the `mneme-init` grill composes a per-project subagent (`subagent_compose`); `mneme model set/list/reset` still manages the `[models.overrides]` config (see [docs/models.md](models.md)).
 
 ### Per-project subagents (mneme-init grill)
 
@@ -825,7 +830,7 @@ spec_advance({ "id": "SPEC-042", "by": "architect" })
 |---------|-------------|
 | `mneme mcp` | Start MCP server (stdio) |
 | `mneme serve --addr :7437` | Start HTTP API |
-| `mneme install claude-code` | Configure agent profiles + hooks |
+| `mneme install claude-code` | Configure MCP, hooks, manual + skills (no global agent profiles) |
 | `mneme init` | Migrate legacy projects to SDD engine |
 | `mneme consolidate` | Run consolidation pipeline manually |
 | `mneme embed backfill` | Generate embeddings for memories without one |
