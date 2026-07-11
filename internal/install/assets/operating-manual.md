@@ -68,6 +68,22 @@ State machine: `backlog_add` → refine → `backlog_promote` → `spec_advance`
 `spec_reject` bounces a failed QA review back to implementing for fixes.
 `spec_pushback` pauses a spec at `needs_grill` until the orchestrator resolves ambiguity.
 
+**Human approval gate (unbreakable).** Between a spec being *designed* (`specced`)
+and advancing it to `planning`/`implementing`, there is a MANDATORY human approval
+gate:
+- The `architect` NEVER calls `spec_advance` past `speccing` — it designs and hands
+  the spec back; it does not advance.
+- The orchestrator presents the COMPLETE spec to the human and WAITS for EXPLICIT
+  approval before advancing past `specced`.
+- Answering design questions or resolving decisions is NOT spec approval. Approval
+  must be explicit and about the spec as a whole.
+- Only exception: the human explicitly authorizes skipping the gate for one specific
+  BL/spec. That authorization applies once, to that spec only — it is never inherited
+  and never becomes a default. Every new SDD flow requires the gate again.
+
+This is a process gate held by orchestrator discipline (like the merge/tag/push and
+QA-zero-observations gates), not a hook — a file-write hook cannot enforce it.
+
 ## 5. Skills
 
 Check installed skills before implementing: `mneme skills list`.

@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [v1.23.0] — 2026-07-11 — share-by-default team memory + unbreakable human-approval gate (SPEC-071, SPEC-072)
+
 ### Changed
 
 - **Team-memory auto-share policy inverted from allow-list to deny-list
@@ -19,6 +21,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   that predate this change. No API/schema changes — `SaveRequest.Shared`
   overrides continue to work in both directions (opt-out an auto-shared
   type, opt-in an excluded one).
+- **Operating manuals now declare the unbreakable human-approval gate**
+  (SPEC-072) — both `operating-manual.md` (§4 SDD + lanes) and
+  `operating-manual-codex.md` (§3 SDD + lanes) spell out that a spec must
+  never advance past `specced` into `planning`/`implementing` without
+  explicit human approval of the complete spec. The `architect` never calls
+  `spec_advance` past `speccing`; answering design questions is not
+  approval; any authorization to skip the gate is one-time and never
+  inherited. This is a process gate enforced by orchestrator/agent
+  discipline, not a hook — the equivalent DB rule (`019f5229`) was removed
+  because a file-write hook cannot enforce a process-level gate.
 
 ## [v1.22.0] — 2026-07-09 — `go install` support: pure-Go driver + module path aligned (SPEC-070)
 
