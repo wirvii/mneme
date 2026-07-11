@@ -26,11 +26,11 @@ type TeamMemoryEnableResult struct {
 	// message.
 	AlreadyEnabled bool
 
-	// Baked is the number of pre-existing memories of a durable type
-	// (SPEC-053 D2: decision/convention/architecture/pattern/bugfix/rule)
-	// that were still local-only (shared=0) and were upgraded to shared=1 by
-	// this run, so knowledge saved before team-memory existed does not stay
-	// hidden from the team.
+	// Baked is the number of pre-existing memories of an auto-shared type
+	// (SPEC-071 share-by-default: every project-scoped type except synthesis
+	// and session_summary) that were still local-only (shared=0) and were
+	// upgraded to shared=1 by this run, so knowledge saved before team-memory
+	// existed does not stay hidden from the team.
 	Baked int
 
 	// Exported is the number of memories (freshly baked this run, or already
@@ -44,10 +44,11 @@ type TeamMemoryEnableResult struct {
 //  1. Ensures <repoRoot>/.mneme/shared/ exists with its .mneme-vault marker
 //     (idempotent — an existing marker is left untouched, matching
 //     vault.Writer's project-mismatch guard).
-//  2. Bakes shared=1 onto every pre-existing durable-type memory that is
-//     still local-only (SPEC-053 D2) — otherwise only memories saved AFTER
-//     enabling would ever reach the team, leaving already-durable knowledge
-//     stranded.
+//  2. Bakes shared=1 onto every pre-existing auto-shared-type memory that is
+//     still local-only (SPEC-071 share-by-default: every project-scoped type
+//     except synthesis and session_summary) — otherwise only memories saved
+//     AFTER enabling would ever reach the team, leaving already-persistent
+//     knowledge stranded.
 //  3. Materializes every shared memory (freshly baked or already shared) to
 //     notes/<uuid>.md using the same PathModeUUID layout write-through
 //     materialization uses (SPEC-062 SS-B).
@@ -98,7 +99,7 @@ func (svc *MemoryService) EnableTeamMemory(ctx context.Context, repoRoot string)
 	})
 
 	for _, m := range memories {
-		if !durableSharedTypes[m.Type] {
+		if !autoSharedType(m.Type) {
 			continue
 		}
 

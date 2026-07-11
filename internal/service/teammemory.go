@@ -20,22 +20,19 @@ import (
 // current process (SPEC-053 D3) — there is no other config flag.
 const sharedVaultRelDir = "shared"
 
-// durableSharedTypes is the set of memory types that are auto-shared
-// (Shared=1) when team-memory is active and the caller does not explicitly
-// override SaveRequest.Shared (SPEC-053 D2). Ephemeral types
-// (session_summary, synthesis) and everyday working notes (discovery, config)
-// are excluded — durability of the knowledge is the bar for defaulting to
-// "share this with the team automatically". discovery/config/session_summary
-// are effectively never auto-shared; a human can still opt one in explicitly
-// via SaveRequest.Shared (team-curated promotion is SS-C scope).
-var durableSharedTypes = map[model.MemoryType]bool{
-	model.TypeDecision:     true,
-	model.TypeConvention:   true,
-	model.TypeArchitecture: true,
-	model.TypePattern:      true,
-	model.TypeBugfix:       true,
-	model.TypeRule:         true,
+// nonSharedTypes are the only memory types NEVER auto-shared to the team
+// vault: synthesis (auto-generated cluster overviews each peer regenerates)
+// and session_summary (ephemeral, verbose). Every other project-scoped type
+// is human-authored persistent knowledge and shares by default (SPEC-071).
+var nonSharedTypes = map[model.MemoryType]bool{
+	model.TypeSynthesis:      true,
+	model.TypeSessionSummary: true,
 }
+
+// autoSharedType reports whether a project-scoped memory of type t is
+// auto-shared to the team vault by default. Policy is share-by-default
+// (SPEC-071): only auto-generated/ephemeral types are excluded.
+func autoSharedType(t model.MemoryType) bool { return !nonSharedTypes[t] }
 
 // teamMemoryState is resolved once at MemoryService construction time (D3)
 // and cached for the process lifetime — repeated Save/Update calls never
@@ -121,16 +118,19 @@ func materializeSuppressed(ctx context.Context) bool {
 	return v
 }
 
-// bakeSharedDefault computes the auto-share default (SPEC-053 D2) for a
-// memory of the given type and scope, used when the caller does not
-// explicitly set SaveRequest.Shared. Global- and org-scoped memories
-// (personal preferences, cross-project config) are never auto-shared
-// regardless of type — team-memory only concerns project knowledge.
+// bakeSharedDefault computes the auto-share default (SPEC-053 D2, policy
+// inverted to share-by-default by SPEC-071) for a memory of the given type
+// and scope, used when the caller does not explicitly set
+// SaveRequest.Shared. Global- and org-scoped memories (personal preferences,
+// cross-project config) are never auto-shared regardless of type —
+// team-memory only concerns project knowledge. Within project scope, every
+// type shares by default except the two excluded by autoSharedType
+// (synthesis, session_summary).
 func bakeSharedDefault(t model.MemoryType, scope model.Scope) int {
 	if scope == model.ScopeGlobal || scope == model.ScopeOrg {
 		return 0
 	}
-	if durableSharedTypes[t] {
+	if autoSharedType(t) {
 		return 1
 	}
 	return 0
