@@ -250,6 +250,39 @@ func TestSave_TeamMemoryActive_ExplicitSharedOverride(t *testing.T) {
 	}
 }
 
+// TestSave_TeamMemoryActive_ExplicitSharedOverride_OptIn verifies the other
+// direction of SPEC-071 AC4: an explicit SaveRequest.Shared=1 opts an
+// otherwise-excluded type (session_summary) into auto-share and
+// materialization, overriding autoSharedType's default of 0.
+func TestSave_TeamMemoryActive_ExplicitSharedOverride_OptIn(t *testing.T) {
+	svc, repoDir := newRepoTestService(t, true)
+	ctx := context.Background()
+
+	one := 1
+	resp, err := svc.Save(ctx, model.SaveRequest{
+		Title:   "Opt in an excluded type for this one session summary",
+		Content: "Content",
+		Type:    model.TypeSessionSummary,
+		Shared:  &one,
+	})
+	if err != nil {
+		t.Fatalf("Save: unexpected error: %v", err)
+	}
+
+	mem, err := svc.Get(ctx, resp.ID)
+	if err != nil {
+		t.Fatalf("Get: unexpected error: %v", err)
+	}
+	if mem.Shared != 1 {
+		t.Errorf("explicit Shared=1 override should be honoured, got %d", mem.Shared)
+	}
+
+	path := sharedVaultFile(repoDir, resp.ID)
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("an explicit opt-in must be materialized, but stat failed: %v", err)
+	}
+}
+
 func TestSave_TeamMemoryActive_ResaveRewritesSameFile(t *testing.T) {
 	svc, repoDir := newRepoTestService(t, true)
 	ctx := context.Background()
@@ -423,25 +456,25 @@ func TestSave_SuppressedContext_NeverMaterializes(t *testing.T) {
 }
 
 // TestPromote_TeamMemoryActive_PersistsAndMaterializes verifies the SPEC-063
-// SS-C contract: promoting a non-durable memory (config, which never
-// auto-shares) sets shared=2 durably in the database — reloaded via a fresh
-// Get, not just held in memory — and, because team-memory is active,
-// materializes it to the shared vault immediately.
+// SS-C contract: promoting a non-auto-shared memory (synthesis, excluded by
+// SPEC-071's share-by-default policy) sets shared=2 durably in the database —
+// reloaded via a fresh Get, not just held in memory — and, because
+// team-memory is active, materializes it to the shared vault immediately.
 func TestPromote_TeamMemoryActive_PersistsAndMaterializes(t *testing.T) {
 	svc, repoDir := newRepoTestService(t, true)
 	ctx := context.Background()
 
 	resp, err := svc.Save(ctx, model.SaveRequest{
-		Title:   "A config note that would never auto-share",
-		Content: "Non-durable types never bake to Shared=1.",
-		Type:    model.TypeConfig,
+		Title:   "A synthesis note that would never auto-share",
+		Content: "Excluded types never bake to Shared=1.",
+		Type:    model.TypeSynthesis,
 	})
 	if err != nil {
 		t.Fatalf("Save: unexpected error: %v", err)
 	}
 
-	// Precondition: config is not a durable type, so it must not have been
-	// auto-shared or materialized by Save.
+	// Precondition: synthesis is excluded from auto-share, so it must not
+	// have been auto-shared or materialized by Save.
 	pre, err := svc.Get(ctx, resp.ID)
 	if err != nil {
 		t.Fatalf("Get before Promote: unexpected error: %v", err)

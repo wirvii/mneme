@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/wirvii/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/service"
 	"github.com/wirvii/mneme/internal/store"
 )
 
@@ -213,11 +214,14 @@ func TestImportFromShared_UpdatesExistingByID_ForcesFrontmatterFields(t *testing
 	ctx := context.Background()
 
 	// Use WithSuppressMaterialize so this setup Save doesn't write a vault
-	// file of its own that could confuse the later file-count reasoning.
-	resp, err := svc.Save(ctx, model.SaveRequest{
+	// file of its own that could confuse the later file-count reasoning
+	// (SPEC-071: discovery now auto-shares by default, so without this guard
+	// Save itself would materialize a file before the test's writeSharedNote
+	// overwrites it).
+	resp, err := svc.Save(service.WithSuppressMaterialize(ctx), model.SaveRequest{
 		Title:   "Original title",
 		Content: "Original content",
-		Type:    model.TypeDiscovery, // non-durable: Shared stays 0 so we can see the import force it.
+		Type:    model.TypeDiscovery, // auto-shares to 1 (SPEC-071); the import below forces it to 2 regardless.
 	})
 	if err != nil {
 		t.Fatalf("Save: %v", err)
@@ -265,10 +269,15 @@ func TestImportFromShared_SkipsWhenDBNewer(t *testing.T) {
 	svc, repoDir := newRepoTestService(t, true)
 	ctx := context.Background()
 
+	// Explicit Shared=0 override (SPEC-071: discovery auto-shares to 1 by
+	// default now) so the test can assert a skipped import leaves an
+	// intentionally-local memory's Shared field untouched.
+	zero := 0
 	resp, err := svc.Save(ctx, model.SaveRequest{
 		Title:   "Local, newer title",
 		Content: "Local, newer content",
 		Type:    model.TypeDiscovery,
+		Shared:  &zero,
 	})
 	if err != nil {
 		t.Fatalf("Save: %v", err)

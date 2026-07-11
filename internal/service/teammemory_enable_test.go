@@ -76,16 +76,68 @@ func TestEnableTeamMemory_CreatesMarkerAndBakesExistingDurables(t *testing.T) {
 	}
 }
 
-// TestEnableTeamMemory_SkipsNonDurableTypes verifies that a non-durable
-// memory (discovery) is never baked or exported by EnableTeamMemory.
+// TestEnableTeamMemory_BakesPreexistingDiscoveryConfigPreference verifies
+// SPEC-071 AC6: re-running EnableTeamMemory retroactively elevates
+// discovery/config/preference memories saved before the share-by-default
+// policy took effect (or before team-memory was ever enabled) to shared=1
+// and exports them, exactly like the pre-existing durable types already
+// covered by TestEnableTeamMemory_CreatesMarkerAndBakesExistingDurables.
+func TestEnableTeamMemory_BakesPreexistingDiscoveryConfigPreference(t *testing.T) {
+	svc, repoDir := newRepoTestService(t, false)
+	ctx := context.Background()
+
+	types := []model.MemoryType{model.TypeDiscovery, model.TypeConfig, model.TypePreference}
+	ids := make([]string, 0, len(types))
+	for _, typ := range types {
+		resp, err := svc.Save(ctx, model.SaveRequest{
+			Title:   "Pre-existing " + string(typ),
+			Content: "Saved before team-memory was enabled.",
+			Type:    typ,
+		})
+		if err != nil {
+			t.Fatalf("Save(%s): unexpected error: %v", typ, err)
+		}
+		ids = append(ids, resp.ID)
+	}
+
+	result, err := svc.EnableTeamMemory(ctx, repoDir)
+	if err != nil {
+		t.Fatalf("EnableTeamMemory: unexpected error: %v", err)
+	}
+	if result.Baked != len(types) {
+		t.Errorf("expected Baked=%d, got %d", len(types), result.Baked)
+	}
+	if result.Exported != len(types) {
+		t.Errorf("expected Exported=%d, got %d", len(types), result.Exported)
+	}
+
+	for i, id := range ids {
+		reloaded, err := svc.Get(ctx, id)
+		if err != nil {
+			t.Fatalf("Get(%s): unexpected error: %v", types[i], err)
+		}
+		if reloaded.Shared != 1 {
+			t.Errorf("%s: expected persisted Shared=1 after enable, got %d", types[i], reloaded.Shared)
+		}
+
+		path := sharedVaultFile(repoDir, id)
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("%s: expected exported vault file at %s: %v", types[i], path, err)
+		}
+	}
+}
+
+// TestEnableTeamMemory_SkipsNonDurableTypes verifies that a memory of an
+// excluded type (synthesis, SPEC-071's share-by-default exception) is never
+// baked or exported by EnableTeamMemory.
 func TestEnableTeamMemory_SkipsNonDurableTypes(t *testing.T) {
 	svc, repoDir := newRepoTestService(t, false)
 	ctx := context.Background()
 
 	resp, err := svc.Save(ctx, model.SaveRequest{
-		Title:   "A discovery",
-		Content: "Not a durable type.",
-		Type:    model.TypeDiscovery,
+		Title:   "A synthesis note",
+		Content: "Excluded from auto-share.",
+		Type:    model.TypeSynthesis,
 	})
 	if err != nil {
 		t.Fatalf("Save: unexpected error: %v", err)
@@ -96,12 +148,12 @@ func TestEnableTeamMemory_SkipsNonDurableTypes(t *testing.T) {
 		t.Fatalf("EnableTeamMemory: unexpected error: %v", err)
 	}
 	if result.Baked != 0 || result.Exported != 0 {
-		t.Errorf("expected Baked=0 and Exported=0 for a non-durable type, got Baked=%d Exported=%d", result.Baked, result.Exported)
+		t.Errorf("expected Baked=0 and Exported=0 for an excluded type, got Baked=%d Exported=%d", result.Baked, result.Exported)
 	}
 
 	path := sharedVaultFile(repoDir, resp.ID)
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Errorf("a non-durable memory must never be exported, but found %s", path)
+		t.Errorf("an excluded-type memory must never be exported, but found %s", path)
 	}
 }
 
