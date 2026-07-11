@@ -4,10 +4,12 @@
 [docs/models.md](../models.md) (defaults, apply-on-install flow,
 cross-provider scope). Index: [docs/API.md](../API.md).
 
-Assignments are stored in `~/.mneme/config.toml` under `[models.overrides]`
-and applied to `~/.claude/agents/<agent>.md` on every
-`mneme install claude-code`. Changes made through these tools require a
-follow-up `mneme install claude-code` to take effect on agent files.
+Assignments are stored in `~/.mneme/config.toml` under `[models.overrides]`.
+Since SPEC-073, `mneme install claude-code` no longer installs global agent
+profiles, so these assignments do not change any file under `~/.claude/agents/`
+by default; per-project subagents pick their model at generation time via the
+`mneme-init` grill (`subagent_compose`). The config remains the source of
+truth for any future agent that uses a per-profile directory.
 
 ---
 

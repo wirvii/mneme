@@ -112,7 +112,7 @@ rules engine's DB access) and decides:
 | Absent, or present but empty `[]` | (any) | **BLOCK** ("legacy") — deny-by-default, protects projects that have not run the `mneme-init` grill yet |
 | Hard failure (config/DB unreadable, corrupt JSON) | (any) | **ALLOW** — fail-open, consistent with the rest of this hook |
 
-This makes retiring the six global subagents (a future release) non-destructive:
+This made retiring the six global subagents (done in SPEC-073) non-destructive:
 a project that never ran the grill has no manifest, so every non-whitelisted
 edit keeps blocking exactly as it does today; a project with a partial manifest
 only blocks the areas that actually have a delegate, letting the orchestrator
@@ -245,7 +245,11 @@ subagents.
 5. If implementer: add `permissionMode: bypassPermissions` with the comment
    explaining why it is intentional.
 6. Update this document with the new agent.
-7. Run `mneme install claude-code` to deploy the updated agents.
+7. Rebuild mneme (`make build`). The asset is the canonical role/permission
+   source consumed by per-project subagent generation (`internal/subagents`);
+   as of SPEC-073 `mneme install claude-code` no longer deploys agent files
+   globally, so there is nothing to "install" — the new role becomes available
+   to the `mneme-init` grill.
 8. Add tests in `internal/install/install_test.go` following the patterns of
    `TestAgentAssets_ReadOnlyAllowlists` and `TestAgentAssets_ImplementerAllowlists`.
 

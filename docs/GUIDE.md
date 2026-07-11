@@ -681,16 +681,17 @@ mneme sync import .mneme/sync/wirvii-mneme.jsonl.gz
 
 ## 11. Agent Ecosystem
 
-`mneme install claude-code` still ships **six global subagent profiles** and
-four slash commands, as it always has. As of the agnostic-agents EPIC
-(SPEC-052, SS-1..SS-6), this is a **transitional** state: subagents are now
-meant to be generated **per-project** by the `mneme-init` skill's grill
-instead, so a project's agents actually match its own stack rather than a
-fixed Go/hexagonal/sqlc template. The global six keep shipping unconditionally
-"every release" until SS-7 (a future, separate release) retires that global
-registration in favor of the per-project model exclusively — see
+`mneme install claude-code` installs slash commands, hooks, the operating
+manual, and skills — but **no longer ships global subagent profiles**. As of
+SPEC-073 (completing the agnostic-agents EPIC, SPEC-052 SS-7), the six global
+profiles that earlier releases wrote to `~/.claude/agents/` are retired:
+install no longer writes them and actively removes any it installed in the past
+(only the ones still byte-identical to what mneme shipped — a customised profile
+is left untouched). Subagents are now generated **per-project** by the
+`mneme-init` skill's grill, so a project's agents match its own stack rather than
+a fixed Go/hexagonal/sqlc template — see
 [docs/enforcement-model.md](enforcement-model.md#project-scoped-opt-in-registration-epic-agnostic-agents-ss-6)
-for the transition detail and the `subagent_*` MCP tools /
+for the model and the `subagent_*` MCP tools /
 [docs/api/subagents.md](api/subagents.md) for the generation API.
 
 ### Subagent profiles (global, transitional)
