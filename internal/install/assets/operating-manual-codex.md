@@ -41,6 +41,13 @@ State machine: `backlog_add` → refine → `backlog_promote` → `spec_advance`
 `spec_reject` bounces a failed QA back to implementing.
 `spec_pushback` pauses a spec at `needs_grill` until ambiguity is resolved.
 
+**Human approval gate (unbreakable).** Even as the single agent that both designs and
+implements, you MUST present the complete spec to the human and wait for EXPLICIT
+approval before advancing a spec past `specced` into planning/implementation.
+Answering design questions is NOT approval. The only exception is an explicit,
+one-time authorization from the human to skip the gate for that specific spec; it is
+never inherited and never a default.
+
 As the single agent you traverse the full cycle: backlog → spec → implement → qa → done.
 
 ## §4 Skills
