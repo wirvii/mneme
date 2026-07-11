@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [v1.24.0] — 2026-07-11 — install no longer ships global agent profiles (SPEC-073)
+
 ### Changed
 
 - **`mneme install claude-code` no longer installs global subagent profiles
