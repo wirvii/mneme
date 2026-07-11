@@ -98,7 +98,7 @@ mneme search "authentication"
 mneme status
 ```
 
-`mneme install claude-code` registers MCP tools, session hooks, and the rules enforcement hook in `~/.claude/settings.json`, plus six bundled subagent profiles (a transitional global set -- see [Subagents](#subagents) below for the per-project model that is replacing them). After install, the agent automatically loads context at session start, saves session summaries at end, and evaluates rules before every file edit. `mneme install codex` wires the same MCP server and memory protocol into OpenAI Codex CLI's single-agent model -- see [docs/codex.md](docs/codex.md) for the differences.
+`mneme install claude-code` registers MCP tools, session hooks, and the rules enforcement hook in `~/.claude/settings.json` -- it no longer writes any global subagent profiles (SPEC-073); it also removes the six profiles a previous install may have left in `~/.claude/agents/`, provided they were never customised (see [Subagents](#subagents) for the per-project generation model that replaced the global set). After install, the agent automatically loads context at session start, saves session summaries at end, and evaluates rules before every file edit. `mneme install codex` wires the same MCP server and memory protocol into OpenAI Codex CLI's single-agent model -- see [docs/codex.md](docs/codex.md) for the differences.
 
 ---
 
@@ -167,7 +167,7 @@ backlog_add -> backlog_refine -> backlog_promote -> spec_new
   -> spec_advance (draft -> speccing -> specced -> implementing -> qa -> done)
 ```
 
-Six pre-configured subagent profiles (architect, backend, frontend, qa-tester, bug-hunter, diagnostician) ship globally with `mneme install claude-code` and integrate with the SDD lifecycle; the orchestrator role is the principal, not an installed profile. See [Subagents](#subagents) for the newer per-project generation model and [Enforcement](#enforcement) for the role/capability model.
+Six agent archetypes (architect, backend, frontend, qa-tester, bug-hunter, diagnostician) integrate with the SDD lifecycle; the orchestrator role is the principal, not an installed profile. They are no longer installed globally by `mneme install claude-code` (SPEC-073) -- profiles are generated per project via the `mneme-init` grill. See [Subagents](#subagents) for that generation model and [Enforcement](#enforcement) for the role/capability model.
 
 ### Memory Manifest
 
@@ -506,10 +506,10 @@ Last tagged release: **v1.17.0**. Full history in [CHANGELOG.md](CHANGELOG.md).
 | `mneme install codex` (v1.17.0) | Single-agent OpenAI Codex CLI support | Done |
 | Agnostic agents (EPIC SPEC-052, SS-1..SS-6) | Per-project subagent generation via `mneme-init` grill, `subagent_*` tools, `mneme subagents`, project-scoped opt-in delegation-hook | Done |
 | Team Memory (EPIC SPEC-053, SS-A..SS-F) | Git-native shared knowledge: `shared`/`author` columns (schema v14), write-through, `mneme promote`, import hooks, `mneme team-memory enable` | Done |
+| SS-7 -- retire global subagent installation (SPEC-073) | `mneme install claude-code` no longer writes `~/.claude/agents/*.md`; it also cleans up unmodified profiles left by earlier installs. Per-project generation via `mneme-init` is the only supported path. | Done |
 
 **Roadmap (honest gaps):**
 
-- **SS-7 -- retire the global subagent installation.** The six global subagent profiles still ship unconditionally with every `mneme install claude-code` during the agnostic-agents transition. A future release drops that default once per-project generation is the only supported path.
 - **CodeGraph C4-C7** -- remaining backlog items (further language coverage, deeper cross-package resolution beyond the current best-effort pass).
 - **HTTP parity** -- the REST API has no SDD/codegraph/skills/model/conflicts/subagent routes; MCP and CLI are ahead. Tracked as a deliberate gap, not an oversight (see [docs/api/http.md](docs/api/http.md) "HTTP parity gaps").
 - **TypeScript/JS type-inference ceiling** -- the CodeGraph JS/TS extractor resolves calls and imports but does not do full type inference; some dynamically-typed or heavily-generic call sites are not tracked. `codegraph_impact`/`codegraph_callees` are documented as best-effort, not exhaustive.

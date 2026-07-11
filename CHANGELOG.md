@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **`mneme install claude-code` no longer installs global subagent profiles
+  (SPEC-073)** — the per-project subagent model (SPEC-068 / the `mneme-init`
+  grill) supersedes the six built-in profiles (`architect`, `backend`,
+  `frontend`, `qa-tester`, `bug-hunter`, `diagnostician`) that used to be
+  written unconditionally to `~/.claude/agents/*.md`, along with the "Agent
+  models" step that patched their `model:` frontmatter. A new "Remove legacy
+  global agents" install step cleans up profiles left by earlier installs:
+  it removes a file only when it is an unmodified copy of the built-in asset
+  (the `model:` line is normalised before comparing, so a `mneme model set`
+  override does not count as a customisation) — anything hand-edited is left
+  intact. `internal/install/assets/agents/*.md` remain embedded unchanged;
+  they are still the canonical source `internal/subagents` composes
+  per-project profiles from. `mneme install codex` is unaffected — it never
+  installed global agent profiles.
+
 ## [v1.23.0] — 2026-07-11 — share-by-default team memory + unbreakable human-approval gate (SPEC-071, SPEC-072)
 
 ### Changed
