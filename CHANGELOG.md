@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Changed
+
+- **Operating manuals now declare the unbreakable human-approval gate**
+  (SPEC-072) — both `operating-manual.md` (§4 SDD + lanes) and
+  `operating-manual-codex.md` (§3 SDD + lanes) spell out that a spec must
+  never advance past `specced` into `planning`/`implementing` without
+  explicit human approval of the complete spec. The `architect` never calls
+  `spec_advance` past `speccing`; answering design questions is not
+  approval; any authorization to skip the gate is one-time and never
+  inherited. This is a process gate enforced by orchestrator/agent
+  discipline, not a hook — the equivalent DB rule (`019f5229`) was removed
+  because a file-write hook cannot enforce a process-level gate.
+
 ## [v1.22.0] — 2026-07-09 — `go install` support: pure-Go driver + module path aligned (SPEC-070)
 
 ### Changed
