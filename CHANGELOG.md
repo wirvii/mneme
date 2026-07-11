@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Changed
+
+- **Team-memory auto-share policy inverted from allow-list to deny-list
+  (SPEC-071)** — project-scoped memories now share to the git-native vault
+  by default. Previously only 6 types (decision, convention, architecture,
+  pattern, bugfix, rule) auto-shared; now all 9 human-authored types do
+  (adding discovery, config, preference). Only `synthesis` (auto-generated
+  cluster overviews) and `session_summary` (ephemeral) are excluded. Running
+  `mneme team-memory enable` again on an already-enabled repo retroactively
+  bakes and exports any pre-existing discovery/config/preference memories
+  that predate this change. No API/schema changes — `SaveRequest.Shared`
+  overrides continue to work in both directions (opt-out an auto-shared
+  type, opt-in an excluded one).
+
 ## [v1.22.0] — 2026-07-09 — `go install` support: pure-Go driver + module path aligned (SPEC-070)
 
 ### Changed

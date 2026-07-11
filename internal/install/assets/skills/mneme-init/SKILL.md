@@ -1,7 +1,7 @@
 ---
 name: mneme-init
 description: "Use once to bootstrap a project with mneme, or to refresh/onboard it later. Single project-level entry point: seeds foundational repo knowledge into memory, applies mneme's managed CLAUDE.md blocks (replacing the native /init), and offers three independent opt-in steps — per-project subagent generation via a 5-phase grill, codegraph indexing, and shared team memory. Trigger keywords: mneme-init, initialize mneme, onboard this repo, generate subagents, set up codegraph."
-version: 1.2.0
+version: 1.3.0
 pinned: false
 ---
 
@@ -87,10 +87,10 @@ Only if the user opts in. Do not reimplement indexing — invoke the existing co
 
 ### Step 3 — Opt-in: shared team memory
 
-Only if the user opts in. This wires the git-native team-memory vault (SPEC-053): a `.mneme/shared/` directory committed to the repo that durable memories (decisions, conventions, architecture, patterns, bugfixes, rules) materialize into automatically once enabled, plus git hooks that import teammates' shared knowledge after every pull/checkout. Do not reimplement any of this yourself — invoke the existing command:
+Only if the user opts in. This wires the git-native team-memory vault (SPEC-053): a `.mneme/shared/` directory committed to the repo that project-scoped memories materialize into automatically once enabled — share-by-default (SPEC-071): every human-authored persistent memory type shares, excluding only auto-generated `synthesis` (cluster overviews) and ephemeral `session_summary` — plus git hooks that import teammates' shared knowledge after every pull/checkout. Do not reimplement any of this yourself — invoke the existing command:
 
 14. Before running anything, tell the user: enabling this commits `.mneme/shared/` to the repository — if the remote is (or might become) public, that knowledge becomes publicly visible, including full commit history once pushed. Confirm they still want to proceed.
-15. Run `mneme team-memory enable`. It is idempotent (safe to re-run): it creates `.mneme/shared/` + its marker if absent, bakes/exports existing durable memories, and installs the `post-merge`/`post-checkout` import hooks.
+15. Run `mneme team-memory enable`. It is idempotent (safe to re-run): it creates `.mneme/shared/` + its marker if absent, bakes/exports existing auto-shared memories, and installs the `post-merge`/`post-checkout` import hooks.
 16. Relay the command's own output verbatim, including its privacy notice — never paraphrase, summarize away, or suppress it.
 17. If the command fails (e.g. not a git repository), report the failure and skip — do not attempt a manual workaround or fabricate a fallback command.
 
