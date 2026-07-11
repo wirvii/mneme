@@ -257,9 +257,12 @@ config. `mneme team-memory enable` creates it, bakes/exports pre-existing
 durable memories, and installs the import hooks in one idempotent step.
 
 **Sharing levels** (`shared` column, layered on `scope=project`, not a new
-scope): `0` local-only (default) · `1` auto-shared (durable type: decision,
-convention, architecture, pattern, bugfix, rule) · `2` team-curated
-(`mneme promote <id>` / `mem_promote`, any type).
+scope): `0` local-only (default) · `1` auto-shared — **share-by-default**
+(SPEC-071): every project-scoped type auto-shares *except* the two
+auto-generated/ephemeral ones (`session_summary`, `synthesis`); i.e. decision,
+discovery, config, preference, convention, architecture, pattern, bugfix, rule
+all auto-share · `2` team-curated (`mneme promote <id>` / `mem_promote`, any
+type).
 
 **Key commands:**
 ```bash

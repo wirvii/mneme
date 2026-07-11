@@ -5,9 +5,10 @@
 
 ## Overview
 
-Team memory lets a repository's durable knowledge — decisions, conventions,
-architecture notes, patterns, bugfixes, rules — flow between teammates through
-the repository itself, with no server, no account, and no network call. It is
+Team memory lets a repository's human knowledge — decisions, discoveries,
+conventions, architecture notes, patterns, bugfixes, rules, config, and
+preferences — flow between teammates through the repository itself, with no
+server, no account, and no network call. It is
 entirely **git-native**: the shared knowledge lives as committed `.md` files
 under `.mneme/shared/` in the repo, and it moves between machines exactly the
 way any other file does — `git push`/`git pull`/`git clone`.
@@ -28,7 +29,7 @@ command:
    does not already exist. The marker's presence is the **only** flag that
    turns team-memory on for a repository — there is no separate config file
    or environment variable (SPEC-053 D3).
-2. **Bakes** `shared=1` onto every pre-existing memory of a durable type
+2. **Bakes** `shared=1` onto every pre-existing memory of an auto-shared type
    (see the table below) that is still local-only, so knowledge saved before
    you ran `enable` does not stay stranded on your machine.
 3. **Exports** every shared memory (freshly baked or already shared) to
@@ -70,35 +71,47 @@ Sharing is controlled by a per-memory `shared` level (0/1/2), not a new scope
 | `shared` | Meaning | Set by |
 |----------|---------|--------|
 | `0` (default) | Local-only. Never materialized to the vault. | Anything saved before team-memory was active, or an explicit opt-out. |
-| `1` (auto-shared) | Shared because its **type** is considered durable knowledge. | `mem_save`/`svc.Save`, automatically, when team-memory is active. |
+| `1` (auto-shared) | Shared because its **type** is human-authored, persistent knowledge. | `mem_save`/`svc.Save`, automatically, when team-memory is active. |
 | `2` (team-curated) | Explicitly, deliberately shared regardless of type. | `mneme promote <id>` / `mem_promote`. |
 
-**Durable types** (auto-share to `shared=1` when team-memory is active):
+**Auto-shared types** — the policy is **share-by-default** (SPEC-071): every
+project-scoped memory auto-shares to `shared=1` when team-memory is active,
+*except* two auto-generated / ephemeral types. A real shared brain means the
+team inherits all durable human knowledge — decisions, discoveries, and the
+discussions around them — not just a curated subset.
 
-| Type | Auto-shared? |
-|------|:---:|
-| `decision` | ✅ |
-| `convention` | ✅ |
-| `architecture` | ✅ |
-| `pattern` | ✅ |
-| `bugfix` | ✅ |
-| `rule` | ✅ |
-| `discovery` | ❌ |
-| `config` | ❌ |
-| `session_summary` | ❌ |
-| `synthesis` | ❌ |
+| Type | Auto-shared? | Why |
+|------|:---:|------|
+| `decision` | ✅ | |
+| `discovery` | ✅ | |
+| `config` | ✅ | |
+| `preference` | ✅ | |
+| `convention` | ✅ | |
+| `architecture` | ✅ | |
+| `pattern` | ✅ | |
+| `bugfix` | ✅ | |
+| `rule` | ✅ | |
+| `session_summary` | ❌ | Ephemeral, verbose, fast-decaying. |
+| `synthesis` | ❌ | Auto-generated cluster overviews — every peer regenerates them from its own graph, so sharing is noise. |
 
 Global- and org-scoped memories (personal preferences, cross-project config)
 are **never** auto-shared, regardless of type — team-memory only concerns a
 single project's knowledge.
 
-**Opting an ephemeral memory in:** call `mneme promote <id>` (or the
+**Opting an excluded memory in:** call `mneme promote <id>` (or the
 `mem_promote` MCP tool) to mark any individual memory as team-curated
 (`shared=2`) and materialize it immediately, independent of its type.
 
-**Opting a durable memory out:** pass an explicit `shared: 0` on `mem_save`
-to keep one particular decision/convention/etc. local-only even though its
-type would otherwise auto-share.
+**Opting a memory out:** pass an explicit `shared: 0` on `mem_save`
+to keep one particular entry local-only even though its type would otherwise
+auto-share.
+
+**Retroactivity (repos enabled before SPEC-071):** a repository that turned
+team-memory on under the old 6-type policy still has its pre-existing
+`discovery`/`config`/`preference` memories at `shared=0`. Re-run
+`mneme team-memory enable` — it is idempotent and its bake step reuses the same
+share-by-default criterion, so it re-marks those memories `shared=1` and exports
+them to the vault. No dedicated backfill command is needed.
 
 ## WRITE — materialize on save
 
@@ -197,13 +210,15 @@ remote is public or private. Because of that, `mneme team-memory enable`
 you, so it never silently assumes the repo is private. Review
 `.mneme/shared/` before pushing to a remote that is, or might become, public.
 Secret-scanning the shared vault's content is out of scope for mneme; a
-durable-type memory should never contain credentials or other secrets in the
-first place.
+shared memory should never contain credentials or other secrets in the first
+place — and note that share-by-default (SPEC-071) now materializes
+`discovery`/`config`/`preference` too, so this discipline matters more than
+before.
 
-Personal preferences (`scope=global`) and ephemeral working notes
-(`session_summary`, `synthesis`, ordinary `discovery`/`config` entries) are
-excluded from auto-sharing precisely so they cannot accidentally leak into a
-committed, potentially-public file.
+Global- and org-scoped memories are excluded from auto-sharing regardless of
+type, and the two auto-generated / ephemeral project types (`session_summary`,
+`synthesis`) are excluded as well — precisely so personal or throwaway notes
+cannot accidentally leak into a committed, potentially-public file.
 
 ## Offline / no-cloud
 
