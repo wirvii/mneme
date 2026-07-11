@@ -902,22 +902,17 @@ func TestClaudeCode_Manual_ContentValid(t *testing.T) {
 	}
 }
 
-// TestClaudeCode_Agents_NonEmpty verifies that the Agents closure returns at
-// least one CommandFile with non-empty content.
-func TestClaudeCode_Agents_NonEmpty(t *testing.T) {
+// TestClaudeCode_AgentsNil verifies that Claude Code no longer installs
+// global per-agent profile files (SPEC-073): Agents must be nil so the
+// "Agent profiles" step is never added to installSteps. The built-in
+// assets/agents/*.md sources remain embedded and accessible for the
+// per-project subagent model (internal/subagents) and for
+// RemoveInstalledBuiltinAgents's cleanup comparison.
+func TestClaudeCode_AgentsNil(t *testing.T) {
 	agent := ClaudeCode("")
 
-	files, err := agent.Agents()
-	if err != nil {
-		t.Fatalf("Agents error: %v", err)
-	}
-	if len(files) == 0 {
-		t.Fatal("Agents returned zero files")
-	}
-	for _, f := range files {
-		if len(f.Content) == 0 {
-			t.Errorf("agent file %s has empty content", f.Path)
-		}
+	if agent.Agents != nil {
+		t.Error("ClaudeCode.Agents must be nil — mneme install claude-code no longer writes global agent profiles (SPEC-073)")
 	}
 }
 

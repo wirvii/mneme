@@ -11,6 +11,7 @@
 package install
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -109,6 +110,17 @@ type Agent struct {
 	// Set this for agents that discover skills in a different location
 	// (e.g. Codex uses $HOME/.agents/skills).
 	SkillsDir string
+
+	// LegacyAgentsCleanupDir, when non-empty, triggers the "Remove legacy
+	// global agents" step (SPEC-073): it removes per-agent profile files
+	// left over from before mneme install stopped writing global agent
+	// profiles (see Agents/D1) in favour of the per-project subagent model
+	// (SPEC-068). Only files that are unmodified copies of the built-in
+	// asset (modulo the `model:` frontmatter line — RemoveInstalledBuiltinAgents
+	// normalises it before comparing) are removed; anything customised is left
+	// intact. Claude Code sets this to ~/.claude/agents; Codex leaves it empty
+	// (it never wrote global agent profiles) so the step is skipped.
+	LegacyAgentsCleanupDir string
 }
 
 // ClaudeCode returns a fully configured *Agent for Claude Code using binaryPath
@@ -197,13 +209,15 @@ func ClaudeCode(binaryPath string) *Agent {
 			}}, nil
 		},
 
-		Agents: func() ([]CommandFile, error) {
-			home, err := os.UserHomeDir()
-			if err != nil {
-				return nil, fmt.Errorf("install: claude-code: agents: home dir: %w", err)
-			}
-			return filesFromEmbed(builtinAgents, "assets/agents", filepath.Join(home, ".claude", "agents"))
-		},
+		// Agents is nil (SPEC-073, D1): mneme install claude-code no longer
+		// writes global per-agent profile files to ~/.claude/agents. The
+		// per-project subagent model (SPEC-068 / the mneme-init grill) is the
+		// only supported way to materialise agent profiles now. The built-in
+		// assets/agents/*.md sources remain intact and embedded — they are
+		// still the canonical source internal/subagents composes from, and
+		// RemoveInstalledBuiltinAgents (LegacyAgentsCleanupDir below) reads
+		// them to identify profiles it previously installed.
+		Agents: nil,
 
 		Templates: func() ([]CommandFile, error) {
 			home, err := os.UserHomeDir()
@@ -241,7 +255,27 @@ func ClaudeCode(binaryPath string) *Agent {
 		},
 
 		Skills: BundledSkillEntries,
+
+		// LegacyAgentsCleanupDir targets the same directory the pre-SPEC-073
+		// Agents closure used to write to, so RemoveInstalledBuiltinAgents can
+		// clean up profiles from older installs (see field godoc).
+		LegacyAgentsCleanupDir: claudeAgentsDir(),
 	}
+}
+
+// claudeAgentsDir returns the absolute path of Claude Code's per-agent
+// profile directory (~/.claude/agents), resolved eagerly (mirroring
+// codexSkillsDir) so LegacyAgentsCleanupDir is always a concrete path at
+// Agent-construction time. If the home directory cannot be resolved, it
+// returns an empty string so the "Remove legacy global agents" step is
+// skipped rather than operating on a bogus path — the same fail-safe
+// fallback used elsewhere when os.UserHomeDir fails.
+func claudeAgentsDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".claude", "agents")
 }
 
 // InstallOptions parametrizes which installation steps run and their mode.
@@ -288,14 +322,20 @@ type installStep struct {
 //  2. Session hooks
 //  3. Protocol injection
 //  4. Slash commands
-//  5. Agent profiles
-//  6. Agent models  ← new, always after profiles
-//  7. Workflow templates
-//  8. Skills (force = opts.Force || opts.ReinstallHooks)
-//  9. Delegation hook (reinstall vs patch, depending on opts.ReinstallHooks)
-// 10. Workflow directories
-// 11. Migrate legacy workflow
-// 12. Personal ecosystem (only when opts.Personal)
+//  5. Agent profiles (dormant capacity — Agents is nil for both built-in
+//     agents since SPEC-073; kept for agents that opt into it explicitly)
+//  6. Agent models (dormant capacity — gated on AgentsDir, which neither
+//     built-in agent sets since SPEC-073)
+//  7. Remove legacy global agents (SPEC-073 — cleans up per-agent profiles
+//     installed by older mneme versions; occupies the slot Agent
+//     profiles/models previously used for Claude Code)
+//  8. Workflow templates
+//  9. Skills (force = opts.Force || opts.ReinstallHooks)
+//
+// 10. Delegation hook (reinstall vs patch, depending on opts.ReinstallHooks)
+// 11. Workflow directories
+// 12. Migrate legacy workflow
+// 13. Personal ecosystem (only when opts.Personal)
 func (a *Agent) installSteps(opts InstallOptions) []installStep {
 	var steps []installStep
 
@@ -370,11 +410,12 @@ func (a *Agent) installSteps(opts InstallOptions) []installStep {
 		})
 	}
 
-	// Step 6: Agent models — always after agent profiles.
-	// When AgentsDir is empty, the agent does not use per-profile files
-	// (e.g. Codex in single-agent mode); skip the step cleanly.
-	// When AgentsDir is non-empty, use it; Claude Code leaves AgentsDir empty
-	// and falls back to ~/.claude/agents, preserving existing behaviour.
+	// Step 6: Agent models. Dormant capacity: when AgentsDir is empty, the
+	// agent does not use per-profile files, so the step is skipped cleanly.
+	// Neither built-in agent sets AgentsDir any more (SPEC-073 removed the
+	// Claude Code fallback to ~/.claude/agents that used to run whenever
+	// Agents was non-nil) — a future agent that opts into per-profile model
+	// assignment sets AgentsDir explicitly to enable this step.
 	if a.AgentsDir != "" {
 		agentsDir := a.AgentsDir
 		steps = append(steps, installStep{
@@ -388,23 +429,24 @@ func (a *Agent) installSteps(opts InstallOptions) []installStep {
 				return "", ApplyAgentModels(agentsDir, overrides)
 			},
 		})
-	} else if a.Agents != nil {
-		// Claude Code path: AgentsDir is empty but Agents func is set →
-		// default to ~/.claude/agents (backwards compatible).
+	}
+
+	// Step 6b: Remove legacy global agents (SPEC-073). Cleans up per-agent
+	// profile files installed by older mneme versions before global agent
+	// profiles were retired in favour of the per-project subagent model
+	// (SPEC-068). Skipped entirely when LegacyAgentsCleanupDir is empty
+	// (e.g. Codex, which never wrote global agent profiles).
+	if a.LegacyAgentsCleanupDir != "" {
+		cleanupDir := a.LegacyAgentsCleanupDir
 		steps = append(steps, installStep{
-			Name: "Agent models",
+			Name: "Remove legacy global agents",
 			Run: func() (string, error) {
-				home, err := os.UserHomeDir()
-				if err != nil {
-					return "", fmt.Errorf("install: agent models: home dir: %w", err)
+				removed, err := RemoveInstalledBuiltinAgents(cleanupDir)
+				detail := "none"
+				if len(removed) > 0 {
+					detail = "removed: " + strings.Join(removed, ", ")
 				}
-				agentsDir := filepath.Join(home, ".claude", "agents")
-				cfg, cfgErr := config.Load(config.DefaultPath())
-				var overrides map[string]string
-				if cfgErr == nil {
-					overrides = cfg.Models.Overrides
-				}
-				return "", ApplyAgentModels(agentsDir, overrides)
+				return detail, err
 			},
 		})
 	}
@@ -625,6 +667,85 @@ func ApplyAgentModels(agentsDir string, overrides map[string]string) error {
 		return fmt.Errorf("install: %s", strings.Join(errs, "; "))
 	}
 	return nil
+}
+
+// RemoveInstalledBuiltinAgents removes per-agent profile files under
+// agentsDir that are unmodified copies of mneme's own built-in assets
+// (SPEC-073). The per-project subagent model (SPEC-068) superseded global
+// agent profiles; this cleans up files a previous `mneme install claude-code`
+// wrote, without ever touching a file the user customised.
+//
+// For each name returned by BundledAgentNames, it reads agentsDir/<name>.md
+// and the embedded assets/agents/<name>.md, normalises the `model:`
+// frontmatter line in both (via SetModelInFrontmatter with a shared
+// sentinel, so a `mneme model set` override does not make an otherwise
+// untouched file look customised — see docs/models.md), and compares the
+// results byte-for-byte. Only an exact match after normalisation is removed;
+// anything that differs (a hand-edited body, or a profile from an older,
+// structurally different asset) is left intact. This is a deliberately
+// conservative, fail-safe check: it would rather leave a stale file behind
+// than delete a customisation.
+//
+// A missing agentsDir, or a missing per-agent file within it, is a silent
+// skip, not an error — both surface as os.IsNotExist from os.ReadFile.
+// Individual read/normalise/remove failures are collected (collect-all,
+// consistent with ApplyAgentModels) rather than aborting the remaining
+// agents. removed lists exactly the names actually deleted, in
+// BundledAgentNames order.
+func RemoveInstalledBuiltinAgents(agentsDir string) (removed []string, err error) {
+	names, _ := BundledAgentNames()
+
+	// An arbitrary, unambiguous placeholder: both sides are normalised to the
+	// same sentinel value before comparing, so any real model string (or its
+	// absence) on either side cancels out and never affects the outcome.
+	const modelSentinel = "__mneme_legacy_cleanup_sentinel__"
+
+	var errs []string
+	for _, name := range names {
+		path := filepath.Join(agentsDir, name+".md")
+
+		installed, readErr := os.ReadFile(path)
+		if readErr != nil {
+			if os.IsNotExist(readErr) {
+				continue
+			}
+			errs = append(errs, fmt.Errorf("install: remove legacy agents: read %s: %w", path, readErr).Error())
+			continue
+		}
+
+		asset, assetErr := builtinAgents.ReadFile("assets/agents/" + name + ".md")
+		if assetErr != nil {
+			errs = append(errs, fmt.Errorf("install: remove legacy agents: read asset %s: %w", name, assetErr).Error())
+			continue
+		}
+
+		normInstalled, normErr := SetModelInFrontmatter(installed, modelSentinel)
+		if normErr != nil {
+			errs = append(errs, fmt.Errorf("install: remove legacy agents: normalize %s: %w", path, normErr).Error())
+			continue
+		}
+		normAsset, normErr := SetModelInFrontmatter(asset, modelSentinel)
+		if normErr != nil {
+			errs = append(errs, fmt.Errorf("install: remove legacy agents: normalize asset %s: %w", name, normErr).Error())
+			continue
+		}
+
+		if !bytes.Equal(normInstalled, normAsset) {
+			// Customised, or from an older/divergent asset version — leave it.
+			continue
+		}
+
+		if rmErr := os.Remove(path); rmErr != nil {
+			errs = append(errs, fmt.Errorf("install: remove legacy agents: remove %s: %w", path, rmErr).Error())
+			continue
+		}
+		removed = append(removed, name)
+	}
+
+	if len(errs) > 0 {
+		return removed, fmt.Errorf("install: %s", strings.Join(errs, "; "))
+	}
+	return removed, nil
 }
 
 // Install runs the full installation sequence for the given agent using the

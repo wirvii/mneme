@@ -1322,8 +1322,10 @@ func TestAgentAssets_ImplementerAllowlists(t *testing.T) {
 // --- SPEC-038 parity tests ---
 
 // TestInstallSteps_DefaultSequence verifies that installSteps with default
-// options returns the expected ordered step names, including "Agent models"
-// immediately after "Agent profiles".
+// options returns the expected ordered step names for Claude Code post
+// SPEC-073: no "Agent profiles" or "Agent models" (Agents is nil, AgentsDir
+// is empty), but "Remove legacy global agents" is present (LegacyAgentsCleanupDir
+// is set).
 func TestInstallSteps_DefaultSequence(t *testing.T) {
 	agent := ClaudeCode("/usr/local/bin/mneme")
 	opts := InstallOptions{BinaryPath: "/usr/local/bin/mneme"}
@@ -1334,31 +1336,19 @@ func TestInstallSteps_DefaultSequence(t *testing.T) {
 		names = append(names, s.Name)
 	}
 
-	agentProfilesIdx := -1
-	agentModelsIdx := -1
-	for i, n := range names {
-		switch n {
-		case "Agent profiles":
-			agentProfilesIdx = i
-		case "Agent models":
-			agentModelsIdx = i
+	forbidden := []string{"Agent profiles", "Agent models"}
+	for _, f := range forbidden {
+		for _, n := range names {
+			if n == f {
+				t.Errorf("step %q must not be present for Claude Code — SPEC-073 dropped global agent profiles", f)
+			}
 		}
-	}
-
-	if agentProfilesIdx == -1 {
-		t.Error("missing step 'Agent profiles'")
-	}
-	if agentModelsIdx == -1 {
-		t.Fatal("missing step 'Agent models' — required by SPEC-038")
-	}
-	if agentProfilesIdx != -1 && agentModelsIdx != agentProfilesIdx+1 {
-		t.Errorf("'Agent models' must immediately follow 'Agent profiles'; got indices %d and %d", agentProfilesIdx, agentModelsIdx)
 	}
 
 	// "Slash commands" is required again — /mneme-init is restored as a thin
 	// wrapper around the mneme-init SKILL (SPEC-058 / EPIC agnostic-agents
 	// SS-5 dropped it; SPEC-067 restored it), so Commands is no longer nil.
-	required := []string{"MCP server", "Session hooks", "Operating manual", "Slash commands", "Skills", "Workflow directories"}
+	required := []string{"MCP server", "Session hooks", "Operating manual", "Slash commands", "Remove legacy global agents", "Skills", "Workflow directories"}
 	for _, req := range required {
 		found := false
 		for _, n := range names {

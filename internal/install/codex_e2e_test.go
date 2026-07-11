@@ -295,6 +295,9 @@ func TestCodexBuilder_Fields(t *testing.T) {
 	if agent.AgentsDir != "" {
 		t.Errorf("AgentsDir must be empty for Codex (skip Agent models step), got %q", agent.AgentsDir)
 	}
+	if agent.LegacyAgentsCleanupDir != "" {
+		t.Errorf("LegacyAgentsCleanupDir must be empty for Codex (never wrote global agent profiles, SPEC-073), got %q", agent.LegacyAgentsCleanupDir)
+	}
 	if agent.SkillsDir == "" {
 		t.Error("SkillsDir must not be empty (Codex discovery path $HOME/.agents/skills)")
 	}
