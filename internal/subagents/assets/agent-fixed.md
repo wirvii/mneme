@@ -1,9 +1,10 @@
 <!-- section: codegraph-policy-readonly -->
 ## Exploracion de codigo: grafo primero
 
-Este proyecto puede tener un grafo de codigo indexado (mneme codegraph). Antes de
-usar Read o Grep para ENTENDER el codigo —su estructura, quien llama a que, el
-impacto de un cambio, o donde vive un simbolo— usa PRIMERO las tools del grafo:
+OBLIGATORIO: cuando este proyecto tiene un grafo de codigo indexado (mneme
+codegraph), DEBES consultar el grafo ANTES de usar Read o Grep para ENTENDER el
+codigo —su estructura, quien llama a que, el impacto de un cambio, o donde vive
+un simbolo. Consulta PRIMERO las tools del grafo:
 
 - `codegraph_search`   — encontrar simbolos por nombre o concepto
 - `codegraph_context`  — vecindario de un simbolo (definicion + relaciones)
@@ -27,9 +28,10 @@ porque el grafo no lo muestre.
 <!-- section: codegraph-policy-implementer -->
 ## Exploracion de codigo: grafo primero
 
-Este proyecto puede tener un grafo de codigo indexado (mneme codegraph). Antes de
-usar Read o Grep para ENTENDER el codigo —su estructura, quien llama a que, el
-impacto de un cambio, o donde vive un simbolo— usa PRIMERO las tools del grafo:
+OBLIGATORIO: cuando este proyecto tiene un grafo de codigo indexado (mneme
+codegraph), DEBES consultar el grafo ANTES de usar Read o Grep para ENTENDER el
+codigo —su estructura, quien llama a que, el impacto de un cambio, o donde vive
+un simbolo. Consulta PRIMERO las tools del grafo:
 
 - `codegraph_search`   — encontrar simbolos por nombre o concepto
 - `codegraph_context`  — vecindario de un simbolo (definicion + relaciones)
@@ -57,9 +59,10 @@ para build, test, git y operaciones —no para explorar codigo.
 <!-- section: codegraph-policy-diagnostician -->
 ## Exploracion de codigo: grafo primero
 
-Este proyecto puede tener un grafo de codigo indexado (mneme codegraph). Antes de
-usar Read o Grep para ENTENDER el codigo —su estructura, quien llama a que, el
-impacto de un cambio, o donde vive un simbolo— usa PRIMERO las tools del grafo:
+OBLIGATORIO: cuando este proyecto tiene un grafo de codigo indexado (mneme
+codegraph), DEBES consultar el grafo ANTES de usar Read o Grep para ENTENDER el
+codigo —su estructura, quien llama a que, el impacto de un cambio, o donde vive
+un simbolo. Consulta PRIMERO las tools del grafo:
 
 - `codegraph_search`   — encontrar simbolos por nombre o concepto
 - `codegraph_context`  — vecindario de un simbolo (definicion + relaciones)

@@ -112,3 +112,14 @@ Save rules: `scope:global` for user preferences, `scope:project` for everything 
 `topic_key` for knowledge that evolves (overwrites). Omit for unique events. Save liberally.
 
 Conflict hygiene: `mneme conflicts scan` periodically to surface superseded memories.
+
+## 8. Code graph: consult it FIRST
+
+MANDATORY: when a project has an indexed code graph (`mneme codegraph`), you MUST
+consult the graph BEFORE reading or grepping source to locate a symbol, find its
+callers, or assess the blast radius of a change: `codegraph_search` /
+`codegraph_context` / `codegraph_callers` / `codegraph_callees` /
+`codegraph_impact`. This applies to the orchestrator AND to every subagent you
+launch — state it in the delegation brief. Fall back to Read/Grep only for the
+literal text the graph can't provide, or when it is stale or the repo is not
+indexed. Measure adoption with `mneme codegraph adoption`.

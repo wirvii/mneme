@@ -82,3 +82,13 @@ Conflict hygiene: `mneme conflicts scan` periodically to surface superseded memo
 **This section is the safety net:** if the session hooks (SessionStart/Stop) are
 not trusted yet (`/hooks` in Codex TUI), the memory discipline described here
 keeps your project knowledge intact without automation.
+
+## §6 Code graph: consult it FIRST
+
+MANDATORY: when this project has an indexed code graph (`mneme codegraph`), you
+MUST consult the graph BEFORE reading or grepping source to locate a symbol,
+find its callers, or assess the blast radius of a change: `codegraph_search` /
+`codegraph_context` / `codegraph_callers` / `codegraph_callees` /
+`codegraph_impact`. Fall back to Read/Grep only for the literal text the graph
+can't provide, or when it is stale or the repo is not indexed. Measure adoption
+with `mneme codegraph adoption`.
