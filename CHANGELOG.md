@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [v1.25.1] — 2026-07-14 — CI green on Windows + Ubuntu (SPEC-081)
+
+### Fixed
+
+- **First CI run (SPEC-077) surfaced three pre-existing fragilities; all fixed
+  so the `ci.yml` workflow is green on both runners:**
+  - `internal/upgrade` tests `TestUpgrader_Upgrade` and
+    `TestDetectInstalledAgents` are Unix-specific (executable bit / `$HOME`
+    semantics) and now skip on `runtime.GOOS == "windows"` — `internal/upgrade`
+    is the Unix upgrade path; on Windows upgrade goes via `go install`.
+  - `TestLaneAudit_FailedAuditReturnsBreaches` (internal/mcp) no longer assumes
+    the working tree diverges from `main`; it builds its own ephemeral git repo
+    so the breach is deterministic on any checkout (clean CI or feature branch).
+  - The lint job builds `golangci-lint` from source (`go install`) so it is
+    compiled with the runner's go1.25 toolchain, fixing the
+    "built with go1.24 < targeted go1.25.8" load error; two pre-existing
+    dead-code findings (`repoSlugFilename`, `Resolver.findNode`) were removed.
+
 ## [v1.25.0] — 2026-07-14 — Windows support: go install install/upgrade + path-aware enforcement (EPIC-windows, SPEC-074)
 
 ### Added
