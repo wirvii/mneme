@@ -1,3 +1,5 @@
+<p align="center"><img src="../assets/logo.svg" width="56" alt="mneme"></p>
+
 # mneme -- API Reference
 
 mneme exposes the same service layer through three frontends: **MCP** (64

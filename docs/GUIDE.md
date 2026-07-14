@@ -1,3 +1,5 @@
+<p align="center"><img src="../assets/logo.svg" width="56" alt="mneme"></p>
+
 # mneme -- End-to-End User Guide
 
 A practical guide for humans and AI agents working with mneme. Each section explains a concept, shows when to use it, and provides copy-pasteable examples with expected output.

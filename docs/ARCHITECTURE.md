@@ -1,3 +1,5 @@
+<p align="center"><img src="../assets/logo.svg" width="56" alt="mneme"></p>
+
 # mneme -- Architecture & Design Documentation
 
 Living documentation of mneme's architecture. Explains what was built, how it works, why each decision was made, and how the pieces fit together.
