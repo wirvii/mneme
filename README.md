@@ -1,11 +1,13 @@
+<p align="center"><img src="assets/logo.svg" width="96" alt="mneme"></p>
+
 # mneme
 
 Persistent memory for AI coding agents -- with a spec-driven workflow engine, semantic code graph, and role enforcement built on top. One binary, zero runtime dependencies.
 
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![Go](https://img.shields.io/badge/Go-1.24+-00ADD8.svg)](https://go.dev)
+[![License](https://img.shields.io/badge/License-Apache%202.0-0d8f80.svg)](LICENSE)
+[![Go](https://img.shields.io/badge/Go-1.25+-00ADD8.svg)](https://go.dev)
 [![Release](https://img.shields.io/github/v/release/wirvii/mneme?label=release)](https://github.com/wirvii/mneme/releases)
-[![MCP Tools](https://img.shields.io/badge/MCP%20tools-64-green.svg)](#mcp-tools)
+[![MCP Tools](https://img.shields.io/badge/MCP%20tools-64-0d8f80.svg)](#mcp-tools)
 
 ---
 
@@ -76,7 +78,7 @@ mneme gives AI coding agents a brain that survives between sessions. It stores s
 ## Quickstart
 
 ```bash
-# 1. Install (recommended — requires Go 1.24+, no C compiler needed)
+# 1. Install (recommended — requires Go 1.25+, no C compiler needed)
 go install github.com/wirvii/mneme/cmd/mneme@latest
 
 # Alternative: download a pre-built binary (no Go toolchain required)
@@ -448,6 +450,7 @@ errors, examples) under [docs/api/](docs/api/):
 | [Configuration](docs/CONFIG.md) | All config sections, env overrides, tuning recipes |
 | [Memory Manifest](docs/MEMORY-MANIFEST.md) | Portable interchange format (JSON Schema 2020-12) |
 | [Technical Spec](docs/SPEC.md) | Original v0.1 specification |
+| [Branding](docs/BRANDING.md) | Logo concept, palette, variants, do's & don'ts, copyable SVG source |
 
 ---
 
@@ -533,7 +536,7 @@ See [docs/CONFIG.md](docs/CONFIG.md) for the full reference.
 
 ## Requirements
 
-- Go 1.24+ (`go install github.com/wirvii/mneme/cmd/mneme@latest` is the
+- Go 1.25+ (`go install github.com/wirvii/mneme/cmd/mneme@latest` is the
   recommended install path — see [Quickstart](#quickstart))
 - No C compiler, no CGO, no build tags: SQLite (with FTS5) is provided by the
   pure-Go `modernc.org/sqlite` driver.
