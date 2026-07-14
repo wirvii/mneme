@@ -1857,3 +1857,74 @@ func TestCodegraphConfig_Origins(t *testing.T) {
 		t.Error("hook_nudge_enabled field not found in codegraph origins")
 	}
 }
+
+// TestCodegraphQuerylog_Default verifies that QuerylogEnabled defaults to true
+// (adoption telemetry on by default, SPEC-083 D-owner-2).
+func TestCodegraphQuerylog_Default(t *testing.T) {
+	t.Parallel()
+	cfg := Default()
+	if !cfg.Codegraph.QuerylogEnabled {
+		t.Error("expected Codegraph.QuerylogEnabled=true by default")
+	}
+}
+
+// TestCodegraphQuerylog_EnvOverride verifies that MNEME_CODEGRAPH_QUERYLOG
+// disables/enables the querylog and wins over any TOML value.
+func TestCodegraphQuerylog_EnvOverride(t *testing.T) {
+	cases := []struct {
+		env  string
+		want bool
+	}{
+		{"false", false},
+		{"0", false},
+		{"true", true},
+		{"1", true},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run("env="+tc.env, func(t *testing.T) {
+			t.Setenv("MNEME_CODEGRAPH_QUERYLOG", tc.env)
+			cfg := Default()
+			applyEnvOverrides(cfg)
+			if cfg.Codegraph.QuerylogEnabled != tc.want {
+				t.Errorf("QuerylogEnabled = %v, want %v for env %q", cfg.Codegraph.QuerylogEnabled, tc.want, tc.env)
+			}
+		})
+	}
+}
+
+// TestCodegraphQuerylog_Origins verifies LoadWithOrigins reports
+// querylog_enabled with origin=env and the correct env var name.
+func TestCodegraphQuerylog_Origins(t *testing.T) {
+	t.Setenv("MNEME_CODEGRAPH_QUERYLOG", "false")
+
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.toml")
+
+	_, origins, err := LoadWithOrigins(configPath)
+	if err != nil {
+		t.Fatalf("LoadWithOrigins: %v", err)
+	}
+
+	cgFields, ok := origins.Sections["codegraph"]
+	if !ok {
+		t.Fatal("codegraph section missing from origins")
+	}
+
+	var found bool
+	for _, f := range cgFields {
+		if f.Key == "querylog_enabled" {
+			found = true
+			if f.Origin != OriginEnv {
+				t.Errorf("querylog_enabled origin = %q, want %q", f.Origin, OriginEnv)
+			}
+			if !strings.Contains(f.EnvVar, "MNEME_CODEGRAPH_QUERYLOG") {
+				t.Errorf("querylog_enabled EnvVar = %q, want to contain MNEME_CODEGRAPH_QUERYLOG", f.EnvVar)
+			}
+		}
+	}
+	if !found {
+		t.Error("querylog_enabled field not found in codegraph origins")
+	}
+}
