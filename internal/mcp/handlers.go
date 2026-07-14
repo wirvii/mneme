@@ -2144,7 +2144,7 @@ func (h *handlers) handleInit(ctx context.Context, raw json.RawMessage) (*ToolCa
 			Message: fmt.Sprintf("mcp: handle init: home dir: %s", err),
 		}
 	}
-	cfg, cfgErr := config.Load(home + "/.mneme/config.toml")
+	cfg, cfgErr := config.Load(filepath.Join(home, ".mneme", "config.toml"))
 	if cfgErr != nil {
 		cfg = config.Default()
 	}

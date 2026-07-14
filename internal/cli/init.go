@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"text/tabwriter"
 
@@ -72,7 +73,7 @@ The command is idempotent: re-running on an already-configured project is safe.`
 			if err != nil {
 				return fmt.Errorf("cannot determine home directory: %w", err)
 			}
-			cfg, err := config.Load(home + "/.mneme/config.toml")
+			cfg, err := config.Load(filepath.Join(home, ".mneme", "config.toml"))
 			if err != nil {
 				return fmt.Errorf("load config: %w", err)
 			}
