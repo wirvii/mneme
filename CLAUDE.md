@@ -139,7 +139,7 @@ see `docs/enforcement-model.md`.
 
 - **Commits**: [Conventional Commits](https://www.conventionalcommits.org/) — `type(scope): description`.
 - **Branches**: `type/short-description` (lowercase, hyphens).
-- **Go version**: 1.24+ (go.mod currently declares 1.25.8).
+- **Go version**: 1.25+ (go.mod currently declares 1.25.8).
 
 ## Lanes (v1.5.0)
 
