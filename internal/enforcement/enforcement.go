@@ -61,6 +61,45 @@ type Decision struct {
 // internal/cli's resolvePathOwnership (SPEC-068), called in-process.
 type OwnershipFunc func(target string) (block bool, owner string)
 
+// PathContext carries the host-OS facts IsWhitelisted, EvaluateFileTool and
+// EvaluateBash need to reason about paths, without this leaf package ever
+// calling os/runtime itself (SPEC-075 D2). Threading these three values as
+// an explicit parameter — rather than reading them from the environment —
+// is what keeps the package a pure function of its inputs: tests exercise
+// both Unix and Windows path semantics from any host by constructing a
+// PathContext with the GOOS they want, and the single production caller
+// (internal/cli/hook.go:evaluateDelegation) builds one real PathContext per
+// invocation from os.UserHomeDir, os.TempDir and runtime.GOOS.
+type PathContext struct {
+	// Home is the user's home directory, used to expand a leading "~/" the
+	// same way the original bash implementation used $HOME. Empty disables
+	// expansion — a "~/"-prefixed path is left as-is and will not match any
+	// whitelist rule.
+	Home string
+
+	// TempDir is the OS scratch directory (os.TempDir()): %TEMP% on
+	// Windows, /tmp-family on Unix. It is only consulted in windows-mode
+	// (GOOS == "windows") to whitelist the platform's actual scratch
+	// location, since the hardcoded Unix literals ("/tmp/", "/private/tmp/")
+	// don't apply there. Empty disables that extra check — it never
+	// widens the Unix literals, which stay hardcoded regardless of TempDir.
+	TempDir string
+
+	// GOOS is runtime.GOOS. It gates every Windows-specific code path in
+	// this package (backslash normalization, drive-letter/UNC absolute
+	// detection, ASCII-literal case-insensitivity, TempDir-based scratch
+	// matching): when GOOS != "windows" none of that logic runs and
+	// behavior is byte-for-byte identical to the pre-SPEC-075 Unix-only
+	// implementation.
+	GOOS string
+}
+
+// isWindows reports whether pc describes a Windows host — the single gate
+// every Windows-specific branch in this package checks.
+func (pc PathContext) isWindows() bool {
+	return pc.GOOS == "windows"
+}
+
 // watchedCommands is the set of file-manipulating command names whose last
 // non-flag argument is treated as a candidate write target (mirrors the bash
 // check_bash_go command list).
@@ -92,7 +131,7 @@ var quoteAndBracketStripper = strings.NewReplacer(
 // IsWhitelisted reports whether path is inside the small set of locations the
 // orchestrator may always write to without delegating or consulting a
 // subagent manifest, mirroring is_allowed_path from enforce_delegation.sh
-// verbatim:
+// verbatim on Unix (pc.GOOS != "windows"):
 //
 //   - CLAUDE.md (any location, matched by basename)
 //   - .claudeignore (any location, matched by basename)
@@ -101,13 +140,41 @@ var quoteAndBracketStripper = strings.NewReplacer(
 //   - /tmp/** and /private/tmp/** (macOS) scratch space
 //   - relative paths under .claude/ or .mneme/
 //
-// home expands a leading "~/" the same way the bash version used $HOME —
-// callers pass os.UserHomeDir() (or "" to disable expansion, in which case a
-// "~/"-prefixed path is left as-is and will not match any of the above).
-func IsWhitelisted(path, home string) bool {
+// pc.Home expands a leading "~/" the same way the bash version used $HOME —
+// callers pass os.UserHomeDir() via PathContext (or "" to disable expansion,
+// in which case a "~/"-prefixed path is left as-is and will not match any of
+// the above).
+//
+// When pc.GOOS == "windows" (SPEC-075 D3), four additional, windows-only
+// behaviors kick in — none of them alter the Unix path taken above, so Unix
+// callers (pc.GOOS == "linux"/"darwin"/anything else) get byte-for-byte
+// identical results to the pre-SPEC-075 implementation:
+//
+//   - Backslashes are normalized to "/" before any other check, so
+//     "C:\Users\x\.claude\settings.json" is evaluated the same as its
+//     forward-slash form.
+//   - A drive-absolute path ("C:/...") or a UNC path ("//server/share/...",
+//     already "/"-prefixed after normalization) is routed into the same
+//     branch as a Unix absolute path, so the "/.claude/"/"/.mneme/"
+//     substring checks apply to it.
+//   - A fixed set of ASCII literals is matched case-insensitively:
+//     "CLAUDE.md", "/.claude/", "/.mneme/", "/docs/", and the drive letter.
+//     User-supplied path segments are never folded.
+//   - pc.TempDir (the OS scratch directory, e.g. %TEMP%) is matched as a
+//     prefix, in addition to the hardcoded Unix /tmp literals which stay in
+//     place unconditionally.
+func IsWhitelisted(path string, pc PathContext) bool {
+	windows := pc.isWindows()
+
 	path = strings.TrimPrefix(path, "./")
 	path = strings.ReplaceAll(path, "'", "")
 	path = strings.ReplaceAll(path, `"`, "")
+
+	home := pc.Home
+	if windows {
+		path = strings.ReplaceAll(path, `\`, "/")
+		home = strings.ReplaceAll(home, `\`, "/")
+	}
 
 	if home != "" && strings.HasPrefix(path, "~/") {
 		path = home + "/" + strings.TrimPrefix(path, "~/")
@@ -118,18 +185,26 @@ func IsWhitelisted(path, home string) bool {
 		basename = path[idx+1:]
 	}
 
-	if basename == "CLAUDE.md" || basename == ".claudeignore" {
+	if basename == "CLAUDE.md" || (windows && strings.EqualFold(basename, "CLAUDE.md")) {
 		return true
 	}
-	if strings.HasSuffix(basename, ".md") && strings.Contains("/"+path, "/docs/") {
+	if basename == ".claudeignore" {
+		return true
+	}
+	if strings.HasSuffix(basename, ".md") && pathHasDocsDir(path, windows) {
 		return true
 	}
 
-	if strings.HasPrefix(path, "/") {
-		if strings.Contains(path, "/.claude/") || strings.Contains(path, "/.mneme/") {
+	absolute := strings.HasPrefix(path, "/")
+	driveAbsolute := windows && hasWindowsDrivePrefix(path)
+	if absolute || driveAbsolute {
+		if pathHasProtectedDir(path, windows) {
 			return true
 		}
 		if strings.HasPrefix(path, "/tmp/") || strings.HasPrefix(path, "/private/tmp/") {
+			return true
+		}
+		if windows && isUnderScratchDir(path, pc.TempDir) {
 			return true
 		}
 		return false
@@ -142,6 +217,65 @@ func IsWhitelisted(path, home string) bool {
 		return true
 	}
 	return false
+}
+
+// hasWindowsDrivePrefix reports whether path starts with a drive letter
+// absolute prefix ("C:/", "d:/", ...). Only called in windows-mode. UNC
+// paths ("//server/share/...") don't need a separate detector here: after
+// IsWhitelisted's backslash normalization they already satisfy
+// strings.HasPrefix(path, "/") and take the same absolute-path branch.
+func hasWindowsDrivePrefix(path string) bool {
+	return len(path) >= 3 && isASCIILetter(path[0]) && path[1] == ':' && path[2] == '/'
+}
+
+// isASCIILetter reports whether b is an ASCII letter — used for the
+// windows-mode drive-letter check, which must accept either case ("C:" or
+// "c:") without folding any other part of the path.
+func isASCIILetter(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
+}
+
+// pathHasDocsDir reports whether path (already "/"-normalized) has a
+// "/docs/" directory segment. In windows-mode the "docs" literal is matched
+// case-insensitively (SPEC-075 D3); on Unix it stays an exact match.
+func pathHasDocsDir(path string, windows bool) bool {
+	haystack := "/" + path
+	if windows {
+		return strings.Contains(strings.ToLower(haystack), "/docs/")
+	}
+	return strings.Contains(haystack, "/docs/")
+}
+
+// pathHasProtectedDir reports whether the (already "/"-normalized) absolute
+// path contains a "/.claude/" or "/.mneme/" directory segment. In
+// windows-mode those two literals are matched case-insensitively (SPEC-075
+// D3); on Unix the check is byte-for-byte the original exact-match.
+func pathHasProtectedDir(path string, windows bool) bool {
+	if windows {
+		lower := strings.ToLower(path)
+		return strings.Contains(lower, "/.claude/") || strings.Contains(lower, "/.mneme/")
+	}
+	return strings.Contains(path, "/.claude/") || strings.Contains(path, "/.mneme/")
+}
+
+// isUnderScratchDir reports whether the (already "/"-normalized) absolute
+// path falls under tempDir, the OS scratch directory injected via
+// PathContext.TempDir. Only consulted in windows-mode: it lets a real
+// %TEMP% (e.g. "C:\Users\x\AppData\Local\Temp") whitelist paths under it
+// the same way the hardcoded Unix /tmp literals do, without widening those
+// Unix literals themselves. An empty tempDir disables the check (matches
+// PathContext.TempDir's documented "" == disabled contract).
+func isUnderScratchDir(path, tempDir string) bool {
+	if tempDir == "" {
+		return false
+	}
+	normalized := strings.TrimSuffix(strings.ReplaceAll(tempDir, `\`, "/"), "/")
+	if normalized == "" {
+		return false
+	}
+	lowerPath := strings.ToLower(path)
+	lowerTemp := strings.ToLower(normalized)
+	return lowerPath == lowerTemp || strings.HasPrefix(lowerPath, lowerTemp+"/")
 }
 
 // evaluateTarget consults own for a single non-whitelisted candidate path and
@@ -160,11 +294,11 @@ func evaluateTarget(target, reason string, own OwnershipFunc) Decision {
 // invocation targeting filePath should be blocked. Mirrors check_file_tool:
 // an empty path or a whitelisted path is always allowed; otherwise own is
 // consulted for the single candidate target.
-func EvaluateFileTool(filePath, home string, own OwnershipFunc) Decision {
+func EvaluateFileTool(filePath string, pc PathContext, own OwnershipFunc) Decision {
 	if filePath == "" {
 		return Decision{}
 	}
-	if IsWhitelisted(filePath, home) {
+	if IsWhitelisted(filePath, pc) {
 		return Decision{}
 	}
 	return evaluateTarget(filePath, fmt.Sprintf("Ruta bloqueada: '%s'", filePath), own)
@@ -181,11 +315,11 @@ func EvaluateFileTool(filePath, home string, own OwnershipFunc) Decision {
 // fails open (returns an empty Decision), matching check_bash_go's
 // "tokenizador no disponible" fallback — shell.Tokenize is always available
 // in-process, so this only fires for genuinely unparsable input.
-func EvaluateBash(command, home string, own OwnershipFunc) Decision {
-	return evaluateBash(command, home, own, 0)
+func EvaluateBash(command string, pc PathContext, own OwnershipFunc) Decision {
+	return evaluateBash(command, pc, own, 0)
 }
 
-func evaluateBash(command, home string, own OwnershipFunc, depth int) Decision {
+func evaluateBash(command string, pc PathContext, own OwnershipFunc, depth int) Decision {
 	if strings.TrimSpace(command) == "" {
 		return Decision{}
 	}
@@ -198,7 +332,7 @@ func evaluateBash(command, home string, own OwnershipFunc, depth int) Decision {
 	for i, tok := range tokens {
 		switch tok.Type {
 		case shell.TypeRedirectTarget:
-			if d := evaluateRedirectTarget(tok.Value, home, own); d.Block {
+			if d := evaluateRedirectTarget(tok.Value, pc, own); d.Block {
 				return d
 			}
 
@@ -206,13 +340,13 @@ func evaluateBash(command, home string, own OwnershipFunc, depth int) Decision {
 			if tok.Quoted {
 				continue
 			}
-			if d := evaluateWordToken(tokens, i, tok.Value, command, home, own, depth); d.Block {
+			if d := evaluateWordToken(tokens, i, tok.Value, command, pc, own, depth); d.Block {
 				return d
 			}
 
 		case shell.TypeCommandSubstitution:
 			if depth < maxBashRecursionDepth && tok.Value != "" {
-				if d := evaluateBash(tok.Value, home, own, depth+1); d.Block {
+				if d := evaluateBash(tok.Value, pc, own, depth+1); d.Block {
 					return d
 				}
 			}
@@ -229,14 +363,14 @@ func evaluateBash(command, home string, own OwnershipFunc, depth int) Decision {
 // evaluateRedirectTarget handles a single TypeRedirectTarget token: process
 // substitution and /dev/* targets are never candidates; anything else is
 // checked against the whitelist and, if not whitelisted, against own.
-func evaluateRedirectTarget(value, home string, own OwnershipFunc) Decision {
+func evaluateRedirectTarget(value string, pc PathContext, own OwnershipFunc) Decision {
 	if isProcessSubstitution(value) {
 		return Decision{}
 	}
 	if strings.HasPrefix(value, "/dev/") {
 		return Decision{}
 	}
-	if IsWhitelisted(value, home) {
+	if IsWhitelisted(value, pc) {
 		return Decision{}
 	}
 	return evaluateTarget(value, fmt.Sprintf("Redirect a ruta protegida: '%s'", value), own)
@@ -251,25 +385,25 @@ func isProcessSubstitution(value string) bool {
 
 // evaluateWordToken dispatches on an unquoted word token's value, mirroring
 // the case statement inside check_bash_go's `word` branch.
-func evaluateWordToken(tokens []shell.Token, i int, value, fullCommand, home string, own OwnershipFunc, depth int) Decision {
+func evaluateWordToken(tokens []shell.Token, i int, value, fullCommand string, pc PathContext, own OwnershipFunc, depth int) Decision {
 	switch value {
 	case "bash", "sh", "zsh":
-		return evaluateShellDashC(tokens, i, home, own, depth)
+		return evaluateShellDashC(tokens, i, pc, own, depth)
 	case "sed", "perl":
 		return evaluateInPlaceEditor(tokens, i, value, fullCommand)
 	case "dd":
-		return evaluateDD(tokens, i, home, own)
+		return evaluateDD(tokens, i, pc, own)
 	case "python", "python2", "python3":
-		if commandMentionsProtectedPath(fullCommand, home) {
+		if commandMentionsProtectedPath(fullCommand, pc) {
 			return Decision{Block: true, Reason: "Script Python inline menciona ruta fuera de whitelist"}
 		}
 	case "node":
-		if commandMentionsProtectedPath(fullCommand, home) {
+		if commandMentionsProtectedPath(fullCommand, pc) {
 			return Decision{Block: true, Reason: "Script Node inline menciona ruta fuera de whitelist"}
 		}
 	default:
 		if watchedCommands[value] {
-			return evaluateWatchedCommand(tokens, i, value, home, own)
+			return evaluateWatchedCommand(tokens, i, value, pc, own)
 		}
 	}
 	return Decision{}
@@ -278,7 +412,7 @@ func evaluateWordToken(tokens []shell.Token, i int, value, fullCommand, home str
 // evaluateShellDashC recurses one level into `bash|sh|zsh -c "<cmd>"` (D5,
 // SPEC-033), guarded by depth so nested -c invocations are not walked
 // indefinitely.
-func evaluateShellDashC(tokens []shell.Token, i int, home string, own OwnershipFunc, depth int) Decision {
+func evaluateShellDashC(tokens []shell.Token, i int, pc PathContext, own OwnershipFunc, depth int) Decision {
 	if depth >= maxBashRecursionDepth {
 		return Decision{}
 	}
@@ -290,7 +424,7 @@ func evaluateShellDashC(tokens []shell.Token, i int, home string, own OwnershipF
 	if !ok || inner == "" {
 		return Decision{}
 	}
-	return evaluateBash(inner, home, own, depth+1)
+	return evaluateBash(inner, pc, own, depth+1)
 }
 
 // evaluateInPlaceEditor hard-blocks sed/perl invocations using an in-place
@@ -311,12 +445,12 @@ func evaluateInPlaceEditor(tokens []shell.Token, i int, name, fullCommand string
 
 // evaluateDD looks for a `dd of=<target>` argument after the "dd" token and
 // checks it like any other candidate target.
-func evaluateDD(tokens []shell.Token, i int, home string, own OwnershipFunc) Decision {
+func evaluateDD(tokens []shell.Token, i int, pc PathContext, own OwnershipFunc) Decision {
 	target := findDDTarget(tokens, i)
 	if target == "" {
 		return Decision{}
 	}
-	if IsWhitelisted(target, home) {
+	if IsWhitelisted(target, pc) {
 		return Decision{}
 	}
 	return evaluateTarget(target, fmt.Sprintf("'dd' a ruta protegida: '%s'", target), own)
@@ -339,12 +473,12 @@ func findDDTarget(tokens []shell.Token, cmdIdx int) string {
 // evaluateWatchedCommand handles tee/mv/cp/rm/rmdir/touch/chmod/chown/ln/
 // install/patch/truncate: the last non-flag unquoted word before the next
 // redirect or separator is the candidate write target.
-func evaluateWatchedCommand(tokens []shell.Token, i int, name, home string, own OwnershipFunc) Decision {
+func evaluateWatchedCommand(tokens []shell.Token, i int, name string, pc PathContext, own OwnershipFunc) Decision {
 	target := findLastWordTarget(tokens, i)
 	if target == "" || strings.HasPrefix(target, "-") {
 		return Decision{}
 	}
-	if IsWhitelisted(target, home) {
+	if IsWhitelisted(target, pc) {
 		return Decision{}
 	}
 	return evaluateTarget(target, fmt.Sprintf("'%s' a ruta protegida: '%s'", name, target), own)
@@ -400,7 +534,7 @@ func tokenValueAt(tokens []shell.Token, i int) (string, bool) {
 // into (shutil.copy, subprocess.run, os.rename, fs.writeFileSync, etc.),
 // trading a higher false-positive rate on reads for a deny-by-default
 // posture on writes (D3, SPEC-042).
-func commandMentionsProtectedPath(cmd, home string) bool {
+func commandMentionsProtectedPath(cmd string, pc PathContext) bool {
 	if !strings.Contains(cmd, "/") && !strings.Contains(cmd, "~/") && !strings.Contains(cmd, `.\`) {
 		return false // fast path: no path-shaped substring anywhere.
 	}
@@ -447,7 +581,7 @@ func commandMentionsProtectedPath(cmd, home string) bool {
 		if cleaned == "" {
 			continue
 		}
-		if !IsWhitelisted(cleaned, home) {
+		if !IsWhitelisted(cleaned, pc) {
 			return true
 		}
 	}

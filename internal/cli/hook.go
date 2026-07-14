@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -1104,10 +1105,22 @@ func runHookEnforceDelegation(r io.Reader, errW io.Writer) error {
 // manifest fails open (returns a zero enforcement.Decision, Block=false),
 // consistent with the rest of this hook family's fail-open philosophy
 // (D8/D9).
+//
+// It builds the enforcement.PathContext once per invocation (SPEC-075 D2):
+// os.UserHomeDir for "~/" expansion, os.TempDir for the OS scratch
+// directory, and runtime.GOOS to gate the windows-mode path semantics in
+// internal/enforcement. This is the only place in the codebase that
+// constructs a PathContext from the real environment — internal/enforcement
+// itself never calls os/runtime.
 func evaluateDelegation(input hookPreToolInput, cwd string) enforcement.Decision {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return enforcement.Decision{}
+	}
+	pc := enforcement.PathContext{
+		Home:    home,
+		TempDir: os.TempDir(),
+		GOOS:    runtime.GOOS,
 	}
 
 	cfg, err := config.Load(config.DefaultPath())
@@ -1129,9 +1142,9 @@ func evaluateDelegation(input hookPreToolInput, cwd string) enforcement.Decision
 	}
 
 	if input.ToolName == "Bash" {
-		return enforcement.EvaluateBash(input.ToolInput.Command, home, own)
+		return enforcement.EvaluateBash(input.ToolInput.Command, pc, own)
 	}
-	return enforcement.EvaluateFileTool(input.filePath(), home, own)
+	return enforcement.EvaluateFileTool(input.filePath(), pc, own)
 }
 
 // printDelegationBlock writes the delegation-block message to w, mirroring

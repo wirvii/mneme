@@ -1,11 +1,27 @@
 package enforcement
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/wirvii/mneme/internal/shell"
+)
 
 // testHome is the fixed home directory used across whitelist/tilde-expansion
 // test cases. It never needs to exist on disk — IsWhitelisted only does
 // string manipulation.
 const testHome = "/home/tester"
+
+// unixGOOSValues are the two Unix GOOS values every ported case (SPEC-075
+// AC2) is re-invoked under, to prove the windows-mode branches added in
+// IsWhitelisted/EvaluateFileTool/EvaluateBash never fire — and therefore
+// never change a single assertion — on either Unix platform.
+var unixGOOSValues = []string{"linux", "darwin"}
+
+// pc builds a PathContext for goos, reusing testHome for every case in this
+// file (mirrors the pre-SPEC-075 testHome-only parameter).
+func pc(goos string) PathContext {
+	return PathContext{Home: testHome, GOOS: goos}
+}
 
 // legacyBlockStub is an OwnershipFunc stub that always blocks with owner
 // "legacy" — it reproduces the isolated $HOME/cwd test environment
@@ -54,16 +70,18 @@ func TestEvaluateFileTool_PortedCases(t *testing.T) {
 		{"AC10_2_edit_unowned_path_allows", "notes.txt", backendOwnsInternalStub, false, ""},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := EvaluateFileTool(tt.path, testHome, tt.own)
-			if got.Block != tt.wantBlock {
-				t.Fatalf("Block = %v, want %v (decision: %+v)", got.Block, tt.wantBlock, got)
-			}
-			if got.Owner != tt.wantOwner {
-				t.Errorf("Owner = %q, want %q", got.Owner, tt.wantOwner)
-			}
-		})
+	for _, goos := range unixGOOSValues {
+		for _, tt := range tests {
+			t.Run(goos+"/"+tt.name, func(t *testing.T) {
+				got := EvaluateFileTool(tt.path, pc(goos), tt.own)
+				if got.Block != tt.wantBlock {
+					t.Fatalf("Block = %v, want %v (decision: %+v)", got.Block, tt.wantBlock, got)
+				}
+				if got.Owner != tt.wantOwner {
+					t.Errorf("Owner = %q, want %q", got.Owner, tt.wantOwner)
+				}
+			})
+		}
 	}
 }
 
@@ -111,16 +129,18 @@ func TestEvaluateBash_PortedCases(t *testing.T) {
 		{"AC10_4_bash_redirect_owned_path_blocks", "echo x > internal/foo.go", backendOwnsInternalStub, true, "backend"},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := EvaluateBash(tt.command, testHome, tt.own)
-			if got.Block != tt.wantBlock {
-				t.Fatalf("Block = %v, want %v (decision: %+v)", got.Block, tt.wantBlock, got)
-			}
-			if got.Owner != tt.wantOwner {
-				t.Errorf("Owner = %q, want %q", got.Owner, tt.wantOwner)
-			}
-		})
+	for _, goos := range unixGOOSValues {
+		for _, tt := range tests {
+			t.Run(goos+"/"+tt.name, func(t *testing.T) {
+				got := EvaluateBash(tt.command, pc(goos), tt.own)
+				if got.Block != tt.wantBlock {
+					t.Fatalf("Block = %v, want %v (decision: %+v)", got.Block, tt.wantBlock, got)
+				}
+				if got.Owner != tt.wantOwner {
+					t.Errorf("Owner = %q, want %q", got.Owner, tt.wantOwner)
+				}
+			})
+		}
 	}
 }
 
@@ -143,22 +163,26 @@ func TestEvaluateBash_RecursionCoverage(t *testing.T) {
 		{"bash_dash_c_recursion_allows_safe_inner", `bash -c "echo hi > .claude/x"`, false, ""},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := EvaluateBash(tt.command, testHome, legacyBlockStub)
-			if got.Block != tt.wantBlock {
-				t.Fatalf("Block = %v, want %v (decision: %+v)", got.Block, tt.wantBlock, got)
-			}
-			if got.Owner != tt.wantOwner {
-				t.Errorf("Owner = %q, want %q", got.Owner, tt.wantOwner)
-			}
-		})
+	for _, goos := range unixGOOSValues {
+		for _, tt := range tests {
+			t.Run(goos+"/"+tt.name, func(t *testing.T) {
+				got := EvaluateBash(tt.command, pc(goos), legacyBlockStub)
+				if got.Block != tt.wantBlock {
+					t.Fatalf("Block = %v, want %v (decision: %+v)", got.Block, tt.wantBlock, got)
+				}
+				if got.Owner != tt.wantOwner {
+					t.Errorf("Owner = %q, want %q", got.Owner, tt.wantOwner)
+				}
+			})
+		}
 	}
 }
 
 // TestIsWhitelisted covers the whitelist rules directly (basename matches,
 // docs/*.md, absolute .claude//.mneme/ substrings, /tmp scratch, relative
-// .claude//.mneme/ prefixes) independent of the Evaluate* entrypoints.
+// .claude//.mneme/ prefixes) independent of the Evaluate* entrypoints. Every
+// case is re-invoked under both Unix GOOS values (SPEC-075 AC2/AC4): none of
+// them trigger the windows-mode branches, so assertions are shared verbatim.
 func TestIsWhitelisted(t *testing.T) {
 	tests := []struct {
 		name string
@@ -181,11 +205,278 @@ func TestIsWhitelisted(t *testing.T) {
 		{"relative_unrelated", "internal/foo.go", false},
 	}
 
+	for _, goos := range unixGOOSValues {
+		for _, tt := range tests {
+			t.Run(goos+"/"+tt.name, func(t *testing.T) {
+				if got := IsWhitelisted(tt.path, pc(goos)); got != tt.want {
+					t.Errorf("IsWhitelisted(%q) = %v, want %v", tt.path, got, tt.want)
+				}
+			})
+		}
+	}
+}
+
+// TestIsWhitelisted_Windows is the new GOOS="windows" matrix (SPEC-075 AC3):
+// drive-absolute paths, UNC paths, %TEMP%-prefixed scratch paths, a blocked
+// non-whitelisted path, and paths mixing "/" and "\" separators.
+func TestIsWhitelisted_Windows(t *testing.T) {
+	winPC := PathContext{
+		Home:    `C:\Users\x`,
+		TempDir: `C:\Users\x\AppData\Local\Temp`,
+		GOOS:    "windows",
+	}
+
+	tests := []struct {
+		name string
+		path string
+		want bool
+	}{
+		{"drive_absolute_claude_md", `C:\proj\CLAUDE.md`, true},
+		{"drive_absolute_dotclaude_settings", `C:\Users\x\.claude\settings.json`, true},
+		{"unc_dotmneme", `\\server\share\.mneme\x`, true},
+		{"under_tempdir_backslash", `C:\Users\x\AppData\Local\Temp\scratch.txt`, true},
+		{"under_tempdir_forward_slash", `C:/Users/x/AppData/Local/Temp/scratch.txt`, true},
+		{"drive_absolute_blocked_src", `C:\proj\src\main.go`, false},
+		{"mixed_separators_dotclaude", `C:\proj/.claude\settings.json`, true},
+		{"mixed_separators_blocked", `C:/proj\src/main.go`, false},
+		{"lowercase_drive_letter_claude_md", `c:\proj\CLAUDE.md`, true},
+		{"lowercase_claude_md_basename", `C:\proj\claude.md`, true},
+		{"tilde_expansion_dotclaude", `~\.claude\settings.json`, true},
+		{"docs_md_backslash", `docs\ARCHITECTURE.md`, true},
+	}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := IsWhitelisted(tt.path, testHome); got != tt.want {
+			if got := IsWhitelisted(tt.path, winPC); got != tt.want {
 				t.Errorf("IsWhitelisted(%q) = %v, want %v", tt.path, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestEvaluateFileTool_Windows exercises EvaluateFileTool end-to-end
+// (whitelist + OwnershipFunc bridge) under GOOS="windows" (SPEC-075 AC3),
+// including the blocked case going through the ownership bridge.
+func TestEvaluateFileTool_Windows(t *testing.T) {
+	winPC := PathContext{
+		Home:    `C:\Users\x`,
+		TempDir: `C:\Users\x\AppData\Local\Temp`,
+		GOOS:    "windows",
+	}
+
+	tests := []struct {
+		name      string
+		path      string
+		wantBlock bool
+		wantOwner string
+	}{
+		{"whitelisted_claude_md", `C:\proj\CLAUDE.md`, false, ""},
+		{"whitelisted_dotclaude", `C:\Users\x\.claude\settings.json`, false, ""},
+		{"whitelisted_unc_dotmneme", `\\server\share\.mneme\x`, false, ""},
+		{"whitelisted_tempdir", `C:\Users\x\AppData\Local\Temp\scratch.txt`, false, ""},
+		{"blocked_src_main_go", `C:\proj\src\main.go`, true, "legacy"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := EvaluateFileTool(tt.path, winPC, legacyBlockStub)
+			if got.Block != tt.wantBlock {
+				t.Fatalf("Block = %v, want %v (decision: %+v)", got.Block, tt.wantBlock, got)
+			}
+			if got.Owner != tt.wantOwner {
+				t.Errorf("Owner = %q, want %q", got.Owner, tt.wantOwner)
+			}
+		})
+	}
+}
+
+// TestEvaluateFileTool_EmptyPath covers the empty-filePath fast path in
+// EvaluateFileTool (a malformed tool payload with no file_path field).
+func TestEvaluateFileTool_EmptyPath(t *testing.T) {
+	got := EvaluateFileTool("", pc("linux"), legacyBlockStub)
+	if got.Block {
+		t.Fatalf("Block = true, want false for empty path (decision: %+v)", got)
+	}
+}
+
+// TestEvaluateBash_EmptyOrUnparsableCommand covers EvaluateBash's two
+// fail-open branches ahead of any token evaluation: a whitespace-only
+// command (never reaches the tokenizer) and a command the tokenizer cannot
+// parse (unterminated quote), matching check_bash_go's "tokenizador no
+// disponible" fallback.
+func TestEvaluateBash_EmptyOrUnparsableCommand(t *testing.T) {
+	tests := []struct {
+		name    string
+		command string
+	}{
+		{"whitespace_only", "   \n\t "},
+		{"unterminated_quote", `echo "hi`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := EvaluateBash(tt.command, pc("linux"), legacyBlockStub)
+			if got.Block {
+				t.Fatalf("Block = true, want false (fail-open) for %q (decision: %+v)", tt.command, got)
+			}
+		})
+	}
+}
+
+// TestEvaluateBash_SedPerlInPlaceAndDD ports coverage for evaluateInPlaceEditor
+// and evaluateDD/findDDTarget: neither is exercised by the 38 ported
+// enforce_delegation_test.sh cases (SPEC-075 AC6, >85% coverage).
+func TestEvaluateBash_SedPerlInPlaceAndDD(t *testing.T) {
+	tests := []struct {
+		name      string
+		command   string
+		wantBlock bool
+		wantOwner string
+	}{
+		{"sed_i_outside_whitelist_blocks", "sed -i 's/a/b/' internal/foo.go", true, ""},
+		{"perl_i_outside_whitelist_blocks", "perl -i -pe 's/a/b/' internal/foo.go", true, ""},
+		{"sed_i_inside_dotclaude_allows", "sed -i 's/a/b/' .claude/settings.json", false, ""},
+		{"sed_i_mentions_claude_md_allows", "sed -i 's/a/b/' CLAUDE.md", false, ""},
+		{"sed_without_i_flag_allows", "sed 's/a/b/' internal/foo.go", false, ""},
+		{"sed_flag_without_i_letter_allows", "sed -n 'p' internal/foo.go", false, ""},
+		{"sed_no_following_token_allows", "sed", false, ""},
+		{"dd_of_protected_blocks", "dd if=/dev/zero of=internal/foo.go", true, "legacy"},
+		{"dd_of_whitelisted_allows", "dd if=/dev/zero of=.claude/scratch", false, ""},
+		{"dd_without_of_allows", "dd if=/dev/zero bs=1M count=1", false, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := EvaluateBash(tt.command, pc("linux"), legacyBlockStub)
+			if got.Block != tt.wantBlock {
+				t.Fatalf("Block = %v, want %v (decision: %+v)", got.Block, tt.wantBlock, got)
+			}
+			if got.Owner != tt.wantOwner {
+				t.Errorf("Owner = %q, want %q", got.Owner, tt.wantOwner)
+			}
+		})
+	}
+}
+
+// TestEvaluateBash_ShellDashCEdgeCases exercises evaluateShellDashC's
+// early-return branches beyond the two RecursionCoverage happy-path cases:
+// no token after "bash" at all, a following token that isn't "-c", a "-c"
+// with no body at all, an empty "-c" body, and recursion attempted beyond
+// maxBashRecursionDepth (a nested bash -c inside bash -c fails open on the
+// inner level, SPEC-033 D5).
+func TestEvaluateBash_ShellDashCEdgeCases(t *testing.T) {
+	tests := []struct {
+		name      string
+		command   string
+		wantBlock bool
+	}{
+		{"bash_alone_no_next_token", "bash", false},
+		{"bash_script_not_dash_c", "bash foo.sh", false},
+		{"bash_dash_c_no_body_token", "bash -c", false},
+		{"bash_dash_c_empty_body", `bash -c ""`, false},
+		{"nested_dash_c_beyond_depth_fails_open", `bash -c "bash -c 'echo hi > internal/foo.go'"`, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := EvaluateBash(tt.command, pc("linux"), legacyBlockStub)
+			if got.Block != tt.wantBlock {
+				t.Fatalf("Block = %v, want %v (decision: %+v)", got.Block, tt.wantBlock, got)
+			}
+		})
+	}
+}
+
+// TestEvaluateBash_WatchedCommandBoundaries covers findLastWordTarget's
+// segment-boundary and skip logic: a "&&" statement boundary stops the scan
+// before crossing into the next command, and flags/quoted words in between
+// the watched command and its real target are skipped rather than picked as
+// the candidate.
+func TestEvaluateBash_WatchedCommandBoundaries(t *testing.T) {
+	tests := []struct {
+		name      string
+		command   string
+		wantBlock bool
+		wantOwner string
+	}{
+		{"mv_stops_at_and_boundary", "mv src.go internal/dst.go && echo done", true, "legacy"},
+		{"mv_skips_flag_and_quoted_arg", `mv -v "note" internal/dst.go`, true, "legacy"},
+		{"rm_only_flags_no_target_allows", "rm -rf", false, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := EvaluateBash(tt.command, pc("linux"), legacyBlockStub)
+			if got.Block != tt.wantBlock {
+				t.Fatalf("Block = %v, want %v (decision: %+v)", got.Block, tt.wantBlock, got)
+			}
+			if got.Owner != tt.wantOwner {
+				t.Errorf("Owner = %q, want %q", got.Owner, tt.wantOwner)
+			}
+		})
+	}
+}
+
+// TestCommandMentionsProtectedPath covers commandMentionsProtectedPath's
+// candidate-filtering branches directly (http(s):// skip, a redirect
+// operator that strips down to nothing, and the happy path that does find a
+// protected candidate) — white-box, since this heuristic is only reachable
+// indirectly through EvaluateBash's python/node dispatch.
+func TestCommandMentionsProtectedPath(t *testing.T) {
+	p := pc("linux")
+	tests := []struct {
+		name string
+		cmd  string
+		want bool
+	}{
+		{"http_url_candidate_skipped", "fetch http://example.com/internal/secret", false},
+		{"https_url_candidate_skipped", "fetch https://example.com/internal/secret", false},
+		{"redirect_operator_strips_to_empty_candidate", "run .claude/x 2>>", false},
+		{"protected_relative_path_detected", "open internal/foo.go", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := commandMentionsProtectedPath(tt.cmd, p); got != tt.want {
+				t.Errorf("commandMentionsProtectedPath(%q) = %v, want %v", tt.cmd, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestIsUnderScratchDir white-box tests isUnderScratchDir directly: an
+// empty tempDir disables the check, a tempDir that normalizes down to
+// nothing (a bare separator) also disables it, and both an exact match and
+// a case-insensitive prefix match are recognized.
+func TestIsUnderScratchDir(t *testing.T) {
+	tests := []struct {
+		name    string
+		path    string
+		tempDir string
+		want    bool
+	}{
+		{"empty_tempdir_disables", "C:/Users/x/AppData/Local/Temp/f", "", false},
+		{"tempdir_normalizes_to_empty", "C:/Users/x/f", "/", false},
+		{"exact_match_case_insensitive", "c:/users/x/temp", "C:/Users/x/Temp", true},
+		{"prefix_match_case_insensitive", "C:/Users/x/Temp/sub/file.txt", `C:\Users\x\Temp\`, true},
+		{"not_under_tempdir", "C:/other/file.txt", "C:/Users/x/Temp", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isUnderScratchDir(tt.path, tt.tempDir); got != tt.want {
+				t.Errorf("isUnderScratchDir(%q, %q) = %v, want %v", tt.path, tt.tempDir, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestTokenValueAt white-box tests tokenValueAt's bounds checking directly
+// (negative index, past-the-end index, in-range index).
+func TestTokenValueAt(t *testing.T) {
+	tokens := []shell.Token{{Value: "a"}, {Value: "b"}}
+
+	if v, ok := tokenValueAt(tokens, -1); ok || v != "" {
+		t.Errorf("tokenValueAt(-1) = (%q, %v), want (\"\", false)", v, ok)
+	}
+	if v, ok := tokenValueAt(tokens, 5); ok || v != "" {
+		t.Errorf("tokenValueAt(5) = (%q, %v), want (\"\", false)", v, ok)
+	}
+	if v, ok := tokenValueAt(tokens, 1); !ok || v != "b" {
+		t.Errorf("tokenValueAt(1) = (%q, %v), want (\"b\", true)", v, ok)
 	}
 }
