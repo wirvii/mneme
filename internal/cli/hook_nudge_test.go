@@ -33,9 +33,6 @@ func mnemeRepoRoot(t *testing.T) string {
 // repository. It is derived from the remote URL git@github.com:wirvii/mneme.git.
 const repoSlug = "wirvii/mneme"
 
-// repoSlugFilename is the DB filename component (slashes replaced with dashes).
-const repoSlugFilename = "wirvii-mneme"
-
 // setupNudgeDB creates a temporary DataDir, builds a codegraph DB for the
 // mneme project slug at the expected path, and returns (dataDir, dbPath).
 // It seeds the DB with one node having the given updatedAtMs timestamp.

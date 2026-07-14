@@ -414,16 +414,3 @@ func tsCandidatePaths(refFilePath, moduleSource string) []string {
 	}
 	return candidates
 }
-
-// findNode is kept for backward compatibility with tests that call it directly.
-// New code should use resolveRef which includes the import-guided tier.
-func (r *Resolver) findNode(referenceName string) (*Node, error) {
-	rn, err := r.resolveRef(UnresolvedRef{ReferenceName: referenceName}, nil)
-	if err != nil {
-		return nil, err
-	}
-	if rn == nil {
-		return nil, nil
-	}
-	return rn.Node, nil
-}
