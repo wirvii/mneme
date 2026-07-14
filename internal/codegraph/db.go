@@ -40,6 +40,18 @@ func DBPath(projectsDir, slug string) string {
 	return filepath.Join(projectsDir, slug+"-codegraph.db")
 }
 
+// QuerylogPath returns the canonical filesystem path for a project's code graph
+// adoption querylog (SPEC-083 W1). It lives alongside the codegraph database in
+// the same projects directory, distinguished by the "-codegraph-querylog.jsonl"
+// suffix, so both the MCP server and the ephemeral pre-tool-use hook resolve it
+// identically from cfg.Storage.DataDir/projects + the detected slug.
+//
+// Example: QuerylogPath("/home/user/.mneme/projects", "myorg-myrepo")
+// returns   "/home/user/.mneme/projects/myorg-myrepo-codegraph-querylog.jsonl"
+func QuerylogPath(projectsDir, slug string) string {
+	return filepath.Join(projectsDir, slug+"-codegraph-querylog.jsonl")
+}
+
 // OpenDB opens (or creates) the codegraph SQLite database at path. The parent
 // directory is created with 0755 permissions if it does not exist. Pass
 // ":memory:" to open a transient in-memory database (useful for tests).

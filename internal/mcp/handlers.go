@@ -9,11 +9,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/wirvii/mneme/internal/codegraph"
 	"github.com/wirvii/mneme/internal/config"
 	"github.com/wirvii/mneme/internal/install"
 	"github.com/wirvii/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/querylog"
 	"github.com/wirvii/mneme/internal/service"
 )
 
@@ -46,6 +48,15 @@ func newHandlers(svc *service.MemoryService, sdd *service.SDDService, skillsSvc 
 // It returns a JSONRPCError when the tool name is unknown, arguments are
 // malformed, or the service returns an error that maps to a protocol error code.
 func (h *handlers) handleToolCall(ctx context.Context, params ToolCallParams) (*ToolCallResult, *JSONRPCError) {
+	// Record code graph adoption telemetry (SPEC-083 W1): every codegraph_* tool
+	// call is an authoritative "use" event. This is the single, authoritative
+	// hook point — the MCP dispatch always runs when the tool runs, it excludes
+	// human CLI use (which never goes through this handler), and it avoids any
+	// dependence on PreToolUse firing for MCP tools. Fail-open, best-effort.
+	if strings.HasPrefix(params.Name, "codegraph_") {
+		h.logCodegraphUse(params.Name)
+	}
+
 	switch params.Name {
 	case "mem_save":
 		return h.handleMemSave(ctx, params.Arguments)
@@ -193,6 +204,33 @@ func (h *handlers) handleToolCall(ctx context.Context, params ToolCallParams) (*
 			Message: fmt.Sprintf("unknown tool: %s", params.Name),
 		}
 	}
+}
+
+// logCodegraphUse appends a code graph "use" telemetry event (SPEC-083 W1) for
+// the named codegraph_* tool. It is gated by [codegraph] querylog_enabled and
+// is strictly best-effort: any failure (no project slug, append error) is
+// ignored so telemetry never affects a tool call. No session id is recorded —
+// the MCP server has none, and the adoption ratio is aggregate, not per-session.
+func (h *handlers) logCodegraphUse(name string) {
+	cfg := h.svc.Config()
+	if cfg == nil || !cfg.Codegraph.QuerylogEnabled {
+		return
+	}
+	slug := h.svc.ProjectSlug()
+	if slug == "" {
+		return
+	}
+	projectsDir := filepath.Join(cfg.Storage.DataDir, "projects")
+	path := codegraph.QuerylogPath(projectsDir, slug)
+	ev := querylog.Event{
+		TS:      time.Now().UTC(),
+		Project: slug,
+		Kind:    querylog.KindUse,
+		Tool:    name,
+		Source:  "mcp",
+	}
+	//nolint:errcheck // telemetry is best-effort; failures must not affect the call
+	_ = querylog.Append(path, ev, querylog.DefaultMaxBytes)
 }
 
 // handleMemSave processes a mem_save tool call.

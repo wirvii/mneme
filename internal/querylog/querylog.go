@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"time"
 )
@@ -87,6 +88,14 @@ func Append(path string, ev Event, maxBytes int64) error {
 		return fmt.Errorf("querylog: marshal event: %w", err)
 	}
 	line = append(line, '\n')
+
+	// Ensure the parent directory exists — the slug may contain a "/" that maps
+	// to a sub-directory (e.g. projects/wirvii/) which is created lazily.
+	if dir := filepath.Dir(path); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return fmt.Errorf("querylog: create dir %s: %w", dir, err)
+		}
+	}
 
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
