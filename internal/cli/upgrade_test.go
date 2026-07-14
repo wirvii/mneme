@@ -12,6 +12,8 @@ import (
 	"runtime/debug"
 	"strings"
 	"testing"
+
+	"github.com/wirvii/mneme/internal/upgrade"
 )
 
 // writeFakeClaudeJSON writes a minimal ~/.claude.json under home that
@@ -205,5 +207,251 @@ func TestRunUpgrade_RefusesDevBuilds(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "cannot upgrade a development build") {
 		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+// stubLookPathGo installs a fake lookPathGo that returns err (nil = "go
+// found"). It restores the original via t.Cleanup. No real PATH lookup is
+// ever performed, so this deterministically exercises both branches
+// regardless of whether the test host has a "go" binary on PATH.
+func stubLookPathGo(t *testing.T, err error) {
+	t.Helper()
+	original := lookPathGo
+	lookPathGo = func() (string, error) {
+		if err != nil {
+			return "", err
+		}
+		return "/usr/local/go/bin/go", nil
+	}
+	t.Cleanup(func() { lookPathGo = original })
+}
+
+// stubGoInstallExec installs a fake goInstallExec that records every
+// requested tag and returns err. It restores the original via t.Cleanup. No
+// real `go install` is ever executed — this respects
+// constraint-no-local-install, which SPEC-076 requires for every test in
+// this file.
+func stubGoInstallExec(t *testing.T, err error) *[]string {
+	t.Helper()
+	original := goInstallExec
+	var tags []string
+	goInstallExec = func(ctx context.Context, tag string, w io.Writer) error {
+		tags = append(tags, tag)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(w, "  [ok] go install %s\n", goInstallTarget(tag))
+		return nil
+	}
+	t.Cleanup(func() { goInstallExec = original })
+	return &tags
+}
+
+// stubGoEnvExec installs a fake goEnvExec returning values[key] (and
+// errs[key] when present). It restores the original via t.Cleanup. No real
+// `go env` subprocess is ever executed.
+func stubGoEnvExec(t *testing.T, values map[string]string, errs map[string]error) {
+	t.Helper()
+	original := goEnvExec
+	goEnvExec = func(ctx context.Context, key string) (string, error) {
+		if err := errs[key]; err != nil {
+			return "", err
+		}
+		return values[key], nil
+	}
+	t.Cleanup(func() { goEnvExec = original })
+}
+
+// TestGoInstallTarget_UsesTagNotLatest covers AC4 (SPEC-076): the target
+// passed to `go install` is "<module>@<TagName>", never "@latest", so the
+// version actually fetched always matches the release Check() resolved.
+func TestGoInstallTarget_UsesTagNotLatest(t *testing.T) {
+	got := goInstallTarget("v1.24.0")
+	want := "github.com/wirvii/mneme/cmd/mneme@v1.24.0"
+	if got != want {
+		t.Errorf("goInstallTarget(%q) = %q, want %q", "v1.24.0", got, want)
+	}
+	if strings.Contains(got, "@latest") {
+		t.Errorf("goInstallTarget must never use @latest, got %q", got)
+	}
+}
+
+// TestPerformUpgradeWindows_Success covers AC1/AC3/AC4/AC6 (SPEC-076): on the
+// Windows branch, checkWritable is never called (there is no way for the
+// stubbed seams to fail because of it), go install is invoked exactly once
+// with the resolved release's exact TagName via the goInstallExec seam
+// (never a real subprocess), and postUpgradeHooks re-execs the path resolved
+// from `go env GOBIN`.
+func TestPerformUpgradeWindows_Success(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeFakeClaudeJSON(t, home)
+
+	stubLookPathGo(t, nil)
+	installedTags := stubGoInstallExec(t, nil)
+	stubGoEnvExec(t, map[string]string{"GOBIN": `C:\Users\dev\go\bin`}, nil)
+	hookCalls := stubInstallExec(t, nil)
+
+	result := &upgrade.CheckResult{
+		Current: "1.23.0",
+		Latest:  upgrade.Release{TagName: "v1.24.0", Version: "1.24.0"},
+	}
+
+	var buf bytes.Buffer
+	if err := performUpgradeWindows(&buf, result); err != nil {
+		t.Fatalf("performUpgradeWindows returned error: %v", err)
+	}
+
+	if len(*installedTags) != 1 || (*installedTags)[0] != "v1.24.0" {
+		t.Fatalf("expected exactly one goInstallExec call with tag %q, got %v", "v1.24.0", *installedTags)
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "Upgrading mneme v1.23.0 → v1.24.0 via `go install`") {
+		t.Errorf("expected upgrading line in output, got: %s", out)
+	}
+	if !strings.Contains(out, "Done. mneme upgraded to v1.24.0.") {
+		t.Errorf("expected Done line in output, got: %s", out)
+	}
+
+	wantBinaryPath := filepath.Join(`C:\Users\dev\go\bin`, "mneme.exe")
+	if len(*hookCalls) != 1 || (*hookCalls)[0] != wantBinaryPath+"|claude-code" {
+		t.Fatalf("expected postUpgradeHooks to re-exec %q, got calls: %v", wantBinaryPath, *hookCalls)
+	}
+}
+
+// TestPerformUpgradeWindows_GoAbsent covers AC2 (SPEC-076): when Go is not on
+// PATH, performUpgradeWindows returns a clear, actionable error before
+// touching goInstallExec at all, and never falls back to the Unix
+// checkWritable/Upgrader path.
+func TestPerformUpgradeWindows_GoAbsent(t *testing.T) {
+	stubLookPathGo(t, errors.New("exec: \"go\": executable file not found in $PATH"))
+	installedTags := stubGoInstallExec(t, nil)
+
+	result := &upgrade.CheckResult{
+		Current: "1.23.0",
+		Latest:  upgrade.Release{TagName: "v1.24.0", Version: "1.24.0"},
+	}
+
+	var buf bytes.Buffer
+	err := performUpgradeWindows(&buf, result)
+	if err == nil {
+		t.Fatal("expected performUpgradeWindows to return an error when go is absent")
+	}
+	if !strings.Contains(err.Error(), "go install") || !strings.Contains(err.Error(), "https://go.dev/dl/") {
+		t.Errorf("expected an actionable error mentioning go install and https://go.dev/dl/, got: %v", err)
+	}
+	if len(*installedTags) != 0 {
+		t.Errorf("expected zero goInstallExec calls when go is absent, got: %v", *installedTags)
+	}
+}
+
+// TestPerformUpgradeWindows_GoInstallFailure_NonFatalHooksSkipped covers the
+// worst-case documented on goInstallExec: when go install itself fails (e.g.
+// the target .exe is locked), performUpgradeWindows surfaces the error and
+// never attempts postUpgradeHooks against an unresolved/unwritten binary.
+func TestPerformUpgradeWindows_GoInstallFailure_NonFatalHooksSkipped(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeFakeClaudeJSON(t, home)
+
+	stubLookPathGo(t, nil)
+	stubGoInstallExec(t, errors.New("go install: access is denied (file in use)"))
+	hookCalls := stubInstallExec(t, nil)
+
+	result := &upgrade.CheckResult{
+		Current: "1.23.0",
+		Latest:  upgrade.Release{TagName: "v1.24.0", Version: "1.24.0"},
+	}
+
+	var buf bytes.Buffer
+	err := performUpgradeWindows(&buf, result)
+	if err == nil {
+		t.Fatal("expected performUpgradeWindows to return an error when go install fails")
+	}
+	if !strings.Contains(err.Error(), "go install") {
+		t.Errorf("expected the go install failure to be wrapped, got: %v", err)
+	}
+	if len(*hookCalls) != 0 {
+		t.Errorf("expected postUpgradeHooks to be skipped after a go install failure, got calls: %v", *hookCalls)
+	}
+}
+
+// TestResolveGoInstallBinary_PrefersGOBINOverGOPATH covers the resolution
+// order documented on resolveGoInstallBinary: GOBIN wins when non-empty.
+func TestResolveGoInstallBinary_PrefersGOBINOverGOPATH(t *testing.T) {
+	stubGoEnvExec(t, map[string]string{
+		"GOBIN":  `C:\Users\dev\go\bin`,
+		"GOPATH": `C:\Users\dev\go`,
+	}, nil)
+
+	var buf bytes.Buffer
+	got := resolveGoInstallBinary(&buf)
+	want := filepath.Join(`C:\Users\dev\go\bin`, "mneme.exe")
+	if got != want {
+		t.Errorf("resolveGoInstallBinary() = %q, want %q", got, want)
+	}
+}
+
+// TestResolveGoInstallBinary_FallsBackToGOPATH covers the fallback documented
+// on resolveGoInstallBinary: an empty GOBIN falls back to GOPATH\bin.
+func TestResolveGoInstallBinary_FallsBackToGOPATH(t *testing.T) {
+	stubGoEnvExec(t, map[string]string{
+		"GOBIN":  "",
+		"GOPATH": `C:\Users\dev\go`,
+	}, nil)
+
+	var buf bytes.Buffer
+	got := resolveGoInstallBinary(&buf)
+	want := filepath.Join(`C:\Users\dev\go`, "bin", "mneme.exe")
+	if got != want {
+		t.Errorf("resolveGoInstallBinary() = %q, want %q", got, want)
+	}
+}
+
+// TestResolveGoInstallBinary_FallsBackToOSExecutable covers the last-resort
+// fallback documented on resolveGoInstallBinary: when both `go env` calls
+// fail, it falls back to os.Executable() (the running test binary) rather
+// than returning "".
+func TestResolveGoInstallBinary_FallsBackToOSExecutable(t *testing.T) {
+	stubGoEnvExec(t, nil, map[string]error{
+		"GOBIN":  errors.New("go env: go not found"),
+		"GOPATH": errors.New("go env: go not found"),
+	})
+
+	wantExe, err := os.Executable()
+	if err != nil {
+		t.Skipf("os.Executable unavailable in this environment: %v", err)
+	}
+
+	var buf bytes.Buffer
+	got := resolveGoInstallBinary(&buf)
+	if got != wantExe {
+		t.Errorf("resolveGoInstallBinary() = %q, want os.Executable() fallback %q", got, wantExe)
+	}
+}
+
+// TestPerformUpgrade_DispatchesByGOOS covers SPEC-076/D1: performUpgrade
+// routes to the Windows branch purely based on the injected goos parameter —
+// never runtime.GOOS or a //go:build constraint — so this test exercises the
+// Windows branch deterministically on any host OS (including this macOS/Unix
+// CI/dev machine). It uses the "go absent" error as a cheap, side-effect-free
+// probe that the Windows branch (not the Unix checkWritable/Upgrader path)
+// actually ran.
+func TestPerformUpgrade_DispatchesByGOOS(t *testing.T) {
+	stubLookPathGo(t, errors.New("go not found"))
+
+	result := &upgrade.CheckResult{
+		Current: "1.23.0",
+		Latest:  upgrade.Release{TagName: "v1.24.0", Version: "1.24.0"},
+	}
+
+	var buf bytes.Buffer
+	err := performUpgrade(&buf, result, "windows")
+	if err == nil {
+		t.Fatal("expected performUpgrade(goos=\"windows\") to return the go-absent error")
+	}
+	if !strings.Contains(err.Error(), "en Windows mneme se instala y actualiza con `go install`") {
+		t.Errorf("expected the Windows-branch error, got: %v", err)
 	}
 }

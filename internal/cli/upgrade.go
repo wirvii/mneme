@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -73,6 +74,24 @@ func runUpgrade(w io.Writer, checkOnly bool) error {
 		return nil
 	}
 
+	return performUpgrade(w, result, runtime.GOOS)
+}
+
+// performUpgrade applies an already-resolved, available upgrade. It is split
+// out from runUpgrade so tests can drive the Windows/Unix branch
+// deterministically via the goos parameter, instead of a //go:build
+// constraint: SPEC-076/D1 keeps runtime.GOOS branching as plain injectable
+// values so the leaf logic stays testable from any host OS.
+func performUpgrade(w io.Writer, result *upgrade.CheckResult, goos string) error {
+	if goos == "windows" {
+		return performUpgradeWindows(w, result)
+	}
+
+	// Unix path — behaviour unchanged from before SPEC-076. internal/upgrade
+	// (checkWritable + upgrader.Upgrade: download .tar.gz, verify checksum,
+	// extract, atomic os.Rename) stays untouched, serving anyone who
+	// installed via install.sh without a Go toolchain.
+
 	// Resolve the absolute path of the running binary, following symlinks.
 	binaryPath, err := os.Executable()
 	if err != nil {
@@ -105,6 +124,154 @@ func runUpgrade(w io.Writer, checkOnly bool) error {
 
 	fmt.Fprintf(w, "Done. mneme upgraded to v%s.\n", result.Latest.Version)
 	return nil
+}
+
+// goInstallModule is the module path passed to `go install`. It must match
+// go.mod's real module (github.com/wirvii/mneme, aligned in SPEC-070) plus
+// the cmd/mneme entrypoint — not the legacy juanftp/mneme path.
+const goInstallModule = "github.com/wirvii/mneme/cmd/mneme"
+
+// goInstallTimeout bounds the `go install` subprocess launched by
+// goInstallExec. Compiling mneme (pure-Go, no CGO) and resolving/downloading
+// its module graph can legitimately take longer than a simple binary swap,
+// so this is more generous than installExecTimeout.
+const goInstallTimeout = 5 * time.Minute
+
+// goEnvTimeout bounds the `go env` subprocess used to resolve go install's
+// target directory (GOBIN/GOPATH). `go env` is a fast, local, read-only
+// query, so a short timeout is enough.
+const goEnvTimeout = 10 * time.Second
+
+// lookPathGo reports whether a "go" toolchain is available on PATH. It is a
+// package-level var (mirrors installExec/goInstallExec below) so tests can
+// force the "no toolchain" branch deterministically: the real exec.LookPath
+// always succeeds under `go test` (the test binary itself was built with
+// Go), so it cannot otherwise exercise that error path.
+var lookPathGo = func() (string, error) { return exec.LookPath("go") }
+
+// goInstallExec runs `go install <goInstallModule>@<tag>`, installing (or
+// updating, on a subsequent run) mneme the same way every Windows user
+// already does per SPEC-070/SPEC-074 — there is no other supported Windows
+// install path. It is a package-level var so tests can substitute a fake
+// that records the requested tag without ever executing `go install` for
+// real (respects constraint-no-local-install).
+//
+// Worst case: if go install cannot even rename-aside the target .exe (an AV
+// scanner, or another process — e.g. this very Claude Code session running
+// mneme as an MCP server — holds a lock on it), `go install` fails with a
+// file-in-use style error. The documented recovery is to close Claude Code
+// (which releases the MCP `mneme` process) and re-run `mneme upgrade`.
+var goInstallExec = runGoInstall
+
+// goInstallTarget builds the "<module>@<tag>" argument passed to `go install`
+// for the given release tag (e.g. "v1.24.0"). Split out as a pure function so
+// tests can assert the exact target string — module path and tag, not
+// "@latest" — without ever invoking exec.Command (constraint-no-local-install).
+func goInstallTarget(tag string) string {
+	return fmt.Sprintf("%s@%s", goInstallModule, tag)
+}
+
+// runGoInstall is the default implementation of goInstallExec.
+func runGoInstall(ctx context.Context, tag string, w io.Writer) error {
+	target := goInstallTarget(tag)
+
+	cmd := exec.CommandContext(ctx, "go", "install", target)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		if len(out) > 0 {
+			fmt.Fprintf(w, "%s\n", indentLines(string(out)))
+		}
+		return fmt.Errorf("go install %s: %w", target, err)
+	}
+
+	fmt.Fprintf(w, "  [ok] go install %s\n", target)
+	return nil
+}
+
+// goEnvExec runs `go env <key>` and returns its trimmed output. It is a
+// package-level var (same seam pattern as goInstallExec) so tests can
+// control GOBIN/GOPATH resolution without depending on the test host's real
+// Go environment.
+var goEnvExec = runGoEnv
+
+// runGoEnv is the default implementation of goEnvExec.
+func runGoEnv(ctx context.Context, key string) (string, error) {
+	cmd := exec.CommandContext(ctx, "go", "env", key)
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("go env %s: %w", key, err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// performUpgradeWindows implements the Windows branch of SPEC-076/SS-2 (D4′):
+// Windows has no downloadable mneme binary (see SPEC-074 §3), so both install
+// and upgrade go through `go install`. checkWritable is intentionally never
+// called here — `go install` manages and reports on its own destination
+// directory (GOBIN or GOPATH\bin) — and internal/upgrade.Upgrader is never
+// invoked on this branch.
+func performUpgradeWindows(w io.Writer, result *upgrade.CheckResult) error {
+	if _, err := lookPathGo(); err != nil {
+		return fmt.Errorf("upgrade: en Windows mneme se instala y actualiza con `go install`; " +
+			"no se encontró el toolchain de Go en PATH. Instálalo desde https://go.dev/dl/ y reintenta")
+	}
+
+	fmt.Fprintf(w, "Upgrading mneme v%s → v%s via `go install`...\n", result.Current, result.Latest.Version)
+
+	ctx, cancel := context.WithTimeout(context.Background(), goInstallTimeout)
+	defer cancel()
+
+	// Target the exact release tag Check() resolved, not @latest: this keeps
+	// the "vX → vY" message above and the version go install actually fetches
+	// in sync, even if the module proxy's notion of "latest" briefly lags the
+	// GitHub release Check() just queried.
+	if err := goInstallExec(ctx, result.Latest.TagName, w); err != nil {
+		return fmt.Errorf("upgrade: go install: %w", err)
+	}
+
+	// Re-exec the freshly installed binary for postUpgradeHooks so the new
+	// version's own embedded assets are applied (see postUpgradeHooks
+	// godoc). Resolve go install's actual target directory rather than
+	// os.Executable(): the running process is still the OUTGOING binary
+	// (which may not even live under GOBIN), so os.Executable() is only the
+	// last-resort fallback.
+	if binaryPath := resolveGoInstallBinary(w); binaryPath != "" {
+		if err := postUpgradeHooks(w, binaryPath); err != nil {
+			// Non-fatal: go install already succeeded; report but don't fail.
+			fmt.Fprintf(w, "  [warn] Post-upgrade hooks: %v\n", err)
+		}
+	}
+
+	fmt.Fprintf(w, "Done. mneme upgraded to v%s.\n", result.Latest.Version)
+	return nil
+}
+
+// resolveGoInstallBinary resolves the absolute path of the mneme.exe that
+// `go install` just wrote, in the same order Go itself picks a target: GOBIN
+// first, then GOPATH's bin directory. If neither `go env` call succeeds
+// (e.g. go disappeared from PATH between the install and this call), it
+// falls back to os.Executable(), which may point at a stale copy if the user
+// runs mneme from outside GOBIN — a known edge (same class as the
+// SPEC-067 bug), acceptable because the sanctioned Windows install path
+// always resolves through GOBIN. Returns "" only if every fallback fails, in
+// which case the caller skips postUpgradeHooks rather than re-exec'ing an
+// unresolved path.
+func resolveGoInstallBinary(w io.Writer) string {
+	ctx, cancel := context.WithTimeout(context.Background(), goEnvTimeout)
+	defer cancel()
+
+	if gobin, err := goEnvExec(ctx, "GOBIN"); err == nil && gobin != "" {
+		return filepath.Join(gobin, "mneme.exe")
+	}
+	if gopath, err := goEnvExec(ctx, "GOPATH"); err == nil && gopath != "" {
+		return filepath.Join(gopath, "bin", "mneme.exe")
+	}
+	if exe, err := os.Executable(); err == nil {
+		return exe
+	}
+
+	fmt.Fprintf(w, "  [warn] could not resolve the go install target; skipping post-upgrade hooks\n")
+	return ""
 }
 
 // installExecTimeout bounds the "mneme install <slug>" subprocess launched by
