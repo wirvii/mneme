@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [v1.25.0] — 2026-07-14 — Windows support: go install install/upgrade + path-aware enforcement (EPIC-windows, SPEC-074)
+
 ### Added
 
 - **Windows support (EPIC-windows, SPEC-074; sub-specs SPEC-075–SPEC-080)** —
