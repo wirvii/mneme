@@ -66,6 +66,28 @@ func TestValidate_NoScript(t *testing.T) {
 	}
 }
 
+func TestValidate_NoShell(t *testing.T) {
+	dir := t.TempDir()
+	validationDir := filepath.Join(dir, "validation")
+	if err := os.MkdirAll(validationDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(validationDir, "run.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\necho ok\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Point PATH at an empty directory so exec.LookPath("sh") fails,
+	// simulating a Windows host without Git-for-Windows on PATH.
+	emptyPathDir := t.TempDir()
+	t.Setenv("PATH", emptyPathDir)
+
+	_, err := skill.Validate(context.Background(), dir)
+	if !errors.Is(err, skill.ErrNoShell) {
+		t.Errorf("expected ErrNoShell, got %v", err)
+	}
+}
+
 func TestValidate_Timeout(t *testing.T) {
 	dir := t.TempDir()
 	validationDir := filepath.Join(dir, "validation")
