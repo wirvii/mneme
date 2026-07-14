@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -212,6 +213,9 @@ func TestChecker_Check(t *testing.T) {
 // ---- Upgrader.Upgrade --------------------------------------------------------
 
 func TestUpgrader_Upgrade(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix-specific: executable-bit / $HOME semantics; internal/upgrade is the Unix upgrade path — on Windows upgrade goes via `go install` in internal/cli (SPEC-076)")
+	}
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -306,6 +310,9 @@ func TestAtomicReplace(t *testing.T) {
 // ---- DetectInstalledAgents ---------------------------------------------------
 
 func TestDetectInstalledAgents(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix-specific: executable-bit / $HOME semantics; internal/upgrade is the Unix upgrade path — on Windows upgrade goes via `go install` in internal/cli (SPEC-076)")
+	}
 	// t.Setenv requires sequential execution — no t.Parallel here.
 
 	cases := []struct {

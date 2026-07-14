@@ -3,8 +3,10 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -1365,6 +1367,53 @@ func newTestServerWithRepoDir(t *testing.T, dir string) *Server {
 	return NewServer(svc, sddSvc, nil, nil, logger, "all", "test")
 }
 
+// initTrivialBreachRepo creates a throwaway git repository whose current branch
+// (feature) diverges from `main` by more than three files, so that a trivial-lane
+// audit run with base_ref=main is guaranteed to breach (file count 4 > limit 3).
+// It returns the repository root directory. The files are plain .txt so the
+// public-symbol check (Go/TS only) is skipped and the breach comes purely from
+// the file-count rule, keeping the scenario deterministic and self-contained.
+func initTrivialBreachRepo(t *testing.T) string {
+	t.Helper()
+
+	dir := t.TempDir()
+
+	run := func(args ...string) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+	}
+
+	// Initialise with `main` as the default branch (portable across git versions
+	// that still default to `master`).
+	run("init", "-q")
+	run("checkout", "-q", "-B", "main")
+	run("config", "user.email", "ci@example.com")
+	run("config", "user.name", "CI Test")
+
+	// Base commit on main.
+	if err := os.WriteFile(filepath.Join(dir, "base.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatalf("write base file: %v", err)
+	}
+	run("add", "-A")
+	run("commit", "-q", "-m", "base commit on main")
+
+	// Feature branch adds four files (> trivial limit of 3) → guaranteed breach.
+	run("checkout", "-q", "-b", "feature")
+	for i := 1; i <= 4; i++ {
+		name := filepath.Join(dir, fmt.Sprintf("changed_%d.txt", i))
+		if err := os.WriteFile(name, []byte("change\n"), 0o644); err != nil {
+			t.Fatalf("write changed file %d: %v", i, err)
+		}
+	}
+	run("add", "-A")
+	run("commit", "-q", "-m", "feature: add four files")
+
+	return dir
+}
+
 // unmarshalToolResult extracts the ToolCallResult from a JSON-RPC response
 // without failing when resp.Error is set. It returns the tool result and
 // whether the JSON-RPC layer itself returned an error.
@@ -1389,23 +1438,11 @@ func unmarshalToolResult(t *testing.T, resp JSONRPCResponse) (ToolCallResult, bo
 // a ToolCallResult with IsError=true and the AuditResult payload — not an empty
 // JSON-RPC error. This is the regression test for the SPEC-035 QA critical bug.
 func TestLaneAudit_FailedAuditReturnsBreaches(t *testing.T) {
-	// Use the mneme repo itself as the audit target. The current feature branch
-	// has far more than 3 changed files relative to main, guaranteeing a breach.
-	repoDir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
-	// Walk up until we find the git root.
-	for {
-		if _, statErr := os.Stat(repoDir + "/.git"); statErr == nil {
-			break
-		}
-		parent := repoDir[:strings.LastIndex(repoDir, string(os.PathSeparator))]
-		if parent == repoDir {
-			t.Skip("no git repo found; skipping lane audit integration test")
-		}
-		repoDir = parent
-	}
+	// Build a dedicated temporary git repository whose feature branch diverges
+	// from `main` by more than 3 files. This makes the audit breach deterministic
+	// in every environment (clean CI checkout on main, or a local feature branch),
+	// instead of assuming the mneme working tree itself has >3 changed files vs main.
+	repoDir := initTrivialBreachRepo(t)
 
 	srv := newTestServerWithRepoDir(t, repoDir)
 
