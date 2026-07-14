@@ -6,6 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Code graph adoption loop — querylog + mandatory nudge/prompts (SPEC-083):**
+  - **Adoption querylog (W1):** a new leaf package `internal/querylog` records a
+    local, privacy-preserving JSONL telemetry file
+    (`~/.mneme/projects/<slug>-codegraph-querylog.jsonl`) capturing when an agent
+    used a `codegraph_*` tool (`use`, logged authoritatively from the MCP
+    dispatch — excludes human CLI use) vs. explored code with Read/Grep/Glob/Bash
+    on an indexed project (`opportunity`, logged by the pre-tool-use hook on every
+    qualified call). Tool names only — never paths, commands, or queries. On by
+    default with an off-switch: `[codegraph] querylog_enabled` (env
+    `MNEME_CODEGRAPH_QUERYLOG`). New report `mneme codegraph adoption [--since
+    7d] [--json]` prints the adoption ratio `uses/(uses+opportunities)` plus
+    top-use / top-missed tools. CLI-only (no new MCP tool, no HTTP).
+  - **Nudge extended to Bash-search + mandatory tone (W2):** the pre-tool-use
+    codegraph nudge now also fires for Bash code-search commands
+    (`grep/egrep/fgrep/rg/ag/ack/find/fd/cat/head/tail`, detected via the shell
+    tokenizer) and its copy is rewritten to mandatory, non-blocking tone
+    ("consult the code graph FIRST … applies to subagents too"). Still
+    context-only, exit 0, once per session (shared across tools), fail-open.
+  - **Prompts reinforced (W3):** a "Code graph: consult it FIRST" section was
+    added to the operating manual (orchestrator + Codex), and the subagent policy
+    (`agent-fixed.md` + the 6 `agents/*.md`) was raised to mandatory tone
+    (OBLIGATORIO). A coherence test guards shared vocabulary across nudge,
+    manuals, and subagent policy.
+
 ## [v1.25.1] — 2026-07-14 — CI green on Windows + Ubuntu (SPEC-081)
 
 ### Fixed
