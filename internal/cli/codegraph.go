@@ -1,9 +1,12 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -12,6 +15,7 @@ import (
 	"github.com/wirvii/mneme/internal/codegraph"
 	"github.com/wirvii/mneme/internal/config"
 	"github.com/wirvii/mneme/internal/project"
+	"github.com/wirvii/mneme/internal/querylog"
 	"github.com/wirvii/mneme/internal/service"
 )
 
@@ -35,6 +39,7 @@ func newCodegraphCmd() *cobra.Command {
 		newCodegraphTraceCmd(),
 		newCodegraphFilesCmd(),
 		newCodegraphHooksCmd(),
+		newCodegraphAdoptionCmd(),
 	)
 	return cmd
 }
@@ -549,6 +554,135 @@ Use --language to filter by programming language.`,
 
 	cmd.Flags().StringVarP(&flagLanguage, "language", "l", "", "Filter by language (e.g. go, typescript)")
 	return cmd
+}
+
+// newCodegraphAdoptionCmd returns the "mneme codegraph adoption" subcommand.
+// It reports how often agents chose the code graph tools over generic
+// Read/Grep/Bash exploration, using the local adoption querylog (SPEC-083 W1).
+//
+// The report is CLI-only by design: it is a human diagnostic (like other admin
+// codegraph subcommands), the codegraph has no HTTP surface today, and an agent
+// does not need to read its own adoption metric at runtime.
+func newCodegraphAdoptionCmd() *cobra.Command {
+	var (
+		flagSince string
+		flagJSON  bool
+	)
+
+	cmd := &cobra.Command{
+		Use:   "adoption",
+		Short: "Report code graph adoption over a time window",
+		Long: `Summarise how often agents chose the code graph tools over generic
+Read/Grep/Bash exploration on this project, using the local, privacy-preserving
+adoption querylog (tool names only — never paths, commands, or queries).
+
+The adoption ratio is uses / (uses + opportunities): the fraction of qualified
+explorations that went through codegraph_* instead of Read/Grep/Bash. A ratio
+rising release over release validates that the nudge and prompt policy work;
+the top-missed tools point at the next pattern to target.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			window, err := parseSinceWindow(flagSince)
+			if err != nil {
+				return fmt.Errorf("codegraph adoption: %w", err)
+			}
+
+			cfg, err := config.Load(config.DefaultPath())
+			if err != nil {
+				return fmt.Errorf("codegraph adoption: load config: %w", err)
+			}
+			if flagDataDir != "" {
+				cfg.Storage.DataDir = flagDataDir
+			}
+
+			slug := flagProject
+			if slug == "" {
+				cwd, cwdErr := os.Getwd()
+				if cwdErr != nil {
+					return fmt.Errorf("codegraph adoption: %w", cwdErr)
+				}
+				det := project.NewDetector(cwd)
+				slug, _ = det.DetectProject()
+			}
+			if slug == "" {
+				return fmt.Errorf("codegraph adoption: no project detected (use --project)")
+			}
+
+			projectsDir := filepath.Join(cfg.Storage.DataDir, "projects")
+			events, err := querylog.Read(codegraph.QuerylogPath(projectsDir, slug))
+			if err != nil {
+				return fmt.Errorf("codegraph adoption: read querylog: %w", err)
+			}
+
+			report := querylog.Aggregate(events, time.Now().Add(-window))
+
+			out := cmd.OutOrStdout()
+			if flagJSON {
+				enc := json.NewEncoder(out)
+				enc.SetIndent("", "  ")
+				if err := enc.Encode(report); err != nil {
+					return fmt.Errorf("codegraph adoption: encode json: %w", err)
+				}
+				return nil
+			}
+			printAdoptionReport(out, slug, flagSince, report)
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&flagSince, "since", "7d", "Time window to aggregate (e.g. 24h, 7d, 30d)")
+	cmd.Flags().BoolVar(&flagJSON, "json", false, "Emit the report as JSON")
+	return cmd
+}
+
+// parseSinceWindow parses a --since window. It accepts a bare "<n>d" day suffix
+// (e.g. "7d", "30d") in addition to any unit Go's time.ParseDuration
+// understands (e.g. "24h"). An empty value defaults to 7 days.
+func parseSinceWindow(s string) (time.Duration, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 7 * 24 * time.Hour, nil
+	}
+	if strings.HasSuffix(s, "d") {
+		n, err := strconv.Atoi(strings.TrimSuffix(s, "d"))
+		if err != nil || n < 0 {
+			return 0, fmt.Errorf("invalid --since %q (expected e.g. 24h, 7d, 30d)", s)
+		}
+		return time.Duration(n) * 24 * time.Hour, nil
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil || d < 0 {
+		return 0, fmt.Errorf("invalid --since %q (expected e.g. 24h, 7d, 30d)", s)
+	}
+	return d, nil
+}
+
+// printAdoptionReport writes the human-readable adoption summary. When there is
+// no data in the window it prints a clear "no data" line and returns (exit 0).
+func printAdoptionReport(out io.Writer, slug, since string, r querylog.Report) {
+	fmt.Fprintf(out, "Code graph adoption (last %s) — %s\n", since, slug)
+	if r.Uses+r.Opportunities == 0 {
+		fmt.Fprintln(out, "  No adoption data yet for this window.")
+		return
+	}
+	fmt.Fprintf(out, "  Adoption ratio:  %.2f  (uses %d / opportunities %d)\n",
+		r.AdoptionRatio, r.Uses, r.Opportunities)
+	if len(r.TopUseTools) > 0 {
+		fmt.Fprintf(out, "  Top graph tools:  %s\n", formatToolCounts(r.TopUseTools))
+	}
+	if len(r.TopMissedTools) > 0 {
+		fmt.Fprintf(out, "  Top missed (Read/Grep/Bash instead of the graph):  %s\n",
+			formatToolCounts(r.TopMissedTools))
+	}
+}
+
+// formatToolCounts renders a "tool N, tool N" summary line.
+func formatToolCounts(tcs []querylog.ToolCount) string {
+	parts := make([]string, 0, len(tcs))
+	for _, tc := range tcs {
+		parts = append(parts, fmt.Sprintf("%s %d", tc.Tool, tc.Count))
+	}
+	return strings.Join(parts, ", ")
 }
 
 // printNodeList is a shared helper that writes a labelled list of nodes to
