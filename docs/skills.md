@@ -147,6 +147,10 @@ A numbered procedure the agent should follow.
 - Exit code **0** = pass; any other code = fail.
 - All output goes to stdout/stderr and is captured by `mneme skills validate`.
 - A timeout of 120 seconds is applied.
+- Requires a POSIX `sh` on `PATH`. Always present on Unix; on Windows it is
+  only there once [Git for Windows](https://gitforwindows.org/) is
+  installed. Without it, `Validate` returns the non-fatal `ErrNoShell`
+  sentinel — the script is skipped, not treated as a failure.
 
 ```sh
 #!/bin/sh

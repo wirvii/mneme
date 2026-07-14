@@ -6,6 +6,41 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Windows support (EPIC-windows, SPEC-074; sub-specs SPEC-075–SPEC-080)** —
+  mneme now runs on Windows end to end, with `go install` as the only
+  supported install *and* upgrade path there:
+  - **Path-aware orchestrator-guard enforcement (SPEC-075)** —
+    `internal/enforcement`'s `IsWhitelisted`/`EvaluateFileTool`/
+    `EvaluateBash` now take an explicit `PathContext{Home, TempDir, GOOS}`
+    instead of a bare Unix `home` string. In windows-mode they normalize
+    backslashes, recognize drive-absolute (`C:\...`) and UNC
+    (`\\server\share\...`) paths, and case-fold a fixed set of ASCII
+    literals (`CLAUDE.md`, `.claude`, `.mneme`, `docs`) — Unix behavior is
+    byte-for-byte unchanged.
+  - **Self-upgrade via `go install` (SPEC-076)** — on Windows, `mneme
+    upgrade` shells out to `go install github.com/wirvii/mneme/cmd/mneme@<tag>`
+    instead of the Unix binary-replace path (`internal/upgrade` is
+    untouched). The worst case — a locked `.exe`, e.g. an antivirus scanner
+    or the MCP `mneme` process itself — is documented: close Claude Code and
+    retry.
+  - **Cross-platform CI (SPEC-077)** — new `.github/workflows/ci.yml`, the
+    repository's first push/PR test workflow, with a `windows-latest` job
+    (build + portable-package tests: `enforcement`, `upgrade`, `skill`,
+    `model`, `scoring`, `embed`) alongside a full `ubuntu-latest` job
+    (all tests + `golangci-lint`); `release.yml` is unmodified.
+  - **`skills validate` cross-platform (SPEC-078)** — `internal/skill.Validate`
+    resolves `sh` via `exec.LookPath` and returns the sentinel `ErrNoShell`
+    (non-fatal — validation is skipped, not failed) when no shell is found
+    on `PATH`, which is expected on Windows without Git for Windows.
+  - **`filepath.Join` cleanup (SPEC-079)** — cosmetic path-concatenation
+    fixes in `internal/mcp/handlers.go` and `internal/cli/init.go`.
+  - **Docs (SPEC-080)** — Windows install/upgrade documented in `README.md`
+    and `docs/GUIDE.md`, plus the Git-for-Windows dependency of the
+    codegraph/team-memory git hooks (`docs/codegraph.md`,
+    `docs/team-memory.md`) and `mneme skills validate` (`docs/skills.md`).
+
 ## [v1.24.0] — 2026-07-11 — install no longer ships global agent profiles (SPEC-073)
 
 ### Changed

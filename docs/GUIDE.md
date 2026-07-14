@@ -988,6 +988,21 @@ mneme consolidate
 
 The `.mneme-vault` marker file's project must match the current project. You cannot import a vault from project A into project B.
 
+### `mneme upgrade` fails on Windows with a file-in-use error
+
+`go install` (the only Windows upgrade path) cannot replace an `mneme.exe`
+that another process still holds a handle on -- commonly an antivirus
+scanner, or this very binary running as the Claude Code MCP server. Close
+Claude Code (which releases the MCP `mneme` process) and re-run
+`mneme upgrade`.
+
+### `mneme skills validate` always reports the script as skipped on Windows
+
+`validation/run.sh` scripts need a POSIX `sh` on `PATH`; Windows only has
+one when [Git for Windows](https://gitforwindows.org/) is installed.
+Without it, `Validate` returns the `ErrNoShell` sentinel -- non-fatal, the
+script is skipped rather than treated as a failure.
+
 ---
 
 ## 15. FAQ
@@ -1028,6 +1043,9 @@ mneme config show --json | jq '.graph.graph_mode'
 
 **Q: Is my data sent to any cloud service?**
 No. mneme is 100% local. All data stays in SQLite files under `~/.mneme/`. There is no telemetry, no cloud sync, no network calls.
+
+**Q: Does mneme run on Windows?**
+Yes. `go install github.com/wirvii/mneme/cmd/mneme@latest` is the only supported install path there, and it doubles as the upgrade path -- `mneme upgrade` shells out to `go install ...@<latest-tag>` internally when it detects a Windows host. Git for Windows is required for the codegraph/team-memory git hooks and for `mneme skills validate` (both shell out to `sh`); without it, `skills validate` returns a non-fatal "skipped" result rather than failing. See the [Windows](../README.md#windows) section of the README.
 
 ---
 

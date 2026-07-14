@@ -15,6 +15,15 @@ make setup         # install + `mneme install claude-code` (configures MCP, hook
 make release-local # ldflags-stripped build with Version=local
 ```
 
+mneme also runs on Windows (EPIC-windows, SPEC-074/075-080): `go install` is
+the only supported install *and* upgrade path there (`mneme upgrade` shells
+out to it internally, SPEC-076) — see the `Windows` section in `README.md`.
+OS-specific branches use `runtime.GOOS` checked inline (e.g.
+`internal/enforcement.PathContext.GOOS`, the `goos` parameter of
+`internal/cli/upgrade.go:performUpgrade`) rather than `_windows.go` files or
+build tags — the same pure-Go, no-build-tags posture as the rest of the
+build.
+
 Run a single package or test:
 
 ```bash

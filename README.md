@@ -98,6 +98,10 @@ mneme search "authentication"
 mneme status
 ```
 
+On Windows, only the first line applies: `go install` is the sole supported
+install (and upgrade) path there — `curl | sh` and `make install`'s `sudo cp`
+step are both Unix-only. See [Windows](#windows) below.
+
 `mneme install claude-code` registers MCP tools, session hooks, and the rules enforcement hook in `~/.claude/settings.json` -- it no longer writes any global subagent profiles (SPEC-073); it also removes the six profiles a previous install may have left in `~/.claude/agents/`, provided they were never customised (see [Subagents](#subagents) for the per-project generation model that replaced the global set). After install, the agent automatically loads context at session start, saves session summaries at end, and evaluates rules before every file edit. `mneme install codex` wires the same MCP server and memory protocol into OpenAI Codex CLI's single-agent model -- see [docs/codex.md](docs/codex.md) for the differences.
 
 ---
@@ -540,6 +544,35 @@ make test          # go test ./...
 make install       # build + sudo cp to /usr/local/bin/
 make setup         # install + mneme install claude-code
 ```
+
+### Windows
+
+`go install` is the **only** supported install *and* upgrade path on
+Windows. `install.sh` (`#!/bin/sh`, `uname`/`tar`) and `make install`/`make
+setup` (the `sudo cp` step) are both Unix-only.
+
+```powershell
+go install github.com/wirvii/mneme/cmd/mneme@latest   # install
+mneme upgrade                                          # upgrade
+```
+
+`mneme upgrade` detects a Windows host and shells out to
+`go install github.com/wirvii/mneme/cmd/mneme@<latest-tag>` instead of the
+Unix binary-replace path. It requires a `go` toolchain on `PATH` — every
+documented Windows install path already needs one, so this is never a *new*
+dependency — and reports an actionable error pointing to
+[go.dev/dl](https://go.dev/dl/) if `go` is missing. Repeating
+`go install ...@latest` by hand works too, as an alternative to
+`mneme upgrade`. Worst case: if something holds a lock on the installed
+`mneme.exe` (an antivirus scanner, or this very binary running as the Claude
+Code MCP server), close Claude Code and retry.
+
+Two mneme features shell out to a POSIX `sh`: the codegraph/team-memory git
+hooks (`#!/bin/sh` scripts that resolve the binary via `command -v mneme`)
+and `mneme skills validate` (`exec.LookPath("sh")`, returning the non-fatal
+`ErrNoShell` sentinel — validation is skipped, not failed — when none is
+found). Both work once [Git for Windows](https://gitforwindows.org/) is
+installed, since its bundled `sh` is what runs them.
 
 ## Contributing
 

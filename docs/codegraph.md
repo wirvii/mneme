@@ -307,6 +307,13 @@ The appended block looks like this:
 # <<< mneme codegraph (SPEC-044) <<<
 ```
 
+> **Windows:** these hooks are `#!/bin/sh` scripts that resolve the binary
+> via `command -v mneme` -- they run correctly on Windows once [Git for
+> Windows](https://gitforwindows.org/) is installed, since its bundled `sh`
+> is what git invokes to run hooks. Without Git for Windows there is no `sh`
+> to run them, so the auto-reindex silently never fires -- the hook file
+> still exists and git itself is never blocked.
+
 `command -v mneme || echo mneme` degrades gracefully when `mneme` is not on
 PATH, avoiding a syntax error that could break other hook logic.
 

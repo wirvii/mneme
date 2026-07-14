@@ -166,6 +166,13 @@ Every memory materialized by write-through carries its own id
 rather than assigning a fresh one, so a re-import of the same note is always
 recognized — even for memories with no `topic_key`.
 
+> **Windows:** the installed `post-merge`/`post-checkout` hooks are
+> `#!/bin/sh` scripts that resolve the binary via `command -v mneme` — they
+> run correctly on Windows once [Git for Windows](https://gitforwindows.org/)
+> is installed, since its bundled `sh` is what git invokes to run hooks.
+> Without Git for Windows there is no `sh` to run them, so the background
+> import silently never fires (git itself is never blocked either way).
+
 Author and shared-level attribution round-trip through the file's
 frontmatter and are **never** overwritten by the importing peer's own git
 identity — the note keeps the identity of whoever originally shared it.
