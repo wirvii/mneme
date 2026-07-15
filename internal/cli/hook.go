@@ -612,21 +612,36 @@ type hookManifestEntry struct {
 
 // manifestQuery selects the single manifest memory's content for a project,
 // mirroring rulesQuery/queryRulesFromDB's read-only access pattern.
+//
+// project and scope complete the real unique key of idx_memories_upsert
+// (topic_key, project, scope) — see 001_initial.sql — so the WHERE clause is
+// covered by that index and the schema itself guarantees at most one live
+// row (SPEC-084 D4). ORDER BY updated_at DESC, id DESC is therefore
+// redundant given the index, but is kept anyway: it makes the query
+// evidently deterministic on its own, and picks the most recently written
+// manifest as a sane fallback if the uniqueness invariant is ever violated
+// by a path that does not go through SaveManifest (sync import, restored/
+// merged DB, manual SQL). id is a UUIDv7 (time-ordered), so it is a sound
+// tie-breaker.
 const manifestQuery = `
 SELECT content
 FROM memories
-WHERE topic_key = ? AND deleted_at IS NULL
+WHERE topic_key = ? AND project = ? AND scope = 'project' AND deleted_at IS NULL
+ORDER BY updated_at DESC, id DESC
 LIMIT 1`
 
 // queryManifestContent opens the database at path read-only and returns the
-// raw JSON content of the subagents/manifest memory.
+// raw JSON content of the subagents/manifest memory scoped to project
+// (SPEC-084 D4/D5): without the project filter, a project's database can
+// contain manifest rows belonging to other projects (e.g. from tests or a
+// merged/imported DB), and the hook would read an arbitrary one of them.
 //
 // found is false — with a nil error — both when the database file itself
 // does not exist and when the file exists but has no manifest row yet; D8
 // treats "no manifest" as the legacy deny-by-default branch, not an error.
 // A non-nil error indicates a hard failure (cannot open/ping, scan error)
 // which callers must treat as fail-open (D8's last row).
-func queryManifestContent(path string) (content string, found bool, err error) {
+func queryManifestContent(path, project string) (content string, found bool, err error) {
 	database, openErr := db.OpenReadOnly(path)
 	if openErr != nil {
 		if strings.Contains(openErr.Error(), "file does not exist") {
@@ -636,7 +651,7 @@ func queryManifestContent(path string) (content string, found bool, err error) {
 	}
 	defer database.Close() //nolint:errcheck // cleanup path; error is not actionable
 
-	row := database.QueryRow(manifestQuery, manifestTopicKey)
+	row := database.QueryRow(manifestQuery, manifestTopicKey, project)
 	if scanErr := row.Scan(&content); scanErr != nil {
 		if errors.Is(scanErr, sql.ErrNoRows) {
 			return "", false, nil
@@ -748,7 +763,7 @@ func runHookPathOwned(targetPath string) error {
 	det := project.NewDetector(cwd)
 	slug, _ := det.DetectProject() // detection failure is non-fatal; slug stays ""
 
-	content, found, err := queryManifestContent(cfg.ProjectDBPath(slug))
+	content, found, err := queryManifestContent(cfg.ProjectDBPath(slug), slug)
 	if err != nil {
 		return nil // fail-open: hard DB error (D8).
 	}
@@ -1244,7 +1259,7 @@ func evaluateDelegation(input hookPreToolInput, cwd string) enforcement.Decision
 	det := project.NewDetector(cwd)
 	slug, _ := det.DetectProject() // detection failure is non-fatal; slug stays ""
 
-	content, found, err := queryManifestContent(cfg.ProjectDBPath(slug))
+	content, found, err := queryManifestContent(cfg.ProjectDBPath(slug), slug)
 	if err != nil {
 		return enforcement.Decision{}
 	}

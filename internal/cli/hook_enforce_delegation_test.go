@@ -40,7 +40,7 @@ func setupDelegationRepo(t *testing.T) (slug, dbPath string) {
 	return slug, dbPath
 }
 
-func seedManifest(t *testing.T, dbPath, content string) {
+func seedManifest(t *testing.T, dbPath, project, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
 		t.Fatalf("mkdir projects dir: %v", err)
@@ -50,7 +50,7 @@ func seedManifest(t *testing.T, dbPath, content string) {
 		t.Fatalf("db.Open: %v", err)
 	}
 	defer database.Close()
-	if err := insertTestManifest(database, content); err != nil {
+	if err := insertTestManifest(database, "m1", project, content); err != nil {
 		t.Fatalf("insertTestManifest: %v", err)
 	}
 }
@@ -59,8 +59,8 @@ func seedManifest(t *testing.T, dbPath, content string) {
 // a path owned by "backend" in a real, seeded manifest blocks with that
 // owner.
 func TestEvaluateDelegation_FileTool_BlockedByImplementer(t *testing.T) {
-	_, dbPath := setupDelegationRepo(t)
-	seedManifest(t, dbPath, `[{"role":"backend","areas":["internal/**"]}]`)
+	slug, dbPath := setupDelegationRepo(t)
+	seedManifest(t, dbPath, slug, `[{"role":"backend","areas":["internal/**"]}]`)
 
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -82,8 +82,8 @@ func TestEvaluateDelegation_FileTool_BlockedByImplementer(t *testing.T) {
 // TestEvaluateDelegation_Bash_BlockedByImplementer covers AC6 parity through
 // the full wiring: a Bash redirect to a manifest-owned path blocks.
 func TestEvaluateDelegation_Bash_BlockedByImplementer(t *testing.T) {
-	_, dbPath := setupDelegationRepo(t)
-	seedManifest(t, dbPath, `[{"role":"backend","areas":["internal/**"]}]`)
+	slug, dbPath := setupDelegationRepo(t)
+	seedManifest(t, dbPath, slug, `[{"role":"backend","areas":["internal/**"]}]`)
 
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -128,8 +128,8 @@ func TestEvaluateDelegation_UnwhitelistedNoManifest_LegacyBlock(t *testing.T) {
 // TestEvaluateDelegation_UnownedPath_Allows covers AC5: a manifest exists but
 // does not own the target path.
 func TestEvaluateDelegation_UnownedPath_Allows(t *testing.T) {
-	_, dbPath := setupDelegationRepo(t)
-	seedManifest(t, dbPath, `[{"role":"backend","areas":["internal/**"]}]`)
+	slug, dbPath := setupDelegationRepo(t)
+	seedManifest(t, dbPath, slug, `[{"role":"backend","areas":["internal/**"]}]`)
 
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -214,8 +214,8 @@ func TestRunHookEnforceDelegation_WhitelistedPath_AllowsWithoutExit(t *testing.T
 // through the full wrapper: a real seeded manifest exists but does not own
 // the target path.
 func TestRunHookEnforceDelegation_UnownedPath_AllowsWithoutExit(t *testing.T) {
-	_, dbPath := setupDelegationRepo(t)
-	seedManifest(t, dbPath, `[{"role":"backend","areas":["internal/**"]}]`)
+	slug, dbPath := setupDelegationRepo(t)
+	seedManifest(t, dbPath, slug, `[{"role":"backend","areas":["internal/**"]}]`)
 
 	payload := `{"tool_name":"Edit","tool_input":{"file_path":"README.md"}}`
 	var errBuf bytes.Buffer

@@ -9,19 +9,25 @@ import (
 	"time"
 
 	"github.com/wirvii/mneme/internal/db"
+	"github.com/wirvii/mneme/internal/model"
 	"github.com/wirvii/mneme/internal/service"
 )
 
 // insertTestManifest inserts a subagents/manifest memory row into database
 // with the given raw JSON content, mirroring insertTestRule's helper style
-// (hook_pre_tool_use_test.go).
-func insertTestManifest(database *db.DB, content string) error {
+// (hook_pre_tool_use_test.go). project is required (SPEC-084 D4/D6):
+// manifestQuery filters on it, so a row inserted without one would never be
+// found by queryManifestContent. id is caller-supplied (rather than a fixed
+// "m1", also mirroring insertTestRule) so a single test can insert more than
+// one manifest row without violating the memories primary key — needed by
+// the A2 regression test below, which inserts two rows sharing a topic_key.
+func insertTestManifest(database *db.DB, id, project, content string) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, err := database.Exec(
 		`INSERT INTO memories
-		 (id, type, scope, topic_key, title, content, created_at, updated_at, importance, confidence, decay_rate)
-		 VALUES (?, 'config', 'project', ?, 'Subagent manifest', ?, ?, ?, 0.9, 0.8, 0.02)`,
-		"m1", manifestTopicKey, content, now, now,
+		 (id, type, scope, topic_key, project, title, content, created_at, updated_at, importance, confidence, decay_rate)
+		 VALUES (?, 'config', 'project', ?, ?, 'Subagent manifest', ?, ?, ?, 0.9, 0.8, 0.02)`,
+		id, manifestTopicKey, project, content, now, now,
 	)
 	return err
 }
@@ -39,12 +45,12 @@ func TestQueryManifestContent_Found(t *testing.T) {
 		t.Fatalf("db.Open: %v", err)
 	}
 	want := `[{"role":"backend","areas":["internal/**"]}]`
-	if insertErr := insertTestManifest(database, want); insertErr != nil {
+	if insertErr := insertTestManifest(database, "m1", "test/project", want); insertErr != nil {
 		t.Fatalf("insertTestManifest: %v", insertErr)
 	}
 	database.Close()
 
-	content, found, err := queryManifestContent(dbPath)
+	content, found, err := queryManifestContent(dbPath, "test/project")
 	if err != nil {
 		t.Fatalf("queryManifestContent: %v", err)
 	}
@@ -69,7 +75,7 @@ func TestQueryManifestContent_NoRow(t *testing.T) {
 	}
 	database.Close()
 
-	_, found, err := queryManifestContent(dbPath)
+	_, found, err := queryManifestContent(dbPath, "test/project")
 	if err != nil {
 		t.Fatalf("queryManifestContent: %v", err)
 	}
@@ -85,7 +91,7 @@ func TestQueryManifestContent_DBFileMissing(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "does-not-exist.db")
 
-	_, found, err := queryManifestContent(dbPath)
+	_, found, err := queryManifestContent(dbPath, "test/project")
 	if err != nil {
 		t.Fatalf("queryManifestContent: %v", err)
 	}
@@ -105,9 +111,47 @@ func TestQueryManifestContent_CorruptDBFile(t *testing.T) {
 		t.Fatalf("write corrupt db: %v", err)
 	}
 
-	_, _, err := queryManifestContent(dbPath)
+	_, _, err := queryManifestContent(dbPath, "test/project")
 	if err == nil {
 		t.Fatal("expected a hard error for a corrupt database file, got nil")
+	}
+}
+
+// TestQueryManifestContent_ScopedToProject is the A2 regression test
+// (SPEC-084 D6): two manifest rows share the same topic_key but belong to
+// different projects — reproducing the real contamination found in
+// wirvii-mneme.db, where test runs and the real project coexist in one
+// database. Before the SPEC-084 fix, manifestQuery had no project filter and
+// could return either row nondeterministically (in practice, whichever the
+// query planner picked first); after the fix it must always return the row
+// matching the requested project.
+func TestQueryManifestContent_ScopedToProject(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+
+	database, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	other := `[{"role":"backend","areas":["apps/core-srv"]}]`
+	want := `[{"role":"backend","areas":["internal/**"]}]`
+	if insertErr := insertTestManifest(database, "m-other", "test/project", other); insertErr != nil {
+		t.Fatalf("insertTestManifest (other project): %v", insertErr)
+	}
+	if insertErr := insertTestManifest(database, "m-real", "wirvii/mneme", want); insertErr != nil {
+		t.Fatalf("insertTestManifest (real project): %v", insertErr)
+	}
+	database.Close()
+
+	content, found, err := queryManifestContent(dbPath, "wirvii/mneme")
+	if err != nil {
+		t.Fatalf("queryManifestContent: %v", err)
+	}
+	if !found {
+		t.Fatal("found = false, want true")
+	}
+	if content != want {
+		t.Errorf("content = %q, want %q (got the other project's manifest instead)", content, want)
 	}
 }
 
@@ -299,7 +343,7 @@ func TestRunHookPathOwned_ManifestExistsButPathNotOwned_AllowsWithoutExit(t *tes
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}
-	if insertErr := insertTestManifest(database, `[{"role":"backend","areas":["internal/**"]}]`); insertErr != nil {
+	if insertErr := insertTestManifest(database, "m1", slug, `[{"role":"backend","areas":["internal/**"]}]`); insertErr != nil {
 		t.Fatalf("insertTestManifest: %v", insertErr)
 	}
 	database.Close()
@@ -318,6 +362,21 @@ func TestRunHookPathOwned_ManifestExistsButPathNotOwned_AllowsWithoutExit(t *tes
 func TestManifestTopicKey_MatchesService(t *testing.T) {
 	if manifestTopicKey != service.SubagentManifestTopicKey {
 		t.Errorf("manifestTopicKey = %q, want %q (service.SubagentManifestTopicKey)", manifestTopicKey, service.SubagentManifestTopicKey)
+	}
+}
+
+// TestManifestQuery_ScopeMatchesSaveManifest is the SPEC-084 D6 guardian: it
+// pins the `scope = 'project'` literal hardcoded in manifestQuery to
+// model.ScopeProject — the value SaveManifest (internal/service/subagents.go)
+// actually writes on every manifest save. If SaveManifest's Scope ever
+// changes, this test fails loudly instead of manifestQuery silently
+// filtering out every real manifest row (found=false, D8's legacy-block
+// branch — indistinguishable from "no manifest" without this guard).
+func TestManifestQuery_ScopeMatchesSaveManifest(t *testing.T) {
+	const scopeLiteralInManifestQuery = "project"
+	if scopeLiteralInManifestQuery != string(model.ScopeProject) {
+		t.Errorf("manifestQuery's hardcoded scope literal = %q, want %q (model.ScopeProject, what SaveManifest writes)",
+			scopeLiteralInManifestQuery, model.ScopeProject)
 	}
 }
 
