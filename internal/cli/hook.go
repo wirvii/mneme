@@ -698,6 +698,60 @@ type pathOwnershipDecision struct {
 	Owner string
 }
 
+// cleanArea normalises a raw manifest area entry before it is used as a
+// glob (SPEC-084 D1/D2): trims surrounding whitespace, drops a leading
+// "./", and drops a trailing "/". The result feeds areaMatches; cleanArea
+// itself never touches disk (the area may not exist in the working tree).
+//
+// ignore is true for an empty or whitespace-only area: areaMatches must
+// never turn that into a "**" glob, which would own the entire repository
+// (D2's degenerate-area guard, R3).
+//
+// "." and "./" are the explicit exception: they normalise to "**" — the
+// area owns the whole tree, deliberately and visibly, rather than by
+// accident of an empty string reaching a glob call.
+func cleanArea(area string) (cleaned string, ignore bool) {
+	trimmed := strings.TrimSpace(area)
+	if trimmed == "" {
+		return "", true
+	}
+	trimmed = strings.TrimPrefix(trimmed, "./")
+	trimmed = strings.TrimSuffix(trimmed, "/")
+	if trimmed == "" || trimmed == "." {
+		return "**", false
+	}
+	return trimmed, false
+}
+
+// areaMatches decides whether pathRel falls under manifest area, unioning
+// two readings of area (SPEC-084 D1/D2): the literal path itself, and every
+// path beneath it. This is deliberately not "detect whether area looks like
+// a directory or a glob": that would require an os.Stat the hook must not
+// perform (the area may not exist in the working tree) and would be brittle
+// against meta-characters. The union costs nothing extra for an area that
+// is already a glob (Match("internal/**", ...) with the "/**" suffix
+// appended a second time is simply redundant, not wrong) and fixes the case
+// that broke in practice: a manifest area written as a bare directory
+// (`apps/web-ui`, from the mneme-init grill) never matched anything inside
+// it, because Match("apps/web-ui", "apps/web-ui/lib/version.ts") is false.
+//
+// The area→glob interpretation lives here, in the hook's matcher, rather
+// than in manifest generation (internal/service/subagents.go): 8+ repos'
+// manifests were already written as bare directories with no re-grill
+// planned, so the fix has to live where every existing manifest is read,
+// not where new ones are written (D1).
+func areaMatches(area, pathRel string) bool {
+	cleaned, ignore := cleanArea(area)
+	if ignore {
+		return false
+	}
+	if matched, _ := doublestar.Match(cleaned, pathRel); matched {
+		return true
+	}
+	matched, _ := doublestar.Match(cleaned+"/**", pathRel)
+	return matched
+}
+
 // resolvePathOwnership implements the D7/D8 decision table for a single
 // target path, given the manifest lookup the caller already performed
 // (queryManifestContent). It performs no I/O itself, so it is directly unit
@@ -708,8 +762,9 @@ type pathOwnershipDecision struct {
 //   - target path is empty or falls outside the project tree -> ALLOW (D7
 //     point 4: a path that cannot be owned is not owned).
 //   - otherwise: BLOCK with the role of the first implementer manifest entry
-//     (subagents.IsImplementer) whose Areas contains a doublestar glob
-//     matching the path (D7 point 5/6); ALLOW if none does.
+//     (subagents.IsImplementer) whose Areas contains an entry matching the
+//     path — literally or as an ancestor directory (areaMatches, SPEC-084
+//     D2) — (D7 point 5/6); ALLOW if none does.
 func resolvePathOwnership(targetPath, cwd string, manifestFound bool, manifestJSON string) pathOwnershipDecision {
 	if !manifestFound {
 		return pathOwnershipDecision{ExitCode: 2, Owner: "legacy"}
@@ -733,7 +788,7 @@ func resolvePathOwnership(targetPath, cwd string, manifestFound bool, manifestJS
 			continue
 		}
 		for _, area := range entry.Areas {
-			if matched, _ := doublestar.Match(area, pathRel); matched {
+			if areaMatches(area, pathRel) {
 				return pathOwnershipDecision{ExitCode: 2, Owner: entry.Role}
 			}
 		}

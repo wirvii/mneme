@@ -409,6 +409,148 @@ func TestHookManifestEntry_RoundTripsServiceManifestEntry(t *testing.T) {
 	}
 }
 
+// --- areaMatches / cleanArea (SPEC-084 D1/D2) -------------------------------
+
+// TestAreaMatches_Table covers D2's table (bare dir, already-glob
+// idempotency, wildcard dir, exact file) plus the empirical anchor pairs
+// from the diagnosis memory (SPEC-084 §1 table A1): the repro that showed a
+// bare directory area never matches anything inside it.
+func TestAreaMatches_Table(t *testing.T) {
+	tests := []struct {
+		name string
+		area string
+		path string
+		want bool
+	}{
+		{
+			name: "bare dir matches descendant (A1 empirical anchor)",
+			area: "apps/web-ui",
+			path: "apps/web-ui/lib/version.ts",
+			want: true,
+		},
+		{
+			name: "bare dir matches itself",
+			area: "apps/web-ui",
+			path: "apps/web-ui",
+			want: true,
+		},
+		{
+			name: "already-glob area is idempotent (A1 empirical anchor)",
+			area: "internal/**",
+			path: "internal/service/foo.go",
+			want: true,
+		},
+		{
+			name: "wildcard dir matches descendant",
+			area: "apps/*-ui",
+			path: "apps/web-ui/lib/version.ts",
+			want: true,
+		},
+		{
+			name: "exact file matches",
+			area: "cmd/mneme/main.go",
+			path: "cmd/mneme/main.go",
+			want: true,
+		},
+		{
+			name: "unrelated path does not match",
+			area: "apps/web-ui",
+			path: "internal/service/foo.go",
+			want: false,
+		},
+		{
+			name: "sibling directory with shared prefix does not match",
+			area: "apps/web-ui",
+			path: "apps/web-ui-admin/lib/foo.ts",
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := areaMatches(tt.area, tt.path)
+			if got != tt.want {
+				t.Errorf("areaMatches(%q, %q) = %v, want %v", tt.area, tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestAreaMatches_DegenerateAreas covers D2's normative edge cases: an empty
+// or whitespace-only area must never own anything (R3 — it must never
+// silently become "**" and block the entire repo), while "." and "./"
+// explicitly do own the whole tree.
+func TestAreaMatches_DegenerateAreas(t *testing.T) {
+	tests := []struct {
+		name string
+		area string
+		path string
+		want bool
+	}{
+		{"empty area never matches", "", "internal/foo.go", false},
+		{"whitespace-only area never matches", "   ", "internal/foo.go", false},
+		{"dot area owns the whole tree", ".", "internal/foo.go", true},
+		{"dot-slash area owns the whole tree", "./", "internal/foo.go", true},
+		{"leading dot-slash is stripped before matching", "./internal", "internal/foo.go", true},
+		{"trailing slash is stripped before matching", "internal/", "internal/foo.go", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := areaMatches(tt.area, tt.path)
+			if got != tt.want {
+				t.Errorf("areaMatches(%q, %q) = %v, want %v", tt.area, tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestCleanArea covers cleanArea directly, isolating the normalisation step
+// from the glob match so a future areaMatches change can't silently mask a
+// cleaning regression.
+func TestCleanArea(t *testing.T) {
+	tests := []struct {
+		name        string
+		area        string
+		wantCleaned string
+		wantIgnore  bool
+	}{
+		{"empty", "", "", true},
+		{"whitespace only", "   ", "", true},
+		{"dot", ".", "**", false},
+		{"dot slash", "./", "**", false},
+		{"bare dir", "apps/web-ui", "apps/web-ui", false},
+		{"bare dir trailing slash", "apps/web-ui/", "apps/web-ui", false},
+		{"leading dot slash", "./apps/web-ui", "apps/web-ui", false},
+		{"already a glob", "internal/**", "internal/**", false},
+		{"surrounding whitespace trimmed", "  apps/web-ui  ", "apps/web-ui", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cleaned, ignore := cleanArea(tt.area)
+			if cleaned != tt.wantCleaned || ignore != tt.wantIgnore {
+				t.Errorf("cleanArea(%q) = (%q, %v), want (%q, %v)", tt.area, cleaned, ignore, tt.wantCleaned, tt.wantIgnore)
+			}
+		})
+	}
+}
+
+// TestResolvePathOwnership_BareDirArea_BlocksDescendant is an integration
+// test at the resolvePathOwnership level (rather than areaMatches directly)
+// reproducing AC2's repro shape: a manifest whose area is a bare directory
+// (as every pre-SPEC-084 grill-generated manifest declares them) must block
+// a file underneath it.
+func TestResolvePathOwnership_BareDirArea_BlocksDescendant(t *testing.T) {
+	manifest := `[{"role":"frontend","areas":["apps/web-ui"]}]`
+
+	got := resolvePathOwnership("apps/web-ui/lib/version.ts", testCWD, true, manifest)
+
+	if got.ExitCode != 2 || got.Owner != "frontend" {
+		t.Errorf("got %+v, want ExitCode=2 Owner=frontend", got)
+	}
+}
+
 // --- normalisePathForOwnership -----------------------------------------------
 
 // TestNormalisePathForOwnership covers R4: relative, absolute in-tree, and
