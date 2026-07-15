@@ -327,16 +327,35 @@ declared `areas` globs.
 
 | Manifest state | Path state | Result |
 |---|---|---|
-| Present, non-empty | Matches an implementer's `areas` glob (`doublestar.Match`) | **BLOCK**, names the first matching role in manifest order |
+| Present, non-empty | Matches an implementer's `areas` entry (`areaMatches`, SPEC-084 D2) | **BLOCK**, names the first matching role in manifest order |
 | Present, non-empty | No implementer's `areas` matches | **ALLOW** |
 | Absent (no row), or present but `[]` | any | **BLOCK**, owner `legacy` — deny-by-default so projects that have not run the `mneme-init` grill keep today's protection |
 | Path is empty or falls outside the project tree | any | **ALLOW** — a path that cannot be normalised relative to the project cannot be owned |
 | Hard failure: config unreadable, DB unreadable/corrupt, manifest JSON unparsable | — | **ALLOW** — fail-open |
 
-**Cost:** one read-only SQLite open + one indexed `SELECT` by `topic_key`, per
-invocation — no subprocess spawn at all (the process running the hook already
-**is** `mneme`). Most orchestrator writes never reach this path (they land in
-`.claude/`, `~/.mneme/`, or `docs/*.md`, all covered by the static whitelist).
+**`areas` glob semantics (SPEC-084 D2):** each entry is interpreted
+recursively, not just as a literal glob — `areaMatches(area, path)` is
+`Match(cleaned, path) || Match(cleaned+"/**", path)`, where `cleaned` trims
+whitespace and a leading `./` / trailing `/`. A bare directory entry
+(`apps/web-ui`) therefore owns everything underneath it, matching what the
+`mneme-init` grill has always generated; an entry that is already a glob
+(`internal/**`) is unaffected (the union is idempotent). An empty or
+whitespace-only entry is ignored rather than expanding to `**`; `.` or `./`
+explicitly resolve to `**`. See `docs/enforcement-model.md`'s "`areas` glob
+semantics" section for the full rationale.
+
+**Manifest lookup is project-scoped (SPEC-084 D4):** the query is `WHERE
+topic_key = 'subagents/manifest' AND project = ? AND deleted_at IS NULL
+ORDER BY updated_at DESC, id DESC LIMIT 1`, not a bare `topic_key` lookup —
+a project's database can contain manifest rows belonging to other projects
+(test runs, an imported/merged database), and without the `project` filter
+the query could return one of those instead of the caller's own manifest.
+
+**Cost:** one read-only SQLite open + one indexed `SELECT` by
+`topic_key`+`project`, per invocation — no subprocess spawn at all (the
+process running the hook already **is** `mneme`). Most orchestrator writes
+never reach this path (they land in `.claude/`, `~/.mneme/`, or `docs/*.md`,
+all covered by the static whitelist).
 
 The standalone `mneme hook path-owned <path>` subcommand still exists as
 general-purpose surface / backward compatibility, but `enforce-delegation` no

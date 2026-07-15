@@ -112,6 +112,42 @@ rules engine's DB access) and decides:
 | Absent, or present but empty `[]` | (any) | **BLOCK** ("legacy") — deny-by-default, protects projects that have not run the `mneme-init` grill yet |
 | Hard failure (config/DB unreadable, corrupt JSON) | (any) | **ALLOW** — fail-open, consistent with the rest of this hook |
 
+#### Manifest lookup is project-scoped (SPEC-084 D4)
+
+The manifest read is `WHERE topic_key = 'subagents/manifest' AND project = ?
+AND scope = 'project' AND deleted_at IS NULL ORDER BY updated_at DESC, id
+DESC LIMIT 1` — a project's SQLite database can legitimately contain manifest
+rows for *other* projects (e.g. test runs, an imported/merged database), and
+the `project`/`scope` filter is what keeps the lookup from picking one of
+those up instead of the caller's own manifest. `project`+`scope` complete
+`idx_memories_upsert`'s real unique key (`topic_key, project, scope`), so the
+`ORDER BY` is a deterministic-on-its-own fallback rather than the load-
+bearing part of the guarantee.
+
+#### `areas` glob semantics (SPEC-084 D2)
+
+A manifest `areas` entry is matched against the target path as the union of
+two readings — the entry itself as a literal glob, **and** the entry treated
+as a directory whose descendants it also owns:
+
+```
+areaMatches(area, path) := Match(cleaned, path) || Match(cleaned+"/**", path)
+```
+
+where `cleaned` trims surrounding whitespace and a leading `./` / trailing
+`/`. This means a bare directory area (`apps/web-ui`, the shape the
+`mneme-init` grill has always generated) owns every path underneath it, not
+just a literal path equal to the area string — `Match("apps/web-ui",
+"apps/web-ui/lib/version.ts")` alone is `false`, which is why this needed
+fixing. An area that is already a glob (`internal/**`) is unaffected — the
+union is idempotent. An empty or whitespace-only area is ignored (it can
+never expand into `**`, which would own the whole repository); `.` or `./`
+explicitly resolve to `**`, owning the whole repository on purpose. The
+normalisation lives in the matcher (`internal/cli/hook.go`), not in manifest
+generation (`internal/service/subagents.go`) — every manifest already
+written keeps its original `areas` content and checksum; only how the hook
+interprets it at match time changed.
+
 This made retiring the six global subagents (done in SPEC-073) non-destructive:
 a project that never ran the grill has no manifest, so every non-whitelisted
 edit keeps blocking exactly as it does today; a project with a partial manifest
