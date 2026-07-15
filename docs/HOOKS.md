@@ -345,14 +345,17 @@ explicitly resolve to `**`. See `docs/enforcement-model.md`'s "`areas` glob
 semantics" section for the full rationale.
 
 **Manifest lookup is project-scoped (SPEC-084 D4):** the query is `WHERE
-topic_key = 'subagents/manifest' AND project = ? AND deleted_at IS NULL
-ORDER BY updated_at DESC, id DESC LIMIT 1`, not a bare `topic_key` lookup —
-a project's database can contain manifest rows belonging to other projects
-(test runs, an imported/merged database), and without the `project` filter
-the query could return one of those instead of the caller's own manifest.
+topic_key = 'subagents/manifest' AND project = ? AND scope = 'project' AND
+deleted_at IS NULL ORDER BY updated_at DESC, id DESC LIMIT 1`, not a bare
+`topic_key` lookup — a project's database can contain manifest rows
+belonging to other projects (test runs, an imported/merged database), and
+without the `project`/`scope` filter the query could return one of those
+instead of the caller's own manifest. `project` and `scope` together
+complete `idx_memories_upsert`'s real unique key (`topic_key, project,
+scope`) — `scope` is not decorative.
 
 **Cost:** one read-only SQLite open + one indexed `SELECT` by
-`topic_key`+`project`, per invocation — no subprocess spawn at all (the
+`topic_key`+`project`+`scope`, per invocation — no subprocess spawn at all (the
 process running the hook already **is** `mneme`). Most orchestrator writes
 never reach this path (they land in `.claude/`, `~/.mneme/`, or `docs/*.md`,
 all covered by the static whitelist).

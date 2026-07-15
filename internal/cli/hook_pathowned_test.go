@@ -366,17 +366,19 @@ func TestManifestTopicKey_MatchesService(t *testing.T) {
 }
 
 // TestManifestQuery_ScopeMatchesSaveManifest is the SPEC-084 D6 guardian: it
-// pins the `scope = 'project'` literal hardcoded in manifestQuery to
-// model.ScopeProject — the value SaveManifest (internal/service/subagents.go)
-// actually writes on every manifest save. If SaveManifest's Scope ever
-// changes, this test fails loudly instead of manifestQuery silently
-// filtering out every real manifest row (found=false, D8's legacy-block
-// branch — indistinguishable from "no manifest" without this guard).
+// inspects the real manifestQuery constant for the `scope = 'project'`
+// clause and pins that clause to model.ScopeProject — the value SaveManifest
+// (internal/service/subagents.go) actually writes on every manifest save.
+// This reads the production constant itself (not a local literal standing
+// in for it), so it fails if manifestQuery's scope clause ever drifts from
+// what SaveManifest writes — instead of manifestQuery silently filtering
+// out every real manifest row (found=false, D8's legacy-block branch —
+// indistinguishable from "no manifest" without this guard).
 func TestManifestQuery_ScopeMatchesSaveManifest(t *testing.T) {
-	const scopeLiteralInManifestQuery = "project"
-	if scopeLiteralInManifestQuery != string(model.ScopeProject) {
-		t.Errorf("manifestQuery's hardcoded scope literal = %q, want %q (model.ScopeProject, what SaveManifest writes)",
-			scopeLiteralInManifestQuery, model.ScopeProject)
+	wantClause := "scope = '" + string(model.ScopeProject) + "'"
+	if !strings.Contains(manifestQuery, wantClause) {
+		t.Errorf("manifestQuery = %q, want it to contain %q (model.ScopeProject, what SaveManifest writes)",
+			manifestQuery, wantClause)
 	}
 }
 
