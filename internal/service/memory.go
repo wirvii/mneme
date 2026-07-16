@@ -66,18 +66,28 @@ type MemoryService struct {
 // launch the worker goroutine. For CLI commands call DrainHebbian after the
 // command completes to flush pending strengthening events.
 //
-// NewMemoryService also resolves team-memory state (SPEC-053 D3): it checks
-// whether the current process working directory is inside a git repository
-// with an active shared vault marker (<repoRoot>/.mneme/shared/.mneme-vault)
-// and caches the result for the service's lifetime. This is best-effort and
-// never fails construction — outside a git repository, or without the
-// marker, team-memory is simply inactive.
-func NewMemoryService(projectStore, globalStore *store.MemoryStore, cfg *config.Config, project string, embedder embed.Embedder) *MemoryService {
+// NewMemoryService never resolves team-memory state itself (SPEC-085 D1/D2):
+// a constructor that shells out to git and stats the filesystem is untestable
+// by construction, and — worse — the ~20 test call sites across this module
+// all run with a working directory inside this very repository, which
+// dogfoods team-memory, so auto-detection there silently activated
+// write-through materialization for every test-created memory (SPEC-085
+// root cause). Team-memory therefore now defaults to OFF (the zero value of
+// TeamMemoryState) unless a caller opts in explicitly via WithTeamMemory,
+// typically as:
+//
+//	service.NewMemoryService(ps, gs, cfg, project, embedder,
+//		service.WithTeamMemory(service.DetectTeamMemory()))
+//
+// The sole production call site that does this is internal/cli.initService.
+// Every existing test call site is unaffected — opts is variadic, so it
+// compiles unchanged and stays safe-by-default.
+func NewMemoryService(projectStore, globalStore *store.MemoryStore, cfg *config.Config, project string, embedder embed.Embedder, opts ...Option) *MemoryService {
 	logger := slog.Default()
 	pool := graph.NewHebbianWorkerPool(projectStore, cfg.Graph, logger)
 	tracker := graph.NewAccessTracker(pool, cfg.Graph, logger)
 
-	return &MemoryService{
+	svc := &MemoryService{
 		projectStore: projectStore,
 		globalStore:  globalStore,
 		config:       cfg,
@@ -85,7 +95,28 @@ func NewMemoryService(projectStore, globalStore *store.MemoryStore, cfg *config.
 		embedder:     embedder,
 		hebbianPool:  pool,
 		tracker:      tracker,
-		teamMemory:   DetectTeamMemory(),
+	}
+
+	for _, opt := range opts {
+		opt(svc)
+	}
+
+	return svc
+}
+
+// Option configures a MemoryService at construction time. See WithTeamMemory
+// for the only Option this package currently defines (SPEC-085 D2).
+type Option func(*MemoryService)
+
+// WithTeamMemory sets the MemoryService's team-memory state to s, overriding
+// the default OFF (zero-value TeamMemoryState) NewMemoryService otherwise
+// leaves in place. Pass the result of DetectTeamMemory to opt a production
+// service into auto-detected team-memory, or a literal TeamMemoryState to
+// pin a specific state (e.g. in tests that construct a service after
+// chdir-ing into a fixture repository).
+func WithTeamMemory(s TeamMemoryState) Option {
+	return func(svc *MemoryService) {
+		svc.teamMemory = s
 	}
 }
 

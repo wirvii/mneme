@@ -267,7 +267,13 @@ func initService() (*service.MemoryService, func(), error) {
 		emb = embed.NopEmbedder{}
 	}
 
-	svc := service.NewMemoryService(projectStore, globalStore, cfg, slug, emb)
+	// 7. Opt in to team-memory auto-detection explicitly (SPEC-085 D2):
+	//    NewMemoryService defaults to OFF and never resolves this itself.
+	//    initService is the one production call site that wants the real,
+	//    environment-derived state — DetectTeamMemory() checks whether cwd is
+	//    inside a git repository with an active shared vault marker.
+	svc := service.NewMemoryService(projectStore, globalStore, cfg, slug, emb,
+		service.WithTeamMemory(service.DetectTeamMemory()))
 
 	return svc, cleanup, nil
 }
