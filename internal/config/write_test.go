@@ -119,3 +119,70 @@ func TestSetModelsOverrides_EmptyOverrides(t *testing.T) {
 		t.Errorf("expected empty overrides, got %v", cfg.Models.Overrides)
 	}
 }
+
+// --- SPEC-086 D6/D7: SetSubagentContainmentMode -----------------------------
+
+func TestSetSubagentContainmentMode_WriteAndReload(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	if err := SetSubagentContainmentMode(path, "wirvii/wirvii360r", "block"); err != nil {
+		t.Fatalf("SetSubagentContainmentMode: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.SubagentContainmentMode("wirvii/wirvii360r"); got != "block" {
+		t.Errorf("SubagentContainmentMode = %q, want %q", got, "block")
+	}
+	// A different, un-promoted project stays on the default.
+	if got := cfg.SubagentContainmentMode("wirvii/other"); got != "warn" {
+		t.Errorf("SubagentContainmentMode(other) = %q, want %q", got, "warn")
+	}
+}
+
+// TestSetSubagentContainmentMode_RejectsInvalidMode is the mutation-tested
+// guard: an invalid mode string must be rejected before anything is written
+// to disk. Deleting the validateContainmentMode call would let a typo like
+// "blocked" silently persist and then silently fail Validate() on the next
+// Load, or worse, resolve to "" and drift to the default.
+func TestSetSubagentContainmentMode_RejectsInvalidMode(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	if err := SetSubagentContainmentMode(path, "wirvii/wirvii360r", "blocked"); err == nil {
+		t.Fatal("SetSubagentContainmentMode: want error for invalid mode, got nil")
+	}
+	if _, err := os.Stat(path); err == nil {
+		t.Error("SetSubagentContainmentMode: want no file written on validation failure")
+	}
+}
+
+// TestSetSubagentContainmentMode_PreservesOtherSections mirrors
+// TestSetModelsOverrides_SurvivesReload: writing a containment override must
+// not disturb an unrelated pre-existing section.
+func TestSetSubagentContainmentMode_PreservesOtherSections(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	initial := `[search]
+default_limit = 20
+`
+	if err := os.WriteFile(path, []byte(initial), 0o644); err != nil {
+		t.Fatalf("write initial config: %v", err)
+	}
+
+	if err := SetSubagentContainmentMode(path, "wirvii/mneme", "block"); err != nil {
+		t.Fatalf("SetSubagentContainmentMode: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Search.DefaultLimit != 20 {
+		t.Errorf("Search.DefaultLimit = %d, want 20 (unrelated section must survive)", cfg.Search.DefaultLimit)
+	}
+}
