@@ -233,6 +233,23 @@ func (h *handlers) handleSubagentCompose(_ context.Context, raw json.RawMessage)
 		}
 	}
 
+	// SPEC-090 D2/G1/G2: scan the RAW req.AreasLayer3MD (pre-wrap) for layer-1
+	// leaks (lifecycle tools, capability keys) before it is ever wrapped or
+	// composed. compose is the point of creation — rejecting here cuts the
+	// leak at the source instead of letting it materialize into a file a
+	// human has to notice later. Scanning the raw, unwrapped string (rather
+	// than a later wrapped/escaped form) means this can never accidentally
+	// widen into scanning layer-1 content — there is no layer-1 content in
+	// this request field at all.
+	if leaks := subagents.ScanLayer23Leaks(req.AreasLayer3MD); len(leaks) > 0 {
+		return nil, &JSONRPCError{
+			Code: CodeInvalidParams,
+			Message: fmt.Sprintf(
+				"mcp: handle subagent_compose: areas_layer3_md contains layer-1 content forbidden in layer 2/3 (lifecycle/capabilities): %s",
+				formatLayer23Leaks(leaks)),
+		}
+	}
+
 	modelVal := req.Model
 	if modelVal == "" {
 		modelVal = "sonnet"
@@ -311,6 +328,18 @@ func renderProjectContextSection(profile service.ProjectProfile) string {
 		fmt.Fprintf(&b, "- Regla cross-cutting: %s\n", rule)
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// formatLayer23Leaks renders leaks as a comma-separated "token" (line N)
+// list for a JSONRPCError message — SPEC-090 D2 requires the guard to name
+// token+line so the grill can re-synthesize precisely instead of guessing
+// what to strip.
+func formatLayer23Leaks(leaks []subagents.Layer23Leak) string {
+	parts := make([]string, 0, len(leaks))
+	for _, leak := range leaks {
+		parts = append(parts, fmt.Sprintf("%q (line %d)", leak.Token, leak.Line))
+	}
+	return strings.Join(parts, ", ")
 }
 
 // wrapUntrustedAreasContent wraps areasLayer3MD in a fixed envelope marking
@@ -427,6 +456,25 @@ func (h *handlers) handleSubagentWrite(ctx context.Context, raw json.RawMessage)
 			Code: CodeInvalidParams,
 			Message: fmt.Sprintf("mcp: handle subagent_write: composed_md failed validation against archetype %q: %s",
 				req.Archetype, strings.Join(validation.Errors, "; ")),
+		}
+	}
+	// SPEC-090 D2/G2 (the critical property): write receives composed_md, not
+	// areas_layer3_md — a hand-edited composed_md could smuggle a leak compose
+	// never saw. Extract ONLY the grill region (subagents.ExtractGrillRegion)
+	// and scan THAT — never the whole composed_md. The layer-1 agent-fixed
+	// block legitimately says "NUNCA llames spec_advance"; scanning the whole
+	// document would reject that legitimate prohibition forever (the
+	// guardián-ciego-opuesto AC4 exists to prevent). When no grill region is
+	// found at all (ok=false — e.g. a hand-authored profile with no wrapped
+	// layer-3 content), there is nothing to scan and nothing to reject here.
+	if region, ok := subagents.ExtractGrillRegion(req.ComposedMD); ok {
+		if leaks := subagents.ScanLayer23Leaks(region); len(leaks) > 0 {
+			return nil, &JSONRPCError{
+				Code: CodeInvalidParams,
+				Message: fmt.Sprintf(
+					"mcp: handle subagent_write: composed_md's grill region contains layer-1 content forbidden in layer 2/3 (lifecycle/capabilities): %s",
+					formatLayer23Leaks(leaks)),
+			}
 		}
 	}
 
