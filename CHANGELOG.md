@@ -4,6 +4,60 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [v1.27.1] — 2026-07-16 — Hotfix: typescript@7 broke TS/JS code-graph extraction IN SILENCE (SPEC-088)
+
+### Fixed
+
+- **`mneme codegraph index` no longer silently produces an empty TS/JS
+  index when the resolved `typescript` package is API-incompatible (e.g.
+  `typescript@7.x`).** v1.27.0 shipped with CI red and, worse, the same
+  failure reproduced on any real machine with an unpinned global
+  `typescript@7`: zero nodes/edges extracted, `errors[]` swallowed, exit 0.
+  The silence had three layers, all fixed together (fixing only one leaves
+  the others swallowing the signal):
+  1. `js/extract.js` now checks the actual Compiler API symbols it uses
+     right after `require('typescript')` — capability, not a version
+     number — and exits **20** (not 3, which Node reserves) with a
+     structured stderr message naming the found version and three escape
+     hatches, instead of letting every call throw into the existing
+     per-file `catch` and produce a valid-but-empty result.
+  2. `TSExtractor.Extract` (`extractor_ts.go`) classifies exit 20 as the
+     new sentinel `ErrExtractorIncompatible`, wrapping the subprocess's own
+     stderr into the Go error. The classification is sticky (a `fatal`
+     field) so a dead subprocess is never written to twice, and
+     `cmd.Wait()` is now called through a `sync.Once`-guarded
+     `waitProcess()` shared between the death-detection path and `Close()`
+     to avoid a second, panicking `Wait()` call.
+  3. `Indexer.Index` now aborts the walk on `errors.Is(err,
+     ErrExtractorIncompatible)` instead of folding it into the ordinary
+     per-file `FilesErrored` counter (`indexer.go:211-216`, the decisive
+     swallow — a systemic "this toolchain can't process ANY file" failure
+     was being treated the same as one broken `.ts` file). Every other
+     per-file extraction error keeps the existing degrade-and-continue
+     behaviour: a repo without `node`, or without `typescript` installed at
+     all, still indexes its `.go` files and exits 0 exactly as before.
+  - `NODE_PATH` precedence inverted (`extractor_ts.go`): an explicitly-set
+    `NODE_PATH` now wins over the global npm root, both because it's the
+    correct semantics for an explicit env var and because it is the escape
+    hatch the new error message points users at
+    (`NODE_PATH=/path/to/ts6/node_modules mneme codegraph index`).
+    **Behaviour change:** anyone with a stale `NODE_PATH` already set now
+    has it take priority over the global install where it previously
+    didn't.
+  - `docs/codegraph.md` documents the supported majors (5.x/6.x), the
+    degrade-vs-abort table, and the three escape hatches; the old
+    "typescript must be installed" line named no major.
+  - CI (`ci.yml`, ubuntu job) now pins `typescript@6.0.3` explicitly before
+    `go test`, and exports `MNEME_TEST_REQUIRE_TS=1` so the TS extractor
+    tests are a hard failure — never a silent skip — if that pin ever
+    breaks. `internal/codegraph/extractor_ts_test.go`'s
+    `TestTSExtractor_ExtractsClass` also had a latent
+    `index out of range` panic (asserting `len(classes) != 1 ||
+    classes[0].Name != ...` in one `||` expression) fixed to fail cleanly
+    instead.
+  - See `bug/codegraph-ts-extractor-typescript-v7-runner-drift` for the
+    full root-cause diagnosis and reproduction.
+
 ## [v1.27.0] — 2026-07-16 — Enforcement that actually enforces + test isolation + subagents that can work (SPEC-084/085/086/087)
 
 ### Added
