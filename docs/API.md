@@ -2,7 +2,7 @@
 
 # mneme -- API Reference
 
-mneme exposes the same service layer through three frontends: **MCP** (64
+mneme exposes the same service layer through three frontends: **MCP** (65
 tools over JSON-RPC 2.0 stdio, primary), **HTTP** (10 REST endpoints under
 `/v1/`), and **CLI** (36 top-level commands, Cobra). This page is an index --
 the full contract for every tool, endpoint, and command lives in
@@ -31,21 +31,21 @@ not a fixed string -- expect it to match `mneme version`.
 
 ---
 
-## MCP tool families (64 tools)
+## MCP tool families (65 tools)
 
 Rule: every MCP tool appears in exactly **one** of these files.
 
 | Family | Count | Reference | Concept guide |
 |--------|-------|-----------|---------------|
 | `mem_*` (incl. `mem_promote`) | 15 | [docs/api/memory.md](api/memory.md) | [docs/GRAPH.md](GRAPH.md), [docs/RULES.md](RULES.md), [docs/team-memory.md](team-memory.md) |
-| `backlog_*` + `spec_*` + `lane_*` + `init` | 4+8+5+1=18 | [docs/api/sdd.md](api/sdd.md) | [docs/lanes.md](lanes.md), [docs/init.md](init.md) |
+| `backlog_*` + `spec_*` + `lane_*` + `init` | 4+9+5+1=19 | [docs/api/sdd.md](api/sdd.md) | [docs/lanes.md](lanes.md), [docs/init.md](init.md) |
 | `codegraph_*` | 10 | [docs/api/codegraph.md](api/codegraph.md) | [docs/codegraph.md](codegraph.md) |
 | `skills_*` | 7 | [docs/api/skills.md](api/skills.md) | [docs/skills.md](skills.md) |
 | `model_*` | 3 | [docs/api/models.md](api/models.md) | [docs/models.md](models.md) |
 | `conflicts_*` | 5 | [docs/api/conflicts.md](api/conflicts.md) | [docs/conflicts.md](conflicts.md) |
 | `subagent_*` | 6 | [docs/api/subagents.md](api/subagents.md) | [docs/enforcement-model.md](enforcement-model.md) |
 
-15 + 18 + 10 + 7 + 3 + 5 + 6 = **64**.
+15 + 19 + 10 + 7 + 3 + 5 + 6 = **65**.
 
 ## Transport references
 
