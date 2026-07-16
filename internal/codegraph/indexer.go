@@ -2,6 +2,7 @@ package codegraph
 
 import (
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -87,8 +88,13 @@ func NewIndexer(store *Store) *Indexer {
 // summarising what was scanned, indexed, skipped, and how many nodes and edges
 // were created.
 //
-// Index never aborts on a single file error — it records the failure in
-// FilesErrored and continues with the remaining files.
+// Index does not abort on an ordinary per-file error — it records the
+// failure in FilesErrored and continues with the remaining files. The one
+// exception (SPEC-088 D4) is ErrExtractorIncompatible: when a language's
+// extractor toolchain is present but unusable, NO file of that language can
+// be extracted, so treating it as a per-file failure would silently produce
+// an empty-but-"successful" index. That case aborts the walk and Index
+// returns the error instead.
 func (ix *Indexer) Index(opts IndexOptions) (*IndexResult, error) {
 	start := time.Now()
 	result := &IndexResult{}
@@ -145,6 +151,12 @@ func (ix *Indexer) Index(opts IndexOptions) (*IndexResult, error) {
 		onDisk[relPath] = struct{}{}
 
 		if err := ix.indexFile(path, relPath, lang, opts, result); err != nil {
+			if errors.Is(err, ErrExtractorIncompatible) {
+				// Systemic: the toolchain for this language can't process ANY
+				// file, not just this one. Abort the walk rather than
+				// continuing to silently count failures (SPEC-088 D4).
+				return err
+			}
 			// Non-fatal: record the error and move on.
 			result.FilesErrored++
 		}
@@ -210,6 +222,14 @@ func (ix *Indexer) indexFile(absPath, relPath, lang string, opts IndexOptions, r
 	// Extract code symbols from file content.
 	extraction, err := extractor.Extract(relPath, content)
 	if err != nil {
+		if errors.Is(err, ErrExtractorIncompatible) {
+			// Systemic (SPEC-088 D4): the extractor's toolchain is present but
+			// unusable, so no file of this language can be extracted. Return
+			// the error so the caller aborts the walk instead of treating this
+			// as an ordinary per-file failure — see the asymmetry documented
+			// on Index.
+			return err
+		}
 		// Extraction error is non-fatal; partial results may still be valid.
 		result.FilesErrored++
 		// Do not return here; fall through to persist partial results if any.
