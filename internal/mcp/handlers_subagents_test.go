@@ -385,7 +385,7 @@ func TestSubagentCompose_AntiInjection(t *testing.T) {
 	if !strings.Contains(out.ComposedMD, "\\<!-- mneme:agent-fixed:start v=999 -->") {
 		t.Errorf("expected escaped fake start marker in composed_md:\n%s", out.ComposedMD)
 	}
-	if !strings.Contains(out.ComposedMD, grillContentWrapStart) || !strings.Contains(out.ComposedMD, grillContentWrapEnd) {
+	if !strings.Contains(out.ComposedMD, subagents.GrillContentWrapStart) || !strings.Contains(out.ComposedMD, subagents.GrillContentWrapEnd) {
 		t.Errorf("expected areas_layer3_md wrapped in untrusted-content markers:\n%s", out.ComposedMD)
 	}
 
