@@ -50,7 +50,7 @@ type MemoryService struct {
 	// teamMemory caches whether the git-native team-memory vault is active for
 	// this process and, when so, its root directory (SPEC-053 D3). Resolved
 	// once at construction time in NewMemoryService.
-	teamMemory teamMemoryState
+	teamMemory TeamMemoryState
 }
 
 // NewMemoryService constructs a MemoryService. The caller must provide fully
@@ -85,7 +85,7 @@ func NewMemoryService(projectStore, globalStore *store.MemoryStore, cfg *config.
 		embedder:     embedder,
 		hebbianPool:  pool,
 		tracker:      tracker,
-		teamMemory:   detectTeamMemory(),
+		teamMemory:   DetectTeamMemory(),
 	}
 }
 

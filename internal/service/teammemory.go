@@ -34,45 +34,54 @@ var nonSharedTypes = map[model.MemoryType]bool{
 // (SPEC-071): only auto-generated/ephemeral types are excluded.
 func autoSharedType(t model.MemoryType) bool { return !nonSharedTypes[t] }
 
-// teamMemoryState is resolved once at MemoryService construction time (D3)
-// and cached for the process lifetime — repeated Save/Update calls never
-// re-run "git rev-parse" or re-stat the marker.
-type teamMemoryState struct {
-	// enabled is true when the current repository has opted into team-memory
+// TeamMemoryState is resolved once, by DetectTeamMemory, and handed to
+// MemoryService at construction time (SPEC-085 D1/D2) — the constructor never
+// resolves it itself. It is cached for the process lifetime: repeated
+// Save/Update calls never re-run "git rev-parse" or re-stat the marker.
+type TeamMemoryState struct {
+	// Enabled is true when the current repository has opted into team-memory
 	// (the shared vault marker exists). When false, Shared is always baked to
 	// 0 and nothing is ever materialized, regardless of memory type.
-	enabled bool
+	Enabled bool
 
-	// vaultRoot is the absolute path to <repoRoot>/.mneme/shared. Only
-	// meaningful when enabled is true.
-	vaultRoot string
+	// VaultRoot is the absolute path to <repoRoot>/.mneme/shared. Only
+	// meaningful when Enabled is true.
+	VaultRoot string
 }
 
-// detectTeamMemory resolves the git repository root for the current process
+// DetectTeamMemory resolves the git repository root for the current process
 // working directory and checks whether the team-memory marker file exists
 // inside <repoRoot>/.mneme/shared/. Both steps are best-effort: any failure
 // (not a git repository, git not installed, marker unreadable) simply yields
 // a disabled state — team-memory is opt-in, never a hard requirement for
 // mneme to function (SPEC-053 D3).
-func detectTeamMemory() teamMemoryState {
+//
+// DetectTeamMemory performs I/O ambient to the calling process (os.Getwd,
+// exec.Command("git", …), os.Stat) and is deliberately NOT called by
+// NewMemoryService (SPEC-085 D1): a constructor that resolves environment
+// state itself is untestable by construction. Callers that want production
+// auto-detection call DetectTeamMemory explicitly and pass the result via
+// WithTeamMemory — currently the sole production call site is
+// internal/cli.initService.
+func DetectTeamMemory() TeamMemoryState {
 	cwd, err := os.Getwd()
 	if err != nil {
-		return teamMemoryState{}
+		return TeamMemoryState{}
 	}
 
 	root, err := gitRepoRoot(cwd)
 	if err != nil {
-		return teamMemoryState{}
+		return TeamMemoryState{}
 	}
 
 	vaultRoot := filepath.Join(root, ".mneme", sharedVaultRelDir)
 	markerPath := filepath.Join(vaultRoot, vault.MarkerFileName)
 
 	if _, statErr := os.Stat(markerPath); statErr != nil {
-		return teamMemoryState{vaultRoot: vaultRoot}
+		return TeamMemoryState{VaultRoot: vaultRoot}
 	}
 
-	return teamMemoryState{enabled: true, vaultRoot: vaultRoot}
+	return TeamMemoryState{Enabled: true, VaultRoot: vaultRoot}
 }
 
 // gitRepoRoot runs "git rev-parse --show-toplevel" in cwd and returns the
@@ -146,7 +155,7 @@ func bakeSharedDefault(t model.MemoryType, scope model.Scope) int {
 // a non-nil pointer is an explicit override (opt-out of an auto-shared type,
 // or opt-in of one that would otherwise default to local-only).
 func (svc *MemoryService) bakeTeamMemoryFields(m *model.Memory, reqShared *int) {
-	if !svc.teamMemory.enabled {
+	if !svc.teamMemory.Enabled {
 		return
 	}
 
@@ -170,7 +179,7 @@ func (svc *MemoryService) bakeTeamMemoryFields(m *model.Memory, reqShared *int) 
 // here; this only affects the in-memory snapshot handed to materialization,
 // not a second bake of Shared itself.
 func (svc *MemoryService) applyTeamMemoryAuthor(m *model.Memory) {
-	if !svc.teamMemory.enabled || m.Shared <= 0 {
+	if !svc.teamMemory.Enabled || m.Shared <= 0 {
 		return
 	}
 	if m.Author == "" {
@@ -250,7 +259,7 @@ func (svc *MemoryService) Promote(ctx context.Context, id string) (*model.Memory
 // and never propagated — a materialization failure must never fail the
 // caller's Save or Update.
 func (svc *MemoryService) materializeTeamMemory(ctx context.Context, m *model.Memory) {
-	if !svc.teamMemory.enabled || m == nil || m.Shared <= 0 {
+	if !svc.teamMemory.Enabled || m == nil || m.Shared <= 0 {
 		return
 	}
 	if materializeSuppressed(ctx) {
@@ -258,7 +267,7 @@ func (svc *MemoryService) materializeTeamMemory(ctx context.Context, m *model.Me
 	}
 
 	writer := vault.NewWriter(vault.ExportOptions{
-		VaultRoot: svc.teamMemory.vaultRoot,
+		VaultRoot: svc.teamMemory.VaultRoot,
 		Project:   svc.project,
 		Scope:     "shared",
 		PathMode:  vault.PathModeUUID,

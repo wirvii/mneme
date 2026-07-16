@@ -137,7 +137,7 @@ func (svc *MemoryService) EnableTeamMemory(ctx context.Context, repoRoot string)
 	// long-lived MCP server session, or a test) would still see
 	// teamMemory.enabled == false, since NewMemoryService only resolves it
 	// once at construction time.
-	svc.teamMemory = teamMemoryState{enabled: true, vaultRoot: vaultRoot}
+	svc.teamMemory = TeamMemoryState{Enabled: true, VaultRoot: vaultRoot}
 
 	return result, nil
 }
