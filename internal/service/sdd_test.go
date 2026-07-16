@@ -1335,3 +1335,199 @@ func TestLaneStats_Counts(t *testing.T) {
 		t.Error("AuditFailRate must be > 0")
 	}
 }
+
+// --- SPEC DOC TESTS (SPEC-087 D3) ---
+
+// TestSpecDocPath_ValidatesSpecID attacks specDocPath directly with hostile
+// ids — NOT via SpecDocWrite/store.GetSpec (AC5). Going only through the
+// service method would let store.GetSpec reject a malformed id as
+// "not found" before specDocPath's own checks ever ran, so a test that
+// deletes specIDPattern would still pass — a guard that cannot detect its
+// own removal (memory testing/antipatron-guardian-que-no-detecta-su-eliminacion).
+//
+// Mutation guard (manually verified): commenting out the
+// `if !specIDPattern.MatchString(id)` block in specDocPath turns every
+// "invalid id" case below red (path traversal succeeds instead of erroring).
+func TestSpecDocPath_ValidatesSpecID(t *testing.T) {
+	tests := []struct {
+		name    string
+		id      string
+		kind    model.SpecDocKind
+		wantErr bool
+	}{
+		{"valid id", "SPEC-087", model.SpecDocKindSpec, false},
+		{"path traversal via id", "../../../etc/passwd", model.SpecDocKindSpec, true},
+		{"embedded traversal segments", "SPEC-001/../../..", model.SpecDocKindSpec, true},
+		{"unknown kind", "SPEC-087", model.SpecDocKind("bogus"), true},
+		{"empty id", "", model.SpecDocKindSpec, true},
+		{"lowercase id rejected", "spec-087", model.SpecDocKindSpec, true},
+		{"absolute path id", "/etc/passwd", model.SpecDocKindSpec, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			path, err := specDocPath(root, "wirvii/mneme", tt.id, tt.kind)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("specDocPath(%q, %q) = %q, want error", tt.id, tt.kind, path)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("specDocPath(%q, %q): unexpected error: %v", tt.id, tt.kind, err)
+			}
+			specDir := filepath.Join(root, "wirvii-mneme", "specs", tt.id)
+			rel, relErr := filepath.Rel(specDir, path)
+			if relErr != nil || strings.Contains(rel, "..") {
+				t.Errorf("specDocPath resolved %q outside %q (rel=%q)", path, specDir, rel)
+			}
+		})
+	}
+}
+
+// TestSpecDocPath_ProjectSlashSanitised verifies specDocPath sanitises a
+// project slug containing "/" the same way config.ProjectWorkflowDir does,
+// so the two never disagree on where a spec's workflow directory lives.
+func TestSpecDocPath_ProjectSlashSanitised(t *testing.T) {
+	root := t.TempDir()
+	path, err := specDocPath(root, "wirvii/mneme", "SPEC-087", model.SpecDocKindPlan)
+	if err != nil {
+		t.Fatalf("specDocPath: %v", err)
+	}
+	want := filepath.Join(root, "wirvii-mneme", "specs", "SPEC-087", "plan.md")
+	if path != want {
+		t.Errorf("specDocPath = %q, want %q", path, want)
+	}
+}
+
+// newTestSDDServiceWithWorkflowDir mirrors newTestSDDService but points
+// Workflow.Dir at a fresh t.TempDir() so SpecDocWrite tests never touch the
+// real ~/.mneme/workflows directory.
+func newTestSDDServiceWithWorkflowDir(t *testing.T, project string) (*SDDService, string) {
+	t.Helper()
+	database, err := db.OpenMemory()
+	if err != nil {
+		t.Fatalf("open memory db: %v", err)
+	}
+	database.SetMaxOpenConns(1)
+	t.Cleanup(func() { database.Close() })
+
+	sddStore := store.NewSDDStore(database)
+	cfg := config.Default()
+	workflowDir := t.TempDir()
+	cfg.Workflow.Dir = workflowDir
+	return NewSDDService(sddStore, cfg, project, nil), workflowDir
+}
+
+// TestSpecDocWrite_Success writes a qa-report.md for a real spec and
+// verifies its content, path, and Created flag.
+func TestSpecDocWrite_Success(t *testing.T) {
+	svc, workflowDir := newTestSDDServiceWithWorkflowDir(t, "wirvii/mneme")
+	ctx := context.Background()
+
+	spec, err := svc.SpecNew(ctx, model.SpecNewRequest{
+		Title: "Test spec",
+		Lane:  model.LaneStandard,
+	})
+	if err != nil {
+		t.Fatalf("SpecNew: %v", err)
+	}
+
+	resp, err := svc.SpecDocWrite(ctx, model.SpecDocWriteRequest{
+		ID:      spec.ID,
+		Kind:    model.SpecDocKindQAReport,
+		Content: "# QA Report\n\nAPROBADO\n",
+	})
+	if err != nil {
+		t.Fatalf("SpecDocWrite: %v", err)
+	}
+
+	wantPath := filepath.Join(workflowDir, "wirvii-mneme", "specs", spec.ID, "qa-report.md")
+	if resp.Path != wantPath {
+		t.Errorf("Path = %q, want %q", resp.Path, wantPath)
+	}
+	if !resp.Created {
+		t.Error("Created = false, want true for a brand-new file")
+	}
+	if resp.Bytes != len("# QA Report\n\nAPROBADO\n") {
+		t.Errorf("Bytes = %d, want %d", resp.Bytes, len("# QA Report\n\nAPROBADO\n"))
+	}
+
+	data, err := os.ReadFile(wantPath)
+	if err != nil {
+		t.Fatalf("read written file: %v", err)
+	}
+	if string(data) != "# QA Report\n\nAPROBADO\n" {
+		t.Errorf("file content = %q, want %q", string(data), "# QA Report\n\nAPROBADO\n")
+	}
+}
+
+// TestSpecDocWrite_OverwriteReportsNotCreated verifies a second write to the
+// same kind reports Created=false and replaces the content.
+func TestSpecDocWrite_OverwriteReportsNotCreated(t *testing.T) {
+	svc, _ := newTestSDDServiceWithWorkflowDir(t, "wirvii/mneme")
+	ctx := context.Background()
+
+	spec, err := svc.SpecNew(ctx, model.SpecNewRequest{Title: "Test spec", Lane: model.LaneStandard})
+	if err != nil {
+		t.Fatalf("SpecNew: %v", err)
+	}
+
+	if _, err := svc.SpecDocWrite(ctx, model.SpecDocWriteRequest{
+		ID: spec.ID, Kind: model.SpecDocKindChanges, Content: "first",
+	}); err != nil {
+		t.Fatalf("first SpecDocWrite: %v", err)
+	}
+
+	resp, err := svc.SpecDocWrite(ctx, model.SpecDocWriteRequest{
+		ID: spec.ID, Kind: model.SpecDocKindChanges, Content: "second",
+	})
+	if err != nil {
+		t.Fatalf("second SpecDocWrite: %v", err)
+	}
+	if resp.Created {
+		t.Error("Created = true on overwrite, want false")
+	}
+
+	data, err := os.ReadFile(resp.Path)
+	if err != nil {
+		t.Fatalf("read written file: %v", err)
+	}
+	if string(data) != "second" {
+		t.Errorf("file content = %q, want %q (overwrite must replace, not append)", string(data), "second")
+	}
+}
+
+// TestSpecDocWrite_UnknownSpec verifies a nonexistent spec ID errors out
+// before anything is written.
+func TestSpecDocWrite_UnknownSpec(t *testing.T) {
+	svc, _ := newTestSDDServiceWithWorkflowDir(t, "wirvii/mneme")
+	ctx := context.Background()
+
+	_, err := svc.SpecDocWrite(ctx, model.SpecDocWriteRequest{
+		ID: "SPEC-999", Kind: model.SpecDocKindSpec, Content: "x",
+	})
+	if err == nil {
+		t.Fatal("expected error for unknown spec ID")
+	}
+}
+
+// TestSpecDocWrite_UnknownKind verifies an unrecognised kind errors before
+// any file is written, for a spec that DOES exist.
+func TestSpecDocWrite_UnknownKind(t *testing.T) {
+	svc, _ := newTestSDDServiceWithWorkflowDir(t, "wirvii/mneme")
+	ctx := context.Background()
+
+	spec, err := svc.SpecNew(ctx, model.SpecNewRequest{Title: "Test spec", Lane: model.LaneStandard})
+	if err != nil {
+		t.Fatalf("SpecNew: %v", err)
+	}
+
+	_, err = svc.SpecDocWrite(ctx, model.SpecDocWriteRequest{
+		ID: spec.ID, Kind: model.SpecDocKind("bogus"), Content: "x",
+	})
+	if !errors.Is(err, model.ErrUnknownSpecDocKind) {
+		t.Errorf("expected ErrUnknownSpecDocKind, got %v", err)
+	}
+}

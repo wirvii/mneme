@@ -11,6 +11,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -525,6 +526,90 @@ func (svc *SDDService) SpecReject(ctx context.Context, req model.SpecRejectReque
 		return nil, fmt.Errorf("service: spec reject: reload: %w", err)
 	}
 	return updated, nil
+}
+
+// specIDPattern is the shape every persisted spec ID must have — mirrors the
+// posture of internal/mcp's roleNamePattern (SPEC-057 C1's path-traversal
+// defense). specDocPath rejects any id that does not match this BEFORE
+// joining it into a filesystem path.
+var specIDPattern = regexp.MustCompile(`^SPEC-\d{3,}$`)
+
+// specDocPath builds the destination path for a spec_doc_write call
+// (SPEC-087 D3). rootWorkflowDir is the un-project-scoped workflow root
+// (config.Config.WorkflowDir()); project and id identify the spec; kind
+// selects a closed, Go-authored filename via SpecDocKind.Filename — the
+// caller never supplies a filename directly.
+//
+// specDocPath is a pure function, deliberately independent of *config.Config
+// and of the store, so it is testable directly with hostile input (AC5)
+// rather than only reachable through SpecDocWrite. Going only through
+// SpecDocWrite would make the path-traversal defense untestable: an id like
+// "../../../etc/passwd" would fail store.GetSpec with "not found" before
+// this function's own checks ever ran, so a test that deletes
+// specIDPattern and only exercises the handler would still pass — a guard
+// that cannot detect its own removal (memory
+// testing/antipatron-guardian-que-no-detecta-su-eliminacion).
+//
+// Two independent checks, in order:
+//  1. id must match specIDPattern — rejects "..", "/", and anything else
+//     that is not a plain "SPEC-<digits>" token, before any path is built.
+//  2. filepath.Rel(specDir, path) must equal exactly filename(kind) — belt
+//     and suspenders confirming the final path still resolves inside
+//     specDir even if (1) or the join logic below is ever weakened.
+func specDocPath(rootWorkflowDir, project, id string, kind model.SpecDocKind) (string, error) {
+	if !specIDPattern.MatchString(id) {
+		return "", fmt.Errorf("service: spec doc path: invalid spec id %q", id)
+	}
+	filename, ok := kind.Filename()
+	if !ok {
+		return "", fmt.Errorf("service: spec doc path: %w", model.ErrUnknownSpecDocKind)
+	}
+
+	safeProject := strings.ReplaceAll(project, "/", "-")
+	specDir := filepath.Join(rootWorkflowDir, safeProject, "specs", id)
+	path := filepath.Join(specDir, filename)
+
+	if rel, err := filepath.Rel(specDir, path); err != nil || rel != filename {
+		return "", fmt.Errorf("service: spec doc path: resolved path %q escapes spec directory %q", path, specDir)
+	}
+	return path, nil
+}
+
+// SpecDocWrite writes content to the file kind maps to, inside id's workflow
+// directory (SPEC-087 D3) — the entregable path a subagent uses instead of
+// copying a report into the workflow directory by hand. The destination
+// directory and filename are never caller-supplied: the directory is derived
+// from the persisted spec record (spec.Project, via store.GetSpec), and the
+// filename comes from SpecDocKind's closed Go-authored map (see
+// specDocPath). 0644 permissions, parent directories created as needed, no
+// append and no arbitrary read — a plain overwrite-or-create write.
+func (svc *SDDService) SpecDocWrite(ctx context.Context, req model.SpecDocWriteRequest) (*model.SpecDocWriteResponse, error) {
+	spec, err := svc.store.GetSpec(ctx, req.ID)
+	if err != nil {
+		return nil, fmt.Errorf("service: spec doc write: get: %w", err)
+	}
+
+	path, err := specDocPath(svc.config.WorkflowDir(), spec.Project, spec.ID, req.Kind)
+	if err != nil {
+		return nil, fmt.Errorf("service: spec doc write: %w", err)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, fmt.Errorf("service: spec doc write: mkdir %s: %w", filepath.Dir(path), err)
+	}
+
+	_, statErr := os.Stat(path)
+	created := os.IsNotExist(statErr)
+
+	if err := os.WriteFile(path, []byte(req.Content), 0o644); err != nil {
+		return nil, fmt.Errorf("service: spec doc write: write %s: %w", path, err)
+	}
+
+	return &model.SpecDocWriteResponse{
+		Path:    path,
+		Bytes:   len(req.Content),
+		Created: created,
+	}, nil
 }
 
 // SpecResolve resolves the oldest unresolved pushback and transitions the spec
