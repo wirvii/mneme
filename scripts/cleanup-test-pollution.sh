@@ -205,6 +205,16 @@ echo
 #        risking real data, matching this script's fail-safe posture.
 echo "-- Purging the DB --"
 
+# -bail: in non-interactive (stdin/heredoc) mode, sqlite3's default behaviour
+# is to keep executing subsequent statements after one fails — which would
+# let a mid-transaction error (e.g. an unexpected FK violation) skip straight
+# past the failing DELETE to COMMIT, applying a partial purge. -bail makes
+# sqlite3 stop and exit non-zero at the FIRST error, before COMMIT is ever
+# reached; the still-open transaction is then rolled back implicitly when
+# the connection closes. Combined with `set -euo pipefail` above, the script
+# itself halts immediately too. This is meant to make a partial purge
+# structurally impossible, not merely caught after the fact by the REMAINING
+# check below.
 IN_LIST="$(
   first=1
   for slug in "${DENYLIST[@]}"; do
@@ -218,7 +228,7 @@ IN_LIST="$(
   done
 )"
 
-sqlite3 "$DB_PATH" <<SQL
+sqlite3 -bail "$DB_PATH" <<SQL
 PRAGMA foreign_keys = ON;
 BEGIN TRANSACTION;
 

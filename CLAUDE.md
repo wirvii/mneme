@@ -178,10 +178,14 @@ sandboxed `HOME=` on the same line makes it observe the *already-sandboxed*
 HOME, forcing a full rebuild and module re-download on every run.
 
 `scripts/cleanup-test-pollution.sh` is the one-off (not a `mneme` subcommand)
-script that purged the pre-SPEC-085 pollution from this repo's real DB and
+script meant to purge the pre-SPEC-085 pollution from this repo's real DB and
 vault: dry-run by default, an explicit denylist of the 14 exact polluted
 project slugs (no globs/heuristics), a precondition that aborts on any
-unrecognised project, and a mandatory DB backup before `--apply`.
+unrecognised project, and a mandatory DB backup before `--apply`. As of this
+writing `--apply` has not been run — the dry-run has been verified against
+the real DB (it enumerates exactly 7752 rows / ~6700 notes) and against
+synthetic fixtures, but the actual purge is the owner's call to make after
+reviewing that output.
 
 ## Quality standards
 

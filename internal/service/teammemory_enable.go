@@ -54,7 +54,7 @@ type TeamMemoryEnableResult struct {
 //     materialization uses (SPEC-062 SS-B).
 //  4. Updates the in-process team-memory state so subsequent Save/Update
 //     calls in THIS process observe team-memory as active immediately,
-//     without needing a process restart to re-run detectTeamMemory.
+//     without needing a process restart to re-run DetectTeamMemory.
 //
 // It does NOT install the git hooks that import teammates' shared knowledge
 // — that is the CLI command's responsibility (it reuses the exact same
