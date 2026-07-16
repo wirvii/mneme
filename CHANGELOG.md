@@ -4,6 +4,30 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [v1.28.0] — 2026-07-16 — The layer-2/3 boundary: no lifecycle/capabilities in grill content + merge pre-existing dev agents (SPEC-090)
+
+### Added
+
+- **`mneme-init` now recognises and merges a dev's pre-existing agents (SPEC-090, Part B).**
+  When the grill runs, `subagent_fingerprint` reports `foreign_agents` (files in `.claude/agents/`
+  without mneme's `agent-fixed` block). The grill analyses their responsibilities, offers to unify
+  overlapping ones — **synthesising the dev's project knowledge into layer 2/3, never their
+  lifecycle/capabilities** — and offers to adopt non-overlapping ones as custom roles mapped to the
+  nearest archetype. A dev-authored file is backed up (`.bak-<timestamp>`) before it is overwritten.
+
+### Fixed
+
+- **The grill can no longer leak lifecycle or capability instructions into a subagent's layer-2/3
+  body (SPEC-090, Part A — closes the BL-110 live bug).** The invariant is now enforced, not just
+  documented: **layer 2/3 = what the agent knows about the project; layer 1 = who it is and what it
+  can do.** A mechanical guard in `subagent_compose`/`subagent_write` scans **only the grill region**
+  (never the whole file — layer 1 legitimately says "never call `spec_advance`") and rejects
+  `spec_advance`/`spec_quick`/`spec_reject` mentions and `tools:`/`permissionMode:` lines. A new
+  `subagents doctor` finding (`lifecycle_in_layer23`, CLI + MCP) surfaces already-materialised leaks
+  in existing repos. The mneme-init SKILL documents the rule, coupled to the detector's token list by
+  a test so the two cannot drift. Honest limit: the guard catches literal tokens, not paraphrased
+  doctrine — that is covered by the SKILL prose and grill discipline (documented in the code).
+
 ## [v1.27.2] — 2026-07-16 — Fix: subagent manifest paths leaking across machines via the vault (SPEC-089)
 
 ### Fixed
