@@ -112,6 +112,22 @@ func TestIsImplementer(t *testing.T) {
 	}
 }
 
+// TestDiagnosticianToolsExcludeWebNavigation pins SPEC-087 decision 3: five
+// roles (architect, qa-tester, backend, frontend, bug-hunter) gain
+// WebSearch/WebFetch, but the diagnostician's envelope is deliberately left
+// unchanged. Explicit negative assertion, not merely the absence of a
+// positive one — AC2.
+func TestDiagnosticianToolsExcludeWebNavigation(t *testing.T) {
+	perm := PermissionTable[RoleDiagnostician]
+	for _, tool := range []string{"WebSearch", "WebFetch"} {
+		for _, got := range perm.Tools {
+			if got == tool {
+				t.Errorf("diagnostician tools unexpectedly contain %q: %v", tool, perm.Tools)
+			}
+		}
+	}
+}
+
 func TestPermission_ToolsString(t *testing.T) {
 	p := Permission{Tools: []string{"Read", "Grep", "mcp__mneme__*"}}
 	want := "Read, Grep, mcp__mneme__*"

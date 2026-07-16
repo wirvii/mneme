@@ -44,20 +44,40 @@ func (p Permission) ToolsString() string {
 }
 
 // readOnlyTools is the allowlist shared by roles that only ever read code:
-// no Edit/Write/MultiEdit/NotebookEdit, no Bash.
+// no Edit/Write/MultiEdit/NotebookEdit, no Bash. SPEC-087 D2 adds
+// WebSearch/WebFetch (canonical order: web-navigation tools immediately
+// before mcp__mneme__*) so architect can research external references
+// without gaining any mutation capability.
 var readOnlyTools = []string{
-	"Read", "Grep", "Glob", "NotebookRead", "BashOutput", "mcp__mneme__*",
+	"Read", "Grep", "Glob", "NotebookRead", "BashOutput",
+	"WebSearch", "WebFetch", "mcp__mneme__*",
+}
+
+// qaTesterTools is qa-tester's own allowlist (SPEC-087 D2): readOnlyTools
+// plus Bash — mirroring diagnosticianTools' shape (Bash after BashOutput) —
+// so qa-tester can run its own gates (go test, lint, build) instead of
+// depending on the orchestrator to run them and paste back the output. No
+// Edit/Write/MultiEdit/NotebookEdit: qa-tester's entregables go through the
+// spec_doc_write MCP tool (SPEC-087 D3), never a file-edit tool.
+var qaTesterTools = []string{
+	"Read", "Grep", "Glob", "NotebookRead", "BashOutput", "Bash",
+	"WebSearch", "WebFetch", "mcp__mneme__*",
 }
 
 // implementerTools is the allowlist shared by roles that implement code:
-// full edit toolset plus Bash.
+// full edit toolset plus Bash. SPEC-087 D2 adds WebSearch/WebFetch (same
+// canonical placement as readOnlyTools/qaTesterTools) immediately before
+// mcp__mneme__*.
 var implementerTools = []string{
 	"Read", "Grep", "Glob", "NotebookRead", "NotebookEdit", "BashOutput",
-	"Edit", "Write", "MultiEdit", "Bash", "mcp__mneme__*",
+	"Edit", "Write", "MultiEdit", "Bash", "WebSearch", "WebFetch", "mcp__mneme__*",
 }
 
-// diagnosticianTools is readOnlyTools plus Bash (for reading logs/infra) but
-// without any edit tool — the diagnostician reads and triages, never mutates.
+// diagnosticianTools is readOnlyTools's pre-SPEC-087 shape plus Bash (for
+// reading logs/infra) but without any edit tool — the diagnostician reads
+// and triages, never mutates. SPEC-087 D2/decision-3 deliberately leaves
+// this envelope unchanged: the diagnostician does not gain web navigation
+// (see TestDiagnosticianToolsExcludeWebNavigation).
 var diagnosticianTools = []string{
 	"Read", "Grep", "Glob", "NotebookRead", "BashOutput", "Bash", "mcp__mneme__*",
 }
@@ -78,8 +98,15 @@ var PermissionTable = map[Role]Permission{
 		PermissionMode: "",
 	},
 	RoleQATester: {
-		Tools:          readOnlyTools,
-		PermissionMode: "",
+		Tools: qaTesterTools,
+		// SPEC-087 D2b: bypassPermissions so qa-tester's own gates
+		// (go test/lint/build via Bash) run unattended — without it, every
+		// Bash call opens a human permission prompt and the role still can't
+		// finish a review desatendido, which is the exact problem this spec
+		// fixes. qa-tester is still not an implementer: the capability
+		// barrier is the tools: allowlist above (no Edit/Write/MultiEdit/
+		// NotebookEdit), not this mode — see IsImplementer's doc comment.
+		PermissionMode: bypassPermissions,
 	},
 	RoleDiagnostician: {
 		Tools:          diagnosticianTools,

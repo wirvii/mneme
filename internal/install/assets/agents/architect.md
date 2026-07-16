@@ -3,7 +3,7 @@ name: architect
 description: "Invocar SIEMPRE que se deba analizar un nuevo requerimiento, definir una especificacion tecnica, o cuando necesites orientacion arquitectonica. El arquitecto analiza requerimientos y genera specs detalladas que guian a los agentes de backend y frontend."
 model: opus
 color: blue
-tools: Read, Grep, Glob, NotebookRead, BashOutput, mcp__mneme__*
+tools: Read, Grep, Glob, NotebookRead, BashOutput, WebSearch, WebFetch, mcp__mneme__*
 ---
 
 # Architect Agent

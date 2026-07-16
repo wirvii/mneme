@@ -1227,12 +1227,19 @@ func TestDelegationHookContent_LogsBlockedAttempts(t *testing.T) {
 	}
 }
 
-// TestAgentAssets_ReadOnlyAllowlists verifies that architect and qa-tester have
-// the correct read-only tools allowlist and do not include edit tools or
-// permissionMode: bypassPermissions.
+// TestAgentAssets_ReadOnlyAllowlists verifies that architect and qa-tester
+// never carry an edit tool (Edit/Write/MultiEdit), regardless of the rest of
+// their allowlist. architect additionally carries no permissionMode at all
+// (a pure read-only role); qa-tester carries permissionMode: bypassPermissions
+// plus Bash since SPEC-087 D2/D2b — Bash lets it run its own gates
+// unattended, bypassPermissions removes the per-call prompt that would
+// otherwise block that, and the capability barrier stays the tools:
+// allowlist (no edit tool) rather than this mode. See
+// internal/subagents.TestPermissionTable_MatchesAgentAssets for the
+// byte-for-byte pin against subagents.PermissionTable.
 func TestAgentAssets_ReadOnlyAllowlists(t *testing.T) {
-	readOnlyAgents := []string{"architect.md", "qa-tester.md"}
-	wantTools := "tools: Read, Grep, Glob, NotebookRead, BashOutput, mcp__mneme__*"
+	wantArchitectTools := "tools: Read, Grep, Glob, NotebookRead, BashOutput, WebSearch, WebFetch, mcp__mneme__*"
+	wantQATesterTools := "tools: Read, Grep, Glob, NotebookRead, BashOutput, Bash, WebSearch, WebFetch, mcp__mneme__*"
 	editTools := []string{"Edit", "Write", "MultiEdit"}
 
 	destDir := t.TempDir()
@@ -1241,27 +1248,38 @@ func TestAgentAssets_ReadOnlyAllowlists(t *testing.T) {
 		t.Fatalf("filesFromEmbed returned error: %v", err)
 	}
 
-	for _, name := range readOnlyAgents {
+	tests := []struct {
+		name            string
+		wantTools       string
+		wantBypassPerms bool
+	}{
+		{"architect.md", wantArchitectTools, false},
+		{"qa-tester.md", wantQATesterTools, true},
+	}
+
+	for _, tt := range tests {
 		var found bool
 		for _, f := range files {
-			if filepath.Base(f.Path) != name {
+			if filepath.Base(f.Path) != tt.name {
 				continue
 			}
 			found = true
 			text := string(f.Content)
 
-			if !strings.Contains(text, wantTools) {
-				t.Errorf("%s: missing expected tools line %q", name, wantTools)
+			if !strings.Contains(text, tt.wantTools) {
+				t.Errorf("%s: missing expected tools line %q", tt.name, tt.wantTools)
 			}
-			if strings.Contains(text, "permissionMode: bypassPermissions") {
-				t.Errorf("%s: must not contain permissionMode: bypassPermissions", name)
+			hasBypass := strings.Contains(text, "permissionMode: bypassPermissions")
+			if hasBypass != tt.wantBypassPerms {
+				t.Errorf("%s: permissionMode: bypassPermissions present=%v, want %v", tt.name, hasBypass, tt.wantBypassPerms)
 			}
-			// The tools: line must not include edit tools. Extract just the tools line.
+			// The tools: line must never include an edit tool, regardless of
+			// permissionMode — that is the actual capability barrier.
 			for _, line := range strings.Split(text, "\n") {
 				if strings.HasPrefix(strings.TrimSpace(line), "tools:") {
 					for _, editTool := range editTools {
 						if strings.Contains(line, editTool) {
-							t.Errorf("%s: tools: line must not contain %q, got %q", name, editTool, line)
+							t.Errorf("%s: tools: line must not contain %q, got %q", tt.name, editTool, line)
 						}
 					}
 					break
@@ -1269,7 +1287,7 @@ func TestAgentAssets_ReadOnlyAllowlists(t *testing.T) {
 			}
 		}
 		if !found {
-			t.Errorf("agent file not found in embed: %s", name)
+			t.Errorf("agent file not found in embed: %s", tt.name)
 		}
 	}
 }

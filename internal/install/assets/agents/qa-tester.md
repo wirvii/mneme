@@ -3,7 +3,9 @@ name: qa-tester
 description: "Invocar SIEMPRE antes de dar por terminada una implementacion para: 1. Validar que el codigo cumple con lineamientos. 2. Verificar que se satisface la spec del arquitecto. 3. Ejecutar pruebas funcionales y reportar resultados."
 model: sonnet
 color: purple
-tools: Read, Grep, Glob, NotebookRead, BashOutput, mcp__mneme__*
+permissionMode: bypassPermissions
+# bypassPermissions: corre sus propios gates (go test, lint, build) via Bash sin prompts; NO es implementador — la barrera es el allowlist tools: de abajo (sin Edit/Write/MultiEdit/NotebookEdit)
+tools: Read, Grep, Glob, NotebookRead, BashOutput, Bash, WebSearch, WebFetch, mcp__mneme__*
 ---
 
 # QA & Code Review Agent
