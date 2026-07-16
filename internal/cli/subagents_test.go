@@ -14,8 +14,35 @@ import (
 // runSubagentsCmd executes "mneme subagents <argv...>" against an isolated
 // --data-dir/--project so tests never touch the real ~/.mneme instance, and
 // returns stdout/stderr separately.
+//
+// It also chdirs into an isolated, non-git temp directory for the duration
+// of the call (restored via t.Cleanup) — same pattern as
+// runTeamMemoryEnableCmd/runTeamMemoryHooksCmd. Without this, --data-dir only
+// isolates the DB path; it does nothing for team-memory auto-detection
+// (service.DetectTeamMemory, wired in by initService via WithTeamMemory),
+// which resolves relative to the REAL process cwd via `git rev-parse
+// --show-toplevel`. When `go test` runs from inside this repository — the
+// normal case — that resolves to this very dogfooded checkout with an active
+// shared vault marker, and every Save a subagents subcommand triggers
+// (profile save, write) would materialize a test fixture straight into the
+// developer's real .mneme/shared/notes/ (SPEC-085).
 func runSubagentsCmd(t *testing.T, dataDir, project string, argv ...string) (stdout, stderr string, err error) {
 	t.Helper()
+
+	isolatedCwd := t.TempDir()
+	orig, wdErr := os.Getwd()
+	if wdErr != nil {
+		t.Fatalf("getwd: %v", wdErr)
+	}
+	if chErr := os.Chdir(isolatedCwd); chErr != nil {
+		t.Fatalf("chdir into isolated cwd: %v", chErr)
+	}
+	t.Cleanup(func() {
+		if restoreErr := os.Chdir(orig); restoreErr != nil {
+			t.Fatalf("restore cwd: %v", restoreErr)
+		}
+	})
+
 	root := NewRootCmd()
 	outBuf := new(bytes.Buffer)
 	errBuf := new(bytes.Buffer)
