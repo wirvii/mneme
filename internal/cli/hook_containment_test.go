@@ -364,6 +364,22 @@ func TestEvaluateDelegation_AC9_LegacyManifestNeverBlocksSubagent_AnyMode(t *tes
 	}
 }
 
+// TestEvaluateSubagentContainment_EmptyAreasComplete_OnlyWhitelistSurvives
+// documents the emergent property SPEC-086 §6 calls out for BL-100: a role
+// with `areas: []` and `areas_complete: true` writes ONLY to the static
+// whitelist — every non-whitelisted candidate falls outside its (empty) own
+// areas and is contained. This needs no new envelope: it falls out of the
+// existing decision table for free.
+func TestEvaluateSubagentContainment_EmptyAreasComplete_OnlyWhitelistSurvives(t *testing.T) {
+	identity := containmentIdentity("qa-tester", "payload")
+	entries := []hookManifestEntry{{Role: "qa-tester", Archetype: "bug-hunter", Areas: []string{}, AreasComplete: true}}
+
+	got := evaluateSubagentContainment(identity, "internal/foo.go", entries, "block")
+	if !got.Block {
+		t.Errorf("Block = false, want true — an empty, certified-complete area list must contain every non-whitelisted path")
+	}
+}
+
 // writeContainmentConfig writes a minimal ~/.mneme/config.toml setting
 // [delegation] subagent_containment = mode, under the HOME setupDelegationRepo
 // already isolated via t.Setenv.
