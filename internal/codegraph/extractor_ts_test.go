@@ -135,8 +135,11 @@ func TestTSExtractor_ExtractsClass(t *testing.T) {
 	}
 
 	classes := filterNodes(result.Nodes, NodeKindClass)
-	if len(classes) != 1 || classes[0].Name != "UserService" {
-		t.Errorf("classes = %v, want [UserService]", nodeNames(classes))
+	if len(classes) != 1 {
+		t.Fatalf("got %d classes, want 1; names: %v", len(classes), nodeNames(classes))
+	}
+	if classes[0].Name != "UserService" {
+		t.Errorf("classes[0].Name = %q, want %q", classes[0].Name, "UserService")
 	}
 	if !classes[0].IsExported {
 		t.Error("UserService should be exported")
