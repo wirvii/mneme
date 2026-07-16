@@ -34,8 +34,28 @@ jobs:
       - name: Build
         run: go build ./...
 
+      # SPEC-088 D1: the runner image's globally pre-installed `typescript`
+      # is unpinned and drifts with the image (this is what shipped v1.27.0
+      # with a silently-broken TS/JS extractor). Install an exact version
+      # explicitly — same npm, same prefix, same `npm root -g` that
+      # extractor_ts.go:74 resolves — so this install wins over whatever the
+      # image baked in. Pin the runner image instead ("runs-on:
+      # ubuntu-24.04") was considered and rejected: the image still drifts
+      # within the tag, and it gives false confidence without fixing
+      # anything an explicit install doesn't already fix.
+      - name: Pin typescript
+        run: npm install -g typescript@6.0.3
+
+      # MNEME_TEST_REQUIRE_TS=1 (SPEC-088 D7) turns an unavailable Node.js or
+      # typescript toolchain into a hard test failure instead of a silent
+      # t.Skip. With the pin above this should never fire in CI — its whole
+      # purpose is to make the pin's own breakage loud instead of invisible
+      # (the failure mode that let typescript@7 reach main undetected: every
+      # TS test quietly skipped, CI stayed green).
       - name: Test
         run: go test ./...
+        env:
+          MNEME_TEST_REQUIRE_TS: "1"
 
       - name: Lint
         run: |
