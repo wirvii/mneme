@@ -251,6 +251,67 @@ func TestSave_TeamMemoryActive_GlobalScopeNeverMaterializes(t *testing.T) {
 	}
 }
 
+// TestSave_TeamMemoryActive_SubagentManifestNeverMaterializes is SPEC-089
+// Part 3's guardian 4 (D4/AC8). Deliberately HETEROGENEOUS: a subagent
+// manifest AND a ProjectProfile — two DIFFERENT topic_keys, both type=config
+// vs type=architecture — saved in the SAME test, so deleting the topic_key
+// guard in bakeSharedDefault cannot slip through unnoticed the way a
+// homogeneous fixture (every case using the manifest) would. This is
+// literally case 2 of the guardian antipattern QA caught in SPEC-085 (mem
+// 019f686b): "the test doesn't vary the input that discriminates." Here it
+// does — one assertion demands Shared=0, the other Shared=1, on the SAME
+// mechanism (bakeTeamMemoryFields/bakeSharedDefault).
+//
+// The manifest goes through the real production entry point
+// (SubagentService.SaveManifest, exactly what "subagents write"/"regen"
+// call) — Shared=0, never materialized to the vault. The ProjectProfile is
+// the CONTROL: an ordinary type=architecture project memory must still
+// auto-share (Shared=1, materialized) — share-by-default is not broken in
+// general by this exclusion.
+func TestSave_TeamMemoryActive_SubagentManifestNeverMaterializes(t *testing.T) {
+	svc, repoDir := newRepoTestService(t, true)
+	ctx := context.Background()
+	subSvc := service.NewSubagentService(svc)
+
+	manifestResp, err := subSvc.SaveManifest(ctx, "", []service.ManifestEntry{
+		{Role: "backend", Path: ".claude/agents/backend.md", Version: 1},
+	})
+	if err != nil {
+		t.Fatalf("SaveManifest: unexpected error: %v", err)
+	}
+	profileResp, err := subSvc.SaveProfile(ctx, "", service.ProjectProfile{
+		SchemaVersion: 1,
+		Org:           "wirvii",
+	})
+	if err != nil {
+		t.Fatalf("SaveProfile: unexpected error: %v", err)
+	}
+
+	manifestMem, err := svc.Get(ctx, manifestResp.ID)
+	if err != nil {
+		t.Fatalf("Get manifest: %v", err)
+	}
+	if manifestMem.Shared != 0 {
+		t.Errorf("manifest Shared = %d, want 0 (SPEC-089 D4 — the manifest never auto-shares)", manifestMem.Shared)
+	}
+	manifestVaultPath := sharedVaultFile(repoDir, manifestResp.ID)
+	if _, statErr := os.Stat(manifestVaultPath); !os.IsNotExist(statErr) {
+		t.Errorf("manifest must never materialize to the shared vault, found %s", manifestVaultPath)
+	}
+
+	profileMem, err := svc.Get(ctx, profileResp.ID)
+	if err != nil {
+		t.Fatalf("Get profile: %v", err)
+	}
+	if profileMem.Shared != 1 {
+		t.Errorf("CONTROL: ProjectProfile Shared = %d, want 1 — share-by-default must not be broken in general", profileMem.Shared)
+	}
+	profileVaultPath := sharedVaultFile(repoDir, profileResp.ID)
+	if _, statErr := os.Stat(profileVaultPath); statErr != nil {
+		t.Errorf("CONTROL: ProjectProfile must materialize to the shared vault: %v", statErr)
+	}
+}
+
 func TestSave_TeamMemoryActive_ExplicitSharedOverride(t *testing.T) {
 	svc, repoDir := newRepoTestService(t, true)
 	ctx := context.Background()

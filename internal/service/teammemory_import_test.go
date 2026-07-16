@@ -311,6 +311,102 @@ func TestImportFromShared_SkipsWhenDBNewer(t *testing.T) {
 	}
 }
 
+// TestImportFromShared_SkipsSubagentManifestNote_LocalManifestSurvives is
+// SPEC-089 Part 3's AC9, exercised against the ACTUAL production entry point
+// a corrupted manifest arrives through: the post-merge/post-checkout git
+// hook ("mneme team-memory hooks run-import") calls ImportFromShared, not
+// VaultImport — patching only vault_import.go's importNote would leave the
+// real incident (novo's manifest clobbered after a plain "git pull")
+// unfixed.
+//
+// Reproduces the exact clobber mechanism: the foreign note reuses the LOCAL
+// manifest's own id (the realistic shape once two peers' manifests have
+// already converged on one id via an earlier import — TestImportFromShared_
+// CreatesAndPreservesSharedAuthor above shows ImportFromShared always
+// preserves the frontmatter id) with a NEWER timestamp and DIVERGENT
+// content. Without the topic_key skip, importSharedNote's existing!=nil
+// branch would call svc.Update and clobber the local manifest in place.
+func TestImportFromShared_SkipsSubagentManifestNote_LocalManifestSurvives(t *testing.T) {
+	svc, repoDir := newRepoTestService(t, true)
+	ctx := context.Background()
+
+	subSvc := service.NewSubagentService(svc)
+	localResp, err := subSvc.SaveManifest(ctx, "test/project", []service.ManifestEntry{
+		{Role: "backend", Path: ".claude/agents/backend.md", Version: 2},
+	})
+	if err != nil {
+		t.Fatalf("SaveManifest: %v", err)
+	}
+	before, err := svc.Get(ctx, localResp.ID)
+	if err != nil {
+		t.Fatalf("Get local manifest: %v", err)
+	}
+
+	notesDir := filepath.Join(repoDir, ".mneme", "shared", "notes")
+	foreignContent := `[{"role":"bug-hunter","path":"/Users/other/chateaprov3/.claude/agents/bug-hunter.md","version":1}]`
+	writeManifestSharedNote(t, notesDir, localResp.ID, foreignContent, before.UpdatedAt.Add(1*time.Hour))
+
+	result, err := svc.ImportFromShared(ctx, repoDir)
+	if err != nil {
+		t.Fatalf("ImportFromShared: %v", err)
+	}
+	if result.Skipped != 1 {
+		t.Errorf("Skipped = %d, want 1 — the manifest note must always be skipped", result.Skipped)
+	}
+	if result.Created != 0 || result.Updated != 0 {
+		t.Errorf("Created=%d Updated=%d, want both 0 — the manifest note must never be persisted", result.Created, result.Updated)
+	}
+
+	after, err := svc.Get(ctx, localResp.ID)
+	if err != nil {
+		t.Fatalf("Get local manifest after import: %v", err)
+	}
+	if after.Content != before.Content {
+		t.Errorf("local manifest was clobbered by the foreign note:\nbefore: %s\nafter:  %s", before.Content, after.Content)
+	}
+	if strings.Contains(after.Content, "bug-hunter") || strings.Contains(after.Content, "chateaprov3") {
+		t.Errorf("local manifest content shows foreign contamination: %s", after.Content)
+	}
+}
+
+// writeManifestSharedNote writes a minimal, valid team-memory vault note
+// shaped like a materialized subagent manifest (type=config, topic_key
+// subagents/manifest) at <notesDir>/<id>.md — writeSharedNote (above)
+// hardcodes type=decision, so this is a dedicated variant for the one
+// SPEC-089 fixture that needs a different type.
+func writeManifestSharedNote(t *testing.T, notesDir, id, content string, updatedAt time.Time) string {
+	t.Helper()
+	if err := os.MkdirAll(notesDir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", notesDir, err)
+	}
+
+	var sb strings.Builder
+	sb.WriteString("---\n")
+	fmt.Fprintf(&sb, "id: %s\n", id)
+	sb.WriteString("type: config\n")
+	sb.WriteString("scope: project\n")
+	sb.WriteString("title: \"Subagent manifest\"\n")
+	sb.WriteString("topic_key: subagents/manifest\n")
+	sb.WriteString("project: test/project\n")
+	sb.WriteString("importance: 0.90\n")
+	sb.WriteString("confidence: 0.80\n")
+	sb.WriteString("decay_rate: 0.005\n")
+	sb.WriteString("created_at: 2026-01-01T00:00:00Z\n")
+	fmt.Fprintf(&sb, "updated_at: %s\n", updatedAt.UTC().Format(time.RFC3339Nano))
+	sb.WriteString("revision_count: 0\n")
+	sb.WriteString("shared: 1\n")
+	sb.WriteString("author: Foreign Peer <foreign@example.com>\n")
+	sb.WriteString("---\n\n")
+	sb.WriteString(content)
+	sb.WriteString("\n")
+
+	path := filepath.Join(notesDir, id+".md")
+	if err := os.WriteFile(path, []byte(sb.String()), 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+	return path
+}
+
 // TestImportFromShared_ReportsConflictCandidates verifies SPEC-053 D6: after
 // importing a memory whose title/content shares salient terms with an
 // existing local memory, ImportFromShared reports a non-zero

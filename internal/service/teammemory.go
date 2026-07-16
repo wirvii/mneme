@@ -128,15 +128,24 @@ func materializeSuppressed(ctx context.Context) bool {
 }
 
 // bakeSharedDefault computes the auto-share default (SPEC-053 D2, policy
-// inverted to share-by-default by SPEC-071) for a memory of the given type
-// and scope, used when the caller does not explicitly set
+// inverted to share-by-default by SPEC-071) for a memory of the given type,
+// scope, and topic_key, used when the caller does not explicitly set
 // SaveRequest.Shared. Global- and org-scoped memories (personal preferences,
 // cross-project config) are never auto-shared regardless of type —
 // team-memory only concerns project knowledge. Within project scope, every
 // type shares by default except the two excluded by autoSharedType
-// (synthesis, session_summary).
-func bakeSharedDefault(t model.MemoryType, scope model.Scope) int {
+// (synthesis, session_summary), AND the subagent manifest (SPEC-089 D4):
+// excluded by topic_key, not by type — type=config still auto-shares for
+// every OTHER config memory. The manifest is a registry of THIS machine's
+// materialization (paths, checksums, generated_at) — sharing it let a
+// teammate's manifest clobber the local one via the vault (SPEC-089's
+// novo -> chateaprov3 and ventasWpDropi incidents). The portable app->role
+// mapping already has its own channel: ProjectProfileTopicKey.
+func bakeSharedDefault(t model.MemoryType, scope model.Scope, topicKey string) int {
 	if scope == model.ScopeGlobal || scope == model.ScopeOrg {
+		return 0
+	}
+	if topicKey == SubagentManifestTopicKey {
 		return 0
 	}
 	if autoSharedType(t) {
@@ -162,7 +171,7 @@ func (svc *MemoryService) bakeTeamMemoryFields(m *model.Memory, reqShared *int) 
 	if reqShared != nil {
 		m.Shared = *reqShared
 	} else {
-		m.Shared = bakeSharedDefault(m.Type, m.Scope)
+		m.Shared = bakeSharedDefault(m.Type, m.Scope, m.TopicKey)
 	}
 
 	if m.Shared > 0 && m.Author == "" {

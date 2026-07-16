@@ -149,6 +149,22 @@ func (svc *MemoryService) importNote(ctx context.Context, note *vault.ParsedNote
 	fm := note.FM
 	relPath := relativeToVaultRoot(note.Path, opts.InputDir) // used only for logging below
 
+	// SPEC-089 Part 3 (D4/AC9): the subagent manifest is a registry of THIS
+	// machine's materialization (paths, checksums, generated_at) — it must
+	// never be imported from a peer's vault, regardless of strategy or
+	// whether it already exists locally. Unconditional and first: importing
+	// it (even under "merge" when the file happens to be newer) is exactly
+	// the clobber SPEC-089 exists to close (novo's manifest overwritten with
+	// a teammate's paths). The local manifest, if any, survives untouched.
+	if fm.TopicKey == SubagentManifestTopicKey {
+		slog.InfoContext(ctx, "vault import",
+			"event", "skipped",
+			"file", relPath,
+			"reason", "subagent_manifest_never_imported",
+		)
+		return "skipped", nil
+	}
+
 	// Case 1: the file carries a valid UUID id.
 	if vault.IsValidUUID(fm.ID) {
 		existing, _, err := svc.getFromEitherStore(ctx, fm.ID)

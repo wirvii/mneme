@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -327,6 +328,83 @@ Updated content via topic_key upsert.
 	}
 }
 
+// TestVaultImport_SkipsSubagentManifestNote_LocalManifestSurvives is SPEC-089
+// Part 3's AC9: a vault note whose topic_key is subagents/manifest must be
+// skipped unconditionally, and the LOCAL manifest must survive untouched —
+// reproducing the exact clobber mechanism TestVaultImport_NewFileWithTopicKey
+// (above) demonstrates for an ordinary topic_key: a no-id vault file with a
+// matching topic_key triggers service.Save's topic_key-based upsert, which
+// would otherwise silently overwrite the local manifest's Role/Path with a
+// teammate's (the novo -> chateaprov3 incident this spec exists to close).
+func TestVaultImport_SkipsSubagentManifestNote_LocalManifestSurvives(t *testing.T) {
+	svc, tmp := newTestServiceWithDataDir(t)
+	ctx := context.Background()
+
+	// The LOCAL manifest, saved via the real production entry point.
+	subSvc := service.NewSubagentService(svc)
+	localResp, err := subSvc.SaveManifest(ctx, "test/project", []service.ManifestEntry{
+		{Role: "backend", Path: ".claude/agents/backend.md", Version: 2},
+	})
+	if err != nil {
+		t.Fatalf("SaveManifest: %v", err)
+	}
+
+	// A FOREIGN manifest note, no id, same topic_key — exactly the shape a
+	// teammate's vault export would carry (SPEC-089's ventasWpDropi/novo
+	// incidents), with divergent content (a different role/path) so a
+	// clobber would be immediately observable.
+	vaultRoot := filepath.Join(tmp, "vaults", "test-project")
+	writeMarker(t, vaultRoot, "test/project", "project")
+	notesDir := filepath.Join(vaultRoot, "notes", "subagents")
+
+	foreignManifest := `---
+type: config
+scope: project
+title: "Subagent manifest"
+topic_key: subagents/manifest
+project: test/project
+importance: 0.90
+confidence: 0.80
+decay_rate: 0.005
+created_at: 2026-01-01T00:00:00Z
+updated_at: 2026-01-01T00:00:00Z
+revision_count: 0
+---
+
+[{"role":"bug-hunter","path":"/Users/other/chateaprov3/.claude/agents/bug-hunter.md","version":1}]
+`
+	if err := os.MkdirAll(notesDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(notesDir, "manifest.md"), []byte(foreignManifest), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	result, err := svc.VaultImport(ctx, service.VaultImportOptions{
+		Scope:    "project",
+		InputDir: vaultRoot,
+		Strategy: "merge",
+	})
+	if err != nil {
+		t.Fatalf("VaultImport: %v", err)
+	}
+	if result.Skipped != 1 {
+		t.Errorf("Skipped = %d, want 1 — the manifest note must always be skipped", result.Skipped)
+	}
+	if result.Created != 0 || result.Updated != 0 {
+		t.Errorf("Created=%d Updated=%d, want both 0 — the manifest note must never be persisted", result.Created, result.Updated)
+	}
+
+	// The local manifest must survive completely untouched.
+	survived, err := svc.Get(ctx, localResp.ID)
+	if err != nil {
+		t.Fatalf("Get local manifest: %v", err)
+	}
+	if !strings.Contains(survived.Content, `"role": "backend"`) || strings.Contains(survived.Content, "bug-hunter") {
+		t.Errorf("local manifest was clobbered by the foreign note, content: %s", survived.Content)
+	}
+}
+
 func TestVaultImport_ParseError(t *testing.T) {
 	svc, tmp := newTestServiceWithDataDir(t)
 	ctx := context.Background()
@@ -548,4 +626,3 @@ func containsString(s, sub string) bool {
 			return false
 		}())
 }
-

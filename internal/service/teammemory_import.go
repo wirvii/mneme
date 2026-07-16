@@ -170,6 +170,22 @@ func (svc *MemoryService) ImportFromShared(ctx context.Context, repoRoot string)
 func (svc *MemoryService) importSharedNote(ctx context.Context, note *vault.ParsedNote) (id, action string, err error) {
 	fm := note.FM
 
+	// SPEC-089 Part 3 (D4/AC9): this is the actual production entry point a
+	// teammate's corrupted manifest arrives through — the post-merge/
+	// post-checkout git hook ("mneme team-memory hooks run-import") calls
+	// ImportFromShared, not VaultImport. Skipping only VaultImport's
+	// importNote would leave the real incident (novo's manifest clobbered by
+	// a teammate's after a plain "git pull") unfixed. Unconditional, same as
+	// importNote: the local manifest, if any, always survives.
+	if fm.TopicKey == SubagentManifestTopicKey {
+		slog.InfoContext(ctx, "team_memory_import",
+			"event", "skipped",
+			"file", note.Path,
+			"reason", "subagent_manifest_never_imported",
+		)
+		return fm.ID, "skipped", nil
+	}
+
 	if !vault.IsValidUUID(fm.ID) {
 		return "", "", fmt.Errorf("note %q has no valid id, skipping", note.Path)
 	}
