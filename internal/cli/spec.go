@@ -416,8 +416,9 @@ they must be resolved one at a time.`,
 }
 
 // newSpecRejectCmd returns the "mneme spec reject" subcommand.
-// It sends a spec backward from qa (standard) or audit (trivial) to implementing,
-// recording the reason in spec_history. Both --reason and --by are required.
+// It sends a spec backward from qa (standard), audit (trivial), or done
+// (either lane, SPEC-087 D6) to implementing, recording the reason in
+// spec_history. Both --reason and --by are required.
 func newSpecRejectCmd() *cobra.Command {
 	var (
 		flagReason string
@@ -426,15 +427,16 @@ func newSpecRejectCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "reject <id>",
-		Short: "Reject a spec from qa/audit back to implementing",
-		Long: `Reject a spec from QA review back to implementing.
+		Short: "Reject a spec from qa/audit/done back to implementing",
+		Long: `Reject a spec from review back to implementing.
 
-Standard lane: qa → implementing.
-Trivial lane:  audit → implementing.
+Standard lane: qa → implementing, or done → implementing.
+Trivial lane:  audit → implementing, or done → implementing.
 
 The rejection reason is required and is persisted in spec_history. Use this
-command to model a QA review that found defects requiring further implementation
-work. For ambiguity or missing spec detail use "spec pushback" instead.`,
+command to model a review that found defects requiring further implementation
+work — during the normal gate, or after the fact once a spec already reached
+done. For ambiguity or missing spec detail use "spec pushback" instead.`,
 		Example: `  mneme spec reject SPEC-012 --reason "edge case in payment flow" --by qa-agent`,
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {

@@ -268,7 +268,12 @@ const (
 	// SpecStatusQA indicates the implementation is under quality assurance review.
 	SpecStatusQA SpecStatus = "qa"
 
-	// SpecStatusDone is the terminal state: the spec is fully delivered.
+	// SpecStatusDone is terminal by default — but, since SPEC-087 D6,
+	// reversible: an explicit, reasoned spec_reject (never spec_advance,
+	// which stays a one-way forward-only operation — see
+	// nextForwardStatusForLane, which has no "done" key and so keeps
+	// rejecting an advance attempt from done) sends it back to
+	// implementing when a review after the fact uncovers a defect.
 	SpecStatusDone SpecStatus = "done"
 
 	// SpecStatusRationale is the trivial-lane equivalent of speccing.
@@ -302,7 +307,12 @@ func (s SpecStatus) Valid() bool {
 }
 
 // IsFinal reports whether this status represents a terminal state.
-// Terminal specs cannot be advanced further.
+// Terminal specs cannot be advanced further via spec_advance (see
+// nextForwardStatusForLane) — the state machine has no forward move out of
+// done. Since SPEC-087 D6 this is "terminal by default", not absolute:
+// spec_reject can still send a done spec back to implementing when a
+// post-hoc review finds a defect. That is a deliberate, reasoned exception
+// distinct from spec_advance, which remains permanently rejected from done.
 func (s SpecStatus) IsFinal() bool {
 	return s == SpecStatusDone
 }
@@ -346,6 +356,13 @@ var validTransitionsStandard = map[SpecStatus]map[SpecStatus]struct{}{
 		SpecStatusImplementing: {},
 		SpecStatusNeedsGrill:   {},
 	},
+	// SPEC-087 D6: spec_reject can send a done spec back to implementing —
+	// the only way out of done. spec_advance stays impossible from done:
+	// nextForwardStatusForLane has no "done" key, so SpecAdvance still fails
+	// with ErrInvalidTransition before CanTransitionTo is ever consulted.
+	SpecStatusDone: {
+		SpecStatusImplementing: {},
+	},
 }
 
 // validTransitionsTrivial defines the state machine for trivial-lane specs.
@@ -368,6 +385,11 @@ var validTransitionsTrivial = map[SpecStatus]map[SpecStatus]struct{}{
 	},
 	SpecStatusNeedsGrill: {
 		SpecStatusRationale: {},
+	},
+	// SPEC-087 D6: mirrors the standard-lane row above — spec_reject can
+	// send a trivial spec back to implementing from done too.
+	SpecStatusDone: {
+		SpecStatusImplementing: {},
 	},
 }
 
@@ -548,12 +570,14 @@ type LaneOverrideRequest struct {
 	By string `json:"by"`
 }
 
-// SpecRejectRequest sends a spec backward from QA/audit to implementing,
-// recording a rejection reason. This is the canonical way to model a QA
-// review that uncovers defects requiring further implementation work.
+// SpecRejectRequest sends a spec backward to implementing, recording a
+// rejection reason. This is the canonical way to model a review that
+// uncovers defects requiring further implementation work — whether caught
+// during the normal review gate or after the fact, once a spec already
+// reached done (SPEC-087 D6).
 //
-// Standard lane: qa → implementing.
-// Trivial lane:  audit → implementing.
+// Standard lane: qa → implementing, or done → implementing.
+// Trivial lane:  audit → implementing, or done → implementing.
 //
 // Distinct from SpecPushback (which models ambiguity → needs_grill).
 type SpecRejectRequest struct {

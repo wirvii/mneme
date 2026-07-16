@@ -1149,8 +1149,9 @@ func (h *handlers) handleLaneStatus(ctx context.Context, raw json.RawMessage) (*
 }
 
 // handleSpecReject processes a spec_reject tool call. It rejects a spec from
-// qa (standard) or audit (trivial) back to implementing. Uses the standard
-// mapServiceError path — no special IsError-with-payload pattern.
+// qa (standard), audit (trivial), or done (either lane, SPEC-087 D6) back to
+// implementing. Uses the standard mapServiceError path — no special
+// IsError-with-payload pattern.
 func (h *handlers) handleSpecReject(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
 	if h.sdd == nil {
 		return nil, h.sddUnavailable("spec_reject")

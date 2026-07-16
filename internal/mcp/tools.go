@@ -749,7 +749,7 @@ func allTools() []ToolDefinition {
 		},
 		{
 			Name:        "spec_reject",
-			Description: "Reject a spec from qa (standard lane) or audit (trivial lane) back to implementing. Records the rejection reason in history. Distinct from spec_pushback which models ambiguity → needs_grill.",
+			Description: "Reject a spec from qa (standard lane), audit (trivial lane), or done (either lane, SPEC-087 D6) back to implementing. Records the rejection reason in history. Distinct from spec_pushback which models ambiguity → needs_grill.",
 			InputSchema: map[string]any{
 				"type":     "object",
 				"required": []string{"id", "reason", "by"},

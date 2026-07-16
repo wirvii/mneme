@@ -487,16 +487,18 @@ func (svc *SDDService) SpecPushback(ctx context.Context, req model.SpecPushbackR
 	return updated, nil
 }
 
-// SpecReject sends a spec backward from qa (standard) or audit (trivial) to
-// implementing, recording the rejection reason in spec_history. This models
-// a QA review that uncovers defects requiring further implementation work.
+// SpecReject sends a spec backward to implementing, recording the rejection
+// reason in spec_history. This models a review that uncovers defects
+// requiring further implementation work — during the normal gate (qa/audit)
+// or, since SPEC-087 D6, after the fact once a spec already reached done.
 //
-// Standard lane: qa → implementing.
-// Trivial lane:  audit → implementing.
+// Standard lane: qa → implementing, or done → implementing.
+// Trivial lane:  audit → implementing, or done → implementing.
 //
 // Distinct from SpecPushback, which models ambiguity → needs_grill.
 // Returns ErrReasonRequired when req.Reason is empty.
-// Returns ErrInvalidTransition when the spec is not in the expected review state.
+// Returns ErrInvalidTransition when the spec is not in a state SpecReject
+// can move to implementing from.
 func (svc *SDDService) SpecReject(ctx context.Context, req model.SpecRejectRequest) (*model.Spec, error) {
 	if req.Reason == "" {
 		return nil, model.ErrReasonRequired

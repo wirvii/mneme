@@ -11,6 +11,7 @@ import (
 
 	"github.com/wirvii/mneme/internal/config"
 	"github.com/wirvii/mneme/internal/db"
+	"github.com/wirvii/mneme/internal/embed"
 	"github.com/wirvii/mneme/internal/model"
 	"github.com/wirvii/mneme/internal/store"
 )
@@ -1078,6 +1079,242 @@ func TestSpecReject_InvalidStatusReturnsError(t *testing.T) {
 	})
 	if !errors.Is(err, model.ErrInvalidTransition) {
 		t.Errorf("expected ErrInvalidTransition, got %v", err)
+	}
+}
+
+// --- SPEC-087 D6: spec_reject from done ---
+
+// TestSpecReject_StandardDoneToImplementing verifies AC7: a standard-lane
+// spec in done status can be rejected back to implementing, with the reason
+// recorded in spec_history.
+//
+// Mutation guard (manually verified): removing the SpecStatusDone row from
+// validTransitionsStandard turns this test red (ErrInvalidTransition).
+func TestSpecReject_StandardDoneToImplementing(t *testing.T) {
+	svc := newTestSDDService(t, "project")
+	ctx := context.Background()
+
+	spec, err := svc.SpecNew(ctx, model.SpecNewRequest{Title: "Standard done reject", Lane: model.LaneStandard})
+	if err != nil {
+		t.Fatalf("SpecNew: %v", err)
+	}
+	for _, by := range []string{"orch", "arch", "arch", "arch", "backend", "backend", "qa"} {
+		spec, err = svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: by})
+		if err != nil {
+			t.Fatalf("SpecAdvance (status=%s): %v", spec.Status, err)
+		}
+	}
+	if spec.Status != model.SpecStatusDone {
+		t.Fatalf("expected done status before reject, got %s", spec.Status)
+	}
+
+	rejected, err := svc.SpecReject(ctx, model.SpecRejectRequest{
+		ID:     spec.ID,
+		Reason: "post-hoc review found a regression",
+		By:     "qa-agent",
+	})
+	if err != nil {
+		t.Fatalf("SpecReject from done: %v", err)
+	}
+	if rejected.Status != model.SpecStatusImplementing {
+		t.Errorf("expected implementing, got %s", rejected.Status)
+	}
+
+	history, err := svc.SpecHistory(ctx, spec.ID)
+	if err != nil {
+		t.Fatalf("SpecHistory: %v", err)
+	}
+	last := history[len(history)-1]
+	if last.FromStatus != model.SpecStatusDone || last.ToStatus != model.SpecStatusImplementing {
+		t.Errorf("last history entry = %s->%s, want done->implementing", last.FromStatus, last.ToStatus)
+	}
+	if !strings.Contains(last.Reason, "post-hoc review found a regression") {
+		t.Errorf("history reason = %q, want it to contain the rejection reason", last.Reason)
+	}
+}
+
+// TestSpecReject_TrivialDoneToImplementing mirrors the standard-lane test
+// for the trivial lane (AC7).
+//
+// Mutation guard (manually verified): removing the SpecStatusDone row from
+// validTransitionsTrivial turns this test red (ErrInvalidTransition).
+func TestSpecReject_TrivialDoneToImplementing(t *testing.T) {
+	svc := newTestSDDService(t, "project")
+	ctx := context.Background()
+
+	spec, err := svc.SpecNew(ctx, model.SpecNewRequest{
+		Title: "Trivial done reject", Lane: model.LaneTrivial, Scope: "internal/model/*.go",
+	})
+	if err != nil {
+		t.Fatalf("SpecNew: %v", err)
+	}
+	spec, err = svc.SpecQuick(ctx, model.SpecQuickRequest{ID: spec.ID, Rationale: "one-liner", By: "orchestrator"})
+	if err != nil {
+		t.Fatalf("SpecQuick: %v", err)
+	}
+	for _, by := range []string{"backend", "backend"} {
+		spec, err = svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: by})
+		if err != nil {
+			t.Fatalf("SpecAdvance (status=%s): %v", spec.Status, err)
+		}
+	}
+	if spec.Status != model.SpecStatusDone {
+		t.Fatalf("expected done status before reject, got %s", spec.Status)
+	}
+
+	rejected, err := svc.SpecReject(ctx, model.SpecRejectRequest{
+		ID:     spec.ID,
+		Reason: "scope was actually exceeded",
+		By:     "orchestrator",
+	})
+	if err != nil {
+		t.Fatalf("SpecReject from done (trivial): %v", err)
+	}
+	if rejected.Status != model.SpecStatusImplementing {
+		t.Errorf("expected implementing, got %s", rejected.Status)
+	}
+}
+
+// TestSpecAdvance_FromDone_StillInvalid is AC8's non-regression guard: D6
+// only opens spec_reject from done, never spec_advance.
+// nextForwardStatusForLane has no SpecStatusDone key, so SpecAdvance keeps
+// failing with ErrInvalidTransition before CanTransitionTo is even
+// consulted.
+//
+// Mutation guard (manually verified): adding
+// `model.SpecStatusDone: model.SpecStatusImplementing` to
+// nextForwardStatusForLane's standardForward map turns this test red (the
+// advance would succeed instead of failing).
+func TestSpecAdvance_FromDone_StillInvalid(t *testing.T) {
+	svc := newTestSDDService(t, "project")
+	ctx := context.Background()
+
+	spec, err := svc.SpecNew(ctx, model.SpecNewRequest{Title: "Advance from done", Lane: model.LaneStandard})
+	if err != nil {
+		t.Fatalf("SpecNew: %v", err)
+	}
+	for _, by := range []string{"orch", "arch", "arch", "arch", "backend", "backend", "qa"} {
+		spec, err = svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: by})
+		if err != nil {
+			t.Fatalf("SpecAdvance (status=%s): %v", spec.Status, err)
+		}
+	}
+	if spec.Status != model.SpecStatusDone {
+		t.Fatalf("expected done, got %s", spec.Status)
+	}
+
+	_, err = svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: "orchestrator"})
+	if !errors.Is(err, model.ErrInvalidTransition) {
+		t.Errorf("expected ErrInvalidTransition advancing from done, got %v", err)
+	}
+}
+
+// TestSpecPushback_FromDone_StillInvalid is AC8's non-regression guard for
+// SpecPushback: done has no needs_grill row in either transition table, so
+// a pushback from done keeps failing.
+func TestSpecPushback_FromDone_StillInvalid(t *testing.T) {
+	svc := newTestSDDService(t, "project")
+	ctx := context.Background()
+
+	spec, err := svc.SpecNew(ctx, model.SpecNewRequest{Title: "Pushback from done", Lane: model.LaneStandard})
+	if err != nil {
+		t.Fatalf("SpecNew: %v", err)
+	}
+	for _, by := range []string{"orch", "arch", "arch", "arch", "backend", "backend", "qa"} {
+		spec, err = svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: by})
+		if err != nil {
+			t.Fatalf("SpecAdvance (status=%s): %v", spec.Status, err)
+		}
+	}
+	if spec.Status != model.SpecStatusDone {
+		t.Fatalf("expected done, got %s", spec.Status)
+	}
+
+	_, err = svc.SpecPushback(ctx, model.SpecPushbackRequest{ID: spec.ID, FromAgent: "qa", Questions: []string{"still ok?"}})
+	if !errors.Is(err, model.ErrInvalidTransition) {
+		t.Errorf("expected ErrInvalidTransition pushing back from done, got %v", err)
+	}
+}
+
+// newTestSDDServiceWithMemory mirrors newTestSDDService but wires a real
+// MemoryService over the SAME project database, so saveCompletionMemory
+// (triggered when a spec re-enters done) actually persists — needed for
+// TestSpecReject_DoneThenReAdvance_SingleCompletionMemory (AC9).
+func newTestSDDServiceWithMemory(t *testing.T, project string) *SDDService {
+	t.Helper()
+	database, err := db.OpenMemory()
+	if err != nil {
+		t.Fatalf("open memory db: %v", err)
+	}
+	database.SetMaxOpenConns(1)
+	t.Cleanup(func() { database.Close() })
+
+	projectStore := store.NewMemoryStore(database)
+	cfg := config.Default()
+	memSvc := NewMemoryService(projectStore, projectStore, cfg, project, embed.NopEmbedder{})
+
+	sddStore := store.NewSDDStore(database)
+	return NewSDDService(sddStore, cfg, project, memSvc)
+}
+
+// TestSpecReject_DoneThenReAdvance_SingleCompletionMemory verifies AC9: a
+// spec rejected from done and re-advanced back to done ends up with exactly
+// ONE spec/<ID> completion memory (topic_key upsert, V4 in the design), with
+// content reflecting the latest completion.
+func TestSpecReject_DoneThenReAdvance_SingleCompletionMemory(t *testing.T) {
+	svc := newTestSDDServiceWithMemory(t, "project")
+	ctx := context.Background()
+
+	spec, err := svc.SpecNew(ctx, model.SpecNewRequest{Title: "AC9 spec", Lane: model.LaneStandard})
+	if err != nil {
+		t.Fatalf("SpecNew: %v", err)
+	}
+	for _, by := range []string{"orch", "arch", "arch", "arch", "backend", "backend", "qa"} {
+		spec, err = svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: by})
+		if err != nil {
+			t.Fatalf("SpecAdvance (status=%s): %v", spec.Status, err)
+		}
+	}
+	if spec.Status != model.SpecStatusDone {
+		t.Fatalf("expected done, got %s", spec.Status)
+	}
+
+	if _, err := svc.SpecReject(ctx, model.SpecRejectRequest{
+		ID: spec.ID, Reason: "found a regression", By: "qa-agent",
+	}); err != nil {
+		t.Fatalf("SpecReject: %v", err)
+	}
+
+	spec, err = svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: "backend"})
+	if err != nil {
+		t.Fatalf("re-advance to qa: %v", err)
+	}
+	if spec.Status != model.SpecStatusQA {
+		t.Fatalf("expected qa, got %s", spec.Status)
+	}
+	spec, err = svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: "qa"})
+	if err != nil {
+		t.Fatalf("re-advance to done: %v", err)
+	}
+	if spec.Status != model.SpecStatusDone {
+		t.Fatalf("expected done again, got %s", spec.Status)
+	}
+
+	// GetByTopicKey is itself the upsert-uniqueness guarantee (V4): the
+	// unique index on (topic_key, project, scope) means a second
+	// saveCompletionMemory call physically cannot create a second row for
+	// the same topic_key — it can only update the existing one. Asserting
+	// the single row's content reflects the SECOND completion (not stale
+	// first-completion content) is therefore the meaningful AC9 check.
+	mem, err := svc.memorySvc.projectStore.GetByTopicKey(ctx, "spec/"+spec.ID, "project")
+	if err != nil {
+		t.Fatalf("GetByTopicKey: %v", err)
+	}
+	if mem == nil {
+		t.Fatal("expected a completion memory to exist after re-advancing to done")
+	}
+	if !strings.Contains(mem.Content, "Completed via spec "+spec.ID) {
+		t.Errorf("completion memory content = %q, missing expected marker", mem.Content)
 	}
 }
 

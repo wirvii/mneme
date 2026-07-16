@@ -199,10 +199,13 @@ func TestSpecStatusCanTransitionTo(t *testing.T) {
 		{SpecStatusQA, SpecStatusSpeccing, LaneStandard, false},
 		{SpecStatusQA, SpecStatusDraft, LaneStandard, false},
 
-		// Standard lane — invalid from terminal state.
+		// Standard lane — from terminal state: everything invalid except
+		// SPEC-087 D6's one reasoned exception, done -> implementing
+		// (spec_reject only — spec_advance stays impossible from done, see
+		// nextForwardStatusForLane, which has no "done" key at all).
 		{SpecStatusDone, SpecStatusDraft, LaneStandard, false},
 		{SpecStatusDone, SpecStatusSpeccing, LaneStandard, false},
-		{SpecStatusDone, SpecStatusImplementing, LaneStandard, false},
+		{SpecStatusDone, SpecStatusImplementing, LaneStandard, true},
 		{SpecStatusDone, SpecStatusQA, LaneStandard, false},
 
 		// Trivial lane — valid forward path.
@@ -219,6 +222,11 @@ func TestSpecStatusCanTransitionTo(t *testing.T) {
 		{SpecStatusDraft, SpecStatusDone, LaneTrivial, false},
 		{SpecStatusRationale, SpecStatusSpeccing, LaneTrivial, false},
 		{SpecStatusRationale, SpecStatusDone, LaneTrivial, false},
+
+		// Trivial lane — SPEC-087 D6's reasoned exception mirrors standard.
+		{SpecStatusDone, SpecStatusImplementing, LaneTrivial, true},
+		{SpecStatusDone, SpecStatusAudit, LaneTrivial, false},
+		{SpecStatusDone, SpecStatusDraft, LaneTrivial, false},
 
 		// Lanes must not mix: trivial paths rejected for standard lane.
 		{SpecStatusDraft, SpecStatusRationale, LaneStandard, false},
