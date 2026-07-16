@@ -34,6 +34,55 @@ and writes them to the project database.
 - **Languages:** Go (via `go/ast`) and TypeScript/JavaScript (via a Node.js
   subprocess that uses the TypeScript compiler API).
 
+### TypeScript toolchain compatibility — SPEC-088 (v1.27.1)
+
+The TS/JS extractor depends on the resolved `typescript` npm package (global
+install or `node_modules/typescript`) exposing the **classic synchronous
+Compiler API** — `ts.createSourceFile`, `ts.forEachChild`,
+`ts.ScriptTarget`/`ts.SyntaxKind`/`ts.NodeFlags`, and friends. **Supported
+majors: typescript 5.x and 6.x.** `typescript@7` is a from-scratch rewrite
+whose `require('typescript')` export surface is nearly empty
+(`version`/`versionMajorMinor` only) — every one of those symbols is
+`undefined` on it, and no major-version allowlist protects against this: the
+extractor checks for the actual symbols it uses (capability, not a version
+number), so a hypothetical future major that keeps the classic API would
+still work here without a code change.
+
+**What happens with an incompatible typescript:**
+
+| Toolchain state | Result |
+|---|---|
+| `node` not on `PATH` | TS/JS extraction is skipped for that run; Go files still index normally. |
+| `typescript` not installed/resolvable | Same as above — degrades gracefully. |
+| `typescript` installed but API-incompatible (e.g. 7.x) | `mneme codegraph index` **aborts with a non-zero exit code** naming the found version and three escape hatches. No partial/empty-but-"successful" index is produced. |
+
+This is a deliberate asymmetry, not an inconsistency: if you never installed
+the toolchain, TS/JS extraction was always optional and degrading is the
+right behaviour. If you *have* typescript installed, you expect it to work —
+finding out it silently extracted nothing (the pre-v1.27.1 behaviour) is
+worse than a hard failure that tells you why.
+
+**Escape hatches**, in order of preference:
+
+1. **Downgrade** the resolved `typescript` to a 5.x or 6.x release
+   (`npm install -g typescript@6`).
+2. **Pin via `NODE_PATH`**: point `NODE_PATH` at a directory containing a
+   compatible `typescript` install — an explicitly-set `NODE_PATH` now takes
+   precedence over the global npm root (`NODE_PATH=/path/to/ts6/node_modules
+   mneme codegraph index`).
+3. **Uninstall** the global `typescript` package to fall back to Go-only
+   indexing (the "toolchain absent" row above).
+
+**Mechanism, for contributors:** `js/extract.js` checks the required API
+symbols right after `require('typescript')` and exits **20** (not one of
+Node's own reserved 1–12 exit codes) when they're missing, writing a
+structured stderr message with the found version. `TSExtractor.Extract` in
+`extractor_ts.go` classifies that specific exit code as
+`ErrExtractorIncompatible` (wrapping the subprocess's stderr) and
+`Indexer.Index` aborts the walk on that sentinel — but keeps the existing
+per-file `FilesErrored` counting for every other kind of extraction error, so
+one broken `.ts` file still doesn't take down the whole index.
+
 ## Symbol resolution strategy (v1.15.0+)
 
 Cross-file references are resolved in four tiers, in order. The first match wins.
@@ -107,8 +156,9 @@ import like `import { getDB } from "@/lib/db"` leaves an unresolved ref.
 
 **Requirements:**
 - Node.js must be available on `PATH`.
-- `typescript` must be installed in the project (local `node_modules/typescript`
-  or a globally resolvable package).
+- `typescript` (major **5.x or 6.x** — see "TypeScript toolchain
+  compatibility" above) must be installed in the project (local
+  `node_modules/typescript` or a globally resolvable package).
 
 **Fail-open:** if Node.js is absent, TypeScript is unavailable, or no tsconfigs
 define `paths`, the alias map is empty and the resolver skips alias expansion
