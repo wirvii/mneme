@@ -1,8 +1,10 @@
 package codegraph
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -427,5 +429,117 @@ func Hello() {}
 	}
 	if third.FilesSkipped != 0 {
 		t.Errorf("Force FilesSkipped = %d, want 0", third.FilesSkipped)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SPEC-088 G2 — indexer abort-vs-continue asymmetry for extractor failures
+// ---------------------------------------------------------------------------
+
+// fakeExtractor is a test double for the Extractor interface. It records
+// every filePath it was asked to extract (so tests can prove whether the
+// walk stopped after the first call) and always returns the same
+// pre-configured error, mirroring the real TSExtractor's contract: a non-nil
+// error always comes with a nil *ExtractionResult (see TSExtractor.Extract).
+type fakeExtractor struct {
+	mu        sync.Mutex
+	returnErr error
+	calls     []string
+}
+
+func (f *fakeExtractor) Extract(filePath string, _ []byte) (*ExtractionResult, error) {
+	f.mu.Lock()
+	f.calls = append(f.calls, filePath)
+	f.mu.Unlock()
+	return nil, f.returnErr
+}
+
+func (f *fakeExtractor) Language() string { return "typescript" }
+
+func (f *fakeExtractor) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.calls)
+}
+
+// registerFakeExtractor swaps the "typescript" entry in the package-global
+// extractorRegistry for a fake, restoring the original on test cleanup.
+// extractorRegistry has no mutex (R7 in SPEC-088) — the caller must not run
+// this test with t.Parallel(), and every other test in this package that
+// indexes .ts/.js files must not run concurrently with it either.
+func registerFakeExtractor(t *testing.T, fake *fakeExtractor) {
+	t.Helper()
+	orig := extractorRegistry["typescript"]
+	t.Cleanup(func() { extractorRegistry["typescript"] = orig })
+	RegisterExtractor("typescript", func() Extractor { return fake })
+}
+
+// TestIndexer_AbortsOnIncompatibleExtractor verifies the systemic half of the
+// D4 asymmetry: when the extractor returns ErrExtractorIncompatible, Index
+// must abort the walk (return the error, errors.Is-checkable) instead of
+// counting the failure and continuing — and it must abort BEFORE the second
+// .ts file is ever handed to the extractor.
+//
+// Mutation proof (SPEC-088 AC9, executed manually — see the implementation
+// report): removing the `errors.Is(err, ErrExtractorIncompatible)` branch in
+// indexer.go's WalkDir callback (falling through to the ordinary
+// `result.FilesErrored++` path) turns this red: Index then returns nil and
+// both .ts files get called, since nothing aborts the walk anymore.
+func TestIndexer_AbortsOnIncompatibleExtractor(t *testing.T) {
+	fake := &fakeExtractor{returnErr: ErrExtractorIncompatible}
+	registerFakeExtractor(t, fake)
+
+	dir := t.TempDir()
+	writeGoFile(t, dir, "a.ts", "export const a = 1;\n")
+	writeGoFile(t, dir, "b.ts", "export const b = 2;\n")
+	writeGoFile(t, dir, "c.go", "package main\n\nfunc C() {}\n")
+
+	ix, _ := newTestIndexer(t)
+	_, err := ix.Index(IndexOptions{RootDir: dir})
+	if err == nil {
+		t.Fatal("Index() error = nil, want ErrExtractorIncompatible")
+	}
+	if !errors.Is(err, ErrExtractorIncompatible) {
+		t.Errorf("Index() error = %v, want errors.Is ErrExtractorIncompatible", err)
+	}
+	if calls := fake.callCount(); calls != 1 {
+		t.Errorf("extractor called %d times, want exactly 1 (walk must abort after the first systemic failure, never reaching the second .ts file)", calls)
+	}
+}
+
+// TestIndexer_ContinuesOnPerFileExtractorError is the anti-regression twin of
+// TestIndexer_AbortsOnIncompatibleExtractor (SPEC-088 D4): an ORDINARY
+// extractor error (not ErrExtractorIncompatible) must still be treated as
+// per-file — Index returns nil, FilesErrored counts both failures, the walk
+// visits every file, and the unrelated .go file still gets indexed. This is
+// the degradation guarantee (AC4): a repo without a working TS toolchain
+// must not lose its Go indexing.
+func TestIndexer_ContinuesOnPerFileExtractorError(t *testing.T) {
+	fake := &fakeExtractor{returnErr: errors.New("boom: ordinary per-file extraction failure")}
+	registerFakeExtractor(t, fake)
+
+	dir := t.TempDir()
+	writeGoFile(t, dir, "a.ts", "export const a = 1;\n")
+	writeGoFile(t, dir, "b.ts", "export const b = 2;\n")
+	writeGoFile(t, dir, "c.go", "package main\n\nfunc C() {}\n")
+
+	ix, s := newTestIndexer(t)
+	result, err := ix.Index(IndexOptions{RootDir: dir})
+	if err != nil {
+		t.Fatalf("Index() error = %v, want nil (an ordinary per-file error must not abort)", err)
+	}
+	if result.FilesErrored != 2 {
+		t.Errorf("FilesErrored = %d, want 2 (both .ts files)", result.FilesErrored)
+	}
+	if calls := fake.callCount(); calls != 2 {
+		t.Errorf("extractor called %d times, want 2 (both .ts files; the walk must not abort)", calls)
+	}
+
+	stats, err := s.GetStats()
+	if err != nil {
+		t.Fatalf("GetStats: %v", err)
+	}
+	if stats.FileCount != 1 {
+		t.Errorf("FileCount = %d, want 1 (only c.go, the unaffected .go file, gets indexed)", stats.FileCount)
 	}
 }

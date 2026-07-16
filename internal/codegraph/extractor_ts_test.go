@@ -1,8 +1,11 @@
 package codegraph
 
 import (
+	"bytes"
+	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -33,13 +36,32 @@ func typescriptAvailable() bool {
 	return cmd.Run() == nil
 }
 
-// skipIfNoTS skips the test if Node.js or the typescript package is unavailable.
+// skipIfNoTS skips the test if Node.js or the typescript package is
+// unavailable — UNLESS MNEME_TEST_REQUIRE_TS=1 is set (SPEC-088 D7), in which
+// case an unavailable toolchain is a hard test failure instead of a silent
+// skip. CI exports this so an unpinned/incompatible typescript can never
+// again make the whole TS test suite pass by skipping everything: that is
+// exactly how typescript@7 reached main undetected (a green CI run where
+// every real assertion had been silently skipped is the same shape of
+// failure as the guard this spec adds — see 019f686b, the guardian that
+// can't detect its own removal).
+//
+// D7 deliberately does NOT widen typescriptAvailable() to accept typescript@7
+// — doing so would make this skip fire (correctly, per the letter of "is TS
+// available") on a machine where the product is still broken.
 func skipIfNoTS(t *testing.T) {
 	t.Helper()
+	requireTS := os.Getenv("MNEME_TEST_REQUIRE_TS") == "1"
 	if !nodeJSAvailable() {
+		if requireTS {
+			t.Fatal("Node.js not available and MNEME_TEST_REQUIRE_TS=1 is set")
+		}
 		t.Skip("Node.js not available")
 	}
 	if !typescriptAvailable() {
+		if requireTS {
+			t.Fatal("typescript package not available and MNEME_TEST_REQUIRE_TS=1 is set")
+		}
 		t.Skip("typescript package not available")
 	}
 }
@@ -780,5 +802,127 @@ func TestTSExtractor_MultipleFiles(t *testing.T) {
 		if len(funcs) != 1 {
 			t.Errorf("Extract(%q): got %d functions, want 1", f.path, len(funcs))
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SPEC-088 — guards for the typescript@7 silent-failure hotfix (G1, G3)
+// ---------------------------------------------------------------------------
+
+// writeFakeIncompatibleTypeScript writes a fake "typescript" package under
+// <dir>/node_modules/typescript whose export surface matches typescript@7.0.2
+// exactly: only `version`/`versionMajorMinor`, none of the classic Compiler
+// API. Returns the node_modules directory (suitable for NODE_PATH). Real
+// production behaviour depends on the *shape* of the export, not a
+// hand-picked constant, so this fixture is deliberately minimal rather than
+// a full fake module.
+func writeFakeIncompatibleTypeScript(t *testing.T, dir string) string {
+	t.Helper()
+	tsDir := filepath.Join(dir, "node_modules", "typescript")
+	if err := os.MkdirAll(tsDir, 0o755); err != nil {
+		t.Fatalf("mkdir fake typescript: %v", err)
+	}
+	fakeTS := "module.exports = { version: '7.0.2', versionMajorMinor: '7.0' };\n"
+	if err := os.WriteFile(filepath.Join(tsDir, "index.js"), []byte(fakeTS), 0o644); err != nil {
+		t.Fatalf("write fake typescript/index.js: %v", err)
+	}
+	return filepath.Join(dir, "node_modules")
+}
+
+// TestExtractJS_IncompatibleTypeScriptAPI_ExitsNonZero is G1 (SPEC-088 D2/D3).
+// It runs the REAL embedded extract.js — the exact byte array
+// (`extractJS`) that ships inside the binary — as a subprocess against a
+// typescript module shaped like typescript@7.0.2's export surface, and
+// asserts the API-capability guard fires: exit 20, no stdout (the guard
+// exits before the JSONL protocol even starts), and stderr naming the found
+// version.
+//
+// Only requires `node` on PATH, not a real typescript install, so it runs
+// even on machines where skipIfNoTS would otherwise skip everything.
+//
+// Mutation proof (SPEC-088 AC9, executed manually — see the implementation
+// report): commenting out the `missingAPI.length > 0` guard block in
+// js/extract.js turns this red, because node then proceeds into
+// ts.createSourceFile against the fake module, throws inside extractFile's
+// try/catch, and exits 0 with an empty-but-valid JSON result — exactly the
+// silent failure this test exists to catch.
+func TestExtractJS_IncompatibleTypeScriptAPI_ExitsNonZero(t *testing.T) {
+	if !nodeJSAvailable() {
+		t.Skip("Node.js not available")
+	}
+
+	tmpDir := t.TempDir()
+	scriptPath := filepath.Join(tmpDir, "extract.js")
+	if err := os.WriteFile(scriptPath, extractJS, 0o644); err != nil {
+		t.Fatalf("write extract.js: %v", err)
+	}
+
+	nodeModules := writeFakeIncompatibleTypeScript(t, tmpDir)
+
+	cmd := exec.Command("node", scriptPath)
+	cmd.Env = append(os.Environ(), "NODE_PATH="+nodeModules)
+	cmd.Stdin = strings.NewReader(`{"path":"test.ts","content":"export function hello(): void {}"}` + "\n")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	runErr := cmd.Run()
+
+	var exitErr *exec.ExitError
+	if !errors.As(runErr, &exitErr) {
+		t.Fatalf("expected an *exec.ExitError, got %v (stdout=%q stderr=%q)", runErr, stdout.String(), stderr.String())
+	}
+	if exitErr.ExitCode() != 20 {
+		t.Errorf("exit code = %d, want 20; stderr=%s", exitErr.ExitCode(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "7.0.2") {
+		t.Errorf("stderr does not name the found version 7.0.2: %s", stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Errorf("expected no stdout (guard must exit before the JSONL protocol starts), got %q", stdout.String())
+	}
+}
+
+// TestTSExtractor_IncompatibleTypeScript_ReturnsSentinel is G3 (SPEC-088 D4,
+// D5). With NODE_PATH pointed at a typescript module shaped like
+// typescript@7 (no Compiler API), Extract must:
+//  1. return errors.Is(err, ErrExtractorIncompatible) — never (result, nil);
+//  2. include what the D2 guard said on stderr in the error message.
+//
+// This test only works because of the D5 seam: an explicit NODE_PATH must
+// win over the ambient global npm root, or the fake module set up here would
+// never be resolved and the test would silently exercise the real global
+// typescript instead. Mutation B below proves that dependency.
+//
+// Mutation proofs (SPEC-088 AC9, executed manually — see the implementation
+// report):
+//   - Mutation A: change tsIncompatibleExitCode from 20 to another value —
+//     checkDeath's `exitErr.ExitCode() == tsIncompatibleExitCode` comparison
+//     stops matching the guard's actual exit(20), so Extract falls through to
+//     the ordinary "no response from node" error and errors.Is fails.
+//   - Mutation B: revert the D5 NODE_PATH ordering (global root first again)
+//     — the real global typescript@6.0.3 wins, the fake module set up by this
+//     test is never resolved, extraction succeeds normally, and
+//     errors.Is(err, ErrExtractorIncompatible) fails because err is nil.
+func TestTSExtractor_IncompatibleTypeScript_ReturnsSentinel(t *testing.T) {
+	if !nodeJSAvailable() {
+		t.Skip("Node.js not available")
+	}
+
+	nodeModules := writeFakeIncompatibleTypeScript(t, t.TempDir())
+	t.Setenv("NODE_PATH", nodeModules)
+
+	ext := NewTSExtractor()
+	defer ext.Close()
+
+	result, err := ext.Extract("test.ts", []byte("export function hello(): void {}"))
+	if result != nil {
+		t.Errorf("result = %+v, want nil", result)
+	}
+	if !errors.Is(err, ErrExtractorIncompatible) {
+		t.Fatalf("err = %v, want errors.Is ErrExtractorIncompatible", err)
+	}
+	if !strings.Contains(err.Error(), "7.0.2") {
+		t.Errorf("err does not include the guard's stderr (found_version 7.0.2): %v", err)
 	}
 }
