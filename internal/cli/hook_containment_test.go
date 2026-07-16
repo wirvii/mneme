@@ -332,6 +332,38 @@ func TestEvaluateDelegation_AC7_ManifestAbsent_LegacyBlock(t *testing.T) {
 	}
 }
 
+// TestEvaluateDelegation_AC9_LegacyManifestNeverBlocksSubagent_AnyMode is
+// AC9's direct reproduction: a manifest written in the exact JSON shape
+// every pre-SPEC-086 manifest has (no "archetype", no "areas_complete" keys
+// at all — not even present, let alone false) must never block a subagent
+// in ANY containment mode, even when the target path falls outside the
+// role's declared areas.
+func TestEvaluateDelegation_AC9_LegacyManifestNeverBlocksSubagent_AnyMode(t *testing.T) {
+	slug, dbPath := setupDelegationRepo(t)
+	// Literal legacy shape: only "role" and "areas" keys, exactly what every
+	// manifest written before SPEC-086 contains.
+	seedManifest(t, dbPath, slug, `[{"role":"frontend","areas":["apps/web-ui"]}]`)
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+
+	for _, mode := range []string{"off", "warn", "block"} {
+		t.Run(mode, func(t *testing.T) {
+			writeContainmentConfig(t, mode)
+
+			input := hookPreToolInput{ToolName: "Edit", AgentID: "x", AgentType: "frontend"}
+			input.ToolInput.FilePath = "internal/store/foo.go" // outside frontend's declared area
+
+			got := evaluateDelegation(input, cwd)
+			if got.Block {
+				t.Fatalf("mode=%s: Block = true, want false — legacy manifest (no areas_complete) must never block (decision: %+v)", mode, got)
+			}
+		})
+	}
+}
+
 // writeContainmentConfig writes a minimal ~/.mneme/config.toml setting
 // [delegation] subagent_containment = mode, under the HOME setupDelegationRepo
 // already isolated via t.Setenv.
