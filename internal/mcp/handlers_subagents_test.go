@@ -96,6 +96,98 @@ func TestSubagentFingerprint(t *testing.T) {
 	if out.SeededMemories == nil || len(out.SeededMemories) != 0 {
 		t.Errorf("seeded_memories = %v, want empty (not nil)", out.SeededMemories)
 	}
+	if out.ForeignAgents == nil || len(out.ForeignAgents) != 0 {
+		t.Errorf("foreign_agents = %v, want empty (not nil) when .claude/agents does not exist", out.ForeignAgents)
+	}
+}
+
+// --- SPEC-090 D5: foreign_agents detection -----------------------------------
+
+// TestSubagentFingerprint_ForeignAgents is AC7: a .claude/agents/*.md file
+// without mneme's agent-fixed managed block is reported as foreign; one
+// with the block AND a matching manifest entry is not.
+func TestSubagentFingerprint_ForeignAgents(t *testing.T) {
+	srv, projectDB := newTestServerForSubagents(t)
+	t.Cleanup(func() { projectDB.Close() })
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/x\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+
+	// Write a mneme-composed profile via compose+write, so it also gets a
+	// manifest entry — this one must NOT be reported as foreign.
+	composeResp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name: "subagent_compose",
+		Arguments: mustMarshal(t, map[string]any{
+			"role":            "backend",
+			"archetype":       "backend",
+			"areas_layer3_md": "## Área: apps/core-srv\n\nStack Go + sqlc.",
+		}),
+	})
+	var composed subagentComposeResponse
+	unmarshalToolText(t, composeResp, &composed)
+	if !composed.Valid {
+		t.Fatalf("precondition: compose must be valid, got errors: %v", composed.Errors)
+	}
+	process(t, srv, "tools/call", 2, ToolCallParams{
+		Name: "subagent_write",
+		Arguments: mustMarshal(t, map[string]any{
+			"role": "backend", "archetype": "backend", "composed_md": composed.ComposedMD, "repo_root": dir,
+		}),
+	})
+
+	// A hand-authored, non-mneme agent dropped into the same directory.
+	agentsDir := filepath.Join(dir, ".claude", "agents")
+	foreignPath := filepath.Join(agentsDir, "security-auditor.md")
+	if err := os.WriteFile(foreignPath, []byte("---\nname: security-auditor\n---\n\nCustom dev-authored agent.\n"), 0o644); err != nil {
+		t.Fatalf("write foreign agent: %v", err)
+	}
+
+	resp := process(t, srv, "tools/call", 3, ToolCallParams{
+		Name:      "subagent_fingerprint",
+		Arguments: mustMarshal(t, map[string]any{"repo_root": dir}),
+	})
+	var out subagentFingerprintResponse
+	unmarshalToolText(t, resp, &out)
+
+	if len(out.ForeignAgents) != 1 || out.ForeignAgents[0] != ".claude/agents/security-auditor.md" {
+		t.Errorf("foreign_agents = %v, want exactly [.claude/agents/security-auditor.md]", out.ForeignAgents)
+	}
+}
+
+// TestSubagentFingerprint_ForeignAgents_UnknownRoleWithBlockStillForeign
+// covers the manifest-mismatch half of D5: a file that carries the
+// agent-fixed block (so it LOOKS like ours) but whose role has no entry in
+// the current manifest is still reported foreign — e.g. a profile copied in
+// from a different project's mneme setup.
+func TestSubagentFingerprint_ForeignAgents_UnknownRoleWithBlockStillForeign(t *testing.T) {
+	srv, projectDB := newTestServerForSubagents(t)
+	t.Cleanup(func() { projectDB.Close() })
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/x\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+	agentsDir := filepath.Join(dir, ".claude", "agents")
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+		t.Fatalf("mkdir agents: %v", err)
+	}
+	orphaned := "---\nname: orphan-role\n---\n<!-- mneme:agent-fixed:start v=2 -->\nx\n<!-- mneme:agent-fixed:end -->\n\n## Área: x\n\ny\n"
+	if err := os.WriteFile(filepath.Join(agentsDir, "orphan-role.md"), []byte(orphaned), 0o644); err != nil {
+		t.Fatalf("write orphan agent: %v", err)
+	}
+
+	resp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name:      "subagent_fingerprint",
+		Arguments: mustMarshal(t, map[string]any{"repo_root": dir}),
+	})
+	var out subagentFingerprintResponse
+	unmarshalToolText(t, resp, &out)
+
+	if len(out.ForeignAgents) != 1 || out.ForeignAgents[0] != ".claude/agents/orphan-role.md" {
+		t.Errorf("foreign_agents = %v, want exactly [.claude/agents/orphan-role.md] (block present but no manifest entry)", out.ForeignAgents)
+	}
 }
 
 func TestSubagentFingerprint_SeededMemoriesAfterSave(t *testing.T) {
