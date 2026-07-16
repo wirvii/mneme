@@ -99,14 +99,41 @@ var PermissionTable = map[Role]Permission{
 	},
 }
 
+// implementerCapabilityTools is the set of tools.Tools entries that grant
+// edit capability — the actual toolset IsImplementer inspects (SPEC-087 D1).
+// Bash is deliberately absent: the diagnostician carries Bash to read logs
+// without ever mutating code, and (since SPEC-087 D2b) qa-tester carries Bash
+// to run its own gates for the same read/execute-only reason. Neither should
+// become an "implementer" merely for having Bash.
+var implementerCapabilityTools = map[string]bool{
+	"Edit":         true,
+	"Write":        true,
+	"MultiEdit":    true,
+	"NotebookEdit": true,
+}
+
 // IsImplementer reports whether role's permission envelope grants edit
-// capability (Edit/Write/MultiEdit/Bash). Used by callers that need to
-// distinguish implementer roles from read-only/diagnostic roles without
-// duplicating the PermissionTable lookup.
+// capability: its Tools allowlist contains at least one of
+// Edit/Write/MultiEdit/NotebookEdit. Bash does NOT count.
+//
+// SPEC-087 D1: this used to read perm.PermissionMode == bypassPermissions as
+// a proxy for edit capability, which happened to be correct only because the
+// three original implementer roles were also the three roles with
+// bypassPermissions. SPEC-087 D2b breaks that coincidence by giving
+// qa-tester bypassPermissions too (so its own go test/lint gates run
+// unattended) without granting it any edit tool — the old proxy would have
+// misclassified qa-tester as an implementer the moment D2b landed. Reading
+// the actual toolset is correct regardless of which roles carry
+// bypassPermissions in the future.
 func IsImplementer(role Role) bool {
 	perm, ok := PermissionTable[role]
 	if !ok {
 		return false
 	}
-	return perm.PermissionMode == bypassPermissions
+	for _, tool := range perm.Tools {
+		if implementerCapabilityTools[tool] {
+			return true
+		}
+	}
+	return false
 }
