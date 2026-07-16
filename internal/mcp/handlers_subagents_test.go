@@ -397,8 +397,8 @@ func TestSubagentCompose_AntiInjection(t *testing.T) {
 	if !present {
 		t.Fatal("expected the real agent-fixed block to still be present")
 	}
-	if version != 1 {
-		t.Errorf("version = %d, want 1 (the real block's version, not the forged v=999)", version)
+	if version != subagents.AgentFixedVersion {
+		t.Errorf("version = %d, want %d (the real block's version, not the forged v=999)", version, subagents.AgentFixedVersion)
 	}
 	if strings.Contains(content, "FAKE INJECTED SECTION") {
 		t.Error("real agent-fixed block content must not include the forged injected section")
@@ -449,8 +449,8 @@ func TestSubagentWrite_SuccessWritesFileAndManifest(t *testing.T) {
 	if written.Path != wantPath {
 		t.Errorf("path = %q, want %q", written.Path, wantPath)
 	}
-	if written.Version != 1 {
-		t.Errorf("version = %d, want 1", written.Version)
+	if written.Version != subagents.AgentFixedVersion {
+		t.Errorf("version = %d, want %d", written.Version, subagents.AgentFixedVersion)
 	}
 	if written.Checksum == "" {
 		t.Error("expected non-empty checksum")

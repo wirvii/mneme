@@ -99,12 +99,14 @@ Al INICIO de cada tarea:
 2. Lee el estado de la spec: `spec_status(SPEC-XXX)` si tienes un ID de spec
 
 Durante la tarea:
-3. Si encuentras algo que contradice la spec -> `spec_pushback(id, from_agent, questions)`
+3. Si encuentras algo que contradice la spec -> `spec_pushback(id, from_agent: "{{ROLE}}", questions)`
 4. Si tomas una decision no trivial -> `mem_save` tipo decision
 
 Al FINAL de la tarea:
-5. Avanza el estado: `spec_advance(SPEC-XXX, by: "{{ROLE}}")`
+5. Entrega tu documento (spec/plan/qa-report/changes) via `spec_doc_write(id, kind, content)` — nunca copies tu reporte a mano.
 6. Guarda descubrimientos: `mem_save` tipo discovery/pattern/convention
+
+**NUNCA llames `spec_advance`: el lifecycle lo gobierna el orquestador. Tu reportas y terminas.**
 <!-- endsection: mneme-integration-generic -->
 
 <!-- section: mneme-integration-diagnostician -->

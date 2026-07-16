@@ -47,8 +47,11 @@ func TestCompose_FreshProfile(t *testing.T) {
 	if !strings.Contains(content, "NO uses `Bash`") {
 		t.Error("expected implementer codegraph-policy variant in agent-fixed block")
 	}
-	if !strings.Contains(content, `spec_advance(SPEC-XXX, by: "backend")`) {
+	if !strings.Contains(content, `spec_pushback(id, from_agent: "backend", questions)`) {
 		t.Error("expected {{ROLE}} substituted with role name in mneme-integration section")
+	}
+	if strings.Contains(content, "spec_advance(SPEC-XXX") {
+		t.Error("agent-fixed block must no longer instruct the agent to call spec_advance (SPEC-087 D4)")
 	}
 
 	if !strings.Contains(got, "## Reglas") {
@@ -183,7 +186,7 @@ func TestCompose_RoleArchetypeSeparation(t *testing.T) {
 	if !present {
 		t.Fatal("expected agent-fixed managed block to be present")
 	}
-	if !strings.Contains(content, `by: "qa-tester"`) {
+	if !strings.Contains(content, `from_agent: "qa-tester"`) {
 		t.Errorf("expected {{ROLE}} substituted with Role (qa-tester) in mneme-integration section, got:\n%s", content)
 	}
 	if strings.Contains(content, "bug-hunter") {
@@ -206,6 +209,41 @@ func TestCompose_ArchetypeEmptyFallsBackToRole(t *testing.T) {
 	wantTools := "tools: " + PermissionTable[RoleBackend].ToolsString()
 	if !strings.Contains(got, wantTools) {
 		t.Errorf("expected backend's own tools when Archetype is empty, got:\n%s", got)
+	}
+}
+
+// TestCompose_AC4_NonVacuousROLEPlaceholder pins SPEC-087 AC4 assertion (2):
+// the {{ROLE}} placeholder must survive removing the spec_advance step
+// (D4), or TestCompose_RoleArchetypeSeparation/TestCompose_FreshProfile
+// would pass vacuously forever even if the placeholder disappeared entirely
+// — the exact antipattern memory 019f686b describes (V5 in the SPEC-087
+// design: {{ROLE}} appeared exactly once, in the very step D4 removes).
+// Mutation guard (manually verified): deleting every "{{ROLE}}" occurrence
+// from assets/agent-fixed.md turns this test red.
+func TestCompose_AC4_NonVacuousROLEPlaceholder(t *testing.T) {
+	if got := strings.Count(LayerOneAsset(), "{{ROLE}}"); got < 1 {
+		t.Fatalf("LayerOneAsset() contains %d occurrences of {{ROLE}}, want >= 1", got)
+	}
+}
+
+// TestCompose_AC4_BodyNeverInstructsSpecAdvance pins SPEC-087 AC4 assertion
+// (3): the composed agent-fixed block must never instruct the agent to CALL
+// spec_advance — the lifecycle belongs to the orchestrator (D4/D5). The only
+// permitted mention is the explicit prohibition sentence.
+func TestCompose_AC4_BodyNeverInstructsSpecAdvance(t *testing.T) {
+	got, err := Compose("", ComposeInput{Role: RoleBackend, Description: "x", Model: "sonnet"})
+	if err != nil {
+		t.Fatalf("Compose: %v", err)
+	}
+	content, _, present := managedblock.ReadText(got, agentFixedMarker)
+	if !present {
+		t.Fatal("expected agent-fixed managed block to be present")
+	}
+	if strings.Contains(content, "spec_advance(SPEC-XXX") {
+		t.Error("agent-fixed block must never instruct the agent to CALL spec_advance")
+	}
+	if !strings.Contains(content, "NUNCA llames `spec_advance`") {
+		t.Error("agent-fixed block must contain the explicit prohibition sentence (D4)")
 	}
 }
 

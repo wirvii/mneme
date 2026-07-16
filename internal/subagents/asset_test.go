@@ -28,7 +28,8 @@ func TestCutSection(t *testing.T) {
 		},
 		{
 			name:         "mneme-integration-generic",
-			wantContains: `spec_advance(SPEC-XXX, by: "{{ROLE}}")`,
+			wantContains: `spec_pushback(id, from_agent: "{{ROLE}}", questions)`,
+			wantMissing:  "spec_advance(SPEC-XXX",
 		},
 		{
 			name:         "mneme-integration-diagnostician",

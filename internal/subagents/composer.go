@@ -13,11 +13,20 @@ import (
 // "<!-- mneme:agent-fixed:start v=N -->").
 const agentFixedMarker = "agent-fixed"
 
-// agentFixedVersion is the current version stamped on the agent-fixed
+// AgentFixedVersion is the current version stamped on the agent-fixed
 // managed block. Bump this whenever LayerOneAsset's content changes in a way
 // that should force every profile to pick up the new wording on next
-// regeneration.
-const agentFixedVersion = 1
+// regeneration. Exported so internal/cli/subagents_doctor.go and
+// internal/mcp/handlers_subagents.go can compare it against a manifest
+// entry's persisted Version and report SPEC-087 D7's "stale_agent_fixed"
+// finding without duplicating the number.
+//
+// v2 (SPEC-087 D4): the agent-fixed block no longer instructs the agent to
+// call spec_advance — an out-of-date profile stamped v1 still does, and now
+// collides with the hook that denies spec_advance to subagents (D5); doctor
+// flags any entry whose Version is still 1 so it can be regenerated
+// (`mneme subagents regen`).
+const AgentFixedVersion = 2
 
 // roleSections maps a Role to the (codegraph-policy, mneme-integration)
 // section names cut from LayerOneAsset for that role's agent-fixed block.
@@ -128,7 +137,7 @@ func Compose(existing string, in ComposeInput) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("subagents: compose: render agent-fixed: %w", err)
 	}
-	text = managedblock.UpsertText(text, agentFixedMarker, agentFixedVersion, agentFixed)
+	text = managedblock.UpsertText(text, agentFixedMarker, AgentFixedVersion, agentFixed)
 
 	if !hadBody && strings.TrimSpace(in.Body) != "" {
 		text = strings.TrimRight(text, "\n") + "\n\n" + strings.TrimSpace(in.Body) + "\n"
@@ -139,8 +148,8 @@ func Compose(existing string, in ComposeInput) (string, error) {
 
 // renderAgentFixed cuts the role's two agent-fixed sections from
 // LayerOneAsset and substitutes the "{{ROLE}}" placeholder with the role's
-// literal name (used by the spec_advance call example in
-// mneme-integration-generic).
+// literal name (used by the spec_pushback from_agent example and the
+// spec_doc_write mention in mneme-integration-generic, SPEC-087 D4).
 func renderAgentFixed(role Role, sections [2]string) (string, error) {
 	content, err := CutSections(LayerOneAsset(), sections[0], sections[1])
 	if err != nil {
