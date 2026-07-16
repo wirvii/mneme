@@ -256,3 +256,29 @@ func TestLaneValid(t *testing.T) {
 		})
 	}
 }
+
+// TestSpecDocKindFilename pins the closed kind -> filename mapping
+// (SPEC-087 D3): a caller only ever selects a kind, never a filename.
+func TestSpecDocKindFilename(t *testing.T) {
+	tests := []struct {
+		kind     SpecDocKind
+		wantName string
+		wantOK   bool
+	}{
+		{SpecDocKindSpec, "spec.md", true},
+		{SpecDocKindPlan, "plan.md", true},
+		{SpecDocKindQAReport, "qa-report.md", true},
+		{SpecDocKindChanges, "changes.md", true},
+		{SpecDocKind("bogus"), "", false},
+		{SpecDocKind(""), "", false},
+	}
+	for _, tc := range tests {
+		t.Run(string(tc.kind), func(t *testing.T) {
+			name, ok := tc.kind.Filename()
+			if name != tc.wantName || ok != tc.wantOK {
+				t.Errorf("SpecDocKind(%q).Filename() = (%q, %v), want (%q, %v)",
+					tc.kind, name, ok, tc.wantName, tc.wantOK)
+			}
+		})
+	}
+}

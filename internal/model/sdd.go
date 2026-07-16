@@ -628,3 +628,72 @@ type SpecStatusResponse struct {
 	History   []*SpecHistory  `json:"history"`
 	Pushbacks []*SpecPushback `json:"pushbacks"`
 }
+
+// --- SPEC DOCUMENTS (SPEC-087 D3) ---
+
+// SpecDocKind identifies which entregable document a caller is writing via
+// spec_doc_write. This is a closed, Go-authored enum: the caller never
+// supplies a filename, only a kind — SpecDocKind.Filename maps it to the
+// exact filename SpecDocWrite writes, so a subagent can hand mneme its
+// deliverable (spec.md, plan.md, qa-report.md, changes.md) instead of
+// copying it by hand into the workflow directory, without ever choosing its
+// own filename.
+type SpecDocKind string
+
+const (
+	// SpecDocKindSpec writes spec.md — the architect's specification.
+	SpecDocKindSpec SpecDocKind = "spec"
+
+	// SpecDocKindPlan writes plan.md — the architect's implementation plan.
+	SpecDocKindPlan SpecDocKind = "plan"
+
+	// SpecDocKindQAReport writes qa-report.md — the qa-tester's review report.
+	SpecDocKindQAReport SpecDocKind = "qa-report"
+
+	// SpecDocKindChanges writes changes.md — an implementer's record of
+	// where it diverged from the spec.
+	SpecDocKindChanges SpecDocKind = "changes"
+)
+
+// specDocFilenames maps each closed SpecDocKind to the exact filename it
+// writes within a spec's workflow directory. Mirrors the filenames
+// inferSpecStatus (internal/service/init.go) already recognises.
+var specDocFilenames = map[SpecDocKind]string{
+	SpecDocKindSpec:     "spec.md",
+	SpecDocKindPlan:     "plan.md",
+	SpecDocKindQAReport: "qa-report.md",
+	SpecDocKindChanges:  "changes.md",
+}
+
+// Filename returns the filename k maps to, and whether k is a recognised
+// SpecDocKind. An unrecognised kind must never reach a filesystem path —
+// callers use this to reject it up front (ErrUnknownSpecDocKind).
+func (k SpecDocKind) Filename() (string, bool) {
+	name, ok := specDocFilenames[k]
+	return name, ok
+}
+
+// SpecDocWriteRequest is the input for spec_doc_write: write content to the
+// file kind maps to, inside id's workflow directory.
+type SpecDocWriteRequest struct {
+	// ID is the spec whose workflow directory the document is written under.
+	ID string `json:"id"`
+
+	// Kind selects the destination filename via SpecDocKind.Filename.
+	Kind SpecDocKind `json:"kind"`
+
+	// Content is the full document content, written verbatim.
+	Content string `json:"content"`
+}
+
+// SpecDocWriteResponse is returned by SpecDocWrite.
+type SpecDocWriteResponse struct {
+	// Path is the absolute path written.
+	Path string `json:"path"`
+
+	// Bytes is len(content) as written.
+	Bytes int `json:"bytes"`
+
+	// Created is true when the file did not exist before this call.
+	Created bool `json:"created"`
+}

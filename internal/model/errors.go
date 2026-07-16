@@ -199,3 +199,9 @@ var ErrInvalidRelation = errors.New("invalid conflict relation: must be supersed
 // resolve both IDs to the same store before creating a relation.
 var ErrCrossStoreRelation = errors.New("cannot relate a global and a project memory; they live in separate stores")
 
+// ErrUnknownSpecDocKind is returned when spec_doc_write is called with a
+// SpecDocKind that SpecDocKind.Filename does not recognise. The kind enum is
+// closed by design (SPEC-087 D3) — a caller can never invent a new
+// filename.
+var ErrUnknownSpecDocKind = errors.New("unknown spec doc kind")
+
