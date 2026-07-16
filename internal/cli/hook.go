@@ -336,6 +336,12 @@ type hookPreToolInput struct {
 		// the enforce-delegation guard (SPEC-069) — the rules-engine
 		// pre-tool-use hook never intercepts Bash (see mutatingTools).
 		Command string `json:"command"`
+		// ID is the spec/backlog ID argument MCP SDD tools send (e.g.
+		// spec_advance, spec_quick) — MCP tool arguments travel inside
+		// tool_input, unlike file-tool payloads which use file_path/command.
+		// SPEC-087 D5 records it on the lifecycle-tool-denied enforcelog
+		// event so the report shows which spec a blocked call targeted.
+		ID string `json:"id"`
 	} `json:"tool_input"`
 
 	// SessionID is the per-session identifier injected by Claude Code (SPEC-044).
@@ -1466,6 +1472,47 @@ var delegationTools = map[string]bool{
 	"Bash":         true,
 }
 
+// lifecycleTools is the EXACT-MATCH set of MCP tool names denied to every
+// subagent (SPEC-087 D5): SDD lifecycle-advancing calls that stay
+// exclusively the orchestrator's, regardless of containment mode — total
+// block, no config, no ramp (decision 5). Never a prefix match: a
+// strings.HasPrefix(tool, "mcp__mneme__spec_") would also catch
+// spec_pushback and spec_doc_write, the two tools THIS spec deliberately
+// gives subagents (AC6 mutation B pins this).
+//
+//   - spec_advance: the observed defect (SPEC-063's premature "done") —
+//     decision 5.
+//   - spec_quick: disguised advance (draft->rationale->implementing in one
+//     call) AND an orchestrator-only operation by CLAUDE.md; a subagent
+//     calling it self-authorises its own work, the same dishonest record.
+//
+// spec_pushback, spec_resolve, spec_status, spec_doc_write, mem_*, and
+// codegraph_* are deliberately NOT in this set — see AC6.
+var lifecycleTools = map[string]bool{
+	"mcp__mneme__spec_advance": true,
+	"mcp__mneme__spec_quick":   true,
+}
+
+// lifecycleBlockMessage is the load-bearing message printed when a
+// subagent's lifecycle-advancing MCP call is denied (SPEC-087 D5/R5). It
+// must name the concrete cause (an out-of-date profile still instructing
+// spec_advance — every profile generated before D4 does) and the concrete
+// fix (mneme subagents regen), not a generic permission-denied message: a
+// subagent that hits this block with no escape hatch would otherwise be
+// stuck between its own stale system prompt and the hook.
+const lifecycleBlockMessage = "⛔ mneme: spec_advance es del orquestador, no de un subagente. Si tu perfil te pide avanzar la spec, está desactualizado (regenéralo: mneme subagents regen). Reporta tu resultado y termina; el orquestador avanzará.\n"
+
+// printLifecycleBlock writes the SPEC-087 D5 lifecycle-tool denial message
+// to w. The canonical sentence names spec_advance specifically (R5); when
+// tool is spec_quick instead, an extra line names it explicitly so the
+// agent does not mistake the message for a spec_advance-only rule.
+func printLifecycleBlock(w io.Writer, tool string) {
+	fmt.Fprint(w, lifecycleBlockMessage)
+	if tool != "mcp__mneme__spec_advance" {
+		fmt.Fprintf(w, "(bloqueado: %s — mismo motivo: el lifecycle SDD lo gobierna el orquestador, no un subagente.)\n", tool)
+	}
+}
+
 // runHookEnforceDelegation implements the "mneme hook enforce-delegation"
 // subcommand: mneme's orchestrator-guard (Layer 2 of the two-layer
 // enforcement model), extended by SPEC-086 to also contain SUBAGENTS to
@@ -1476,6 +1523,16 @@ var delegationTools = map[string]bool{
 // evaluateDelegation -> enforcement.Evaluate* pipeline, just with a
 // different OwnershipFunc closure (D10).
 //
+// SPEC-087 D5 adds a FIRST, independent guard ahead of everything else: a
+// subagent calling a lifecycleTools MCP tool (spec_advance, spec_quick) is
+// denied unconditionally. It runs before the delegationTools filter — those
+// tools are never file/Bash tools, so the filter would otherwise short-
+// circuit past them entirely — and before the RoleSource=="unresolved"
+// short-circuit below, because this guard only needs identity.IsSubagent
+// (agent_id present), never agent_type: if Claude Code ever stops sending
+// agent_type, SPEC-086's area containment loses its signal and warns loudly,
+// but this lifecycle block keeps working (R6).
+//
 // A subagent whose role could not be resolved (agent_id present,
 // agent_type absent — D2) warns loudly on errW and is always allowed; every
 // other subagent path is evaluated by evaluateDelegation exactly like the
@@ -1483,15 +1540,28 @@ var delegationTools = map[string]bool{
 //
 // On an orchestrator block: prints the delegation message to errW, logs a
 // best-effort discovery memory (logBlockedEditDiscovery), and exits 2. On a
-// subagent block (containment mode "block" only): prints the containment
-// message to errW and exits 2 — no discovery memory (SPEC-069's "orchestrator
-// bypassed SDD" narrative does not apply to a contained subagent). Every
-// other path — unrelated tool, allowed path, or any fail-open branch inside
+// subagent containment block (containment mode "block" only): prints the
+// containment message to errW and exits 2 — no discovery memory (SPEC-069's
+// "orchestrator bypassed SDD" narrative does not apply to a contained
+// subagent). On a subagent lifecycle-tool block (D5): prints
+// lifecycleBlockMessage, logs a best-effort enforcelog event (never a
+// discovery memory — same reasoning), and exits 2. Every other path —
+// unrelated tool, allowed path, or any fail-open branch inside
 // evaluateDelegation — returns nil (exit 0).
 func runHookEnforceDelegation(r io.Reader, errW io.Writer) error {
 	var input hookPreToolInput
 	if err := json.NewDecoder(r).Decode(&input); err != nil {
 		return nil // fail-open: empty/invalid stdin (e.g. io.EOF).
+	}
+
+	identity := input.resolveIdentity()
+
+	if identity.IsSubagent && lifecycleTools[input.ToolName] {
+		printLifecycleBlock(errW, input.ToolName)
+		logLifecycleToolDeniedEvent(input, identity)
+		//nolint:gocritic // os.Exit(2) is the documented hook exit code for rejection
+		os.Exit(2)
+		return nil
 	}
 
 	if !delegationTools[input.ToolName] {
@@ -1504,7 +1574,6 @@ func runHookEnforceDelegation(r io.Reader, errW io.Writer) error {
 	}
 	cwd = resolveHookCWD(input, cwd)
 
-	identity := input.resolveIdentity()
 	if identity.IsSubagent && identity.RoleSource == "unresolved" {
 		warnUnresolvedRole(errW)
 		logUnresolvedRoleEvent(input, identity, cwd)
@@ -1761,6 +1830,47 @@ func logContainmentEvent(cfg *config.Config, slug string, input hookPreToolInput
 		Mode:       mode,
 		Reason:     result.Reason,
 		Owner:      result.Owner,
+	}
+	_ = enforcelog.Append(path, ev, enforcelog.DefaultMaxBytes) //nolint:errcheck // best-effort telemetry
+}
+
+// logLifecycleToolDeniedEvent appends a best-effort enforcelog.Event for a
+// SPEC-087 D5 lifecycle-tool denial (Reason: "lifecycle_tool_denied_to_
+// subagent"). Self-contained (resolves cwd/config/project itself, mirroring
+// logUnresolvedRoleEvent) because this guard fires BEFORE
+// runHookEnforceDelegation's own cwd resolution — D5 places it ahead of the
+// delegationTools filter on purpose, so neither cwd nor decision.Block/Owner
+// exist yet at this point. input.ToolInput.ID (the spec/backlog ID the MCP
+// call targeted, when present) is recorded as Target so a report shows which
+// spec a blocked call was aimed at. No discovery memory: SPEC-069's
+// "orchestrator bypassed SDD" narrative does not apply to a contained
+// subagent (same reasoning logContainmentEvent already documents).
+func logLifecycleToolDeniedEvent(input hookPreToolInput, identity CallerIdentity) {
+	cfg, err := config.Load(config.DefaultPath())
+	if err != nil {
+		return
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return
+	}
+	cwd = resolveHookCWD(input, cwd)
+	det := project.NewDetector(cwd)
+	slug, _ := det.DetectProject()
+
+	path := enforcelogPath(cfg.Storage.DataDir, slug)
+	ev := enforcelog.Event{
+		TS:         time.Now().UTC(),
+		Session:    input.SessionID,
+		Project:    slug,
+		Caller:     "subagent",
+		AgentID:    identity.AgentID,
+		Role:       identity.Role,
+		RoleSource: identity.RoleSource,
+		Tool:       input.ToolName,
+		Target:     input.ToolInput.ID,
+		Decision:   enforcelog.DecisionBlock,
+		Reason:     "lifecycle_tool_denied_to_subagent",
 	}
 	_ = enforcelog.Append(path, ev, enforcelog.DefaultMaxBytes) //nolint:errcheck // best-effort telemetry
 }
