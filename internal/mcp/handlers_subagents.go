@@ -463,6 +463,10 @@ type subagentWriteResponse struct {
 	Path     string `json:"path"`
 	Checksum string `json:"checksum"`
 	Version  int    `json:"version"`
+	// BackupPath is the path subagent_write backed up the pre-existing
+	// developer-authored file to (SPEC-090 D9), or "" when no backup was
+	// made (the destination did not exist, or was already ours).
+	BackupPath string `json:"backup_path,omitempty"`
 }
 
 // handleSubagentWrite processes a subagent_write tool call: it writes
@@ -564,6 +568,24 @@ func (h *handlers) handleSubagentWrite(ctx context.Context, raw json.RawMessage)
 		}
 	}
 
+	// SPEC-090 D9: back up the pre-existing file BEFORE overwriting it, but
+	// ONLY when it existed AND was not ours to begin with (no agent-fixed
+	// block — i.e. it is a developer's own hand-authored agent that
+	// subagent_write is about to clobber). Overwriting a file mneme itself
+	// generated is idempotent regeneration already traced by git/the
+	// manifest — backing it up every time would be pure churn, not a safety
+	// net. The backup lives in the repo (git-visible), never in scratchpad.
+	var backupPath string
+	if existed && subagents.IsForeignAgentFile(string(originalBytes)) {
+		backupPath = path + ".bak-" + time.Now().UTC().Format("20060102T150405Z")
+		if err := os.WriteFile(backupPath, originalBytes, 0o644); err != nil {
+			return nil, &JSONRPCError{
+				Code:    CodeInternalError,
+				Message: fmt.Sprintf("mcp: handle subagent_write: back up existing %s: %s", path, err),
+			}
+		}
+	}
+
 	if _, err := h.subagentSvc.WriteAgentProfiles([]service.WriteAgentFile{
 		{Role: subagents.Role(req.Role), Path: path, Content: req.ComposedMD},
 	}); err != nil {
@@ -611,9 +633,10 @@ func (h *handlers) handleSubagentWrite(ctx context.Context, raw json.RawMessage)
 	}
 
 	return resultFromAny(subagentWriteResponse{
-		Path:     path,
-		Checksum: checksum,
-		Version:  version,
+		Path:       path,
+		Checksum:   checksum,
+		Version:    version,
+		BackupPath: backupPath,
 	})
 }
 

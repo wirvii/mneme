@@ -711,6 +711,136 @@ func TestSubagentWrite_PersistsArchetypeAndAreasComplete(t *testing.T) {
 	}
 }
 
+// --- SPEC-090 D9/G7: backup before overwriting a dev-owned file -------------
+
+// TestSubagentWrite_BacksUpDevOwnedFile is G7/AC8's positive case:
+// overwriting a pre-existing file that lacks mneme's agent-fixed block
+// (a developer's own hand-authored agent) creates a
+// ".bak-<timestamp>" sibling with the ORIGINAL bytes, reported in
+// BackupPath.
+func TestSubagentWrite_BacksUpDevOwnedFile(t *testing.T) {
+	srv, projectDB := newTestServerForSubagents(t)
+	t.Cleanup(func() { projectDB.Close() })
+
+	dir := t.TempDir()
+	agentsDir := filepath.Join(dir, ".claude", "agents")
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+		t.Fatalf("mkdir agents: %v", err)
+	}
+	original := []byte("---\nname: backend\ndescription: dev-authored\n---\n\nCustom instructions the dev wrote by hand.\n")
+	targetPath := filepath.Join(agentsDir, "backend.md")
+	if err := os.WriteFile(targetPath, original, 0o644); err != nil {
+		t.Fatalf("write pre-existing dev file: %v", err)
+	}
+
+	composeResp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name: "subagent_compose",
+		Arguments: mustMarshal(t, map[string]any{
+			"role":            "backend",
+			"archetype":       "backend",
+			"areas_layer3_md": "## Área: apps/core-srv\n\nStack Go + sqlc.",
+		}),
+	})
+	var composed subagentComposeResponse
+	unmarshalToolText(t, composeResp, &composed)
+	if !composed.Valid {
+		t.Fatalf("precondition: compose must be valid, got errors: %v", composed.Errors)
+	}
+
+	writeResp := process(t, srv, "tools/call", 2, ToolCallParams{
+		Name: "subagent_write",
+		Arguments: mustMarshal(t, map[string]any{
+			"role": "backend", "archetype": "backend", "composed_md": composed.ComposedMD, "repo_root": dir,
+		}),
+	})
+	var written subagentWriteResponse
+	unmarshalToolText(t, writeResp, &written)
+
+	if written.BackupPath == "" {
+		t.Fatal("expected a non-empty BackupPath when overwriting a dev-owned file")
+	}
+	if !strings.HasPrefix(written.BackupPath, targetPath+".bak-") {
+		t.Errorf("BackupPath = %q, want prefix %q", written.BackupPath, targetPath+".bak-")
+	}
+	backedUp, err := os.ReadFile(written.BackupPath)
+	if err != nil {
+		t.Fatalf("read backup file: %v", err)
+	}
+	if string(backedUp) != string(original) {
+		t.Errorf("backup content = %q, want the original dev-authored bytes %q", backedUp, original)
+	}
+
+	// The live file must now hold the NEW composed_md, not the backup.
+	live, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatalf("read live file: %v", err)
+	}
+	if string(live) != composed.ComposedMD {
+		t.Error("live file was not overwritten with composed_md")
+	}
+}
+
+// TestSubagentWrite_NoBackupForOwnFile is G7/AC8's negative case: overwriting
+// a file mneme itself generated (already carries the agent-fixed block —
+// idempotent regeneration) creates NO backup.
+func TestSubagentWrite_NoBackupForOwnFile(t *testing.T) {
+	srv, projectDB := newTestServerForSubagents(t)
+	t.Cleanup(func() { projectDB.Close() })
+
+	dir := t.TempDir()
+
+	compose := func(areas string) string {
+		resp := process(t, srv, "tools/call", 1, ToolCallParams{
+			Name: "subagent_compose",
+			Arguments: mustMarshal(t, map[string]any{
+				"role":            "backend",
+				"archetype":       "backend",
+				"areas_layer3_md": areas,
+			}),
+		})
+		var out subagentComposeResponse
+		unmarshalToolText(t, resp, &out)
+		if !out.Valid {
+			t.Fatalf("precondition: compose must be valid, got errors: %v", out.Errors)
+		}
+		return out.ComposedMD
+	}
+
+	first := process(t, srv, "tools/call", 2, ToolCallParams{
+		Name: "subagent_write",
+		Arguments: mustMarshal(t, map[string]any{
+			"role": "backend", "archetype": "backend", "composed_md": compose("## Área: apps/a\n\nx"), "repo_root": dir,
+		}),
+	})
+	var firstWritten subagentWriteResponse
+	unmarshalToolText(t, first, &firstWritten)
+	if firstWritten.BackupPath != "" {
+		t.Errorf("first write (no pre-existing file): BackupPath = %q, want empty", firstWritten.BackupPath)
+	}
+
+	// Second write: the file on disk now IS ours (has the agent-fixed
+	// block) — regenerating it must not back it up.
+	second := process(t, srv, "tools/call", 3, ToolCallParams{
+		Name: "subagent_write",
+		Arguments: mustMarshal(t, map[string]any{
+			"role": "backend", "archetype": "backend", "composed_md": compose("## Área: apps/b\n\ny"), "repo_root": dir,
+		}),
+	})
+	var secondWritten subagentWriteResponse
+	unmarshalToolText(t, second, &secondWritten)
+	if secondWritten.BackupPath != "" {
+		t.Errorf("second write (overwriting our own file): BackupPath = %q, want empty", secondWritten.BackupPath)
+	}
+
+	entries, err := filepath.Glob(filepath.Join(dir, ".claude", "agents", "*.bak-*"))
+	if err != nil {
+		t.Fatalf("glob backups: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("found unexpected backup file(s): %v", entries)
+	}
+}
+
 func TestSubagentWrite_UpsertsExistingManifestEntry(t *testing.T) {
 	srv, projectDB := newTestServerForSubagents(t)
 	t.Cleanup(func() { projectDB.Close() })
