@@ -109,6 +109,28 @@ func TestDiagnoseManifestEntry_BareDirReportedHealthyNotActionable(t *testing.T)
 	}
 }
 
+// TestDiagnoseManifestEntry_StaleAgentFixed covers SPEC-087 D7: a manifest
+// entry whose persisted Version has fallen behind subagents.AgentFixedVersion
+// is flagged stale_agent_fixed; an entry already at the current version is
+// not.
+func TestDiagnoseManifestEntry_StaleAgentFixed(t *testing.T) {
+	stale := service.ManifestEntry{
+		Role: subagents.RoleBackend, Archetype: subagents.RoleBackend,
+		Areas: []string{"internal/**"}, AreasComplete: true, Version: 1,
+	}
+	findings := diagnoseManifestEntry(stale, alwaysExists, matchingChecksum)
+	if !findingKinds(findings)[doctorKindStaleAgentFixed] {
+		t.Errorf("findings = %+v, want stale_agent_fixed for Version:1", findings)
+	}
+
+	current := stale
+	current.Version = subagents.AgentFixedVersion
+	freshFindings := diagnoseManifestEntry(current, alwaysExists, matchingChecksum)
+	if findingKinds(freshFindings)[doctorKindStaleAgentFixed] {
+		t.Errorf("findings = %+v, must NOT flag stale_agent_fixed at the current version", freshFindings)
+	}
+}
+
 // --- backfillArchetypes: the mutation-tested "--fix scope" guardian --------
 
 // TestBackfillArchetypes_FillsOnlyKnownRoles is the mutation-tested
@@ -146,6 +168,21 @@ func TestBackfillArchetypes_NeverTouchesAreasComplete(t *testing.T) {
 	got, _ := backfillArchetypes(entries)
 	if got[0].AreasComplete {
 		t.Fatal("AreasComplete = true, want false — --fix must never backfill areas_complete")
+	}
+}
+
+// TestBackfillArchetypes_NeverTouchesVersion is AC11's non-regression guard:
+// --fix backfills Archetype only — it must never touch Version (that is
+// `mneme subagents regen`'s job, a different blast radius: files, not the
+// manifest field).
+func TestBackfillArchetypes_NeverTouchesVersion(t *testing.T) {
+	entries := []service.ManifestEntry{{Role: subagents.RoleBackend, Version: 1}}
+	got, changed := backfillArchetypes(entries)
+	if !changed {
+		t.Fatal("changed = false, want true (archetype was backfilled)")
+	}
+	if got[0].Version != 1 {
+		t.Errorf("Version = %d, want unchanged 1 — --fix must never bump Version", got[0].Version)
 	}
 }
 

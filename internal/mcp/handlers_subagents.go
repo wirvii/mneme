@@ -654,6 +654,13 @@ const (
 	mcpDoctorKindOrphanPath       mcpDoctorFindingKind = "orphan_path"
 	mcpDoctorKindDrift            mcpDoctorFindingKind = "drift"
 	mcpDoctorKindBareDirOK        mcpDoctorFindingKind = "bare_dir_ok"
+	// mcpDoctorKindStaleAgentFixed mirrors cli's doctorKindStaleAgentFixed
+	// (SPEC-087 D7/R7): fires when a manifest entry's persisted Version has
+	// fallen behind subagents.AgentFixedVersion. NOT auto-fixed by --fix
+	// (SPEC-086 AC16 stays green) — the mneme-init grill is the one place
+	// D11 expects a repair workflow to actually act on this, per this
+	// file's own package doc comment.
+	mcpDoctorKindStaleAgentFixed mcpDoctorFindingKind = "stale_agent_fixed"
 )
 
 // mcpDoctorFinding is one diagnostic observation about a single manifest
@@ -695,6 +702,12 @@ func diagnoseManifestEntryMCP(e service.ManifestEntry, fileExists func(string) b
 		findings = append(findings, mcpDoctorFinding{
 			Kind:   mcpDoctorKindNotVerified,
 			Detail: "areas_complete ausente o false — no verificado (re-grillar para certificar)",
+		})
+	}
+	if e.Version < subagents.AgentFixedVersion {
+		findings = append(findings, mcpDoctorFinding{
+			Kind:   mcpDoctorKindStaleAgentFixed,
+			Detail: fmt.Sprintf("agent-fixed block en v%d, la versión actual es v%d — regenerar con `mneme subagents regen --role %s`", e.Version, subagents.AgentFixedVersion, e.Role),
 		})
 	}
 

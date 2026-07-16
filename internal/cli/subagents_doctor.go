@@ -33,6 +33,16 @@ import (
 	"github.com/wirvii/mneme/internal/subagents"
 )
 
+// SPEC-087 D7: doctor also reports when a manifest entry's persisted
+// agent-fixed block Version has fallen behind subagents.AgentFixedVersion —
+// stamped when a profile was generated, never touched by any read path, so
+// it is exactly what tells doctor a materialised file is stale without
+// re-reading and re-parsing the file itself. Deliberately NOT auto-fixed:
+// --fix stays narrowly scoped to the archetype backfill (SPEC-086 AC16
+// pins that and must stay green); regenerating a FILE is a different blast
+// radius than backfilling a MANIFEST field, so it needs its own explicit
+// command (`mneme subagents regen`).
+
 // doctorFindingKind classifies a single diagnostic finding.
 type doctorFindingKind string
 
@@ -44,6 +54,7 @@ const (
 	doctorKindOrphanPath       doctorFindingKind = "orphan_path"
 	doctorKindDrift            doctorFindingKind = "drift"
 	doctorKindBareDirOK        doctorFindingKind = "bare_dir_ok"
+	doctorKindStaleAgentFixed  doctorFindingKind = "stale_agent_fixed"
 )
 
 // doctorFinding is one diagnostic observation about a single manifest entry.
@@ -89,6 +100,12 @@ func diagnoseManifestEntry(e service.ManifestEntry, fileExists func(string) bool
 		findings = append(findings, doctorFinding{
 			Role: role, Kind: doctorKindNotVerified,
 			Detail: "areas_complete ausente o false — no verificado (re-grillar para certificar)",
+		})
+	}
+	if e.Version < subagents.AgentFixedVersion {
+		findings = append(findings, doctorFinding{
+			Role: role, Kind: doctorKindStaleAgentFixed,
+			Detail: fmt.Sprintf("agent-fixed block en v%d, la versión actual es v%d — regenerar con `mneme subagents regen --role %s`", e.Version, subagents.AgentFixedVersion, role),
 		})
 	}
 
@@ -181,12 +198,15 @@ func newSubagentsDoctorCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "doctor",
 		Short: "Diagnose the current project's subagent manifest (report-only by default)",
-		Long: `Runs SPEC-086 D11's checks against every entry in the current project's
-subagent manifest: an implementer role with no declared areas (degenerate),
-areas_complete absent (not verified), archetype absent (backfill available
-via --fix), a checksum that no longer matches the file on disk (drift), a
-path that no longer exists (orphan), and a role/archetype not recognised by
-subagents.PermissionTable (unknown — its area is unprotected by the hook).
+		Long: `Runs SPEC-086 D11's checks (plus SPEC-087 D7's stale_agent_fixed) against
+every entry in the current project's subagent manifest: an implementer role
+with no declared areas (degenerate), areas_complete absent (not verified),
+archetype absent (backfill available via --fix), an agent-fixed block
+version behind the current AgentFixedVersion (regenerate with
+"mneme subagents regen"), a checksum that no longer matches the file on
+disk (drift), a path that no longer exists (orphan), and a role/archetype
+not recognised by subagents.PermissionTable (unknown — its area is
+unprotected by the hook).
 
 A bare-directory area (e.g. "apps/web-ui" instead of "apps/web-ui/**") is
 reported as healthy, not rewritten — areaMatches already resolves it.

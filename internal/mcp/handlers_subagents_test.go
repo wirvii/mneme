@@ -839,6 +839,36 @@ func TestDiagnoseManifestEntryMCP_ArchetypeMissingAndNotVerified(t *testing.T) {
 	}
 }
 
+// TestDiagnoseManifestEntryMCP_StaleAgentFixed mirrors the CLI's
+// TestDiagnoseManifestEntry_StaleAgentFixed (SPEC-087 D7/R7 parity): a
+// manifest entry whose persisted Version has fallen behind
+// subagents.AgentFixedVersion is flagged stale_agent_fixed over MCP too.
+func TestDiagnoseManifestEntryMCP_StaleAgentFixed(t *testing.T) {
+	stale := service.ManifestEntry{
+		Role: subagents.RoleBackend, Archetype: subagents.RoleBackend,
+		Areas: []string{"internal/**"}, AreasComplete: true, Version: 1,
+	}
+	findings := diagnoseManifestEntryMCP(stale, mcpAlwaysExists, mcpMatchingChecksum)
+	found := false
+	for _, f := range findings {
+		if f.Kind == mcpDoctorKindStaleAgentFixed {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("findings = %+v, want stale_agent_fixed for Version:1", findings)
+	}
+
+	current := stale
+	current.Version = subagents.AgentFixedVersion
+	freshFindings := diagnoseManifestEntryMCP(current, mcpAlwaysExists, mcpMatchingChecksum)
+	for _, f := range freshFindings {
+		if f.Kind == mcpDoctorKindStaleAgentFixed {
+			t.Errorf("findings = %+v, must NOT flag stale_agent_fixed at the current version", freshFindings)
+		}
+	}
+}
+
 // TestSubagentManifestList_IncludesDoctorFindings_D4BugCaseVisible is the
 // end-to-end MCP reproduction of AC16/D12: a custom-role entry (the exact
 // D4 bug shape — role="qa-tester", archetype="bug-hunter") written via

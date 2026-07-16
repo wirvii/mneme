@@ -64,7 +64,8 @@ Subcommands:
   compose        Assemble a subagent profile preview (never writes to disk).
   write          Write a composed profile to .claude/agents/ and update the manifest.
   manifest-list  List the generated subagent profiles recorded in the manifest.
-  doctor         Diagnose the manifest (degenerate areas, drift, unknown roles) — [--fix] backfills archetype only.`,
+  doctor         Diagnose the manifest (degenerate areas, drift, unknown roles) — [--fix] backfills archetype only.
+  regen          Regenerate materialised profiles' layer-1 content from the manifest (SPEC-087 D7).`,
 	}
 
 	cmd.AddCommand(
@@ -74,6 +75,7 @@ Subcommands:
 		newSubagentsWriteCmd(),
 		newSubagentsManifestListCmd(),
 		newSubagentsDoctorCmd(),
+		newSubagentsRegenCmd(),
 	)
 
 	return cmd
@@ -872,4 +874,175 @@ func newSubagentsManifestListCmd() *cobra.Command {
 
 	cmd.Flags().BoolVar(&flagJSON, "json", false, "Output as JSON")
 	return cmd
+}
+
+// --- regen (SPEC-087 D7) ---
+
+// subagentRegenResult reports the outcome of regenerating a single manifest
+// entry.
+type subagentRegenResult struct {
+	Role       string `json:"role"`
+	Path       string `json:"path"`
+	OldVersion int    `json:"old_version"`
+	NewVersion int    `json:"new_version"`
+	Changed    bool   `json:"changed"`
+	Error      string `json:"error,omitempty"`
+}
+
+func newSubagentsRegenCmd() *cobra.Command {
+	var (
+		flagRole   string
+		flagAll    bool
+		flagDryRun bool
+		flagJSON   bool
+	)
+
+	cmd := &cobra.Command{
+		Use:   "regen",
+		Short: "Regenerate materialised subagent profiles' layer-1 content from the manifest",
+		Long: `Reads the current project's subagent manifest (the source of truth: Role,
+EffectiveArchetype(), Path) and, for each selected entry, rewrites its
+frontmatter and agent-fixed managed block against the current
+PermissionTable/LayerOneAsset (internal/subagents.Regenerate) — preserving
+any hand-authored capa-2/3 body byte-for-byte. Updates the manifest entry's
+Version, Checksum, and GeneratedAt on success.
+
+Bumping AgentFixedVersion alone changes nothing for a profile already
+written to disk: nothing re-composes it automatically. This command is the
+mechanical upgrade path for the 8+ repos that already ran the grill before
+a layer-1 change landed (e.g. SPEC-087 D4's removal of the spec_advance
+instruction).
+
+Refuses (per-entry, does not abort the batch) any file that has no
+frontmatter or no agent-fixed managed block — not a mneme-generated
+profile, never overwritten. Exactly one of --role or --all is required.`,
+		Example: `  mneme subagents regen --all
+  mneme subagents regen --role backend
+  mneme subagents regen --all --dry-run`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if flagRole == "" && !flagAll {
+				return errors.New("subagents regen: exactly one of --role or --all is required")
+			}
+			if flagRole != "" && flagAll {
+				return errors.New("subagents regen: --role and --all are mutually exclusive")
+			}
+
+			svc, cleanup, err := initSubagentService()
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+
+			ctx := cmd.Context()
+			entries, err := svc.ReadManifest(ctx, flagProject)
+			if err != nil {
+				return fmt.Errorf("subagents regen: %w", err)
+			}
+
+			results, updated, changedAny, matched := regenerateManifestEntries(entries, flagRole, flagDryRun)
+			if flagRole != "" && !matched {
+				return fmt.Errorf("subagents regen: role %q not found in manifest", flagRole)
+			}
+
+			if !flagDryRun && changedAny {
+				if _, err := svc.SaveManifest(ctx, flagProject, updated); err != nil {
+					return fmt.Errorf("subagents regen: save manifest: %w", err)
+				}
+			}
+
+			if flagJSON {
+				return printJSON(cmd.OutOrStdout(), results)
+			}
+			printSubagentRegenResults(cmd.OutOrStdout(), results, flagDryRun)
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&flagRole, "role", "", "Regenerate only this role's profile")
+	cmd.Flags().BoolVar(&flagAll, "all", false, "Regenerate every profile in the manifest")
+	cmd.Flags().BoolVar(&flagDryRun, "dry-run", false, "Report what would change without writing anything")
+	cmd.Flags().BoolVar(&flagJSON, "json", false, "Output results as JSON")
+
+	return cmd
+}
+
+// regenerateManifestEntries runs internal/subagents.Regenerate over every
+// entry in entries selected by role (all entries when role == ""), writing
+// the regenerated content back to disk unless dryRun is true. It is a pure-
+// ish helper (the only I/O is os.ReadFile/os.WriteFile) factored out of
+// newSubagentsRegenCmd's RunE so it is directly testable without a cobra
+// command harness.
+//
+// Returns: results (one per selected entry, in manifest order), updated
+// (the full entries slice with Version/Checksum/GeneratedAt refreshed for
+// every successfully-regenerated entry — ready to pass to SaveManifest
+// verbatim), changedAny (whether any entry's checksum actually changed —
+// callers use this to skip a no-op SaveManifest call), and matched
+// (whether role, when non-empty, matched at least one entry).
+func regenerateManifestEntries(entries []service.ManifestEntry, role string, dryRun bool) (results []subagentRegenResult, updated []service.ManifestEntry, changedAny, matched bool) {
+	updated = make([]service.ManifestEntry, len(entries))
+	copy(updated, entries)
+
+	for i, e := range entries {
+		if role != "" && string(e.Role) != role {
+			continue
+		}
+		matched = true
+
+		result := subagentRegenResult{Role: string(e.Role), Path: e.Path, OldVersion: e.Version}
+
+		existing, readErr := os.ReadFile(e.Path)
+		if readErr != nil {
+			result.Error = readErr.Error()
+			results = append(results, result)
+			continue
+		}
+
+		regenerated, regenErr := subagents.Regenerate(string(existing), e.Role, e.EffectiveArchetype())
+		if regenErr != nil {
+			result.Error = regenErr.Error()
+			results = append(results, result)
+			continue
+		}
+
+		_, newVersion, _ := managedblock.ReadText(regenerated, "agent-fixed")
+		newChecksum := checksumOfSubagentContent(regenerated)
+		result.NewVersion = newVersion
+		result.Changed = newChecksum != e.Checksum
+
+		if !dryRun {
+			if writeErr := os.WriteFile(e.Path, []byte(regenerated), 0o644); writeErr != nil {
+				result.Error = writeErr.Error()
+				results = append(results, result)
+				continue
+			}
+			updated[i].Version = newVersion
+			updated[i].Checksum = newChecksum
+			updated[i].GeneratedAt = time.Now().UTC()
+			changedAny = changedAny || result.Changed
+		}
+
+		results = append(results, result)
+	}
+
+	return results, updated, changedAny, matched
+}
+
+// printSubagentRegenResults writes the human-readable regen report to w.
+func printSubagentRegenResults(w io.Writer, results []subagentRegenResult, dryRun bool) {
+	for _, r := range results {
+		if r.Error != "" {
+			fmt.Fprintf(w, "[error]       %-16s %s: %s\n", r.Role, r.Path, r.Error)
+			continue
+		}
+		status := "unchanged"
+		if r.Changed {
+			status = "regenerated"
+		}
+		if dryRun {
+			status = "would-" + status
+		}
+		fmt.Fprintf(w, "[%-11s] %-16s v%d -> v%d  %s\n", status, r.Role, r.OldVersion, r.NewVersion, r.Path)
+	}
 }
