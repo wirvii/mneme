@@ -64,7 +64,8 @@ Subcommands:
   profile save   Upsert the project-profile from a JSON file or stdin.
   compose        Assemble a subagent profile preview (never writes to disk).
   write          Write a composed profile to .claude/agents/ and update the manifest.
-  manifest-list  List the generated subagent profiles recorded in the manifest.`,
+  manifest-list  List the generated subagent profiles recorded in the manifest.
+  doctor         Diagnose the manifest (degenerate areas, drift, unknown roles) — [--fix] backfills archetype only.`,
 	}
 
 	cmd.AddCommand(
@@ -73,6 +74,7 @@ Subcommands:
 		newSubagentsComposeCmd(),
 		newSubagentsWriteCmd(),
 		newSubagentsManifestListCmd(),
+		newSubagentsDoctorCmd(),
 	)
 
 	return cmd
