@@ -20,6 +20,7 @@ import (
 	"github.com/wirvii/mneme/internal/codegraph"
 	"github.com/wirvii/mneme/internal/config"
 	"github.com/wirvii/mneme/internal/db"
+	"github.com/wirvii/mneme/internal/enforcelog"
 	"github.com/wirvii/mneme/internal/enforcement"
 	"github.com/wirvii/mneme/internal/model"
 	"github.com/wirvii/mneme/internal/project"
@@ -342,6 +343,26 @@ type hookPreToolInput struct {
 	// per session. Absent or empty falls back to a project-keyed TTL entry.
 	SessionID string `json:"session_id"`
 
+	// CWD is the working directory Claude Code recorded for this invocation
+	// (SPEC-086 D14, captured verbatim in the 2026-07-15 payload snapshot —
+	// see memory enforcement/payload-pretooluse-agent-type-capturado). It is
+	// authoritative over where the call actually happened; resolveHookCWD
+	// prefers it, falling back to os.Getwd() when absent (older Claude Code
+	// versions, or a hand-built payload in a test).
+	CWD string `json:"cwd"`
+
+	// AgentType is the literal subagent role name Claude Code injects
+	// top-level in the PreToolUse payload (SPEC-086 D1) — captured evidence,
+	// 2026-07-15: it equals the `.claude/agents/<role>.md` filename / the
+	// manifest's Role field, with NO correlation, cache, or transcript
+	// needed. Deliberately only the top-level location is read: SPEC-042's
+	// five-path agent_id defensiveness was itself the product of guessing
+	// without evidence, and D1 refuses to repeat that mistake for a field
+	// that DOES have a confirmed single shape. If Claude Code ever stops
+	// sending it, resolveIdentity's RoleSource="unresolved" branch (D2)
+	// notices and warns loudly instead of silently returning "" forever.
+	AgentType string `json:"agent_type"`
+
 	// The five paths where Claude Code may inject agent_id (SPEC-042 / SPEC-043).
 	// Any non-empty value signals a subagent; all empty / absent means orchestrator.
 	AgentID  string `json:"agent_id"`
@@ -351,13 +372,11 @@ type hookPreToolInput struct {
 	Metadata struct{ AgentID string `json:"agent_id"` } `json:"metadata"`
 }
 
-// resolveCaller inspects all five known agent_id locations in the payload and
-// returns CallerSubagent if any of them is non-empty, CallerOrchestrator otherwise.
-//
-// This replicates the multi-key resolution logic of enforce_delegation.sh so
-// both layers behave identically regardless of which payload field Claude Code
-// uses in a given version.
-func (in hookPreToolInput) resolveCaller() rules.Caller {
+// agentID returns the first non-empty value among the five known agent_id
+// locations (SPEC-042/SPEC-043), or "" when none is set (orchestrator).
+// resolveCaller and resolveIdentity both build on this single scan so the
+// five-path list is defined in exactly one place.
+func (in hookPreToolInput) agentID() string {
 	for _, id := range []string{
 		in.AgentID,
 		in.Session.AgentID,
@@ -366,10 +385,66 @@ func (in hookPreToolInput) resolveCaller() rules.Caller {
 		in.Metadata.AgentID,
 	} {
 		if id != "" {
-			return rules.CallerSubagent
+			return id
 		}
 	}
+	return ""
+}
+
+// resolveCaller inspects all five known agent_id locations in the payload and
+// returns CallerSubagent if any of them is non-empty, CallerOrchestrator otherwise.
+//
+// This replicates the multi-key resolution logic of enforce_delegation.sh so
+// both layers behave identically regardless of which payload field Claude Code
+// uses in a given version.
+func (in hookPreToolInput) resolveCaller() rules.Caller {
+	if in.agentID() != "" {
+		return rules.CallerSubagent
+	}
 	return rules.CallerOrchestrator
+}
+
+// CallerIdentity is the role-aware resolution of who is invoking the current
+// tool call (SPEC-086 D1) — the successor to the boolean resolveCaller() for
+// every caller that needs to know WHICH role, not merely WHETHER a subagent
+// is calling.
+type CallerIdentity struct {
+	// IsSubagent mirrors resolveCaller() == rules.CallerSubagent.
+	IsSubagent bool
+
+	// AgentID is the opaque agent_id value (first of the five defensive
+	// paths that resolved non-empty), "" for the orchestrator.
+	AgentID string
+
+	// Role is the literal role name from AgentType, "" when unknown
+	// (orchestrator, or RoleSource=="unresolved").
+	Role string
+
+	// RoleSource explains where Role came from:
+	//   - "payload": AgentType was present — the normal subagent case.
+	//   - "unresolved": IsSubagent is true but AgentType was empty — D2's
+	//     fail-open-but-noisy case: a Claude Code payload shape change that
+	//     must never be allowed to silently disable containment.
+	//   - "n/a": IsSubagent is false (orchestrator) — there is no role to
+	//     resolve at all.
+	RoleSource string
+}
+
+// resolveIdentity is CallerIdentity's constructor from a raw PreToolUse
+// payload (SPEC-086 D1). It never guesses at additional agent_type
+// locations: only the confirmed top-level field is read (see AgentType's
+// doc comment) — RoleSource="unresolved" is the intentional signal for "the
+// evidence this was built on stopped holding", not a prompt to add more
+// speculative paths.
+func (in hookPreToolInput) resolveIdentity() CallerIdentity {
+	agentID := in.agentID()
+	if agentID == "" {
+		return CallerIdentity{IsSubagent: false, RoleSource: "n/a"}
+	}
+	if in.AgentType == "" {
+		return CallerIdentity{IsSubagent: true, AgentID: agentID, RoleSource: "unresolved"}
+	}
+	return CallerIdentity{IsSubagent: true, AgentID: agentID, Role: in.AgentType, RoleSource: "payload"}
 }
 
 // filePath returns the target file path for the invocation. For most tools this
@@ -819,6 +894,111 @@ func resolvePathOwnership(targetPath, cwd string, manifestFound bool, manifestJS
 	return pathOwnershipDecision{ExitCode: 0}
 }
 
+// ---- Subagent containment (SPEC-086 D5) -------------------------------------
+
+// findManifestEntryByRole returns the manifest entry whose Role matches
+// role exactly (the join key against a resolved CallerIdentity.Role — see
+// AgentType's doc comment: agent_type IS the manifest's Role field, no
+// correlation needed), or (zero, false) when none matches.
+func findManifestEntryByRole(entries []hookManifestEntry, role string) (hookManifestEntry, bool) {
+	for _, e := range entries {
+		if e.Role == role {
+			return e, true
+		}
+	}
+	return hookManifestEntry{}, false
+}
+
+// entryAreasMatch reports whether pathRel falls under any of entry's
+// declared Areas (areaMatches, SPEC-084 D1/D2).
+func entryAreasMatch(entry hookManifestEntry, pathRel string) bool {
+	for _, area := range entry.Areas {
+		if areaMatches(area, pathRel) {
+			return true
+		}
+	}
+	return false
+}
+
+// findOwnerRole returns the role of the first implementer manifest entry
+// whose declared areas cover pathRel (mirrors resolvePathOwnership's own
+// loop, D4-fixed via isImplementer()), or "" when none does. This is used
+// purely to name a helpful "@owner" in the rendered containment message
+// (AC8) — it never affects the containment decision itself, which is always
+// evaluated against the CALLING role's own declared areas, not against
+// whoever else might own the path.
+func findOwnerRole(entries []hookManifestEntry, pathRel string) string {
+	for _, e := range entries {
+		if !e.isImplementer() {
+			continue
+		}
+		if entryAreasMatch(e, pathRel) {
+			return e.Role
+		}
+	}
+	return ""
+}
+
+// subagentContainmentResult is the outcome of evaluating one candidate path
+// against a subagent's own declared, manifest-certified areas (SPEC-086 D5).
+type subagentContainmentResult struct {
+	// Block is the functional outcome fed back through
+	// enforcement.OwnershipFunc: true only when containment mode is "block"
+	// AND the role's areas are certified complete (AreasComplete) AND the
+	// path falls outside them. Incomplete data NEVER blocks, regardless of
+	// mode (D6's "dato incompleto nunca bloquea").
+	Block bool
+
+	// WouldBlock is true whenever the path falls outside the role's
+	// declared areas, independent of AreasComplete or mode — the D3/D7
+	// evidence signal logged to enforcelog so a project can see what WOULD
+	// break before promoting to "block".
+	WouldBlock bool
+
+	// Owner is the role (if any) whose own areas actually cover pathRel —
+	// see findOwnerRole.
+	Owner string
+
+	// Reason is a short machine label for telemetry/messaging.
+	Reason string
+}
+
+// evaluateSubagentContainment implements SPEC-086 D5's decision table for a
+// single candidate path pathRel, given a resolved subagent identity (D2's
+// "unresolved" row must be handled by the caller before reaching here — see
+// resolveHookCWD's sibling, subagentOwnershipFunc) and the parsed manifest
+// entries. It performs no I/O and never blocks the ORCHESTRATOR'S
+// deny-by-default fallback: unlike resolvePathOwnership, an absent role in
+// the manifest (row 4) or an absent manifest entirely is always ALLOW —
+// there is no "legacy" inheritance for subagents (D5's explicit point:
+// heriting it would block every implementer subagent in every repo without
+// a manifest the day this feature merges).
+func evaluateSubagentContainment(identity CallerIdentity, pathRel string, entries []hookManifestEntry, mode string) subagentContainmentResult {
+	entry, found := findManifestEntryByRole(entries, identity.Role)
+	if !found {
+		return subagentContainmentResult{Reason: "role_not_in_manifest"}
+	}
+	if entryAreasMatch(entry, pathRel) {
+		return subagentContainmentResult{Reason: "matches_own_areas"}
+	}
+
+	// Path falls outside the role's declared areas.
+	owner := findOwnerRole(entries, pathRel)
+	if !entry.AreasComplete {
+		return subagentContainmentResult{
+			WouldBlock: true,
+			Owner:      owner,
+			Reason:     "outside_declared_areas_but_areas_incomplete",
+		}
+	}
+	return subagentContainmentResult{
+		Block:      mode == "block",
+		WouldBlock: true,
+		Owner:      owner,
+		Reason:     "outside_declared_areas",
+	}
+}
+
 // runHookPathOwned implements the "mneme hook path-owned <path>" subcommand
 // (SPEC-068 D6/D7/D8): it decides whether the orchestrator should be blocked
 // from editing targetPath by consulting the project's subagent manifest, and
@@ -1241,12 +1421,43 @@ func renderCodegraphNudge(w io.Writer, stale bool, hoursStale int) {
 	fmt.Fprintf(w, "<!-- mneme:codegraph-nudge:end -->\n")
 }
 
+// resolveHookCWD implements D14: the payload's own cwd field is
+// authoritative over where a tool invocation actually happened, so it is
+// preferred over the hook process's own os.Getwd() when present. Every call
+// site already has a real os.Getwd() result to pass as fallback (computed
+// once, right before this call), so a malformed/empty input.CWD never
+// leaves the hook without a working directory.
+func resolveHookCWD(input hookPreToolInput, fallback string) string {
+	if input.CWD != "" {
+		return input.CWD
+	}
+	return fallback
+}
+
+// unresolvedRoleWarning is D2's mandatory, impossible-to-miss stderr message:
+// printed on EVERY invocation where a subagent's agent_id is present but
+// agent_type is not — the payload shape this whole feature is built on
+// (captured 2026-07-15, memory
+// enforcement/payload-pretooluse-agent-type-capturado) stopped holding.
+// Never fail-closed (blocking every subagent in 8+ repos on a Claude Code
+// version bump is worse than losing containment), but never silent either —
+// that silence is exactly what let the equivalent gap go unnoticed for two
+// months before this spec (SPEC-042 D2 precedent: the noisy jq guard).
+const unresolvedRoleWarning = "⚠ mneme: agent_id presente sin agent_type — la contención de subagentes está DESACTIVADA. Payload cambió; ver docs/HOOKS.md.\n"
+
+// warnUnresolvedRole writes unresolvedRoleWarning to errW.
+func warnUnresolvedRole(errW io.Writer) {
+	fmt.Fprint(errW, unresolvedRoleWarning)
+}
+
 // delegationTools is the set of tool names the orchestrator-guard (Layer 2)
 // intercepts. Unlike mutatingTools (used by the rules-engine pre-tool-use
 // hook, which never intercepts Bash — see its own doc comment), Bash IS
 // included here: the delegation guard evaluates Bash commands for redirects,
 // destructive commands, and inline scripts, exactly like the bash
-// enforce_delegation.sh it replaces (SPEC-069 D1/D5).
+// enforce_delegation.sh it replaces (SPEC-069 D1/D5). SPEC-086 D5 evaluates
+// the SAME tool set for subagent containment — a subagent's Bash usage is
+// contained on a best-effort basis exactly like the orchestrator's (R3).
 var delegationTools = map[string]bool{
 	"Write":        true,
 	"Edit":         true,
@@ -1257,20 +1468,25 @@ var delegationTools = map[string]bool{
 
 // runHookEnforceDelegation implements the "mneme hook enforce-delegation"
 // subcommand: mneme's orchestrator-guard (Layer 2 of the two-layer
-// enforcement model). This is an in-process Go port of
-// enforce_delegation.sh (SPEC-069) — the bash script is now a thin compat
-// shim that exec's this subcommand (see internal/install/hooks.go).
+// enforcement model), extended by SPEC-086 to also contain SUBAGENTS to
+// their manifest-declared areas — the `if resolveCaller() == CallerSubagent
+// { return nil }` short-circuit this function used to have is gone (D5): a
+// subagent invocation is now resolved to a full CallerIdentity and
+// evaluated exactly like the orchestrator's, through the same
+// evaluateDelegation -> enforcement.Evaluate* pipeline, just with a
+// different OwnershipFunc closure (D10).
 //
-// It reads the tool invocation JSON from r, short-circuits for subagents
-// (resolveCaller) and unrelated tools (delegationTools), then delegates the
-// actual decision to internal/enforcement via evaluateDelegation, which
-// injects an in-process OwnershipFunc closure over resolvePathOwnership
-// (SPEC-068) — no subprocess round-trip to "mneme hook path-owned" or
-// "mneme hook tokenize".
+// A subagent whose role could not be resolved (agent_id present,
+// agent_type absent — D2) warns loudly on errW and is always allowed; every
+// other subagent path is evaluated by evaluateDelegation exactly like the
+// orchestrator's Bash/file-tool paths.
 //
-// On a block: prints the delegation message to errW, logs a best-effort
-// discovery memory (logBlockedEditDiscovery), and exits 2. Every other path —
-// subagent, unrelated tool, allowed path, or any fail-open branch inside
+// On an orchestrator block: prints the delegation message to errW, logs a
+// best-effort discovery memory (logBlockedEditDiscovery), and exits 2. On a
+// subagent block (containment mode "block" only): prints the containment
+// message to errW and exits 2 — no discovery memory (SPEC-069's "orchestrator
+// bypassed SDD" narrative does not apply to a contained subagent). Every
+// other path — unrelated tool, allowed path, or any fail-open branch inside
 // evaluateDelegation — returns nil (exit 0).
 func runHookEnforceDelegation(r io.Reader, errW io.Writer) error {
 	var input hookPreToolInput
@@ -1278,9 +1494,6 @@ func runHookEnforceDelegation(r io.Reader, errW io.Writer) error {
 		return nil // fail-open: empty/invalid stdin (e.g. io.EOF).
 	}
 
-	if input.resolveCaller() == rules.CallerSubagent {
-		return nil
-	}
 	if !delegationTools[input.ToolName] {
 		return nil
 	}
@@ -1289,9 +1502,24 @@ func runHookEnforceDelegation(r io.Reader, errW io.Writer) error {
 	if err != nil {
 		return nil // fail-open: cannot resolve cwd.
 	}
+	cwd = resolveHookCWD(input, cwd)
+
+	identity := input.resolveIdentity()
+	if identity.IsSubagent && identity.RoleSource == "unresolved" {
+		warnUnresolvedRole(errW)
+		logUnresolvedRoleEvent(input, identity, cwd)
+		return nil
+	}
 
 	decision := evaluateDelegation(input, cwd)
 	if !decision.Block {
+		return nil
+	}
+
+	if identity.IsSubagent {
+		printContainmentBlock(errW, identity, decision)
+		//nolint:gocritic // os.Exit(2) is the documented hook exit code for rejection
+		os.Exit(2)
 		return nil
 	}
 
@@ -1305,11 +1533,22 @@ func runHookEnforceDelegation(r io.Reader, errW io.Writer) error {
 // evaluateDelegation resolves config/project/manifest state once — mirroring
 // runHookPathOwned's own resolution — and delegates to
 // internal/enforcement's pure Evaluate* functions via an in-process
-// OwnershipFunc closure over resolvePathOwnership (SPEC-068), never a
-// subprocess. Any hard failure resolving the home directory, config, or the
-// manifest fails open (returns a zero enforcement.Decision, Block=false),
-// consistent with the rest of this hook family's fail-open philosophy
-// (D8/D9).
+// OwnershipFunc closure (SPEC-068/086 D10), never a subprocess. Any hard
+// failure resolving the home directory, config, or the manifest fails open
+// (returns a zero enforcement.Decision, Block=false), consistent with the
+// rest of this hook family's fail-open philosophy (D8/D9).
+//
+// The closure itself branches on input.resolveIdentity() (D10: "la
+// identidad la captura el closure, construido en evaluateDelegation, donde
+// input ya está disponible"): an orchestrator gets the existing
+// resolvePathOwnership legacy-deny-by-default lookup (SPEC-068/084,
+// unchanged — AC7), a subagent gets the new SPEC-086 D5 containment lookup
+// (subagentOwnershipFunc) — routed through the exact same
+// enforcement.EvaluateFileTool/EvaluateBash call below, so a subagent's Bash
+// usage is contained via the same token-walking machinery the orchestrator
+// guard already has (redirects, watched commands, sed -i, dd, inline
+// scripts), instead of duplicating it. enforcement.OwnershipFunc's signature
+// never changes — internal/enforcement is untouched here except for D9.
 //
 // It builds the enforcement.PathContext once per invocation (SPEC-075 D2):
 // os.UserHomeDir for "~/" expansion, os.TempDir for the OS scratch
@@ -1341,15 +1580,50 @@ func evaluateDelegation(input hookPreToolInput, cwd string) enforcement.Decision
 		return enforcement.Decision{}
 	}
 
-	own := func(target string) (bool, string) {
-		d := resolvePathOwnership(target, cwd, found, content)
-		return d.ExitCode == 2, d.Owner
+	identity := input.resolveIdentity()
+
+	var own enforcement.OwnershipFunc
+	if identity.IsSubagent {
+		own = subagentOwnershipFunc(identity, cwd, found, content, cfg, slug, input)
+	} else {
+		own = func(target string) (bool, string) {
+			d := resolvePathOwnership(target, cwd, found, content)
+			return d.ExitCode == 2, d.Owner
+		}
 	}
 
 	if input.ToolName == "Bash" {
 		return enforcement.EvaluateBash(input.ToolInput.Command, pc, own)
 	}
 	return enforcement.EvaluateFileTool(input.filePath(), pc, own)
+}
+
+// subagentOwnershipFunc builds the OwnershipFunc closure evaluateDelegation
+// injects for a resolved subagent identity (SPEC-086 D5/D10): the manifest
+// JSON is parsed once here (not per-candidate), and every candidate target
+// enforcement.EvaluateFileTool/EvaluateBash surfaces is evaluated against
+// evaluateSubagentContainment, with a best-effort enforcelog event on every
+// call (D3) so the D7 promotion gate has evidence to work from.
+func subagentOwnershipFunc(identity CallerIdentity, cwd string, manifestFound bool, manifestJSON string, cfg *config.Config, slug string, input hookPreToolInput) enforcement.OwnershipFunc {
+	var entries []hookManifestEntry
+	if manifestFound {
+		_ = json.Unmarshal([]byte(manifestJSON), &entries) // parse error -> entries stays nil -> allow (defensive; D2's unresolved short-circuit is the primary guard)
+	}
+	mode := cfg.SubagentContainmentMode(slug)
+
+	return func(target string) (bool, string) {
+		if identity.RoleSource == "unresolved" || !manifestFound || len(entries) == 0 {
+			return false, ""
+		}
+		pathRel, outOfTree := normalisePathForOwnership(target, cwd)
+		if outOfTree || pathRel == "" {
+			return false, ""
+		}
+
+		result := evaluateSubagentContainment(identity, pathRel, entries, mode)
+		logContainmentEvent(cfg, slug, input, identity, pathRel, mode, result)
+		return result.Block, result.Owner
+	}
 }
 
 // printDelegationBlock writes the delegation-block message to w, mirroring
@@ -1368,6 +1642,21 @@ func printDelegationBlock(w io.Writer, decision enforcement.Decision) {
 	fmt.Fprintln(w, "Whitelist: .claude/**, ~/.claude/**, ~/.mneme/**, /tmp/**, CLAUDE.md, **/docs/*.md, .claudeignore")
 	fmt.Fprintln(w, "ACCIÓN: Delegá al subagente correspondiente (Agent tool con subagent_type=backend|frontend|architect|...).")
 	fmt.Fprintln(w, "Tu trabajo es coordinar y conversar, NO implementar código.")
+}
+
+// printContainmentBlock writes the subagent-containment block message to w
+// (SPEC-086 AC8): it names BOTH the calling role (identity.Role, from the
+// message body, not from decision.Owner — a subagent is never its own
+// path's owner in this message) and, when known, the role whose declared
+// areas actually cover the path (decision.Owner), so the subagent knows
+// exactly who to point the orchestrator at.
+func printContainmentBlock(w io.Writer, identity CallerIdentity, decision enforcement.Decision) {
+	fmt.Fprintln(w, "BLOQUEADO: Esta ruta está fuera de las áreas declaradas para este subagente.")
+	fmt.Fprintf(w, "Rol: %s | Razón: %s\n", identity.Role, decision.Reason)
+	if decision.Owner != "" && decision.Owner != "legacy" {
+		fmt.Fprintf(w, "Dueño declarado de esta ruta: @%s\n", decision.Owner)
+	}
+	fmt.Fprintln(w, "ACCIÓN: No edites esta ruta — está fuera de tu área. Repórtaselo al orquestador para que delegue correctamente.")
 }
 
 // saveDiscoveryFunc persists a discovery memory. logBlockedEditDiscovery
@@ -1422,6 +1711,86 @@ func logBlockedEditDiscovery(errW io.Writer, save saveDiscoveryFunc, tool, targe
 	if _, err := save(context.Background(), req); err != nil {
 		fmt.Fprintf(errW, "[mneme] enforce-delegation: log discovery: save failed: %v\n", err)
 	}
+}
+
+// ---- enforcelog telemetry wiring (SPEC-086 D3) ------------------------------
+
+// enforcelogPath resolves the on-disk path of a project's enforcement
+// telemetry log, mirroring codegraph.QuerylogPath's naming convention
+// (<projects-dir>/<slug>-suffix): enforcelog.Append creates the parent
+// directory as needed, so a slug containing "/" (nested project slugs) is
+// handled the same way querylog already handles it.
+func enforcelogPath(dataDir, slug string) string {
+	return filepath.Join(dataDir, "projects", slug+"-enforce.jsonl")
+}
+
+// containmentDecisionLabel converts a subagentContainmentResult into the
+// enforcelog.Decision the D7 promotion gate and "delegation-hook report"
+// read: Block wins over WouldBlock (an actual block IS evidence of a would-
+// block, but is reported as the stronger label), which wins over Allow.
+func containmentDecisionLabel(result subagentContainmentResult) enforcelog.Decision {
+	switch {
+	case result.Block:
+		return enforcelog.DecisionBlock
+	case result.WouldBlock:
+		return enforcelog.DecisionWouldBlock
+	default:
+		return enforcelog.DecisionAllow
+	}
+}
+
+// logContainmentEvent appends a best-effort enforcelog.Event for one
+// subagent-containment candidate evaluation (SPEC-086 D3). Failures
+// (including config.Load, which is intentionally re-resolved here rather
+// than threaded through every call site — telemetry must never be able to
+// affect the containment decision itself) are silently ignored: this
+// function is fail-open by construction, exactly like logOpportunity.
+func logContainmentEvent(cfg *config.Config, slug string, input hookPreToolInput, identity CallerIdentity, pathRel, mode string, result subagentContainmentResult) {
+	path := enforcelogPath(cfg.Storage.DataDir, slug)
+	ev := enforcelog.Event{
+		TS:         time.Now().UTC(),
+		Session:    input.SessionID,
+		Project:    slug,
+		Caller:     "subagent",
+		AgentID:    identity.AgentID,
+		Role:       identity.Role,
+		RoleSource: identity.RoleSource,
+		Tool:       input.ToolName,
+		Target:     pathRel,
+		Decision:   containmentDecisionLabel(result),
+		Mode:       mode,
+		Reason:     result.Reason,
+		Owner:      result.Owner,
+	}
+	_ = enforcelog.Append(path, ev, enforcelog.DefaultMaxBytes) //nolint:errcheck // best-effort telemetry
+}
+
+// logUnresolvedRoleEvent appends a best-effort enforcelog.Event for D2's
+// "agent_id present, agent_type absent" case — logged once per invocation
+// (unlike logContainmentEvent, which fires per candidate path) since the
+// unresolved-role short-circuit in runHookEnforceDelegation never reaches
+// evaluateDelegation/subagentOwnershipFunc at all.
+func logUnresolvedRoleEvent(input hookPreToolInput, identity CallerIdentity, cwd string) {
+	cfg, err := config.Load(config.DefaultPath())
+	if err != nil {
+		return
+	}
+	det := project.NewDetector(cwd)
+	slug, _ := det.DetectProject()
+
+	path := enforcelogPath(cfg.Storage.DataDir, slug)
+	ev := enforcelog.Event{
+		TS:         time.Now().UTC(),
+		Session:    input.SessionID,
+		Project:    slug,
+		Caller:     "subagent",
+		AgentID:    identity.AgentID,
+		RoleSource: identity.RoleSource,
+		Tool:       input.ToolName,
+		Decision:   enforcelog.DecisionAllow,
+		Reason:     "agent_type_unresolved",
+	}
+	_ = enforcelog.Append(path, ev, enforcelog.DefaultMaxBytes) //nolint:errcheck // best-effort telemetry
 }
 
 // sessionEndPrompt is the text printed by the session-end hook. It is designed

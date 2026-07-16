@@ -1,0 +1,16 @@
+{
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Edit",
+  "agent_id": null,
+  "agent_type": null,
+  "session_id": "bdd75358-d0e5-4d92-be40-71799070ed10",
+  "permission_mode": "acceptEdits",
+  "cwd": "/Users/naujoyamat/Projects/Repos/mneme",
+  "transcript_path": "/Users/naujoyamat/.claude/projects/-Users-naujoyamat-Projects-Repos-mneme/bdd75358-d0e5-4d92-be40-71799070ed10.jsonl",
+  "tool_input": {
+    "file_path": "/Users/naujoyamat/Projects/Repos/mneme/CLAUDE.md",
+    "old_string": "old",
+    "new_string": "new",
+    "replace_all": false
+  }
+}

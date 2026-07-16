@@ -1,0 +1,17 @@
+{
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Edit",
+  "agent_id": "a4ee1b9b81d3c70f8",
+  "agent_type": "backend",
+  "session_id": "bdd75358-d0e5-4d92-be40-71799070ed10",
+  "permission_mode": "bypassPermissions",
+  "effort": { "level": "high" },
+  "cwd": "/Users/naujoyamat/Projects/Repos/mneme",
+  "transcript_path": "/Users/naujoyamat/.claude/projects/-Users-naujoyamat-Projects-Repos-mneme/bdd75358-d0e5-4d92-be40-71799070ed10.jsonl",
+  "tool_input": {
+    "file_path": "/Users/naujoyamat/Projects/Repos/mneme/internal/cli/hook.go",
+    "old_string": "old",
+    "new_string": "new",
+    "replace_all": false
+  }
+}
