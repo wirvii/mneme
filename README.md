@@ -301,9 +301,12 @@ Two independent layers keep agent roles honest:
    cannot call `Edit`/`Write`/`MultiEdit`/`NotebookEdit` -- Claude Code enforces
    this natively, independent of what the prompt says.
 2. **`PreToolUse` hook (defense in depth).** `mneme hook pre-tool-use` evaluates
-   role-aware rules against every mutating tool call; a bash hook additionally
-   blocks the orchestrator from editing protected paths directly, by detecting
-   the absence of an `agent_id` in the hook payload.
+   role-aware rules against every mutating tool call; `mneme hook enforce-delegation`
+   additionally blocks the orchestrator from editing protected paths directly, by
+   detecting the absence of an `agent_id` in the hook payload, and — since a real
+   captured payload confirmed the top-level `agent_type` field is genuine
+   (2026-07-15) — contains each **subagent** to its own manifest-declared,
+   certified-complete areas (`off`/`warn`/`block` per project, default `warn`).
 
 | Role | Edits code? | Notes |
 |------|-------------|-------|

@@ -104,13 +104,21 @@ mneme enforces role boundaries at two layers:
 
 2. **Hook (defense in depth)**: `mneme hook enforce-delegation` (a Go
    `PreToolUse` subcommand, SPEC-069) detects the orchestrator by the absence
-   of `agent_id` in the hook payload. Orchestrator edit attempts against protected paths are blocked with
+   of `agent_id` in the hook payload (`CallerIdentity.IsSubagent`, SPEC-086).
+   Orchestrator edit attempts against protected paths are blocked with
    exit code 2 and logged as `discovery` memories — except a path with no
    implementer subagent to own it (per `mneme hook path-owned`, SPEC-068),
    which is allowed through as a conscious fallback: the orchestrator supplies
    stages/areas that have no delegate rather than the flow breaking. This is a
    documented trade-off (correction, not excellence) — materialize the missing
    subagent via the `mneme-init` grill when quality/isolation matter.
+   Since SPEC-086, a **subagent** invocation is no longer waved through
+   unconditionally either: the payload's top-level `agent_type` field (real,
+   confirmed 2026-07-15) identifies WHICH role is calling, and it is
+   contained to its own manifest-declared, `areas_complete`-certified areas
+   — `off`/`warn`/`block` per project (`[delegation] subagent_containment`
+   in `~/.mneme/config.toml`, default `warn`). See "Subagent containment"
+   in `docs/enforcement-model.md`.
 
 Every blocked attempt is queryable via:
 

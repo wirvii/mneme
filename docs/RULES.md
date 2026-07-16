@@ -73,10 +73,10 @@ Match against the **role of the hook caller**: orchestrator (main session, no `a
 agent:orchestrator   Applies only to the orchestrator (main session)
 agent:subagent       Applies only to subagents (Task/Agent calls)
 agent:*              Applies to all roles (wildcard)
-agent:<other>        Reserved -- does not match (DEFERRED, forward-compat)
+agent:<other>        Reserved -- does not match yet (see note below)
 ```
 
-**`agent:<agent_type>` DEFERRED:** The format `agent:backend`, `agent:frontend`, etc. is reserved for when Claude Code exposes the `agent_type` field in the payload. For now, any name other than `orchestrator`, `subagent`, and `*` does not match either role.
+**`agent:<agent_type>` (e.g. `agent:backend`, `agent:frontend`) is NOT YET implemented in this rules engine**, but is no longer blocked on missing evidence: a real captured PreToolUse payload (2026-07-15, SPEC-086, memory `enforcement/payload-pretooluse-agent-type-capturado`) confirmed Claude Code DOES expose a top-level `agent_type` field carrying the literal subagent role name — the premise this selector was deferred on ("Claude Code does not expose `agent_type`") is false. SPEC-086 used this same field to build role-aware subagent containment in the delegation-enforcement hook (`internal/cli/hook.go`'s `CallerIdentity`/`resolveIdentity` — see `docs/enforcement-model.md`'s "Subagent containment" section), but did NOT extend it to this rules engine's `applies_to` matcher (`internal/rules/match.go`) — that is a separate, independent workstream (BL-106). Until BL-106 lands, any name other than `orchestrator`, `subagent`, and `*` still does not match either role here.
 
 ### Combined selectors (AND)
 

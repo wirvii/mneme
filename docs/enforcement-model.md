@@ -93,8 +93,19 @@ when it reports a block. When it blocks, the guard:
    queryable discovery memory — a logging failure never changes the exit code.
 3. Exits with code 2, which causes Claude Code to reject the tool call.
 
-The guard does NOT discriminate by agent role (only by the presence of
-`agent_id`). Role boundaries for subagents are enforced entirely by Layer 1.
+Through SPEC-084 the guard did not discriminate by agent role at all — it
+only ever ran against the orchestrator (`agent_id` absent); a subagent
+invocation short-circuited to allow immediately. **SPEC-086 changed this**:
+a real captured PreToolUse payload (2026-07-15,
+[[enforcement/payload-pretooluse-agent-type-capturado]]) confirmed Claude
+Code DOES send a top-level `agent_type` field carrying the literal subagent
+role name (`"backend"`, `"qa-tester"`, ...), settling a question that had
+been open since SPEC-042/043. The guard now resolves a full
+`CallerIdentity{IsSubagent, AgentID, Role, RoleSource}` (`resolveIdentity`,
+`internal/cli/hook.go`) and, for a subagent, contains it to its own
+manifest-declared areas — see "Subagent containment" below. Layer 1 (the
+capability allowlist) remains the primary, always-on defense regardless of
+this Layer 2 addition.
 
 ### Manifest-aware path ownership (SPEC-068)
 
@@ -155,10 +166,47 @@ only blocks the areas that actually have a delegate, letting the orchestrator
 supply the rest as a documented fallback (see the operating manual's
 "Orchestrator fallback" section).
 
-Note on `agent_type`: Claude Code injects `agent_id` into the hook payload for
-subagents but does NOT inject `agent_type`. The hook therefore cannot identify
-which subagent role is attempting an action — only whether the caller is the
-principal or a subagent. This is by design: Layer 1 handles role discrimination.
+### Subagent containment (SPEC-086 D5)
+
+Since SPEC-086, a subagent invocation is evaluated by the **same**
+`evaluateDelegation` → `enforcement.EvaluateFileTool`/`EvaluateBash` pipeline
+as the orchestrator's — only the injected `OwnershipFunc` closure differs
+(`subagentOwnershipFunc` instead of `resolvePathOwnership`). This is
+deliberately NOT the orchestrator's deny-by-default lookup: a subagent never
+inherits "legacy" blocking just because a project has no manifest, or
+because its role is absent from one (e.g. `general-purpose`) — mneme never
+contains an agent it did not generate.
+
+| Condition | Result |
+|---|---|
+| Path whitelisted, out of tree, or empty | **ALLOW** |
+| No manifest for the project | **ALLOW** — no legacy inheritance for subagents |
+| `agent_type` absent (`agent_id` present, `RoleSource="unresolved"`) | **ALLOW** + a mandatory stderr warning on every such invocation (never silent — see the D2 precedent below) |
+| Role absent from the manifest | **ALLOW** — logged |
+| Manifest entry has `areas_complete` false/absent | **ALLOW** — logged as `would_block` for future evidence, never a real block regardless of mode |
+| `areas_complete: true` and the path matches the role's own declared areas | **ALLOW** |
+| `areas_complete: true` and no match | `would_block` in **warn** mode (the default) / **BLOCK** in **block** mode, naming the role that DOES own the path when one exists |
+
+Two independent knobs, never conflated: `areas_complete` (set once, by a
+human, in response to the `mneme-init` grill's explicit completeness
+question — see `internal/install/assets/skills/mneme-init/SKILL.md`)
+certifies the **data**; `[delegation] subagent_containment` in
+`~/.mneme/config.toml` (`off`/`warn`/`block`, global default `warn`, with
+optional per-project `[delegation.projects."<slug>"]` overrides via
+`Config.SubagentContainmentMode`) controls whether the project **acts** on
+it yet. Incomplete data never blocks, no matter what the mode is set to.
+
+`agent_type` is Claude Code **observed behavior**, not a published contract
+— a future version could stop sending it. That is exactly what
+`RoleSource="unresolved"` detects: the guard fails open (never blocks 8+
+repos' worth of subagents over a version bump) but never silently — the
+precedent is SPEC-042 D2's "noisy jq guard" for the equivalent situation
+with `agent_id` resolution. Every containment decision (and the unresolved
+case) is recorded to `internal/enforcelog` (local JSONL, 0600, never shared
+to the team vault — see its own package doc for the explicit privacy
+contract), which `mneme delegation-hook report` and `mneme delegation-hook
+promote` read to decide when a project has enough evidence to move from
+`warn` to `block`.
 
 #### Inherent limits of Layer 2
 
