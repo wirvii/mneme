@@ -771,6 +771,58 @@ mneme subagents manifest-list --json
 |------|---------|-------------|
 | `--json` | false | JSON output |
 
+### mneme subagents doctor
+
+Diagnoses the current project's manifest (report-only by default):
+`degenerate_areas`, `archetype_missing`, `not_verified`
+(`areas_complete` absent/false), `orphan_path`, `drift`, `unknown_role`,
+`bare_dir_ok` (informational, never actionable), and, since SPEC-087 D7,
+`stale_agent_fixed` (a manifest entry's persisted `Version` behind
+`subagents.AgentFixedVersion`). `--fix` ONLY backfills the `archetype`
+field for entries whose `Role` is one of the six built-in archetypes — it
+never touches `areas_complete` or `Version`; regenerating a stale profile's
+FILE is a different blast radius, handled by `mneme subagents regen`
+below.
+
+```bash
+mneme subagents doctor
+mneme subagents doctor --fix
+mneme subagents doctor --json
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--fix` | false | Backfill missing `archetype` fields only |
+| `--json` | false | JSON output |
+
+### mneme subagents regen
+
+Rewrites a materialised profile's frontmatter and agent-fixed managed block
+against the current `PermissionTable`/layer-1 asset
+(`internal/subagents.Regenerate`), preserving any hand-authored capa-2/3
+body byte-for-byte, then updates the manifest entry's `Version`/`Checksum`/
+`GeneratedAt`. This is the mechanical upgrade path for a project whose
+profiles were generated before a layer-1 change landed (e.g. SPEC-087 D4's
+removal of the `spec_advance` instruction from the agent-fixed block) —
+bumping `AgentFixedVersion` alone changes nothing already written to disk.
+
+Refuses (per-entry, does not abort the batch) any manifest entry whose file
+has no frontmatter or no agent-fixed managed block — not a mneme-generated
+profile, never overwritten. Exactly one of `--role`/`--all` is required.
+
+```bash
+mneme subagents regen --all
+mneme subagents regen --role backend
+mneme subagents regen --all --dry-run
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--role` | | Regenerate only this role's profile |
+| `--all` | false | Regenerate every profile in the manifest |
+| `--dry-run` | false | Report what would change without writing anything |
+| `--json` | false | JSON output (per-entry `role`, `path`, `old_version`, `new_version`, `changed`, `error`) |
+
 ---
 
 ## Team Memory

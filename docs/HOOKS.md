@@ -406,6 +406,57 @@ guard runs entirely in-process (no `jq`, no bash interpreter, no subprocess
 round-trip), so there is no longer a runtime-dependency failure mode to
 document — the only prerequisite is that `mneme` itself is on `PATH`.
 
+### Lifecycle-tool denial (SPEC-087 D5)
+
+`enforce-delegation` also intercepts two MCP tool names — `spec_advance` and
+`spec_quick` — for any resolved subagent, unconditionally: a subagent calling
+either is blocked (exit 2), no mode, no config, no ramp. This closed the gap
+that let a subagent prematurely mark a spec `done` (SPEC-063).
+
+```
+mcp__mneme__spec_advance   -> exit 2 (blocked)
+mcp__mneme__spec_quick     -> exit 2 (blocked)
+mcp__mneme__spec_pushback  -> exit 0 (allowed)
+mcp__mneme__spec_reject    -> exit 0 (allowed)
+mcp__mneme__spec_doc_write -> exit 0 (allowed)
+```
+
+Three properties distinguish this guard from the subagent-containment guard
+above:
+
+- **Exact-match, never a prefix.** `lifecycleTools` (`internal/cli/hook.go`)
+  is a two-entry map. A `strings.HasPrefix(tool, "mcp__mneme__spec_")` would
+  also catch `spec_pushback` and `spec_doc_write` — the two SDD tools a
+  subagent is specifically meant to use.
+- **Runs before everything else in `runHookEnforceDelegation`** — before the
+  `delegationTools` filter (MCP tool names are never file/Bash tools, so
+  that filter would otherwise skip past them entirely) and before the
+  `RoleSource=="unresolved"` short-circuit. It only needs
+  `identity.IsSubagent` (i.e. `agent_id` present), never `agent_type`: if
+  Claude Code ever stops sending `agent_type` and subagent-containment loses
+  its signal (see "Role resolution" above), this block keeps working.
+- **No discovery memory on block** — the "orchestrator bypassed SDD"
+  narrative (SPEC-069) does not apply to a contained subagent; only a
+  best-effort `enforcelog` event is recorded (`Reason:
+  "lifecycle_tool_denied_to_subagent"`).
+
+**The block message is load-bearing**: a subagent profile generated before
+SPEC-087 D4 still instructs the agent to call `spec_advance` in its own
+system prompt (layer-1 "agent-fixed" block, version 1). The message tells
+the agent its profile is stale and names the fix directly:
+
+```
+⛔ mneme: spec_advance es del orquestador, no de un subagente. Si tu perfil
+te pide avanzar la spec, está desactualizado (regenéralo: mneme subagents
+regen). Reporta tu resultado y termina; el orquestador avanzará.
+```
+
+`mneme subagents doctor` reports `stale_agent_fixed` for any manifest entry
+whose `Version` is behind `subagents.AgentFixedVersion` (currently 2); `mneme
+subagents regen [--role R] [--all] [--dry-run]` regenerates the file(s) in
+place, preserving any hand-authored area sections byte-for-byte. See
+[`docs/subagents.md`](subagents.md).
+
 ### Inherent limits (Layer 2 scope)
 
 `mneme hook enforce-delegation` is Layer 2: it stops the **cooperative

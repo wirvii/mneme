@@ -63,9 +63,9 @@ Supporting packages: `scoring/` (decay, BM25 re-ranking, RRF fusion), `consolida
 
 ### The three frontends
 
-- **MCP** (`internal/mcp`, primary) — JSON-RPC 2.0 over stdio, ProtocolVersion `2024-11-05`. Surface: 64 tools (15 `mem_*`, 4 `backlog_*`, 8 `spec_*`, 5 `lane_*`, 10 `codegraph_*`, 7 `skills_*`, 3 `model_*`, 5 `conflicts_*`, 6 `subagent_*`, 1 `init`). `mem_*`: mem_save, mem_search, mem_get, mem_context, mem_update, mem_session_end, mem_suggest_topic_key, mem_relate, mem_timeline, mem_stats, mem_checkpoint, mem_forget, mem_promote, mem_gaps, mem_explore. `spec_*`: spec_new, spec_status, spec_advance (returns `{spec, executor}` — SPEC-068 advisory `ResolveStageExecutor` recommendation for the stage just entered), spec_pushback, spec_resolve, spec_list, spec_quick, spec_reject. `lane_*`: lane_audit, lane_reclassify, lane_override, lane_status, lane_stats. `skills_*`: skills_list, skills_install, skills_pin, skills_unpin, skills_remove, skills_lint, skills_validate. `model_*`: model_list, model_set, model_reset. `conflicts_*`: conflicts_candidates, conflicts_scan, conflicts_link, conflicts_unlink, conflicts_list. `subagent_*`: subagent_fingerprint, subagent_profile_get, subagent_profile_save, subagent_compose, subagent_write, subagent_manifest_list. `init`: applies managed blocks + drift report (see `docs/init.md`). `handleMessage()` is exposed separately from `Run()` so unit tests can drive it without I/O loops.
+- **MCP** (`internal/mcp`, primary) — JSON-RPC 2.0 over stdio, ProtocolVersion `2024-11-05`. Surface: 65 tools (15 `mem_*`, 4 `backlog_*`, 9 `spec_*`, 5 `lane_*`, 10 `codegraph_*`, 7 `skills_*`, 3 `model_*`, 5 `conflicts_*`, 6 `subagent_*`, 1 `init`). `mem_*`: mem_save, mem_search, mem_get, mem_context, mem_update, mem_session_end, mem_suggest_topic_key, mem_relate, mem_timeline, mem_stats, mem_checkpoint, mem_forget, mem_promote, mem_gaps, mem_explore. `spec_*`: spec_new, spec_status, spec_advance (returns `{spec, executor}` — SPEC-068 advisory `ResolveStageExecutor` recommendation for the stage just entered; **blocked for subagents** — SPEC-087 D5), spec_pushback, spec_resolve, spec_doc_write (writes a spec's entregable — spec/plan/qa-report/changes — to its workflow directory; directory+filename are never caller-supplied, SPEC-087 D3), spec_list, spec_quick (also blocked for subagents, D5), spec_reject (now also valid from `done`, SPEC-087 D6). `lane_*`: lane_audit, lane_reclassify, lane_override, lane_status, lane_stats. `skills_*`: skills_list, skills_install, skills_pin, skills_unpin, skills_remove, skills_lint, skills_validate. `model_*`: model_list, model_set, model_reset. `conflicts_*`: conflicts_candidates, conflicts_scan, conflicts_link, conflicts_unlink, conflicts_list. `subagent_*`: subagent_fingerprint, subagent_profile_get, subagent_profile_save, subagent_compose, subagent_write, subagent_manifest_list. `init`: applies managed blocks + drift report (see `docs/init.md`). `handleMessage()` is exposed separately from `Run()` so unit tests can drive it without I/O loops.
 - **HTTP** (`internal/http`, `mneme serve --addr :7437`) — stdlib `net/http`, graceful shutdown 10s, 8 endpoints under `/v1/`. Currently lacks SDD endpoints and a few mem tools (`mem_checkpoint`, `mem_timeline`, `mem_suggest_topic_key`); when adding service capabilities, decide explicitly whether HTTP gets parity.
-- **CLI** (`internal/cli`, Cobra) — 36 top-level commands. Notable: `sync export|import|status` is the backup/restore path (no dedicated `restore` command); `mneme init` sets up managed blocks, reports drift, and (with `--apply`) migrates legacy projects to the SDD engine (see `docs/init.md`); `mneme install <agent>` configures MCP config, hooks, the operating manual, slash commands and skills (no global agent profiles since SPEC-073) — supported agents: `claude-code` (multi-agent, full delegation) and `codex` (single-agent, no delegation; see `docs/codex.md`); `mneme skills` manages skills in `~/.claude/skills/`; `mneme model` manages per-agent model assignments; `mneme conflicts` detects and manages memory conflict relations; `mneme subagents` composes/writes per-project subagent profiles; `mneme delegation-hook` toggles the project-scoped opt-in enforcement hook; `mneme codegraph hooks install|remove` installs/removes git hooks that auto-reindex the code graph after commits and checkouts (see `docs/codegraph.md`); `mneme team-memory enable` activates the git-native shared-knowledge vault (marker + bake/export existing durables + import hooks) and `mneme promote <id>` explicitly shares one memory regardless of type (see `docs/team-memory.md`).
+- **CLI** (`internal/cli`, Cobra) — 36 top-level commands. Notable: `sync export|import|status` is the backup/restore path (no dedicated `restore` command); `mneme init` sets up managed blocks, reports drift, and (with `--apply`) migrates legacy projects to the SDD engine (see `docs/init.md`); `mneme install <agent>` configures MCP config, hooks, the operating manual, slash commands and skills (no global agent profiles since SPEC-073) — supported agents: `claude-code` (multi-agent, full delegation) and `codex` (single-agent, no delegation; see `docs/codex.md`); `mneme skills` manages skills in `~/.claude/skills/`; `mneme model` manages per-agent model assignments; `mneme conflicts` detects and manages memory conflict relations; `mneme subagents` composes/writes per-project subagent profiles and diagnoses/regenerates them (`doctor` reports `stale_agent_fixed` when a profile's `Version` is behind `subagents.AgentFixedVersion`; `regen [--role R] [--all] [--dry-run]` rewrites layer-1 content in place, preserving hand-authored areas — SPEC-087 D7); `mneme delegation-hook` toggles the project-scoped opt-in enforcement hook; `mneme codegraph hooks install|remove` installs/removes git hooks that auto-reindex the code graph after commits and checkouts (see `docs/codegraph.md`); `mneme team-memory enable` activates the git-native shared-knowledge vault (marker + bake/export existing durables + import hooks) and `mneme promote <id>` explicitly shares one memory regardless of type (see `docs/team-memory.md`).
 
 ### Persistence
 
@@ -96,11 +96,14 @@ mneme enforces role boundaries at two layers:
 
 1. **Capability (primary)**: every subagent declares an explicit `tools:`
    allowlist in its YAML frontmatter (`internal/install/assets/agents/*.md`).
-   Read-only agents (`architect`, `qa-tester`) physically cannot edit code
-   because they lack `Edit`, `Write`, `MultiEdit`, `NotebookEdit`, and `Bash`.
-   Implementer agents (`backend`, `frontend`, `bug-hunter`) have the full
-   edit+execution toolset. The `diagnostician` agent has `Bash` for log reading
-   but lacks Edit/Write/MultiEdit — it reads infra, never mutates code.
+   `architect` physically cannot edit code or run Bash. `qa-tester` has
+   `Bash` (+ `permissionMode: bypassPermissions`, SPEC-087 D2/D2b — so its
+   own gates run unattended) to run its own gates, but no `Edit`/`Write`/
+   `MultiEdit`/`NotebookEdit` — `IsImplementer` reads the toolset, not
+   `permissionMode` (SPEC-087 D1). Implementer agents (`backend`,
+   `frontend`, `bug-hunter`) have the full edit+execution toolset. The
+   `diagnostician` agent has `Bash` for log reading but lacks
+   Edit/Write/MultiEdit — it reads infra, never mutates code.
 
 2. **Hook (defense in depth)**: `mneme hook enforce-delegation` (a Go
    `PreToolUse` subcommand, SPEC-069) detects the orchestrator by the absence
@@ -117,8 +120,12 @@ mneme enforces role boundaries at two layers:
    confirmed 2026-07-15) identifies WHICH role is calling, and it is
    contained to its own manifest-declared, `areas_complete`-certified areas
    — `off`/`warn`/`block` per project (`[delegation] subagent_containment`
-   in `~/.mneme/config.toml`, default `warn`). See "Subagent containment"
-   in `docs/enforcement-model.md`.
+   in `~/.mneme/config.toml`, default `warn`). Separately, SPEC-087 D5
+   **unconditionally** denies `spec_advance`/`spec_quick` to any resolved
+   subagent (exact-match, no mode) — the lifecycle belongs to the
+   orchestrator; `spec_pushback`/`spec_reject`/`spec_doc_write` stay
+   allowed. See "Subagent containment" and "Lifecycle-tool denial" in
+   `docs/enforcement-model.md`.
 
 Every blocked attempt is queryable via:
 

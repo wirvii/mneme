@@ -1,7 +1,7 @@
 # API Reference — SDD Tools (`backlog_*`, `spec_*`, `lane_*`, `init`)
 
-18 MCP tools over JSON-RPC 2.0 stdio (`mneme mcp`): `backlog_*` (4), `spec_*`
-(8), `lane_*` (5), `init` (1). Concept guide: [docs/lanes.md](../lanes.md)
+19 MCP tools over JSON-RPC 2.0 stdio (`mneme mcp`): `backlog_*` (4), `spec_*`
+(9), `lane_*` (5), `init` (1). Concept guide: [docs/lanes.md](../lanes.md)
 (trivial/standard lanes, auditor thresholds), [docs/init.md](../init.md)
 (managed blocks, drift, legacy migration). Index: [docs/API.md](../API.md).
 
@@ -13,8 +13,10 @@ Trivial lane:  draft -> rationale -> implementing -> audit -> done
 ```
 
 `spec_pushback`/`spec_resolve` model ambiguity (any status -> `needs_grill` ->
-back to `speccing`/`rationale`). `spec_reject` models a failed review (`qa` or
-`audit` -> `implementing`), distinct from pushback. See error codes at the
+back to `speccing`/`rationale`). `spec_reject` models a failed review (`qa`,
+`audit`, or — since SPEC-087 D6 — `done` -> `implementing`), distinct from
+pushback. `done -> implementing` is the ONLY way out of `done`: `spec_advance`
+still rejects any attempt to advance past `done`. See error codes at the
 bottom.
 
 ---
@@ -163,6 +165,28 @@ lane) or `rationale` (trivial lane).
 
 **Errors:** `-32602` missing fields. `-32000` pushback or spec not found.
 
+### spec_doc_write
+
+Write a spec entregable (`spec`/`plan`/`qa-report`/`changes`) to its
+workflow directory (SPEC-087 D3) — the path a subagent uses instead of
+copying its report into the workflow directory by hand. The destination
+directory and filename are never caller-supplied: the directory is derived
+from the persisted spec record (`spec.Project`, via `GetSpec`) and the
+filename comes from a closed, Go-authored `kind -> filename` map
+(`spec` → `spec.md`, `plan` → `plan.md`, `qa-report` → `qa-report.md`,
+`changes` → `changes.md`). 0644, parent directories created as needed, plain
+overwrite-or-create — no append, no arbitrary read.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `id` | string | yes | Spec ID (e.g. `SPEC-001`) |
+| `kind` | string | yes | `spec`, `plan`, `qa-report`, or `changes` |
+| `content` | string | yes | Full document content, written verbatim |
+
+**Returns:** `{"path": "/abs/path/to/qa-report.md", "bytes": 1234, "created": true}`
+
+**Errors:** `-32602` unknown `kind`, missing fields. `-32000` spec not found.
+
 ### spec_list
 
 List specs for the current project.
@@ -193,9 +217,12 @@ step by recording a rationale. Rejected for standard-lane specs.
 
 ### spec_reject
 
-Reject a spec from `qa` (standard lane) or `audit` (trivial lane) back to
-`implementing`. Records the rejection reason in history. Distinct from
-`spec_pushback`, which models ambiguity rather than a failed review.
+Reject a spec from `qa` (standard lane), `audit` (trivial lane), or `done`
+(either lane, SPEC-087 D6) back to `implementing`. Records the rejection
+reason in history. Distinct from `spec_pushback`, which models ambiguity
+rather than a failed review. `done -> implementing` is the only way a
+`done` spec ever moves again — `spec_advance` remains impossible from
+`done`.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -205,7 +232,7 @@ Reject a spec from `qa` (standard lane) or `audit` (trivial lane) back to
 
 **Returns:** Updated spec object with `status: "implementing"`.
 
-**Errors:** `-32602` invalid transition (spec not in `qa`/`audit`), missing fields. `-32000` not found.
+**Errors:** `-32602` invalid transition (spec not in `qa`/`audit`/`done`), missing fields. `-32000` not found.
 
 ---
 

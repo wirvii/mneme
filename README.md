@@ -7,7 +7,7 @@ Persistent memory for AI coding agents -- with a spec-driven workflow engine, se
 [![License](https://img.shields.io/badge/License-Apache%202.0-0d8f80.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.25+-00ADD8.svg)](https://go.dev)
 [![Release](https://img.shields.io/github/v/release/wirvii/mneme?label=release)](https://github.com/wirvii/mneme/releases)
-[![MCP Tools](https://img.shields.io/badge/MCP%20tools-64-0d8f80.svg)](#mcp-tools)
+[![MCP Tools](https://img.shields.io/badge/MCP%20tools-65-0d8f80.svg)](#mcp-tools)
 
 ---
 
@@ -37,7 +37,7 @@ Persistent memory for AI coding agents -- with a spec-driven workflow engine, se
 
 ## What is mneme?
 
-mneme gives AI coding agents a brain that survives between sessions. It stores structured knowledge -- decisions, patterns, rules, conventions, architecture -- in a local SQLite database with full-text search, a weighted knowledge graph, and automatic consolidation. Any MCP-compatible agent (Claude Code, Cursor, Windsurf, OpenCode, Gemini CLI) can save and retrieve persistent memory through 64 tools over JSON-RPC stdio.
+mneme gives AI coding agents a brain that survives between sessions. It stores structured knowledge -- decisions, patterns, rules, conventions, architecture -- in a local SQLite database with full-text search, a weighted knowledge graph, and automatic consolidation. Any MCP-compatible agent (Claude Code, Cursor, Windsurf, OpenCode, Gemini CLI) can save and retrieve persistent memory through 65 tools over JSON-RPC stdio.
 
 ## Why mneme?
 
@@ -391,7 +391,7 @@ that figure:
 
 ## MCP Tools
 
-The MCP server (`mneme mcp`) exposes **64 tools** over JSON-RPC 2.0 stdio,
+The MCP server (`mneme mcp`) exposes **65 tools** over JSON-RPC 2.0 stdio,
 grouped by family. Each family has a full contract reference (params, returns,
 errors, examples) under [docs/api/](docs/api/):
 
@@ -399,7 +399,7 @@ errors, examples) under [docs/api/](docs/api/):
 |--------|-------|-----------------|-----------|
 | `mem_*` | 15 | Save, search, update, relate, explore, promote, and time-travel through memories | [docs/api/memory.md](docs/api/memory.md) |
 | `backlog_*` | 4 | Raw idea → refined → promoted-to-spec lifecycle | [docs/api/sdd.md](docs/api/sdd.md) |
-| `spec_*` | 8 | Spec lifecycle: draft → speccing → ... → done, plus `quick`/`reject` shortcuts | [docs/api/sdd.md](docs/api/sdd.md) |
+| `spec_*` | 9 | Spec lifecycle: draft → speccing → ... → done, plus `quick`/`reject`/`doc_write` shortcuts | [docs/api/sdd.md](docs/api/sdd.md) |
 | `lane_*` | 5 | Trivial-lane audit, reclassify, override, status, stats | [docs/api/sdd.md](docs/api/sdd.md) |
 | `codegraph_*` | 10 | Symbol search, callers/callees, impact analysis, call tracing | [docs/api/codegraph.md](docs/api/codegraph.md) |
 | `skills_*` | 7 | Install/pin/lint/validate skills in `~/.claude/skills/` | [docs/api/skills.md](docs/api/skills.md) |
@@ -408,7 +408,7 @@ errors, examples) under [docs/api/](docs/api/):
 | `init` | 1 | Apply managed blocks + drift report (project bootstrap) | [docs/api/sdd.md](docs/api/sdd.md) |
 | `subagent_*` | 6 | Fingerprint, compose, validate, and write per-project subagent profiles | [docs/api/subagents.md](docs/api/subagents.md) |
 
-15 + 4 + 8 + 5 + 10 + 7 + 3 + 5 + 1 + 6 = **64**.
+15 + 4 + 9 + 5 + 10 + 7 + 3 + 5 + 1 + 6 = **65**.
 
 ---
 
@@ -494,13 +494,13 @@ errors, examples) under [docs/api/](docs/api/):
 
 **Persistence:** two SQLite databases per host -- `~/.mneme/global.db` (global + org scope) and `~/.mneme/projects/<slug>.db` (project scope, slug from git remote). Schema v14 with 14 embedded migrations.
 
-**Three frontends:** MCP (primary, 64 tools over stdio), HTTP (REST API at `:7437`, 10 endpoints under `/v1/` -- no SDD/codegraph/skills/model/conflicts/subagent parity yet), and CLI (Cobra, 36 commands).
+**Three frontends:** MCP (primary, 65 tools over stdio), HTTP (REST API at `:7437`, 10 endpoints under `/v1/` -- no SDD/codegraph/skills/model/conflicts/subagent parity yet), and CLI (Cobra, 36 commands).
 
 ---
 
 ## Status & Roadmap
 
-**Current (main): schema v14, 64 MCP tools, 36 CLI commands, 10 HTTP endpoints.**
+**Current (main): schema v14, 65 MCP tools, 36 CLI commands, 10 HTTP endpoints.**
 Last tagged release: **v1.17.0**. Full history in [CHANGELOG.md](CHANGELOG.md).
 
 **Shipped:**

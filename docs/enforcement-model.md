@@ -8,13 +8,20 @@
 
 ## Critical Rules
 
-1. Read-only agents (`architect`, `qa-tester`) MUST NOT include `Edit`,
-   `Write`, `MultiEdit`, `NotebookEdit`, or `Bash` in their `tools:` allowlist.
+1. Read-only agents MUST NOT include `Edit`, `Write`, `MultiEdit`, or
+   `NotebookEdit` in their `tools:` allowlist. `architect` additionally
+   excludes `Bash`; `qa-tester` and `diagnostician` include `Bash` (to run
+   gates / read logs respectively) without ever gaining an edit tool — see
+   `IsImplementer` (SPEC-087 D1): the capability barrier is the presence of
+   an edit tool, not `Bash`, and not `permissionMode`.
 2. Implementer agents (`backend`, `frontend`, `bug-hunter`) MUST include the
    full edit toolset in their `tools:` allowlist.
-3. No read-only agent MAY use `permissionMode: bypassPermissions`. That flag is
-   reserved for implementers in autonomous runs where Claude Code permission
-   prompts would interrupt the workflow.
+3. `permissionMode: bypassPermissions` is reserved for roles that need
+   autonomous, unattended tool calls (implementers, and — since SPEC-087
+   D2b — `qa-tester`, so its own gates run without a human permission
+   prompt on every `Bash` call). It is never, on its own, what makes a role
+   an implementer: `IsImplementer` reads the `tools:` allowlist, not this
+   flag (SPEC-087 D1).
 4. All subagents MUST include `mcp__mneme__*` (wildcard) to retain access to
    mneme memory tools (`mem_save`, `mem_search`, `mem_context`, etc.).
 5. The orchestrator (principal) MUST NOT edit source paths directly. The
@@ -35,12 +42,20 @@ it, regardless of what the prompt says.
 
 | Role | `tools:` allowlist |
 |---|---|
-| `architect` | `Read, Grep, Glob, NotebookRead, BashOutput, mcp__mneme__*` |
-| `qa-tester` | `Read, Grep, Glob, NotebookRead, BashOutput, mcp__mneme__*` |
-| `diagnostician` | `Read, Grep, Glob, NotebookRead, BashOutput, Bash, mcp__mneme__*` — Bash for log reading; NO Edit/Write/MultiEdit |
-| `backend` | `Read, Grep, Glob, NotebookRead, NotebookEdit, BashOutput, Edit, Write, MultiEdit, Bash, mcp__mneme__*` |
-| `frontend` | `Read, Grep, Glob, NotebookRead, NotebookEdit, BashOutput, Edit, Write, MultiEdit, Bash, mcp__mneme__*` |
-| `bug-hunter` | `Read, Grep, Glob, NotebookRead, NotebookEdit, BashOutput, Edit, Write, MultiEdit, Bash, mcp__mneme__*` |
+| `architect` | `Read, Grep, Glob, NotebookRead, BashOutput, WebSearch, WebFetch, mcp__mneme__*` |
+| `qa-tester` | `Read, Grep, Glob, NotebookRead, BashOutput, Bash, WebSearch, WebFetch, mcp__mneme__*` — Bash + `permissionMode: bypassPermissions` since SPEC-087 D2/D2b, so its own gates (`go test`, lint, build) run unattended; still no Edit/Write/MultiEdit/NotebookEdit — the capability barrier stays the allowlist, not the permission mode (see `IsImplementer`, SPEC-087 D1) |
+| `diagnostician` | `Read, Grep, Glob, NotebookRead, BashOutput, Bash, mcp__mneme__*` — Bash for log reading; NO Edit/Write/MultiEdit. SPEC-087 D2/decision-3 deliberately does NOT add WebSearch/WebFetch here |
+| `backend` | `Read, Grep, Glob, NotebookRead, NotebookEdit, BashOutput, Edit, Write, MultiEdit, Bash, WebSearch, WebFetch, mcp__mneme__*` |
+| `frontend` | `Read, Grep, Glob, NotebookRead, NotebookEdit, BashOutput, Edit, Write, MultiEdit, Bash, WebSearch, WebFetch, mcp__mneme__*` |
+| `bug-hunter` | `Read, Grep, Glob, NotebookRead, NotebookEdit, BashOutput, Edit, Write, MultiEdit, Bash, WebSearch, WebFetch, mcp__mneme__*` |
+
+`IsImplementer(role)` (`internal/subagents/permissions.go`) reports edit
+capability by reading this actual toolset — `Edit`/`Write`/`MultiEdit`/
+`NotebookEdit` — never `permissionMode` (SPEC-087 D1): `qa-tester` and
+`backend` now share `permissionMode: bypassPermissions` without sharing
+edit capability, so the old `PermissionMode == bypassPermissions` proxy
+would have misclassified `qa-tester` as an implementer the moment D2b
+landed. `Bash` never counts toward "implementer" either way.
 
 ### Layer 2a — Go rules engine (role-aware, SPEC-043)
 
@@ -207,6 +222,36 @@ to the team vault — see its own package doc for the explicit privacy
 contract), which `mneme delegation-hook report` and `mneme delegation-hook
 promote` read to decide when a project has enough evidence to move from
 `warn` to `block`.
+
+### Lifecycle-tool denial (SPEC-087 D5)
+
+A subagent-containment allow does not mean a subagent may do anything MCP
+exposes. `enforce-delegation` separately, unconditionally denies two SDD
+lifecycle tools to any resolved subagent — total block, no mode:
+
+| Tool | Result |
+|---|---|
+| `mcp__mneme__spec_advance` | **BLOCK** — the observed defect (SPEC-063's premature `done`) |
+| `mcp__mneme__spec_quick` | **BLOCK** — disguised advance (draft→rationale→implementing) and an orchestrator-only operation |
+| `mcp__mneme__spec_pushback`, `mcp__mneme__spec_reject`, `mcp__mneme__spec_doc_write`, `mcp__mneme__mem_*`, `mcp__mneme__codegraph_*` | **ALLOW** |
+
+`lifecycleTools` (`internal/cli/hook.go`) is an **exact-match** set —
+`strings.HasPrefix(tool, "mcp__mneme__spec_")` would also catch
+`spec_pushback` and `spec_doc_write`. The check runs **before** the
+`delegationTools` filter (MCP tool names are never file/Bash tools) and
+**before** the `RoleSource=="unresolved"` short-circuit above: it only
+needs `identity.IsSubagent`, never `agent_type`, so it keeps working even
+if Claude Code ever stops sending `agent_type` and subagent containment
+loses its signal. No discovery memory on block (a contained subagent did
+not bypass SDD); a best-effort `enforcelog` event is recorded instead
+(`Reason: "lifecycle_tool_denied_to_subagent"`).
+
+This closes the gap `spec_doc_write` (SPEC-087 D3) opens on purpose: a
+subagent can now write its own entregable (`spec.md`/`plan.md`/
+`qa-report.md`/`changes.md`) without ever being able to advance the spec
+that entregable belongs to. See `docs/HOOKS.md`'s own "Lifecycle-tool
+denial" section for the exact block message and `docs/subagents.md` for
+`mneme subagents regen` (the remediation the message names).
 
 #### Inherent limits of Layer 2
 

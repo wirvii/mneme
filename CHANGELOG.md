@@ -6,6 +6,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Subagents can now do their own work end-to-end (SPEC-087):**
+  - `qa-tester` gains `Bash` + `permissionMode: bypassPermissions` so it can
+    run its own gates (`go test`, lint, build) unattended, instead of the
+    orchestrator running them and pasting back the output. It still carries
+    no `Edit`/`Write`/`MultiEdit`/`NotebookEdit` — `IsImplementer` now reads
+    the actual toolset rather than `permissionMode` (D1), since the two are
+    no longer the same three roles. `architect`, `qa-tester`, `backend`,
+    `frontend`, and `bug-hunter` also gain `WebSearch`/`WebFetch`; the
+    `diagnostician` envelope is unchanged.
+  - New MCP tool `spec_doc_write(id, kind, content)` writes a spec's
+    entregable (`spec`/`plan`/`qa-report`/`changes`) to its workflow
+    directory — the directory and filename are never caller-supplied (a
+    closed, Go-authored `kind -> filename` map plus the persisted spec
+    record), closing the "reports copied by hand" gap.
+  - `ComposeInput` splits `Role` (identity: frontmatter `name:`, `{{ROLE}}`)
+    from `Archetype` (capability: permission envelope) — a custom role no
+    longer needs a post-hoc frontmatter patch to fix its name.
+  - The agent-fixed layer-1 block no longer instructs subagents to call
+    `spec_advance`; it explicitly prohibits it and points to
+    `spec_doc_write` instead (`AgentFixedVersion` 1 → 2).
+  - `mneme hook enforce-delegation` now unconditionally denies
+    `spec_advance`/`spec_quick` to any subagent (exact-match, no mode) —
+    the lifecycle stays the orchestrator's.
+  - `spec_reject` can now send a `done` spec back to `implementing`
+    (the only way out of `done`; `spec_advance` still can't move past it).
+  - `mneme subagents regen [--role R] [--all] [--dry-run]` mechanically
+    upgrades already-materialised profiles in place, preserving
+    hand-authored area sections byte-for-byte; `mneme subagents doctor`
+    gains the `stale_agent_fixed` finding (CLI and MCP).
+  - MCP surface: 64 → 65 tools.
+
 ## [v1.26.0] — 2026-07-14 — Code graph adoption: querylog + mandatory nudge/prompts (SPEC-083)
 
 ### Added
