@@ -561,6 +561,23 @@ type subagentManifestListRequest struct {
 	Project string `json:"project"`
 }
 
+// subagentManifestListEntry embeds service.ManifestEntry (so
+// encoding/json flattens every persisted field at the top level, exactly
+// matching the pre-SPEC-086 response shape) and adds Findings — the SPEC-086
+// D11/D12 doctor diagnostics for this entry. This keeps
+// subagent_manifest_list backward compatible: a caller that still
+// unmarshals into []service.ManifestEntry (every AC1-era test in this repo
+// does exactly that) silently ignores the extra "findings" key, since Go's
+// encoding/json drops JSON fields absent from the destination struct. A new
+// caller — critically, the mneme-init grill, which runs over MCP and is the
+// one place D11's diagnostics are actually meant to feed back into a
+// repair workflow (CLI-only doctor findings are invisible to it) — can read
+// Findings directly.
+type subagentManifestListEntry struct {
+	service.ManifestEntry
+	Findings []mcpDoctorFinding `json:"findings,omitempty"`
+}
+
 // handleSubagentManifestList processes a subagent_manifest_list tool call.
 func (h *handlers) handleSubagentManifestList(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
 	var req subagentManifestListRequest
@@ -580,10 +597,15 @@ func (h *handlers) handleSubagentManifestList(ctx context.Context, raw json.RawM
 			Message: fmt.Sprintf("mcp: handle subagent_manifest_list: %s", err),
 		}
 	}
-	if entries == nil {
-		entries = []service.ManifestEntry{}
+
+	out := make([]subagentManifestListEntry, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, subagentManifestListEntry{
+			ManifestEntry: e,
+			Findings:      diagnoseManifestEntryMCP(e, mcpRealFileExists, mcpRealChecksum),
+		})
 	}
-	return resultFromAny(entries)
+	return resultFromAny(out)
 }
 
 // resolveRepoRoot returns explicit when non-empty, otherwise the current
@@ -610,4 +632,140 @@ func nonNilStrings(s []string) []string {
 		return []string{}
 	}
 	return s
+}
+
+// --- SPEC-086 D11/D12: doctor diagnostics surfaced over MCP -----------------
+//
+// This mirrors internal/cli/subagents_doctor.go's diagnoseManifestEntry
+// (kind constants, struct shape, and check ordering) rather than importing
+// it: mneme's three frontends are peers that call into service/leaf layers
+// directly and do not import each other (see this file's own composeBody/
+// checksumOf/upsertManifestEntry, all already duplicated from
+// internal/cli/subagents.go for the same reason). D12 requires this
+// diagnostic to be reachable over MCP specifically because the mneme-init
+// grill — the one thing D11 expects to actually repair a manifest — runs
+// over MCP, not the CLI; a CLI-only doctor is invisible to it.
+//
+// The one thing intentionally NOT duplicated is cli's areaMatches/cleanArea
+// (SPEC-084 D1/D2, unexported in internal/cli/hook.go): the bare-directory
+// finding here uses a simpler, purely informational isGlobLike check
+// instead of full glob-normalisation semantics — sufficient for advisory
+// output, since this finding is never actionable (mcpDoctorFindingKind's
+// bareDirOK case) and never feeds an enforcement decision.
+
+// mcpDoctorFindingKind classifies a single diagnostic finding (mirrors
+// cli's doctorFindingKind).
+type mcpDoctorFindingKind string
+
+const (
+	mcpDoctorKindUnknownRole      mcpDoctorFindingKind = "unknown_role"
+	mcpDoctorKindDegenerateAreas  mcpDoctorFindingKind = "degenerate_areas"
+	mcpDoctorKindArchetypeMissing mcpDoctorFindingKind = "archetype_missing"
+	mcpDoctorKindNotVerified      mcpDoctorFindingKind = "not_verified"
+	mcpDoctorKindOrphanPath       mcpDoctorFindingKind = "orphan_path"
+	mcpDoctorKindDrift            mcpDoctorFindingKind = "drift"
+	mcpDoctorKindBareDirOK        mcpDoctorFindingKind = "bare_dir_ok"
+)
+
+// mcpDoctorFinding is one diagnostic observation about a single manifest
+// entry, returned inline on subagent_manifest_list (mirrors cli's
+// doctorFinding, minus the redundant Role field — the caller already knows
+// which entry a given Findings slice belongs to).
+type mcpDoctorFinding struct {
+	Kind   mcpDoctorFindingKind `json:"kind"`
+	Detail string               `json:"detail"`
+}
+
+// diagnoseManifestEntryMCP runs the same checks as cli's
+// diagnoseManifestEntry against a single manifest entry. fileExists/
+// actualChecksum are injected so the function is testable without touching
+// the real filesystem.
+func diagnoseManifestEntryMCP(e service.ManifestEntry, fileExists func(string) bool, actualChecksum func(string) (string, bool)) []mcpDoctorFinding {
+	var findings []mcpDoctorFinding
+	archetype := e.EffectiveArchetype()
+
+	if _, known := subagents.PermissionTable[archetype]; !known {
+		findings = append(findings, mcpDoctorFinding{
+			Kind:   mcpDoctorKindUnknownRole,
+			Detail: fmt.Sprintf("archetype/role %q no está en PermissionTable — no es implementador para el hook, su área está desprotegida", archetype),
+		})
+	} else if subagents.IsImplementer(archetype) && len(e.Areas) == 0 {
+		findings = append(findings, mcpDoctorFinding{
+			Kind:   mcpDoctorKindDegenerateAreas,
+			Detail: "rol implementador sin áreas declaradas (degenerado)",
+		})
+	}
+
+	if e.Archetype == "" {
+		findings = append(findings, mcpDoctorFinding{
+			Kind:   mcpDoctorKindArchetypeMissing,
+			Detail: "archetype ausente — backfill mecánico disponible (mneme subagents doctor --fix)",
+		})
+	}
+	if !e.AreasComplete {
+		findings = append(findings, mcpDoctorFinding{
+			Kind:   mcpDoctorKindNotVerified,
+			Detail: "areas_complete ausente o false — no verificado (re-grillar para certificar)",
+		})
+	}
+
+	if e.Path != "" {
+		if !fileExists(e.Path) {
+			findings = append(findings, mcpDoctorFinding{
+				Kind:   mcpDoctorKindOrphanPath,
+				Detail: fmt.Sprintf("path %q no existe en disco (huérfano)", e.Path),
+			})
+		} else if e.Checksum != "" {
+			if actual, ok := actualChecksum(e.Path); ok && actual != e.Checksum {
+				findings = append(findings, mcpDoctorFinding{
+					Kind:   mcpDoctorKindDrift,
+					Detail: "checksum en disco no coincide con el manifest (drift)",
+				})
+			}
+		}
+	}
+
+	for _, area := range e.Areas {
+		trimmed := strings.TrimSpace(area)
+		if trimmed == "" || trimmed == "." || trimmed == "./" {
+			continue
+		}
+		if !mcpIsGlobLike(trimmed) {
+			findings = append(findings, mcpDoctorFinding{
+				Kind:   mcpDoctorKindBareDirOK,
+				Detail: fmt.Sprintf("area %q es un directorio desnudo — areaMatches ya lo resuelve, sano", area),
+			})
+		}
+	}
+
+	return findings
+}
+
+// mcpIsGlobLike reports whether area already contains glob metacharacters
+// (mirrors cli's isGlobLike).
+func mcpIsGlobLike(area string) bool {
+	for _, r := range area {
+		switch r {
+		case '*', '?', '[':
+			return true
+		}
+	}
+	return false
+}
+
+// mcpRealFileExists/mcpRealChecksum are the production fileExists/
+// actualChecksum implementations diagnoseManifestEntryMCP is wired with
+// outside tests (mirrors cli's realFileExists/realChecksum).
+func mcpRealFileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+func mcpRealChecksum(path string) (string, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", false
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), true
 }

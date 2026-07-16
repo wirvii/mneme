@@ -799,3 +799,126 @@ func TestSubagentManifestList_EmptyWhenNoneWritten(t *testing.T) {
 	}
 }
 
+// --- SPEC-086 D11/D12: doctor findings on subagent_manifest_list -----------
+
+func mcpAlwaysExists(string) bool               { return true }
+func mcpMatchingChecksum(string) (string, bool) { return "abc", true }
+
+// TestDiagnoseManifestEntryMCP_UnknownRole mirrors the CLI's doctor test:
+// direct, no-I/O coverage of diagnoseManifestEntryMCP.
+func TestDiagnoseManifestEntryMCP_UnknownRole(t *testing.T) {
+	entry := service.ManifestEntry{Role: "totally-custom", Areas: []string{"internal/**"}, AreasComplete: true}
+	findings := diagnoseManifestEntryMCP(entry, mcpAlwaysExists, mcpMatchingChecksum)
+
+	found := false
+	for _, f := range findings {
+		if f.Kind == mcpDoctorKindUnknownRole {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("findings = %+v, want unknown_role", findings)
+	}
+}
+
+// TestDiagnoseManifestEntryMCP_ArchetypeMissingAndNotVerified covers the
+// two findings every pre-SPEC-086 manifest entry will show.
+func TestDiagnoseManifestEntryMCP_ArchetypeMissingAndNotVerified(t *testing.T) {
+	entry := service.ManifestEntry{Role: subagents.RoleBackend, Areas: []string{"internal/**"}}
+	findings := diagnoseManifestEntryMCP(entry, mcpAlwaysExists, mcpMatchingChecksum)
+
+	kinds := map[mcpDoctorFindingKind]bool{}
+	for _, f := range findings {
+		kinds[f.Kind] = true
+	}
+	if !kinds[mcpDoctorKindArchetypeMissing] {
+		t.Error("expected archetype_missing")
+	}
+	if !kinds[mcpDoctorKindNotVerified] {
+		t.Error("expected not_verified")
+	}
+}
+
+// TestSubagentManifestList_IncludesDoctorFindings_D4BugCaseVisible is the
+// end-to-end MCP reproduction of AC16/D12: a custom-role entry (the exact
+// D4 bug shape — role="qa-tester", archetype="bug-hunter") written via
+// subagent_write must come back from subagent_manifest_list with a
+// "findings" key visible to a caller that parses the raw JSON, while a
+// caller that still unmarshals into the OLD []service.ManifestEntry shape
+// (every pre-SPEC-086 test in this file does exactly that) is completely
+// unaffected — mutation-tested by asserting BOTH shapes work on the same
+// response.
+func TestSubagentManifestList_IncludesDoctorFindings_D4BugCaseVisible(t *testing.T) {
+	srv, projectDB := newTestServerForSubagents(t)
+	t.Cleanup(func() { projectDB.Close() })
+
+	composeResp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name: "subagent_compose",
+		Arguments: mustMarshal(t, map[string]any{
+			"role":            "qa-tester",
+			"archetype":       "bug-hunter",
+			"areas_layer3_md": "## Área: apps/core-srv\n\nGo + sqlc.",
+		}),
+	})
+	var composed subagentComposeResponse
+	unmarshalToolText(t, composeResp, &composed)
+	if !composed.Valid {
+		t.Fatalf("precondition: compose must be valid, got errors: %v", composed.Errors)
+	}
+
+	dir := t.TempDir()
+	writeResp := process(t, srv, "tools/call", 2, ToolCallParams{
+		Name: "subagent_write",
+		Arguments: mustMarshal(t, map[string]any{
+			"role":        "qa-tester",
+			"archetype":   "bug-hunter",
+			"composed_md": composed.ComposedMD,
+			"repo_root":   dir,
+			// Areas deliberately omitted -> degenerate_areas finding.
+		}),
+	})
+	var written subagentWriteResponse
+	unmarshalToolText(t, writeResp, &written)
+	if written.Path == "" {
+		t.Fatal("precondition: write must succeed")
+	}
+
+	manifestResp := process(t, srv, "tools/call", 3, ToolCallParams{
+		Name:      "subagent_manifest_list",
+		Arguments: mustMarshal(t, map[string]any{}),
+	})
+
+	// New-shape read: findings are present and correct.
+	var rich []subagentManifestListEntry
+	unmarshalToolText(t, manifestResp, &rich)
+	if len(rich) != 1 {
+		t.Fatalf("len(rich) = %d, want 1", len(rich))
+	}
+	if rich[0].Archetype != subagents.RoleBugHunter {
+		t.Fatalf("precondition: Archetype = %q, want bug-hunter", rich[0].Archetype)
+	}
+	kinds := map[mcpDoctorFindingKind]bool{}
+	for _, f := range rich[0].Findings {
+		kinds[f.Kind] = true
+	}
+	if !kinds[mcpDoctorKindNotVerified] {
+		t.Errorf("findings = %+v, want not_verified (areas_complete omitted)", rich[0].Findings)
+	}
+	if !kinds[mcpDoctorKindDegenerateAreas] {
+		t.Errorf("findings = %+v, want degenerate_areas (no areas declared)", rich[0].Findings)
+	}
+	// The D4 bug case itself: archetype IS present here (it's the whole
+	// point of this test), so unknown_role/archetype_missing must NOT fire.
+	if kinds[mcpDoctorKindUnknownRole] || kinds[mcpDoctorKindArchetypeMissing] {
+		t.Errorf("findings = %+v, unknown_role/archetype_missing must not fire when archetype is set and known", rich[0].Findings)
+	}
+
+	// Old-shape read: backward compatibility, the exact assertion every
+	// pre-SPEC-086 test in this file makes.
+	var legacy []service.ManifestEntry
+	unmarshalToolText(t, manifestResp, &legacy)
+	if len(legacy) != 1 || legacy[0].Role != "qa-tester" || legacy[0].Archetype != subagents.RoleBugHunter {
+		t.Errorf("legacy-shape unmarshal broken: %+v", legacy)
+	}
+}
+
