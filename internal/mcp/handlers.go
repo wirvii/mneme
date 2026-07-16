@@ -106,6 +106,8 @@ func (h *handlers) handleToolCall(ctx context.Context, params ToolCallParams) (*
 		return h.handleSpecPushback(ctx, params.Arguments)
 	case "spec_resolve":
 		return h.handleSpecResolve(ctx, params.Arguments)
+	case "spec_doc_write":
+		return h.handleSpecDocWrite(ctx, params.Arguments)
 	case "spec_list":
 		return h.handleSpecList(ctx, params.Arguments)
 	case "spec_quick":
@@ -667,7 +669,8 @@ func (h *handlers) mapServiceError(method string, err error) *JSONRPCError {
 		errors.Is(err, model.ErrSkillNoValidation) ||
 		errors.Is(err, model.ErrUnknownAgent) ||
 		errors.Is(err, model.ErrInvalidModel) ||
-		errors.Is(err, model.ErrInvalidRelation) {
+		errors.Is(err, model.ErrInvalidRelation) ||
+		errors.Is(err, model.ErrUnknownSpecDocKind) {
 		return &JSONRPCError{
 			Code:    CodeInvalidParams,
 			Message: fmt.Sprintf("mcp: handle %s: %s", method, err),
@@ -969,6 +972,31 @@ func (h *handlers) handleSpecResolve(ctx context.Context, raw json.RawMessage) (
 	}
 
 	return resultFromAny(spec)
+}
+
+// handleSpecDocWrite processes a spec_doc_write tool call (SPEC-087 D3): the
+// entregable path a subagent uses instead of copying a report into the
+// workflow directory by hand. kind is validated by the service against a
+// closed Go-authored enum (model.SpecDocKind) — this handler never builds a
+// path itself.
+func (h *handlers) handleSpecDocWrite(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	if h.sdd == nil {
+		return nil, h.sddUnavailable("spec_doc_write")
+	}
+	var req model.SpecDocWriteRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return nil, &JSONRPCError{
+			Code:    CodeInvalidParams,
+			Message: fmt.Sprintf("mcp: handle spec_doc_write: invalid arguments: %s", err),
+		}
+	}
+
+	resp, err := h.sdd.SpecDocWrite(ctx, req)
+	if err != nil {
+		return nil, h.mapServiceError("spec_doc_write", err)
+	}
+
+	return resultFromAny(resp)
 }
 
 // handleSpecList processes a spec_list tool call.

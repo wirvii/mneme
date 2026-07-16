@@ -1661,6 +1661,151 @@ func TestHandleLaneStats_ReturnsResponse(t *testing.T) {
 	}
 }
 
+// --- SPEC DOC WRITE TESTS (SPEC-087 D3) ---
+
+// newTestServerWithSDDAndWorkflowDir mirrors newTestServerWithSDD but points
+// Workflow.Dir at a fresh t.TempDir() so spec_doc_write tests never touch the
+// real ~/.mneme/workflows directory.
+func newTestServerWithSDDAndWorkflowDir(t *testing.T) (*Server, string) {
+	t.Helper()
+
+	projectDB, err := db.OpenMemory()
+	if err != nil {
+		t.Fatalf("open project db: %v", err)
+	}
+	projectDB.SetMaxOpenConns(1)
+	globalDB, err := db.OpenMemory()
+	if err != nil {
+		t.Fatalf("open global db: %v", err)
+	}
+	globalDB.SetMaxOpenConns(1)
+	t.Cleanup(func() { projectDB.Close(); globalDB.Close() })
+
+	projectStore := store.NewMemoryStore(projectDB)
+	globalStore := store.NewMemoryStore(globalDB)
+	cfg := config.Default()
+	workflowDir := t.TempDir()
+	cfg.Workflow.Dir = workflowDir
+	svc := service.NewMemoryService(projectStore, globalStore, cfg, "test-project", embed.NopEmbedder{})
+
+	sddStore := store.NewSDDStore(projectDB)
+	sddSvc := service.NewSDDService(sddStore, cfg, "test-project", svc)
+
+	logger := slog.Default()
+	return NewServer(svc, sddSvc, nil, nil, logger, "all", "test"), workflowDir
+}
+
+// TestHandleSpecDocWrite_HappyPath verifies spec_doc_write writes content to
+// the expected path derived from the persisted spec record.
+func TestHandleSpecDocWrite_HappyPath(t *testing.T) {
+	srv, workflowDir := newTestServerWithSDDAndWorkflowDir(t)
+
+	newResp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name: "spec_new",
+		Arguments: mustMarshal(t, map[string]any{
+			"title": "spec_doc_write happy path",
+			"lane":  "standard",
+		}),
+	})
+	if newResp.Error != nil {
+		t.Fatalf("spec_new: %v", newResp.Error.Message)
+	}
+	var spec struct {
+		ID      string `json:"id"`
+		Project string `json:"project"`
+	}
+	unmarshalToolText(t, newResp, &spec)
+
+	writeResp := process(t, srv, "tools/call", 2, ToolCallParams{
+		Name: "spec_doc_write",
+		Arguments: mustMarshal(t, map[string]any{
+			"id":      spec.ID,
+			"kind":    "qa-report",
+			"content": "# QA Report\n\nAPROBADO\n",
+		}),
+	})
+	if writeResp.Error != nil {
+		t.Fatalf("spec_doc_write: %v", writeResp.Error.Message)
+	}
+
+	var result struct {
+		Path    string `json:"path"`
+		Bytes   int    `json:"bytes"`
+		Created bool   `json:"created"`
+	}
+	unmarshalToolText(t, writeResp, &result)
+
+	wantPath := filepath.Join(workflowDir, "test-project", "specs", spec.ID, "qa-report.md")
+	if result.Path != wantPath {
+		t.Errorf("Path = %q, want %q", result.Path, wantPath)
+	}
+	if !result.Created {
+		t.Error("Created = false, want true")
+	}
+
+	data, err := os.ReadFile(wantPath)
+	if err != nil {
+		t.Fatalf("read written file: %v", err)
+	}
+	if string(data) != "# QA Report\n\nAPROBADO\n" {
+		t.Errorf("file content = %q", string(data))
+	}
+}
+
+// TestHandleSpecDocWrite_UnknownKind verifies an unrecognised kind returns
+// CodeInvalidParams instead of writing anything.
+func TestHandleSpecDocWrite_UnknownKind(t *testing.T) {
+	srv, _ := newTestServerWithSDDAndWorkflowDir(t)
+
+	newResp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name: "spec_new",
+		Arguments: mustMarshal(t, map[string]any{
+			"title": "spec_doc_write unknown kind",
+			"lane":  "standard",
+		}),
+	})
+	if newResp.Error != nil {
+		t.Fatalf("spec_new: %v", newResp.Error.Message)
+	}
+	var spec struct {
+		ID string `json:"id"`
+	}
+	unmarshalToolText(t, newResp, &spec)
+
+	writeResp := process(t, srv, "tools/call", 2, ToolCallParams{
+		Name: "spec_doc_write",
+		Arguments: mustMarshal(t, map[string]any{
+			"id":      spec.ID,
+			"kind":    "bogus",
+			"content": "x",
+		}),
+	})
+	if writeResp.Error == nil {
+		t.Fatal("expected error for unknown kind")
+	}
+	if writeResp.Error.Code != CodeInvalidParams {
+		t.Errorf("error code = %d, want %d", writeResp.Error.Code, CodeInvalidParams)
+	}
+}
+
+// TestHandleSpecDocWrite_UnknownSpec verifies a nonexistent spec ID returns
+// an error rather than writing anywhere.
+func TestHandleSpecDocWrite_UnknownSpec(t *testing.T) {
+	srv, _ := newTestServerWithSDDAndWorkflowDir(t)
+
+	writeResp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name: "spec_doc_write",
+		Arguments: mustMarshal(t, map[string]any{
+			"id":      "SPEC-999",
+			"kind":    "spec",
+			"content": "x",
+		}),
+	})
+	if writeResp.Error == nil {
+		t.Fatal("expected error for unknown spec id")
+	}
+}
+
 // --- MODEL TOOL TESTS (SPEC-038) ---
 
 // newTestServerWithModels builds a test server with a real ModelsService

@@ -598,6 +598,29 @@ func allTools() []ToolDefinition {
 			},
 		},
 		{
+			Name:        "spec_doc_write",
+			Description: "Write a spec entregable (spec/plan/qa-report/changes) to its workflow directory. The destination directory and filename are never caller-supplied: the directory is derived from the persisted spec record and the filename from a closed set of kinds.",
+			InputSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"id", "kind", "content"},
+				"properties": map[string]any{
+					"id": map[string]any{
+						"type":        "string",
+						"description": "Spec ID (e.g. SPEC-001).",
+					},
+					"kind": map[string]any{
+						"type":        "string",
+						"description": "Which document to write.",
+						"enum":        []string{"spec", "plan", "qa-report", "changes"},
+					},
+					"content": map[string]any{
+						"type":        "string",
+						"description": "Full document content, written verbatim.",
+					},
+				},
+			},
+		},
+		{
 			Name:        "spec_list",
 			Description: "List specs for the current project.",
 			InputSchema: map[string]any{
