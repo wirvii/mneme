@@ -974,12 +974,13 @@ func TestSubagentManifestList_EmptyWhenNoneWritten(t *testing.T) {
 
 func mcpAlwaysExists(string) bool               { return true }
 func mcpMatchingChecksum(string) (string, bool) { return "abc", true }
+func mcpNoContent(string) (string, bool)        { return "", false }
 
 // TestDiagnoseManifestEntryMCP_UnknownRole mirrors the CLI's doctor test:
 // direct, no-I/O coverage of diagnoseManifestEntryMCP.
 func TestDiagnoseManifestEntryMCP_UnknownRole(t *testing.T) {
 	entry := service.ManifestEntry{Role: "totally-custom", Areas: []string{"internal/**"}, AreasComplete: true}
-	findings := diagnoseManifestEntryMCP(entry, "/", mcpAlwaysExists, mcpMatchingChecksum)
+	findings := diagnoseManifestEntryMCP(entry, "/", mcpAlwaysExists, mcpMatchingChecksum, mcpNoContent)
 
 	found := false
 	for _, f := range findings {
@@ -996,7 +997,7 @@ func TestDiagnoseManifestEntryMCP_UnknownRole(t *testing.T) {
 // two findings every pre-SPEC-086 manifest entry will show.
 func TestDiagnoseManifestEntryMCP_ArchetypeMissingAndNotVerified(t *testing.T) {
 	entry := service.ManifestEntry{Role: subagents.RoleBackend, Areas: []string{"internal/**"}}
-	findings := diagnoseManifestEntryMCP(entry, "/", mcpAlwaysExists, mcpMatchingChecksum)
+	findings := diagnoseManifestEntryMCP(entry, "/", mcpAlwaysExists, mcpMatchingChecksum, mcpNoContent)
 
 	kinds := map[mcpDoctorFindingKind]bool{}
 	for _, f := range findings {
@@ -1019,7 +1020,7 @@ func TestDiagnoseManifestEntryMCP_StaleAgentFixed(t *testing.T) {
 		Role: subagents.RoleBackend, Archetype: subagents.RoleBackend,
 		Areas: []string{"internal/**"}, AreasComplete: true, Version: 1,
 	}
-	findings := diagnoseManifestEntryMCP(stale, "/", mcpAlwaysExists, mcpMatchingChecksum)
+	findings := diagnoseManifestEntryMCP(stale, "/", mcpAlwaysExists, mcpMatchingChecksum, mcpNoContent)
 	found := false
 	for _, f := range findings {
 		if f.Kind == mcpDoctorKindStaleAgentFixed {
@@ -1032,10 +1033,48 @@ func TestDiagnoseManifestEntryMCP_StaleAgentFixed(t *testing.T) {
 
 	current := stale
 	current.Version = subagents.AgentFixedVersion
-	freshFindings := diagnoseManifestEntryMCP(current, "/", mcpAlwaysExists, mcpMatchingChecksum)
+	freshFindings := diagnoseManifestEntryMCP(current, "/", mcpAlwaysExists, mcpMatchingChecksum, mcpNoContent)
 	for _, f := range freshFindings {
 		if f.Kind == mcpDoctorKindStaleAgentFixed {
 			t.Errorf("findings = %+v, must NOT flag stale_agent_fixed at the current version", freshFindings)
+		}
+	}
+}
+
+// TestDiagnoseManifestEntryMCP_LifecycleInLayer23 is G3's MCP half: mirrors
+// the CLI's TestDiagnoseManifestEntry_LifecycleInLayer23 — a leak inside the
+// grill region reports lifecycle_in_layer23; a token that only appears in
+// the layer-1 block (outside the region, its own legitimate prohibition)
+// must never fire the finding.
+func TestDiagnoseManifestEntryMCP_LifecycleInLayer23(t *testing.T) {
+	leakedContent := "<!-- mneme:agent-fixed:start v=2 -->\nNUNCA llames spec_advance.\n<!-- mneme:agent-fixed:end -->\n\n" +
+		subagents.GrillContentWrapStart + "\n\nAl terminar, llama spec_advance.\n\n" + subagents.GrillContentWrapEnd + "\n"
+	cleanContent := "<!-- mneme:agent-fixed:start v=2 -->\nNUNCA llames spec_advance.\n<!-- mneme:agent-fixed:end -->\n\n" +
+		subagents.GrillContentWrapStart + "\n\n## Área: x\n\nStack limpio, sin lifecycle.\n\n" + subagents.GrillContentWrapEnd + "\n"
+
+	leaky := service.ManifestEntry{
+		Role: subagents.RoleBackend, Archetype: subagents.RoleBackend,
+		Path: "/x.md", AreasComplete: true, Areas: []string{"internal/**"},
+	}
+	readLeaky := func(string) (string, bool) { return leakedContent, true }
+	findings := diagnoseManifestEntryMCP(leaky, "/", mcpAlwaysExists, mcpMatchingChecksum, readLeaky)
+	found := false
+	for _, f := range findings {
+		if f.Kind == mcpDoctorKindLifecycleInLayer23 {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("findings = %+v, want lifecycle_in_layer23 for a leak in the grill region", findings)
+	}
+
+	clean := leaky
+	clean.Path = "/clean.md"
+	readClean := func(string) (string, bool) { return cleanContent, true }
+	cleanFindings := diagnoseManifestEntryMCP(clean, "/", mcpAlwaysExists, mcpMatchingChecksum, readClean)
+	for _, f := range cleanFindings {
+		if f.Kind == mcpDoctorKindLifecycleInLayer23 {
+			t.Errorf("findings = %+v, must NOT flag lifecycle_in_layer23 — spec_advance only appears in the layer-1 block, outside the region", cleanFindings)
 		}
 	}
 }
@@ -1051,7 +1090,7 @@ func TestDiagnoseManifestEntryMCP_ForeignPath(t *testing.T) {
 		Path:          "/Users/other/chateaprov3/.claude/agents/bug-hunter.md",
 		AreasComplete: true, Areas: []string{"internal/**"},
 	}
-	findings := diagnoseManifestEntryMCP(entry, "/Users/owner/novo", mcpAlwaysExists, mcpMatchingChecksum)
+	findings := diagnoseManifestEntryMCP(entry, "/Users/owner/novo", mcpAlwaysExists, mcpMatchingChecksum, mcpNoContent)
 
 	kinds := map[mcpDoctorFindingKind]bool{}
 	for _, f := range findings {

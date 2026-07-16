@@ -176,3 +176,48 @@ func TestExtractGrillRegion_G2NeverScansOutsideTheRegion(t *testing.T) {
 		t.Errorf("ScanLayer23Leaks(region) = %+v, want no leaks — the layer-1 prohibition must never be scanned", leaks)
 	}
 }
+
+// --- DetectLayer23Leaks (SPEC-090 D3): the doctor-shared helper ------------
+
+// TestDetectLayer23Leaks_ReadsExtractsAndScans is G3's underlying unit: a
+// leak inside the grill region of the file at path is detected; a clean
+// region reports no leaks; an unreadable path reports no leaks (never a
+// spurious finding for a file the doctor can't even open).
+func TestDetectLayer23Leaks_ReadsExtractsAndScans(t *testing.T) {
+	withLeak := "<!-- mneme:agent-fixed:start v=2 -->\nNUNCA llames spec_advance.\n<!-- mneme:agent-fixed:end -->\n\n" +
+		GrillContentWrapStart + "\n\nAl terminar llama spec_advance.\n\n" + GrillContentWrapEnd + "\n"
+	clean := "<!-- mneme:agent-fixed:start v=2 -->\nNUNCA llames spec_advance.\n<!-- mneme:agent-fixed:end -->\n\n" +
+		GrillContentWrapStart + "\n\n## Área: x\n\nStack limpio.\n\n" + GrillContentWrapEnd + "\n"
+
+	files := map[string]string{"/leaky.md": withLeak, "/clean.md": clean}
+	readContent := func(path string) (string, bool) {
+		content, ok := files[path]
+		return content, ok
+	}
+
+	leaks := DetectLayer23Leaks("/leaky.md", readContent)
+	if len(leaks) != 1 || leaks[0].Token != "spec_advance" {
+		t.Errorf("DetectLayer23Leaks(/leaky.md) = %+v, want exactly one spec_advance leak", leaks)
+	}
+
+	if leaks := DetectLayer23Leaks("/clean.md", readContent); len(leaks) != 0 {
+		t.Errorf("DetectLayer23Leaks(/clean.md) = %+v, want no leaks", leaks)
+	}
+
+	if leaks := DetectLayer23Leaks("/missing.md", readContent); leaks != nil {
+		t.Errorf("DetectLayer23Leaks(/missing.md) = %+v, want nil for an unreadable path", leaks)
+	}
+}
+
+// TestDetectLayer23Leaks_NoGrillRegionReportsNothing covers a profile with
+// no wrapped grill region at all (predates the wrap, or hand-authored) —
+// DetectLayer23Leaks must never fabricate a finding from content outside a
+// region it cannot locate.
+func TestDetectLayer23Leaks_NoGrillRegionReportsNothing(t *testing.T) {
+	noRegion := "<!-- mneme:agent-fixed:start v=2 -->\nNUNCA llames spec_advance.\n<!-- mneme:agent-fixed:end -->\n\n## Área: x\n\ny\n"
+	readContent := func(string) (string, bool) { return noRegion, true }
+
+	if leaks := DetectLayer23Leaks("/x.md", readContent); leaks != nil {
+		t.Errorf("DetectLayer23Leaks = %+v, want nil when there is no grill region to extract", leaks)
+	}
+}

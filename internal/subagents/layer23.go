@@ -122,3 +122,28 @@ func ExtractGrillRegion(fileBody string) (region string, ok bool) {
 
 	return strings.TrimSpace(fileBody[contentStart : contentStart+relEnd]), true
 }
+
+// DetectLayer23Leaks reads path via readContent, extracts its grill region
+// via ExtractGrillRegion, and scans that region with ScanLayer23Leaks — the
+// single piece of logic internal/cli/subagents_doctor.go's
+// diagnoseManifestEntry and internal/mcp/handlers_subagents.go's
+// diagnoseManifestEntryMCP both call (SPEC-090 D3) for the
+// lifecycle_in_layer23 finding, so the two frontends can never diverge on
+// what counts as a leak already materialized on disk.
+//
+// readContent is injected so this stays testable without touching a real
+// filesystem (mirrors the fileExists/actualChecksum callbacks the two
+// doctor copies already take). Returns nil — never a finding — when the
+// file cannot be read, or when it carries no grill region at all (a profile
+// authored before the grill-content wrap existed, or entirely by hand).
+func DetectLayer23Leaks(path string, readContent func(string) (string, bool)) []Layer23Leak {
+	content, ok := readContent(path)
+	if !ok {
+		return nil
+	}
+	region, ok := ExtractGrillRegion(content)
+	if !ok {
+		return nil
+	}
+	return ScanLayer23Leaks(region)
+}

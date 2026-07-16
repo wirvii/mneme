@@ -65,6 +65,14 @@ const (
 	// it. Actionable, but doctor never deletes the entry (purging a foreign
 	// entry is deliberately out of scope — SPEC-089 D2's rejected alternative).
 	doctorKindForeignPath doctorFindingKind = "foreign_path"
+
+	// doctorKindLifecycleInLayer23 fires when subagents.DetectLayer23Leaks
+	// finds SDD lifecycle tokens or capability keys already materialized
+	// inside a manifest entry's grill region on disk (SPEC-090 D3): the
+	// leak already happened (subagent_compose/write's guard only prevents
+	// NEW ones), so doctor reports it for a human to act on by re-grilling
+	// the role — it never edits the file itself.
+	doctorKindLifecycleInLayer23 doctorFindingKind = "lifecycle_in_layer23"
 )
 
 // doctorFinding is one diagnostic observation about a single manifest entry.
@@ -81,12 +89,14 @@ func (k doctorFindingKind) actionable() bool {
 }
 
 // diagnoseManifestEntry runs every SPEC-086 D11 check against a single
-// manifest entry. fileExists/actualChecksum are injected so the function is
-// testable without touching the real filesystem. root confines e.Path
-// (SPEC-089 Part 1) exactly as regenerateManifestEntries does — the same
-// subagents.ResolveManifestPath call, so doctor's foreign_path finding and
-// regen's skip decision can never disagree.
-func diagnoseManifestEntry(e service.ManifestEntry, root string, fileExists func(string) bool, actualChecksum func(string) (string, bool)) []doctorFinding {
+// manifest entry. fileExists/actualChecksum/readContent are injected so the
+// function is testable without touching the real filesystem. root confines
+// e.Path (SPEC-089 Part 1) exactly as regenerateManifestEntries does — the
+// same subagents.ResolveManifestPath call, so doctor's foreign_path finding
+// and regen's skip decision can never disagree. readContent (SPEC-090 D3)
+// feeds subagents.DetectLayer23Leaks for the lifecycle_in_layer23 finding —
+// injected in parallel to actualChecksum, for the same reason.
+func diagnoseManifestEntry(e service.ManifestEntry, root string, fileExists func(string) bool, actualChecksum func(string) (string, bool), readContent func(string) (string, bool)) []doctorFinding {
 	var findings []doctorFinding
 	role := string(e.Role)
 	archetype := e.EffectiveArchetype()
@@ -133,11 +143,19 @@ func diagnoseManifestEntry(e service.ManifestEntry, root string, fileExists func
 				Role: role, Kind: doctorKindOrphanPath,
 				Detail: fmt.Sprintf("path %q no existe en disco (huérfano)", e.Path),
 			})
-		} else if e.Checksum != "" {
-			if actual, ok := actualChecksum(e.Path); ok && actual != e.Checksum {
+		} else {
+			if e.Checksum != "" {
+				if actual, ok := actualChecksum(e.Path); ok && actual != e.Checksum {
+					findings = append(findings, doctorFinding{
+						Role: role, Kind: doctorKindDrift,
+						Detail: "checksum en disco no coincide con el manifest (drift)",
+					})
+				}
+			}
+			for _, leak := range subagents.DetectLayer23Leaks(e.Path, readContent) {
 				findings = append(findings, doctorFinding{
-					Role: role, Kind: doctorKindDrift,
-					Detail: "checksum en disco no coincide con el manifest (drift)",
+					Role: role, Kind: doctorKindLifecycleInLayer23,
+					Detail: fmt.Sprintf("fuga de capa 1 (%s) en la región de capa 2/3: %q, línea %d — re-grillar el rol para limpiarlo", leak.Kind, leak.Token, leak.Line),
 				})
 			}
 		}
@@ -187,6 +205,17 @@ func realChecksum(path string) (string, bool) {
 	return hex.EncodeToString(sum[:]), true
 }
 
+// realReadContent is the production readContent implementation
+// diagnoseManifestEntry is wired with outside tests (SPEC-090 D3, mirrors
+// realFileExists/realChecksum).
+func realReadContent(path string) (string, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", false
+	}
+	return string(data), true
+}
+
 // backfillArchetypes returns a copy of entries with Archetype set to Role
 // for every entry whose Archetype is empty AND whose Role is a recognised
 // built-in archetype (the only case this backfill can do mechanically,
@@ -216,17 +245,22 @@ func newSubagentsDoctorCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "doctor",
 		Short: "Diagnose the current project's subagent manifest (report-only by default)",
-		Long: `Runs SPEC-086 D11's checks (plus SPEC-087 D7's stale_agent_fixed and
-SPEC-089 Part 1's foreign_path) against every entry in the current project's
-subagent manifest: a Path that resolves outside the project root or looks
-authored on a different OS family (foreign — the entry regen will refuse to
-touch, checked before orphan/drift), an implementer role with no declared
-areas (degenerate), areas_complete absent (not verified), archetype absent
-(backfill available via --fix), an agent-fixed block version behind the
-current AgentFixedVersion (regenerate with "mneme subagents regen"), a
-checksum that no longer matches the file on disk (drift), a path that no
-longer exists (orphan), and a role/archetype not recognised by
-subagents.PermissionTable (unknown — its area is unprotected by the hook).
+		Long: `Runs SPEC-086 D11's checks (plus SPEC-087 D7's stale_agent_fixed,
+SPEC-089 Part 1's foreign_path, and SPEC-090 D3's lifecycle_in_layer23)
+against every entry in the current project's subagent manifest: a Path that
+resolves outside the project root or looks authored on a different OS family
+(foreign — the entry regen will refuse to touch, checked before
+orphan/drift), an implementer role with no declared areas (degenerate),
+areas_complete absent (not verified), archetype absent (backfill available
+via --fix), an agent-fixed block version behind the current
+AgentFixedVersion (regenerate with "mneme subagents regen"), a checksum that
+no longer matches the file on disk (drift), a path that no longer exists
+(orphan), a role/archetype not recognised by subagents.PermissionTable
+(unknown — its area is unprotected by the hook), and an SDD lifecycle token
+or capability key (tools:/permissionMode:) already materialized inside the
+file's grill region — layer-1 content that leaked into layer 2/3 before
+subagent_compose/write's guard existed; report-only, re-grill the role to
+clean it up.
 
 A bare-directory area (e.g. "apps/web-ui" instead of "apps/web-ui/**") is
 reported as healthy, not rewritten — areaMatches already resolves it.
@@ -268,7 +302,7 @@ D2), only "mneme subagents regen" skips touching it.`,
 
 			var all []doctorFinding
 			for _, e := range entries {
-				all = append(all, diagnoseManifestEntry(e, root, realFileExists, realChecksum)...)
+				all = append(all, diagnoseManifestEntry(e, root, realFileExists, realChecksum, realReadContent)...)
 			}
 			sort.SliceStable(all, func(i, j int) bool {
 				if all[i].Role != all[j].Role {

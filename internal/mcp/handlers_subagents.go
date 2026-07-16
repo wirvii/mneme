@@ -649,7 +649,7 @@ func (h *handlers) handleSubagentManifestList(ctx context.Context, raw json.RawM
 	for _, e := range entries {
 		out = append(out, subagentManifestListEntry{
 			ManifestEntry: e,
-			Findings:      diagnoseManifestEntryMCP(e, root, mcpRealFileExists, mcpRealChecksum),
+			Findings:      diagnoseManifestEntryMCP(e, root, mcpRealFileExists, mcpRealChecksum, mcpRealReadContent),
 		})
 	}
 	return resultFromAny(out)
@@ -728,6 +728,15 @@ const (
 	// path is never confined and those two checks would be meaningless for
 	// it. Actionable, but never removes the entry.
 	mcpDoctorKindForeignPath mcpDoctorFindingKind = "foreign_path"
+
+	// mcpDoctorKindLifecycleInLayer23 mirrors cli's
+	// doctorKindLifecycleInLayer23 (SPEC-090 D3): fires when
+	// subagents.DetectLayer23Leaks finds an SDD lifecycle token or
+	// capability key already materialized inside a manifest entry's grill
+	// region on disk. Report-only — the mneme-init grill, which runs over
+	// MCP, is the one place expected to actually re-synthesize the leaked
+	// content out.
+	mcpDoctorKindLifecycleInLayer23 mcpDoctorFindingKind = "lifecycle_in_layer23"
 )
 
 // mcpDoctorFinding is one diagnostic observation about a single manifest
@@ -741,11 +750,14 @@ type mcpDoctorFinding struct {
 
 // diagnoseManifestEntryMCP runs the same checks as cli's
 // diagnoseManifestEntry against a single manifest entry. fileExists/
-// actualChecksum are injected so the function is testable without touching
-// the real filesystem. root confines e.Path (SPEC-089 Part 1) via the same
-// subagents.ResolveManifestPath call regen and cli's doctor use, so this
-// mirror can never disagree with them about what counts as foreign.
-func diagnoseManifestEntryMCP(e service.ManifestEntry, root string, fileExists func(string) bool, actualChecksum func(string) (string, bool)) []mcpDoctorFinding {
+// actualChecksum/readContent are injected so the function is testable
+// without touching the real filesystem. root confines e.Path (SPEC-089
+// Part 1) via the same subagents.ResolveManifestPath call regen and cli's
+// doctor use, so this mirror can never disagree with them about what counts
+// as foreign. readContent (SPEC-090 D3) feeds subagents.DetectLayer23Leaks
+// for the lifecycle_in_layer23 finding — injected in parallel to
+// actualChecksum, for the same reason.
+func diagnoseManifestEntryMCP(e service.ManifestEntry, root string, fileExists func(string) bool, actualChecksum func(string) (string, bool), readContent func(string) (string, bool)) []mcpDoctorFinding {
 	var findings []mcpDoctorFinding
 	archetype := e.EffectiveArchetype()
 
@@ -791,11 +803,19 @@ func diagnoseManifestEntryMCP(e service.ManifestEntry, root string, fileExists f
 				Kind:   mcpDoctorKindOrphanPath,
 				Detail: fmt.Sprintf("path %q no existe en disco (huérfano)", e.Path),
 			})
-		} else if e.Checksum != "" {
-			if actual, ok := actualChecksum(e.Path); ok && actual != e.Checksum {
+		} else {
+			if e.Checksum != "" {
+				if actual, ok := actualChecksum(e.Path); ok && actual != e.Checksum {
+					findings = append(findings, mcpDoctorFinding{
+						Kind:   mcpDoctorKindDrift,
+						Detail: "checksum en disco no coincide con el manifest (drift)",
+					})
+				}
+			}
+			for _, leak := range subagents.DetectLayer23Leaks(e.Path, readContent) {
 				findings = append(findings, mcpDoctorFinding{
-					Kind:   mcpDoctorKindDrift,
-					Detail: "checksum en disco no coincide con el manifest (drift)",
+					Kind:   mcpDoctorKindLifecycleInLayer23,
+					Detail: fmt.Sprintf("fuga de capa 1 (%s) en la región de capa 2/3: %q, línea %d — re-grillar el rol para limpiarlo", leak.Kind, leak.Token, leak.Line),
 				})
 			}
 		}
@@ -829,9 +849,10 @@ func mcpIsGlobLike(area string) bool {
 	return false
 }
 
-// mcpRealFileExists/mcpRealChecksum are the production fileExists/
-// actualChecksum implementations diagnoseManifestEntryMCP is wired with
-// outside tests (mirrors cli's realFileExists/realChecksum).
+// mcpRealFileExists/mcpRealChecksum/mcpRealReadContent are the production
+// fileExists/actualChecksum/readContent implementations diagnoseManifestEntryMCP
+// is wired with outside tests (mirrors cli's
+// realFileExists/realChecksum/realReadContent).
 func mcpRealFileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
@@ -844,4 +865,15 @@ func mcpRealChecksum(path string) (string, bool) {
 	}
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:]), true
+}
+
+// mcpRealReadContent is the production readContent implementation
+// diagnoseManifestEntryMCP is wired with outside tests (SPEC-090 D3, mirrors
+// cli's realReadContent).
+func mcpRealReadContent(path string) (string, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", false
+	}
+	return string(data), true
 }

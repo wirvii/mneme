@@ -20,13 +20,14 @@ func alwaysExists(string) bool                 { return true }
 func neverExists(string) bool                  { return false }
 func matchingChecksum(string) (string, bool)   { return "abc", true }
 func mismatchedChecksum(string) (string, bool) { return "different", true }
+func noContent(string) (string, bool)          { return "", false }
 
 // TestDiagnoseManifestEntry_UnknownRole covers the D4-adjacent unknown-role
 // finding: a role/archetype absent from PermissionTable is flagged as
 // unprotected.
 func TestDiagnoseManifestEntry_UnknownRole(t *testing.T) {
 	entry := service.ManifestEntry{Role: "totally-custom", Areas: []string{"internal/**"}, AreasComplete: true}
-	findings := diagnoseManifestEntry(entry, "/", alwaysExists, matchingChecksum)
+	findings := diagnoseManifestEntry(entry, "/", alwaysExists, matchingChecksum, noContent)
 	if !findingKinds(findings)[doctorKindUnknownRole] {
 		t.Errorf("findings = %+v, want unknown_role", findings)
 	}
@@ -36,7 +37,7 @@ func TestDiagnoseManifestEntry_UnknownRole(t *testing.T) {
 // no declared areas.
 func TestDiagnoseManifestEntry_DegenerateAreas(t *testing.T) {
 	entry := service.ManifestEntry{Role: subagents.RoleBackend, Archetype: subagents.RoleBackend, AreasComplete: true}
-	findings := diagnoseManifestEntry(entry, "/", alwaysExists, matchingChecksum)
+	findings := diagnoseManifestEntry(entry, "/", alwaysExists, matchingChecksum, noContent)
 	if !findingKinds(findings)[doctorKindDegenerateAreas] {
 		t.Errorf("findings = %+v, want degenerate_areas", findings)
 	}
@@ -46,7 +47,7 @@ func TestDiagnoseManifestEntry_DegenerateAreas(t *testing.T) {
 // compat findings every pre-SPEC-086 manifest entry will show.
 func TestDiagnoseManifestEntry_ArchetypeMissing_And_NotVerified(t *testing.T) {
 	entry := service.ManifestEntry{Role: subagents.RoleBackend, Areas: []string{"internal/**"}}
-	findings := diagnoseManifestEntry(entry, "/", alwaysExists, matchingChecksum)
+	findings := diagnoseManifestEntry(entry, "/", alwaysExists, matchingChecksum, noContent)
 	kinds := findingKinds(findings)
 	if !kinds[doctorKindArchetypeMissing] {
 		t.Error("expected archetype_missing")
@@ -69,7 +70,7 @@ func TestDiagnoseManifestEntry_ForeignPath(t *testing.T) {
 		Path:          "/Users/other/chateaprov3/.claude/agents/bug-hunter.md",
 		AreasComplete: true, Areas: []string{"internal/**"},
 	}
-	findings := diagnoseManifestEntry(entry, "/Users/owner/novo", alwaysExists, matchingChecksum)
+	findings := diagnoseManifestEntry(entry, "/Users/owner/novo", alwaysExists, matchingChecksum, noContent)
 	kinds := findingKinds(findings)
 	if !kinds[doctorKindForeignPath] {
 		t.Errorf("findings = %+v, want foreign_path", findings)
@@ -88,7 +89,7 @@ func TestDiagnoseManifestEntry_ForeignPath_WindowsDriveLetter(t *testing.T) {
 		Path:          `c:\Users\Usuario\Desktop\ventasWpDropi\.claude\agents\backend.md`,
 		AreasComplete: true, Areas: []string{"internal/**"},
 	}
-	findings := diagnoseManifestEntry(entry, "/Users/owner/ventasWpDropi", alwaysExists, matchingChecksum)
+	findings := diagnoseManifestEntry(entry, "/Users/owner/ventasWpDropi", alwaysExists, matchingChecksum, noContent)
 	if !findingKinds(findings)[doctorKindForeignPath] {
 		t.Errorf("findings = %+v, want foreign_path", findings)
 	}
@@ -96,7 +97,7 @@ func TestDiagnoseManifestEntry_ForeignPath_WindowsDriveLetter(t *testing.T) {
 
 func TestDiagnoseManifestEntry_OrphanPath(t *testing.T) {
 	entry := service.ManifestEntry{Role: subagents.RoleBackend, Archetype: subagents.RoleBackend, Path: "/nowhere", AreasComplete: true, Areas: []string{"internal/**"}}
-	findings := diagnoseManifestEntry(entry, "/", neverExists, matchingChecksum)
+	findings := diagnoseManifestEntry(entry, "/", neverExists, matchingChecksum, noContent)
 	if !findingKinds(findings)[doctorKindOrphanPath] {
 		t.Errorf("findings = %+v, want orphan_path", findings)
 	}
@@ -107,7 +108,7 @@ func TestDiagnoseManifestEntry_ChecksumDrift(t *testing.T) {
 		Role: subagents.RoleBackend, Archetype: subagents.RoleBackend, Path: "/x.md",
 		Checksum: "abc", AreasComplete: true, Areas: []string{"internal/**"},
 	}
-	findings := diagnoseManifestEntry(entry, "/", alwaysExists, mismatchedChecksum)
+	findings := diagnoseManifestEntry(entry, "/", alwaysExists, mismatchedChecksum, noContent)
 	if !findingKinds(findings)[doctorKindDrift] {
 		t.Errorf("findings = %+v, want drift", findings)
 	}
@@ -122,7 +123,7 @@ func TestDiagnoseManifestEntry_BareDirReportedHealthyNotActionable(t *testing.T)
 		Role: subagents.RoleFrontend, Archetype: subagents.RoleFrontend,
 		Areas: []string{"apps/web-ui"}, AreasComplete: true,
 	}
-	findings := diagnoseManifestEntry(entry, "/", alwaysExists, matchingChecksum)
+	findings := diagnoseManifestEntry(entry, "/", alwaysExists, matchingChecksum, noContent)
 
 	var bareDir *doctorFinding
 	for i := range findings {
@@ -141,7 +142,7 @@ func TestDiagnoseManifestEntry_BareDirReportedHealthyNotActionable(t *testing.T)
 		Role: subagents.RoleBackend, Archetype: subagents.RoleBackend,
 		Areas: []string{"internal/**"}, AreasComplete: true,
 	}
-	globFindings := diagnoseManifestEntry(globEntry, "/", alwaysExists, matchingChecksum)
+	globFindings := diagnoseManifestEntry(globEntry, "/", alwaysExists, matchingChecksum, noContent)
 	if findingKinds(globFindings)[doctorKindBareDirOK] {
 		t.Errorf("findings = %+v, an already-glob area must not be flagged as bare_dir_ok", globFindings)
 	}
@@ -156,16 +157,55 @@ func TestDiagnoseManifestEntry_StaleAgentFixed(t *testing.T) {
 		Role: subagents.RoleBackend, Archetype: subagents.RoleBackend,
 		Areas: []string{"internal/**"}, AreasComplete: true, Version: 1,
 	}
-	findings := diagnoseManifestEntry(stale, "/", alwaysExists, matchingChecksum)
+	findings := diagnoseManifestEntry(stale, "/", alwaysExists, matchingChecksum, noContent)
 	if !findingKinds(findings)[doctorKindStaleAgentFixed] {
 		t.Errorf("findings = %+v, want stale_agent_fixed for Version:1", findings)
 	}
 
 	current := stale
 	current.Version = subagents.AgentFixedVersion
-	freshFindings := diagnoseManifestEntry(current, "/", alwaysExists, matchingChecksum)
+	freshFindings := diagnoseManifestEntry(current, "/", alwaysExists, matchingChecksum, noContent)
 	if findingKinds(freshFindings)[doctorKindStaleAgentFixed] {
 		t.Errorf("findings = %+v, must NOT flag stale_agent_fixed at the current version", freshFindings)
+	}
+}
+
+// --- SPEC-090 D3/G3: lifecycle_in_layer23 ------------------------------------
+
+// leakedRegionContent and cleanRegionContent are fixtures used by
+// TestDiagnoseManifestEntry_LifecycleInLayer23: a materialized profile whose
+// grill region does/does not contain a layer-1 leak. Both also carry the
+// layer-1 agent-fixed block's OWN legitimate "NUNCA llames spec_advance"
+// prohibition, outside the region — proving the finding, like the guard, is
+// region-scoped (mirrors G2).
+var (
+	leakedRegionContent = "<!-- mneme:agent-fixed:start v=2 -->\nNUNCA llames spec_advance.\n<!-- mneme:agent-fixed:end -->\n\n" +
+		subagents.GrillContentWrapStart + "\n\nAl terminar, llama spec_advance.\n\n" + subagents.GrillContentWrapEnd + "\n"
+	cleanRegionContent = "<!-- mneme:agent-fixed:start v=2 -->\nNUNCA llames spec_advance.\n<!-- mneme:agent-fixed:end -->\n\n" +
+		subagents.GrillContentWrapStart + "\n\n## Área: x\n\nStack limpio, sin lifecycle.\n\n" + subagents.GrillContentWrapEnd + "\n"
+)
+
+// TestDiagnoseManifestEntry_LifecycleInLayer23 is G3: a leak inside the
+// grill region reports lifecycle_in_layer23; a token that only appears in
+// the layer-1 block (outside the region, its own legitimate prohibition)
+// must never fire the finding.
+func TestDiagnoseManifestEntry_LifecycleInLayer23(t *testing.T) {
+	leaky := service.ManifestEntry{
+		Role: subagents.RoleBackend, Archetype: subagents.RoleBackend,
+		Path: "/x.md", AreasComplete: true, Areas: []string{"internal/**"},
+	}
+	readLeaky := func(string) (string, bool) { return leakedRegionContent, true }
+	findings := diagnoseManifestEntry(leaky, "/", alwaysExists, matchingChecksum, readLeaky)
+	if !findingKinds(findings)[doctorKindLifecycleInLayer23] {
+		t.Errorf("findings = %+v, want lifecycle_in_layer23 for a leak in the grill region", findings)
+	}
+
+	clean := leaky
+	clean.Path = "/clean.md"
+	readClean := func(string) (string, bool) { return cleanRegionContent, true }
+	cleanFindings := diagnoseManifestEntry(clean, "/", alwaysExists, matchingChecksum, readClean)
+	if findingKinds(cleanFindings)[doctorKindLifecycleInLayer23] {
+		t.Errorf("findings = %+v, must NOT flag lifecycle_in_layer23 — spec_advance only appears in the layer-1 block, outside the region", cleanFindings)
 	}
 }
 
