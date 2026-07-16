@@ -96,10 +96,12 @@ func TestEvaluateBash_PortedCases(t *testing.T) {
 		wantBlock bool
 		wantOwner string
 	}{
-		// A-cases: orchestrator bypass hardening (AC2).
-		{"A1_python_shutil_copy", `python3 -c "import shutil; shutil.copy('src.go', 'internal/dst.go')"`, legacyBlockStub, true, ""},
-		{"A2_python_subprocess_cp", `python3 -c "import subprocess; subprocess.run(['cp', 'src', 'internal/dst.go'])"`, legacyBlockStub, true, ""},
-		{"A3_python_os_rename", `python3 -c "import os; os.rename('src.go', 'internal/dst.go')"`, legacyBlockStub, true, ""},
+		// A-cases: orchestrator bypass hardening (AC2). Owner is now "legacy"
+		// (not "") because SPEC-086 D9 F3 routes these candidates through the
+		// ownership bridge instead of hard-blocking without consulting it.
+		{"A1_python_shutil_copy", `python3 -c "import shutil; shutil.copy('src.go', 'internal/dst.go')"`, legacyBlockStub, true, "legacy"},
+		{"A2_python_subprocess_cp", `python3 -c "import subprocess; subprocess.run(['cp', 'src', 'internal/dst.go'])"`, legacyBlockStub, true, "legacy"},
+		{"A3_python_os_rename", `python3 -c "import os; os.rename('src.go', 'internal/dst.go')"`, legacyBlockStub, true, "legacy"},
 
 		// Non-regression: safe commands still allowed (AC3).
 		{"NR1_python_print_only", `python3 -c "print(2+2)"`, legacyBlockStub, false, ""},
@@ -112,7 +114,7 @@ func TestEvaluateBash_PortedCases(t *testing.T) {
 		// F-cases: SPEC-043 regression fixes 1-4.
 		{"F1_python_redirect_2devnull_no_path", `python3 -c "print(2+2)" 2>/dev/null`, legacyBlockStub, false, ""},
 		{"F2_python_open_CLAUDE_md_with_redirect", `python3 -c "open('CLAUDE.md')" 2>/dev/null`, legacyBlockStub, false, ""},
-		{"F3_python_open_protected_path_with_redirect", `python3 -c "open('internal/x.go','w')" 2>/dev/null`, legacyBlockStub, true, ""},
+		{"F3_python_open_protected_path_with_redirect", `python3 -c "open('internal/x.go','w')" 2>/dev/null`, legacyBlockStub, true, "legacy"},
 		{"F4_node_redirect_2devnull_no_path", `node -e "console.log(1)" 2>/dev/null`, legacyBlockStub, false, ""},
 		{"F7_redirect_tilde_mneme", "echo x > ~/.mneme/scratch.txt", legacyBlockStub, false, ""},
 		{"F10_redirect_tmp", "echo x > /tmp/out.log", legacyBlockStub, false, ""},
@@ -436,6 +438,113 @@ func TestCommandMentionsProtectedPath(t *testing.T) {
 				t.Errorf("commandMentionsProtectedPath(%q) = %v, want %v", tt.cmd, got, tt.want)
 			}
 		})
+	}
+}
+
+// --- SPEC-086 D9: inline-script false positive (F1/F2/F3) -------------------
+
+// TestEvaluateBash_InlineScriptFP_AC3Repro is the literal owner repro (AC3):
+// a read-only python3 -c JSON parser fed by a SQL query whose string literal
+// merely contains a path-shaped substring inside another (already-terminated)
+// Bash command. Before F1+F2 this blocked (exit 2) because
+// commandMentionsProtectedPath inspected the WHOLE command line, including
+// the sqlite3 argument that precedes the pipe. Mutation check: deleting F1
+// (scoping to the -c argument) or F2 (the write-signal gate) turns this red —
+// see TestEvaluateInlineScript_MutationGuards below for the isolated proof.
+func TestEvaluateBash_InlineScriptFP_AC3Repro(t *testing.T) {
+	cmd := `sqlite3 ~/.mneme/projects/wirvii-mneme.db "SELECT id FROM memories WHERE files LIKE '%internal/cli/hook.go%'" | python3 -c "import sys,json; data=sys.stdin.read(); print(data)"`
+
+	got := EvaluateBash(cmd, pc("linux"), legacyBlockStub)
+
+	if got.Block {
+		t.Fatalf("Block = true, want false (decision: %+v) — AC3 repro must not block", got)
+	}
+}
+
+// TestEvaluateBash_InlineScriptFP_NonRegression covers AC4: a bare read-only
+// inline script, and a script whose print() statement mentions no path at
+// all, both stay allowed.
+func TestEvaluateBash_InlineScriptFP_NonRegression(t *testing.T) {
+	tests := []struct {
+		name string
+		cmd  string
+	}{
+		{"cat_pipe_python_json_parser", `cat internal/cli/hook.go | python3 -c "import sys,json"`},
+		{"python_arithmetic_only", `python3 -c "print(2+2)"`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := EvaluateBash(tt.cmd, pc("linux"), legacyBlockStub)
+			if got.Block {
+				t.Errorf("Block = true, want false (decision: %+v)", got)
+			}
+		})
+	}
+}
+
+// TestEvaluateBash_InlineScriptFP_F6RestoresFallback covers AC6: a
+// write-signal-carrying inline script targeting a path with NO owner in the
+// manifest is now allowed (F3 routes the candidate through own instead of
+// hard-blocking), where the pre-SPEC-086 implementation would have blocked
+// unconditionally.
+func TestEvaluateBash_InlineScriptFP_F6RestoresFallback(t *testing.T) {
+	unownedStub := func(string) (bool, string) { return false, "" }
+
+	got := EvaluateBash(`python3 -c "open('internal/x.go','w').write('x')"`, pc("linux"), unownedStub)
+
+	if got.Block {
+		t.Fatalf("Block = true, want false (decision: %+v) — unowned candidate must fall through to allow", got)
+	}
+}
+
+// TestEvaluateInlineScript_MutationGuards isolates each of F1/F2/F3 with a
+// direct mutation check: temporarily reproducing what the OLD, unscoped
+// heuristic would have done — inspecting the full command line with no
+// write-signal gate — and confirming today's implementation diverges from it
+// exactly where the fix requires (per the mutation discipline in
+// [[testing/antipatron-guardian-que-no-detecta-su-eliminacion]]).
+func TestEvaluateInlineScript_MutationGuards(t *testing.T) {
+	p := pc("linux")
+
+	// F1 guard: without a -c/-e flag at all, there is no inline script to
+	// inspect — a bare `python3 script.py` naming a protected path as its
+	// OWN argument (not inside a script string) must never block through
+	// this heuristic. If F1 were deleted (falling back to fullCommand
+	// inspection), this candidate would trigger a block.
+	tokens, err := shell.Tokenize(`python3 internal/x.go`)
+	if err != nil {
+		t.Fatalf("Tokenize: %v", err)
+	}
+	if got := evaluateInlineScript(tokens, 0, "Python", hasPythonWriteSignal, p, legacyBlockStub); got.Block {
+		t.Errorf("F1 guard: Block = true, want false — no -c/-e flag means no inline script (decision: %+v)", got)
+	}
+
+	// F2 guard: a -c script that mentions a protected path but has no write
+	// API call must not block. If F2 were deleted (mention alone were
+	// sufficient), this would block.
+	readOnlyTokens, err := shell.Tokenize(`python3 -c "print(open('internal/x.go').read())"`)
+	if err != nil {
+		t.Fatalf("Tokenize: %v", err)
+	}
+	if got := evaluateInlineScript(readOnlyTokens, 0, "Python", hasPythonWriteSignal, p, legacyBlockStub); got.Block {
+		t.Errorf("F2 guard: Block = true, want false — open() with no write mode has no write signal (decision: %+v)", got)
+	}
+
+	// F3 guard: a write-signal script targeting an EXPLICITLY unowned path
+	// (own returns false) must allow. If F3 were deleted (hard-block
+	// regardless of own), this would block even though own says allow.
+	writeTokens, err := shell.Tokenize(`python3 -c "open('internal/x.go','w')"`)
+	if err != nil {
+		t.Fatalf("Tokenize: %v", err)
+	}
+	allowStub := func(string) (bool, string) { return false, "" }
+	if got := evaluateInlineScript(writeTokens, 0, "Python", hasPythonWriteSignal, p, allowStub); got.Block {
+		t.Errorf("F3 guard: Block = true, want false — own() returned allow, the hard-block must be gone (decision: %+v)", got)
+	}
+	// Sanity: the SAME script blocks when own says block, proving the
+	// candidate really does reach the ownership bridge (F3's positive case).
+	if got := evaluateInlineScript(writeTokens, 0, "Python", hasPythonWriteSignal, p, legacyBlockStub); !got.Block {
+		t.Errorf("F3 guard: Block = false, want true — own() returned block, the bridge must be consulted (decision: %+v)", got)
 	}
 }
 

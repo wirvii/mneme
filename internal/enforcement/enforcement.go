@@ -394,16 +394,124 @@ func evaluateWordToken(tokens []shell.Token, i int, value, fullCommand string, p
 	case "dd":
 		return evaluateDD(tokens, i, pc, own)
 	case "python", "python2", "python3":
-		if commandMentionsProtectedPath(fullCommand, pc) {
-			return Decision{Block: true, Reason: "Script Python inline menciona ruta fuera de whitelist"}
-		}
+		return evaluateInlineScript(tokens, i, "Python", hasPythonWriteSignal, pc, own)
 	case "node":
-		if commandMentionsProtectedPath(fullCommand, pc) {
-			return Decision{Block: true, Reason: "Script Node inline menciona ruta fuera de whitelist"}
-		}
+		return evaluateInlineScript(tokens, i, "Node", hasNodeWriteSignal, pc, own)
 	default:
 		if watchedCommands[value] {
 			return evaluateWatchedCommand(tokens, i, value, pc, own)
+		}
+	}
+	return Decision{}
+}
+
+// inlineScriptFlags is the set of interpreter flags that carry an inline
+// script as their argument, mirroring `python -c "..."` and `node -e "..."`.
+// A python/node invocation without one of these flags (`python3 script.py`,
+// `| python3 -`) has no inline script for this heuristic to inspect at all
+// (SPEC-086 D9 F1) — the file-argument case is a Read/Write tool concern, not
+// a text-level heuristic over an inline string.
+var inlineScriptFlags = map[string]bool{"-c": true, "-e": true}
+
+// inlineScriptArg scans the tokens following the interpreter command at
+// cmdIdx (within the same statement — it stops at the first separator or
+// redirect, mirroring findLastWordTarget's segment boundary) for a "-c"/"-e"
+// flag and returns the value of the token immediately after it: the inline
+// script text. ok is false when no such flag is found before the statement
+// ends, which is F1's scoping fix — commandMentionsProtectedPath (the old
+// implementation) inspected fullCommand regardless of whether an inline
+// script was even present, so a protected-looking path anywhere else on the
+// command line (e.g. inside an unrelated SQL string piped into python3 for
+// JSON parsing) produced a false positive.
+func inlineScriptArg(tokens []shell.Token, cmdIdx int) (script string, ok bool) {
+	for j := cmdIdx + 1; j < len(tokens); j++ {
+		t := tokens[j]
+		switch t.Type {
+		case shell.TypeSeparator, shell.TypeRedirect:
+			return "", false
+		case shell.TypeWord:
+			if !t.Quoted && inlineScriptFlags[t.Value] {
+				next, found := tokenValueAt(tokens, j+1)
+				if !found {
+					return "", false
+				}
+				return next, true
+			}
+		case shell.TypeRedirectTarget, shell.TypeCommandSubstitution, shell.TypeHeredocBody:
+			// Not a candidate boundary or flag — keep scanning.
+		}
+	}
+	return "", false
+}
+
+// pythonOpenWriteMode matches a two-argument python open(path, mode) call and
+// captures the mode string, so hasPythonWriteSignal can distinguish a write
+// mode ("w", "a", "x", "w+", ...) from a read-only open(path) or open(path,
+// "r") — SPEC-086 D9 F2.
+var pythonOpenWriteMode = regexp.MustCompile(`open\s*\([^()]*,\s*["']([rwaxbRWAXB+]{1,4})["']`)
+
+// pythonWriteAPI matches python API calls that mutate the filesystem
+// regardless of the open() built-in: str/pathlib write methods, shutil's
+// copy/move family, the os module's rename/remove/mkdir family, and any use
+// of the subprocess module at all (SPEC-086 D9 F2). subprocess is
+// deliberately unconditional — the target of a subprocess call is opaque to
+// this text-level heuristic, so it trades precision for the deny-by-default
+// posture SPEC-042 D3 established (see the FP residual note below).
+var pythonWriteAPI = regexp.MustCompile(
+	`\.write(_text|_bytes)?\s*\(|\.writelines\s*\(|` +
+		`shutil\.(copy2?|copyfile|move|rmtree)\s*\(|` +
+		`os\.(rename|replace|remove|unlink|mkdir|makedirs|rmdir|truncate|system)\s*\(|` +
+		`\.unlink\s*\(|\.mkdir\s*\(|\.rename\s*\(|subprocess\.`,
+)
+
+// hasPythonWriteSignal reports whether script (the inline argument of a
+// `python -c`/`python -e` invocation) contains a write-capable API call
+// (SPEC-086 D9 F2). A script that only reads (parses JSON, prints, opens
+// read-only) has none of these signals and is never a block candidate,
+// regardless of what paths it mentions — F2 is the fix for the FP the owner
+// hit three times: an inline JSON parser reading from stdin, whose SQL
+// literal argument merely contained a path-shaped substring.
+func hasPythonWriteSignal(script string) bool {
+	if m := pythonOpenWriteMode.FindStringSubmatch(script); m != nil {
+		if strings.ContainsAny(strings.ToLower(m[1]), "wax+") {
+			return true
+		}
+	}
+	return pythonWriteAPI.MatchString(script)
+}
+
+// nodeWriteAPI matches node's filesystem write surface: any use of the fs
+// module, the child_process module (spawns an opaque subprocess, same
+// rationale as python's subprocess), or an explicit require('fs') (SPEC-086
+// D9 F2).
+var nodeWriteAPI = regexp.MustCompile(`fs\.|child_process|require\(['"]fs['"]\)`)
+
+// hasNodeWriteSignal reports whether script (the inline argument of a
+// `node -e` invocation) contains a write-capable API call (SPEC-086 D9 F2).
+func hasNodeWriteSignal(script string) bool {
+	return nodeWriteAPI.MatchString(script)
+}
+
+// evaluateInlineScript implements SPEC-086 D9's three-part fix for the
+// python/node inline-script heuristic:
+//
+//   - F1: only the -c/-e argument is inspected (inlineScriptArg), never the
+//     full command line.
+//   - F2: a candidate path is only considered when the script also exhibits a
+//     write-capable API call (hasWriteSignal) — a read-only script never
+//     blocks, no matter what it mentions.
+//   - F3: candidates that survive F1+F2 are resolved through own, the same
+//     manifest-ownership bridge every other watched command uses (restoring
+//     the "unowned path -> allow" fallback and the areas contention this
+//     family of rules used to skip entirely as a hard-block).
+func evaluateInlineScript(tokens []shell.Token, i int, label string, hasWriteSignal func(string) bool, pc PathContext, own OwnershipFunc) Decision {
+	script, ok := inlineScriptArg(tokens, i)
+	if !ok || !hasWriteSignal(script) {
+		return Decision{}
+	}
+	for _, candidate := range protectedPathCandidates(script, pc) {
+		if d := evaluateTarget(candidate, fmt.Sprintf("Script %s inline con señal de escritura menciona ruta protegida: '%s'", label, candidate), own); d.Block {
+			return d
 		}
 	}
 	return Decision{}
@@ -522,21 +630,33 @@ func tokenValueAt(tokens []shell.Token, i int) (string, bool) {
 	return tokens[i].Value, true
 }
 
-// commandMentionsProtectedPath reports whether cmd (the full, untokenized
-// command string) mentions a path outside the whitelist, using the same
-// heuristic as the bash implementation: split the command on whitespace and
-// the punctuation Python/JS call syntax typically uses (parens, brackets,
-// commas), then check every path-shaped candidate against the whitelist.
+// commandMentionsProtectedPath reports whether cmd mentions a path outside
+// the whitelist. It is a thin boolean wrapper over protectedPathCandidates —
+// kept as its own function because it is white-box tested directly
+// (TestCommandMentionsProtectedPath) independently of the F3 ownership
+// bridge that consumes the candidate list.
+func commandMentionsProtectedPath(cmd string, pc PathContext) bool {
+	return len(protectedPathCandidates(cmd, pc)) > 0
+}
+
+// protectedPathCandidates extracts every path-shaped substring in cmd that is
+// NOT whitelisted, using the same heuristic as the original bash
+// implementation: split the command on whitespace and the punctuation
+// Python/JS call syntax typically uses (parens, brackets, commas), then keep
+// every path-shaped candidate that survives the whitelist check.
 //
 // This is deliberately a text-level heuristic (not an AST walk of the inline
 // script) — it exists to catch inline python -c / node -e scripts that write
 // to or otherwise reference protected paths via APIs the tokenizer cannot see
 // into (shutil.copy, subprocess.run, os.rename, fs.writeFileSync, etc.),
 // trading a higher false-positive rate on reads for a deny-by-default
-// posture on writes (D3, SPEC-042).
-func commandMentionsProtectedPath(cmd string, pc PathContext) bool {
+// posture on writes (D3, SPEC-042). SPEC-086 D9 F2 narrows when this function
+// is even consulted (only after a write-signal check), and F3 routes every
+// returned candidate through the manifest-ownership bridge instead of a hard
+// block.
+func protectedPathCandidates(cmd string, pc PathContext) []string {
 	if !strings.Contains(cmd, "/") && !strings.Contains(cmd, "~/") && !strings.Contains(cmd, `.\`) {
-		return false // fast path: no path-shaped substring anywhere.
+		return nil // fast path: no path-shaped substring anywhere.
 	}
 
 	fields := strings.FieldsFunc(cmd, func(r rune) bool {
@@ -547,6 +667,7 @@ func commandMentionsProtectedPath(cmd string, pc PathContext) bool {
 		return false
 	})
 
+	var candidates []string
 	for _, candidate := range fields {
 		if candidate == "" {
 			continue
@@ -582,10 +703,10 @@ func commandMentionsProtectedPath(cmd string, pc PathContext) bool {
 			continue
 		}
 		if !IsWhitelisted(cleaned, pc) {
-			return true
+			candidates = append(candidates, cleaned)
 		}
 	}
-	return false
+	return candidates
 }
 
 // looksLikePath reports whether candidate resembles a filesystem path:
