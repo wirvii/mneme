@@ -96,6 +96,82 @@ func TestRegenerateManifestEntries_UpgradesStaleEntry(t *testing.T) {
 	}
 }
 
+// TestRegenerateManifestEntries_MigratesLegacyAbsolutePath_ZeroBehaviorDiff
+// is AC6 (SPEC-089 Part 2's hard restriction): a legacy manifest entry with
+// an absolute-IN-REPO Path (the correct, pre-Part-2 shape on the owner's own
+// machine) — already at AgentFixedVersion, so no content regeneration is
+// needed — must end up, after regen, at EXACTLY the same file in the same
+// location as today. The ONLY thing that changes is the PERSISTED Path
+// representation (absolute -> root-relative). Diff of on-disk behavior = 0.
+func TestRegenerateManifestEntries_MigratesLegacyAbsolutePath_ZeroBehaviorDiff(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, ".claude", "agents", "backend.md")
+
+	current, err := subagents.Compose("", subagents.ComposeInput{
+		Role:        subagents.RoleBackend,
+		Archetype:   subagents.RoleBackend,
+		Description: "Implements server-side logic",
+		Model:       "sonnet",
+		Body:        "## Área: apps/core-srv\n\nHand-authored, already current.",
+	})
+	if err != nil {
+		t.Fatalf("compose fixture: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(current), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+
+	// The legacy shape: Path absolute-in-repo, Checksum already matching the
+	// current on-disk content (simulating a manifest entry that was already
+	// regenerated once under Part 1 alone, before Part 2's migration existed).
+	entries := []service.ManifestEntry{{
+		Role: subagents.RoleBackend, Archetype: subagents.RoleBackend,
+		Path: path, Version: subagents.AgentFixedVersion,
+		Checksum: checksumOfSubagentContent(current),
+	}}
+
+	results, updated, changedAny, matched := regenerateManifestEntries(entries, "", false, root)
+	if !matched {
+		t.Fatal("matched = false, want true")
+	}
+	if len(results) != 1 || results[0].Error != "" {
+		t.Fatalf("results = %+v, want one error-free result", results)
+	}
+	if results[0].Changed {
+		t.Error("results[0].Changed = true, want false — content was already current, only Path migrates")
+	}
+
+	// The hard restriction: the file on disk is byte-for-byte unchanged, at
+	// the exact same path.
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("re-read file: %v", err)
+	}
+	if string(after) != string(before) {
+		t.Error("file content changed — AC6 requires zero behavior diff for a content-current legacy entry")
+	}
+	if _, statErr := os.Stat(path); statErr != nil {
+		t.Fatalf("file must still exist at the exact same location: %v", statErr)
+	}
+
+	// Only the PERSISTED Path representation changes, to the relative form.
+	if updated[0].Path != ".claude/agents/backend.md" {
+		t.Errorf("updated[0].Path = %q, want %q (migrated to relative)", updated[0].Path, ".claude/agents/backend.md")
+	}
+	// changedAny must be true so the caller actually calls SaveManifest and
+	// persists the migration — even though content itself did not change.
+	if !changedAny {
+		t.Error("changedAny = false, want true — a Path-only migration must still trigger a manifest save")
+	}
+}
+
 // TestRegenerateManifestEntries_DryRunNeverWrites verifies --dry-run leaves
 // both the file on disk and the returned manifest entries untouched, while
 // still reporting what WOULD change.

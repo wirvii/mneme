@@ -760,7 +760,7 @@ already written, the file is rolled back to its exact pre-call state.`,
 
 			entries = upsertSubagentManifestEntry(entries, service.ManifestEntry{
 				Role:            subagents.Role(flagRole),
-				Path:            path,
+				Path:            manifestRelativePath(flagRole),
 				Version:         version,
 				Checksum:        checksum,
 				Areas:           flagAreas,
@@ -815,6 +815,17 @@ func rollbackSubagentFile(path string, existed bool, original []byte) {
 	} else {
 		_ = os.Remove(path)
 	}
+}
+
+// manifestRelativePath returns the root-relative, slash-separated form of a
+// freshly written profile's destination (".claude/agents/<role>.md") —
+// SPEC-089 Part 2 (D3): a brand-new manifest entry's Path is persisted
+// relative-to-root from the moment it is written, never absolute. The actual
+// filesystem write still uses the caller's absolute `path` (root-confined,
+// validated above); only the value PERSISTED in the manifest changes.
+// Mirrors internal/mcp/handlers_subagents.go's manifestRelativePath.
+func manifestRelativePath(role string) string {
+	return filepath.ToSlash(filepath.Join(".claude", "agents", role+".md"))
 }
 
 // upsertSubagentManifestEntry replaces the entry matching entry.Role in
@@ -999,17 +1010,22 @@ const regenErrForeignPath = "path fuera de la raíz (foráneo) — omitido"
 // root). An entry whose Path escapes root — a foreign absolute path from a
 // different repo checkout, or an absolute/relative path authored on a
 // different OS family (see subagents.ResolveManifestPath) — is skipped with
-// regenErrForeignPath and NEVER reaches os.ReadFile or os.WriteFile. This is
-// Part 1 of SPEC-089: it does not yet persist the resolved relSlash form
-// back into the manifest (Part 2's job) — updated[i].Path is left exactly as
-// read for every entry, foreign or not.
+// regenErrForeignPath and NEVER reaches os.ReadFile or os.WriteFile.
+//
+// For every entry that IS regenerated, the writeback also persists the
+// already-resolved relSlash form as the new Path (SPEC-089 Part 2 D3) — the
+// transparent migration path for a legacy absolute-in-repo entry: the file
+// on disk at the resolved abs is unaffected either way (same bytes, same
+// location), only the manifest's PERSISTED Path representation changes.
+// changedAny reflects this too, so a Path-only migration (content already
+// current) still triggers a SaveManifest — see pathMigrated below.
 //
 // Returns: results (one per selected entry, in manifest order), updated
-// (the full entries slice with Version/Checksum/GeneratedAt refreshed for
-// every successfully-regenerated entry — ready to pass to SaveManifest
-// verbatim), changedAny (whether any entry's checksum actually changed —
-// callers use this to skip a no-op SaveManifest call), and matched
-// (whether role, when non-empty, matched at least one entry).
+// (the full entries slice with Path/Version/Checksum/GeneratedAt refreshed
+// for every successfully-regenerated entry — ready to pass to SaveManifest
+// verbatim), changedAny (whether any entry's checksum or Path representation
+// actually changed — callers use this to skip a no-op SaveManifest call),
+// and matched (whether role, when non-empty, matched at least one entry).
 func regenerateManifestEntries(entries []service.ManifestEntry, role string, dryRun bool, root string) (results []subagentRegenResult, updated []service.ManifestEntry, changedAny, matched bool) {
 	updated = make([]service.ManifestEntry, len(entries))
 	copy(updated, entries)
@@ -1022,7 +1038,7 @@ func regenerateManifestEntries(entries []service.ManifestEntry, role string, dry
 
 		result := subagentRegenResult{Role: string(e.Role), Path: e.Path, OldVersion: e.Version}
 
-		abs, _, ok := subagents.ResolveManifestPath(e.Path, root)
+		abs, relSlash, ok := subagents.ResolveManifestPath(e.Path, root)
 		if !ok {
 			result.Error = regenErrForeignPath
 			results = append(results, result)
@@ -1054,10 +1070,20 @@ func regenerateManifestEntries(entries []service.ManifestEntry, role string, dry
 				results = append(results, result)
 				continue
 			}
+			// SPEC-089 Part 2 (D3): persist the resolved relSlash form on the
+			// writeback — the same value ResolveManifestPath already computed
+			// above, never recalculated. This is what transparently migrates a
+			// legacy absolute-in-repo Path to the relative representation
+			// (AC6): the on-disk file at abs is untouched either way (same
+			// bytes, same location — pathMigrated alone changes nothing about
+			// what regenerated content was written), only the PERSISTED Path
+			// value changes.
+			pathMigrated := updated[i].Path != relSlash
+			updated[i].Path = relSlash
 			updated[i].Version = newVersion
 			updated[i].Checksum = newChecksum
 			updated[i].GeneratedAt = time.Now().UTC()
-			changedAny = changedAny || result.Changed
+			changedAny = changedAny || result.Changed || pathMigrated
 		}
 
 		results = append(results, result)

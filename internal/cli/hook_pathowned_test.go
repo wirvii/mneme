@@ -423,6 +423,29 @@ func TestHookManifestEntry_RoundTripsServiceManifestEntry(t *testing.T) {
 	}
 }
 
+// TestResolvePathOwnership_IgnoresPathRepresentation is the SPEC-089 Part 2
+// (AC7) regression guard: hookManifestEntry (see its doc comment) has no
+// Path field at all, so resolvePathOwnership's decision can never depend on
+// whether a manifest entry's persisted Path is absolute or root-relative —
+// json.Unmarshal simply drops the extra "path" key either way. This proves
+// that directly: two manifest JSON blobs, identical except one carries an
+// absolute Path and the other the new SPEC-089 Part 2 relative form, must
+// produce the exact same ownership decision.
+func TestResolvePathOwnership_IgnoresPathRepresentation(t *testing.T) {
+	absolutePathManifest := `[{"role":"backend","archetype":"backend","areas":["internal/**"],"path":"/repo/.claude/agents/backend.md"}]`
+	relativePathManifest := `[{"role":"backend","archetype":"backend","areas":["internal/**"],"path":".claude/agents/backend.md"}]`
+
+	gotAbs := resolvePathOwnership("internal/foo.go", testCWD, true, absolutePathManifest)
+	gotRel := resolvePathOwnership("internal/foo.go", testCWD, true, relativePathManifest)
+
+	if gotAbs != gotRel {
+		t.Errorf("decision depends on Path representation: absolute=%+v, relative=%+v — want identical", gotAbs, gotRel)
+	}
+	if gotAbs.ExitCode != 2 || gotAbs.Owner != "backend" {
+		t.Errorf("got %+v, want ExitCode=2 Owner=backend regardless of Path representation", gotAbs)
+	}
+}
+
 // --- SPEC-086 D4: archetype-aware implementer lookup (the real bug fix) ----
 
 // TestResolvePathOwnership_CustomRoleArchetypeIsProtected is the mutation-

@@ -477,8 +477,11 @@ func TestSubagentWrite_SuccessWritesFileAndManifest(t *testing.T) {
 	if entries[0].Role != subagents.RoleBackend {
 		t.Errorf("manifest role = %q, want backend", entries[0].Role)
 	}
-	if entries[0].Path != wantPath {
-		t.Errorf("manifest path = %q, want %q", entries[0].Path, wantPath)
+	// SPEC-089 Part 2 (D3/AC5): a freshly written entry's Path is persisted
+	// root-relative, slash-separated — never the absolute filesystem path
+	// (that's `written.Path`, the write response, asserted above).
+	if entries[0].Path != ".claude/agents/backend.md" {
+		t.Errorf("manifest path = %q, want %q", entries[0].Path, ".claude/agents/backend.md")
 	}
 	if !entries[0].EnforcementHook {
 		t.Error("manifest enforcement_hook = false, want true")

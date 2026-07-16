@@ -326,7 +326,9 @@ func TestSubagentsWrite_WritesFileAndManifest(t *testing.T) {
 	if len(entries) != 1 {
 		t.Fatalf("expected 1 manifest entry, got %d: %+v", len(entries), entries)
 	}
-	if entries[0].Role != "backend" || entries[0].Path != writtenPath {
+	// SPEC-089 Part 2 (D3/AC5): a freshly written entry's Path is persisted
+	// root-relative, slash-separated — never the absolute filesystem path.
+	if entries[0].Role != "backend" || entries[0].Path != ".claude/agents/backend.md" {
 		t.Errorf("unexpected manifest entry: %+v", entries[0])
 	}
 	if !entries[0].EnforcementHook {

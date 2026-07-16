@@ -489,7 +489,7 @@ func (h *handlers) handleSubagentWrite(ctx context.Context, raw json.RawMessage)
 
 	entries = upsertManifestEntry(entries, service.ManifestEntry{
 		Role:            subagents.Role(req.Role),
-		Path:            path,
+		Path:            manifestRelativePath(req.Role),
 		Version:         version,
 		Checksum:        checksum,
 		Areas:           req.Areas,
@@ -531,6 +531,17 @@ func rollbackAgentFile(path string, existed bool, original []byte) {
 func checksumOf(content string) string {
 	sum := sha256.Sum256([]byte(content))
 	return hex.EncodeToString(sum[:])
+}
+
+// manifestRelativePath returns the root-relative, slash-separated form of a
+// freshly written profile's destination (".claude/agents/<role>.md") —
+// SPEC-089 Part 2 (D3): a brand-new manifest entry's Path is persisted
+// relative-to-root from the moment it is written, never absolute. The actual
+// filesystem write still uses the caller's absolute `path` (root-confined,
+// validated above); only the value PERSISTED in the manifest changes. Mirrors
+// internal/cli/subagents.go's manifestRelativePath.
+func manifestRelativePath(role string) string {
+	return filepath.ToSlash(filepath.Join(".claude", "agents", role+".md"))
 }
 
 // upsertManifestEntry replaces the entry matching entry.Role in entries, or
