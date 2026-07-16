@@ -4,6 +4,27 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [v1.27.2] — 2026-07-16 — Fix: subagent manifest paths leaking across machines via the vault (SPEC-089)
+
+### Fixed
+
+- **The subagent manifest no longer corrupts across machines (SPEC-089).** `ManifestEntry.Path`
+  was absolute and the manifest auto-shared through the team-memory vault, so a teammate's
+  manifest — with their absolute paths — would clobber the local one on `git pull`. Observed in
+  production: one repo's manifest pointed a role at a *different* repo, another had Windows paths
+  from a teammate's machine. Three-part fix:
+  - **Part 1 (defensive):** `subagents regen`/`doctor` now confine every manifest path to the
+    project root and reject foreign paths (a path escaping the root, or absolute on a different OS)
+    instead of reading/writing them — closing a hole where `regen` could write into the wrong repo.
+    New `foreign_path` doctor finding (CLI + MCP).
+  - **Part 2:** manifest `Path` is now stored relative to the repo root; legacy absolute paths
+    migrate transparently on next `regen` (a path inside the repo relativises with zero behaviour
+    change; a foreign one is rejected). The enforcement hook is unaffected — it never read `Path`.
+  - **Part 3:** the manifest is excluded from share-by-default and from vault import (by topic key),
+    on **both** import paths — the manual `vault import` and the `post-merge`/`post-checkout` git
+    hook that caused the real incident. A teammate's `areas_complete` certification can no longer
+    silently drive your enforcement hook.
+
 ## [v1.27.1] — 2026-07-16 — Hotfix: typescript@7 broke TS/JS code-graph extraction IN SILENCE (SPEC-088)
 
 ### Fixed
