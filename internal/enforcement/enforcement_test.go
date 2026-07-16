@@ -507,11 +507,19 @@ func TestEvaluateInlineScript_MutationGuards(t *testing.T) {
 	p := pc("linux")
 
 	// F1 guard: without a -c/-e flag at all, there is no inline script to
-	// inspect — a bare `python3 script.py` naming a protected path as its
-	// OWN argument (not inside a script string) must never block through
-	// this heuristic. If F1 were deleted (falling back to fullCommand
-	// inspection), this candidate would trigger a block.
-	tokens, err := shell.Tokenize(`python3 internal/x.go`)
+	// inspect. This case is deliberately built so a WRITE-SIGNAL-CARRYING
+	// string sits among the trailing words — if F1 were deleted (falling
+	// back to joining every trailing word into "the script" instead of
+	// requiring -c/-e), F2's write-signal check would find shutil.copy(
+	// and pass, and F3 would then reach own() with the 'internal/dst.go'
+	// candidate and block. An earlier version of this guard used a
+	// trailing word with NO write signal (`python3 internal/x.go`), which
+	// stayed green under this exact F1 deletion because F2 masked it — a
+	// confounded, blind guardian. This is the corrected, isolated version:
+	// verified live by actually deleting F1's -c/-e requirement in
+	// enforcement.go and confirming this exact case turns red (restored
+	// immediately after).
+	tokens, err := shell.Tokenize(`python3 script.py "shutil.copy('a', 'internal/dst.go')"`)
 	if err != nil {
 		t.Fatalf("Tokenize: %v", err)
 	}
