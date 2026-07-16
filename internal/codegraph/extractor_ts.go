@@ -4,6 +4,7 @@ import (
 	"bufio"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -16,6 +17,56 @@ import (
 //go:embed js/extract.js
 var extractJS []byte
 
+// ErrExtractorIncompatible indicates the extractor's toolchain is present but
+// unusable, so NO file of that language can be extracted. Callers must abort
+// rather than counting per-file failures. Distinct from an absent toolchain,
+// which degrades gracefully (TS/JS extraction is optional). See SPEC-088 D4.
+var ErrExtractorIncompatible = errors.New("codegraph: extractor toolchain incompatible")
+
+// tsIncompatibleExitCode is the exit code js/extract.js uses (SPEC-088 D3)
+// when the resolved typescript package lacks the Compiler API symbols the
+// script depends on. Deliberately not 1-12: Node.js reserves that range for
+// its own fatal failures (3 = Internal JavaScript Parse Error), and colliding
+// with it would misreport a Node-internal crash as a toolchain incompatibility.
+const tsIncompatibleExitCode = 20
+
+// stderrBufferLimit bounds how much subprocess stderr TSExtractor retains for
+// error messages (SPEC-088 D6). Large enough for the D2 guard's structured
+// JSON message with room to spare; small enough to never matter for memory.
+const stderrBufferLimit = 4 * 1024
+
+// boundedBuffer is a mutex-protected, capacity-limited byte sink used as
+// (part of) cmd.Stderr. os/exec copies into Stderr from a goroutine it owns
+// whenever Stderr is not an *os.File — io.MultiWriter never is — so Write
+// must be safe for concurrent use independent of TSExtractor's own mutex.
+type boundedBuffer struct {
+	mu  sync.Mutex
+	buf []byte
+}
+
+// Write appends p up to the remaining capacity and always reports the full
+// length written, per the io.Writer contract — truncation is silent by
+// design, this buffer only ever backs a diagnostic message.
+func (b *boundedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if remaining := stderrBufferLimit - len(b.buf); remaining > 0 {
+		if len(p) > remaining {
+			b.buf = append(b.buf, p[:remaining]...)
+		} else {
+			b.buf = append(b.buf, p...)
+		}
+	}
+	return len(p), nil
+}
+
+// String returns the captured bytes collected so far.
+func (b *boundedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return string(b.buf)
+}
+
 // TSExtractor extracts code symbols from TypeScript/JavaScript files using a
 // Node.js subprocess that parses source with the official TypeScript compiler.
 // It implements the Extractor interface and manages the Node.js process lifecycle.
@@ -23,12 +74,24 @@ var extractJS []byte
 // The subprocess communicates via JSONL over stdin/stdout: each file is sent as
 // a JSON line with path and content, and the result is read back as a JSON line.
 type TSExtractor struct {
-	mu     sync.Mutex
-	cmd    *exec.Cmd
-	stdin  io.WriteCloser
-	stdout *bufio.Scanner
-	tmpDir string
-	ready  bool
+	mu        sync.Mutex
+	cmd       *exec.Cmd
+	stdin     io.WriteCloser
+	stdout    *bufio.Scanner
+	stderrBuf *boundedBuffer
+	tmpDir    string
+	ready     bool
+
+	// waitOnce/waitErr guard against calling cmd.Wait() twice — once from the
+	// death-detection path inside Extract, once from Close — which os/exec
+	// turns into a panic ("exec: Wait was already called"). See SPEC-088 R2.
+	waitOnce sync.Once
+	waitErr  error
+
+	// fatal is sticky: once a call classifies the subprocess's death as
+	// ErrExtractorIncompatible, every subsequent call returns the same error
+	// immediately instead of writing to a pipe whose reader is gone.
+	fatal error
 }
 
 // NewTSExtractor creates a TS extractor. The underlying Node.js subprocess is
@@ -69,14 +132,22 @@ func (e *TSExtractor) ensureStarted() error {
 
 	// Ensure globally installed npm packages are resolvable by Node.js.
 	// Modern Node.js versions do not automatically search the global prefix
-	// so we prepend it to NODE_PATH if not already present.
+	// so we append it to NODE_PATH if not already present.
+	//
+	// SPEC-088 D5: an explicit, caller-set NODE_PATH is listed FIRST so it
+	// wins over the global npm root — Node's module resolution searches
+	// NODE_PATH entries in order and uses the first match. This is both the
+	// correct semantics for an explicitly-set env var and the escape hatch
+	// ErrExtractorIncompatible's error message points users at (D4): a global
+	// typescript@7 no longer overrides a compatible install pinned via
+	// NODE_PATH.
 	e.cmd.Env = os.Environ()
 	if globalRoot, gErr := exec.Command("npm", "root", "-g").Output(); gErr == nil {
 		rootPath := strings.TrimSpace(string(globalRoot))
 		if rootPath != "" {
 			existing := os.Getenv("NODE_PATH")
 			if existing != "" {
-				e.cmd.Env = append(e.cmd.Env, "NODE_PATH="+rootPath+string(os.PathListSeparator)+existing)
+				e.cmd.Env = append(e.cmd.Env, "NODE_PATH="+existing+string(os.PathListSeparator)+rootPath)
 			} else {
 				e.cmd.Env = append(e.cmd.Env, "NODE_PATH="+rootPath)
 			}
@@ -97,8 +168,14 @@ func (e *TSExtractor) ensureStarted() error {
 	// 10MB buffer for large files
 	e.stdout.Buffer(make([]byte, 0, 1024*1024), 10*1024*1024)
 
-	// Capture stderr but do not block on it
-	e.cmd.Stderr = os.Stderr
+	// Capture stderr for humans watching the process AND for Go-side error
+	// messages (SPEC-088 D6): a MultiWriter still passes bytes through to
+	// os.Stderr, but also retains a bounded copy so that a systemic death
+	// (e.g. the D2 API guard exiting 20) can report what the subprocess
+	// actually said even in contexts where stderr passthrough is invisible
+	// (the codegraph auto-reindex git hook, MCP tool invocations).
+	e.stderrBuf = &boundedBuffer{}
+	e.cmd.Stderr = io.MultiWriter(os.Stderr, e.stderrBuf)
 
 	if err := e.cmd.Start(); err != nil {
 		os.RemoveAll(tmpDir)
@@ -175,9 +252,19 @@ type tsError struct {
 // Extract sends a file to the Node.js subprocess for parsing and returns the
 // extracted nodes, edges, and unresolved references. The subprocess is started
 // lazily on the first call.
+//
+// Extract never returns (result, nil) when the toolchain is incompatible
+// (SPEC-088 AC3): once the subprocess is classified as having died from the
+// D2 API guard (exit 20), that classification is sticky — this and every
+// later call return ErrExtractorIncompatible immediately without touching the
+// dead stdin/stdout pipes.
 func (e *TSExtractor) Extract(filePath string, content []byte) (*ExtractionResult, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
+	if e.fatal != nil {
+		return nil, e.fatal
+	}
 
 	if err := e.ensureStarted(); err != nil {
 		return nil, err
@@ -191,11 +278,17 @@ func (e *TSExtractor) Extract(filePath string, content []byte) (*ExtractionResul
 	}
 	data = append(data, '\n')
 	if _, err := e.stdin.Write(data); err != nil {
+		if dErr := e.checkDeath(); dErr != nil {
+			return nil, dErr
+		}
 		return nil, fmt.Errorf("codegraph: ts extractor: write stdin: %w", err)
 	}
 
 	// Read result
 	if !e.stdout.Scan() {
+		if dErr := e.checkDeath(); dErr != nil {
+			return nil, dErr
+		}
 		if scanErr := e.stdout.Err(); scanErr != nil {
 			return nil, fmt.Errorf("codegraph: ts extractor: read stdout: %w", scanErr)
 		}
@@ -208,6 +301,40 @@ func (e *TSExtractor) Extract(filePath string, content []byte) (*ExtractionResul
 	}
 
 	return convertTSResult(&raw), nil
+}
+
+// checkDeath waits for the subprocess and classifies its exit. When the exit
+// code matches tsIncompatibleExitCode (the D2 guard in js/extract.js), it
+// wraps ErrExtractorIncompatible with the captured stderr (D6) and latches it
+// into e.fatal so every subsequent call short-circuits (R2) instead of
+// writing to a pipe whose reader is gone. Any other death (crash, killed
+// process, ordinary EOF) is left to the caller's existing error path — only
+// the D2 guard's specific signal is systemic; a same-file JS exception or an
+// unrelated process death must not be misclassified as toolchain
+// incompatibility.
+func (e *TSExtractor) checkDeath() error {
+	waitErr := e.waitProcess()
+
+	var exitErr *exec.ExitError
+	if errors.As(waitErr, &exitErr) && exitErr.ExitCode() == tsIncompatibleExitCode {
+		stderr := strings.TrimSpace(e.stderrBuf.String())
+		e.fatal = fmt.Errorf("%w: %s", ErrExtractorIncompatible, stderr)
+		return e.fatal
+	}
+	return nil
+}
+
+// waitProcess calls cmd.Wait() exactly once no matter how many call sites
+// (Extract's death-detection path, Close) request it, caching the result for
+// everyone else. A second real call to cmd.Wait() panics with "exec: Wait
+// was already called" — see SPEC-088 R2.
+func (e *TSExtractor) waitProcess() error {
+	e.waitOnce.Do(func() {
+		if e.cmd != nil {
+			e.waitErr = e.cmd.Wait()
+		}
+	})
+	return e.waitErr
 }
 
 // convertTSResult transforms the JSON-native types from the Node.js script into
@@ -331,7 +458,9 @@ func (e *TSExtractor) LoadTSConfigAliases(rootDir string) ([]tsconfigEntry, erro
 }
 
 // Close terminates the Node.js subprocess and cleans up temporary files.
-// It is safe to call Close multiple times.
+// It is safe to call Close multiple times. Waiting on the subprocess goes
+// through waitProcess so that a prior death detected inside Extract (R2)
+// never triggers a second, panicking call to cmd.Wait().
 func (e *TSExtractor) Close() error {
 	if !e.ready {
 		return nil
@@ -340,7 +469,7 @@ func (e *TSExtractor) Close() error {
 		_ = e.stdin.Close()
 	}
 	if e.cmd != nil && e.cmd.Process != nil {
-		_ = e.cmd.Wait()
+		_ = e.waitProcess()
 	}
 	if e.tmpDir != "" {
 		os.RemoveAll(e.tmpDir)
