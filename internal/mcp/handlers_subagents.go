@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wirvii/mneme/internal/frontmatter"
 	"github.com/wirvii/mneme/internal/managedblock"
 	"github.com/wirvii/mneme/internal/service"
 	"github.com/wirvii/mneme/internal/subagents"
@@ -259,7 +258,8 @@ func (h *handlers) handleSubagentCompose(_ context.Context, raw json.RawMessage)
 	}
 
 	composed, err := subagents.Compose("", subagents.ComposeInput{
-		Role:        archetype,
+		Role:        subagents.Role(req.Role),
+		Archetype:   archetype,
 		Description: description,
 		Model:       modelVal,
 		Body:        composeBody(req.ProfileJSON, req.AreasLayer3MD),
@@ -269,17 +269,6 @@ func (h *handlers) handleSubagentCompose(_ context.Context, raw json.RawMessage)
 			Code:    CodeInvalidParams,
 			Message: fmt.Sprintf("mcp: handle subagent_compose: %s", err),
 		}
-	}
-
-	if req.Role != string(archetype) {
-		patched, err := frontmatter.SetFrontmatter([]byte(composed), frontmatter.Fields{Name: &req.Role})
-		if err != nil {
-			return nil, &JSONRPCError{
-				Code:    CodeInternalError,
-				Message: fmt.Sprintf("mcp: handle subagent_compose: override role name: %s", err),
-			}
-		}
-		composed = string(patched)
 	}
 
 	result := subagents.Validate(composed, archetype)

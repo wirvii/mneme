@@ -37,7 +37,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/wirvii/mneme/internal/frontmatter"
 	"github.com/wirvii/mneme/internal/managedblock"
 	"github.com/wirvii/mneme/internal/service"
 	"github.com/wirvii/mneme/internal/subagents"
@@ -436,21 +435,14 @@ Layer-3 content comes from exactly one of:
 			}
 
 			composed, err := subagents.Compose("", subagents.ComposeInput{
-				Role:        archetype,
+				Role:        subagents.Role(flagRole),
+				Archetype:   archetype,
 				Description: description,
 				Model:       modelVal,
 				Body:        composeSubagentBody(profile, areasMD),
 			})
 			if err != nil {
 				return fmt.Errorf("subagents compose: %w", err)
-			}
-
-			if flagRole != string(archetype) {
-				patched, perr := frontmatter.SetFrontmatter([]byte(composed), frontmatter.Fields{Name: &flagRole})
-				if perr != nil {
-					return fmt.Errorf("subagents compose: override role name: %w", perr)
-				}
-				composed = string(patched)
 			}
 
 			result := subagents.Validate(composed, archetype)

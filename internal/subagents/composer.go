@@ -33,9 +33,19 @@ var roleSections = map[Role][2]string{
 // ComposeInput holds the values ProfileComposer needs to render or
 // regenerate a single subagent profile.
 type ComposeInput struct {
-	// Role selects the PermissionTable entry and the agent-fixed section
-	// variant. Required.
+	// Role is the literal role name: the frontmatter `name:` value and the
+	// destination filename (.claude/agents/<Role>.md), and the value
+	// substituted for "{{ROLE}}" in the agent-fixed block (SPEC-087 D4). May
+	// differ from Archetype for a custom role that inherits a built-in
+	// archetype's capability envelope. Required.
 	Role Role
+
+	// Archetype selects the PermissionTable entry and the agent-fixed
+	// section variant — the capability key, as opposed to Role's identity
+	// key (SPEC-087 D4). Empty falls back to Role (mirrors
+	// ManifestEntry.EffectiveArchetype's compat path), so every pre-D4
+	// caller that only ever set Role keeps working unchanged.
+	Archetype Role
 
 	// Description is the frontmatter `description:` value. Elicited from the
 	// project profile/grill (SS-3+), written here verbatim — Compose never
@@ -51,6 +61,15 @@ type ComposeInput struct {
 	Body string
 }
 
+// effectiveArchetype returns in.Archetype when set, falling back to in.Role
+// (SPEC-087 D4) — mirrors service.ManifestEntry.EffectiveArchetype.
+func (in ComposeInput) effectiveArchetype() Role {
+	if in.Archetype != "" {
+		return in.Archetype
+	}
+	return in.Role
+}
+
 // Compose renders a subagent profile: Go-authored frontmatter (via
 // frontmatter.SetFrontmatter, values from PermissionTable + in) plus the
 // Go-authored agent-fixed managed block (via managedblock.UpsertText),
@@ -59,17 +78,27 @@ type ComposeInput struct {
 // existing is the current full file content, or "" for a brand-new profile.
 // When existing has no body yet (fresh bootstrap), in.Body seeds it.
 //
+// Role and Archetype are deliberately independent (SPEC-087 D4): the
+// frontmatter `name:` and the "{{ROLE}}" substitution always use in.Role,
+// while the permission envelope (PermissionTable) and agent-fixed section
+// variant (roleSections) always key off in.effectiveArchetype(). This
+// replaces the previous pattern of composing under Role==Archetype and then
+// patching `name:` afterwards for a custom role — see the removed patch in
+// internal/mcp/handlers_subagents.go and internal/cli/subagents.go.
+//
 // Compose is idempotent: calling it twice with the same in on its own output
 // reproduces the same frontmatter and agent-fixed block, and never
 // re-appends in.Body once a body is present.
 func Compose(existing string, in ComposeInput) (string, error) {
-	perm, ok := PermissionTable[in.Role]
+	archetype := in.effectiveArchetype()
+
+	perm, ok := PermissionTable[archetype]
 	if !ok {
-		return "", fmt.Errorf("subagents: compose: unknown role %q", in.Role)
+		return "", fmt.Errorf("subagents: compose: unknown archetype %q", archetype)
 	}
-	sections, ok := roleSections[in.Role]
+	sections, ok := roleSections[archetype]
 	if !ok {
-		return "", fmt.Errorf("subagents: compose: no agent-fixed sections defined for role %q", in.Role)
+		return "", fmt.Errorf("subagents: compose: no agent-fixed sections defined for archetype %q", archetype)
 	}
 
 	hadBody := hasBodyContent(existing)

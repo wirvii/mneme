@@ -151,6 +151,64 @@ func TestCompose_RegeneratePreservesHandAuthoredBody(t *testing.T) {
 	}
 }
 
+// TestCompose_RoleArchetypeSeparation verifies SPEC-087 D4: a custom Role
+// composed against a different Archetype gets the archetype's permission
+// envelope and agent-fixed section variant, but its OWN name in the
+// frontmatter and in {{ROLE}} substitutions — never the archetype's name.
+// This is AC4's assertion (1): the antipattern the old
+// Role==Archetype-then-patch-name approach was prone to (see the removed
+// patch in internal/mcp/handlers_subagents.go / internal/cli/subagents.go).
+func TestCompose_RoleArchetypeSeparation(t *testing.T) {
+	got, err := Compose("", ComposeInput{
+		Role:        RoleQATester,
+		Archetype:   RoleBugHunter,
+		Description: "Custom qa-tester built on the bug-hunter envelope.",
+		Model:       "sonnet",
+	})
+	if err != nil {
+		t.Fatalf("Compose: %v", err)
+	}
+
+	if !strings.Contains(got, "name: qa-tester") {
+		t.Errorf("expected name: qa-tester (Role), got:\n%s", got)
+	}
+	wantTools := "tools: " + PermissionTable[RoleBugHunter].ToolsString()
+	if !strings.Contains(got, wantTools) {
+		t.Errorf("expected bug-hunter's tools (Archetype), missing %q, got:\n%s", wantTools, got)
+	}
+	if strings.Contains(got, "name: bug-hunter") {
+		t.Errorf("archetype name must never leak into frontmatter, got:\n%s", got)
+	}
+	content, _, present := managedblock.ReadText(got, agentFixedMarker)
+	if !present {
+		t.Fatal("expected agent-fixed managed block to be present")
+	}
+	if !strings.Contains(content, `by: "qa-tester"`) {
+		t.Errorf("expected {{ROLE}} substituted with Role (qa-tester) in mneme-integration section, got:\n%s", content)
+	}
+	if strings.Contains(content, "bug-hunter") {
+		t.Errorf("archetype name must never appear in the agent-fixed body, got:\n%s", content)
+	}
+}
+
+// TestCompose_ArchetypeEmptyFallsBackToRole verifies the compat path: when
+// Archetype is unset, Compose behaves exactly as it did before Role/Archetype
+// were split (Role doubles as the archetype).
+func TestCompose_ArchetypeEmptyFallsBackToRole(t *testing.T) {
+	got, err := Compose("", ComposeInput{
+		Role:        RoleBackend,
+		Description: "No archetype set.",
+		Model:       "sonnet",
+	})
+	if err != nil {
+		t.Fatalf("Compose: %v", err)
+	}
+	wantTools := "tools: " + PermissionTable[RoleBackend].ToolsString()
+	if !strings.Contains(got, wantTools) {
+		t.Errorf("expected backend's own tools when Archetype is empty, got:\n%s", got)
+	}
+}
+
 func TestHasBodyContent(t *testing.T) {
 	tests := []struct {
 		name string
