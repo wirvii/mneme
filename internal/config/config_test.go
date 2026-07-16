@@ -1928,3 +1928,69 @@ func TestCodegraphQuerylog_Origins(t *testing.T) {
 		t.Error("querylog_enabled field not found in codegraph origins")
 	}
 }
+
+// --- SPEC-086 D6: [delegation] subagent_containment mode --------------------
+
+func TestDelegationConfig_SubagentContainment_Default(t *testing.T) {
+	cfg := Default()
+	if cfg.Delegation.SubagentContainment != "warn" {
+		t.Errorf("Delegation.SubagentContainment = %q, want %q", cfg.Delegation.SubagentContainment, "warn")
+	}
+	if got := cfg.SubagentContainmentMode("any/project"); got != "warn" {
+		t.Errorf("SubagentContainmentMode = %q, want %q", got, "warn")
+	}
+}
+
+func TestDelegationConfig_SubagentContainment_InvalidRejected(t *testing.T) {
+	cfg := Default()
+	cfg.Delegation.SubagentContainment = "sometimes"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate: want error for invalid subagent_containment, got nil")
+	}
+}
+
+// TestDelegationConfig_SubagentContainmentMode_PerProjectOverride is the
+// mutation-tested guard for D6's core promise: a per-project entry in
+// [delegation.projects."<slug>"] must win over the global default. Deleting
+// the per-project lookup (falling straight through to the global value)
+// turns this red.
+func TestDelegationConfig_SubagentContainmentMode_PerProjectOverride(t *testing.T) {
+	cfg := Default()
+	cfg.Delegation.SubagentContainment = "warn"
+	cfg.Delegation.Projects = map[string]DelegationProjectConfig{
+		"wirvii/wirvii360r": {SubagentContainment: "block"},
+	}
+
+	if got := cfg.SubagentContainmentMode("wirvii/wirvii360r"); got != "block" {
+		t.Errorf("SubagentContainmentMode(overridden) = %q, want %q", got, "block")
+	}
+	if got := cfg.SubagentContainmentMode("wirvii/other"); got != "warn" {
+		t.Errorf("SubagentContainmentMode(not overridden) = %q, want %q (global default)", got, "warn")
+	}
+}
+
+func TestDelegationConfig_SubagentContainment_LoadFromTOML(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.toml")
+	toml := `
+[delegation]
+subagent_containment = "block"
+
+[delegation.projects."wirvii/wirvii360r"]
+subagent_containment = "off"
+`
+	if err := os.WriteFile(configPath, []byte(toml), 0o600); err != nil {
+		t.Fatalf("write config.toml: %v", err)
+	}
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.SubagentContainmentMode("some/other-project"); got != "block" {
+		t.Errorf("SubagentContainmentMode(global) = %q, want %q", got, "block")
+	}
+	if got := cfg.SubagentContainmentMode("wirvii/wirvii360r"); got != "off" {
+		t.Errorf("SubagentContainmentMode(project override) = %q, want %q", got, "off")
+	}
+}

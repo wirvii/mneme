@@ -274,6 +274,30 @@ type DelegationConfig struct {
 	// AllowedPaths is a list of path patterns that are always allowed,
 	// even if they match a protected prefix. Supports glob syntax.
 	AllowedPaths []string `toml:"allowed_paths"`
+
+	// SubagentContainment is the global default containment mode for the
+	// subagent-areas containment check (SPEC-086 D5/D6): "off" (never
+	// evaluate), "warn" (log would_block events, never exit 2 — the default,
+	// so installing this feature never breaks a project on day one), or
+	// "block" (exit 2 when a role's declared areas are certified complete
+	// and the target path falls outside them). Per-project entries in
+	// Projects take precedence over this default. Empty is treated as "warn".
+	SubagentContainment string `toml:"subagent_containment"`
+
+	// Projects holds per-project containment-mode overrides, keyed by the
+	// project slug (e.g. "wirvii/wirvii360r"). This lets a project graduate
+	// to "block" independently of every other project on the machine
+	// (SPEC-086 D6) — evaluateDelegation already calls config.Load once per
+	// invocation, so reading this map costs zero extra I/O.
+	Projects map[string]DelegationProjectConfig `toml:"projects"`
+}
+
+// DelegationProjectConfig holds the per-project delegation settings a
+// [delegation.projects."<slug>"] TOML table may override.
+type DelegationProjectConfig struct {
+	// SubagentContainment overrides DelegationConfig.SubagentContainment for
+	// this one project. Empty means "no override — use the global default".
+	SubagentContainment string `toml:"subagent_containment"`
 }
 
 // SpecConfig controls the spec lifecycle quality gates and behavior.
@@ -514,9 +538,10 @@ func Default() *Config {
 			Dir: filepath.Join(home, ".mneme", "workflows"),
 		},
 		Delegation: DelegationConfig{
-			Enabled:        true,
-			ProtectedPaths: []string{"cmd/", "internal/", "src/", "apps/", "packages/", "lib/"},
-			AllowedPaths:   []string{"docs/", "*.md", "CLAUDE.md", "CLAUDE.local.md"},
+			Enabled:             true,
+			ProtectedPaths:      []string{"cmd/", "internal/", "src/", "apps/", "packages/", "lib/"},
+			AllowedPaths:        []string{"docs/", "*.md", "CLAUDE.md", "CLAUDE.local.md"},
+			SubagentContainment: "warn",
 		},
 		Spec: SpecConfig{
 			AutoGrill: true,
@@ -1071,6 +1096,8 @@ func buildDelegationOrigins(cfg, dflt *Config) []ConfigFieldInfo {
 	fields = append(fields, makeField("protected_paths", cfg.Delegation.ProtectedPaths, o, ev))
 	o, ev = fieldOrigin(len(cfg.Delegation.AllowedPaths), len(dflt.Delegation.AllowedPaths), true)
 	fields = append(fields, makeField("allowed_paths", cfg.Delegation.AllowedPaths, o, ev))
+	o, ev = fieldOrigin(cfg.Delegation.SubagentContainment, dflt.Delegation.SubagentContainment, true)
+	fields = append(fields, makeField("subagent_containment", cfg.Delegation.SubagentContainment, o, ev))
 	return fields
 }
 
@@ -1297,7 +1324,46 @@ func (c *Config) Validate() error {
 		return errors.New("suggestions.max_results must be >= 1")
 	}
 
+	if err := validateContainmentMode("delegation.subagent_containment", c.Delegation.SubagentContainment); err != nil {
+		return err
+	}
+	for slug, proj := range c.Delegation.Projects {
+		if err := validateContainmentMode(fmt.Sprintf("delegation.projects.%q.subagent_containment", slug), proj.SubagentContainment); err != nil {
+			return err
+		}
+	}
+
 	return nil
+}
+
+// validContainmentModes is the accepted value set for
+// DelegationConfig.SubagentContainment and DelegationProjectConfig.SubagentContainment
+// (SPEC-086 D6). An empty string is always valid — it means "use the default"
+// (global default "warn", per-project empty means "no override").
+var validContainmentModes = map[string]bool{"": true, "off": true, "warn": true, "block": true}
+
+// validateContainmentMode returns a descriptive error when value is not one
+// of the accepted containment-mode strings.
+func validateContainmentMode(field, value string) error {
+	if !validContainmentModes[value] {
+		return fmt.Errorf("%s %q is not valid; accepted values: off, warn, block", field, value)
+	}
+	return nil
+}
+
+// SubagentContainmentMode resolves the effective containment mode for
+// project (SPEC-086 D6): a per-project override in Delegation.Projects wins
+// when present and non-empty; otherwise the global Delegation.SubagentContainment
+// applies; an empty result (freshly zero-valued Config, never went through
+// Load/Default) resolves to "warn", matching Default()'s value.
+func (c *Config) SubagentContainmentMode(project string) string {
+	if proj, ok := c.Delegation.Projects[project]; ok && proj.SubagentContainment != "" {
+		return proj.SubagentContainment
+	}
+	if c.Delegation.SubagentContainment != "" {
+		return c.Delegation.SubagentContainment
+	}
+	return "warn"
 }
 
 // DefaultPath returns the default configuration file path (~/.mneme/config.toml).
