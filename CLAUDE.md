@@ -8,8 +8,8 @@ mneme is a pure-Go build — no CGO, no C compiler, no build tags. SQLite (with 
 
 ```bash
 make build         # go build -o mneme ./cmd/mneme
-make test          # go test ./...
-make test-race     # go test -race ./...
+make test          # HOME/USERPROFILE-sandboxed go test ./... + scripts/testguard.sh (SPEC-085 G2)
+make test-race     # same sandbox, go test -race ./...
 make install       # build + sudo cp to /usr/local/bin/
 make setup         # install + `mneme install claude-code` (configures MCP, hooks, manual, skills)
 make release-local # ldflags-stripped build with Version=local
@@ -59,7 +59,7 @@ cli/  mcp/  http/        ← three frontends (Cobra, JSON-RPC stdio, REST)
 
 **Dependency rule:** imports flow inward only. `model` has no external deps. Adapters (`store`, `mcp`, `http`, `cli`) sit at the edges and are swappable. Don't let frontends call `store` or `db` directly — go through `service`.
 
-Supporting packages: `scoring/` (decay, BM25 re-ranking, RRF fusion), `consolidation/` (background decay/dedup/budget sweeps + edge decay), `graph/` (Hebbian auto-strengthening: AccessTracker ring buffer + HebbianWorkerPool async worker), `rules/` (applies_to pattern matching engine for pre-tool-use hook), `enforcement/` (leaf: pure orchestrator-guard decision logic for `mneme hook enforce-delegation` — stdlib + `internal/shell` only, no internal deps, SPEC-069), `embed/` (TF-IDF baseline), `sync/` (JSONL.gz git-shareable export/import), `project/` (git-remote slug detection), `config/` (TOML + env overrides), `install/` (agent installer: MCP/hooks/manual/commands/skills — no global agent profiles since SPEC-073), `skill/` (leaf: SKILL.md parser, structural linter, validate runner — no internal deps), `conflicts/` (leaf: deterministic FTS5 candidate extraction + LLM judgment via claude CLI subprocess — no internal deps), `tui/` (Bubble Tea), `upgrade/`, `export/`.
+Supporting packages: `scoring/` (decay, BM25 re-ranking, RRF fusion), `consolidation/` (background decay/dedup/budget sweeps + edge decay), `graph/` (Hebbian auto-strengthening: AccessTracker ring buffer + HebbianWorkerPool async worker), `rules/` (applies_to pattern matching engine for pre-tool-use hook), `enforcement/` (leaf: pure orchestrator-guard decision logic for `mneme hook enforce-delegation` — stdlib + `internal/shell` only, no internal deps, SPEC-069), `embed/` (TF-IDF baseline), `sync/` (JSONL.gz git-shareable export/import), `project/` (git-remote slug detection), `config/` (TOML + env overrides), `install/` (agent installer: MCP/hooks/manual/commands/skills — no global agent profiles since SPEC-073), `skill/` (leaf: SKILL.md parser, structural linter, validate runner — no internal deps), `conflicts/` (leaf: deterministic FTS5 candidate extraction + LLM judgment via claude CLI subprocess — no internal deps), `testenv/` (leaf: `Isolate(m *testing.M)` sandboxes HOME/USERPROFILE for a test binary's TestMain, SPEC-085), `tui/` (Bubble Tea), `upgrade/`, `export/`.
 
 ### The three frontends
 
@@ -126,6 +126,62 @@ see `docs/enforcement-model.md`.
 - `internal/store` tests run against a **real in-memory SQLite** — no mocks (per `docs/ARCHITECTURE.md`). Treat the DB as part of the unit under test.
 - Table-driven tests are the default.
 - Target >85% coverage on core packages (`model`, `store`, `service`, `scoring`).
+
+### Test isolation from the real environment (SPEC-085)
+
+mneme dogfoods itself: this repo's own `~/.mneme/projects/wirvii-mneme.db` and
+`.mneme/shared/` vault are real, used daily. A test suite that resolves an
+environment-derived path (HOME, git identity, git-repo-root-based vault
+detection) instead of an injected one can silently write into them. SPEC-085
+fixed a concrete case of this — `NewMemoryService` used to auto-detect
+team-memory from the process cwd, and every test running inside this
+dogfooding repo activated write-through materialization, corrupting the real
+DB via the vault import round-trip (7752 of 9058 rows were test fixtures
+before the cleanup). The fix is layered — know all four when writing a new
+test that touches `service.NewMemoryService` or drives a real CLI command:
+
+1. **`NewMemoryService` never auto-detects team-memory (D1/D2).** It takes a
+   variadic `...service.Option`; team-memory defaults OFF (the zero value of
+   `service.TeamMemoryState`). The only production call site allowed to opt
+   in is `internal/cli.initService`, via
+   `service.WithTeamMemory(service.DetectTeamMemory())`. A test that needs to
+   exercise the real detection path (chdir + marker file) must opt in
+   explicitly the same way — see `newRepoTestService` in
+   `internal/service/teammemory_test.go`.
+2. **`gitident.Reset()` in any test helper that chdirs into a fixture git
+   repo.** `gitident.Author()` memoizes process-wide via `sync.Once`; without
+   `Reset()`, an earlier test's resolved identity leaks into every later
+   `Author()` call in the same test binary regardless of cwd.
+3. **A CLI-level test that drives a real cobra command (`root.Execute()`)
+   must also chdir into an isolated, non-git temp directory** — not just
+   isolate `--data-dir`. `service.DetectTeamMemory()` resolves relative to
+   the real process cwd via `git rev-parse --show-toplevel`, which
+   `--data-dir` does nothing to isolate; see `runSubagentsCmd` in
+   `internal/cli/subagents_test.go` and `runTeamMemoryEnableCmd`/
+   `runTeamMemoryHooksCmd` for the pattern.
+4. **`internal/testenv.Isolate(m *testing.M)` from `TestMain`** in every
+   package that touches environment-derived paths directly or via a
+   production constructor: `service`, `cli`, `mcp`, `http`, `install`,
+   `upgrade`. This is what protects a bare `go test ./...` — exactly how an
+   agent normally runs the suite — not just `make test`'s HOME sandbox (G2,
+   below). `internal/testenv`'s own `TestAllIsolatedPackagesDeclareTestMain`
+   fails if any of those six packages loses its `TestMain`.
+
+`make test`/`make test-race` additionally sandbox `HOME`/`USERPROFILE` to
+`tmp/testhome` (gitignored) as defense-in-depth (G2), then run
+`scripts/testguard.sh`, which fails if any `projects/*.db` or `global.db`
+shows up inside that sandbox — proof no test resolved a real DB path.
+`GOCACHE`/`GOMODCACHE` are captured via `$(shell go env …)` at Makefile parse
+time (not inline in the recipe) specifically because bash evaluates same-line
+`VAR=value` assignments left-to-right — putting `go env GOCACHE` after the
+sandboxed `HOME=` on the same line makes it observe the *already-sandboxed*
+HOME, forcing a full rebuild and module re-download on every run.
+
+`scripts/cleanup-test-pollution.sh` is the one-off (not a `mneme` subcommand)
+script that purged the pre-SPEC-085 pollution from this repo's real DB and
+vault: dry-run by default, an explicit denylist of the 14 exact polluted
+project slugs (no globs/heuristics), a precondition that aborts on any
+unrecognised project, and a mandatory DB backup before `--apply`.
 
 ## Quality standards
 

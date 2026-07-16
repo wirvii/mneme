@@ -1051,6 +1051,45 @@ Verified against benchmarks in `internal/service/bench_test.go`.
 
 **Test suite:** 527+ test functions across core packages. Tests run against real in-memory SQLite (no mocks). Target >85% coverage on `model`, `store`, `service`, `scoring`.
 
+### Test isolation from the real environment (SPEC-085)
+
+mneme dogfoods itself against its own real `~/.mneme/projects/wirvii-mneme.db`
+and `.mneme/shared/` vault. A per-DB in-memory SQLite (`db.OpenMemory()`) is
+not, by itself, enough isolation: `NewMemoryService`'s team-memory state used
+to be resolved by an ambient-I/O call inside the constructor
+(`os.Getwd()` + `git rev-parse --show-toplevel` + `os.Stat` on the vault
+marker) rather than injected, so any test running with a cwd inside this
+repository silently activated write-through materialization regardless of
+which DB the memory itself lived in — an in-memory `MemoryService.Save` still
+wrote a real file to `<repo>/.mneme/shared/notes/`, and the `post-merge` git
+hook (`ImportFromShared`) then re-imported it into the real DB on the next
+pull. 7752 of 9058 rows in `wirvii-mneme.db` were test fixtures before this
+was fixed.
+
+**The fix layers four independent mechanisms**, because the root cause had
+two distinct, unrelated causes (constructor auto-detection, and a
+process-wide `sync.Once` identity cache in `internal/gitident`) plus two
+additional leak surfaces discovered while closing them (a CLI-integration
+test driving the real command with an unisolated cwd; `go test` invoked
+without `make`'s wrapper):
+
+1. `service.NewMemoryService` takes a variadic `...service.Option` and
+   defaults team-memory OFF; only `internal/cli.initService`
+   (`service.WithTeamMemory(service.DetectTeamMemory())`) opts in for real.
+2. `internal/gitident.Reset()` in any test helper that chdirs into a fixture
+   git repo, clearing the process-wide memoized identity.
+3. Any test that drives a real CLI command end-to-end must isolate cwd, not
+   just `--data-dir` — `DetectTeamMemory` resolves the vault marker relative
+   to the real process cwd, which `--data-dir` does nothing to change.
+4. `internal/testenv.Isolate(m *testing.M)`, wired into `TestMain` in
+   `service`/`cli`/`mcp`/`http`/`install`/`upgrade`, sandboxes
+   HOME/USERPROFILE for the whole test binary — protecting a bare
+   `go test ./...`, not just `make test`'s Makefile-level HOME sandbox.
+
+See the "Test isolation from the real environment" section of `CLAUDE.md` for
+the full contract new tests must follow, and `docs/team-memory.md` for how
+this interacts with the write-through materialization path itself.
+
 ---
 
 *Originally written 2026-04-30 for EPIC-1 through EPIC-6 (SPEC-001 through SPEC-026); updated for schema v14 / 64 MCP tools / 36 CLI commands after the SDD+lanes, CodeGraph, Skills, Models, Conflicts, agnostic-agents (per-project subagents), and Team Memory EPICs. See [CHANGELOG.md](../CHANGELOG.md) for the full release history.*

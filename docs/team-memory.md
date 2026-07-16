@@ -115,9 +115,11 @@ them to the vault. No dedicated backfill command is needed.
 
 ## WRITE — materialize on save
 
-When team-memory is active for the current process (the marker was found at
-service construction, or `mneme team-memory enable` just activated it),
-`mem_save`/`svc.Save` and `svc.Update` **synchronously** write the memory to
+When team-memory is active for the current process — `initService` opted in
+via `service.WithTeamMemory(service.DetectTeamMemory())` at construction
+(SPEC-085 D1/D2; see below), or `mneme team-memory enable` just activated it
+for the rest of this process — `mem_save`/`svc.Save` and `svc.Update`
+**synchronously** write the memory to
 `.mneme/shared/notes/<uuid>.md` immediately after persisting it to SQLite —
 there is no background sync, no polling, no watcher. This is a deliberate
 correction of an earlier design assumption: mneme has no live filesystem
@@ -254,6 +256,26 @@ mneme team-memory hooks install           # install only the import hooks
 mneme team-memory hooks remove            # remove only the mneme-managed hook block
 mneme promote <id>                        # mark one memory as team-curated (shared=2)
 ```
+
+## Test isolation (SPEC-085)
+
+Team-memory's write-through path (constructor-time detection + synchronous
+materialization on `Save`) is exactly the mechanism that, before SPEC-085,
+let this repo's own test suite corrupt its own real database: any test whose
+process cwd sat inside this dogfooding repo previously activated team-memory
+automatically, materialized test fixtures to the real `.mneme/shared/notes/`,
+and the `post-merge` hook re-imported them into the real
+`~/.mneme/projects/wirvii-mneme.db` on the next pull — 7752 of 9058 rows were
+test pollution before the cleanup.
+
+The fix: `service.NewMemoryService` never resolves team-memory state itself
+anymore. It defaults OFF and only activates when a caller opts in explicitly
+via `service.WithTeamMemory(service.DetectTeamMemory())` — the one production
+call site is `internal/cli.initService`. A test that needs to exercise real
+detection (chdir into a fixture repo with a marker) must opt in the same
+explicit way; see `newRepoTestService` in
+`internal/service/teammemory_test.go` and the "Test isolation from the real
+environment" section of `CLAUDE.md` for the full four-layer contract.
 
 ## Anti-scope
 
