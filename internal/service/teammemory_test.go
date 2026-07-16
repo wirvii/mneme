@@ -44,6 +44,19 @@ import (
 // cwd (see gitident.Reset's godoc).
 func newRepoTestService(t *testing.T, withMarker bool) (*service.MemoryService, string) {
 	t.Helper()
+	return newRepoTestServiceWithIdentity(t, withMarker, "Team Member", "team@example.com")
+}
+
+// newRepoTestServiceWithIdentity is newRepoTestService parameterized by git
+// identity. It exists so a guard test can prove gitident.Reset() actually
+// matters (SPEC-085 AC5) by using an identity DIFFERENT from the "Team
+// Member <team@example.com>" every other call site in this package shares —
+// with a shared identity, deleting Reset() would make no test go red, since
+// every fixture's expected Author() value is identical regardless of whether
+// the cache is stale or fresh. See TestAuthor_ResolvesDistinctIdentitiesAcrossSubtests
+// in gitident_cache_guard_test.go.
+func newRepoTestServiceWithIdentity(t *testing.T, withMarker bool, gitUserName, gitUserEmail string) (*service.MemoryService, string) {
+	t.Helper()
 
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
@@ -51,8 +64,8 @@ func newRepoTestService(t *testing.T, withMarker bool) (*service.MemoryService, 
 
 	repoDir := t.TempDir()
 	runGit(t, repoDir, "init")
-	runGit(t, repoDir, "config", "user.name", "Team Member")
-	runGit(t, repoDir, "config", "user.email", "team@example.com")
+	runGit(t, repoDir, "config", "user.name", gitUserName)
+	runGit(t, repoDir, "config", "user.email", gitUserEmail)
 
 	if withMarker {
 		sharedRoot := filepath.Join(repoDir, ".mneme", "shared")
