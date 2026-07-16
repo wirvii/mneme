@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -150,11 +151,43 @@ func newDelegationHookStatusCmd() *cobra.Command {
 			if enabled {
 				state = "enabled"
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "%s: %s\n", state, path)
+			out := cmd.OutOrStdout()
+			fmt.Fprintf(out, "%s: %s\n", state, path)
+
+			// SPEC-086 D7/AC15: best-effort nag, appended after the primary
+			// registration status — a nag failure must never break this
+			// command's primary purpose.
+			if line := statusCmdNagLine(cmd, root); line != "" {
+				fmt.Fprintln(out, line)
+			}
 			return nil
 		},
 	}
 	return cmd
+}
+
+// statusCmdNagLine resolves the project at root and computes its D7 nag
+// line, swallowing every error (config load, project detection, DB access)
+// as "no nag" — this is deliberately best-effort so a DB hiccup never
+// breaks "delegation-hook status"'s primary output.
+func statusCmdNagLine(cmd *cobra.Command, root string) string {
+	cfg, err := config.Load(config.DefaultPath())
+	if err != nil {
+		return ""
+	}
+	det := project.NewDetector(root)
+	slug, _ := det.DetectProject()
+	if slug == "" {
+		return ""
+	}
+
+	subSvc, cleanup, err := initSubagentService()
+	if err != nil {
+		return ""
+	}
+	defer cleanup()
+
+	return delegationNagLine(cmd.Context(), cfg, slug, subSvc)
 }
 
 // --- report (SPEC-086 D3/D7) -------------------------------------------------
@@ -338,6 +371,130 @@ func evaluatePromoteGate(events []enforcelog.Event, now time.Time, entries []hoo
 	}
 
 	return len(reasons) == 0, reasons, pairs
+}
+
+// --- status nag (SPEC-086 D7 antidote, AC15) --------------------------------
+//
+// The gate (evaluatePromoteGate) makes promotion POSSIBLE once evidence
+// exists. Nothing in that gate makes anyone actually RUN "delegation-hook
+// promote" — a project can sit in "warn" forever, evidence piling up
+// unread, which is exactly the failure mode the owner already lived once
+// (two months believing a hook was blocking when it silently blocked
+// nothing). The nag is the piece that was missing then: an unavoidable,
+// periodic reminder once a project has had far more than enough time and
+// evidence to promote and just hasn't.
+
+// nagMinWindow is stricter than promoteMinWindow (7 days, "eligible"): the
+// nag only fires after MORE than twice that — a project that could have
+// promoted a week ago and still hasn't gets an escalating reminder, not an
+// immediate one from the moment the gate opens.
+const nagMinWindow = 14 * 24 * time.Hour
+
+// statusNag is the rendered evidence behind a single "ready to promote"
+// reminder line.
+type statusNag struct {
+	Slug          string
+	WouldBlock    int
+	RolesTotal    int
+	RolesComplete int
+	DaysInWarn    int
+}
+
+// evaluateStatusNag is D7's antidote as a pure function (no I/O, directly
+// unit-testable): a project nags only when (1) its containment mode is
+// "warn" — a project already in "block" or "off" needs no promotion
+// reminder, (2) it has accumulated more than nagMinWindow (14 days) of
+// telemetry since its earliest recorded event, and (3) evaluatePromoteGate's
+// own evidence+areas_complete criteria are ALREADY green — i.e. the project
+// could have run "delegation-hook promote" a week ago and simply hasn't.
+func evaluateStatusNag(events []enforcelog.Event, now time.Time, entries []hookManifestEntry, mode, slug string) (statusNag, bool) {
+	if mode != "warn" || len(events) == 0 {
+		return statusNag{}, false
+	}
+
+	earliest := events[0].TS
+	for _, ev := range events {
+		if ev.TS.Before(earliest) {
+			earliest = ev.TS
+		}
+	}
+	elapsed := now.Sub(earliest)
+	if elapsed < nagMinWindow {
+		return statusNag{}, false
+	}
+
+	ok, _, _ := evaluatePromoteGate(events, now, entries)
+	if !ok {
+		return statusNag{}, false
+	}
+
+	rolesTotal, rolesComplete := 0, 0
+	for _, e := range entries {
+		if !e.isImplementer() {
+			continue
+		}
+		rolesTotal++
+		if e.AreasComplete {
+			rolesComplete++
+		}
+	}
+
+	return statusNag{
+		Slug:          slug,
+		WouldBlock:    nagWouldBlockTotal(enforcelog.Aggregate(events, time.Time{})),
+		RolesTotal:    rolesTotal,
+		RolesComplete: rolesComplete,
+		DaysInWarn:    int(elapsed.Hours() / 24),
+	}, true
+}
+
+// nagWouldBlockTotal sums WouldBlock across every role in report — kept as
+// its own small function so evaluateStatusNag's construction above reads
+// linearly (report.Total counts EVERY event including allows; the nag
+// message specifically wants the would_block count).
+func nagWouldBlockTotal(report enforcelog.Report) int {
+	total := 0
+	for _, rr := range report.ByRole {
+		total += rr.WouldBlock
+	}
+	return total
+}
+
+// renderNagLine formats a statusNag as the single-line reminder D7
+// specifies, e.g.:
+//
+//	wirvii/wirvii360r: 31 would_block, 4/4 roles completos, 21 días en warn → listo para bloquear: mneme delegation-hook promote
+func renderNagLine(n statusNag) string {
+	return fmt.Sprintf("%s: %d would_block, %d/%d roles completos, %d días en warn → listo para bloquear: mneme delegation-hook promote",
+		n.Slug, n.WouldBlock, n.RolesComplete, n.RolesTotal, n.DaysInWarn)
+}
+
+// delegationNagLine is the I/O-performing wrapper "mneme status" and
+// "delegation-hook status" both call: reads the project's enforcelog and
+// manifest, evaluates the nag, and returns the rendered line ("" when no
+// nag applies or any read fails — this must never break the primary
+// command it is attached to).
+func delegationNagLine(ctx context.Context, cfg *config.Config, slug string, subSvc *service.SubagentService) string {
+	if slug == "" || cfg == nil || subSvc == nil {
+		return ""
+	}
+	mode := cfg.SubagentContainmentMode(slug)
+	events, err := enforcelog.Read(enforcelogPath(cfg.Storage.DataDir, slug))
+	if err != nil || len(events) == 0 {
+		return ""
+	}
+
+	manifest, err := subSvc.ReadManifest(ctx, slug)
+	if err != nil {
+		return ""
+	}
+	entries := serviceEntriesToHook(manifest)
+
+	nag, ok := evaluateStatusNag(events, time.Now(), entries, mode, slug)
+	if !ok {
+		return ""
+	}
+	return renderNagLine(nag)
 }
 
 func newDelegationHookPromoteCmd() *cobra.Command {

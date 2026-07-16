@@ -135,16 +135,24 @@ func renderFullStatus(ctx context.Context, svc *service.MemoryService, sddSvc *s
 
 	recentDone, _ := sddSvc.RecentlyCompletedSpecs(ctx, slug, 5)
 
+	// SPEC-086 D7/AC15: best-effort delegation-hook promotion nag. Reuses
+	// svc's already-open connection (service.NewSubagentService(svc)) rather
+	// than opening a second one — any failure resolves to "" (no nag),
+	// consistent with the rest of this command's fail-open-on-warnings
+	// posture (backlog/spec fetches above also swallow their own errors).
+	nagLine := delegationNagLine(ctx, cfg, slug, service.NewSubagentService(svc))
+
 	if asJSON {
 		type fullOut struct {
-			Version      string              `json:"version"`
-			Project      string              `json:"project"`
-			Database     string              `json:"database"`
-			ProjectCount int                 `json:"project_memories"`
-			GlobalCount  int                 `json:"global_memories"`
-			Backlog      []*model.BacklogItem `json:"backlog"`
-			InProgress   []*model.Spec        `json:"specs_in_progress"`
-			RecentDone   []*model.Spec        `json:"recently_completed"`
+			Version       string               `json:"version"`
+			Project       string               `json:"project"`
+			Database      string               `json:"database"`
+			DelegationNag string               `json:"delegation_nag,omitempty"`
+			ProjectCount  int                  `json:"project_memories"`
+			GlobalCount   int                  `json:"global_memories"`
+			Backlog       []*model.BacklogItem `json:"backlog"`
+			InProgress    []*model.Spec        `json:"specs_in_progress"`
+			RecentDone    []*model.Spec        `json:"recently_completed"`
 		}
 		var dbPath string
 		if slug != "" {
@@ -153,14 +161,15 @@ func renderFullStatus(ctx context.Context, svc *service.MemoryService, sddSvc *s
 			dbPath = cfg.GlobalDBPath()
 		}
 		return printJSON(os.Stdout, fullOut{
-			Version:      Version,
-			Project:      slug,
-			Database:     shortenHome(dbPath),
-			ProjectCount: projectCount,
-			GlobalCount:  globalCount,
-			Backlog:      activeBacklog,
-			InProgress:   inProgressSpecs,
-			RecentDone:   recentDone,
+			Version:       Version,
+			Project:       slug,
+			Database:      shortenHome(dbPath),
+			DelegationNag: nagLine,
+			ProjectCount:  projectCount,
+			GlobalCount:   globalCount,
+			Backlog:       activeBacklog,
+			InProgress:    inProgressSpecs,
+			RecentDone:    recentDone,
 		})
 	}
 
@@ -172,6 +181,16 @@ func renderFullStatus(ctx context.Context, svc *service.MemoryService, sddSvc *s
 	}
 	fmt.Fprintln(os.Stdout, header)
 	fmt.Fprintln(os.Stdout)
+
+	// DELEGATION NAG (SPEC-086 D7/AC15) — printed right after the header,
+	// before backlog/specs, so it is impossible to miss: this is the
+	// antidote to a project sitting in "warn" forever with evidence nobody
+	// looked at.
+	if nagLine != "" {
+		fmt.Fprintln(os.Stdout, section("DELEGATION", 50))
+		fmt.Fprintf(os.Stdout, "  %s\n", nagLine)
+		fmt.Fprintln(os.Stdout)
+	}
 
 	// BACKLOG section
 	if len(activeBacklog) > 0 {

@@ -162,6 +162,7 @@ func TestDelegationHookReport_WithTelemetry_ShowsRoleBreakdown(t *testing.T) {
 // project with no telemetry never gets promoted — no config file is written
 // at all.
 func TestDelegationHookPromote_GateFails_RejectsWithoutWriting(t *testing.T) {
+	resetGlobalCLIFlags(t) // promote reads the manifest via initSubagentService(); see delegation_hook_nag_test.go's comment.
 	setupDelegationRepo(t)
 	home := os.Getenv("HOME")
 
@@ -182,6 +183,7 @@ func TestDelegationHookPromote_GateFails_RejectsWithoutWriting(t *testing.T) {
 // TestDelegationHookPromote_RequiresYesFlag verifies the confirmation gate:
 // even when D7's evidence gate passes, promotion is refused without --yes.
 func TestDelegationHookPromote_RequiresYesFlag(t *testing.T) {
+	resetGlobalCLIFlags(t)
 	slug, _ := setupDelegationRepo(t)
 	home := os.Getenv("HOME")
 	path := enforcelogPath(home+"/.mneme", slug)
