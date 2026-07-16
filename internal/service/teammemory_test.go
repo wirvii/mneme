@@ -12,6 +12,7 @@ import (
 	"github.com/wirvii/mneme/internal/config"
 	"github.com/wirvii/mneme/internal/db"
 	"github.com/wirvii/mneme/internal/embed"
+	"github.com/wirvii/mneme/internal/gitident"
 	"github.com/wirvii/mneme/internal/model"
 	"github.com/wirvii/mneme/internal/service"
 	"github.com/wirvii/mneme/internal/store"
@@ -19,22 +20,28 @@ import (
 
 // newRepoTestService constructs a MemoryService whose process working
 // directory is chdir'd into a fresh temporary git repository for the
-// duration of the test (restored via t.Cleanup). This exercises
-// MemoryService's real repo-root/team-memory detection (SPEC-053 D3), which
-// resolves relative to os.Getwd() at construction time — unlike
-// newTestService, which runs from wherever `go test` happens to invoke from
-// (inside the mneme repo itself, where no shared vault marker exists, so
-// team-memory always resolves inactive there — see
-// TestSave_SharedAuthorDefaults_Inert in memory_test.go).
+// duration of the test (restored via t.Cleanup), and explicitly opts it into
+// team-memory via WithTeamMemory(service.DetectTeamMemory()) — mirroring
+// exactly what internal/cli.initService does in production (SPEC-085 D2).
+// Since NewMemoryService no longer auto-detects (SPEC-085 D1), this explicit
+// opt-in is what makes DetectTeamMemory's real repo-root/marker resolution
+// exercised at all here; a service built with newTestService (no chdir, no
+// WithTeamMemory) is inert by construction regardless of cwd — see
+// TestSave_SharedAuthorDefaults_Inert in memory_test.go.
 //
 // When withMarker is true, <repoDir>/.mneme/shared/.mneme-vault is created
-// before the service is constructed so team-memory resolves as active.
-// Returns the service and the repo directory (equal to the new cwd).
+// before DetectTeamMemory runs so team-memory resolves as active. Returns
+// the service and the repo directory (equal to the new cwd).
 //
 // This helper never touches the real mneme repository or ~/.mneme — it
 // creates and chdirs into an isolated t.TempDir() git repo, per
 // constraint-no-local-install. It also isolates the process from the
-// developer's real global git config so gitident.Author() is deterministic.
+// developer's real global git config so gitident.Author() is deterministic,
+// and resets gitident's process-wide sync.Once cache (SPEC-085 D3) both
+// before construction and on cleanup — without this, an earlier test in the
+// same binary that resolved a different git identity first would leave its
+// result memoized for every subsequent call in this process, regardless of
+// cwd (see gitident.Reset's godoc).
 func newRepoTestService(t *testing.T, withMarker bool) (*service.MemoryService, string) {
 	t.Helper()
 
@@ -65,6 +72,12 @@ func newRepoTestService(t *testing.T, withMarker bool) (*service.MemoryService, 
 		}
 	})
 
+	// SPEC-085 D3: reset the process-wide gitident cache both now (so an
+	// earlier test's memoized identity never leaks into this one) and on
+	// cleanup (so this test's identity never leaks into the next one).
+	gitident.Reset()
+	t.Cleanup(gitident.Reset)
+
 	projectDB, err := db.OpenMemory()
 	if err != nil {
 		t.Fatalf("open project db: %v", err)
@@ -79,7 +92,11 @@ func newRepoTestService(t *testing.T, withMarker bool) (*service.MemoryService, 
 	globalStore := store.NewMemoryStore(globalDB)
 	cfg := config.Default()
 
-	svc := service.NewMemoryService(projectStore, globalStore, cfg, "test/project", embed.NopEmbedder{})
+	// SPEC-085 D2: NewMemoryService defaults to team-memory OFF. This helper
+	// exists specifically to exercise the real, environment-derived state, so
+	// it opts in explicitly — exactly as internal/cli.initService does.
+	svc := service.NewMemoryService(projectStore, globalStore, cfg, "test/project", embed.NopEmbedder{},
+		service.WithTeamMemory(service.DetectTeamMemory()))
 	return svc, repoDir
 }
 
