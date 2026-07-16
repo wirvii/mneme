@@ -1,7 +1,7 @@
 ---
 name: mneme-init
 description: "Use once to bootstrap a project with mneme, or to refresh/onboard it later. Single project-level entry point: seeds foundational repo knowledge into memory, applies mneme's managed CLAUDE.md blocks (replacing the native /init), and offers three independent opt-in steps — per-project subagent generation via a 5-phase grill, codegraph indexing, and shared team memory. Trigger keywords: mneme-init, initialize mneme, onboard this repo, generate subagents, set up codegraph."
-version: 1.3.0
+version: 1.4.0
 pinned: false
 ---
 
@@ -27,6 +27,7 @@ Use this skill when:
 8. The shared-memory step invokes the EXISTING `mneme team-memory enable` command (SPEC-053/SPEC-065) — never reimplement vault export or hook-install logic yourself, and always relay its privacy notice to the user verbatim (never paraphrase or suppress it).
 9. ONE fact per `mem_save` call during Phase 0-2 seeding — never dump an entire file as a single memory. Always set `topic_key` so re-runs upsert instead of duplicating.
 10. Never rewrite the user's CLAUDE.md prose directly — only the `init` MCP tool's managed block. Report drift; do not silently edit user content.
+11. **The layer 2/3 boundary (SPEC-090).** `areas_layer3_md` (Phase 3, and any content you later synthesize into it) is project KNOWLEDGE ONLY — stack, architecture, commands, best practices, domain. It must NEVER contain lifecycle instructions (`spec_advance`, `spec_quick`, `spec_reject` — layer 1's `agent-fixed` block already governs the SDD lifecycle and explicitly forbids the subagent from calling `spec_advance` itself), capability declarations (`tools:`/`permissionMode:` — those are ALWAYS Go-authored via `archetype`, see rule 4), or role doctrine. `subagent_compose`/`subagent_write` mechanically reject any of this if it slips into `areas_layer3_md`/the composed grill region — but do not rely on the reject as your only defense: draft Phase 3 content that never contains it in the first place.
 
 ## Automated Checks
 
@@ -37,10 +38,11 @@ Use this skill when:
 | Role slug validity | Every `role` passed to `subagent_compose`/`subagent_write` matches `^[a-z][a-z0-9-]*$` | Rename the role to a lowercase slug before composing |
 | Preview before write | `subagent_compose` was reviewed by the user before the matching `subagent_write` call | Always compose (preview), get confirmation, then write |
 | Opt-in steps confirmed | Subagents / codegraph / shared-memory steps were each explicitly offered and answered, not silently run or silently skipped | Ask the user yes/no for each opt-in step before acting on it |
+| Layer 2/3 stays project knowledge only | `areas_layer3_md` never contains `spec_advance`, `spec_quick`, `spec_reject`, or a `tools:`/`permissionMode:` line — those belong exclusively to layer 1 | Strip the lifecycle/capability content from the draft before calling `subagent_compose`; if it was rejected, re-synthesize using only the token/line the error names |
 
 ## Verification
 
-- Run `mneme skills validate mneme-init` to execute the deterministic validation script (checks that this file still documents the `subagent_*` tools it depends on).
+- Run `mneme skills validate mneme-init` to execute the deterministic validation script (checks that this file still documents the `subagent_*` tools it depends on, AND that it still documents every `spec_advance`/`spec_quick`/`spec_reject` layer 2/3-forbidden token from rule 11).
 - Run `mneme skills lint mneme-init` to confirm the structural format (5 sections, 3-column Automated Checks table, semver, name==directory).
 - After the core step: `mneme init --check` (or the `init` MCP tool with `check:true`) should report the managed block present and list any drift findings.
 - After the subagent grill: `subagent_manifest_list` should list the newly written roles with their `engine`/`areas`/`checksum`.
@@ -69,10 +71,10 @@ Only if the user opts in. Uses the `subagent_*` MCP tools exclusively:
 | 0 | Deterministic fingerprint: project root, apps/packages, stack markers, what typed-memory already exists | `subagent_fingerprint`, `mem_context`, `mem_search` |
 | 1 | Elicit repo/org knowledge ONCE (commit convention, language, layout, cross-cutting rules) | `subagent_profile_get`, `subagent_profile_save` (writes `profile_json.repo` + `profile_json.org`) |
 | 2 | Propose roles + map apps to roles (one subagent per role, covering ALL its apps) — user adjusts the suggestion | `subagent_profile_save` (writes `profile_json.mapping`) |
-| 3 | Per role x area detail: stack, architecture, commands, best practices. Brownfield: pre-seed from Phase 0 + `mem_search`. Evergreen (no code yet): ask the DESIRED stack from scratch | conversation with the user; draft `areas_layer3_md` per role |
+| 3 | Per role x area detail: stack, architecture, commands, best practices. Brownfield: pre-seed from Phase 0 + `mem_search`. Evergreen (no code yet): ask the DESIRED stack from scratch. **Project knowledge only — never lifecycle (`spec_advance`/`spec_quick`/`spec_reject`), capabilities (`tools:`/`permissionMode:`), or role doctrine (rule 11)** | conversation with the user; draft `areas_layer3_md` per role |
 | 4 | Compose a preview, then write only on confirmation | `subagent_compose` (preview, no disk writes) → user confirms → `subagent_write` (atomic write + manifest update) |
 
-7. For each role, call `subagent_compose` with `role`, `archetype`, `areas_layer3_md`, and `profile_json` (from Phases 1-2), then show the user the preview.
+7. For each role, call `subagent_compose` with `role`, `archetype`, `areas_layer3_md`, and `profile_json` (from Phases 1-2), then show the user the preview. If it is rejected for a layer 2/3 leak (rule 11), the error names the exact token and line — remove it from the Phase 3 draft and re-compose; never work around the rejection by hiding the token outside the tool's plain-text argument.
 7b. For each role, ask the **areas-completeness question** (SPEC-086 D11) BEFORE writing — this is what feeds `areas_complete`, the flag that turns the delegation hook's subagent containment (`mneme delegation-hook`) from purely informational into something that can actually block:
     > "`<role>` hoy declara `<apps from Phase 2>`. **Además de las apps**, ¿en qué otras rutas puede escribir — `packages/*-go`, migraciones, config de raíz? Estas van a ser las **únicas** rutas donde podrá escribir."
     Set `areas_complete: true` ONLY when the user explicitly confirms the resulting area list is exhaustive. **NEVER default it to `true`, NEVER infer it from Phase 2's app→role mapping alone** — Phase 2 maps apps, not every path a role may touch (`packages/*-go`, root-level config, migrations are easy to miss), and `areas_complete: true` on an incomplete list will make that role start losing writes to legitimate paths the day the project promotes to `block` mode (`mneme delegation-hook promote`). When in doubt, or the user is unsure, leave it `false` (or omit it) — an unverified role is never contained, only observed (`would_block` telemetry, never a real block).
