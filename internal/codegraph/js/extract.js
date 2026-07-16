@@ -12,6 +12,51 @@ try {
   process.exit(1);
 }
 
+// SPEC-088 D2: verify the classic synchronous Compiler API symbols this
+// script depends on actually exist on the resolved `typescript` module.
+// `require('typescript')` succeeding is NOT proof the API is usable —
+// typescript@7.x is a from-scratch rewrite whose export surface is nearly
+// empty (only `version`/`versionMajorMinor`), so every one of these would be
+// `undefined`. Checking for the real symbols (capability), not a version
+// number, is the invariant we actually depend on: a future major that keeps
+// this API passes here even without an explicit allowlist entry, and a
+// same-major fork that removes it is caught even though the version string
+// looks fine.
+const REQUIRED_TS_FUNCTIONS = [
+  'createSourceFile', 'forEachChild', 'getLeadingCommentRanges',
+  'readConfigFile', 'parseJsonConfigFileContent',
+];
+const REQUIRED_TS_OBJECTS = ['ScriptTarget', 'ScriptKind', 'SyntaxKind', 'NodeFlags', 'sys'];
+
+function missingTypeScriptAPI(mod) {
+  const missing = [];
+  for (const fn of REQUIRED_TS_FUNCTIONS) {
+    if (typeof mod[fn] !== 'function') missing.push(fn);
+  }
+  for (const obj of REQUIRED_TS_OBJECTS) {
+    if (typeof mod[obj] !== 'object' || mod[obj] === null) missing.push(obj);
+  }
+  return missing;
+}
+
+const missingAPI = missingTypeScriptAPI(ts);
+if (missingAPI.length > 0) {
+  // SPEC-088 D3: exit 20, never 3 — Node reserves 1-12 for its own fatal
+  // failures (3 = Internal JavaScript Parse Error); colliding with that
+  // range would misreport a Node-internal crash as "typescript incompatible".
+  process.stderr.write(JSON.stringify({
+    error: 'typescript package is present but its API is incompatible with this extractor',
+    found_version: ts.version || 'unknown',
+    missing_symbols: missingAPI,
+    hint: 'This extractor requires the classic synchronous TypeScript Compiler API ' +
+      '(typescript 5.x/6.x). Escape hatches: (1) downgrade the resolved typescript to a ' +
+      '5.x/6.x release, (2) set NODE_PATH to a directory containing a compatible typescript ' +
+      'install (an explicit NODE_PATH now takes precedence over the global npm root), or ' +
+      '(3) uninstall the global typescript package to fall back to Go-only indexing.',
+  }) + '\n');
+  process.exit(20);
+}
+
 // nodeID produces a deterministic 16-hex-char identifier matching Go's NodeID function.
 // It computes SHA-256 of "<filePath>:<qualifiedName>" and takes the first 8 bytes as hex.
 function nodeID(filePath, qualifiedName) {
