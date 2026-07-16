@@ -601,13 +601,35 @@ func queryRulesFromDB(path string) ([]model.Memory, error) {
 const manifestTopicKey = "subagents/manifest"
 
 // hookManifestEntry is a minimal local mirror of service.ManifestEntry
-// (SPEC-068 D13): path-owned only ever reads Role and Areas, so it defines
-// its own lightweight struct rather than depending on internal/service.
+// (SPEC-068 D13): path-owned only ever reads Role, Areas, Archetype, and
+// AreasComplete (SPEC-086 D4/D5), so it defines its own lightweight struct
+// rather than depending on internal/service.
 // TestHookManifestEntry_RoundTripsServiceManifestEntry guards the shape
 // against drift by round-tripping a real service.ManifestEntry through it.
 type hookManifestEntry struct {
-	Role  string   `json:"role"`
-	Areas []string `json:"areas"`
+	Role          string   `json:"role"`
+	Areas         []string `json:"areas"`
+	Archetype     string   `json:"archetype"`
+	AreasComplete bool     `json:"areas_complete"`
+}
+
+// effectiveArchetype returns e.Archetype when set, falling back to e.Role
+// (SPEC-086 D4) — mirrors service.ManifestEntry.EffectiveArchetype for the
+// hook's lightweight local copy of the manifest shape.
+func (e hookManifestEntry) effectiveArchetype() subagents.Role {
+	if e.Archetype != "" {
+		return subagents.Role(e.Archetype)
+	}
+	return subagents.Role(e.Role)
+}
+
+// isImplementer reports whether e's capability envelope
+// (effectiveArchetype's PermissionTable entry) grants edit capability
+// (SPEC-086 D4) — the fixed replacement for the old
+// subagents.IsImplementer(subagents.Role(entry.Role)) lookup, which ignored
+// archetype and so never protected a custom role's areas.
+func (e hookManifestEntry) isImplementer() bool {
+	return subagents.IsImplementer(e.effectiveArchetype())
 }
 
 // manifestQuery selects the single manifest memory's content for a project,
@@ -784,7 +806,7 @@ func resolvePathOwnership(targetPath, cwd string, manifestFound bool, manifestJS
 	}
 
 	for _, entry := range entries {
-		if !subagents.IsImplementer(subagents.Role(entry.Role)) {
+		if !entry.isImplementer() {
 			continue
 		}
 		for _, area := range entry.Areas {

@@ -106,6 +106,37 @@ type ManifestEntry struct {
 	// cover (subset or all of ProjectProfile.Mapping for this Role).
 	Areas []string `json:"areas,omitempty"`
 
+	// Archetype is the built-in role (subagents.PermissionTable key) this
+	// entry's Role was composed from (SPEC-086 D4). Role is the join key
+	// against the PreToolUse payload's agent_type (the literal role name,
+	// e.g. "qa-tester"); Archetype is the capability key
+	// (subagents.IsImplementer looks up PermissionTable by Archetype, with
+	// Role as a fallback when Archetype is empty — the compat path for the
+	// 8+ manifests written before this field existed, where role==archetype
+	// always held).
+	//
+	// Fixes a real bug: subagent_write/`subagents write` already receive an
+	// archetype argument and validate composed_md against it, but used to
+	// discard it — ManifestEntry never persisted it. resolvePathOwnership
+	// filters candidate manifest entries by
+	// subagents.IsImplementer(subagents.Role(entry.Role)), a lookup BY ROLE
+	// NAME. Any custom role (role != archetype, e.g.
+	// subagent_compose(role:"qa-tester", archetype:"bug-hunter")) was
+	// therefore never recognised as an implementer: its declared areas were
+	// silently unprotected, and the orchestrator had free rein over them.
+	Archetype subagents.Role `json:"archetype,omitempty"`
+
+	// AreasComplete reports whether Areas is a certified-exhaustive list of
+	// every path this role may write to (SPEC-086 D5/D11): when true, a path
+	// that matches none of Areas is a containment candidate (would_block in
+	// warn mode, block in block mode); when false or absent (every manifest
+	// written before this field existed), Areas is treated as a partial,
+	// unverified sample and containment never fires for this role — only a
+	// human answering the mneme-init grill's completeness question sets this
+	// to true, never an automated backfill (`mneme subagents doctor --fix`
+	// deliberately excludes it — see docs/HOOKS.md).
+	AreasComplete bool `json:"areas_complete,omitempty"`
+
 	// Engine identifies the GenerationEngine used to draft capa-2/3 content
 	// (e.g. "passthrough", "cli-claude", "cli-codex").
 	Engine string `json:"engine,omitempty"`
@@ -116,6 +147,26 @@ type ManifestEntry struct {
 	// EnforcementHook reports whether the delegation-enforcement hook is
 	// enabled for this project (SPEC-052 D9).
 	EnforcementHook bool `json:"enforcement_hook"`
+}
+
+// EffectiveArchetype returns Archetype when set, falling back to Role when
+// it is empty (SPEC-086 D4) — the compatibility path for every manifest
+// written before Archetype existed, where role and archetype were always
+// identical by construction.
+func (e ManifestEntry) EffectiveArchetype() subagents.Role {
+	if e.Archetype != "" {
+		return e.Archetype
+	}
+	return e.Role
+}
+
+// IsImplementer reports whether this entry's capability envelope
+// (EffectiveArchetype's PermissionTable entry) grants edit capability
+// (SPEC-086 D4). This is the fixed version of the old
+// subagents.IsImplementer(subagents.Role(entry.Role)) lookup, which ignored
+// archetype entirely and so never protected a custom role's areas.
+func (e ManifestEntry) IsImplementer() bool {
+	return subagents.IsImplementer(e.EffectiveArchetype())
 }
 
 // SubagentService orchestrates persistence for the agnostic-agents EPIC

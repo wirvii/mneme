@@ -388,7 +388,13 @@ func TestManifestQuery_ScopeMatchesSaveManifest(t *testing.T) {
 // hookManifestEntry with Role and Areas intact.
 func TestHookManifestEntry_RoundTripsServiceManifestEntry(t *testing.T) {
 	full := []service.ManifestEntry{
-		{Role: "backend", Path: "/repo/.claude/agents/backend.md", Areas: []string{"internal/**", "cmd/**"}},
+		{
+			Role:          "qa-tester",
+			Path:          "/repo/.claude/agents/qa-tester.md",
+			Areas:         []string{"internal/**", "cmd/**"},
+			Archetype:     "bug-hunter",
+			AreasComplete: true,
+		},
 	}
 	data, err := json.Marshal(full)
 	if err != nil {
@@ -408,6 +414,46 @@ func TestHookManifestEntry_RoundTripsServiceManifestEntry(t *testing.T) {
 	}
 	if strings.Join(lite[0].Areas, ",") != strings.Join(full[0].Areas, ",") {
 		t.Errorf("Areas = %v, want %v", lite[0].Areas, full[0].Areas)
+	}
+	if lite[0].Archetype != string(full[0].Archetype) {
+		t.Errorf("Archetype = %q, want %q", lite[0].Archetype, full[0].Archetype)
+	}
+	if lite[0].AreasComplete != full[0].AreasComplete {
+		t.Errorf("AreasComplete = %v, want %v", lite[0].AreasComplete, full[0].AreasComplete)
+	}
+}
+
+// --- SPEC-086 D4: archetype-aware implementer lookup (the real bug fix) ----
+
+// TestResolvePathOwnership_CustomRoleArchetypeIsProtected is the mutation-
+// tested reproduction of AC11: a manifest entry whose Role is a custom name
+// ("qa-tester") but whose Archetype is an implementer archetype
+// ("bug-hunter") must have its declared area protected. Before D4, this
+// entry was invisible to resolvePathOwnership's subagents.IsImplementer(Role)
+// lookup — deleting the archetype-aware isImplementer() (falling back to
+// comparing Role directly against PermissionTable) reproduces the bug and
+// turns this test red.
+func TestResolvePathOwnership_CustomRoleArchetypeIsProtected(t *testing.T) {
+	manifest := `[{"role":"qa-tester","archetype":"bug-hunter","areas":["internal/**"]}]`
+
+	got := resolvePathOwnership("internal/foo.go", testCWD, true, manifest)
+
+	if got.ExitCode != 2 || got.Owner != "qa-tester" {
+		t.Errorf("got %+v, want ExitCode=2 Owner=qa-tester — archetype bug-hunter must be recognised as an implementer", got)
+	}
+}
+
+// TestResolvePathOwnership_OldManifestEntryWithoutArchetype_StillProtected
+// covers the compat fallback: an entry with no archetype field at all
+// (every manifest written before SPEC-086) falls back to Role, so a plain
+// "backend" entry is unaffected — zero migration required (AC9).
+func TestResolvePathOwnership_OldManifestEntryWithoutArchetype_StillProtected(t *testing.T) {
+	manifest := `[{"role":"backend","areas":["internal/**"]}]`
+
+	got := resolvePathOwnership("internal/foo.go", testCWD, true, manifest)
+
+	if got.ExitCode != 2 || got.Owner != "backend" {
+		t.Errorf("got %+v, want ExitCode=2 Owner=backend", got)
 	}
 }
 

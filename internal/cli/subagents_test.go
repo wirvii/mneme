@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/wirvii/mneme/internal/service"
+	"github.com/wirvii/mneme/internal/subagents"
 )
 
 // runSubagentsCmd executes "mneme subagents <argv...>" against an isolated
@@ -333,6 +334,63 @@ func TestSubagentsWrite_WritesFileAndManifest(t *testing.T) {
 	}
 	if len(entries[0].Areas) != 1 || entries[0].Areas[0] != "apps/core-srv" {
 		t.Errorf("unexpected areas: %+v", entries[0].Areas)
+	}
+}
+
+// TestSubagentsWrite_PersistsArchetypeAndAreasComplete is the CLI-parity
+// mutation-tested guard for SPEC-086 D4/D12: --archetype and --areas-complete
+// must be persisted in the saved manifest entry, not merely used for
+// composed_md validation. A custom role (role="qa-tester",
+// archetype="bug-hunter") makes a dropped --archetype observable: it would
+// come back "" (or equal to Role), not the distinct "bug-hunter" asserted
+// below.
+func TestSubagentsWrite_PersistsArchetypeAndAreasComplete(t *testing.T) {
+	dataDir := t.TempDir()
+	repoRoot := t.TempDir()
+	areasFile := filepath.Join(t.TempDir(), "areas.md")
+	if err := os.WriteFile(areasFile, []byte("## Área: apps/core-srv\n\nStack: Go 1.25.\n"), 0o644); err != nil {
+		t.Fatalf("write areas file: %v", err)
+	}
+
+	composedOut := filepath.Join(t.TempDir(), "composed.md")
+	_, _, err := runSubagentsCmd(t, dataDir, "test-subagents-write-archetype",
+		"subagents", "compose",
+		"--role", "qa-tester", "--archetype", "bug-hunter",
+		"--description", "QA con permisos de implementador",
+		"--areas-file", areasFile,
+		"--out", composedOut)
+	if err != nil {
+		t.Fatalf("subagents compose: %v", err)
+	}
+
+	stdout, _, err := runSubagentsCmd(t, dataDir, "test-subagents-write-archetype",
+		"subagents", "write",
+		"--role", "qa-tester", "--archetype", "bug-hunter",
+		"--composed-file", composedOut,
+		"--repo-root", repoRoot,
+		"--areas", "apps/core-srv",
+		"--areas-complete")
+	if err != nil {
+		t.Fatalf("subagents write: %v (stdout=%s)", err, stdout)
+	}
+
+	manifestOut, _, err := runSubagentsCmd(t, dataDir, "test-subagents-write-archetype",
+		"subagents", "manifest-list", "--json")
+	if err != nil {
+		t.Fatalf("manifest-list: %v", err)
+	}
+	var entries []service.ManifestEntry
+	if err := json.Unmarshal([]byte(manifestOut), &entries); err != nil {
+		t.Fatalf("unmarshal manifest: %v (raw=%s)", err, manifestOut)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 manifest entry, got %d: %+v", len(entries), entries)
+	}
+	if entries[0].Archetype != subagents.RoleBugHunter {
+		t.Errorf("Archetype = %q, want %q (must not be discarded, must not equal Role)", entries[0].Archetype, subagents.RoleBugHunter)
+	}
+	if !entries[0].AreasComplete {
+		t.Error("AreasComplete = false, want true (from --areas-complete)")
 	}
 }
 

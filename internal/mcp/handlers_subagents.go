@@ -379,6 +379,11 @@ type subagentWriteRequest struct {
 	RepoRoot        string   `json:"repo_root"`
 	Engine          string   `json:"engine"`
 	Areas           []string `json:"areas"`
+	// AreasComplete certifies Areas as an exhaustive list of every path this
+	// role may write to (SPEC-086 D4/D5/D11). Must never be inferred or
+	// backfilled automatically — only set true in response to the
+	// mneme-init grill's explicit completeness question.
+	AreasComplete bool `json:"areas_complete"`
 }
 
 // subagentWriteResponse is the output of subagent_write.
@@ -499,6 +504,8 @@ func (h *handlers) handleSubagentWrite(ctx context.Context, raw json.RawMessage)
 		Version:         version,
 		Checksum:        checksum,
 		Areas:           req.Areas,
+		Archetype:       archetype,
+		AreasComplete:   req.AreasComplete,
 		Engine:          engine,
 		GeneratedAt:     time.Now().UTC(),
 		EnforcementHook: req.EnforcementHook,

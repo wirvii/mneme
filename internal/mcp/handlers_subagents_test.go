@@ -488,6 +488,72 @@ func TestSubagentWrite_SuccessWritesFileAndManifest(t *testing.T) {
 	}
 }
 
+// TestSubagentWrite_PersistsArchetypeAndAreasComplete is the SPEC-086 D4
+// mutation-tested guard: subagent_write already receives archetype and
+// validates composed_md against it, but used to discard it when building the
+// ManifestEntry. A custom role (role="qa-tester", archetype="bug-hunter")
+// makes the bug observable — if the handler dropped req.Archetype, the saved
+// entry's Archetype field would come back "" (or, worse, silently equal to
+// Role), not the distinct "bug-hunter" this test asserts. areas_complete is
+// asserted the same way, in the same call, since it is the sibling field
+// SPEC-086 D4/D5 adds together.
+func TestSubagentWrite_PersistsArchetypeAndAreasComplete(t *testing.T) {
+	srv, projectDB := newTestServerForSubagents(t)
+	t.Cleanup(func() { projectDB.Close() })
+
+	composeResp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name: "subagent_compose",
+		Arguments: mustMarshal(t, map[string]any{
+			"role":            "qa-tester",
+			"archetype":       "bug-hunter",
+			"areas_layer3_md": "## Área: apps/core-srv\n\nGo + sqlc.",
+		}),
+	})
+	var composed subagentComposeResponse
+	unmarshalToolText(t, composeResp, &composed)
+	if !composed.Valid {
+		t.Fatalf("precondition: compose must be valid, got errors: %v", composed.Errors)
+	}
+
+	dir := t.TempDir()
+	writeResp := process(t, srv, "tools/call", 2, ToolCallParams{
+		Name: "subagent_write",
+		Arguments: mustMarshal(t, map[string]any{
+			"role":           "qa-tester",
+			"archetype":      "bug-hunter",
+			"composed_md":    composed.ComposedMD,
+			"repo_root":      dir,
+			"areas":          []string{"apps/core-srv"},
+			"areas_complete": true,
+		}),
+	})
+	var written subagentWriteResponse
+	unmarshalToolText(t, writeResp, &written)
+	if written.Path == "" {
+		t.Fatal("precondition: write must succeed")
+	}
+
+	manifestResp := process(t, srv, "tools/call", 3, ToolCallParams{
+		Name:      "subagent_manifest_list",
+		Arguments: mustMarshal(t, map[string]any{}),
+	})
+	var entries []service.ManifestEntry
+	unmarshalToolText(t, manifestResp, &entries)
+
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 manifest entry, got %d", len(entries))
+	}
+	if entries[0].Role != "qa-tester" {
+		t.Fatalf("precondition: manifest role = %q, want qa-tester", entries[0].Role)
+	}
+	if entries[0].Archetype != subagents.RoleBugHunter {
+		t.Errorf("manifest archetype = %q, want %q (must not be discarded, must not equal Role)", entries[0].Archetype, subagents.RoleBugHunter)
+	}
+	if !entries[0].AreasComplete {
+		t.Error("manifest areas_complete = false, want true")
+	}
+}
+
 func TestSubagentWrite_UpsertsExistingManifestEntry(t *testing.T) {
 	srv, projectDB := newTestServerForSubagents(t)
 	t.Cleanup(func() { projectDB.Close() })

@@ -338,3 +338,49 @@ func TestWriteAgentProfiles_RollbackRestoresOriginalContent(t *testing.T) {
 		t.Fatalf("rollback: want original content %q restored, got %q", original, got)
 	}
 }
+
+// --- SPEC-086 D4: Archetype/AreasComplete on ManifestEntry ------------------
+
+// TestManifestEntry_IsImplementer_UsesArchetypeOverRole is the mutation-tested
+// reproduction of the D4 bug: a custom role (role != archetype, e.g.
+// subagent_compose(role:"qa-tester", archetype:"bug-hunter")) must be
+// recognised as an implementer via its Archetype, even though "qa-tester" on
+// its own is a read-only archetype in subagents.PermissionTable. Deleting the
+// EffectiveArchetype indirection (falling back to comparing entry.Role
+// directly) turns this red — that IS the bug this field fixes.
+func TestManifestEntry_IsImplementer_UsesArchetypeOverRole(t *testing.T) {
+	entry := service.ManifestEntry{Role: "qa-tester", Archetype: subagents.RoleBugHunter}
+
+	if !entry.IsImplementer() {
+		t.Fatal("IsImplementer() = false, want true — custom role's Archetype (bug-hunter) is an implementer archetype")
+	}
+	if entry.EffectiveArchetype() != subagents.RoleBugHunter {
+		t.Errorf("EffectiveArchetype() = %q, want %q", entry.EffectiveArchetype(), subagents.RoleBugHunter)
+	}
+}
+
+// TestManifestEntry_IsImplementer_FallsBackToRole covers the compat path: an
+// entry with no Archetype (every manifest written before this field existed)
+// falls back to Role, so an old "backend"-role entry is still recognised as
+// an implementer with zero migration.
+func TestManifestEntry_IsImplementer_FallsBackToRole(t *testing.T) {
+	entry := service.ManifestEntry{Role: subagents.RoleBackend}
+
+	if !entry.IsImplementer() {
+		t.Fatal("IsImplementer() = false, want true — Role=backend with no Archetype must fall back to Role")
+	}
+	if entry.EffectiveArchetype() != subagents.RoleBackend {
+		t.Errorf("EffectiveArchetype() = %q, want %q", entry.EffectiveArchetype(), subagents.RoleBackend)
+	}
+}
+
+// TestManifestEntry_IsImplementer_ReadOnlyArchetypeNeverImplementer verifies
+// the negative case: a genuinely read-only archetype (architect) is never an
+// implementer, regardless of what Role says.
+func TestManifestEntry_IsImplementer_ReadOnlyArchetypeNeverImplementer(t *testing.T) {
+	entry := service.ManifestEntry{Role: "architect", Archetype: subagents.RoleArchitect}
+
+	if entry.IsImplementer() {
+		t.Fatal("IsImplementer() = true, want false — architect archetype is read-only")
+	}
+}

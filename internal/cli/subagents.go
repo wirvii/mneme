@@ -664,6 +664,7 @@ func newSubagentsWriteCmd() *cobra.Command {
 		flagRepoRoot        string
 		flagEngine          string
 		flagAreas           []string
+		flagAreasComplete   bool
 		flagJSON            bool
 	)
 
@@ -767,6 +768,8 @@ already written, the file is rolled back to its exact pre-call state.`,
 				Version:         version,
 				Checksum:        checksum,
 				Areas:           flagAreas,
+				Archetype:       archetype,
+				AreasComplete:   flagAreasComplete,
 				Engine:          engine,
 				GeneratedAt:     time.Now().UTC(),
 				EnforcementHook: flagEnforcementHook,
@@ -793,6 +796,7 @@ already written, the file is rolled back to its exact pre-call state.`,
 	cmd.Flags().StringVar(&flagRepoRoot, "repo-root", "", "Repository root (default: current directory)")
 	cmd.Flags().StringVar(&flagEngine, "engine", "", "Generation engine label recorded in the manifest (e.g. passthrough, cli-claude, cli-codex)")
 	cmd.Flags().StringSliceVar(&flagAreas, "areas", nil, "App/package paths this profile covers")
+	cmd.Flags().BoolVar(&flagAreasComplete, "areas-complete", false, "Certify --areas as an exhaustive list of every path this role may write to (SPEC-086 D5/D11 — never backfill this automatically)")
 	cmd.Flags().BoolVar(&flagJSON, "json", false, "Output as JSON")
 
 	return cmd
