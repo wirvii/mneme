@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -56,7 +57,7 @@ func TestRegenerateManifestEntries_UpgradesStaleEntry(t *testing.T) {
 		Path: path, Version: 1, Checksum: checksumOfSubagentContent(string(oldContent)),
 	}}
 
-	results, updated, changedAny, matched := regenerateManifestEntries(entries, "", false)
+	results, updated, changedAny, matched := regenerateManifestEntries(entries, "", false, dir)
 	if !matched {
 		t.Fatal("matched = false, want true")
 	}
@@ -112,7 +113,7 @@ func TestRegenerateManifestEntries_DryRunNeverWrites(t *testing.T) {
 		Path: path, Version: 1, Checksum: checksumOfSubagentContent(string(before)),
 	}}
 
-	results, updated, changedAny, _ := regenerateManifestEntries(entries, "", true)
+	results, updated, changedAny, _ := regenerateManifestEntries(entries, "", true, dir)
 	if changedAny {
 		t.Error("changedAny = true, want false under --dry-run")
 	}
@@ -146,7 +147,7 @@ func TestRegenerateManifestEntries_RoleFilter(t *testing.T) {
 		{Role: subagents.RoleFrontend, Archetype: subagents.RoleFrontend, Path: frontendPath, Version: 1},
 	}
 
-	results, updated, _, matched := regenerateManifestEntries(entries, "backend", false)
+	results, updated, _, matched := regenerateManifestEntries(entries, "backend", false, dir)
 	if !matched {
 		t.Fatal("matched = false, want true")
 	}
@@ -162,7 +163,7 @@ func TestRegenerateManifestEntries_RoleFilter(t *testing.T) {
 // that matches nothing reports matched=false so the caller can error out.
 func TestRegenerateManifestEntries_UnknownRoleNotMatched(t *testing.T) {
 	entries := []service.ManifestEntry{{Role: subagents.RoleBackend, Path: "/x.md", Version: 1}}
-	_, _, _, matched := regenerateManifestEntries(entries, "nonexistent-role", false)
+	_, _, _, matched := regenerateManifestEntries(entries, "nonexistent-role", false, t.TempDir())
 	if matched {
 		t.Error("matched = true, want false for a role absent from the manifest")
 	}
@@ -179,7 +180,7 @@ func TestRegenerateManifestEntries_RefusesNonMnemeFile(t *testing.T) {
 	}
 
 	entries := []service.ManifestEntry{{Role: subagents.RoleBackend, Archetype: subagents.RoleBackend, Path: path, Version: 1}}
-	results, _, changedAny, _ := regenerateManifestEntries(entries, "", false)
+	results, _, changedAny, _ := regenerateManifestEntries(entries, "", false, dir)
 	if changedAny {
 		t.Error("changedAny = true, want false — the entry errored, nothing to save")
 	}
@@ -193,6 +194,128 @@ func TestRegenerateManifestEntries_RefusesNonMnemeFile(t *testing.T) {
 	}
 	if string(after) != "# Just prose\n" {
 		t.Error("a file that Regenerate refused must never be overwritten")
+	}
+}
+
+// TestRegenerateManifestEntries_NovoFixture_RejectsForeignChateaprov3Path is
+// AC1 and mutation guardian 1 (SPEC-089 Part 1): reproduces novo's real
+// manifest — 4 legitimate in-repo entries plus a 5th (bug-hunter) whose Path
+// points at an absolute location OUTSIDE root, into a REAL sibling tempdir
+// standing in for chateaprov3. Before the D2 confinement, `regen --all`
+// would have written inside that sibling checkout; this test asserts the
+// sibling file is neither created nor modified via os.Stat/os.ReadFile
+// against the actual foreign path, not against a local constant — the
+// antipattern this spec's design explicitly warns against (mem
+// 019f686b).
+func TestRegenerateManifestEntries_NovoFixture_RejectsForeignChateaprov3Path(t *testing.T) {
+	novoRoot := t.TempDir()
+	chateaprov3Root := t.TempDir() // a REAL sibling tempdir, not a mock.
+
+	inRepoRoles := []subagents.Role{subagents.RoleBackend, subagents.RoleFrontend, subagents.RoleArchitect, subagents.RoleQATester}
+	entries := make([]service.ManifestEntry, 0, len(inRepoRoles)+1)
+	for _, role := range inRepoRoles {
+		p := filepath.Join(novoRoot, ".claude", "agents", string(role)+".md")
+		buildStaleAgentProfile(t, p, role)
+		entries = append(entries, service.ManifestEntry{Role: role, Archetype: role, Path: p, Version: 1})
+	}
+
+	// The 5th, corrupted entry: bug-hunter pointing INTO the sibling repo —
+	// the exact shape found in novo's real manifest (BL-111).
+	foreignPath := filepath.Join(chateaprov3Root, ".claude", "agents", "bug-hunter.md")
+	buildStaleAgentProfile(t, foreignPath, subagents.RoleBugHunter)
+	foreignBefore, err := os.ReadFile(foreignPath)
+	if err != nil {
+		t.Fatalf("read foreign fixture: %v", err)
+	}
+	entries = append(entries, service.ManifestEntry{
+		Role: subagents.RoleBugHunter, Archetype: subagents.RoleBugHunter, Path: foreignPath, Version: 1,
+	})
+
+	results, _, _, matched := regenerateManifestEntries(entries, "", false, novoRoot)
+	if !matched {
+		t.Fatal("matched = false, want true")
+	}
+	if len(results) != len(entries) {
+		t.Fatalf("results = %+v, want %d (one per entry)", results, len(entries))
+	}
+
+	last := results[len(results)-1]
+	if last.Role != string(subagents.RoleBugHunter) {
+		t.Fatalf("last result Role = %q, want bug-hunter", last.Role)
+	}
+	if last.Error != regenErrForeignPath {
+		t.Errorf("last result Error = %q, want %q", last.Error, regenErrForeignPath)
+	}
+	for i := 0; i < len(inRepoRoles); i++ {
+		if results[i].Error != "" {
+			t.Errorf("results[%d].Error = %q, want no error for an in-repo entry", i, results[i].Error)
+		}
+	}
+
+	// AC1's load-bearing assertion: os.Stat/os.ReadFile of the ACTUAL
+	// foreign path (the real tempdir sibling), never a mock or constant.
+	info, statErr := os.Stat(foreignPath)
+	if statErr != nil {
+		t.Fatalf("foreign file must still exist on disk: %v", statErr)
+	}
+	if info.IsDir() {
+		t.Fatal("foreign path unexpectedly became a directory")
+	}
+	foreignAfter, err := os.ReadFile(foreignPath)
+	if err != nil {
+		t.Fatalf("re-read foreign file: %v", err)
+	}
+	if string(foreignAfter) != string(foreignBefore) {
+		t.Error("the foreign file in the sibling repo was modified — the confinement guardian failed")
+	}
+}
+
+// TestRegenerateManifestEntries_VentasWpDropiFixture_RejectsAllWindowsPaths
+// is AC2 and mutation guardian 2 (SPEC-089 Part 1): reproduces
+// ventasWpDropi's real manifest — every entry stores a Windows path
+// ("c:\Users\Usuario\Desktop\...") from a Windows machine that is not this
+// one. On a non-Windows GOOS, all four entries must be skipped as foreign
+// with zero os.WriteFile calls (asserted indirectly: no file appears
+// anywhere under root after the call).
+func TestRegenerateManifestEntries_VentasWpDropiFixture_RejectsAllWindowsPaths(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("scoped to non-Windows GOOS — the case that materialized in production (SPEC-089)")
+	}
+	root := t.TempDir()
+
+	roles := []subagents.Role{subagents.RoleBackend, subagents.RoleFrontend, subagents.RoleQATester, subagents.RoleBugHunter}
+	entries := make([]service.ManifestEntry, 0, len(roles))
+	for _, role := range roles {
+		windowsPath := `c:\Users\Usuario\Desktop\ventasWpDropi\.claude\agents\` + string(role) + `.md`
+		entries = append(entries, service.ManifestEntry{Role: role, Archetype: role, Path: windowsPath, Version: 1})
+	}
+
+	results, updated, changedAny, matched := regenerateManifestEntries(entries, "", false, root)
+	if !matched {
+		t.Fatal("matched = false, want true")
+	}
+	if changedAny {
+		t.Error("changedAny = true, want false — every entry was rejected as foreign, nothing written")
+	}
+	if len(results) != len(roles) {
+		t.Fatalf("results = %+v, want %d", results, len(roles))
+	}
+	for i, r := range results {
+		if r.Error != regenErrForeignPath {
+			t.Errorf("results[%d].Error = %q, want %q", i, r.Error, regenErrForeignPath)
+		}
+		if updated[i].Version != 1 {
+			t.Errorf("updated[%d].Version = %d, want unchanged 1 — a foreign entry must never be regenerated", i, updated[i].Version)
+		}
+	}
+
+	// No file must have been written anywhere under root.
+	entriesOnDisk, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatalf("read root: %v", err)
+	}
+	if len(entriesOnDisk) != 0 {
+		t.Errorf("root = %v, want empty — no os.WriteFile must have occurred for any foreign entry", entriesOnDisk)
 	}
 }
 
@@ -245,7 +368,7 @@ func TestSubagentsRegen_EndToEnd(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	stdout, stderr, err := runSubagentsCmd(t, dataDir, "test-regen-e2e", "subagents", "regen", "--all")
+	stdout, stderr, err := runSubagentsCmd(t, dataDir, "test-regen-e2e", "subagents", "regen", "--all", "--repo-root", repoRoot)
 	if err != nil {
 		t.Fatalf("regen --all: %v (stderr=%s)", err, stderr)
 	}

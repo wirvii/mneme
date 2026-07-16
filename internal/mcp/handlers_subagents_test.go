@@ -808,7 +808,7 @@ func mcpMatchingChecksum(string) (string, bool) { return "abc", true }
 // direct, no-I/O coverage of diagnoseManifestEntryMCP.
 func TestDiagnoseManifestEntryMCP_UnknownRole(t *testing.T) {
 	entry := service.ManifestEntry{Role: "totally-custom", Areas: []string{"internal/**"}, AreasComplete: true}
-	findings := diagnoseManifestEntryMCP(entry, mcpAlwaysExists, mcpMatchingChecksum)
+	findings := diagnoseManifestEntryMCP(entry, "/", mcpAlwaysExists, mcpMatchingChecksum)
 
 	found := false
 	for _, f := range findings {
@@ -825,7 +825,7 @@ func TestDiagnoseManifestEntryMCP_UnknownRole(t *testing.T) {
 // two findings every pre-SPEC-086 manifest entry will show.
 func TestDiagnoseManifestEntryMCP_ArchetypeMissingAndNotVerified(t *testing.T) {
 	entry := service.ManifestEntry{Role: subagents.RoleBackend, Areas: []string{"internal/**"}}
-	findings := diagnoseManifestEntryMCP(entry, mcpAlwaysExists, mcpMatchingChecksum)
+	findings := diagnoseManifestEntryMCP(entry, "/", mcpAlwaysExists, mcpMatchingChecksum)
 
 	kinds := map[mcpDoctorFindingKind]bool{}
 	for _, f := range findings {
@@ -848,7 +848,7 @@ func TestDiagnoseManifestEntryMCP_StaleAgentFixed(t *testing.T) {
 		Role: subagents.RoleBackend, Archetype: subagents.RoleBackend,
 		Areas: []string{"internal/**"}, AreasComplete: true, Version: 1,
 	}
-	findings := diagnoseManifestEntryMCP(stale, mcpAlwaysExists, mcpMatchingChecksum)
+	findings := diagnoseManifestEntryMCP(stale, "/", mcpAlwaysExists, mcpMatchingChecksum)
 	found := false
 	for _, f := range findings {
 		if f.Kind == mcpDoctorKindStaleAgentFixed {
@@ -861,11 +861,36 @@ func TestDiagnoseManifestEntryMCP_StaleAgentFixed(t *testing.T) {
 
 	current := stale
 	current.Version = subagents.AgentFixedVersion
-	freshFindings := diagnoseManifestEntryMCP(current, mcpAlwaysExists, mcpMatchingChecksum)
+	freshFindings := diagnoseManifestEntryMCP(current, "/", mcpAlwaysExists, mcpMatchingChecksum)
 	for _, f := range freshFindings {
 		if f.Kind == mcpDoctorKindStaleAgentFixed {
 			t.Errorf("findings = %+v, must NOT flag stale_agent_fixed at the current version", freshFindings)
 		}
+	}
+}
+
+// TestDiagnoseManifestEntryMCP_ForeignPath is AC4's MCP half: mirrors the
+// CLI's TestDiagnoseManifestEntry_ForeignPath — a manifest entry whose Path
+// escapes root is flagged foreign_path, and orphan_path/drift must not also
+// fire (a foreign path is never confined, so those two checks are
+// meaningless — and must never be asked about a path outside root).
+func TestDiagnoseManifestEntryMCP_ForeignPath(t *testing.T) {
+	entry := service.ManifestEntry{
+		Role: subagents.RoleBugHunter, Archetype: subagents.RoleBugHunter,
+		Path:          "/Users/other/chateaprov3/.claude/agents/bug-hunter.md",
+		AreasComplete: true, Areas: []string{"internal/**"},
+	}
+	findings := diagnoseManifestEntryMCP(entry, "/Users/owner/novo", mcpAlwaysExists, mcpMatchingChecksum)
+
+	kinds := map[mcpDoctorFindingKind]bool{}
+	for _, f := range findings {
+		kinds[f.Kind] = true
+	}
+	if !kinds[mcpDoctorKindForeignPath] {
+		t.Errorf("findings = %+v, want foreign_path", findings)
+	}
+	if kinds[mcpDoctorKindOrphanPath] || kinds[mcpDoctorKindDrift] {
+		t.Errorf("findings = %+v, orphan_path/drift must not also fire for a foreign path", findings)
 	}
 }
 
@@ -951,4 +976,3 @@ func TestSubagentManifestList_IncludesDoctorFindings_D4BugCaseVisible(t *testing
 		t.Errorf("legacy-shape unmarshal broken: %+v", legacy)
 	}
 }
-

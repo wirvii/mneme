@@ -55,6 +55,16 @@ const (
 	doctorKindDrift            doctorFindingKind = "drift"
 	doctorKindBareDirOK        doctorFindingKind = "bare_dir_ok"
 	doctorKindStaleAgentFixed  doctorFindingKind = "stale_agent_fixed"
+	// doctorKindForeignPath fires when a manifest entry's Path fails
+	// subagents.ResolveManifestPath against the current project root
+	// (SPEC-089 Part 1): an absolute path from a different repo checkout (the
+	// real novo -> chateaprov3 shape) or a path authored on a different OS
+	// family (the real ventasWpDropi Windows-path shape). Checked BEFORE
+	// orphan_path/drift — a foreign path is never confined, so those two
+	// checks would be meaningless (and could touch a file outside root) for
+	// it. Actionable, but doctor never deletes the entry (purging a foreign
+	// entry is deliberately out of scope — SPEC-089 D2's rejected alternative).
+	doctorKindForeignPath doctorFindingKind = "foreign_path"
 )
 
 // doctorFinding is one diagnostic observation about a single manifest entry.
@@ -72,8 +82,11 @@ func (k doctorFindingKind) actionable() bool {
 
 // diagnoseManifestEntry runs every SPEC-086 D11 check against a single
 // manifest entry. fileExists/actualChecksum are injected so the function is
-// testable without touching the real filesystem.
-func diagnoseManifestEntry(e service.ManifestEntry, fileExists func(string) bool, actualChecksum func(string) (string, bool)) []doctorFinding {
+// testable without touching the real filesystem. root confines e.Path
+// (SPEC-089 Part 1) exactly as regenerateManifestEntries does — the same
+// subagents.ResolveManifestPath call, so doctor's foreign_path finding and
+// regen's skip decision can never disagree.
+func diagnoseManifestEntry(e service.ManifestEntry, root string, fileExists func(string) bool, actualChecksum func(string) (string, bool)) []doctorFinding {
 	var findings []doctorFinding
 	role := string(e.Role)
 	archetype := e.EffectiveArchetype()
@@ -110,7 +123,12 @@ func diagnoseManifestEntry(e service.ManifestEntry, fileExists func(string) bool
 	}
 
 	if e.Path != "" {
-		if !fileExists(e.Path) {
+		if _, _, ok := subagents.ResolveManifestPath(e.Path, root); !ok {
+			findings = append(findings, doctorFinding{
+				Role: role, Kind: doctorKindForeignPath,
+				Detail: fmt.Sprintf("path %q está fuera de la raíz del proyecto o es foráneo-de-otro-SO — `regen` la omite, nunca la toca (SPEC-089)", e.Path),
+			})
+		} else if !fileExists(e.Path) {
 			findings = append(findings, doctorFinding{
 				Role: role, Kind: doctorKindOrphanPath,
 				Detail: fmt.Sprintf("path %q no existe en disco (huérfano)", e.Path),
@@ -198,15 +216,17 @@ func newSubagentsDoctorCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "doctor",
 		Short: "Diagnose the current project's subagent manifest (report-only by default)",
-		Long: `Runs SPEC-086 D11's checks (plus SPEC-087 D7's stale_agent_fixed) against
-every entry in the current project's subagent manifest: an implementer role
-with no declared areas (degenerate), areas_complete absent (not verified),
-archetype absent (backfill available via --fix), an agent-fixed block
-version behind the current AgentFixedVersion (regenerate with
-"mneme subagents regen"), a checksum that no longer matches the file on
-disk (drift), a path that no longer exists (orphan), and a role/archetype
-not recognised by subagents.PermissionTable (unknown — its area is
-unprotected by the hook).
+		Long: `Runs SPEC-086 D11's checks (plus SPEC-087 D7's stale_agent_fixed and
+SPEC-089 Part 1's foreign_path) against every entry in the current project's
+subagent manifest: a Path that resolves outside the project root or looks
+authored on a different OS family (foreign — the entry regen will refuse to
+touch, checked before orphan/drift), an implementer role with no declared
+areas (degenerate), areas_complete absent (not verified), archetype absent
+(backfill available via --fix), an agent-fixed block version behind the
+current AgentFixedVersion (regenerate with "mneme subagents regen"), a
+checksum that no longer matches the file on disk (drift), a path that no
+longer exists (orphan), and a role/archetype not recognised by
+subagents.PermissionTable (unknown — its area is unprotected by the hook).
 
 A bare-directory area (e.g. "apps/web-ui" instead of "apps/web-ui/**") is
 reported as healthy, not rewritten — areaMatches already resolves it.
@@ -214,7 +234,9 @@ reported as healthy, not rewritten — areaMatches already resolves it.
 --fix ONLY backfills the archetype field for entries where Role is one of
 the six built-in archetypes. It NEVER touches areas_complete: that flag
 represents an explicit human answer from the mneme-init grill, and doctor
-must never fabricate the confidence it certifies.`,
+must never fabricate the confidence it certifies. It never removes a
+foreign_path entry either — purging is deliberately out of scope (SPEC-089
+D2), only "mneme subagents regen" skips touching it.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			svc, cleanup, err := initSubagentService()
@@ -239,9 +261,14 @@ must never fabricate the confidence it certifies.`,
 				entries = fixed
 			}
 
+			root, rerr := os.Getwd()
+			if rerr != nil {
+				return fmt.Errorf("subagents doctor: %w", rerr)
+			}
+
 			var all []doctorFinding
 			for _, e := range entries {
-				all = append(all, diagnoseManifestEntry(e, realFileExists, realChecksum)...)
+				all = append(all, diagnoseManifestEntry(e, root, realFileExists, realChecksum)...)
 			}
 			sort.SliceStable(all, func(i, j int) bool {
 				if all[i].Role != all[j].Role {

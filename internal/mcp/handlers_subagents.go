@@ -587,11 +587,20 @@ func (h *handlers) handleSubagentManifestList(ctx context.Context, raw json.RawM
 		}
 	}
 
+	// SPEC-089 Part 1: root confines every entry's Path for the foreign_path
+	// check. subagent_manifest_list takes no repo_root argument (deliberately
+	// no new request field — see the design's "no new public API"), so root
+	// is always the process cwd, mirroring cli's doctor command.
+	root, rpcErr := resolveRepoRoot("")
+	if rpcErr != nil {
+		return nil, rpcErr
+	}
+
 	out := make([]subagentManifestListEntry, 0, len(entries))
 	for _, e := range entries {
 		out = append(out, subagentManifestListEntry{
 			ManifestEntry: e,
-			Findings:      diagnoseManifestEntryMCP(e, mcpRealFileExists, mcpRealChecksum),
+			Findings:      diagnoseManifestEntryMCP(e, root, mcpRealFileExists, mcpRealChecksum),
 		})
 	}
 	return resultFromAny(out)
@@ -661,6 +670,15 @@ const (
 	// D11 expects a repair workflow to actually act on this, per this
 	// file's own package doc comment.
 	mcpDoctorKindStaleAgentFixed mcpDoctorFindingKind = "stale_agent_fixed"
+
+	// mcpDoctorKindForeignPath mirrors cli's doctorKindForeignPath
+	// (SPEC-089 Part 1): a manifest entry's Path fails
+	// subagents.ResolveManifestPath against the current repo root — an
+	// absolute path from a different repo checkout, or one authored on a
+	// different OS family. Checked before orphan_path/drift, since a foreign
+	// path is never confined and those two checks would be meaningless for
+	// it. Actionable, but never removes the entry.
+	mcpDoctorKindForeignPath mcpDoctorFindingKind = "foreign_path"
 )
 
 // mcpDoctorFinding is one diagnostic observation about a single manifest
@@ -675,8 +693,10 @@ type mcpDoctorFinding struct {
 // diagnoseManifestEntryMCP runs the same checks as cli's
 // diagnoseManifestEntry against a single manifest entry. fileExists/
 // actualChecksum are injected so the function is testable without touching
-// the real filesystem.
-func diagnoseManifestEntryMCP(e service.ManifestEntry, fileExists func(string) bool, actualChecksum func(string) (string, bool)) []mcpDoctorFinding {
+// the real filesystem. root confines e.Path (SPEC-089 Part 1) via the same
+// subagents.ResolveManifestPath call regen and cli's doctor use, so this
+// mirror can never disagree with them about what counts as foreign.
+func diagnoseManifestEntryMCP(e service.ManifestEntry, root string, fileExists func(string) bool, actualChecksum func(string) (string, bool)) []mcpDoctorFinding {
 	var findings []mcpDoctorFinding
 	archetype := e.EffectiveArchetype()
 
@@ -712,7 +732,12 @@ func diagnoseManifestEntryMCP(e service.ManifestEntry, fileExists func(string) b
 	}
 
 	if e.Path != "" {
-		if !fileExists(e.Path) {
+		if _, _, ok := subagents.ResolveManifestPath(e.Path, root); !ok {
+			findings = append(findings, mcpDoctorFinding{
+				Kind:   mcpDoctorKindForeignPath,
+				Detail: fmt.Sprintf("path %q está fuera de la raíz del proyecto o es foráneo-de-otro-SO — `regen` la omite, nunca la toca (SPEC-089)", e.Path),
+			})
+		} else if !fileExists(e.Path) {
 			findings = append(findings, mcpDoctorFinding{
 				Kind:   mcpDoctorKindOrphanPath,
 				Detail: fmt.Sprintf("path %q no existe en disco (huérfano)", e.Path),

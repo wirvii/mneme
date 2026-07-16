@@ -26,7 +26,7 @@ func mismatchedChecksum(string) (string, bool) { return "different", true }
 // unprotected.
 func TestDiagnoseManifestEntry_UnknownRole(t *testing.T) {
 	entry := service.ManifestEntry{Role: "totally-custom", Areas: []string{"internal/**"}, AreasComplete: true}
-	findings := diagnoseManifestEntry(entry, alwaysExists, matchingChecksum)
+	findings := diagnoseManifestEntry(entry, "/", alwaysExists, matchingChecksum)
 	if !findingKinds(findings)[doctorKindUnknownRole] {
 		t.Errorf("findings = %+v, want unknown_role", findings)
 	}
@@ -36,7 +36,7 @@ func TestDiagnoseManifestEntry_UnknownRole(t *testing.T) {
 // no declared areas.
 func TestDiagnoseManifestEntry_DegenerateAreas(t *testing.T) {
 	entry := service.ManifestEntry{Role: subagents.RoleBackend, Archetype: subagents.RoleBackend, AreasComplete: true}
-	findings := diagnoseManifestEntry(entry, alwaysExists, matchingChecksum)
+	findings := diagnoseManifestEntry(entry, "/", alwaysExists, matchingChecksum)
 	if !findingKinds(findings)[doctorKindDegenerateAreas] {
 		t.Errorf("findings = %+v, want degenerate_areas", findings)
 	}
@@ -46,7 +46,7 @@ func TestDiagnoseManifestEntry_DegenerateAreas(t *testing.T) {
 // compat findings every pre-SPEC-086 manifest entry will show.
 func TestDiagnoseManifestEntry_ArchetypeMissing_And_NotVerified(t *testing.T) {
 	entry := service.ManifestEntry{Role: subagents.RoleBackend, Areas: []string{"internal/**"}}
-	findings := diagnoseManifestEntry(entry, alwaysExists, matchingChecksum)
+	findings := diagnoseManifestEntry(entry, "/", alwaysExists, matchingChecksum)
 	kinds := findingKinds(findings)
 	if !kinds[doctorKindArchetypeMissing] {
 		t.Error("expected archetype_missing")
@@ -56,9 +56,47 @@ func TestDiagnoseManifestEntry_ArchetypeMissing_And_NotVerified(t *testing.T) {
 	}
 }
 
+// TestDiagnoseManifestEntry_ForeignPath is AC4's CLI half: a manifest entry
+// whose Path escapes the given root — the real novo -> chateaprov3 shape —
+// is flagged foreign_path, and neither orphan_path nor drift also fire for
+// it (a foreign path is never confined, so those two checks would be
+// meaningless — and dangerous, since alwaysExists/matchingChecksum here
+// stand in for a real os.Stat/checksum that must never even be asked about
+// a foreign path in production).
+func TestDiagnoseManifestEntry_ForeignPath(t *testing.T) {
+	entry := service.ManifestEntry{
+		Role: subagents.RoleBugHunter, Archetype: subagents.RoleBugHunter,
+		Path:          "/Users/other/chateaprov3/.claude/agents/bug-hunter.md",
+		AreasComplete: true, Areas: []string{"internal/**"},
+	}
+	findings := diagnoseManifestEntry(entry, "/Users/owner/novo", alwaysExists, matchingChecksum)
+	kinds := findingKinds(findings)
+	if !kinds[doctorKindForeignPath] {
+		t.Errorf("findings = %+v, want foreign_path", findings)
+	}
+	if kinds[doctorKindOrphanPath] || kinds[doctorKindDrift] {
+		t.Errorf("findings = %+v, orphan_path/drift must not also fire for a foreign path", findings)
+	}
+}
+
+// TestDiagnoseManifestEntry_ForeignPath_WindowsDriveLetter is AC2/AC4's CLI
+// half: the exact ventasWpDropi shape must be flagged foreign_path, never
+// silently treated as a relative path.
+func TestDiagnoseManifestEntry_ForeignPath_WindowsDriveLetter(t *testing.T) {
+	entry := service.ManifestEntry{
+		Role: subagents.RoleBackend, Archetype: subagents.RoleBackend,
+		Path:          `c:\Users\Usuario\Desktop\ventasWpDropi\.claude\agents\backend.md`,
+		AreasComplete: true, Areas: []string{"internal/**"},
+	}
+	findings := diagnoseManifestEntry(entry, "/Users/owner/ventasWpDropi", alwaysExists, matchingChecksum)
+	if !findingKinds(findings)[doctorKindForeignPath] {
+		t.Errorf("findings = %+v, want foreign_path", findings)
+	}
+}
+
 func TestDiagnoseManifestEntry_OrphanPath(t *testing.T) {
 	entry := service.ManifestEntry{Role: subagents.RoleBackend, Archetype: subagents.RoleBackend, Path: "/nowhere", AreasComplete: true, Areas: []string{"internal/**"}}
-	findings := diagnoseManifestEntry(entry, neverExists, matchingChecksum)
+	findings := diagnoseManifestEntry(entry, "/", neverExists, matchingChecksum)
 	if !findingKinds(findings)[doctorKindOrphanPath] {
 		t.Errorf("findings = %+v, want orphan_path", findings)
 	}
@@ -69,7 +107,7 @@ func TestDiagnoseManifestEntry_ChecksumDrift(t *testing.T) {
 		Role: subagents.RoleBackend, Archetype: subagents.RoleBackend, Path: "/x.md",
 		Checksum: "abc", AreasComplete: true, Areas: []string{"internal/**"},
 	}
-	findings := diagnoseManifestEntry(entry, alwaysExists, mismatchedChecksum)
+	findings := diagnoseManifestEntry(entry, "/", alwaysExists, mismatchedChecksum)
 	if !findingKinds(findings)[doctorKindDrift] {
 		t.Errorf("findings = %+v, want drift", findings)
 	}
@@ -84,7 +122,7 @@ func TestDiagnoseManifestEntry_BareDirReportedHealthyNotActionable(t *testing.T)
 		Role: subagents.RoleFrontend, Archetype: subagents.RoleFrontend,
 		Areas: []string{"apps/web-ui"}, AreasComplete: true,
 	}
-	findings := diagnoseManifestEntry(entry, alwaysExists, matchingChecksum)
+	findings := diagnoseManifestEntry(entry, "/", alwaysExists, matchingChecksum)
 
 	var bareDir *doctorFinding
 	for i := range findings {
@@ -103,7 +141,7 @@ func TestDiagnoseManifestEntry_BareDirReportedHealthyNotActionable(t *testing.T)
 		Role: subagents.RoleBackend, Archetype: subagents.RoleBackend,
 		Areas: []string{"internal/**"}, AreasComplete: true,
 	}
-	globFindings := diagnoseManifestEntry(globEntry, alwaysExists, matchingChecksum)
+	globFindings := diagnoseManifestEntry(globEntry, "/", alwaysExists, matchingChecksum)
 	if findingKinds(globFindings)[doctorKindBareDirOK] {
 		t.Errorf("findings = %+v, an already-glob area must not be flagged as bare_dir_ok", globFindings)
 	}
@@ -118,14 +156,14 @@ func TestDiagnoseManifestEntry_StaleAgentFixed(t *testing.T) {
 		Role: subagents.RoleBackend, Archetype: subagents.RoleBackend,
 		Areas: []string{"internal/**"}, AreasComplete: true, Version: 1,
 	}
-	findings := diagnoseManifestEntry(stale, alwaysExists, matchingChecksum)
+	findings := diagnoseManifestEntry(stale, "/", alwaysExists, matchingChecksum)
 	if !findingKinds(findings)[doctorKindStaleAgentFixed] {
 		t.Errorf("findings = %+v, want stale_agent_fixed for Version:1", findings)
 	}
 
 	current := stale
 	current.Version = subagents.AgentFixedVersion
-	freshFindings := diagnoseManifestEntry(current, alwaysExists, matchingChecksum)
+	freshFindings := diagnoseManifestEntry(current, "/", alwaysExists, matchingChecksum)
 	if findingKinds(freshFindings)[doctorKindStaleAgentFixed] {
 		t.Errorf("findings = %+v, must NOT flag stale_agent_fixed at the current version", freshFindings)
 	}

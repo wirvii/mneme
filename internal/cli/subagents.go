@@ -891,10 +891,11 @@ type subagentRegenResult struct {
 
 func newSubagentsRegenCmd() *cobra.Command {
 	var (
-		flagRole   string
-		flagAll    bool
-		flagDryRun bool
-		flagJSON   bool
+		flagRole     string
+		flagAll      bool
+		flagDryRun   bool
+		flagJSON     bool
+		flagRepoRoot string
 	)
 
 	cmd := &cobra.Command{
@@ -934,13 +935,22 @@ profile, never overwritten. Exactly one of --role or --all is required.`,
 			}
 			defer cleanup()
 
+			root := flagRepoRoot
+			if root == "" {
+				cwd, cerr := os.Getwd()
+				if cerr != nil {
+					return fmt.Errorf("subagents regen: %w", cerr)
+				}
+				root = cwd
+			}
+
 			ctx := cmd.Context()
 			entries, err := svc.ReadManifest(ctx, flagProject)
 			if err != nil {
 				return fmt.Errorf("subagents regen: %w", err)
 			}
 
-			results, updated, changedAny, matched := regenerateManifestEntries(entries, flagRole, flagDryRun)
+			results, updated, changedAny, matched := regenerateManifestEntries(entries, flagRole, flagDryRun, root)
 			if flagRole != "" && !matched {
 				return fmt.Errorf("subagents regen: role %q not found in manifest", flagRole)
 			}
@@ -963,9 +973,19 @@ profile, never overwritten. Exactly one of --role or --all is required.`,
 	cmd.Flags().BoolVar(&flagAll, "all", false, "Regenerate every profile in the manifest")
 	cmd.Flags().BoolVar(&flagDryRun, "dry-run", false, "Report what would change without writing anything")
 	cmd.Flags().BoolVar(&flagJSON, "json", false, "Output results as JSON")
+	cmd.Flags().StringVar(&flagRepoRoot, "repo-root", "", "Repository root every manifest Path is confined to (default: current directory) — SPEC-089")
 
 	return cmd
 }
+
+// regenErrForeignPath is the error message reported for a manifest entry
+// whose Path resolves outside root (SPEC-089 Part 1). The entry is skipped
+// before any os.ReadFile/os.WriteFile against its stored value — this is the
+// confinement guardian that closes the destructive-write hole (AC1/AC2): the
+// exact defect the --dry-run flag alone used to be the only thing preventing
+// (novo's manifest would otherwise have written inside a sibling
+// chateaprov3 checkout via `regen --all`).
+const regenErrForeignPath = "path fuera de la raíz (foráneo) — omitido"
 
 // regenerateManifestEntries runs internal/subagents.Regenerate over every
 // entry in entries selected by role (all entries when role == ""), writing
@@ -974,13 +994,23 @@ profile, never overwritten. Exactly one of --role or --all is required.`,
 // newSubagentsRegenCmd's RunE so it is directly testable without a cobra
 // command harness.
 //
+// root confines every entry's Path (SPEC-089 D1/D2): before touching disk,
+// each entry's stored Path is resolved via subagents.ResolveManifestPath(e.Path,
+// root). An entry whose Path escapes root — a foreign absolute path from a
+// different repo checkout, or an absolute/relative path authored on a
+// different OS family (see subagents.ResolveManifestPath) — is skipped with
+// regenErrForeignPath and NEVER reaches os.ReadFile or os.WriteFile. This is
+// Part 1 of SPEC-089: it does not yet persist the resolved relSlash form
+// back into the manifest (Part 2's job) — updated[i].Path is left exactly as
+// read for every entry, foreign or not.
+//
 // Returns: results (one per selected entry, in manifest order), updated
 // (the full entries slice with Version/Checksum/GeneratedAt refreshed for
 // every successfully-regenerated entry — ready to pass to SaveManifest
 // verbatim), changedAny (whether any entry's checksum actually changed —
 // callers use this to skip a no-op SaveManifest call), and matched
 // (whether role, when non-empty, matched at least one entry).
-func regenerateManifestEntries(entries []service.ManifestEntry, role string, dryRun bool) (results []subagentRegenResult, updated []service.ManifestEntry, changedAny, matched bool) {
+func regenerateManifestEntries(entries []service.ManifestEntry, role string, dryRun bool, root string) (results []subagentRegenResult, updated []service.ManifestEntry, changedAny, matched bool) {
 	updated = make([]service.ManifestEntry, len(entries))
 	copy(updated, entries)
 
@@ -992,7 +1022,14 @@ func regenerateManifestEntries(entries []service.ManifestEntry, role string, dry
 
 		result := subagentRegenResult{Role: string(e.Role), Path: e.Path, OldVersion: e.Version}
 
-		existing, readErr := os.ReadFile(e.Path)
+		abs, _, ok := subagents.ResolveManifestPath(e.Path, root)
+		if !ok {
+			result.Error = regenErrForeignPath
+			results = append(results, result)
+			continue
+		}
+
+		existing, readErr := os.ReadFile(abs)
 		if readErr != nil {
 			result.Error = readErr.Error()
 			results = append(results, result)
@@ -1012,7 +1049,7 @@ func regenerateManifestEntries(entries []service.ManifestEntry, role string, dry
 		result.Changed = newChecksum != e.Checksum
 
 		if !dryRun {
-			if writeErr := os.WriteFile(e.Path, []byte(regenerated), 0o644); writeErr != nil {
+			if writeErr := os.WriteFile(abs, []byte(regenerated), 0o644); writeErr != nil {
 				result.Error = writeErr.Error()
 				results = append(results, result)
 				continue
