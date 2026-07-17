@@ -3,6 +3,7 @@ package service
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"strings"
 
 	"github.com/wirvii/mneme/internal/model"
@@ -46,6 +47,16 @@ type ProfileService struct {
 	// Default/ResolveActive all return model.ErrProfileServiceNotConfigured
 	// when it is unset — mirrors Activate's mem/sub guard.
 	configPath string
+
+	// defaultFS is the embedded OSS "default profile" (install.DefaultProfileFS,
+	// SPEC-096 §6) — the source Activate reads from for a PinDefault
+	// activation, injected by the frontend so this package never imports
+	// internal/install (preserves the SPEC-092 layering rule). nil until
+	// WithDefaultProfileFS is passed; Activate/DefaultManifest return
+	// model.ErrDefaultProfileUnavailable when a default activation is
+	// attempted without it — should never happen in a real binary, every
+	// production frontend wires it.
+	defaultFS fs.FS
 }
 
 // ProfileOption configures a ProfileService at construction time, mirroring
@@ -86,6 +97,19 @@ func WithProfileSkillsDir(dir string) ProfileOption {
 // that touch the host default need it.
 func WithProfileConfigPath(path string) ProfileOption {
 	return func(s *ProfileService) { s.configPath = path }
+}
+
+// WithDefaultProfileFS wires the embedded OSS default profile into the
+// ProfileService (SPEC-096 §6): the fs.FS Activate reads from when
+// activating the sourceless PinDefault profile (profile.DefaultProfileName)
+// instead of a checkout under the host-level store. Production frontends
+// pass install.DefaultProfileFS() — this package itself never imports
+// internal/install, keeping the cli/mcp -> service -> leaf dependency rule
+// intact. A ProfileService without this wired still activates any
+// store-backed profile unchanged; only a PinDefault activation needs it
+// (model.ErrDefaultProfileUnavailable otherwise).
+func WithDefaultProfileFS(fsys fs.FS) ProfileOption {
+	return func(s *ProfileService) { s.defaultFS = fsys }
 }
 
 // NewProfileService constructs a ProfileService whose store operates on

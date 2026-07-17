@@ -249,3 +249,12 @@ var ErrProfileServiceNotConfigured = errors.New("profile service: memory/subagen
 // the vault, after a profile switch already purged the row. Rejected before
 // the row is touched — silently no-op'ing would hide an operator error.
 var ErrProfileMemoryNotShareable = errors.New("profile-provenance memory cannot be promoted to team-shared")
+
+// ErrDefaultProfileUnavailable is returned by ProfileService.Activate/
+// DefaultManifest when a PinDefault activation is attempted (or the default
+// profile's manifest is requested) but no embedded default profile fs.FS was
+// injected via WithDefaultProfileFS (SPEC-096 §6). This should never happen
+// in a correctly built binary — install.DefaultProfileFS() is always wired
+// by every production frontend — so seeing this in practice points at a
+// ProfileService constructed by hand (e.g. a test) that forgot the option.
+var ErrDefaultProfileUnavailable = errors.New("profile service: default profile fs.FS not configured")

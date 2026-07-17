@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -36,8 +37,20 @@ type ActivationInput struct {
 	RepoRoot string
 
 	// Name is the profile to activate — already resolved by the caller
-	// (§2 never decides which profile to activate, only how).
+	// (§2 never decides which profile to activate, only how). Ignored (and
+	// forced to profile.DefaultProfileName) when Default is true or Name
+	// already equals profile.DefaultProfileName.
 	Name string
+
+	// Default requests activation of the embedded OSS default profile
+	// (SPEC-096 §6) instead of a checkout under the host-level store: contents
+	// are read from svc.defaultFS via profile.LoadContentsFS rather than
+	// profile.LoadContents(store.ProfilePath(Name)). Source/Ref are typically
+	// left empty for a default activation (mirroring Pin.IsDefault()); Commit
+	// carries the caller-built synthetic "bundled:<mneme-version>+<manifest-
+	// version>" marker (SPEC-096 §6 AC9) used by StalenessAgainst to detect a
+	// `mneme upgrade`.
+	Default bool
 
 	// Source is the git remote the profile was cloned from, recorded on the
 	// lock. Empty for mneme's internal default profile.
@@ -49,6 +62,14 @@ type ActivationInput struct {
 	// Commit is the resolved SHA of Ref, recorded on the lock and used by
 	// StalenessAgainst.
 	Commit string
+}
+
+// isDefaultActivation reports whether in requests the embedded OSS default
+// profile — either explicitly (Default) or by naming it directly
+// (profile.DefaultProfileName), so a caller that already resolved the name
+// (e.g. from a Pin) does not also need to set Default.
+func (in ActivationInput) isDefaultActivation() bool {
+	return in.Default || in.Name == profile.DefaultProfileName
 }
 
 // ActivateResult reports what Activate materialized and inserted, for the
@@ -95,24 +116,47 @@ func (s *ProfileService) Activate(ctx context.Context, in ActivationInput) (*Act
 	if in.RepoRoot == "" {
 		return nil, fmt.Errorf("service: profile: activate: repo root is required")
 	}
-	if in.Name == "" {
+
+	isDefault := in.isDefaultActivation()
+	if !isDefault && in.Name == "" {
 		return nil, fmt.Errorf("service: profile: activate: profile name is required")
 	}
 
-	dir, err := s.store.ProfilePath(in.Name)
-	if err != nil {
-		return nil, fmt.Errorf("service: profile: activate: %w", err)
-	}
-	if _, statErr := os.Stat(dir); statErr != nil {
-		if os.IsNotExist(statErr) {
-			return nil, fmt.Errorf("service: profile: activate: %q: %w", in.Name, profile.ErrProfileNotFound)
-		}
-		return nil, fmt.Errorf("service: profile: activate: stat %s: %w", dir, statErr)
-	}
+	profileName := in.Name
+	var contents *profile.Contents
+	var err error
 
-	contents, err := profile.LoadContents(dir)
-	if err != nil {
-		return nil, fmt.Errorf("service: profile: activate: %w", err)
+	if isDefault {
+		// SPEC-096 §6: the embedded OSS default profile is never a checkout
+		// under the host-level store — its source is the fs.FS the frontend
+		// injected via WithDefaultProfileFS, read through the exact same
+		// LoadContentsFS parse path a disk checkout uses (AC2). The pin's own
+		// Name field (if any) is purely informational for a sourceless pin —
+		// the lock/rules/result always use the reserved DefaultProfileName.
+		profileName = profile.DefaultProfileName
+		if s.defaultFS == nil {
+			return nil, fmt.Errorf("service: profile: activate: %w", model.ErrDefaultProfileUnavailable)
+		}
+		contents, err = profile.LoadContentsFS(s.defaultFS)
+		if err != nil {
+			return nil, fmt.Errorf("service: profile: activate: %w", err)
+		}
+	} else {
+		dir, pathErr := s.store.ProfilePath(in.Name)
+		if pathErr != nil {
+			return nil, fmt.Errorf("service: profile: activate: %w", pathErr)
+		}
+		if _, statErr := os.Stat(dir); statErr != nil {
+			if os.IsNotExist(statErr) {
+				return nil, fmt.Errorf("service: profile: activate: %q: %w", in.Name, profile.ErrProfileNotFound)
+			}
+			return nil, fmt.Errorf("service: profile: activate: stat %s: %w", dir, statErr)
+		}
+
+		contents, err = profile.LoadContents(dir)
+		if err != nil {
+			return nil, fmt.Errorf("service: profile: activate: %w", err)
+		}
 	}
 
 	// project="" resolves to s.sub's own MemoryService project slug — the
@@ -146,14 +190,14 @@ func (s *ProfileService) Activate(ctx context.Context, in ActivationInput) (*Act
 		blockPaths = append(blockPaths, blockArtifact.Path)
 	}
 
-	lockRules, ruleIDs, err := s.materializeRules(ctx, contents.Rules, in.Name)
+	lockRules, ruleIDs, err := s.materializeRules(ctx, contents.Rules, profileName)
 	if err != nil {
 		return nil, fmt.Errorf("service: profile: activate: %w", err)
 	}
 
 	lock := profile.Lock{
 		SchemaVersion: profile.LockSchemaVersion,
-		Profile:       in.Name,
+		Profile:       profileName,
 		Source:        in.Source,
 		Ref:           in.Ref,
 		Commit:        in.Commit,
@@ -166,13 +210,32 @@ func (s *ProfileService) Activate(ctx context.Context, in ActivationInput) (*Act
 	}
 
 	return &ActivateResult{
-		Profile:       in.Name,
+		Profile:       profileName,
 		Commit:        in.Commit,
 		Agents:        agentPaths,
 		Skills:        skillNames,
 		Blocks:        blockPaths,
 		RulesInserted: ruleIDs,
 	}, nil
+}
+
+// DefaultManifest reads and parses the embedded OSS default profile's
+// mneme-profile.toml (SPEC-096 §6), letting a caller build the
+// version-locked synthetic commit ("bundled:<mneme-version>+<manifest-
+// version>", AC9) that ActivationInput.Commit expects for a default
+// activation — Activate itself never resolves a version string, mirroring
+// how it never resolves Source/Ref/Commit for any other profile either.
+// Returns model.ErrDefaultProfileUnavailable when no fs.FS was injected via
+// WithDefaultProfileFS.
+func (s *ProfileService) DefaultManifest() (*profile.Manifest, error) {
+	if s.defaultFS == nil {
+		return nil, fmt.Errorf("service: profile: default manifest: %w", model.ErrDefaultProfileUnavailable)
+	}
+	m, err := profile.ParseManifestFS(s.defaultFS)
+	if err != nil {
+		return nil, fmt.Errorf("service: profile: default manifest: %w", err)
+	}
+	return m, nil
 }
 
 // materializeAgents fuses and writes every agent asset via
@@ -209,7 +272,11 @@ func (s *ProfileService) materializeAgents(agents []profile.AgentAsset, repoRoot
 // materializeSkills copies every profile-declared skill directory into
 // s.skillsDir, skipping any whose already-installed SKILL.md has
 // pinned:true — the same pin-respecting semantics install.WriteSkills
-// already establishes for the global installer.
+// already establishes for the global installer. Skill bytes are read through
+// c.FS (fs.WalkDir/fs.ReadFile) rather than the os package directly, so a
+// disk checkout (c.FS == os.DirFS(profileDir)) and the embedded OSS default
+// profile (c.FS == install.DefaultProfileFS(), SPEC-096 §6) share one copy
+// path — the destination on disk is always a real directory either way.
 func (s *ProfileService) materializeSkills(c *profile.Contents) ([]profile.LockArtifact, []string, error) {
 	if len(c.Skills) == 0 {
 		return nil, nil, nil
@@ -230,7 +297,8 @@ func (s *ProfileService) materializeSkills(c *profile.Contents) ([]profile.LockA
 			}
 		}
 
-		if err := copyDir(filepath.Join(c.SkillsDir, name), dest); err != nil {
+		src := path.Join(c.SkillsDir, name)
+		if err := copyFSDir(c.FS, src, dest); err != nil {
 			return nil, nil, fmt.Errorf("copy skill %s: %w", name, err)
 		}
 		artifacts = append(artifacts, profile.LockArtifact{Kind: "skill", Path: dest})
@@ -578,28 +646,33 @@ func ensureLockGitignore(repoRoot string) error {
 	return nil
 }
 
-// copyDir recursively copies every file under src to the same relative
-// location under dst, creating directories as needed. Used to materialize a
-// profile's skills/<name>/ directory into the host-level skills directory.
-func copyDir(src, dst string) error {
-	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
+// copyFSDir recursively copies every file under src (a path within fsys) to
+// the same relative location under dst (a real filesystem directory),
+// creating directories as needed. fsys is either os.DirFS(profileDir) for a
+// store-backed profile or the embedded OSS default profile
+// (install.DefaultProfileFS, SPEC-096 §6) — this is the single copy path
+// shared by both, so a profile's skills/<name>/ directory materializes
+// identically to the host-level skills directory regardless of where its
+// bytes actually live.
+func copyFSDir(fsys fs.FS, src, dst string) error {
+	return fs.WalkDir(fsys, src, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 
-		rel, relErr := filepath.Rel(src, path)
-		if relErr != nil {
-			return fmt.Errorf("copy dir: relative path of %s: %w", path, relErr)
+		rel := strings.TrimPrefix(strings.TrimPrefix(p, src), "/")
+		target := dst
+		if rel != "" {
+			target = filepath.Join(dst, filepath.FromSlash(rel))
 		}
-		target := filepath.Join(dst, rel)
 
 		if d.IsDir() {
 			return os.MkdirAll(target, 0o755)
 		}
 
-		data, readErr := os.ReadFile(path)
+		data, readErr := fs.ReadFile(fsys, p)
 		if readErr != nil {
-			return fmt.Errorf("copy dir: read %s: %w", path, readErr)
+			return fmt.Errorf("copy dir: read %s: %w", p, readErr)
 		}
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 			return fmt.Errorf("copy dir: mkdir %s: %w", filepath.Dir(target), err)

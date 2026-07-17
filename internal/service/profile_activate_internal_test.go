@@ -111,33 +111,35 @@ func TestWriteLock_RenameError(t *testing.T) {
 	}
 }
 
-// TestCopyDir_SourceMissingReturnsErr verifies that copyDir propagates the
-// error filepath.WalkDir reports for a nonexistent source root.
-func TestCopyDir_SourceMissingReturnsErr(t *testing.T) {
-	err := copyDir(filepath.Join(t.TempDir(), "does-not-exist"), t.TempDir())
+// TestCopyFSDir_SourceMissingReturnsErr verifies that copyFSDir propagates
+// the error fs.WalkDir reports for a nonexistent source root.
+func TestCopyFSDir_SourceMissingReturnsErr(t *testing.T) {
+	src := t.TempDir()
+	err := copyFSDir(os.DirFS(src), "does-not-exist", t.TempDir())
 	if err == nil {
 		t.Fatal("expected an error copying a nonexistent source directory")
 	}
 }
 
-// TestCopyDir_ReadFileErrorViaBrokenSymlink verifies that copyDir propagates
-// an os.ReadFile failure for a broken symlink inside the source tree.
-func TestCopyDir_ReadFileErrorViaBrokenSymlink(t *testing.T) {
+// TestCopyFSDir_ReadFileErrorViaBrokenSymlink verifies that copyFSDir
+// propagates an fs.ReadFile failure for a broken symlink inside the source
+// tree.
+func TestCopyFSDir_ReadFileErrorViaBrokenSymlink(t *testing.T) {
 	src := t.TempDir()
 	link := filepath.Join(src, "broken")
 	if err := os.Symlink(filepath.Join(src, "does-not-exist-target"), link); err != nil {
 		t.Fatalf("symlink: %v", err)
 	}
 
-	if err := copyDir(src, t.TempDir()); err == nil {
+	if err := copyFSDir(os.DirFS(src), ".", t.TempDir()); err == nil {
 		t.Fatal("expected an error copying a source directory containing a broken symlink")
 	}
 }
 
-// TestCopyDir_WriteFileError verifies that copyDir propagates an
+// TestCopyFSDir_WriteFileError verifies that copyFSDir propagates an
 // os.WriteFile failure (here: the destination path is pre-occupied by a
 // directory).
-func TestCopyDir_WriteFileError(t *testing.T) {
+func TestCopyFSDir_WriteFileError(t *testing.T) {
 	src := t.TempDir()
 	if err := os.WriteFile(filepath.Join(src, "a.txt"), []byte("hello"), 0o644); err != nil {
 		t.Fatalf("write fixture file: %v", err)
@@ -147,7 +149,7 @@ func TestCopyDir_WriteFileError(t *testing.T) {
 		t.Fatalf("pre-occupy destination with a directory: %v", err)
 	}
 
-	if err := copyDir(src, dst); err == nil {
+	if err := copyFSDir(os.DirFS(src), ".", dst); err == nil {
 		t.Fatal("expected an error writing over a destination path that is a directory")
 	}
 }
