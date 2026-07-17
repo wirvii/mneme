@@ -268,7 +268,7 @@ func (s *ProfileService) materializeRules(ctx context.Context, rules []profile.R
 		return nil, nil, nil
 	}
 
-	source := "profile:" + profileName
+	source := model.ProfileSourcePrefix + profileName
 	lockRules := make([]profile.LockRule, 0, len(rules))
 	ids := make([]string, 0, len(rules))
 	for _, r := range rules {
