@@ -68,6 +68,19 @@ func buildGitEnv(extra []string) []string {
 	return append(env, extra...)
 }
 
+// GitInit runs a plain `git init` in dir (no commit, no remote) — the final
+// step of assembling a new project from a scaffold (SPEC-098 §7a), the same
+// operation profile.Scaffold (§5) performs for a new profile repo. It shares
+// runGit's environment handling so a scaffolded repo is initialized exactly
+// like every other git operation this package spawns. The caller (the author)
+// makes the first commit with their own credentials — mneme never commits.
+func GitInit(dir string) error {
+	if _, err := runGit(dir, nil, "init"); err != nil {
+		return fmt.Errorf("profile: git init: %w", err)
+	}
+	return nil
+}
+
 // currentRef returns a human-readable ref for the git repository at dir:
 // the nearest tag description when one exists, falling back to the full
 // commit SHA. Used by Store.List and Store.Add/Update to report what a
