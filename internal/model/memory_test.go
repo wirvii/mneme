@@ -216,3 +216,39 @@ func TestSeverityValid(t *testing.T) {
 		})
 	}
 }
+
+// TestIsProfileSource covers SPEC-094 §4 AC1: the single predicate the
+// team-memory frontier uses to exclude profile-injected memories from the
+// shared vault. "" (hand-authored, the default) must always be false; only a
+// value carrying the exact ProfileSourcePrefix reports true.
+func TestIsProfileSource(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		source string
+		want   bool
+	}{
+		{"empty hand-authored default", "", false},
+		{"profile with a name", "profile:chatea-pro", true},
+		{"profile prefix with empty name", "profile:", true},
+		{"unrelated type value", "discovery", false},
+		{"unrelated actor value", "user", false},
+		{"partial prefix, not a match", "prof", false},
+		{"prefix as substring, not a prefix", "not-profile:chatea-pro", false},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := IsProfileSource(tc.source); got != tc.want {
+				t.Errorf("IsProfileSource(%q) = %v, want %v", tc.source, got, tc.want)
+			}
+		})
+	}
+
+	if ProfileSourcePrefix != "profile:" {
+		t.Errorf("ProfileSourcePrefix = %q, want %q", ProfileSourcePrefix, "profile:")
+	}
+}

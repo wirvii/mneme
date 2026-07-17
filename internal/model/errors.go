@@ -239,3 +239,14 @@ var ErrInvalidProfile = errors.New("invalid profile manifest or pin")
 // and is unaffected.
 var ErrProfileServiceNotConfigured = errors.New("profile service: memory/subagent seam not configured")
 
+// ErrProfileMemoryNotShareable is returned by Promote (mem_promote / mneme
+// promote) when the target memory carries profile provenance
+// (IsProfileSource(m.Source) — SPEC-094 §4). A profile's rules are
+// derived/regenerable from the profile's own repository (SPEC-092): the
+// team's standard travels through that channel, never through this
+// project's team-memory vault. Promoting one would duplicate the source of
+// truth and let the rule resurrect as a zombie the next time a peer imports
+// the vault, after a profile switch already purged the row. Rejected before
+// the row is touched — silently no-op'ing would hide an operator error.
+var ErrProfileMemoryNotShareable = errors.New("profile-provenance memory cannot be promoted to team-shared")
+

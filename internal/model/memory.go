@@ -4,7 +4,10 @@
 // so keeping it dependency-free ensures clean architecture boundaries.
 package model
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // MemoryType classifies the nature of a memory so retrieval, scoring, and decay
 // can be tuned per category. The type is stored as a string in SQLite so it is
@@ -288,6 +291,28 @@ type Memory struct {
 	// rules are derived/regenerable (re-materialized by re-activating the
 	// profile) and must never be confused with a human's durable knowledge.
 	Source string `json:"source,omitempty"`
+}
+
+// ProfileSourcePrefix marks the provenance of a memory materialized by a
+// profile activation (SPEC-092 §2's SaveProfileRule stamps the full value
+// "profile:<name>"). It is the single string every layer that stamps or
+// reads profile provenance must reference — see IsProfileSource, the one
+// predicate the team-memory frontier (SPEC-094 §4) uses to exclude
+// profile-injected memories from the shared vault, both on write (never
+// materialize) and on read (never resurrect an orphaned note).
+const ProfileSourcePrefix = "profile:"
+
+// IsProfileSource reports whether source was stamped by a profile
+// activation, i.e. it starts with ProfileSourcePrefix. "" — the default for
+// every hand-authored memory and for every memory the public mem_save path
+// creates — always reports false, so hand-authored knowledge is never
+// affected by the guards built on top of this predicate (SPEC-071's
+// share-by-default stays intact). Having a single predicate, rather than an
+// inline strings.HasPrefix at each call site, is what keeps the switch's
+// deletion key (MemoryStore.HardDeleteBySource) and the vault-exclusion
+// guards from drifting apart if the prefix ever changes.
+func IsProfileSource(source string) bool {
+	return strings.HasPrefix(source, ProfileSourcePrefix)
 }
 
 // SaveRequest carries the agent's intent to persist a memory. Title and Content
