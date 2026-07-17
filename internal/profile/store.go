@@ -55,6 +55,17 @@ func (s *Store) profilePath(name string) (string, error) {
 	return filepath.Join(s.profilesDir, name), nil
 }
 
+// ProfilePath returns the absolute path of the profile named name within
+// this store (<profilesDir>/<name>), validating name as a safe-slug. It
+// performs no I/O and does not check whether the profile actually exists —
+// callers that need that also stat the result or call LoadContents against
+// it. Exported so callers outside this package (ProfileService's activation
+// engine, SPEC-092 §2) can resolve a profile's directory without duplicating
+// the safe-slug validation this package already owns.
+func (s *Store) ProfilePath(name string) (string, error) {
+	return s.profilePath(name)
+}
+
 // AddResult reports the outcome of Store.Add.
 type AddResult struct {
 	// Name is the profile's identifier (derived from the manifest when the
