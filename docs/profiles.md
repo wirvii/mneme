@@ -1,14 +1,17 @@
-# Profiles §1–§3: manifest/pin/store, activation, precedence + use/default
+# Profiles §1–§3, §5: manifest/pin/store, activation, precedence + use/default, assisted creation
 
-> SPEC-091 (§1) + SPEC-092 (§2) + SPEC-093 (§3), 3 of 7 specs in the EPIC
-> `profiles`. Design reference: `docs/profiles-design.md` (§1–§7, §9–§11,
-> §16.2–§16.3, decisions #2/#4–#13). This document covers §1 (the foundation:
-> manifest, pin, host-level store, read-only pin resolution), §2 (the
-> activation engine: hybrid materialization, `.mneme/profile.lock`,
-> `source=profile:<name>` provenance, switch), and §3 (precedence, the two
-> write verbs `use`/`default`, and the SessionStart integration). Team-memory
-> exclusion, assisted creation, and scaffolding are later specs (§4–§7); do
-> not expect them here.
+> SPEC-091 (§1) + SPEC-092 (§2) + SPEC-093 (§3) + SPEC-095 (§5), 4 of 7 specs
+> in the EPIC `profiles`. Design reference: `docs/profiles-design.md` (§1–§7,
+> §9–§11, §15.6–§15.7, §16.2–§16.3/§16.5, decisions #2–#13/#18). This document
+> covers §1 (the foundation: manifest, pin, host-level store, read-only pin
+> resolution), §2 (the activation engine: hybrid materialization,
+> `.mneme/profile.lock`, `source=profile:<name>` provenance, switch), §3
+> (precedence, the two write verbs `use`/`default`, and the SessionStart
+> integration), and §5 (assisted creation: the `profile new` scaffolder, the
+> `mneme-profile-author` skill, and `mneme-init`'s profile-detection
+> integration). Team-memory exclusion (§4), the default OSS profile's
+> migration (§6), and project scaffolding (§7) are later specs; do not expect
+> them here.
 
 ## Overview
 
@@ -208,15 +211,16 @@ internal/managedblock (leaf: Upsert/Read/RemoveText/Remove — stdlib only)
   skill copying and the CLAUDE.md block upsert are new, self-contained
   service-layer code (`copyDir`, `managedblock.Upsert`).
 
-## MCP tools (65→69→71)
+## MCP tools (65→69→71→72)
 
 §2 added no new CLI/MCP verbs — `Activate`/`Switch`/`Deactivate`/
 `DetectStaleness`/`ActiveLock` are `ProfileService` methods §3 consumes
 (`use`) or exposes indirectly (SessionStart). §3 adds the two write verbs:
-`profile_use`/`profile_default` (69→71).
+`profile_use`/`profile_default` (69→71). §5 adds one: `profile_new` (71→72).
 
 | Tool | Params | Returns |
 |------|--------|---------|
+| `profile_new` | `{name, dir?}` | `NewProfileResult` (name/path/manifest_path) |
 | `profile_add` | `{source, name?, ref?, force?}` | `AddResult` (name/version/ref/path) |
 | `profile_update` | `{name?, ref?}` | `UpdateResult` (name/old_ref/new_ref/version) |
 | `profile_list` | `{}` | `[]ProfileInfo` |
@@ -626,14 +630,155 @@ When `PinMissing` comes from a host *default* naming an uninstalled profile
 (rather than a repo's own pin), there is no known `Source` to print an exact
 `add` command for — the block instead asks for the git URL explicitly.
 
+## §5: Assisted creation — scaffolder + grill + `mneme-init` integration
+
+§5 is "the other end of the lifecycle" (`docs/profiles-design.md` §15.7): §1–§3
+covered how a profile is *installed*/*activated*/*precedence-resolved*; §5
+covers how one is **created** in the first place, and how an existing repo
+**onboards** to one. Creation is, deliberately, the same "two halves" pattern
+project scaffolding uses (§15.1): a **deterministic command** for structure,
+and an **assisted skill** for content.
+
+### The scaffolder — `mneme profile new <name>`
+
+```bash
+mneme profile new <name> [--dir <path>]
+```
+
+`profile.Scaffold(dest, ScaffoldInput{Name})` (the leaf, reusing
+`Manifest.Validate`'s safe-slug check and `runGit`) creates:
+
+```
+<dest>/
+  mneme-profile.toml        # name=<name>, version="0.1.0" — RenderManifest
+  README.md                 # what this is + next step + how a team consumes it
+  agents/.gitkeep
+  skills/.gitkeep
+  blocks/.gitkeep
+  templates/.gitkeep
+  scaffolds/_blueprints/.gitkeep   # left EMPTY — populated by §7, never here
+  rules.jsonl                # empty file (0 rules)
+  models.toml                # commented stub
+  policy.toml                # commented stub
+```
+
+...then runs `git init` (no commit, no remote — the author commits/pushes
+once they've curated real content). `Scaffold` is a **free function of the
+leaf, not a `Store` method**: it never touches `~/.mneme/profiles/`. That
+frontier matters — `profile new` produces a **source repo** the author
+fills in and pushes; only *then* does a consumer install it via `profile add`
+(§1). `RenderManifest` is the write-path counterpart of `ParseManifest`
+(symmetric to `WritePin`/`PinFromStore`, §3).
+
+`ProfileService.NewProfile(NewProfileInput{Name, Dir})` wraps `Scaffold`:
+`Dir` defaults to `<cwd>/<Name>`; a non-empty destination fails with the same
+`ErrProfileExists` sentinel `Store.Add` uses for an already-installed name
+(translated to `model.ErrProfileExists`); an unsafe-slug `Name` fails via
+`Manifest.Validate` (`model.ErrInvalidProfile`) — both rejections happen
+**before any filesystem write**.
+
+`mneme profile new` (CLI) and `profile_new` (MCP, `{name, dir?}` →
+`NewProfileResult{name, path, manifest_path}`) are thin wiring over this one
+method. MCP parity here is not cosmetic: `profile_new` is the
+**mneme-profile-author skill's own first step**, and skills only ever call
+MCP tools. HTTP gets nothing new (consistent with §1/§2/§3 — this is a
+host-local, developer-session operation).
+
+### The grill — `mneme-profile-author` skill
+
+A sibling of `mneme-init` (not a sub-phase of it — see decision #3 and A3):
+`mneme-init` **onboards a single repo** to consume a profile; this skill
+**authors the profile repo's content**, independent of any one project.
+Embedded at `internal/install/assets/skills/mneme-profile-author/`, picked up
+by `BundledSkillEntries`'s existing `assets/skills` walk with **no new
+wiring** (the precedent SPEC-058 established: dropping a subdirectory is
+enough, `TestBundledSkills_AllLintClean` validates it instantly).
+
+Its workflow: scaffold (`profile_new`) → identity (`mneme-profile.toml`) →
+capa-1 per role (`subagent_compose(archetype=...)`, **always** Go-authored —
+never hand-written `tools:`/`permissionMode:` — written to
+`<profile-repo>/agents/<role>.md` via `Write`) → rules (`rules.jsonl`, one
+`RuleSpec` JSON object per line) → blocks/models/policy/templates → skills →
+close out (the author runs `git add`/`commit`/`tag`/`push` themselves — the
+skill never does this on their behalf). `scaffolds/_blueprints/` is
+explicitly left empty; project scaffolding is a separate, later spec (§7),
+and the skill's own `validation/run.sh` greps for that deferral alongside the
+`profile_new`/`subagent_compose` tool references and the
+Go-authored-capa-1 invariant.
+
+### `mneme-init` integration — profile detection precedes the subagent grill
+
+`mneme-init`'s SKILL.md (now v1.6.0) gained a "Step 0.5 — Profile detection"
+phase, prose-only (no new Go, uses the **existing** `profile_status`/
+`profile_add`/`profile_use` MCP tools from §1/§3), inserted right after the
+core step and before the subagent grill is offered:
+
+- **`PinInstalled`** → tell the user this repo's capa-1 comes from the
+  installed profile; run the grill in **profile-active mode**.
+- **`PinMissing`** → offer the **same gate** the SessionStart integration
+  (§3) already uses: `profile_add <source> --ref <ref>` then
+  `profile_use <name>`, **only on explicit confirmation** — never clones
+  without OK. Declines → grill runs in **vanilla mode** for this session.
+- **`PinDefault`**/**`PinAbsent`** → **vanilla mode**, byte-for-byte
+  identical to pre-§5 behavior (zero regression for repos with no profile).
+
+**Vanilla mode** is unchanged: `subagent_compose` → `subagent_write` per
+role, exactly as before. **Profile-active mode** changes Phase 4 of the
+grill: it authors and **persists** capa-2/3 via `subagent_profile_save`
+(including a `ProjectProfileArea` entry — this role's `areas_layer3_md`
+draft — in `profile_json.areas`), then — critically — **never calls
+`subagent_write`** for that role (doing so would bake a second,
+archetype-generated capa-1 on top of the profile's own, R4/AC7). Instead it
+calls `profile_use <name>` once per session to trigger the **fusion**
+(`ProfileService.Activate` → `fuseAgent`, §2) of the profile's capa-1 with
+the freshly-saved capa-2/3. The areas-completeness question (SPEC-086 D11,
+`areas_complete`) is asked in **both** modes — it feeds the delegation hook's
+containment regardless of which mode wrote the manifest entry.
+
+### `ProjectProfile.Areas` — making capa-3 queryable (§3.6, R2)
+
+Before §5, `ProjectProfile` (the capa-2 typed-memory record, SPEC-052 D4)
+persisted `Repo`/`Org`/`Mapping` — but the capa-3 doctrine
+(`areas_layer3_md` per role) was only ever baked directly into the composed
+`.claude/agents/<role>.md` file `subagents.Compose` produces. That is fine in
+vanilla mode (the composed file IS the artifact), but breaks down in
+profile-active mode: Phase 4 there never calls `subagent_write`, so nothing
+would ever persist the capa-3 draft anywhere `fuseAgent` could read it back.
+
+```go
+type ProjectProfile struct {
+    SchemaVersion int
+    Repo          ProjectProfileRepo
+    Org           string
+    Mapping       []ProjectProfileMapping
+    Areas         []ProjectProfileArea `json:"areas,omitempty"` // NEW (§5)
+}
+
+type ProjectProfileArea struct {
+    Role     subagents.Role `json:"role"`
+    Layer3MD string         `json:"layer3_md"`
+}
+```
+
+`Areas` round-trips through the existing `subagent_profile_save`/
+`subagent_profile_get` typed-memory JSON path — **no SQLite migration**, the
+same self-describing-JSON posture `ProjectProfile.SchemaVersion` already
+documents. A `ProjectProfile` saved before this field existed reads back with
+`Areas == nil` (`json:"omitempty"`, additive) — no reader breaks. This is a
+change to `internal/service` only; it does **not** touch the leaf
+`internal/subagents`' public contract (no new `Compose` mode, no changed
+signature) — see R1/§3.5 in the design memory for why that seam stayed
+untouched: the AUTHORING of a profile's capa-1 (the `mneme-profile-author`
+skill, above) uses `subagent_compose` exactly as it exists today; only the
+**render of the fusion** belongs to §2's `fuseAgent`.
+
 ## Anti-scope (each is a later spec)
 
 | Topic | Spec |
 |-------|------|
 | Enforcing the vault exclusion (forcing `shared=0` in team-memory's own write path) + anti-zombie guard | §4 |
-| Assisted creation (`profile new`) + `mneme-init` integration (capa-2/3 authoring in the grill) | §5 |
 | Migrating the default OSS profile (assets → profile format); real materialization of `PinDefault` | §6 |
-| Scaffolding (`/new-project`, `/new-app`, `scaffolds/`, `_blueprints/`); the pin's `scaffold` field is preserved by `WritePin`, never acted upon | §7 |
+| Scaffolding (`/new-project`, `/new-app`, `scaffolds/`, `_blueprints/`); the pin's `scaffold` field is preserved by `WritePin`, never acted upon; §5 only leaves `scaffolds/_blueprints/` in the skeleton | §7 |
 | Runtime consumption of `models.toml`/`policy.toml`/`templates/` by scoring/lanes/`spec_doc_write` | follow-up |
 
 ## Testing notes
@@ -677,3 +822,15 @@ its own default via `t.Cleanup` to avoid bleeding into unrelated tests in the
 same run; `scripts/testguard.sh` does not need extending for this, since it
 only checks for stray SQLite/profile-store artifacts, not `config.toml`
 contents.
+
+§5's `Scaffold`/`NewProfile` tests inject `dest` via `t.TempDir()` exclusively
+— `Scaffold` never resolves `HOME`, and `git init` (no commit) needs no
+identity, so no test needs `gitident.Reset()` here either (same posture §1
+already established for `Store.Add`'s clones). `TestScaffold_DestinationNotEmpty`
+asserts the destination is untouched beyond the pre-existing fixture file when
+`ErrProfileExists` fires, and `TestScaffold_UnsafeName` asserts the
+destination is never even created for an unsafe-slug `Name` — both guard the
+"validate before any write" ordering AC2 requires. `scripts/testguard.sh`
+needed no changes for §5: a scaffolded profile repo written under `t.TempDir()`
+was never going to land inside the sandboxed test `HOME` in the first place
+(unlike `Store.Add`, `Scaffold` never touches `profilesDir`).
