@@ -28,14 +28,24 @@ if [ -f "$TEST_HOME/.mneme/global.db" ]; then
   leaked+=("$TEST_HOME/.mneme/global.db")
 fi
 
+# SPEC-091 §1 AC13: internal/profile's host-level store
+# (Config.ProfilesDir(), ~/.mneme/profiles) is filesystem, not SQLite — a
+# leak here would not show up in the two checks above. Every test that
+# touches profile.Store/service.ProfileService injects its own t.TempDir()
+# (or an isolated --data-dir), so this directory must never appear inside
+# the sandboxed HOME either.
+if [ -d "$TEST_HOME/.mneme/profiles" ]; then
+  leaked+=("$TEST_HOME/.mneme/profiles")
+fi
+
 if [ "${#leaked[@]}" -gt 0 ]; then
-  echo "testguard: found production-shaped DB file(s) inside the sandboxed test HOME:" >&2
+  echo "testguard: found production-shaped DB file(s)/directory(ies) inside the sandboxed test HOME:" >&2
   for f in "${leaked[@]}"; do
     echo "  $f" >&2
   done
-  echo "testguard: a test resolved the real DB path instead of db.OpenMemory()/t.TempDir()." >&2
+  echo "testguard: a test resolved a real config.Config path (DB or profile store) instead of db.OpenMemory()/t.TempDir()." >&2
   echo "testguard: see the \"Testing\" section of CLAUDE.md and docs/ARCHITECTURE.md." >&2
   exit 1
 fi
 
-echo "testguard: OK — no test wrote to the sandboxed HOME's production DB paths."
+echo "testguard: OK — no test wrote to the sandboxed HOME's production DB/profile-store paths."

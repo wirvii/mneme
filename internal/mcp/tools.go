@@ -1298,6 +1298,73 @@ func allTools() []ToolDefinition {
 				},
 			},
 		},
+		// --- PROFILE TOOLS (SPEC-091 §1) ---
+
+		{
+			Name:        "profile_add",
+			Description: "Clone a profile's git repository into the host-level store (~/.mneme/profiles/<name>/), shared by every project on this host. The name is derived from the profile's mneme-profile.toml manifest unless name is passed explicitly (in which case it must match).",
+			InputSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"source"},
+				"properties": map[string]any{
+					"source": map[string]any{
+						"type":        "string",
+						"description": "Git URL to clone the profile from.",
+					},
+					"name": map[string]any{
+						"type":        "string",
+						"description": "Override the profile name. Must match the manifest's declared name.",
+					},
+					"ref": map[string]any{
+						"type":        "string",
+						"description": "Tag/branch/commit to check out after cloning.",
+					},
+					"force": map[string]any{
+						"type":        "boolean",
+						"description": "Overwrite an existing installation. Default: false.",
+					},
+				},
+			},
+		},
+		{
+			Name:        "profile_update",
+			Description: "Fetch and check out the latest state of an installed profile. When name is omitted, the current repository's pin (.mneme-profile) is resolved and its name (and, absent ref, its ref) is used instead.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"name": map[string]any{
+						"type":        "string",
+						"description": "Profile name in the host-level store. Defaults to the current repo's pinned profile.",
+					},
+					"ref": map[string]any{
+						"type":        "string",
+						"description": "Tag/branch/commit to check out. Defaults to the current repo's pinned ref, or a fast-forward pull of the current branch.",
+					},
+				},
+			},
+		},
+		{
+			Name:        "profile_list",
+			Description: "List profiles installed in the host-level store (~/.mneme/profiles/): name, version, current ref, and path. Directories with an invalid or missing manifest are reported as invalid rather than omitted.",
+			InputSchema: map[string]any{
+				"type":       "object",
+				"properties": map[string]any{},
+			},
+		},
+		{
+			Name:        "profile_status",
+			Description: "Report the pin resolution (.mneme-profile) for the current (or given) repository: installed, missing (needs profile_add), default (mneme's internal profile), or absent (no pin at all). Read-only — never writes anything.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"project_root": map[string]any{
+						"type":        "string",
+						"description": "Absolute path to the repository root. Defaults to current working directory.",
+					},
+				},
+			},
+		},
+
 		{
 			Name:        "init",
 			Description: "Initialise a project with mneme managed blocks and report drift. Applies the global operating manual and a minimal repo block to CLAUDE.md files, then runs the drift detector. Pass check=true for report-only mode (no writes). Returns drift findings and a summary of blocks applied.",

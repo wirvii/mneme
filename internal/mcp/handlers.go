@@ -29,18 +29,25 @@ type handlers struct {
 	skillsSvc   *service.SkillsService     // optional; nil disables skills tools
 	modelsSvc   *service.ModelsService     // optional; nil disables model tools
 	subagentSvc *service.SubagentService   // wraps svc; always available (SPEC-057/SS-4)
+	profileSvc  *service.ProfileService    // wraps cfg.ProfilesDir(); always available (SPEC-091 §1)
 	logger      *slog.Logger
 }
 
 // newHandlers constructs a handlers bound to the given services and logger.
 func newHandlers(svc *service.MemoryService, sdd *service.SDDService, skillsSvc *service.SkillsService, modelsSvc *service.ModelsService, logger *slog.Logger) *handlers {
+	cfg := svc.Config()
 	return &handlers{
 		svc:         svc,
 		sdd:         sdd,
 		skillsSvc:   skillsSvc,
 		modelsSvc:   modelsSvc,
 		subagentSvc: service.NewSubagentService(svc),
-		logger:      logger,
+		// noPrompt=true: MCP is an unattended agent session — a git credential
+		// prompt no human will see must fail fast instead of hanging the
+		// process (R1). The CLI frontend passes false instead (see
+		// internal/cli/profile.go's newProfileSvc).
+		profileSvc: service.NewProfileService(cfg.ProfilesDir(), true),
+		logger:     logger,
 	}
 }
 
@@ -160,6 +167,16 @@ func (h *handlers) handleToolCall(ctx context.Context, params ToolCallParams) (*
 		return h.handleConflictsUnlink(ctx, params.Arguments)
 	case "conflicts_list":
 		return h.handleConflictsList(ctx, params.Arguments)
+
+	// --- PROFILE TOOLS (SPEC-091 §1) ---
+	case "profile_add":
+		return h.handleProfileAdd(ctx, params.Arguments)
+	case "profile_update":
+		return h.handleProfileUpdate(ctx, params.Arguments)
+	case "profile_list":
+		return h.handleProfileList(ctx, params.Arguments)
+	case "profile_status":
+		return h.handleProfileStatus(ctx, params.Arguments)
 
 	// --- CODEGRAPH TOOLS ---
 	case "codegraph_search":
@@ -630,7 +647,8 @@ func (h *handlers) mapServiceError(method string, err error) *JSONRPCError {
 		errors.Is(err, model.ErrBacklogNotFound) ||
 		errors.Is(err, model.ErrSpecNotFound) ||
 		errors.Is(err, model.ErrPushbackNotFound) ||
-		errors.Is(err, model.ErrSkillNotFound) {
+		errors.Is(err, model.ErrSkillNotFound) ||
+		errors.Is(err, model.ErrProfileNotFound) {
 		return &JSONRPCError{
 			Code:    CodeMemoryNotFound,
 			Message: fmt.Sprintf("mcp: handle %s: %s", method, err),
@@ -670,7 +688,10 @@ func (h *handlers) mapServiceError(method string, err error) *JSONRPCError {
 		errors.Is(err, model.ErrUnknownAgent) ||
 		errors.Is(err, model.ErrInvalidModel) ||
 		errors.Is(err, model.ErrInvalidRelation) ||
-		errors.Is(err, model.ErrUnknownSpecDocKind) {
+		errors.Is(err, model.ErrUnknownSpecDocKind) ||
+		errors.Is(err, model.ErrProfileExists) ||
+		errors.Is(err, model.ErrProfileNameMismatch) ||
+		errors.Is(err, model.ErrInvalidProfile) {
 		return &JSONRPCError{
 			Code:    CodeInvalidParams,
 			Message: fmt.Sprintf("mcp: handle %s: %s", method, err),
