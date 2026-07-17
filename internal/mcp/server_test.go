@@ -11,6 +11,7 @@ import (
 	"github.com/wirvii/mneme/internal/config"
 	"github.com/wirvii/mneme/internal/db"
 	"github.com/wirvii/mneme/internal/embed"
+	"github.com/wirvii/mneme/internal/model"
 	"github.com/wirvii/mneme/internal/service"
 	"github.com/wirvii/mneme/internal/store"
 )
@@ -469,6 +470,62 @@ func TestMemPromote_NotFound(t *testing.T) {
 	}
 	if resp.Error.Code != CodeInvalidParams {
 		t.Errorf("error code = %d, want %d (CodeInvalidParams)", resp.Error.Code, CodeInvalidParams)
+	}
+}
+
+// TestMemPromote_ProfileProvenance_RejectedAsInvalidParams is SPEC-094 §4
+// AC4/AC9's MCP surface: promoting a memory with profile provenance must
+// come back as CodeInvalidParams — an operator error, not an internal
+// failure — carrying model.ErrProfileMemoryNotShareable's message. There is
+// no public MCP tool that stamps profile provenance (mem_save's Source field
+// is json:"-"), so this seeds the row directly via the underlying
+// MemoryService.SaveProfileRule, exactly as a real profile activation would
+// (SPEC-092 §2).
+func TestMemPromote_ProfileProvenance_RejectedAsInvalidParams(t *testing.T) {
+	projectDB, err := db.OpenMemory()
+	if err != nil {
+		t.Fatalf("open project db: %v", err)
+	}
+	t.Cleanup(func() { projectDB.Close() })
+	globalDB, err := db.OpenMemory()
+	if err != nil {
+		t.Fatalf("open global db: %v", err)
+	}
+	t.Cleanup(func() { globalDB.Close() })
+
+	svc := service.NewMemoryService(store.NewMemoryStore(projectDB), store.NewMemoryStore(globalDB), config.Default(), "test-project", embed.NopEmbedder{})
+	srv := NewServer(svc, nil, nil, nil, slog.Default(), "all", "test")
+
+	saveResp, err := svc.SaveProfileRule(t.Context(), model.SaveRequest{
+		Title:     "A profile-injected rule",
+		Content:   "Team standard rule.",
+		AppliesTo: []string{"**"},
+	}, "chatea-pro")
+	if err != nil {
+		t.Fatalf("SaveProfileRule: unexpected error: %v", err)
+	}
+
+	resp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name:      "mem_promote",
+		Arguments: mustMarshal(t, map[string]any{"id": saveResp.ID}),
+	})
+
+	if resp.Error == nil {
+		t.Fatal("expected an error response for a profile-provenance memory")
+	}
+	if resp.Error.Code != CodeInvalidParams {
+		t.Errorf("error code = %d, want %d (CodeInvalidParams)", resp.Error.Code, CodeInvalidParams)
+	}
+	if !strings.Contains(resp.Error.Message, "cannot be promoted") {
+		t.Errorf("error message = %q, want it to mention ErrProfileMemoryNotShareable", resp.Error.Message)
+	}
+
+	reloaded, err := svc.Get(t.Context(), saveResp.ID)
+	if err != nil {
+		t.Fatalf("Get after rejected promote: unexpected error: %v", err)
+	}
+	if reloaded.Shared != 0 {
+		t.Errorf("Shared must stay 0 after a rejected promote, got %d", reloaded.Shared)
 	}
 }
 

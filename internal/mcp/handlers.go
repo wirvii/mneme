@@ -592,7 +592,10 @@ func (h *handlers) handleMemForget(ctx context.Context, raw json.RawMessage) (*T
 // must contain an "id" field. Unlike other not-found mappings routed through
 // mapServiceError (CodeMemoryNotFound), an unknown id here is reported as
 // CodeInvalidParams — the caller supplied a bad argument, not a query that
-// legitimately found nothing (SPEC-063 SS-C contract).
+// legitimately found nothing (SPEC-063 SS-C contract). Promoting a memory
+// with profile provenance (model.ErrProfileMemoryNotShareable, SPEC-094 §4)
+// is mapped the same way: it is always an operator error, not an internal
+// failure.
 func (h *handlers) handleMemPromote(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
 	var args struct {
 		ID string `json:"id"`
@@ -612,7 +615,7 @@ func (h *handlers) handleMemPromote(ctx context.Context, raw json.RawMessage) (*
 
 	m, err := h.svc.Promote(ctx, args.ID)
 	if err != nil {
-		if errors.Is(err, model.ErrNotFound) {
+		if errors.Is(err, model.ErrNotFound) || errors.Is(err, model.ErrProfileMemoryNotShareable) {
 			return nil, &JSONRPCError{
 				Code:    CodeInvalidParams,
 				Message: fmt.Sprintf("mcp: handle mem_promote: %s", err),
