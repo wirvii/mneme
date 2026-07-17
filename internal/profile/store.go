@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 )
 
 // ErrProfileExists is returned by Store.Add when the destination
@@ -325,4 +326,92 @@ func (s *Store) List() ([]ProfileInfo, error) {
 
 	sort.Slice(infos, func(i, j int) bool { return infos[i].Name < infos[j].Name })
 	return infos, nil
+}
+
+// PinFromStoreResult is the result of Store.PinFromStore: a self-describing
+// Pin reconstructed from name's current checkout in the store, the resolved
+// HEAD commit SHA (fed into ActivationInput.Commit for §2's lock/staleness
+// tracking), and any non-blocking warnings.
+type PinFromStoreResult struct {
+	// Pin is the reconstructed pin: Name=name, Source=the checkout's
+	// "origin" remote URL (empty when none is configured), Ref=the exact
+	// tag when HEAD sits on one, otherwise the full commit SHA.
+	Pin *Pin
+
+	// Commit is the checkout's current HEAD commit SHA (git rev-parse
+	// HEAD), independent of whether Ref is itself a tag or already a SHA.
+	Commit string
+
+	// Warnings lists non-blocking advisories — e.g. no "origin" remote
+	// configured. The pin is still reconstructed either way, just without a
+	// Source a future teammate could auto-bootstrap the profile from.
+	Warnings []string
+}
+
+// PinFromStore reconstructs a self-describing Pin for the profile named name
+// from its current checkout in the store (SPEC-093 §3.2/AC2): the "use" verb
+// calls this to build the pin it is about to write, without ever cloning —
+// name must already be present in the store (ErrProfileNotFound otherwise;
+// cloning stays the exclusive responsibility of Store.Add, keeping the
+// add/use frontier strict).
+func (s *Store) PinFromStore(name string) (*PinFromStoreResult, error) {
+	dir, err := s.profilePath(name)
+	if err != nil {
+		return nil, fmt.Errorf("profile: store: pin from store: %w", err)
+	}
+	if _, statErr := os.Stat(dir); statErr != nil {
+		if os.IsNotExist(statErr) {
+			return nil, fmt.Errorf("profile: store: pin from store: %q: %w", name, ErrProfileNotFound)
+		}
+		return nil, fmt.Errorf("profile: store: pin from store: stat %s: %w", dir, statErr)
+	}
+
+	var warnings []string
+
+	source, srcErr := runGit(dir, s.GitEnv, "remote", "get-url", "origin")
+	source = strings.TrimSpace(source)
+	if srcErr != nil {
+		source = ""
+		warnings = append(warnings, "sin remote origin; el pin no será auto-bootstrapeable por otro dev")
+	}
+
+	ref, err := exactRefOrSHA(dir, s.GitEnv)
+	if err != nil {
+		return nil, fmt.Errorf("profile: store: pin from store: resolve ref: %w", err)
+	}
+
+	commitOut, err := runGit(dir, s.GitEnv, "rev-parse", "HEAD")
+	if err != nil {
+		return nil, fmt.Errorf("profile: store: pin from store: resolve commit: %w", err)
+	}
+
+	return &PinFromStoreResult{
+		Pin:      &Pin{Name: name, Source: source, Ref: ref},
+		Commit:   strings.TrimSpace(commitOut),
+		Warnings: warnings,
+	}, nil
+}
+
+// HeadCommit returns the full commit SHA (git rev-parse HEAD) of the profile
+// named name's current checkout. Used to populate ActivationInput.Commit
+// when the caller already holds a Pin from ResolvePin/ResolveActive (which
+// carries no Commit field) rather than one just reconstructed by
+// PinFromStore (which resolves the commit as part of the same git
+// round-trip).
+func (s *Store) HeadCommit(name string) (string, error) {
+	dir, err := s.profilePath(name)
+	if err != nil {
+		return "", fmt.Errorf("profile: store: head commit: %w", err)
+	}
+	if _, statErr := os.Stat(dir); statErr != nil {
+		if os.IsNotExist(statErr) {
+			return "", fmt.Errorf("profile: store: head commit: %q: %w", name, ErrProfileNotFound)
+		}
+		return "", fmt.Errorf("profile: store: head commit: stat %s: %w", dir, statErr)
+	}
+	out, err := runGit(dir, s.GitEnv, "rev-parse", "HEAD")
+	if err != nil {
+		return "", fmt.Errorf("profile: store: head commit: %w", err)
+	}
+	return strings.TrimSpace(out), nil
 }

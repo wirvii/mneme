@@ -310,3 +310,181 @@ func TestStore_ProfilePath_RejectsUnsafeNames(t *testing.T) {
 		}
 	}
 }
+
+// TestStore_PinFromStore_TagAndOrigin covers AC2's primary path: HEAD sits
+// on an exact tag and the checkout carries an "origin" remote (git clone
+// sets one automatically) — no network involved, entirely local fixtures.
+func TestStore_PinFromStore_TagAndOrigin(t *testing.T) {
+	source := newFixtureRepo(t, "chatea-pro", "1.0.0")
+	s := NewStore(t.TempDir())
+
+	added, err := s.Add(source, "", "v1", false)
+	if err != nil {
+		t.Fatalf("Add: unexpected error: %v", err)
+	}
+
+	res, err := s.PinFromStore("chatea-pro")
+	if err != nil {
+		t.Fatalf("PinFromStore: unexpected error: %v", err)
+	}
+	if res.Pin.Name != "chatea-pro" {
+		t.Errorf("Pin.Name = %q, want %q", res.Pin.Name, "chatea-pro")
+	}
+	if res.Pin.Source != source {
+		t.Errorf("Pin.Source = %q, want %q (origin remote)", res.Pin.Source, source)
+	}
+	if res.Pin.Ref != "v1" {
+		t.Errorf("Pin.Ref = %q, want %q (exact tag)", res.Pin.Ref, "v1")
+	}
+	wantCommit := strings.TrimSpace(mustRunGit(t, added.Path, "rev-parse", "HEAD"))
+	if res.Commit != wantCommit {
+		t.Errorf("Commit = %q, want %q", res.Commit, wantCommit)
+	}
+	if len(res.Warnings) != 0 {
+		t.Errorf("Warnings = %v, want empty (origin remote is set)", res.Warnings)
+	}
+}
+
+// TestStore_PinFromStore_NoTagFallsBackToSHA covers the non-exact-tag branch
+// of Ref resolution: a fresh commit with no tag on it must resolve to the
+// full commit SHA, not a relative/abbreviated description.
+func TestStore_PinFromStore_NoTagFallsBackToSHA(t *testing.T) {
+	source := newFixtureRepo(t, "chatea-pro", "1.0.0")
+	addFixtureCommit(t, source, "2.0.0", "") // new commit, deliberately untagged
+
+	s := NewStore(t.TempDir())
+	if _, err := s.Add(source, "", "", false); err != nil {
+		t.Fatalf("Add: unexpected error: %v", err)
+	}
+
+	res, err := s.PinFromStore("chatea-pro")
+	if err != nil {
+		t.Fatalf("PinFromStore: unexpected error: %v", err)
+	}
+	wantSHA := strings.TrimSpace(mustRunGit(t, source, "rev-parse", "HEAD"))
+	if res.Pin.Ref != wantSHA {
+		t.Errorf("Pin.Ref = %q, want full SHA %q", res.Pin.Ref, wantSHA)
+	}
+	if res.Commit != wantSHA {
+		t.Errorf("Commit = %q, want %q", res.Commit, wantSHA)
+	}
+}
+
+// TestStore_PinFromStore_NoOriginRemote covers the warning branch: a
+// checkout with no "origin" remote configured must still resolve (Source
+// empty, non-fatal warning), never error out.
+func TestStore_PinFromStore_NoOriginRemote(t *testing.T) {
+	source := newFixtureRepo(t, "chatea-pro", "1.0.0")
+	s := NewStore(t.TempDir())
+
+	added, err := s.Add(source, "", "v1", false)
+	if err != nil {
+		t.Fatalf("Add: unexpected error: %v", err)
+	}
+	mustRunGit(t, added.Path, "remote", "remove", "origin")
+
+	res, err := s.PinFromStore("chatea-pro")
+	if err != nil {
+		t.Fatalf("PinFromStore: unexpected error: %v", err)
+	}
+	if res.Pin.Source != "" {
+		t.Errorf("Pin.Source = %q, want empty (no origin remote)", res.Pin.Source)
+	}
+	if len(res.Warnings) != 1 {
+		t.Errorf("Warnings = %v, want exactly one entry", res.Warnings)
+	}
+}
+
+// TestStore_PinFromStore_NotInstalled covers the ErrProfileNotFound branch —
+// PinFromStore must never clone.
+func TestStore_PinFromStore_NotInstalled(t *testing.T) {
+	s := NewStore(t.TempDir())
+	if _, err := s.PinFromStore("nonexistent"); !errors.Is(err, ErrProfileNotFound) {
+		t.Errorf("PinFromStore: err = %v, want ErrProfileNotFound", err)
+	}
+}
+
+// TestStore_HeadCommit covers the standalone HeadCommit helper the
+// SessionStart integration uses (a Pin from ResolveActive carries no Commit
+// field, unlike one built fresh by PinFromStore).
+func TestStore_HeadCommit(t *testing.T) {
+	source := newFixtureRepo(t, "chatea-pro", "1.0.0")
+	s := NewStore(t.TempDir())
+
+	added, err := s.Add(source, "", "v1", false)
+	if err != nil {
+		t.Fatalf("Add: unexpected error: %v", err)
+	}
+
+	wantSHA := strings.TrimSpace(mustRunGit(t, added.Path, "rev-parse", "HEAD"))
+	commit, err := s.HeadCommit("chatea-pro")
+	if err != nil {
+		t.Fatalf("HeadCommit: unexpected error: %v", err)
+	}
+	if commit != wantSHA {
+		t.Errorf("HeadCommit = %q, want %q", commit, wantSHA)
+	}
+}
+
+// TestStore_HeadCommit_NotInstalled covers the ErrProfileNotFound branch.
+func TestStore_HeadCommit_NotInstalled(t *testing.T) {
+	s := NewStore(t.TempDir())
+	if _, err := s.HeadCommit("nonexistent"); !errors.Is(err, ErrProfileNotFound) {
+		t.Errorf("HeadCommit: err = %v, want ErrProfileNotFound", err)
+	}
+}
+
+// TestStore_PinFromStore_InvalidName covers profilePath's safe-slug guard.
+func TestStore_PinFromStore_InvalidName(t *testing.T) {
+	s := NewStore(t.TempDir())
+	if _, err := s.PinFromStore("../evil"); !errors.Is(err, ErrInvalidPin) {
+		t.Errorf("PinFromStore: err = %v, want ErrInvalidPin", err)
+	}
+}
+
+// TestStore_HeadCommit_InvalidName covers profilePath's safe-slug guard.
+func TestStore_HeadCommit_InvalidName(t *testing.T) {
+	s := NewStore(t.TempDir())
+	if _, err := s.HeadCommit("../evil"); !errors.Is(err, ErrInvalidPin) {
+		t.Errorf("HeadCommit: err = %v, want ErrInvalidPin", err)
+	}
+}
+
+// TestStore_PinFromStore_GitFailure covers the exactRefOrSHA/rev-parse
+// failure branches: a checkout whose .git metadata has been corrupted makes
+// every git subprocess against it fail deterministically.
+func TestStore_PinFromStore_GitFailure(t *testing.T) {
+	source := newFixtureRepo(t, "chatea-pro", "1.0.0")
+	s := NewStore(t.TempDir())
+	added, err := s.Add(source, "", "v1", false)
+	if err != nil {
+		t.Fatalf("Add: unexpected error: %v", err)
+	}
+
+	if err := os.RemoveAll(filepath.Join(added.Path, ".git")); err != nil {
+		t.Fatalf("corrupt .git: %v", err)
+	}
+
+	if _, err := s.PinFromStore("chatea-pro"); err == nil {
+		t.Error("PinFromStore: expected error once .git metadata is gone")
+	}
+}
+
+// TestStore_HeadCommit_GitFailure mirrors TestStore_PinFromStore_GitFailure
+// for the standalone HeadCommit helper.
+func TestStore_HeadCommit_GitFailure(t *testing.T) {
+	source := newFixtureRepo(t, "chatea-pro", "1.0.0")
+	s := NewStore(t.TempDir())
+	added, err := s.Add(source, "", "v1", false)
+	if err != nil {
+		t.Fatalf("Add: unexpected error: %v", err)
+	}
+
+	if err := os.RemoveAll(filepath.Join(added.Path, ".git")); err != nil {
+		t.Fatalf("corrupt .git: %v", err)
+	}
+
+	if _, err := s.HeadCommit("chatea-pro"); err == nil {
+		t.Error("HeadCommit: expected error once .git metadata is gone")
+	}
+}

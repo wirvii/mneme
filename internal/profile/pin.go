@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/pelletier/go-toml/v2"
 )
@@ -93,4 +94,54 @@ func (p *Pin) Warnings() []string {
 		warnings = append(warnings, "ref no pinneado; se usará HEAD del branch por defecto — no reproducible")
 	}
 	return warnings
+}
+
+// WritePin validates pin and writes it atomically (temp file + rename) to
+// <projectRoot>/PinFileName — the write-path counterpart to ParsePinFile/
+// ResolvePin (§1 only read the pin; §3's "profile use" is the first writer,
+// SPEC-093 §3.2/AC1).
+//
+// If a pin already exists at projectRoot and pin.Scaffold is empty, the
+// existing pin's Scaffold field (the /new-project provenance metadata owned
+// by §7) is carried over onto the pin actually written: "use" reconstructs
+// every OTHER field of the pin from the store, but must never silently erase
+// which scaffold generated this project (R5). Any other pre-existing field
+// is replaced outright — WritePin is a pure replacement, never a merge.
+//
+// Validation happens BEFORE anything touches disk: an invalid pin (wrapping
+// ErrInvalidPin) is rejected without writing a temp file at all. The write
+// itself is atomic — a sibling ".tmp" file is written first and only then
+// renamed into place — so a concurrent reader (ParsePinFile/ResolvePin)
+// never observes a partially written pin.
+func WritePin(projectRoot string, pin *Pin) error {
+	if pin == nil {
+		return fmt.Errorf("profile: write pin: pin is required: %w", ErrInvalidPin)
+	}
+
+	toWrite := *pin
+	path := filepath.Join(projectRoot, PinFileName)
+	if toWrite.Scaffold == "" {
+		if existing, err := ParsePinFile(path); err == nil {
+			toWrite.Scaffold = existing.Scaffold
+		}
+	}
+
+	if err := toWrite.Validate(); err != nil {
+		return fmt.Errorf("profile: write pin: %w", err)
+	}
+
+	data, err := toml.Marshal(&toWrite)
+	if err != nil {
+		return fmt.Errorf("profile: write pin: marshal: %w", err)
+	}
+
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return fmt.Errorf("profile: write pin: write temp: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("profile: write pin: rename: %w", err)
+	}
+	return nil
 }

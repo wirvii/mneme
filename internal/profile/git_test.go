@@ -85,3 +85,36 @@ func TestCurrentRef_NotARepo(t *testing.T) {
 		t.Error("currentRef: expected error for a non-repository directory")
 	}
 }
+
+func TestExactRefOrSHA_ExactTag(t *testing.T) {
+	dir := newFixtureRepo(t, "chatea-pro", "1.0.0")
+	mustRunGit(t, dir, "checkout", "-q", "v1")
+
+	ref, err := exactRefOrSHA(dir, nil)
+	if err != nil {
+		t.Fatalf("exactRefOrSHA: unexpected error: %v", err)
+	}
+	if ref != "v1" {
+		t.Errorf("ref = %q, want exact tag %q", ref, "v1")
+	}
+}
+
+func TestExactRefOrSHA_NoTagFallsBackToSHA(t *testing.T) {
+	dir := newFixtureRepo(t, "chatea-pro", "1.0.0")
+	addFixtureCommit(t, dir, "2.0.0", "") // untagged commit past v1
+
+	ref, err := exactRefOrSHA(dir, nil)
+	if err != nil {
+		t.Fatalf("exactRefOrSHA: unexpected error: %v", err)
+	}
+	wantSHA := strings.TrimSpace(mustRunGit(t, dir, "rev-parse", "HEAD"))
+	if ref != wantSHA {
+		t.Errorf("ref = %q, want full SHA %q", ref, wantSHA)
+	}
+}
+
+func TestExactRefOrSHA_NotARepo(t *testing.T) {
+	if _, err := exactRefOrSHA(t.TempDir(), nil); err == nil {
+		t.Error("exactRefOrSHA: expected error for a non-repository directory")
+	}
+}
