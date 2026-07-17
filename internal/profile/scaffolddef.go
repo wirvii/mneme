@@ -132,30 +132,31 @@ type ScaffoldDef struct {
 	Layout Layout `toml:"layout"`
 
 	// Toolchain is the monorepo wiring axis (turborepo | custom); empty for a
-	// single layout.
-	Toolchain Toolchain `toml:"toolchain"`
+	// single layout. omitempty so a rendered single scaffold.toml (SPEC-100 §7c
+	// capture) never emits an empty toolchain that its own validation rejects.
+	Toolchain Toolchain `toml:"toolchain,omitempty"`
 
 	// Bootstrap is the pinned official generator (e.g. "create-turbo@2.3.1")
 	// run before the profile overlay — monorepo/turborepo only. Empty means
 	// "no bootstrap" (single, or a custom shell captured verbatim).
-	Bootstrap string `toml:"bootstrap"`
+	Bootstrap string `toml:"bootstrap,omitempty"`
 
 	// Overlay is the FS-relative subdirectory of team content applied on top
 	// of the bootstrap. Optional; defaults to overlaySubdir when a monorepo
 	// omits it (a §7b concern — §7a's single layout uses skeleton/, not
 	// overlay/).
-	Overlay string `toml:"overlay"`
+	Overlay string `toml:"overlay,omitempty"`
 
 	// Blueprints names the composable apps under _blueprints/ this scaffold
 	// offers (monorepo only; §7b).
-	Blueprints []string `toml:"blueprints"`
+	Blueprints []string `toml:"blueprints,omitempty"`
 
 	// Vars is the substitution-variable table, keyed by variable name.
-	Vars map[string]VarSpec `toml:"vars"`
+	Vars map[string]VarSpec `toml:"vars,omitempty"`
 
 	// Wiring is the custom-toolchain wiring declaration (§7b); nil unless the
 	// scaffold.toml carries a [wiring] table.
-	Wiring *WiringSpec `toml:"wiring"`
+	Wiring *WiringSpec `toml:"wiring,omitempty"`
 }
 
 // ParseScaffold parses raw scaffold.toml bytes into a ScaffoldDef and

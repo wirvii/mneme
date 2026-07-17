@@ -295,3 +295,9 @@ var ErrUnknownWiringAction = errors.New("unknown scaffold wiring action")
 // whose layout has no composable-app notion — today a single layout (SPEC-099
 // §7b). Adding an app to it simply does not apply.
 var ErrAppAddNotApplicable = errors.New("app add does not apply to this scaffold layout")
+
+// ErrNothingToCapture is returned when `mneme scaffold capture <repo>` finds no
+// capturable content in the exemplar repository — an empty directory, or one
+// holding only VCS/dependency noise (.git, node_modules) with no files, apps,
+// or packages worth turning into a scaffold (SPEC-100 §7c).
+var ErrNothingToCapture = errors.New("nothing to capture from the exemplar repository")
