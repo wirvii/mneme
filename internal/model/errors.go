@@ -205,3 +205,29 @@ var ErrCrossStoreRelation = errors.New("cannot relate a global and a project mem
 // filename.
 var ErrUnknownSpecDocKind = errors.New("unknown spec doc kind")
 
+// --- Profile sentinel errors (SPEC-091 §1) ---
+//
+// These mirror the internal/profile leaf's own sentinels (profile.ErrProfileExists,
+// profile.ErrProfileNotFound, profile.ErrProfileNameMismatch,
+// profile.ErrInvalidManifest, profile.ErrInvalidPin) — ProfileService translates
+// between the two so cli/mcp only ever need to import internal/model for
+// errors.Is comparisons, never internal/profile directly (the same posture
+// SkillsService/ConflictsService already establish for their own leaves).
+
+// ErrProfileExists is returned when `profile add` targets a name already
+// present in the host-level store and --force was not passed.
+var ErrProfileExists = errors.New("profile already installed")
+
+// ErrProfileNotFound is returned when `profile update` targets a name that is
+// not present in the host-level store.
+var ErrProfileNotFound = errors.New("profile not installed")
+
+// ErrProfileNameMismatch is returned when `profile add --name X` is given but
+// the cloned repository's manifest declares a different name — the store
+// directory must never disagree with the profile's own declared identity.
+var ErrProfileNameMismatch = errors.New("requested profile name does not match manifest name")
+
+// ErrInvalidProfile is returned when a profile manifest or pin fails
+// required-field or safe-slug validation.
+var ErrInvalidProfile = errors.New("invalid profile manifest or pin")
+

@@ -1202,6 +1202,15 @@ func (c *Config) LogDir() string {
 	return filepath.Join(c.Storage.DataDir, "logs")
 }
 
+// ProfilesDir returns the absolute path to the host-level profile store
+// (~/.mneme/profiles). Each profile is a git checkout under
+// <ProfilesDir>/<name>, shared by every project on the host — see
+// internal/profile (SPEC-091 §1). This is a single method with no backing
+// TOML field or env var, mirroring ProjectDBPath/GlobalDBPath/LogDir.
+func (c *Config) ProfilesDir() string {
+	return filepath.Join(c.Storage.DataDir, "profiles")
+}
+
 // Validate checks that every required field has an acceptable value.
 // It returns the first validation error encountered so the caller can surface
 // a clear message without needing to inspect the full Config struct.

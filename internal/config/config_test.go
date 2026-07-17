@@ -248,6 +248,18 @@ func TestGlobalDBPath(t *testing.T) {
 	}
 }
 
+// TestProfilesDir verifies that the profile store path is a "profiles"
+// sub-directory directly inside DataDir (SPEC-091 §1 AC4) — mirroring
+// GlobalDBPath/LogDir, no new TOML field or env var backs it.
+func TestProfilesDir(t *testing.T) {
+	cfg := Default()
+	got := cfg.ProfilesDir()
+	want := filepath.Join(cfg.Storage.DataDir, "profiles")
+	if got != want {
+		t.Errorf("ProfilesDir() = %q, want %q", got, want)
+	}
+}
+
 // TestValidate covers the validation rules documented on (*Config).Validate.
 func TestValidate(t *testing.T) {
 	tests := []struct {
