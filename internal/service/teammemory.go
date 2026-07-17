@@ -174,6 +174,15 @@ func (svc *MemoryService) bakeTeamMemoryFields(m *model.Memory, reqShared *int) 
 		m.Shared = bakeSharedDefault(m.Type, m.Scope, m.TopicKey)
 	}
 
+	// SPEC-094 §4: a profile's provenance always wins, even over an explicit
+	// reqShared override. The team's standard travels through the profile's
+	// own repository (channel 1, SPEC-092) — never through this project's
+	// team-memory vault (channel 2). Checked last so nothing computed above
+	// can shadow it.
+	if model.IsProfileSource(m.Source) {
+		m.Shared = 0
+	}
+
 	if m.Shared > 0 && m.Author == "" {
 		m.Author = gitident.Author()
 	}
@@ -225,7 +234,9 @@ const sharedTeamCurated = 2
 // behaviour (SPEC-053 D3).
 //
 // Returns model.ErrNotFound when no active memory exists with that id in
-// either store.
+// either store, and model.ErrProfileMemoryNotShareable (SPEC-094 §4) when the
+// memory carries profile provenance (IsProfileSource(m.Source)) — profile
+// rules belong to the profile's own repository, never the team-memory vault.
 func (svc *MemoryService) Promote(ctx context.Context, id string) (*model.Memory, error) {
 	m, targetStore, err := svc.getFromEitherStore(ctx, id)
 	if err != nil {
@@ -233,6 +244,16 @@ func (svc *MemoryService) Promote(ctx context.Context, id string) (*model.Memory
 	}
 	if targetStore == nil {
 		return nil, fmt.Errorf("service: promote: %w", model.ErrNotFound)
+	}
+
+	// SPEC-094 §4: a profile-injected rule is derived/regenerable from the
+	// profile's own repository; promoting it to the team-memory vault would
+	// duplicate the team's standard across two channels and let it
+	// resurrect as a zombie after a profile switch purges the row (SPEC-092).
+	// SetTeamMemoryFields below is the only path that persists shared=2
+	// directly, so the rejection must happen here, before it runs.
+	if model.IsProfileSource(m.Source) {
+		return nil, fmt.Errorf("service: promote: %w", model.ErrProfileMemoryNotShareable)
 	}
 
 	author := m.Author
@@ -269,6 +290,14 @@ func (svc *MemoryService) Promote(ctx context.Context, id string) (*model.Memory
 // caller's Save or Update.
 func (svc *MemoryService) materializeTeamMemory(ctx context.Context, m *model.Memory) {
 	if !svc.teamMemory.Enabled || m == nil || m.Shared <= 0 {
+		return
+	}
+	// SPEC-094 §4: belt-and-braces, independent of Shared. bakeTeamMemoryFields
+	// already forces Shared=0 on the normal Save path; this covers Update,
+	// Promote, and any future caller that reaches this function with
+	// Shared > 0 for a profile-provenance memory some other way — nothing
+	// with profile provenance is ever allowed to touch the vault.Writer.
+	if model.IsProfileSource(m.Source) {
 		return
 	}
 	if materializeSuppressed(ctx) {

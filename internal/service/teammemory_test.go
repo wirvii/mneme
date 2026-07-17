@@ -724,6 +724,116 @@ func TestPromote_PreservesExistingAuthor(t *testing.T) {
 	}
 }
 
+// TestSave_TeamMemoryActive_ProfileProvenanceForcesSharedZero_EvenWithOverride
+// is SPEC-094 §4 AC2: bakeTeamMemoryFields must force Shared=0 for a memory
+// carrying profile provenance, EVEN when the caller passes an explicit
+// reqShared override requesting auto-share. The team's standard travels
+// through the profile's own repository (SPEC-092), never through this
+// project's team-memory vault — no override can flip that.
+func TestSave_TeamMemoryActive_ProfileProvenanceForcesSharedZero_EvenWithOverride(t *testing.T) {
+	svc, repoDir := newRepoTestService(t, true)
+	ctx := context.Background()
+
+	one := 1
+	resp, err := svc.Save(ctx, model.SaveRequest{
+		Title:     "A profile-injected rule",
+		Content:   "Do not commit directly to main.",
+		Type:      model.TypeRule,
+		AppliesTo: []string{"**"},
+		Source:    "profile:chatea-pro",
+		Shared:    &one, // explicit override attempting to force auto-share
+	})
+	if err != nil {
+		t.Fatalf("Save: unexpected error: %v", err)
+	}
+
+	mem, err := svc.Get(ctx, resp.ID)
+	if err != nil {
+		t.Fatalf("Get: unexpected error: %v", err)
+	}
+	if mem.Shared != 0 {
+		t.Errorf("expected Shared=0 for profile-provenance memory even with an explicit override, got %d", mem.Shared)
+	}
+	if mem.Source != "profile:chatea-pro" {
+		t.Errorf("expected Source to round-trip unchanged, got %q", mem.Source)
+	}
+
+	path := sharedVaultFile(repoDir, resp.ID)
+	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+		t.Errorf("a profile-provenance memory must never materialize, but found %s", path)
+	}
+}
+
+// TestSave_TeamMemoryActive_HandAuthoredRuleStillAutoShares is the SPEC-071
+// non-regression control for AC8: a hand-authored rule (Source=="") of an
+// auto-share type still bakes to Shared=1 and materializes normally — §4's
+// guards are no-ops for empty provenance.
+func TestSave_TeamMemoryActive_HandAuthoredRuleStillAutoShares(t *testing.T) {
+	svc, repoDir := newRepoTestService(t, true)
+	ctx := context.Background()
+
+	resp, err := svc.Save(ctx, model.SaveRequest{
+		Title:     "A hand-authored rule",
+		Content:   "Wrap errors with %w.",
+		Type:      model.TypeRule,
+		AppliesTo: []string{"**"},
+	})
+	if err != nil {
+		t.Fatalf("Save: unexpected error: %v", err)
+	}
+
+	mem, err := svc.Get(ctx, resp.ID)
+	if err != nil {
+		t.Fatalf("Get: unexpected error: %v", err)
+	}
+	if mem.Shared != 1 {
+		t.Errorf("expected Shared=1 for a hand-authored rule with team-memory active, got %d", mem.Shared)
+	}
+
+	path := sharedVaultFile(repoDir, resp.ID)
+	if _, statErr := os.Stat(path); statErr != nil {
+		t.Errorf("a hand-authored rule must still materialize (SPEC-071 non-regression): %v", statErr)
+	}
+}
+
+// TestPromote_ProfileProvenance_RejectedBeforeMutation is SPEC-094 §4 AC4: a
+// memory carrying profile provenance must never be promoted to shared=2 —
+// Promote rejects it with model.ErrProfileMemoryNotShareable before touching
+// the row, so neither the database nor the vault ever see it as team-curated.
+func TestPromote_ProfileProvenance_RejectedBeforeMutation(t *testing.T) {
+	svc, repoDir := newRepoTestService(t, true)
+	ctx := context.Background()
+
+	resp, err := svc.Save(ctx, model.SaveRequest{
+		Title:     "A profile-injected rule",
+		Content:   "Team standard, lives in the profile repo.",
+		Type:      model.TypeRule,
+		AppliesTo: []string{"**"},
+		Source:    "profile:chatea-pro",
+	})
+	if err != nil {
+		t.Fatalf("Save: unexpected error: %v", err)
+	}
+
+	_, err = svc.Promote(ctx, resp.ID)
+	if !errors.Is(err, model.ErrProfileMemoryNotShareable) {
+		t.Fatalf("expected model.ErrProfileMemoryNotShareable, got %v", err)
+	}
+
+	reloaded, err := svc.Get(ctx, resp.ID)
+	if err != nil {
+		t.Fatalf("Get after rejected Promote: unexpected error: %v", err)
+	}
+	if reloaded.Shared != 0 {
+		t.Errorf("Shared must stay 0 after a rejected Promote, got %d", reloaded.Shared)
+	}
+
+	path := sharedVaultFile(repoDir, resp.ID)
+	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+		t.Errorf("a rejected Promote must never materialize, but found %s", path)
+	}
+}
+
 // TestUpdate_SuppressedContext_NeverMaterializes mirrors the Save guard test
 // for Update: an already-shared memory re-materializes normally, but not when
 // the call is made under a suppressed context.
