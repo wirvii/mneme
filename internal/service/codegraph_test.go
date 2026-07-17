@@ -231,3 +231,34 @@ func TestCodeGraphService_ResolveSymbol_NotFound(t *testing.T) {
 		t.Error("expected error when resolving nonexistent symbol, got nil")
 	}
 }
+
+// TestLastIndexedSHA_RoundTrip verifies the service passthroughs read and write
+// the last-indexed SHA in the codegraph DB (SPEC-101). A fresh service returns
+// "" until a SHA is stamped.
+func TestLastIndexedSHA_RoundTrip(t *testing.T) {
+	cdb, err := codegraph.OpenDB(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cdb.Close() })
+	svc := NewCodeGraphServiceFromDB(cdb)
+
+	got, err := svc.LastIndexedSHA()
+	if err != nil {
+		t.Fatalf("LastIndexedSHA (fresh): %v", err)
+	}
+	if got != "" {
+		t.Errorf("fresh LastIndexedSHA = %q, want empty", got)
+	}
+
+	if err := svc.SetLastIndexedSHA("cafebabe"); err != nil {
+		t.Fatalf("SetLastIndexedSHA: %v", err)
+	}
+	got, err = svc.LastIndexedSHA()
+	if err != nil {
+		t.Fatalf("LastIndexedSHA (after set): %v", err)
+	}
+	if got != "cafebabe" {
+		t.Errorf("LastIndexedSHA = %q, want cafebabe", got)
+	}
+}

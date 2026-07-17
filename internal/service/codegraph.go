@@ -67,6 +67,23 @@ func (s *CodeGraphService) Index(opts codegraph.IndexOptions) (*codegraph.IndexR
 	return result, nil
 }
 
+// LastIndexedSHA returns the git commit SHA recorded as the last successfully
+// indexed state for this project, or "" when none has been recorded yet (a
+// fresh DB, or one just rebuilt with --force). It is the anchor the CLI git
+// orchestration diffs against HEAD to drive the scoped incremental re-index
+// (SPEC-101).
+func (s *CodeGraphService) LastIndexedSHA() (string, error) {
+	return s.store.GetMetadata(codegraph.MetaKeyLastIndexedSHA)
+}
+
+// SetLastIndexedSHA records sha as the last successfully indexed commit for this
+// project. Callers must only advance it after a successful index run, so a
+// discarded or failed run never moves the anchor past what is actually in the
+// graph (the last_sha invariant that makes coalescing safe).
+func (s *CodeGraphService) SetLastIndexedSHA(sha string) error {
+	return s.store.SetMetadata(codegraph.MetaKeyLastIndexedSHA, sha)
+}
+
 // Search finds symbols by name using FTS5 prefix matching. An empty kinds or
 // languages slice means no filtering on that dimension. limit is clamped to
 // the range [1, 50]; a zero or negative value defaults to 20.
