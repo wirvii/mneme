@@ -145,6 +145,82 @@ func TestLoadContents_NoRulesFile(t *testing.T) {
 	}
 }
 
+// TestLoadContents_DelegatesToLoadContentsFS verifies AC2's single-parse-path
+// guarantee: LoadContents(dir) and LoadContentsFS(os.DirFS(dir)) against the
+// same tree produce field-for-field identical Contents (except FS itself,
+// which is a distinct-but-equivalent os.DirFS(dir) value each call).
+func TestLoadContents_DelegatesToLoadContentsFS(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, agentsSubdir, "backend.md"), "---\nname: backend\n---\nbody")
+	writeFile(t, filepath.Join(dir, skillsSubdir, "new-project", "SKILL.md"), "# skill")
+	writeFile(t, filepath.Join(dir, blocksSubdir, "profile.md"), "## Contexto")
+	writeFile(t, filepath.Join(dir, rulesFileName),
+		`{"title":"No CGO","content":"pure go","applies_to":["**"],"severity":"warn"}`+"\n")
+	writeFile(t, filepath.Join(dir, modelsFileName), "[models]\n")
+
+	viaLoadContents, err := LoadContents(dir)
+	if err != nil {
+		t.Fatalf("LoadContents: %v", err)
+	}
+	viaLoadContentsFS, err := LoadContentsFS(os.DirFS(dir))
+	if err != nil {
+		t.Fatalf("LoadContentsFS: %v", err)
+	}
+
+	if len(viaLoadContents.Agents) != len(viaLoadContentsFS.Agents) ||
+		viaLoadContents.Agents[0].Role != viaLoadContentsFS.Agents[0].Role ||
+		string(viaLoadContents.Agents[0].Content) != string(viaLoadContentsFS.Agents[0].Content) {
+		t.Errorf("Agents diverged: %+v vs %+v", viaLoadContents.Agents, viaLoadContentsFS.Agents)
+	}
+	if len(viaLoadContents.Skills) != 1 || viaLoadContents.Skills[0] != viaLoadContentsFS.Skills[0] {
+		t.Errorf("Skills diverged: %v vs %v", viaLoadContents.Skills, viaLoadContentsFS.Skills)
+	}
+	if viaLoadContents.SkillsDir != viaLoadContentsFS.SkillsDir {
+		t.Errorf("SkillsDir diverged: %q vs %q", viaLoadContents.SkillsDir, viaLoadContentsFS.SkillsDir)
+	}
+	if len(viaLoadContents.Blocks) != 1 || viaLoadContents.Blocks[0].Name != viaLoadContentsFS.Blocks[0].Name {
+		t.Errorf("Blocks diverged: %+v vs %+v", viaLoadContents.Blocks, viaLoadContentsFS.Blocks)
+	}
+	if len(viaLoadContents.Rules) != len(viaLoadContentsFS.Rules) {
+		t.Errorf("Rules diverged: %+v vs %+v", viaLoadContents.Rules, viaLoadContentsFS.Rules)
+	}
+	if viaLoadContents.ModelsPath != viaLoadContentsFS.ModelsPath {
+		t.Errorf("ModelsPath diverged: %q vs %q", viaLoadContents.ModelsPath, viaLoadContentsFS.ModelsPath)
+	}
+	if viaLoadContents.FS == nil || viaLoadContentsFS.FS == nil {
+		t.Error("expected both Contents to carry a non-nil FS")
+	}
+}
+
+// TestDefaultProfileName verifies the reserved constant's exact value, since
+// ProfileService.Activate compares against it by string equality.
+func TestDefaultProfileName(t *testing.T) {
+	if DefaultProfileName != "mneme-default" {
+		t.Errorf("DefaultProfileName = %q, want %q", DefaultProfileName, "mneme-default")
+	}
+}
+
+// TestLoadContentsFS_MinimalProfile verifies that an fs.FS with nothing but
+// the manifest parses to a near-zero-value Contents (FS still set) and no
+// error — the same guarantee LoadContents already gives a disk checkout,
+// now verified directly against the fs.FS entry point the embedded default
+// profile also uses.
+func TestLoadContentsFS_MinimalProfile(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, ManifestFileName), "name=\"minimal\"\nversion=\"1.0.0\"\n")
+
+	c, err := LoadContentsFS(os.DirFS(dir))
+	if err != nil {
+		t.Fatalf("LoadContentsFS: unexpected error: %v", err)
+	}
+	if c.FS == nil {
+		t.Error("expected FS to be set even for a minimal profile")
+	}
+	if len(c.Agents) != 0 || len(c.Skills) != 0 || len(c.Blocks) != 0 || len(c.Rules) != 0 {
+		t.Errorf("expected empty Contents for a minimal profile, got %+v", c)
+	}
+}
+
 func contains(s, sub string) bool {
 	return len(sub) == 0 || (len(s) >= len(sub) && indexOf(s, sub) >= 0)
 }

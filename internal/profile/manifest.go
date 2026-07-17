@@ -3,6 +3,7 @@ package profile
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"strconv"
 	"strings"
@@ -92,6 +93,24 @@ func ParseManifestFile(path string) (*Manifest, error) {
 	m, err := ParseManifest(data)
 	if err != nil {
 		return nil, fmt.Errorf("profile: parse manifest file %s: %w", path, err)
+	}
+	return m, nil
+}
+
+// ParseManifestFS reads ManifestFileName from the root of fsys and parses it
+// as a Manifest — the fs.FS-based counterpart of ParseManifestFile (SPEC-096
+// §6), used to read the embedded OSS default profile's identity (a
+// disk-rooted profile still reads its manifest via ParseManifestFile, called
+// with the real path by profile.Store; fsys-based reading only matters for a
+// filesystem with no meaningful "path" of its own, i.e. an embed.FS).
+func ParseManifestFS(fsys fs.FS) (*Manifest, error) {
+	data, err := fs.ReadFile(fsys, ManifestFileName)
+	if err != nil {
+		return nil, fmt.Errorf("profile: parse manifest fs: read %s: %w", ManifestFileName, err)
+	}
+	m, err := ParseManifest(data)
+	if err != nil {
+		return nil, fmt.Errorf("profile: parse manifest fs: %s: %w", ManifestFileName, err)
 	}
 	return m, nil
 }

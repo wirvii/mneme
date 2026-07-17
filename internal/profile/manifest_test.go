@@ -55,6 +55,32 @@ func TestParseManifestFile_NotFound(t *testing.T) {
 	}
 }
 
+// TestParseManifestFS_ValidManifest verifies that ParseManifestFS reads and
+// parses ManifestFileName from the root of an fs.FS — the accessor
+// DefaultManifest (SPEC-096 §6) uses to read the embedded OSS default
+// profile's identity.
+func TestParseManifestFS_ValidManifest(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir+"/"+ManifestFileName, "name=\"mneme-default\"\nversion=\"1.0.0\"\n")
+
+	m, err := ParseManifestFS(os.DirFS(dir))
+	if err != nil {
+		t.Fatalf("ParseManifestFS: unexpected error: %v", err)
+	}
+	if m.Name != "mneme-default" || m.Version != "1.0.0" {
+		t.Errorf("unexpected manifest fields: %+v", m)
+	}
+}
+
+// TestParseManifestFS_NotFound verifies that ParseManifestFS surfaces the
+// underlying fs.ErrNotExist-wrapped error when the manifest is absent.
+func TestParseManifestFS_NotFound(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := ParseManifestFS(os.DirFS(dir)); err == nil {
+		t.Error("ParseManifestFS: expected error for missing manifest")
+	}
+}
+
 func TestManifest_Validate(t *testing.T) {
 	tests := []struct {
 		name    string
