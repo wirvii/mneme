@@ -115,7 +115,7 @@ func TestFrontmatter_OmitEmpty(t *testing.T) {
 	out := buf.String()
 
 	// Optional fields should be absent.
-	absent := []string{"topic_key:", "project:", "created_by:", "files:", "applies_to:", "severity:", "superseded_by:", "shared:", "author:"}
+	absent := []string{"topic_key:", "project:", "created_by:", "files:", "applies_to:", "severity:", "superseded_by:", "shared:", "author:", "source:"}
 	for _, f := range absent {
 		if strings.Contains(out, f) {
 			t.Errorf("frontmatter should not contain %q for memory with no value\nGot:\n%s", f, out)
@@ -301,6 +301,59 @@ func TestFrontmatter_SharedAuthor_RoundTrip(t *testing.T) {
 // test's string-building.
 func itoa(n int) string {
 	return fmt.Sprintf("%d", n)
+}
+
+// TestFrontmatter_Source_RoundTrip is SPEC-094 §4 AC5: source round-trips
+// through FromMemory -> WriteTo -> parseFrontmatter, and source=="" produces
+// output byte-identical to before this field existed (no churn on existing
+// notes).
+func TestFrontmatter_Source_RoundTrip(t *testing.T) {
+	cases := []struct {
+		name     string
+		source   string
+		wantOmit bool
+	}{
+		{name: "empty source omitted (hand-authored)", source: "", wantOmit: true},
+		{name: "profile source present", source: "profile:chatea-pro", wantOmit: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := &model.Memory{
+				ID:        "019ddc45-0000-0000-0000-000000000020",
+				Type:      model.TypeRule,
+				Scope:     model.ScopeProject,
+				Title:     "A rule",
+				CreatedAt: mustParseTime("2026-01-01T00:00:00Z"),
+				UpdatedAt: mustParseTime("2026-01-01T00:00:00Z"),
+				AppliesTo: []string{"**"},
+				Severity:  model.SeverityWarn,
+				Source:    tc.source,
+			}
+
+			fm := FromMemory(m)
+			var buf bytes.Buffer
+			if _, err := fm.WriteTo(&buf); err != nil {
+				t.Fatalf("WriteTo returned error: %v", err)
+			}
+			out := buf.String()
+
+			if tc.wantOmit && strings.Contains(out, "source:") {
+				t.Errorf("source=\"\" should be omitted from frontmatter\nGot:\n%s", out)
+			}
+			if !tc.wantOmit && !strings.Contains(out, "source: "+tc.source) {
+				t.Errorf("expected source: %s in frontmatter\nGot:\n%s", tc.source, out)
+			}
+
+			parsed, _, err := parseFrontmatter(buf.Bytes())
+			if err != nil {
+				t.Fatalf("parseFrontmatter returned error: %v", err)
+			}
+			if parsed.Source != tc.source {
+				t.Errorf("round-trip Source: got %q, want %q", parsed.Source, tc.source)
+			}
+		})
+	}
 }
 
 func TestFrontmatter_SupersededBy(t *testing.T) {

@@ -18,7 +18,7 @@ import (
 //   - id, type, scope, title, importance, confidence, decay_rate,
 //     created_at, updated_at, revision_count — always present.
 //   - topic_key, project, created_by, files, applies_to, severity,
-//     superseded_by, shared, author — present only when non-empty
+//     superseded_by, shared, author, source — present only when non-empty
 //     (shared is additionally omitted when it is the default/local value 0,
 //     per SPEC-053 D2/D7 so peers without team-memory never see the field).
 //
@@ -43,6 +43,15 @@ type Frontmatter struct {
 	SupersededBy  string   `yaml:"superseded_by,omitempty"`
 	Shared        int      `yaml:"shared,omitempty"`
 	Author        string   `yaml:"author,omitempty"`
+
+	// Source round-trips model.Memory.Source — the profile-provenance stamp
+	// (SPEC-092), formatted "profile:<name>". Empty for hand-authored
+	// memories. In a post-SPEC-094 repo the team-memory writer never emits a
+	// non-empty Source (the write guard blocks it before materialization), so
+	// this field is written purely for round-trip symmetry with the vault
+	// reader/personal-vault export path; it is read by the team-memory
+	// import guard (importSharedNote) to skip orphaned profile notes.
+	Source string `yaml:"source,omitempty"`
 }
 
 // FromMemory builds a Frontmatter from m, applying the inclusion rules from
@@ -94,6 +103,9 @@ func FromMemory(m *model.Memory) Frontmatter {
 	}
 	if m.Author != "" {
 		fm.Author = m.Author
+	}
+	if m.Source != "" {
+		fm.Source = m.Source
 	}
 
 	return fm
@@ -215,6 +227,12 @@ func (fm Frontmatter) WriteTo(w io.Writer) (int64, error) {
 	if fm.Author != "" {
 		if err := write("author: %s\n", fm.Author); err != nil {
 			return total, fmt.Errorf("vault: frontmatter: write author: %w", err)
+		}
+	}
+
+	if fm.Source != "" {
+		if err := write("source: %s\n", fm.Source); err != nil {
+			return total, fmt.Errorf("vault: frontmatter: write source: %w", err)
 		}
 	}
 

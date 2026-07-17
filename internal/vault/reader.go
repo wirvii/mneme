@@ -196,6 +196,8 @@ func parseFrontmatter(data []byte) (Frontmatter, int, error) {
 			fm.Shared = parseIntField(value)
 		case "author":
 			fm.Author = value
+		case "source":
+			fm.Source = value
 		case "files":
 			currentList = &fm.Files
 		case "applies_to":
