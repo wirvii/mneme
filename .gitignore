@@ -43,3 +43,8 @@ tmp/
 # .mneme/shared/ (team-memory vault, SPEC-053) must stay trackable, and the
 # .mneme-profile pin lives at the repo root, outside .mneme/ entirely.
 .mneme/profile.lock
+
+# .claude/ is now tracked (subagent profiles + shared settings) so `git stash -u`
+# and teammates keep the delegation setup. Machine-local pieces stay ignored:
+.claude/settings.local.json
+.claude/tmp/
