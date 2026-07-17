@@ -23,6 +23,8 @@ const (
 	scaffoldFileName = "scaffold.toml"
 	skeletonSubdir   = "skeleton"
 	overlaySubdir    = "overlay"
+	shellSubdir      = "shell"
+	blueprintsSubdir = "_blueprints"
 )
 
 // Layout is the assembly mode a scaffold declares (docs/profiles-design.md
@@ -212,6 +214,17 @@ func (s ScaffoldDef) validate() error {
 			return fmt.Errorf("profile: scaffold: single layout must not declare blueprints: %w", ErrInvalidScaffold)
 		case s.Wiring != nil:
 			return fmt.Errorf("profile: scaffold: single layout must not declare a [wiring] table: %w", ErrInvalidScaffold)
+		}
+	}
+
+	// Fail-fast on an unknown wiring verb at PARSE time, never at wiring
+	// runtime (SPEC-099 §7b AC9, the closed-vocabulary invariant): a custom
+	// toolchain's on_add list may only use workspace:/json-merge:/copy:.
+	if s.Wiring != nil {
+		for _, raw := range s.Wiring.OnAdd {
+			if _, err := parseWiringAction(raw); err != nil {
+				return err
+			}
 		}
 	}
 
