@@ -21,20 +21,20 @@ import (
 // they would be skipped even without the explicit map lookup. The only entry
 // here that is NOT covered by the hidden-dir skip is "coverage".
 var ignoredDirs = map[string]struct{}{
-	".git":        {},
-	"vendor":      {},
+	".git":         {},
+	"vendor":       {},
 	"node_modules": {},
-	"dist":        {},
-	"build":       {},
-	".codegraph":  {},
-	"testdata":    {},
+	"dist":         {},
+	"build":        {},
+	".codegraph":   {},
+	"testdata":     {},
 	// Framework/toolchain build and cache directories — inequivocally generated.
-	".next":        {}, // Next.js build output
-	".turbo":       {}, // Turborepo cache
-	".svelte-kit":  {}, // SvelteKit build output
-	".nuxt":        {}, // Nuxt build output
-	".cache":       {}, // generic tool cache (Babel, ESLint, Parcel, etc.)
-	"coverage":     {}, // test coverage output (not hidden; needs explicit entry)
+	".next":       {}, // Next.js build output
+	".turbo":      {}, // Turborepo cache
+	".svelte-kit": {}, // SvelteKit build output
+	".nuxt":       {}, // Nuxt build output
+	".cache":      {}, // generic tool cache (Babel, ESLint, Parcel, etc.)
+	"coverage":    {}, // test coverage output (not hidden; needs explicit entry)
 }
 
 // maxFileSize is the upper bound on file size the indexer will attempt to
@@ -68,6 +68,14 @@ type IndexOptions struct {
 
 	// DryRun reports what would be indexed without writing to the store.
 	DryRun bool
+
+	// Changes, when non-nil, activates scoped mode (SPEC-101): the indexer does
+	// NOT walk RootDir and instead processes exactly this list of changed files
+	// (added/modified → extract, deleted → purge, renamed → purge old + extract
+	// new). A nil slice (the default) preserves the full walk-the-tree behaviour
+	// byte-for-byte. Force takes precedence: when Force is true the indexer does a
+	// full scan even if Changes is set.
+	Changes []ChangedFile
 }
 
 // Indexer orchestrates the extraction of code symbols from a directory tree
@@ -96,6 +104,13 @@ func NewIndexer(store *Store) *Indexer {
 // an empty-but-"successful" index. That case aborts the walk and Index
 // returns the error instead.
 func (ix *Indexer) Index(opts IndexOptions) (*IndexResult, error) {
+	// Scoped mode (SPEC-101): a non-nil Changes list means the caller already
+	// computed the delta (e.g. from a git diff), so skip the tree walk entirely.
+	// Force overrides scoped mode and forces a full scan.
+	if opts.Changes != nil && !opts.Force {
+		return ix.indexScoped(opts)
+	}
+
 	start := time.Now()
 	result := &IndexResult{}
 
@@ -125,26 +140,21 @@ func (ix *Indexer) Index(opts IndexOptions) (*IndexResult, error) {
 			return nil
 		}
 
-		// Hidden files and Go-convention files that start with '_' are skipped.
-		base := d.Name()
-		if strings.HasPrefix(base, ".") || strings.HasPrefix(base, "_") {
-			return nil
-		}
-
-		ext := filepath.Ext(base)
-		lang, supported := supportedExtensions[ext]
-		if !supported {
-			return nil
-		}
-		if opts.Language != "" {
-			lang = opts.Language
-		}
-
 		// Compute path relative to RootDir. All store operations use relative paths
 		// so that the index is portable across machines.
 		relPath, err := filepath.Rel(opts.RootDir, path)
 		if err != nil {
 			return nil
+		}
+
+		// Eligibility is decided by the shared predicate so the full walk and the
+		// scoped path agree exactly on what counts as an indexable source file.
+		lang, ok := isEligibleSource(relPath)
+		if !ok {
+			return nil
+		}
+		if opts.Language != "" {
+			lang = opts.Language
 		}
 
 		result.FilesScanned++
@@ -176,6 +186,136 @@ func (ix *Indexer) Index(opts IndexOptions) (*IndexResult, error) {
 
 	result.DurationMs = time.Since(start).Milliseconds()
 	return result, nil
+}
+
+// isEligibleSource reports whether the file at relPath (a path relative to the
+// index root) is one the indexer should process, and if so its detected
+// language. It is the single source of truth shared by the full walk and the
+// scoped path (SPEC-101), so both agree exactly on what is indexable:
+//
+//   - no path component may be a hidden directory (leading ".") or one of the
+//     ignoredDirs (vendor, node_modules, build caches, …);
+//   - the base name must not start with "." (hidden) or "_" (Go-convention
+//     ignored file);
+//   - the extension must map to a supported language.
+//
+// The directory-component check mirrors the SkipDir logic in Index's WalkDir
+// callback; in the walk it is redundant (ignored dirs are pruned before their
+// files are visited) but harmless, and it is essential in scoped mode where
+// there is no walk to prune anything.
+func isEligibleSource(relPath string) (lang string, ok bool) {
+	slashed := filepath.ToSlash(relPath)
+	parts := strings.Split(slashed, "/")
+	for _, dir := range parts[:len(parts)-1] {
+		if dir == "" || dir == "." {
+			continue
+		}
+		if strings.HasPrefix(dir, ".") {
+			return "", false
+		}
+		if _, skip := ignoredDirs[dir]; skip {
+			return "", false
+		}
+	}
+
+	base := parts[len(parts)-1]
+	if strings.HasPrefix(base, ".") || strings.HasPrefix(base, "_") {
+		return "", false
+	}
+
+	lang, ok = supportedExtensions[filepath.Ext(base)]
+	if !ok {
+		return "", false
+	}
+	return lang, true
+}
+
+// indexScoped processes a pre-computed list of changed files (opts.Changes)
+// without walking the tree (SPEC-101). Added/modified files are extracted via
+// the same indexFile path used by the full scan (idempotent: it deletes stale
+// nodes then re-inserts); deleted files have their symbols purged; renamed files
+// have the old path purged and the new path extracted.
+//
+// It deliberately does NOT call pruneDeleted — that is full-scan-only detection
+// (it would wipe every file absent from the small change set). In scoped mode
+// deletions are explicit, carried by ChangeDeleted / ChangeRenamed entries.
+func (ix *Indexer) indexScoped(opts IndexOptions) (*IndexResult, error) {
+	start := time.Now()
+	result := &IndexResult{}
+
+	for _, ch := range opts.Changes {
+		switch ch.Status {
+		case ChangeDeleted:
+			// A delete purges unconditionally: DeleteNodesByFile/DeleteFile are
+			// no-ops when the path was never indexed or was ineligible.
+			if err := ix.purgeFile(ch.Path, opts, result); err != nil {
+				return nil, err
+			}
+
+		case ChangeRenamed:
+			// Purge the old path, then re-extract the new path if it is eligible.
+			if err := ix.purgeFile(ch.OldPath, opts, result); err != nil {
+				return nil, err
+			}
+			if err := ix.indexScopedFile(ch.Path, opts, result); err != nil {
+				return nil, err
+			}
+
+		default:
+			// ChangeAdded / ChangeModified.
+			if err := ix.indexScopedFile(ch.Path, opts, result); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	result.DurationMs = time.Since(start).Milliseconds()
+	return result, nil
+}
+
+// indexScopedFile extracts a single changed file if it is eligible, reusing the
+// full-scan indexFile so the two paths stay behaviourally identical (incremental
+// content-hash skip included). Ineligible paths (unsupported extension, ignored
+// directory) are silently ignored — they are simply not part of the graph. The
+// systemic ErrExtractorIncompatible aborts scoped mode just as it aborts the
+// walk; any other per-file error is recorded and processing continues.
+func (ix *Indexer) indexScopedFile(relPath string, opts IndexOptions, result *IndexResult) error {
+	lang, ok := isEligibleSource(relPath)
+	if !ok {
+		return nil
+	}
+	if opts.Language != "" {
+		lang = opts.Language
+	}
+
+	result.FilesScanned++
+	if err := ix.indexFile(filepath.Join(opts.RootDir, relPath), relPath, lang, opts, result); err != nil {
+		if errors.Is(err, ErrExtractorIncompatible) {
+			return err
+		}
+		result.FilesErrored++
+	}
+	return nil
+}
+
+// purgeFile removes a file's symbols from the graph (deleted or renamed-away
+// path). DeleteNodesByFile cascades to edges and unresolved_refs; DeleteFile
+// drops the file record. Both are idempotent no-ops when the path is absent, so
+// purging an ineligible or never-indexed path is safe. In DryRun mode nothing is
+// written; the counter is still bumped so callers can see what would happen.
+func (ix *Indexer) purgeFile(relPath string, opts IndexOptions, result *IndexResult) error {
+	if opts.DryRun {
+		result.FilesDeleted++
+		return nil
+	}
+	if _, err := ix.store.DeleteNodesByFile(relPath); err != nil {
+		return fmt.Errorf("codegraph: indexer: scoped delete nodes for %s: %w", relPath, err)
+	}
+	if err := ix.store.DeleteFile(relPath); err != nil {
+		return fmt.Errorf("codegraph: indexer: scoped delete file record %s: %w", relPath, err)
+	}
+	result.FilesDeleted++
+	return nil
 }
 
 // indexFile handles the incremental check, extraction, and store write for a

@@ -468,6 +468,47 @@ type GraphStats struct {
 	LastUpdated int64 `json:"last_updated"`
 }
 
+// ChangeStatus classifies how a single file changed within a range of commits.
+// It is the git-agnostic vocabulary the scoped indexer (SPEC-101) consumes: the
+// caller (the CLI git-orchestration layer) translates a `git diff --name-status`
+// entry into one of these, and the codegraph package never touches git itself.
+type ChangeStatus int
+
+const (
+	// ChangeAdded marks a newly added file (git status A) whose symbols must be
+	// extracted into the graph.
+	ChangeAdded ChangeStatus = iota
+
+	// ChangeModified marks an in-place modified file (git status M) whose symbols
+	// must be re-extracted (the per-file content-hash check still short-circuits
+	// an unchanged body).
+	ChangeModified
+
+	// ChangeDeleted marks a removed file (git status D) whose symbols must be
+	// purged from the graph.
+	ChangeDeleted
+
+	// ChangeRenamed marks a renamed file (git status R): the symbols under OldPath
+	// are purged and the file is re-extracted under Path.
+	ChangeRenamed
+)
+
+// ChangedFile describes one file touched in a commit range, in terms the scoped
+// indexer understands. It carries no git state — only the relative paths and the
+// kind of change.
+type ChangedFile struct {
+	// Path is the file path relative to IndexOptions.RootDir. For a rename it is
+	// the destination (new) path; for a delete it is the removed path.
+	Path string `json:"path"`
+
+	// OldPath is populated only for ChangeRenamed: the source (old) path whose
+	// symbols must be purged before the file is re-extracted under Path.
+	OldPath string `json:"old_path,omitempty"`
+
+	// Status is the kind of change (added, modified, deleted, renamed).
+	Status ChangeStatus `json:"status"`
+}
+
 // IndexResult reports the outcome of a full or incremental index run over a
 // directory tree. Counters are cumulative across all files processed in the run.
 type IndexResult struct {
@@ -484,6 +525,11 @@ type IndexResult struct {
 	// FilesErrored is the number of files where extraction produced a fatal error
 	// and no nodes or edges were written.
 	FilesErrored int `json:"files_errored"`
+
+	// FilesDeleted is the number of files whose symbols were purged from the graph
+	// during a scoped index run (deleted or renamed-away paths). It is always zero
+	// for a full-scan run, where deletions are handled implicitly by pruneDeleted.
+	FilesDeleted int `json:"files_deleted"`
 
 	// NodesCreated is the total number of new nodes inserted into the store.
 	NodesCreated int `json:"nodes_created"`

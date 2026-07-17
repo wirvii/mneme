@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"path"
 	"strings"
+	"time"
 )
 
 // Store provides CRUD, graph traversal, full-text search, and batch operations
@@ -369,6 +370,53 @@ func (s *Store) DeleteFile(path string) error {
 	_, err := s.db.DB.Exec(`DELETE FROM files WHERE path = ?`, path)
 	if err != nil {
 		return fmt.Errorf("codegraph: store: delete file: %w", err)
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Project metadata (key/value)
+// ---------------------------------------------------------------------------
+
+// MetaKeyLastIndexedSHA is the project_metadata key under which the last git
+// commit SHA that was successfully indexed is stored. It is the anchor for the
+// scoped-diff incremental re-index (SPEC-101): run-reindex diffs this SHA
+// against HEAD to compute exactly which files changed. It lives in the same DB
+// as the nodes/edges it describes so it resets in lockstep whenever the index
+// is rebuilt (--force, corruption, upgrade), never leaving a stale anchor that
+// would silently drop files.
+const MetaKeyLastIndexedSHA = "last_indexed_sha"
+
+// GetMetadata returns the value stored under key in the project_metadata table.
+// It returns ("", nil) when the key does not exist — an absent key is a normal
+// state (e.g. a codegraph DB that has never recorded a last-indexed SHA), not an
+// error.
+func (s *Store) GetMetadata(key string) (string, error) {
+	const q = `SELECT value FROM project_metadata WHERE key = ?`
+	var value string
+	err := s.db.DB.QueryRow(q, key).Scan(&value)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", nil
+		}
+		return "", fmt.Errorf("codegraph: store: get metadata %q: %w", key, err)
+	}
+	return value, nil
+}
+
+// SetMetadata upserts (key, value) into the project_metadata table, refreshing
+// updated_at to the current Unix time on every write. A second write to the same
+// key overwrites the previous value — the table is a single-row-per-key store.
+func (s *Store) SetMetadata(key, value string) error {
+	const q = `
+		INSERT INTO project_metadata (key, value, updated_at)
+		VALUES (?, ?, ?)
+		ON CONFLICT(key) DO UPDATE SET
+			value = excluded.value,
+			updated_at = excluded.updated_at`
+
+	if _, err := s.db.DB.Exec(q, key, value, time.Now().Unix()); err != nil {
+		return fmt.Errorf("codegraph: store: set metadata %q: %w", key, err)
 	}
 	return nil
 }
