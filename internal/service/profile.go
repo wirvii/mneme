@@ -12,12 +12,64 @@ import (
 // ProfileService wraps internal/profile (the leaf) so cli/mcp never call it
 // directly — the dependency rule stays cli/mcp -> service -> leaf, exactly
 // like SkillsService/ConflictsService wrap internal/skill/internal/conflicts.
-// §1 needs no database access at all: profiles/pins/manifests are entirely
-// filesystem + git state. The seam §2 will need (a *MemoryService, to record
-// provenance on rules/memories a profile writes) is intentionally NOT wired
-// here — YAGNI until that spec actually lands.
+// §1 needed no database access at all: profiles/pins/manifests were entirely
+// filesystem + git state. §2 cables the seam §1 left documented and dormant:
+// mem (to insert/purge provenance-marked rules) and sub (to read a project's
+// capa-2/3 for the agent-fusion step) are both optional — nil unless a
+// caller opts in via WithProfileMemoryService/WithProfileSubagentService —
+// so every existing construction (`profile add/update/list/status`, which
+// never touch either) keeps compiling unchanged. Activate/Switch/Deactivate
+// fail fast with a clear error if called before those seams are wired.
 type ProfileService struct {
 	store *profile.Store
+
+	// mem inserts/purges the provenance-marked rule memories a profile
+	// activation materializes (SPEC-092 §2). nil until
+	// WithProfileMemoryService is passed to NewProfileService.
+	mem *MemoryService
+
+	// sub reads a project's capa-2/3 (ReadProfile) for the agent-fusion step
+	// (SPEC-092 §3.5). nil until WithProfileSubagentService is passed to
+	// NewProfileService.
+	sub *SubagentService
+
+	// skillsDir is the host-level Claude Code skills directory
+	// (~/.claude/skills), injected the same way SkillsService's own
+	// skillsDir is — this package never resolves HOME itself. Empty unless
+	// WithProfileSkillsDir is passed; Activate errors if a profile declares
+	// skills but this is unset.
+	skillsDir string
+}
+
+// ProfileOption configures a ProfileService at construction time, mirroring
+// MemoryService's own Option pattern (service.Option). Every option added
+// here is additive: existing NewProfileService call sites that pass no
+// options keep compiling and behaving exactly as before.
+type ProfileOption func(*ProfileService)
+
+// WithProfileMemoryService wires mem into the ProfileService, enabling
+// Activate/Switch/Deactivate to insert and purge provenance-marked rule
+// memories (SPEC-092 §2). Required for any of those three methods to work —
+// omitting it is only valid for a ProfileService that only ever calls
+// Add/Update/List/ResolvePin (the §1 surface).
+func WithProfileMemoryService(mem *MemoryService) ProfileOption {
+	return func(s *ProfileService) { s.mem = mem }
+}
+
+// WithProfileSubagentService wires sub into the ProfileService, enabling
+// Activate/Switch to read a project's capa-2/3 (SubagentService.ReadProfile)
+// for the agent-fusion step (SPEC-092 §3.5). A ProfileService without this
+// wired still activates agents — fuseAgent degrades cleanly to capa-1 alone
+// when sub is nil, exactly like when the repo has no capa-2/3 yet.
+func WithProfileSubagentService(sub *SubagentService) ProfileOption {
+	return func(s *ProfileService) { s.sub = sub }
+}
+
+// WithProfileSkillsDir wires the host-level skills directory
+// (~/.claude/skills) into the ProfileService, so Activate/Deactivate know
+// where to materialize/remove a profile's skills/ entries.
+func WithProfileSkillsDir(dir string) ProfileOption {
+	return func(s *ProfileService) { s.skillsDir = dir }
 }
 
 // NewProfileService constructs a ProfileService whose store operates on
@@ -28,12 +80,16 @@ type ProfileService struct {
 // hang waiting for a prompt no human will see (R1). The CLI frontend passes
 // false so a developer present at a terminal can still authenticate
 // interactively (design decision #11).
-func NewProfileService(profilesDir string, noPrompt bool) *ProfileService {
+func NewProfileService(profilesDir string, noPrompt bool, opts ...ProfileOption) *ProfileService {
 	st := profile.NewStore(profilesDir)
 	if noPrompt {
 		st.GitEnv = []string{profile.GitTerminalPromptDisabled}
 	}
-	return &ProfileService{store: st}
+	svc := &ProfileService{store: st}
+	for _, opt := range opts {
+		opt(svc)
+	}
+	return svc
 }
 
 // The following are re-exported as type aliases so cli/mcp only ever import

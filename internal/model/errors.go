@@ -231,3 +231,11 @@ var ErrProfileNameMismatch = errors.New("requested profile name does not match m
 // required-field or safe-slug validation.
 var ErrInvalidProfile = errors.New("invalid profile manifest or pin")
 
+// ErrProfileServiceNotConfigured is returned by ProfileService.Activate/
+// Switch/Deactivate when the caller did not wire the memory-service seam
+// (WithProfileMemoryService, SPEC-092 §2) a ProfileService needs to insert
+// or purge provenance-marked rule memories. A ProfileService constructed
+// only for the §1 surface (Add/Update/List/ResolvePin) never needs this seam
+// and is unaffected.
+var ErrProfileServiceNotConfigured = errors.New("profile service: memory/subagent seam not configured")
+
