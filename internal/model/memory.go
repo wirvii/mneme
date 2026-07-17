@@ -278,6 +278,16 @@ type Memory struct {
 	// from the local git config. Round-trips through the vault frontmatter so
 	// peers preserve the original author on import.
 	Author string `json:"author,omitempty"`
+
+	// Source records the provenance of a memory materialized by a profile
+	// activation (SPEC-092), formatted "profile:<name>". Empty means
+	// hand-authored — the default for every memory saved before this field
+	// existed and for every memory the public mem_save path creates. Source
+	// is the switch's deletion key (MemoryStore.HardDeleteBySource) and, in a
+	// later spec, the exclusion key for the team-memory vault: a profile's
+	// rules are derived/regenerable (re-materialized by re-activating the
+	// profile) and must never be confused with a human's durable knowledge.
+	Source string `json:"source,omitempty"`
 }
 
 // SaveRequest carries the agent's intent to persist a memory. Title and Content
@@ -333,6 +343,17 @@ type SaveRequest struct {
 	// resolves to 0 (local, not shared) — the behaviour before this field
 	// existed.
 	Shared *int `json:"shared,omitempty"`
+
+	// Source is the profile provenance stamp (SPEC-092), formatted
+	// "profile:<name>". It is deliberately json:"-": the public mem_save tool
+	// unmarshals its raw JSON arguments directly into a SaveRequest, so any
+	// field with a JSON name could be spoofed by a caller that includes it in
+	// the request payload — json:"-" makes that structurally impossible
+	// rather than relying on the tool schema (documentation only, never
+	// enforced) to keep an agent from setting it. The only writer is
+	// MemoryService.SaveProfileRule, which sets this field directly in Go
+	// code before calling Save.
+	Source string `json:"-"`
 }
 
 // UpdateRequest carries the fields an agent wants to change on an existing memory.

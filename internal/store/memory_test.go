@@ -1164,6 +1164,229 @@ func TestStore_GetMemoryMetadata_Deleted(t *testing.T) {
 	}
 }
 
+// TestCreate_SourceRoundTrip verifies that Memory.Source (SPEC-092 provenance)
+// survives a Create → Get round trip and that a memory created without an
+// explicit Source resolves to "" (hand-authored default, unchanged behaviour
+// for every memory saved before this field existed).
+func TestCreate_SourceRoundTrip(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	plain, err := s.Create(ctx, makeMemory())
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	got, err := s.Get(ctx, plain.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Source != "" {
+		t.Errorf("Source: got %q, want empty for hand-authored memory", got.Source)
+	}
+
+	stamped := makeMemory()
+	stamped.Type = model.TypeRule
+	stamped.AppliesTo = []string{"**"}
+	stamped.Source = "profile:chatea-pro"
+	created, err := s.Create(ctx, stamped)
+	if err != nil {
+		t.Fatalf("Create stamped: %v", err)
+	}
+	gotStamped, err := s.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("Get stamped: %v", err)
+	}
+	if gotStamped.Source != "profile:chatea-pro" {
+		t.Errorf("Source: got %q, want %q", gotStamped.Source, "profile:chatea-pro")
+	}
+}
+
+// TestList_SourceFilter verifies that ListOptions.Source restricts results to
+// memories with an exact provenance match, and that the zero value (empty
+// string) leaves existing listings unaffected (SPEC-092 AC3).
+func TestList_SourceFilter(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	for i := 0; i < 2; i++ {
+		m := makeMemory()
+		m.Project = "proj-src"
+		m.Source = "profile:chatea-pro"
+		if _, err := s.Create(ctx, m); err != nil {
+			t.Fatalf("Create profile-sourced: %v", err)
+		}
+	}
+	handAuthored := makeMemory()
+	handAuthored.Project = "proj-src"
+	if _, err := s.Create(ctx, handAuthored); err != nil {
+		t.Fatalf("Create hand-authored: %v", err)
+	}
+
+	filtered, err := s.List(ctx, ListOptions{Project: "proj-src", Source: "profile:chatea-pro"})
+	if err != nil {
+		t.Fatalf("List with Source filter: %v", err)
+	}
+	if len(filtered) != 2 {
+		t.Errorf("expected 2 profile-sourced memories, got %d", len(filtered))
+	}
+
+	unfiltered, err := s.List(ctx, ListOptions{Project: "proj-src"})
+	if err != nil {
+		t.Fatalf("List without Source filter: %v", err)
+	}
+	if len(unfiltered) != 3 {
+		t.Errorf("expected 3 memories with no Source filter, got %d", len(unfiltered))
+	}
+}
+
+// TestHardDeleteBySource verifies the core deletion primitive behind a
+// profile switch (SPEC-092 AC5/R1): it physically removes every memory
+// carrying the given provenance — the row no longer exists at all, not even
+// as a soft-deleted tombstone — leaves hand-authored memories (Source="")
+// intact, is scoped by project, and is idempotent.
+func TestHardDeleteBySource(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	const source = "profile:chatea-pro"
+	var stampedIDs []string
+	for i := 0; i < 3; i++ {
+		m := makeMemory()
+		m.Project = "proj-x"
+		m.Type = model.TypeRule
+		m.AppliesTo = []string{"**"}
+		m.Source = source
+		created, err := s.Create(ctx, m)
+		if err != nil {
+			t.Fatalf("Create stamped %d: %v", i, err)
+		}
+		stampedIDs = append(stampedIDs, created.ID)
+	}
+
+	handAuthored := makeMemory()
+	handAuthored.Project = "proj-x"
+	handAuthoredCreated, err := s.Create(ctx, handAuthored)
+	if err != nil {
+		t.Fatalf("Create hand-authored: %v", err)
+	}
+
+	otherProject := makeMemory()
+	otherProject.Project = "proj-y"
+	otherProject.Type = model.TypeRule
+	otherProject.AppliesTo = []string{"**"}
+	otherProject.Source = source
+	otherCreated, err := s.Create(ctx, otherProject)
+	if err != nil {
+		t.Fatalf("Create other-project stamped: %v", err)
+	}
+
+	deleted, err := s.HardDeleteBySource(ctx, "proj-x", source)
+	if err != nil {
+		t.Fatalf("HardDeleteBySource: %v", err)
+	}
+	if len(deleted) != 3 {
+		t.Fatalf("expected 3 deleted ids, got %d (%v)", len(deleted), deleted)
+	}
+	for _, id := range stampedIDs {
+		found := false
+		for _, d := range deleted {
+			if d == id {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("expected %s among deleted ids %v", id, deleted)
+		}
+	}
+
+	// The rows must be gone entirely — not even a soft-deleted tombstone: a
+	// direct COUNT(*) with no deleted_at filter must be zero.
+	var remaining int
+	if err := s.db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM memories WHERE id IN (?, ?, ?)",
+		stampedIDs[0], stampedIDs[1], stampedIDs[2],
+	).Scan(&remaining); err != nil {
+		t.Fatalf("count remaining: %v", err)
+	}
+	if remaining != 0 {
+		t.Errorf("expected 0 rows remaining for purged ids, got %d", remaining)
+	}
+
+	// Hand-authored memory in the same project is untouched.
+	got, err := s.Get(ctx, handAuthoredCreated.ID)
+	if err != nil {
+		t.Fatalf("Get hand-authored after purge: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected hand-authored memory to survive the purge")
+	}
+
+	// A same-source memory in a different project is untouched.
+	gotOther, err := s.Get(ctx, otherCreated.ID)
+	if err != nil {
+		t.Fatalf("Get other-project after purge: %v", err)
+	}
+	if gotOther == nil {
+		t.Fatal("expected other-project memory with the same source to survive the purge")
+	}
+
+	// Idempotent: a second call finds nothing left to delete.
+	deletedAgain, err := s.HardDeleteBySource(ctx, "proj-x", source)
+	if err != nil {
+		t.Fatalf("HardDeleteBySource (second call): %v", err)
+	}
+	if len(deletedAgain) != 0 {
+		t.Errorf("expected 0 deleted on second call, got %d", len(deletedAgain))
+	}
+}
+
+// TestHardDeleteBySource_FTSInvariant verifies that the DELETE fired by
+// HardDeleteBySource passes through the existing memories_ad AFTER DELETE
+// trigger, keeping memories_fts consistent — the same invariant the
+// retention-based HardDelete already relies on (SPEC-092 R6).
+func TestHardDeleteBySource_FTSInvariant(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	m := makeMemory()
+	m.Project = "proj-fts"
+	m.Type = model.TypeRule
+	m.AppliesTo = []string{"**"}
+	m.Source = "profile:chatea-pro"
+	m.Title = "Unmistakable searchable title xyzzy"
+	created, err := s.Create(ctx, m)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	before, err := s.FTS5Search(ctx, "xyzzy", SearchOptions{Project: "proj-fts"})
+	if err != nil {
+		t.Fatalf("FTS5Search before purge: %v", err)
+	}
+	if len(before) != 1 {
+		t.Fatalf("expected 1 FTS hit before purge, got %d", len(before))
+	}
+
+	if _, err := s.HardDeleteBySource(ctx, "proj-fts", "profile:chatea-pro"); err != nil {
+		t.Fatalf("HardDeleteBySource: %v", err)
+	}
+
+	after, err := s.FTS5Search(ctx, "xyzzy", SearchOptions{Project: "proj-fts"})
+	if err != nil {
+		t.Fatalf("FTS5Search after purge: %v", err)
+	}
+	if len(after) != 0 {
+		t.Errorf("expected 0 FTS hits after purge, got %d (ids: %v)", len(after), func() []string {
+			ids := make([]string, len(after))
+			for i, r := range after {
+				ids[i] = r.ID
+			}
+			return ids
+		}())
+	}
+	_ = created
+}
+
 // isNotFound unwraps err chain to check for model.ErrNotFound.
 func isNotFound(err error) bool {
 	return err != nil && containsStr(err.Error(), "memory not found")

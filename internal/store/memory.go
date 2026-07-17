@@ -86,13 +86,13 @@ func (s *MemoryStore) insertMemory(ctx context.Context, m *model.Memory, errPref
 			session_id, created_by, created_at, updated_at,
 			importance, confidence, access_count, last_accessed,
 			decay_rate, revision_count, superseded_by, deleted_at,
-			applies_to, severity, shared, author
+			applies_to, severity, shared, author, source
 		) VALUES (
 			?, ?, ?, ?, ?, ?, ?,
 			?, ?, ?, ?,
 			?, ?, ?, ?,
 			?, ?, ?, ?,
-			?, ?, ?, ?
+			?, ?, ?, ?, ?
 		)`
 
 	var topicKey, project, sessionID, createdBy, supersededBy sql.NullString
@@ -125,7 +125,7 @@ func (s *MemoryStore) insertMemory(ctx context.Context, m *model.Memory, errPref
 		m.UpdatedAt.Format(time.RFC3339Nano),
 		m.Importance, m.Confidence, m.AccessCount, lastAccessed,
 		m.DecayRate, m.RevisionCount, supersededBy, deletedAt,
-		appliesTo, string(m.Severity), m.Shared, m.Author,
+		appliesTo, string(m.Severity), m.Shared, m.Author, m.Source,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("%s: insert: %w", errPrefix, err)
@@ -147,7 +147,7 @@ func (s *MemoryStore) Get(ctx context.Context, id string) (*model.Memory, error)
 		       session_id, created_by, created_at, updated_at,
 		       importance, confidence, access_count, last_accessed,
 		       decay_rate, revision_count, superseded_by, deleted_at,
-		       applies_to, severity, shared, author
+		       applies_to, severity, shared, author, source
 		FROM memories
 		WHERE id = ? AND deleted_at IS NULL`
 
@@ -409,6 +409,64 @@ func (s *MemoryStore) HardDelete(ctx context.Context, olderThan time.Time) (int,
 	return int(n), nil
 }
 
+// HardDeleteBySource permanently removes every memory belonging to project
+// whose source column exactly matches source (e.g. "profile:chatea-pro"),
+// returning the ids that were deleted. Distinct from HardDelete, which purges
+// by retention (deleted_at older than a cutoff): this one is scoped by
+// provenance, not by age or by a prior soft-delete — a row does not need a
+// deleted_at tombstone to be eligible.
+//
+// This is the deletion primitive behind a profile switch/deactivate
+// (SPEC-092): profile-injected rules are derived/regenerable from the
+// profile's own store, so they are hard-deleted rather than soft-deleted —
+// there is no tombstone to keep, and re-activating the profile re-materializes
+// them. Runs inside a single transaction so the id collection and the delete
+// observe a consistent snapshot. Idempotent: a source with no matching rows
+// returns an empty, non-nil slice and no error.
+func (s *MemoryStore) HardDeleteBySource(ctx context.Context, project, source string) ([]string, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("store: hard delete by source: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	const selectQ = `SELECT id FROM memories WHERE project = ? AND source = ?`
+	rows, err := tx.QueryContext(ctx, selectQ, project, source)
+	if err != nil {
+		return nil, fmt.Errorf("store: hard delete by source: select: %w", err)
+	}
+
+	deleted := make([]string, 0)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("store: hard delete by source: scan: %w", err)
+		}
+		deleted = append(deleted, id)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("store: hard delete by source: iterate: %w", err)
+	}
+	rows.Close()
+
+	if len(deleted) == 0 {
+		return deleted, nil
+	}
+
+	const deleteQ = `DELETE FROM memories WHERE project = ? AND source = ?`
+	if _, err := tx.ExecContext(ctx, deleteQ, project, source); err != nil {
+		return nil, fmt.Errorf("store: hard delete by source: delete: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("store: hard delete by source: commit: %w", err)
+	}
+
+	return deleted, nil
+}
+
 // ListOptions parameterises a List query. Zero values are ignored (no filter).
 type ListOptions struct {
 	// Project restricts results to a specific project slug. Empty means no filter.
@@ -423,6 +481,11 @@ type ListOptions struct {
 	// IncludeSuperseded includes memories whose superseded_by is set when true.
 	// Defaults to false (superseded memories are hidden).
 	IncludeSuperseded bool
+
+	// Source restricts results to a specific provenance stamp, e.g.
+	// "profile:chatea-pro" (SPEC-092). Empty means no filter — existing
+	// listings are unaffected by this field's zero value.
+	Source string
 
 	// OrderBy is the column used for sorting, e.g. "importance", "created_at",
 	// "updated_at". Defaults to "importance DESC" when empty.
@@ -450,6 +513,10 @@ func (s *MemoryStore) List(ctx context.Context, opts ListOptions) ([]*model.Memo
 		where = append(where, "type = ?")
 		args = append(args, string(opts.Type))
 	}
+	if opts.Source != "" {
+		where = append(where, "source = ?")
+		args = append(args, opts.Source)
+	}
 	if !opts.IncludeSuperseded {
 		where = append(where, "superseded_by IS NULL")
 	}
@@ -469,7 +536,7 @@ func (s *MemoryStore) List(ctx context.Context, opts ListOptions) ([]*model.Memo
 		       session_id, created_by, created_at, updated_at,
 		       importance, confidence, access_count, last_accessed,
 		       decay_rate, revision_count, superseded_by, deleted_at,
-		       applies_to, severity, shared, author
+		       applies_to, severity, shared, author, source
 		FROM memories
 		WHERE %s
 		ORDER BY %s
@@ -662,7 +729,7 @@ func (s *MemoryStore) GetByIDPrefix(ctx context.Context, prefix string) (*model.
 		       session_id, created_by, created_at, updated_at,
 		       importance, confidence, access_count, last_accessed,
 		       decay_rate, revision_count, superseded_by, deleted_at,
-		       applies_to, severity, shared, author
+		       applies_to, severity, shared, author, source
 		FROM memories
 		WHERE REPLACE(id, '-', '') LIKE ? AND deleted_at IS NULL
 		LIMIT 1`
@@ -691,7 +758,7 @@ func (s *MemoryStore) GetByTopicKey(ctx context.Context, topicKey, project strin
 		       session_id, created_by, created_at, updated_at,
 		       importance, confidence, access_count, last_accessed,
 		       decay_rate, revision_count, superseded_by, deleted_at,
-		       applies_to, severity, shared, author
+		       applies_to, severity, shared, author, source
 		FROM memories
 		WHERE topic_key = ? AND project IS ? AND deleted_at IS NULL
 		LIMIT 1`
@@ -757,12 +824,12 @@ func scanMemory(row *sql.Row) (*model.Memory, error) {
 }
 
 // scanMemoryRow scans either a *sql.Row or *sql.Rows into a *model.Memory.
-// The SELECT must include 23 columns in this exact order:
+// The SELECT must include 24 columns in this exact order:
 // id, type, scope, title, content, topic_key, project,
 // session_id, created_by, created_at, updated_at,
 // importance, confidence, access_count, last_accessed,
 // decay_rate, revision_count, superseded_by, deleted_at,
-// applies_to, severity, shared, author.
+// applies_to, severity, shared, author, source.
 func scanMemoryRow(row scannerRow) (*model.Memory, error) {
 	var (
 		m            model.Memory
@@ -786,7 +853,7 @@ func scanMemoryRow(row scannerRow) (*model.Memory, error) {
 		&createdAt, &updatedAt,
 		&m.Importance, &m.Confidence, &m.AccessCount, &lastAccessed,
 		&m.DecayRate, &m.RevisionCount, &supersededBy, &deletedAt,
-		&appliesTo, &severityStr, &m.Shared, &m.Author,
+		&appliesTo, &severityStr, &m.Shared, &m.Author, &m.Source,
 	)
 	if err != nil {
 		return nil, err
