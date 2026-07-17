@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -23,9 +24,11 @@ import (
 	"github.com/wirvii/mneme/internal/enforcelog"
 	"github.com/wirvii/mneme/internal/enforcement"
 	"github.com/wirvii/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/profile"
 	"github.com/wirvii/mneme/internal/project"
 	"github.com/wirvii/mneme/internal/querylog"
 	"github.com/wirvii/mneme/internal/rules"
+	"github.com/wirvii/mneme/internal/service"
 	"github.com/wirvii/mneme/internal/shell"
 	"github.com/wirvii/mneme/internal/subagents"
 )
@@ -86,7 +89,7 @@ Events:
 			event := args[0]
 			switch event {
 			case "session-start":
-				return runHookSessionStart(cmd.Context())
+				return runHookSessionStart(cmd.Context(), os.Stdout, os.Stderr)
 			case "session-end":
 				return runHookSessionEnd()
 			case "pre-tool-use":
@@ -110,20 +113,28 @@ Events:
 }
 
 // runHookSessionStart detects the current project, loads its mneme context, and
-// prints a structured message to stdout. The agent reads this output from the
+// prints a structured message to w. The agent reads this output from the
 // hook's stdout and incorporates it into its context window at session start.
+// w/errW are explicit (rather than hardcoded os.Stdout/os.Stderr) so tests can
+// drive this function directly with buffers — mirrors runHookPreToolUse's own
+// io.Writer parameters.
 //
 // The output is intentionally minimal and machine-readable so the agent can
 // parse or ignore individual sections based on what it needs.
-func runHookSessionStart(ctx context.Context) error {
+func runHookSessionStart(ctx context.Context, w, errW io.Writer) error {
 	svc, cleanup, err := initService()
 	if err != nil {
 		// Hook failure must not block the agent from starting. Print a warning
 		// to stderr and exit cleanly so the agent session proceeds.
-		fmt.Fprintf(os.Stderr, "[mneme] session-start hook error: %v\n", err)
+		fmt.Fprintf(errW, "[mneme] session-start hook error: %v\n", err)
 		return nil
 	}
 	defer cleanup()
+
+	// SPEC-093 §3.6: resolve/materialize (or nudge) the active profile BEFORE
+	// the context block — fail-open, exit 0 always, same contract as
+	// maybeEmitCodegraphNudge.
+	maybeActivateProfile(ctx, svc, w, errW)
 
 	req := model.ContextRequest{
 		// Budget zero signals the service to use its configured default.
@@ -133,12 +144,158 @@ func runHookSessionStart(ctx context.Context) error {
 	resp, err := svc.Context(ctx, req)
 	if err != nil {
 		// Non-fatal: the agent session must not be blocked by a mneme failure.
-		fmt.Fprintf(os.Stderr, "[mneme] context load error: %v\n", err)
+		fmt.Fprintf(errW, "[mneme] context load error: %v\n", err)
 		return nil
 	}
 
-	printContextHook(os.Stdout, resp)
+	printContextHook(w, resp)
 	return nil
+}
+
+// ---- Profile SessionStart integration (SPEC-093 §3.6) -----------------------
+
+// resolveProfileProjectRoot returns cwd's git toplevel when cwd is inside a
+// git repository, or cwd itself otherwise (§3.6 step 1). Mirrors
+// internal/service's own unexported gitRepoRoot helper locally rather than
+// exporting it — the hook's dependency surface stays minimal, same posture as
+// manifestTopicKey/hookManifestEntry mirroring service internals elsewhere in
+// this file.
+func resolveProfileProjectRoot(cwd string) string {
+	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
+	cmd.Dir = cwd
+	out, err := cmd.Output()
+	if err != nil {
+		return cwd
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// maybeActivateProfile implements SPEC-093 §3.6: resolves the profile active
+// for the current repo — pin > host default > vanilla, read exactly once
+// here via ProfileService.ResolveActive (AC10) — and either materializes it
+// (PinInstalled), confirms a pending internal-default state (PinDefault, §6
+// follow-up), or emits an actionable nudge/gate (PinMissing). A resolution of
+// PinAbsent (vanilla) emits nothing, avoiding noise on every non-profile
+// project.
+//
+// This function NEVER returns an error and never aborts session start: every
+// failure (config load, resolve, materialization) is degraded to a WARN on
+// errW and the function simply returns — the exact fail-open contract
+// maybeEmitCodegraphNudge already established for this same hook.
+func maybeActivateProfile(ctx context.Context, mem *service.MemoryService, w, errW io.Writer) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return // fail-open: cannot resolve cwd.
+	}
+	root := resolveProfileProjectRoot(cwd)
+
+	cfg := mem.Config()
+	sub := service.NewSubagentService(mem)
+	skillsDir := ""
+	if home, herr := os.UserHomeDir(); herr == nil {
+		skillsDir = filepath.Join(home, ".claude", "skills")
+	}
+	profileSvc := service.NewProfileService(cfg.ProfilesDir(), false,
+		service.WithProfileMemoryService(mem),
+		service.WithProfileSubagentService(sub),
+		service.WithProfileSkillsDir(skillsDir),
+		service.WithProfileConfigPath(config.DefaultPath()),
+	)
+
+	res, err := profileSvc.ResolveActive(root)
+	if err != nil {
+		fmt.Fprintf(errW, "[mneme] profile resolve error: %v\n", err)
+		return
+	}
+
+	switch res.Resolution.State {
+	case service.ProfilePinAbsent:
+		return // vanilla — silence.
+	case service.ProfilePinInstalled:
+		activateProfileForSession(ctx, profileSvc, root, res, w, errW)
+	case service.ProfilePinDefault:
+		renderProfileDefaultPending(w, res.Resolution.Pin.Name)
+	case service.ProfilePinMissing:
+		renderProfileNudge(w, res.Resolution.Pin)
+	}
+}
+
+// activateProfileForSession resolves the checkout's HEAD commit and invokes
+// Activate for the profile res.Resolution.Pin names. Any failure (resolving
+// the commit, or Activate itself) is degraded to a WARN on errW — SessionStart
+// is fail-open, unlike ProfileService.Use's explicit-action, error-propagating
+// contract.
+func activateProfileForSession(ctx context.Context, svc *service.ProfileService, root string, res service.ProfileActiveResolution, w, errW io.Writer) {
+	pin := res.Resolution.Pin
+
+	commit, err := svc.ResolveCommit(pin.Name)
+	if err != nil {
+		fmt.Fprintf(errW, "[mneme] profile activation failed: resolve commit: %v\n", err)
+		return
+	}
+
+	if _, err := svc.Activate(ctx, service.ActivationInput{
+		RepoRoot: root,
+		Name:     pin.Name,
+		Source:   pin.Source,
+		Ref:      pin.Ref,
+		Commit:   commit,
+	}); err != nil {
+		fmt.Fprintf(errW, "[mneme] profile activation failed: %v\n", err)
+		return
+	}
+
+	origin := "pin"
+	if res.Source == service.ProfileSourceGlobalDefault {
+		origin = "default global"
+	}
+	fmt.Fprintf(w, "<!-- mneme:profile:start -->\n")
+	fmt.Fprintf(w, "Profile %s@%s activo (via %s)\n", pin.Name, pin.Ref, origin)
+	fmt.Fprintf(w, "<!-- mneme:profile:end -->\n")
+}
+
+// renderProfileDefaultPending confirms a PinDefault resolution (a pin with no
+// Source — mneme's internal default profile) without materializing anything:
+// the internal default profile's real materialization depends on §6, not yet
+// landed (SPEC-093 §3.6/A3). This is a no-op confirmation, never a failure.
+func renderProfileDefaultPending(w io.Writer, name string) {
+	fmt.Fprintf(w, "<!-- mneme:profile:start -->\n")
+	fmt.Fprintf(w, "Profile %s (default interno de mneme) — materialización pendiente de habilitar.\n", name)
+	fmt.Fprintf(w, "<!-- mneme:profile:end -->\n")
+}
+
+// renderProfileNudge emits the actionable nudge/gate block for a PinMissing
+// resolution (§3.6): the agent converts this into a gate with the dev
+// present — mneme itself NEVER clones. Two variants: when pin.Source is
+// known (the common case — a repo's own pin names an uninstalled profile),
+// the exact `profile add <url> --ref <ref> && profile use <name>` commands
+// are printed; when it is not (a host default names a profile absent from
+// the store — the default only ever records a bare name, never a git URL),
+// a generic message asks for the URL instead.
+func renderProfileNudge(w io.Writer, pin *profile.Pin) {
+	fmt.Fprintf(w, "<!-- mneme:profile:start -->\n")
+	fmt.Fprintf(w, "## Profile no instalado\n\n")
+
+	if pin.Source != "" {
+		refSuffix, refFlag := "", ""
+		if pin.Ref != "" {
+			refSuffix = "@" + pin.Ref
+			refFlag = " --ref " + pin.Ref
+		}
+		fmt.Fprintf(w, "Este repo usa el profile `%s%s` (source `%s`), que no está instalado en este host.\n\n",
+			pin.Name, refSuffix, pin.Source)
+		fmt.Fprintf(w, "**Para instalarlo ahora** (con tu confirmación — mneme nunca clona sin OK):\n")
+		fmt.Fprintf(w, "    mneme profile add %s%s\n", pin.Source, refFlag)
+		fmt.Fprintf(w, "    mneme profile use %s\n\n", pin.Name)
+	} else {
+		fmt.Fprintf(w, "El default global de este host apunta a `%s`, que no está instalado en el store (o no tiene una fuente conocida).\n\n", pin.Name)
+		fmt.Fprintf(w, "**Para instalarlo ahora** necesitas la URL del repo del profile:\n")
+		fmt.Fprintf(w, "    mneme profile add <git-url> --name %s\n", pin.Name)
+		fmt.Fprintf(w, "    mneme profile use %s\n\n", pin.Name)
+	}
+
+	fmt.Fprintf(w, "Hasta entonces la sesión corre en modo **vanilla** (sin el profile del equipo).\n")
+	fmt.Fprintf(w, "<!-- mneme:profile:end -->\n")
 }
 
 // printContextHook writes the context response as a structured markdown block
