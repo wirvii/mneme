@@ -1477,6 +1477,29 @@ func allTools() []ToolDefinition {
 				},
 			},
 		},
+		// --- SCAFFOLD TOOL (SPEC-100 §7c) ---
+		{
+			Name:        "scaffold_capture",
+			Description: "Capture an existing exemplar repository into a DRAFT scaffold within a profile repo the author is curating (SPEC-100 §7c — the deterministic half of the mneme-profile-author §15.6 authoring grill). Auto-detects the exemplar's structure (apps/, packages/, turbo.json, pnpm-workspace.yaml) to infer the scaffold's layout (single | monorepo) and toolchain (turborepo | custom), and reads go.mod / package.json for its identity. Writes scaffolds/<name>/scaffold.toml (a valid draft) plus the captured trees (shell/ + overlay/ for a monorepo, or a flat skeleton/ for a single layout, and each app under _blueprints/), rewriting the exemplar's project name and Go module path to {{PROJECT_NAME}} / {{MODULE_PATH}} placeholders. Never bootstraps, runs git, or activates — the author curates the draft (prune legacy, refine [vars]/[wiring]) and commits it. Errors if the exemplar holds nothing to capture, the name is not a safe-slug, the target scaffold already exists, or --into is not an existing directory.",
+			InputSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"repo"},
+				"properties": map[string]any{
+					"repo": map[string]any{
+						"type":        "string",
+						"description": "Path to the exemplar repository to capture from.",
+					},
+					"name": map[string]any{
+						"type":        "string",
+						"description": "Scaffold catalog name (a safe-slug ^[a-z0-9][a-z0-9-]*$). Defaults to the exemplar's directory basename.",
+					},
+					"into": map[string]any{
+						"type":        "string",
+						"description": "Profile repository to write the scaffold into (its scaffolds/<name>/ and _blueprints/). Defaults to the current working directory.",
+					},
+				},
+			},
+		},
 		{
 			Name:        "init",
 			Description: "Initialise a project with mneme managed blocks and report drift. Applies the global operating manual and a minimal repo block to CLAUDE.md files, then runs the drift detector. Pass check=true for report-only mode (no writes). Returns drift findings and a summary of blocks applied.",

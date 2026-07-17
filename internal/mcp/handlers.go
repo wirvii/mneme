@@ -214,6 +214,8 @@ func (h *handlers) handleToolCall(ctx context.Context, params ToolCallParams) (*
 		return h.handleProjectNew(ctx, params.Arguments)
 	case "app_add":
 		return h.handleAppAdd(ctx, params.Arguments)
+	case "scaffold_capture":
+		return h.handleScaffoldCapture(ctx, params.Arguments)
 
 	// --- CODEGRAPH TOOLS ---
 	case "codegraph_search":

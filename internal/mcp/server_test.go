@@ -202,6 +202,8 @@ func TestToolsList(t *testing.T) {
 		"profile_use", "profile_default",
 		// Project tools (SPEC-098 §7a + SPEC-099 §7b)
 		"project_new", "app_add",
+		// Scaffold tool (SPEC-100 §7c)
+		"scaffold_capture",
 		// Init tool (SPEC-041)
 		"init",
 		// Subagent tools (SPEC-057 / EPIC agnostic-agents SS-4)

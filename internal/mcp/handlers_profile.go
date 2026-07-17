@@ -127,6 +127,44 @@ func (h *handlers) handleAppAdd(ctx context.Context, raw json.RawMessage) (*Tool
 	return resultFromAny(res)
 }
 
+// --- SCAFFOLD HANDLER (SPEC-100 §7c) ---
+
+// scaffoldCaptureRequest is the input to scaffold_capture.
+type scaffoldCaptureRequest struct {
+	Repo string `json:"repo"`
+	Name string `json:"name"`
+	Into string `json:"into"`
+}
+
+// handleScaffoldCapture processes a scaffold_capture tool call: captures an
+// exemplar repository into a draft scaffold within a profile repo — auto-
+// detecting layout/toolchain, drafting a valid scaffold.toml, and copying the
+// shell/overlay/skeleton plus each app blueprint with the exemplar's identity
+// parametrized. The deterministic half of the mneme-profile-author §15.6
+// authoring grill — it never bootstraps, runs git, or activates.
+func (h *handlers) handleScaffoldCapture(_ context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	var req scaffoldCaptureRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return nil, &JSONRPCError{
+			Code:    CodeInvalidParams,
+			Message: fmt.Sprintf("mcp: handle scaffold_capture: invalid arguments: %s", err),
+		}
+	}
+	if req.Repo == "" {
+		return nil, &JSONRPCError{Code: CodeInvalidParams, Message: "mcp: handle scaffold_capture: repo is required"}
+	}
+
+	res, err := h.profileSvc.CaptureScaffold(service.ScaffoldCaptureInput{
+		Repo: req.Repo,
+		Name: req.Name,
+		Into: req.Into,
+	})
+	if err != nil {
+		return nil, h.mapServiceError("scaffold_capture", err)
+	}
+	return resultFromAny(res)
+}
+
 // profileAddRequest is the input to profile_add.
 type profileAddRequest struct {
 	Source string `json:"source"`
