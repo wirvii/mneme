@@ -39,6 +39,13 @@ type ProfileService struct {
 	// WithProfileSkillsDir is passed; Activate errors if a profile declares
 	// skills but this is unset.
 	skillsDir string
+
+	// configPath is the config.toml path (typically config.DefaultPath())
+	// this service reads/writes [profiles].default against (SPEC-093 §3).
+	// Empty unless WithProfileConfigPath is passed; SetDefault/ClearDefault/
+	// Default/ResolveActive all return model.ErrProfileServiceNotConfigured
+	// when it is unset — mirrors Activate's mem/sub guard.
+	configPath string
 }
 
 // ProfileOption configures a ProfileService at construction time, mirroring
@@ -70,6 +77,15 @@ func WithProfileSubagentService(sub *SubagentService) ProfileOption {
 // where to materialize/remove a profile's skills/ entries.
 func WithProfileSkillsDir(dir string) ProfileOption {
 	return func(s *ProfileService) { s.skillsDir = dir }
+}
+
+// WithProfileConfigPath wires the config.toml path into the ProfileService
+// (SPEC-093 §3), enabling SetDefault/ClearDefault/Default/ResolveActive to
+// read/write [profiles].default. A ProfileService without this wired still
+// supports Add/Update/List/ResolvePin/Activate/Switch — only the §3 verbs
+// that touch the host default need it.
+func WithProfileConfigPath(path string) ProfileOption {
+	return func(s *ProfileService) { s.configPath = path }
 }
 
 // NewProfileService constructs a ProfileService whose store operates on
@@ -117,6 +133,14 @@ type (
 
 	// ProfileManifest is a profile's parsed mneme-profile.toml identity.
 	ProfileManifest = profile.Manifest
+
+	// ProfileActiveSource explains which precedence tier (pin / host
+	// default / vanilla) decided a project's active profile
+	// (ProfileService.ResolveActive, SPEC-093 §3.5).
+	ProfileActiveSource = profile.ActiveSource
+
+	// ProfileActiveResolution is the result of ProfileService.ResolveActive.
+	ProfileActiveResolution = profile.ActiveResolution
 )
 
 // The four PinState values, re-exported for cli/mcp.
@@ -125,6 +149,13 @@ const (
 	ProfilePinDefault   = profile.PinDefault
 	ProfilePinInstalled = profile.PinInstalled
 	ProfilePinMissing   = profile.PinMissing
+)
+
+// The three ActiveSource values, re-exported for cli/mcp (SPEC-093 §3.5).
+const (
+	ProfileSourceVanilla       = profile.SourceVanilla
+	ProfileSourcePin           = profile.SourcePin
+	ProfileSourceGlobalDefault = profile.SourceGlobalDefault
 )
 
 // Add clones source into the host-level store as a new profile. See
