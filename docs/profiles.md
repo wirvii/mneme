@@ -347,7 +347,18 @@ avoids.
 
 Gitignored (machine-local materialization state, same lesson SPEC-089
 learned about the subagent manifest — never commit machine-local paths),
-TOML, absolute paths (correct here precisely *because* it never travels):
+TOML, absolute paths (correct here precisely *because* it never travels).
+This is a **code-level guarantee, not a documentation aspiration**: every
+`Activate` call ensures a scoped `<repoRoot>/.mneme/.gitignore` exists
+containing exactly the line `profile.lock` (`writeLock` →
+`ensureLockGitignore`, idempotent, preserves any pre-existing hand-authored
+content in that file). The entry is deliberately scoped to the lock file
+alone, **not** a blanket `.mneme/` ignore — `.mneme/shared/` (the
+team-memory vault, SPEC-053) must stay trackable once a repo opts into
+team-memory, and the pin `.mneme-profile` lives at the repo root, outside
+`.mneme/` entirely, so neither is ever affected by this entry. This repo's
+own root `.gitignore` additionally carries a `.mneme/profile.lock` line for
+the same reason, belt-and-suspenders.
 
 ```toml
 # .mneme/profile.lock

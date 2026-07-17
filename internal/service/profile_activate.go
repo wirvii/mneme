@@ -506,7 +506,8 @@ func (s *ProfileService) DetectStaleness(repoRoot string, cached profile.Snapsho
 // writeLock serialises lock and writes it atomically (temp file + rename,
 // same-directory so the rename is same-filesystem) to
 // profile.LockPath(repoRoot), creating the parent .mneme/ directory as
-// needed.
+// needed. It also guarantees (AC13) that the freshly written profile.lock is
+// gitignored in the destination project — see ensureLockGitignore.
 func writeLock(repoRoot string, lock profile.Lock) error {
 	data, err := profile.RenderLock(lock)
 	if err != nil {
@@ -518,12 +519,61 @@ func writeLock(repoRoot string, lock profile.Lock) error {
 		return fmt.Errorf("mkdir %s: %w", filepath.Dir(path), err)
 	}
 
+	if err := ensureLockGitignore(repoRoot); err != nil {
+		return fmt.Errorf("ensure lock gitignore: %w", err)
+	}
+
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o644); err != nil {
 		return fmt.Errorf("write temp lock: %w", err)
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		return fmt.Errorf("rename temp lock: %w", err)
+	}
+	return nil
+}
+
+// lockGitignoreEntry is the single line ensureLockGitignore guarantees
+// inside <repoRoot>/.mneme/.gitignore — scoped to profile.lock alone, never
+// a blanket ignore of the .mneme/ directory (AC13 fix, QA observation 1):
+// .mneme/shared/ (the team-memory vault, SPEC-053) must stay trackable when
+// a repo opts into team-memory, and the pin .mneme-profile lives at the repo
+// root, outside .mneme/ entirely — neither is affected by this entry.
+const lockGitignoreEntry = "profile.lock"
+
+// ensureLockGitignore makes sure profile.lock can never be accidentally
+// committed by whatever repo Activate materializes into (AC13): it
+// writes/updates a small, self-contained <repoRoot>/.mneme/.gitignore
+// containing exactly lockGitignoreEntry — a pattern scoped to that single
+// file inside .mneme/, not a blanket ".mneme/" ignore, which would silently
+// break team-memory's committed .mneme/shared/ vault. Idempotent: a
+// .gitignore that already contains the entry (on any line, exact match after
+// trimming) is left untouched; any other pre-existing content in the file is
+// preserved.
+func ensureLockGitignore(repoRoot string) error {
+	path := filepath.Join(repoRoot, ".mneme", ".gitignore")
+
+	existing, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("read %s: %w", path, err)
+	}
+
+	for _, line := range strings.Split(string(existing), "\n") {
+		if strings.TrimSpace(line) == lockGitignoreEntry {
+			return nil
+		}
+	}
+
+	var b strings.Builder
+	b.Write(existing)
+	if len(existing) > 0 && !strings.HasSuffix(string(existing), "\n") {
+		b.WriteString("\n")
+	}
+	b.WriteString(lockGitignoreEntry)
+	b.WriteString("\n")
+
+	if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
 	}
 	return nil
 }

@@ -37,3 +37,9 @@ CLAUDE.local.md
 
 # Spec artifact tree — generated locally, published manually to wirvii/mneme-spec
 tmp/
+
+# Profile activation lock (SPEC-092) — machine-local materialization receipt,
+# absolute paths + rule UUIDs, never committed. Scoped to the lock file only:
+# .mneme/shared/ (team-memory vault, SPEC-053) must stay trackable, and the
+# .mneme-profile pin lives at the repo root, outside .mneme/ entirely.
+.mneme/profile.lock
