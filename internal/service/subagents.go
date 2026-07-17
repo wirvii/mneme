@@ -53,6 +53,38 @@ type ProjectProfile struct {
 	// Mapping lists which role owns which app/package (grill phase 2),
 	// e.g. {"apps/core-srv", "backend"}.
 	Mapping []ProjectProfileMapping `json:"mapping,omitempty"`
+
+	// Areas persists the capa-3 (per-role project doctrine: stack,
+	// architecture, commands, best practices) as queryable typed-memory
+	// content, one entry per role (SPEC-095 §5/§3.6). Before this field
+	// existed, capa-3 was only ever baked directly into the composed
+	// .claude/agents/<role>.md file produced by subagents.Compose — never
+	// recoverable on its own. That is a problem for the profiles EPIC's
+	// "profile-active" mode (SPEC-092 §2 fuseAgent): fusing a profile's
+	// pre-composed capa-1 with a repo's capa-2/3 needs the capa-3 prose back
+	// as data, via ReadProfile, not baked into a file that mode never writes
+	// (subagent_write is skipped entirely in profile-active mode — see
+	// docs/profiles.md §5). Populated by the mneme-init grill's Phase 3 when
+	// a profile is active; absent (nil) for every ProjectProfile saved
+	// before this field existed or by a vanilla-mode grill — both read back
+	// cleanly (json:"omitempty", no migration).
+	Areas []ProjectProfileArea `json:"areas,omitempty"`
+}
+
+// ProjectProfileArea is one role's capa-3 project doctrine — the
+// areas_layer3_md prose the mneme-init grill drafts per role (stack,
+// architecture, commands, best practices), persisted so subagents.fuseAgent
+// (SPEC-092 §2) can recover it independently of whatever capa-1 a profile
+// contributes for the same role (SPEC-095 §5/§3.6).
+type ProjectProfileArea struct {
+	// Role is the subagent role this capa-3 draft belongs to.
+	Role subagents.Role `json:"role"`
+
+	// Layer3MD is the areas_layer3_md prose authored during the grill for
+	// Role — project knowledge only (stack/architecture/commands/best
+	// practices), never lifecycle instructions or capability declarations
+	// (the same layer 2/3 boundary subagent_compose enforces, SPEC-090).
+	Layer3MD string `json:"layer3_md"`
 }
 
 // ProjectProfileRepo holds the repo-wide facts elicited once during grill

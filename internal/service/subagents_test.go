@@ -140,6 +140,76 @@ func TestSaveProfile_IdempotentUpsertByTopicKey(t *testing.T) {
 	}
 }
 
+// TestSaveProfile_AreasRoundTrip guards SPEC-095 §5/§3.6: ProjectProfile.Areas
+// (the capa-3 project doctrine per role) survives the SaveProfile/ReadProfile
+// typed-memory round-trip, so subagents.fuseAgent (SPEC-092 §2) can recover it
+// independently of whatever capa-1 a profile contributes for the same role.
+func TestSaveProfile_AreasRoundTrip(t *testing.T) {
+	t.Parallel()
+	svc := newSubagentTestService(t)
+	ctx := context.Background()
+
+	profile := service.ProjectProfile{
+		SchemaVersion: 2,
+		Org:           "wirvii",
+		Areas: []service.ProjectProfileArea{
+			{Role: subagents.RoleBackend, Layer3MD: "## Stack\nGo 1.25 + sqlc.\n"},
+			{Role: subagents.RoleFrontend, Layer3MD: "## Stack\nNext.js 16.\n"},
+		},
+	}
+
+	if _, err := svc.SaveProfile(ctx, "test/project", profile); err != nil {
+		t.Fatalf("SaveProfile: %v", err)
+	}
+
+	got, err := svc.ReadProfile(ctx, "test/project")
+	if err != nil {
+		t.Fatalf("ReadProfile: %v", err)
+	}
+	if got == nil {
+		t.Fatal("ReadProfile: want non-nil profile after save")
+	}
+	if len(got.Areas) != len(profile.Areas) {
+		t.Fatalf("ReadProfile: areas length mismatch: got %d, want %d", len(got.Areas), len(profile.Areas))
+	}
+	for i, a := range profile.Areas {
+		if got.Areas[i] != a {
+			t.Fatalf("ReadProfile: areas[%d] mismatch: got %+v, want %+v", i, got.Areas[i], a)
+		}
+	}
+}
+
+// TestReadProfile_BackwardCompatWithoutAreas guards SPEC-095 §5/§3.6: a
+// ProjectProfile persisted before the Areas field existed (a bare JSON object
+// with no "areas" key at all) reads back cleanly with Areas nil — Areas is
+// additive (json:"omitempty"), no migration, no reader breakage.
+func TestReadProfile_BackwardCompatWithoutAreas(t *testing.T) {
+	t.Parallel()
+	svc := newSubagentTestService(t)
+	ctx := context.Background()
+
+	// A profile shaped exactly like one saved before Areas existed: no
+	// "areas" key in the persisted JSON at all.
+	legacy := service.ProjectProfile{SchemaVersion: 1, Org: "wirvii"}
+	if _, err := svc.SaveProfile(ctx, "test/project", legacy); err != nil {
+		t.Fatalf("SaveProfile (legacy shape): %v", err)
+	}
+
+	got, err := svc.ReadProfile(ctx, "test/project")
+	if err != nil {
+		t.Fatalf("ReadProfile: %v", err)
+	}
+	if got == nil {
+		t.Fatal("ReadProfile: want non-nil profile")
+	}
+	if got.Areas != nil {
+		t.Fatalf("ReadProfile: want nil Areas for a legacy-shaped profile, got %+v", got.Areas)
+	}
+	if got.Org != "wirvii" {
+		t.Fatalf("ReadProfile: want Org=%q preserved, got %q", "wirvii", got.Org)
+	}
+}
+
 func TestSaveManifest_RoundTrip(t *testing.T) {
 	t.Parallel()
 	svc := newSubagentTestService(t)
