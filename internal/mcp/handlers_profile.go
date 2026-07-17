@@ -43,6 +43,48 @@ func (h *handlers) handleProfileNew(_ context.Context, raw json.RawMessage) (*To
 	return resultFromAny(res)
 }
 
+// --- PROJECT HANDLER (SPEC-098 §7a) ---
+
+// projectNewRequest is the input to project_new.
+type projectNewRequest struct {
+	Scaffold    string            `json:"scaffold"`
+	Dir         string            `json:"dir"`
+	Vars        map[string]string `json:"vars"`
+	ProjectRoot string            `json:"project_root"`
+}
+
+// handleProjectNew processes a project_new tool call: assembles a brand-new
+// project repository from a scaffold in the active profile's catalog (copy
+// skeleton + variable substitution + git init), then writes the fresh repo's
+// .mneme-profile pin with scaffold=<name>. The deterministic half of the
+// /new-project skill — it never commits, sets a remote, or activates.
+func (h *handlers) handleProjectNew(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	var req projectNewRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return nil, &JSONRPCError{
+			Code:    CodeInvalidParams,
+			Message: fmt.Sprintf("mcp: handle project_new: invalid arguments: %s", err),
+		}
+	}
+	if req.Scaffold == "" {
+		return nil, &JSONRPCError{Code: CodeInvalidParams, Message: "mcp: handle project_new: scaffold is required"}
+	}
+	if req.Dir == "" {
+		return nil, &JSONRPCError{Code: CodeInvalidParams, Message: "mcp: handle project_new: dir is required"}
+	}
+
+	res, err := h.profileSvc.NewProject(ctx, service.ProjectNewInput{
+		Scaffold:    req.Scaffold,
+		Dir:         req.Dir,
+		Vars:        req.Vars,
+		ProjectRoot: req.ProjectRoot,
+	})
+	if err != nil {
+		return nil, h.mapServiceError("project_new", err)
+	}
+	return resultFromAny(res)
+}
+
 // profileAddRequest is the input to profile_add.
 type profileAddRequest struct {
 	Source string `json:"source"`

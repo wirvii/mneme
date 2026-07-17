@@ -174,6 +174,7 @@ in a local SQLite database and exposes them via MCP for agent integration.`,
 		newDelegationHookCmd(),
 		newTeamMemoryCmd(),
 		newProfileCmd(),
+		newProjectCmd(),
 	)
 
 	return root

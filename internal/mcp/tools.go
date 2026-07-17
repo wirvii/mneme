@@ -1418,6 +1418,34 @@ func allTools() []ToolDefinition {
 			},
 		},
 
+		// --- PROJECT TOOLS (SPEC-098 §7a) ---
+		{
+			Name:        "project_new",
+			Description: "Grow a brand-new project repository from a scaffold in the ACTIVE profile's catalog (pin > host default > vanilla). Copies the scaffold's skeleton with {{var}} substitution, runs `git init` (no commit, no remote), and writes the fresh repo's .mneme-profile pin with scaffold=<name> plus the active profile's identity — so the repo is born pointing at the profile that generated it. Does NOT commit, set a remote, or activate: the /new-project skill chains mneme-init over the fresh repo. Errors if the destination is not empty, the scaffold is not in the active profile's catalog, or (today) the layout is monorepo (arrives in a later mneme).",
+			InputSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"scaffold", "dir"},
+				"properties": map[string]any{
+					"scaffold": map[string]any{
+						"type":        "string",
+						"description": "The scaffold name to assemble (a scaffolds/<name>/ entry of the active profile).",
+					},
+					"dir": map[string]any{
+						"type":        "string",
+						"description": "Destination directory for the new project. Must be empty or absent.",
+					},
+					"vars": map[string]any{
+						"type":        "object",
+						"description": "Substitution variables as a flat string->string map, merged over the scaffold's declared [vars] defaults.",
+						"additionalProperties": map[string]any{"type": "string"},
+					},
+					"project_root": map[string]any{
+						"type":        "string",
+						"description": "Directory from which the ACTIVE profile is resolved (NOT the destination). Defaults to the current working directory.",
+					},
+				},
+			},
+		},
 		{
 			Name:        "init",
 			Description: "Initialise a project with mneme managed blocks and report drift. Applies the global operating manual and a minimal repo block to CLAUDE.md files, then runs the drift detector. Pass check=true for report-only mode (no writes). Returns drift findings and a summary of blocks applied.",

@@ -67,6 +67,10 @@ func newHandlers(svc *service.MemoryService, sdd *service.SDDService, skillsSvc 
 			// call Activate stays consistently capable of a default
 			// activation.
 			service.WithDefaultProfileFS(install.DefaultProfileFS()),
+			// SPEC-098 §7a: project_new assembles a scaffold; wire the real
+			// bootstrapper so a monorepo scaffold (§7b) can run its pinned
+			// generator. A single-layout scaffold never touches it.
+			service.WithProfileBootstrapper(service.NewExecBootstrapper()),
 		),
 		logger: logger,
 	}
@@ -204,6 +208,10 @@ func (h *handlers) handleToolCall(ctx context.Context, params ToolCallParams) (*
 		return h.handleProfileUse(ctx, params.Arguments)
 	case "profile_default":
 		return h.handleProfileDefault(ctx, params.Arguments)
+
+	// --- PROJECT TOOLS (SPEC-098 §7a) ---
+	case "project_new":
+		return h.handleProjectNew(ctx, params.Arguments)
 
 	// --- CODEGRAPH TOOLS ---
 	case "codegraph_search":
@@ -678,7 +686,8 @@ func (h *handlers) mapServiceError(method string, err error) *JSONRPCError {
 		errors.Is(err, model.ErrSpecNotFound) ||
 		errors.Is(err, model.ErrPushbackNotFound) ||
 		errors.Is(err, model.ErrSkillNotFound) ||
-		errors.Is(err, model.ErrProfileNotFound) {
+		errors.Is(err, model.ErrProfileNotFound) ||
+		errors.Is(err, model.ErrScaffoldNotFound) {
 		return &JSONRPCError{
 			Code:    CodeMemoryNotFound,
 			Message: fmt.Sprintf("mcp: handle %s: %s", method, err),
@@ -721,7 +730,10 @@ func (h *handlers) mapServiceError(method string, err error) *JSONRPCError {
 		errors.Is(err, model.ErrUnknownSpecDocKind) ||
 		errors.Is(err, model.ErrProfileExists) ||
 		errors.Is(err, model.ErrProfileNameMismatch) ||
-		errors.Is(err, model.ErrInvalidProfile) {
+		errors.Is(err, model.ErrInvalidProfile) ||
+		errors.Is(err, model.ErrInvalidScaffold) ||
+		errors.Is(err, model.ErrBootstrapToolMissing) ||
+		errors.Is(err, model.ErrLayoutUnsupported) {
 		return &JSONRPCError{
 			Code:    CodeInvalidParams,
 			Message: fmt.Sprintf("mcp: handle %s: %s", method, err),
