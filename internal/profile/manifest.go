@@ -65,6 +65,24 @@ func ParseManifest(data []byte) (*Manifest, error) {
 	return &m, nil
 }
 
+// RenderManifest serializes m to TOML bytes — the write-path counterpart of
+// ParseManifest (symmetric to Pin's ParsePin/WritePin pairing, §3), used by
+// Scaffold (§5) to produce a brand-new profile's mneme-profile.toml. m is
+// validated first: an invalid manifest (missing name/version, or a name
+// failing the safe-slug check) is rejected with ErrInvalidManifest before any
+// bytes are produced, so a caller can never render a manifest that would
+// fail its own round-trip through ParseManifest+Validate.
+func RenderManifest(m Manifest) ([]byte, error) {
+	if err := m.Validate(); err != nil {
+		return nil, fmt.Errorf("profile: render manifest: %w", err)
+	}
+	data, err := toml.Marshal(&m)
+	if err != nil {
+		return nil, fmt.Errorf("profile: render manifest: marshal: %w", err)
+	}
+	return data, nil
+}
+
 // ParseManifestFile reads path and parses it as a Manifest.
 func ParseManifestFile(path string) (*Manifest, error) {
 	data, err := os.ReadFile(path)
