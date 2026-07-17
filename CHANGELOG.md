@@ -4,6 +4,40 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [v1.29.0] — 2026-07-17 — Profiles: team methodology as a portable git repo + scoped codegraph reindex
+
+### Added
+
+- **Profiles (SPEC-091→100): a team's whole methodology packaged as a portable git repo,
+  activable per-project or globally with nvm-like semantics.** A profile bundles subagent
+  layer-1 + skills + rules + managed blocks + models + spec templates, distributed as a git
+  repo installed once into a host-level store and switched via a per-project pin.
+  - `mneme profile add|update|list|status` — manage the host-level profile store.
+  - `mneme profile use|default` — nvm-style verbs: `use` pins the current repo, `default`
+    sets the global default read once at SessionStart (never re-points live sessions).
+    Precedence: repo pin > global default > vanilla (pure replacement, no merge).
+  - Hybrid activation + `.mneme/profile.lock` (gitignored): materialises agents/skills/blocks,
+    re-points runtime rules/models/policy/templates; clean switch removes only what it wrote.
+  - `mneme profile new` + the `mneme-profile-author` skill — assisted profile creation; and
+    `mneme-init` now detects the pin and fuses profile layer-1 with the repo's layer-2/3.
+  - Scaffolding: `mneme project new` (layouts single/monorepo), `mneme app add` (Turborepo
+    built-in wiring or declared `[wiring]`), `mneme scaffold capture` (author a scaffold from
+    an exemplar repo). Bootstrap generators are version-pinned (never `@latest`).
+  - The OSS default profile is embedded in the binary; vanilla `mneme install claude-code`
+    is byte-identical to before (verified). Profile-provenance memories are excluded from the
+    team-memory vault (anti-zombie guard). Migration 015 adds memory provenance.
+
+- **Codegraph scoped re-index (SPEC-101).** Git hooks now re-index only the files a commit
+  actually changed (`git diff --name-status` against the last-indexed SHA) instead of walking
+  and hashing the whole tree on every commit, plus a portable coalesce lock so rapid commits
+  no longer stack overlapping re-indexers. Deletions/renames purge their symbols from the graph.
+  Full-scan fallback (`mneme codegraph index`, `--force`, first run) unchanged. Zero migration.
+
+### Changed
+
+- `.claude/` (subagent profiles) and `.mneme/shared/` (team-memory vault) are now tracked in
+  the repo, so a stray `git stash -u` can no longer sweep the delegation setup off disk.
+
 ## [v1.28.0] — 2026-07-16 — The layer-2/3 boundary: no lifecycle/capabilities in grill content + merge pre-existing dev agents (SPEC-090)
 
 ### Added
