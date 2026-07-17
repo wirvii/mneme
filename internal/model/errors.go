@@ -258,3 +258,31 @@ var ErrProfileMemoryNotShareable = errors.New("profile-provenance memory cannot 
 // by every production frontend — so seeing this in practice points at a
 // ProfileService constructed by hand (e.g. a test) that forgot the option.
 var ErrDefaultProfileUnavailable = errors.New("profile service: default profile fs.FS not configured")
+
+// --- Scaffold sentinel errors (SPEC-098 §7a) ---
+//
+// These mirror the internal/profile leaf's scaffold sentinels
+// (profile.ErrInvalidLayout/ErrInvalidToolchain/ErrBootstrapNotPinned/
+// ErrInvalidScaffold/ErrScaffoldNotFound/ErrLayoutUnsupported) plus one the
+// service itself raises (ErrBootstrapToolMissing) — ProfileService translates
+// between the two so cli/mcp only ever import internal/model for errors.Is.
+
+// ErrInvalidScaffold is returned when a scaffold.toml fails schema validation
+// (bad layout/toolchain, an unpinned bootstrap, or single-layout exclusivity).
+var ErrInvalidScaffold = errors.New("invalid scaffold definition")
+
+// ErrScaffoldNotFound is returned when `project new <scaffold>` names a
+// scaffold absent from the active profile's catalog (or the active profile has
+// no scaffolds at all).
+var ErrScaffoldNotFound = errors.New("scaffold not found in active profile")
+
+// ErrBootstrapToolMissing is returned when a scaffold's pinned bootstrap
+// generator cannot run because the package runner (pnpm/npx) is not on PATH —
+// an actionable environment precondition, never a panic (analogous to
+// ErrCLIUnavailable for conflicts).
+var ErrBootstrapToolMissing = errors.New("scaffold bootstrap tool not found on PATH")
+
+// ErrLayoutUnsupported is returned when a project scaffold uses a layout not
+// yet assembled by the current mneme (today: monorepo, which arrives with
+// SPEC-099 §7b).
+var ErrLayoutUnsupported = errors.New("scaffold layout not yet supported")

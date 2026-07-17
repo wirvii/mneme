@@ -48,6 +48,14 @@ type ProfileService struct {
 	// when it is unset — mirrors Activate's mem/sub guard.
 	configPath string
 
+	// bootstrapper runs a scaffold's pinned official generator subprocess
+	// (SPEC-098 §7a §4.4) during NewProject's assembly. nil until
+	// WithProfileBootstrapper is passed — a single-layout scaffold never needs
+	// it (single has no bootstrap), so every existing construction keeps
+	// working; only a bootstrap-bearing plan errors when it is unset. Tests
+	// inject a fake that writes a fixture tree with zero network.
+	bootstrapper Bootstrapper
+
 	// defaultFS is the embedded OSS "default profile" (install.DefaultProfileFS,
 	// SPEC-096 §6) — the source Activate reads from for a PinDefault
 	// activation, injected by the frontend so this package never imports
@@ -97,6 +105,17 @@ func WithProfileSkillsDir(dir string) ProfileOption {
 // that touch the host default need it.
 func WithProfileConfigPath(path string) ProfileOption {
 	return func(s *ProfileService) { s.configPath = path }
+}
+
+// WithProfileBootstrapper wires the scaffold bootstrapper into the
+// ProfileService (SPEC-098 §7a): the Strategy NewProject invokes to run a
+// scaffold's pinned official generator (e.g. `pnpm dlx create-turbo@2.3.1`).
+// Production frontends pass service.NewExecBootstrapper(); tests pass a fake
+// that materializes a fixture tree with zero network. A ProfileService without
+// this wired still assembles any single-layout scaffold (which has no
+// bootstrap); only a bootstrap-bearing plan needs it.
+func WithProfileBootstrapper(b Bootstrapper) ProfileOption {
+	return func(s *ProfileService) { s.bootstrapper = b }
 }
 
 // WithDefaultProfileFS wires the embedded OSS default profile into the
@@ -239,6 +258,15 @@ func translateProfileError(op string, err error) error {
 		return fmt.Errorf("%s: %w", op, model.ErrProfileNameMismatch)
 	case errors.Is(err, profile.ErrInvalidManifest), errors.Is(err, profile.ErrInvalidPin):
 		return fmt.Errorf("%s: %w: %s", op, model.ErrInvalidProfile, err)
+	case errors.Is(err, profile.ErrInvalidLayout),
+		errors.Is(err, profile.ErrInvalidToolchain),
+		errors.Is(err, profile.ErrBootstrapNotPinned),
+		errors.Is(err, profile.ErrInvalidScaffold):
+		return fmt.Errorf("%s: %w: %s", op, model.ErrInvalidScaffold, err)
+	case errors.Is(err, profile.ErrScaffoldNotFound):
+		return fmt.Errorf("%s: %w", op, model.ErrScaffoldNotFound)
+	case errors.Is(err, profile.ErrLayoutUnsupported):
+		return fmt.Errorf("%s: %w", op, model.ErrLayoutUnsupported)
 	}
 
 	if hint := gitAuthHint(err); hint != "" {
