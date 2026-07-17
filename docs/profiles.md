@@ -1,13 +1,14 @@
-# Profiles §1–§2: manifest/pin/store, activation, lockfile, provenance
+# Profiles §1–§3: manifest/pin/store, activation, precedence + use/default
 
-> SPEC-091 (§1) + SPEC-092 (§2), 2 of 7 specs in the EPIC `profiles`. Design
-> reference: `docs/profiles-design.md` (§1–§4, §7, §9, §11, §12, §16.2,
-> decisions #2/#4/#5/#7/#8/#9/#10/#11/#12/#13). This document covers §1 (the
-> foundation: manifest, pin, host-level store, read-only pin resolution) and
-> §2 (the activation engine: hybrid materialization, `.mneme/profile.lock`,
-> `source=profile:<name>` provenance, switch). The `use`/`default` verbs,
-> precedence, SessionStart integration, team-memory exclusion, assisted
-> creation, and scaffolding are later specs (§3–§7); do not expect them here.
+> SPEC-091 (§1) + SPEC-092 (§2) + SPEC-093 (§3), 3 of 7 specs in the EPIC
+> `profiles`. Design reference: `docs/profiles-design.md` (§1–§7, §9–§11,
+> §16.2–§16.3, decisions #2/#4–#13). This document covers §1 (the foundation:
+> manifest, pin, host-level store, read-only pin resolution), §2 (the
+> activation engine: hybrid materialization, `.mneme/profile.lock`,
+> `source=profile:<name>` provenance, switch), and §3 (precedence, the two
+> write verbs `use`/`default`, and the SessionStart integration). Team-memory
+> exclusion, assisted creation, and scaffolding are later specs (§4–§7); do
+> not expect them here.
 
 ## Overview
 
@@ -207,12 +208,12 @@ internal/managedblock (leaf: Upsert/Read/RemoveText/Remove — stdlib only)
   skill copying and the CLAUDE.md block upsert are new, self-contained
   service-layer code (`copyDir`, `managedblock.Upsert`).
 
-## MCP tools (65→69, unchanged by §2)
+## MCP tools (65→69→71)
 
-§2 adds no new CLI/MCP verbs — `Activate`/`Switch`/`Deactivate`/
-`DetectStaleness`/`ActiveLock` are `ProfileService` methods consumed by a
-later spec (§3: `use`/`default`/SessionStart). The tool count below is
-unchanged from §1.
+§2 added no new CLI/MCP verbs — `Activate`/`Switch`/`Deactivate`/
+`DetectStaleness`/`ActiveLock` are `ProfileService` methods §3 consumes
+(`use`) or exposes indirectly (SessionStart). §3 adds the two write verbs:
+`profile_use`/`profile_default` (69→71).
 
 | Tool | Params | Returns |
 |------|--------|---------|
@@ -220,6 +221,8 @@ unchanged from §1.
 | `profile_update` | `{name?, ref?}` | `UpdateResult` (name/old_ref/new_ref/version) |
 | `profile_list` | `{}` | `[]ProfileInfo` |
 | `profile_status` | `{project_root?}` | `Resolution` (state/pin/manifest/path) |
+| `profile_use` | `{name, project_root?}` | `UseResult` (name/source/ref/project_root/materialized/warnings) |
+| `profile_default` | `{name?, clear?}` | `DefaultResult` (default) |
 
 ## HTTP: no endpoints (decision, AC12)
 
@@ -478,17 +481,159 @@ snapshot was taken. §2 only detects and reports; **when** to call this
 (SessionStart, or before every mneme operation) and how to surface the
 message are §3.
 
+## §3: Precedence, `use`/`default`, and SessionStart
+
+§3 is the consistency spine of the nvm model (`docs/profiles-design.md` §5,
+§6, §10, decisions #5/#6): the two verbs that activate a profile, the
+precedence rule that decides which wins, and the SessionStart integration
+that lets a repo auto-activate on open.
+
+### The pin gains a writer — `WritePin` + `Store.PinFromStore`
+
+§1 only *read* the pin (`ResolvePin`). §3 adds the write path:
+
+```go
+func WritePin(projectRoot string, pin *Pin) error
+func (s *Store) PinFromStore(name string) (*PinFromStoreResult, error)
+func (s *Store) HeadCommit(name string) (string, error)
+```
+
+- `WritePin` validates (rejecting an invalid pin with `ErrInvalidPin` before
+  touching disk) and writes atomically (temp file + `os.Rename`). If a pin
+  already exists at `projectRoot` and the new one carries no `Scaffold`, the
+  existing pin's `Scaffold` (the `/new-project` provenance field, §7) is
+  carried over — everything else is a pure replacement.
+- `PinFromStore` reconstructs a self-describing pin from a profile's
+  checkout in the store, without ever cloning: `Name` = the requested name,
+  `Source` = `git remote get-url origin` (empty + a warning when the
+  checkout has no origin — e.g. it was hand-placed rather than cloned),
+  `Ref` = the exact tag when HEAD sits on one (`git describe --tags
+  --exact-match`), otherwise the full commit SHA. It also resolves `Commit`
+  (`git rev-parse HEAD`) in the same round-trip, for `ActivationInput.Commit`.
+- `HeadCommit` is the standalone counterpart used when the caller already
+  has a `Pin` from `ResolvePin`/`ResolveActive` (which never carries a commit
+  field) rather than one just built by `PinFromStore`.
+
+### `mneme profile use <name>` — "= `nvm use`"
+
+`ProfileService.Use(ctx, projectRoot, name)`:
+
+1. `Store.PinFromStore(name)` — **never clones**; `name` must already be
+   installed (`model.ErrProfileNotFound` otherwise, pointing at `profile
+   add`). This keeps the `add`/`use` frontier strict.
+2. `profile.WritePin(projectRoot, pin)` — writes `.mneme-profile` at the repo
+   root.
+3. `ProfileService.Activate(ctx, ActivationInput{...})` — materializes
+   **immediately** (§2). Unlike the SessionStart path below, a
+   materialization failure here **is** propagated as an error: the caller
+   explicitly asked to activate a profile and must know if it failed.
+
+`mneme profile use <name>` (CLI) and `profile_use` (MCP) are thin wiring over
+this one method — both require a ProfileService fully wired with
+`WithProfileMemoryService`/`WithProfileSubagentService`/`WithProfileSkillsDir`
+(same construction as the SessionStart integration and as
+`internal/service/subagents_test.go`'s pattern), since `use` invokes
+`Activate` directly.
+
+### `mneme profile default [<name>] [--clear]` — "= `nvm alias default`"
+
+A new `[profiles]` section in `~/.mneme/config.toml`:
+
+```toml
+[profiles]
+default = "chatea-pro"   # "" (or absent) = vanilla
+```
+
+`ProfileService.SetDefault`/`ClearDefault`/`Default` wrap
+`config.SetProfilesDefault(path, name)` (the same atomic
+load/mutate/marshal/rename-into-place pattern as `SetModelsOverrides`).
+`SetDefault` fail-fasts with `model.ErrProfileNotFound` when `name` is not in
+the host-level store — a default that resolves to nothing is a footgun the
+dev can fix with `profile add` first (design decision A1). Crucially: this
+verb **never materializes anything** and **never re-points a session already
+running** — it only affects sessions started *after* the call, in repos with
+*no pin of their own*.
+
+### Precedence — `Store.ResolveActive`
+
+```go
+type ActiveSource int // SourceVanilla | SourcePin | SourceGlobalDefault
+type ActiveResolution struct { Source ActiveSource; Resolution Resolution }
+func (s *Store) ResolveActive(projectRoot, globalDefault string) (ActiveResolution, error)
+```
+
+Pure replacement, never a merge (decision #5): a project's own pin — in
+**any** of its three non-absent states (`PinDefault`/`PinInstalled`/
+`PinMissing`) — wins outright and `globalDefault` is never even consulted.
+Only when the project has **no pin at all** does the host default apply
+(itself resolving to `PinInstalled` or `PinMissing` against the store).
+`globalDefault` is injected as a plain string by the caller
+(`ProfileService.ResolveActive`) — the leaf never imports `internal/config`,
+keeping the SPEC-056 D5 import-guard green.
+
+### Read-once-not-live (§3.7, AC10)
+
+`Config.Profiles.Default` is consulted in **exactly one** production
+call-site in the whole runtime: `ProfileService.ResolveActive`, invoked once
+per session by `runHookSessionStart`. `TestProfilesDefault_SingleReadPath`
+(`internal/service/profile_default_readonce_test.go`) enforces this
+structurally — it walks `internal/` and fails if the field selector
+`.Profiles.Default` shows up anywhere outside `internal/config` (which owns
+the field) except that one file. This is what makes `profile default`
+"sessions started after this call only": nothing else in mneme re-reads the
+default mid-session, and nothing re-derives already-materialized files from
+it later. `profile use`, by contrast, is an **explicit** in-session action
+and re-materializes on purpose — the read-once rule applies to the *default*,
+never to `use`.
+
+### SessionStart integration — `maybeActivateProfile`
+
+`runHookSessionStart` calls `maybeActivateProfile` **before** the context
+block, with the exact fail-open contract `maybeEmitCodegraphNudge` already
+established (exit 0 always; every failure degrades to a `stderr` WARN):
+
+1. Resolve the project root (`git rev-parse --show-toplevel`, or `cwd` when
+   not a git repo).
+2. `ProfileService.ResolveActive(root)` — the one-time read described above.
+3. Branch on `Resolution.State`:
+   - `PinAbsent` (vanilla) → emit nothing (no noise on non-profile repos).
+   - `PinInstalled` → resolve the checkout's commit (`ResolveCommit`), call
+     `Activate`, and print a short confirmation block naming the source
+     (`via pin` or `via default global`). A failure here WARNs and returns —
+     it never aborts the session.
+   - `PinDefault` (mneme's internal default profile — no `Source`) → print a
+     pending-confirmation block; real materialization depends on §6
+     (not yet landed).
+   - `PinMissing` → print the actionable nudge/gate (below). **Never
+     clones.**
+
+```
+<!-- mneme:profile:start -->
+## Profile no instalado
+
+Este repo usa el profile `chatea-pro@v3` (source `git@github.com:chateapro/mneme-profile.git`),
+que no está instalado en este host.
+
+**Para instalarlo ahora** (con tu confirmación — mneme nunca clona sin OK):
+    mneme profile add git@github.com:chateapro/mneme-profile.git --ref v3
+    mneme profile use chatea-pro
+
+Hasta entonces la sesión corre en modo **vanilla** (sin el profile del equipo).
+<!-- mneme:profile:end -->
+```
+
+When `PinMissing` comes from a host *default* naming an uninstalled profile
+(rather than a repo's own pin), there is no known `Source` to print an exact
+`add` command for — the block instead asks for the git URL explicitly.
+
 ## Anti-scope (each is a later spec)
 
 | Topic | Spec |
 |-------|------|
-| `use`/`default` verbs (writing the pin, global default in config) | §3 |
-| Precedence (pin > global default > vanilla) that **chooses** A/B | §3 |
-| SessionStart hook + actionable nudge/gate; **invoking** `Activate`/`DetectStaleness` | §3 |
 | Enforcing the vault exclusion (forcing `shared=0` in team-memory's own write path) + anti-zombie guard | §4 |
 | Assisted creation (`profile new`) + `mneme-init` integration (capa-2/3 authoring in the grill) | §5 |
-| Migrating the default OSS profile (assets → profile format) | §6 |
-| Scaffolding (`/new-project`, `/new-app`, `scaffolds/`, `_blueprints/`) | §7 |
+| Migrating the default OSS profile (assets → profile format); real materialization of `PinDefault` | §6 |
+| Scaffolding (`/new-project`, `/new-app`, `scaffolds/`, `_blueprints/`); the pin's `scaffold` field is preserved by `WritePin`, never acted upon | §7 |
 | Runtime consumption of `models.toml`/`policy.toml`/`templates/` by scoring/lanes/`spec_doc_write` | follow-up |
 
 ## Testing notes
@@ -501,7 +646,34 @@ checks that no test leaves a `profiles/` directory, a `profile.lock`, or
 materialized skills behind in the sandboxed test `HOME` (SPEC-091 §1 AC13,
 extended by SPEC-092 §2), the same invariant it already enforces for
 `projects/*.db`/`global.db`. `internal/service`'s activation tests
-(`profile_activate_test.go`) inject every path (`profilesDir`, `repoRoot`,
-`skillsDir`) via `t.TempDir()` and build the `MemoryService`/
-`SubagentService` seam the same way `internal/service/subagents_test.go`
-already does — no test resolves `HOME` or a real project database.
+(`profile_activate_test.go`, `profile_use_test.go`) inject every path
+(`profilesDir`, `repoRoot`, `skillsDir`, and — new in §3 — `configPath`) via
+`t.TempDir()` and build the `MemoryService`/`SubagentService` seam the same
+way `internal/service/subagents_test.go` already does — no test resolves
+`HOME` or a real project database.
+
+§3's `Use` tests need a git-BACKED fixture (unlike §2's plain-file
+`newActivationTestEnv`), since `PinFromStore` shells out to `git remote
+get-url origin`/`git describe`/`git rev-parse` against the checkout —
+`profile_use_test.go`'s `newUseTestEnv` `git init`s the fixture profile
+directory directly (local identity, no network) so those commands have real
+state to read.
+
+`internal/cli`'s SessionStart tests (`profile_sessionstart_test.go`) drive
+`runHookSessionStart(ctx, w, errW)` directly with `bytes.Buffer`s — the
+function's signature changed from hardcoded `os.Stdout`/`os.Stderr` to
+explicit `io.Writer` parameters specifically so this is possible without
+capturing real OS stdout (mirrors `runHookPreToolUse`'s existing shape).
+Each test `os.Chdir`s into an isolated fixture and calls `gitident.Reset()`
+(SPEC-085 §5.3/§5.4 note 3) defensively — `initService()`'s
+`DetectTeamMemory()` resolves the real process cwd via `git rev-parse
+--show-toplevel`, and none of these fixtures ever create the team-memory
+marker file, so `gitident.Author()` is never actually invoked, but the reset
+guards against that changing later. CLI-level tests of `profile
+default`/`SessionStart`'s `[profiles].default` reads write to
+`config.DefaultPath()` under the sandboxed test `HOME` (shared by the whole
+`internal/cli` test binary run, per SPEC-085 G2) — each such test cleans up
+its own default via `t.Cleanup` to avoid bleeding into unrelated tests in the
+same run; `scripts/testguard.sh` does not need extending for this, since it
+only checks for stray SQLite/profile-store artifacts, not `config.toml`
+contents.
