@@ -1364,6 +1364,41 @@ func allTools() []ToolDefinition {
 				},
 			},
 		},
+		{
+			Name:        "profile_use",
+			Description: "Activate an already-installed profile for the current (or given) repository, immediately: reconstructs a self-describing pin from the profile's checkout in the host-level store (name + origin remote + exact tag/commit), writes it to .mneme-profile, and materializes it right away (agents/skills/blocks/rules). Never clones — the profile must already be installed via profile_add. Preserves a preexisting 'scaffold' field on the pin.",
+			InputSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"name"},
+				"properties": map[string]any{
+					"name": map[string]any{
+						"type":        "string",
+						"description": "Profile name in the host-level store (must already be installed).",
+					},
+					"project_root": map[string]any{
+						"type":        "string",
+						"description": "Absolute path to the repository root. Defaults to current working directory.",
+					},
+				},
+			},
+		},
+		{
+			Name:        "profile_default",
+			Description: "Set, clear, or (with neither name nor clear) print the HOST-level default profile (~/.mneme/config.toml's [profiles].default): the profile a session activates at SessionStart when the repository has NO .mneme-profile pin. Never materializes anything and never re-points sessions already running — use profile_use to activate a profile in the current repo now.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"name": map[string]any{
+						"type":        "string",
+						"description": "Profile name to set as the host-level default (must already be installed).",
+					},
+					"clear": map[string]any{
+						"type":        "boolean",
+						"description": "When true, clears the default (reverts to vanilla). Takes precedence over name.",
+					},
+				},
+			},
+		},
 
 		{
 			Name:        "init",

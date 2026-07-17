@@ -218,3 +218,150 @@ func TestHandleProfileUpdate_NotFound(t *testing.T) {
 		t.Errorf("error code = %d, want %d", resp.Error.Code, CodeMemoryNotFound)
 	}
 }
+
+// --- SPEC-093 §3: profile_use / profile_default ------------------------------
+
+func TestHandleProfileUse_ActivatesAndMaterializes(t *testing.T) {
+	srv := newProfileTestServer(t)
+	source := newMCPProfileFixtureRepo(t, "chatea-pro", "1.0.0")
+
+	addResp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name:      "profile_add",
+		Arguments: mustMarshal(t, map[string]any{"source": source}),
+	})
+	if addResp.Error != nil {
+		t.Fatalf("profile_add: unexpected error: %s", addResp.Error.Message)
+	}
+
+	repoRoot := t.TempDir()
+	resp := process(t, srv, "tools/call", 2, ToolCallParams{
+		Name:      "profile_use",
+		Arguments: mustMarshal(t, map[string]any{"name": "chatea-pro", "project_root": repoRoot}),
+	})
+	if resp.Error != nil {
+		t.Fatalf("profile_use: unexpected error: %s", resp.Error.Message)
+	}
+
+	var result struct {
+		Name         string `json:"name"`
+		Ref          string `json:"ref"`
+		Materialized bool   `json:"materialized"`
+	}
+	unmarshalToolText(t, resp, &result)
+	if result.Name != "chatea-pro" || !result.Materialized {
+		t.Errorf("unexpected UseResult: %+v", result)
+	}
+
+	if _, err := os.Stat(filepath.Join(repoRoot, ".mneme-profile")); err != nil {
+		t.Errorf("expected .mneme-profile to be written: %v", err)
+	}
+}
+
+func TestHandleProfileUse_MissingName(t *testing.T) {
+	srv := newProfileTestServer(t)
+
+	resp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name:      "profile_use",
+		Arguments: mustMarshal(t, map[string]any{}),
+	})
+	if resp.Error == nil {
+		t.Fatal("expected CodeInvalidParams, got nil error")
+	}
+	if resp.Error.Code != CodeInvalidParams {
+		t.Errorf("error code = %d, want %d", resp.Error.Code, CodeInvalidParams)
+	}
+}
+
+func TestHandleProfileUse_NotInstalled(t *testing.T) {
+	srv := newProfileTestServer(t)
+
+	resp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name:      "profile_use",
+		Arguments: mustMarshal(t, map[string]any{"name": "nonexistent", "project_root": t.TempDir()}),
+	})
+	if resp.Error == nil {
+		t.Fatal("expected an error for a nonexistent profile")
+	}
+	if resp.Error.Code != CodeMemoryNotFound {
+		t.Errorf("error code = %d, want %d", resp.Error.Code, CodeMemoryNotFound)
+	}
+}
+
+func TestHandleProfileDefault_SetPrintClear(t *testing.T) {
+	srv := newProfileTestServer(t)
+	source := newMCPProfileFixtureRepo(t, "chatea-pro", "1.0.0")
+	t.Cleanup(func() {
+		_ = config.SetProfilesDefault(config.DefaultPath(), "")
+	})
+
+	addResp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name:      "profile_add",
+		Arguments: mustMarshal(t, map[string]any{"source": source}),
+	})
+	if addResp.Error != nil {
+		t.Fatalf("profile_add: unexpected error: %s", addResp.Error.Message)
+	}
+
+	setResp := process(t, srv, "tools/call", 2, ToolCallParams{
+		Name:      "profile_default",
+		Arguments: mustMarshal(t, map[string]any{"name": "chatea-pro"}),
+	})
+	if setResp.Error != nil {
+		t.Fatalf("profile_default (set): unexpected error: %s", setResp.Error.Message)
+	}
+	var setResult struct {
+		Default string `json:"default"`
+	}
+	unmarshalToolText(t, setResp, &setResult)
+	if setResult.Default != "chatea-pro" {
+		t.Errorf("set result = %+v, want Default=chatea-pro", setResult)
+	}
+
+	printResp := process(t, srv, "tools/call", 3, ToolCallParams{
+		Name:      "profile_default",
+		Arguments: mustMarshal(t, map[string]any{}),
+	})
+	if printResp.Error != nil {
+		t.Fatalf("profile_default (print): unexpected error: %s", printResp.Error.Message)
+	}
+	var printResult struct {
+		Default string `json:"default"`
+	}
+	unmarshalToolText(t, printResp, &printResult)
+	if printResult.Default != "chatea-pro" {
+		t.Errorf("print result = %+v, want Default=chatea-pro", printResult)
+	}
+
+	clearResp := process(t, srv, "tools/call", 4, ToolCallParams{
+		Name:      "profile_default",
+		Arguments: mustMarshal(t, map[string]any{"clear": true}),
+	})
+	if clearResp.Error != nil {
+		t.Fatalf("profile_default (clear): unexpected error: %s", clearResp.Error.Message)
+	}
+	var clearResult struct {
+		Default string `json:"default"`
+	}
+	unmarshalToolText(t, clearResp, &clearResult)
+	if clearResult.Default != "" {
+		t.Errorf("clear result = %+v, want empty Default", clearResult)
+	}
+}
+
+func TestHandleProfileDefault_NotInstalled(t *testing.T) {
+	srv := newProfileTestServer(t)
+	t.Cleanup(func() {
+		_ = config.SetProfilesDefault(config.DefaultPath(), "")
+	})
+
+	resp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name:      "profile_default",
+		Arguments: mustMarshal(t, map[string]any{"name": "nonexistent"}),
+	})
+	if resp.Error == nil {
+		t.Fatal("expected an error for a nonexistent profile")
+	}
+	if resp.Error.Code != CodeMemoryNotFound {
+		t.Errorf("error code = %d, want %d", resp.Error.Code, CodeMemoryNotFound)
+	}
+}

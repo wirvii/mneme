@@ -36,18 +36,33 @@ type handlers struct {
 // newHandlers constructs a handlers bound to the given services and logger.
 func newHandlers(svc *service.MemoryService, sdd *service.SDDService, skillsSvc *service.SkillsService, modelsSvc *service.ModelsService, logger *slog.Logger) *handlers {
 	cfg := svc.Config()
+	subagentSvc := service.NewSubagentService(svc)
+
+	skillsDir := ""
+	if home, err := os.UserHomeDir(); err == nil {
+		skillsDir = filepath.Join(home, ".claude", "skills")
+	}
+
 	return &handlers{
 		svc:         svc,
 		sdd:         sdd,
 		skillsSvc:   skillsSvc,
 		modelsSvc:   modelsSvc,
-		subagentSvc: service.NewSubagentService(svc),
+		subagentSvc: subagentSvc,
 		// noPrompt=true: MCP is an unattended agent session — a git credential
 		// prompt no human will see must fail fast instead of hanging the
 		// process (R1). The CLI frontend passes false instead (see
 		// internal/cli/profile.go's newProfileSvc).
-		profileSvc: service.NewProfileService(cfg.ProfilesDir(), true),
-		logger:     logger,
+		// mem/sub/skillsDir/configPath wired (SPEC-093 §3) so profile_use can
+		// materialize (Activate) and profile_default can read/write
+		// [profiles].default — same wiring as the CLI's newActivatingProfileSvc.
+		profileSvc: service.NewProfileService(cfg.ProfilesDir(), true,
+			service.WithProfileMemoryService(svc),
+			service.WithProfileSubagentService(subagentSvc),
+			service.WithProfileSkillsDir(skillsDir),
+			service.WithProfileConfigPath(config.DefaultPath()),
+		),
+		logger: logger,
 	}
 }
 
@@ -177,6 +192,10 @@ func (h *handlers) handleToolCall(ctx context.Context, params ToolCallParams) (*
 		return h.handleProfileList(ctx, params.Arguments)
 	case "profile_status":
 		return h.handleProfileStatus(ctx, params.Arguments)
+	case "profile_use":
+		return h.handleProfileUse(ctx, params.Arguments)
+	case "profile_default":
+		return h.handleProfileDefault(ctx, params.Arguments)
 
 	// --- CODEGRAPH TOOLS ---
 	case "codegraph_search":

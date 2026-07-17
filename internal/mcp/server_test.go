@@ -196,8 +196,9 @@ func TestToolsList(t *testing.T) {
 		"model_list", "model_set", "model_reset",
 		// Conflicts tools (SPEC-039)
 		"conflicts_candidates", "conflicts_scan", "conflicts_link", "conflicts_unlink", "conflicts_list",
-		// Profile tools (SPEC-091 §1)
+		// Profile tools (SPEC-091 §1 + SPEC-093 §3)
 		"profile_add", "profile_update", "profile_list", "profile_status",
+		"profile_use", "profile_default",
 		// Init tool (SPEC-041)
 		"init",
 		// Subagent tools (SPEC-057 / EPIC agnostic-agents SS-4)

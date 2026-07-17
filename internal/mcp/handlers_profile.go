@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+
+	"github.com/wirvii/mneme/internal/service"
 )
 
 // --- PROFILE HANDLERS (SPEC-091 §1) ---
@@ -128,6 +130,84 @@ func (h *handlers) handleProfileStatus(_ context.Context, raw json.RawMessage) (
 	res, err := h.profileSvc.ResolvePin(root)
 	if err != nil {
 		return nil, h.mapServiceError("profile_status", err)
+	}
+	return resultFromAny(res)
+}
+
+// --- PROFILE HANDLERS (SPEC-093 §3) ---
+//
+// profile_use/profile_default extend the §1 surface with the two write
+// verbs (nvm use / nvm alias default). h.profileSvc is fully wired (mem/
+// sub/skillsDir/configPath — see newHandlers) so profile_use can invoke
+// Activate and profile_default can read/write [profiles].default.
+
+// profileUseRequest is the input to profile_use.
+type profileUseRequest struct {
+	Name        string `json:"name"`
+	ProjectRoot string `json:"project_root"`
+}
+
+// handleProfileUse processes a profile_use tool call: reconstructs a
+// self-describing pin from name's checkout in the host-level store, writes
+// it to the target repo's .mneme-profile, and materializes it immediately.
+func (h *handlers) handleProfileUse(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	var req profileUseRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return nil, &JSONRPCError{
+			Code:    CodeInvalidParams,
+			Message: fmt.Sprintf("mcp: handle profile_use: invalid arguments: %s", err),
+		}
+	}
+	if req.Name == "" {
+		return nil, &JSONRPCError{Code: CodeInvalidParams, Message: "mcp: handle profile_use: name is required"}
+	}
+
+	root, rpcErr := resolveRepoRoot(req.ProjectRoot)
+	if rpcErr != nil {
+		return nil, rpcErr
+	}
+
+	res, err := h.profileSvc.Use(ctx, root, req.Name)
+	if err != nil {
+		return nil, h.mapServiceError("profile_use", err)
+	}
+	return resultFromAny(res)
+}
+
+// profileDefaultRequest is the input to profile_default.
+type profileDefaultRequest struct {
+	Name  string `json:"name"`
+	Clear bool   `json:"clear"`
+}
+
+// handleProfileDefault processes a profile_default tool call: sets, clears,
+// or (when neither name nor clear is given) prints the host-level default
+// profile. Never materializes anything.
+func (h *handlers) handleProfileDefault(_ context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	var req profileDefaultRequest
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &req); err != nil {
+			return nil, &JSONRPCError{
+				Code:    CodeInvalidParams,
+				Message: fmt.Sprintf("mcp: handle profile_default: invalid arguments: %s", err),
+			}
+		}
+	}
+
+	var (
+		res *service.DefaultResult
+		err error
+	)
+	switch {
+	case req.Clear:
+		res, err = h.profileSvc.ClearDefault()
+	case req.Name != "":
+		res, err = h.profileSvc.SetDefault(req.Name)
+	default:
+		res, err = h.profileSvc.Default()
+	}
+	if err != nil {
+		return nil, h.mapServiceError("profile_default", err)
 	}
 	return resultFromAny(res)
 }
