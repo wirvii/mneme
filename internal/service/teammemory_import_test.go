@@ -2,6 +2,7 @@ package service_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -405,6 +406,111 @@ func writeManifestSharedNote(t *testing.T, notesDir, id, content string, updated
 		t.Fatalf("write %s: %v", path, err)
 	}
 	return path
+}
+
+// writeProfileSharedNote writes a minimal, valid team-memory vault note
+// shaped like a materialized profile rule (type=rule, with applies_to/
+// severity and a "source: profile:<name>" frontmatter line) at
+// <notesDir>/<id>.md — writeSharedNote (above) never sets source, so this is
+// a dedicated variant for SPEC-094 §4's anti-zombie fixtures: it simulates an
+// orphaned profile note that should never have existed in the vault post-§4
+// (legacy pre-§4 state, or a peer on an older mneme).
+func writeProfileSharedNote(t *testing.T, notesDir, id, profileName, title, content string, updatedAt time.Time) string {
+	t.Helper()
+	if err := os.MkdirAll(notesDir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", notesDir, err)
+	}
+
+	var sb strings.Builder
+	sb.WriteString("---\n")
+	fmt.Fprintf(&sb, "id: %s\n", id)
+	sb.WriteString("type: rule\n")
+	sb.WriteString("scope: project\n")
+	fmt.Fprintf(&sb, "title: %q\n", title)
+	sb.WriteString("project: test/project\n")
+	sb.WriteString("importance: 0.80\n")
+	sb.WriteString("confidence: 0.80\n")
+	sb.WriteString("decay_rate: 0.005\n")
+	sb.WriteString("created_at: 2026-01-01T00:00:00Z\n")
+	fmt.Fprintf(&sb, "updated_at: %s\n", updatedAt.UTC().Format(time.RFC3339Nano))
+	sb.WriteString("revision_count: 0\n")
+	sb.WriteString("applies_to:\n  - \"**\"\n")
+	sb.WriteString("severity: warn\n")
+	fmt.Fprintf(&sb, "source: profile:%s\n", profileName)
+	sb.WriteString("---\n\n")
+	sb.WriteString(content)
+	sb.WriteString("\n")
+
+	path := filepath.Join(notesDir, id+".md")
+	if err := os.WriteFile(path, []byte(sb.String()), 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+	return path
+}
+
+// TestImportFromShared_SkipsProfileProvenanceNote_NeverResurrectsZombie is
+// SPEC-094 §4 AC6: the exact zombie scenario §11 describes — a note with
+// profile provenance orphaned in the vault (legacy pre-§4 state, or a peer on
+// an older mneme) must be skipped on import, never re-created as an active
+// rule.
+func TestImportFromShared_SkipsProfileProvenanceNote_NeverResurrectsZombie(t *testing.T) {
+	svc, repoDir := newRepoTestService(t, true)
+	ctx := context.Background()
+
+	const noteID = "01938f1b-abcd-7abc-8def-0000000000bb"
+	notesDir := filepath.Join(repoDir, ".mneme", "shared", "notes")
+	writeProfileSharedNote(t, notesDir, noteID, "old-profile",
+		"Orphaned profile rule", "This rule must never resurrect.", time.Now().UTC())
+
+	result, err := svc.ImportFromShared(ctx, repoDir)
+	if err != nil {
+		t.Fatalf("ImportFromShared: %v", err)
+	}
+	if result.Skipped != 1 {
+		t.Errorf("Skipped = %d, want 1 — a profile-provenance note must always be skipped", result.Skipped)
+	}
+	if result.Created != 0 || result.Updated != 0 {
+		t.Errorf("Created=%d Updated=%d, want both 0 — a profile-provenance note must never be persisted", result.Created, result.Updated)
+	}
+
+	if _, err := svc.Get(ctx, noteID); !errors.Is(err, model.ErrNotFound) {
+		t.Errorf("expected model.ErrNotFound for a skipped profile note, got %v", err)
+	}
+}
+
+// TestSaveProfileRule_ThenImport_NeverLeavesAnArtifactToResurrect is SPEC-094
+// §4 AC7: the full write->(no)->import round trip. SaveProfileRule under
+// active team-memory must not materialize a file (the write guard), so a
+// subsequent ImportFromShared finds nothing of profile provenance to import —
+// the exact cycle the zombie bug (§11) exploited is closed at both ends.
+func TestSaveProfileRule_ThenImport_NeverLeavesAnArtifactToResurrect(t *testing.T) {
+	svc, repoDir := newRepoTestService(t, true)
+	ctx := context.Background()
+
+	resp, err := svc.SaveProfileRule(ctx, model.SaveRequest{
+		Title:     "A profile-injected rule",
+		Content:   "Team standard rule.",
+		AppliesTo: []string{"**"},
+	}, "chatea-pro")
+	if err != nil {
+		t.Fatalf("SaveProfileRule: unexpected error: %v", err)
+	}
+
+	path := sharedVaultFile(repoDir, resp.ID)
+	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+		t.Fatalf("SaveProfileRule must never materialize a file, but found %s", path)
+	}
+
+	result, err := svc.ImportFromShared(ctx, repoDir)
+	if err != nil {
+		t.Fatalf("ImportFromShared: %v", err)
+	}
+	if result.Total != 0 {
+		t.Errorf("expected 0 notes under the vault (nothing was ever materialized), found %d", result.Total)
+	}
+	if result.Created != 0 {
+		t.Errorf("Created = %d, want 0 — no profile-provenance memory should ever be created via import", result.Created)
+	}
 }
 
 // TestImportFromShared_ReportsConflictCandidates verifies SPEC-053 D6: after

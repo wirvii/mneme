@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/wirvii/mneme/internal/model"
 	"github.com/wirvii/mneme/internal/vault"
 )
 
@@ -182,6 +183,22 @@ func (svc *MemoryService) importSharedNote(ctx context.Context, note *vault.Pars
 			"event", "skipped",
 			"file", note.Path,
 			"reason", "subagent_manifest_never_imported",
+		)
+		return fm.ID, "skipped", nil
+	}
+
+	// SPEC-094 §4 (anti-zombie): a note with profile provenance should never
+	// exist in the vault — the write-through guards (bakeTeamMemoryFields/
+	// materializeTeamMemory) block it before it is ever materialized. But a
+	// repo can still carry one from a pre-§4 state, or from a peer running an
+	// older mneme. Never resurrect it as an active rule: the team's standard
+	// re-enters the database from the profile's own repository on the next
+	// activation (SPEC-092's SaveProfileRule), not from the vault.
+	if model.IsProfileSource(fm.Source) {
+		slog.InfoContext(ctx, "team_memory_import",
+			"event", "skipped",
+			"file", note.Path,
+			"reason", "profile_provenance_never_imported",
 		)
 		return fm.ID, "skipped", nil
 	}
