@@ -236,3 +236,130 @@ func TestRead_FileNotExist(t *testing.T) {
 		t.Error("expected present=false for non-existent file")
 	}
 }
+
+// TestRemoveText_PreservesProseAroundBlock verifies that RemoveText removes
+// only the marker's block, keeping prose before and after intact.
+func TestRemoveText_PreservesProseAroundBlock(t *testing.T) {
+	text := "# Header\n\nSome intro prose.\n\n" +
+		UpsertText("", "profile", 1, "## Contexto\n\nprofile content") +
+		"\nSome trailing prose.\n"
+
+	got := RemoveText(text, "profile")
+
+	if strings.Contains(got, StartMarker("profile", 1)) || strings.Contains(got, EndMarker("profile")) {
+		t.Errorf("expected block markers to be gone, got %q", got)
+	}
+	if !strings.Contains(got, "Some intro prose.") {
+		t.Errorf("expected leading prose preserved, got %q", got)
+	}
+	if !strings.Contains(got, "Some trailing prose.") {
+		t.Errorf("expected trailing prose preserved, got %q", got)
+	}
+}
+
+// TestRemoveText_IdempotentWhenAbsent verifies RemoveText is a no-op when
+// marker's block does not exist in text.
+func TestRemoveText_IdempotentWhenAbsent(t *testing.T) {
+	text := "# Header\n\nplain prose, no managed block\n"
+	got := RemoveText(text, "profile")
+	if got != text {
+		t.Errorf("expected text unchanged when block absent, got %q, want %q", got, text)
+	}
+
+	// Calling it again on its own output changes nothing either.
+	got2 := RemoveText(got, "profile")
+	if got2 != got {
+		t.Errorf("expected second RemoveText call to be a no-op, got %q, want %q", got2, got)
+	}
+}
+
+// TestRemoveText_LeavesOtherMarkersUntouched verifies that removing one
+// marker's block never touches a different marker's block in the same text.
+func TestRemoveText_LeavesOtherMarkersUntouched(t *testing.T) {
+	text := UpsertText("", "managed", 1, "operating manual")
+	text = UpsertText(text, "profile", 1, "profile block")
+
+	got := RemoveText(text, "profile")
+
+	if !strings.Contains(got, StartMarker("managed", 1)) || !strings.Contains(got, EndMarker("managed")) {
+		t.Errorf("expected 'managed' block to survive removal of 'profile', got %q", got)
+	}
+	if strings.Contains(got, StartMarker("profile", 1)) {
+		t.Errorf("expected 'profile' block to be gone, got %q", got)
+	}
+}
+
+// TestRemoveText_UpsertRemoveRoundTrip verifies Upsert then Remove restores
+// text to its pre-upsert state (module whitespace), matching the round-trip
+// criterion the existing Upsert/Read tests already use.
+func TestRemoveText_UpsertRemoveRoundTrip(t *testing.T) {
+	original := "# Header\n\nOriginal prose.\n"
+	upserted := UpsertText(original, "profile", 1, "injected content")
+	restored := RemoveText(upserted, "profile")
+
+	if strings.TrimSpace(restored) != strings.TrimSpace(original) {
+		t.Errorf("Upsert->Remove round trip: got %q, want %q (modulo whitespace)", restored, original)
+	}
+}
+
+// TestRemove_FileBacked verifies the file-backed wrapper: it reads, removes
+// the block, and writes the result back.
+func TestRemove_FileBacked(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "CLAUDE.md")
+
+	text := "# Header\n\nprose\n"
+	text = UpsertText(text, "profile", 1, "profile content")
+	if err := os.WriteFile(target, []byte(text), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	if err := Remove(target, "profile"); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read after Remove: %v", err)
+	}
+	if strings.Contains(string(data), StartMarker("profile", 1)) {
+		t.Errorf("expected block gone after Remove, got %q", string(data))
+	}
+	if !strings.Contains(string(data), "prose") {
+		t.Errorf("expected prose preserved after Remove, got %q", string(data))
+	}
+}
+
+// TestRemove_MissingFile verifies that Remove on a non-existent file is a
+// no-op, not an error.
+func TestRemove_MissingFile(t *testing.T) {
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "does-not-exist.md")
+
+	if err := Remove(missing, "profile"); err != nil {
+		t.Errorf("expected no error removing a block from a missing file, got %v", err)
+	}
+}
+
+// TestRemove_BlockAbsentIsNoop verifies that Remove on a file that exists but
+// does not contain marker's block leaves the file untouched.
+func TestRemove_BlockAbsentIsNoop(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "CLAUDE.md")
+	original := "# Header\n\nplain prose\n"
+	if err := os.WriteFile(target, []byte(original), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	if err := Remove(target, "profile"); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(data) != original {
+		t.Errorf("expected file unchanged, got %q, want %q", string(data), original)
+	}
+}

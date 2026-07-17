@@ -145,6 +145,56 @@ func findBlock(text, marker string) (startIdx, endIdx int) {
 	return startIdx, endIdx
 }
 
+// RemoveText returns text with marker's managed block (any version) removed
+// entirely — start marker, content, and end marker — while preserving
+// everything outside it byte-for-byte (module leading/trailing blank-line
+// normalisation, matching UpsertText's own whitespace handling). Idempotent:
+// calling RemoveText on text that does not contain marker's block returns
+// text unchanged. Other markers' blocks are left untouched.
+func RemoveText(text, marker string) string {
+	startIdx, endIdx := findBlock(text, marker)
+	if startIdx == -1 || endIdx == -1 {
+		return text
+	}
+
+	end := EndMarker(marker)
+	before := strings.TrimRight(text[:startIdx], "\n")
+	after := strings.TrimLeft(text[endIdx+len(end):], "\n")
+
+	if before == "" {
+		return after
+	}
+	if after == "" {
+		return before + "\n"
+	}
+	return before + "\n\n" + after
+}
+
+// Remove is the file-backed wrapper around RemoveText: it reads filePath,
+// removes marker's managed block, and writes the result back. A missing
+// file, or a file that does not contain marker's block, is a no-op (no
+// error) — Remove is safe to call unconditionally during a profile
+// deactivate/switch.
+func Remove(filePath, marker string) error {
+	text, err := readFileOrEmpty(filePath)
+	if err != nil {
+		return fmt.Errorf("managedblock: remove: read %s: %w", filePath, err)
+	}
+	if text == "" {
+		return nil
+	}
+
+	result := RemoveText(text, marker)
+	if result == text {
+		return nil
+	}
+
+	if err := os.WriteFile(filePath, []byte(result), 0o644); err != nil {
+		return fmt.Errorf("managedblock: remove: write %s: %w", filePath, err)
+	}
+	return nil
+}
+
 // Upsert is the file-backed wrapper around UpsertText: it reads filePath (a
 // missing file is treated as empty text), computes the upserted result, and
 // writes it back. Parent directories are created as needed.
