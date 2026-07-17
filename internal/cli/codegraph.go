@@ -122,12 +122,10 @@ If [path] is omitted the current directory is used.`,
 			}
 
 			start := time.Now()
-			result, err := svc.Index(codegraph.IndexOptions{
-				RootDir:  absRoot,
-				Language: flagLanguage,
-				Force:    flagForce,
-				DryRun:   flagDryRun,
-			})
+			opts := fullScanOptions(absRoot, flagForce)
+			opts.Language = flagLanguage
+			opts.DryRun = flagDryRun
+			result, err := svc.Index(opts)
 			if err != nil {
 				return fmt.Errorf("codegraph index: %w", err)
 			}

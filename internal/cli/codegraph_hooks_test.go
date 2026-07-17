@@ -342,3 +342,214 @@ func min(a, b int) int {
 	}
 	return b
 }
+
+// ---------------------------------------------------------------------------
+// SPEC-102 — full-scan honours .gitignore via `git ls-files`.
+// ---------------------------------------------------------------------------
+
+// runGit runs git with args inside dir and fails the test on error.
+func runGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}
+
+// TestGitEligibleFiles_RespectsGitignore verifies decision B (SPEC-102): the
+// result includes tracked files AND untracked-but-not-ignored files (WIP),
+// but excludes anything under a gitignored directory.
+func TestGitEligibleFiles_RespectsGitignore(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+
+	writeFile(t, dir, "src.go", "package main\n")
+	writeFile(t, dir, ".gitignore", "ignored/\n")
+	writeFile(t, dir, "ignored/dep.go", "package ignored\n")
+	writeFile(t, dir, "wip.go", "package main\n// untracked WIP\n")
+
+	runGit(t, dir, "add", "src.go", ".gitignore")
+	runGit(t, dir, "commit", "-m", "initial")
+
+	paths, ok := gitEligibleFiles(dir)
+	if !ok {
+		t.Fatal("gitEligibleFiles: ok = false, want true (dir is a git repo)")
+	}
+
+	want := map[string]bool{"src.go": true, "wip.go": true}
+	got := make(map[string]bool, len(paths))
+	for _, p := range paths {
+		got[p] = true
+	}
+	for p := range want {
+		if !got[p] {
+			t.Errorf("gitEligibleFiles missing expected path %q; got %v", p, paths)
+		}
+	}
+	if got["ignored/dep.go"] {
+		t.Errorf("gitEligibleFiles included gitignored path ignored/dep.go; got %v", paths)
+	}
+}
+
+// TestGitEligibleFiles_NonGitDir verifies the fallback signal: a plain,
+// non-git directory yields ok=false so the caller falls back to the legacy
+// walk.
+func TestGitEligibleFiles_NonGitDir(t *testing.T) {
+	dir := t.TempDir() // no git init
+
+	_, ok := gitEligibleFiles(dir)
+	if ok {
+		t.Error("gitEligibleFiles: ok = true for a non-git directory, want false")
+	}
+}
+
+// TestFullScanOptions_Fallback verifies that fullScanOptions populates
+// Include for a git directory and leaves it nil (legacy walk) for a non-git
+// directory.
+func TestFullScanOptions_Fallback(t *testing.T) {
+	gitDirPath := t.TempDir()
+	initGitRepo(t, gitDirPath)
+	writeFile(t, gitDirPath, "a.go", "package main\n")
+	runGit(t, gitDirPath, "add", "a.go")
+	runGit(t, gitDirPath, "commit", "-m", "initial")
+
+	opts := fullScanOptions(gitDirPath, false)
+	if opts.Include == nil {
+		t.Error("fullScanOptions: Include is nil for a git directory, want non-nil")
+	}
+	if opts.RootDir != gitDirPath {
+		t.Errorf("fullScanOptions: RootDir = %q, want %q", opts.RootDir, gitDirPath)
+	}
+	if opts.Force {
+		t.Error("fullScanOptions: Force = true, want false (as passed)")
+	}
+
+	nonGitDir := t.TempDir()
+	optsNonGit := fullScanOptions(nonGitDir, true)
+	if optsNonGit.Include != nil {
+		t.Errorf("fullScanOptions: Include = %v for a non-git directory, want nil (legacy walk fallback)", optsNonGit.Include)
+	}
+	if !optsNonGit.Force {
+		t.Error("fullScanOptions: Force = false, want true (as passed)")
+	}
+}
+
+// TestCodegraphIndex_FullScan_SkipsGitignoredDir is the end-to-end regression
+// test for the SPEC-102 bug: running the real "codegraph index" command
+// against a fixture with a gitignored directory containing .go files must
+// not index anything under that directory.
+func TestCodegraphIndex_FullScan_SkipsGitignoredDir(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+
+	writeFile(t, dir, "pkg/real.go", "package pkg\n\nfunc Real() {}\n")
+	writeFile(t, dir, ".gitignore", "tmp/\n")
+	writeFile(t, dir, "tmp/testhome/vendored.go", "package vendored\n\nfunc Vendored() {}\n")
+
+	runGit(t, dir, "add", "pkg/real.go", ".gitignore")
+	runGit(t, dir, "commit", "-m", "initial")
+
+	dataDir := t.TempDir()
+	t.Setenv("HOME", t.TempDir()) // isolate from any real ~/.mneme config
+
+	origDataDir := flagDataDir
+	origProject := flagProject
+	flagDataDir = dataDir
+	flagProject = "spec102-fullscan"
+	t.Cleanup(func() {
+		flagDataDir = origDataDir
+		flagProject = origProject
+	})
+
+	orig, wdErr := os.Getwd()
+	if wdErr != nil {
+		t.Fatalf("Getwd: %v", wdErr)
+	}
+	if chErr := os.Chdir(dir); chErr != nil {
+		t.Fatalf("Chdir %s: %v", dir, chErr)
+	}
+	t.Cleanup(func() { _ = os.Chdir(orig) })
+
+	root := &cobra.Command{Use: "mneme"}
+	root.AddCommand(newCodegraphCmd())
+	var outBuf bytes.Buffer
+	root.SetOut(&outBuf)
+	root.SetArgs([]string{"codegraph", "index"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("codegraph index: %v\noutput:\n%s", err, outBuf.String())
+	}
+
+	svc, err := initCodeGraphService()
+	if err != nil {
+		t.Fatalf("initCodeGraphService: %v", err)
+	}
+	defer func() { _ = svc.Close() }()
+
+	files, err := svc.Files("", "")
+	if err != nil {
+		t.Fatalf("svc.Files: %v", err)
+	}
+	for _, f := range files {
+		if strings.HasPrefix(f.Path, "tmp/") {
+			t.Errorf("codegraph index indexed a path under gitignored tmp/: %s", f.Path)
+		}
+	}
+
+	foundReal := false
+	for _, f := range files {
+		if f.Path == "pkg/real.go" {
+			foundReal = true
+		}
+	}
+	if !foundReal {
+		t.Errorf("codegraph index did not index the tracked pkg/real.go; files = %+v", files)
+	}
+}
+
+// TestReindexOnce_FullScanFallback_RespectsGitignore verifies AC4: the
+// reindexOnce fallback path (no last_sha recorded, so it takes the
+// full-scan-when-first-run branch) also honours .gitignore.
+func TestReindexOnce_FullScanFallback_RespectsGitignore(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+
+	writeFile(t, dir, "pkg/real.go", "package pkg\n\nfunc Real() {}\n")
+	writeFile(t, dir, ".gitignore", "tmp/\n")
+	writeFile(t, dir, "tmp/testhome/vendored.go", "package vendored\n\nfunc Vendored() {}\n")
+
+	runGit(t, dir, "add", "pkg/real.go", ".gitignore")
+	runGit(t, dir, "commit", "-m", "initial")
+
+	dataDir := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
+
+	origDataDir := flagDataDir
+	origProject := flagProject
+	flagDataDir = dataDir
+	flagProject = "spec102-reindexonce"
+	t.Cleanup(func() {
+		flagDataDir = origDataDir
+		flagProject = origProject
+	})
+
+	svc, err := initCodeGraphServiceForCWD(dir)
+	if err != nil {
+		t.Fatalf("initCodeGraphServiceForCWD: %v", err)
+	}
+	defer func() { _ = svc.Close() }()
+
+	// No last_sha recorded yet — reindexOnce takes the first-run full-scan branch.
+	if err := reindexOnce(svc, dir); err != nil {
+		t.Fatalf("reindexOnce: %v", err)
+	}
+
+	files, err := svc.Files("", "")
+	if err != nil {
+		t.Fatalf("svc.Files: %v", err)
+	}
+	for _, f := range files {
+		if strings.HasPrefix(f.Path, "tmp/") {
+			t.Errorf("reindexOnce fallback indexed a path under gitignored tmp/: %s", f.Path)
+		}
+	}
+}

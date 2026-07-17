@@ -272,6 +272,47 @@ func runCodegraphHooksReindex() error {
 	return nil
 }
 
+// gitEligibleFiles returns the repo paths (relative to root) that git
+// considers part of the working tree and NOT gitignored — tracked files plus
+// untracked-but-not-ignored files (SPEC-102 decision B) — via a single `git
+// ls-files` call. ok is false when root is not inside a git worktree or git
+// is unavailable, signalling the caller to fall back to the legacy filesystem
+// walk (Include=nil).
+//
+// `--cached` selects tracked files, `--others` adds untracked ones, and
+// `--exclude-standard` applies .gitignore, .git/info/exclude, and the global
+// excludes file to the untracked set. git prunes ignored directories
+// internally while resolving this, so a large ignored directory (e.g.
+// tmp/testhome) is never walked — this is what makes ls-files both simpler
+// and faster than enumerating candidates first and running them through
+// `git check-ignore`. -z (NUL-separated output) avoids git's path quoting,
+// mirroring the robustness of parseDiff's own parsing.
+func gitEligibleFiles(root string) (paths []string, ok bool) {
+	out, err := runGitCmd(root, "ls-files", "-z", "--cached", "--others", "--exclude-standard")
+	if err != nil {
+		return nil, false
+	}
+	for _, p := range strings.Split(out, "\x00") {
+		if p = strings.TrimSpace(p); p != "" {
+			paths = append(paths, p)
+		}
+	}
+	return paths, true
+}
+
+// fullScanOptions builds the codegraph.IndexOptions for a full scan rooted at
+// root, honouring .gitignore when root is inside a git repository and falling
+// back to the indexer's legacy filesystem walk (ignoredDirs + hidden-dir skip)
+// otherwise (SPEC-102). Callers overlay any additional fields (Language,
+// DryRun, Force) on the returned value.
+func fullScanOptions(root string, force bool) codegraph.IndexOptions {
+	opts := codegraph.IndexOptions{RootDir: root, Force: force}
+	if files, ok := gitEligibleFiles(root); ok {
+		opts.Include = files
+	}
+	return opts
+}
+
 // reindexOnce runs a single indexing pass for the repository rooted at root.
 // It reads the last indexed SHA, diffs it against HEAD, and indexes only the
 // delta (scoped mode). It falls back to a full scan when there is no recorded
@@ -296,7 +337,7 @@ func reindexOnce(svc *service.CodeGraphService, root string) error {
 	switch {
 	case last == "" || !gitCommitExists(root, last):
 		// First run, or the anchor was garbage-collected: index the whole tree.
-		if _, err := svc.Index(codegraph.IndexOptions{RootDir: root, Force: false}); err != nil {
+		if _, err := svc.Index(fullScanOptions(root, false)); err != nil {
 			return err
 		}
 
@@ -312,7 +353,7 @@ func reindexOnce(svc *service.CodeGraphService, root string) error {
 		if diffErr != nil {
 			// The anchor existed but the diff failed unexpectedly — degrade to a
 			// full scan rather than lose the update.
-			if _, err := svc.Index(codegraph.IndexOptions{RootDir: root, Force: false}); err != nil {
+			if _, err := svc.Index(fullScanOptions(root, false)); err != nil {
 				return err
 			}
 		} else {
