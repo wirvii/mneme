@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Fixed
+
+- **Codegraph full-scan now respects `.gitignore` (SPEC-102).** A full index (`mneme codegraph
+  index`, and the auto-reindex hook's fallback when no `last_sha` is recorded) used to walk the
+  raw filesystem tree with only a hardcoded `ignoredDirs` name-list, so a gitignored directory
+  that didn't match one of those names — e.g. `tmp/testhome`, this repo's own `make test`
+  sandbox — got walked and indexed in full. Full scans inside a git worktree now resolve the
+  eligible file set via `git ls-files -z --cached --others --exclude-standard` (tracked files
+  plus untracked-but-not-ignored WIP) and index exactly that list instead of walking; git prunes
+  ignored directories internally, so they are never stat'd. Non-git directories keep the
+  previous walk-based behaviour unchanged. Because the full scan still prunes stale records, a
+  single `mneme codegraph index` self-heals a graph previously polluted this way — verified on
+  this repo: 322,060 nodes / 3,662 files → 8,427 nodes / 460 files, zero paths under `tmp/`.
+
 ## [v1.29.0] — 2026-07-17 — Profiles: team methodology as a portable git repo + scoped codegraph reindex
 
 ### Added

@@ -34,6 +34,39 @@ and writes them to the project database.
 - **Languages:** Go (via `go/ast`) and TypeScript/JavaScript (via a Node.js
   subprocess that uses the TypeScript compiler API).
 
+### Full scan respects `.gitignore` — SPEC-102
+
+A full scan (`mneme codegraph index` with no prior `last_sha`, or the
+auto-reindex hook's fallback when the recorded SHA is missing/stale) no
+longer walks the raw filesystem tree with only a hardcoded `ignoredDirs`
+name-list. When the target directory is inside a git worktree, the CLI first
+resolves the eligible file set via a single `git ls-files -z --cached
+--others --exclude-standard` call — tracked files **plus** untracked files
+that are not gitignored — and hands that list to the indexer instead of
+walking. git prunes ignored directories internally while resolving this, so
+a large gitignored directory (build caches, a `tmp/` sandbox, vendored
+dependencies not meant to be tracked, …) is never even stat'd, not just
+skipped after being visited.
+
+This is deliberately **not** "only indexed files" (`git ls-files --cached`
+alone): a work-in-progress file you just created and haven't committed yet
+is still indexed, which matters for an agent exploring code it is actively
+writing. The only thing excluded is what git itself would ignore.
+
+**Non-git fallback:** when the target directory is not inside a git
+worktree (or `git` is not on `PATH`), indexing falls back to the previous
+behaviour unchanged — `filepath.WalkDir` with the hidden-directory skip and
+the `ignoredDirs` name-list described above. Nothing regresses for
+non-git-managed source trees.
+
+**Self-healing:** unlike the SPEC-101 scoped (commit-diff) reindex, a
+full scan still runs the existing prune pass, so any node previously
+indexed from a path that is no longer in the (now git-filtered) candidate
+list — e.g. the entire contents of a gitignored directory picked up by an
+older mneme version — is purged automatically on the next
+`mneme codegraph index` or `mneme codegraph index --force`. No manual
+cleanup step is required.
+
 ### TypeScript toolchain compatibility — SPEC-088 (v1.27.1)
 
 The TS/JS extractor depends on the resolved `typescript` npm package (global
