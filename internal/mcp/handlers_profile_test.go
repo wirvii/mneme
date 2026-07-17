@@ -78,6 +78,68 @@ func newMCPProfileFixtureRepo(t *testing.T, name, version string) string {
 	return dir
 }
 
+// --- SPEC-095 §5: profile_new ------------------------------------------------
+
+func TestHandleProfileNew_Success(t *testing.T) {
+	srv := newProfileTestServer(t)
+	dest := filepath.Join(t.TempDir(), "chatea-pro")
+
+	resp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name:      "profile_new",
+		Arguments: mustMarshal(t, map[string]any{"name": "chatea-pro", "dir": dest}),
+	})
+	if resp.Error != nil {
+		t.Fatalf("profile_new: unexpected error: %s", resp.Error.Message)
+	}
+
+	var result struct {
+		Name         string `json:"name"`
+		Path         string `json:"path"`
+		ManifestPath string `json:"manifest_path"`
+	}
+	unmarshalToolText(t, resp, &result)
+	if result.Name != "chatea-pro" || result.Path != dest {
+		t.Errorf("unexpected NewProfileResult: %+v", result)
+	}
+	if _, err := os.Stat(result.ManifestPath); err != nil {
+		t.Errorf("expected manifest at %s: %v", result.ManifestPath, err)
+	}
+	if info, err := os.Stat(filepath.Join(dest, ".git")); err != nil || !info.IsDir() {
+		t.Errorf("expected %s/.git to exist: %v", dest, err)
+	}
+}
+
+func TestHandleProfileNew_MissingName(t *testing.T) {
+	srv := newProfileTestServer(t)
+
+	resp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name:      "profile_new",
+		Arguments: mustMarshal(t, map[string]any{}),
+	})
+	if resp.Error == nil {
+		t.Fatal("expected CodeInvalidParams, got nil error")
+	}
+	if resp.Error.Code != CodeInvalidParams {
+		t.Errorf("error code = %d, want %d", resp.Error.Code, CodeInvalidParams)
+	}
+}
+
+func TestHandleProfileNew_DestinationNotEmpty(t *testing.T) {
+	srv := newProfileTestServer(t)
+	dest := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dest, "keep.txt"), []byte("hi"), 0o644); err != nil {
+		t.Fatalf("write fixture file: %v", err)
+	}
+
+	resp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name:      "profile_new",
+		Arguments: mustMarshal(t, map[string]any{"name": "chatea-pro", "dir": dest}),
+	})
+	if resp.Error == nil {
+		t.Fatal("profile_new: expected an error for non-empty destination")
+	}
+}
+
 func TestHandleProfileAdd_MissingSource(t *testing.T) {
 	srv := newProfileTestServer(t)
 

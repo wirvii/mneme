@@ -218,10 +218,81 @@ func TestProfileCmd_Help(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := buf.String()
-	for _, sub := range []string{"add", "update", "list", "status", "use", "default"} {
+	for _, sub := range []string{"new", "add", "update", "list", "status", "use", "default"} {
 		if !strings.Contains(out, sub) {
 			t.Errorf("help output missing subcommand %q", sub)
 		}
+	}
+}
+
+// --- SPEC-095 §5: profile new ------------------------------------------------
+
+func TestProfileCmd_New_ScaffoldsRepo(t *testing.T) {
+	isolateProfileCmdCwd(t)
+	dataDir := t.TempDir()
+	dest := filepath.Join(t.TempDir(), "chatea-pro")
+
+	out, _, err := execProfileCmd(t, dataDir, "profile", "new", "chatea-pro", "--dir", dest)
+	if err != nil {
+		t.Fatalf("profile new: unexpected error: %v", err)
+	}
+	if !strings.Contains(out, "chatea-pro") || !strings.Contains(out, dest) {
+		t.Errorf("profile new output = %q, want mention of chatea-pro and %s", out, dest)
+	}
+
+	for _, name := range []string{"mneme-profile.toml", "README.md", "rules.jsonl", "models.toml", "policy.toml"} {
+		if _, statErr := os.Stat(filepath.Join(dest, name)); statErr != nil {
+			t.Errorf("profile new: expected %s to exist: %v", name, statErr)
+		}
+	}
+	for _, dir := range []string{"agents", "skills", "blocks", "templates", filepath.Join("scaffolds", "_blueprints")} {
+		full := filepath.Join(dest, dir)
+		if info, statErr := os.Stat(full); statErr != nil || !info.IsDir() {
+			t.Errorf("profile new: expected directory %s to exist: %v", full, statErr)
+		}
+	}
+	if info, statErr := os.Stat(filepath.Join(dest, ".git")); statErr != nil || !info.IsDir() {
+		t.Errorf("profile new: expected %s/.git to exist: %v", dest, statErr)
+	}
+
+	// Never touches the host-level store.
+	out, _, err = execProfileCmd(t, dataDir, "profile", "list")
+	if err != nil {
+		t.Fatalf("profile list: unexpected error: %v", err)
+	}
+	if !strings.Contains(out, "No profiles installed") {
+		t.Errorf("profile list output = %q, want mention of empty store after profile new", out)
+	}
+}
+
+func TestProfileCmd_New_DefaultDestFromCwd(t *testing.T) {
+	cwd := isolateProfileCmdCwd(t)
+	dataDir := t.TempDir()
+
+	out, _, err := execProfileCmd(t, dataDir, "profile", "new", "chatea-pro")
+	if err != nil {
+		t.Fatalf("profile new: unexpected error: %v", err)
+	}
+	want := filepath.Join(cwd, "chatea-pro")
+	if _, statErr := os.Stat(filepath.Join(want, "mneme-profile.toml")); statErr != nil {
+		t.Errorf("profile new: expected manifest under default dest %s: %v (out=%q)", want, statErr, out)
+	}
+}
+
+func TestProfileCmd_New_DestinationNotEmpty(t *testing.T) {
+	isolateProfileCmdCwd(t)
+	dataDir := t.TempDir()
+	dest := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dest, "keep.txt"), []byte("hi"), 0o644); err != nil {
+		t.Fatalf("write fixture file: %v", err)
+	}
+
+	_, _, err := execProfileCmd(t, dataDir, "profile", "new", "chatea-pro", "--dir", dest)
+	if err == nil {
+		t.Fatal("profile new: expected error for non-empty destination")
+	}
+	if !strings.Contains(err.Error(), "not empty") {
+		t.Errorf("err = %v, want mention of 'not empty'", err)
 	}
 }
 

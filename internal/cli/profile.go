@@ -32,6 +32,7 @@ host-level store installed once (~/.mneme/profiles/<name>/), plus a
 per-project pointer committed at the project's root (.mneme-profile).
 
 Subcommands:
+  new      Scaffold a brand-new profile repo (structure + manifest + git init).
   add      Clone a profile into the host-level store (once).
   update   Fetch + checkout the latest state of an installed profile.
   list     List profiles in the host-level store.
@@ -41,6 +42,7 @@ Subcommands:
 	}
 
 	cmd.AddCommand(
+		newProfileNewCmd(),
 		newProfileAddCmd(),
 		newProfileUpdateCmd(),
 		newProfileListCmd(),
@@ -105,6 +107,48 @@ func newActivatingProfileSvc() (*service.ProfileService, func(), error) {
 		service.WithProfileConfigPath(config.DefaultPath()),
 	)
 	return svc, cleanup, nil
+}
+
+// newProfileNewCmd returns the "mneme profile new" subcommand (SPEC-095 §5).
+func newProfileNewCmd() *cobra.Command {
+	var flagDir string
+
+	cmd := &cobra.Command{
+		Use:   "new <name> [--dir <path>]",
+		Short: "Scaffold a brand-new profile repo (structure + manifest + git init)",
+		Long: `Scaffold a new profile REPOSITORY: the source a profile author curates,
+commits, and pushes — BEFORE any consumer ever runs "profile add" against it.
+
+Creates the standard directory tree (agents/ skills/ blocks/ templates/
+scaffolds/_blueprints/), a stub mneme-profile.toml/rules.jsonl/models.toml/
+policy.toml/README.md, and runs "git init" (no commit, no remote). Never
+touches the host-level store (~/.mneme/profiles/) — that only happens later,
+when a consumer runs "profile add" against the pushed repo.
+
+Curate the scaffolded content with the mneme-profile-author skill (or by
+hand): agents/<role>.md, skills/, rules.jsonl, blocks/, models.toml,
+policy.toml, templates/.`,
+		Example: `  mneme profile new chatea-pro
+  mneme profile new chatea-pro --dir /path/to/repo`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			svc := newProfileSvc()
+
+			res, err := svc.NewProfile(service.NewProfileInput{Name: args[0], Dir: flagDir})
+			if err != nil {
+				if errors.Is(err, model.ErrProfileExists) {
+					return fmt.Errorf("profile new: destination not empty — choose another directory or empty it: %w", err)
+				}
+				return fmt.Errorf("profile new: %w", err)
+			}
+
+			fmt.Fprintf(cmd.OutOrStdout(), "Scaffolded %s -> %s\n", res.Name, res.Path)
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&flagDir, "dir", "", "Destination directory (default: <cwd>/<name>)")
+	return cmd
 }
 
 // newProfileAddCmd returns the "mneme profile add" subcommand.

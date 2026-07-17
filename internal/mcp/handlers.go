@@ -183,7 +183,9 @@ func (h *handlers) handleToolCall(ctx context.Context, params ToolCallParams) (*
 	case "conflicts_list":
 		return h.handleConflictsList(ctx, params.Arguments)
 
-	// --- PROFILE TOOLS (SPEC-091 §1) ---
+	// --- PROFILE TOOLS (SPEC-091 §1, SPEC-095 §5) ---
+	case "profile_new":
+		return h.handleProfileNew(ctx, params.Arguments)
 	case "profile_add":
 		return h.handleProfileAdd(ctx, params.Arguments)
 	case "profile_update":

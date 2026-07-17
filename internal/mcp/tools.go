@@ -1301,6 +1301,24 @@ func allTools() []ToolDefinition {
 		// --- PROFILE TOOLS (SPEC-091 §1) ---
 
 		{
+			Name:        "profile_new",
+			Description: "Scaffold a brand-new profile REPOSITORY (structure §3 of docs/profiles-design.md + mneme-profile.toml + git init) — the source a profile author curates, commits, and pushes BEFORE any consumer ever runs profile_add against it. Never touches the host-level store (~/.mneme/profiles/). Errors if the destination directory exists and is not empty, or if name is not a safe-slug.",
+			InputSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"name"},
+				"properties": map[string]any{
+					"name": map[string]any{
+						"type":        "string",
+						"description": "The new profile's name (safe-slug ^[a-z0-9][a-z0-9-]*$); becomes the manifest's name and, when dir is omitted, the destination subdirectory.",
+					},
+					"dir": map[string]any{
+						"type":        "string",
+						"description": "Destination directory. Defaults to <cwd>/<name>.",
+					},
+				},
+			},
+		},
+		{
 			Name:        "profile_add",
 			Description: "Clone a profile's git repository into the host-level store (~/.mneme/profiles/<name>/), shared by every project on this host. The name is derived from the profile's mneme-profile.toml manifest unless name is passed explicitly (in which case it must match).",
 			InputSchema: map[string]any{

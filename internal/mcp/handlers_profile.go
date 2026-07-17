@@ -15,6 +15,34 @@ import (
 // (see newHandlers) — an unattended MCP session must never hang waiting on
 // a git credential prompt no human will see (R1, AC11).
 
+// profileNewRequest is the input to profile_new (SPEC-095 §5).
+type profileNewRequest struct {
+	Name string `json:"name"`
+	Dir  string `json:"dir"`
+}
+
+// handleProfileNew processes a profile_new tool call: scaffolds a brand-new
+// profile repository (structure + manifest + git init) — the mneme-
+// profile-author skill's first step. Never touches the host-level store.
+func (h *handlers) handleProfileNew(_ context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	var req profileNewRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return nil, &JSONRPCError{
+			Code:    CodeInvalidParams,
+			Message: fmt.Sprintf("mcp: handle profile_new: invalid arguments: %s", err),
+		}
+	}
+	if req.Name == "" {
+		return nil, &JSONRPCError{Code: CodeInvalidParams, Message: "mcp: handle profile_new: name is required"}
+	}
+
+	res, err := h.profileSvc.NewProfile(service.NewProfileInput{Name: req.Name, Dir: req.Dir})
+	if err != nil {
+		return nil, h.mapServiceError("profile_new", err)
+	}
+	return resultFromAny(res)
+}
+
 // profileAddRequest is the input to profile_add.
 type profileAddRequest struct {
 	Source string `json:"source"`
