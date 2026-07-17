@@ -179,6 +179,57 @@ Author and shared-level attribution round-trip through the file's
 frontmatter and are **never** overwritten by the importing peer's own git
 identity — the note keeps the identity of whoever originally shared it.
 
+## Profile provenance exclusion (SPEC-094 §4)
+
+An [mneme profile](profiles.md) can inject its rules (commits/PRs/branches/
+conventions) as `rule` memories into the active repository's database
+(SPEC-092 §2, `SaveProfileRule`). Those rules carry a provenance stamp,
+`source = "profile:<name>"`, distinguishing them from hand-authored
+knowledge. Team-memory treats provenance as an invariant, systemic exclusion
+from the shared vault — a profile's standard travels through **its own**
+git repository (reviewed, versioned there), never through this project's
+`.mneme/shared/` vault. The two channels are deliberately orthogonal:
+
+| Channel | Carries | Shared via |
+|---------|---------|------------|
+| Profile repository | The team's methodology: rules, agents, skills, templates | The profile's own git remote (private, one PR to update) |
+| Team-memory vault | This repo's accumulated knowledge: decisions, discoveries, bugfixes | `.mneme/shared/` in **this** project's git repository |
+
+If a profile's rules leaked into the vault, two problems would follow: the
+rule would live in two places at once (duplicated source of truth), and —
+worse — a **profile switch** (`DeactivateProfileRules`, which hard-deletes
+the rows by provenance) would leave the file still committed in
+`.mneme/shared/notes/`, so the very next `git pull` would resurrect it as an
+active rule via the import hook. This is the "rule zombie" bug the
+exclusion closes.
+
+**Write guard (never materializes):** both `bakeTeamMemoryFields` (the
+`Save` bake step) and `materializeTeamMemory` (the single function that ever
+writes to `vault.Writer`) check `model.IsProfileSource(m.Source)` — the bake
+step forces `Shared=0` even against an explicit override, and materialize
+early-returns unconditionally, independent of `Shared`. Two independent
+checks, on purpose: either one failing does not let a profile rule slip
+through.
+
+**Promote guard (rejects elevation):** `mneme promote <id>` / `mem_promote`
+refuses to elevate a profile-provenance memory to `shared=2`, returning
+`ErrProfileMemoryNotShareable` before the row is touched — promoting one
+would be an operator error, not a silent no-op.
+
+**Read guard (anti-zombie, never resurrects):** `importSharedNote` skips any
+note whose frontmatter carries `source: profile:*`, unconditionally — the
+same pattern already used to skip the subagent manifest. This is
+defense-in-depth against a repo that carries an orphaned profile note from a
+pre-§4 state, or from a teammate running an older mneme: the note is never
+imported as an active rule. `source` round-trips through the vault
+frontmatter (`internal/vault/frontmatter.go`, `omitempty`) purely so this
+guard can read it back.
+
+**Non-regression:** a hand-authored memory (`source == ""`, the default for
+everything saved before this field existed, and for every memory `mem_save`
+creates) is unaffected by any of these guards — share-by-default (SPEC-071)
+behaves exactly as before.
+
 ## Conflicts
 
 Two independent layers, matching the two ways a shared vault can disagree:
