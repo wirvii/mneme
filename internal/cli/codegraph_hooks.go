@@ -185,16 +185,42 @@ func newCodegraphHooksRunReindexCmd() *cobra.Command {
 	}
 }
 
+// Coalesce-lock file names and staleness TTL for the run-reindex hook (SPEC-101).
+const (
+	// reindexLockName is the pidfile created (atomically, O_EXCL) inside the git
+	// directory while a re-index is running. Its existence IS the lock.
+	reindexLockName = "mneme-reindex.lock"
+
+	// reindexDirtyName is the marker a coalesced (locked-out) invocation touches
+	// so the current holder knows more commits arrived and runs one catch-up pass.
+	reindexDirtyName = "mneme-reindex.dirty"
+
+	// reindexLockTTL bounds how long a lockfile is trusted before it is treated
+	// as stale (holder crashed without releasing) and stolen. A scoped re-index
+	// is a matter of seconds, so ten minutes is a very generous ceiling. Staleness
+	// is judged by mtime — the portable, syscall-free alternative to probing the
+	// recorded PID for liveness (which would need build-tagged platform code).
+	reindexLockTTL = 10 * time.Minute
+)
+
 // runCodegraphHooksReindex performs the actual incremental re-index. It is a
 // standalone function (not a method) so it can be called and its return value
 // inspected in tests without needing a full Cobra invocation.
+//
+// Flow (SPEC-101): skip during rebase/merge/cherry-pick; then take a coalesce
+// lock so concurrent git events never stack multiple indexing processes. An
+// invocation that cannot take the lock leaves a dirty marker and exits; the
+// holder consumes that marker with a single catch-up pass on the way out. The
+// last_sha invariant guarantees any commit dropped by the lock is picked up by
+// the next diff, so coalescing can discard work without ever losing a file.
 func runCodegraphHooksReindex() error {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("run-reindex: cannot determine cwd: %w", err)
 	}
 
-	// 1. Detect git-dir and skip if a rebase/merge/cherry-pick is in progress.
+	// 1. Detect git-dir and skip (before taking any lock) if a rebase/merge/
+	//    cherry-pick is in progress.
 	gd, err := gitDir(cwd)
 	if err != nil {
 		return fmt.Errorf("run-reindex: git dir: %w", err)
@@ -209,19 +235,242 @@ func runCodegraphHooksReindex() error {
 		return fmt.Errorf("run-reindex: repo root: %w", err)
 	}
 
-	// 3. Init service with project detection from cwd.
+	// 3. Coalesce lock: only one indexing pass per git-dir at a time.
+	lock, err := acquireReindexLock(gd)
+	if err != nil {
+		return fmt.Errorf("run-reindex: acquire lock: %w", err)
+	}
+	if !lock.acquired {
+		// Another run holds the lock — record that work is pending and exit 0.
+		touchReindexDirty(gd)
+		return nil
+	}
+	defer lock.release()
+
+	// 4. Init service with project detection from cwd.
 	svc, err := initCodeGraphServiceForCWD(cwd)
 	if err != nil {
 		return fmt.Errorf("run-reindex: init service: %w", err)
 	}
 	defer func() { _ = svc.Close() }()
 
-	// 4. Incremental index (Force=false so unchanged files are skipped).
-	_, err = svc.Index(codegraph.IndexOptions{
-		RootDir: root,
-		Force:   false,
-	})
-	return err
+	// 5. One indexing pass (scoped from last_sha, or full-scan fallback).
+	if err := reindexOnce(svc, root); err != nil {
+		return err
+	}
+
+	// 6. Catch-up: if commits arrived while we were indexing, a coalesced
+	//    invocation left the dirty marker. Consume it and run exactly one more
+	//    pass, which recomputes the range from the (now advanced) last_sha.
+	dirtyPath := filepath.Join(gd, reindexDirtyName)
+	if fileExists(dirtyPath) {
+		_ = os.Remove(dirtyPath)
+		if err := reindexOnce(svc, root); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// reindexOnce runs a single indexing pass for the repository rooted at root.
+// It reads the last indexed SHA, diffs it against HEAD, and indexes only the
+// delta (scoped mode). It falls back to a full scan when there is no recorded
+// SHA, when the recorded SHA no longer exists (gc/squash/rebase dropped it), or
+// when the diff itself fails. last_sha is advanced to HEAD only after the index
+// succeeds — never before — so a failed or discarded pass leaves the anchor put.
+func reindexOnce(svc *service.CodeGraphService, root string) error {
+	last, err := svc.LastIndexedSHA()
+	if err != nil {
+		return fmt.Errorf("run-reindex: read last sha: %w", err)
+	}
+
+	headOut, err := runGitCmd(root, "rev-parse", "HEAD")
+	if err != nil {
+		return fmt.Errorf("run-reindex: rev-parse HEAD: %w", err)
+	}
+	head := strings.TrimSpace(headOut)
+	if head == "" {
+		return fmt.Errorf("run-reindex: empty HEAD")
+	}
+
+	switch {
+	case last == "" || !gitCommitExists(root, last):
+		// First run, or the anchor was garbage-collected: index the whole tree.
+		if _, err := svc.Index(codegraph.IndexOptions{RootDir: root, Force: false}); err != nil {
+			return err
+		}
+
+	case last == head:
+		// Nothing changed since the last successful index — do not re-stamp.
+		return nil
+
+	default:
+		// Scoped: index exactly the files in the last_sha..HEAD delta. The tree
+		// diff form (last..head) is symmetric, so it works across branch switches
+		// and rewritten history, not just fast-forwards.
+		diffOut, diffErr := runGitCmd(root, "diff", "--name-status", "-M", last+".."+head)
+		if diffErr != nil {
+			// The anchor existed but the diff failed unexpectedly — degrade to a
+			// full scan rather than lose the update.
+			if _, err := svc.Index(codegraph.IndexOptions{RootDir: root, Force: false}); err != nil {
+				return err
+			}
+		} else {
+			changes := parseDiff(diffOut)
+			if _, err := svc.Index(codegraph.IndexOptions{RootDir: root, Changes: changes}); err != nil {
+				return err
+			}
+		}
+	}
+
+	if err := svc.SetLastIndexedSHA(head); err != nil {
+		return fmt.Errorf("run-reindex: stamp last sha: %w", err)
+	}
+	return nil
+}
+
+// parseDiff turns the output of `git diff --name-status -M` into a git-agnostic
+// list of ChangedFile the scoped indexer consumes. Each line is tab-separated:
+//
+//	A|M|D|T<TAB>path
+//	R<score><TAB>old<TAB>new
+//	C<score><TAB>src<TAB>dst
+//
+// The first character of the status field selects the ChangeStatus. Renames map
+// to ChangeRenamed (old→new); copies map to a ChangeAdded of the destination;
+// type-changes (T) are treated as a modification. Unknown/unmerged statuses and
+// malformed lines are skipped. The result is always non-nil (possibly empty) so
+// callers stay on the scoped path even when the delta contains no files.
+func parseDiff(nameStatus string) []codegraph.ChangedFile {
+	changes := []codegraph.ChangedFile{}
+	for _, raw := range strings.Split(nameStatus, "\n") {
+		line := strings.TrimRight(raw, "\r")
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		fields := strings.Split(line, "\t")
+		if len(fields) < 2 || fields[0] == "" {
+			continue
+		}
+		switch fields[0][0] {
+		case 'A':
+			changes = append(changes, codegraph.ChangedFile{Path: fields[1], Status: codegraph.ChangeAdded})
+		case 'M':
+			changes = append(changes, codegraph.ChangedFile{Path: fields[1], Status: codegraph.ChangeModified})
+		case 'T':
+			// Type change (e.g. file ↔ symlink): re-extract as a modification.
+			changes = append(changes, codegraph.ChangedFile{Path: fields[1], Status: codegraph.ChangeModified})
+		case 'D':
+			changes = append(changes, codegraph.ChangedFile{Path: fields[1], Status: codegraph.ChangeDeleted})
+		case 'R':
+			if len(fields) >= 3 {
+				changes = append(changes, codegraph.ChangedFile{
+					OldPath: fields[1], Path: fields[2], Status: codegraph.ChangeRenamed,
+				})
+			}
+		case 'C':
+			// Copy: the source is untouched; only the destination is new.
+			if len(fields) >= 3 {
+				changes = append(changes, codegraph.ChangedFile{Path: fields[2], Status: codegraph.ChangeAdded})
+			}
+		}
+	}
+	return changes
+}
+
+// reindexLock is the handle returned by acquireReindexLock. When acquired is
+// true the caller owns the lock and must call release() (typically via defer);
+// when false another process holds it and the caller must not index.
+type reindexLock struct {
+	path     string
+	acquired bool
+}
+
+// acquireReindexLock attempts to take the coalesce lock for gitDir. The lock is
+// a pidfile created with O_CREATE|O_EXCL — the atomic exclusive create IS the
+// lock, which is portable to every OS mneme runs on without flock/syscall.Kill
+// or build-tagged platform files. If the file already exists it is treated as a
+// live lock unless its mtime is older than reindexLockTTL, in which case the
+// holder is presumed dead, the stale file is removed, and the lock is retried
+// once.
+func acquireReindexLock(gitDir string) (*reindexLock, error) {
+	lockPath := filepath.Join(gitDir, reindexLockName)
+
+	lock, err := tryCreateReindexLock(lockPath)
+	if err != nil {
+		return nil, err
+	}
+	if lock.acquired {
+		return lock, nil
+	}
+
+	// The lock exists. Decide whether it is stale (crashed holder) by mtime.
+	info, statErr := os.Stat(lockPath)
+	if statErr != nil {
+		// Vanished between the failed create and the stat — the holder released
+		// it. Retry once; whatever this returns is authoritative.
+		return tryCreateReindexLock(lockPath)
+	}
+	if time.Since(info.ModTime()) > reindexLockTTL {
+		_ = os.Remove(lockPath)
+		return tryCreateReindexLock(lockPath)
+	}
+	return lock, nil // held by a live process
+}
+
+// tryCreateReindexLock performs one atomic O_EXCL create attempt, writing
+// "PID\ntimestamp" for diagnostics. It returns acquired=true on success and
+// acquired=false (no error) when the file already exists; any other error is
+// returned.
+func tryCreateReindexLock(lockPath string) (*reindexLock, error) {
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		if os.IsExist(err) {
+			return &reindexLock{path: lockPath, acquired: false}, nil
+		}
+		return nil, err
+	}
+	_, _ = fmt.Fprintf(f, "%d\n%d\n", os.Getpid(), time.Now().Unix())
+	_ = f.Close()
+	return &reindexLock{path: lockPath, acquired: true}, nil
+}
+
+// release removes the lockfile. It is safe to call on a non-acquired lock (no-op)
+// and safe to call multiple times.
+func (l *reindexLock) release() {
+	if l != nil && l.acquired {
+		_ = os.Remove(l.path)
+		l.acquired = false
+	}
+}
+
+// touchReindexDirty creates (or refreshes the mtime of) the dirty marker inside
+// gitDir, signalling the current lock holder that more commits arrived and a
+// catch-up pass is warranted. All failures are ignored — the marker is a
+// best-effort latency optimisation, not a correctness requirement.
+func touchReindexDirty(gitDir string) {
+	dirtyPath := filepath.Join(gitDir, reindexDirtyName)
+	if f, err := os.OpenFile(dirtyPath, os.O_CREATE|os.O_WRONLY, 0o600); err == nil {
+		_ = f.Close()
+	}
+	now := time.Now()
+	_ = os.Chtimes(dirtyPath, now, now)
+}
+
+// fileExists reports whether path exists (of any type). Used for the dirty
+// marker check.
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+// gitCommitExists reports whether sha resolves to an existing commit object in
+// the repository at root. It uses `git rev-parse --verify --quiet <sha>^{commit}`
+// which exits non-zero (captured as an error) when the object is absent — the
+// signal to fall back to a full scan.
+func gitCommitExists(root, sha string) bool {
+	_, err := runGitCmd(root, "rev-parse", "--verify", "--quiet", sha+"^{commit}")
+	return err == nil
 }
 
 // initCodeGraphServiceForCWD is a variant of initCodeGraphService that derives
@@ -413,10 +662,10 @@ func removeMarkedBlock(hookPath string) (removed bool, err error) {
 // dozens of post-checkout hooks.
 func reindexInProgress(gitDir string) bool {
 	sentinels := []string{
-		"rebase-merge",       // git rebase -i (interactive) in progress
-		"rebase-apply",       // git rebase (non-interactive) / git am in progress
-		"MERGE_HEAD",         // git merge in progress
-		"CHERRY_PICK_HEAD",   // git cherry-pick in progress
+		"rebase-merge",     // git rebase -i (interactive) in progress
+		"rebase-apply",     // git rebase (non-interactive) / git am in progress
+		"MERGE_HEAD",       // git merge in progress
+		"CHERRY_PICK_HEAD", // git cherry-pick in progress
 	}
 	for _, s := range sentinels {
 		if _, err := os.Stat(filepath.Join(gitDir, s)); err == nil {
