@@ -25,11 +25,11 @@ import (
 type handlers struct {
 	svc         *service.MemoryService
 	sdd         *service.SDDService
-	cgSvc       *service.CodeGraphService  // lazy-initialized on first codegraph tool call
-	skillsSvc   *service.SkillsService     // optional; nil disables skills tools
-	modelsSvc   *service.ModelsService     // optional; nil disables model tools
-	subagentSvc *service.SubagentService   // wraps svc; always available (SPEC-057/SS-4)
-	profileSvc  *service.ProfileService    // wraps cfg.ProfilesDir(); always available (SPEC-091 §1)
+	cgSvc       *service.CodeGraphService // lazy-initialized on first codegraph tool call
+	skillsSvc   *service.SkillsService    // optional; nil disables skills tools
+	modelsSvc   *service.ModelsService    // optional; nil disables model tools
+	subagentSvc *service.SubagentService  // wraps svc; always available (SPEC-057/SS-4)
+	profileSvc  *service.ProfileService   // wraps cfg.ProfilesDir(); always available (SPEC-091 §1)
 	logger      *slog.Logger
 }
 
@@ -212,6 +212,8 @@ func (h *handlers) handleToolCall(ctx context.Context, params ToolCallParams) (*
 	// --- PROJECT TOOLS (SPEC-098 §7a) ---
 	case "project_new":
 		return h.handleProjectNew(ctx, params.Arguments)
+	case "app_add":
+		return h.handleAppAdd(ctx, params.Arguments)
 
 	// --- CODEGRAPH TOOLS ---
 	case "codegraph_search":
@@ -733,7 +735,9 @@ func (h *handlers) mapServiceError(method string, err error) *JSONRPCError {
 		errors.Is(err, model.ErrInvalidProfile) ||
 		errors.Is(err, model.ErrInvalidScaffold) ||
 		errors.Is(err, model.ErrBootstrapToolMissing) ||
-		errors.Is(err, model.ErrLayoutUnsupported) {
+		errors.Is(err, model.ErrLayoutUnsupported) ||
+		errors.Is(err, model.ErrUnknownWiringAction) ||
+		errors.Is(err, model.ErrAppAddNotApplicable) {
 		return &JSONRPCError{
 			Code:    CodeInvalidParams,
 			Message: fmt.Sprintf("mcp: handle %s: %s", method, err),

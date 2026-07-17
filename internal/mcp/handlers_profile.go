@@ -85,6 +85,48 @@ func (h *handlers) handleProjectNew(ctx context.Context, raw json.RawMessage) (*
 	return resultFromAny(res)
 }
 
+// appAddRequest is the input to app_add (SPEC-099 §7b).
+type appAddRequest struct {
+	Blueprint string            `json:"blueprint"`
+	Name      string            `json:"name"`
+	Dir       string            `json:"dir"`
+	Vars      map[string]string `json:"vars"`
+	Scaffold  string            `json:"scaffold"`
+}
+
+// handleAppAdd processes an app_add tool call: adds one composable app (a
+// blueprint of the monorepo's originating scaffold) to an existing monorepo and
+// auto-wires it into the workspace/toolchain root files (Turborepo built-in or
+// the scaffold's declared [wiring]). The deterministic half of the /new-app
+// skill — it never runs git init, commits, or sets a remote.
+func (h *handlers) handleAppAdd(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	var req appAddRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return nil, &JSONRPCError{
+			Code:    CodeInvalidParams,
+			Message: fmt.Sprintf("mcp: handle app_add: invalid arguments: %s", err),
+		}
+	}
+	if req.Blueprint == "" {
+		return nil, &JSONRPCError{Code: CodeInvalidParams, Message: "mcp: handle app_add: blueprint is required"}
+	}
+	if req.Name == "" {
+		return nil, &JSONRPCError{Code: CodeInvalidParams, Message: "mcp: handle app_add: name is required"}
+	}
+
+	res, err := h.profileSvc.AddApp(ctx, service.AppAddInput{
+		Blueprint: req.Blueprint,
+		Name:      req.Name,
+		Dir:       req.Dir,
+		Vars:      req.Vars,
+		Scaffold:  req.Scaffold,
+	})
+	if err != nil {
+		return nil, h.mapServiceError("app_add", err)
+	}
+	return resultFromAny(res)
+}
+
 // profileAddRequest is the input to profile_add.
 type profileAddRequest struct {
 	Source string `json:"source"`

@@ -200,8 +200,8 @@ func TestToolsList(t *testing.T) {
 		// Profile tools (SPEC-091 §1 + SPEC-093 §3 + SPEC-095 §5)
 		"profile_new", "profile_add", "profile_update", "profile_list", "profile_status",
 		"profile_use", "profile_default",
-		// Project tools (SPEC-098 §7a)
-		"project_new",
+		// Project tools (SPEC-098 §7a + SPEC-099 §7b)
+		"project_new", "app_add",
 		// Init tool (SPEC-041)
 		"init",
 		// Subagent tools (SPEC-057 / EPIC agnostic-agents SS-4)

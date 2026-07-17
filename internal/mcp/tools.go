@@ -1435,13 +1435,44 @@ func allTools() []ToolDefinition {
 						"description": "Destination directory for the new project. Must be empty or absent.",
 					},
 					"vars": map[string]any{
-						"type":        "object",
-						"description": "Substitution variables as a flat string->string map, merged over the scaffold's declared [vars] defaults.",
+						"type":                 "object",
+						"description":          "Substitution variables as a flat string->string map, merged over the scaffold's declared [vars] defaults.",
 						"additionalProperties": map[string]any{"type": "string"},
 					},
 					"project_root": map[string]any{
 						"type":        "string",
 						"description": "Directory from which the ACTIVE profile is resolved (NOT the destination). Defaults to the current working directory.",
+					},
+				},
+			},
+		},
+		{
+			Name:        "app_add",
+			Description: "Add a composable app to an existing MONOREPO grown from the active profile's scaffold (SPEC-099 §7b). Reads the monorepo's pin to learn which scaffold generated it, then copies the named blueprint (a _blueprints/<name> archetype the scaffold offers) into the scaffold's apps directory under `name` with {{var}} substitution, and auto-wires it: the Turborepo built-in adapter updates pnpm-workspace.yaml (a no-op when a glob already covers apps/*, and it never touches turbo.json), or a custom toolchain applies its declared [wiring] actions (workspace:/json-merge:/copy:). Does NOT run git init, commit, or set a remote. Errors if the layout is single (no apps to add), the blueprint is not offered by the scaffold, or the target app directory is not empty.",
+			InputSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"blueprint", "name"},
+				"properties": map[string]any{
+					"blueprint": map[string]any{
+						"type":        "string",
+						"description": "The blueprint archetype to instantiate (a _blueprints/<name> entry the monorepo's scaffold declares).",
+					},
+					"name": map[string]any{
+						"type":        "string",
+						"description": "Name the new app takes under the scaffold's apps directory (a safe-slug).",
+					},
+					"dir": map[string]any{
+						"type":        "string",
+						"description": "Monorepo root the app is added to. Defaults to the current working directory.",
+					},
+					"vars": map[string]any{
+						"type":                 "object",
+						"description":          "Substitution variables as a flat string->string map, merged over the scaffold's declared [vars] defaults.",
+						"additionalProperties": map[string]any{"type": "string"},
+					},
+					"scaffold": map[string]any{
+						"type":        "string",
+						"description": "Override which scaffold archetype supplies the blueprint catalog (defaults to the monorepo pin's scaffold field).",
 					},
 				},
 			},
