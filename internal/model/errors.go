@@ -283,6 +283,15 @@ var ErrScaffoldNotFound = errors.New("scaffold not found in active profile")
 var ErrBootstrapToolMissing = errors.New("scaffold bootstrap tool not found on PATH")
 
 // ErrLayoutUnsupported is returned when a project scaffold uses a layout not
-// yet assembled by the current mneme (today: monorepo, which arrives with
-// SPEC-099 §7b).
+// yet assembled by the current mneme.
 var ErrLayoutUnsupported = errors.New("scaffold layout not yet supported")
+
+// ErrUnknownWiringAction is returned when a custom-toolchain scaffold's
+// [wiring].on_add declares a verb outside the closed vocabulary
+// (workspace:/json-merge:/copy:) — a parse-time fail-fast (SPEC-099 §7b).
+var ErrUnknownWiringAction = errors.New("unknown scaffold wiring action")
+
+// ErrAppAddNotApplicable is returned when `mneme app add` targets a scaffold
+// whose layout has no composable-app notion — today a single layout (SPEC-099
+// §7b). Adding an app to it simply does not apply.
+var ErrAppAddNotApplicable = errors.New("app add does not apply to this scaffold layout")

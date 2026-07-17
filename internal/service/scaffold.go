@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -273,8 +274,28 @@ func (s *ProfileService) executePlan(ctx context.Context, plan profile.AssemblyP
 	}
 
 	for _, cp := range plan.Copies {
+		if cp.Optional {
+			if _, err := fs.Stat(profileFS, cp.Src); err != nil {
+				if errors.Is(err, fs.ErrNotExist) {
+					continue // an optional overlay/shell the scaffold does not ship
+				}
+				return fmt.Errorf("service: profile: new project: stat %s: %w", cp.Src, err)
+			}
+		}
 		if err := copyFSDirSubst(profileFS, cp.Src, cp.Dest, cp.Vars); err != nil {
 			return fmt.Errorf("service: profile: new project: %w", err)
+		}
+	}
+
+	for _, bp := range plan.Blueprints {
+		if err := copyFSDirSubst(profileFS, bp.Src, bp.Dest, bp.Vars); err != nil {
+			return fmt.Errorf("service: profile: new project: blueprint %s: %w", bp.Src, err)
+		}
+	}
+
+	for _, edit := range plan.Wiring {
+		if err := applyWiringEdit(profileFS, dest, edit); err != nil {
+			return fmt.Errorf("service: profile: new project: wiring: %w", err)
 		}
 	}
 

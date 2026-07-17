@@ -258,6 +258,8 @@ func translateProfileError(op string, err error) error {
 		return fmt.Errorf("%s: %w", op, model.ErrProfileNameMismatch)
 	case errors.Is(err, profile.ErrInvalidManifest), errors.Is(err, profile.ErrInvalidPin):
 		return fmt.Errorf("%s: %w: %s", op, model.ErrInvalidProfile, err)
+	case errors.Is(err, profile.ErrUnknownWiringAction):
+		return fmt.Errorf("%s: %w: %s", op, model.ErrUnknownWiringAction, err)
 	case errors.Is(err, profile.ErrInvalidLayout),
 		errors.Is(err, profile.ErrInvalidToolchain),
 		errors.Is(err, profile.ErrBootstrapNotPinned),
@@ -267,6 +269,8 @@ func translateProfileError(op string, err error) error {
 		return fmt.Errorf("%s: %w", op, model.ErrScaffoldNotFound)
 	case errors.Is(err, profile.ErrLayoutUnsupported):
 		return fmt.Errorf("%s: %w", op, model.ErrLayoutUnsupported)
+	case errors.Is(err, profile.ErrAppAddNotApplicable):
+		return fmt.Errorf("%s: %w", op, model.ErrAppAddNotApplicable)
 	}
 
 	if hint := gitAuthHint(err); hint != "" {
