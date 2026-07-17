@@ -2006,3 +2006,52 @@ subagent_containment = "off"
 		t.Errorf("SubagentContainmentMode(project override) = %q, want %q", got, "off")
 	}
 }
+
+// --- SPEC-093 §3: [profiles].default -----------------------------------------
+
+// TestProfilesConfig_DefaultIsVanilla verifies Default() initialises
+// Profiles.Default to "" — the out-of-box OSS behaviour never changes.
+func TestProfilesConfig_DefaultIsVanilla(t *testing.T) {
+	cfg := Default()
+	if cfg.Profiles.Default != "" {
+		t.Errorf("Profiles.Default = %q, want empty (vanilla)", cfg.Profiles.Default)
+	}
+}
+
+// TestProfilesConfig_EnvOverride verifies MNEME_PROFILES_DEFAULT overrides
+// both Default() and whatever the TOML file says.
+func TestProfilesConfig_EnvOverride(t *testing.T) {
+	t.Setenv("MNEME_PROFILES_DEFAULT", "chatea-pro")
+
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(configPath, []byte("[profiles]\ndefault = \"other-profile\"\n"), 0o600); err != nil {
+		t.Fatalf("write config.toml: %v", err)
+	}
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Profiles.Default != "chatea-pro" {
+		t.Errorf("Profiles.Default = %q, want %q (env wins)", cfg.Profiles.Default, "chatea-pro")
+	}
+}
+
+// TestProfilesConfig_LoadFromTOML verifies the TOML file sets the default
+// when no env override is present.
+func TestProfilesConfig_LoadFromTOML(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(configPath, []byte("[profiles]\ndefault = \"chatea-pro\"\n"), 0o600); err != nil {
+		t.Fatalf("write config.toml: %v", err)
+	}
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Profiles.Default != "chatea-pro" {
+		t.Errorf("Profiles.Default = %q, want %q", cfg.Profiles.Default, "chatea-pro")
+	}
+}

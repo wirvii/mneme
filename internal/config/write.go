@@ -107,3 +107,45 @@ func SetSubagentContainmentMode(path, project, mode string) error {
 
 	return nil
 }
+
+// SetProfilesDefault reads the config file at path (creating it if absent),
+// sets [profiles].default to name, and writes the result back atomically —
+// mirrors SetModelsOverrides' load/mutate/marshal/rename-into-place pattern
+// exactly. This is the sole write-path "mneme profile default <name>" /
+// "--clear" uses (SPEC-093 §3.3/§3.4). name == "" clears the default,
+// reverting sessions with no repo pin to vanilla.
+func SetProfilesDefault(path, name string) error {
+	cfg := Default()
+	if _, err := os.Stat(path); err == nil {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("config: write: read %s: %w", path, err)
+		}
+		if err := toml.Unmarshal(data, cfg); err != nil {
+			return fmt.Errorf("config: write: parse toml: %w", err)
+		}
+	}
+
+	cfg.Profiles.Default = name
+
+	out, err := toml.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("config: write: marshal: %w", err)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("config: write: mkdir: %w", err)
+	}
+
+	tmpPath := path + ".tmp"
+	if err := os.WriteFile(tmpPath, out, 0o644); err != nil {
+		return fmt.Errorf("config: write: write tmp: %w", err)
+	}
+
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("config: write: rename: %w", err)
+	}
+
+	return nil
+}

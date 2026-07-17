@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	tomlPkg "github.com/pelletier/go-toml/v2"
 )
 
 // TestSetModelsOverrides_WriteAndReload verifies that SetModelsOverrides persists
@@ -181,6 +183,89 @@ default_limit = 20
 	cfg, err := Load(path)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Search.DefaultLimit != 20 {
+		t.Errorf("Search.DefaultLimit = %d, want 20 (unrelated section must survive)", cfg.Search.DefaultLimit)
+	}
+}
+
+// --- SPEC-093 §3.4: SetProfilesDefault ---------------------------------------
+
+func TestSetProfilesDefault_WriteAndReload(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	if err := SetProfilesDefault(path, "chatea-pro"); err != nil {
+		t.Fatalf("SetProfilesDefault: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Profiles.Default != "chatea-pro" {
+		t.Errorf("Profiles.Default = %q, want %q", cfg.Profiles.Default, "chatea-pro")
+	}
+}
+
+func TestSetProfilesDefault_EmptyClears(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	if err := SetProfilesDefault(path, "chatea-pro"); err != nil {
+		t.Fatalf("first SetProfilesDefault: %v", err)
+	}
+	if err := SetProfilesDefault(path, ""); err != nil {
+		t.Fatalf("second SetProfilesDefault (clear): %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Profiles.Default != "" {
+		t.Errorf("Profiles.Default = %q, want empty after clear", cfg.Profiles.Default)
+	}
+}
+
+// TestSetProfilesDefault_PreservesOtherSections mirrors
+// TestSetModelsOverrides_SurvivesReload / TestSetSubagentContainmentMode_PreservesOtherSections:
+// writing the default profile must not disturb an unrelated pre-existing
+// section, nor a pre-existing [models.overrides] map.
+func TestSetProfilesDefault_PreservesOtherSections(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	if err := SetModelsOverrides(path, map[string]string{"bug-hunter": "opus"}); err != nil {
+		t.Fatalf("SetModelsOverrides: %v", err)
+	}
+
+	seededCfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load seeded config: %v", err)
+	}
+	seededCfg.Search.DefaultLimit = 20
+	seededOut, err := tomlPkg.Marshal(seededCfg)
+	if err != nil {
+		t.Fatalf("marshal seeded config: %v", err)
+	}
+	if err := os.WriteFile(path, seededOut, 0o644); err != nil {
+		t.Fatalf("write seeded config: %v", err)
+	}
+
+	if err := SetProfilesDefault(path, "chatea-pro"); err != nil {
+		t.Fatalf("SetProfilesDefault: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Profiles.Default != "chatea-pro" {
+		t.Errorf("Profiles.Default = %q, want %q", cfg.Profiles.Default, "chatea-pro")
+	}
+	if got := cfg.Models.Overrides["bug-hunter"]; got != "opus" {
+		t.Errorf("Models.Overrides[bug-hunter] = %q, want %q (unrelated section must survive)", got, "opus")
 	}
 	if cfg.Search.DefaultLimit != 20 {
 		t.Errorf("Search.DefaultLimit = %d, want 20 (unrelated section must survive)", cfg.Search.DefaultLimit)
