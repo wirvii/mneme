@@ -76,6 +76,17 @@ type IndexOptions struct {
 	// byte-for-byte. Force takes precedence: when Force is true the indexer does a
 	// full scan even if Changes is set.
 	Changes []ChangedFile
+
+	// Include, when non-nil, replaces the filesystem tree walk with an explicit
+	// list of candidate paths (relative to RootDir) for a FULL scan (SPEC-102).
+	// The CLI populates it from `git ls-files` so the index honours .gitignore
+	// without this package knowing anything about git. Each path is still run
+	// through isEligibleSource, and pruneDeleted STILL runs (unlike scoped mode
+	// via Changes), so nodes for paths no longer in the list are purged — this
+	// is what auto-heals a graph previously polluted by a gitignored directory.
+	// A nil slice (the default) preserves the legacy walk (the non-git
+	// fallback). Include is ignored when Changes activates scoped mode.
+	Include []string
 }
 
 // Indexer orchestrates the extraction of code symbols from a directory tree
@@ -109,6 +120,15 @@ func (ix *Indexer) Index(opts IndexOptions) (*IndexResult, error) {
 	// Force overrides scoped mode and forces a full scan.
 	if opts.Changes != nil && !opts.Force {
 		return ix.indexScoped(opts)
+	}
+
+	// Full-scan-by-list (SPEC-102): a non-nil Include means the caller already
+	// computed the git-eligible file list (tracked + untracked-but-not-ignored),
+	// so replace the tree walk with an iteration over that list. Unlike scoped
+	// mode, pruneDeleted still runs — this is a full scan, just driven by a
+	// precomputed candidate set instead of filepath.WalkDir.
+	if opts.Include != nil {
+		return ix.indexList(opts)
 	}
 
 	start := time.Now()
@@ -178,6 +198,64 @@ func (ix *Indexer) Index(opts IndexOptions) (*IndexResult, error) {
 	}
 
 	// Cleanup phase: remove store records for files that no longer exist on disk.
+	if !opts.DryRun {
+		if err := ix.pruneDeleted(onDisk); err != nil {
+			return nil, err
+		}
+	}
+
+	result.DurationMs = time.Since(start).Milliseconds()
+	return result, nil
+}
+
+// indexList performs a full scan driven by a precomputed candidate list
+// (opts.Include) instead of filepath.WalkDir (SPEC-102). It exists to let the
+// CLI honour .gitignore (via `git ls-files`) without teaching this
+// git-agnostic package anything about git: the caller resolves the list of
+// paths git considers part of the working tree, and indexList applies exactly
+// the same eligibility, extraction, and pruning logic the walk does.
+//
+// Each entry is still filtered through isEligibleSource — belt-and-suspenders
+// against a caller-supplied path that falls under a hidden or ignoredDirs
+// directory (e.g. a tracked file inside vendor/) — so the walk and the list
+// path agree exactly on what is indexable, mirroring the walk/scoped
+// symmetry documented on isEligibleSource.
+//
+// Unlike indexScoped (Changes), indexList still runs pruneDeleted: it is a
+// full scan, so any store record whose path is absent from the (now
+// git-filtered) list is stale and must be purged. This is what auto-heals a
+// graph previously polluted by a gitignored directory that the legacy walk
+// used to descend into — the next full-scan run with Include populated no
+// longer sees those paths in onDisk and prunes them.
+func (ix *Indexer) indexList(opts IndexOptions) (*IndexResult, error) {
+	start := time.Now()
+	result := &IndexResult{}
+	onDisk := make(map[string]struct{})
+
+	for _, rel := range opts.Include {
+		rel = filepath.Clean(rel)
+
+		lang, ok := isEligibleSource(rel)
+		if !ok {
+			continue
+		}
+		if opts.Language != "" {
+			lang = opts.Language
+		}
+
+		result.FilesScanned++
+		onDisk[rel] = struct{}{}
+
+		if err := ix.indexFile(filepath.Join(opts.RootDir, rel), rel, lang, opts, result); err != nil {
+			if errors.Is(err, ErrExtractorIncompatible) {
+				// Systemic (SPEC-088 D4): abort rather than silently produce an
+				// empty-but-"successful" index for this language.
+				return nil, err
+			}
+			result.FilesErrored++
+		}
+	}
+
 	if !opts.DryRun {
 		if err := ix.pruneDeleted(onDisk); err != nil {
 			return nil, err
