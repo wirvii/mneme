@@ -14,11 +14,12 @@ import (
 	"github.com/wirvii/mneme/internal/service"
 )
 
-// newProfileCmd returns the "mneme profile" subcommand group (SPEC-091 §1):
-// a team's working methodology packaged as a portable git repo, activated
-// with nvm-like semantics. §1 only covers the foundation — the store
-// (add/update/list) and read-only pin resolution (status). The verbs that
-// WRITE a project's pin ("use"/"default") are a later spec (§3).
+// newProfileCmd returns the "mneme profile" subcommand group: a team's
+// working methodology packaged as a portable git repo, activated with
+// nvm-like semantics. §1 (SPEC-091) covers the foundation — the store
+// (add/update/list) and read-only pin resolution (status). §3 (SPEC-093)
+// adds the two write-verbs: "use" (per-repo, immediate) and "default"
+// (host-level, sessions with no repo pin).
 func newProfileCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "profile",
@@ -31,13 +32,12 @@ host-level store installed once (~/.mneme/profiles/<name>/), plus a
 per-project pointer committed at the project's root (.mneme-profile).
 
 Subcommands:
-  add     Clone a profile into the host-level store (once).
-  update  Fetch + checkout the latest state of an installed profile.
-  list    List profiles in the host-level store.
-  status  Report the current repo's pin resolution (read-only).
-
-This command family does not write .mneme-profile itself — that is a later
-verb ("profile use"/"profile default", not part of this release).`,
+  add      Clone a profile into the host-level store (once).
+  update   Fetch + checkout the latest state of an installed profile.
+  list     List profiles in the host-level store.
+  status   Report the current repo's pin resolution (read-only).
+  use      Activate a profile for THIS repo now (writes the pin + materializes).
+  default  Set/clear/print the HOST-level default for repos with no pin.`,
 	}
 
 	cmd.AddCommand(
@@ -45,6 +45,8 @@ verb ("profile use"/"profile default", not part of this release).`,
 		newProfileUpdateCmd(),
 		newProfileListCmd(),
 		newProfileStatusCmd(),
+		newProfileUseCmd(),
+		newProfileDefaultCmd(),
 	)
 
 	return cmd
@@ -56,6 +58,11 @@ verb ("profile use"/"profile default", not part of this release).`,
 // the CLI frontend: a developer at a terminal can authenticate interactively
 // (design decision #11); the MCP frontend passes true instead (see
 // internal/mcp/handlers_profile.go).
+//
+// configPath is always wired (SPEC-093 §3) so "profile default"/"profile
+// status" (via ResolveActive, when a future caller needs it) can read/write
+// [profiles].default — harmless no-op for add/update/list/status, which
+// never touch it.
 func newProfileSvc() *service.ProfileService {
 	cfg := config.Default()
 	if home, err := os.UserHomeDir(); err == nil {
@@ -66,7 +73,38 @@ func newProfileSvc() *service.ProfileService {
 	if flagDataDir != "" {
 		cfg.Storage.DataDir = flagDataDir
 	}
-	return service.NewProfileService(cfg.ProfilesDir(), false)
+	return service.NewProfileService(cfg.ProfilesDir(), false,
+		service.WithProfileConfigPath(config.DefaultPath()),
+	)
+}
+
+// newActivatingProfileSvc constructs a ProfileService fully wired for
+// Use/Activate (SPEC-093 §3.2): mem (rule provenance), sub (capa-2/3
+// fusion), and the host-level skills directory, on top of the same
+// MemoryService/database initService() builds for every other CLI command —
+// same pattern as initSubagentService (internal/cli/subagents.go). Only
+// "profile use" needs this heavier construction; add/update/list/status/
+// default never materialize, so they keep the lighter newProfileSvc().
+func newActivatingProfileSvc() (*service.ProfileService, func(), error) {
+	mem, cleanup, err := initService()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	cfg := mem.Config()
+	sub := service.NewSubagentService(mem)
+	skillsDir := ""
+	if home, herr := os.UserHomeDir(); herr == nil {
+		skillsDir = filepath.Join(home, ".claude", "skills")
+	}
+
+	svc := service.NewProfileService(cfg.ProfilesDir(), false,
+		service.WithProfileMemoryService(mem),
+		service.WithProfileSubagentService(sub),
+		service.WithProfileSkillsDir(skillsDir),
+		service.WithProfileConfigPath(config.DefaultPath()),
+	)
+	return svc, cleanup, nil
 }
 
 // newProfileAddCmd returns the "mneme profile add" subcommand.
@@ -293,4 +331,112 @@ func profileStatusLine(res service.ProfileResolution) string {
 	default:
 		return "unknown pin state"
 	}
+}
+
+// newProfileUseCmd returns the "mneme profile use" subcommand (SPEC-093
+// §3.2, "= nvm use").
+func newProfileUseCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "use <name>",
+		Short: "Activate a profile for THIS repo now (writes the pin + materializes)",
+		Long: `Activate an already-installed profile for the current repository,
+immediately: reconstructs a self-describing pin from the profile's checkout
+in the host-level store (name + the checkout's origin remote + its exact
+tag/commit), writes it to .mneme-profile at the repo root, and materializes
+it right away (agents/skills/blocks/rules).
+
+"use" never clones — <name> must already be installed via "profile add".
+A preexisting "scaffold" field in the current pin (if any) is preserved.`,
+		Example: `  mneme profile use chatea-pro`,
+		Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			svc, cleanup, err := newActivatingProfileSvc()
+			if err != nil {
+				return fmt.Errorf("profile use: %w", err)
+			}
+			defer cleanup()
+
+			root, err := os.Getwd()
+			if err != nil {
+				return fmt.Errorf("profile use: %w", err)
+			}
+
+			res, err := svc.Use(cmd.Context(), root, args[0])
+			if err != nil {
+				if errors.Is(err, model.ErrProfileNotFound) {
+					return fmt.Errorf("profile use: %q is not installed — run `mneme profile add` first: %w", args[0], err)
+				}
+				return fmt.Errorf("profile use: %w", err)
+			}
+
+			fmt.Fprintf(cmd.OutOrStdout(), "Activated %s@%s -> %s (materialized)\n", res.Name, res.Ref, res.ProjectRoot)
+			for _, w := range res.Warnings {
+				fmt.Fprintf(cmd.OutOrStdout(), "warning: %s\n", w)
+			}
+			return nil
+		},
+	}
+	return cmd
+}
+
+// newProfileDefaultCmd returns the "mneme profile default" subcommand
+// (SPEC-093 §3.3, "= nvm alias default").
+func newProfileDefaultCmd() *cobra.Command {
+	var flagClear bool
+
+	cmd := &cobra.Command{
+		Use:   "default [<name>]",
+		Short: "Set/clear/print the HOST-level default profile for repos with no pin",
+		Long: `Fix (or clear, or print) the host-level default profile
+(~/.mneme/config.toml's [profiles].default): the profile a session activates
+at SessionStart when the repository has NO .mneme-profile pin.
+
+This does NOT materialize anything and does NOT re-point sessions already
+running — it only affects sessions started AFTER this call, in repos with no
+pin of their own. Use "profile use" to activate a profile in THIS repo now.`,
+		Example: `  mneme profile default chatea-pro
+  mneme profile default --clear
+  mneme profile default`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			svc := newProfileSvc()
+
+			switch {
+			case flagClear:
+				if _, err := svc.ClearDefault(); err != nil {
+					return fmt.Errorf("profile default: %w", err)
+				}
+				fmt.Fprintln(cmd.OutOrStdout(), "Default global limpiado — vuelve a vanilla.")
+				return nil
+
+			case len(args) == 1:
+				res, err := svc.SetDefault(args[0])
+				if err != nil {
+					if errors.Is(err, model.ErrProfileNotFound) {
+						return fmt.Errorf("profile default: %q is not installed — run `mneme profile add` first: %w", args[0], err)
+					}
+					return fmt.Errorf("profile default: %w", err)
+				}
+				fmt.Fprintf(cmd.OutOrStdout(),
+					"Default global = %s. Afecta sesiones NUEVAS. Para activar en ESTE repo ahora: `mneme profile use %s`.\n",
+					res.Default, res.Default)
+				return nil
+
+			default:
+				res, err := svc.Default()
+				if err != nil {
+					return fmt.Errorf("profile default: %w", err)
+				}
+				if res.Default == "" {
+					fmt.Fprintln(cmd.OutOrStdout(), "No default global configurado (vanilla).")
+				} else {
+					fmt.Fprintln(cmd.OutOrStdout(), res.Default)
+				}
+				return nil
+			}
+		},
+	}
+
+	cmd.Flags().BoolVar(&flagClear, "clear", false, "Clear the default (revert to vanilla)")
+	return cmd
 }

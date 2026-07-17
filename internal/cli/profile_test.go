@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/wirvii/mneme/internal/config"
 )
 
 // mustRunGitForProfileCmd runs git with args in dir, failing the test on error.
@@ -216,9 +218,115 @@ func TestProfileCmd_Help(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := buf.String()
-	for _, sub := range []string{"add", "update", "list", "status"} {
+	for _, sub := range []string{"add", "update", "list", "status", "use", "default"} {
 		if !strings.Contains(out, sub) {
 			t.Errorf("help output missing subcommand %q", sub)
 		}
+	}
+}
+
+// --- SPEC-093 §3: profile use / profile default ------------------------------
+
+func TestProfileCmd_Use_ActivatesAndMaterializes(t *testing.T) {
+	isolateProfileCmdCwd(t)
+	dataDir := t.TempDir()
+	source := newProfileCmdFixtureRepo(t, "chatea-pro", "1.0.0")
+
+	if _, _, err := execProfileCmd(t, dataDir, "profile", "add", source); err != nil {
+		t.Fatalf("profile add: unexpected error: %v", err)
+	}
+
+	out, _, err := execProfileCmd(t, dataDir, "profile", "use", "chatea-pro")
+	if err != nil {
+		t.Fatalf("profile use: unexpected error: %v", err)
+	}
+	if !strings.Contains(out, "chatea-pro") || !strings.Contains(out, "materialized") {
+		t.Errorf("profile use output = %q, want mention of chatea-pro/materialized", out)
+	}
+
+	projectRoot, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(projectRoot, ".mneme-profile")); err != nil {
+		t.Errorf("expected .mneme-profile to be written: %v", err)
+	}
+}
+
+func TestProfileCmd_Use_NotInstalled(t *testing.T) {
+	isolateProfileCmdCwd(t)
+	dataDir := t.TempDir()
+
+	_, _, err := execProfileCmd(t, dataDir, "profile", "use", "nonexistent")
+	if err == nil {
+		t.Fatal("profile use: expected error for a non-installed profile")
+	}
+	if !strings.Contains(err.Error(), "not installed") {
+		t.Errorf("err = %v, want mention of 'not installed'", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(t.TempDir(), ".mneme-profile")); !os.IsNotExist(err) {
+		t.Errorf("expected no pin written")
+	}
+}
+
+func TestProfileCmd_Default_SetPrintClear(t *testing.T) {
+	isolateProfileCmdCwd(t)
+	dataDir := t.TempDir()
+	source := newProfileCmdFixtureRepo(t, "chatea-pro", "1.0.0")
+
+	if _, _, err := execProfileCmd(t, dataDir, "profile", "add", source); err != nil {
+		t.Fatalf("profile add: unexpected error: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = config.SetProfilesDefault(config.DefaultPath(), "")
+	})
+
+	out, _, err := execProfileCmd(t, dataDir, "profile", "default", "chatea-pro")
+	if err != nil {
+		t.Fatalf("profile default <name>: unexpected error: %v", err)
+	}
+	if !strings.Contains(out, "chatea-pro") || !strings.Contains(out, "NUEVAS") {
+		t.Errorf("profile default <name> output = %q, want mention of chatea-pro and NUEVAS", out)
+	}
+
+	out, _, err = execProfileCmd(t, dataDir, "profile", "default")
+	if err != nil {
+		t.Fatalf("profile default (print): unexpected error: %v", err)
+	}
+	if strings.TrimSpace(out) != "chatea-pro" {
+		t.Errorf("profile default (print) output = %q, want %q", strings.TrimSpace(out), "chatea-pro")
+	}
+
+	out, _, err = execProfileCmd(t, dataDir, "profile", "default", "--clear")
+	if err != nil {
+		t.Fatalf("profile default --clear: unexpected error: %v", err)
+	}
+	if !strings.Contains(out, "vanilla") {
+		t.Errorf("profile default --clear output = %q, want mention of vanilla", out)
+	}
+
+	out, _, err = execProfileCmd(t, dataDir, "profile", "default")
+	if err != nil {
+		t.Fatalf("profile default (print after clear): unexpected error: %v", err)
+	}
+	if !strings.Contains(out, "vanilla") {
+		t.Errorf("profile default (print after clear) output = %q, want mention of vanilla", out)
+	}
+}
+
+func TestProfileCmd_Default_NotInstalled(t *testing.T) {
+	isolateProfileCmdCwd(t)
+	dataDir := t.TempDir()
+	t.Cleanup(func() {
+		_ = config.SetProfilesDefault(config.DefaultPath(), "")
+	})
+
+	_, _, err := execProfileCmd(t, dataDir, "profile", "default", "nonexistent")
+	if err == nil {
+		t.Fatal("profile default <name>: expected error for a non-installed profile")
+	}
+	if !strings.Contains(err.Error(), "not installed") {
+		t.Errorf("err = %v, want mention of 'not installed'", err)
 	}
 }
