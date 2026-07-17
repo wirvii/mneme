@@ -434,8 +434,11 @@ func (svc *MemoryService) Forget(ctx context.Context, id string, reason string) 
 // writes onto every rule it materializes (SPEC-092): "profile:<name>".
 // Kept as a single helper so SaveProfileRule and PurgeProfileRules can never
 // drift out of sync on the exact string they stamp vs. the one they purge by.
+// Built on model.ProfileSourcePrefix (SPEC-094 §4) rather than a local
+// literal, so this package and the team-memory vault-exclusion guards it
+// feeds (model.IsProfileSource) can never disagree on the prefix.
 func profileSourcePrefix(profileName string) string {
-	return "profile:" + profileName
+	return model.ProfileSourcePrefix + profileName
 }
 
 // SaveProfileRule persists req as a project-scoped rule memory, stamping its
