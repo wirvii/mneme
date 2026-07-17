@@ -1,17 +1,18 @@
-# Profiles §1–§3, §5: manifest/pin/store, activation, precedence + use/default, assisted creation
+# Profiles §1–§3, §5–§6: manifest/pin/store, activation, precedence + use/default, assisted creation, default OSS profile
 
-> SPEC-091 (§1) + SPEC-092 (§2) + SPEC-093 (§3) + SPEC-095 (§5), 4 of 7 specs
-> in the EPIC `profiles`. Design reference: `docs/profiles-design.md` (§1–§7,
-> §9–§11, §15.6–§15.7, §16.2–§16.3/§16.5, decisions #2–#13/#18). This document
-> covers §1 (the foundation: manifest, pin, host-level store, read-only pin
+> SPEC-091 (§1) + SPEC-092 (§2) + SPEC-093 (§3) + SPEC-095 (§5) + SPEC-096
+> (§6), 5 of 7 specs in the EPIC `profiles`. Design reference:
+> `docs/profiles-design.md` (§1–§8, §9–§11, §13–§14, §15.6–§15.7,
+> §16.2–§16.3/§16.5–§16.6, decisions #2–#13/#18). This document covers §1
+> (the foundation: manifest, pin, host-level store, read-only pin
 > resolution), §2 (the activation engine: hybrid materialization,
 > `.mneme/profile.lock`, `source=profile:<name>` provenance, switch), §3
 > (precedence, the two write verbs `use`/`default`, and the SessionStart
-> integration), and §5 (assisted creation: the `profile new` scaffolder, the
+> integration), §5 (assisted creation: the `profile new` scaffolder, the
 > `mneme-profile-author` skill, and `mneme-init`'s profile-detection
-> integration). Team-memory exclusion (§4), the default OSS profile's
-> migration (§6), and project scaffolding (§7) are later specs; do not expect
-> them here.
+> integration), and §6 (the embedded OSS default profile that `PinDefault`
+> materializes, closing the hole §3 left open). Team-memory exclusion (§4)
+> and project scaffolding (§7) are later specs; do not expect them here.
 
 ## Overview
 
@@ -166,8 +167,9 @@ service/profile.go + service/profile_activate.go   (ProfileService)
         │   rules)                WriteAgentProfiles:
         │                         atomic agent writes)
         ▼
-internal/profile   (leaf: Manifest, Pin, Store, ResolvePin, Contents,
-                     LoadContents, Lock, ParseLock/RenderLock, Snapshot,
+internal/profile   (leaf: Manifest, ParseManifestFS, Pin, Store, ResolvePin,
+                     Contents, LoadContents/LoadContentsFS,
+                     DefaultProfileName, Lock, ParseLock/RenderLock, Snapshot,
                      StalenessAgainst — stdlib + go-toml/v2 only)
 internal/managedblock (leaf: Upsert/Read/RemoveText/Remove — stdlib only)
 ```
@@ -605,9 +607,11 @@ established (exit 0 always; every failure degrades to a `stderr` WARN):
      `Activate`, and print a short confirmation block naming the source
      (`via pin` or `via default global`). A failure here WARNs and returns —
      it never aborts the session.
-   - `PinDefault` (mneme's internal default profile — no `Source`) → print a
-     pending-confirmation block; real materialization depends on §6
-     (not yet landed).
+   - `PinDefault` (mneme's internal default profile — no `Source`) →
+     **materializes** the embedded OSS default profile (§6,
+     `activateDefaultProfileForSession`) and prints the `mneme-default (OSS
+     built-in)` confirmation block. Before §6 this branch only printed a
+     pending-confirmation message; §6 closes that hole.
    - `PinMissing` → print the actionable nudge/gate (below). **Never
      clones.**
 
@@ -772,12 +776,184 @@ untouched: the AUTHORING of a profile's capa-1 (the `mneme-profile-author`
 skill, above) uses `subagent_compose` exactly as it exists today; only the
 **render of the fusion** belongs to §2's `fuseAgent`.
 
+## §6: The embedded OSS default profile
+
+§6 provides the assets `PinDefault` (§1/§3) anticipated but never had:
+`SPEC-091 §3.5` defines `PinDefault` as a **resolution state**, and
+`SPEC-093 §3.6/A3` explicitly punts real materialization to "when §6
+provides it". §6 provides it, and does so fulfilling `docs/profiles-design.md`
+§14's OSS deliverable: **the engine (§1–§3, §5) + one "default profile"** —
+mneme's own current assets (agents/skills/models/templates), migrated into
+profile format.
+
+### Decision — embedded, never materialized to `~/.mneme/profiles/_default`
+
+The default profile is an `fs.FS` packaged with `//go:embed`, **never**
+written to `~/.mneme/profiles/`. Four reasons, all consequences of lessons
+this EPIC already learned:
+
+1. **Reproducibility.** Embedded = exactly what the binary shipped. A
+   `~/.mneme/profiles/_default` on disk would be state that drifts from the
+   binary the moment `mneme upgrade` ships new agents (SPEC-089's lesson:
+   never persist machine-local derived state that can go stale).
+2. **No network, no install step, always present.** A real profile installs
+   via `profile add <url>` (a clone). The default has no URL (`Source ==
+   ""`) — embedded, it needs no install step and works offline on a
+   freshly-installed host.
+3. **The store stays a pure "git checkouts" abstraction.** `Store.List`/
+   `Update`/`ResolvePin` all assume a `.git` checkout; a `_default` entry
+   with no remote would be a permanent special case. The default is never
+   consulted through the store — it resolves purely by `PinState`.
+4. **No new corruption surface** (SPEC-089's exact lesson, generalised).
+
+### Where the assets live — `internal/install`, not the leaf or `service`
+
+```go
+// internal/install/default_profile.go
+//go:embed assets/profiles/default
+var defaultProfileFS embed.FS
+
+func DefaultProfileFS() fs.FS   // re-rooted via fs.Sub — mneme-profile.toml at the FS root
+```
+
+`internal/install` already owns the OSS assets (`builtinAgents`/
+`builtinSkills`/`builtinTemplates`, `assets.go`) and their `embed.FS`
+machinery — the default profile tree is a **parallel, byte-parity-guarded
+copy** under `internal/install/assets/profiles/default/`, not a move. The
+global installer keeps reading its own assets exactly as before (R1) —
+`installSteps`/`ClaudeCode()`/`WriteSkills`/`InjectManual`/`WriteTemplates`/
+`ApplyAgentModels`/`RemoveInstalledBuiltinAgents` are **untouched**.
+
+`internal/profile` (the leaf) and `internal/service` **never import
+`internal/install`** — the `fs.FS` is injected by the frontend
+(`cli.initService`'s callers, `mcp`'s handler construction) via
+`service.WithDefaultProfileFS(install.DefaultProfileFS())`, the same
+functional-option pattern `WithTeamMemory` established (SPEC-085 D1):
+
+```
+cli/hook.go, cli/profile.go, mcp/handlers.go   (import install)
+        │  WithDefaultProfileFS(install.DefaultProfileFS())
+        ▼
+service.ProfileService{ defaultFS fs.FS }      (Activate reads it in the default branch)
+        │
+        ▼
+profile.LoadContentsFS(fsys fs.FS)             (leaf: parses disk checkouts AND the embed identically)
+```
+
+### One parse path — `LoadContentsFS`
+
+§2's `LoadContents(dir)` became a one-line wrapper:
+
+```go
+func LoadContents(dir string) (*Contents, error) {
+	return LoadContentsFS(os.DirFS(dir))
+}
+
+func LoadContentsFS(fsys fs.FS) (*Contents, error)   // the real parser now
+```
+
+Every helper (`loadAgents`, `loadBlocks`, `loadSkillNames`, `loadRules`) was
+rewritten from `os.ReadDir`/`os.ReadFile`/`os.Stat` to `fs.ReadDir`/
+`fs.ReadFile`/`fs.Stat` against the injected `fsys` — a disk checkout
+(`os.DirFS`) and the embedded default now share **one** parse path, so the
+default can never silently parse differently than a git-cloned profile.
+`Contents.SkillsDir`/`ModelsPath`/`PolicyPath`/`TemplatesDir` changed
+meaning accordingly: they are now **`fsys`-relative** paths (`"skills"`,
+`"models.toml"`, …) instead of absolute disk paths — `Contents.FS` carries
+the filesystem they are relative to, so a caller reopens them via
+`fs.ReadFile(c.FS, c.ModelsPath)` rather than the `os` package directly.
+`ProfileService.materializeSkills`'s skill-directory copy was rewritten the
+same way — `copyDir` (disk→disk) became `copyFSDir(fsys fs.FS, src, dst
+string)` (fs.FS→disk) — so a profile's `skills/<name>/` materializes
+identically whether its bytes live on disk or in the binary.
+
+`profile.DefaultProfileName = "mneme-default"` is the reserved name a
+sourceless pin always resolves to, and `profile.ParseManifestFS(fsys)` is
+the `fs.FS` counterpart of `ParseManifestFile` used to read the default's
+own manifest (`ProfileService.DefaultManifest()`).
+
+### Wiring `PinDefault` into `Activate`
+
+`ActivationInput` gained one field: `Default bool`. `Activate` branches on
+`in.Default || in.Name == profile.DefaultProfileName`:
+
+```go
+if isDefault {
+    profileName = profile.DefaultProfileName   // the pin's own Name is informational only
+    contents, err = profile.LoadContentsFS(s.defaultFS)   // ErrDefaultProfileUnavailable if unwired
+} else {
+    contents, err = profile.LoadContents(store.ProfilePath(in.Name))   // §2, unchanged
+}
+```
+
+Everything downstream of that branch point — agent fusion, skill copy, block
+upsert, rule insertion, lock write — is **§2 unchanged**. The lock records
+`profile="mneme-default"`, `source=""`, and a caller-built **synthetic,
+version-locked commit**: `"bundled:<mneme-version>+<manifest-version>"`.
+Activate itself never resolves a version string for any profile (default or
+otherwise) — `activateDefaultProfileForSession` (`internal/cli/hook.go`)
+builds it from `ProfileService.DefaultManifest()` + the CLI's own `Version`.
+After a `mneme upgrade`, `<mneme-version>` changes → `Lock.StalenessAgainst`
+(§2, unchanged) flags the workspace stale → the next SessionStart
+re-materializes the new default. No `~/.mneme/profiles/_default` ever
+existed to go stale in the first place.
+
+### Asset mapping and the empty `blocks/`
+
+| Today (`internal/install/assets/…`) | Default profile piece | Rule |
+|---|---|---|
+| `agents/<role>.md` ×6 | `agents/<role>.md` | byte copy |
+| `skills/{example-skill,mneme-init,mneme-profile-author}/` | `skills/…` | byte copy, full tree |
+| `defaults.go:defaultAgentModels` | `models.toml` `[models]` | 1:1 serialisation |
+| `assets/templates/spec-template.md` | `templates/spec.md` | byte copy (only entregable existing today; plan/qa join when they exist) |
+| `assets/operating-manual.md` | **NOT migrated** | see below |
+| — | `rules.jsonl` | absent (0 rules) |
+| enforcement/lane defaults | `policy.toml` | informative only, not consumed |
+
+**The operating manual is never a profile block.** It is host-global
+infrastructure the installer injects directly into `~/.claude/CLAUDE.md`
+(`InjectManual`) — not per-project. Migrating it into `blocks/` would make
+`PinDefault` upsert a **second** copy into the *project's* `CLAUDE.md`,
+diverging from vanilla. The default OSS profile's `blocks/` directory ships
+only a non-`.md` keep file (`blocks/README`, since `go:embed` cannot embed an
+empty directory) — `LoadContentsFS` parses it to zero blocks (its loader
+only picks up `*.md` files). One observable consequence: activating
+`mneme-default` in a repo only ever adds the 6 layer-1 agents to
+`.claude/agents/` — skills/models already match what the global install
+leaves on the host (idempotent).
+
+### `TestDefaultProfile_DriftAgainstAssets` — the parity guard
+
+A white-box test in `internal/install` byte-compares every migrated piece
+against its origin (`builtinAgents`, `BundledSkillEntries`,
+`defaultAgentModels`, `builtinTemplates`) on every test run. Editing one copy
+without the other breaks CI immediately — the same guard
+`internal/subagents`' own archetype copy already established as precedent.
+
+### No-regression — the vanilla path never routes through the default
+
+**`installSteps`/`ClaudeCode()` are untouched.** A `PinAbsent` repo resolves
+to `SourceVanilla` (§3.5) unconditionally — SessionStart emits nothing, and
+`mneme install claude-code` runs exactly the pre-§6 sequence: MCP config,
+hooks, the global manual, `/mneme-init`, skills, templates, the delegation
+hook. `TestClaudeCodeInstall_VanillaGolden`/`TestClaudeCodeInstall_Idempotency`
+(`internal/install`) freeze that contract — including an explicit assertion
+that `.claude/agents/` and `.mneme/profile.lock` never appear after a
+vanilla `Install()` call. `TestInstallSteps_DefaultSequence` (pre-existing)
+needed zero changes.
+
+### No new surface
+
+§6 added **zero** MCP tools (71 unchanged), zero CLI commands, zero HTTP
+endpoints — `PinDefault` activates through the existing SessionStart hook and
+`ResolveActive`/`Activate` (§3), with a `Default: true`/`profile.DefaultProfileName`
+`ActivationInput`, nothing more.
+
 ## Anti-scope (each is a later spec)
 
 | Topic | Spec |
 |-------|------|
 | Enforcing the vault exclusion (forcing `shared=0` in team-memory's own write path) + anti-zombie guard | §4 |
-| Migrating the default OSS profile (assets → profile format); real materialization of `PinDefault` | §6 |
 | Scaffolding (`/new-project`, `/new-app`, `scaffolds/`, `_blueprints/`); the pin's `scaffold` field is preserved by `WritePin`, never acted upon; §5 only leaves `scaffolds/_blueprints/` in the skeleton | §7 |
 | Runtime consumption of `models.toml`/`policy.toml`/`templates/` by scoring/lanes/`spec_doc_write` | follow-up |
 
@@ -834,3 +1010,20 @@ destination is never even created for an unsafe-slug `Name` — both guard the
 needed no changes for §5: a scaffolded profile repo written under `t.TempDir()`
 was never going to land inside the sandboxed test `HOME` in the first place
 (unlike `Store.Add`, `Scaffold` never touches `profilesDir`).
+
+§6's `internal/service` tests (`profile_activate_default_test.go`) build a
+small `testing/fstest.MapFS` shaped like the embedded default (manifest, one
+agent, one skill) instead of importing `internal/install` — the leaf/service
+layering guard means `service_test` cannot depend on `install`, and a
+`MapFS` exercises the exact same `LoadContentsFS` entry point the real
+`embed.FS` does. `internal/install`'s own tests (`default_profile_test.go`)
+exercise `DefaultProfileFS()` directly. `internal/cli`'s
+`TestMaybeActivateProfile_PinDefault` (`profile_sessionstart_test.go`) is the
+one test in the whole suite that materializes the *real* embedded skills
+(`example-skill`/`mneme-init`/`mneme-profile-author`) — relying entirely on
+`internal/cli`'s package-level `TestMain(testenv.Isolate(m))` (SPEC-085 D5b)
+to sandbox `os.UserHomeDir()`, since `maybeActivateProfile`'s `skillsDir`
+resolution is not independently test-injectable the way `--data-dir` is;
+verified manually against a real, populated `~/.claude/skills/` that no file
+there changes when running `go test ./internal/cli/...` without an explicit
+`HOME` override.
