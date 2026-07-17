@@ -1387,6 +1387,20 @@ func TestHardDeleteBySource_FTSInvariant(t *testing.T) {
 	_ = created
 }
 
+// TestHardDeleteBySource_BeginTxErrorPropagates verifies that HardDeleteBySource
+// surfaces a failure starting the transaction (here: the underlying *sql.DB is
+// already closed) instead of panicking or silently succeeding.
+func TestHardDeleteBySource_BeginTxErrorPropagates(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.db.Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+
+	if _, err := s.HardDeleteBySource(context.Background(), "proj-x", "profile:chatea-pro"); err == nil {
+		t.Fatal("expected an error hard-deleting by source against a closed database")
+	}
+}
+
 // isNotFound unwraps err chain to check for model.ErrNotFound.
 func isNotFound(err error) bool {
 	return err != nil && containsStr(err.Error(), "memory not found")
