@@ -1,0 +1,11 @@
+# Model alias per bundled agent — the OSS default (docs/models.md), migrated
+# 1:1 from internal/install/defaults.go's defaultAgentModels (SPEC-096 §6).
+# The architect uses opus because its output (the spec) propagates to every
+# other agent; implementers use sonnet for cost efficiency.
+[models]
+architect     = "opus"
+backend       = "sonnet"
+frontend      = "sonnet"
+qa-tester     = "sonnet"
+bug-hunter    = "sonnet"
+diagnostician = "sonnet"

@@ -1,0 +1,130 @@
+---
+name: mneme-init
+description: "Use once to bootstrap a project with mneme, or to refresh/onboard it later. Single entry point: seeds repo knowledge into memory, applies managed CLAUDE.md blocks (replacing native /init), detects a team profile (gate if missing), and offers 3 opt-in steps — subagent grill, codegraph indexing, shared team memory. Trigger: mneme-init, initialize mneme, onboard this repo, generate subagents."
+version: 1.6.0
+pinned: false
+---
+
+<!-- mneme-init: project-level orchestrator, SPEC-058 / EPIC agnostic-agents SS-5. -->
+
+## When to Use
+
+Use this skill when:
+- The user explicitly asks to run `mneme-init`, "initialize mneme for this project", or "onboard this repo".
+- A session starts and `mem_context`/`mem_search` return no memories for this project (cold-start).
+- The user asks to refresh mneme's knowledge after significant repo changes (new apps, new stack, reorganised modules).
+- The user asks specifically for one of the opt-in steps: "generate subagents", "set up per-project agents", "index the codegraph", or "wire shared team memory".
+
+## Critical Rules
+
+1. The CORE step (repo analysis + memory seeding + managed CLAUDE.md blocks) always runs and REPLACES the native `/init` command — never run both.
+2. The three remaining steps — subagent grill, codegraph, shared memory — are INDEPENDENT and OPT-IN. Ask about each one separately; declining one does not skip the others.
+3. Never invent MCP tool names, CLI flags, or schemas. Use only the tools and commands listed in this file.
+4. The subagent grill (Phases 0-4) is conducted BY YOU using the deterministic `subagent_*` MCP tools as data sources/writers — permissions (`tools:`, `permissionMode:`) are ALWAYS Go-authored via the `archetype` parameter; never invent them.
+5. `subagent_compose` returns a PREVIEW only. Nothing is written to disk until the user confirms and you call `subagent_write`.
+6. Every `role` passed to `subagent_compose`/`subagent_write` must match `^[a-z][a-z0-9-]*$`. `archetype` must be one of `architect, backend, frontend, qa-tester, bug-hunter, diagnostician`.
+7. The codegraph step invokes the EXISTING `mneme codegraph index` / `mneme codegraph hooks install` commands — never reimplement indexing or hook logic yourself.
+8. The shared-memory step invokes the EXISTING `mneme team-memory enable` command (SPEC-053/SPEC-065) — never reimplement vault export or hook-install logic yourself, and always relay its privacy notice to the user verbatim (never paraphrase or suppress it).
+9. ONE fact per `mem_save` call during Phase 0-2 seeding — never dump an entire file as a single memory. Always set `topic_key` so re-runs upsert instead of duplicating.
+10. Never rewrite the user's CLAUDE.md prose directly — only the `init` MCP tool's managed block. Report drift; do not silently edit user content.
+11. **The layer 2/3 boundary (SPEC-090).** `areas_layer3_md` (Phase 3, and any content you later synthesize into it) is project KNOWLEDGE ONLY — stack, architecture, commands, best practices, domain. It must NEVER contain lifecycle instructions (`spec_advance`, `spec_quick`, `spec_reject` — layer 1's `agent-fixed` block already governs the SDD lifecycle and explicitly forbids the subagent from calling `spec_advance` itself), capability declarations (`tools:`/`permissionMode:` — those are ALWAYS Go-authored via `archetype`, see rule 4), or role doctrine. `subagent_compose`/`subagent_write` mechanically reject any of this if it slips into `areas_layer3_md`/the composed grill region — but do not rely on the reject as your only defense: draft Phase 3 content that never contains it in the first place.
+12. **Profile detection precedes the subagent grill (SPEC-095 §5).** Before Step 1, call `profile_status` to read this repo's pin state and branch: `PinInstalled` → run Step 1 in **profile-active mode** (below); `PinMissing` → offer the install **gate** (`profile_add` + `profile_use`) and only proceed if the user says yes — **never clone without explicit OK**, mirroring the SessionStart gate's own contract; `PinDefault`/`PinAbsent` → run Step 1 in **vanilla mode**, IDENTICAL to today's behavior (zero regression for repos with no profile). In **profile-active mode**, the grill authors and persists capa-2/3 (`subagent_profile_save`, including a `profile_json.areas` entry per role — the capa-3 doctrine draft) but does **NOT** call `subagent_write` (that would bake a second, duplicate capa-1 from the archetype on top of the profile's own); instead it materializes by calling `profile_use <name>`, which fuses the profile's capa-1 with this repo's capa-2/3. In **vanilla mode**, nothing changes: `subagent_compose` → `subagent_write` as always.
+13. **Fusing pre-existing agents (SPEC-090, Phase 0.5).** `subagent_fingerprint`'s `foreign_agents` list is the ONLY detection source — never `Read`/`Glob` `.claude/agents/` yourself to look for more. Whether a foreign agent OVERLAPS a proposed role is a judgment call YOU make by reading the file and reasoning about it in conversation — there is no naming heuristic to lean on (a name like `security-auditor` tells you nothing reliable about scope). When you DO fuse one in, you must EXTRACT its project knowledge and draft fresh `areas_layer3_md` prose from it — NEVER concatenate/paste its raw body into `areas_layer3_md`; that is exactly the BL-110 mechanism rule 11's guard exists to catch, and a mechanical reject is a worse outcome for the user than simply never having pasted it. A foreign agent that does not overlap ANY proposed role is offered as a new CUSTOM role (`subagent_compose`/`subagent_write` with `role` set to its own name and `archetype` mapped to the closest of the six built-ins) — it brings ONLY its extracted knowledge, never its own capabilities; `archetype`'s Go-authored `PermissionTable` entry is what governs `tools:`/`permissionMode:`, exactly as for any other role.
+
+## Automated Checks
+
+| Check | What it verifies | How to fix |
+|---|---|---|
+| Core step calls `init` tool | Managed CLAUDE.md blocks + drift report came from the `init` MCP tool, not a hand-edit | Call `init` with `repo_root` (add `check:true` first if unsure) before touching CLAUDE.md |
+| One fact per mem_save | Each `mem_save` call during seeding contains a single fact with a `topic_key` | Split multi-fact dumps into separate `mem_save` calls |
+| Role slug validity | Every `role` passed to `subagent_compose`/`subagent_write` matches `^[a-z][a-z0-9-]*$` | Rename the role to a lowercase slug before composing |
+| Preview before write | `subagent_compose` was reviewed by the user before the matching `subagent_write` call | Always compose (preview), get confirmation, then write |
+| Opt-in steps confirmed | Subagents / codegraph / shared-memory steps were each explicitly offered and answered, not silently run or silently skipped | Ask the user yes/no for each opt-in step before acting on it |
+| Layer 2/3 stays project knowledge only | `areas_layer3_md` never contains `spec_advance`, `spec_quick`, `spec_reject`, or a `tools:`/`permissionMode:` line — those belong exclusively to layer 1 | Strip the lifecycle/capability content from the draft before calling `subagent_compose`; if it was rejected, re-synthesize using only the token/line the error names |
+| Fusion never concatenates | A foreign agent's body was EXTRACTED and re-drafted into fresh `areas_layer3_md` prose, never pasted verbatim (rule 13) | Re-read the foreign file, pull out only the project-knowledge facts, and write new prose in your own words |
+| Profile detection before the grill | `profile_status` was called before Step 1 in every run — the mode (vanilla/profile-active/gate) was decided, not assumed | Call `profile_status` first; branch on its `state` before proposing any role |
+| No `subagent_write` in profile-active mode | When the repo is `PinInstalled`, Step 1 never calls `subagent_write` — only `subagent_profile_save` + `profile_use` | Replace the `subagent_write` call with `profile_use <name>` to materialize the fusion instead |
+
+## Verification
+
+- Run `mneme skills validate mneme-init` to execute the deterministic validation script (checks that this file still documents the `subagent_*` tools it depends on, AND that it still documents every `spec_advance`/`spec_quick`/`spec_reject` layer 2/3-forbidden token from rule 11).
+- Run `mneme skills lint mneme-init` to confirm the structural format (5 sections, 3-column Automated Checks table, semver, name==directory).
+- After the core step: `mneme init --check` (or the `init` MCP tool with `check:true`) should report the managed block present and list any drift findings.
+- After the subagent grill: `subagent_manifest_list` should list the newly written roles with their `engine`/`areas`/`checksum`. Any foreign agent that was fused now maps to a manifest entry too (adopted as a custom role); any that the user declined remains untouched on disk and outside the manifest.
+- After fusing a foreign agent (rule 12): its `subagent_write` response's `backup_path` (SPEC-090 D9) should be non-empty — confirms the original file was preserved before being overwritten.
+- After enabling the delegation hook: `mneme delegation-hook status` should print `enabled: <repo>/.claude/settings.json`.
+- After the codegraph opt-in: `mneme codegraph status` should report a non-zero file/symbol count for the repo.
+- After the shared-memory opt-in: `<repo>/.mneme/shared/.mneme-vault` should exist and `mneme team-memory enable`'s output should report the hooks it installed; re-running the command should report "already enabled" instead of erroring.
+- Before reporting completion, confirm with the user that each opt-in step's outcome (done / skipped / deferred) matches what they asked for.
+
+## Workflow
+
+### Step 0 — Core (always runs, no opt-in)
+
+1. Call `mem_context` and `mem_search` (keywords from the repo name/stack) to see what mneme already knows — avoid re-seeding duplicates.
+2. Call the `init` MCP tool (`repo_root` = project root; pass `check:true` first for a dry-run if unsure) to apply the global operating manual and the minimal repo managed block to CLAUDE.md and get a drift report. This REPLACES the native `/init` command.
+3. Read CLAUDE.md and, if present, package.json / go.mod / Cargo.toml / tsconfig.json / docker-compose.yml / .env.example / a 2-level directory listing. Save ONE memory per fact (types: architecture / config / convention, with topic_keys like `architecture/overview`, `config/commands`, `convention/commits`).
+4. Classify each CLAUDE.md section as a **behavior instruction** (keep in CLAUDE.md) or **project knowledge** (migrate to mneme). Do not delete anything from CLAUDE.md — the user cleans it up later if they want.
+5. Report to the user what was seeded and the drift findings from step 2.
+6. Ask, ONE AT A TIME, whether to proceed with each of the three opt-in steps below.
+
+### Step 0.5 — Profile detection (always runs, no opt-in; SPEC-095 §5)
+
+Runs right after Step 0, BEFORE offering the subagent grill — its outcome decides which MODE Step 1 runs in.
+
+7. Call `profile_status` (optionally `{project_root}`) to read this repo's pin resolution and branch on `state`:
+   - **`installed`** → this repo already pins a profile that IS in the host-level store. Tell the user: "this repo uses profile `<name>@<ref>` — the subagent grill's capa-1 comes from the profile; it will only author this repo's capa-2/3." Proceed to Step 1 in **profile-active mode**.
+   - **`missing`** → the pin names a profile with a `source` that is NOT installed yet. Offer the **gate**, exactly like the SessionStart gate: "This repo uses `<name>@<ref>` (source `<source>`), not installed. Install it now?" On yes: call `profile_add` with that source/ref, then `profile_use <name>` (which writes nothing further and materializes immediately). On no, or no answer: proceed to Step 1 in **vanilla mode** for this session — **never clone without explicit confirmation**.
+   - **`default`** (pinned to mneme's internal default profile, no external `source`) or **`absent`** (no pin at all) → proceed to Step 1 in **vanilla mode** — identical to today's behavior, zero regression.
+
+### Step 1 — Opt-in: generate per-project subagents (5-phase grill)
+
+Only if the user opts in. Uses the `subagent_*` MCP tools exclusively. Runs in **vanilla mode** or **profile-active mode**, decided by Step 0.5 above:
+
+| Phase | Purpose | Tools |
+|---|---|---|
+| 0 | Deterministic fingerprint: project root, apps/packages, stack markers, what typed-memory already exists, AND `foreign_agents` — pre-existing `.claude/agents/*.md` files mneme did not generate (SPEC-090 D5) | `subagent_fingerprint`, `mem_context`, `mem_search` |
+| 0.5 | **Fusion (SPEC-090, only when `foreign_agents` is non-empty).** For EACH foreign agent: read the file, then reason (in conversation, no naming heuristic — rule 12) about whether it overlaps a role you are about to propose. Overlaps → offer to EXTRACT its project knowledge into that role's `areas_layer3_md` draft (never concatenate the raw body). No overlap → offer to adopt it as a new CUSTOM role, mapped to the closest archetype. Declines to either → leave the file untouched, do not mention it again this session | `Read` (the foreign file only — never `Glob`/`Read` to re-discover more); `subagent_compose`/`subagent_write` for the fused or adopted result |
+| 1 | Elicit repo/org knowledge ONCE (commit convention, language, layout, cross-cutting rules) | `subagent_profile_get`, `subagent_profile_save` (writes `profile_json.repo` + `profile_json.org`) |
+| 2 | Propose roles + map apps to roles (one subagent per role, covering ALL its apps) — user adjusts the suggestion | `subagent_profile_save` (writes `profile_json.mapping`) |
+| 3 | Per role x area detail: stack, architecture, commands, best practices. Brownfield: pre-seed from Phase 0 + `mem_search` + any Phase 0.5 extraction. Evergreen (no code yet): ask the DESIRED stack from scratch. **Project knowledge only — never lifecycle (`spec_advance`/`spec_quick`/`spec_reject`), capabilities (`tools:`/`permissionMode:`), or role doctrine (rule 11)** | conversation with the user; draft `areas_layer3_md` per role |
+| 4 | **Vanilla mode:** compose a preview, then write only on confirmation. **Profile-active mode:** persist capa-2/3 (repo/org/mapping + this role's `areas_layer3_md` draft as a `ProjectProfileArea`), do NOT write a full agent file — materialize by activating the profile instead | Vanilla: `subagent_compose` (preview) → user confirms → `subagent_write`. Profile-active: `subagent_profile_save` (with `profile_json.areas` including this role) → user confirms → `profile_use <name>` |
+
+6a. If `foreign_agents` (from Phase 0) is non-empty, run Phase 0.5 BEFORE proposing roles in Phase 2: for each foreign path, `Read` it, judge overlap by reasoning about its content against the roles you are about to propose (never by matching names), and tell the user what you found. Offer exactly one of: (a) fuse — its knowledge feeds that role's Phase 3 draft, extracted and re-written, never pasted; (b) adopt as a custom role — proceeds through the normal compose/write flow with `role` = the foreign agent's own name; (c) leave it alone — skip it entirely, do not raise it again. The user decides for each one; never assume. (This foreign-agent fusion path applies to **vanilla mode** — a profile-active repo's capa-1 always comes from the profile, never from a foreign local file.)
+7. **Vanilla mode:** for each role, call `subagent_compose` with `role`, `archetype`, `areas_layer3_md`, and `profile_json` (from Phases 1-2, plus any Phase 0.5 extraction), then show the user the preview. If it is rejected for a layer 2/3 leak (rule 11), the error names the exact token and line — remove it from the Phase 3 draft and re-compose; never work around the rejection by hiding the token outside the tool's plain-text argument. **Profile-active mode:** skip `subagent_compose` for this role entirely — its capa-1 already exists in the profile's own `agents/<role>.md`.
+7b. For each role, ask the **areas-completeness question** (SPEC-086 D11) BEFORE writing — this is what feeds `areas_complete`, the flag that turns the delegation hook's subagent containment (`mneme delegation-hook`) from purely informational into something that can actually block:
+    > "`<role>` hoy declara `<apps from Phase 2>`. **Además de las apps**, ¿en qué otras rutas puede escribir — `packages/*-go`, migraciones, config de raíz? Estas van a ser las **únicas** rutas donde podrá escribir."
+    Set `areas_complete: true` ONLY when the user explicitly confirms the resulting area list is exhaustive. **NEVER default it to `true`, NEVER infer it from Phase 2's app→role mapping alone** — Phase 2 maps apps, not every path a role may touch (`packages/*-go`, root-level config, migrations are easy to miss), and `areas_complete: true` on an incomplete list will make that role start losing writes to legitimate paths the day the project promotes to `block` mode (`mneme delegation-hook promote`). When in doubt, or the user is unsure, leave it `false` (or omit it) — an unverified role is never contained, only observed (`would_block` telemetry, never a real block). This question is asked in BOTH modes.
+8. **Vanilla mode:** on confirmation, call `subagent_write` with the same `role`/`archetype` and the (possibly user-edited) `composed_md`, plus `areas`, `areas_complete` (from 7b), and `engine` (defaults to `passthrough`). When this overwrites a fused/adopted foreign agent (step 6a), the response's `backup_path` (SPEC-090 D9) is non-empty — mention it to the user so they know the original file was preserved. **Profile-active mode:** do NOT call `subagent_write` for this role (it would bake a duplicate, archetype-generated capa-1 on top of the profile's own) — instead call `subagent_profile_save` with `profile_json.mapping`/`areas`/`areas_complete` for this role (the `areas` entry carries `{role, layer3_md}` — the Phase 3 draft, verbatim project knowledge, never lifecycle/capability content), then, once every role for this session is captured, call `profile_use <name>` (the same profile from Step 0.5) to materialize the fusion of the profile's capa-1 with this repo's freshly-saved capa-2/3.
+9. AFTER at least one implementer role (`backend`, `frontend`, or `bug-hunter` archetype) has been written (vanilla mode) or activated via fusion (profile-active mode), OFFER the delegation-enforcement hook: ask the user if they want strict orchestrator/subagent separation for THIS project. If yes, run `mneme delegation-hook enable` (registers the two PreToolUse entries in THIS project's `.claude/settings.json` — requires `~/.claude/hooks/enforce_delegation.sh` to already exist, i.e. the user has run `mneme install claude-code` at least once; if it's missing, tell them to run that first). In vanilla mode, record the answer via the `enforcement_hook` parameter on `subagent_write` (persisted in the manifest); in profile-active mode there is no `subagent_write` call to carry it, so mention the hook's on/off state to the user directly instead. `mneme delegation-hook status` reports whether it is currently registered; `mneme delegation-hook disable` removes it. Layer 1 (the capability allowlist baked into the generated profile) always applies to the subagents themselves, independent of this opt-in Layer 2 hook.
+10. **Vanilla mode:** call `subagent_manifest_list` at the end to confirm what was written. **Profile-active mode:** confirm the fusion by re-reading `subagent_profile_get` (the persisted capa-2/3, including `areas`) and pointing the user at `.claude/agents/<role>.md` to see the fused result `profile_use` just materialized.
+
+### Step 2 — Opt-in: codegraph indexing
+
+Only if the user opts in. Do not reimplement indexing — invoke the existing commands:
+
+11. Run `mneme codegraph index` to build the initial semantic index of the repo.
+12. Run `mneme codegraph hooks install` to install the git hooks that auto-reindex after commit/checkout.
+13. If either command fails or is unsupported (e.g. not a git repository for the hooks step), report the failure and skip — do not attempt a manual workaround.
+
+### Step 3 — Opt-in: shared team memory
+
+Only if the user opts in. This wires the git-native team-memory vault (SPEC-053): a `.mneme/shared/` directory committed to the repo that project-scoped memories materialize into automatically once enabled — share-by-default (SPEC-071): every human-authored persistent memory type shares, excluding only auto-generated `synthesis` (cluster overviews) and ephemeral `session_summary` — plus git hooks that import teammates' shared knowledge after every pull/checkout. Do not reimplement any of this yourself — invoke the existing command:
+
+14. Before running anything, tell the user: enabling this commits `.mneme/shared/` to the repository — if the remote is (or might become) public, that knowledge becomes publicly visible, including full commit history once pushed. Confirm they still want to proceed.
+15. Run `mneme team-memory enable`. It is idempotent (safe to re-run): it creates `.mneme/shared/` + its marker if absent, bakes/exports existing auto-shared memories, and installs the `post-merge`/`post-checkout` import hooks.
+16. Relay the command's own output verbatim, including its privacy notice — never paraphrase, summarize away, or suppress it.
+17. If the command fails (e.g. not a git repository), report the failure and skip — do not attempt a manual workaround or fabricate a fallback command.
+
+### Step 4 — Final report
+
+18. Summarize what ran, using this format (core always runs; each opt-in step is done / skipped / not requested / deferred):
+
+```
+mneme-init complete for {project}
+
+Core: memories seeded (N), managed blocks applied, drift findings: N
+Subagents: <done (roles: ...) | skipped | not requested>
+Codegraph: <done | skipped | not requested>
+Shared memory: <done (vault + hooks installed) | skipped | not requested>
+```

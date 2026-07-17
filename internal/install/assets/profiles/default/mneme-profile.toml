@@ -1,0 +1,6 @@
+name        = "mneme-default"
+version     = "1.0.0"
+description = "Default OSS profile: mneme's built-in agents, skills, models and templates."
+
+[compat]
+mneme = ">=1.28.0"

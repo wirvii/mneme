@@ -1,0 +1,8 @@
+Intentionally empty (SPEC-096 §6 R3/AC4).
+
+The operating manual is host-global infrastructure the installer injects
+directly into ~/.claude/CLAUDE.md (InjectManual) — it is NOT a profile block.
+Migrating it here would make PinDefault inject a SECOND copy into the
+project's own CLAUDE.md, diverging from vanilla's behaviour. This file only
+exists so go:embed can see a non-empty blocks/ directory; it has no .md
+extension, so profile.LoadContentsFS's block loader ignores it (0 blocks).

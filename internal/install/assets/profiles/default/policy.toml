@@ -1,0 +1,9 @@
+# Informative-only (v1): the OSS default's enforcement/lane defaults, mirrored
+# here for a profile-driven view of the same values internal/config already
+# defaults to. Not parsed/consumed by §6 — runtime wiring of policy.toml is a
+# later follow-up (docs/profiles-design.md §2.regla-de-frontera).
+[enforcement]
+subagent_containment = "warn"
+
+[lanes]
+default = "standard"
