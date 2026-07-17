@@ -2,17 +2,84 @@ package service_test
 
 import (
 	"context"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/wirvii/mneme/internal/config"
+	"github.com/wirvii/mneme/internal/db"
+	"github.com/wirvii/mneme/internal/embed"
 	"github.com/wirvii/mneme/internal/managedblock"
 	"github.com/wirvii/mneme/internal/model"
 	"github.com/wirvii/mneme/internal/profile"
 	"github.com/wirvii/mneme/internal/service"
+	"github.com/wirvii/mneme/internal/store"
 )
+
+// newClosedDBTestService builds a MemoryService whose two underlying SQLite
+// connections are already closed — every store operation it attempts
+// (Save/Get/List/GetByTopicKey/HardDeleteBySource) fails predictably. Used to
+// force the "downstream store call fails" branches of Activate/Deactivate
+// (ReadProfile, SaveProfileRule, PurgeProfileRules) that a normal, healthy
+// in-memory SQLite store never exercises.
+func newClosedDBTestService(t *testing.T) *service.MemoryService {
+	t.Helper()
+	projectDB, err := db.OpenMemory()
+	if err != nil {
+		t.Fatalf("open project db: %v", err)
+	}
+	globalDB, err := db.OpenMemory()
+	if err != nil {
+		t.Fatalf("open global db: %v", err)
+	}
+	projectStore := store.NewMemoryStore(projectDB)
+	globalStore := store.NewMemoryStore(globalDB)
+	cfg := config.Default()
+	mem := service.NewMemoryService(projectStore, globalStore, cfg, "test/project", embed.NopEmbedder{})
+	if err := projectDB.Close(); err != nil {
+		t.Fatalf("close project db: %v", err)
+	}
+	if err := globalDB.Close(); err != nil {
+		t.Fatalf("close global db: %v", err)
+	}
+	return mem
+}
+
+// mustRunGitProfile runs git with args in dir, failing the test on error —
+// mirrors internal/profile/store_test.go's mustRunGit. Only "init" is used
+// here: git check-ignore works against the working tree + .gitignore rules
+// alone, no commits or identity required.
+func mustRunGitProfile(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}
+
+// gitCheckIgnored reports whether relPath (relative to repoRoot) is
+// gitignored. Exit 0 = ignored, exit 1 = not ignored — both are valid,
+// non-fatal outcomes here; only a genuine git failure fails the test.
+func gitCheckIgnored(t *testing.T, repoRoot, relPath string) bool {
+	t.Helper()
+	cmd := exec.Command("git", "check-ignore", "-q", relPath)
+	cmd.Dir = repoRoot
+	err := cmd.Run()
+	if err == nil {
+		return true
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		return false
+	}
+	t.Fatalf("git check-ignore %s: %v", relPath, err)
+	return false
+}
 
 // writeProfileFile writes content to path, creating parent directories.
 func writeProfileFile(t *testing.T, path, content string) {
@@ -501,4 +568,398 @@ func mustLockActivatedAt(t *testing.T, svc *service.ProfileService, repoRoot str
 		t.Fatalf("ActiveLock: present=%v err=%v", present, err)
 	}
 	return lock.ActivatedAt
+}
+
+// TestActivate_LockFileIsGitignored is the AC13 regression test (QA
+// observation 1): Activate must leave .mneme/profile.lock gitignored in the
+// destination project, WITHOUT sweeping up .mneme/shared/ (the team-memory
+// vault, SPEC-053, which must stay trackable) or the root-level
+// .mneme-profile pin (which lives outside .mneme/ entirely) — a blanket
+// ".mneme/" ignore would silently break both.
+func TestActivate_LockFileIsGitignored(t *testing.T) {
+	svc, _, repoRoot, _ := newActivationTestEnv(t)
+	mustRunGitProfile(t, repoRoot, "init", "-q")
+
+	if _, err := svc.Activate(context.Background(), service.ActivationInput{RepoRoot: repoRoot, Name: "acme"}); err != nil {
+		t.Fatalf("Activate: %v", err)
+	}
+
+	if !gitCheckIgnored(t, repoRoot, filepath.Join(".mneme", "profile.lock")) {
+		t.Error("expected .mneme/profile.lock to be gitignored after Activate (AC13)")
+	}
+
+	writeProfileFile(t, filepath.Join(repoRoot, ".mneme", "shared", "note.md"), "shared vault note")
+	if gitCheckIgnored(t, repoRoot, filepath.Join(".mneme", "shared", "note.md")) {
+		t.Error("expected .mneme/shared/ (team-memory vault) to remain trackable, not gitignored")
+	}
+
+	writeProfileFile(t, filepath.Join(repoRoot, ".mneme-profile"), "profile = \"acme\"\n")
+	if gitCheckIgnored(t, repoRoot, ".mneme-profile") {
+		t.Error("expected the .mneme-profile pin to remain trackable, not gitignored")
+	}
+}
+
+// TestActivate_RepoRootRequired verifies Activate's input-validation guard
+// for a missing RepoRoot.
+func TestActivate_RepoRootRequired(t *testing.T) {
+	svc, _, _, _ := newActivationTestEnv(t)
+	_, err := svc.Activate(context.Background(), service.ActivationInput{Name: "acme"})
+	if err == nil {
+		t.Fatal("expected an error when RepoRoot is empty")
+	}
+}
+
+// TestActivate_NameRequired verifies Activate's input-validation guard for a
+// missing Name.
+func TestActivate_NameRequired(t *testing.T) {
+	svc, _, repoRoot, _ := newActivationTestEnv(t)
+	_, err := svc.Activate(context.Background(), service.ActivationInput{RepoRoot: repoRoot})
+	if err == nil {
+		t.Fatal("expected an error when Name is empty")
+	}
+}
+
+// TestActivate_ProfilePathInvalidName verifies that a Name failing the
+// safe-slug check surfaces as an Activate error instead of ever reaching the
+// filesystem (defense-in-depth, R2).
+func TestActivate_ProfilePathInvalidName(t *testing.T) {
+	svc, _, repoRoot, _ := newActivationTestEnv(t)
+	_, err := svc.Activate(context.Background(), service.ActivationInput{RepoRoot: repoRoot, Name: "../evil"})
+	if err == nil {
+		t.Fatal("expected an error for a profile name that fails the safe-slug check")
+	}
+}
+
+// TestActivate_StatOtherError verifies that a os.Stat failure other than
+// "not exist" (here: profilesDir itself is not a directory, so
+// profilesDir/<name> can never resolve) surfaces as a distinct Activate
+// error path from ErrProfileNotFound.
+func TestActivate_StatOtherError(t *testing.T) {
+	tmp := t.TempDir()
+	profilesFile := filepath.Join(tmp, "profiles-as-file")
+	if err := os.WriteFile(profilesFile, []byte("blocker"), 0o644); err != nil {
+		t.Fatalf("write profiles-as-file blocker: %v", err)
+	}
+
+	mem := newTestService(t)
+	sub := service.NewSubagentService(mem)
+	svc := service.NewProfileService(profilesFile, false,
+		service.WithProfileMemoryService(mem),
+		service.WithProfileSubagentService(sub),
+	)
+
+	_, err := svc.Activate(context.Background(), service.ActivationInput{RepoRoot: t.TempDir(), Name: "acme"})
+	if err == nil {
+		t.Fatal("expected a stat error when profilesDir is not actually a directory")
+	}
+	if errors.Is(err, profile.ErrProfileNotFound) {
+		t.Errorf("expected an error distinct from ErrProfileNotFound, got %v", err)
+	}
+}
+
+// TestActivate_LoadContentsError verifies that a malformed rules.jsonl fails
+// Activate at the LoadContents step.
+func TestActivate_LoadContentsError(t *testing.T) {
+	profilesDir := t.TempDir()
+	repoRoot := t.TempDir()
+	profileDir := filepath.Join(profilesDir, "broken")
+	writeProfileFile(t, filepath.Join(profileDir, profile.ManifestFileName), "name=\"broken\"\nversion=\"1.0.0\"\n")
+	writeProfileFile(t, filepath.Join(profileDir, "rules.jsonl"), "not-json\n")
+
+	mem := newTestService(t)
+	sub := service.NewSubagentService(mem)
+	svc := service.NewProfileService(profilesDir, false,
+		service.WithProfileMemoryService(mem),
+		service.WithProfileSubagentService(sub),
+	)
+
+	_, err := svc.Activate(context.Background(), service.ActivationInput{RepoRoot: repoRoot, Name: "broken"})
+	if err == nil {
+		t.Fatal("expected an error loading a profile with a malformed rules.jsonl")
+	}
+}
+
+// TestActivate_ReadProfileError verifies that a failure reading the repo's
+// capa-2/3 project profile (SubagentService.ReadProfile) surfaces as an
+// Activate error, using a MemoryService whose store is already closed to
+// force the failure deterministically.
+func TestActivate_ReadProfileError(t *testing.T) {
+	profilesDir := t.TempDir()
+	profileDir := filepath.Join(profilesDir, "acme")
+	writeProfileFile(t, filepath.Join(profileDir, profile.ManifestFileName), "name=\"acme\"\nversion=\"1.0.0\"\n")
+
+	mem := newClosedDBTestService(t)
+	sub := service.NewSubagentService(mem)
+	svc := service.NewProfileService(profilesDir, false,
+		service.WithProfileMemoryService(mem),
+		service.WithProfileSubagentService(sub),
+	)
+
+	_, err := svc.Activate(context.Background(), service.ActivationInput{RepoRoot: t.TempDir(), Name: "acme"})
+	if err == nil {
+		t.Fatal("expected an error when reading the project profile fails")
+	}
+}
+
+// TestActivate_MaterializeAgentsError verifies that a failure writing an
+// agent file (here: .claude already exists as a regular file, blocking the
+// agents/ mkdir) surfaces as an Activate error.
+func TestActivate_MaterializeAgentsError(t *testing.T) {
+	svc, _, repoRoot, _ := newActivationTestEnv(t)
+	if err := os.WriteFile(filepath.Join(repoRoot, ".claude"), []byte("blocker"), 0o644); err != nil {
+		t.Fatalf("write .claude blocker file: %v", err)
+	}
+
+	_, err := svc.Activate(context.Background(), service.ActivationInput{RepoRoot: repoRoot, Name: "acme"})
+	if err == nil {
+		t.Fatal("expected an error when .claude exists as a regular file blocking agents/ mkdir")
+	}
+}
+
+// TestActivate_MaterializeSkillsError verifies that a profile declaring
+// skills fails Activate when no skills directory was configured
+// (WithProfileSkillsDir omitted).
+func TestActivate_MaterializeSkillsError(t *testing.T) {
+	profilesDir := t.TempDir()
+	repoRoot := t.TempDir()
+	profileDir := filepath.Join(profilesDir, "acme")
+	writeProfileFile(t, filepath.Join(profileDir, profile.ManifestFileName), "name=\"acme\"\nversion=\"1.0.0\"\n")
+	writeProfileFile(t, filepath.Join(profileDir, "skills", "acme-skill", "SKILL.md"),
+		"---\nname: acme-skill\npinned: false\n---\n\n# Acme skill\n")
+
+	mem := newTestService(t)
+	sub := service.NewSubagentService(mem)
+	svc := service.NewProfileService(profilesDir, false,
+		service.WithProfileMemoryService(mem),
+		service.WithProfileSubagentService(sub),
+		// deliberately no WithProfileSkillsDir.
+	)
+
+	_, err := svc.Activate(context.Background(), service.ActivationInput{RepoRoot: repoRoot, Name: "acme"})
+	if err == nil {
+		t.Fatal("expected an error when a profile declares skills but no skills directory is configured")
+	}
+	if !strings.Contains(err.Error(), "skills directory") {
+		t.Errorf("expected a skills-directory-related error, got %v", err)
+	}
+}
+
+// TestActivate_MaterializeBlocksError verifies that a failure upserting the
+// "profile" managed block (here: CLAUDE.md already exists as a directory)
+// surfaces as an Activate error.
+func TestActivate_MaterializeBlocksError(t *testing.T) {
+	svc, _, repoRoot, _ := newActivationTestEnv(t)
+	if err := os.MkdirAll(filepath.Join(repoRoot, "CLAUDE.md"), 0o755); err != nil {
+		t.Fatalf("mkdir CLAUDE.md as directory: %v", err)
+	}
+
+	_, err := svc.Activate(context.Background(), service.ActivationInput{RepoRoot: repoRoot, Name: "acme"})
+	if err == nil {
+		t.Fatal("expected an error when CLAUDE.md exists as a directory")
+	}
+}
+
+// TestActivate_MaterializeRulesError verifies that a rule whose applies_to
+// contains an empty pattern (valid per RuleSpec.Validate's len-only check,
+// rejected by model.SaveRequest's per-pattern check) fails Activate at the
+// materializeRules/SaveProfileRule step.
+func TestActivate_MaterializeRulesError(t *testing.T) {
+	profilesDir := t.TempDir()
+	repoRoot := t.TempDir()
+	profileDir := filepath.Join(profilesDir, "bad-rules")
+	writeProfileFile(t, filepath.Join(profileDir, profile.ManifestFileName), "name=\"bad-rules\"\nversion=\"1.0.0\"\n")
+	writeProfileFile(t, filepath.Join(profileDir, "rules.jsonl"),
+		`{"title":"Bad rule","content":"content","applies_to":[""]}`+"\n")
+
+	mem := newTestService(t)
+	sub := service.NewSubagentService(mem)
+	svc := service.NewProfileService(profilesDir, false,
+		service.WithProfileMemoryService(mem),
+		service.WithProfileSubagentService(sub),
+	)
+
+	_, err := svc.Activate(context.Background(), service.ActivationInput{RepoRoot: repoRoot, Name: "bad-rules"})
+	if err == nil {
+		t.Fatal("expected an error when a rule's applies_to contains an empty pattern")
+	}
+}
+
+// TestActivate_WriteLockError verifies that a failure writing profile.lock
+// (here: .mneme already exists as a regular file, blocking its own mkdir)
+// surfaces as an Activate error.
+func TestActivate_WriteLockError(t *testing.T) {
+	profilesDir := t.TempDir()
+	repoRoot := t.TempDir()
+	profileDir := filepath.Join(profilesDir, "acme")
+	writeProfileFile(t, filepath.Join(profileDir, profile.ManifestFileName), "name=\"acme\"\nversion=\"1.0.0\"\n")
+
+	mem := newTestService(t)
+	sub := service.NewSubagentService(mem)
+	svc := service.NewProfileService(profilesDir, false,
+		service.WithProfileMemoryService(mem),
+		service.WithProfileSubagentService(sub),
+	)
+
+	if err := os.WriteFile(filepath.Join(repoRoot, ".mneme"), []byte("blocker"), 0o644); err != nil {
+		t.Fatalf("write .mneme blocker file: %v", err)
+	}
+
+	_, err := svc.Activate(context.Background(), service.ActivationInput{RepoRoot: repoRoot, Name: "acme"})
+	if err == nil {
+		t.Fatal("expected an error writing the lock when .mneme exists as a regular file")
+	}
+}
+
+// TestActiveLock_ReadErrorOtherThanNotExist verifies that ActiveLock
+// surfaces a read failure distinct from "no lock yet" (here: the lock path
+// itself is a directory).
+func TestActiveLock_ReadErrorOtherThanNotExist(t *testing.T) {
+	svc, _, repoRoot, _ := newActivationTestEnv(t)
+	lockPath := profile.LockPath(repoRoot)
+	if err := os.MkdirAll(lockPath, 0o755); err != nil {
+		t.Fatalf("mkdir lock path as directory: %v", err)
+	}
+
+	_, _, err := svc.ActiveLock(repoRoot)
+	if err == nil {
+		t.Fatal("expected an error when the lock path is a directory")
+	}
+}
+
+// TestActiveLock_ParseLockError verifies that ActiveLock surfaces a parse
+// failure for a corrupted lock file.
+func TestActiveLock_ParseLockError(t *testing.T) {
+	svc, _, repoRoot, _ := newActivationTestEnv(t)
+	writeProfileFile(t, profile.LockPath(repoRoot), "not valid toml{{{")
+
+	_, _, err := svc.ActiveLock(repoRoot)
+	if err == nil {
+		t.Fatal("expected an error parsing an invalid lock file")
+	}
+}
+
+// TestDeactivate_NilLockIsNoop verifies that Deactivate on a nil lock (a
+// workspace that never activated anything) is a true no-op.
+func TestDeactivate_NilLockIsNoop(t *testing.T) {
+	svc, _, _, _ := newActivationTestEnv(t)
+	if err := svc.Deactivate(context.Background(), nil); err != nil {
+		t.Fatalf("expected Deactivate(nil) to be a no-op, got %v", err)
+	}
+}
+
+// TestDeactivate_RequiresMemorySeam verifies that Deactivate refuses to run
+// without the memory-service seam wired.
+func TestDeactivate_RequiresMemorySeam(t *testing.T) {
+	svc := service.NewProfileService(t.TempDir(), false)
+	err := svc.Deactivate(context.Background(), &profile.Lock{Profile: "acme"})
+	if err == nil || !strings.Contains(err.Error(), "not configured") {
+		t.Fatalf("expected a 'not configured' error, got %v", err)
+	}
+}
+
+// TestDeactivate_RemoveArtifactErrorPropagates verifies that a failure
+// removing one artifact (here: an unrecognised Kind) aborts Deactivate with
+// a wrapped error.
+func TestDeactivate_RemoveArtifactErrorPropagates(t *testing.T) {
+	svc, _, _, _ := newActivationTestEnv(t)
+	lock := &profile.Lock{
+		Profile:   "acme",
+		Artifacts: []profile.LockArtifact{{Kind: "bogus", Path: "/nonexistent"}},
+	}
+	if err := svc.Deactivate(context.Background(), lock); err == nil {
+		t.Fatal("expected an error deactivating a lock with an unknown artifact kind")
+	}
+}
+
+// TestDeactivate_PurgeProfileRulesErrorPropagates verifies that a failure
+// hard-deleting a profile's rules (here: a closed underlying store) aborts
+// Deactivate with a wrapped error.
+func TestDeactivate_PurgeProfileRulesErrorPropagates(t *testing.T) {
+	mem := newClosedDBTestService(t)
+	sub := service.NewSubagentService(mem)
+	svc := service.NewProfileService(t.TempDir(), false,
+		service.WithProfileMemoryService(mem),
+		service.WithProfileSubagentService(sub),
+	)
+
+	if err := svc.Deactivate(context.Background(), &profile.Lock{Profile: "acme"}); err == nil {
+		t.Fatal("expected an error purging rules against a closed memory store")
+	}
+}
+
+// TestSwitch_ActiveLockErrorPropagates verifies that Switch surfaces a
+// failure reading the current lock instead of silently treating it as
+// absent.
+func TestSwitch_ActiveLockErrorPropagates(t *testing.T) {
+	svc, _, repoRoot, _ := newActivationTestEnv(t)
+	lockPath := profile.LockPath(repoRoot)
+	if err := os.MkdirAll(lockPath, 0o755); err != nil {
+		t.Fatalf("mkdir lock path as directory: %v", err)
+	}
+
+	_, err := svc.Switch(context.Background(), repoRoot, service.ActivationInput{Name: "acme"})
+	if err == nil {
+		t.Fatal("expected Switch to fail when ActiveLock cannot read the lock")
+	}
+}
+
+// TestSwitch_DeactivateErrorPropagates verifies that Switch aborts (without
+// activating the destination profile) when Deactivate fails on a corrupted
+// departing lock.
+func TestSwitch_DeactivateErrorPropagates(t *testing.T) {
+	svc, _, repoRoot, _ := newActivationTestEnv(t)
+	ctx := context.Background()
+
+	if _, err := svc.Activate(ctx, service.ActivationInput{RepoRoot: repoRoot, Name: "acme"}); err != nil {
+		t.Fatalf("Activate: %v", err)
+	}
+
+	lock, present, err := svc.ActiveLock(repoRoot)
+	if err != nil || !present {
+		t.Fatalf("ActiveLock: present=%v err=%v", present, err)
+	}
+	lock.Artifacts = append(lock.Artifacts, profile.LockArtifact{Kind: "bogus", Path: "/nonexistent"})
+	data, err := profile.RenderLock(*lock)
+	if err != nil {
+		t.Fatalf("RenderLock: %v", err)
+	}
+	if err := os.WriteFile(profile.LockPath(repoRoot), data, 0o644); err != nil {
+		t.Fatalf("write corrupted lock: %v", err)
+	}
+
+	if _, err := svc.Switch(ctx, repoRoot, service.ActivationInput{Name: "acme"}); err == nil {
+		t.Fatal("expected Switch to fail when Deactivate cannot remove a corrupted artifact")
+	}
+}
+
+// TestSwitch_ActivateToErrorPropagates verifies that Switch surfaces the
+// destination Activate's own error (here: an unknown profile) after already
+// deactivating the departing one.
+func TestSwitch_ActivateToErrorPropagates(t *testing.T) {
+	svc, _, repoRoot, _ := newActivationTestEnv(t)
+	ctx := context.Background()
+
+	if _, err := svc.Activate(ctx, service.ActivationInput{RepoRoot: repoRoot, Name: "acme"}); err != nil {
+		t.Fatalf("Activate: %v", err)
+	}
+
+	if _, err := svc.Switch(ctx, repoRoot, service.ActivationInput{Name: "does-not-exist"}); err == nil {
+		t.Fatal("expected Switch to fail when the destination profile does not exist")
+	}
+}
+
+// TestDetectStaleness_ActiveLockErrorPropagates verifies that DetectStaleness
+// surfaces a failure reading the lock instead of silently reporting "not
+// stale".
+func TestDetectStaleness_ActiveLockErrorPropagates(t *testing.T) {
+	svc, _, repoRoot, _ := newActivationTestEnv(t)
+	lockPath := profile.LockPath(repoRoot)
+	if err := os.MkdirAll(lockPath, 0o755); err != nil {
+		t.Fatalf("mkdir lock path as directory: %v", err)
+	}
+
+	_, _, err := svc.DetectStaleness(repoRoot, profile.Snapshot{})
+	if err == nil {
+		t.Fatal("expected DetectStaleness to fail when ActiveLock cannot read the lock")
+	}
 }
