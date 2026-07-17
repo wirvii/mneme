@@ -140,6 +140,45 @@ func TestMaybeActivateProfile_GlobalDefaultMissing(t *testing.T) {
 	}
 }
 
+// TestMaybeActivateProfile_PinDefault covers SPEC-096 §6 AC6: a repo pinned
+// to the sourceless default (.mneme-profile with no "source") materializes
+// the embedded OSS default profile — closing the hole SPEC-093 §3.6 left
+// open (a mere "materialización pendiente" confirmation, no real files) —
+// and prints the "mneme-default (OSS built-in)" confirmation block.
+func TestMaybeActivateProfile_PinDefault(t *testing.T) {
+	dataDir := t.TempDir()
+	root := t.TempDir()
+
+	pin := "name = \"mneme-default\"\n"
+	if err := os.WriteFile(filepath.Join(root, ".mneme-profile"), []byte(pin), 0o644); err != nil {
+		t.Fatalf("write pin: %v", err)
+	}
+
+	stdout, stderr := runSessionStartHook(t, root, dataDir)
+	if !strings.Contains(stdout, "<!-- mneme:profile:start -->") || !strings.Contains(stdout, "mneme-default (OSS built-in)") {
+		t.Errorf("expected the OSS built-in confirmation block, got stdout=%q stderr=%q", stdout, stderr)
+	}
+
+	// The embedded default profile's 6 agents must actually be on disk now —
+	// AC6 is about REAL materialization, not just a confirmation message.
+	agentPath := filepath.Join(root, ".claude", "agents", "backend.md")
+	if _, err := os.Stat(agentPath); err != nil {
+		t.Errorf("expected the default profile's backend agent to be materialized at %s: %v", agentPath, err)
+	}
+
+	lockPath := filepath.Join(root, ".mneme", "profile.lock")
+	lockData, err := os.ReadFile(lockPath)
+	if err != nil {
+		t.Fatalf("read profile.lock: %v", err)
+	}
+	if !strings.Contains(string(lockData), "profile") || !strings.Contains(string(lockData), "mneme-default") {
+		t.Errorf("expected the lock to record profile = mneme-default, got: %s", lockData)
+	}
+	if !strings.Contains(string(lockData), "bundled:") {
+		t.Errorf("expected the lock's commit to carry the synthetic \"bundled:\" marker, got: %s", lockData)
+	}
+}
+
 // TestMaybeActivateProfile_ActivationFailure_FailsOpen covers AC7's
 // fail-open guarantee: a materialization failure degrades to a WARN on
 // stderr and the hook still returns nil (exit 0), printing no confirmation
@@ -169,6 +208,33 @@ func TestMaybeActivateProfile_ActivationFailure_FailsOpen(t *testing.T) {
 		t.Errorf("expected no confirmation block on activation failure, got: %s", stdout)
 	}
 	if !strings.Contains(stderr, "profile activation failed") {
+		t.Errorf("expected a WARN on stderr, got: %s", stderr)
+	}
+}
+
+// TestMaybeActivateProfile_PinDefault_ActivationFailure_FailsOpen mirrors
+// TestMaybeActivateProfile_ActivationFailure_FailsOpen for the default-profile
+// branch (SPEC-096 §6 AC6): a materialization failure degrades to a WARN on
+// stderr, exit 0, no confirmation block — the same fail-open contract as
+// every other SessionStart branch, never a special case for the default.
+func TestMaybeActivateProfile_PinDefault_ActivationFailure_FailsOpen(t *testing.T) {
+	dataDir := t.TempDir()
+	root := t.TempDir()
+
+	pin := "name = \"mneme-default\"\n"
+	if err := os.WriteFile(filepath.Join(root, ".mneme-profile"), []byte(pin), 0o644); err != nil {
+		t.Fatalf("write pin: %v", err)
+	}
+	// Force writeLock's os.MkdirAll(filepath.Join(root, ".mneme"), ...) to fail.
+	if err := os.WriteFile(filepath.Join(root, ".mneme"), []byte("not a directory"), 0o644); err != nil {
+		t.Fatalf("seed conflicting .mneme file: %v", err)
+	}
+
+	stdout, stderr := runSessionStartHook(t, root, dataDir)
+	if strings.Contains(stdout, "<!-- mneme:profile:start -->") {
+		t.Errorf("expected no confirmation block on activation failure, got: %s", stdout)
+	}
+	if !strings.Contains(stderr, "default profile activation failed") {
 		t.Errorf("expected a WARN on stderr, got: %s", stderr)
 	}
 }

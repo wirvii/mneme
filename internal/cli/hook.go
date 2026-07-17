@@ -23,6 +23,7 @@ import (
 	"github.com/wirvii/mneme/internal/db"
 	"github.com/wirvii/mneme/internal/enforcelog"
 	"github.com/wirvii/mneme/internal/enforcement"
+	"github.com/wirvii/mneme/internal/install"
 	"github.com/wirvii/mneme/internal/model"
 	"github.com/wirvii/mneme/internal/profile"
 	"github.com/wirvii/mneme/internal/project"
@@ -170,13 +171,13 @@ func resolveProfileProjectRoot(cwd string) string {
 	return strings.TrimSpace(string(out))
 }
 
-// maybeActivateProfile implements SPEC-093 §3.6: resolves the profile active
-// for the current repo — pin > host default > vanilla, read exactly once
-// here via ProfileService.ResolveActive (AC10) — and either materializes it
-// (PinInstalled), confirms a pending internal-default state (PinDefault, §6
-// follow-up), or emits an actionable nudge/gate (PinMissing). A resolution of
-// PinAbsent (vanilla) emits nothing, avoiding noise on every non-profile
-// project.
+// maybeActivateProfile implements SPEC-093 §3.6 + SPEC-096 §6: resolves the
+// profile active for the current repo — pin > host default > vanilla, read
+// exactly once here via ProfileService.ResolveActive (AC10) — and either
+// materializes it (PinInstalled), materializes the embedded OSS default
+// profile (PinDefault, closed by §6 — see activateDefaultProfileForSession),
+// or emits an actionable nudge/gate (PinMissing). A resolution of PinAbsent
+// (vanilla) emits nothing, avoiding noise on every non-profile project.
 //
 // This function NEVER returns an error and never aborts session start: every
 // failure (config load, resolve, materialization) is degraded to a WARN on
@@ -200,6 +201,7 @@ func maybeActivateProfile(ctx context.Context, mem *service.MemoryService, w, er
 		service.WithProfileSubagentService(sub),
 		service.WithProfileSkillsDir(skillsDir),
 		service.WithProfileConfigPath(config.DefaultPath()),
+		service.WithDefaultProfileFS(install.DefaultProfileFS()),
 	)
 
 	res, err := profileSvc.ResolveActive(root)
@@ -214,7 +216,7 @@ func maybeActivateProfile(ctx context.Context, mem *service.MemoryService, w, er
 	case service.ProfilePinInstalled:
 		activateProfileForSession(ctx, profileSvc, root, res, w, errW)
 	case service.ProfilePinDefault:
-		renderProfileDefaultPending(w, res.Resolution.Pin.Name)
+		activateDefaultProfileForSession(ctx, profileSvc, root, w, errW)
 	case service.ProfilePinMissing:
 		renderProfileNudge(w, res.Resolution.Pin)
 	}
@@ -254,13 +256,38 @@ func activateProfileForSession(ctx context.Context, svc *service.ProfileService,
 	fmt.Fprintf(w, "<!-- mneme:profile:end -->\n")
 }
 
-// renderProfileDefaultPending confirms a PinDefault resolution (a pin with no
-// Source — mneme's internal default profile) without materializing anything:
-// the internal default profile's real materialization depends on §6, not yet
-// landed (SPEC-093 §3.6/A3). This is a no-op confirmation, never a failure.
-func renderProfileDefaultPending(w io.Writer, name string) {
+// activateDefaultProfileForSession implements SPEC-096 §6's closure of the
+// hole SPEC-093 §3.6 left open: a PinDefault resolution (a pin with no
+// Source — mneme's internal default profile) now MATERIALIZES the embedded
+// OSS default profile instead of merely confirming a pending state. The
+// synthetic, version-locked commit ("bundled:<mneme-version>+<manifest-
+// version>", AC9) is built here — Activate itself never resolves a version
+// string for any profile, default or otherwise — from ProfileService's own
+// DefaultManifest (best-effort: a manifest read failure degrades to an empty
+// version segment rather than aborting the activation attempt). Like
+// activateProfileForSession, any failure degrades to a WARN on errW —
+// SessionStart's fail-open contract, cero red either way.
+func activateDefaultProfileForSession(ctx context.Context, svc *service.ProfileService, root string, w, errW io.Writer) {
+	version := ""
+	if manifest, err := svc.DefaultManifest(); err != nil {
+		fmt.Fprintf(errW, "[mneme] default profile manifest error: %v\n", err)
+	} else {
+		version = manifest.Version
+	}
+	commit := fmt.Sprintf("bundled:%s+%s", Version, version)
+
+	if _, err := svc.Activate(ctx, service.ActivationInput{
+		RepoRoot: root,
+		Name:     profile.DefaultProfileName,
+		Default:  true,
+		Commit:   commit,
+	}); err != nil {
+		fmt.Fprintf(errW, "[mneme] default profile activation failed: %v\n", err)
+		return
+	}
+
 	fmt.Fprintf(w, "<!-- mneme:profile:start -->\n")
-	fmt.Fprintf(w, "Profile %s (default interno de mneme) — materialización pendiente de habilitar.\n", name)
+	fmt.Fprintf(w, "Profile mneme-default (OSS built-in) activo\n")
 	fmt.Fprintf(w, "<!-- mneme:profile:end -->\n")
 }
 

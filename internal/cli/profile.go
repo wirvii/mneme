@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/wirvii/mneme/internal/config"
+	"github.com/wirvii/mneme/internal/install"
 	"github.com/wirvii/mneme/internal/model"
 	"github.com/wirvii/mneme/internal/service"
 )
@@ -87,6 +88,12 @@ func newProfileSvc() *service.ProfileService {
 // same pattern as initSubagentService (internal/cli/subagents.go). Only
 // "profile use" needs this heavier construction; add/update/list/status/
 // default never materialize, so they keep the lighter newProfileSvc().
+// WithDefaultProfileFS is wired for parity with the SessionStart integration
+// (SPEC-096 §6) — "profile use mneme-default" is not an officially supported
+// verb (the embedded default is never a store checkout PinFromStore can
+// reconstruct a pin from), but a ProfileService fully capable of a default
+// activation costs nothing extra here and keeps every Activate call site
+// consistent.
 func newActivatingProfileSvc() (*service.ProfileService, func(), error) {
 	mem, cleanup, err := initService()
 	if err != nil {
@@ -105,6 +112,7 @@ func newActivatingProfileSvc() (*service.ProfileService, func(), error) {
 		service.WithProfileSubagentService(sub),
 		service.WithProfileSkillsDir(skillsDir),
 		service.WithProfileConfigPath(config.DefaultPath()),
+		service.WithDefaultProfileFS(install.DefaultProfileFS()),
 	)
 	return svc, cleanup, nil
 }

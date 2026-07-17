@@ -61,6 +61,12 @@ func newHandlers(svc *service.MemoryService, sdd *service.SDDService, skillsSvc 
 			service.WithProfileSubagentService(subagentSvc),
 			service.WithProfileSkillsDir(skillsDir),
 			service.WithProfileConfigPath(config.DefaultPath()),
+			// SPEC-096 §6: parity with the CLI's SessionStart/newActivatingProfileSvc
+			// wiring — profile_use is not officially routed at the embedded
+			// default today, but every ProfileService construction that can
+			// call Activate stays consistently capable of a default
+			// activation.
+			service.WithDefaultProfileFS(install.DefaultProfileFS()),
 		),
 		logger: logger,
 	}
