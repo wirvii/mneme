@@ -210,6 +210,7 @@ func (svc *MemoryService) validateAndBuildMemory(req *model.SaveRequest) (*model
 		DecayRate:  decayRate,
 		AppliesTo:  req.AppliesTo,
 		Severity:   req.Severity,
+		Source:     req.Source,
 	}, nil
 }
 
@@ -427,6 +428,65 @@ func (svc *MemoryService) Forget(ctx context.Context, id string, reason string) 
 	}
 
 	return nil
+}
+
+// profileSourcePrefix formats the provenance stamp a profile activation
+// writes onto every rule it materializes (SPEC-092): "profile:<name>".
+// Kept as a single helper so SaveProfileRule and PurgeProfileRules can never
+// drift out of sync on the exact string they stamp vs. the one they purge by.
+func profileSourcePrefix(profileName string) string {
+	return "profile:" + profileName
+}
+
+// SaveProfileRule persists req as a project-scoped rule memory, stamping its
+// provenance to source="profile:<profileName>" (SPEC-092). This is the only
+// path in mneme that can set Memory.Source to a non-empty value: the public
+// mem_save tool never exposes a way to do this (model.SaveRequest.Source is
+// json:"-"), so an agent calling mem_save directly can never forge a
+// profile's provenance.
+//
+// SaveProfileRule forces Type=TypeRule, Scope=ScopeProject, and Shared=0
+// regardless of what req carries on those fields — a profile-injected rule
+// is always project-scoped, always a rule, and is never auto-shared to the
+// team-memory vault by this path (the vault-exclusion enforcement itself is
+// wired by a later spec; forcing Shared=0 here is what keeps that invariant
+// true in the meantime). Title, Content, AppliesTo, Severity, and TopicKey
+// are taken from req unchanged. Reuses the exact same
+// validate/upsert/embed/wikilink pipeline every other memory goes through —
+// there is no parallel write path to keep in sync.
+func (svc *MemoryService) SaveProfileRule(ctx context.Context, req model.SaveRequest, profileName string) (*model.SaveResponse, error) {
+	req.Type = model.TypeRule
+	req.Scope = model.ScopeProject
+	req.Source = profileSourcePrefix(profileName)
+	zero := 0
+	req.Shared = &zero
+
+	resp, err := svc.Save(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("service: save profile rule: %w", err)
+	}
+	return resp, nil
+}
+
+// PurgeProfileRules physically deletes every project-scoped memory whose
+// Source is "profile:<profileName>" — a hard delete, not a soft delete or a
+// Forget (SPEC-092 R1). Profile-injected rules are derived/regenerable: the
+// profile's own store is their source of truth, and re-activating the
+// profile re-materializes them via SaveProfileRule, so there is no tombstone
+// worth keeping. This is the primitive a profile switch/deactivate uses to
+// undo what an earlier Activate materialized in the database; it must never
+// be called against hand-authored memories (Source == ""), which keep using
+// Forget/SoftDelete for their recoverable semantics.
+//
+// Returns the ids that were deleted (possibly empty, never nil-with-error).
+// Idempotent: calling it again after the rules are already gone returns an
+// empty slice and no error.
+func (svc *MemoryService) PurgeProfileRules(ctx context.Context, project, profileName string) ([]string, error) {
+	removed, err := svc.projectStore.HardDeleteBySource(ctx, project, profileSourcePrefix(profileName))
+	if err != nil {
+		return nil, fmt.Errorf("service: purge profile rules: %w", err)
+	}
+	return removed, nil
 }
 
 // ProjectSlug returns the project slug associated with this service instance.
