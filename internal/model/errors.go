@@ -249,4 +249,3 @@ var ErrProfileServiceNotConfigured = errors.New("profile service: memory/subagen
 // the vault, after a profile switch already purged the row. Rejected before
 // the row is touched — silently no-op'ing would hide an operator error.
 var ErrProfileMemoryNotShareable = errors.New("profile-provenance memory cannot be promoted to team-shared")
-
