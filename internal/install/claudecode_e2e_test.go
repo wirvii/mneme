@@ -143,3 +143,25 @@ func TestClaudeCodeInstall_VanillaGolden(t *testing.T) {
 		t.Errorf("no .mneme/profile.lock must exist after a vanilla install; stat err = %v", err)
 	}
 }
+
+// TestClaudeCodeOperatingManual_AntiDrift verifies that the embedded
+// operating-manual.md (claude-code) contains the grill-me-over-brainstorming
+// refinement doctrine (SPEC-103 D10/AC10). It is the first content-level
+// anti-drift test for the claude-code manual's body — mirroring
+// TestCodexOperatingManual_AntiDrift, which already guards the Codex variant
+// — so that a future edit cannot silently drop the clause the way nothing
+// previously protected this file's prose.
+func TestClaudeCodeOperatingManual_AntiDrift(t *testing.T) {
+	content := operatingManual()
+
+	if len(content) == 0 {
+		t.Fatal("operatingManual() returned empty string")
+	}
+
+	if !strings.Contains(content, "grill-me") {
+		t.Error("operating-manual.md: expected keyword \"grill-me\" not found")
+	}
+	if !strings.Contains(content, "Do NOT use `superpowers:brainstorming`") {
+		t.Error("operating-manual.md: expected negation of superpowers:brainstorming not found")
+	}
+}

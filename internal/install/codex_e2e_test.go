@@ -245,6 +245,8 @@ func TestCodexOperatingManual_AntiDrift(t *testing.T) {
 		"backlog_add",
 		"spec_advance",
 		"AGENTS.md",
+		"grill-me",
+		"Do NOT use `superpowers:brainstorming`",
 	}
 	for _, kw := range keywords {
 		if !strings.Contains(content, kw) {
