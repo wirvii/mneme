@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [v1.30.0] — 2026-07-18 — Grill-me enforced for BL refinement
+
+### Added
+
+- **Doctrine: refine standard-lane BLs with `grill-me`, not `superpowers:brainstorming` (SPEC-103).**
+  Both operating manuals (claude-code §4, codex §3) now carry a targeted refinement doctrine: a
+  standard-lane backlog item is refined with `grill-me` — a one-question-at-a-time interrogation
+  that recommends an answer at every branch — before `backlog_refine`. `superpowers:brainstorming`
+  is explicitly prohibited for this step (not vetoed generally): its own pipeline writes a design
+  doc under `docs/superpowers/specs/` and invokes `writing-plans`, stepping on the @architect's job
+  and saving the spec to the wrong path, and it doesn't ship with mneme the way `grill-me` does.
+  Trivial-lane grilling stays optional.
+- **`backlog_add` returns a refinement advisory, gated to lane standard.** The pure function
+  `service.RefinementAdvisory` (mirrors `ResolveStageExecutor`, SPEC-068) computes the nudge text
+  for a lane. The MCP `backlog_add` response now wraps `{item, advisory}` (`advisory` is
+  `omitempty`, so a trivial-lane response carries no such field), and `mneme backlog add` prints
+  the same advisory to stdout for CLI parity. Trivial-lane items receive no advisory in either
+  frontend. HTTP is unchanged (`internal/http` has no SDD endpoints).
+
 ## [v1.29.1] — 2026-07-17 — Codegraph full-scan respects .gitignore
 
 ### Fixed
