@@ -7,6 +7,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/wirvii/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/service"
 )
 
 // newBacklogCmd returns the "mneme backlog" subcommand group.
@@ -78,6 +79,10 @@ follow a shortened SDD path. All other items should use standard.`,
 
 			fmt.Fprintf(os.Stdout, "Created %s: %q [%s] priority:%s lane:%s\n",
 				item.ID, item.Title, item.Status, item.Priority, item.Lane)
+
+			if advisory := service.RefinementAdvisory(item.Lane); advisory != "" {
+				fmt.Fprintf(os.Stdout, "\n%s\n", advisory)
+			}
 			return nil
 		},
 	}
