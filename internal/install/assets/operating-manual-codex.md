@@ -50,6 +50,15 @@ never inherited and never a default.
 
 As the single agent you traverse the full cycle: backlog → spec → implement → qa → done.
 
+**Refinamiento: grill-me, no brainstorming.** For a **standard**-lane item,
+refine it with `grill-me` (one question at a time, recommending an answer at
+each step) before `backlog_refine`. **Do NOT use `superpowers:brainstorming`
+to refine it** — it clashes with the SDD flow (writes its own design doc and
+plan, stepping on the spec you are about to write) and doesn't ship with
+mneme. This applies even though you are the same agent doing both refinement
+and implementation. For **trivial** items the grill is optional — grill it or
+reclassify to standard if it turns out ambiguous.
+
 ## §4 Skills
 
 Bundled skills are installed to `$HOME/.agents/skills` for Codex to discover.

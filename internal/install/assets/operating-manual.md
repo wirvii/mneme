@@ -84,6 +84,23 @@ gate:
 This is a process gate held by orchestrator discipline (like the merge/tag/push and
 QA-zero-observations gates), not a hook — a file-write hook cannot enforce it.
 
+### Refinamiento: grill-me, no brainstorming
+
+In lane **standard**, refine a backlog item with `grill-me` — a one-question-
+at-a-time interrogation that recommends an answer at every branch — and pour
+the result into `backlog_refine` before `backlog_promote`.
+
+**Do NOT use `superpowers:brainstorming` to refine a backlog item.**
+brainstorming clashes with the mneme SDD flow: its own pipeline writes a
+design doc under `docs/superpowers/specs/` and invokes `writing-plans` —
+stepping on the @architect's job and saving the spec to the wrong path. It
+also doesn't ship with mneme, so not every teammate has it installed. This
+prohibition is targeted to BL refinement — brainstorming remains fine for
+exploration outside the SDD flow.
+
+In lane **trivial**, the grill is optional: if the item turns out to be
+ambiguous, grill it or reclassify it to standard.
+
 ## 5. Skills
 
 Check installed skills before implementing: `mneme skills list`.
