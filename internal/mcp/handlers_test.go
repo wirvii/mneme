@@ -307,7 +307,9 @@ func TestMapServiceError_InternalErrorIncludesMessage(t *testing.T) {
 	}
 
 	var addResult struct {
-		ID string `json:"id"`
+		Item struct {
+			ID string `json:"id"`
+		} `json:"item"`
 	}
 	unmarshalToolText(t, addResp, &addResult)
 
@@ -315,7 +317,7 @@ func TestMapServiceError_InternalErrorIncludesMessage(t *testing.T) {
 	refineResp := process(t, srv, "tools/call", 2, ToolCallParams{
 		Name: "backlog_refine",
 		Arguments: mustMarshal(t, map[string]any{
-			"id":          addResult.ID,
+			"id":          addResult.Item.ID,
 			"description": "Refined description with enough detail.",
 		}),
 	})
@@ -326,7 +328,7 @@ func TestMapServiceError_InternalErrorIncludesMessage(t *testing.T) {
 	// First promote — should succeed.
 	promoteResp := process(t, srv, "tools/call", 3, ToolCallParams{
 		Name:      "backlog_promote",
-		Arguments: mustMarshal(t, map[string]any{"id": addResult.ID}),
+		Arguments: mustMarshal(t, map[string]any{"id": addResult.Item.ID}),
 	})
 	if promoteResp.Error != nil {
 		t.Fatalf("first backlog_promote: %v", promoteResp.Error.Message)
@@ -336,7 +338,7 @@ func TestMapServiceError_InternalErrorIncludesMessage(t *testing.T) {
 	// (status is no longer "refined"), so the service should return an error.
 	promoteResp2 := process(t, srv, "tools/call", 4, ToolCallParams{
 		Name:      "backlog_promote",
-		Arguments: mustMarshal(t, map[string]any{"id": addResult.ID}),
+		Arguments: mustMarshal(t, map[string]any{"id": addResult.Item.ID}),
 	})
 	if promoteResp2.Error == nil {
 		t.Fatal("expected second backlog_promote to fail, got nil error")
@@ -349,6 +351,55 @@ func TestMapServiceError_InternalErrorIncludesMessage(t *testing.T) {
 	// The message must be prefixed with the tool name.
 	if !strings.HasPrefix(promoteResp2.Error.Message, "mcp: handle backlog_promote:") {
 		t.Errorf("error message %q does not start with expected prefix", promoteResp2.Error.Message)
+	}
+}
+
+// TestBacklogAdd_AdvisoryEnvelope verifies the {item, advisory} envelope
+// (SPEC-103 AC3/AC6): a standard-lane item carries a non-empty advisory
+// mentioning grill-me, while a trivial-lane item carries no advisory field at
+// all (thanks to omitempty).
+func TestBacklogAdd_AdvisoryEnvelope(t *testing.T) {
+	srv := newTestServerWithSDD(t)
+
+	standardResp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name: "backlog_add",
+		Arguments: mustMarshal(t, map[string]any{
+			"title": "Standard-lane item",
+			"lane":  "standard",
+		}),
+	})
+	if standardResp.Error != nil {
+		t.Fatalf("backlog_add (standard): %v", standardResp.Error.Message)
+	}
+	var standardResult struct {
+		Item struct {
+			ID string `json:"id"`
+		} `json:"item"`
+		Advisory string `json:"advisory"`
+	}
+	unmarshalToolText(t, standardResp, &standardResult)
+	if standardResult.Item.ID == "" {
+		t.Error("standard-lane item.id is empty")
+	}
+	if !strings.Contains(standardResult.Advisory, "grill-me") {
+		t.Errorf("standard-lane advisory = %q, want it to mention grill-me", standardResult.Advisory)
+	}
+
+	trivialResp := process(t, srv, "tools/call", 2, ToolCallParams{
+		Name: "backlog_add",
+		Arguments: mustMarshal(t, map[string]any{
+			"title": "Trivial-lane item",
+			"lane":  "trivial",
+			"scope": "internal/model/*.go",
+		}),
+	})
+	if trivialResp.Error != nil {
+		t.Fatalf("backlog_add (trivial): %v", trivialResp.Error.Message)
+	}
+	var trivialEnvelope map[string]json.RawMessage
+	unmarshalToolText(t, trivialResp, &trivialEnvelope)
+	if _, present := trivialEnvelope["advisory"]; present {
+		t.Errorf("trivial-lane envelope has an \"advisory\" field, want it omitted: %v", trivialEnvelope)
 	}
 }
 

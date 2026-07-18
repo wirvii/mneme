@@ -807,7 +807,19 @@ func (h *handlers) sddUnavailable(method string) *JSONRPCError {
 	}
 }
 
-// handleBacklogAdd processes a backlog_add tool call.
+// backlogAddResponse is the envelope handleBacklogAdd returns (SPEC-103 D7):
+// the created item plus an advisory refinement nudge, mirroring the
+// {spec, executor} envelope handleSpecAdvance returns (specAdvanceResponse,
+// SPEC-068 D5). Advisory is omitempty so a trivial-lane item's response
+// carries no advisory field at all (SPEC-103 D4/AC3).
+type backlogAddResponse struct {
+	Item     *model.BacklogItem `json:"item"`
+	Advisory string             `json:"advisory,omitempty"`
+}
+
+// handleBacklogAdd processes a backlog_add tool call. After creating the
+// item, it resolves the refinement advisory for its lane (SPEC-103 D6/D7) and
+// returns both in one envelope.
 func (h *handlers) handleBacklogAdd(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
 	if h.sdd == nil {
 		return nil, h.sddUnavailable("backlog_add")
@@ -825,7 +837,9 @@ func (h *handlers) handleBacklogAdd(ctx context.Context, raw json.RawMessage) (*
 		return nil, h.mapServiceError("backlog_add", err)
 	}
 
-	return resultFromAny(item)
+	advisory := service.RefinementAdvisory(item.Lane)
+
+	return resultFromAny(backlogAddResponse{Item: item, Advisory: advisory})
 }
 
 // handleBacklogList processes a backlog_list tool call.
