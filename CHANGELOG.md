@@ -4,6 +4,43 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [v1.30.1] — 2026-08-01 — MCP server survives oversized messages
+
+### Fixed
+
+- **The MCP server no longer dies on a JSON-RPC message over 64 KiB (SPEC-104).**
+  `internal/mcp/server.go`'s `Run()` read its stdio loop with `bufio.NewScanner(reader)`
+  and never called `scanner.Buffer(...)`, so any single incoming line past
+  `bufio.MaxScanTokenSize` (64 KiB) made `Scan()` fail with `bufio.ErrTooLong` — and,
+  because a `Scanner` in that state can never be resumed, `Run()` returned the error,
+  which propagated all the way to `cobra` and killed the whole process (exit 1). Real
+  logs showed 18 crashes across 5 projects, 16 of them triggered by `spec_doc_write` —
+  the one tool that sends a complete spec/plan/qa-report document, which routinely
+  exceeds 64 KiB. The fix replaces the scanner with a hand-written `bufio.Reader`
+  accumulation loop (`readMessage`, `internal/mcp/reader.go`) bounded by a fixed,
+  non-configurable 10 MiB per-message ceiling (`maxMessageBytes`): a message over the
+  limit is discarded, the stream is resynchronised to the next `'\n'` so the following
+  message is read cleanly, and the client receives a JSON-RPC error response
+  (`CodeMessageTooLarge = -32001`, in the `-32000..-32099` implementation-defined server
+  error range) instead of a dropped connection. The response still carries the
+  request's original `id` whenever it falls within the message's first 512 bytes
+  (`requestIDFromPrefix`, a best-effort token-walk over the truncated prefix using
+  `json.Decoder` + `UseNumber()` — never a full parse, since the message doesn't fit),
+  falling back to `id: null` per JSON-RPC 2.0 when it can't be recovered. `ReadSlice` is
+  used in an explicit loop rather than the simpler `ReadBytes` specifically so an
+  unbounded, delimiter-less input can never be fully buffered before the limit check —
+  otherwise "the process dies on an oversized message" would just become "the process
+  dies of OOM reading one". `internal/http` is intentionally left unchanged: its request
+  bodies are read via `json.NewDecoder(r.Body)`, which has no line-length limit to begin
+  with, so there is nothing to migrate there — a request body size ceiling for HTTP is a
+  separate, still-open concern. `internal/service/drift.go`'s `DetectDrift` gets the same
+  class of fix (`scanner.Buffer(64 KiB, 1 MiB)`) for an unrelated but structurally
+  identical gap: a `CLAUDE.md` with one line over 64 KiB used to make the drift detector
+  return an error and silently discard every finding already collected instead of
+  reporting them. A new `internal/mcp/e2e` package compiles the real `./cmd/mneme`
+  binary and drives it over stdio with a real >10 MiB message to verify the exit code
+  and response sequence end-to-end — something no in-process unit test can observe.
+
 ## [v1.30.0] — 2026-07-18 — Grill-me enforced for BL refinement
 
 ### Added

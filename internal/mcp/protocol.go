@@ -38,6 +38,15 @@ const (
 	// CodeMemoryNotFound is a server-defined error code indicating the requested
 	// memory ID does not exist.
 	CodeMemoryNotFound = -32000
+	// CodeMessageTooLarge is a server-defined error code (SPEC-104 DD7)
+	// reported when an incoming message exceeds Server.maxMessage. It lives in
+	// the -32000..-32099 range JSON-RPC 2.0 reserves for implementation-defined
+	// server errors rather than -32600 (Invalid Request) or -32700 (Parse
+	// error): the message may be perfectly well-formed JSON-RPC, it simply
+	// didn't fit inside this server's transport limit. A distinct code lets a
+	// client distinguish "too big" from "malformed" programmatically instead
+	// of string-matching error.message.
+	CodeMessageTooLarge = -32001
 )
 
 // InitializeParams holds the parameters sent by the client in the initialize request.

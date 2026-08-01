@@ -155,6 +155,46 @@ func TestDetectDrift_FileNotExist(t *testing.T) {
 	}
 }
 
+// TestDetectDrift_LargeLineDoesNotSuppressFindings is the SPEC-104 AC17
+// regression: a CLAUDE.md containing one ~200 KB line (well past
+// bufio.Scanner's unconfigured 64 KiB default token size) followed by a line
+// with real, detectable drift must still report that finding with err == nil
+// — not silently discard everything it already collected because the scanner
+// choked on an earlier, unrelated line. Before the fix this returned
+// (nil, non-nil error); DetectDrift's caller (RunDrift) then discards all
+// findings collected so far and only prints a warning (SPEC-104 DD10).
+func TestDetectDrift_LargeLineDoesNotSuppressFindings(t *testing.T) {
+	dir := t.TempDir()
+	f := filepath.Join(dir, "CLAUDE.md")
+
+	hugeLine := strings.Repeat("x", 200*1024) // ~200 KB, past the 64 KiB default
+	content := "# My Project\n\n" +
+		hugeLine + "\n\n" +
+		"## Session lifecycle\n\n" +
+		"- Always do mem_search first.\n"
+	if err := os.WriteFile(f, []byte(content), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	findings, err := DetectDrift(f)
+	if err != nil {
+		t.Fatalf("DetectDrift error: %v, want nil (a long unrelated line must not suppress real findings)", err)
+	}
+	if len(findings) == 0 {
+		t.Fatal("expected the 'Session lifecycle' finding after the huge line, got zero findings")
+	}
+
+	var found bool
+	for _, fi := range findings {
+		if strings.Contains(fi.Message, "duplicates global manual section") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected 'duplicates global manual section' finding, got: %v", findings)
+	}
+}
+
 // TestDriftFinding_String verifies the formatted output of DriftFinding.String().
 func TestDriftFinding_String(t *testing.T) {
 	fi := DriftFinding{
