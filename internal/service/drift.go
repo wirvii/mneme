@@ -97,6 +97,17 @@ func DetectDrift(filePath string) ([]DriftFinding, error) {
 
 	var findings []DriftFinding
 	scanner := bufio.NewScanner(f)
+	// A CLAUDE.md with one line past bufio.Scanner's unconfigured 64 KiB
+	// default token size used to make Scan() fail with bufio.ErrTooLong,
+	// which the Err() check below already turned into an error — but that
+	// error made DetectDrift's caller (RunDrift) discard every finding
+	// already collected, reporting an empty drift report plus a warning
+	// instead of the real findings (SPEC-104 DD10). 1 MiB is generous for a
+	// single line of project documentation; a line longer than that is a
+	// pathological case (e.g. a minified CLAUDE.md) this detector is willing
+	// to skip rather than protect against unboundedly.
+	const maxDriftLine = 1024 * 1024
+	scanner.Buffer(make([]byte, 64*1024), maxDriftLine)
 	lineNum := 0
 	inManagedBlock := false
 
