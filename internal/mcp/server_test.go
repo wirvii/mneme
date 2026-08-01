@@ -161,6 +161,18 @@ func unmarshalToolText(t *testing.T, resp JSONRPCResponse, v any) {
 
 // --- Tests ---
 
+// TestNewServer_MaxMessageSeed is AC13: NewServer must seed maxMessage to the
+// production constant maxMessageBytes. Other tests in this file lower
+// srv.maxMessage after construction to exercise the oversized-message path
+// cheaply (DD2) — this test guards the seed itself, so lowering it in one
+// test can never mask a regression of what production actually gets.
+func TestNewServer_MaxMessageSeed(t *testing.T) {
+	srv := newTestServer(t)
+	if srv.maxMessage != maxMessageBytes {
+		t.Errorf("NewServer: maxMessage = %d, want %d (maxMessageBytes)", srv.maxMessage, maxMessageBytes)
+	}
+}
+
 func TestInitialize(t *testing.T) {
 	srv := newTestServer(t)
 	resp := process(t, srv, "initialize", 1, map[string]any{
