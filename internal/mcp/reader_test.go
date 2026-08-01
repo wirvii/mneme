@@ -157,6 +157,62 @@ func TestReadMessage_ResyncsAfterOversizedLine(t *testing.T) {
 	}
 }
 
+// TestReadMessage_ResyncsAcrossManyBufferFulls is the QA-flagged coverage gap
+// (SPEC-104 rejection): TestReadMessage_ResyncsAfterOversizedLine above only
+// exercises resync when the oversized line's terminating '\n' arrives in the
+// SAME ReadSlice call that first crosses the limit. It never proves the
+// resync survives when the reader's internal buffer fills — bufio.ErrBufferFull
+// — repeatedly AFTER over is already true and BEFORE the '\n' is finally
+// found, which is exactly the scenario D3/DD4 exist for: draining, not
+// abandoning, every remaining chunk of a message that is far larger than the
+// limit. QA proved the gap by mutating the ErrBufferFull branch's `continue`
+// into an early return and showing the whole suite — including
+// TestRunLoop_LargeMessages and the e2e — stayed green; a mutation that
+// abandons resync mid-message must fail HERE.
+//
+// A tiny bufio.Reader buffer (bufio.NewReaderSize enforces a 16-byte floor
+// regardless of the requested size) forces dozens of ErrBufferFull cycles
+// from a message of only a couple hundred bytes, keeping this test cheap —
+// no need to allocate hundreds of KB to reproduce the property, matching
+// QA's own suggestion.
+func TestReadMessage_ResyncsAcrossManyBufferFulls(t *testing.T) {
+	const (
+		limit      = 16 // crossed almost immediately
+		tinyReader = 8  // bumped up to bufio's 16-byte minimum internal buffer
+	)
+
+	// Comfortably more than one full reader-buffer's worth of bytes past the
+	// point where `over` becomes true: with a ~16-byte internal buffer, 200
+	// bytes forces well over a dozen ErrBufferFull cycles before the '\n'.
+	oversizedLine := strings.Repeat("a", 200)
+	input := oversizedLine + "\n" + "ok\n"
+	r := bufio.NewReaderSize(strings.NewReader(input), tinyReader)
+
+	line1, err1 := readMessage(r, limit)
+	var tooLong *messageTooLongError
+	if !errors.As(err1, &tooLong) {
+		t.Fatalf("first readMessage error = %v, want *messageTooLongError", err1)
+	}
+	if line1 != nil {
+		t.Errorf("first line = %q, want nil", line1)
+	}
+	wantSize := len(oversizedLine) + 1 // + the '\n'
+	if tooLong.Size != wantSize {
+		t.Errorf("Size = %d, want %d", tooLong.Size, wantSize)
+	}
+
+	// The property under test: after draining through dozens of
+	// ErrBufferFull cycles, the reader must be positioned exactly after the
+	// oversized line's '\n' — not mid-line — so the next message reads clean.
+	line2, err2 := readMessage(r, limit)
+	if err2 != nil {
+		t.Fatalf("second readMessage unexpected error: %v (want the clean 'ok' message, not a corrupted tail)", err2)
+	}
+	if string(line2) != "ok" {
+		t.Errorf("second line = %q, want %q", line2, "ok")
+	}
+}
+
 // TestReadMessage_IOFailure verifies AC12: a real I/O error (never io.EOF)
 // from the underlying reader is returned from readMessage unwrapped, not
 // turned into a *messageTooLongError or otherwise swallowed.
