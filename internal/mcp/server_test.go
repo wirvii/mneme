@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"io"
 	"log/slog"
 	"strings"
 	"testing"
@@ -43,9 +45,12 @@ func newTestServer(t *testing.T) *Server {
 	return NewServer(svc, nil, nil, nil, logger, "all", "test")
 }
 
-// sendMessage writes a single JSON-RPC request as a line to buf and returns the
-// raw bytes written (useful for debugging).
-func sendMessage(t *testing.T, buf *bytes.Buffer, method string, id int, params any) {
+// buildRequestLine marshals method/id/params into a single JSON-RPC request
+// line with no trailing newline. Extracted from sendMessage so the large-
+// message test table (TestRunLoop_LargeMessages) can control line endings and
+// exact byte sizes itself instead of going through a buffer that always
+// appends '\n'.
+func buildRequestLine(t *testing.T, method string, id int, params any) []byte {
 	t.Helper()
 
 	var rawID json.RawMessage
@@ -74,8 +79,29 @@ func sendMessage(t *testing.T, buf *bytes.Buffer, method string, id int, params 
 	if err != nil {
 		t.Fatalf("marshal request: %v", err)
 	}
-	buf.Write(b)
+	return b
+}
+
+// sendMessage writes a single JSON-RPC request as a line to buf and returns the
+// raw bytes written (useful for debugging).
+func sendMessage(t *testing.T, buf *bytes.Buffer, method string, id int, params any) {
+	t.Helper()
+	buf.Write(buildRequestLine(t, method, id, params))
 	buf.WriteByte('\n')
+}
+
+// newResponseScanner builds a bufio.Scanner over r with a buffer large enough
+// to read any response Run can legitimately produce (up to maxMessageBytes,
+// D2). Without this, an assertion scanner reading a large-but-valid response
+// (e.g. tools/list) would fail with "token too long" itself — the exact bug
+// this spec fixes, but on the test's own read path instead of the server's
+// (D5/AC16). The literal 10*1024*1024 duplicates maxMessageBytes on purpose:
+// this test-only helper predates the constant in the P1→P2 TDD sequence and
+// is not the production reader.
+func newResponseScanner(r io.Reader) *bufio.Scanner {
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
+	return scanner
 }
 
 // readResponse reads one line from scanner and deserializes it as a JSONRPCResponse.
@@ -749,7 +775,7 @@ func TestRunLoop(t *testing.T) {
 	}
 
 	// Expect exactly 2 responses (initialize + tools/list; notification has none).
-	scanner := bufio.NewScanner(strings.NewReader(out.String()))
+	scanner := newResponseScanner(strings.NewReader(out.String()))
 	for i := 1; i <= 2; i++ {
 		if !scanner.Scan() {
 			t.Fatalf("expected response %d, got EOF", i)
@@ -764,6 +790,248 @@ func TestRunLoop(t *testing.T) {
 	}
 	if scanner.Scan() {
 		t.Errorf("unexpected extra response line: %s", scanner.Text())
+	}
+}
+
+// initializeParams returns the standard params payload for an "initialize"
+// request, shared by every TestRunLoop_LargeMessages case so the handshake
+// itself is never the thing under test.
+func initializeParams() map[string]any {
+	return map[string]any{
+		"protocolVersion": "2024-11-05",
+		"capabilities":    map[string]any{},
+		"clientInfo":      map[string]any{"name": "t", "version": "1"},
+	}
+}
+
+// paddedToolsListLine builds a "tools/list" request line of exactly target
+// bytes. "tools/list" is used as the size knob because dispatchMethod ignores
+// its Params entirely (server.go), so padding an otherwise-unused "pad" field
+// grows the line to any target size without ever making the message invalid
+// — the test controls size independently of any tool's argument schema.
+func paddedToolsListLine(t *testing.T, id int, target int) []byte {
+	t.Helper()
+
+	base := buildRequestLine(t, "tools/list", id, map[string]any{"pad": ""})
+	if target < len(base) {
+		t.Fatalf("paddedToolsListLine: target %d is smaller than the unpadded base (%d bytes)", target, len(base))
+	}
+
+	line := buildRequestLine(t, "tools/list", id, map[string]any{"pad": strings.Repeat("a", target-len(base))})
+	if len(line) != target {
+		t.Fatalf("paddedToolsListLine: built %d bytes, want %d", len(line), target)
+	}
+	return line
+}
+
+// paddedLineParamsBeforeID builds a raw "tools/list" request line of exactly
+// target bytes with "id" placed textually AFTER "params" — the opposite
+// order buildRequestLine's fixed struct layout produces. Once padded well
+// past idPrefixBytes, the id lands outside the retained prefix, exercising
+// requestIDFromPrefix's documented fallback (DD6): a client that happens to
+// emit params before id gets a `null`-correlated error, not a wrong guess.
+func paddedLineParamsBeforeID(t *testing.T, id int, target int) []byte {
+	t.Helper()
+
+	build := func(pad string) string {
+		return fmt.Sprintf(`{"jsonrpc":"2.0","method":"tools/list","params":{"pad":%q},"id":%d}`, pad, id)
+	}
+
+	base := build("")
+	if target < len(base) {
+		t.Fatalf("paddedLineParamsBeforeID: target %d is smaller than the unpadded base (%d bytes)", target, len(base))
+	}
+
+	line := build(strings.Repeat("a", target-len(base)))
+	if len(line) != target {
+		t.Fatalf("paddedLineParamsBeforeID: built %d bytes, want %d", len(line), target)
+	}
+	return []byte(line)
+}
+
+// TestRunLoop_LargeMessages is the regression test for the crash fixed by
+// SPEC-104: a message near or over the historical 64 KiB bufio.Scanner token
+// limit must never stop the server from answering the messages that follow
+// it. Every case sends three messages — initialize (id 1), the message under
+// test (id 2), and a final tools/list (id 3, the "survival canary") — and
+// asserts: Run returns nil, exactly 3 responses arrive (no cascade, AC8), and
+// response 3 (the canary) is error-free. The "limit+1" case additionally
+// lowers srv.maxMessage (DD2) to exercise the real size-limit branch cheaply
+// and asserts response 2 carries CodeMessageTooLarge; id recovery from the
+// oversized message's prefix (DD6) lands in P4, so today it asserts "null".
+func TestRunLoop_LargeMessages(t *testing.T) {
+	const (
+		size64KBMinus1 = 64*1024 - 1 // 65535 bytes: valid, must keep working (AC5).
+		size64KBPlus1  = 64*1024 + 1 // 65537 bytes: today's exact crash trigger (AC4).
+	)
+
+	tests := []struct {
+		name             string
+		buildInput       func(t *testing.T, srv *Server) []byte
+		serverMaxMessage int    // 0 = leave the server's default (maxMessageBytes)
+		wantSecondID     string // expected literal json for responses[1].ID
+		wantSecondError  bool
+		wantSecondCode   int
+	}{
+		{
+			name: "64KB-1",
+			buildInput: func(t *testing.T, _ *Server) []byte {
+				var buf bytes.Buffer
+				buf.Write(buildRequestLine(t, "initialize", 1, initializeParams()))
+				buf.WriteByte('\n')
+				buf.Write(paddedToolsListLine(t, 2, size64KBMinus1))
+				buf.WriteByte('\n')
+				buf.Write(buildRequestLine(t, "tools/list", 3, nil))
+				buf.WriteByte('\n')
+				return buf.Bytes()
+			},
+			wantSecondID: "2",
+		},
+		{
+			name: "64KB+1",
+			buildInput: func(t *testing.T, _ *Server) []byte {
+				var buf bytes.Buffer
+				buf.Write(buildRequestLine(t, "initialize", 1, initializeParams()))
+				buf.WriteByte('\n')
+				buf.Write(paddedToolsListLine(t, 2, size64KBPlus1))
+				buf.WriteByte('\n')
+				buf.Write(buildRequestLine(t, "tools/list", 3, nil))
+				buf.WriteByte('\n')
+				return buf.Bytes()
+			},
+			wantSecondID: "2",
+		},
+		{
+			name: "sin newline final",
+			buildInput: func(t *testing.T, _ *Server) []byte {
+				var buf bytes.Buffer
+				buf.Write(buildRequestLine(t, "initialize", 1, initializeParams()))
+				buf.WriteByte('\n')
+				buf.Write(buildRequestLine(t, "tools/list", 2, nil))
+				buf.WriteByte('\n')
+				buf.Write(buildRequestLine(t, "tools/list", 3, nil)) // no trailing '\n'
+				return buf.Bytes()
+			},
+			wantSecondID: "2",
+		},
+		{
+			name: "CRLF",
+			buildInput: func(t *testing.T, _ *Server) []byte {
+				var buf bytes.Buffer
+				buf.Write(buildRequestLine(t, "initialize", 1, initializeParams()))
+				buf.WriteString("\r\n")
+				buf.Write(buildRequestLine(t, "tools/list", 2, nil))
+				buf.WriteString("\r\n")
+				buf.Write(buildRequestLine(t, "tools/list", 3, nil))
+				buf.WriteString("\r\n")
+				return buf.Bytes()
+			},
+			wantSecondID: "2",
+		},
+		{
+			// paddedToolsListLine (via buildRequestLine) places "id" right
+			// after "jsonrpc" in the marshaled struct, well within
+			// idPrefixBytes — so the id must be recovered, not null (AC7).
+			name:             "limit+1",
+			serverMaxMessage: 1024,
+			buildInput: func(t *testing.T, srv *Server) []byte {
+				var buf bytes.Buffer
+				buf.Write(buildRequestLine(t, "initialize", 1, initializeParams()))
+				buf.WriteByte('\n')
+				buf.Write(paddedToolsListLine(t, 2, srv.maxMessage+1))
+				buf.WriteByte('\n')
+				buf.Write(buildRequestLine(t, "tools/list", 3, nil))
+				buf.WriteByte('\n')
+				return buf.Bytes()
+			},
+			wantSecondID:    "2",
+			wantSecondError: true,
+			wantSecondCode:  CodeMessageTooLarge,
+		},
+		{
+			// "params" is placed BEFORE "id" in the raw JSON text (unlike
+			// buildRequestLine's fixed struct field order), so once padded
+			// past idPrefixBytes the id sits outside the retained prefix —
+			// the documented fallback (DD6): null, not a wrong guess.
+			name:             "limit+1 sin id recuperable",
+			serverMaxMessage: 1024,
+			buildInput: func(t *testing.T, srv *Server) []byte {
+				var buf bytes.Buffer
+				buf.Write(buildRequestLine(t, "initialize", 1, initializeParams()))
+				buf.WriteByte('\n')
+				buf.Write(paddedLineParamsBeforeID(t, 2, srv.maxMessage+1))
+				buf.WriteByte('\n')
+				buf.Write(buildRequestLine(t, "tools/list", 3, nil))
+				buf.WriteByte('\n')
+				return buf.Bytes()
+			},
+			wantSecondID:    "null",
+			wantSecondError: true,
+			wantSecondCode:  CodeMessageTooLarge,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := newTestServer(t)
+			if tt.serverMaxMessage > 0 {
+				srv.maxMessage = tt.serverMaxMessage
+			}
+			in := bytes.NewReader(tt.buildInput(t, srv))
+			var out bytes.Buffer
+
+			if err := srv.Run(t.Context(), in, &out); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+
+			scanner := newResponseScanner(bytes.NewReader(out.Bytes()))
+			var responses []JSONRPCResponse
+			for scanner.Scan() {
+				var resp JSONRPCResponse
+				if err := json.Unmarshal(scanner.Bytes(), &resp); err != nil {
+					t.Fatalf("unmarshal response: %v (raw: %s)", err, scanner.Text())
+				}
+				responses = append(responses, resp)
+			}
+			if err := scanner.Err(); err != nil {
+				t.Fatalf("scan responses: %v", err)
+			}
+
+			// Exactly 3 responses: no cascade of extra error responses after
+			// the oversized message is discarded (AC8).
+			if len(responses) != 3 {
+				t.Fatalf("got %d responses, want exactly 3", len(responses))
+			}
+
+			second := responses[1]
+			if string(second.ID) != tt.wantSecondID {
+				t.Errorf("responses[1].ID = %s, want %s", second.ID, tt.wantSecondID)
+			}
+			if tt.wantSecondError {
+				if second.Error == nil {
+					t.Fatal("responses[1].Error = nil, want an error")
+				}
+				if second.Error.Code != tt.wantSecondCode {
+					t.Errorf("responses[1].Error.Code = %d, want %d", second.Error.Code, tt.wantSecondCode)
+				}
+				if !strings.HasPrefix(second.Error.Message, "mcp: message too large:") {
+					t.Errorf("responses[1].Error.Message = %q, want prefix %q", second.Error.Message, "mcp: message too large:")
+				}
+			} else if second.Error != nil {
+				t.Errorf("responses[1] has unexpected error: %v", second.Error)
+			}
+
+			// The property under test is survival: id 3 (the canary) must
+			// have been answered correctly regardless of what happened to
+			// message 2.
+			third := responses[2]
+			if string(third.ID) != "3" {
+				t.Errorf("responses[2].ID = %s, want 3 (survival canary)", third.ID)
+			}
+			if third.Error != nil {
+				t.Errorf("responses[2] (canary) has unexpected error: %v", third.Error)
+			}
+		})
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -23,6 +24,13 @@ type Server struct {
 	handlers  *handlers
 	logger    *slog.Logger
 	version   string
+	// maxMessage is the per-message size ceiling Run enforces (SPEC-104 D2).
+	// It is seeded from maxMessageBytes by NewServer rather than read as a
+	// global directly so tests can lower it (srv.maxMessage = ...) to exercise
+	// the oversized-message path cheaply, without an API change and without
+	// ever allocating a real 10 MiB buffer per test case (DD1/DD2). Production
+	// code never sets this field to anything but maxMessageBytes.
+	maxMessage int
 }
 
 // NewServer constructs a Server. toolsMode selects which tool set to expose:
@@ -38,14 +46,15 @@ func NewServer(svc *service.MemoryService, sddSvc *service.SDDService, skillsSvc
 	}
 
 	return &Server{
-		svc:       svc,
-		sdd:       sddSvc,
-		skillsSvc: skillsSvc,
-		modelsSvc: modelsSvc,
-		tools:     tools,
-		handlers:  newHandlers(svc, sddSvc, skillsSvc, modelsSvc, logger),
-		logger:    logger,
-		version:   version,
+		svc:        svc,
+		sdd:        sddSvc,
+		skillsSvc:  skillsSvc,
+		modelsSvc:  modelsSvc,
+		tools:      tools,
+		handlers:   newHandlers(svc, sddSvc, skillsSvc, modelsSvc, logger),
+		logger:     logger,
+		version:    version,
+		maxMessage: maxMessageBytes,
 	}
 }
 
@@ -57,13 +66,26 @@ func NewServer(svc *service.MemoryService, sddSvc *service.SDDService, skillsSvc
 // single-line JSON followed by a newline. Notifications (requests without an id)
 // are processed silently with no response emitted.
 //
+// A single incoming message larger than s.maxMessage (10 MiB, SPEC-104 D2)
+// does NOT terminate the loop: it is discarded, a JSON-RPC error response
+// (CodeMessageTooLarge) is written in its place, and Run keeps serving
+// subsequent messages. This replaced an earlier implementation built on
+// bufio.Scanner, whose unconfigured 64 KiB default token size meant any
+// larger message (mneme's own spec_doc_write is the frequent real-world
+// trigger — SDD documents routinely exceed 64 KiB) made Scan() fail with
+// bufio.ErrTooLong and killed the entire server process. Note the asymmetry
+// with internal/http: HTTP request bodies are read via json.NewDecoder,
+// which has no line-length limit to begin with, so there is nothing there to
+// migrate (DD9); a request body size limit for HTTP is a separate, still-open
+// concern (see BL backlog).
+//
 // Background tasks (e.g. consolidation) are started via svc.Start before the
 // message loop begins. They are stopped automatically when ctx is cancelled.
 func (s *Server) Run(ctx context.Context, reader io.Reader, writer io.Writer) error {
 	// Start background tasks. This is a no-op when consolidation is disabled.
 	s.svc.Start(ctx)
 
-	scanner := bufio.NewScanner(reader)
+	r := bufio.NewReaderSize(reader, readerBufferSize)
 	bw := bufio.NewWriter(writer)
 
 	for {
@@ -73,15 +95,26 @@ func (s *Server) Run(ctx context.Context, reader io.Reader, writer io.Writer) er
 		default:
 		}
 
-		if !scanner.Scan() {
-			if err := scanner.Err(); err != nil {
-				return fmt.Errorf("mcp: run: read: %w", err)
+		line, err := readMessage(r, s.maxMessage)
+
+		var tooLong *messageTooLongError
+		if errors.As(err, &tooLong) {
+			s.logger.Error("mcp: discarded oversized message",
+				"bytes", tooLong.Size, "limit", tooLong.Limit)
+			id := requestIDFromPrefix(tooLong.Prefix)
+			if err := s.writeResponse(bw, s.errorResponse(id, CodeMessageTooLarge, tooLong.Error())); err != nil {
+				return err
 			}
+			continue
+		}
+		if errors.Is(err, io.EOF) {
 			// EOF — client closed the connection.
 			return nil
 		}
+		if err != nil {
+			return fmt.Errorf("mcp: run: read: %w", err)
+		}
 
-		line := scanner.Bytes()
 		if len(line) == 0 {
 			continue
 		}
@@ -92,22 +125,37 @@ func (s *Server) Run(ctx context.Context, reader io.Reader, writer io.Writer) er
 			continue
 		}
 
-		b, err := json.Marshal(resp)
-		if err != nil {
-			s.logger.Error("mcp: marshal response", "error", err)
-			continue
-		}
-
-		if _, err := bw.Write(b); err != nil {
-			return fmt.Errorf("mcp: run: write: %w", err)
-		}
-		if err := bw.WriteByte('\n'); err != nil {
-			return fmt.Errorf("mcp: run: write newline: %w", err)
-		}
-		if err := bw.Flush(); err != nil {
-			return fmt.Errorf("mcp: run: flush: %w", err)
+		if err := s.writeResponse(bw, resp); err != nil {
+			return err
 		}
 	}
+}
+
+// writeResponse marshals resp and writes it as a single line to bw, flushing
+// immediately so the client sees it without buffering delay (SPEC-104 DD8).
+// It is shared by every response Run emits — the normal tools/call/tools/list
+// path and the oversized-message error path alike — so both go through
+// exactly one write-and-flush sequence instead of two copies that could drift
+// apart. A json.Marshal failure is logged and treated as non-fatal (the
+// response is simply dropped, matching pre-existing behaviour); a failure
+// writing to bw is a real I/O error and is returned for Run to propagate.
+func (s *Server) writeResponse(bw *bufio.Writer, resp JSONRPCResponse) error {
+	b, err := json.Marshal(resp)
+	if err != nil {
+		s.logger.Error("mcp: marshal response", "error", err)
+		return nil
+	}
+
+	if _, err := bw.Write(b); err != nil {
+		return fmt.Errorf("mcp: run: write: %w", err)
+	}
+	if err := bw.WriteByte('\n'); err != nil {
+		return fmt.Errorf("mcp: run: write newline: %w", err)
+	}
+	if err := bw.Flush(); err != nil {
+		return fmt.Errorf("mcp: run: flush: %w", err)
+	}
+	return nil
 }
 
 // handleMessage parses a single JSON-RPC message and returns the response to
