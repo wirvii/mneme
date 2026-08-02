@@ -16,10 +16,12 @@ import (
 // paths.
 const LockFileName = "profile.lock"
 
-// LockSchemaVersion is the current schema_version RenderLock writes and
-// ParseLock/Lock.Validate expects. Bump this if the TOML shape changes in a
+// LockSchemaVersion is the current schema_version RenderLock writes and the
+// upper bound Lock.Validate accepts. Bump this if the TOML shape changes in a
 // way that requires a reader/writer to know which version it is looking at.
-const LockSchemaVersion = 1
+// SPEC-105 bumped it from 1 to 2 when LockArtifact gained Backup/Created/
+// Digest — all optional, so a v1 lock still parses and validates (DD7).
+const LockSchemaVersion = 2
 
 // ErrInvalidLock is the sentinel returned by Lock.Validate when the lock's
 // schema_version is not one this build of mneme understands.
@@ -40,6 +42,24 @@ type LockArtifact struct {
 	// Marker is the managedblock marker used for a "block" artifact (e.g.
 	// "profile"). Empty for "agent"/"skill".
 	Marker string `toml:"marker,omitempty"`
+
+	// Backup is the absolute path of the pre-activation copy this activation
+	// saved because Path already existed and did NOT belong to the previous
+	// activation (SPEC-105 DD5/DD7). Empty when nothing was displaced —
+	// either Path did not exist (see Created) or it belonged to the profile's
+	// own previous activation and was safely overwritten.
+	Backup string `toml:"backup,omitempty"`
+
+	// Created is true when Path did not exist before this activation — the
+	// state to restore on Deactivate is "the file does not exist" (SPEC-105
+	// DD5/DD7), most notably for the "block" artifact's CLAUDE.md (DD14).
+	Created bool `toml:"created,omitempty"`
+
+	// Digest is the sha256 hex of the managed block's content, set only for
+	// Kind == "block" (SPEC-105 DD7/DD13). It is the only way to confirm the
+	// real presence of an artifact whose containing file (CLAUDE.md) may
+	// exist for reasons entirely unrelated to the profile.
+	Digest string `toml:"digest,omitempty"`
 }
 
 // LockRule records one memory Activate inserted via SaveProfileRule, so a
@@ -112,12 +132,16 @@ func RenderLock(l Lock) ([]byte, error) {
 }
 
 // Validate checks that l carries a schema_version this build of mneme
-// understands. An unrecognised version means a newer mneme wrote the lock —
-// callers should surface this as a warning rather than silently trusting a
-// shape they might not parse correctly.
+// understands. SPEC-105 DD7 widened this from strict equality to a range:
+// any version from 1 up to LockSchemaVersion validates, because a v1 lock
+// (predating Backup/Created/Digest) still parses correctly — its new fields
+// simply come back as their zero value, which is semantically correct ("no
+// backup", "existence unknown"). Only a version ABOVE LockSchemaVersion is
+// rejected: that means a newer mneme wrote this lock, and this build cannot
+// safely know how to undo it.
 func (l Lock) Validate() error {
-	if l.SchemaVersion != LockSchemaVersion {
-		return fmt.Errorf("profile: lock: unsupported schema_version %d (expected %d): %w",
+	if l.SchemaVersion < 1 || l.SchemaVersion > LockSchemaVersion {
+		return fmt.Errorf("profile: lock: unsupported schema_version %d (expected 1..%d): %w",
 			l.SchemaVersion, LockSchemaVersion, ErrInvalidLock)
 	}
 	return nil
