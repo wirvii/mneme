@@ -6,8 +6,56 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/wirvii/mneme/internal/config"
+	"github.com/wirvii/mneme/internal/db"
+	"github.com/wirvii/mneme/internal/embed"
 	"github.com/wirvii/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/service"
+	"github.com/wirvii/mneme/internal/store"
 )
+
+// newNoSlugTestService builds a MemoryService the same way newTestService
+// does, except with project="" — simulating internal/cli.initService's
+// documented aliasing (SPEC-105 DD11: initService falls back to global.db as
+// the project store when the working directory does not resolve a git
+// remote slug). Both stores are still distinct in-memory databases here —
+// what matters for these tests is HasProject()==false, not which physical
+// file backs which store.
+func newNoSlugTestService(t *testing.T) *service.MemoryService {
+	t.Helper()
+	projectDB, err := db.OpenMemory()
+	if err != nil {
+		t.Fatalf("open project db: %v", err)
+	}
+	globalDB, err := db.OpenMemory()
+	if err != nil {
+		t.Fatalf("open global db: %v", err)
+	}
+	t.Cleanup(func() { projectDB.Close(); globalDB.Close() })
+	projectStore := store.NewMemoryStore(projectDB)
+	globalStore := store.NewMemoryStore(globalDB)
+	cfg := config.Default()
+	return service.NewMemoryService(projectStore, globalStore, cfg, "", embed.NopEmbedder{})
+}
+
+// newSharedStoreTestService builds a MemoryService whose project store and
+// global store are the SAME underlying database — the real-world shape of
+// initService's global.db-as-projectStore aliasing (SPEC-105 §1.2), used by
+// TestPurgeProfileRules_SweepsOrphansAndIsIdempotent to prove the second
+// sweep in PurgeProfileRules is idempotent rather than harmful when both
+// stores are literally one file.
+func newSharedStoreTestService(t *testing.T, project string) (*service.MemoryService, *store.MemoryStore) {
+	t.Helper()
+	sharedDB, err := db.OpenMemory()
+	if err != nil {
+		t.Fatalf("open shared db: %v", err)
+	}
+	t.Cleanup(func() { sharedDB.Close() })
+	shared := store.NewMemoryStore(sharedDB)
+	cfg := config.Default()
+	svc := service.NewMemoryService(shared, shared, cfg, project, embed.NopEmbedder{})
+	return svc, shared
+}
 
 // TestSaveProfileRule_StampsProvenance verifies that SaveProfileRule always
 // stamps source="profile:<name>", forces project scope and Shared=0
@@ -210,5 +258,230 @@ func TestPurgeProfileRules_HardDeletes(t *testing.T) {
 	}
 	if len(final) != 0 {
 		t.Errorf("expected 0 removed on third call, got %d", len(final))
+	}
+}
+
+// TestSaveProfileRule_NoSlugReturnsErrProjectSlugRequired (SPEC-105 AC18)
+// verifies that a MemoryService with no resolved project slug rejects
+// SaveProfileRule outright and writes nothing — the fix for the cross-repo
+// leak: a project-scoped row with no project used to be served in every
+// repo on the host.
+func TestSaveProfileRule_NoSlugReturnsErrProjectSlugRequired(t *testing.T) {
+	svc := newNoSlugTestService(t)
+	ctx := context.Background()
+
+	_, err := svc.SaveProfileRule(ctx, model.SaveRequest{
+		Title:     "No slug rule",
+		Content:   "content",
+		AppliesTo: []string{"**"},
+	}, "chatea-pro")
+	if !errors.Is(err, model.ErrProjectSlugRequired) {
+		t.Fatalf("expected ErrProjectSlugRequired, got %v", err)
+	}
+
+	rows, err := svc.List(ctx, store.ListOptions{Type: model.TypeRule, Limit: 100})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("expected no rows written, got %d", len(rows))
+	}
+}
+
+// TestSaveProfileRule_WithSlugStillWorks is a non-regression: a service with
+// a resolved slug is unaffected by the new guard.
+func TestSaveProfileRule_WithSlugStillWorks(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+
+	resp, err := svc.SaveProfileRule(ctx, model.SaveRequest{
+		Title:     "Slugged rule",
+		Content:   "content",
+		AppliesTo: []string{"**"},
+	}, "chatea-pro")
+	if err != nil {
+		t.Fatalf("SaveProfileRule: %v", err)
+	}
+	if resp.ID == "" {
+		t.Fatal("expected a non-empty id")
+	}
+}
+
+// TestPurgeProfileRules_SweepsOrphansAndIsIdempotent (SPEC-105 AC23) sows
+// orphan rows directly into the global store (bypassing SaveProfileRule,
+// which now refuses to create them) plus normal rows in the project store,
+// then verifies PurgeProfileRules zeroes out BOTH sets and that a second
+// call is idempotent.
+func TestPurgeProfileRules_SweepsOrphansAndIsIdempotent(t *testing.T) {
+	svc, shared := newSharedStoreTestService(t, "proj-x")
+	ctx := context.Background()
+
+	// Normal project-scoped rows via the real write path.
+	if _, err := svc.SaveProfileRule(ctx, model.SaveRequest{
+		Title: "Scoped rule", Content: "content", AppliesTo: []string{"**"},
+	}, "chatea-pro"); err != nil {
+		t.Fatalf("SaveProfileRule: %v", err)
+	}
+
+	// Orphan rows: seeded directly against the store (SaveProfileRule would
+	// now reject these) to simulate the pre-fix leak's leftovers.
+	orphan := &model.Memory{
+		Type:       model.TypeRule,
+		Scope:      model.ScopeProject,
+		Title:      "Orphan rule",
+		Content:    "content",
+		Project:    "",
+		AppliesTo:  []string{"**"},
+		Source:     "profile:chatea-pro",
+		Importance: 0.5,
+		DecayRate:  0.01,
+	}
+	if _, err := shared.Create(ctx, orphan); err != nil {
+		t.Fatalf("seed orphan: %v", err)
+	}
+
+	removed, err := svc.PurgeProfileRules(ctx, svc.ProjectSlug(), "chatea-pro")
+	if err != nil {
+		t.Fatalf("PurgeProfileRules: %v", err)
+	}
+	if len(removed) != 2 {
+		t.Fatalf("expected 2 removed ids (1 scoped + 1 orphan), got %d (%v)", len(removed), removed)
+	}
+
+	ids, _, err := svc.ListProfileRuleIDs(ctx, "chatea-pro")
+	if err != nil {
+		t.Fatalf("ListProfileRuleIDs: %v", err)
+	}
+	if len(ids) != 0 {
+		t.Errorf("expected 0 remaining project-scoped rows, got %d", len(ids))
+	}
+	orphanIDs, err := svc.ListOrphanProfileRuleIDs(ctx, "chatea-pro")
+	if err != nil {
+		t.Fatalf("ListOrphanProfileRuleIDs: %v", err)
+	}
+	if len(orphanIDs) != 0 {
+		t.Errorf("expected 0 remaining orphan rows, got %d", len(orphanIDs))
+	}
+
+	// Second call: idempotent, no error, nothing left to remove.
+	removedAgain, err := svc.PurgeProfileRules(ctx, svc.ProjectSlug(), "chatea-pro")
+	if err != nil {
+		t.Fatalf("PurgeProfileRules (second call): %v", err)
+	}
+	if len(removedAgain) != 0 {
+		t.Errorf("expected 0 removed on idempotent second call, got %d", len(removedAgain))
+	}
+}
+
+// TestListProfileRuleIDs_ReturnsOnlyThatProvenance verifies the id set is
+// scoped exactly to the requested profile's provenance, not to every rule in
+// the project.
+func TestListProfileRuleIDs_ReturnsOnlyThatProvenance(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+
+	resp, err := svc.SaveProfileRule(ctx, model.SaveRequest{
+		Title: "A", Content: "content", AppliesTo: []string{"**"},
+	}, "chatea-pro")
+	if err != nil {
+		t.Fatalf("SaveProfileRule chatea-pro: %v", err)
+	}
+	if _, err := svc.SaveProfileRule(ctx, model.SaveRequest{
+		Title: "B", Content: "content", AppliesTo: []string{"**"},
+	}, "other-profile"); err != nil {
+		t.Fatalf("SaveProfileRule other-profile: %v", err)
+	}
+	if _, err := svc.Save(ctx, model.SaveRequest{
+		Title: "Hand-authored", Content: "content", Type: model.TypeRule,
+		AppliesTo: []string{"**"}, Severity: model.SeverityWarn,
+	}); err != nil {
+		t.Fatalf("Save hand-authored: %v", err)
+	}
+
+	ids, truncated, err := svc.ListProfileRuleIDs(ctx, "chatea-pro")
+	if err != nil {
+		t.Fatalf("ListProfileRuleIDs: %v", err)
+	}
+	if truncated {
+		t.Error("expected truncated=false")
+	}
+	if len(ids) != 1 || ids[0] != resp.ID {
+		t.Fatalf("expected exactly [%s], got %v", resp.ID, ids)
+	}
+}
+
+// TestListProfileRuleIDs_NoSlugReturnsSentinel verifies the DD9 contract: no
+// resolved slug means there is no project-scoped set to compare against.
+func TestListProfileRuleIDs_NoSlugReturnsSentinel(t *testing.T) {
+	svc := newNoSlugTestService(t)
+	ctx := context.Background()
+
+	_, _, err := svc.ListProfileRuleIDs(ctx, "chatea-pro")
+	if !errors.Is(err, model.ErrProjectSlugRequired) {
+		t.Fatalf("expected ErrProjectSlugRequired, got %v", err)
+	}
+}
+
+// TestListProfileRuleIDs_TruncatedFlag verifies the non-truncated case at a
+// small, fast scale — a handful of rows well under the cap must report
+// truncated=false and the exact count. The cap itself (5000) is a package-
+// private constant not worth reproducing here; the truncated=true path is
+// exercised structurally by TestConverged_TruncatedRuleScanIsDivergent in
+// internal/profile, which is where the fail-safe's actual behaviour (always
+// divergent) is asserted.
+func TestListProfileRuleIDs_TruncatedFlag(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+
+	const seedCount = 5
+	for i := 0; i < seedCount; i++ {
+		if _, err := svc.SaveProfileRule(ctx, model.SaveRequest{
+			Title: "Rule", Content: "content", AppliesTo: []string{"**"},
+		}, "chatea-pro"); err != nil {
+			t.Fatalf("SaveProfileRule %d: %v", i, err)
+		}
+	}
+
+	ids, truncated, err := svc.ListProfileRuleIDs(ctx, "chatea-pro")
+	if err != nil {
+		t.Fatalf("ListProfileRuleIDs: %v", err)
+	}
+	if truncated {
+		t.Error("expected truncated=false when the seed count is well under the cap")
+	}
+	if len(ids) != seedCount {
+		t.Fatalf("expected %d ids, got %d", seedCount, len(ids))
+	}
+}
+
+// TestListOrphanProfileRuleIDs_FindsGlobalProjectScopedRows verifies the
+// orphan lookup surfaces exactly the rows SaveProfileRule can no longer
+// create but that a pre-fix leak already left behind.
+func TestListOrphanProfileRuleIDs_FindsGlobalProjectScopedRows(t *testing.T) {
+	svc, shared := newSharedStoreTestService(t, "")
+	ctx := context.Background()
+
+	orphan := &model.Memory{
+		Type:       model.TypeRule,
+		Scope:      model.ScopeProject,
+		Title:      "Orphan",
+		Content:    "content",
+		Project:    "",
+		AppliesTo:  []string{"**"},
+		Source:     "profile:chatea-pro",
+		Importance: 0.5,
+		DecayRate:  0.01,
+	}
+	created, err := shared.Create(ctx, orphan)
+	if err != nil {
+		t.Fatalf("seed orphan: %v", err)
+	}
+
+	ids, err := svc.ListOrphanProfileRuleIDs(ctx, "chatea-pro")
+	if err != nil {
+		t.Fatalf("ListOrphanProfileRuleIDs: %v", err)
+	}
+	if len(ids) != 1 || ids[0] != created.ID {
+		t.Fatalf("expected exactly [%s], got %v", created.ID, ids)
 	}
 }

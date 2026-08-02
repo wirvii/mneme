@@ -457,7 +457,18 @@ func profileSourcePrefix(profileName string) string {
 // are taken from req unchanged. Reuses the exact same
 // validate/upsert/embed/wikilink pipeline every other memory goes through —
 // there is no parallel write path to keep in sync.
+//
+// Rejects with model.ErrProjectSlugRequired when !svc.HasProject() (SPEC-105
+// DD8 layer 1), before touching req at all: a project-scoped row with no
+// project is served in EVERY repo on the host once it lands in global.db —
+// exactly the cross-repo leak §1.2 of the spec measured in the wild. The
+// caller must degrade (skip rules, keep materializing agents/skills/blocks)
+// and report the omission rather than writing a row "provisionally".
 func (svc *MemoryService) SaveProfileRule(ctx context.Context, req model.SaveRequest, profileName string) (*model.SaveResponse, error) {
+	if !svc.HasProject() {
+		return nil, fmt.Errorf("service: save profile rule: %w", model.ErrProjectSlugRequired)
+	}
+
 	req.Type = model.TypeRule
 	req.Scope = model.ScopeProject
 	req.Source = profileSourcePrefix(profileName)
@@ -469,6 +480,80 @@ func (svc *MemoryService) SaveProfileRule(ctx context.Context, req model.SaveReq
 		return nil, fmt.Errorf("service: save profile rule: %w", err)
 	}
 	return resp, nil
+}
+
+// profileRuleScanCap bounds how many rows ListProfileRuleIDs/
+// ListOrphanProfileRuleIDs will scan before giving up and reporting
+// truncated=true (SPEC-105 DD3). It exists so the convergence guard
+// (internal/profile.Converged) never has to trust a comparison against data
+// it knows might be incomplete — a truncated scan is always treated as
+// divergent by the caller, never as a false "equal". A var, not a const, so
+// an internal test can shrink it and exercise the truncated=true path
+// without seeding 5000 real rows (mirrors the pattern already established
+// by profile_activate_internal_test.go for this package's other test-only
+// overrides).
+var profileRuleScanCap = 5000
+
+// ListProfileRuleIDs returns the ids of every rule memory alive in the
+// project store with provenance source=profile:<profileName> (SPEC-105
+// DD9/DD14) — the "what does the database actually think exists" half of
+// the convergence guard's rule-set comparison (condition 6 of
+// internal/profile.Converged). truncated is true when the scan hit
+// profileRuleScanCap before finishing; the caller must treat that as
+// divergence, never as equality (DD3's fail-safe).
+//
+// Returns model.ErrProjectSlugRequired when !svc.HasProject(): without a
+// resolved project slug there is no project-scoped set to compare against
+// (DD9) — the caller should treat this the same way it treats "the profile's
+// rules were never inserted", which is exactly what materializeRules already
+// does for a slug-less activation (DD8 layer 4).
+func (svc *MemoryService) ListProfileRuleIDs(ctx context.Context, profileName string) (ids []string, truncated bool, err error) {
+	if !svc.HasProject() {
+		return nil, false, fmt.Errorf("service: list profile rule ids: %w", model.ErrProjectSlugRequired)
+	}
+
+	rows, err := svc.projectStore.List(ctx, store.ListOptions{
+		Project: svc.project,
+		Type:    model.TypeRule,
+		Source:  profileSourcePrefix(profileName),
+		Limit:   profileRuleScanCap,
+	})
+	if err != nil {
+		return nil, false, fmt.Errorf("service: list profile rule ids: %w", err)
+	}
+
+	ids = make([]string, 0, len(rows))
+	for _, m := range rows {
+		ids = append(ids, m.ID)
+	}
+	return ids, len(rows) == profileRuleScanCap, nil
+}
+
+// ListOrphanProfileRuleIDs returns the ids of every project-scoped rule
+// memory with provenance source=profile:<profileName> that ended up in the
+// GLOBAL store — residue of the slug-empty leak SPEC-105 fixes at the write
+// path (DD8 layer 1). By construction this cannot produce false positives:
+// SaveProfileRule is the only writer of Source, and it always forces
+// Scope=ScopeProject, so a row matching {Type: rule, Scope: project, Source:
+// profile:<name>} in globalStore can only be an orphan of that exact leak.
+// Does not require a resolved project slug — an orphan sweep is meaningful
+// from any repo (DD10).
+func (svc *MemoryService) ListOrphanProfileRuleIDs(ctx context.Context, profileName string) ([]string, error) {
+	rows, err := svc.globalStore.List(ctx, store.ListOptions{
+		Type:   model.TypeRule,
+		Scope:  model.ScopeProject,
+		Source: profileSourcePrefix(profileName),
+		Limit:  profileRuleScanCap,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("service: list orphan profile rule ids: %w", err)
+	}
+
+	ids := make([]string, 0, len(rows))
+	for _, m := range rows {
+		ids = append(ids, m.ID)
+	}
+	return ids, nil
 }
 
 // PurgeProfileRules physically deletes every project-scoped memory whose
@@ -484,18 +569,48 @@ func (svc *MemoryService) SaveProfileRule(ctx context.Context, req model.SaveReq
 // Returns the ids that were deleted (possibly empty, never nil-with-error).
 // Idempotent: calling it again after the rules are already gone returns an
 // empty slice and no error.
+//
+// SPEC-105 DD10: this ALWAYS also sweeps the global store for rows with the
+// same provenance and project="" — the orphans a slug-less SaveProfileRule
+// call used to leave behind, now unreachable at the write path (DD8 layer
+// 1) but never previously cleaned up. When project resolves to no slug,
+// projectStore and globalStore are typically the same file (initService's
+// global.db-as-projectStore aliasing, DD11) and the second delete is simply
+// idempotent — not an error. Barring a row from any repo is correct: a row
+// with scope=project and project=NULL is unattributable garbage by
+// construction, and no repo can ever reclaim it (DD10).
 func (svc *MemoryService) PurgeProfileRules(ctx context.Context, project, profileName string) ([]string, error) {
-	removed, err := svc.projectStore.HardDeleteBySource(ctx, project, profileSourcePrefix(profileName))
+	source := profileSourcePrefix(profileName)
+
+	removed, err := svc.projectStore.HardDeleteBySource(ctx, project, source)
 	if err != nil {
 		return nil, fmt.Errorf("service: purge profile rules: %w", err)
 	}
-	return removed, nil
+
+	orphans, err := svc.globalStore.HardDeleteBySource(ctx, "", source)
+	if err != nil {
+		return nil, fmt.Errorf("service: purge profile rules: sweep orphans: %w", err)
+	}
+
+	return append(removed, orphans...), nil
 }
 
 // ProjectSlug returns the project slug associated with this service instance.
 // It is either the value detected from git or the value provided at construction.
 func (svc *MemoryService) ProjectSlug() string {
 	return svc.project
+}
+
+// HasProject reports whether this service instance resolved a non-empty
+// project slug (SPEC-105 DD11). Makes explicit a condition that was
+// previously implicit: internal/cli.initService aliases global.db as the
+// project store whenever the working directory does not resolve a git
+// remote slug, and every project-scoped write in that state is invisible to
+// per-project isolation. SaveProfileRule, ListRules, and loadActiveRules all
+// consult this predicate rather than comparing svc.project == "" inline, so
+// the condition has one name and one meaning across the package.
+func (svc *MemoryService) HasProject() bool {
+	return svc.project != ""
 }
 
 // DrainHebbian closes the Hebbian worker pool and waits up to 200 ms for
