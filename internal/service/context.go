@@ -753,22 +753,29 @@ func sortCommunitiesBySize(communities []*model.Community) []*model.Community {
 //
 // A safety cap of 200 rules per store is applied to bound memory and CPU usage
 // even when a project accumulates many rules over time.
+//
+// SPEC-105 DD8 layer 2: the project tier is skipped entirely when project ==
+// "" — passing Project: "" to store.ListOptions means "no filter" (every
+// project's rows), which is exactly the cross-repo leak this spec fixes.
+// There is no project-scoped set to serve without a resolved slug; the
+// global tier (already Scope: ScopeGlobal below) is unaffected.
 func (svc *MemoryService) loadActiveRules(ctx context.Context, project string) ([]model.Memory, error) {
 	const ruleCap = 200
 
-	projectRules, err := svc.projectStore.List(ctx, store.ListOptions{
-		Project: project,
-		Type:    model.TypeRule,
-		OrderBy: "importance DESC",
-		Limit:   ruleCap,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("service: load active rules: project store: %w", err)
-	}
-
-	allRules := make([]model.Memory, 0, len(projectRules))
-	for _, r := range projectRules {
-		allRules = append(allRules, *r)
+	allRules := make([]model.Memory, 0)
+	if project != "" {
+		projectRules, err := svc.projectStore.List(ctx, store.ListOptions{
+			Project: project,
+			Type:    model.TypeRule,
+			OrderBy: "importance DESC",
+			Limit:   ruleCap,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("service: load active rules: project store: %w", err)
+		}
+		for _, r := range projectRules {
+			allRules = append(allRules, *r)
+		}
 	}
 
 	if svc.config.Context.IncludeGlobal {

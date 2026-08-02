@@ -679,3 +679,128 @@ func TestListRules_Limit(t *testing.T) {
 		t.Errorf("got %d rules, want 3", len(rules))
 	}
 }
+
+// newTestServiceWithGlobalStore is like newTestService but also returns the
+// raw *store.MemoryStore backing globalStore, so a test can seed a row
+// directly (bypassing Save/SaveProfileRule's normal defaulting) — needed to
+// reproduce the scope=project/project=NULL leak SPEC-105 fixes: no normal
+// write path can create that shape anymore, but it is exactly what a
+// pre-fix repo's global.db already contains.
+func newTestServiceWithGlobalStore(t *testing.T) (*service.MemoryService, *store.MemoryStore) {
+	t.Helper()
+	projectDB, err := db.OpenMemory()
+	if err != nil {
+		t.Fatalf("open project db: %v", err)
+	}
+	globalDB, err := db.OpenMemory()
+	if err != nil {
+		t.Fatalf("open global db: %v", err)
+	}
+	t.Cleanup(func() { projectDB.Close(); globalDB.Close() })
+	projectStore := store.NewMemoryStore(projectDB)
+	globalStore := store.NewMemoryStore(globalDB)
+	cfg := config.Default()
+	svc := service.NewMemoryService(projectStore, globalStore, cfg, "test/project", embed.NopEmbedder{})
+	return svc, globalStore
+}
+
+// TestListRules_DoesNotServeProjectScopedRowsFromGlobalStore (SPEC-105 AC20)
+// reproduces the symptom verified in production: a project-scoped,
+// severity=block rule with no project (the cross-repo leak's shape) sitting
+// in global.db used to be returned by `mneme rule list` from ANY repo. This
+// must fail before the invariant-R fix and pass after it.
+func TestListRules_DoesNotServeProjectScopedRowsFromGlobalStore(t *testing.T) {
+	svc, globalStore := newTestServiceWithGlobalStore(t)
+	ctx := context.Background()
+
+	leaked := &model.Memory{
+		Type:       model.TypeRule,
+		Scope:      model.ScopeProject,
+		Title:      "Leaked block rule",
+		Content:    "content",
+		Project:    "",
+		AppliesTo:  []string{"**"},
+		Severity:   model.SeverityBlock,
+		Source:     "profile:chatea-pro",
+		Importance: 0.9,
+		DecayRate:  0.01,
+	}
+	if _, err := globalStore.Create(ctx, leaked); err != nil {
+		t.Fatalf("seed leaked row: %v", err)
+	}
+
+	rules, err := svc.ListRules(ctx, service.ListRulesOptions{})
+	if err != nil {
+		t.Fatalf("ListRules: %v", err)
+	}
+	for _, r := range rules {
+		if r.Title == "Leaked block rule" {
+			t.Fatalf("ListRules must not serve a scope=project row from the global store, got %+v", r)
+		}
+	}
+}
+
+// TestListRules_StillServesOrgScopedRules is the non-regression the
+// invariant-R fix must preserve: splitting the global branch into two
+// queries (global + org) must not drop org-scoped rules, which ListRules
+// has always served.
+func TestListRules_StillServesOrgScopedRules(t *testing.T) {
+	svc := newTestService(t)
+
+	saveRuleScoped(t, svc, "Org rule", model.SeverityWarn, model.ScopeOrg)
+
+	rules, err := svc.ListRules(context.Background(), service.ListRulesOptions{})
+	if err != nil {
+		t.Fatalf("ListRules: %v", err)
+	}
+	found := false
+	for _, r := range rules {
+		if r.Title == "Org rule" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected the org-scoped rule to still be served")
+	}
+}
+
+// TestListRules_SkipsProjectTierWithoutSlug verifies that a service with no
+// resolved project slug never queries the project tier for rules — there is
+// no project-scoped set to serve without a slug (DD8 layer 2, mirroring
+// SaveProfileRule's write-side guard).
+func TestListRules_SkipsProjectTierWithoutSlug(t *testing.T) {
+	projectDB, err := db.OpenMemory()
+	if err != nil {
+		t.Fatalf("open project db: %v", err)
+	}
+	globalDB, err := db.OpenMemory()
+	if err != nil {
+		t.Fatalf("open global db: %v", err)
+	}
+	t.Cleanup(func() { projectDB.Close(); globalDB.Close() })
+	projectStore := store.NewMemoryStore(projectDB)
+	globalStore := store.NewMemoryStore(globalDB)
+	cfg := config.Default()
+	svc := service.NewMemoryService(projectStore, globalStore, cfg, "", embed.NopEmbedder{})
+	ctx := context.Background()
+
+	// A row that DOES exist in the (aliased) project store, but with no
+	// slug resolved there is nothing to scope it to — it must not surface.
+	if _, err := projectStore.Create(ctx, &model.Memory{
+		Type: model.TypeRule, Scope: model.ScopeProject, Title: "Unscoped rule",
+		Content: "content", Project: "", AppliesTo: []string{"**"},
+		Severity: model.SeverityWarn, Importance: 0.5, DecayRate: 0.01,
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	rules, err := svc.ListRules(ctx, service.ListRulesOptions{})
+	if err != nil {
+		t.Fatalf("ListRules: %v", err)
+	}
+	for _, r := range rules {
+		if r.Title == "Unscoped rule" {
+			t.Fatalf("expected the project tier to be skipped without a resolved slug, got %+v", r)
+		}
+	}
+}

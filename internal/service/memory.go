@@ -684,6 +684,16 @@ type ListRulesOptions struct {
 // stores, sorted by severity descending, importance descending, and then
 // updated_at descending. When opts.Scope is empty or "all" both stores are
 // queried and their results merged. Severity filtering is applied post-merge.
+//
+// SPEC-105 DD8 invariant R: the global store may only ever serve rules with
+// scope IN (global, org); the project store may only ever serve rules
+// scope=project for the resolved slug, and serves nothing at all when no
+// slug resolved (svc.HasProject()==false) — a project-scoped row with no
+// project used to be returned to EVERY repo on the host (§1.2 of the spec).
+// Because the caller-facing "global" tier historically included org-scoped
+// rules too (opts.Scope == string(model.ScopeGlobal) meant "everything not
+// project"), the global branch below is two queries — Scope: ScopeGlobal and
+// Scope: ScopeOrg — fused, so this fix does not silently drop org rules.
 func (svc *MemoryService) ListRules(ctx context.Context, opts ListRulesOptions) ([]*model.Memory, error) {
 	limit := opts.Limit
 	if limit <= 0 {
@@ -692,10 +702,13 @@ func (svc *MemoryService) ListRules(ctx context.Context, opts ListRulesOptions) 
 
 	var merged []*model.Memory
 
-	// Query project store unless the caller requested global only.
-	if opts.Scope == "" || opts.Scope == "all" || opts.Scope == string(model.ScopeProject) {
+	// Query project store unless the caller requested global only, and only
+	// when a project slug actually resolved — otherwise there is no
+	// project-scoped set to serve (invariant R).
+	if (opts.Scope == "" || opts.Scope == "all" || opts.Scope == string(model.ScopeProject)) && svc.HasProject() {
 		projectRules, err := svc.projectStore.List(ctx, store.ListOptions{
 			Project: svc.project,
+			Scope:   model.ScopeProject,
 			Type:    model.TypeRule,
 			OrderBy: "importance DESC, updated_at DESC",
 			Limit:   limit,
@@ -706,10 +719,14 @@ func (svc *MemoryService) ListRules(ctx context.Context, opts ListRulesOptions) 
 		merged = append(merged, projectRules...)
 	}
 
-	// Query global store unless the caller requested project only.
+	// Query global store unless the caller requested project only. Two
+	// queries — global then org — fused: a single Scope filter would either
+	// miss org rules (ScopeGlobal only) or reopen invariant R (no filter at
+	// all, the pre-fix bug).
 	if opts.Scope == "" || opts.Scope == "all" || opts.Scope == string(model.ScopeGlobal) {
 		globalRules, err := svc.globalStore.List(ctx, store.ListOptions{
 			Type:    model.TypeRule,
+			Scope:   model.ScopeGlobal,
 			OrderBy: "importance DESC, updated_at DESC",
 			Limit:   limit,
 		})
@@ -717,6 +734,17 @@ func (svc *MemoryService) ListRules(ctx context.Context, opts ListRulesOptions) 
 			return nil, fmt.Errorf("service: list rules: global store: %w", err)
 		}
 		merged = append(merged, globalRules...)
+
+		orgRules, err := svc.globalStore.List(ctx, store.ListOptions{
+			Type:    model.TypeRule,
+			Scope:   model.ScopeOrg,
+			OrderBy: "importance DESC, updated_at DESC",
+			Limit:   limit,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("service: list rules: global store (org): %w", err)
+		}
+		merged = append(merged, orgRules...)
 	}
 
 	// Apply severity filter post-merge.

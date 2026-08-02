@@ -558,6 +558,50 @@ func TestContext_Performance_LoadActiveRules(t *testing.T) {
 	}
 }
 
+// TestLoadActiveRules_SkipsProjectTierWithoutSlug (SPEC-105 DD8 layer 2)
+// verifies that a service with no resolved project slug never surfaces a
+// project-scoped rule through Context() — passing Project: "" to
+// store.ListOptions meant "no filter" (every project's rows), which is the
+// cross-repo leak this spec fixes. Exercised through the public Context()
+// API since loadActiveRules itself is unexported.
+func TestLoadActiveRules_SkipsProjectTierWithoutSlug(t *testing.T) {
+	projectDB, err := db.OpenMemory()
+	if err != nil {
+		t.Fatalf("open project db: %v", err)
+	}
+	globalDB, err := db.OpenMemory()
+	if err != nil {
+		t.Fatalf("open global db: %v", err)
+	}
+	t.Cleanup(func() { projectDB.Close(); globalDB.Close() })
+	projectStore := store.NewMemoryStore(projectDB)
+	globalStore := store.NewMemoryStore(globalDB)
+	cfg := config.Default()
+	svc := service.NewMemoryService(projectStore, globalStore, cfg, "", embed.NopEmbedder{})
+	ctx := context.Background()
+
+	// Seeded directly (bypassing Save, which now defaults Project to the
+	// service's own — also empty — slug): reproduces a row already sitting
+	// in an aliased global.db-as-projectStore before this fix.
+	if _, err := projectStore.Create(ctx, &model.Memory{
+		Type: model.TypeRule, Scope: model.ScopeProject, Title: "Unscoped context rule",
+		Content: "content", Project: "", AppliesTo: []string{"**"},
+		Severity: model.SeverityWarn, Importance: 0.9, DecayRate: 0.01,
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	resp, err := svc.Context(ctx, model.ContextRequest{Project: ""})
+	if err != nil {
+		t.Fatalf("Context: %v", err)
+	}
+	for _, r := range resp.Rules {
+		if r.Title == "Unscoped context rule" {
+			t.Fatalf("expected the project rules tier to be skipped without a resolved slug, got %+v", r)
+		}
+	}
+}
+
 // newTestServiceWithGraphForContext creates a MemoryService with a real SQLite
 // store for context graph expansion tests.
 func newTestServiceWithGraphForContext(t *testing.T, graphMode string) (*service.MemoryService, *store.MemoryStore) {
