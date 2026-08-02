@@ -473,3 +473,117 @@ func TestReconcile_PreflightFailureDoesNotDeactivate(t *testing.T) {
 		t.Errorf("expected the agent file untouched by the failed preflight, got %q", string(contentAfter))
 	}
 }
+
+// TestReconcile_PreflightFailure_UnreadableBackupAbortsBeforeDeactivate
+// (SPEC-105 DD16) verifies the THIRD precondition preflightDeactivate
+// checks — that every artifact's registered Backup is readable — which the
+// read-only-agents-directory scenario above never exercises (that one
+// fails on the agent artifact's OWN first precondition, its parent
+// directory, before preflightDeactivate ever reaches that same artifact's
+// Backup check).
+//
+// The scenario is built so the check actually MATTERS, not just so an
+// error eventually surfaces: the agent artifact (no backup — freshly
+// created by the first activation) sorts BEFORE the skill artifact (backed
+// up, because a hand-written, unpinned skill directory pre-existed) in
+// lock.Artifacts, exactly the order Deactivate iterates in. Without this
+// precondition, Deactivate would remove the agent file OUTRIGHT — a real,
+// irreversible mutation — before ever reaching the skill artifact and
+// discovering its backup is gone. A test that only checked the lock stayed
+// at commit c1 (never checking whether Deactivate had already mutated
+// something for the artifact ahead of the failing one in iteration order)
+// would still pass even if this precondition were deleted from
+// preflightDeactivate — this one does not.
+func TestReconcile_PreflightFailure_UnreadableBackupAbortsBeforeDeactivate(t *testing.T) {
+	svc, mem, repoRoot, skillsDir := newActivationTestEnv(t)
+	ctx := context.Background()
+
+	// A pre-existing, unpinned skill directory not owned by any prior
+	// activation, so the first Reconcile displaces (backs up) it.
+	existingSkillFile := filepath.Join(skillsDir, "acme-skill", "SKILL.md")
+	writeProfileFile(t, existingSkillFile, "---\nname: acme-skill\npinned: false\n---\n\n# Pre-existing, unpinned\n")
+
+	if _, err := svc.Reconcile(ctx, repoRoot, service.ActivationInput{Name: "acme", Commit: "c1"}); err != nil {
+		t.Fatalf("Reconcile (first): %v", err)
+	}
+
+	lockBefore, present, err := svc.ActiveLock(repoRoot)
+	if err != nil || !present {
+		t.Fatalf("ActiveLock (before): present=%v err=%v", present, err)
+	}
+	var skillBackup string
+	for _, a := range lockBefore.Artifacts {
+		if a.Kind == profile.LockArtifactKindSkill && a.Backup != "" {
+			skillBackup = a.Backup
+		}
+	}
+	if skillBackup == "" {
+		t.Fatal("expected the first activation to have backed up the pre-existing skill directory")
+	}
+
+	// The agent artifact — no backup, freshly created — must sort BEFORE
+	// the skill artifact above in lock.Artifacts (Activate appends agents,
+	// then skills, then the block): this is exactly what makes the test
+	// meaningful, per the doc comment above.
+	agentIdx, skillIdx := -1, -1
+	for i, a := range lockBefore.Artifacts {
+		switch a.Kind {
+		case profile.LockArtifactKindAgent:
+			agentIdx = i
+		case profile.LockArtifactKindSkill:
+			skillIdx = i
+		}
+	}
+	if agentIdx == -1 || skillIdx == -1 || agentIdx >= skillIdx {
+		t.Fatalf("expected the agent artifact to precede the skill artifact in lock.Artifacts, got agentIdx=%d skillIdx=%d", agentIdx, skillIdx)
+	}
+
+	agentPath := filepath.Join(repoRoot, ".claude", "agents", "backend.md")
+	if _, err := os.Stat(agentPath); err != nil {
+		t.Fatalf("expected the agent file to exist after the first activation: %v", err)
+	}
+	idsBefore, _, err := mem.ListProfileRuleIDs(ctx, "acme")
+	if err != nil {
+		t.Fatalf("ListProfileRuleIDs (before): %v", err)
+	}
+
+	// Make the registered skill backup unreadable — deleted out from under
+	// the lock (the same effect a corrupted disk or an operator's stray
+	// `rm` would have).
+	if err := os.RemoveAll(skillBackup); err != nil {
+		t.Fatalf("remove skill backup: %v", err)
+	}
+
+	// A different commit forces divergence (not noop), which is what
+	// reaches the preflightDeactivate step at all.
+	_, err = svc.Reconcile(ctx, repoRoot, service.ActivationInput{Name: "acme", Commit: "c2"})
+	if err == nil {
+		t.Fatal("expected Reconcile to fail the preflight against an unreadable registered backup")
+	}
+
+	// Zero mutation: the agent file — which Deactivate would otherwise
+	// remove outright on its way to the skill artifact that actually
+	// fails — must survive untouched. This is the assertion an ungated
+	// preflightDeactivate gets wrong: Deactivate would already have
+	// deleted this file by the time it discovered the skill's backup was
+	// gone.
+	if _, err := os.Stat(agentPath); err != nil {
+		t.Errorf("expected the agent file to survive (zero mutation before the preflight failure), got err: %v", err)
+	}
+
+	lockAfter, _, lockErr := svc.ActiveLock(repoRoot)
+	if lockErr != nil {
+		t.Fatalf("ActiveLock (after): %v", lockErr)
+	}
+	if lockAfter.Commit != "c1" {
+		t.Errorf("expected the lock to remain at commit %q, got %q", "c1", lockAfter.Commit)
+	}
+
+	idsAfter, _, err := mem.ListProfileRuleIDs(ctx, "acme")
+	if err != nil {
+		t.Fatalf("ListProfileRuleIDs (after): %v", err)
+	}
+	if len(idsAfter) != len(idsBefore) {
+		t.Errorf("expected the rule count unaffected by the failed preflight: before=%d after=%d", len(idsBefore), len(idsAfter))
+	}
+}
