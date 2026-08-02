@@ -427,3 +427,132 @@ func TestHandleProfileDefault_NotInstalled(t *testing.T) {
 		t.Errorf("error code = %d, want %d", resp.Error.Code, CodeMemoryNotFound)
 	}
 }
+
+// --- SPEC-105 DD21: profile_deactivate ---------------------------------------
+
+// activateForDeactivateTest is a shared setup for the profile_deactivate
+// tests below: adds a fixture profile and activates it (profile_use) for a
+// fresh repoRoot, returning the repo root.
+func activateForDeactivateTest(t *testing.T, srv *Server) string {
+	t.Helper()
+	source := newMCPProfileFixtureRepo(t, "chatea-pro", "1.0.0")
+
+	addResp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name:      "profile_add",
+		Arguments: mustMarshal(t, map[string]any{"source": source}),
+	})
+	if addResp.Error != nil {
+		t.Fatalf("profile_add: unexpected error: %s", addResp.Error.Message)
+	}
+
+	repoRoot := t.TempDir()
+	useResp := process(t, srv, "tools/call", 2, ToolCallParams{
+		Name:      "profile_use",
+		Arguments: mustMarshal(t, map[string]any{"name": "chatea-pro", "project_root": repoRoot}),
+	})
+	if useResp.Error != nil {
+		t.Fatalf("profile_use: unexpected error: %s", useResp.Error.Message)
+	}
+	return repoRoot
+}
+
+// TestProfileDeactivate_PlanWithoutApply (SPEC-105 AC29) verifies that
+// calling profile_deactivate without apply returns the plan (applied=false)
+// and mutates nothing.
+func TestProfileDeactivate_PlanWithoutApply(t *testing.T) {
+	srv := newProfileTestServer(t)
+	repoRoot := activateForDeactivateTest(t, srv)
+
+	lockPath := filepath.Join(repoRoot, ".mneme", "profile.lock")
+	before, err := os.ReadFile(lockPath)
+	if err != nil {
+		t.Fatalf("read lock before: %v", err)
+	}
+
+	resp := process(t, srv, "tools/call", 3, ToolCallParams{
+		Name:      "profile_deactivate",
+		Arguments: mustMarshal(t, map[string]any{"project_root": repoRoot}),
+	})
+	if resp.Error != nil {
+		t.Fatalf("profile_deactivate: unexpected error: %s", resp.Error.Message)
+	}
+
+	var result struct {
+		Applied     bool   `json:"applied"`
+		Profile     string `json:"profile"`
+		NextSession string `json:"next_session"`
+	}
+	unmarshalToolText(t, resp, &result)
+	if result.Applied {
+		t.Error("expected applied=false without apply:true")
+	}
+	if result.Profile != "chatea-pro" {
+		t.Errorf("profile = %q, want %q", result.Profile, "chatea-pro")
+	}
+	if result.NextSession == "" {
+		t.Error("expected a non-empty next_session field")
+	}
+
+	after, err := os.ReadFile(lockPath)
+	if err != nil {
+		t.Fatalf("read lock after: %v", err)
+	}
+	if string(before) != string(after) {
+		t.Error("expected the lock unchanged when apply is not set")
+	}
+}
+
+// TestProfileDeactivate_ExecutesWithApply (SPEC-105 AC29) verifies that
+// apply:true executes the plan: the lock is deleted, the pin survives.
+func TestProfileDeactivate_ExecutesWithApply(t *testing.T) {
+	srv := newProfileTestServer(t)
+	repoRoot := activateForDeactivateTest(t, srv)
+
+	resp := process(t, srv, "tools/call", 3, ToolCallParams{
+		Name:      "profile_deactivate",
+		Arguments: mustMarshal(t, map[string]any{"project_root": repoRoot, "apply": true}),
+	})
+	if resp.Error != nil {
+		t.Fatalf("profile_deactivate (apply): unexpected error: %s", resp.Error.Message)
+	}
+
+	var result struct {
+		Applied bool `json:"applied"`
+	}
+	unmarshalToolText(t, resp, &result)
+	if !result.Applied {
+		t.Error("expected applied=true with apply:true")
+	}
+
+	if _, err := os.Stat(filepath.Join(repoRoot, ".mneme", "profile.lock")); !os.IsNotExist(err) {
+		t.Errorf("expected the lock to be removed, stat err = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(repoRoot, ".mneme-profile")); err != nil {
+		t.Errorf("expected the pin to survive: %v", err)
+	}
+}
+
+// TestProfileDeactivate_UnsupportedLockMapsToInvalidParams verifies that a
+// lock schema_version newer than this build understands maps to
+// CodeInvalidParams (model.ErrProfileLockUnsupported), not a generic
+// internal error.
+func TestProfileDeactivate_UnsupportedLockMapsToInvalidParams(t *testing.T) {
+	srv := newProfileTestServer(t)
+	repoRoot := activateForDeactivateTest(t, srv)
+
+	lockPath := filepath.Join(repoRoot, ".mneme", "profile.lock")
+	if err := os.WriteFile(lockPath, []byte("schema_version = 99\nprofile = \"chatea-pro\"\n"), 0o644); err != nil {
+		t.Fatalf("write unsupported lock: %v", err)
+	}
+
+	resp := process(t, srv, "tools/call", 3, ToolCallParams{
+		Name:      "profile_deactivate",
+		Arguments: mustMarshal(t, map[string]any{"project_root": repoRoot}),
+	})
+	if resp.Error == nil {
+		t.Fatal("expected an error for an unsupported lock schema")
+	}
+	if resp.Error.Code != CodeInvalidParams {
+		t.Errorf("error code = %d, want %d", resp.Error.Code, CodeInvalidParams)
+	}
+}

@@ -208,6 +208,8 @@ func (h *handlers) handleToolCall(ctx context.Context, params ToolCallParams) (*
 		return h.handleProfileUse(ctx, params.Arguments)
 	case "profile_default":
 		return h.handleProfileDefault(ctx, params.Arguments)
+	case "profile_deactivate":
+		return h.handleProfileDeactivate(ctx, params.Arguments)
 
 	// --- PROJECT TOOLS (SPEC-098 §7a) ---
 	case "project_new":
@@ -739,7 +741,9 @@ func (h *handlers) mapServiceError(method string, err error) *JSONRPCError {
 		errors.Is(err, model.ErrBootstrapToolMissing) ||
 		errors.Is(err, model.ErrLayoutUnsupported) ||
 		errors.Is(err, model.ErrUnknownWiringAction) ||
-		errors.Is(err, model.ErrAppAddNotApplicable) {
+		errors.Is(err, model.ErrAppAddNotApplicable) ||
+		errors.Is(err, model.ErrProjectSlugRequired) ||
+		errors.Is(err, model.ErrProfileLockUnsupported) {
 		return &JSONRPCError{
 			Code:    CodeInvalidParams,
 			Message: fmt.Sprintf("mcp: handle %s: %s", method, err),

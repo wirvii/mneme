@@ -1417,6 +1417,23 @@ func allTools() []ToolDefinition {
 				},
 			},
 		},
+		{
+			Name:        "profile_deactivate",
+			Description: "Compute the plan to undo THIS repo's active profile's materialization and, with apply:true, execute it: every displaced agent/skill is restored (or removed if it belonged to the profile), the managed block is removed from CLAUDE.md, every rule with this profile's provenance is purged (project-scoped and any orphaned global rows), and the activation lock is deleted. Never touches .mneme-profile (the pin) — a committed, team-shared file; if the pin or the host default still point at this profile, the NEXT SessionStart reactivates it, and the returned NextSession field says so before anything is applied. Without apply:true, returns the plan and mutates nothing.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"project_root": map[string]any{
+						"type":        "string",
+						"description": "Absolute path to the repository root. Defaults to current working directory.",
+					},
+					"apply": map[string]any{
+						"type":        "boolean",
+						"description": "When true, executes the plan. Default false: returns the plan without mutating anything.",
+					},
+				},
+			},
+		},
 
 		// --- PROJECT TOOLS (SPEC-098 §7a) ---
 		{

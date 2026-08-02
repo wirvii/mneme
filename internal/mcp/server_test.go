@@ -235,9 +235,9 @@ func TestToolsList(t *testing.T) {
 		"model_list", "model_set", "model_reset",
 		// Conflicts tools (SPEC-039)
 		"conflicts_candidates", "conflicts_scan", "conflicts_link", "conflicts_unlink", "conflicts_list",
-		// Profile tools (SPEC-091 §1 + SPEC-093 §3 + SPEC-095 §5)
+		// Profile tools (SPEC-091 §1 + SPEC-093 §3 + SPEC-095 §5 + SPEC-105 DD21)
 		"profile_new", "profile_add", "profile_update", "profile_list", "profile_status",
-		"profile_use", "profile_default",
+		"profile_use", "profile_default", "profile_deactivate",
 		// Project tools (SPEC-098 §7a + SPEC-099 §7b)
 		"project_new", "app_add",
 		// Scaffold tool (SPEC-100 §7c)

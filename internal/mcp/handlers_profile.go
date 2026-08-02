@@ -361,3 +361,37 @@ func (h *handlers) handleProfileDefault(_ context.Context, raw json.RawMessage) 
 	}
 	return resultFromAny(res)
 }
+
+// profileDeactivateRequest is the input to profile_deactivate.
+type profileDeactivateRequest struct {
+	ProjectRoot string `json:"project_root"`
+	Apply       bool   `json:"apply"`
+}
+
+// handleProfileDeactivate processes a profile_deactivate tool call
+// (SPEC-105 DD21): without apply, returns the plan and mutates nothing;
+// with apply:true, executes it — restoring/removing artifacts, purging
+// provenance-marked rules, and deleting the activation lock, but never
+// touching .mneme-profile (the pin, DD19).
+func (h *handlers) handleProfileDeactivate(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	var req profileDeactivateRequest
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &req); err != nil {
+			return nil, &JSONRPCError{
+				Code:    CodeInvalidParams,
+				Message: fmt.Sprintf("mcp: handle profile_deactivate: invalid arguments: %s", err),
+			}
+		}
+	}
+
+	root, rpcErr := resolveRepoRoot(req.ProjectRoot)
+	if rpcErr != nil {
+		return nil, rpcErr
+	}
+
+	res, err := h.profileSvc.DeactivateProject(ctx, service.DeactivateInput{RepoRoot: root, Apply: req.Apply})
+	if err != nil {
+		return nil, h.mapServiceError("profile_deactivate", err)
+	}
+	return resultFromAny(res)
+}
