@@ -301,3 +301,20 @@ var ErrAppAddNotApplicable = errors.New("app add does not apply to this scaffold
 // holding only VCS/dependency noise (.git, node_modules) with no files, apps,
 // or packages worth turning into a scaffold (SPEC-100 §7c).
 var ErrNothingToCapture = errors.New("nothing to capture from the exemplar repository")
+
+// --- Profile reconciliation sentinel errors (SPEC-105) ---
+
+// ErrProjectSlugRequired is returned by SaveProfileRule when the service did
+// not resolve a project slug: a profile rule is scope=project by definition,
+// and a project-scoped row with no project is served in EVERY repo on the
+// host (the exact cross-repo leak SPEC-105 fixes). Rejected before the row is
+// written; the caller degrades and reports the omission — it is never
+// persisted "provisionally".
+var ErrProjectSlugRequired = errors.New("profile rules require a resolved project slug")
+
+// ErrProfileLockUnsupported is returned when .mneme/profile.lock declares a
+// schema_version newer than this binary understands: an activation whose
+// record cannot be read safely cannot be undone safely either, so
+// Reconcile/Deactivate refuse to mutate anything and surface this sentinel
+// with the remedy (`mneme upgrade`) instead.
+var ErrProfileLockUnsupported = errors.New("profile lock written by a newer mneme")
