@@ -283,6 +283,31 @@ Result: BLOCKED
 
 ---
 
+## Invariant R: which store serves which scope (SPEC-105)
+
+A cross-repo leak (BL-132/SPEC-105) let `mneme rule list` — and, more
+seriously, the `PreToolUse` hook — return `scope=project` rules that had
+landed in `global.db` with no project (`initService` aliases `global.db` as
+the project store whenever the cwd doesn't resolve a git-remote slug). The
+fix established an invariant every rule-serving code path now honors:
+
+- The **global** store may only ever serve rules with `scope ∈ {global, org}`.
+- The **project** store may only ever serve `scope = project` rows for the
+  resolved slug — and serves **nothing at all** when no slug resolved
+  (`MemoryService.HasProject()` is false). A project-scoped row with no
+  project is served to **every repo on the host** otherwise — that was the
+  bug.
+
+This applies to `MemoryService.ListRules` (`mneme rule list`/`rule test`),
+`loadActiveRules` (`mem_context`'s rules phase), and — the surface with
+actual teeth, since it can `exit 2` and block a tool call — the
+`PreToolUse` hook's own SQL (`rulesQueryProject`/`rulesQueryGlobal`,
+`internal/cli/hook.go`). A profile's rules (`source=profile:<name>`) are
+additionally rejected at the write path
+(`SaveProfileRule` → `model.ErrProjectSlugRequired`) when no slug resolved,
+so the leak can no longer originate at all — see `docs/profiles.md` §8 for
+the full incident and fix.
+
 ## How the hook works
 
 The `mneme hook pre-tool-use` hook is registered as a `PreToolUse` hook in Claude Code via `mneme install claude-code`.
@@ -302,7 +327,9 @@ Hook reads stdin JSON: {"tool_name":"Edit","tool_input":{"file_path":"..."}}
 Opens project + global DB in read-only mode
         |
         v
-SELECT rules WHERE type='rule' AND deleted_at IS NULL (LIMIT 200)
+Project DB: SELECT ... WHERE type='rule' AND deleted_at IS NULL (LIMIT 200)
+Global  DB: SELECT ... WHERE type='rule' AND deleted_at IS NULL
+            AND scope IN ('global','org')                       (LIMIT 200)
         |
         v
 Match rules against tool + path (in-memory, <50ms)

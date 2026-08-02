@@ -84,6 +84,21 @@ The `pre-tool-use` hook fires before every `Edit`, `Write`, `MultiEdit`, and
 3. Queries active rules from the mneme databases (project + global) in read-only
    mode.
 4. Matches rules against the tool name, file path, and caller role.
+
+### Scope filter on the global DB (SPEC-105)
+
+The project DB's query (`rulesQueryProject`) is unfiltered by scope — that
+file only ever contains rows belonging to this one project. The **global**
+DB's query (`rulesQueryGlobal`) adds `AND scope IN ('global', 'org')` —
+fixing a cross-repo leak (BL-132): `initService` aliases `global.db` as the
+project store whenever the cwd doesn't resolve a git-remote slug, and a
+project-scoped rule that landed there with no project used to be evaluated
+by this hook in **every repo on the host**, including a `severity=block`
+rule that had nothing to do with the repo currently being edited. See
+`docs/RULES.md`'s "Invariant R" section and `docs/profiles.md` §8 for the
+full incident and fix — `queryRulesFromDB` now takes the query as a
+parameter precisely so the project and global databases can be held to
+different scope filters.
 5. Emits a markdown reminder to stdout for Claude Code to inject as a system
    reminder (info/warn/block rules all appear; degraded rules show as WARN).
 6. Exits with code 2 **only if an effective block** rule matched — block rules

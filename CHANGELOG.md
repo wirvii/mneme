@@ -4,6 +4,64 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [v1.30.2] — 2026-08-02 — Profile activation is convergent; `deactivate` arrives
+
+### Fixed
+
+- **Profile activation is no longer an unconditional event — it's convergent
+  (SPEC-105, BL-132).** `ProfileService.Activate` used to materialize
+  unconditionally on every call, and no production call site (`profile use`,
+  SessionStart) ever deactivated the previous state first: 215 rows with
+  `source=profile:<name>` accumulated across 8 real repos, up to 9 tandas per
+  repo, all against the **same** profile commit — the growth tracked
+  SessionStart *sessions*, not profile commits, and never stopped. A second,
+  independent bug let project-scoped rules leak into `global.db` (via
+  `initService`'s `global.db`-as-projectStore aliasing whenever the cwd
+  doesn't resolve a git-remote slug) and be served to **every repo on the
+  host**, including the `PreToolUse` hook — which can `exit 2` and block a
+  tool call for a repo that has nothing to do with the profile that leaked
+  it. The fix: a new `ProfileService.Reconcile` compares the workspace
+  against what it should be (`internal/profile.Converged`, a pure guard —
+  identity, every artifact's presence, a "block" artifact's content digest,
+  and the rule id **set** the database actually holds) and only mutates when
+  it disagrees; `Use`, `activateProfileForSession`, and
+  `activateDefaultProfileForSession` all call it now instead of a bare
+  `Activate`. Independently, `materializeRules` now purges by provenance
+  before every insert regardless of the guard, so idempotency holds even if
+  the lock is deleted by hand. The rules leak is contained at every layer:
+  `SaveProfileRule` rejects writes with no resolved project slug
+  (`model.ErrProjectSlugRequired`, degrading the activation rather than
+  failing it), `ListRules`/`loadActiveRules`/the `PreToolUse` hook's own SQL
+  all stop serving `scope=project` rows from the global store, and
+  `PurgeProfileRules` now also sweeps matching orphaned rows out of
+  `global.db` from any repo.
+- **A hand-written file the dev never got around to pinning could be
+  silently overwritten and permanently lost on the first activation.**
+  `Activate` now backs up any pre-existing agent/skill artifact that isn't
+  owned by the previous activation's own lock, before overwriting it
+  (`.mneme/backups/<UTC>/...`); `deactivate`/repair restores it byte-for-byte.
+
+### Added
+
+- **`mneme profile deactivate`** (dry-run by default, `--apply` to execute,
+  `--json` for machine output): computes the plan to undo the current repo's
+  active profile — restore/remove every materialized artifact, purge every
+  rule with this profile's provenance (project-scoped and orphaned-global),
+  delete the activation lock — and reports `NextSession`, computed before
+  anything mutates, naming whether the repo's pin or the host default will
+  simply reactivate the same profile on the next session. Deliberately never
+  touches `.mneme-profile` (the pin) — it's a committed, team-shared file.
+  Also available as the `profile_deactivate` MCP tool (75→76 tools,
+  `profile_*` 7→8).
+- A repo carrying an activation lock with **no** pin pointing at it (deleted,
+  or never committed) now gets an actionable SessionStart report — profile
+  name, activation date, how many artifacts are still alive, rule counts,
+  and the exact `mneme profile deactivate --apply` command — instead of
+  silence. It never deactivates on its own.
+
+See `docs/profiles.md` §8 for the full incident writeup and design, and
+`docs/RULES.md`'s "Invariant R" section for the rules-scope fix.
+
 ## [v1.30.1] — 2026-08-01 — MCP server survives oversized messages
 
 ### Fixed

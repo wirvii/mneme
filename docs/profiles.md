@@ -213,12 +213,13 @@ internal/managedblock (leaf: Upsert/Read/RemoveText/Remove — stdlib only)
   skill copying and the CLAUDE.md block upsert are new, self-contained
   service-layer code (`copyDir`, `managedblock.Upsert`).
 
-## MCP tools (65→69→71→72)
+## MCP tools (65→69→71→72→...→76)
 
 §2 added no new CLI/MCP verbs — `Activate`/`Switch`/`Deactivate`/
 `DetectStaleness`/`ActiveLock` are `ProfileService` methods §3 consumes
 (`use`) or exposes indirectly (SessionStart). §3 adds the two write verbs:
 `profile_use`/`profile_default` (69→71). §5 adds one: `profile_new` (71→72).
+SPEC-105 §8 adds one more: `profile_deactivate` (75→76, `profile_*` 7→8).
 
 | Tool | Params | Returns |
 |------|--------|---------|
@@ -227,8 +228,9 @@ internal/managedblock (leaf: Upsert/Read/RemoveText/Remove — stdlib only)
 | `profile_update` | `{name?, ref?}` | `UpdateResult` (name/old_ref/new_ref/version) |
 | `profile_list` | `{}` | `[]ProfileInfo` |
 | `profile_status` | `{project_root?}` | `Resolution` (state/pin/manifest/path) |
-| `profile_use` | `{name, project_root?}` | `UseResult` (name/source/ref/project_root/materialized/warnings) |
+| `profile_use` | `{name, project_root?}` | `UseResult` (name/source/ref/project_root/materialized/action/warnings) |
 | `profile_default` | `{name?, clear?}` | `DefaultResult` (default) |
+| `profile_deactivate` | `{project_root?, apply?}` | `DeactivateResult` (applied/profile/commit/ref/activated_at/artifacts/rule_ids/orphan_rule_ids/lock_path/next_session/residual_backups/warnings) |
 
 ## HTTP: no endpoints (decision, AC12)
 
@@ -239,7 +241,10 @@ interactive git credentials — a REST endpoint on a shared server has no clean
 semantics for "clone a private repo on behalf of a remote caller." Profiles
 also activate at SessionStart (§3), a CLI/agent-session lifecycle, not an
 HTTP server's. Consistent with the existing "HTTP lacks SDD tools" precedent;
-re-evaluated if a genuine server-side use case appears.
+re-evaluated if a genuine server-side use case appears. §8 (SPEC-105 DD22)
+reaffirms this for `deactivate`: it's a host-local operation over the
+filesystem of the caller's own repo — "whose `project_root`?" has no REST
+answer — so the endpoint count stays 8, unchanged.
 
 ## §2: Activation, lockfile, and provenance
 
@@ -450,23 +455,43 @@ not an export from the leaf. When the repo has no capa-2/3 yet, `fuseAgent`
 degrades cleanly to capa-1 alone (the repo simply hasn't run `mneme-init`;
 §5 wires the grill's capa-2/3 authoring later).
 
-### Switch A→B — `ProfileService.Switch`
+### Switch A→B — `ProfileService.Switch` (no longer dead code, SPEC-105 §8)
 
-1. Read A's lock (`ActiveLock`). Absent → `Switch` degrades to a plain
-   `Activate(B)`.
-2. `Deactivate(A)`: remove every artifact A's lock lists (`os.Remove` for
-   agent files, `os.RemoveAll` for skill directories,
-   `managedblock.Remove(path, "profile")` for the block — removing *only*
-   the marked region, never surrounding `CLAUDE.md` prose or a different
-   marker's block) and `PurgeProfileRules(A)` (hard delete by provenance).
-3. `Activate(B)` — materializes B, inserts B's rules, writes a fresh lock
-   (overwriting A's).
+Pre-SPEC-105, `Switch` was implemented and tested but **never called by any
+production code path** (verified with `codegraph_callers`). SPEC-105 §8
+rewires the three production call sites onto `Reconcile` instead (see §8
+below) and reimplements `Switch` itself as a thin adapter over it:
 
-**Invariant:** the switch only ever touches what A's own lock lists, plus
-rows carrying A's exact provenance stamp. Hand-authored agent files (never in
-any lock), rules without a `profile:*` source, and `CLAUDE.md` prose outside
-the `"profile"` block are structurally invisible to it — there is no code
-path that could reach them.
+```go
+func (s *ProfileService) Switch(ctx context.Context, repoRoot string, to ActivationInput) (*ActivateResult, error) {
+    result, err := s.Reconcile(ctx, repoRoot, to)
+    ...
+    if result.Activation != nil { return result.Activation, nil }
+    // Action == noop: already exactly `to` — reconstruct an ActivateResult
+    // view from the untouched lock instead of redoing any I/O.
+}
+```
+
+Conceptually the steps are unchanged:
+
+1. Read A's lock (`ActiveLock`). Absent → equivalent to a plain `Activate(B)`.
+2. `Deactivate(A)`: remove every artifact A's lock lists — restoring a
+   backed-up dev file when one exists (§8/DD5), `os.RemoveAll` for
+   skill directories otherwise, `managedblock.Remove(path, "profile")` for
+   the block (removing *only* the marked region) — and
+   `PurgeProfileRules(A)` (hard delete by provenance, plus the orphan sweep,
+   §8/DD10).
+3. `Activate(B)` — materializes B, inserts B's rules, writes a fresh lock.
+
+**New in §8:** if `to` is already exactly what's active (same profile, same
+commit, nothing drifted), `Reconcile`'s guard reports `noop` and `Switch`
+skips steps 2-3 entirely — there is nothing to switch away from.
+
+**Invariant (unchanged):** the switch only ever touches what A's own lock
+lists, plus rows carrying A's exact provenance stamp. Hand-authored agent
+files (never in any lock), rules without a `profile:*` source, and
+`CLAUDE.md` prose outside the `"profile"` block are structurally invisible
+to it — there is no code path that could reach them.
 
 ### Staleness detection — same-repo race
 
@@ -949,6 +974,180 @@ endpoints — `PinDefault` activates through the existing SessionStart hook and
 `ResolveActive`/`Activate` (§3), with a `Default: true`/`profile.DefaultProfileName`
 `ActivationInput`, nothing more.
 
+## §8: Reconciliation, backup, and deactivation (SPEC-105)
+
+An incident surfaced the gap §2-§6 left open: `Activate` was an
+**unconditional** materialization event, not idempotent even against the
+same commit. Every SessionStart called it unguarded, so 215 rows accumulated
+across 8 real repos (up to 9 tandas per repo, all against the same profile
+commit — the tandas were *sessions*, not commits). A second, independent bug
+let project-scoped rules leak into `global.db` (via `initService`'s
+`global.db`-as-projectStore aliasing when no git remote resolves a slug) and
+be served to **every repo on the host**, including the `PreToolUse` hook,
+which can `exit 2` and block a tool call for a repo with nothing to do with
+the profile that leaked it. §8 fixes both, adds a supported way to undo an
+activation, and contains the rules-leak's blast radius without redesigning
+`initService`.
+
+### The core fix: activation becomes convergence, not an event
+
+```go
+func Converged(lock *Lock, want Desired, obs Observation) (bool, []Divergence)
+func (s *ProfileService) Reconcile(ctx context.Context, repoRoot string, in ActivationInput) (*ReconcileResult, error)
+```
+
+`Converged` (leaf, pure, `internal/profile/converge.go`) decides whether a
+workspace already matches `want` — comparing profile/commit identity, every
+artifact's presence (and a "block" artifact's **digest**, not just its
+marker's presence — DD13, catches a dev editing inside the managed block by
+hand), and the rule id **set** the database actually has against the
+lock's declared set. The comparison is against the **database**, not just
+the lock — deliberately: it's what lets a single `Reconcile` call
+self-repair one of the 215-row-contaminated repos (lock says 3 ids, DB has
+9 → divergent → purge & reinsert → DB has 3) with no migration script.
+
+`Reconcile` (impure, `internal/service/profile_reconcile.go`) is the
+orchestrator: read the lock → if present, `observe()` the real world (stat
+files, read the block, query rule ids) → ask `Converged` → **noop** and
+return immediately if it agrees (the hot SessionStart path: no `Contents`
+loaded, no git touched) → otherwise `preflightDeactivate` → `Deactivate` →
+`Activate(in)`. `ReconcileAction` reports which of `noop` / `activated` /
+`repaired` / `switched` / `blocked` happened. All three production call
+sites (`Use`, `activateProfileForSession`, `activateDefaultProfileForSession`)
+now call `Reconcile`, never a bare `Activate`.
+
+**Defense in depth (DD4):** independently of the guard, `materializeRules`
+now purges by provenance **before its first insert, every time** — so
+"activating N times is idempotent in rules" is true by construction, even
+if the lock is deleted by hand or a future bug breaks `Converged` itself.
+The four mutation tests below prove the guard actually does the work (not
+just DD4's purge).
+
+### Lock schema v2: backups and digests
+
+`LockArtifact` gains three optional fields (schema_version 1→2,
+`Lock.Validate` widened from strict equality to a **range** `1..2` so a v1
+lock still parses and validates — only a version this build has never heard
+of is rejected):
+
+```go
+Backup  string // pre-activation copy of a dev's own displaced file, if any
+Created bool   // Path did not exist before this activation
+Digest  string // sha256 of a "block" artifact's content, for drift detection
+```
+
+Before overwriting a path, `Activate` checks it against the **previous
+lock's own artifact set**: owned by that lock → overwrite freely (no
+backup); exists but NOT owned → copy it to
+`<repoRoot>/.mneme/backups/<UTC>/<relative path>` first (or
+`backups/<UTC>/skills/<name>/` for a skill directory, which lives outside
+the repo) and record `Backup`; does not exist → `Created: true`. Never
+overwrites an existing backup destination — collisions get a `-1`, `-2`...
+suffix, and the lock records the path actually used. `Deactivate` restores
+a `Backup` byte-for-byte and deletes the backup (and its now-empty run
+directory) instead of just removing the profile's file. A `CLAUDE.md`
+the activation itself `Created` gets deleted on deactivate only if removing
+the block leaves it empty/whitespace-only; a pre-existing `CLAUDE.md` is
+never deleted, however empty the remaining prose looks.
+
+`.mneme/.gitignore` gains a second scoped entry, `backups/`, alongside the
+existing `profile.lock` — backups are copies of files that in several repos
+ARE tracked (`.claude/agents/*.md`); committing a copy is noise, and
+potentially a dev's own content leaking into shared history.
+
+### Rules sin slug: contained, not just documented (DD8)
+
+`initService` still aliases `global.db` as the project store when no git
+remote resolves a slug — that redesign is out of scope for a patch — but
+its consequences are now contained at every layer:
+
+1. **Write:** `SaveProfileRule` rejects with `model.ErrProjectSlugRequired`
+   when `!svc.HasProject()`. `Activate` doesn't fail on this — it degrades:
+   agents/skills/blocks still materialize, `ActivateResult.Degradations`
+   names the cause and remedy.
+2. **Read:** `ListRules`/`loadActiveRules` stop serving `scope=project` rows
+   from the global store (the global branch is `scope IN (global, org)`,
+   fused from two queries so org rules — already served today — don't
+   silently disappear). `mneme rule list` from a repo with no profile no
+   longer returns another repo's rules.
+3. **The hook (the surface with actual teeth):** `internal/cli/hook.go`'s
+   `rulesQuery` splits into `rulesQueryProject` (unchanged) and
+   `rulesQueryGlobal` (`+ AND scope IN ('global', 'org')`). This is the one
+   that matters most: a `severity=block` rule leaking through here used to
+   `exit 2` a tool call in **every repo on the host**.
+4. **The sweep:** `PurgeProfileRules` now ALSO deletes matching rows from
+   the global store with an empty project (`HardDeleteBySource`'s clause
+   fixed to treat `project=""` as "match `project IS NULL`" — SQLite
+   persists an empty `Project` as `NULL`, so the old `project = ''` clause
+   silently matched nothing). Runs from **any** repo — a row with
+   `scope=project`/`project=NULL` is unattributable garbage no repo could
+   ever legitimately claim.
+
+### `mneme profile deactivate` — dry-run by default
+
+```bash
+mneme profile deactivate            # prints the plan, mutates nothing
+mneme profile deactivate --apply    # executes it
+mneme profile deactivate --json     # same object, either mode
+```
+
+`ProfileService.DeactivateProject` builds one `DeactivateResult` regardless
+of `Apply` (`Applied` distinguishes them): per-artifact plan (`remove` /
+`restore` / `remove-file`), the rule ids about to be purged (project-scoped
+and orphaned-global, separately), residual backup directories from OTHER
+activations (left untouched), and — computed **before** anything mutates —
+`NextSession`, one of three messages:
+
+- pin present → *"reactivará X (pin); elimina el pin si quieres
+  desactivarlo permanentemente"*.
+- no pin, host default set → *"reactivará X (default global); ejecuta
+  `mneme profile default --clear`"*.
+- neither → *"correrá en modo vanilla"*.
+
+**Deliberately never touches `.mneme-profile`** — it's a committed,
+team-shared file; a local "undo the materialization" op silently rewriting
+it would create a diff every teammate sees. `NextSession` exists precisely
+because of this: the 8 contaminated repos have no pin at all — their
+contamination came from the host **default** — so `deactivate --apply`
+alone does not close the loop; the operator still has to
+`mneme profile default --clear` (or repoint it) before opening a new
+session.
+
+### Lock huérfano (DD20)
+
+`maybeActivateProfile`'s `ProfilePinAbsent` branch used to return in silence
+unconditionally — correct for the common vanilla case, wrong for a repo
+that still carries an activation lock with nothing pointing at it (the pin
+was deleted, or never committed). It now checks `ActiveLock` first: present
+→ emit an actionable-but-passive block (profile, `ActivatedAt`, how many
+artifacts are still alive, rule counts by provenance, and the exact
+`mneme profile deactivate --apply` command) and return — **never
+deactivates on its own**. The silence of an absent pin is not consent to
+delete files from the workspace.
+
+### Preflight, adjacent to each mutation (DD16)
+
+`preflightActivate` (inside `Activate`, before `materializeAgents`) and
+`preflightDeactivate` (inside `Reconcile`/`DeactivateProject`, before
+`Deactivate`) each check every filesystem precondition their own mutation
+phase needs — via a **real, transient write probe** (create+remove a file),
+not a permission-bit inspection, so it behaves the same on Windows as on
+Unix. Either failing aborts with zero mutations. A failure that happens
+mid-flight anyway (preflight passed, the write failed regardless) is
+reported on **stdout** — the `<!-- mneme:profile:start -->` block the agent
+actually reads as context — not just stderr, which it never sees.
+
+### Mutation testing (verification discipline, precedent SPEC-104)
+
+Four deliberate mutations were applied to `Converged`/`PurgeProfileRules`
+and reverted before this spec's implementation was considered complete: the
+guard forced to always converge, forced to always diverge, its rule-set
+comparison downgraded to a length check, and the orphan sweep deleted.
+Each one made a specific, predicted subset of tests fail — proof the
+convergence tests actually exercise the guard, not merely DD4's
+independent purge-before-insert side effect (the exact gap that let a
+previous spec's QA reject a superficially-passing implementation).
+
 ## Anti-scope (each is a later spec)
 
 | Topic | Spec |
@@ -956,6 +1155,10 @@ endpoints — `PinDefault` activates through the existing SessionStart hook and
 | Enforcing the vault exclusion (forcing `shared=0` in team-memory's own write path) + anti-zombie guard | §4 |
 | Scaffolding (`/new-project`, `/new-app`, `scaffolds/`, `_blueprints/`); the pin's `scaffold` field is preserved by `WritePin`, never acted upon; §5 only leaves `scaffolds/_blueprints/` in the skeleton | §7 |
 | Runtime consumption of `models.toml`/`policy.toml`/`templates/` by scoring/lanes/`spec_doc_write` | follow-up |
+| A persistent "profile disabled in this repo" state (today `deactivate` doesn't stop the pin/host-default from reactivating on the next SessionStart — `NextSession` only reports it) | follow-up (§8) |
+| Redesigning `initService`'s `global.db`-as-projectStore aliasing when no git remote resolves a slug (§8 contains the consequences via `HasProject()`; does not eliminate the aliasing) | follow-up (§8) |
+| Running `scripts/cleanup-test-pollution.sh` against the historical contamination beyond what convergence self-repairs | follow-up (§8) |
+| Validating `rules.jsonl` for duplicate `topic_key`s at `profile add`/`update` time (today they silently collapse via upsert — DD3 tolerates it, a warning would be kinder) | follow-up (§8) |
 
 ## Testing notes
 
