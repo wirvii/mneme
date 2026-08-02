@@ -95,6 +95,7 @@ const (
 	DivergenceBlockDrift      = "block-drift"
 	DivergenceRules           = "rules"
 	DivergenceRulesTruncated  = "rules-truncated"
+	DivergenceUnknownArtifact = "unknown-artifact-kind"
 )
 
 // Converged decides whether the workspace described by lock (the last
@@ -176,6 +177,17 @@ func Converged(lock *Lock, want Desired, obs Observation) (bool, []Divergence) {
 					Detail: "managed block content changed since activation: " + a.Path,
 				})
 			}
+		default:
+			// Fail-safe (mirrors the RulesTruncated philosophy, DD3): an
+			// artifact kind this build does not recognize can never be
+			// safely claimed as "still matches" — treat it as divergence so
+			// Reconcile repairs (and Deactivate's own default case surfaces
+			// a clear error for it) rather than silently pretending the
+			// workspace is fine.
+			divs = append(divs, Divergence{
+				Kind:   DivergenceUnknownArtifact,
+				Detail: "lock records an artifact of unrecognized kind " + a.Kind + " at " + a.Path,
+			})
 		}
 	}
 

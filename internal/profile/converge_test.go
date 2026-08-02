@@ -216,6 +216,38 @@ func TestConverged_Matrix(t *testing.T) {
 	}
 }
 
+// TestConverged_UnknownArtifactKindIsDivergent (SPEC-105 fail-safe, mirrors
+// DD3's RulesTruncated philosophy) verifies that a lock artifact whose Kind
+// this build does not recognise is never silently treated as "still
+// matches" — it must always report a divergence, forcing Reconcile to
+// repair (and Deactivate's own default case to surface a clear error)
+// rather than pretending an unknown artifact type is fine.
+func TestConverged_UnknownArtifactKindIsDivergent(t *testing.T) {
+	lock := &Lock{
+		SchemaVersion: LockSchemaVersion,
+		Profile:       "chatea-pro",
+		Commit:        "abc123",
+		Artifacts: []LockArtifact{
+			{Kind: "bogus", Path: "/nonexistent"},
+		},
+	}
+	obs := Observation{}
+
+	ok, divs := Converged(lock, Desired{Profile: "chatea-pro", Commit: "abc123"}, obs)
+	if ok {
+		t.Fatal("expected divergent for an unrecognized artifact kind")
+	}
+	found := false
+	for _, d := range divs {
+		if d.Kind == DivergenceUnknownArtifact {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected DivergenceUnknownArtifact, got %+v", divs)
+	}
+}
+
 // TestConverged_RuleSetComparisonIsSetBased verifies that duplicate ids in
 // lock.Rules (the topic_key-collapse scenario of DD3) converge against a
 // single matching id in obs.RuleIDs — comparing lengths would wrongly report

@@ -915,24 +915,54 @@ func removeBackupRunDirIfEmpty(backupPath string) {
 // Switch never touches anything outside the departing profile's own lock —
 // hand-authored files, rules without a profile provenance stamp, and
 // CLAUDE.md prose outside the "profile" block are all invisible to it.
+//
+// SPEC-105 DD15: Switch is now a thin adapter over Reconcile — it stopped
+// being dead code (nothing called it in production before this spec) and
+// gained Reconcile's convergence guard along the way: if to is already
+// exactly what is active (Action == noop), there is nothing left to
+// deactivate, and Switch reports that state without redundant I/O. Its
+// signature is unchanged (D7) — callers that already depend on Switch's
+// *ActivateResult shape are unaffected.
 func (s *ProfileService) Switch(ctx context.Context, repoRoot string, to ActivationInput) (*ActivateResult, error) {
-	to.RepoRoot = repoRoot
-
-	lockA, present, err := s.ActiveLock(repoRoot)
+	result, err := s.Reconcile(ctx, repoRoot, to)
 	if err != nil {
 		return nil, fmt.Errorf("service: profile: switch: %w", err)
 	}
-	if present {
-		if err := s.Deactivate(ctx, lockA); err != nil {
-			return nil, fmt.Errorf("service: profile: switch: deactivate %s: %w", lockA.Profile, err)
+	if result.Activation != nil {
+		return result.Activation, nil
+	}
+
+	// Action == noop: the workspace already matches `to` exactly, so there
+	// is nothing new to report — reconstruct an ActivateResult-shaped view
+	// from the untouched lock so Switch's return type stays uniform
+	// regardless of whether Reconcile found actual work to do.
+	lock, _, lockErr := s.ActiveLock(repoRoot)
+	if lockErr != nil {
+		return nil, fmt.Errorf("service: profile: switch: %w", lockErr)
+	}
+	return activateResultFromLock(lock), nil
+}
+
+// activateResultFromLock reconstructs an ActivateResult-shaped view from an
+// already-converged lock, for Switch's noop path (SPEC-105 DD15): the
+// artifacts/rules are exactly what a fresh Activate would have reported, so
+// there is no reason to redo any I/O to obtain them.
+func activateResultFromLock(lock *profile.Lock) *ActivateResult {
+	res := &ActivateResult{Profile: lock.Profile, Commit: lock.Commit}
+	for _, a := range lock.Artifacts {
+		switch a.Kind {
+		case profile.LockArtifactKindAgent:
+			res.Agents = append(res.Agents, a.Path)
+		case profile.LockArtifactKindSkill:
+			res.Skills = append(res.Skills, a.Path)
+		case profile.LockArtifactKindBlock:
+			res.Blocks = append(res.Blocks, a.Path)
 		}
 	}
-
-	result, err := s.Activate(ctx, to)
-	if err != nil {
-		return nil, fmt.Errorf("service: profile: switch: %w", err)
+	for _, r := range lock.Rules {
+		res.RulesInserted = append(res.RulesInserted, r.ID)
 	}
-	return result, nil
+	return res
 }
 
 // DetectStaleness reports whether the on-disk lock for repoRoot has diverged
