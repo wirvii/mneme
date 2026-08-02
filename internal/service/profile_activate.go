@@ -94,6 +94,25 @@ type ActivateResult struct {
 
 	// RulesInserted lists the ids of every memory SaveProfileRule inserted.
 	RulesInserted []string
+
+	// RulesPurged lists the ids of every memory PurgeProfileRules removed
+	// before inserting RulesInserted — SPEC-105 DD4's before-insert sweep,
+	// which is what makes "activating N times is idempotent in rules" true
+	// by construction rather than by relying on Reconcile's guard alone.
+	// Includes both this project's rows and any orphaned rows the same
+	// sweep found in the global store (DD10).
+	RulesPurged []string
+
+	// Backups lists the absolute paths every displaced dev file/directory
+	// was copied to before Activate overwrote it (SPEC-105 DD5/DD12).
+	// Empty when nothing was displaced.
+	Backups []string
+
+	// Degradations lists human-readable notices for anything Activate chose
+	// to skip rather than fail on — today, only "no project slug resolved,
+	// rules were not written" (SPEC-105 DD8 layer 4). Empty means nothing
+	// was degraded; a non-empty Activate is still considered successful.
+	Degradations []string
 }
 
 // Activate materializes the profile named in.Name into the project rooted
@@ -213,7 +232,7 @@ func (s *ProfileService) Activate(ctx context.Context, in ActivationInput) (*Act
 		blockPaths = append(blockPaths, blockArtifact.Path)
 	}
 
-	lockRules, ruleIDs, err := s.materializeRules(ctx, contents.Rules, profileName)
+	rulesResult, err := s.materializeRules(ctx, contents.Rules, profileName)
 	if err != nil {
 		return nil, fmt.Errorf("service: profile: activate: %w", err)
 	}
@@ -226,10 +245,17 @@ func (s *ProfileService) Activate(ctx context.Context, in ActivationInput) (*Act
 		Commit:        in.Commit,
 		ActivatedAt:   at,
 		Artifacts:     artifacts,
-		Rules:         lockRules,
+		Rules:         rulesResult.lockRules,
 	}
 	if err := writeLock(in.RepoRoot, lock); err != nil {
 		return nil, fmt.Errorf("service: profile: activate: %w", err)
+	}
+
+	var backups []string
+	for _, a := range artifacts {
+		if a.Backup != "" {
+			backups = append(backups, a.Backup)
+		}
 	}
 
 	return &ActivateResult{
@@ -238,7 +264,10 @@ func (s *ProfileService) Activate(ctx context.Context, in ActivationInput) (*Act
 		Agents:        agentPaths,
 		Skills:        skillNames,
 		Blocks:        blockPaths,
-		RulesInserted: ruleIDs,
+		RulesInserted: rulesResult.ids,
+		RulesPurged:   rulesResult.purged,
+		Backups:       backups,
+		Degradations:  rulesResult.degradations,
 	}, nil
 }
 
@@ -498,11 +527,48 @@ func (s *ProfileService) materializeBlocks(blocks []profile.BlockAsset, repoRoot
 	}, nil
 }
 
+// materializedRules is materializeRules' full result: the lock entries and
+// ids to report on ActivateResult, the ids DD4's before-insert sweep
+// removed, and any degradation notices (DD8 layer 4). Bundled into one
+// struct rather than growing materializeRules' return list further.
+type materializedRules struct {
+	lockRules    []profile.LockRule
+	ids          []string
+	purged       []string
+	degradations []string
+}
+
 // materializeRules inserts every RuleSpec as a provenance-marked rule memory
 // via MemoryService.SaveProfileRule.
-func (s *ProfileService) materializeRules(ctx context.Context, rules []profile.RuleSpec, profileName string) ([]profile.LockRule, []string, error) {
+//
+// SPEC-105 DD4: before inserting anything, it ALWAYS purges by provenance
+// via PurgeProfileRules — regardless of the convergence guard's state,
+// regardless of len(rules), and regardless of whether a project slug
+// resolved. This is deliberate defense in depth: the guard depends on the
+// lock; this purge does not depend on anything, so "activating N times is
+// idempotent in rules" is true BY CONSTRUCTION, even with the lock deleted
+// by hand, .mneme/ wiped, or a future bug in Converged.
+//
+// SPEC-105 DD8 layer 4: when the service has no resolved project slug
+// (!svc.mem.HasProject()), rules are skipped rather than failing the whole
+// activation — agents/skills/blocks still materialize. The omission is
+// reported via materializedRules.degradations, never silently dropped.
+func (s *ProfileService) materializeRules(ctx context.Context, rules []profile.RuleSpec, profileName string) (materializedRules, error) {
+	purged, purgeErr := s.mem.PurgeProfileRules(ctx, s.mem.ProjectSlug(), profileName)
+	if purgeErr != nil {
+		return materializedRules{}, fmt.Errorf("purge profile rules before insert: %w", purgeErr)
+	}
+
 	if len(rules) == 0 {
-		return nil, nil, nil
+		return materializedRules{purged: purged}, nil
+	}
+
+	if !s.mem.HasProject() {
+		degradation := fmt.Sprintf(
+			"omitiendo %d regla(s) del profile: este directorio no resuelve un slug de proyecto "+
+				"(git remote ausente, o cwd fuera de un repo) — ejecuta desde un repo con remote, o repunta el pin",
+			len(rules))
+		return materializedRules{purged: purged, degradations: []string{degradation}}, nil
 	}
 
 	source := model.ProfileSourcePrefix + profileName
@@ -518,12 +584,12 @@ func (s *ProfileService) materializeRules(ctx context.Context, rules []profile.R
 		}
 		resp, err := s.mem.SaveProfileRule(ctx, req, profileName)
 		if err != nil {
-			return nil, nil, fmt.Errorf("save profile rule %q: %w", r.Title, err)
+			return materializedRules{}, fmt.Errorf("save profile rule %q: %w", r.Title, err)
 		}
 		lockRules = append(lockRules, profile.LockRule{ID: resp.ID, Source: source})
 		ids = append(ids, resp.ID)
 	}
-	return lockRules, ids, nil
+	return materializedRules{lockRules: lockRules, ids: ids, purged: purged}, nil
 }
 
 // fuseAgent merges layer1 — a profile's own agents/<role>.md file, already

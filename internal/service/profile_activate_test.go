@@ -1178,6 +1178,163 @@ func TestActivate_MaterializeRulesError(t *testing.T) {
 	}
 }
 
+// TestActivate_PurgesBeforeInsertingRules (SPEC-105 AC1 partial, DD4)
+// activates the SAME profile twice by calling Activate DIRECTLY — bypassing
+// the convergence guard entirely, since that guard does not exist yet at
+// this step of the plan — and verifies the rule count does not grow. This
+// is the test that proves DD4's defense in depth works even with nothing
+// else protecting against re-materialization.
+func TestActivate_PurgesBeforeInsertingRules(t *testing.T) {
+	svc, mem, repoRoot, _ := newActivationTestEnv(t)
+	ctx := context.Background()
+
+	if _, err := svc.Activate(ctx, service.ActivationInput{RepoRoot: repoRoot, Name: "acme", Commit: "c1"}); err != nil {
+		t.Fatalf("Activate (first): %v", err)
+	}
+	if _, err := svc.Activate(ctx, service.ActivationInput{RepoRoot: repoRoot, Name: "acme", Commit: "c1"}); err != nil {
+		t.Fatalf("Activate (second): %v", err)
+	}
+	if _, err := svc.Activate(ctx, service.ActivationInput{RepoRoot: repoRoot, Name: "acme", Commit: "c1"}); err != nil {
+		t.Fatalf("Activate (third): %v", err)
+	}
+
+	ids, _, err := mem.ListProfileRuleIDs(ctx, "acme")
+	if err != nil {
+		t.Fatalf("ListProfileRuleIDs: %v", err)
+	}
+	if len(ids) != 1 {
+		t.Fatalf("expected exactly 1 rule (the fixture profile's rules.jsonl has 1 entry) after 3 activations, got %d", len(ids))
+	}
+}
+
+// TestActivate_NoSlugDegradesRulesButMaterializesTheRest (SPEC-105 AC19)
+// verifies that a ProfileService whose MemoryService has no resolved
+// project slug still materializes agents/skills/blocks — only the rules
+// phase degrades, reported via ActivateResult.Degradations.
+func TestActivate_NoSlugDegradesRulesButMaterializesTheRest(t *testing.T) {
+	profilesDir := t.TempDir()
+	repoRoot := t.TempDir()
+	skillsDir := t.TempDir()
+
+	profileDir := filepath.Join(profilesDir, "acme")
+	writeProfileFile(t, filepath.Join(profileDir, profile.ManifestFileName), "name=\"acme\"\nversion=\"1.0.0\"\n")
+	writeProfileFile(t, filepath.Join(profileDir, "agents", "backend.md"), "---\nname: backend\n---\n\nCapa-1 backend content.\n")
+	writeProfileFile(t, filepath.Join(profileDir, "blocks", "profile.md"), "## Metodología Acme")
+	writeProfileFile(t, filepath.Join(profileDir, "skills", "acme-skill", "SKILL.md"), "---\nname: acme-skill\npinned: false\n---\n\n# Acme skill\n")
+	writeProfileFile(t, filepath.Join(profileDir, "rules.jsonl"),
+		`{"title":"No CGO","content":"Pure Go, no CGO.","applies_to":["**"]}`+"\n")
+
+	projectDB, err := db.OpenMemory()
+	if err != nil {
+		t.Fatalf("open project db: %v", err)
+	}
+	globalDB, err := db.OpenMemory()
+	if err != nil {
+		t.Fatalf("open global db: %v", err)
+	}
+	t.Cleanup(func() { projectDB.Close(); globalDB.Close() })
+	mem := service.NewMemoryService(store.NewMemoryStore(projectDB), store.NewMemoryStore(globalDB), config.Default(), "", embed.NopEmbedder{})
+	sub := service.NewSubagentService(mem)
+	svc := service.NewProfileService(profilesDir, false,
+		service.WithProfileMemoryService(mem),
+		service.WithProfileSubagentService(sub),
+		service.WithProfileSkillsDir(skillsDir),
+	)
+
+	result, err := svc.Activate(context.Background(), service.ActivationInput{RepoRoot: repoRoot, Name: "acme"})
+	if err != nil {
+		t.Fatalf("Activate: %v", err)
+	}
+
+	if len(result.Agents) != 1 {
+		t.Errorf("expected agents to still materialize, got %v", result.Agents)
+	}
+	if len(result.Skills) != 1 {
+		t.Errorf("expected skills to still materialize, got %v", result.Skills)
+	}
+	if len(result.Blocks) != 1 {
+		t.Errorf("expected blocks to still materialize, got %v", result.Blocks)
+	}
+	if len(result.RulesInserted) != 0 {
+		t.Errorf("expected zero rules inserted without a resolved slug, got %v", result.RulesInserted)
+	}
+	if len(result.Degradations) != 1 {
+		t.Fatalf("expected exactly 1 degradation notice, got %v", result.Degradations)
+	}
+}
+
+// TestTeamMemory_ProfileRulesNeverReachVault (SPEC-105 AC24) verifies the
+// full activate → deactivate cycle, run against a team-memory-ACTIVE
+// service (newRepoTestService's real DetectTeamMemory path, per SPEC-085),
+// never lets a profile rule reach the shared vault, and leaves a
+// pre-existing shared note completely untouched.
+func TestTeamMemory_ProfileRulesNeverReachVault(t *testing.T) {
+	mem, repoDir := newRepoTestService(t, true)
+	sub := service.NewSubagentService(mem)
+	ctx := context.Background()
+
+	// A pre-existing, auto-shared hand-authored memory that must survive
+	// the whole cycle untouched.
+	handResp, err := mem.Save(ctx, model.SaveRequest{
+		Title:   "Hand-authored decision",
+		Content: "predates the profile entirely",
+		Type:    model.TypeDecision,
+	})
+	if err != nil {
+		t.Fatalf("Save hand-authored: %v", err)
+	}
+	handVaultFile := sharedVaultFile(repoDir, handResp.ID)
+	if _, err := os.Stat(handVaultFile); err != nil {
+		t.Fatalf("expected the hand-authored memory to materialize to the vault: %v", err)
+	}
+
+	profilesDir := t.TempDir()
+	profileDir := filepath.Join(profilesDir, "acme")
+	writeProfileFile(t, filepath.Join(profileDir, profile.ManifestFileName), "name=\"acme\"\nversion=\"1.0.0\"\n")
+	writeProfileFile(t, filepath.Join(profileDir, "rules.jsonl"),
+		`{"title":"No CGO","content":"Pure Go, no CGO.","applies_to":["**"]}`+"\n")
+
+	svc := service.NewProfileService(profilesDir, false,
+		service.WithProfileMemoryService(mem),
+		service.WithProfileSubagentService(sub),
+	)
+
+	if _, err := svc.Activate(ctx, service.ActivationInput{RepoRoot: repoDir, Name: "acme", Commit: "c1"}); err != nil {
+		t.Fatalf("Activate: %v", err)
+	}
+	lock, _, err := svc.ActiveLock(repoDir)
+	if err != nil {
+		t.Fatalf("ActiveLock: %v", err)
+	}
+	if len(lock.Rules) != 1 {
+		t.Fatalf("expected 1 rule in the lock, got %d", len(lock.Rules))
+	}
+
+	if err := svc.Deactivate(ctx, lock); err != nil {
+		t.Fatalf("Deactivate: %v", err)
+	}
+
+	notesDir := filepath.Join(repoDir, ".mneme", "shared", "notes")
+	entries, err := os.ReadDir(notesDir)
+	if err != nil {
+		t.Fatalf("ReadDir notes: %v", err)
+	}
+	for _, e := range entries {
+		data, readErr := os.ReadFile(filepath.Join(notesDir, e.Name()))
+		if readErr != nil {
+			t.Fatalf("read note %s: %v", e.Name(), readErr)
+		}
+		if strings.Contains(string(data), "No CGO") {
+			t.Errorf("expected no profile-rule-derived note in the shared vault, found one at %s", e.Name())
+		}
+	}
+
+	// The pre-existing hand-authored note survives untouched.
+	if _, err := os.Stat(handVaultFile); err != nil {
+		t.Errorf("expected the pre-existing hand-authored note to survive, got err: %v", err)
+	}
+}
+
 // TestActivate_WriteLockError verifies that a failure writing profile.lock
 // (here: .mneme already exists as a regular file, blocking its own mkdir)
 // surfaces as an Activate error.
