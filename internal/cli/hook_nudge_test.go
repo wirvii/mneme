@@ -405,7 +405,7 @@ func TestNudge_DoesNotAffectBlockRules(t *testing.T) {
 	}
 	database.Close()
 
-	rulesList, err := queryRulesFromDB(dbPath)
+	rulesList, err := queryRulesFromDB(dbPath, rulesQueryProject)
 	if err != nil {
 		t.Fatalf("queryRulesFromDB: %v", err)
 	}

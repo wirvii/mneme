@@ -661,14 +661,32 @@ var mutatingTools = map[string]bool{
 	"NotebookEdit": true,
 }
 
-// rulesQuery is the SQL used to fetch all active rules from a database. It
-// targets the partial index idx_memories_rules (created in migration 006) and
-// caps results at 200 so the hook completes well within the <50ms target even
-// for large rule sets.
-const rulesQuery = `
+// rulesQueryProject is the SQL used to fetch all active rules from a
+// project-scoped database (cfg.ProjectDBPath(slug)). It targets the partial
+// index idx_memories_rules (created in migration 006) and caps results at
+// 200 so the hook completes well within the <50ms target even for large rule
+// sets. Unlike rulesQueryGlobal, it applies no scope filter: that file only
+// ever contains rows belonging to this one project (SPEC-105 DD8 layer 2/3
+// — the hook is the "surface with teeth", the only reader that can actually
+// block a tool call).
+const rulesQueryProject = `
 SELECT id, title, content, applies_to, severity
 FROM memories
 WHERE type = 'rule' AND deleted_at IS NULL
+ORDER BY importance DESC
+LIMIT 200`
+
+// rulesQueryGlobal is rulesQueryProject plus a scope filter restricting
+// results to scope IN ('global', 'org') — the invariant R the rest of
+// SPEC-105 establishes: global.db may only ever serve global/org rules.
+// Without this filter, a project-scoped row that leaked into global.db with
+// no project (the cross-repo bug this spec fixes) would be evaluated by the
+// PreToolUse hook in EVERY repo on the host, including a severity=block rule
+// that has nothing to do with the repo currently being edited.
+const rulesQueryGlobal = `
+SELECT id, title, content, applies_to, severity
+FROM memories
+WHERE type = 'rule' AND deleted_at IS NULL AND scope IN ('global', 'org')
 ORDER BY importance DESC
 LIMIT 200`
 
@@ -783,7 +801,7 @@ func loadRulesForHook(cwd string, errW io.Writer) ([]model.Memory, error) {
 	// Load project-scoped rules when a project was detected.
 	if slug != "" {
 		projectPath := cfg.ProjectDBPath(slug)
-		projectRules, rErr := queryRulesFromDB(projectPath)
+		projectRules, rErr := queryRulesFromDB(projectPath, rulesQueryProject)
 		if rErr != nil {
 			fmt.Fprintf(errW, "[mneme] pre-tool-use hook: project DB error: %v\n", rErr)
 			// Non-fatal: continue to load global rules.
@@ -791,8 +809,8 @@ func loadRulesForHook(cwd string, errW io.Writer) ([]model.Memory, error) {
 		allRules = append(allRules, projectRules...)
 	}
 
-	// Load global-scoped rules.
-	globalRules, gErr := queryRulesFromDB(cfg.GlobalDBPath())
+	// Load global/org-scoped rules only (invariant R, SPEC-105 DD8).
+	globalRules, gErr := queryRulesFromDB(cfg.GlobalDBPath(), rulesQueryGlobal)
 	if gErr != nil {
 		fmt.Fprintf(errW, "[mneme] pre-tool-use hook: global DB error: %v\n", gErr)
 	}
@@ -802,12 +820,15 @@ func loadRulesForHook(cwd string, errW io.Writer) ([]model.Memory, error) {
 }
 
 // queryRulesFromDB opens the database at path in read-only mode, executes
-// rulesQuery, and returns the resulting rule memories. The database is closed
-// before returning regardless of success or failure.
+// query, and returns the resulting rule memories. The database is closed
+// before returning regardless of success or failure. query is caller-supplied
+// (rulesQueryProject or rulesQueryGlobal, SPEC-105 DD8) rather than a single
+// package constant, so the project and global databases can be held to
+// different scope filters.
 //
 // Returns an empty slice (not an error) when the file does not exist — this is
 // the expected state for new projects that have not been initialised yet.
-func queryRulesFromDB(path string) ([]model.Memory, error) {
+func queryRulesFromDB(path, query string) ([]model.Memory, error) {
 	database, err := db.OpenReadOnly(path)
 	if err != nil {
 		// File not found is not an error — project may not have a DB yet.
@@ -818,7 +839,7 @@ func queryRulesFromDB(path string) ([]model.Memory, error) {
 	}
 	defer database.Close() //nolint:errcheck // cleanup path; error is not actionable
 
-	rows, err := database.Query(rulesQuery)
+	rows, err := database.Query(query)
 	if err != nil {
 		return nil, fmt.Errorf("query rules: %w", err)
 	}
@@ -898,7 +919,7 @@ func (e hookManifestEntry) isImplementer() bool {
 }
 
 // manifestQuery selects the single manifest memory's content for a project,
-// mirroring rulesQuery/queryRulesFromDB's read-only access pattern.
+// mirroring rulesQueryProject/queryRulesFromDB's read-only access pattern.
 //
 // project and scope complete the real unique key of idx_memories_upsert
 // (topic_key, project, scope) — see 001_initial.sql — so the WHERE clause is

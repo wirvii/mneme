@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wirvii/mneme/internal/config"
 	"github.com/wirvii/mneme/internal/db"
 	"github.com/wirvii/mneme/internal/model"
 	"github.com/wirvii/mneme/internal/rules"
@@ -77,7 +78,7 @@ func TestPreToolUse_BlockRule(t *testing.T) {
 	}
 	database.Close()
 
-	rulesList, err := queryRulesFromDB(dbPath)
+	rulesList, err := queryRulesFromDB(dbPath, rulesQueryProject)
 	if err != nil {
 		t.Fatalf("queryRulesFromDB: %v", err)
 	}
@@ -113,7 +114,7 @@ func TestPreToolUse_WarnRule(t *testing.T) {
 	}
 	database.Close()
 
-	rulesList, err := queryRulesFromDB(dbPath)
+	rulesList, err := queryRulesFromDB(dbPath, rulesQueryProject)
 	if err != nil {
 		t.Fatalf("queryRulesFromDB: %v", err)
 	}
@@ -150,7 +151,7 @@ func TestPreToolUse_InfoRule(t *testing.T) {
 	}
 	database.Close()
 
-	rulesList, err := queryRulesFromDB(dbPath)
+	rulesList, err := queryRulesFromDB(dbPath, rulesQueryProject)
 	if err != nil {
 		t.Fatalf("queryRulesFromDB: %v", err)
 	}
@@ -187,7 +188,7 @@ func TestPreToolUse_NoMatch(t *testing.T) {
 	}
 	database.Close()
 
-	rulesList, err := queryRulesFromDB(dbPath)
+	rulesList, err := queryRulesFromDB(dbPath, rulesQueryProject)
 	if err != nil {
 		t.Fatalf("queryRulesFromDB: %v", err)
 	}
@@ -280,7 +281,7 @@ func TestPreToolUse_MultipleSeverities(t *testing.T) {
 	}
 	database.Close()
 
-	rulesList, err := queryRulesFromDB(dbPath)
+	rulesList, err := queryRulesFromDB(dbPath, rulesQueryProject)
 	if err != nil {
 		t.Fatalf("queryRulesFromDB: %v", err)
 	}
@@ -303,7 +304,7 @@ func TestPreToolUse_MultipleSeverities(t *testing.T) {
 // TestQueryRulesFromDB_FileNotExist verifies that queryRulesFromDB returns an
 // empty slice and nil error when the database file is absent.
 func TestQueryRulesFromDB_FileNotExist(t *testing.T) {
-	rulesList, err := queryRulesFromDB("/tmp/mneme-missing-test-db-12345.db")
+	rulesList, err := queryRulesFromDB("/tmp/mneme-missing-test-db-12345.db", rulesQueryProject)
 	if err != nil {
 		t.Errorf("expected nil error for missing DB, got: %v", err)
 	}
@@ -323,12 +324,137 @@ func TestQueryRulesFromDB_EmptyDB(t *testing.T) {
 	}
 	database.Close()
 
-	rulesList, err := queryRulesFromDB(dbPath)
+	rulesList, err := queryRulesFromDB(dbPath, rulesQueryProject)
 	if err != nil {
 		t.Errorf("expected nil error for empty DB, got: %v", err)
 	}
 	if len(rulesList) != 0 {
 		t.Errorf("expected 0 rules for empty DB, got %d", len(rulesList))
+	}
+}
+
+// insertScopedRule inserts a rule row with an explicit scope and project
+// (an empty project persists as SQL NULL, matching insertMemory's real
+// behaviour — see internal/store/memory.go's toNullString), unlike
+// insertTestRule which always hard-codes scope='project'. Needed to
+// reproduce the cross-repo leak shape SPEC-105 fixes: a project-scoped,
+// project=NULL row sitting in global.db.
+func insertScopedRule(database *db.DB, id, title, content string, severity model.Severity, appliesTo []string, scope, project string) error {
+	appliesToJSON, err := json.Marshal(appliesTo)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	var projectArg any
+	if project != "" {
+		projectArg = project
+	}
+	_, err = database.Exec(
+		`INSERT INTO memories
+		 (id, type, scope, project, title, content, applies_to, severity, created_at, updated_at, importance, confidence, decay_rate)
+		 VALUES (?, 'rule', ?, ?, ?, ?, ?, ?, ?, ?, 0.95, 0.8, 0.0)`,
+		id, scope, projectArg, title, content, string(appliesToJSON), string(severity), now, now,
+	)
+	return err
+}
+
+// TestHookPreToolUse_IgnoresProjectScopedRulesInGlobalDB (SPEC-105 AC21) is
+// the most important test of the entire rules-leak fix block: it proves the
+// ONE reader with actual teeth — the PreToolUse hook, which can exit 2 and
+// reject a tool call — never evaluates a scope=project, project=NULL row
+// sitting in global.db. Before the fix (rulesQueryGlobal's scope filter),
+// loadRulesForHook returned this row and the hook would exit 2 for a repo
+// that has nothing to do with the profile that leaked it.
+func TestHookPreToolUse_IgnoresProjectScopedRulesInGlobalDB(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("MNEME_DATA_DIR", dataDir)
+
+	cfg, err := config.Load(config.DefaultPath())
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	globalDB, err := db.Open(cfg.GlobalDBPath())
+	if err != nil {
+		t.Fatalf("db.Open global: %v", err)
+	}
+	if insertErr := insertScopedRule(globalDB, "leaked-1", "Leaked block rule", "content",
+		model.SeverityBlock, []string{"**"}, "project", ""); insertErr != nil {
+		t.Fatalf("insertScopedRule: %v", insertErr)
+	}
+	globalDB.Close()
+
+	// A non-git cwd so project.NewDetector resolves no slug — only the
+	// global DB tier is exercised, matching the real bug's shape (a repo
+	// with no profile of its own, hitting a leaked rule from another repo).
+	cwd := t.TempDir()
+
+	var errBuf bytes.Buffer
+	activeRules, loadErr := loadRulesForHook(cwd, &errBuf)
+	if loadErr != nil {
+		t.Fatalf("loadRulesForHook: %v", loadErr)
+	}
+	for _, r := range activeRules {
+		if r.ID == "leaked-1" {
+			t.Fatalf("expected the leaked scope=project rule to be excluded from the global DB read, got it in activeRules")
+		}
+	}
+
+	// End-to-end: driving the rules matcher against whatever loadRulesForHook
+	// returned must never produce a block match — i.e. the hook would exit 0.
+	filePath := filepath.Join(cwd, "any-file.go")
+	result := rules.Match(activeRules, rules.Invocation{Tool: "Edit", FilePath: filePath, CWD: cwd, Caller: rules.CallerOrchestrator})
+	if result.MaxSev == model.SeverityBlock {
+		t.Fatal("expected no block-severity match — the hook must exit 0, not 2, for a leaked project-scoped global rule")
+	}
+}
+
+// TestHookPreToolUse_StillEvaluatesGlobalAndOrgRules is the non-regression
+// TestHookPreToolUse_IgnoresProjectScopedRulesInGlobalDB requires: scope=
+// global and scope=org rows in global.db — which do belong there — must
+// still be evaluated by the hook.
+func TestHookPreToolUse_StillEvaluatesGlobalAndOrgRules(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("MNEME_DATA_DIR", dataDir)
+
+	cfg, err := config.Load(config.DefaultPath())
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	globalDB, err := db.Open(cfg.GlobalDBPath())
+	if err != nil {
+		t.Fatalf("db.Open global: %v", err)
+	}
+	if insertErr := insertScopedRule(globalDB, "global-1", "Global rule", "content",
+		model.SeverityWarn, []string{"**"}, "global", ""); insertErr != nil {
+		t.Fatalf("insertScopedRule global: %v", insertErr)
+	}
+	if insertErr := insertScopedRule(globalDB, "org-1", "Org rule", "content",
+		model.SeverityWarn, []string{"**"}, "org", ""); insertErr != nil {
+		t.Fatalf("insertScopedRule org: %v", insertErr)
+	}
+	globalDB.Close()
+
+	cwd := t.TempDir()
+	var errBuf bytes.Buffer
+	activeRules, loadErr := loadRulesForHook(cwd, &errBuf)
+	if loadErr != nil {
+		t.Fatalf("loadRulesForHook: %v", loadErr)
+	}
+
+	foundGlobal, foundOrg := false, false
+	for _, r := range activeRules {
+		if r.ID == "global-1" {
+			foundGlobal = true
+		}
+		if r.ID == "org-1" {
+			foundOrg = true
+		}
+	}
+	if !foundGlobal {
+		t.Error("expected the scope=global rule to still be evaluated")
+	}
+	if !foundOrg {
+		t.Error("expected the scope=org rule to still be evaluated")
 	}
 }
 
@@ -460,7 +586,7 @@ func TestPreToolUse_BlockDegradedForSubagent(t *testing.T) {
 	}
 	database.Close()
 
-	rulesList, err := queryRulesFromDB(dbPath)
+	rulesList, err := queryRulesFromDB(dbPath, rulesQueryProject)
 	if err != nil {
 		t.Fatalf("queryRulesFromDB: %v", err)
 	}
@@ -517,7 +643,7 @@ func TestPreToolUse_BlockEnforcedForOrchestrator(t *testing.T) {
 	}
 	database.Close()
 
-	rulesList, err := queryRulesFromDB(dbPath)
+	rulesList, err := queryRulesFromDB(dbPath, rulesQueryProject)
 	if err != nil {
 		t.Fatalf("queryRulesFromDB: %v", err)
 	}
@@ -566,7 +692,7 @@ func TestPreToolUse_AgentSelectorNoMatchForWrongCaller(t *testing.T) {
 	}
 	database.Close()
 
-	rulesList, err := queryRulesFromDB(dbPath)
+	rulesList, err := queryRulesFromDB(dbPath, rulesQueryProject)
 	if err != nil {
 		t.Fatalf("queryRulesFromDB: %v", err)
 	}
