@@ -296,6 +296,54 @@ func TestUse_ActivateFailure(t *testing.T) {
 	}
 }
 
+// TestUse_SecondCallIsNoopButStillReportsSuccess (SPEC-105 DD15) verifies
+// that calling Use twice against the same profile/checkout reports the
+// second call's Action as "noop" (Reconcile's convergence guard), while
+// Materialized stays true either way — a noop is just as "the workspace
+// reflects this profile" as a fresh activation, from Use's caller's
+// perspective.
+func TestUse_SecondCallIsNoopButStillReportsSuccess(t *testing.T) {
+	svc, _, repoRoot, _ := newUseTestEnv(t)
+	ctx := context.Background()
+
+	first, err := svc.Use(ctx, repoRoot, "acme")
+	if err != nil {
+		t.Fatalf("Use (first): %v", err)
+	}
+	if !first.Materialized {
+		t.Error("expected Materialized=true on the first call")
+	}
+
+	second, err := svc.Use(ctx, repoRoot, "acme")
+	if err != nil {
+		t.Fatalf("Use (second): %v", err)
+	}
+	if !second.Materialized {
+		t.Error("expected Materialized=true on the second call too")
+	}
+	if second.Action != string(service.ReconcileNoop) {
+		t.Errorf("Action: got %q, want %q", second.Action, service.ReconcileNoop)
+	}
+}
+
+// TestUse_PropagatesActivationError (SPEC-105 AC27) verifies the asymmetric
+// contract of D7: unlike SessionStart (fail-open), Use propagates a
+// reconciliation failure as an error — reusing the same fault injection as
+// TestUse_ActivateFailure (a regular file blocking .mneme's own mkdir),
+// now exercised through Reconcile rather than a bare Activate call.
+func TestUse_PropagatesActivationError(t *testing.T) {
+	svc, _, repoRoot, _ := newUseTestEnv(t)
+	ctx := context.Background()
+
+	if err := os.WriteFile(filepath.Join(repoRoot, ".mneme"), []byte("not a directory"), 0o644); err != nil {
+		t.Fatalf("seed conflicting .mneme file: %v", err)
+	}
+
+	if _, err := svc.Use(ctx, repoRoot, "acme"); err == nil {
+		t.Error("Use: expected error when Reconcile's Activate step fails")
+	}
+}
+
 // TestSetDefault_InvalidName covers the safe-slug validation branch (an
 // unsafe name must never reach the filesystem).
 func TestSetDefault_InvalidName(t *testing.T) {

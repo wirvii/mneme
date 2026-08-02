@@ -11,7 +11,7 @@ import (
 )
 
 // UseResult reports the outcome of ProfileService.Use: the pin written and
-// whether Activate materialized it.
+// whether Reconcile materialized it.
 type UseResult struct {
 	// Name is the activated profile's name.
 	Name string `json:"name"`
@@ -26,9 +26,17 @@ type UseResult struct {
 	// ProjectRoot is the repository root the pin was written to.
 	ProjectRoot string `json:"project_root"`
 
-	// Materialized is true when Activate succeeded — Use always attempts
-	// immediate materialization (see Use's doc comment for why).
+	// Materialized is true whenever Reconcile did not report
+	// ReconcileBlocked — SPEC-105 DD15: Use always attempts immediate
+	// reconciliation (see Use's doc comment for why), and a noop
+	// (workspace already matched) is just as "materialized" as a fresh
+	// activation from this caller's point of view.
 	Materialized bool `json:"materialized"`
+
+	// Action is Reconcile's own ReconcileAction ("activated", "noop",
+	// "repaired", "switched"), so a caller that cares can distinguish a
+	// fresh activation from a convergence no-op.
+	Action string `json:"action"`
 
 	// Warnings carries any non-blocking advisories from Store.PinFromStore
 	// (e.g. no "origin" remote configured on the checkout).
@@ -48,13 +56,18 @@ type DefaultResult struct {
 // self-describing pin from name's checkout in the host-level store
 // (Store.PinFromStore), writes it to <projectRoot>/.mneme-profile
 // (profile.WritePin — preserving any preexisting "scaffold" field), and
-// immediately materializes it (Activate, §2). Use NEVER clones — name must
-// already be installed (model.ErrProfileNotFound otherwise, pointing the
-// caller at `profile add`), keeping the add/use frontier strict.
+// immediately reconciles it (Reconcile, SPEC-105 DD15) — no longer a bare
+// Activate: a repeated `profile use` against the same already-converged
+// profile is now a cheap noop instead of a redundant re-materialization.
+// Use NEVER clones — name must already be installed (model.ErrProfileNotFound
+// otherwise, pointing the caller at `profile add`), keeping the add/use
+// frontier strict.
 //
 // Unlike the SessionStart integration (§3.6), which is fail-open by
-// contract, a materialization failure here IS propagated as an error: the
-// caller explicitly asked to activate a profile and must know if it failed.
+// contract, a reconciliation failure here IS propagated as an error (D7):
+// the caller explicitly asked to activate a profile and must know if it
+// failed — including a ReconcileBlocked outcome (a lock this build cannot
+// safely interpret), which Reconcile itself already turns into an error.
 func (s *ProfileService) Use(ctx context.Context, projectRoot, name string) (*UseResult, error) {
 	if projectRoot == "" {
 		return nil, fmt.Errorf("service: profile: use: project root is required")
@@ -72,22 +85,27 @@ func (s *ProfileService) Use(ctx context.Context, projectRoot, name string) (*Us
 		return nil, translateProfileError("service: profile: use", err)
 	}
 
-	if _, err := s.Activate(ctx, ActivationInput{
-		RepoRoot: projectRoot,
-		Name:     pinResult.Pin.Name,
-		Source:   pinResult.Pin.Source,
-		Ref:      pinResult.Pin.Ref,
-		Commit:   pinResult.Commit,
-	}); err != nil {
-		return nil, fmt.Errorf("service: profile: use: activate: %w", err)
+	result, err := s.Reconcile(ctx, projectRoot, ActivationInput{
+		Name:   pinResult.Pin.Name,
+		Source: pinResult.Pin.Source,
+		Ref:    pinResult.Pin.Ref,
+		Commit: pinResult.Commit,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("service: profile: use: reconcile: %w", err)
 	}
 
 	return &UseResult{
-		Name:         pinResult.Pin.Name,
-		Source:       pinResult.Pin.Source,
-		Ref:          pinResult.Pin.Ref,
-		ProjectRoot:  projectRoot,
+		Name:        pinResult.Pin.Name,
+		Source:      pinResult.Pin.Source,
+		Ref:         pinResult.Pin.Ref,
+		ProjectRoot: projectRoot,
+		// Reconcile only returns a nil error for activated/noop/repaired/
+		// switched — ReconcileBlocked always comes back as a non-nil error
+		// (handled above), so reaching this point means the workspace is
+		// materialized one way or another.
 		Materialized: true,
+		Action:       string(result.Action),
 		Warnings:     pinResult.Warnings,
 	}, nil
 }

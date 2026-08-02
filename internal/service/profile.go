@@ -273,6 +273,8 @@ func translateProfileError(op string, err error) error {
 		return fmt.Errorf("%s: %w", op, model.ErrAppAddNotApplicable)
 	case errors.Is(err, profile.ErrNothingToCapture):
 		return fmt.Errorf("%s: %w", op, model.ErrNothingToCapture)
+	case errors.Is(err, profile.ErrInvalidLock):
+		return fmt.Errorf("%s: %w", op, model.ErrProfileLockUnsupported)
 	}
 
 	if hint := gitAuthHint(err); hint != "" {
