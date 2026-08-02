@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -399,5 +400,151 @@ func TestProfileCmd_Default_NotInstalled(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "not installed") {
 		t.Errorf("err = %v, want mention of 'not installed'", err)
+	}
+}
+
+// TestProfileDeactivateCmd_DryRunPrintsPlanAndMutatesNothing (SPEC-105 AC8)
+// verifies that `profile deactivate` with no flags prints the plan and
+// leaves the activation lock byte-for-byte unchanged.
+func TestProfileDeactivateCmd_DryRunPrintsPlanAndMutatesNothing(t *testing.T) {
+	isolateProfileCmdCwd(t)
+	dataDir := t.TempDir()
+	source := newProfileCmdFixtureRepo(t, "chatea-pro", "1.0.0")
+
+	if _, _, err := execProfileCmd(t, dataDir, "profile", "add", source); err != nil {
+		t.Fatalf("profile add: unexpected error: %v", err)
+	}
+	if _, _, err := execProfileCmd(t, dataDir, "profile", "use", "chatea-pro"); err != nil {
+		t.Fatalf("profile use: unexpected error: %v", err)
+	}
+
+	projectRoot, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	lockPath := filepath.Join(projectRoot, ".mneme", "profile.lock")
+	before, err := os.ReadFile(lockPath)
+	if err != nil {
+		t.Fatalf("read lock before: %v", err)
+	}
+
+	out, _, err := execProfileCmd(t, dataDir, "profile", "deactivate")
+	if err != nil {
+		t.Fatalf("profile deactivate: unexpected error: %v", err)
+	}
+	if !strings.Contains(out, "Plan") {
+		t.Errorf("expected dry-run output to say Plan, got: %s", out)
+	}
+	if !strings.Contains(out, "Ejecuta con --apply") {
+		t.Errorf("expected the dry-run hint, got: %s", out)
+	}
+	if !strings.Contains(out, "NextSession") {
+		t.Errorf("expected the NextSession line, got: %s", out)
+	}
+
+	after, err := os.ReadFile(lockPath)
+	if err != nil {
+		t.Fatalf("read lock after: %v", err)
+	}
+	if string(before) != string(after) {
+		t.Error("expected the lock to be byte-for-byte unchanged after a dry-run")
+	}
+}
+
+// TestProfileDeactivateCmd_ApplyRemovesEverything (SPEC-105 AC7/AC9)
+// verifies that `profile deactivate --apply` deletes the lock while
+// preserving the pin.
+func TestProfileDeactivateCmd_ApplyRemovesEverything(t *testing.T) {
+	isolateProfileCmdCwd(t)
+	dataDir := t.TempDir()
+	source := newProfileCmdFixtureRepo(t, "chatea-pro", "1.0.0")
+
+	if _, _, err := execProfileCmd(t, dataDir, "profile", "add", source); err != nil {
+		t.Fatalf("profile add: unexpected error: %v", err)
+	}
+	if _, _, err := execProfileCmd(t, dataDir, "profile", "use", "chatea-pro"); err != nil {
+		t.Fatalf("profile use: unexpected error: %v", err)
+	}
+
+	projectRoot, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+
+	out, _, err := execProfileCmd(t, dataDir, "profile", "deactivate", "--apply")
+	if err != nil {
+		t.Fatalf("profile deactivate --apply: unexpected error: %v", err)
+	}
+	if !strings.Contains(out, "Aplicado") {
+		t.Errorf("expected apply output to say Aplicado, got: %s", out)
+	}
+
+	if _, err := os.Stat(filepath.Join(projectRoot, ".mneme", "profile.lock")); !os.IsNotExist(err) {
+		t.Errorf("expected the lock to be removed, stat err = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(projectRoot, ".mneme-profile")); err != nil {
+		t.Errorf("expected the pin to survive --apply: %v", err)
+	}
+}
+
+// TestProfileDeactivateCmd_JSONOutput verifies --json emits the same
+// DeactivateResult shape the service layer returns.
+func TestProfileDeactivateCmd_JSONOutput(t *testing.T) {
+	isolateProfileCmdCwd(t)
+	dataDir := t.TempDir()
+	source := newProfileCmdFixtureRepo(t, "chatea-pro", "1.0.0")
+
+	if _, _, err := execProfileCmd(t, dataDir, "profile", "add", source); err != nil {
+		t.Fatalf("profile add: unexpected error: %v", err)
+	}
+	if _, _, err := execProfileCmd(t, dataDir, "profile", "use", "chatea-pro"); err != nil {
+		t.Fatalf("profile use: unexpected error: %v", err)
+	}
+
+	out, _, err := execProfileCmd(t, dataDir, "profile", "deactivate", "--json")
+	if err != nil {
+		t.Fatalf("profile deactivate --json: unexpected error: %v", err)
+	}
+
+	var result struct {
+		Applied     bool   `json:"applied"`
+		Profile     string `json:"profile"`
+		NextSession string `json:"next_session"`
+	}
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("unmarshal --json output: %v\noutput: %s", err, out)
+	}
+	if result.Applied {
+		t.Error("expected applied=false in dry-run JSON output")
+	}
+	if result.Profile != "chatea-pro" {
+		t.Errorf("profile = %q, want %q", result.Profile, "chatea-pro")
+	}
+	if result.NextSession == "" {
+		t.Error("expected a non-empty next_session field")
+	}
+}
+
+// TestProfileDeactivateCmd_NextSessionWarning (SPEC-105 AC10) verifies that
+// the pin-present case's NextSession message names the pin as what will
+// reactivate the profile.
+func TestProfileDeactivateCmd_NextSessionWarning(t *testing.T) {
+	isolateProfileCmdCwd(t)
+	dataDir := t.TempDir()
+	source := newProfileCmdFixtureRepo(t, "chatea-pro", "1.0.0")
+
+	if _, _, err := execProfileCmd(t, dataDir, "profile", "add", source); err != nil {
+		t.Fatalf("profile add: unexpected error: %v", err)
+	}
+	if _, _, err := execProfileCmd(t, dataDir, "profile", "use", "chatea-pro"); err != nil {
+		t.Fatalf("profile use: unexpected error: %v", err)
+	}
+
+	out, _, err := execProfileCmd(t, dataDir, "profile", "deactivate")
+	if err != nil {
+		t.Fatalf("profile deactivate: unexpected error: %v", err)
+	}
+	if !strings.Contains(out, "pin .mneme-profile") {
+		t.Errorf("expected the pin-present NextSession message, got: %s", out)
 	}
 }

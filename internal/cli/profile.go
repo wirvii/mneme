@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -33,13 +34,14 @@ host-level store installed once (~/.mneme/profiles/<name>/), plus a
 per-project pointer committed at the project's root (.mneme-profile).
 
 Subcommands:
-  new      Scaffold a brand-new profile repo (structure + manifest + git init).
-  add      Clone a profile into the host-level store (once).
-  update   Fetch + checkout the latest state of an installed profile.
-  list     List profiles in the host-level store.
-  status   Report the current repo's pin resolution (read-only).
-  use      Activate a profile for THIS repo now (writes the pin + materializes).
-  default  Set/clear/print the HOST-level default for repos with no pin.`,
+  new        Scaffold a brand-new profile repo (structure + manifest + git init).
+  add        Clone a profile into the host-level store (once).
+  update     Fetch + checkout the latest state of an installed profile.
+  list       List profiles in the host-level store.
+  status     Report the current repo's pin resolution (read-only).
+  use        Activate a profile for THIS repo now (writes the pin + materializes).
+  default    Set/clear/print the HOST-level default for repos with no pin.
+  deactivate Undo THIS repo's active profile's materialization (dry-run by default).`,
 	}
 
 	cmd.AddCommand(
@@ -50,6 +52,7 @@ Subcommands:
 		newProfileStatusCmd(),
 		newProfileUseCmd(),
 		newProfileDefaultCmd(),
+		newProfileDeactivateCmd(),
 	)
 
 	return cmd
@@ -491,4 +494,112 @@ pin of their own. Use "profile use" to activate a profile in THIS repo now.`,
 
 	cmd.Flags().BoolVar(&flagClear, "clear", false, "Clear the default (revert to vanilla)")
 	return cmd
+}
+
+// newProfileDeactivateCmd returns the "mneme profile deactivate" subcommand
+// (SPEC-105 DD17): dry-run by default — prints the plan, mutates nothing —
+// and executes only with --apply, mirroring `mneme init --apply`/`mneme
+// conflicts scan --apply`'s precedent. Deliberately does NOT touch
+// .mneme-profile (DD19): the pin is a committed, team-shared file; this
+// undoes the LOCAL materialization only.
+func newProfileDeactivateCmd() *cobra.Command {
+	var flagApply bool
+	var flagJSON bool
+
+	cmd := &cobra.Command{
+		Use:   "deactivate",
+		Short: "Undo THIS repo's active profile's materialization (dry-run by default)",
+		Long: `Compute the plan to undo whatever profile is active for the current
+repository and, with --apply, execute it: every materialized agent/skill is
+restored (if it displaced a dev's own file) or removed, the "profile" managed
+block is removed from CLAUDE.md, every rule with this profile's provenance is
+purged, and the activation lock (.mneme/profile.lock) is deleted.
+
+Deliberately never touches .mneme-profile (the pin) — it is a committed,
+team-shared file. If the repo's pin (or the host default) still points at
+this profile, the NEXT SessionStart will simply reactivate it; the report's
+"NextSession" line says so explicitly, before anything is applied.
+
+Without --apply: prints the plan, mutates nothing.
+With --apply: executes it.`,
+		Example: `  mneme profile deactivate
+  mneme profile deactivate --apply
+  mneme profile deactivate --json`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			svc, cleanup, err := newActivatingProfileSvc()
+			if err != nil {
+				return fmt.Errorf("profile deactivate: %w", err)
+			}
+			defer cleanup()
+
+			root, err := os.Getwd()
+			if err != nil {
+				return fmt.Errorf("profile deactivate: %w", err)
+			}
+
+			result, err := svc.DeactivateProject(cmd.Context(), service.DeactivateInput{RepoRoot: root, Apply: flagApply})
+			if err != nil {
+				if errors.Is(err, model.ErrProfileLockUnsupported) {
+					return fmt.Errorf("profile deactivate: lock escrito por una versión más nueva de mneme; ejecuta `mneme upgrade`: %w", err)
+				}
+				return fmt.Errorf("profile deactivate: %w", err)
+			}
+
+			if flagJSON {
+				enc := json.NewEncoder(cmd.OutOrStdout())
+				enc.SetIndent("", "  ")
+				return enc.Encode(result)
+			}
+
+			renderDeactivatePlan(cmd.OutOrStdout(), result)
+			return nil
+		},
+	}
+
+	cmd.Flags().BoolVar(&flagApply, "apply", false, "Execute the plan (default: dry-run, mutates nothing)")
+	cmd.Flags().BoolVar(&flagJSON, "json", false, "Output as JSON")
+	return cmd
+}
+
+// renderDeactivatePlan renders a service.DeactivateResult as human-readable
+// text for `profile deactivate`'s default (non-JSON) output — the same
+// object dry-run and --apply share (Applied distinguishes them).
+func renderDeactivatePlan(w io.Writer, result *service.DeactivateResult) {
+	for _, msg := range result.Warnings {
+		fmt.Fprintf(w, "warning: %s\n", msg)
+	}
+	if len(result.Artifacts) == 0 && !result.Applied && result.Profile == "" {
+		return // nothing to deactivate — the warning above already said so.
+	}
+
+	verb := "Plan"
+	if result.Applied {
+		verb = "Aplicado"
+	}
+	fmt.Fprintf(w, "%s: desactivar %s@%s (activado %s)\n", verb, result.Profile, result.Commit, result.ActivatedAt.Format("2006-01-02 15:04:05 MST"))
+
+	for _, a := range result.Artifacts {
+		exists := "no existe"
+		if a.Exists {
+			exists = "existe"
+		}
+		fmt.Fprintf(w, "  - [%s] %s (%s, %s)\n", a.Kind, a.Path, a.Action, exists)
+	}
+
+	fmt.Fprintf(w, "Rules del proyecto con esta proveniencia: %d\n", len(result.RuleIDs))
+	if len(result.OrphanRuleIDs) > 0 {
+		fmt.Fprintf(w, "Rules huérfanas en el store global: %d\n", len(result.OrphanRuleIDs))
+	}
+	if len(result.ResidualBackups) > 0 {
+		fmt.Fprintf(w, "Directorios de respaldo residuales (de otras corridas, no tocados): %d\n", len(result.ResidualBackups))
+		for _, dir := range result.ResidualBackups {
+			fmt.Fprintf(w, "  - %s\n", dir)
+		}
+	}
+
+	fmt.Fprintf(w, "\nNextSession: %s\n", result.NextSession)
+
+	if !result.Applied {
+		fmt.Fprintf(w, "\nEjecuta con --apply para aplicar este plan.\n")
+	}
 }

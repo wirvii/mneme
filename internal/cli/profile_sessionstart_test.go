@@ -180,11 +180,13 @@ func TestMaybeActivateProfile_PinDefault(t *testing.T) {
 }
 
 // TestMaybeActivateProfile_ActivationFailure_FailsOpen covers AC7's
-// fail-open guarantee: a materialization failure degrades to a WARN on
-// stderr and the hook still returns nil (exit 0), printing no confirmation
-// block. The failure is induced deterministically by pre-creating
-// <root>/.mneme as a REGULAR FILE, so writeLock's os.MkdirAll(".mneme", ...)
-// fails.
+// fail-open guarantee (updated for SPEC-105 AC26): a materialization
+// failure still degrades to a WARN on stderr and the hook still returns nil
+// (exit 0) — but now ALSO emits a profile block on stdout describing the
+// failure (SPEC-105 DD16: the agent reads stdout as context, never stderr,
+// so a failure that only logged to stderr was invisible to it). The
+// failure is induced deterministically by pre-creating <root>/.mneme as a
+// REGULAR FILE, so Reconcile's own ActiveLock/writeLock machinery fails.
 func TestMaybeActivateProfile_ActivationFailure_FailsOpen(t *testing.T) {
 	dataDir := t.TempDir()
 	source := newProfileCmdFixtureRepo(t, "chatea-pro", "1.0.0")
@@ -198,14 +200,14 @@ func TestMaybeActivateProfile_ActivationFailure_FailsOpen(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, ".mneme-profile"), []byte(pin), 0o644); err != nil {
 		t.Fatalf("write pin: %v", err)
 	}
-	// Force writeLock's os.MkdirAll(filepath.Join(root, ".mneme"), ...) to fail.
+	// Force Reconcile's underlying ActiveLock/writeLock to fail.
 	if err := os.WriteFile(filepath.Join(root, ".mneme"), []byte("not a directory"), 0o644); err != nil {
 		t.Fatalf("seed conflicting .mneme file: %v", err)
 	}
 
 	stdout, stderr := runSessionStartHook(t, root, dataDir)
-	if strings.Contains(stdout, "<!-- mneme:profile:start -->") {
-		t.Errorf("expected no confirmation block on activation failure, got: %s", stdout)
+	if !strings.Contains(stdout, "<!-- mneme:profile:start -->") || !strings.Contains(stdout, "## Fallo activando el profile") {
+		t.Errorf("expected a failure block on stdout (SPEC-105 AC26), got: %s", stdout)
 	}
 	if !strings.Contains(stderr, "profile activation failed") {
 		t.Errorf("expected a WARN on stderr, got: %s", stderr)
@@ -214,9 +216,10 @@ func TestMaybeActivateProfile_ActivationFailure_FailsOpen(t *testing.T) {
 
 // TestMaybeActivateProfile_PinDefault_ActivationFailure_FailsOpen mirrors
 // TestMaybeActivateProfile_ActivationFailure_FailsOpen for the default-profile
-// branch (SPEC-096 §6 AC6): a materialization failure degrades to a WARN on
-// stderr, exit 0, no confirmation block — the same fail-open contract as
-// every other SessionStart branch, never a special case for the default.
+// branch (SPEC-096 §6 AC6, updated for SPEC-105 AC26): a materialization
+// failure degrades to a WARN on stderr AND a failure block on stdout, exit
+// 0 either way — the same fail-open contract as every other SessionStart
+// branch, never a special case for the default.
 func TestMaybeActivateProfile_PinDefault_ActivationFailure_FailsOpen(t *testing.T) {
 	dataDir := t.TempDir()
 	root := t.TempDir()
@@ -225,16 +228,139 @@ func TestMaybeActivateProfile_PinDefault_ActivationFailure_FailsOpen(t *testing.
 	if err := os.WriteFile(filepath.Join(root, ".mneme-profile"), []byte(pin), 0o644); err != nil {
 		t.Fatalf("write pin: %v", err)
 	}
-	// Force writeLock's os.MkdirAll(filepath.Join(root, ".mneme"), ...) to fail.
+	// Force Reconcile's underlying ActiveLock/writeLock to fail.
 	if err := os.WriteFile(filepath.Join(root, ".mneme"), []byte("not a directory"), 0o644); err != nil {
 		t.Fatalf("seed conflicting .mneme file: %v", err)
 	}
 
 	stdout, stderr := runSessionStartHook(t, root, dataDir)
-	if strings.Contains(stdout, "<!-- mneme:profile:start -->") {
-		t.Errorf("expected no confirmation block on activation failure, got: %s", stdout)
+	if !strings.Contains(stdout, "<!-- mneme:profile:start -->") || !strings.Contains(stdout, "## Fallo activando el profile") {
+		t.Errorf("expected a failure block on stdout (SPEC-105 AC26), got: %s", stdout)
 	}
 	if !strings.Contains(stderr, "default profile activation failed") {
 		t.Errorf("expected a WARN on stderr, got: %s", stderr)
+	}
+}
+
+// TestSessionStart_PartialFailureReportsOnStdoutAndExitsZero (SPEC-105 AC26)
+// is the canonical, explicitly-named regression test for the fix
+// TestMaybeActivateProfile_ActivationFailure_FailsOpen's updated assertions
+// already exercise: a profile activation failure during SessionStart
+// produces a "<!-- mneme:profile:start -->" block on STDOUT describing the
+// failure, and the hook still returns nil (exit code 0, fail-open).
+func TestSessionStart_PartialFailureReportsOnStdoutAndExitsZero(t *testing.T) {
+	dataDir := t.TempDir()
+	source := newProfileCmdFixtureRepo(t, "chatea-pro", "1.0.0")
+
+	if _, _, err := execProfileCmd(t, dataDir, "profile", "add", source); err != nil {
+		t.Fatalf("profile add: unexpected error: %v", err)
+	}
+
+	root := t.TempDir()
+	pin := "name   = \"chatea-pro\"\nsource = \"" + source + "\"\nref    = \"v1\"\n"
+	if err := os.WriteFile(filepath.Join(root, ".mneme-profile"), []byte(pin), 0o644); err != nil {
+		t.Fatalf("write pin: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".mneme"), []byte("not a directory"), 0o644); err != nil {
+		t.Fatalf("seed conflicting .mneme file: %v", err)
+	}
+
+	// runSessionStartHook itself calls t.Fatalf if runHookSessionStart
+	// returns a non-nil error, so simply reaching the assertions below
+	// already proves exit code 0 (fail-open).
+	stdout, _ := runSessionStartHook(t, root, dataDir)
+	if !strings.Contains(stdout, "<!-- mneme:profile:start -->") {
+		t.Errorf("expected the profile block on stdout, got: %s", stdout)
+	}
+	if !strings.Contains(stdout, "## Fallo activando el profile") {
+		t.Errorf("expected the failure heading on stdout, got: %s", stdout)
+	}
+}
+
+// TestSessionStart_SecondRunIsNoop (SPEC-105 DD15) verifies that running the
+// SessionStart hook twice against the same pinned profile still prints the
+// confirmation block both times (the agent needs to know which profile
+// governs the session every time), even though the second run is a
+// Reconcile noop under the hood.
+func TestSessionStart_SecondRunIsNoop(t *testing.T) {
+	dataDir := t.TempDir()
+	source := newProfileCmdFixtureRepo(t, "chatea-pro", "1.0.0")
+
+	if _, _, err := execProfileCmd(t, dataDir, "profile", "add", source); err != nil {
+		t.Fatalf("profile add: unexpected error: %v", err)
+	}
+
+	root := t.TempDir()
+	pin := "name   = \"chatea-pro\"\nsource = \"" + source + "\"\nref    = \"v1\"\n"
+	if err := os.WriteFile(filepath.Join(root, ".mneme-profile"), []byte(pin), 0o644); err != nil {
+		t.Fatalf("write pin: %v", err)
+	}
+
+	first, _ := runSessionStartHook(t, root, dataDir)
+	if !strings.Contains(first, "chatea-pro") {
+		t.Fatalf("expected the first run to confirm chatea-pro, got: %s", first)
+	}
+
+	second, _ := runSessionStartHook(t, root, dataDir)
+	if !strings.Contains(second, "<!-- mneme:profile:start -->") || !strings.Contains(second, "chatea-pro") {
+		t.Errorf("expected the second (noop) run to still confirm chatea-pro, got: %s", second)
+	}
+	if strings.Contains(second, "## Fallo activando el profile") {
+		t.Errorf("expected no failure block on a converged second run, got: %s", second)
+	}
+}
+
+// TestSessionStart_OrphanLockEmitsActionableBlock (SPEC-105 AC28) verifies
+// that a lock left behind with NO pin pointing at it emits the actionable
+// orphan-lock block — naming the profile, ActivatedAt, and the exact
+// `mneme profile deactivate --apply` command — and that it does NOT
+// deactivate anything: the materialized artifacts stay exactly as they
+// were.
+func TestSessionStart_OrphanLockEmitsActionableBlock(t *testing.T) {
+	dataDir := t.TempDir()
+	source := newProfileCmdFixtureRepo(t, "chatea-pro", "1.0.0")
+
+	if _, _, err := execProfileCmd(t, dataDir, "profile", "add", source); err != nil {
+		t.Fatalf("profile add: unexpected error: %v", err)
+	}
+
+	root := t.TempDir()
+	pin := "name   = \"chatea-pro\"\nsource = \"" + source + "\"\nref    = \"v1\"\n"
+	if err := os.WriteFile(filepath.Join(root, ".mneme-profile"), []byte(pin), 0o644); err != nil {
+		t.Fatalf("write pin: %v", err)
+	}
+
+	// Activate once (writes the lock), then remove the pin — simulating a
+	// repo whose pin was deleted (or never committed) after activation,
+	// leaving a lock with nothing pointing at it.
+	runSessionStartHook(t, root, dataDir)
+	if err := os.Remove(filepath.Join(root, ".mneme-profile")); err != nil {
+		t.Fatalf("remove pin: %v", err)
+	}
+
+	lockPath := filepath.Join(root, ".mneme", "profile.lock")
+	lockBefore, err := os.ReadFile(lockPath)
+	if err != nil {
+		t.Fatalf("read lock before: %v", err)
+	}
+
+	stdout, _ := runSessionStartHook(t, root, dataDir)
+	if !strings.Contains(stdout, "## Lock de profile huérfano") {
+		t.Errorf("expected the orphan-lock heading, got: %s", stdout)
+	}
+	if !strings.Contains(stdout, "chatea-pro") {
+		t.Errorf("expected the profile name in the orphan-lock block, got: %s", stdout)
+	}
+	if !strings.Contains(stdout, "mneme profile deactivate --apply") {
+		t.Errorf("expected the exact deactivate command, got: %s", stdout)
+	}
+
+	// No deactivation happened: the lock survives byte-for-byte.
+	lockAfter, err := os.ReadFile(lockPath)
+	if err != nil {
+		t.Errorf("expected the lock to survive (never auto-deactivated): %v", err)
+	}
+	if string(lockAfter) != string(lockBefore) {
+		t.Errorf("expected the lock untouched by the orphan-lock report")
 	}
 }
