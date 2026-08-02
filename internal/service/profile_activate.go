@@ -122,9 +122,28 @@ func (s *ProfileService) Activate(ctx context.Context, in ActivationInput) (*Act
 		return nil, fmt.Errorf("service: profile: activate: profile name is required")
 	}
 
+	// A single fixed instant for this activation run — used both as the
+	// lock's ActivatedAt and, for any artifact this activation displaces, as
+	// the backup run directory's timestamp (SPEC-105 DD12). Computing it
+	// once here, rather than letting BackupDir and the lock construction
+	// each call time.Now() independently, is what guarantees every backup
+	// this single Activate call produces lands in the same run directory.
+	at := time.Now().UTC()
+
+	// The lock a PRIOR activation (if any) left behind determines which
+	// on-disk paths this activation is allowed to overwrite without a
+	// backup (SPEC-105 DD5): anything that activation owned is fair game;
+	// anything else — including a workspace that has never activated a
+	// profile at all, in which case prevLock is nil and ownedPaths is empty
+	// — belongs to the dev and must be preserved.
+	prevLock, _, err := s.ActiveLock(in.RepoRoot)
+	if err != nil {
+		return nil, fmt.Errorf("service: profile: activate: %w", err)
+	}
+	prevOwned := ownedPaths(prevLock)
+
 	profileName := in.Name
 	var contents *profile.Contents
-	var err error
 
 	if isDefault {
 		// SPEC-096 §6: the embedded OSS default profile is never a checkout
@@ -168,13 +187,13 @@ func (s *ProfileService) Activate(ctx context.Context, in ActivationInput) (*Act
 
 	var artifacts []profile.LockArtifact
 
-	agentArtifacts, agentPaths, err := s.materializeAgents(contents.Agents, in.RepoRoot, projectProfile)
+	agentArtifacts, agentPaths, err := s.materializeAgents(contents.Agents, in.RepoRoot, projectProfile, prevOwned, at)
 	if err != nil {
 		return nil, fmt.Errorf("service: profile: activate: %w", err)
 	}
 	artifacts = append(artifacts, agentArtifacts...)
 
-	skillArtifacts, skillNames, err := s.materializeSkills(contents)
+	skillArtifacts, skillNames, err := s.materializeSkills(contents, in.RepoRoot, prevOwned, at)
 	if err != nil {
 		return nil, fmt.Errorf("service: profile: activate: %w", err)
 	}
@@ -201,7 +220,7 @@ func (s *ProfileService) Activate(ctx context.Context, in ActivationInput) (*Act
 		Source:        in.Source,
 		Ref:           in.Ref,
 		Commit:        in.Commit,
-		ActivatedAt:   time.Now().UTC(),
+		ActivatedAt:   at,
 		Artifacts:     artifacts,
 		Rules:         lockRules,
 	}
@@ -241,19 +260,36 @@ func (s *ProfileService) DefaultManifest() (*profile.Manifest, error) {
 // materializeAgents fuses and writes every agent asset via
 // SubagentService.WriteAgentProfiles, reusing its existing atomic
 // write-with-rollback machinery instead of reimplementing it.
-func (s *ProfileService) materializeAgents(agents []profile.AgentAsset, repoRoot string, pp *ProjectProfile) ([]profile.LockArtifact, []string, error) {
+//
+// Before writing, each target path is classified against prevOwned (SPEC-105
+// DD5): a path the previous activation already owned is safely overwritten
+// with no backup; a path that exists but was NOT in the previous lock
+// belongs to the dev and is backed up first (backupDisplaced) so Deactivate
+// can restore it byte-for-byte; a path that does not exist yet is marked
+// Created so its provenance is explicit on the lock, even though — for the
+// agent kind — Deactivate's removal behaviour does not otherwise depend on
+// it (only the "block" kind's cleanup does, DD7).
+func (s *ProfileService) materializeAgents(agents []profile.AgentAsset, repoRoot string, pp *ProjectProfile, prevOwned map[string]bool, at time.Time) ([]profile.LockArtifact, []string, error) {
 	if len(agents) == 0 {
 		return nil, nil, nil
 	}
 
 	files := make([]WriteAgentFile, 0, len(agents))
 	paths := make([]string, 0, len(agents))
+	artifacts := make([]profile.LockArtifact, 0, len(agents))
 	for _, a := range agents {
 		fused, err := s.fuseAgent(a.Content, a.Role, pp)
 		if err != nil {
 			return nil, nil, fmt.Errorf("fuse agent %s: %w", a.Role, err)
 		}
 		path := filepath.Join(repoRoot, ".claude", "agents", a.Role+".md")
+
+		artifact, err := displaceAndBuildArtifact(profile.LockArtifactKindAgent, path, repoRoot, at, prevOwned)
+		if err != nil {
+			return nil, nil, fmt.Errorf("agent %s: %w", a.Role, err)
+		}
+		artifacts = append(artifacts, artifact)
+
 		files = append(files, WriteAgentFile{Role: subagents.Role(a.Role), Path: path, Content: fused})
 		paths = append(paths, path)
 	}
@@ -262,10 +298,6 @@ func (s *ProfileService) materializeAgents(agents []profile.AgentAsset, repoRoot
 		return nil, nil, fmt.Errorf("write agent profiles: %w", err)
 	}
 
-	artifacts := make([]profile.LockArtifact, 0, len(paths))
-	for _, p := range paths {
-		artifacts = append(artifacts, profile.LockArtifact{Kind: "agent", Path: p})
-	}
 	return artifacts, paths, nil
 }
 
@@ -277,7 +309,13 @@ func (s *ProfileService) materializeAgents(agents []profile.AgentAsset, repoRoot
 // disk checkout (c.FS == os.DirFS(profileDir)) and the embedded OSS default
 // profile (c.FS == install.DefaultProfileFS(), SPEC-096 §6) share one copy
 // path — the destination on disk is always a real directory either way.
-func (s *ProfileService) materializeSkills(c *profile.Contents) ([]profile.LockArtifact, []string, error) {
+//
+// Displacement (SPEC-105 DD5/DD6) is handled identically to
+// materializeAgents: a pre-existing, non-pinned skill directory not owned by
+// the previous activation is backed up before being overwritten. pinned:true
+// keeps skipping entirely, unaffected by this — the backup only protects the
+// skills a dev did NOT think to pin.
+func (s *ProfileService) materializeSkills(c *profile.Contents, repoRoot string, prevOwned map[string]bool, at time.Time) ([]profile.LockArtifact, []string, error) {
 	if len(c.Skills) == 0 {
 		return nil, nil, nil
 	}
@@ -297,14 +335,130 @@ func (s *ProfileService) materializeSkills(c *profile.Contents) ([]profile.LockA
 			}
 		}
 
+		artifact, err := displaceAndBuildArtifact(profile.LockArtifactKindSkill, dest, repoRoot, at, prevOwned)
+		if err != nil {
+			return nil, nil, fmt.Errorf("skill %s: %w", name, err)
+		}
+
 		src := path.Join(c.SkillsDir, name)
 		if err := copyFSDir(c.FS, src, dest); err != nil {
 			return nil, nil, fmt.Errorf("copy skill %s: %w", name, err)
 		}
-		artifacts = append(artifacts, profile.LockArtifact{Kind: "skill", Path: dest})
+		artifacts = append(artifacts, artifact)
 		installed = append(installed, name)
 	}
 	return artifacts, installed, nil
+}
+
+// ownedPaths returns the set of artifact paths prev (the previous
+// activation's lock) recorded — the "this activation may overwrite these
+// without asking" set of SPEC-105 DD5. A nil prev (no prior activation)
+// yields an empty set, meaning every existing path at that location belongs
+// to the dev.
+func ownedPaths(prev *profile.Lock) map[string]bool {
+	owned := make(map[string]bool)
+	if prev == nil {
+		return owned
+	}
+	for _, a := range prev.Artifacts {
+		owned[a.Path] = true
+	}
+	return owned
+}
+
+// displaceAndBuildArtifact classifies path against prevOwned (SPEC-105 DD5)
+// and returns the LockArtifact this activation should record for it: backing
+// path up first via backupDisplaced when it exists and is NOT owned by the
+// previous activation, or marking Created when it does not exist yet. Shared
+// by materializeAgents and materializeSkills so the two never drift on the
+// backup-vs-overwrite decision.
+func displaceAndBuildArtifact(kind, path, repoRoot string, at time.Time, prevOwned map[string]bool) (profile.LockArtifact, error) {
+	artifact := profile.LockArtifact{Kind: kind, Path: path}
+
+	_, statErr := os.Stat(path)
+	switch {
+	case statErr == nil:
+		if !prevOwned[path] {
+			backupPath, err := backupDisplaced(repoRoot, at, path)
+			if err != nil {
+				return profile.LockArtifact{}, fmt.Errorf("back up displaced %s: %w", path, err)
+			}
+			artifact.Backup = backupPath
+		}
+	case os.IsNotExist(statErr):
+		artifact.Created = true
+	default:
+		return profile.LockArtifact{}, fmt.Errorf("stat %s: %w", path, statErr)
+	}
+
+	return artifact, nil
+}
+
+// backupDisplaced copies target (a file or directory that Activate is about
+// to overwrite and that does NOT belong to the previous activation, SPEC-105
+// DD5) into this run's backup directory (profile.BackupDir(repoRoot, at)),
+// preserving target's path relative to repoRoot when target lives inside it
+// (e.g. ".claude/agents/backend.md"), or — for a skill directory, which
+// lives under s.skillsDir outside the repo entirely — under "skills/<base
+// name>" instead (DD12). Never overwrites an existing backup path: a
+// colliding destination is suffixed "-1", "-2", … and the path actually used
+// is returned so the caller can record it verbatim on the lock — restoration
+// never needs to reconstruct the name.
+func backupDisplaced(repoRoot string, at time.Time, target string) (string, error) {
+	backupRoot := profile.BackupDir(repoRoot, at)
+
+	rel, relErr := filepath.Rel(repoRoot, target)
+	if relErr != nil || rel == "." || strings.HasPrefix(rel, "..") {
+		rel = filepath.Join("skills", filepath.Base(target))
+	}
+	dest := uniqueBackupPath(filepath.Join(backupRoot, rel))
+
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		return "", fmt.Errorf("backup displaced: mkdir %s: %w", filepath.Dir(dest), err)
+	}
+
+	info, err := os.Stat(target)
+	if err != nil {
+		return "", fmt.Errorf("backup displaced: stat %s: %w", target, err)
+	}
+
+	if info.IsDir() {
+		if err := copyFSDir(os.DirFS(target), ".", dest); err != nil {
+			return "", fmt.Errorf("backup displaced: copy dir %s: %w", target, err)
+		}
+		return dest, nil
+	}
+
+	data, err := os.ReadFile(target)
+	if err != nil {
+		return "", fmt.Errorf("backup displaced: read %s: %w", target, err)
+	}
+	if err := os.WriteFile(dest, data, 0o644); err != nil {
+		return "", fmt.Errorf("backup displaced: write %s: %w", dest, err)
+	}
+	return dest, nil
+}
+
+// uniqueBackupPath returns path unchanged when nothing already exists there,
+// or the first "<stem>-N<ext>" (file) / "<name>-N" (directory) variant that
+// does not yet exist (SPEC-105 DD12: a backup destination is never
+// overwritten).
+func uniqueBackupPath(path string) string {
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return path
+	}
+
+	dir := filepath.Dir(path)
+	base := filepath.Base(path)
+	ext := filepath.Ext(base)
+	stem := strings.TrimSuffix(base, ext)
+
+	for i := 1; ; i++ {
+		candidate := filepath.Join(dir, fmt.Sprintf("%s-%d%s", stem, i, ext))
+		if _, err := os.Stat(candidate); os.IsNotExist(err) {
+			return candidate
+		}
+	}
 }
 
 // materializeBlocks concatenates every blocks/*.md asset (in the sorted
@@ -504,20 +658,27 @@ func (s *ProfileService) Deactivate(ctx context.Context, lock *profile.Lock) err
 	return nil
 }
 
-// removeArtifact removes a single materialized artifact according to its
-// Kind. A missing agent file is not an error (already gone is the desired
-// end state).
+// removeArtifact undoes a single materialized artifact according to its
+// Kind. When a.Backup is set (SPEC-105 DD5: the path was displaced from a
+// dev's own file/directory at activation time), it takes priority over the
+// kind-specific removal below — restoring the backup IS the correct
+// end state, not deleting it. A missing agent file with no backup is not an
+// error (already gone is the desired end state).
 func removeArtifact(a profile.LockArtifact) error {
+	if a.Backup != "" {
+		return restoreArtifactBackup(a)
+	}
+
 	switch a.Kind {
-	case "agent":
+	case profile.LockArtifactKindAgent:
 		if err := os.Remove(a.Path); err != nil && !os.IsNotExist(err) {
 			return err
 		}
-	case "skill":
+	case profile.LockArtifactKindSkill:
 		if err := os.RemoveAll(a.Path); err != nil {
 			return err
 		}
-	case "block":
+	case profile.LockArtifactKindBlock:
 		if err := managedblock.Remove(a.Path, a.Marker); err != nil {
 			return err
 		}
@@ -525,6 +686,107 @@ func removeArtifact(a profile.LockArtifact) error {
 		return fmt.Errorf("unknown artifact kind %q", a.Kind)
 	}
 	return nil
+}
+
+// restoreArtifactBackup restores a.Backup (a file or directory copy
+// backupDisplaced saved before Activate overwrote a.Path) back onto a.Path,
+// then removes the backup copy and — when the run directory it lived in is
+// now empty — the run directory itself (SPEC-105 DD12 retention: Deactivate
+// cleans up after itself, but never touches a run directory belonging to a
+// DIFFERENT activation, since removeBackupRunDirIfEmpty only ever removes
+// directories it finds empty).
+func restoreArtifactBackup(a profile.LockArtifact) error {
+	info, err := os.Stat(a.Backup)
+	if err != nil {
+		return fmt.Errorf("stat backup %s: %w", a.Backup, err)
+	}
+
+	// Clear whatever the profile wrote at a.Path first, so restoring a
+	// directory backup can never merge with stale profile-owned content.
+	if err := os.RemoveAll(a.Path); err != nil {
+		return fmt.Errorf("remove %s before restore: %w", a.Path, err)
+	}
+
+	if info.IsDir() {
+		if err := os.MkdirAll(a.Path, 0o755); err != nil {
+			return fmt.Errorf("mkdir %s: %w", a.Path, err)
+		}
+		if err := copyFSDir(os.DirFS(a.Backup), ".", a.Path); err != nil {
+			return fmt.Errorf("restore dir %s: %w", a.Path, err)
+		}
+		if err := os.RemoveAll(a.Backup); err != nil {
+			return fmt.Errorf("remove backup dir %s: %w", a.Backup, err)
+		}
+	} else {
+		data, err := os.ReadFile(a.Backup)
+		if err != nil {
+			return fmt.Errorf("read backup %s: %w", a.Backup, err)
+		}
+		if err := os.MkdirAll(filepath.Dir(a.Path), 0o755); err != nil {
+			return fmt.Errorf("mkdir %s: %w", filepath.Dir(a.Path), err)
+		}
+		if err := os.WriteFile(a.Path, data, 0o644); err != nil {
+			return fmt.Errorf("restore %s: %w", a.Path, err)
+		}
+		if err := os.Remove(a.Backup); err != nil {
+			return fmt.Errorf("remove backup %s: %w", a.Backup, err)
+		}
+	}
+
+	removeBackupRunDirIfEmpty(a.Backup)
+	return nil
+}
+
+// backupRunDir walks up from backupPath to find the run directory a backup
+// lives directly under or within — the directory whose OWN parent is named
+// "backups" (i.e. "<repoRoot>/.mneme/backups/<UTC>"). Returns "" when no such
+// ancestor is found (e.g. a hand-constructed LockArtifact in a test that
+// does not follow the real BackupDir layout) — the caller treats that as
+// "nothing to clean up", never as an error.
+func backupRunDir(backupPath string) string {
+	dir := filepath.Dir(backupPath)
+	for {
+		parent := filepath.Dir(dir)
+		if filepath.Base(parent) == "backups" {
+			return dir
+		}
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
+}
+
+// removeBackupRunDirIfEmpty removes backupPath's parent directory, and each
+// empty ancestor above it up to and including the run directory
+// (backupRunDir), stopping at the first non-empty directory it finds (SPEC-
+// 105 DD12: "elimina el directorio de la corrida cuando queda vacío" — but
+// never a directory that still holds another artifact's backup from the
+// SAME run, and never a directory belonging to a DIFFERENT run). Best-effort:
+// any error here is silently ignored — a residual empty backup directory is
+// harmless clutter, never a correctness problem, and `profile deactivate`
+// separately reports leftover run directories from OTHER activations
+// (ResidualBackups, DD12) that this function correctly leaves alone.
+func removeBackupRunDirIfEmpty(backupPath string) {
+	runDir := backupRunDir(backupPath)
+	if runDir == "" {
+		return
+	}
+
+	dir := filepath.Dir(backupPath)
+	for {
+		entries, err := os.ReadDir(dir)
+		if err != nil || len(entries) > 0 {
+			return
+		}
+		if err := os.Remove(dir); err != nil {
+			return
+		}
+		if dir == runDir {
+			return
+		}
+		dir = filepath.Dir(dir)
+	}
 }
 
 // Switch deactivates whatever profile is currently active for the project
@@ -574,8 +836,9 @@ func (s *ProfileService) DetectStaleness(repoRoot string, cached profile.Snapsho
 // writeLock serialises lock and writes it atomically (temp file + rename,
 // same-directory so the rename is same-filesystem) to
 // profile.LockPath(repoRoot), creating the parent .mneme/ directory as
-// needed. It also guarantees (AC13) that the freshly written profile.lock is
-// gitignored in the destination project — see ensureLockGitignore.
+// needed. It also guarantees (AC13, and DD24's backups/ addition) that the
+// freshly written profile.lock — and any pre-activation backup directory —
+// are gitignored in the destination project — see ensureMnemeGitignore.
 func writeLock(repoRoot string, lock profile.Lock) error {
 	data, err := profile.RenderLock(lock)
 	if err != nil {
@@ -587,8 +850,8 @@ func writeLock(repoRoot string, lock profile.Lock) error {
 		return fmt.Errorf("mkdir %s: %w", filepath.Dir(path), err)
 	}
 
-	if err := ensureLockGitignore(repoRoot); err != nil {
-		return fmt.Errorf("ensure lock gitignore: %w", err)
+	if err := ensureMnemeGitignore(repoRoot, lockGitignoreEntry, backupsGitignoreEntry); err != nil {
+		return fmt.Errorf("ensure mneme gitignore: %w", err)
 	}
 
 	tmp := path + ".tmp"
@@ -601,24 +864,34 @@ func writeLock(repoRoot string, lock profile.Lock) error {
 	return nil
 }
 
-// lockGitignoreEntry is the single line ensureLockGitignore guarantees
-// inside <repoRoot>/.mneme/.gitignore — scoped to profile.lock alone, never
-// a blanket ignore of the .mneme/ directory (AC13 fix, QA observation 1):
-// .mneme/shared/ (the team-memory vault, SPEC-053) must stay trackable when
-// a repo opts into team-memory, and the pin .mneme-profile lives at the repo
-// root, outside .mneme/ entirely — neither is affected by this entry.
+// lockGitignoreEntry is the line ensureMnemeGitignore guarantees inside
+// <repoRoot>/.mneme/.gitignore for the activation lock — scoped to
+// profile.lock alone, never a blanket ignore of the .mneme/ directory (AC13
+// fix, QA observation 1): .mneme/shared/ (the team-memory vault, SPEC-053)
+// must stay trackable when a repo opts into team-memory, and the pin
+// .mneme-profile lives at the repo root, outside .mneme/ entirely — neither
+// is affected by this entry.
 const lockGitignoreEntry = "profile.lock"
 
-// ensureLockGitignore makes sure profile.lock can never be accidentally
-// committed by whatever repo Activate materializes into (AC13): it
-// writes/updates a small, self-contained <repoRoot>/.mneme/.gitignore
-// containing exactly lockGitignoreEntry — a pattern scoped to that single
-// file inside .mneme/, not a blanket ".mneme/" ignore, which would silently
-// break team-memory's committed .mneme/shared/ vault. Idempotent: a
-// .gitignore that already contains the entry (on any line, exact match after
-// trimming) is left untouched; any other pre-existing content in the file is
-// preserved.
-func ensureLockGitignore(repoRoot string) error {
+// backupsGitignoreEntry is the second, equally scoped entry SPEC-105 DD24
+// adds: the pre-activation backups directory holds copies of files that, in
+// several repos, ARE themselves tracked (e.g. .claude/agents/*.md) — a
+// backup copy under .mneme/backups/ is noise in the repo's history at best,
+// and potentially a dev's personal content leaking into shared history at
+// worst. Honors the exact same reasoning lockGitignoreEntry's godoc
+// documents: a second SCOPED entry, not a wider ".mneme/" ignore.
+const backupsGitignoreEntry = "backups/"
+
+// ensureMnemeGitignore makes sure every one of entries is present, in order,
+// inside <repoRoot>/.mneme/.gitignore (SPEC-105 DD24 generalises the AC13
+// fix from a single hard-coded line to any number of entries — today
+// lockGitignoreEntry and backupsGitignoreEntry). Idempotent per line: an
+// entry already present anywhere in the file (exact match after trimming)
+// is never duplicated; any other pre-existing content — hand-authored or
+// from an earlier version of this function — is preserved untouched.
+// Missing entries are appended in the order given, so a fresh file always
+// lists profile.lock before backups/.
+func ensureMnemeGitignore(repoRoot string, entries ...string) error {
 	path := filepath.Join(repoRoot, ".mneme", ".gitignore")
 
 	existing, err := os.ReadFile(path)
@@ -626,19 +899,32 @@ func ensureLockGitignore(repoRoot string) error {
 		return fmt.Errorf("read %s: %w", path, err)
 	}
 
+	present := make(map[string]bool)
 	for _, line := range strings.Split(string(existing), "\n") {
-		if strings.TrimSpace(line) == lockGitignoreEntry {
-			return nil
-		}
+		present[strings.TrimSpace(line)] = true
 	}
 
 	var b strings.Builder
 	b.Write(existing)
-	if len(existing) > 0 && !strings.HasSuffix(string(existing), "\n") {
+	needsNewline := len(existing) > 0 && !strings.HasSuffix(string(existing), "\n")
+
+	wroteAny := false
+	for _, entry := range entries {
+		if present[entry] {
+			continue
+		}
+		if needsNewline {
+			b.WriteString("\n")
+			needsNewline = false
+		}
+		b.WriteString(entry)
 		b.WriteString("\n")
+		wroteAny = true
 	}
-	b.WriteString(lockGitignoreEntry)
-	b.WriteString("\n")
+
+	if !wroteAny {
+		return nil
+	}
 
 	if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)

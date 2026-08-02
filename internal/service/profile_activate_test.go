@@ -248,6 +248,235 @@ func TestActivate_SkillPinnedIsSkipped(t *testing.T) {
 	}
 }
 
+// TestActivate_BacksUpDisplacedAgent (SPEC-105 AC11) verifies that a
+// hand-written .claude/agents/backend.md that is NOT in any prior lock (no
+// lock exists at all here — the strictest case of DD5's "not owned") gets
+// copied to the backup directory before Activate overwrites it, and that
+// the lock records the backup's path.
+func TestActivate_BacksUpDisplacedAgent(t *testing.T) {
+	svc, _, repoRoot, _ := newActivationTestEnv(t)
+	ctx := context.Background()
+
+	agentPath := filepath.Join(repoRoot, ".claude", "agents", "backend.md")
+	writeProfileFile(t, agentPath, "hand-written backend agent, never activated before")
+
+	if _, err := svc.Activate(ctx, service.ActivationInput{RepoRoot: repoRoot, Name: "acme"}); err != nil {
+		t.Fatalf("Activate: %v", err)
+	}
+
+	lock, present, err := svc.ActiveLock(repoRoot)
+	if err != nil {
+		t.Fatalf("ActiveLock: %v", err)
+	}
+	if !present {
+		t.Fatal("expected a lock after Activate")
+	}
+
+	var agentArtifact *profile.LockArtifact
+	for i := range lock.Artifacts {
+		if lock.Artifacts[i].Kind == profile.LockArtifactKindAgent {
+			agentArtifact = &lock.Artifacts[i]
+		}
+	}
+	if agentArtifact == nil {
+		t.Fatal("expected an agent artifact in the lock")
+	}
+	if agentArtifact.Backup == "" {
+		t.Fatal("expected a non-empty Backup path for the displaced hand-written agent")
+	}
+
+	backupData, err := os.ReadFile(agentArtifact.Backup)
+	if err != nil {
+		t.Fatalf("read backup %s: %v", agentArtifact.Backup, err)
+	}
+	if !strings.Contains(string(backupData), "hand-written backend agent") {
+		t.Errorf("expected the backup to contain the original content, got %q", string(backupData))
+	}
+
+	// The overwritten file now carries the profile's content instead.
+	overwritten, err := os.ReadFile(agentPath)
+	if err != nil {
+		t.Fatalf("read overwritten agent: %v", err)
+	}
+	if !strings.Contains(string(overwritten), "Capa-1 backend content.") {
+		t.Errorf("expected the profile's content after activation, got %q", string(overwritten))
+	}
+}
+
+// TestDeactivate_RestoresBackedUpAgent (SPEC-105 AC12) verifies that
+// Deactivate restores a backed-up agent byte-for-byte and removes both the
+// backup file and its now-empty run directory.
+func TestDeactivate_RestoresBackedUpAgent(t *testing.T) {
+	svc, _, repoRoot, _ := newActivationTestEnv(t)
+	ctx := context.Background()
+
+	agentPath := filepath.Join(repoRoot, ".claude", "agents", "backend.md")
+	original := "hand-written backend agent, never activated before"
+	writeProfileFile(t, agentPath, original)
+
+	if _, err := svc.Activate(ctx, service.ActivationInput{RepoRoot: repoRoot, Name: "acme"}); err != nil {
+		t.Fatalf("Activate: %v", err)
+	}
+
+	lock, _, err := svc.ActiveLock(repoRoot)
+	if err != nil {
+		t.Fatalf("ActiveLock: %v", err)
+	}
+	var backupPath string
+	for _, a := range lock.Artifacts {
+		if a.Kind == profile.LockArtifactKindAgent {
+			backupPath = a.Backup
+		}
+	}
+	if backupPath == "" {
+		t.Fatal("expected a recorded backup path")
+	}
+	runDir := filepath.Dir(filepath.Dir(filepath.Dir(backupPath))) // .../<UTC>/.claude/agents -> .../<UTC>
+
+	if err := svc.Deactivate(ctx, lock); err != nil {
+		t.Fatalf("Deactivate: %v", err)
+	}
+
+	restored, err := os.ReadFile(agentPath)
+	if err != nil {
+		t.Fatalf("read restored agent: %v", err)
+	}
+	if string(restored) != original {
+		t.Errorf("restored content: got %q, want %q (byte-for-byte)", string(restored), original)
+	}
+
+	if _, err := os.Stat(backupPath); !os.IsNotExist(err) {
+		t.Errorf("expected backup file to be removed after restore, stat err = %v", err)
+	}
+	if _, err := os.Stat(runDir); !os.IsNotExist(err) {
+		t.Errorf("expected the now-empty run directory %s to be removed, stat err = %v", runDir, err)
+	}
+}
+
+// TestActivate_OwnedAgentIsOverwrittenWithoutBackup (SPEC-105 AC13) verifies
+// that an agent file the PREVIOUS activation itself wrote is safely
+// overwritten by the next activation of the same profile with no backup —
+// and that Deactivate then removes it (does not try to "restore" it, since
+// there is nothing to restore it to).
+func TestActivate_OwnedAgentIsOverwrittenWithoutBackup(t *testing.T) {
+	svc, _, repoRoot, _ := newActivationTestEnv(t)
+	ctx := context.Background()
+
+	if _, err := svc.Activate(ctx, service.ActivationInput{RepoRoot: repoRoot, Name: "acme", Commit: "c1"}); err != nil {
+		t.Fatalf("Activate (first): %v", err)
+	}
+
+	// Second activation of the SAME profile: the agent path is already
+	// owned by the first activation's lock, so no backup should be made.
+	if _, err := svc.Activate(ctx, service.ActivationInput{RepoRoot: repoRoot, Name: "acme", Commit: "c2"}); err != nil {
+		t.Fatalf("Activate (second): %v", err)
+	}
+
+	lock, present, err := svc.ActiveLock(repoRoot)
+	if err != nil {
+		t.Fatalf("ActiveLock: %v", err)
+	}
+	if !present {
+		t.Fatal("expected a lock after the second activation")
+	}
+
+	var agentArtifact *profile.LockArtifact
+	for i := range lock.Artifacts {
+		if lock.Artifacts[i].Kind == profile.LockArtifactKindAgent {
+			agentArtifact = &lock.Artifacts[i]
+		}
+	}
+	if agentArtifact == nil {
+		t.Fatal("expected an agent artifact in the lock")
+	}
+	if agentArtifact.Backup != "" {
+		t.Errorf("expected no backup for an agent the previous activation owned, got Backup=%q", agentArtifact.Backup)
+	}
+
+	agentPath := filepath.Join(repoRoot, ".claude", "agents", "backend.md")
+	if err := svc.Deactivate(ctx, lock); err != nil {
+		t.Fatalf("Deactivate: %v", err)
+	}
+	if _, err := os.Stat(agentPath); !os.IsNotExist(err) {
+		t.Errorf("expected the owned agent to be removed (not restored) on deactivate, stat err = %v", err)
+	}
+}
+
+// TestActivate_BacksUpDisplacedSkillDir (SPEC-105 AC15) verifies that a
+// pre-existing, non-pinned skill directory not owned by any prior
+// activation is backed up before being overwritten (DD6).
+func TestActivate_BacksUpDisplacedSkillDir(t *testing.T) {
+	svc, _, repoRoot, skillsDir := newActivationTestEnv(t)
+	ctx := context.Background()
+
+	existingSkillFile := filepath.Join(skillsDir, "acme-skill", "SKILL.md")
+	writeProfileFile(t, existingSkillFile, "---\nname: acme-skill\npinned: false\n---\n\n# Pre-existing, unpinned, never activated\n")
+
+	if _, err := svc.Activate(ctx, service.ActivationInput{RepoRoot: repoRoot, Name: "acme"}); err != nil {
+		t.Fatalf("Activate: %v", err)
+	}
+
+	lock, _, err := svc.ActiveLock(repoRoot)
+	if err != nil {
+		t.Fatalf("ActiveLock: %v", err)
+	}
+	var skillArtifact *profile.LockArtifact
+	for i := range lock.Artifacts {
+		if lock.Artifacts[i].Kind == profile.LockArtifactKindSkill {
+			skillArtifact = &lock.Artifacts[i]
+		}
+	}
+	if skillArtifact == nil {
+		t.Fatal("expected a skill artifact in the lock")
+	}
+	if skillArtifact.Backup == "" {
+		t.Fatal("expected a non-empty Backup path for the displaced skill directory")
+	}
+
+	backedUpFile := filepath.Join(skillArtifact.Backup, "SKILL.md")
+	data, err := os.ReadFile(backedUpFile)
+	if err != nil {
+		t.Fatalf("read backed-up skill file %s: %v", backedUpFile, err)
+	}
+	if !strings.Contains(string(data), "Pre-existing, unpinned") {
+		t.Errorf("expected the backup to contain the original content, got %q", string(data))
+	}
+}
+
+// TestActivate_PinnedSkillStillSkipped (SPEC-105 AC15) is the companion
+// non-regression: a pinned skill directory keeps being skipped entirely —
+// it never enters the lock, so DD6's backup machinery never triggers for it
+// (that guarantee is unrelated to whether it changed).
+func TestActivate_PinnedSkillStillSkipped(t *testing.T) {
+	svc, _, repoRoot, skillsDir := newActivationTestEnv(t)
+	ctx := context.Background()
+
+	pinnedPath := filepath.Join(skillsDir, "acme-skill", "SKILL.md")
+	writeProfileFile(t, pinnedPath, "---\nname: acme-skill\npinned: true\n---\n\n# Pinned, never touched\n")
+
+	if _, err := svc.Activate(ctx, service.ActivationInput{RepoRoot: repoRoot, Name: "acme"}); err != nil {
+		t.Fatalf("Activate: %v", err)
+	}
+
+	lock, _, err := svc.ActiveLock(repoRoot)
+	if err != nil {
+		t.Fatalf("ActiveLock: %v", err)
+	}
+	for _, a := range lock.Artifacts {
+		if a.Kind == profile.LockArtifactKindSkill {
+			t.Fatalf("expected the pinned skill to never enter the lock, got %+v", a)
+		}
+	}
+
+	data, err := os.ReadFile(pinnedPath)
+	if err != nil {
+		t.Fatalf("read pinned skill: %v", err)
+	}
+	if !strings.Contains(string(data), "Pinned, never touched") {
+		t.Errorf("expected pinned skill content untouched, got %q", string(data))
+	}
+}
+
 // TestActivate_NotFound verifies that activating a profile absent from the
 // store fails with profile.ErrProfileNotFound.
 func TestActivate_NotFound(t *testing.T) {
@@ -596,6 +825,22 @@ func TestActivate_LockFileIsGitignored(t *testing.T) {
 	writeProfileFile(t, filepath.Join(repoRoot, ".mneme-profile"), "profile = \"acme\"\n")
 	if gitCheckIgnored(t, repoRoot, ".mneme-profile") {
 		t.Error("expected the .mneme-profile pin to remain trackable, not gitignored")
+	}
+}
+
+// TestActivate_GitignoreHasBothEntries (SPEC-105 DD24) extends the AC13
+// coverage above: .mneme/backups/ — the pre-activation backup directory —
+// must be gitignored too, alongside profile.lock.
+func TestActivate_GitignoreHasBothEntries(t *testing.T) {
+	svc, _, repoRoot, _ := newActivationTestEnv(t)
+	mustRunGitProfile(t, repoRoot, "init", "-q")
+
+	if _, err := svc.Activate(context.Background(), service.ActivationInput{RepoRoot: repoRoot, Name: "acme"}); err != nil {
+		t.Fatalf("Activate: %v", err)
+	}
+
+	if !gitCheckIgnored(t, repoRoot, filepath.Join(".mneme", "backups", "x")) {
+		t.Error("expected .mneme/backups/ to be gitignored after Activate (DD24)")
 	}
 }
 

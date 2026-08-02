@@ -5,10 +5,65 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/wirvii/mneme/internal/profile"
 	"github.com/wirvii/mneme/internal/subagents"
 )
+
+// TestBackupDisplaced_NeverOverwrites (SPEC-105 DD12) verifies that two
+// displacements landing on the exact same backup destination — same
+// repoRoot, same at instant, same target — never collide: the second call
+// receives a "-1" suffix, and the path it returns is the one actually used
+// on disk, so the caller (materializeAgents/materializeSkills) never needs
+// to reconstruct the name.
+func TestBackupDisplaced_NeverOverwrites(t *testing.T) {
+	repoRoot := t.TempDir()
+	at := time.Date(2026, 8, 2, 19, 11, 3, 0, time.UTC)
+
+	agentPath := filepath.Join(repoRoot, ".claude", "agents", "backend.md")
+	if err := os.MkdirAll(filepath.Dir(agentPath), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(agentPath, []byte("version one"), 0o644); err != nil {
+		t.Fatalf("write v1: %v", err)
+	}
+
+	first, err := backupDisplaced(repoRoot, at, agentPath)
+	if err != nil {
+		t.Fatalf("backupDisplaced (first): %v", err)
+	}
+
+	if err := os.WriteFile(agentPath, []byte("version two"), 0o644); err != nil {
+		t.Fatalf("write v2: %v", err)
+	}
+	second, err := backupDisplaced(repoRoot, at, agentPath)
+	if err != nil {
+		t.Fatalf("backupDisplaced (second): %v", err)
+	}
+
+	if first == second {
+		t.Fatalf("expected distinct backup paths, both were %q", first)
+	}
+	if !strings.HasSuffix(second, "-1.md") {
+		t.Errorf("expected the second backup to carry a -1 suffix before the extension, got %q", second)
+	}
+
+	firstData, err := os.ReadFile(first)
+	if err != nil {
+		t.Fatalf("read first backup: %v", err)
+	}
+	if string(firstData) != "version one" {
+		t.Errorf("first backup content: got %q, want %q", firstData, "version one")
+	}
+	secondData, err := os.ReadFile(second)
+	if err != nil {
+		t.Fatalf("read second backup: %v", err)
+	}
+	if string(secondData) != "version two" {
+		t.Errorf("second backup content: got %q, want %q", secondData, "version two")
+	}
+}
 
 // TestRemoveArtifact_AgentOtherErrorReturnsErr verifies that removeArtifact
 // propagates an os.Remove failure that is NOT os.IsNotExist (the only
@@ -199,33 +254,39 @@ func TestRenderProfileFusionSection_AllFieldsRendered(t *testing.T) {
 	}
 }
 
-// TestEnsureLockGitignore_CreatesFileWithEntry verifies that
-// ensureLockGitignore creates <repoRoot>/.mneme/.gitignore containing
-// exactly lockGitignoreEntry when none existed yet.
-func TestEnsureLockGitignore_CreatesFileWithEntry(t *testing.T) {
+// TestEnsureMnemeGitignore_CreatesFileWithEntriesInOrder verifies that
+// ensureMnemeGitignore creates <repoRoot>/.mneme/.gitignore containing every
+// entry given, in order — profile.lock before backups/ (SPEC-105 DD24).
+func TestEnsureMnemeGitignore_CreatesFileWithEntriesInOrder(t *testing.T) {
 	repoRoot := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(repoRoot, ".mneme"), 0o755); err != nil {
 		t.Fatalf("mkdir .mneme: %v", err)
 	}
 
-	if err := ensureLockGitignore(repoRoot); err != nil {
-		t.Fatalf("ensureLockGitignore: %v", err)
+	if err := ensureMnemeGitignore(repoRoot, lockGitignoreEntry, backupsGitignoreEntry); err != nil {
+		t.Fatalf("ensureMnemeGitignore: %v", err)
 	}
 
 	data, err := os.ReadFile(filepath.Join(repoRoot, ".mneme", ".gitignore"))
 	if err != nil {
 		t.Fatalf("read .gitignore: %v", err)
 	}
-	if strings.TrimSpace(string(data)) != lockGitignoreEntry {
-		t.Errorf("expected .gitignore to contain only %q, got %q", lockGitignoreEntry, string(data))
+	got := string(data)
+	lockIdx := strings.Index(got, lockGitignoreEntry)
+	backupsIdx := strings.Index(got, backupsGitignoreEntry)
+	if lockIdx == -1 || backupsIdx == -1 {
+		t.Fatalf("expected both entries present, got %q", got)
+	}
+	if lockIdx > backupsIdx {
+		t.Errorf("expected %q before %q, got %q", lockGitignoreEntry, backupsGitignoreEntry, got)
 	}
 }
 
-// TestEnsureLockGitignore_IdempotentAndPreservesExistingContent verifies
-// that calling ensureLockGitignore twice against a .gitignore with
-// pre-existing, hand-authored content never duplicates the entry and never
+// TestEnsureMnemeGitignore_IdempotentAndPreservesExistingContent verifies
+// that calling ensureMnemeGitignore twice against a .gitignore with
+// pre-existing, hand-authored content never duplicates any entry and never
 // disturbs what was already there.
-func TestEnsureLockGitignore_IdempotentAndPreservesExistingContent(t *testing.T) {
+func TestEnsureMnemeGitignore_IdempotentAndPreservesExistingContent(t *testing.T) {
 	repoRoot := t.TempDir()
 	mnemeDir := filepath.Join(repoRoot, ".mneme")
 	if err := os.MkdirAll(mnemeDir, 0o755); err != nil {
@@ -236,11 +297,11 @@ func TestEnsureLockGitignore_IdempotentAndPreservesExistingContent(t *testing.T)
 		t.Fatalf("seed .gitignore: %v", err)
 	}
 
-	if err := ensureLockGitignore(repoRoot); err != nil {
-		t.Fatalf("ensureLockGitignore (first call): %v", err)
+	if err := ensureMnemeGitignore(repoRoot, lockGitignoreEntry, backupsGitignoreEntry); err != nil {
+		t.Fatalf("ensureMnemeGitignore (first call): %v", err)
 	}
-	if err := ensureLockGitignore(repoRoot); err != nil {
-		t.Fatalf("ensureLockGitignore (second call): %v", err)
+	if err := ensureMnemeGitignore(repoRoot, lockGitignoreEntry, backupsGitignoreEntry); err != nil {
+		t.Fatalf("ensureMnemeGitignore (second call): %v", err)
 	}
 
 	data, err := os.ReadFile(gitignorePath)
@@ -254,27 +315,61 @@ func TestEnsureLockGitignore_IdempotentAndPreservesExistingContent(t *testing.T)
 	if strings.Count(got, lockGitignoreEntry) != 1 {
 		t.Errorf("expected exactly one %q entry after two calls, got %q", lockGitignoreEntry, got)
 	}
+	if strings.Count(got, backupsGitignoreEntry) != 1 {
+		t.Errorf("expected exactly one %q entry after two calls, got %q", backupsGitignoreEntry, got)
+	}
 }
 
-// TestEnsureLockGitignore_ReadErrorPropagates verifies that a read failure
+// TestEnsureMnemeGitignore_OneEntryAlreadyPresentOnlyAddsMissing verifies
+// that when one of the entries already exists, only the missing one is
+// appended — not both re-written.
+func TestEnsureMnemeGitignore_OneEntryAlreadyPresentOnlyAddsMissing(t *testing.T) {
+	repoRoot := t.TempDir()
+	mnemeDir := filepath.Join(repoRoot, ".mneme")
+	if err := os.MkdirAll(mnemeDir, 0o755); err != nil {
+		t.Fatalf("mkdir .mneme: %v", err)
+	}
+	gitignorePath := filepath.Join(mnemeDir, ".gitignore")
+	if err := os.WriteFile(gitignorePath, []byte(lockGitignoreEntry+"\n"), 0o644); err != nil {
+		t.Fatalf("seed .gitignore: %v", err)
+	}
+
+	if err := ensureMnemeGitignore(repoRoot, lockGitignoreEntry, backupsGitignoreEntry); err != nil {
+		t.Fatalf("ensureMnemeGitignore: %v", err)
+	}
+
+	data, err := os.ReadFile(gitignorePath)
+	if err != nil {
+		t.Fatalf("read .gitignore: %v", err)
+	}
+	got := string(data)
+	if strings.Count(got, lockGitignoreEntry) != 1 {
+		t.Errorf("expected exactly one %q entry, got %q", lockGitignoreEntry, got)
+	}
+	if !strings.Contains(got, backupsGitignoreEntry) {
+		t.Errorf("expected the missing %q entry to be appended, got %q", backupsGitignoreEntry, got)
+	}
+}
+
+// TestEnsureMnemeGitignore_ReadErrorPropagates verifies that a read failure
 // (here: the .gitignore path is itself a directory) is surfaced, not
 // silently swallowed.
-func TestEnsureLockGitignore_ReadErrorPropagates(t *testing.T) {
+func TestEnsureMnemeGitignore_ReadErrorPropagates(t *testing.T) {
 	repoRoot := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(repoRoot, ".mneme", ".gitignore"), 0o755); err != nil {
 		t.Fatalf("mkdir .gitignore as directory: %v", err)
 	}
 
-	if err := ensureLockGitignore(repoRoot); err == nil {
+	if err := ensureMnemeGitignore(repoRoot, lockGitignoreEntry, backupsGitignoreEntry); err == nil {
 		t.Fatal("expected an error when the .gitignore path is a directory")
 	}
 }
 
-// TestEnsureLockGitignore_WriteErrorPropagates verifies that a write
+// TestEnsureMnemeGitignore_WriteErrorPropagates verifies that a write
 // failure (here: a read-only .mneme directory) is surfaced. Skipped when
 // running as root, since permission checks are bypassed for root and the
 // injected failure would never occur.
-func TestEnsureLockGitignore_WriteErrorPropagates(t *testing.T) {
+func TestEnsureMnemeGitignore_WriteErrorPropagates(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("running as root: permission-based write-failure injection does not apply")
 	}
@@ -289,7 +384,7 @@ func TestEnsureLockGitignore_WriteErrorPropagates(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(mnemeDir, 0o755) })
 
-	if err := ensureLockGitignore(repoRoot); err == nil {
+	if err := ensureMnemeGitignore(repoRoot, lockGitignoreEntry, backupsGitignoreEntry); err == nil {
 		t.Fatal("expected an error writing .gitignore into a read-only .mneme directory")
 	}
 }
