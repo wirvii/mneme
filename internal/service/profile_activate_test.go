@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -1004,6 +1005,154 @@ func TestActivate_MaterializeBlocksError(t *testing.T) {
 	}
 }
 
+// TestDeactivate_RemovesCreatedClaudeMD (SPEC-105 AC14) verifies that a
+// CLAUDE.md the activation itself created (Created: true) is deleted on
+// Deactivate once removing the managed block leaves it empty.
+func TestDeactivate_RemovesCreatedClaudeMD(t *testing.T) {
+	svc, _, repoRoot, _ := newActivationTestEnv(t)
+	ctx := context.Background()
+
+	if _, err := svc.Activate(ctx, service.ActivationInput{RepoRoot: repoRoot, Name: "acme"}); err != nil {
+		t.Fatalf("Activate: %v", err)
+	}
+
+	claudeMD := filepath.Join(repoRoot, "CLAUDE.md")
+	if _, err := os.Stat(claudeMD); err != nil {
+		t.Fatalf("expected CLAUDE.md to exist after Activate: %v", err)
+	}
+
+	lock, _, err := svc.ActiveLock(repoRoot)
+	if err != nil {
+		t.Fatalf("ActiveLock: %v", err)
+	}
+	var blockArtifact *profile.LockArtifact
+	for i := range lock.Artifacts {
+		if lock.Artifacts[i].Kind == profile.LockArtifactKindBlock {
+			blockArtifact = &lock.Artifacts[i]
+		}
+	}
+	if blockArtifact == nil {
+		t.Fatal("expected a block artifact in the lock")
+	}
+	if !blockArtifact.Created {
+		t.Fatal("expected Created=true for a CLAUDE.md that did not exist before Activate")
+	}
+
+	if err := svc.Deactivate(ctx, lock); err != nil {
+		t.Fatalf("Deactivate: %v", err)
+	}
+	if _, err := os.Stat(claudeMD); !os.IsNotExist(err) {
+		t.Errorf("expected CLAUDE.md to be removed after Deactivate, stat err = %v", err)
+	}
+}
+
+// TestDeactivate_PreservesPreexistingClaudeMDProse (SPEC-105 AC14) verifies
+// that a CLAUDE.md that existed BEFORE Activate (Created: false) is never
+// deleted by Deactivate, and its hand-authored prose survives untouched.
+func TestDeactivate_PreservesPreexistingClaudeMDProse(t *testing.T) {
+	svc, _, repoRoot, _ := newActivationTestEnv(t)
+	ctx := context.Background()
+
+	claudeMD := filepath.Join(repoRoot, "CLAUDE.md")
+	writeProfileFile(t, claudeMD, "# My project\n\nHand-authored prose that predates any profile.\n")
+
+	if _, err := svc.Activate(ctx, service.ActivationInput{RepoRoot: repoRoot, Name: "acme"}); err != nil {
+		t.Fatalf("Activate: %v", err)
+	}
+
+	lock, _, err := svc.ActiveLock(repoRoot)
+	if err != nil {
+		t.Fatalf("ActiveLock: %v", err)
+	}
+	var blockArtifact *profile.LockArtifact
+	for i := range lock.Artifacts {
+		if lock.Artifacts[i].Kind == profile.LockArtifactKindBlock {
+			blockArtifact = &lock.Artifacts[i]
+		}
+	}
+	if blockArtifact == nil {
+		t.Fatal("expected a block artifact in the lock")
+	}
+	if blockArtifact.Created {
+		t.Fatal("expected Created=false for a pre-existing CLAUDE.md")
+	}
+
+	if err := svc.Deactivate(ctx, lock); err != nil {
+		t.Fatalf("Deactivate: %v", err)
+	}
+
+	data, err := os.ReadFile(claudeMD)
+	if err != nil {
+		t.Fatalf("expected CLAUDE.md to survive Deactivate, got err: %v", err)
+	}
+	if !strings.Contains(string(data), "Hand-authored prose that predates any profile.") {
+		t.Errorf("expected the pre-existing prose intact, got %q", string(data))
+	}
+}
+
+// TestPreflightActivate_ReadOnlyAgentsDirAbortsBeforeAnyWrite (SPEC-105 AC25)
+// verifies that a read-only .claude/agents/ directory aborts Activate in
+// the preflight phase — before ANY artifact is written — leaving the
+// previous lock and every artifact it names exactly as they were. Skipped
+// on Windows, where chmod-based permission injection does not apply (this
+// repo's convention: runtime.GOOS checks inline, no build tags — see
+// internal/enforcement.PathContext.GOOS).
+func TestPreflightActivate_ReadOnlyAgentsDirAbortsBeforeAnyWrite(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod-based permission injection does not apply on Windows")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: permission-based write-failure injection does not apply")
+	}
+
+	svc, _, repoRoot, _ := newActivationTestEnv(t)
+	ctx := context.Background()
+
+	// First activation succeeds normally, establishing a lock and an agent
+	// file to later prove untouched.
+	if _, err := svc.Activate(ctx, service.ActivationInput{RepoRoot: repoRoot, Name: "acme", Commit: "c1"}); err != nil {
+		t.Fatalf("Activate (first): %v", err)
+	}
+	lockBefore, _, err := svc.ActiveLock(repoRoot)
+	if err != nil {
+		t.Fatalf("ActiveLock (before): %v", err)
+	}
+	agentPath := filepath.Join(repoRoot, ".claude", "agents", "backend.md")
+	contentBefore, err := os.ReadFile(agentPath)
+	if err != nil {
+		t.Fatalf("read agent before: %v", err)
+	}
+
+	agentsDir := filepath.Join(repoRoot, ".claude", "agents")
+	if err := os.Chmod(agentsDir, 0o555); err != nil {
+		t.Fatalf("chmod agents dir read-only: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(agentsDir, 0o755) })
+
+	_, err = svc.Activate(ctx, service.ActivationInput{RepoRoot: repoRoot, Name: "acme", Commit: "c2"})
+	if err == nil {
+		t.Fatal("expected Activate to fail the preflight against a read-only agents directory")
+	}
+
+	// The lock is untouched (still the first activation's).
+	lockAfter, _, err := svc.ActiveLock(repoRoot)
+	if err != nil {
+		t.Fatalf("ActiveLock (after): %v", err)
+	}
+	if lockAfter.Commit != lockBefore.Commit {
+		t.Errorf("expected the lock to remain at commit %q, got %q", lockBefore.Commit, lockAfter.Commit)
+	}
+
+	// The agent file's content is untouched.
+	contentAfter, err := os.ReadFile(agentPath)
+	if err != nil {
+		t.Fatalf("read agent after: %v", err)
+	}
+	if string(contentAfter) != string(contentBefore) {
+		t.Errorf("expected the agent file untouched by the failed preflight, got %q", string(contentAfter))
+	}
+}
+
 // TestActivate_MaterializeRulesError verifies that a rule whose applies_to
 // contains an empty pattern (valid per RuleSpec.Validate's len-only check,
 // rejected by model.SaveRequest's per-pattern check) fails Activate at the
@@ -1080,6 +1229,55 @@ func TestActiveLock_ParseLockError(t *testing.T) {
 	_, _, err := svc.ActiveLock(repoRoot)
 	if err == nil {
 		t.Fatal("expected an error parsing an invalid lock file")
+	}
+}
+
+// TestActiveLock_FutureSchemaReturnsSentinel (SPEC-105 AC17, service half)
+// verifies that a lock declaring schema_version 99 (written by a newer
+// mneme, hypothetically) makes ActiveLock fail with
+// model.ErrProfileLockUnsupported rather than silently trusting a shape it
+// might not parse correctly.
+func TestActiveLock_FutureSchemaReturnsSentinel(t *testing.T) {
+	svc, _, repoRoot, _ := newActivationTestEnv(t)
+	writeProfileFile(t, profile.LockPath(repoRoot), "schema_version = 99\nprofile = \"acme\"\n")
+
+	_, present, err := svc.ActiveLock(repoRoot)
+	if present {
+		t.Error("expected present=false for an unsupported lock schema")
+	}
+	if !errors.Is(err, model.ErrProfileLockUnsupported) {
+		t.Errorf("expected model.ErrProfileLockUnsupported, got %v", err)
+	}
+}
+
+// TestActiveLock_V1LockStillParses (SPEC-105 AC16) verifies that a v1 lock
+// (predating Backup/Created/Digest, and predating Validate's range check)
+// still parses and validates successfully.
+func TestActiveLock_V1LockStillParses(t *testing.T) {
+	svc, _, repoRoot, _ := newActivationTestEnv(t)
+	v1TOML := `
+schema_version = 1
+profile = "acme"
+source = ""
+ref = ""
+commit = "abc123"
+activated_at = 2026-07-16T23:00:00Z
+
+[[artifact]]
+kind = "agent"
+path = "` + filepath.Join(repoRoot, ".claude", "agents", "backend.md") + `"
+`
+	writeProfileFile(t, profile.LockPath(repoRoot), v1TOML)
+
+	lock, present, err := svc.ActiveLock(repoRoot)
+	if err != nil {
+		t.Fatalf("ActiveLock: %v", err)
+	}
+	if !present {
+		t.Fatal("expected present=true for a valid v1 lock")
+	}
+	if lock.Profile != "acme" {
+		t.Errorf("Profile: got %q, want %q", lock.Profile, "acme")
 	}
 }
 

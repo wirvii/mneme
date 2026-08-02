@@ -185,6 +185,10 @@ func (s *ProfileService) Activate(ctx context.Context, in ActivationInput) (*Act
 		return nil, fmt.Errorf("service: profile: activate: read project profile: %w", err)
 	}
 
+	if failures := preflightActivate(in.RepoRoot, contents, s.skillsDir, at); len(failures) > 0 {
+		return nil, fmt.Errorf("service: profile: activate: preflight failed: %s", strings.Join(failures, "; "))
+	}
+
 	var artifacts []profile.LockArtifact
 
 	agentArtifacts, agentPaths, err := s.materializeAgents(contents.Agents, in.RepoRoot, projectProfile, prevOwned, at)
@@ -477,10 +481,21 @@ func (s *ProfileService) materializeBlocks(blocks []profile.BlockAsset, repoRoot
 	joined := strings.Join(parts, "\n\n")
 
 	claudeMD := filepath.Join(repoRoot, "CLAUDE.md")
+	created := false
+	if _, statErr := os.Stat(claudeMD); os.IsNotExist(statErr) {
+		created = true
+	}
+
 	if err := managedblock.Upsert(claudeMD, profileBlockMarker, profileBlockVersion, joined); err != nil {
 		return nil, fmt.Errorf("upsert profile block: %w", err)
 	}
-	return &profile.LockArtifact{Kind: "block", Path: claudeMD, Marker: profileBlockMarker}, nil
+	return &profile.LockArtifact{
+		Kind:    profile.LockArtifactKindBlock,
+		Path:    claudeMD,
+		Marker:  profileBlockMarker,
+		Created: created,
+		Digest:  profile.BlockDigest(joined),
+	}, nil
 }
 
 // materializeRules inserts every RuleSpec as a provenance-marked rule memory
@@ -612,6 +627,13 @@ func escapeManagedBlockSyntax(s string) string {
 // ActiveLock reads and parses the activation lock for the project rooted at
 // repoRoot. present is false (with a nil lock and nil error) when no lock
 // exists yet — a workspace that has never activated a profile.
+//
+// SPEC-105 DD7 wires Lock.Validate() here — previously never called by any
+// production code path. A lock whose schema_version is newer than this
+// binary understands surfaces model.ErrProfileLockUnsupported: this build
+// cannot safely determine what such a lock's Backup/Created/Digest fields
+// mean, so it must refuse to act on it (Reconcile/Deactivate) rather than
+// silently misinterpreting them.
 func (s *ProfileService) ActiveLock(repoRoot string) (lock *profile.Lock, present bool, err error) {
 	path := profile.LockPath(repoRoot)
 	data, readErr := os.ReadFile(path)
@@ -625,6 +647,9 @@ func (s *ProfileService) ActiveLock(repoRoot string) (lock *profile.Lock, presen
 	parsed, parseErr := profile.ParseLock(data)
 	if parseErr != nil {
 		return nil, false, fmt.Errorf("service: profile: active lock: %w", parseErr)
+	}
+	if validateErr := parsed.Validate(); validateErr != nil {
+		return nil, false, fmt.Errorf("service: profile: active lock: %w: %w", model.ErrProfileLockUnsupported, validateErr)
 	}
 	return parsed, true, nil
 }
@@ -679,11 +704,40 @@ func removeArtifact(a profile.LockArtifact) error {
 			return err
 		}
 	case profile.LockArtifactKindBlock:
-		if err := managedblock.Remove(a.Path, a.Marker); err != nil {
-			return err
-		}
+		return removeBlockArtifact(a)
 	default:
 		return fmt.Errorf("unknown artifact kind %q", a.Kind)
+	}
+	return nil
+}
+
+// removeBlockArtifact removes a's managed block from its containing file
+// (CLAUDE.md) and, when a.Created is true — meaning that file did not exist
+// before this activation created it (SPEC-105 DD7/DD14) — deletes the file
+// entirely if removing the block left it empty or containing only
+// whitespace (AC14). A CLAUDE.md that predates the activation (Created ==
+// false) is NEVER deleted, no matter how empty the remaining prose is —
+// deleting a file mneme did not create is not this function's call to make.
+func removeBlockArtifact(a profile.LockArtifact) error {
+	if err := managedblock.Remove(a.Path, a.Marker); err != nil {
+		return err
+	}
+	if !a.Created {
+		return nil
+	}
+
+	data, err := os.ReadFile(a.Path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if strings.TrimSpace(string(data)) != "" {
+		return nil
+	}
+	if err := os.Remove(a.Path); err != nil && !os.IsNotExist(err) {
+		return err
 	}
 	return nil
 }
@@ -831,6 +885,100 @@ func (s *ProfileService) DetectStaleness(repoRoot string, cached profile.Snapsho
 
 	stale, msg = lock.StalenessAgainst(cached)
 	return stale, msg, nil
+}
+
+// preflightActivate checks every filesystem precondition Activate's
+// materialization phase will need — BEFORE any of it runs (SPEC-105 DD16):
+// the parent directory of each agent file is creatable/writable, skillsDir
+// is writable when the profile declares skills, CLAUDE.md is writable (or
+// creatable) when the profile declares blocks, and this run's backup
+// directory (profile.BackupDir) is creatable. Returns the list of unmet
+// preconditions in human-readable form; an empty list means Activate may
+// proceed. Each check is a real (transient, immediately-undone) write probe
+// rather than a permission-bit inspection, so it catches ACL-based
+// restrictions a bare os.Stat can't see — and so it behaves identically on
+// Windows, where Unix permission bits do not apply (this repo's other
+// OS-specific branches are all runtime.GOOS checks, never build tags).
+func preflightActivate(repoRoot string, c *profile.Contents, skillsDir string, at time.Time) []string {
+	var failures []string
+
+	if len(c.Agents) > 0 {
+		agentsDir := filepath.Join(repoRoot, ".claude", "agents")
+		if msg := checkDirWritable(agentsDir); msg != "" {
+			failures = append(failures, msg)
+		}
+	}
+
+	if len(c.Skills) > 0 {
+		if skillsDir == "" {
+			failures = append(failures, "profile declares skills but no skills directory is configured")
+		} else if msg := checkDirWritable(skillsDir); msg != "" {
+			failures = append(failures, msg)
+		}
+	}
+
+	if len(c.Blocks) > 0 {
+		if msg := checkFileWritableOrCreatable(filepath.Join(repoRoot, "CLAUDE.md")); msg != "" {
+			failures = append(failures, msg)
+		}
+	}
+
+	if msg := checkDirWritable(profile.BackupDir(repoRoot, at)); msg != "" {
+		failures = append(failures, msg)
+	}
+
+	return failures
+}
+
+// checkDirWritable reports "" when dir (or its nearest existing ancestor,
+// when dir itself does not exist yet) accepts a transient probe file, or a
+// human-readable failure message otherwise. Creating and immediately
+// removing a real file — rather than inspecting permission bits — is what
+// makes this reliable across ACL-based restrictions and across platforms.
+func checkDirWritable(dir string) string {
+	existing := nearestExistingAncestor(dir)
+
+	probe := filepath.Join(existing, ".mneme-preflight-probe")
+	f, err := os.OpenFile(probe, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o644)
+	if err != nil {
+		return fmt.Sprintf("%s is not writable: %v", existing, err)
+	}
+	_ = f.Close()
+	_ = os.Remove(probe)
+	return ""
+}
+
+// checkFileWritableOrCreatable reports "" when path already exists and is
+// writable, or — when it does not exist yet — when its parent directory
+// passes checkDirWritable (i.e. path is creatable).
+func checkFileWritableOrCreatable(path string) string {
+	if _, err := os.Stat(path); err == nil {
+		f, openErr := os.OpenFile(path, os.O_WRONLY, 0)
+		if openErr != nil {
+			return fmt.Sprintf("%s is not writable: %v", path, openErr)
+		}
+		_ = f.Close()
+		return ""
+	}
+	return checkDirWritable(filepath.Dir(path))
+}
+
+// nearestExistingAncestor walks up from dir until it finds a directory that
+// already exists, returning dir itself when it already exists. Used so a
+// writability probe never needs to call MkdirAll first — that would create
+// directories as a side effect of a check that might still fail for an
+// entirely different reason.
+func nearestExistingAncestor(dir string) string {
+	for {
+		if info, err := os.Stat(dir); err == nil && info.IsDir() {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return dir
+		}
+		dir = parent
+	}
 }
 
 // writeLock serialises lock and writes it atomically (temp file + rename,
