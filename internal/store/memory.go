@@ -423,6 +423,16 @@ func (s *MemoryStore) HardDelete(ctx context.Context, olderThan time.Time) (int,
 // them. Runs inside a single transaction so the id collection and the delete
 // observe a consistent snapshot. Idempotent: a source with no matching rows
 // returns an empty, non-nil slice and no error.
+//
+// project == "" means "the rows with no project", not "the rows whose
+// project column is the literal empty string": insertMemory persists an
+// empty Project as SQL NULL (toNullString), so a naive `project = ''` clause
+// never matches those rows (SPEC-105 §1.2) — this is exactly why
+// PurgeProfileRules could not reach the cross-repo orphans a slug-less
+// SaveProfileRule call used to create. The clause below treats project=""
+// and project IS NULL as the same condition; a non-empty project keeps its
+// original exact-match behaviour and, deliberately, still never matches a
+// NULL row.
 func (s *MemoryStore) HardDeleteBySource(ctx context.Context, project, source string) ([]string, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -430,8 +440,13 @@ func (s *MemoryStore) HardDeleteBySource(ctx context.Context, project, source st
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	const selectQ = `SELECT id FROM memories WHERE project = ? AND source = ?`
-	rows, err := tx.QueryContext(ctx, selectQ, project, source)
+	// The SELECT and DELETE clauses MUST stay byte-identical — divergence
+	// here would mean the ids this method reports as deleted are not the
+	// same set the DELETE actually removed.
+	const whereClause = `(project = ? OR (? = '' AND project IS NULL)) AND source = ?`
+
+	selectQ := `SELECT id FROM memories WHERE ` + whereClause
+	rows, err := tx.QueryContext(ctx, selectQ, project, project, source)
 	if err != nil {
 		return nil, fmt.Errorf("store: hard delete by source: select: %w", err)
 	}
@@ -455,8 +470,8 @@ func (s *MemoryStore) HardDeleteBySource(ctx context.Context, project, source st
 		return deleted, nil
 	}
 
-	const deleteQ = `DELETE FROM memories WHERE project = ? AND source = ?`
-	if _, err := tx.ExecContext(ctx, deleteQ, project, source); err != nil {
+	deleteQ := `DELETE FROM memories WHERE ` + whereClause
+	if _, err := tx.ExecContext(ctx, deleteQ, project, project, source); err != nil {
 		return nil, fmt.Errorf("store: hard delete by source: delete: %w", err)
 	}
 

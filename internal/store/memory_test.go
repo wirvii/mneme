@@ -1390,6 +1390,175 @@ func TestHardDeleteBySource_FTSInvariant(t *testing.T) {
 // TestHardDeleteBySource_BeginTxErrorPropagates verifies that HardDeleteBySource
 // surfaces a failure starting the transaction (here: the underlying *sql.DB is
 // already closed) instead of panicking or silently succeeding.
+// TestHardDeleteBySource_EmptyProjectMatchesNullRows (SPEC-105 AC22) proves
+// the exact bug found in §1.2 of the spec: insertMemory persists an empty
+// Project as SQL NULL (toNullString), so `WHERE project = ''` never matches
+// those rows. HardDeleteBySource(ctx, "", source) must reach them.
+func TestHardDeleteBySource_EmptyProjectMatchesNullRows(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	const source = "profile:chatea-pro"
+	var orphanIDs []string
+	for i := 0; i < 3; i++ {
+		m := makeMemory()
+		m.Project = "" // persisted as NULL, not ""
+		m.Type = model.TypeRule
+		m.AppliesTo = []string{"**"}
+		m.Source = source
+		created, err := s.Create(ctx, m)
+		if err != nil {
+			t.Fatalf("Create orphan %d: %v", i, err)
+		}
+		orphanIDs = append(orphanIDs, created.ID)
+	}
+
+	deleted, err := s.HardDeleteBySource(ctx, "", source)
+	if err != nil {
+		t.Fatalf("HardDeleteBySource: %v", err)
+	}
+	if len(deleted) != 3 {
+		t.Fatalf("expected 3 deleted rows with project=NULL, got %d (ids: %v)", len(deleted), deleted)
+	}
+
+	var remaining int
+	if err := s.db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM memories WHERE id IN (?, ?, ?)",
+		orphanIDs[0], orphanIDs[1], orphanIDs[2],
+	).Scan(&remaining); err != nil {
+		t.Fatalf("count remaining: %v", err)
+	}
+	if remaining != 0 {
+		t.Errorf("expected 0 rows remaining for the NULL-project orphans, got %d", remaining)
+	}
+}
+
+// TestHardDeleteBySource_NamedProjectDoesNotTouchNullRows (SPEC-105 AC22)
+// verifies the companion guarantee: calling with a non-empty project must
+// never reach the NULL-project rows — the two clauses of DD9's new WHERE
+// must stay mutually exclusive.
+func TestHardDeleteBySource_NamedProjectDoesNotTouchNullRows(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	const source = "profile:chatea-pro"
+
+	orphan := makeMemory()
+	orphan.Project = ""
+	orphan.Type = model.TypeRule
+	orphan.AppliesTo = []string{"**"}
+	orphan.Source = source
+	orphanCreated, err := s.Create(ctx, orphan)
+	if err != nil {
+		t.Fatalf("Create orphan: %v", err)
+	}
+
+	deleted, err := s.HardDeleteBySource(ctx, "some-project", source)
+	if err != nil {
+		t.Fatalf("HardDeleteBySource: %v", err)
+	}
+	if len(deleted) != 0 {
+		t.Fatalf("expected 0 deleted rows for a named project with no matching rows, got %d", len(deleted))
+	}
+
+	if _, err := s.Get(ctx, orphanCreated.ID); err != nil {
+		t.Fatalf("expected orphan row to survive a named-project purge, got err=%v", err)
+	}
+}
+
+// TestHardDeleteBySource_ReturnedIDsMatchDeletedRows guards against the
+// SELECT and DELETE clauses of HardDeleteBySource silently diverging: the
+// ids it reports must be exactly the ids that no longer exist afterward.
+func TestHardDeleteBySource_ReturnedIDsMatchDeletedRows(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	const source = "profile:chatea-pro"
+	m := makeMemory()
+	m.Project = ""
+	m.Type = model.TypeRule
+	m.AppliesTo = []string{"**"}
+	m.Source = source
+	created, err := s.Create(ctx, m)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	deleted, err := s.HardDeleteBySource(ctx, "", source)
+	if err != nil {
+		t.Fatalf("HardDeleteBySource: %v", err)
+	}
+	if len(deleted) != 1 || deleted[0] != created.ID {
+		t.Fatalf("expected deleted ids [%s], got %v", created.ID, deleted)
+	}
+
+	var remaining int
+	if err := s.db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM memories WHERE id = ?", created.ID,
+	).Scan(&remaining); err != nil {
+		t.Fatalf("count remaining: %v", err)
+	}
+	if remaining != 0 {
+		t.Errorf("expected the reported id to actually be gone, found %d rows", remaining)
+	}
+}
+
+// TestList_BySourceAndScope_IsolatesOrphans verifies that List with Source
+// and Scope filters (and no Project filter) surfaces exactly the
+// project-scoped, provenance-marked rows that leaked into the store with an
+// empty project — the primitive PurgeProfileRules' orphan sweep relies on
+// (SPEC-105 DD9 — no new store primitive needed, ListOptions.Source already
+// exists).
+func TestList_BySourceAndScope_IsolatesOrphans(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	const source = "profile:chatea-pro"
+
+	orphan := makeMemory()
+	orphan.Project = ""
+	orphan.Type = model.TypeRule
+	orphan.AppliesTo = []string{"**"}
+	orphan.Source = source
+	if _, err := s.Create(ctx, orphan); err != nil {
+		t.Fatalf("Create orphan: %v", err)
+	}
+
+	scoped := makeMemory()
+	scoped.Project = "proj-x"
+	scoped.Type = model.TypeRule
+	scoped.AppliesTo = []string{"**"}
+	scoped.Source = source
+	if _, err := s.Create(ctx, scoped); err != nil {
+		t.Fatalf("Create scoped: %v", err)
+	}
+
+	unrelated := makeMemory()
+	unrelated.Project = ""
+	if _, err := s.Create(ctx, unrelated); err != nil {
+		t.Fatalf("Create unrelated: %v", err)
+	}
+
+	got, err := s.List(ctx, ListOptions{
+		Type:   model.TypeRule,
+		Scope:  model.ScopeProject,
+		Source: source,
+		Limit:  100,
+	})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+
+	if len(got) != 2 {
+		t.Fatalf("expected 2 rows (orphan + scoped) with source=%q, got %d", source, len(got))
+	}
+	for _, m := range got {
+		if m.Source != source {
+			t.Errorf("unexpected source %q in result", m.Source)
+		}
+	}
+}
+
 func TestHardDeleteBySource_BeginTxErrorPropagates(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.db.Close(); err != nil {
