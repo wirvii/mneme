@@ -65,12 +65,13 @@ func treeHash(t *testing.T, root string) string {
 // *store.MemoryStore so a test can seed an orphan row directly — something
 // SaveProfileRule can no longer do since SPEC-105 DD8 layer 1.
 type deactivationTestEnv struct {
-	svc         *service.ProfileService
-	mem         *service.MemoryService
-	globalStore *store.MemoryStore
-	repoRoot    string
-	skillsDir   string
-	configPath  string
+	svc          *service.ProfileService
+	mem          *service.MemoryService
+	projectStore *store.MemoryStore
+	globalStore  *store.MemoryStore
+	repoRoot     string
+	skillsDir    string
+	configPath   string
 }
 
 // newDeactivationTestEnv builds the "acme" fixture profile (same shape as
@@ -116,7 +117,7 @@ func newDeactivationTestEnv(t *testing.T) deactivationTestEnv {
 	)
 
 	return deactivationTestEnv{
-		svc: svc, mem: mem, globalStore: globalStore,
+		svc: svc, mem: mem, projectStore: projectStore, globalStore: globalStore,
 		repoRoot: repoRoot, skillsDir: skillsDir, configPath: configPath,
 	}
 }
@@ -381,6 +382,51 @@ func TestDeactivateProject_ReportsOrphanRules(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected orphan rule %s in OrphanRuleIDs, got %v", orphanID, result.OrphanRuleIDs)
+	}
+}
+
+// TestDeactivateProject_ReportsSupersededProfileRules (SPEC-105 AC32 live
+// verification, post-implementation) verifies that a profile rule marked
+// superseded by an unrelated `conflicts scan --apply` still appears in
+// DeactivateProject's RuleIDs — the dry-run report must never undercount
+// what --apply is about to physically delete (PurgeProfileRules/
+// HardDeleteBySource does not respect superseded_by either).
+func TestDeactivateProject_ReportsSupersededProfileRules(t *testing.T) {
+	env := newDeactivationTestEnv(t)
+	ctx := context.Background()
+
+	if _, err := env.svc.Activate(ctx, service.ActivationInput{RepoRoot: env.repoRoot, Name: "acme", Commit: "c1"}); err != nil {
+		t.Fatalf("Activate: %v", err)
+	}
+
+	lock, _, err := env.svc.ActiveLock(env.repoRoot)
+	if err != nil {
+		t.Fatalf("ActiveLock: %v", err)
+	}
+	if len(lock.Rules) != 1 {
+		t.Fatalf("expected exactly 1 rule in the lock, got %d", len(lock.Rules))
+	}
+	ruleID := lock.Rules[0].ID
+
+	// Simulate an unrelated `conflicts scan --apply` judging this rule
+	// superseded by some other (here, made-up) memory id.
+	if err := env.projectStore.SetSupersededBy(ctx, ruleID, "019f0000-0000-7000-8000-000000000000"); err != nil {
+		t.Fatalf("SetSupersededBy: %v", err)
+	}
+
+	result, err := env.svc.DeactivateProject(ctx, service.DeactivateInput{RepoRoot: env.repoRoot, Apply: false})
+	if err != nil {
+		t.Fatalf("DeactivateProject: %v", err)
+	}
+
+	found := false
+	for _, id := range result.RuleIDs {
+		if id == ruleID {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected the superseded rule %s to still appear in RuleIDs, got %v", ruleID, result.RuleIDs)
 	}
 }
 

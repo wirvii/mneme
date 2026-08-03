@@ -485,3 +485,92 @@ func TestListOrphanProfileRuleIDs_FindsGlobalProjectScopedRows(t *testing.T) {
 		t.Fatalf("expected exactly [%s], got %v", created.ID, ids)
 	}
 }
+
+// TestListProfileRuleIDs_IncludesSupersededRows (SPEC-105 AC32 live
+// verification, post-implementation) verifies that ListProfileRuleIDs sees
+// a profile rule even after it has been marked superseded by an unrelated
+// `conflicts scan --apply` — PurgeProfileRules/HardDeleteBySource deletes a
+// profile-sourced row regardless of superseded_by, so excluding it here
+// would make the observer disagree with what the purge actually does,
+// which is exactly what made Converged report permanent divergence for a
+// workspace that had, in every practical sense, already converged.
+func TestListProfileRuleIDs_IncludesSupersededRows(t *testing.T) {
+	svc, shared := newSharedStoreTestService(t, "test/project")
+	ctx := context.Background()
+
+	winner, err := svc.SaveProfileRule(ctx, model.SaveRequest{
+		Title: "Winner", Content: "content", AppliesTo: []string{"**"},
+	}, "acme")
+	if err != nil {
+		t.Fatalf("SaveProfileRule (winner): %v", err)
+	}
+	loser, err := svc.SaveProfileRule(ctx, model.SaveRequest{
+		Title: "Loser", Content: "content", AppliesTo: []string{"**"},
+	}, "acme")
+	if err != nil {
+		t.Fatalf("SaveProfileRule (loser): %v", err)
+	}
+
+	// This is the store-level primitive conflicts.persistVerdict uses for a
+	// "supersedes" judgment — accessed directly here since the test only
+	// needs the resulting column state, not the LLM judge pipeline.
+	if err := shared.SetSupersededBy(ctx, loser.ID, winner.ID); err != nil {
+		t.Fatalf("SetSupersededBy: %v", err)
+	}
+
+	ids, truncated, err := svc.ListProfileRuleIDs(ctx, "acme")
+	if err != nil {
+		t.Fatalf("ListProfileRuleIDs: %v", err)
+	}
+	if truncated {
+		t.Error("expected truncated=false")
+	}
+	if len(ids) != 2 {
+		t.Fatalf("expected both ids (including the superseded one), got %d: %v", len(ids), ids)
+	}
+	foundLoser := false
+	for _, id := range ids {
+		if id == loser.ID {
+			foundLoser = true
+		}
+	}
+	if !foundLoser {
+		t.Errorf("expected the superseded rule %s among %v", loser.ID, ids)
+	}
+}
+
+// TestListOrphanProfileRuleIDs_IncludesSupersededRows mirrors
+// TestListProfileRuleIDs_IncludesSupersededRows for the global-store orphan
+// sweep: a superseded orphan row must still be reported, for the same
+// reason (the purge doesn't respect superseded_by either).
+func TestListOrphanProfileRuleIDs_IncludesSupersededRows(t *testing.T) {
+	svc, shared := newSharedStoreTestService(t, "")
+	ctx := context.Background()
+
+	orphan := &model.Memory{
+		Type:       model.TypeRule,
+		Scope:      model.ScopeProject,
+		Title:      "Orphan",
+		Content:    "content",
+		Project:    "",
+		AppliesTo:  []string{"**"},
+		Source:     "profile:chatea-pro",
+		Importance: 0.5,
+		DecayRate:  0.01,
+	}
+	created, err := shared.Create(ctx, orphan)
+	if err != nil {
+		t.Fatalf("seed orphan: %v", err)
+	}
+	if err := shared.SetSupersededBy(ctx, created.ID, "019f0000-0000-7000-8000-000000000000"); err != nil {
+		t.Fatalf("SetSupersededBy: %v", err)
+	}
+
+	ids, err := svc.ListOrphanProfileRuleIDs(ctx, "chatea-pro")
+	if err != nil {
+		t.Fatalf("ListOrphanProfileRuleIDs: %v", err)
+	}
+	if len(ids) != 1 || ids[0] != created.ID {
+		t.Fatalf("expected exactly [%s] (including superseded), got %v", created.ID, ids)
+	}
+}

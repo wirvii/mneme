@@ -198,6 +198,61 @@ func TestReconcile_LockDivergesFromDB_Repairs(t *testing.T) {
 	}
 }
 
+// TestReconcile_SupersededRuleStillConverges (SPEC-105 AC32 live
+// verification, post-implementation — the important test of this pair)
+// verifies that a lock's declared rule going superseded — by an unrelated
+// `conflicts link .. supersedes` judgment, the exact shape found in the
+// live wapi verification — does NOT make the guard report divergence.
+// Before ListProfileRuleIDs included superseded rows, this would have
+// reported Action=repaired FOREVER: the superseded id is a permanent
+// database state (nothing un-supersedes it on its own), so every single
+// SessionStart would have rewritten agents/CLAUDE.md indefinitely — not
+// re-accumulating rules (DD4 already prevents that half), but exactly the
+// other half of the re-materialization bug this spec exists to fix.
+func TestReconcile_SupersededRuleStillConverges(t *testing.T) {
+	svc, mem, repoRoot, _ := newActivationTestEnv(t)
+	ctx := context.Background()
+	in := service.ActivationInput{Name: "acme", Commit: "c1"}
+
+	if _, err := svc.Reconcile(ctx, repoRoot, in); err != nil {
+		t.Fatalf("Reconcile (first): %v", err)
+	}
+
+	lock, _, err := svc.ActiveLock(repoRoot)
+	if err != nil {
+		t.Fatalf("ActiveLock: %v", err)
+	}
+	if len(lock.Rules) != 1 {
+		t.Fatalf("expected exactly 1 rule in the lock, got %d", len(lock.Rules))
+	}
+	ruleID := lock.Rules[0].ID
+
+	winner, err := mem.Save(ctx, model.SaveRequest{
+		Title: "Winner", Content: "content", Type: model.TypeDecision,
+	})
+	if err != nil {
+		t.Fatalf("Save winner: %v", err)
+	}
+
+	// Simulate an unrelated `conflicts link <winner> <rule> supersedes` —
+	// or equally, `conflicts scan --apply` reaching the same verdict —
+	// marking the profile rule superseded. PurgeProfileRules/
+	// HardDeleteBySource would still delete it regardless; the guard must
+	// agree with that and treat it as still "there".
+	if err := mem.ConflictLink(ctx, winner.ID, ruleID, "supersedes", "test"); err != nil {
+		t.Fatalf("ConflictLink: %v", err)
+	}
+
+	result, err := svc.Reconcile(ctx, repoRoot, in)
+	if err != nil {
+		t.Fatalf("Reconcile (second, after supersede): %v", err)
+	}
+	if result.Action != service.ReconcileNoop {
+		t.Errorf("Action: got %q, want %q — a superseded-but-still-provenance-tagged rule must not force a repair",
+			result.Action, service.ReconcileNoop)
+	}
+}
+
 // TestReconcile_MissingArtifactTriggersRepair (SPEC-105 AC4) verifies that
 // deleting a materialized agent file (without touching the lock at all)
 // makes the guard fail and Reconcile recreate it.

@@ -502,6 +502,46 @@ var profileRuleScanCap = 5000
 // profileRuleScanCap before finishing; the caller must treat that as
 // divergence, never as equality (DD3's fail-safe).
 //
+// IncludeSuperseded: true is deliberate (found via the AC32 live
+// verification, post-implementation): PurgeProfileRules/HardDeleteBySource
+// deletes a profile-sourced row regardless of its superseded_by state — a
+// row this provenance owns is derived/regenerable garbage-to-purge whether
+// or not an unrelated `conflicts scan` happened to mark it superseded by a
+// sibling. If this read excluded superseded rows while the purge does not,
+// the two sides would disagree about what "the database currently holds"
+// means: a profile rule that later gets marked superseded (a real,
+// reproduced case — an operator's `conflicts scan --apply` judged one
+// activation batch's rules superseded by a later batch's near-duplicates)
+// would vanish from this observation while still very much being a live,
+// enforced row: the PreToolUse hook's own rule query (rulesQueryProject/
+// rulesQueryGlobal in internal/cli/hook.go) selects on `type = 'rule' AND
+// deleted_at IS NULL` alone, with no superseded_by clause at all — it is
+// the one reader with actual teeth (a severity=block match exits 2 and
+// rejects the tool call), and a superseded rule still fires it in full.
+// Converged would then see the lock's declared id "missing", report
+// permanent divergence, and Reconcile would rewrite agents/blocks on every
+// single SessionStart forever — the exact re-materialization bug this spec
+// exists to fix, wearing the "superseded" disguise instead of the
+// "SessionStart never deactivates" one.
+//
+// deleted_at (soft-delete) is NOT given the same treatment, on purpose:
+// store.List's own deleted_at IS NULL filter is unconditional (no
+// ListOptions field can override it), and it is what loadActiveRules
+// itself relies on to decide a rule is no longer enforced — a soft-deleted
+// profile rule (the plausible path: internal/consolidation's decay sweep
+// runs with no Type filter and can soft-delete any memory, rule or not,
+// whose effective importance has decayed below threshold) is genuinely
+// inactive, not a spurious metadata annotation on an otherwise-live row.
+// Treating it as "still present" would make Converged report noop and
+// leave that rule permanently un-enforced with nothing to ever revive it.
+// Reporting it as missing — the current, unchanged behaviour — correctly
+// drives a repair: Deactivate's purge removes the tombstone (Hard-
+// DeleteBySource already reaches soft-deleted rows, unconditionally, by
+// design predating this spec) and Activate reinserts a fresh, undecayed
+// row. Unlike the superseded_by case, this is a one-time, self-resolving
+// repair (the new row gets a fresh decay clock) rather than a permanent,
+// every-session loop, so no fix was warranted here.
+//
 // Returns model.ErrProjectSlugRequired when !svc.HasProject(): without a
 // resolved project slug there is no project-scoped set to compare against
 // (DD9) — the caller should treat this the same way it treats "the profile's
@@ -513,10 +553,11 @@ func (svc *MemoryService) ListProfileRuleIDs(ctx context.Context, profileName st
 	}
 
 	rows, err := svc.projectStore.List(ctx, store.ListOptions{
-		Project: svc.project,
-		Type:    model.TypeRule,
-		Source:  profileSourcePrefix(profileName),
-		Limit:   profileRuleScanCap,
+		Project:           svc.project,
+		Type:              model.TypeRule,
+		Source:            profileSourcePrefix(profileName),
+		IncludeSuperseded: true,
+		Limit:             profileRuleScanCap,
 	})
 	if err != nil {
 		return nil, false, fmt.Errorf("service: list profile rule ids: %w", err)
@@ -538,12 +579,20 @@ func (svc *MemoryService) ListProfileRuleIDs(ctx context.Context, profileName st
 // profile:<name>} in globalStore can only be an orphan of that exact leak.
 // Does not require a resolved project slug — an orphan sweep is meaningful
 // from any repo (DD10).
+//
+// IncludeSuperseded: true for the exact same reason as ListProfileRuleIDs
+// (see its doc comment): PurgeProfileRules' orphan sweep
+// (HardDeleteBySource against the global store) does not respect
+// superseded_by either, so excluding a superseded orphan here would just
+// make DeactivateProject's report silently undercount what `deactivate
+// --apply` is actually about to delete.
 func (svc *MemoryService) ListOrphanProfileRuleIDs(ctx context.Context, profileName string) ([]string, error) {
 	rows, err := svc.globalStore.List(ctx, store.ListOptions{
-		Type:   model.TypeRule,
-		Scope:  model.ScopeProject,
-		Source: profileSourcePrefix(profileName),
-		Limit:  profileRuleScanCap,
+		Type:              model.TypeRule,
+		Scope:             model.ScopeProject,
+		Source:            profileSourcePrefix(profileName),
+		IncludeSuperseded: true,
+		Limit:             profileRuleScanCap,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("service: list orphan profile rule ids: %w", err)
