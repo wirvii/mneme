@@ -99,6 +99,23 @@ type Agent struct {
 	// behaviour unchanged.
 	HooksWriter func() error
 
+	// RetiredHooks, when non-nil, declares hook registrations that mneme
+	// wrote in the past and has since retired: the "Retire stale hooks" step
+	// calls it to learn which file and which HookPatches to purge, then
+	// removes them via removeHookCommands on EVERY install run — convergent
+	// and idempotent (D5, SPEC-106), the same posture SPEC-105 established
+	// for profile reconciliation. This exists because a hook contract can
+	// become obsolete (SPEC-106: the `Stop` event never delivered its
+	// payload to either agent) without the underlying registration
+	// disappearing on its own — something has to actively purge it, on
+	// hosts that keep running `mneme install` rather than starting fresh.
+	// nil means the agent has nothing to retire and the step is skipped
+	// entirely (e.g. today, no agent has a second generation of retirements
+	// yet). RetiredHooks and Hooks/HooksWriter MUST be disjoint by Command —
+	// see TestRetiredHooksDisjointFromHooks — or the same run would write and
+	// purge the same registration, oscillating the file between installs.
+	RetiredHooks func() (path string, patches []HookPatch, err error)
+
 	// AgentsDir, when non-empty, overrides the directory used by the "Agent models"
 	// step. When empty, the step is skipped entirely — appropriate for agents
 	// that do not use per-agent profile files (e.g. Codex in single-agent mode).
@@ -320,22 +337,28 @@ type installStep struct {
 // Step ordering:
 //  1. MCP server
 //  2. Session hooks
-//  3. Protocol injection
-//  4. Slash commands
-//  5. Agent profiles (dormant capacity — Agents is nil for both built-in
+//  3. Retire stale hooks (SPEC-106 — purges hook registrations mneme itself
+//     wrote in a past version and has since retired; gated on
+//     a.RetiredHooks != nil, and placed immediately AFTER "Session hooks" so
+//     the purge is always the last word on the hooks file for a given run,
+//     even if a future writer re-adds a stale entry)
+//  4. Protocol injection
+//  5. Slash commands
+//  6. Agent profiles (dormant capacity — Agents is nil for both built-in
 //     agents since SPEC-073; kept for agents that opt into it explicitly)
-//  6. Agent models (dormant capacity — gated on AgentsDir, which neither
+//  7. Agent models (dormant capacity — gated on AgentsDir, which neither
 //     built-in agent sets since SPEC-073)
-//  7. Remove legacy global agents (SPEC-073 — cleans up per-agent profiles
+//  8. Remove legacy global agents (SPEC-073 — cleans up per-agent profiles
 //     installed by older mneme versions; occupies the slot Agent
 //     profiles/models previously used for Claude Code)
-//  8. Workflow templates
-//  9. Skills (force = opts.Force || opts.ReinstallHooks)
+//  9. Workflow templates
 //
-// 10. Delegation hook (reinstall vs patch, depending on opts.ReinstallHooks)
-// 11. Workflow directories
-// 12. Migrate legacy workflow
-// 13. Personal ecosystem (only when opts.Personal)
+// 10. Skills (force = opts.Force || opts.ReinstallHooks)
+//
+// 11. Delegation hook (reinstall vs patch, depending on opts.ReinstallHooks)
+// 12. Workflow directories
+// 13. Migrate legacy workflow
+// 14. Personal ecosystem (only when opts.Personal)
 func (a *Agent) installSteps(opts InstallOptions) []installStep {
 	var steps []installStep
 
@@ -375,6 +398,33 @@ func (a *Agent) installSteps(opts InstallOptions) []installStep {
 			Name: "Session hooks",
 			Run: func() (string, error) {
 				return "", PatchHooks(a)
+			},
+		})
+	}
+
+	// Step 2b: Retire stale hooks (SPEC-106). Purges hook registrations mneme
+	// wrote in a past version and has since retired (see RetiredHooks
+	// godoc). Runs on EVERY install, unconditionally — no flag, no branch —
+	// so the purge is convergent and idempotent (D5). Skipped entirely when
+	// RetiredHooks is nil (nothing to retire). Placed immediately after
+	// "Session hooks" so it always has the last word on the hooks file for
+	// this run, mirroring the precedent set by "Remove legacy global agents"
+	// (SPEC-073) for per-agent profile cleanup.
+	if a.RetiredHooks != nil {
+		retiredHooks := a.RetiredHooks
+		steps = append(steps, installStep{
+			Name: "Retire stale hooks",
+			Run: func() (string, error) {
+				path, patches, err := retiredHooks()
+				if err != nil {
+					return "", err
+				}
+				removed, err := removeHookCommands(path, patches)
+				detail := "none"
+				if len(removed) > 0 {
+					detail = "removed: " + strings.Join(removed, ", ")
+				}
+				return detail, err
 			},
 		})
 	}

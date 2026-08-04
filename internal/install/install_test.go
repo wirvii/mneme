@@ -1381,6 +1381,79 @@ func TestInstallSteps_DefaultSequence(t *testing.T) {
 	}
 }
 
+// TestRetireStaleHooksStep_Detail verifies both branches of the "Retire
+// stale hooks" step's detail string (SPEC-106 AC12), using a synthetic Agent
+// whose RetiredHooks targets a temp settings file with a controllable
+// pre-existing "Stop" registration.
+func TestRetireStaleHooksStep_Detail(t *testing.T) {
+	dir := t.TempDir()
+	settingsPath := filepath.Join(dir, "settings.json")
+
+	agent := &Agent{
+		Name: "Synthetic",
+		Slug: "synthetic",
+		RetiredHooks: func() (string, []HookPatch, error) {
+			return settingsPath, []HookPatch{
+				{Event: "Stop", Command: "mneme hook session-end"},
+			}, nil
+		},
+	}
+
+	findStep := func(steps []installStep, name string) *installStep {
+		for i := range steps {
+			if steps[i].Name == name {
+				return &steps[i]
+			}
+		}
+		return nil
+	}
+
+	// Branch 1: nothing registered yet — detail must be "none".
+	steps := agent.installSteps(InstallOptions{})
+	step := findStep(steps, "Retire stale hooks")
+	if step == nil {
+		t.Fatal("expected \"Retire stale hooks\" step to be present")
+	}
+	detail, err := step.Run()
+	if err != nil {
+		t.Fatalf("Run() (nothing registered): %v", err)
+	}
+	if detail != "none" {
+		t.Errorf("detail (nothing registered) = %q, want \"none\"", detail)
+	}
+
+	// Branch 2: seed the file with the stale registration, then re-run.
+	seed := `{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"mneme hook session-end"}]}]}}`
+	if err := os.WriteFile(settingsPath, []byte(seed), 0o644); err != nil {
+		t.Fatalf("seed settings file: %v", err)
+	}
+	steps = agent.installSteps(InstallOptions{})
+	step = findStep(steps, "Retire stale hooks")
+	if step == nil {
+		t.Fatal("expected \"Retire stale hooks\" step to be present (2nd run)")
+	}
+	detail, err = step.Run()
+	if err != nil {
+		t.Fatalf("Run() (registered): %v", err)
+	}
+	if detail != "removed: mneme hook session-end" {
+		t.Errorf("detail (registered) = %q, want \"removed: mneme hook session-end\"", detail)
+	}
+}
+
+// TestRetireStaleHooksStep_SkippedWhenNil verifies that an Agent with
+// RetiredHooks == nil never produces a "Retire stale hooks" step — the field
+// is opt-in, not mandatory (SPEC-106).
+func TestRetireStaleHooksStep_SkippedWhenNil(t *testing.T) {
+	agent := &Agent{Name: "Synthetic", Slug: "synthetic"}
+	steps := agent.installSteps(InstallOptions{})
+	for _, s := range steps {
+		if s.Name == "Retire stale hooks" {
+			t.Error("\"Retire stale hooks\" step must not appear when RetiredHooks is nil")
+		}
+	}
+}
+
 // TestInstallSteps_ReinstallHooks verifies that with ReinstallHooks=true,
 // the "Delegation hook (reinstall)" step appears instead of "Delegation hook".
 func TestInstallSteps_ReinstallHooks(t *testing.T) {
