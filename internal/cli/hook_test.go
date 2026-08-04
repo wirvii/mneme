@@ -2,12 +2,40 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/wirvii/mneme/internal/model"
 )
+
+// TestRunHookSessionEnd_EmitsEmptyJSONObject covers SPEC-106 AC1 — the first
+// test this handler has ever had. runHookSessionEnd must emit exactly `{}\n`
+// (no prefix, no suffix) and return nil, and that output must round-trip
+// through json.Unmarshal into an empty map: valid JSON with zero decision
+// fields, so neither Claude Code nor Codex ever interprets it as a
+// block/continue instruction (D2 — the subcommand survives its contract's
+// retirement strictly as a no-op).
+func TestRunHookSessionEnd_EmitsEmptyJSONObject(t *testing.T) {
+	var buf bytes.Buffer
+	if err := runHookSessionEnd(&buf); err != nil {
+		t.Fatalf("runHookSessionEnd returned error: %v", err)
+	}
+
+	got := buf.String()
+	if got != "{}\n" {
+		t.Fatalf("runHookSessionEnd output = %q, want %q", got, "{}\n")
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &decoded); err != nil {
+		t.Fatalf("output is not valid JSON: %v", err)
+	}
+	if len(decoded) != 0 {
+		t.Errorf("decoded output has %d fields, want 0 (no decision fields): %#v", len(decoded), decoded)
+	}
+}
 
 // TestPrintContextHook_WithRules verifies that when resp.Rules is non-empty the
 // output contains the "## Active Rules" heading with [SEVERITY] tags and the

@@ -41,8 +41,14 @@ import (
 // Events:
 //   - session-start: loads and prints project context so the agent can consume
 //     it as part of its initialization
-//   - session-end: prints a reminder prompt that instructs the agent to call the
-//     mem_session_end MCP tool before the session is closed
+//   - session-end: retired no-op (SPEC-106 D2). No longer registered by
+//     `mneme install` (see Agent.RetiredHooks, which purges any pre-existing
+//     registration) — it survives only so a host that has not reinstalled
+//     keeps getting a harmless `{}` exit instead of a broken one. It never
+//     delivered a working session-end reminder: Claude Code discards a Stop
+//     hook's stdout, Codex rejects plain text for that event outright, and
+//     Stop fires once per turn anyway, not once per session. The session-end
+//     discipline that actually works lives in the operating manual, not here.
 //   - pre-tool-use: evaluates active rules against the current tool invocation
 //     (stdin JSON) and emits markdown to stdout; exits with code 2 to block.
 //     Also emits a context-only codegraph nudge (SPEC-044) for Read/Grep/Glob
@@ -75,7 +81,9 @@ human use.
 
 Events:
   session-start     Load and print project context for the agent to consume
-  session-end       Print a reminder for the agent to call mem_session_end
+  session-end       Retired no-op: emits {} (SPEC-106 — no longer registered
+                    by mneme install; kept only so hosts that have not
+                    reinstalled get a harmless exit)
   pre-tool-use      Evaluate rules against the current tool invocation (PreToolUse hook)
   enforce-delegation  Orchestrator-guard (Layer 2): blocks the orchestrator from
                     writing to, or running Bash against, a path outside the static
@@ -92,7 +100,7 @@ Events:
 			case "session-start":
 				return runHookSessionStart(cmd.Context(), os.Stdout, os.Stderr)
 			case "session-end":
-				return runHookSessionEnd()
+				return runHookSessionEnd(os.Stdout)
 			case "pre-tool-use":
 				return runHookPreToolUse(os.Stdin, os.Stdout, os.Stderr)
 			case "enforce-delegation":
@@ -563,15 +571,30 @@ func writeTokenizeResponse(w io.Writer, tokens []shell.Token) {
 	_ = enc.Encode(resp)
 }
 
-// runHookSessionEnd prints a prompt that reminds (or instructs) the agent to
-// call the mem_session_end MCP tool before the session closes.
+// runHookSessionEnd is registered against Claude Code's/Codex's "Stop" event
+// (SPEC-106 D2): a no-op that emits exactly `{}\n` and exits 0. `{}` is a
+// valid, decision-free response for both agents' Stop contract (S1), so a
+// host that still has the registration from a pre-SPEC-106 install (see
+// Agent.RetiredHooks — every fresh `mneme install` purges the registration
+// going forward) gets a harmless exit instead of a broken one.
 //
-// Design note: the session-end hook fires when the agent is stopping, but at
-// that point the hook does not have access to the conversation content. The
-// actual session summary must be created by the agent via the MCP tool. This
-// hook provides the prompt that triggers that behaviour.
-func runHookSessionEnd() error {
-	fmt.Fprint(os.Stdout, sessionEndPrompt)
+// The subcommand SURVIVES the retirement of its contract on purpose: it is
+// no longer registered by new installs, but a host that does not reinstall
+// keeps invoking it, and this no-op is what makes that safe.
+//
+// Why the contract was retired rather than fixed in place: "Stop" fires once
+// per TURN, not once per session (SessionStart/SessionEnd are the
+// once-per-session events) — even a working reminder would have fired after
+// every response, not just at session close. Separately, Claude Code
+// silently discards a Stop hook's stdout (only UserPromptSubmit,
+// UserPromptExpansion, and SessionStart inject stdout as context), so the
+// original plain-text reminder never reached the agent in the first place;
+// Codex actively REJECTS plain text for this event (invalid JSON output). No
+// stdin is read — the payload (stop_hook_active, transcript_path in Codex)
+// is unused; wiring a real session-end summary from it is BL-136, not this
+// hook's job.
+func runHookSessionEnd(w io.Writer) error {
+	fmt.Fprint(w, "{}\n")
 	return nil
 }
 
@@ -2182,16 +2205,3 @@ func logUnresolvedRoleEvent(input hookPreToolInput, identity CallerIdentity, cwd
 	_ = enforcelog.Append(path, ev, enforcelog.DefaultMaxBytes) //nolint:errcheck // best-effort telemetry
 }
 
-// sessionEndPrompt is the text printed by the session-end hook. It is designed
-// to be read by the agent as an instruction to execute before fully stopping.
-const sessionEndPrompt = `<!-- mneme:session-end:start -->
-IMPORTANT: Before you stop, you MUST call mem_session_end with a summary of this session.
-
-Use this format:
-mem_session_end({
-  summary: "## Goal\n<what was the goal of this session?>\n\n## Accomplished\n<what was completed?>\n\n## Next Steps\n<what should happen next?>\n\n## Relevant Files\n<which files were modified or are important?>"
-})
-
-Do not skip this step. The next session depends on this summary to pick up where you left off.
-<!-- mneme:session-end:end -->
-`

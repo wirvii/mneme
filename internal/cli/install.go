@@ -37,7 +37,7 @@ func newInstallCmd() *cobra.Command {
 memory system. This command:
 
   1. Registers the mneme MCP server in the agent's MCP config
-  2. Installs session-start and session-end hooks
+  2. Installs the session-start hook
   3. Injects the memory protocol into the agent's system prompt file
   4. Installs workflow templates and bundled skills
   5. Applies per-agent model assignments (from config or defaults, Claude only)
