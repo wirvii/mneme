@@ -80,7 +80,7 @@ func DisableProjectDelegationHook(repoRoot string) (string, error) {
 	}
 	settingsPath := filepath.Join(repoRoot, ".claude", "settings.json")
 
-	if err := removeHookCommands(settingsPath, patches); err != nil {
+	if _, err := removeHookCommands(settingsPath, patches); err != nil {
 		return "", fmt.Errorf("install: disable project delegation hook: %w", err)
 	}
 	return settingsPath, nil
@@ -125,42 +125,55 @@ func ProjectDelegationHookStatus(repoRoot string) (enabled bool, settingsPath st
 }
 
 // removeHookCommands deletes every command entry matching one of patches
-// from settingsPath's hooks map, pruning now-empty matcher-groups and
-// now-empty event arrays. Every other entry — other hook events, every
-// other top-level setting — is left untouched. A missing file, or one with
-// no matching command registered, is a no-op success (no write performed).
-func removeHookCommands(settingsPath string, patches []HookPatch) error {
-	data, err := os.ReadFile(settingsPath)
+// from path's hooks map, pruning now-empty matcher-groups and now-empty
+// event arrays. Every other entry — other hook events, every other
+// top-level setting — is left untouched. It works on ANY JSON file that
+// nests its hook registrations under a top-level "hooks" key — both
+// ~/.claude/settings.json (Claude Code) and ~/.codex/hooks.json (Codex)
+// share that exact shape (DD8, SPEC-106: there is no root difference to
+// adapt for), so this single implementation serves both agents unmodified.
+// A missing file, or one with no matching command registered, is a no-op
+// success: removed is nil and no write is performed — that no-write is what
+// keeps a repeated purge byte-identical (SPEC-106 AC10b).
+func removeHookCommands(path string, patches []HookPatch) (removed []string, err error) {
+	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil
+			return nil, nil
 		}
-		return fmt.Errorf("read settings: %w", err)
+		return nil, fmt.Errorf("read settings: %w", err)
 	}
 
 	settings := map[string]any{}
 	if len(data) > 0 {
 		if err := json.Unmarshal(data, &settings); err != nil {
-			return fmt.Errorf("parse settings: %w", err)
+			return nil, fmt.Errorf("parse settings: %w", err)
 		}
 	}
 
 	hooksRaw, ok := settings["hooks"]
 	if !ok || hooksRaw == nil {
-		return nil
+		return nil, nil
 	}
 	hooks, ok := hooksRaw.(map[string]any)
 	if !ok {
-		return fmt.Errorf("settings.hooks is not an object")
+		return nil, fmt.Errorf("settings.hooks is not an object")
 	}
 
+	// Group commands by event while preserving the order events first appear
+	// in patches, so the returned removed slice is deterministic regardless
+	// of Go's randomised map iteration order.
+	var events []string
 	byEvent := make(map[string][]string)
 	for _, p := range patches {
+		if _, seen := byEvent[p.Event]; !seen {
+			events = append(events, p.Event)
+		}
 		byEvent[p.Event] = append(byEvent[p.Event], p.Command)
 	}
 
-	changed := false
-	for event, commands := range byEvent {
+	for _, event := range events {
+		commands := byEvent[event]
 		eventListRaw, ok := hooks[event]
 		if !ok {
 			continue
@@ -170,17 +183,16 @@ func removeHookCommands(settingsPath string, patches []HookPatch) error {
 			continue
 		}
 
-		anyExisted := false
+		var removedHere []string
 		for _, cmd := range commands {
 			if hookCommandExists(eventList, cmd) {
-				anyExisted = true
-				break
+				removedHere = append(removedHere, cmd)
 			}
 		}
-		if !anyExisted {
+		if len(removedHere) == 0 {
 			continue
 		}
-		changed = true
+		removed = append(removed, removedHere...)
 
 		filtered := filterOutHookCommands(eventList, commands)
 		if len(filtered) == 0 {
@@ -190,19 +202,19 @@ func removeHookCommands(settingsPath string, patches []HookPatch) error {
 		}
 	}
 
-	if !changed {
-		return nil
+	if len(removed) == 0 {
+		return nil, nil
 	}
 
 	settings["hooks"] = hooks
 	out, err := json.MarshalIndent(settings, "", "  ")
 	if err != nil {
-		return fmt.Errorf("marshal: %w", err)
+		return removed, fmt.Errorf("marshal: %w", err)
 	}
-	if err := os.WriteFile(settingsPath, append(out, '\n'), 0o644); err != nil {
-		return fmt.Errorf("write: %w", err)
+	if err := os.WriteFile(path, append(out, '\n'), 0o644); err != nil {
+		return removed, fmt.Errorf("write: %w", err)
 	}
-	return nil
+	return removed, nil
 }
 
 // filterOutHookCommands returns eventList (an array of matcher-groups) with

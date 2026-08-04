@@ -20,10 +20,12 @@ import (
 //	  }
 //	}
 //
-// Key structural difference vs ~/.claude/settings.json: in hooks.json the
-// top-level root IS the hooks map (key "hooks"), whereas in settings.json
-// "hooks" is nested one level below other settings keys. Everything inside
-// (event → array of matcher-groups → array of hook commands) is identical.
+// Both hooks.json and ~/.claude/settings.json nest their hook registrations
+// under the SAME top-level "hooks" key — there is no root difference to
+// adapt for (DD8, SPEC-106; a previous version of this comment claimed
+// otherwise). removeHookCommands (delegation_project.go) operates on either
+// file unmodified. Everything inside that key (event → array of
+// matcher-groups → array of hook commands) is identical too.
 //
 // The function reuses hookCommandExists to prevent duplicate entries.
 //

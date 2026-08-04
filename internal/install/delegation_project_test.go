@@ -292,6 +292,148 @@ func TestEnableProjectDelegationHook_StripsLegacyScriptEntry(t *testing.T) {
 	assertHookEntry(t, hooks, "SessionStart", "mneme hook session-start")
 }
 
+// TestRemoveHookCommands_ReturnsRemovedCommands verifies that
+// removeHookCommands returns exactly the commands it actually deleted (not
+// merely the ones requested), and returns an empty removed slice — with no
+// error — when none of the requested commands were registered.
+func TestRemoveHookCommands_ReturnsRemovedCommands(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+
+	existing := `{
+  "hooks": {
+    "Stop": [
+      {"hooks": [{"type": "command", "command": "mneme hook session-end"}]}
+    ],
+    "SessionStart": [
+      {"hooks": [{"type": "command", "command": "mneme hook session-start"}]}
+    ]
+  }
+}`
+	if err := os.WriteFile(path, []byte(existing), 0o644); err != nil {
+		t.Fatalf("write initial settings: %v", err)
+	}
+
+	patches := []HookPatch{{Event: "Stop", Command: "mneme hook session-end"}}
+	removed, err := removeHookCommands(path, patches)
+	if err != nil {
+		t.Fatalf("removeHookCommands: %v", err)
+	}
+	if len(removed) != 1 || removed[0] != "mneme hook session-end" {
+		t.Errorf("removed = %v, want [\"mneme hook session-end\"]", removed)
+	}
+
+	// A second call finds nothing left to remove: empty removed, no error.
+	removed, err = removeHookCommands(path, patches)
+	if err != nil {
+		t.Fatalf("second removeHookCommands: %v", err)
+	}
+	if len(removed) != 0 {
+		t.Errorf("second call: removed = %v, want empty", removed)
+	}
+}
+
+// TestRemoveHookCommands_NoMatchDoesNotWrite is the unit-level proof behind
+// SPEC-106 AC10(b): when none of the requested commands are registered,
+// removeHookCommands must not touch the file at all — not even a
+// byte-identical rewrite. This is verified via mtime, which only changes on
+// an actual write.
+func TestRemoveHookCommands_NoMatchDoesNotWrite(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+
+	existing := `{
+  "hooks": {
+    "SessionStart": [
+      {"hooks": [{"type": "command", "command": "mneme hook session-start"}]}
+    ]
+  }
+}`
+	if err := os.WriteFile(path, []byte(existing), 0o644); err != nil {
+		t.Fatalf("write initial settings: %v", err)
+	}
+
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat before: %v", err)
+	}
+
+	patches := []HookPatch{{Event: "Stop", Command: "mneme hook session-end"}}
+	removed, err := removeHookCommands(path, patches)
+	if err != nil {
+		t.Fatalf("removeHookCommands: %v", err)
+	}
+	if len(removed) != 0 {
+		t.Errorf("removed = %v, want empty (nothing matched)", removed)
+	}
+
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat after: %v", err)
+	}
+	if !before.ModTime().Equal(after.ModTime()) {
+		t.Errorf("file was rewritten despite no match: mtime before=%v after=%v", before.ModTime(), after.ModTime())
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read after: %v", err)
+	}
+	if string(data) != existing {
+		t.Errorf("file content changed despite no match:\nbefore:\n%s\nafter:\n%s", existing, data)
+	}
+}
+
+// TestRemoveHookCommands_CodexHooksJSONRoot is the unit-level proof of DD8
+// (SPEC-106): removeHookCommands, unmodified, operates correctly on a file
+// shaped like ~/.codex/hooks.json — same top-level "hooks" key as
+// ~/.claude/settings.json — removing only the requested Stop command and
+// leaving SessionStart untouched.
+func TestRemoveHookCommands_CodexHooksJSONRoot(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hooks.json")
+
+	existing := `{
+  "hooks": {
+    "SessionStart": [
+      {"hooks": [{"type": "command", "command": "mneme hook session-start"}]}
+    ],
+    "Stop": [
+      {"hooks": [{"type": "command", "command": "mneme hook session-end"}]}
+    ]
+  }
+}`
+	if err := os.WriteFile(path, []byte(existing), 0o644); err != nil {
+		t.Fatalf("write initial hooks.json: %v", err)
+	}
+
+	patches := []HookPatch{{Event: "Stop", Command: "mneme hook session-end"}}
+	removed, err := removeHookCommands(path, patches)
+	if err != nil {
+		t.Fatalf("removeHookCommands: %v", err)
+	}
+	if len(removed) != 1 || removed[0] != "mneme hook session-end" {
+		t.Errorf("removed = %v, want [\"mneme hook session-end\"]", removed)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read after: %v", err)
+	}
+	var root map[string]any
+	if err := json.Unmarshal(data, &root); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	hooks, ok := root["hooks"].(map[string]any)
+	if !ok {
+		t.Fatal("hooks key missing or not an object")
+	}
+	if _, exists := hooks["Stop"]; exists {
+		t.Errorf("Stop event should have been pruned entirely, still present: %#v", hooks["Stop"])
+	}
+	assertHookEntry(t, hooks, "SessionStart", "mneme hook session-start")
+}
+
 // TestProjectDelegationHookPatches_MatchGlobal verifies the project patches
 // carry the exact same commands as the global ClaudeCode().DelegationHook
 // registers, so opting in at project scope gives byte-identical enforcement
