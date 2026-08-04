@@ -1514,6 +1514,138 @@ func TestRetireStaleHooks_PreservesForeignStopEntries(t *testing.T) {
 	})
 }
 
+// TestRetiredHooksDisjointFromHooks covers AC21 (SPEC-106): the invariant
+// that keeps the install from oscillating between runs. If a Command ever
+// appeared in BOTH the registered hooks (Hooks() or HooksWriter) and
+// RetiredHooks()'s purge list, the "Session hooks" step would write it and
+// the very next "Retire stale hooks" step would delete it again in the SAME
+// run — every install would then produce a different file than the last,
+// silently breaking D5's idempotency guarantee even though every other test
+// stays green. This test intentionally lands AFTER Step 3 (see plan.md D-C):
+// before RetiredHooks was populated for any real agent, the same assertion
+// would have passed VACUOUSLY — green without checking anything.
+func TestRetiredHooksDisjointFromHooks(t *testing.T) {
+	cases := []struct {
+		name  string
+		agent *Agent
+	}{
+		{"ClaudeCode", ClaudeCode("/usr/local/bin/mneme")},
+		{"Codex", Codex("/usr/local/bin/mneme")},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			registered, err := registeredHookCommands(t, tc.agent)
+			if err != nil {
+				t.Fatalf("registeredHookCommands: %v", err)
+			}
+
+			var retired []string
+			if tc.agent.RetiredHooks != nil {
+				_, patches, err := tc.agent.RetiredHooks()
+				if err != nil {
+					t.Fatalf("RetiredHooks: %v", err)
+				}
+				for _, p := range patches {
+					retired = append(retired, p.Command)
+				}
+			}
+
+			if len(registered) == 0 || len(retired) == 0 {
+				return // nothing to overlap
+			}
+
+			registeredSet := make(map[string]bool, len(registered))
+			for _, c := range registered {
+				registeredSet[c] = true
+			}
+			for _, c := range retired {
+				if registeredSet[c] {
+					t.Errorf("%s: command %q appears in BOTH the registered hooks and RetiredHooks() — the install would write and purge it in the same run", tc.name, c)
+				}
+			}
+		})
+	}
+}
+
+// registeredHookCommands returns every hook Command an agent actively
+// registers today, regardless of which mechanism it uses: Hooks() directly
+// (Claude Code), or HooksWriter (Codex) — exercised against a scratch HOME
+// so no real file is ever touched, then introspected by walking the scratch
+// tree for any JSON file shaped like {"hooks": {...}} and collecting every
+// nested "command" value.
+func registeredHookCommands(t *testing.T, agent *Agent) ([]string, error) {
+	t.Helper()
+	var commands []string
+
+	if agent.Hooks != nil {
+		_, patches, err := agent.Hooks()
+		if err != nil {
+			return nil, err
+		}
+		for _, p := range patches {
+			commands = append(commands, p.Command)
+		}
+	}
+
+	if agent.HooksWriter != nil {
+		dir := t.TempDir()
+		t.Setenv("HOME", dir)
+		if err := agent.HooksWriter(); err != nil {
+			return nil, err
+		}
+
+		walkErr := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+			if err != nil || info.IsDir() || filepath.Ext(path) != ".json" {
+				return err
+			}
+			data, rerr := os.ReadFile(path)
+			if rerr != nil {
+				return rerr
+			}
+			var root map[string]any
+			if uerr := json.Unmarshal(data, &root); uerr != nil {
+				return nil // not JSON we care about
+			}
+			hooks, ok := root["hooks"].(map[string]any)
+			if !ok {
+				return nil
+			}
+			for _, eventListRaw := range hooks {
+				eventList, ok := eventListRaw.([]any)
+				if !ok {
+					continue
+				}
+				for _, item := range eventList {
+					group, ok := item.(map[string]any)
+					if !ok {
+						continue
+					}
+					inner, ok := group["hooks"].([]any)
+					if !ok {
+						continue
+					}
+					for _, h := range inner {
+						entry, ok := h.(map[string]any)
+						if !ok {
+							continue
+						}
+						if cmd, ok := entry["command"].(string); ok {
+							commands = append(commands, cmd)
+						}
+					}
+				}
+			}
+			return nil
+		})
+		if walkErr != nil {
+			return nil, walkErr
+		}
+	}
+
+	return commands, nil
+}
+
 // TestRetireStaleHooksStep_Detail verifies both branches of the "Retire
 // stale hooks" step's detail string (SPEC-106 AC12), using a synthetic Agent
 // whose RetiredHooks targets a temp settings file with a controllable
