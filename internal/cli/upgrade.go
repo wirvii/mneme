@@ -324,9 +324,10 @@ func indentLines(s string) string {
 // version — a process cannot load the logic or assets of a binary it hasn't
 // exec'd (see SPEC-067 / bug/upgrade-in-process-install-stale-assets).
 //
-// DetectInstalledAgents stays in-process: it only reads ~/.claude.json, a
-// stable, version-independent format, so running it with outgoing code is
-// safe (D4).
+// DetectInstalledAgents stays in-process: it reads ~/.claude.json AND
+// ~/.codex/config.toml (SPEC-106 D7 — Codex detection was previously
+// missing entirely), both stable, version-independent formats, so running
+// it with outgoing code is safe (D4).
 //
 // Failures are non-fatal: the binary on disk has already been replaced by
 // upgrader.Upgrade, so a failed re-provision step is reported as a warning

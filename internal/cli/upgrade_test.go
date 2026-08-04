@@ -39,6 +39,22 @@ func writeFakeClaudeJSON(t *testing.T, home string) {
 	}
 }
 
+// writeFakeCodexConfig writes a minimal ~/.codex/config.toml under home that
+// detectAgentsInHome recognises as an installed "codex" agent (a
+// [mcp_servers.mneme] table) — the gemelo of writeFakeClaudeJSON above, for
+// the "codex" branch of DetectInstalledAgents (SPEC-106 D7).
+func writeFakeCodexConfig(t *testing.T, home string) {
+	t.Helper()
+	codexDir := filepath.Join(home, ".codex")
+	if err := os.MkdirAll(codexDir, 0o755); err != nil {
+		t.Fatalf("mkdir .codex: %v", err)
+	}
+	content := "[mcp_servers.mneme]\ncommand = \"/usr/local/bin/mneme\"\nargs = [\"mcp\", \"--tools=agent\"]\n"
+	if err := os.WriteFile(filepath.Join(codexDir, "config.toml"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write fake config.toml: %v", err)
+	}
+}
+
 // stubInstallExec installs a fake installExec that records every call and
 // returns errs[slug] (nil if absent). It restores the original installExec
 // via t.Cleanup. No real process is ever executed — this respects
@@ -129,6 +145,59 @@ func TestPostUpgradeHooks_NoAgents(t *testing.T) {
 	}
 	if len(*calls) != 0 {
 		t.Fatalf("expected 0 installExec calls, got %d: %v", len(*calls), *calls)
+	}
+}
+
+// TestPostUpgradeHooks_CodexOnly covers AC15(a) (SPEC-106): a HOME with only
+// ~/.codex/config.toml installed yields exactly one installExec call, with
+// slug "codex" — the exact scenario DetectInstalledAgents used to be unable
+// to see at all (D7).
+func TestPostUpgradeHooks_CodexOnly(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeFakeCodexConfig(t, home)
+
+	calls := stubInstallExec(t, nil)
+
+	var buf bytes.Buffer
+	err := postUpgradeHooks(&buf, "/path/to/new/mneme")
+	if err != nil {
+		t.Fatalf("postUpgradeHooks returned error: %v", err)
+	}
+
+	if len(*calls) != 1 {
+		t.Fatalf("expected 1 installExec call, got %d: %v", len(*calls), *calls)
+	}
+	if (*calls)[0] != "/path/to/new/mneme|codex" {
+		t.Errorf("unexpected call: %q", (*calls)[0])
+	}
+}
+
+// TestPostUpgradeHooks_BothAgents covers AC15(b) (SPEC-106): a HOME with both
+// ~/.claude.json and ~/.codex/config.toml installed yields exactly two
+// installExec calls, in the fixed order claude-code then codex.
+func TestPostUpgradeHooks_BothAgents(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeFakeClaudeJSON(t, home)
+	writeFakeCodexConfig(t, home)
+
+	calls := stubInstallExec(t, nil)
+
+	var buf bytes.Buffer
+	err := postUpgradeHooks(&buf, "/path/to/new/mneme")
+	if err != nil {
+		t.Fatalf("postUpgradeHooks returned error: %v", err)
+	}
+
+	want := []string{"/path/to/new/mneme|claude-code", "/path/to/new/mneme|codex"}
+	if len(*calls) != len(want) {
+		t.Fatalf("expected %d installExec calls, got %d: %v", len(want), len(*calls), *calls)
+	}
+	for i := range want {
+		if (*calls)[i] != want[i] {
+			t.Errorf("call %d = %q, want %q", i, (*calls)[i], want[i])
+		}
 	}
 }
 

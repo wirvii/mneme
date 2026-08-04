@@ -22,6 +22,8 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+
+	"github.com/pelletier/go-toml/v2"
 )
 
 // HTTPClient is the minimal interface required for HTTP GET requests.
@@ -411,35 +413,96 @@ func CompareVersions(a, b string) int {
 	return 0
 }
 
-// DetectInstalledAgents returns the slugs of agents that have mneme configured.
-// Currently it checks:
-//   - "claude-code": ~/.claude.json contains a top-level mcpServers.mneme entry.
+// DetectInstalledAgents returns the slugs of agents that have mneme
+// configured, resolving HOME and delegating to detectAgentsInHome for the
+// actual per-agent checks. It is the ONLY function in this pair that can
+// fail — and only if HOME itself cannot be resolved — because
+// detectAgentsInHome (SPEC-106 D7) treats every other failure mode
+// (missing file, unreadable file, malformed content) as "this agent is not
+// installed", not as an upgrade-aborting error: `mneme upgrade` must never
+// stop re-provisioning agent B just because agent A's config happens to be
+// unreadable.
+//
+// Two criteria, evaluated independently (DD15):
+//   - "claude-code": <home>/.claude.json has a top-level mcpServers.mneme entry.
+//   - "codex": <home>/.codex/config.toml has a [mcp_servers.mneme] table.
+//
+// Returned in the fixed order ["claude-code", "codex"] when both are present.
 func DetectInstalledAgents() ([]string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, fmt.Errorf("upgrade: detect agents: home dir: %w", err)
 	}
+	return detectAgentsInHome(home), nil
+}
 
-	claudeJSON := filepath.Join(home, ".claude.json")
-	data, err := os.ReadFile(claudeJSON)
-	if os.IsNotExist(err) {
-		return nil, nil
+// detectAgentsInHome is the pure, injectable core of agent detection
+// (SPEC-106 DD13): it takes home directly instead of calling
+// os.UserHomeDir(), and never returns an error — so tests can drive every
+// combination of present/absent/malformed config files via t.TempDir()
+// without ever touching HOME or a real filesystem path (SPEC-085).
+//
+// Each candidate agent is evaluated in isolation (DD14): a problem with ONE
+// agent's config file (absent, unreadable, malformed) only rules out that
+// agent, never the others. The return order is always
+// ["claude-code", "codex"] when both are detected — deterministic, so
+// callers (postUpgradeHooks) re-provision agents in a stable sequence.
+func detectAgentsInHome(home string) []string {
+	var agents []string
+	if hasClaudeCodeMCPEntry(home) {
+		agents = append(agents, "claude-code")
 	}
+	if hasCodexMCPEntry(home) {
+		agents = append(agents, "codex")
+	}
+	return agents
+}
+
+// hasClaudeCodeMCPEntry reports whether <home>/.claude.json declares a
+// top-level mcpServers.mneme entry — the same file and key `mneme install
+// claude-code` itself writes to (WriteMCPConfig). Any read or parse failure
+// (missing file, unreadable, malformed JSON) is treated as "not installed",
+// never propagated as an error — this mirrors the pre-SPEC-106 behaviour for
+// malformed JSON ("don't fail the whole upgrade") and extends the same
+// tolerance to a missing/unreadable file, which used to abort ALL detection
+// (see DetectInstalledAgents' old %w on os.ReadFile) instead of just this one
+// agent.
+func hasClaudeCodeMCPEntry(home string) bool {
+	data, err := os.ReadFile(filepath.Join(home, ".claude.json"))
 	if err != nil {
-		return nil, fmt.Errorf("upgrade: detect agents: read %s: %w", claudeJSON, err)
+		return false
 	}
 
 	var root struct {
 		MCPServers map[string]json.RawMessage `json:"mcpServers"`
 	}
 	if err := json.Unmarshal(data, &root); err != nil {
-		// Malformed JSON — don't fail the whole upgrade; just skip detection.
-		return nil, nil
+		return false
+	}
+	_, ok := root.MCPServers["mneme"]
+	return ok
+}
+
+// hasCodexMCPEntry reports whether <home>/.codex/config.toml declares a
+// [mcp_servers.mneme] table — the exact path install.Codex() writes to
+// (WriteCodexConfig), deliberately NOT $CODEX_HOME (DD16: "detect where I
+// wrote"; honouring CODEX_HOME would require reworking the installer as a
+// whole, out of scope here). Symmetric with hasClaudeCodeMCPEntry: presence
+// of the table is the criterion (DD15) — `enabled=false` or a missing
+// `[mcp_servers.mneme.tools]` sub-table are NOT interpreted, and any read or
+// parse failure is "not installed", never an error.
+func hasCodexMCPEntry(home string) bool {
+	data, err := os.ReadFile(filepath.Join(home, ".codex", "config.toml"))
+	if err != nil {
+		return false
 	}
 
-	var agents []string
-	if _, ok := root.MCPServers["mneme"]; ok {
-		agents = append(agents, "claude-code")
+	var root struct {
+		MCPServers map[string]any `toml:"mcp_servers"`
 	}
-	return agents, nil
+	if err := toml.Unmarshal(data, &root); err != nil {
+		return false
+	}
+	_, ok := root.MCPServers["mneme"]
+	return ok
 }

@@ -307,6 +307,95 @@ func TestAtomicReplace(t *testing.T) {
 	}
 }
 
+// ---- detectAgentsInHome -------------------------------------------------------
+
+// TestDetectAgentsInHome covers AC13 (SPEC-106): the pure per-agent detector,
+// exercised over every present/absent/malformed combination via an injected
+// directory — never HOME, never t.Setenv — so it runs on every platform,
+// unlike TestDetectInstalledAgents below (which needs Unix $HOME semantics
+// and skips on Windows).
+func TestDetectAgentsInHome(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name        string
+		claudeJSON  string // "" = do not write the file
+		codexConfig string // "" = do not write the file
+		want        []string
+	}{
+		{
+			name:       "only claude-code",
+			claudeJSON: `{"mcpServers":{"mneme":{"command":"/usr/local/bin/mneme"}}}`,
+			want:       []string{"claude-code"},
+		},
+		{
+			name:        "only codex (impossible before SPEC-106)",
+			codexConfig: "[mcp_servers.mneme]\ncommand = \"/usr/local/bin/mneme\"\n",
+			want:        []string{"codex"},
+		},
+		{
+			name:        "both, fixed order claude-code then codex",
+			claudeJSON:  `{"mcpServers":{"mneme":{"command":"/usr/local/bin/mneme"}}}`,
+			codexConfig: "[mcp_servers.mneme]\ncommand = \"/usr/local/bin/mneme\"\n",
+			want:        []string{"claude-code", "codex"},
+		},
+		{
+			name: "neither file present",
+			want: nil,
+		},
+		{
+			name:        "claude-code malformed, codex valid",
+			claudeJSON:  `not json`,
+			codexConfig: "[mcp_servers.mneme]\ncommand = \"/usr/local/bin/mneme\"\n",
+			want:        []string{"codex"},
+		},
+		{
+			name:        "codex malformed, claude-code valid",
+			claudeJSON:  `{"mcpServers":{"mneme":{"command":"/usr/local/bin/mneme"}}}`,
+			codexConfig: "not = toml = broken [[[",
+			want:        []string{"claude-code"},
+		},
+		{
+			name:        "codex config.toml without an mneme entry",
+			codexConfig: "[mcp_servers.other]\ncommand = \"/usr/local/bin/other\"\n",
+			want:        nil,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			home := t.TempDir()
+			if tc.claudeJSON != "" {
+				if err := os.WriteFile(filepath.Join(home, ".claude.json"), []byte(tc.claudeJSON), 0o644); err != nil {
+					t.Fatalf("write .claude.json: %v", err)
+				}
+			}
+			if tc.codexConfig != "" {
+				codexDir := filepath.Join(home, ".codex")
+				if err := os.MkdirAll(codexDir, 0o755); err != nil {
+					t.Fatalf("mkdir .codex: %v", err)
+				}
+				if err := os.WriteFile(filepath.Join(codexDir, "config.toml"), []byte(tc.codexConfig), 0o644); err != nil {
+					t.Fatalf("write config.toml: %v", err)
+				}
+			}
+
+			got := detectAgentsInHome(home)
+			if len(got) != len(tc.want) {
+				t.Fatalf("detectAgentsInHome() = %v, want %v", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Errorf("detectAgentsInHome()[%d] = %q, want %q", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
 // ---- DetectInstalledAgents ---------------------------------------------------
 
 func TestDetectInstalledAgents(t *testing.T) {
