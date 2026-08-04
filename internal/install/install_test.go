@@ -1366,7 +1366,7 @@ func TestInstallSteps_DefaultSequence(t *testing.T) {
 	// "Slash commands" is required again — /mneme-init is restored as a thin
 	// wrapper around the mneme-init SKILL (SPEC-058 / EPIC agnostic-agents
 	// SS-5 dropped it; SPEC-067 restored it), so Commands is no longer nil.
-	required := []string{"MCP server", "Session hooks", "Operating manual", "Slash commands", "Remove legacy global agents", "Skills", "Workflow directories"}
+	required := []string{"MCP server", "Session hooks", "Retire stale hooks", "Operating manual", "Slash commands", "Remove legacy global agents", "Skills", "Workflow directories"}
 	for _, req := range required {
 		found := false
 		for _, n := range names {
@@ -1379,6 +1379,139 @@ func TestInstallSteps_DefaultSequence(t *testing.T) {
 			t.Errorf("missing required step %q", req)
 		}
 	}
+
+	// "Retire stale hooks" must sit immediately after "Session hooks"
+	// (SPEC-106 AC11) — this is the single authoritative sequence both
+	// Install() and the CLI RunE consume.
+	sessionHooksIdx, retireIdx := -1, -1
+	for i, n := range names {
+		if n == "Session hooks" {
+			sessionHooksIdx = i
+		}
+		if n == "Retire stale hooks" {
+			retireIdx = i
+		}
+	}
+	if sessionHooksIdx == -1 || retireIdx != sessionHooksIdx+1 {
+		t.Errorf("\"Retire stale hooks\" must be at index \"Session hooks\"+1: got sessionHooksIdx=%d retireIdx=%d in %v", sessionHooksIdx, retireIdx, names)
+	}
+}
+
+// TestClaudeCode_NoStopHookRegistered verifies that ClaudeCode().Hooks()
+// registers exactly one patch (SessionStart) and none for the retired "Stop"
+// event (SPEC-106 AC3).
+func TestClaudeCode_NoStopHookRegistered(t *testing.T) {
+	agent := ClaudeCode("/usr/local/bin/mneme")
+
+	_, patches, err := agent.Hooks()
+	if err != nil {
+		t.Fatalf("Hooks: %v", err)
+	}
+	if len(patches) != 1 {
+		t.Fatalf("Hooks() returned %d patches, want exactly 1: %+v", len(patches), patches)
+	}
+	if patches[0].Event != "SessionStart" || patches[0].Command != "mneme hook session-start" {
+		t.Errorf("Hooks()[0] = %+v, want {SessionStart, mneme hook session-start}", patches[0])
+	}
+	for _, p := range patches {
+		if p.Event == "Stop" {
+			t.Errorf("Hooks() must not register a Stop patch, found: %+v", p)
+		}
+	}
+}
+
+// TestRetireStaleHooks_PreservesForeignStopEntries covers AC8 (SPEC-106): a
+// pre-existing "Stop" registration that mixes mneme's retired command with a
+// user's own script survives the purge — only the exact "mneme hook
+// session-end" command is removed, never a whole matcher-group or event that
+// still has other entries in it.
+func TestRetireStaleHooks_PreservesForeignStopEntries(t *testing.T) {
+	const binPath = "/usr/local/bin/mneme"
+
+	t.Run("same matcher-group", func(t *testing.T) {
+		tmpHome := t.TempDir()
+		t.Setenv("HOME", tmpHome)
+
+		settingsDir := filepath.Join(tmpHome, ".claude")
+		if err := os.MkdirAll(settingsDir, 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		settingsPath := filepath.Join(settingsDir, "settings.json")
+		existing := `{
+  "hooks": {
+    "Stop": [
+      {"hooks": [
+        {"type": "command", "command": "mneme hook session-end"},
+        {"type": "command", "command": "/home/u/my-own-stop.sh"}
+      ]}
+    ]
+  }
+}`
+		if err := os.WriteFile(settingsPath, []byte(existing), 0o644); err != nil {
+			t.Fatalf("write initial settings: %v", err)
+		}
+
+		if err := Install(ClaudeCode(binPath), binPath); err != nil {
+			t.Fatalf("Install: %v", err)
+		}
+
+		data, err := os.ReadFile(settingsPath)
+		if err != nil {
+			t.Fatalf("read settings: %v", err)
+		}
+		var settings map[string]any
+		if err := json.Unmarshal(data, &settings); err != nil {
+			t.Fatalf("unmarshal settings: %v", err)
+		}
+		hooks, ok := settings["hooks"].(map[string]any)
+		if !ok {
+			t.Fatal("settings.hooks is not an object")
+		}
+		assertHookEntry(t, hooks, "Stop", "/home/u/my-own-stop.sh")
+		assertHookCount(t, hooks, "Stop", "mneme hook session-end", 0)
+	})
+
+	t.Run("distinct matcher-groups", func(t *testing.T) {
+		tmpHome := t.TempDir()
+		t.Setenv("HOME", tmpHome)
+
+		settingsDir := filepath.Join(tmpHome, ".claude")
+		if err := os.MkdirAll(settingsDir, 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		settingsPath := filepath.Join(settingsDir, "settings.json")
+		existing := `{
+  "hooks": {
+    "Stop": [
+      {"hooks": [{"type": "command", "command": "mneme hook session-end"}]},
+      {"hooks": [{"type": "command", "command": "/home/u/my-own-stop.sh"}]}
+    ]
+  }
+}`
+		if err := os.WriteFile(settingsPath, []byte(existing), 0o644); err != nil {
+			t.Fatalf("write initial settings: %v", err)
+		}
+
+		if err := Install(ClaudeCode(binPath), binPath); err != nil {
+			t.Fatalf("Install: %v", err)
+		}
+
+		data, err := os.ReadFile(settingsPath)
+		if err != nil {
+			t.Fatalf("read settings: %v", err)
+		}
+		var settings map[string]any
+		if err := json.Unmarshal(data, &settings); err != nil {
+			t.Fatalf("unmarshal settings: %v", err)
+		}
+		hooks, ok := settings["hooks"].(map[string]any)
+		if !ok {
+			t.Fatal("settings.hooks is not an object")
+		}
+		// mneme's own matcher-group is pruned entirely; the foreign one survives.
+		assertHookEntry(t, hooks, "Stop", "/home/u/my-own-stop.sh")
+		assertHookCount(t, hooks, "Stop", "mneme hook session-end", 0)
+	})
 }
 
 // TestRetireStaleHooksStep_Detail verifies both branches of the "Retire

@@ -61,6 +61,31 @@ func Codex(binaryPath string) *Agent {
 			return WriteCodexHooks(path)
 		},
 
+		// RetiredHooks purges the "Stop" -> "mneme hook session-end"
+		// registration a previous mneme version wrote to hooks.json
+		// (SPEC-106, D2/D4). Codex's Stop contract REJECTS this hook's
+		// output outright — plain text on stdout with exit 0 is invalid for
+		// this event (S1) — which is what surfaced the defect as a visible
+		// "Stop hook (failed)" error on every session close, even though the
+		// underlying bug (the hook never delivered a usable reminder to
+		// EITHER agent) predates Codex support. SessionStart is unaffected:
+		// in Codex, plain text IS injected as context for that event (S3),
+		// so it keeps working exactly as before. Every `mneme install codex`
+		// run now actively removes the stale registration — convergent and
+		// idempotent (D5), matching what WriteCodexHooks no longer writes
+		// (see TestRetiredHooksDisjointFromHooks).
+		RetiredHooks: func() (string, []HookPatch, error) {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return "", nil, fmt.Errorf("install: codex: retired hooks: home dir: %w", err)
+			}
+			path := filepath.Join(home, ".codex", "hooks.json")
+			patches := []HookPatch{
+				{Event: "Stop", Command: "mneme hook session-end"},
+			}
+			return path, patches, nil
+		},
+
 		// Manual injects the single-agent operating manual into ~/.codex/AGENTS.md
 		// as a managed block. Codex concatenates ~/.codex/AGENTS.md (global) with
 		// per-repo AGENTS.md files; the global managed block is always present.

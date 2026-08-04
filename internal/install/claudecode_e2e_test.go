@@ -49,6 +49,126 @@ func TestClaudeCodeInstall_Idempotency(t *testing.T) {
 	}
 }
 
+// TestClaudeCodeInstall_RetiresStopHook covers AC7 (SPEC-106): starting from a
+// pre-existing ~/.claude/settings.json that already registers the retired
+// Stop -> mneme hook session-end command (and nothing else in Stop), plus a
+// foreign PreToolUse entry and an unrelated top-level key, Install(ClaudeCode(...))
+// removes the Stop key entirely while leaving everything else untouched.
+func TestClaudeCodeInstall_RetiresStopHook(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	settingsDir := filepath.Join(tmpHome, ".claude")
+	if err := os.MkdirAll(settingsDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	settingsPath := filepath.Join(settingsDir, "settings.json")
+	existing := `{
+  "theme": "dark",
+  "hooks": {
+    "Stop": [
+      {"hooks": [{"type": "command", "command": "mneme hook session-end"}]}
+    ],
+    "PreToolUse": [
+      {"hooks": [{"type": "command", "command": "some-other-hook.sh"}]}
+    ]
+  }
+}`
+	if err := os.WriteFile(settingsPath, []byte(existing), 0o644); err != nil {
+		t.Fatalf("write initial settings: %v", err)
+	}
+
+	const binPath = "/usr/local/bin/mneme"
+	if err := Install(ClaudeCode(binPath), binPath); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+
+	data, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("read settings: %v", err)
+	}
+	var settings map[string]any
+	if err := json.Unmarshal(data, &settings); err != nil {
+		t.Fatalf("unmarshal settings: %v", err)
+	}
+
+	hooks, ok := settings["hooks"].(map[string]any)
+	if !ok {
+		t.Fatal("settings.hooks is not an object")
+	}
+	if _, exists := hooks["Stop"]; exists {
+		t.Errorf("Stop key must not exist after install, got %#v", hooks["Stop"])
+	}
+	assertHookEntry(t, hooks, "SessionStart", "mneme hook session-start")
+	assertHookEntry(t, hooks, "PreToolUse", "some-other-hook.sh")
+	if settings["theme"] != "dark" {
+		t.Errorf("theme = %v, want \"dark\"", settings["theme"])
+	}
+}
+
+// TestClaudeCodeInstall_IdempotencyWithPreexistingStopHook covers AC10(b) for
+// Claude Code: a HOME that already carries the retired Stop registration has
+// it purged on the first install; a second install finds nothing left to
+// remove for the Stop event and settings.json stays byte-identical from that
+// point on. This test asserts byte-identical content rather than mtime: the
+// "Session hooks" and "Delegation hook" steps (PatchHooks) unconditionally
+// rewrite settings.json on every install regardless of the "Retire stale
+// hooks" step's own no-write behaviour, so mtime is not a meaningful signal
+// at this full end-to-end level — the no-write proof for removeHookCommands
+// itself lives at the unit level (TestRemoveHookCommands_NoMatchDoesNotWrite)
+// and the "none" detail is covered by TestRetireStaleHooksStep_Detail.
+func TestClaudeCodeInstall_IdempotencyWithPreexistingStopHook(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	settingsDir := filepath.Join(tmpHome, ".claude")
+	if err := os.MkdirAll(settingsDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	settingsPath := filepath.Join(settingsDir, "settings.json")
+	existing := `{
+  "hooks": {
+    "Stop": [
+      {"hooks": [{"type": "command", "command": "mneme hook session-end"}]}
+    ]
+  }
+}`
+	if err := os.WriteFile(settingsPath, []byte(existing), 0o644); err != nil {
+		t.Fatalf("write initial settings: %v", err)
+	}
+
+	const binPath = "/usr/local/bin/mneme"
+
+	if err := Install(ClaudeCode(binPath), binPath); err != nil {
+		t.Fatalf("first Install: %v", err)
+	}
+	afterFirst, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("read settings after first install: %v", err)
+	}
+	var firstSettings map[string]any
+	if err := json.Unmarshal(afterFirst, &firstSettings); err != nil {
+		t.Fatalf("unmarshal after first install: %v", err)
+	}
+	if hooks, ok := firstSettings["hooks"].(map[string]any); ok {
+		if _, exists := hooks["Stop"]; exists {
+			t.Fatalf("precondition failed: Stop key still present after first install: %#v", hooks["Stop"])
+		}
+	}
+
+	if err := Install(ClaudeCode(binPath), binPath); err != nil {
+		t.Fatalf("second Install: %v", err)
+	}
+	afterSecond, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("read settings after second install: %v", err)
+	}
+
+	if !bytes.Equal(afterFirst, afterSecond) {
+		t.Errorf("settings.json not byte-identical between 1st and 2nd install:\n1st:\n%s\n2nd:\n%s", afterFirst, afterSecond)
+	}
+}
+
 // claudeCodeGoldenArtifactPaths returns the absolute paths of every artefact
 // a vanilla `mneme install claude-code` is expected to produce under tmpHome.
 func claudeCodeGoldenArtifactPaths(tmpHome string) []string {
@@ -125,9 +245,16 @@ func TestClaudeCodeInstall_VanillaGolden(t *testing.T) {
 		t.Fatalf("read settings.json: %v", err)
 	}
 	settings := string(settingsData)
-	for _, want := range []string{"mneme hook session-start", "mneme hook session-end", "mneme hook pre-tool-use", "mneme hook enforce-delegation"} {
+	for _, want := range []string{"mneme hook session-start", "mneme hook pre-tool-use", "mneme hook enforce-delegation"} {
 		if !strings.Contains(settings, want) {
 			t.Errorf("settings.json: expected hook command %q not found", want)
+		}
+	}
+	// AC5 (SPEC-106): "session-end" is retired from the Stop event — a
+	// vanilla install must never register it, nor the "Stop" key at all.
+	for _, mustNot := range []string{"mneme hook session-end", "\"Stop\""} {
+		if strings.Contains(settings, mustNot) {
+			t.Errorf("settings.json: must not contain %q (SPEC-106 D4), got:\n%s", mustNot, settings)
 		}
 	}
 

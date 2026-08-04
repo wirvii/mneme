@@ -27,7 +27,11 @@ func parseCodexHooks(t *testing.T, path string) map[string]any {
 }
 
 // TestWriteCodexHooks_NewFile verifies that WriteCodexHooks creates hooks.json
-// from scratch with the expected SessionStart and Stop entries.
+// from scratch with the expected SessionStart entry, and — the SPEC-106 AC4
+// regression this test now also guards — that the "Stop" key is ABSENT, not
+// merely unasserted: registering it never delivered a usable reminder (Codex
+// rejects plain-text stdout for that event) and it is retired in this asset
+// (see Codex().RetiredHooks for the purge of any pre-existing copy).
 func TestWriteCodexHooks_NewFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".codex", "hooks.json")
@@ -38,11 +42,12 @@ func TestWriteCodexHooks_NewFile(t *testing.T) {
 
 	hooks := parseCodexHooks(t, path)
 
-	for _, event := range []string{"SessionStart", "Stop"} {
-		list, ok := hooks[event].([]any)
-		if !ok || len(list) == 0 {
-			t.Errorf("%s: event missing or empty", event)
-		}
+	list, ok := hooks["SessionStart"].([]any)
+	if !ok || len(list) == 0 {
+		t.Error("SessionStart: event missing or empty")
+	}
+	if _, exists := hooks["Stop"]; exists {
+		t.Errorf("Stop: event must be absent (SPEC-106 D4), got %#v", hooks["Stop"])
 	}
 
 	// Verify the specific commands.
@@ -72,7 +77,6 @@ func TestWriteCodexHooks_NewFile(t *testing.T) {
 	}
 
 	checkCommand("SessionStart", "mneme hook session-start")
-	checkCommand("Stop", "mneme hook session-end")
 }
 
 // TestWriteCodexHooks_Idempotent verifies that running WriteCodexHooks twice
@@ -145,13 +149,12 @@ func TestWriteCodexHooks_NoDuplicateEntries(t *testing.T) {
 	if n := countCommand("SessionStart", "mneme hook session-start"); n != 1 {
 		t.Errorf("SessionStart: expected 1 occurrence of session-start, got %d", n)
 	}
-	if n := countCommand("Stop", "mneme hook session-end"); n != 1 {
-		t.Errorf("Stop: expected 1 occurrence of session-end, got %d", n)
-	}
 }
 
 // TestWriteCodexHooks_PreservesOtherHooks verifies that pre-existing hooks for
-// other events are not removed when WriteCodexHooks merges its entries.
+// other events are not removed when WriteCodexHooks merges its entries, and
+// that WriteCodexHooks does not itself (re-)add the retired "Stop" event
+// (SPEC-106 D4) even when merging into a file that already has other hooks.
 func TestWriteCodexHooks_PreservesOtherHooks(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "hooks.json")
@@ -183,11 +186,12 @@ func TestWriteCodexHooks_PreservesOtherHooks(t *testing.T) {
 	if _, ok := hooks["PreToolUse"]; !ok {
 		t.Error("PreToolUse event was removed")
 	}
-	// SessionStart and Stop must have been added.
+	// SessionStart must have been added.
 	if _, ok := hooks["SessionStart"]; !ok {
 		t.Error("SessionStart event was not added")
 	}
-	if _, ok := hooks["Stop"]; !ok {
-		t.Error("Stop event was not added")
+	// Stop is retired (SPEC-106 D4) and must not be (re-)introduced.
+	if _, ok := hooks["Stop"]; ok {
+		t.Error("Stop event must not be added — it is retired (SPEC-106 D4)")
 	}
 }

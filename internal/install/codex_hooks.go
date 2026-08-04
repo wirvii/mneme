@@ -15,10 +15,16 @@ import (
 //
 //	{
 //	  "hooks": {
-//	    "SessionStart": [{"hooks": [{"type":"command","command":"<string>"}]}],
-//	    "Stop":         [{"hooks": [{"type":"command","command":"<string>"}]}]
+//	    "SessionStart": [{"hooks": [{"type":"command","command":"<string>"}]}]
 //	  }
 //	}
+//
+// "Stop" is deliberately absent from the schema above (SPEC-106, D4): Codex's
+// Stop contract rejects this hook outright (plain text on stdout with exit 0
+// is invalid for that event, S1), and the registration never delivered a
+// usable reminder to either agent in the first place. A pre-existing "Stop"
+// registration from an older mneme version is purged by
+// Codex().RetiredHooks, not re-added here.
 //
 // Both hooks.json and ~/.claude/settings.json nest their hook registrations
 // under the SAME top-level "hooks" key — there is no root difference to
@@ -56,10 +62,10 @@ func WriteCodexHooks(path string) error {
 		return fmt.Errorf("install: codex hooks: hooks key in %s is not an object", path)
 	}
 
-	// Patches to register: SessionStart and Stop events.
+	// Patches to register: SessionStart only (SPEC-106 D4 — Stop is retired,
+	// see the package-level godoc above and Codex().RetiredHooks).
 	patches := []HookPatch{
 		{Event: "SessionStart", Command: "mneme hook session-start"},
-		{Event: "Stop", Command: "mneme hook session-end"},
 	}
 
 	for _, patch := range patches {

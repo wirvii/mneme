@@ -180,11 +180,38 @@ func ClaudeCode(binaryPath string) *Agent {
 				return "", nil, fmt.Errorf("install: claude-code: hooks: home dir: %w", err)
 			}
 			path := filepath.Join(home, ".claude", "settings.json")
+			// SPEC-106: the "Stop" registration is gone from here — see
+			// RetiredHooks below, which purges any pre-existing copy instead of
+			// re-registering it. Stop fires once per TURN (not once per
+			// session) and Claude Code silently discards a Stop hook's stdout
+			// (it is not one of the three events whose stdout is injected as
+			// context), so the registration never delivered anything: neither
+			// the wrong-cadence reminder it was meant to send, nor any usable
+			// signal. SessionStart is unaffected — it IS one of those three
+			// events, and its behaviour does not change.
 			patches := []HookPatch{
 				{
 					Event:   "SessionStart",
 					Command: "mneme hook session-start",
 				},
+			}
+			return path, patches, nil
+		},
+
+		// RetiredHooks purges the "Stop" -> "mneme hook session-end"
+		// registration a previous mneme version wrote (SPEC-106, D2/D4): the
+		// hook survives as a no-op ({} on stdout, see runHookSessionEnd) for
+		// any host that does not reinstall, but every `mneme install
+		// claude-code` run now actively removes the stale registration from
+		// ~/.claude/settings.json — convergent and idempotent (D5), matching
+		// what Hooks above no longer writes (see TestRetiredHooksDisjointFromHooks).
+		RetiredHooks: func() (string, []HookPatch, error) {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return "", nil, fmt.Errorf("install: claude-code: retired hooks: home dir: %w", err)
+			}
+			path := filepath.Join(home, ".claude", "settings.json")
+			patches := []HookPatch{
 				{
 					Event:   "Stop",
 					Command: "mneme hook session-end",
