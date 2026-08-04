@@ -1139,7 +1139,7 @@ Invoked by agent hook systems, not typically run directly.
 | Subcommand | Event | Description |
 |------------|-------|-------------|
 | `session-start` | SessionStart | Load and print project context |
-| `session-end` | SessionEnd | Print reminder to call `mem_session_end` |
+| `session-end` | `Stop` (retired, no longer registered) | No-op: emits `{}` and exits 0 (SPEC-106) |
 | `pre-tool-use` | PreToolUse | Evaluate rules against the tool invocation |
 | `enforce-delegation` | PreToolUse | Orchestrator-guard (Layer 2, SPEC-069): blocks the orchestrator from editing/running Bash against a path outside the static whitelist and owned by an implementer subagent |
 | `tokenize` | -- | Parse a shell command from stdin into structured JSON tokens (general-purpose surface; `enforce-delegation` no longer spawns this) |

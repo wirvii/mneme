@@ -121,7 +121,8 @@ Session lifecycle:
 - FIRST MESSAGE: `mem_context`, then `mem_search` with keywords. `spec_list` to see active specs.
 - EVERY user message: `mem_search` before responding.
 - AFTER completed task: `mem_save` (decision/discovery/bugfix/convention). Use `topic_key` for evolving knowledge.
-- BEFORE session end: `mem_session_end` with summary.
+- BEFORE session end: `mem_session_end` with summary. There is no hook that reminds you of
+  this — if you don't call it, no one will. `mneme hook session-end` is a retired no-op.
 - LONG tasks: `mem_checkpoint` periodically.
 - POST-COMPACTION: `mem_context` to recover context.
 

@@ -749,7 +749,7 @@ enable|disable|status`, `team-memory enable|hooks`. Full flag reference:
 | Hook | Type | Purpose |
 |------|------|---------|
 | `session-start` | Observational | Hydrates context with `mem_context` |
-| `session-end` | Observational | Persists session summary |
+| `session-end` | Retired no-op (SPEC-106) | Emits `{}`; no longer registered by `mneme install`. Never persisted anything — kept only so hosts with a pre-existing registration exit cleanly |
 | `pre-tool-use` | Enforcement | Matches rules against tool+path, blocks on severity=block |
 | `enforce-delegation` | Enforcement | Blocks `Edit`/`Write`/`MultiEdit` on protected paths |
 

@@ -8,7 +8,7 @@ to use mneme as its persistent memory and SDD engine.
 | Artefact | Location | Purpose |
 |---|---|---|
 | MCP server | `~/.codex/config.toml` → `[mcp_servers.mneme]` | Exposes all mneme tools to Codex |
-| Session hooks | `~/.codex/hooks.json` → `SessionStart` / `Stop` | Auto-inject context and save session end |
+| Session hooks | `~/.codex/hooks.json` → `SessionStart` | Auto-inject context at session start |
 | Operating manual | `~/.codex/AGENTS.md` (managed block) | Single-agent memory + SDD instructions |
 | CLAUDE.md fallback | `project_doc_fallback_filenames` in `config.toml` | Codex reads existing CLAUDE.md files |
 | Workflow templates | `~/.mneme/templates/` | Shared with Claude (agent-agnostic) |
@@ -45,10 +45,29 @@ Codex hooks in `~/.codex/hooks.json` require explicit trust before they run:
 2. In the TUI, run `/hooks`
 3. Review and trust the mneme hooks
 
-Until the hooks are trusted, the session-lifecycle instructions in
-`~/.codex/AGENTS.md §5` (Memory & conflicts) cover the same discipline manually:
-call `mem_context` on first message, `mem_search` before responding, `mem_save`
-after tasks, `mem_session_end` before ending.
+Until the hooks are trusted — and even after, for session end — the
+session-lifecycle instructions in `~/.codex/AGENTS.md §5` (Memory & conflicts)
+cover the discipline manually: call `mem_context` on first message,
+`mem_search` before responding, `mem_save` after tasks, `mem_session_end`
+before ending. There is no hook that reminds you of the last step: `mneme
+hook session-end` is a retired no-op (SPEC-106) — see "Retired: the `Stop`
+session hook" below.
+
+### Retired: the `Stop` session hook (SPEC-106)
+
+Earlier versions of `mneme install codex` also registered `Stop` →
+`mneme hook session-end` in `hooks.json`. That registration never worked:
+Codex's `Stop` contract requires JSON on stdout when it exits 0, and the
+hook printed plain text, which produced a visible `Stop hook (failed)` error
+on every session close. `mneme install codex` no longer registers `Stop`, and
+it actively removes a pre-existing registration on every run.
+
+If you previously worked around this by pointing `Stop` at your own script
+(e.g. one that wraps the output in valid JSON), that registration is **not**
+touched — mneme only purges the exact command it wrote itself
+(`mneme hook session-end`), never a command you registered yourself. You are
+free to remove it manually from `~/.codex/hooks.json` once you no longer need
+it.
 
 ## CLAUDE.md fallback behaviour (S1)
 

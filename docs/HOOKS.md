@@ -27,12 +27,6 @@ This adds the following to `~/.claude/settings.json`:
         "hooks": [{"type": "command", "command": "mneme hook session-start"}]
       }
     ],
-    "Stop": [
-      {
-        "matcher": "",
-        "hooks": [{"type": "command", "command": "mneme hook session-end"}]
-      }
-    ],
     "PreToolUse": [
       {
         "matcher": "",
@@ -64,10 +58,25 @@ Claude Code injects it into the agent's context window.
 
 **Manual equivalent:** `mneme context --budget 4000`
 
-### `mneme hook session-end`
+### `mneme hook session-end` (retired, SPEC-106)
 
-Fires at `Stop`. Prints a reminder prompt that instructs the agent to call
-`mem_session_end` before the session closes.
+This subcommand still exists — it emits `{}` and exits 0 — but `mneme install`
+no longer registers it against any event, and any pre-existing registration in
+`~/.claude/settings.json` or `~/.codex/hooks.json` is actively purged on the
+next `mneme install`.
+
+It never delivered a working reminder. It was registered against `Stop`, which
+is a **per-turn** event, not a per-session one — `SessionStart`/`SessionEnd`
+are the once-per-session pair. On top of that, Claude Code discards a `Stop`
+hook's stdout with exit 0 (only `UserPromptSubmit`, `UserPromptExpansion`, and
+`SessionStart` inject stdout as context), so the reminder text never reached
+the agent. Codex is stricter: it rejects plain-text stdout for `Stop` outright,
+which is what surfaced the defect as a visible `Stop hook (failed)` error.
+
+The subcommand survives purely as a safe no-op for hosts that have not
+reinstalled yet. The session-end discipline that actually works is the one
+described in the operating manual (`mem_session_end` before you stop) — see
+`operating-manual.md` §7 / `operating-manual-codex.md` §5.
 
 ---
 
@@ -545,11 +554,13 @@ A: The hook targets <50ms. If it's slower, check that the project DB is not
 unusually large and that no other process holds a long write lock. The busy
 timeout is 1s; if it fires frequently, investigate lock contention.
 
-**Q: Why two separate hooks (`session-start`/`session-end` vs. `pre-tool-use`)?**
-A: They serve different purposes. Session hooks are observational — they load
-context in bulk at session boundaries and never block. The pre-tool-use hook is
-active enforcement — it fires on every file mutation and can block the action.
-Combining them would muddle the semantics and hurt performance.
+**Q: Why a separate `session-start` hook vs. `pre-tool-use`?**
+A: They serve different purposes. `session-start` is observational — it loads
+context in bulk once per session and never blocks (`session-end` is a retired
+no-op — see above; it is no longer part of this distinction). The
+pre-tool-use hook is active enforcement — it fires on every file mutation and
+can block the action. Combining them would muddle the semantics and hurt
+performance.
 
 ---
 

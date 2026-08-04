@@ -432,6 +432,16 @@ func TestCodexOperatingManual_AntiDrift(t *testing.T) {
 			t.Errorf("operating-manual-codex.md: expected keyword %q not found", kw)
 		}
 	}
+
+	// SPEC-106 DD19/DD20: the manual must say there is no automatic net for
+	// session-end (mneme hook session-end is a retired no-op), and must no
+	// longer claim the Stop event as part of the session hooks pair.
+	if !strings.Contains(content, "no hook that reminds you") {
+		t.Error("operating-manual-codex.md: expected the no-automatic-net phrase for session end not found")
+	}
+	if strings.Contains(content, "SessionStart/Stop") {
+		t.Error("operating-manual-codex.md: must not contain \"SessionStart/Stop\" — Stop is retired (SPEC-106 D4)")
+	}
 }
 
 // TestCodexBuilder_Fields verifies that Codex() returns an Agent with the

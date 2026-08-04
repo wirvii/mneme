@@ -291,4 +291,10 @@ func TestClaudeCodeOperatingManual_AntiDrift(t *testing.T) {
 	if !strings.Contains(content, "Do NOT use `superpowers:brainstorming`") {
 		t.Error("operating-manual.md: expected negation of superpowers:brainstorming not found")
 	}
+	// SPEC-106 DD19: the manual must say there is no automatic net for
+	// session-end — mneme hook session-end is a retired no-op, not a
+	// reminder mechanism.
+	if !strings.Contains(content, "no hook that reminds you") {
+		t.Error("operating-manual.md: expected the no-automatic-net phrase for session end not found")
+	}
 }
