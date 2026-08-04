@@ -4,6 +4,49 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Fixed
+
+- **The `Stop` hook never delivered its session-end reminder in EITHER
+  agent, since the day it shipped (SPEC-106, BL-134).** `mneme hook
+  session-end` printed plain text to stdout; Claude Code discards a `Stop`
+  hook's stdout with exit 0 (only `UserPromptSubmit`, `UserPromptExpansion`,
+  and `SessionStart` inject stdout as agent-visible context), so the
+  reminder silently never reached the model. Codex is stricter and rejects
+  plain-text stdout for `Stop` outright, which is what surfaced the defect
+  as a visible `Stop hook (failed)` error on every session close — Codex
+  didn't introduce the bug, it made it visible. Separately, `Stop` fires
+  once per **turn**, not once per session (`SessionStart`/`SessionEnd` are
+  the once-per-session pair), so even a working reminder would have fired
+  after every response instead of just at session close — the original
+  design was incompatible with the event's semantics. `docs/HOOKS.md`,
+  `docs/api/cli.md`, and `docs/ARCHITECTURE.md` repeated the false claim
+  that the hook delivered a reminder / persisted a session summary; all
+  three are corrected.
+- **`mneme upgrade` never re-provisioned Codex.** `DetectInstalledAgents`
+  only read `~/.claude.json`; a Codex-only host got zero detected agents,
+  so its `AGENTS.md`, `hooks.json`, and `config.toml` stayed frozen at
+  whatever version first installed them.
+
+### Changed
+
+- **`mneme hook session-end` now emits `{}` and exits 0** — a no-op valid
+  in both agents' `Stop` contract — instead of plain text. The subcommand
+  survives so a host with a pre-existing registration gets a harmless exit
+  instead of a broken one, but `mneme install` no longer registers it
+  against any event in either agent, and actively purges a pre-existing
+  `Stop` -> `mneme hook session-end` registration from
+  `~/.claude/settings.json` / `~/.codex/hooks.json` on every run (new
+  `Agent.RetiredHooks` + "Retire stale hooks" install step). A `Stop` entry
+  the user registered themselves — pointing at their own script — is never
+  touched: the purge matches by exact command string. The `sessionEndPrompt`
+  constant is removed.
+- **`DetectInstalledAgents` detects Codex** via `[mcp_servers.mneme]` in
+  `~/.codex/config.toml`, and evaluates each agent independently: a
+  missing or unreadable `~/.claude.json` no longer aborts detection for
+  Codex (or vice versa).
+
 ## [v1.30.2] — 2026-08-02 — Profile activation is convergent; `deactivate` arrives
 
 ### Fixed
