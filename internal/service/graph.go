@@ -425,15 +425,13 @@ func parseWindow(w string) (time.Duration, error) {
 }
 
 // makeTimelinePreview returns a short excerpt of the memory content, capped at
-// 200 characters. This mirrors the behaviour of makePreview in the search store.
+// model.ListExcerptRunes characters. This mirrors the behaviour of makePreview
+// in the search store.
 //
 // Delegates to model.Excerpt (SPEC-109 D8) so the rune-safe truncation logic
-// exists in exactly one place instead of three; behaviour is unchanged. The
-// 200 literal is replaced by model.ListExcerptRunes once that constant lands
-// in step 4 of SPEC-109's plan.
+// exists in exactly one place instead of three; behaviour is unchanged.
 func makeTimelinePreview(content string) string {
-	const maxLen = 200
-	excerpt, truncated := model.Excerpt(content, maxLen)
+	excerpt, truncated := model.Excerpt(content, model.ListExcerptRunes)
 	if truncated {
 		return excerpt + "..."
 	}

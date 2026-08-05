@@ -88,6 +88,26 @@ func (l Lane) Valid() bool {
 	return ok
 }
 
+// Convención de acotado de los listados del SDD (SPEC-109 D4/D13). Los tres
+// valores son los que YA existían en el repo, no inventados. Definidos aquí
+// una sola vez porque tres números repartidos entre service y mcp no son una
+// convención, son tres coincidencias.
+const (
+	// ListDefaultLimit es el default que aplica el frontend MCP cuando el
+	// llamador omite limit. Es el default de mem_timeline (service/graph.go).
+	ListDefaultLimit = 20
+
+	// ListMaxLimit es el techo duro que aplica el service. Un limit mayor se
+	// capa EN SILENCIO (D5), lo cual es no-lesivo SÓLO porque Total informa
+	// del número real de coincidencias: sin ese dato, capar callado sería
+	// otro dato falso que parece real. Las dos decisiones son inseparables.
+	ListMaxLimit = 50
+
+	// ListExcerptRunes es el largo del excerpt en RUNAS (nunca bytes).
+	// Es el de makeTimelinePreview.
+	ListExcerptRunes = 200
+)
+
 // --- BACKLOG ---
 
 // BacklogStatus represents the lifecycle state of a backlog item.
@@ -230,6 +250,27 @@ type BacklogAddRequest struct {
 type BacklogListRequest struct {
 	Status  BacklogStatus `json:"status,omitempty"`
 	Project string        `json:"project,omitempty"`
+
+	// Limit caps the number of items returned (SPEC-109 D5/D9).
+	// <= 0 means no window (the CLI's path — full fidelity, never truncated).
+	// > ListMaxLimit is silently capped to ListMaxLimit by the service: this
+	// is safe only because Total always reports the true match count.
+	Limit int `json:"limit,omitempty"`
+}
+
+// BacklogListResponse wraps a page of items with the REAL number of matches.
+//
+// Returned BY VALUE, not by pointer (D10): renderFullStatus
+// (cli/status.go:117) discards BacklogList's error and then ranges over the
+// result — a pattern that would become a nil-deref with a pointer. The zero
+// value is a safe empty list.
+type BacklogListResponse struct {
+	Items []*BacklogItem `json:"items"`
+
+	// Total is the number of matches BEFORE Limit was applied — the same
+	// contract as SearchResponse.Total (model/search.go), which mem_timeline
+	// used to violate (SPEC-109 D3/D18).
+	Total int `json:"total"`
 }
 
 // BacklogRefineRequest updates a backlog item during refinement.
@@ -643,6 +684,19 @@ type SpecResolveRequest struct {
 type SpecListRequest struct {
 	Status  SpecStatus `json:"status,omitempty"`
 	Project string     `json:"project,omitempty"`
+
+	// Limit caps the number of specs returned (SPEC-109 D5/D9). Same
+	// two-mode semantics as BacklogListRequest.Limit: <= 0 means no window,
+	// > ListMaxLimit is silently capped by the service.
+	Limit int `json:"limit,omitempty"`
+}
+
+// SpecListResponse is the SpecList equivalent of BacklogListResponse.
+// Returned BY VALUE for the same nil-deref reason (D10). No excerpt field:
+// model.Spec has no Description (D15/CF1) — there is no long text to excerpt.
+type SpecListResponse struct {
+	Specs []*Spec `json:"specs"`
+	Total int     `json:"total"`
 }
 
 // SpecStatusResponse is returned by spec_status with full context:
