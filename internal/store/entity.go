@@ -613,6 +613,27 @@ func (s *MemoryStore) FindRelation(ctx context.Context, sourceID, targetID strin
 	return r, nil
 }
 
+// memoriesInRangeWhere is the ONLY definition of the time-range predicate.
+// ListMemoriesInRange and CountMemoriesInRange both consume it, so they
+// cannot diverge (SPEC-109 D6).
+//
+// Preserves EXACTLY the current semantics — including that it does NOT
+// filter superseded_by, unlike sessionWorkWhere — because what matters is
+// that Total matches what the list would return without a window, not
+// changing what enters the window. SPEC-109 only fixes the count (D18).
+func memoriesInRangeWhere(from, to time.Time, project string) (where string, args []any) {
+	where = "deleted_at IS NULL AND created_at >= ? AND created_at <= ?"
+	args = []any{
+		from.UTC().Format(time.RFC3339Nano),
+		to.UTC().Format(time.RFC3339Nano),
+	}
+	if project != "" {
+		where += " AND project = ?"
+		args = append(args, project)
+	}
+	return where, args
+}
+
 // ListMemoriesInRange returns all non-deleted memories whose created_at falls
 // within [from, to]. Results are ordered by created_at ascending. The limit
 // defaults to 20 when zero.
@@ -621,16 +642,7 @@ func (s *MemoryStore) ListMemoriesInRange(ctx context.Context, from, to time.Tim
 		limit = 20
 	}
 
-	args := []any{
-		from.UTC().Format(time.RFC3339Nano),
-		to.UTC().Format(time.RFC3339Nano),
-	}
-	where := "deleted_at IS NULL AND created_at >= ? AND created_at <= ?"
-
-	if project != "" {
-		where += " AND project = ?"
-		args = append(args, project)
-	}
+	where, args := memoriesInRangeWhere(from, to, project)
 
 	q := fmt.Sprintf(`
 		SELECT id, type, scope, title, content, topic_key, project,
@@ -671,6 +683,23 @@ func (s *MemoryStore) ListMemoriesInRange(ctx context.Context, from, to time.Tim
 	}
 
 	return memories, nil
+}
+
+// CountMemoriesInRange counts the matches of the SAME predicate
+// ListMemoriesInRange uses, without a LIMIT: it is the "before Limit was
+// applied" figure model.SearchResponse.Total's contract requires
+// (model/search.go), which mem_timeline used to violate by reporting
+// len(results) instead (SPEC-109 D3/D18).
+func (s *MemoryStore) CountMemoriesInRange(ctx context.Context, from, to time.Time, project string) (int, error) {
+	where, args := memoriesInRangeWhere(from, to, project)
+
+	q := fmt.Sprintf(`SELECT COUNT(*) FROM memories WHERE %s`, where)
+
+	var total int
+	if err := s.db.QueryRowContext(ctx, q, args...).Scan(&total); err != nil {
+		return 0, fmt.Errorf("store: count memories in range: %w", err)
+	}
+	return total, nil
 }
 
 // CandidatePair represents two memories with a shared entity overlap count.
@@ -725,9 +754,9 @@ func (s *MemoryStore) FindOrphanRelations(ctx context.Context, project string) (
 	var orphans []OrphanRelation
 	for rows.Next() {
 		var (
-			relID, relType         string
-			srcID, srcName         string
-			tgtID, tgtName         string
+			relID, relType string
+			srcID, srcName string
+			tgtID, tgtName string
 		)
 		if scanErr := rows.Scan(&relID, &relType, &srcID, &srcName, &tgtID, &tgtName); scanErr != nil {
 			return nil, fmt.Errorf("store: find orphan relations: scan: %w", scanErr)
@@ -1046,10 +1075,10 @@ func scanRelation(row *sql.Row) (*model.Relation, error) {
 // last_traversed_at after migration 007.
 func scanRelationRow(row relationScanner) (*model.Relation, error) {
 	var (
-		r              model.Relation
-		metadata       sql.NullString
-		createdAt      string
-		lastTraversed  sql.NullString
+		r             model.Relation
+		metadata      sql.NullString
+		createdAt     string
+		lastTraversed sql.NullString
 	)
 
 	err := row.Scan(

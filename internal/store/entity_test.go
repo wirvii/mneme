@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -902,6 +903,59 @@ func TestListMemoriesInRange_SharedAuthor(t *testing.T) {
 	}
 	if memories[0].Author != "Jane Doe <jane@example.com>" {
 		t.Errorf("Author: got %q, want %q", memories[0].Author, "Jane Doe <jane@example.com>")
+	}
+}
+
+// TestCountMemoriesInRange_MatchesUnwindowedList is AC10 at the store level
+// and SPEC-109's D6 anti-divergence guard: with 30 memories in the window and
+// limit=5, CountMemoriesInRange must equal len(ListMemoriesInRange(limit=0))
+// — the two share memoriesInRangeWhere by construction, so they cannot
+// diverge.
+func TestCountMemoriesInRange_MatchesUnwindowedList(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	project := "count-range-test"
+
+	for i := 0; i < 30; i++ {
+		if _, err := s.Create(ctx, &model.Memory{
+			Type: model.TypeDiscovery, Scope: model.ScopeProject,
+			Title: fmt.Sprintf("memory %d", i), Content: "content", Project: project,
+		}); err != nil {
+			t.Fatalf("Create %d: %v", i, err)
+		}
+	}
+
+	from := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	// ListMemoriesInRange has no "no window" mode (limit<=0 defaults to 20,
+	// unchanged by SPEC-109 D18) — pass a limit above the fixture size to
+	// capture every match.
+	unwindowed, err := s.ListMemoriesInRange(ctx, from, to, project, 100)
+	if err != nil {
+		t.Fatalf("ListMemoriesInRange(limit=100): %v", err)
+	}
+	if len(unwindowed) != 30 {
+		t.Fatalf("expected 30 memories, got %d", len(unwindowed))
+	}
+
+	windowed, err := s.ListMemoriesInRange(ctx, from, to, project, 5)
+	if err != nil {
+		t.Fatalf("ListMemoriesInRange(limit=5): %v", err)
+	}
+	if len(windowed) != 5 {
+		t.Fatalf("expected 5 memories with limit=5, got %d", len(windowed))
+	}
+
+	total, err := s.CountMemoriesInRange(ctx, from, to, project)
+	if err != nil {
+		t.Fatalf("CountMemoriesInRange: %v", err)
+	}
+	if total != 30 {
+		t.Errorf("CountMemoriesInRange = %d, want 30 (the real match count, not the limit)", total)
+	}
+	if total != len(unwindowed) {
+		t.Errorf("CountMemoriesInRange (%d) diverges from len(unwindowed) (%d)", total, len(unwindowed))
 	}
 }
 

@@ -3,6 +3,7 @@ package service_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"testing"
 
@@ -402,6 +403,46 @@ func TestTimeline_ByMemoryID(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("anchor memory %q not found in timeline results", saved.ID)
+	}
+}
+
+// TestTimeline_TotalReflectsRealCountNotLimit is AC10: with 30 memories in
+// the window and limit=5, Total must be 30 (the real match count), not 5 —
+// the case that was impossible before SPEC-109 D3/D18, when Total was
+// literally len(results) and so could never exceed limit.
+func TestTimeline_TotalReflectsRealCountNotLimit(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+
+	var anchorID string
+	for i := 0; i < 30; i++ {
+		saved, err := svc.Save(ctx, model.SaveRequest{
+			Title:   fmt.Sprintf("memory %d", i),
+			Content: "timeline total test content",
+			Type:    model.TypeDiscovery,
+		})
+		if err != nil {
+			t.Fatalf("Save %d: %v", i, err)
+		}
+		if i == 0 {
+			anchorID = saved.ID
+		}
+	}
+
+	resp, err := svc.Timeline(ctx, model.TimelineRequest{
+		Around: anchorID,
+		Window: "1d",
+		Limit:  5,
+	})
+	if err != nil {
+		t.Fatalf("Timeline: %v", err)
+	}
+
+	if len(resp.Results) != 5 {
+		t.Errorf("len(Results) = %d, want 5", len(resp.Results))
+	}
+	if resp.Total != 30 {
+		t.Errorf("Total = %d, want 30 (the real match count, not the limit)", resp.Total)
 	}
 }
 

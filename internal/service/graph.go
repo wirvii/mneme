@@ -314,6 +314,17 @@ func (svc *MemoryService) Timeline(ctx context.Context, req model.TimelineReques
 		return nil, fmt.Errorf("service: timeline: %w", err)
 	}
 
+	// Total is the count BEFORE limit was applied (model.SearchResponse's
+	// contract) — sharing memoriesInRangeWhere with ListMemoriesInRange (D6)
+	// means it can never diverge from what the same query, unwindowed, would
+	// return. Before SPEC-109 this was len(results), which could never
+	// exceed limit and so never told the caller how many memories actually
+	// existed in the window (D3/D18).
+	total, err := svc.projectStore.CountMemoriesInRange(ctx, from, to, project)
+	if err != nil {
+		return nil, fmt.Errorf("service: timeline: count: %w", err)
+	}
+
 	results := make([]model.SearchResult, 0, len(memories))
 	for _, m := range memories {
 		results = append(results, model.SearchResult{
@@ -326,7 +337,7 @@ func (svc *MemoryService) Timeline(ctx context.Context, req model.TimelineReques
 
 	return &model.SearchResponse{
 		Results: results,
-		Total:   len(results),
+		Total:   total,
 		Query:   req.Around,
 	}, nil
 }
