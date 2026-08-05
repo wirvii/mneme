@@ -54,15 +54,23 @@ func NewSDDStore(database *db.DB) *SDDStore {
 // is SQLite's own monotonically-increasing insertion counter — immune to any
 // text-formatting artefact — and is safe here because backlog_items rows are
 // archived (status update), never hard-deleted, so rowid is never reused.
+//
+// Every column is qualified with the b alias since SPEC-110 D11 added a
+// LEFT JOIN: an unqualified `rowid` with more than one source in the FROM is
+// fragile — the derived table exposes no rowid, so SQLite may resolve it today
+// and stop tomorrow. Losing this tie-break breaks NOTHING VISIBLY: the list
+// still returns the same items and Total still adds up. What breaks is that a
+// LIMIT goes back to being a lottery instead of a window — the exact defect QA
+// rejected in SPEC-109, which showed up in only 23 of 300 iterations.
 const backlogListOrder = ` ORDER BY
-	CASE priority
+	CASE b.priority
 	    WHEN 'critical' THEN 0
 	    WHEN 'high'     THEN 1
 	    WHEN 'medium'   THEN 2
 	    WHEN 'low'      THEN 3
 	    ELSE 99
 	END ASC,
-	position ASC, rowid ASC`
+	b.position ASC, b.rowid ASC`
 
 // specListOrder is the TOTAL order for spec listings: rowid alone, since it
 // is both unique (no further tie-break needed) and monotonic by insertion —
@@ -82,14 +90,49 @@ const specListOrder = ` ORDER BY rowid ASC`
 const backlogListWhere = ` WHERE project = ?`
 const backlogListWhereStatus = backlogListWhere + ` AND status = ?`
 
+// backlogSelectColumns / backlogSelectFrom are the ONE projection every read
+// path of a BacklogItem uses (SPEC-110 D11/D12): GetBacklogItem and
+// ListBacklogItems both build their query from these, so neither can return an
+// item whose RefinementCount is silently zero.
+//
+// The count comes from a LEFT JOIN against an ALREADY-AGGREGATED derived table.
+// Three properties make this the only admissible form:
+//
+//  1. No N+1: one page query covers N items. There is no per-item COUNT.
+//  2. No row multiplication: the derived table is unique by item_id, so the
+//     LEFT JOIN yields exactly ONE row per item. Joining the RAW table instead
+//     would return one row per refinement — an item with 3 refinements would
+//     appear 3 times — and since backlogCountSelect counts backlog_items
+//     WITHOUT the join, Total would stop matching len(items) of an unwindowed
+//     list, breaking the relation SPEC-109 D3/D6 built.
+//  3. The derived table carries NO WHERE, so the textual guard
+//     TestBacklogListPredicate_SharedByCountAndPage still passes unchanged.
+//     This is why a correlated subquery — (SELECT COUNT(*) ... WHERE r.item_id
+//     = b.id) — is FORBIDDEN: it embeds a WHERE in backlogListSelect, which is
+//     precisely what that guard exists to catch.
+//
+// backlogListWhere stays byte-identical (" WHERE project = ?", unqualified):
+// the derived table exposes neither project nor status, so the same string
+// resolves both in the joined page query and in the un-joined COUNT.
+const backlogSelectColumns = `
+	SELECT b.id, b.title, b.description, b.status, b.priority, b.project,
+	       COALESCE(b.spec_id, ''), b.archive_reason, b.position, b.lane, b.scope,
+	       b.created_at, b.updated_at, COALESCE(r.n, 0)`
+
+const backlogSelectFrom = `
+	FROM backlog_items b
+	LEFT JOIN (
+	    SELECT item_id, COUNT(*) AS n
+	    FROM backlog_refinements
+	    GROUP BY item_id
+	) r ON r.item_id = b.id`
+
 // backlogListSelect / backlogCountSelect share backlogListWhere so the page
 // and the COUNT can never select from a different row set.
-const backlogListSelect = `
-	SELECT id, title, description, status, priority, project,
-	       COALESCE(spec_id, ''), archive_reason, position, lane, scope,
-	       created_at, updated_at
-	FROM backlog_items`
+const backlogListSelect = backlogSelectColumns + backlogSelectFrom
 
+// backlogCountSelect counts ITEMS and must NEVER gain the join: Total is a
+// count of items, not of refinements (SPEC-109 D3).
 const backlogCountSelect = `SELECT COUNT(*) FROM backlog_items`
 
 // specListWhere / specListWhereStatus mirror backlogListWhere for specs (D6).
@@ -155,10 +198,7 @@ func (s *SDDStore) CreateBacklogItem(ctx context.Context, item *model.BacklogIte
 // GetBacklogItem retrieves a backlog item by ID.
 // Returns model.ErrBacklogNotFound when no matching item exists.
 func (s *SDDStore) GetBacklogItem(ctx context.Context, id string) (*model.BacklogItem, error) {
-	const q = `
-		SELECT id, title, description, status, priority, project,
-		       COALESCE(spec_id, ''), archive_reason, position, lane, scope, created_at, updated_at
-		FROM backlog_items WHERE id = ?`
+	q := backlogSelectColumns + backlogSelectFrom + ` WHERE b.id = ?`
 
 	row := s.db.QueryRowContext(ctx, q, id)
 	item, err := scanBacklogItem(row)
@@ -789,7 +829,7 @@ func (s *SDDStore) queryPushbacks(ctx context.Context, q, specID string) ([]*mod
 // scanBacklogItem scans a single row into a BacklogItem.
 // The SELECT must include columns in this order: id, title, description,
 // status, priority, project, spec_id, archive_reason, position, lane, scope,
-// created_at, updated_at.
+// created_at, updated_at, refinement_count (backlogSelectColumns).
 func scanBacklogItem(row *sql.Row) (*model.BacklogItem, error) {
 	item := &model.BacklogItem{}
 	var createdStr, updatedStr string
@@ -798,7 +838,7 @@ func scanBacklogItem(row *sql.Row) (*model.BacklogItem, error) {
 		(*string)(&item.Status), (*string)(&item.Priority),
 		&item.Project, &item.SpecID, &item.ArchiveReason,
 		&item.Position, (*string)(&item.Lane), &item.Scope,
-		&createdStr, &updatedStr,
+		&createdStr, &updatedStr, &item.RefinementCount,
 	)
 	if err != nil {
 		return nil, err
@@ -826,7 +866,7 @@ func collectBacklogItems(rows *sql.Rows) ([]*model.BacklogItem, error) {
 			(*string)(&item.Status), (*string)(&item.Priority),
 			&item.Project, &item.SpecID, &item.ArchiveReason,
 			&item.Position, (*string)(&item.Lane), &item.Scope,
-			&createdStr, &updatedStr,
+			&createdStr, &updatedStr, &item.RefinementCount,
 		); err != nil {
 			return nil, fmt.Errorf("scan backlog item: %w", err)
 		}

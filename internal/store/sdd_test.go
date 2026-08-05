@@ -1,9 +1,11 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -1246,5 +1248,286 @@ func TestInsertLaneAuditAndLatestLaneAudit(t *testing.T) {
 	}
 	if latest.CreatedAt.IsZero() {
 		t.Error("CreatedAt must not be zero")
+	}
+}
+
+// --- SPEC-110: backlog_refinements counter (Paso 3) ---
+
+// insertRawRefinement inserts a row directly into backlog_refinements via SQL,
+// bypassing AppendBacklogRefinement (introduced in Paso 4). Used here only to
+// set up fixtures for the counter/projection tests below.
+func insertRawRefinement(t *testing.T, s *SDDStore, itemID string, seq int, body string) {
+	t.Helper()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := s.db.ExecContext(context.Background(),
+		`INSERT INTO backlog_refinements (item_id, seq, body, by, at) VALUES (?, ?, ?, '', ?)`,
+		itemID, seq, body, now,
+	)
+	if err != nil {
+		t.Fatalf("insert raw refinement for %s seq %d: %v", itemID, seq, err)
+	}
+}
+
+// TestGetBacklogItem_RefinementCount is AC7: GetBacklogItem populates
+// RefinementCount correctly, both when zero and when non-zero.
+func TestGetBacklogItem_RefinementCount(t *testing.T) {
+	s := newTestSDDStore(t)
+	ctx := context.Background()
+
+	zero := &model.BacklogItem{
+		ID: "BL-001", Title: "no refinements", Status: model.BacklogStatusRaw,
+		Priority: model.PriorityMedium, Project: "proj", Lane: model.LaneStandard,
+	}
+	three := &model.BacklogItem{
+		ID: "BL-002", Title: "three refinements", Status: model.BacklogStatusRefined,
+		Priority: model.PriorityMedium, Project: "proj", Lane: model.LaneStandard,
+	}
+	if err := s.CreateBacklogItem(ctx, zero); err != nil {
+		t.Fatalf("create BL-001: %v", err)
+	}
+	if err := s.CreateBacklogItem(ctx, three); err != nil {
+		t.Fatalf("create BL-002: %v", err)
+	}
+	for seq := 1; seq <= 3; seq++ {
+		insertRawRefinement(t, s, "BL-002", seq, fmt.Sprintf("refinement %d", seq))
+	}
+
+	gotZero, err := s.GetBacklogItem(ctx, "BL-001")
+	if err != nil {
+		t.Fatalf("GetBacklogItem BL-001: %v", err)
+	}
+	if gotZero.RefinementCount != 0 {
+		t.Errorf("BL-001 RefinementCount = %d, want 0", gotZero.RefinementCount)
+	}
+
+	gotThree, err := s.GetBacklogItem(ctx, "BL-002")
+	if err != nil {
+		t.Fatalf("GetBacklogItem BL-002: %v", err)
+	}
+	if gotThree.RefinementCount != 3 {
+		t.Errorf("BL-002 RefinementCount = %d, want 3", gotThree.RefinementCount)
+	}
+}
+
+// TestListBacklogItems_RefinementCount is AC8: ListBacklogItems populates
+// RefinementCount correctly for each item on the page, in a single page query.
+func TestListBacklogItems_RefinementCount(t *testing.T) {
+	s := newTestSDDStore(t)
+	ctx := context.Background()
+	project := "refcounttest"
+
+	items := []*model.BacklogItem{
+		{ID: "BL-001", Title: "zero", Status: model.BacklogStatusRaw, Priority: model.PriorityMedium, Project: project, Lane: model.LaneStandard},
+		{ID: "BL-002", Title: "one", Status: model.BacklogStatusRefined, Priority: model.PriorityMedium, Project: project, Lane: model.LaneStandard},
+		{ID: "BL-003", Title: "three", Status: model.BacklogStatusRefined, Priority: model.PriorityMedium, Project: project, Lane: model.LaneStandard},
+	}
+	for _, item := range items {
+		if err := s.CreateBacklogItem(ctx, item); err != nil {
+			t.Fatalf("create %s: %v", item.ID, err)
+		}
+	}
+	insertRawRefinement(t, s, "BL-002", 1, "r1")
+	for seq := 1; seq <= 3; seq++ {
+		insertRawRefinement(t, s, "BL-003", seq, fmt.Sprintf("r%d", seq))
+	}
+
+	got, _, err := s.ListBacklogItems(ctx, project, "", 0)
+	if err != nil {
+		t.Fatalf("ListBacklogItems: %v", err)
+	}
+
+	counts := make(map[string]int, len(got))
+	for _, item := range got {
+		counts[item.ID] = item.RefinementCount
+	}
+	want := map[string]int{"BL-001": 0, "BL-002": 1, "BL-003": 3}
+	for id, wantCount := range want {
+		if counts[id] != wantCount {
+			t.Errorf("item %s RefinementCount = %d, want %d", id, counts[id], wantCount)
+		}
+	}
+}
+
+// TestListBacklogItems_JoinDoesNotMultiplyRows is AC9: the LEFT JOIN against
+// the derived, already-aggregated table must not multiply rows. Each item
+// appears exactly once in the page regardless of how many refinements it has,
+// and for every status filter (and no filter), total (limit=1) still equals
+// len(unwindowed list) — the relation SPEC-109 D3/D6 built.
+func TestListBacklogItems_JoinDoesNotMultiplyRows(t *testing.T) {
+	s := newTestSDDStore(t)
+	ctx := context.Background()
+	project := "joinnomultiplytest"
+
+	statuses := []model.BacklogStatus{model.BacklogStatusRaw, model.BacklogStatusRefined}
+	n := 0
+	for _, status := range statuses {
+		for i := 0; i < 3; i++ {
+			n++
+			item := &model.BacklogItem{
+				ID: fmt.Sprintf("BL-%03d", n), Title: fmt.Sprintf("item %d", n),
+				Status: status, Priority: model.PriorityMedium,
+				Project: project, Lane: model.LaneStandard,
+			}
+			if err := s.CreateBacklogItem(ctx, item); err != nil {
+				t.Fatalf("create %s: %v", item.ID, err)
+			}
+		}
+	}
+	// Give items varying refinement counts: 0, 1, and 3.
+	insertRawRefinement(t, s, "BL-001", 1, "r1")
+	for seq := 1; seq <= 3; seq++ {
+		insertRawRefinement(t, s, "BL-004", seq, fmt.Sprintf("r%d", seq))
+	}
+
+	unwindowed, _, err := s.ListBacklogItems(ctx, project, "", 0)
+	if err != nil {
+		t.Fatalf("ListBacklogItems(limit=0): %v", err)
+	}
+	if len(unwindowed) != 6 {
+		t.Fatalf("expected 6 items (one row each, no multiplication), got %d", len(unwindowed))
+	}
+	seen := make(map[string]int)
+	for _, item := range unwindowed {
+		seen[item.ID]++
+	}
+	for id, count := range seen {
+		if count != 1 {
+			t.Errorf("item %s appeared %d times in the page, want exactly 1", id, count)
+		}
+	}
+
+	cases := append([]model.BacklogStatus{""}, statuses...)
+	for _, status := range cases {
+		name := string(status)
+		if name == "" {
+			name = "(no filter)"
+		}
+		t.Run(name, func(t *testing.T) {
+			list, _, err := s.ListBacklogItems(ctx, project, status, 0)
+			if err != nil {
+				t.Fatalf("ListBacklogItems(limit=0): %v", err)
+			}
+			_, total, err := s.ListBacklogItems(ctx, project, status, 1)
+			if err != nil {
+				t.Fatalf("ListBacklogItems(limit=1): %v", err)
+			}
+			if total != len(list) {
+				t.Errorf("total=%d, want %d (len of unwindowed list)", total, len(list))
+			}
+		})
+	}
+}
+
+// TestBacklogRefinementCount_GetAndListAgree is AC10: for the same item with N
+// refinements, GetBacklogItem and ListBacklogItems must report the exact same
+// RefinementCount — both paths derive their projection from the same const
+// (backlogSelectColumns/backlogSelectFrom), so this symmetry is structural.
+func TestBacklogRefinementCount_GetAndListAgree(t *testing.T) {
+	s := newTestSDDStore(t)
+	ctx := context.Background()
+	project := "getlistagreetest"
+
+	item := &model.BacklogItem{
+		ID: "BL-001", Title: "agree test", Status: model.BacklogStatusRefined,
+		Priority: model.PriorityMedium, Project: project, Lane: model.LaneStandard,
+	}
+	if err := s.CreateBacklogItem(ctx, item); err != nil {
+		t.Fatalf("create BL-001: %v", err)
+	}
+	for seq := 1; seq <= 4; seq++ {
+		insertRawRefinement(t, s, "BL-001", seq, fmt.Sprintf("r%d", seq))
+	}
+
+	got, err := s.GetBacklogItem(ctx, "BL-001")
+	if err != nil {
+		t.Fatalf("GetBacklogItem: %v", err)
+	}
+	list, _, err := s.ListBacklogItems(ctx, project, "", 0)
+	if err != nil {
+		t.Fatalf("ListBacklogItems: %v", err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("expected exactly 1 item in list, got %d", len(list))
+	}
+	if got.RefinementCount != list[0].RefinementCount {
+		t.Errorf("GetBacklogItem.RefinementCount=%d, ListBacklogItems.RefinementCount=%d — they must agree",
+			got.RefinementCount, list[0].RefinementCount)
+	}
+	if got.RefinementCount != 4 {
+		t.Errorf("RefinementCount = %d, want 4", got.RefinementCount)
+	}
+}
+
+// TestBacklogListSelect_UsesDerivedJoinNotCorrelatedSubquery is AC11a: the
+// counter must come from a LEFT JOIN against an already-aggregated derived
+// table, never a correlated subquery (which would embed a WHERE and break
+// TestBacklogListPredicate_SharedByCountAndPage — precisely what that guard
+// exists to catch), and backlogCountSelect must never gain the join (Total
+// counts items, not refinements — SPEC-109 D3).
+func TestBacklogListSelect_UsesDerivedJoinNotCorrelatedSubquery(t *testing.T) {
+	upper := strings.ToUpper(backlogListSelect)
+	if !strings.Contains(upper, "LEFT JOIN") {
+		t.Error("backlogListSelect must contain a LEFT JOIN to project the refinement counter")
+	}
+	if !strings.Contains(upper, "GROUP BY") {
+		t.Error("backlogListSelect must join against a GROUP BY-aggregated derived table")
+	}
+	if strings.Contains(upper, "WHERE") {
+		t.Error("backlogListSelect must not contain WHERE — a correlated subquery would break the shared predicate guard")
+	}
+	if strings.Contains(strings.ToUpper(backlogCountSelect), "LEFT JOIN") {
+		t.Error("backlogCountSelect must never gain the join — total counts items, not refinements")
+	}
+}
+
+// TestListBacklogItems_EmitsExactlyTwoQueries is AC11a (zero N+1): the source
+// of ListBacklogItems must call the database exactly twice — one COUNT and one
+// page query — regardless of how many items are on the page. Textual guard,
+// precedent internal/service/profile_default_readonce_test.go.
+func TestListBacklogItems_EmitsExactlyTwoQueries(t *testing.T) {
+	src, err := os.ReadFile("sdd.go")
+	if err != nil {
+		t.Fatalf("read sdd.go: %v", err)
+	}
+
+	start := bytes.Index(src, []byte("func (s *SDDStore) ListBacklogItems("))
+	if start == -1 {
+		t.Fatal("ListBacklogItems not found in sdd.go")
+	}
+	// The function body ends at the next top-level "\n}\n" after start.
+	end := bytes.Index(src[start:], []byte("\n}\n"))
+	if end == -1 {
+		t.Fatal("could not locate end of ListBacklogItems body")
+	}
+	body := string(src[start : start+end])
+
+	count := strings.Count(body, "s.db.QueryRowContext") +
+		strings.Count(body, "s.db.QueryContext") +
+		strings.Count(body, "s.db.ExecContext")
+	if count != 2 {
+		t.Errorf("ListBacklogItems body issues %d db calls, want exactly 2 (one COUNT, one page): body=%s", count, body)
+	}
+}
+
+// TestBacklogListOrder_QualifiesEveryColumn is AC11b, the R3 silence-trap
+// guard: backlogListOrder must qualify every column with the b alias — an
+// unqualified `rowid` breaks the deterministic tie-break in total silence the
+// moment a second FROM source (the derived table) exists.
+func TestBacklogListOrder_QualifiesEveryColumn(t *testing.T) {
+	if !strings.Contains(backlogListOrder, "b.rowid") {
+		t.Error("backlogListOrder must qualify rowid as b.rowid")
+	}
+	if !strings.Contains(backlogListOrder, "b.priority") {
+		t.Error("backlogListOrder must qualify priority as b.priority")
+	}
+	if !strings.Contains(backlogListOrder, "b.position") {
+		t.Error("backlogListOrder must qualify position as b.position")
+	}
+	// A bare " rowid" (preceded by whitespace, not "b.rowid") would mean the
+	// qualification was lost or only partially applied.
+	for _, token := range strings.Fields(backlogListOrder) {
+		if token == "rowid," || token == "rowid" {
+			t.Errorf("backlogListOrder contains a bare, unqualified rowid token: %q", token)
+		}
 	}
 }
