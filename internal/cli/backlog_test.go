@@ -193,4 +193,176 @@ func TestBacklogList_TableOutputFormatUnchanged(t *testing.T) {
 	if !strings.Contains(lines[0], "[raw") || !strings.Contains(lines[0], "]") {
 		t.Errorf("expected bracketed status column, got: %q", lines[0])
 	}
+	// SPEC-110 D19: none of these items have refinements, so the "refs:N"
+	// suffix must not appear anywhere — the output stays identical.
+	for i, line := range lines {
+		if strings.Contains(line, "refs:") {
+			t.Errorf("line %d unexpectedly contains a refs: suffix for a zero-refinement item: %q", i, line)
+		}
+	}
+}
+
+// TestBacklogListCmd_ShowsRefinementCountOnlyWhenNonZero is AC24/AC26: the
+// "refs:N" suffix appears only for items with at least one refinement, and
+// is absent for items with zero.
+func TestBacklogListCmd_ShowsRefinementCountOnlyWhenNonZero(t *testing.T) {
+	dataDir := t.TempDir()
+	project := "test-backlog-list-refcount"
+
+	addOut, stderr, err := runBacklogCmd(t, dataDir, project,
+		"backlog", "add", "Refined item", "--lane", "standard")
+	if err != nil {
+		t.Fatalf("backlog add refined item: %v (stderr=%s)", err, stderr)
+	}
+	if _, stderr, err := runBacklogCmd(t, dataDir, project,
+		"backlog", "add", "Untouched item", "--lane", "standard"); err != nil {
+		t.Fatalf("backlog add untouched item: %v (stderr=%s)", err, stderr)
+	}
+
+	if !strings.Contains(addOut, "Created BL-001") {
+		t.Fatalf("expected first item to be BL-001, got stdout=%s", addOut)
+	}
+	if _, stderr, err := runBacklogCmd(t, dataDir, project,
+		"backlog", "refine", "BL-001", "--refinement", "r1"); err != nil {
+		t.Fatalf("backlog refine BL-001: %v (stderr=%s)", err, stderr)
+	}
+	if _, stderr, err := runBacklogCmd(t, dataDir, project,
+		"backlog", "refine", "BL-001", "--refinement", "r2"); err != nil {
+		t.Fatalf("backlog refine BL-001 (2nd): %v (stderr=%s)", err, stderr)
+	}
+
+	stdout, stderr, err := runBacklogCmd(t, dataDir, project, "backlog", "list")
+	if err != nil {
+		t.Fatalf("backlog list: %v (stderr=%s)", err, stderr)
+	}
+
+	lines := strings.Split(strings.TrimRight(stdout, "\n"), "\n")
+	var refinedLine, untouchedLine string
+	for _, line := range lines {
+		if strings.Contains(line, "BL-001") {
+			refinedLine = line
+		}
+		if strings.Contains(line, "BL-002") {
+			untouchedLine = line
+		}
+	}
+	if refinedLine == "" || untouchedLine == "" {
+		t.Fatalf("expected both BL-001 and BL-002 in output: %q", stdout)
+	}
+	if !strings.Contains(refinedLine, "refs:2") {
+		t.Errorf("BL-001 line missing refs:2 suffix: %q", refinedLine)
+	}
+	if strings.Contains(untouchedLine, "refs:") {
+		t.Errorf("BL-002 line unexpectedly contains a refs: suffix: %q", untouchedLine)
+	}
+}
+
+// TestBacklogRefineCmd_SecondRefinementSucceeds is AC24: a second refinement
+// on the same item succeeds (no longer rejected), reports the refinement
+// number, and keeps the item in refined status.
+func TestBacklogRefineCmd_SecondRefinementSucceeds(t *testing.T) {
+	dataDir := t.TempDir()
+	project := "test-backlog-refine-second"
+
+	if _, stderr, err := runBacklogCmd(t, dataDir, project,
+		"backlog", "add", "X", "--lane", "standard"); err != nil {
+		t.Fatalf("backlog add: %v (stderr=%s)", err, stderr)
+	}
+
+	if _, stderr, err := runBacklogCmd(t, dataDir, project,
+		"backlog", "refine", "BL-001", "--refinement", "r1"); err != nil {
+		t.Fatalf("first refine: %v (stderr=%s)", err, stderr)
+	}
+
+	stdout, stderr, err := runBacklogCmd(t, dataDir, project,
+		"backlog", "refine", "BL-001", "--refinement", "r2", "--by", "architect")
+	if err != nil {
+		t.Fatalf("second refine: %v (stderr=%s)", err, stderr)
+	}
+	if !strings.Contains(stdout, "refinement #2") {
+		t.Errorf("expected stdout to report refinement #2, got %q", stdout)
+	}
+	if !strings.Contains(stdout, "refined") {
+		t.Errorf("expected stdout to report status refined, got %q", stdout)
+	}
+}
+
+// TestBacklogGetCmd_PrintsAllRefinements is AC25: "mneme backlog get" prints
+// the item header plus every refinement body in full.
+func TestBacklogGetCmd_PrintsAllRefinements(t *testing.T) {
+	dataDir := t.TempDir()
+	project := "test-backlog-get-text"
+
+	if _, stderr, err := runBacklogCmd(t, dataDir, project,
+		"backlog", "add", "X", "--lane", "standard"); err != nil {
+		t.Fatalf("backlog add: %v (stderr=%s)", err, stderr)
+	}
+	for _, body := range []string{"first refinement", "second refinement"} {
+		if _, stderr, err := runBacklogCmd(t, dataDir, project,
+			"backlog", "refine", "BL-001", "--refinement", body); err != nil {
+			t.Fatalf("refine %q: %v (stderr=%s)", body, err, stderr)
+		}
+	}
+
+	stdout, stderr, err := runBacklogCmd(t, dataDir, project, "backlog", "get", "BL-001")
+	if err != nil {
+		t.Fatalf("backlog get: %v (stderr=%s)", err, stderr)
+	}
+	if !strings.Contains(stdout, "BL-001") {
+		t.Errorf("expected item header in output: %q", stdout)
+	}
+	if !strings.Contains(stdout, "first refinement") || !strings.Contains(stdout, "second refinement") {
+		t.Errorf("expected both refinement bodies in full, got %q", stdout)
+	}
+	if !strings.Contains(stdout, "#1") || !strings.Contains(stdout, "#2") {
+		t.Errorf("expected refinement sequence numbers #1 and #2, got %q", stdout)
+	}
+}
+
+// TestBacklogGetCmd_JSONIsEnvelope is AC25: "mneme backlog get --json" prints
+// the full {item, refinements} envelope.
+func TestBacklogGetCmd_JSONIsEnvelope(t *testing.T) {
+	dataDir := t.TempDir()
+	project := "test-backlog-get-json"
+
+	if _, stderr, err := runBacklogCmd(t, dataDir, project,
+		"backlog", "add", "X", "--lane", "standard"); err != nil {
+		t.Fatalf("backlog add: %v (stderr=%s)", err, stderr)
+	}
+	if _, stderr, err := runBacklogCmd(t, dataDir, project,
+		"backlog", "refine", "BL-001", "--refinement", "r1", "--by", "backend"); err != nil {
+		t.Fatalf("refine: %v (stderr=%s)", err, stderr)
+	}
+
+	stdout, stderr, err := runBacklogCmd(t, dataDir, project, "backlog", "get", "BL-001", "--json")
+	if err != nil {
+		t.Fatalf("backlog get --json: %v (stderr=%s)", err, stderr)
+	}
+
+	var envelope struct {
+		Item struct {
+			ID              string `json:"id"`
+			RefinementCount int    `json:"refinement_count"`
+		} `json:"item"`
+		Refinements []struct {
+			Seq  int    `json:"seq"`
+			Body string `json:"body"`
+			By   string `json:"by"`
+		} `json:"refinements"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &envelope); err != nil {
+		t.Fatalf("backlog get --json did not decode as the envelope: %v\nstdout=%s", err, stdout)
+	}
+	if envelope.Item.ID != "BL-001" {
+		t.Errorf("Item.ID = %q, want BL-001", envelope.Item.ID)
+	}
+	if envelope.Item.RefinementCount != 1 {
+		t.Errorf("Item.RefinementCount = %d, want 1", envelope.Item.RefinementCount)
+	}
+	if len(envelope.Refinements) != 1 {
+		t.Fatalf("expected 1 refinement, got %d", len(envelope.Refinements))
+	}
+	if envelope.Refinements[0].Body != "r1" || envelope.Refinements[0].By != "backend" {
+		t.Errorf("refinement = %+v, want body=r1 by=backend", envelope.Refinements[0])
+	}
 }

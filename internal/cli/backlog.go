@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -26,6 +27,7 @@ criteria, then promoted to specs to enter the SDD lifecycle.`,
 	cmd.AddCommand(
 		newBacklogAddCmd(),
 		newBacklogListCmd(),
+		newBacklogGetCmd(),
 		newBacklogRefineCmd(),
 		newBacklogPromoteCmd(),
 		newBacklogArchiveCmd(),
@@ -145,8 +147,15 @@ Filter by --status to narrow results. Without a filter all statuses are shown.`,
 				if item.SpecID != "" {
 					specRef = " → " + item.SpecID
 				}
-				fmt.Fprintf(os.Stdout, "  %-8s  [%-8s]  %-40s  %s%s\n",
-					item.ID, item.Status, item.Title, item.Priority, specRef)
+				// The refinement count suffix only appears when non-zero
+				// (SPEC-110 D19): items with no refinements print byte-identical
+				// to before this spec, preserving TestBacklogList_TableOutputFormatUnchanged.
+				refs := ""
+				if item.RefinementCount > 0 {
+					refs = fmt.Sprintf("  refs:%d", item.RefinementCount)
+				}
+				fmt.Fprintf(os.Stdout, "  %-8s  [%-8s]  %-40s  %s%s%s\n",
+					item.ID, item.Status, item.Title, item.Priority, specRef, refs)
 			}
 			return nil
 		},
@@ -160,17 +169,23 @@ Filter by --status to narrow results. Without a filter all statuses are shown.`,
 
 // newBacklogRefineCmd returns the "mneme backlog refine" subcommand.
 func newBacklogRefineCmd() *cobra.Command {
-	var flagRefinement string
+	var (
+		flagRefinement string
+		flagBy         string
+	)
 
 	cmd := &cobra.Command{
 		Use:   "refine <id>",
-		Short: "Refine a raw backlog item",
-		Long: `Refine a raw backlog item by adding detailed description content.
+		Short: "Refine a backlog item",
+		Long: `Appends a refinement row to a backlog item (SPEC-110).
 
-The refinement text is appended to the item's existing description and the
-status is changed from raw to refined. Only raw items can be refined.`,
-		Example: `  mneme backlog refine BL-001 --refinement "Acceptance criteria: push on iOS and Android..."`,
-		Args:    cobra.ExactArgs(1),
+An item accepts N refinements: raw becomes refined on the first one, and
+refined stays refined on every subsequent one. The description is never
+modified — each refinement is stored as its own row; use "backlog get" to
+read them all.`,
+		Example: `  mneme backlog refine BL-001 --refinement "Acceptance criteria: push on iOS and Android..."
+  mneme backlog refine BL-001 --refinement "Merged with BL-002" --by architect`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if flagRefinement == "" {
 				return fmt.Errorf("--refinement is required")
@@ -185,6 +200,7 @@ status is changed from raw to refined. Only raw items can be refined.`,
 			req := model.BacklogRefineRequest{
 				ID:         args[0],
 				Refinement: flagRefinement,
+				By:         flagBy,
 			}
 
 			item, err := svc.BacklogRefine(cmd.Context(), req)
@@ -192,12 +208,81 @@ status is changed from raw to refined. Only raw items can be refined.`,
 				return err
 			}
 
-			fmt.Fprintf(os.Stdout, "Refined %s: %q [raw -> refined]\n", item.ID, item.Title)
+			fmt.Fprintf(os.Stdout, "Refined %s: %q (refinement #%d, status %s)\n",
+				item.ID, item.Title, item.RefinementCount, item.Status)
 			return nil
 		},
 	}
 
 	cmd.Flags().StringVar(&flagRefinement, "refinement", "", "Refinement content to add (required)")
+	cmd.Flags().StringVar(&flagBy, "by", "", "Who appends the refinement (e.g. orchestrator, architect). Optional.")
+
+	return cmd
+}
+
+// newBacklogGetCmd returns the "mneme backlog get" subcommand.
+//
+// It exists because SPEC-110 D2 moved refinements out of the description:
+// `backlog list --json` used to be the CLI's full-fidelity path, and without
+// this command the refinement bodies would be unreachable from the CLI
+// altogether. It is a SUBCOMMAND of `mneme backlog`, so the top-level command
+// count does not change.
+func newBacklogGetCmd() *cobra.Command {
+	var flagJSON bool
+
+	cmd := &cobra.Command{
+		Use:   "get <id>",
+		Short: "Get a backlog item with all of its refinements",
+		Long: `Get a single backlog item by ID, plus ALL of its refinements — no excerpt, no
+limit (SPEC-110 D6). This is the CLI's full-fidelity path for refinements,
+the way "backlog list --json" already is for the item fields.`,
+		Example: `  mneme backlog get BL-001
+  mneme backlog get BL-001 --json`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			svc, cleanup, err := initSDDService()
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+
+			resp, err := svc.BacklogGet(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+
+			if flagJSON {
+				return printJSON(os.Stdout, resp)
+			}
+
+			item := resp.Item
+			specRef := ""
+			if item.SpecID != "" {
+				specRef = " → " + item.SpecID
+			}
+			fmt.Fprintf(os.Stdout, "%s: %q [%s] priority:%s lane:%s%s\n",
+				item.ID, item.Title, item.Status, item.Priority, item.Lane, specRef)
+			if item.Description != "" {
+				fmt.Fprintf(os.Stdout, "\ndescription:\n%s\n", item.Description)
+			}
+
+			if len(resp.Refinements) == 0 {
+				fmt.Fprintln(os.Stdout, "\nNo refinements.")
+				return nil
+			}
+			fmt.Fprintf(os.Stdout, "\nrefinements (%d):\n", len(resp.Refinements))
+			for _, r := range resp.Refinements {
+				by := r.By
+				if by == "" {
+					by = "(unattributed)"
+				}
+				fmt.Fprintf(os.Stdout, "\n#%d  by:%s  at:%s\n%s\n", r.Seq, by, r.At.Format(time.RFC3339), r.Body)
+			}
+			return nil
+		},
+	}
+
+	cmd.Flags().BoolVar(&flagJSON, "json", false, "Output as JSON")
 
 	return cmd
 }
