@@ -36,11 +36,22 @@ type MemoryRelation struct {
 	CreatedAt time.Time
 }
 
-// relationListOrder is the TOTAL order for memory_relations listings.
-// mr.created_at DESC alone is not unique; mr.id closes the tie-break (D7).
-// DESC is preserved — reversing it would change the CLI's output shape,
-// which is out of scope here.
-const relationListOrder = ` ORDER BY mr.created_at DESC, mr.id ASC`
+// relationListOrder is the TOTAL order for memory_relations listings: most
+// recently inserted first.
+//
+// mr.id ALONE, not mr.created_at DESC, mr.id ASC (QA rejection on the first
+// cut of D7/AC27): the original order relied on created_at DESC being
+// lexicographically chronological, which time.RFC3339Nano is not — Format
+// trims trailing zeros from the fractional-second component, so two
+// timestamps a few microseconds apart can compare in the WRONG direction as
+// plain text (see backlogListOrder's godoc for the exact byte-level
+// mechanism). mr.id is `INTEGER PRIMARY KEY AUTOINCREMENT` (migration 013):
+// monotonically increasing by insertion order and — thanks to AUTOINCREMENT
+// specifically — never reused even across deletes (DeleteMemoryRelation
+// does delete rows here, unlike backlog_items/specs). DESC preserves the
+// original "most recent first" intent; reversing it would change the CLI's
+// output shape, which is out of scope here.
+const relationListOrder = ` ORDER BY mr.id DESC`
 
 // MemoryRelationListOptions parameterises ListMemoryRelations.
 type MemoryRelationListOptions struct {

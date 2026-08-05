@@ -243,12 +243,76 @@ func TestListBacklogItems_DeterministicTieBreak(t *testing.T) {
 	if !equalStrings(idsOf(first), idsOf(second)) {
 		t.Errorf("non-deterministic order: first=%v second=%v", idsOf(first), idsOf(second))
 	}
-	// The tie-break is created_at then id; all rows share created_at (same
-	// test, same second in practice) so id ASC decides — lexicographic
-	// "BL-001" < "BL-002" < ... matches insertion order here.
+	// The tie-break is rowid — SQLite's own monotonic insertion counter,
+	// which always matches insertion order here regardless of how close
+	// together (in wall-clock time) the five CreateBacklogItem calls land.
 	want := []string{"BL-001", "BL-002", "BL-003", "BL-004", "BL-005"}
 	if gotIDs := idsOf(first); !equalStrings(gotIDs, want) {
 		t.Errorf("order = %v, want %v", gotIDs, want)
+	}
+}
+
+// TestListBacklogItems_OrderSurvivesInsertBursts is the repeated/burst test
+// QA required after rejecting the first cut of D7/AC27: a single insert
+// followed by a single comparison would never have caught the original bug
+// (created_at ASC, id ASC assumed time.RFC3339Nano is lexicographically
+// chronological, which it is not — Format trims trailing zeros from the
+// fractional-second component, so two timestamps microseconds apart can
+// compare in the WRONG direction as plain text). QA reproduced the
+// resulting misordering in 23 of 300 iterations of 5-item insert bursts;
+// this test runs the same shape of burst hundreds of times so a
+// reintroduction of a created_at/timestamp-text tie-break would be caught
+// with very high probability, not just "usually".
+//
+// Each iteration: create 5 items back-to-back (no delay — maximises the
+// chance two land within the same or adjacent nanoseconds, the exact
+// condition that triggered the trailing-zero-trim bug), then assert BOTH
+// that two consecutive listings agree with each other AND that the order
+// exactly matches insertion order. rowid guarantees this unconditionally;
+// the old created_at-based tie-break could not.
+func TestListBacklogItems_OrderSurvivesInsertBursts(t *testing.T) {
+	s := newTestSDDStore(t)
+	ctx := context.Background()
+
+	const iterations = 300
+	const burstSize = 5
+
+	for iter := 0; iter < iterations; iter++ {
+		// backlog_items.id is a GLOBAL primary key (no project scoping,
+		// unlike specs' composite (project, id) — migration 005), so IDs
+		// must be unique across iterations, not just within one.
+		project := fmt.Sprintf("burst-order-test-%d", iter)
+		wantOrder := make([]string, 0, burstSize)
+		for i := 0; i < burstSize; i++ {
+			id := fmt.Sprintf("BL-%d-%03d", iter, i)
+			item := &model.BacklogItem{
+				ID: id, Title: "burst item", Status: model.BacklogStatusRaw,
+				Priority: model.PriorityMedium, Project: project, Position: 0,
+				Lane: model.LaneStandard,
+			}
+			if err := s.CreateBacklogItem(ctx, item); err != nil {
+				t.Fatalf("iteration %d: create %s: %v", iter, id, err)
+			}
+			wantOrder = append(wantOrder, id)
+		}
+
+		first, _, err := s.ListBacklogItems(ctx, project, "", 0)
+		if err != nil {
+			t.Fatalf("iteration %d: ListBacklogItems (first): %v", iter, err)
+		}
+		second, _, err := s.ListBacklogItems(ctx, project, "", 0)
+		if err != nil {
+			t.Fatalf("iteration %d: ListBacklogItems (second): %v", iter, err)
+		}
+
+		gotFirst := idsOf(first)
+		if !equalStrings(gotFirst, idsOf(second)) {
+			t.Fatalf("iteration %d: non-deterministic order between two calls: first=%v second=%v",
+				iter, gotFirst, idsOf(second))
+		}
+		if !equalStrings(gotFirst, wantOrder) {
+			t.Fatalf("iteration %d: order = %v, want insertion order %v", iter, gotFirst, wantOrder)
+		}
 	}
 }
 
@@ -371,6 +435,60 @@ func TestListSpecs_LimitPagesAndReportsTrueTotal(t *testing.T) {
 	}
 	if total != 25 {
 		t.Errorf("total=%d, want 25 (the real match count, not the limit)", total)
+	}
+}
+
+// TestListSpecs_OrderSurvivesInsertBursts mirrors
+// TestListBacklogItems_OrderSurvivesInsertBursts for specListOrder, which had
+// the exact same created_at-lexicographic-vs-chronological defect (QA
+// rejection on the first cut of D7/AC27).
+func TestListSpecs_OrderSurvivesInsertBursts(t *testing.T) {
+	s := newTestSDDStore(t)
+	ctx := context.Background()
+
+	const iterations = 300
+	const burstSize = 5
+
+	for iter := 0; iter < iterations; iter++ {
+		project := fmt.Sprintf("burst-spec-order-test-%d", iter)
+		wantOrder := make([]string, 0, burstSize)
+		for i := 0; i < burstSize; i++ {
+			id := fmt.Sprintf("SPEC-%03d", i)
+			spec := &model.Spec{
+				ID: id, Title: "burst spec", Status: model.SpecStatusDraft,
+				Project: project, Lane: model.LaneStandard,
+			}
+			if err := s.CreateSpec(ctx, spec); err != nil {
+				t.Fatalf("iteration %d: create %s: %v", iter, id, err)
+			}
+			wantOrder = append(wantOrder, id)
+		}
+
+		first, _, err := s.ListSpecs(ctx, project, "", 0)
+		if err != nil {
+			t.Fatalf("iteration %d: ListSpecs (first): %v", iter, err)
+		}
+		second, _, err := s.ListSpecs(ctx, project, "", 0)
+		if err != nil {
+			t.Fatalf("iteration %d: ListSpecs (second): %v", iter, err)
+		}
+
+		gotFirst := make([]string, len(first))
+		for i, spec := range first {
+			gotFirst[i] = spec.ID
+		}
+		gotSecond := make([]string, len(second))
+		for i, spec := range second {
+			gotSecond[i] = spec.ID
+		}
+
+		if !equalStrings(gotFirst, gotSecond) {
+			t.Fatalf("iteration %d: non-deterministic order between two calls: first=%v second=%v",
+				iter, gotFirst, gotSecond)
+		}
+		if !equalStrings(gotFirst, wantOrder) {
+			t.Fatalf("iteration %d: order = %v, want insertion order %v", iter, gotFirst, wantOrder)
+		}
 	}
 }
 

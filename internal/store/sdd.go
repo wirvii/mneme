@@ -37,9 +37,23 @@ func NewSDDStore(database *db.DB) *SDDStore {
 // LIMIT applied over the lexicographic order could leave the entire medium
 // bucket outside the window.
 //
-// created_at (TEXT ISO-8601, whose lexicographic order IS chronological) and
-// id close the tie-break: position is 0 on every item, so without them the
-// order is partial and a LIMIT would be a lottery, not a window (D7).
+// rowid closes the tie-break: position is 0 on every item, so without a
+// final tie-break the order is partial and a LIMIT would be a lottery, not a
+// window (D7).
+//
+// rowid, NOT created_at (QA rejection on the first cut of D7/AC27): the
+// original tie-break used `created_at ASC, id ASC`, on the false premise
+// that time.RFC3339Nano is lexicographically chronological. It is not —
+// Format trims trailing zeros from the fractional-second component, so e.g.
+// "...52.77Z" (an exact .770000000s) and "...52.770018Z" (18µs later) compare
+// as "...52.770018Z" < "...52.77Z" byte-for-byte ('0' < 'Z' at the first
+// point of divergence) even though the first string denotes the LATER
+// instant. QA reproduced the resulting misordering in 23 of 300 iterations
+// of 5-item insert bursts, and it also flipped this package's own
+// TestListBacklogItems_DeterministicTieBreak in 1 of 3 repeated runs. rowid
+// is SQLite's own monotonically-increasing insertion counter — immune to any
+// text-formatting artefact — and is safe here because backlog_items rows are
+// archived (status update), never hard-deleted, so rowid is never reused.
 const backlogListOrder = ` ORDER BY
 	CASE priority
 	    WHEN 'critical' THEN 0
@@ -48,11 +62,15 @@ const backlogListOrder = ` ORDER BY
 	    WHEN 'low'      THEN 3
 	    ELSE 99
 	END ASC,
-	position ASC, created_at ASC, id ASC`
+	position ASC, rowid ASC`
 
-// specListOrder is the TOTAL order for spec listings. created_at is not
-// unique; id closes the tie-break (D7).
-const specListOrder = ` ORDER BY created_at ASC, id ASC`
+// specListOrder is the TOTAL order for spec listings: rowid alone, since it
+// is both unique (no further tie-break needed) and monotonic by insertion —
+// see backlogListOrder's godoc for why created_at was rejected as a sort key
+// (QA rejection on the first cut of D7/AC27: time.RFC3339Nano is not
+// lexicographically chronological). specs rows are never hard-deleted
+// either, so rowid reuse is not a concern.
+const specListOrder = ` ORDER BY rowid ASC`
 
 // backlogListWhere / backlogListWhereStatus are the ONLY definition of the
 // backlog listing predicate. The COUNT and the page query consume the SAME

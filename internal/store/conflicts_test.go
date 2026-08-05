@@ -185,6 +185,74 @@ func TestListAndCountMemoryRelations_TotalBehavioralGuard(t *testing.T) {
 	}
 }
 
+// TestListMemoryRelations_OrderSurvivesInsertBursts is the repeated/burst
+// test QA required after rejecting the first cut of D7/AC27 (a single
+// insert + single comparison would never have caught the original bug):
+// relationListOrder used to be `mr.created_at DESC, mr.id ASC`, relying on
+// time.RFC3339Nano being lexicographically chronological — it is not (Format
+// trims trailing zeros from the fractional-second component, so two
+// timestamps microseconds apart can compare in the wrong direction as plain
+// text). relationListOrder now orders by `mr.id DESC` alone — mr.id is
+// `INTEGER PRIMARY KEY AUTOINCREMENT` (migration 013), monotonic by
+// insertion and never reused even across deletes. This test creates a burst
+// of 5 relations back-to-back, hundreds of times, and asserts both
+// call-to-call stability and that the order is exactly the reverse of
+// insertion order (most recently inserted first).
+func TestListMemoryRelations_OrderSurvivesInsertBursts(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	const iterations = 300
+	const burstSize = 5
+
+	for iter := 0; iter < iterations; iter++ {
+		project := fmt.Sprintf("burst-rel-order-test-%d", iter)
+		var insertedFrom []string
+		for i := 0; i < burstSize; i++ {
+			fromID := fmt.Sprintf("burst-from-%d-%d", iter, i)
+			toID := fmt.Sprintf("burst-to-%d-%d", iter, i)
+			insertTestMemory(t, s, fromID, "from", "content", project)
+			insertTestMemory(t, s, toID, "to", "content", project)
+			if err := s.CreateMemoryRelation(ctx, fromID, toID, "conflicts_with", "manual", ""); err != nil {
+				t.Fatalf("iteration %d: CreateMemoryRelation %d: %v", iter, i, err)
+			}
+			insertedFrom = append(insertedFrom, fromID)
+		}
+		// Reverse: relationListOrder is DESC (most recently inserted first).
+		wantOrder := make([]string, burstSize)
+		for i, from := range insertedFrom {
+			wantOrder[burstSize-1-i] = from
+		}
+
+		opts := MemoryRelationListOptions{Project: project}
+		first, err := s.ListMemoryRelations(ctx, opts)
+		if err != nil {
+			t.Fatalf("iteration %d: ListMemoryRelations (first): %v", iter, err)
+		}
+		second, err := s.ListMemoryRelations(ctx, opts)
+		if err != nil {
+			t.Fatalf("iteration %d: ListMemoryRelations (second): %v", iter, err)
+		}
+
+		gotFirst := make([]string, len(first))
+		for i, r := range first {
+			gotFirst[i] = r.FromID
+		}
+		gotSecond := make([]string, len(second))
+		for i, r := range second {
+			gotSecond[i] = r.FromID
+		}
+
+		if !equalStrings(gotFirst, gotSecond) {
+			t.Fatalf("iteration %d: non-deterministic order between two calls: first=%v second=%v",
+				iter, gotFirst, gotSecond)
+		}
+		if !equalStrings(gotFirst, wantOrder) {
+			t.Fatalf("iteration %d: order = %v, want reverse-insertion order %v", iter, gotFirst, wantOrder)
+		}
+	}
+}
+
 // TestDeleteMemoryRelation verifies that a relation can be deleted in either
 // direction and that a second delete returns ErrNotFound.
 func TestDeleteMemoryRelation(t *testing.T) {
