@@ -138,7 +138,10 @@ func (svc *SDDService) BacklogList(ctx context.Context, req model.BacklogListReq
 		return nil, model.ErrInvalidBacklogStatus
 	}
 
-	items, err := svc.store.ListBacklogItems(ctx, req.Project, req.Status)
+	// TODO(SPEC-109 step 6): apply model.ListMaxLimit capping and return the
+	// {Items,Total} envelope. This call passes limit=0 (no window) purely to
+	// keep the package compiling after the store signature change in step 5.
+	items, _, err := svc.store.ListBacklogItems(ctx, req.Project, req.Status, 0)
 	if err != nil {
 		return nil, fmt.Errorf("service: backlog list: %w", err)
 	}
@@ -708,7 +711,10 @@ func (svc *SDDService) SpecList(ctx context.Context, req model.SpecListRequest) 
 		return nil, model.ErrInvalidSpecStatus
 	}
 
-	specs, err := svc.store.ListSpecs(ctx, req.Project, req.Status)
+	// TODO(SPEC-109 step 6): apply model.ListMaxLimit capping and return the
+	// {Specs,Total} envelope. This call passes limit=0 (no window) purely to
+	// keep the package compiling after the store signature change in step 5.
+	specs, _, err := svc.store.ListSpecs(ctx, req.Project, req.Status, 0)
 	if err != nil {
 		return nil, fmt.Errorf("service: spec list: %w", err)
 	}
@@ -1066,7 +1072,9 @@ func (svc *SDDService) LaneStats(ctx context.Context, project string) (*model.La
 		project = svc.project
 	}
 
-	specs, err := svc.store.ListSpecs(ctx, project, "")
+	// LaneStats aggregates over every spec in the project — it is not one of
+	// SPEC-109's windowed listing tools, so it always passes limit=0 (no window).
+	specs, _, err := svc.store.ListSpecs(ctx, project, "", 0)
 	if err != nil {
 		return nil, fmt.Errorf("service: lane stats: list specs: %w", err)
 	}

@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -127,9 +129,12 @@ func TestListBacklogItems(t *testing.T) {
 	}
 
 	// Filter by status=raw: expect BL-001 and BL-003.
-	rawItems, err := s.ListBacklogItems(ctx, project, model.BacklogStatusRaw)
+	rawItems, rawTotal, err := s.ListBacklogItems(ctx, project, model.BacklogStatusRaw, 0)
 	if err != nil {
 		t.Fatalf("ListBacklogItems(raw): %v", err)
+	}
+	if rawTotal != 2 {
+		t.Errorf("expected total=2 for raw items, got %d", rawTotal)
 	}
 	if len(rawItems) != 2 {
 		t.Errorf("expected 2 raw items, got %d", len(rawItems))
@@ -140,9 +145,12 @@ func TestListBacklogItems(t *testing.T) {
 	// ('critical' < 'high' < 'low' < 'medium', which would put the low item
 	// before the medium one). SPEC-109 D20/AC27: this is the fix, verified
 	// by asserting exact order instead of only membership.
-	all, err := s.ListBacklogItems(ctx, project, "")
+	all, allTotal, err := s.ListBacklogItems(ctx, project, "", 0)
 	if err != nil {
 		t.Fatalf("ListBacklogItems(all): %v", err)
+	}
+	if allTotal != 3 {
+		t.Errorf("expected total=3, got %d", allTotal)
 	}
 	if len(all) != 3 {
 		t.Errorf("expected 3 items, got %d", len(all))
@@ -192,7 +200,7 @@ func TestListBacklogItems_PriorityRankOrder(t *testing.T) {
 		}
 	}
 
-	got, err := s.ListBacklogItems(ctx, project, "")
+	got, _, err := s.ListBacklogItems(ctx, project, "", 0)
 	if err != nil {
 		t.Fatalf("ListBacklogItems: %v", err)
 	}
@@ -223,11 +231,11 @@ func TestListBacklogItems_DeterministicTieBreak(t *testing.T) {
 		}
 	}
 
-	first, err := s.ListBacklogItems(ctx, project, "")
+	first, _, err := s.ListBacklogItems(ctx, project, "", 0)
 	if err != nil {
 		t.Fatalf("ListBacklogItems (first): %v", err)
 	}
-	second, err := s.ListBacklogItems(ctx, project, "")
+	second, _, err := s.ListBacklogItems(ctx, project, "", 0)
 	if err != nil {
 		t.Fatalf("ListBacklogItems (second): %v", err)
 	}
@@ -256,6 +264,226 @@ func equalStrings(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// TestBacklogListPredicate_SharedByCountAndPage is AC9's textual guard
+// (precedent SPEC-108 AC8): the COUNT and page queries for backlog listing
+// must embed the exact same predicate. Proven by construction here —
+// backlogListWhereStatus EXTENDS backlogListWhere rather than being an
+// independently written string, and neither SELECT constant carries its own
+// WHERE, so the shared where variable built in ListBacklogItems is the only
+// source of filtering for both queries. If a future edit gave either query
+// its own filter, this test would catch the divergence.
+func TestBacklogListPredicate_SharedByCountAndPage(t *testing.T) {
+	if !strings.HasPrefix(backlogListWhereStatus, backlogListWhere) {
+		t.Error("backlogListWhereStatus does not extend backlogListWhere — COUNT and page could diverge")
+	}
+	if strings.Contains(strings.ToUpper(backlogCountSelect), "WHERE") {
+		t.Error("backlogCountSelect must not embed its own WHERE clause")
+	}
+	if strings.Contains(strings.ToUpper(backlogListSelect), "WHERE") {
+		t.Error("backlogListSelect must not embed its own WHERE clause")
+	}
+}
+
+// TestSpecListPredicate_SharedByCountAndPage mirrors the guard above for specs.
+func TestSpecListPredicate_SharedByCountAndPage(t *testing.T) {
+	if !strings.HasPrefix(specListWhereStatus, specListWhere) {
+		t.Error("specListWhereStatus does not extend specListWhere — COUNT and page could diverge")
+	}
+	if strings.Contains(strings.ToUpper(specCountSelect), "WHERE") {
+		t.Error("specCountSelect must not embed its own WHERE clause")
+	}
+	if strings.Contains(strings.ToUpper(specListSelect), "WHERE") {
+		t.Error("specListSelect must not embed its own WHERE clause")
+	}
+}
+
+// TestListSpecs_TotalBehavioralGuard mirrors
+// TestListBacklogItems_TotalBehavioralGuard (AC8) for specs.
+func TestListSpecs_TotalBehavioralGuard(t *testing.T) {
+	s := newTestSDDStore(t)
+	ctx := context.Background()
+	project := "specstotalguardtest"
+
+	statuses := []model.SpecStatus{
+		model.SpecStatusDraft, model.SpecStatusImplementing, model.SpecStatusDone,
+	}
+	n := 0
+	for _, status := range statuses {
+		for i := 0; i < 3; i++ {
+			n++
+			spec := &model.Spec{
+				ID: fmt.Sprintf("SPEC-%03d", n), Title: fmt.Sprintf("spec %d", n),
+				Status: status, Project: project, Lane: model.LaneStandard,
+			}
+			if err := s.CreateSpec(ctx, spec); err != nil {
+				t.Fatalf("create %s: %v", spec.ID, err)
+			}
+		}
+	}
+
+	cases := append([]model.SpecStatus{""}, statuses...)
+	for _, status := range cases {
+		name := string(status)
+		if name == "" {
+			name = "(no filter)"
+		}
+		t.Run(name, func(t *testing.T) {
+			unwindowed, _, err := s.ListSpecs(ctx, project, status, 0)
+			if err != nil {
+				t.Fatalf("ListSpecs(limit=0): %v", err)
+			}
+			_, total, err := s.ListSpecs(ctx, project, status, 1)
+			if err != nil {
+				t.Fatalf("ListSpecs(limit=1): %v", err)
+			}
+			if total != len(unwindowed) {
+				t.Errorf("total=%d, want %d (len of unwindowed list)", total, len(unwindowed))
+			}
+		})
+	}
+}
+
+// TestListSpecs_LimitPagesAndReportsTrueTotal mirrors
+// TestListBacklogItems_LimitPagesAndReportsTrueTotal (AC6) for specs.
+func TestListSpecs_LimitPagesAndReportsTrueTotal(t *testing.T) {
+	s := newTestSDDStore(t)
+	ctx := context.Background()
+	project := "specslimitpagetest"
+
+	for i := 1; i <= 25; i++ {
+		spec := &model.Spec{
+			ID: fmt.Sprintf("SPEC-%03d", i), Title: fmt.Sprintf("spec %d", i),
+			Status: model.SpecStatusDraft, Project: project, Lane: model.LaneStandard,
+		}
+		if err := s.CreateSpec(ctx, spec); err != nil {
+			t.Fatalf("create %s: %v", spec.ID, err)
+		}
+	}
+
+	specs, total, err := s.ListSpecs(ctx, project, "", 10)
+	if err != nil {
+		t.Fatalf("ListSpecs: %v", err)
+	}
+	if len(specs) != 10 {
+		t.Errorf("expected 10 specs with limit=10, got %d", len(specs))
+	}
+	if total != 25 {
+		t.Errorf("total=%d, want 25 (the real match count, not the limit)", total)
+	}
+}
+
+// TestListBacklogItems_TotalBehavioralGuard is AC8: for every combination of
+// (status filter × no filter), the total returned by a limit=1 call must
+// equal len(items) from a limit=0 call. This is the test that fails if the
+// COUNT and page queries ever diverge in their WHERE clause.
+func TestListBacklogItems_TotalBehavioralGuard(t *testing.T) {
+	s := newTestSDDStore(t)
+	ctx := context.Background()
+	project := "totalguardtest"
+
+	statuses := []model.BacklogStatus{
+		model.BacklogStatusRaw, model.BacklogStatusRefined,
+		model.BacklogStatusPromoted, model.BacklogStatusArchived,
+	}
+	n := 0
+	for _, status := range statuses {
+		for i := 0; i < 3; i++ {
+			n++
+			item := &model.BacklogItem{
+				ID: fmt.Sprintf("BL-%03d", n), Title: fmt.Sprintf("item %d", n),
+				Status: status, Priority: model.PriorityMedium,
+				Project: project, Lane: model.LaneStandard,
+			}
+			if err := s.CreateBacklogItem(ctx, item); err != nil {
+				t.Fatalf("create %s: %v", item.ID, err)
+			}
+		}
+	}
+
+	cases := append([]model.BacklogStatus{""}, statuses...)
+	for _, status := range cases {
+		name := string(status)
+		if name == "" {
+			name = "(no filter)"
+		}
+		t.Run(name, func(t *testing.T) {
+			unwindowed, _, err := s.ListBacklogItems(ctx, project, status, 0)
+			if err != nil {
+				t.Fatalf("ListBacklogItems(limit=0): %v", err)
+			}
+			_, total, err := s.ListBacklogItems(ctx, project, status, 1)
+			if err != nil {
+				t.Fatalf("ListBacklogItems(limit=1): %v", err)
+			}
+			if total != len(unwindowed) {
+				t.Errorf("total=%d, want %d (len of unwindowed list)", total, len(unwindowed))
+			}
+		})
+	}
+}
+
+// TestListBacklogItems_LimitZeroIsUnwindowed is AC12: limit<=0 returns every
+// matching item and total equals the returned count.
+func TestListBacklogItems_LimitZeroIsUnwindowed(t *testing.T) {
+	s := newTestSDDStore(t)
+	ctx := context.Background()
+	project := "limitzerotest"
+
+	for i := 1; i <= 25; i++ {
+		item := &model.BacklogItem{
+			ID: fmt.Sprintf("BL-%03d", i), Title: fmt.Sprintf("item %d", i),
+			Status: model.BacklogStatusRaw, Priority: model.PriorityMedium,
+			Project: project, Lane: model.LaneStandard,
+		}
+		if err := s.CreateBacklogItem(ctx, item); err != nil {
+			t.Fatalf("create %s: %v", item.ID, err)
+		}
+	}
+
+	items, total, err := s.ListBacklogItems(ctx, project, "", 0)
+	if err != nil {
+		t.Fatalf("ListBacklogItems: %v", err)
+	}
+	if len(items) != 25 {
+		t.Errorf("expected 25 items with limit=0, got %d", len(items))
+	}
+	if total != len(items) {
+		t.Errorf("total=%d, want %d (== len(items))", total, len(items))
+	}
+}
+
+// TestListBacklogItems_LimitPagesAndReportsTrueTotal is AC6 at store level:
+// 25 items, limit=10 returns exactly 10 items but total is the real count of
+// 25 — the case that was impossible before SPEC-109 (total could never
+// exceed limit).
+func TestListBacklogItems_LimitPagesAndReportsTrueTotal(t *testing.T) {
+	s := newTestSDDStore(t)
+	ctx := context.Background()
+	project := "limitpagetest"
+
+	for i := 1; i <= 25; i++ {
+		item := &model.BacklogItem{
+			ID: fmt.Sprintf("BL-%03d", i), Title: fmt.Sprintf("item %d", i),
+			Status: model.BacklogStatusRaw, Priority: model.PriorityMedium,
+			Project: project, Lane: model.LaneStandard,
+		}
+		if err := s.CreateBacklogItem(ctx, item); err != nil {
+			t.Fatalf("create %s: %v", item.ID, err)
+		}
+	}
+
+	items, total, err := s.ListBacklogItems(ctx, project, "", 10)
+	if err != nil {
+		t.Fatalf("ListBacklogItems: %v", err)
+	}
+	if len(items) != 10 {
+		t.Errorf("expected 10 items with limit=10, got %d", len(items))
+	}
+	if total != 25 {
+		t.Errorf("total=%d, want 25 (the real match count, not the limit)", total)
+	}
 }
 
 func TestUpdateBacklogItem(t *testing.T) {
@@ -807,7 +1035,7 @@ func TestUpdateSpecBaseSHA(t *testing.T) {
 	}
 
 	// ListSpecs must also return the SHA.
-	list, err := s.ListSpecs(ctx, "proj", "")
+	list, _, err := s.ListSpecs(ctx, "proj", "", 0)
 	if err != nil {
 		t.Fatalf("ListSpecs: %v", err)
 	}

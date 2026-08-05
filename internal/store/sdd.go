@@ -54,6 +54,38 @@ const backlogListOrder = ` ORDER BY
 // unique; id closes the tie-break (D7).
 const specListOrder = ` ORDER BY created_at ASC, id ASC`
 
+// backlogListWhere / backlogListWhereStatus are the ONLY definition of the
+// backlog listing predicate. The COUNT and the page query consume the SAME
+// variable and the SAME args slice, so they cannot diverge: the symmetry is
+// structural, not a convention a future editor could break by accident. If
+// they diverge, Total lies — and a Total that lies is worse than no Total at
+// all. Precedent and same requirement as sessionWorkWhere (store/session.go)
+// and HardDeleteBySource ("MUST stay byte-identical").
+const backlogListWhere = ` WHERE project = ?`
+const backlogListWhereStatus = backlogListWhere + ` AND status = ?`
+
+// backlogListSelect / backlogCountSelect share backlogListWhere so the page
+// and the COUNT can never select from a different row set.
+const backlogListSelect = `
+	SELECT id, title, description, status, priority, project,
+	       COALESCE(spec_id, ''), archive_reason, position, lane, scope,
+	       created_at, updated_at
+	FROM backlog_items`
+
+const backlogCountSelect = `SELECT COUNT(*) FROM backlog_items`
+
+// specListWhere / specListWhereStatus mirror backlogListWhere for specs (D6).
+const specListWhere = ` WHERE project = ?`
+const specListWhereStatus = specListWhere + ` AND status = ?`
+
+const specListSelect = `
+	SELECT id, title, status, project, COALESCE(backlog_id, ''),
+	       lane, scope, COALESCE(base_sha, ''), assigned_agents, files_changed,
+	       created_at, updated_at
+	FROM specs`
+
+const specCountSelect = `SELECT COUNT(*) FROM specs`
+
 // --- BACKLOG OPERATIONS ---
 
 // NextBacklogID returns the next sequential backlog ID for the project.
@@ -127,29 +159,46 @@ func (s *SDDStore) GetBacklogItem(ctx context.Context, id string) (*model.Backlo
 // with this godoc: SPEC-109 D20), then position, then a deterministic
 // created_at/id tie-break (D7). Pass an empty status to list all statuses
 // for the project.
-func (s *SDDStore) ListBacklogItems(ctx context.Context, project string, status model.BacklogStatus) ([]*model.BacklogItem, error) {
-	var (
-		rows *sql.Rows
-		err  error
-	)
-
-	const baseQ = `
-		SELECT id, title, description, status, priority, project,
-		       COALESCE(spec_id, ''), archive_reason, position, lane, scope, created_at, updated_at
-		FROM backlog_items
-		WHERE project = ?`
-
+//
+// limit <= 0 means no window — every matching row is returned (the CLI's
+// path). limit > 0 caps the page via SQL LIMIT; the service layer is
+// responsible for applying model.ListMaxLimit (D5), this method applies
+// whatever limit it is given verbatim.
+//
+// The second return value is total: the number of matches BEFORE limit was
+// applied, computed by a COUNT query that shares the exact same where/args
+// as the page query (D6) — they cannot diverge, so total can never lie about
+// what a limit=0 call would have returned.
+func (s *SDDStore) ListBacklogItems(ctx context.Context, project string, status model.BacklogStatus, limit int) ([]*model.BacklogItem, int, error) {
+	where := backlogListWhere
+	args := []any{project}
 	if status != "" {
-		rows, err = s.db.QueryContext(ctx, baseQ+" AND status = ?"+backlogListOrder, project, string(status))
-	} else {
-		rows, err = s.db.QueryContext(ctx, baseQ+backlogListOrder, project)
+		where = backlogListWhereStatus
+		args = append(args, string(status))
 	}
+
+	var total int
+	if err := s.db.QueryRowContext(ctx, backlogCountSelect+where, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("store: count backlog items: %w", err)
+	}
+
+	q := backlogListSelect + where + backlogListOrder
+	if limit > 0 {
+		q += ` LIMIT ?`
+		args = append(args, limit)
+	}
+
+	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
-		return nil, fmt.Errorf("store: list backlog items: %w", err)
+		return nil, 0, fmt.Errorf("store: list backlog items: %w", err)
 	}
 	defer rows.Close()
 
-	return collectBacklogItems(rows)
+	items, err := collectBacklogItems(rows)
+	if err != nil {
+		return nil, 0, err
+	}
+	return items, total, nil
 }
 
 // UpdateBacklogItem updates the mutable fields of a backlog item.
@@ -288,28 +337,41 @@ func (s *SDDStore) GetSpec(ctx context.Context, id string) (*model.Spec, error) 
 // ordered by created_at then a deterministic id tie-break (D7 — created_at
 // alone is not unique). Pass an empty status to list all statuses for the
 // project.
-func (s *SDDStore) ListSpecs(ctx context.Context, project string, status model.SpecStatus) ([]*model.Spec, error) {
-	var (
-		rows *sql.Rows
-		err  error
-	)
-
-	const baseQ = `
-		SELECT id, title, status, project, COALESCE(backlog_id, ''),
-		       lane, scope, COALESCE(base_sha, ''), assigned_agents, files_changed, created_at, updated_at
-		FROM specs WHERE project = ?`
-
+//
+// limit <= 0 means no window (every matching row is returned); limit > 0
+// caps the page via SQL LIMIT. The second return value, total, is the number
+// of matches BEFORE limit was applied, computed by a COUNT query sharing the
+// exact same where/args as the page query (D6) so it cannot diverge.
+func (s *SDDStore) ListSpecs(ctx context.Context, project string, status model.SpecStatus, limit int) ([]*model.Spec, int, error) {
+	where := specListWhere
+	args := []any{project}
 	if status != "" {
-		rows, err = s.db.QueryContext(ctx, baseQ+" AND status = ?"+specListOrder, project, string(status))
-	} else {
-		rows, err = s.db.QueryContext(ctx, baseQ+specListOrder, project)
+		where = specListWhereStatus
+		args = append(args, string(status))
 	}
+
+	var total int
+	if err := s.db.QueryRowContext(ctx, specCountSelect+where, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("store: count specs: %w", err)
+	}
+
+	q := specListSelect + where + specListOrder
+	if limit > 0 {
+		q += ` LIMIT ?`
+		args = append(args, limit)
+	}
+
+	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
-		return nil, fmt.Errorf("store: list specs: %w", err)
+		return nil, 0, fmt.Errorf("store: list specs: %w", err)
 	}
 	defer rows.Close()
 
-	return collectSpecs(rows)
+	specs, err := collectSpecs(rows)
+	if err != nil {
+		return nil, 0, err
+	}
+	return specs, total, nil
 }
 
 // UpdateSpecStatus changes the status of a spec and records the transition
