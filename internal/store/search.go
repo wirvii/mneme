@@ -239,12 +239,15 @@ var stopWords = map[string]bool{
 // makePreview returns a truncated excerpt of content. If content is shorter than
 // maxLen the full content is returned. Otherwise the first maxLen characters are
 // returned followed by "...".
+//
+// Delegates to model.Excerpt (SPEC-109 D8) so the rune-safe truncation logic
+// exists in exactly one place instead of three; behaviour is unchanged.
 func makePreview(content string, maxLen int) string {
-	runes := []rune(content)
-	if len(runes) <= maxLen {
-		return content
+	excerpt, truncated := model.Excerpt(content, maxLen)
+	if truncated {
+		return excerpt + "..."
 	}
-	return string(runes[:maxLen]) + "..."
+	return excerpt
 }
 
 // bm25ToRelevance converts a raw BM25 score (negative float, closer to 0 = better)
