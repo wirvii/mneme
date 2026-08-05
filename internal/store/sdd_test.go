@@ -135,7 +135,11 @@ func TestListBacklogItems(t *testing.T) {
 		t.Errorf("expected 2 raw items, got %d", len(rawItems))
 	}
 
-	// No filter: expect all 3 items, ordered by priority (critical first).
+	// No filter: expect all 3 items, ordered by PRIORITY RANK (critical,
+	// medium, low) — NOT the lexicographic order of the priority column
+	// ('critical' < 'high' < 'low' < 'medium', which would put the low item
+	// before the medium one). SPEC-109 D20/AC27: this is the fix, verified
+	// by asserting exact order instead of only membership.
 	all, err := s.ListBacklogItems(ctx, project, "")
 	if err != nil {
 		t.Fatalf("ListBacklogItems(all): %v", err)
@@ -143,21 +147,115 @@ func TestListBacklogItems(t *testing.T) {
 	if len(all) != 3 {
 		t.Errorf("expected 3 items, got %d", len(all))
 	}
-	// Priority ordering: critical < medium < low (by rank).
-	// Since priority is stored as text in SQLite and sorted ASC by text,
-	// we verify the first item is critical (rank 0) which sorts first alphabetically.
-	// Actually SQLite text sort: critical < high < low < medium (lexicographic).
-	// The spec says ORDER BY priority ASC which is alphabetical, not by rank.
-	// We just verify all items are present.
-	ids := map[string]bool{}
-	for _, item := range all {
-		ids[item.ID] = true
-	}
-	for _, expected := range []string{"BL-001", "BL-002", "BL-003"} {
-		if !ids[expected] {
-			t.Errorf("missing item %s in list", expected)
+	wantOrder := []string{"BL-001", "BL-003", "BL-002"} // critical, medium, low
+	for i, want := range wantOrder {
+		if i >= len(all) {
+			t.Fatalf("missing item at position %d, want %s", i, want)
+		}
+		if all[i].ID != want {
+			t.Errorf("position %d: got %s, want %s (order: %v)", i, all[i].ID, want, idsOf(all))
 		}
 	}
+}
+
+// idsOf extracts the IDs of a backlog item slice, for readable test failure
+// messages.
+func idsOf(items []*model.BacklogItem) []string {
+	ids := make([]string, len(items))
+	for i, item := range items {
+		ids[i] = item.ID
+	}
+	return ids
+}
+
+// TestListBacklogItems_PriorityRankOrder is AC27: with one item of each
+// priority, ListBacklogItems must return critical, high, medium, low — NOT
+// the lexicographic order of the priority TEXT column ('critical' < 'high'
+// < 'low' < 'medium', SPEC-109 D20), which would incorrectly place low
+// before medium.
+func TestListBacklogItems_PriorityRankOrder(t *testing.T) {
+	s := newTestSDDStore(t)
+	ctx := context.Background()
+	project := "rankordertest"
+
+	// Inserted in an order that would NOT coincidentally match either the
+	// correct or the buggy ordering, so the assertion is meaningful.
+	items := []*model.BacklogItem{
+		{ID: "BL-001", Title: "low", Status: model.BacklogStatusRaw, Priority: model.PriorityLow, Project: project, Lane: model.LaneStandard},
+		{ID: "BL-002", Title: "medium", Status: model.BacklogStatusRaw, Priority: model.PriorityMedium, Project: project, Lane: model.LaneStandard},
+		{ID: "BL-003", Title: "critical", Status: model.BacklogStatusRaw, Priority: model.PriorityCritical, Project: project, Lane: model.LaneStandard},
+		{ID: "BL-004", Title: "high", Status: model.BacklogStatusRaw, Priority: model.PriorityHigh, Project: project, Lane: model.LaneStandard},
+	}
+	for _, item := range items {
+		if err := s.CreateBacklogItem(ctx, item); err != nil {
+			t.Fatalf("create %s: %v", item.ID, err)
+		}
+	}
+
+	got, err := s.ListBacklogItems(ctx, project, "")
+	if err != nil {
+		t.Fatalf("ListBacklogItems: %v", err)
+	}
+
+	want := []string{"BL-003", "BL-004", "BL-002", "BL-001"} // critical, high, medium, low
+	if gotIDs := idsOf(got); !equalStrings(gotIDs, want) {
+		t.Errorf("order = %v, want %v (critical, high, medium, low)", gotIDs, want)
+	}
+}
+
+// TestListBacklogItems_DeterministicTieBreak is AC16: with ≥3 items tied on
+// priority and position (BacklogAdd always sets Position=0 in production —
+// see D7), two consecutive ListBacklogItems calls must return the exact same
+// order. Without the created_at/id tie-break this would be a lottery.
+func TestListBacklogItems_DeterministicTieBreak(t *testing.T) {
+	s := newTestSDDStore(t)
+	ctx := context.Background()
+	project := "tiebreaktest"
+
+	for _, id := range []string{"BL-001", "BL-002", "BL-003", "BL-004", "BL-005"} {
+		item := &model.BacklogItem{
+			ID: id, Title: "tied " + id, Status: model.BacklogStatusRaw,
+			Priority: model.PriorityMedium, Project: project, Position: 0,
+			Lane: model.LaneStandard,
+		}
+		if err := s.CreateBacklogItem(ctx, item); err != nil {
+			t.Fatalf("create %s: %v", id, err)
+		}
+	}
+
+	first, err := s.ListBacklogItems(ctx, project, "")
+	if err != nil {
+		t.Fatalf("ListBacklogItems (first): %v", err)
+	}
+	second, err := s.ListBacklogItems(ctx, project, "")
+	if err != nil {
+		t.Fatalf("ListBacklogItems (second): %v", err)
+	}
+
+	if !equalStrings(idsOf(first), idsOf(second)) {
+		t.Errorf("non-deterministic order: first=%v second=%v", idsOf(first), idsOf(second))
+	}
+	// The tie-break is created_at then id; all rows share created_at (same
+	// test, same second in practice) so id ASC decides — lexicographic
+	// "BL-001" < "BL-002" < ... matches insertion order here.
+	want := []string{"BL-001", "BL-002", "BL-003", "BL-004", "BL-005"}
+	if gotIDs := idsOf(first); !equalStrings(gotIDs, want) {
+		t.Errorf("order = %v, want %v", gotIDs, want)
+	}
+}
+
+// equalStrings reports whether two string slices have the same elements in
+// the same order.
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func TestUpdateBacklogItem(t *testing.T) {

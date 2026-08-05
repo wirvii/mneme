@@ -36,6 +36,12 @@ type MemoryRelation struct {
 	CreatedAt time.Time
 }
 
+// relationListOrder is the TOTAL order for memory_relations listings.
+// mr.created_at DESC alone is not unique; mr.id closes the tie-break (D7).
+// DESC is preserved — reversing it would change the CLI's output shape,
+// which is out of scope here.
+const relationListOrder = ` ORDER BY mr.created_at DESC, mr.id ASC`
+
 // MemoryRelationListOptions parameterises ListMemoryRelations.
 type MemoryRelationListOptions struct {
 	// Project restricts the results to memory pairs that belong to this project.
@@ -125,7 +131,7 @@ func (s *MemoryStore) ListMemoryRelations(ctx context.Context, opts MemoryRelati
 		args = append(args, opts.Relation)
 	}
 
-	q += ` ORDER BY mr.created_at DESC`
+	q += relationListOrder
 
 	if opts.Limit > 0 {
 		q += ` LIMIT ?`

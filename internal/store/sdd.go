@@ -28,6 +28,32 @@ func NewSDDStore(database *db.DB) *SDDStore {
 	return &SDDStore{db: database}
 }
 
+// backlogListOrder is the TOTAL order for backlog listings.
+//
+// The CASE replicates model.Priority.Rank() (critical=0, high=1, medium=2,
+// low=3) because priority is a TEXT column and ordering it directly yields
+// the lexicographic order 'critical' < 'high' < 'low' < 'medium' — i.e. low
+// BEFORE medium (SPEC-109 D20). With 139 active items and 72 in medium, a
+// LIMIT applied over the lexicographic order could leave the entire medium
+// bucket outside the window.
+//
+// created_at (TEXT ISO-8601, whose lexicographic order IS chronological) and
+// id close the tie-break: position is 0 on every item, so without them the
+// order is partial and a LIMIT would be a lottery, not a window (D7).
+const backlogListOrder = ` ORDER BY
+	CASE priority
+	    WHEN 'critical' THEN 0
+	    WHEN 'high'     THEN 1
+	    WHEN 'medium'   THEN 2
+	    WHEN 'low'      THEN 3
+	    ELSE 99
+	END ASC,
+	position ASC, created_at ASC, id ASC`
+
+// specListOrder is the TOTAL order for spec listings. created_at is not
+// unique; id closes the tie-break (D7).
+const specListOrder = ` ORDER BY created_at ASC, id ASC`
+
 // --- BACKLOG OPERATIONS ---
 
 // NextBacklogID returns the next sequential backlog ID for the project.
@@ -95,9 +121,12 @@ func (s *SDDStore) GetBacklogItem(ctx context.Context, id string) (*model.Backlo
 	return item, nil
 }
 
-// ListBacklogItems returns items filtered by project and optionally by status,
-// ordered by priority rank (ascending) then position (ascending).
-// Pass an empty status to list all statuses for the project.
+// ListBacklogItems returns items filtered by project and optionally by
+// status, ordered by priority rank (ascending, via backlogListOrder — NOT
+// the lexicographic order of the priority column, which used to disagree
+// with this godoc: SPEC-109 D20), then position, then a deterministic
+// created_at/id tie-break (D7). Pass an empty status to list all statuses
+// for the project.
 func (s *SDDStore) ListBacklogItems(ctx context.Context, project string, status model.BacklogStatus) ([]*model.BacklogItem, error) {
 	var (
 		rows *sql.Rows
@@ -111,9 +140,9 @@ func (s *SDDStore) ListBacklogItems(ctx context.Context, project string, status 
 		WHERE project = ?`
 
 	if status != "" {
-		rows, err = s.db.QueryContext(ctx, baseQ+" AND status = ? ORDER BY priority ASC, position ASC", project, string(status))
+		rows, err = s.db.QueryContext(ctx, baseQ+" AND status = ?"+backlogListOrder, project, string(status))
 	} else {
-		rows, err = s.db.QueryContext(ctx, baseQ+" ORDER BY priority ASC, position ASC", project)
+		rows, err = s.db.QueryContext(ctx, baseQ+backlogListOrder, project)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("store: list backlog items: %w", err)
@@ -255,8 +284,10 @@ func (s *SDDStore) GetSpec(ctx context.Context, id string) (*model.Spec, error) 
 	return spec, nil
 }
 
-// ListSpecs returns specs filtered by project and optionally by status.
-// Pass an empty status to list all statuses for the project.
+// ListSpecs returns specs filtered by project and optionally by status,
+// ordered by created_at then a deterministic id tie-break (D7 — created_at
+// alone is not unique). Pass an empty status to list all statuses for the
+// project.
 func (s *SDDStore) ListSpecs(ctx context.Context, project string, status model.SpecStatus) ([]*model.Spec, error) {
 	var (
 		rows *sql.Rows
@@ -269,9 +300,9 @@ func (s *SDDStore) ListSpecs(ctx context.Context, project string, status model.S
 		FROM specs WHERE project = ?`
 
 	if status != "" {
-		rows, err = s.db.QueryContext(ctx, baseQ+" AND status = ? ORDER BY created_at ASC", project, string(status))
+		rows, err = s.db.QueryContext(ctx, baseQ+" AND status = ?"+specListOrder, project, string(status))
 	} else {
-		rows, err = s.db.QueryContext(ctx, baseQ+" ORDER BY created_at ASC", project)
+		rows, err = s.db.QueryContext(ctx, baseQ+specListOrder, project)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("store: list specs: %w", err)
