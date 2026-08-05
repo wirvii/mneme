@@ -2100,6 +2100,173 @@ func TestHandleBacklogGet_FullDescription(t *testing.T) {
 	}
 }
 
+// TestHandleBacklogList_EmitsRefinementCount is AC21: backlog_list emits
+// `refinements` (present even when 0, no omitempty) alongside excerpt/
+// truncated/total, and never emits `description`.
+func TestHandleBacklogList_EmitsRefinementCount(t *testing.T) {
+	srv := newTestServerWithSDD(t)
+
+	addResp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name: "backlog_add",
+		Arguments: mustMarshal(t, map[string]any{
+			"title": "Ledger item", "lane": "standard", "description": "d",
+		}),
+	})
+	if addResp.Error != nil {
+		t.Fatalf("backlog_add: %v", addResp.Error.Message)
+	}
+	var added struct {
+		Item struct {
+			ID string `json:"id"`
+		} `json:"item"`
+	}
+	unmarshalToolText(t, addResp, &added)
+
+	if resp := process(t, srv, "tools/call", 2, ToolCallParams{
+		Name: "backlog_refine",
+		Arguments: mustMarshal(t, map[string]any{
+			"id": added.Item.ID, "refinement": "r1",
+		}),
+	}); resp.Error != nil {
+		t.Fatalf("backlog_refine: %v", resp.Error.Message)
+	}
+
+	listResp := process(t, srv, "tools/call", 3, ToolCallParams{
+		Name:      "backlog_list",
+		Arguments: mustMarshal(t, map[string]any{}),
+	})
+	if listResp.Error != nil {
+		t.Fatalf("backlog_list: %v", listResp.Error.Message)
+	}
+
+	var raw map[string]any
+	unmarshalToolText(t, listResp, &raw)
+	items, ok := raw["items"].([]any)
+	if !ok || len(items) != 1 {
+		t.Fatalf("expected exactly 1 item, got %#v", raw["items"])
+	}
+	itemMap, ok := items[0].(map[string]any)
+	if !ok {
+		t.Fatalf("item is not a map: %#v", items[0])
+	}
+	refinements, ok := itemMap["refinements"]
+	if !ok {
+		t.Fatal("backlog_list item must emit 'refinements'")
+	}
+	if refinements != float64(1) {
+		t.Errorf("refinements = %v, want 1", refinements)
+	}
+	if _, hasDescription := itemMap["description"]; hasDescription {
+		t.Error("backlog_list must never emit 'description'")
+	}
+}
+
+// TestHandleBacklogGet_ReturnsEnvelopeWithAllRefinements is AC22:
+// backlog_get returns {item, refinements} with the full refinement bodies,
+// no excerpt/truncated/total anywhere in the envelope.
+func TestHandleBacklogGet_ReturnsEnvelopeWithAllRefinements(t *testing.T) {
+	srv := newTestServerWithSDD(t)
+
+	addResp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name:      "backlog_add",
+		Arguments: mustMarshal(t, map[string]any{"title": "X", "lane": "standard"}),
+	})
+	if addResp.Error != nil {
+		t.Fatalf("backlog_add: %v", addResp.Error.Message)
+	}
+	var added struct {
+		Item struct {
+			ID string `json:"id"`
+		} `json:"item"`
+	}
+	unmarshalToolText(t, addResp, &added)
+
+	for _, body := range []string{"r1", "r2", "r3"} {
+		if resp := process(t, srv, "tools/call", 2, ToolCallParams{
+			Name:      "backlog_refine",
+			Arguments: mustMarshal(t, map[string]any{"id": added.Item.ID, "refinement": body}),
+		}); resp.Error != nil {
+			t.Fatalf("backlog_refine(%s): %v", body, resp.Error.Message)
+		}
+	}
+
+	getResp := process(t, srv, "tools/call", 3, ToolCallParams{
+		Name:      "backlog_get",
+		Arguments: mustMarshal(t, map[string]any{"id": added.Item.ID}),
+	})
+	if getResp.Error != nil {
+		t.Fatalf("backlog_get: %v", getResp.Error.Message)
+	}
+
+	var raw map[string]any
+	unmarshalToolText(t, getResp, &raw)
+	if _, hasTotal := raw["total"]; hasTotal {
+		t.Error("backlog_get envelope must not emit 'total' (D7)")
+	}
+	refinements, ok := raw["refinements"].([]any)
+	if !ok || len(refinements) != 3 {
+		t.Fatalf("expected 3 refinements, got %#v", raw["refinements"])
+	}
+	for i, want := range []string{"r1", "r2", "r3"} {
+		r, ok := refinements[i].(map[string]any)
+		if !ok {
+			t.Fatalf("refinement %d is not a map: %#v", i, refinements[i])
+		}
+		if r["body"] != want {
+			t.Errorf("refinement[%d].body = %v, want %q", i, r["body"], want)
+		}
+		if _, hasExcerpt := r["excerpt"]; hasExcerpt {
+			t.Errorf("refinement[%d] must not emit 'excerpt'", i)
+		}
+	}
+}
+
+// TestHandleBacklogRefine_PromotedReturnsInvalidParams is AC23: refining a
+// promoted item returns CodeInvalidParams (-32602), not the opaque internal
+// error code (-32603) — model.ErrBacklogNotRefinable must be registered in
+// mapServiceError.
+func TestHandleBacklogRefine_PromotedReturnsInvalidParams(t *testing.T) {
+	srv := newTestServerWithSDD(t)
+
+	addResp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name:      "backlog_add",
+		Arguments: mustMarshal(t, map[string]any{"title": "X", "lane": "standard"}),
+	})
+	if addResp.Error != nil {
+		t.Fatalf("backlog_add: %v", addResp.Error.Message)
+	}
+	var added struct {
+		Item struct {
+			ID string `json:"id"`
+		} `json:"item"`
+	}
+	unmarshalToolText(t, addResp, &added)
+
+	if resp := process(t, srv, "tools/call", 2, ToolCallParams{
+		Name:      "backlog_refine",
+		Arguments: mustMarshal(t, map[string]any{"id": added.Item.ID, "refinement": "r1"}),
+	}); resp.Error != nil {
+		t.Fatalf("backlog_refine: %v", resp.Error.Message)
+	}
+	if resp := process(t, srv, "tools/call", 3, ToolCallParams{
+		Name:      "backlog_promote",
+		Arguments: mustMarshal(t, map[string]any{"id": added.Item.ID}),
+	}); resp.Error != nil {
+		t.Fatalf("backlog_promote: %v", resp.Error.Message)
+	}
+
+	resp := process(t, srv, "tools/call", 4, ToolCallParams{
+		Name:      "backlog_refine",
+		Arguments: mustMarshal(t, map[string]any{"id": added.Item.ID, "refinement": "should fail"}),
+	})
+	if resp.Error == nil {
+		t.Fatal("expected backlog_refine on a promoted item to fail")
+	}
+	if resp.Error.Code != CodeInvalidParams {
+		t.Errorf("error code = %d, want %d (CodeInvalidParams)", resp.Error.Code, CodeInvalidParams)
+	}
+}
+
 // TestHandleBacklogGet_NotFound is AC19: an unknown ID surfaces
 // CodeMemoryNotFound (-32000) end-to-end, via the existing
 // model.ErrBacklogNotFound -> mapServiceError mapping — no new sentinel.

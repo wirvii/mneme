@@ -443,7 +443,9 @@ func allTools() []ToolDefinition {
 				"200-character `excerpt` with a `truncated` flag — call `backlog_get` for the full " +
 				"description. `total` is the number of matches before `limit` was applied. Items beyond " +
 				"`limit` (max 50) are not reachable by listing: narrow with `status`, or fetch by ID with " +
-				"`backlog_get`.",
+				"`backlog_get`. `refinements` is how many refinements each item has (an item accepts N — " +
+				"SPEC-110). An empty `excerpt` with `refinements` > 0 does NOT mean an empty item — the " +
+				"detail lives in the refinements: call `backlog_get`.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -467,9 +469,10 @@ func allTools() []ToolDefinition {
 		},
 		{
 			Name: "backlog_get",
-			Description: "Get one backlog item by ID with its FULL description (no excerpt). " +
-				"This is the only way to read a grill ledger over MCP: spec_status does not " +
-				"include the backlog item and the specs table has no description column.",
+			Description: "Get one backlog item by ID with its FULL description, plus ALL of its " +
+				"refinements — no excerpt, no limit. This is the only way to read a grill ledger " +
+				"over MCP: spec_status does not include the backlog item and the specs table has " +
+				"no description column. Returns {item, refinements}.",
 			InputSchema: map[string]any{
 				"type":     "object",
 				"required": []string{"id"},
@@ -482,8 +485,9 @@ func allTools() []ToolDefinition {
 			},
 		},
 		{
-			Name:        "backlog_refine",
-			Description: "Refine a raw backlog item with additional details.",
+			Name: "backlog_refine",
+			Description: "Append a refinement to a raw or refined backlog item. An item accepts N " +
+				"refinements: each one is stored as its own row and the item's description never grows.",
 			InputSchema: map[string]any{
 				"type":     "object",
 				"required": []string{"id", "refinement"},
@@ -495,6 +499,10 @@ func allTools() []ToolDefinition {
 					"refinement": map[string]any{
 						"type":        "string",
 						"description": "Refinement content to add to the item.",
+					},
+					"by": map[string]any{
+						"type":        "string",
+						"description": "Who appends the refinement (e.g. orchestrator, architect). Optional.",
 					},
 				},
 			},

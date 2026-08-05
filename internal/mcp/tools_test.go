@@ -85,6 +85,37 @@ func TestBacklogGetSchema_RequiresID(t *testing.T) {
 	}
 }
 
+// TestBacklogRefineSchema_ByIsOptional is AC20: backlog_refine declares `by`
+// in properties but does NOT require it (SPEC-110 D5/D19) — the field is
+// backward compatible with every existing caller that omits it.
+func TestBacklogRefineSchema_ByIsOptional(t *testing.T) {
+	tools := allTools()
+	tool := findTool(tools, "backlog_refine")
+	if tool == nil {
+		t.Fatal("backlog_refine tool not found in allTools()")
+	}
+	schema, ok := tool.InputSchema.(map[string]any)
+	if !ok {
+		t.Fatal("backlog_refine InputSchema is not map[string]any")
+	}
+	props, ok := schema["properties"].(map[string]any)
+	if !ok {
+		t.Fatal("backlog_refine InputSchema.properties is not map[string]any")
+	}
+	if _, ok := props["by"]; !ok {
+		t.Error("backlog_refine does not declare a 'by' property")
+	}
+	required, ok := schema["required"].([]string)
+	if !ok {
+		t.Fatal("backlog_refine InputSchema.required is not []string")
+	}
+	for _, r := range required {
+		if r == "by" {
+			t.Error("backlog_refine must NOT require 'by' — it is optional (D5)")
+		}
+	}
+}
+
 // findTool returns the ToolDefinition named name, or nil if absent.
 func findTool(tools []ToolDefinition, name string) *ToolDefinition {
 	for i := range tools {

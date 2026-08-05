@@ -712,6 +712,7 @@ func (h *handlers) mapServiceError(method string, err error) *JSONRPCError {
 		errors.Is(err, model.ErrInvalidRelationType) ||
 		errors.Is(err, model.ErrInvalidTransition) ||
 		errors.Is(err, model.ErrBacklogNotRefined) ||
+		errors.Is(err, model.ErrBacklogNotRefinable) ||
 		errors.Is(err, model.ErrQualityGateFailed) ||
 		errors.Is(err, model.ErrInvalidBacklogStatus) ||
 		errors.Is(err, model.ErrInvalidPriority) ||
@@ -931,9 +932,10 @@ func (h *handlers) handleBacklogPromote(ctx context.Context, raw json.RawMessage
 	return resultFromAny(spec)
 }
 
-// handleBacklogGet processes a backlog_get tool call (SPEC-109 D2/D12): the
-// only way over MCP to read a backlog item's FULL description — no excerpt,
-// no truncation.
+// handleBacklogGet processes a backlog_get tool call (SPEC-109 D2/D12,
+// SPEC-110 D6/D7): the only way over MCP to read a backlog item's FULL
+// description plus ALL of its refinements — no excerpt, no truncation, no
+// limit. Returns the {item, refinements} envelope.
 func (h *handlers) handleBacklogGet(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
 	if h.sdd == nil {
 		return nil, h.sddUnavailable("backlog_get")
@@ -954,14 +956,14 @@ func (h *handlers) handleBacklogGet(ctx context.Context, raw json.RawMessage) (*
 		}
 	}
 
-	item, err := h.sdd.BacklogGet(ctx, args.ID)
+	resp, err := h.sdd.BacklogGet(ctx, args.ID)
 	if err != nil {
 		// mapServiceError already maps model.ErrBacklogNotFound to
 		// CodeMemoryNotFound (-32000) — no new sentinel or mapping needed (D12).
 		return nil, h.mapServiceError("backlog_get", err)
 	}
 
-	return resultFromAny(item)
+	return resultFromAny(resp)
 }
 
 // handleSpecNew processes a spec_new tool call.

@@ -31,8 +31,20 @@ type backlogListItem struct {
 	Position      int                 `json:"position"`
 	Lane          model.Lane          `json:"lane"`
 	Scope         string              `json:"scope,omitempty"`
-	CreatedAt     time.Time           `json:"created_at"`
-	UpdatedAt     time.Time           `json:"updated_at"`
+
+	// Refinements is how many refinements the item has (SPEC-110 D4).
+	//
+	// NO omitempty, deliberately: an absent field would be ambiguous with
+	// "this binary has no counter" — the same false-datum reasoning that keeps
+	// omitempty off Total and Truncated.
+	//
+	// Wire name `refinements` (not the domain's refinement_count) is what D4
+	// fixed; the MCP view is already a projection with its own names (excerpt
+	// vs description).
+	Refinements int `json:"refinements"`
+
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // backlogListView is the MCP wire shape for backlog_list: a page of
@@ -65,6 +77,7 @@ func newBacklogListView(resp model.BacklogListResponse, excerptRunes int) backlo
 			Position:      item.Position,
 			Lane:          item.Lane,
 			Scope:         item.Scope,
+			Refinements:   item.RefinementCount,
 			CreatedAt:     item.CreatedAt,
 			UpdatedAt:     item.UpdatedAt,
 		})

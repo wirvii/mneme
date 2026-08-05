@@ -119,6 +119,36 @@ func TestNewBacklogListView_PreservesOtherFields(t *testing.T) {
 	}
 }
 
+// TestNewBacklogListView_ProjectsRefinementCount is AC21: the view's
+// Refinements field mirrors Item.RefinementCount, with no omitempty (present
+// even at zero — SPEC-110 D4/D18).
+func TestNewBacklogListView_ProjectsRefinementCount(t *testing.T) {
+	resp := model.BacklogListResponse{
+		Items: []*model.BacklogItem{
+			{ID: "BL-001", Title: "no refinements", RefinementCount: 0},
+			{ID: "BL-002", Title: "three refinements", RefinementCount: 3},
+		},
+		Total: 2,
+	}
+
+	view := newBacklogListView(resp, model.ListExcerptRunes)
+
+	if view.Items[0].Refinements != 0 {
+		t.Errorf("Items[0].Refinements = %d, want 0", view.Items[0].Refinements)
+	}
+	if view.Items[1].Refinements != 3 {
+		t.Errorf("Items[1].Refinements = %d, want 3", view.Items[1].Refinements)
+	}
+
+	b, err := json.Marshal(view.Items[0])
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(b), `"refinements":0`) {
+		t.Errorf("JSON must emit refinements even when zero (no omitempty), got %s", b)
+	}
+}
+
 // TestNewBacklogListView_DoesNotMutateSourceItems guards against an
 // in-place overwrite of the original *model.BacklogItem's Description —
 // the entities are pointers, and a shared pointer being silently truncated
