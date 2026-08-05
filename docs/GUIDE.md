@@ -761,7 +761,8 @@ backlog_add -> backlog_refine -> backlog_promote
 // Add an idea
 backlog_add({ "title": "Add rate limiting to HTTP API", "priority": "high" })
 
-// Refine it
+// Refine it (can be called again later — refinements accumulate as rows,
+// never concatenated into description — SPEC-110)
 backlog_refine({ "id": "BL-042", "refinement": "Use token bucket, 100 req/min per IP..." })
 
 // Promote to spec
@@ -887,7 +888,7 @@ cheatsheet covers the original memory-tool surface; for the complete set
 |------|-----------------|---------------------|---------|
 | `backlog_add` | `title` | `description`, `priority`, `project` | Add to backlog |
 | `backlog_list` | -- | `status`, `project` | List items |
-| `backlog_refine` | `id`, `refinement` | -- | Refine a raw item |
+| `backlog_refine` | `id`, `refinement` | `by` | Append a refinement (raw or refined item, callable N times — SPEC-110) |
 | `backlog_promote` | `id` | -- | Promote to spec |
 
 ### Spec tools (8)

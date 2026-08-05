@@ -11,8 +11,20 @@ reporting the number of matches *before* `limit` was applied — a `limit`
 above 50 is silently capped, which is safe only because `total` always tells
 the truth about how many exist. `backlog_list` additionally replaces each
 item's `description` with a 200-rune `excerpt` + `truncated` flag, since
-backlog descriptions are grill ledgers that can run to tens of KB; call the
-new `backlog_get` for the full text.
+backlog descriptions are grill ledgers that can run to tens of KB; call
+`backlog_get` for the full text.
+
+**Refinement is iterative (SPEC-110):** a backlog item accepts N
+refinements, each stored as its own row (`backlog_refinements`) rather than
+concatenated into `description` — the old code accepted exactly one
+refinement (`raw -> refined`), which is why a real grill ledger merge was
+lost when a second refinement was attempted. `raw` and `refined` items both
+accept `backlog_refine`; `promoted`/`archived` do not (`-32602`,
+`ErrBacklogNotRefinable`). `description` is write-once, set only by
+`backlog_add`. `backlog_list` gains a `refinements` counter per item (no
+`omitempty` — present even at 0); `backlog_get` now returns
+`{item, refinements}` with ALL refinements in full, no limit — a
+**breaking change** to its previous shape (the raw item at the top level).
 
 State machines:
 
@@ -57,7 +69,10 @@ List backlog items for the current project. Descriptions are returned as a
 full description. `total` is the number of matches before `limit` was
 applied. Items beyond `limit` (max 50) are not reachable by listing: narrow
 with `status`, or fetch by ID with `backlog_get` (SPEC-109 D19 — a known,
-documented limitation, not paging).
+documented limitation, not paging). Each item also carries `refinements`
+(SPEC-110 D4): how many refinements it has. An empty `excerpt` with
+`refinements` > 0 does **not** mean an empty item — the detail lives in the
+refinements; call `backlog_get`.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -71,7 +86,7 @@ documented limitation, not paging).
 {
   "items": [
     {"id": "BL-001", "title": "Push notifications", "excerpt": "...", "truncated": true,
-     "status": "raw", "priority": "medium", "project": "wirvii/mneme",
+     "status": "raw", "priority": "medium", "project": "wirvii/mneme", "refinements": 2,
      "created_at": "2026-04-30T12:00:00Z", "updated_at": "2026-04-30T12:00:00Z"}
   ],
   "total": 25
@@ -80,33 +95,48 @@ documented limitation, not paging).
 
 ### backlog_get
 
-Get one backlog item by ID with its FULL description (no excerpt). This is
-the only way to read a grill ledger over MCP: `spec_status` does not include
-the backlog item and the `specs` table has no description column — before
-SPEC-109, `backlog_list` (which can serialize a 461 KB grill ledger in a
-single line) was the only path, and therefore unusable by a read-only
-subagent.
+Get one backlog item by ID with its FULL description, plus **all** of its
+refinements — no excerpt, no limit (SPEC-110 D6/D7). This is the only way to
+read a grill ledger over MCP: `spec_status` does not include the backlog
+item and the `specs` table has no description column. The SPEC-109 `limit`
+convention does **not** apply here — there is no escape hatch for
+refinements the way `backlog_get` itself is one for `backlog_list`, so a
+default window would leave rows permanently unreachable.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `id` | string | yes | Backlog item ID (e.g. `BL-001`) |
 
-**Returns:** The full backlog item, `description` included in full.
+**Returns (breaking change from SPEC-109's shape):** `{item, refinements}` —
+the full backlog item (`description` included in full, plus
+`refinement_count`) and the complete, ordered (`seq` ascending) list of
+refinements: `{"item": {...}, "refinements": [{"item_id": "BL-001", "seq": 1,
+"body": "...", "by": "architect", "at": "..."}]}`. No `total` field: with no
+window, `len(refinements)` and `item.refinement_count` cannot disagree.
 
 **Errors:** `-32602` missing `id`. `-32000` not found (`model.ErrBacklogNotFound`).
 
 ### backlog_refine
 
-Refine a raw backlog item with additional details.
+Append a refinement to a `raw` or `refined` backlog item (SPEC-110). An item
+accepts **N** refinements: each is stored as its own row and the item's
+`description` never grows — `raw` becomes `refined` on the first call and
+**stays** `refined` on every subsequent one. `promoted`/`archived` items
+reject refinement (`-32602`, not writable — nobody reads a promoted item's
+description).
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `id` | string | yes | Backlog item ID (e.g. `BL-001`) |
 | `refinement` | string | yes | Refinement content to add to the item |
+| `by` | string | no | Who appends the refinement (e.g. `orchestrator`, `architect`). Omitted means unattributed. |
 
-**Returns:** Updated backlog item with `status: "refined"`.
+**Returns:** Updated backlog item, re-read from the database — `status`
+(`refined`) and `refinement_count` reflect the just-appended row.
 
-**Errors:** `-32602` missing `id`/`refinement`. `-32000` not found.
+**Errors:** `-32602` missing `id`/`refinement`, empty/whitespace-only
+`refinement` (`ErrContentRequired`), item is `promoted`/`archived`
+(`ErrBacklogNotRefinable`). `-32000` not found.
 
 ### backlog_promote
 

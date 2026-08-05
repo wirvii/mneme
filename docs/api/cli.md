@@ -303,13 +303,34 @@ mneme backlog list --status refined --json
 
 ### mneme backlog refine
 
+Appends a refinement row to the item (SPEC-110). An item accepts N
+refinements: `raw` becomes `refined` on the first one, `refined` stays
+`refined` on every subsequent one. `description` is never modified.
+
 ```bash
 mneme backlog refine BL-001 --refinement "Acceptance criteria..."
+mneme backlog refine BL-001 --refinement "Merged with BL-002" --by architect
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--refinement` | required | Refinement content (appended) |
+| `--refinement` | required | Refinement content (stored as its own row) |
+| `--by` | | Who appends the refinement (e.g. `orchestrator`, `architect`). Optional. |
+
+### mneme backlog get
+
+Full-fidelity read: the item plus ALL of its refinements, no excerpt, no
+limit (SPEC-110 D6/D8) — the CLI's escape hatch for refinement bodies, the
+way `backlog list --json` already is for the item's own fields.
+
+```bash
+mneme backlog get BL-001
+mneme backlog get BL-001 --json
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--json` | false | Output the `{item, refinements}` envelope as JSON |
 
 ### mneme backlog promote
 
