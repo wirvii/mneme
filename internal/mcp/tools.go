@@ -45,7 +45,7 @@ func allTools() []ToolDefinition {
 					},
 					"session_id": map[string]any{
 						"type":        "string",
-						"description": "Agent session ID to associate this memory with.",
+						"description": "Agent session ID to associate this memory with. The SessionStart hook's mneme:session block announces the current session's id — pass it here so mem_session_end can later report real memories_created/session_duration for this session.",
 					},
 					"created_by": map[string]any{
 						"type":        "string",
@@ -210,7 +210,7 @@ func allTools() []ToolDefinition {
 		},
 		{
 			Name:        "mem_session_end",
-			Description: "End the current session and save a summary.",
+			Description: "End the current session and save a summary. Pass session_id (the one announced by the SessionStart hook's mneme:session block) to get real memories_created/session_duration back — omit it and both fields are absent from the response, since mneme cannot attribute prior work to an id it just generated.",
 			InputSchema: map[string]any{
 				"type":     "object",
 				"required": []string{"summary"},
@@ -221,7 +221,7 @@ func allTools() []ToolDefinition {
 					},
 					"session_id": map[string]any{
 						"type":        "string",
-						"description": "Session ID to close. Generated when omitted.",
+						"description": "Session ID to close. Generated when omitted — but generating one here forfeits memories_created/session_duration in the response. The SessionStart hook's mneme:session block announces the current session's id; use it here and in mem_save.",
 					},
 					"project": map[string]any{
 						"type":        "string",

@@ -267,6 +267,44 @@ func TestSessionEnd(t *testing.T) {
 	}
 }
 
+// TestSessionEnd_OmitsMetricsWithoutSessionID verifies AC27's HTTP half: the
+// handler itself is unchanged (it serializes the same model.SessionEndResponse,
+// server.go:498) — the contract change is entirely in the model, and this
+// confirms it round-trips correctly over the wire: memories_created and
+// session_duration are absent from the JSON body when the caller omits
+// session_id, since mneme generated one and cannot attribute prior work to it
+// (SPEC-108 D13).
+func TestSessionEnd_OmitsMetricsWithoutSessionID(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+
+	reqBody, _ := json.Marshal(model.SessionEndRequest{
+		Summary: "Closed without a session_id.",
+	})
+
+	resp, err := http.Post(srv.URL+"/v1/sessions/end", "application/json", bytes.NewReader(reqBody))
+	if err != nil {
+		t.Fatalf("POST /v1/sessions/end: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200, got %d", resp.StatusCode)
+	}
+
+	var raw map[string]json.RawMessage
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		t.Fatalf("decode session end response: %v", err)
+	}
+
+	if _, ok := raw["memories_created"]; ok {
+		t.Errorf("expected memories_created to be absent from the JSON body, got: %v", raw)
+	}
+	if _, ok := raw["session_duration"]; ok {
+		t.Errorf("expected session_duration to be absent from the JSON body, got: %v", raw)
+	}
+}
+
 func TestRelate(t *testing.T) {
 	srv := newTestServer(t)
 	defer srv.Close()
