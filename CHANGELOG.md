@@ -8,6 +8,56 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`backlog_list` no longer serializes an unbounded JSON array — it was
+  returning 461 KB in a single line for this repo's own backlog, versus 3.5
+  KB from the equivalent CLI table (SPEC-109, BL-138).** The three SDD/
+  conflicts listing tools now share one acotado convention: a `limit`
+  parameter (integer, min 1, max 50, default 20 when the caller omits it)
+  and a `total` field reporting the real number of matches *before* `limit`
+  was applied — `limit` above 50 is silently capped, which is safe only
+  because `total` never lies about it. `backlog_list`'s wire shape changes
+  from a bare array to `{"items": [...], "total": N}`, and each item's
+  `description` (a full grill ledger in this repo — the same field
+  `BacklogRefine` concatenates onto without limit) is replaced by a
+  200-rune `excerpt` + `truncated` flag. `spec_list` gains `limit`/`total`
+  with no excerpt (`model.Spec` has no `description` field); `conflicts_list`
+  keeps its existing `count` and gains `total` alongside it. **New MCP tool
+  `backlog_get`** (76 → 77 tools) reads one backlog item's FULL description —
+  before this spec there was no MCP path to it at all: `spec_status` does
+  not include the originating backlog item, and the `specs` table has no
+  description column. The CLI (`mneme backlog list`, `mneme spec list`,
+  `mneme conflicts list`, `mneme status`) is untouched in output shape
+  (`--json` still emits the full, untruncated array) except for one
+  intentional fix: `backlog_list`'s row order was silently wrong — SQLite
+  sorted the `priority` TEXT column lexicographically
+  (`critical < high < low < medium`), so `low`-priority items always
+  printed before `medium` ones despite `model.Priority.Rank()` defining the
+  correct order (a helper production code never called). With a `limit` now
+  in play this stopped being cosmetic: it could push the entire `medium`
+  bucket outside a 50-item window. Both `backlog_list` and `spec_list` now
+  order by an explicit priority-rank `CASE` (backlog) and a deterministic
+  `created_at`/`id` tie-break (both), since `position` is `0` on every
+  backlog item in practice and an unbroken tie on a `LIMIT`ed query is a
+  lottery, not a window. New leaf function `model.Excerpt(s, maxRunes)
+  (string, bool)` replaces three separate copies of the same rune-safe
+  truncation logic (`store.makePreview`, `service.makeTimelinePreview`, and
+  the new SDD view) — cutting by bytes would split a multibyte character
+  (this repo's ledgers carry accented characters and em-dashes) and produce
+  invalid UTF-8.
+
+### Fixed
+
+- **`mem_timeline` and `conflicts_list` each reported a `total`/`count`
+  that could never exceed the page `limit` (SPEC-109, same family of defect
+  BL-137 already found in `mem_session_end`).** Both computed the figure as
+  `len(results)` *after* windowing instead of counting matches before the
+  window was applied, so neither could ever tell the caller how many
+  memories/relations actually existed beyond the current page. `mem_timeline`
+  now reports a real count via a new `MemoryStore.CountMemoriesInRange`
+  sharing the exact same predicate as the list query (so the two can never
+  diverge); `conflicts_list` gains `total` alongside the existing `count`
+  the same way.
+
 - **`SessionStart` now announces the current session_id and warns when a
   previous session left work without a summary (SPEC-108, BL-136/BL-137).**
   `mneme hook session-start` reads an optional JSON payload from stdin
@@ -23,8 +73,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   in `docs/HOOKS.md`. No new MCP tool, HTTP endpoint, or CLI command; only
   the `mem_save`/`mem_session_end` tool descriptions were updated (76 tools
   unchanged).
-
-### Fixed
 
 - **`mem_session_end` reported hardcoded `memories_created: 0` and
   `session_duration: "0s"` regardless of what actually happened (SPEC-108,

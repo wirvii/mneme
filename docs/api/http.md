@@ -205,7 +205,7 @@ families have **no HTTP route at all**:
 | `mem_checkpoint` | 1 | -- | Not implemented |
 | `mem_timeline` | 1 | -- | Not implemented |
 | `mem_suggest_topic_key` | 1 | -- | Not implemented |
-| `backlog_*` | 4 | -- | Not implemented |
+| `backlog_*` | 5 | -- | Not implemented |
 | `spec_*` | 8 | -- | Not implemented |
 | `lane_*` | 5 | -- | Not implemented |
 | `codegraph_*` | 10 | -- | Not implemented |
@@ -216,6 +216,16 @@ families have **no HTTP route at all**:
 
 Before adding a new service capability, decide explicitly whether HTTP gets
 parity -- do not assume it should.
+
+**SPEC-109 note (D14):** `backlog_list`/`spec_list`/`conflicts_list` (and the
+new `backlog_get`) gained an acotado convention — `limit` (default 20, max
+50, silently capped) plus a `total` field reporting the real match count
+before the limit, and `backlog_list` additionally excerpts `description`.
+`internal/http` was not touched by that spec since none of these families
+has a route yet (this table). Whenever SDD or conflicts endpoints are
+eventually added here, they MUST inherit this convention rather than
+reintroducing an unbounded array — do not repeat the defect SPEC-109 fixed
+in MCP.
 
 ## See also
 

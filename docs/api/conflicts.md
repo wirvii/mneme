@@ -98,11 +98,18 @@ for the given project. `supersedes` relations are stored as
 `memories.superseded_by` and are **not** listed here — use `mem_search` with
 `include_superseded: true` to see those.
 
+Shares the same acotado convention as `backlog_list`/`spec_list` (SPEC-109):
+a `limit` param (min 1, max 50, default 20) silently capped above 50 — safe
+because `total` always reports the real match count. `count` (relations
+actually returned) is kept for backward compatibility; `total` is new and is
+what stops `count` from quietly becoming a lie the instant a limit exists.
+
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `project` | string | no | Project slug to filter results. Default: auto-detected |
+| `limit` | integer | no | Max relations returned. Min 1, max 50, default 20 |
 
-**Returns:** `{"relations": [{"from_id": "...", "to_id": "...", "relation": "conflicts_with", "judged_by": "claude-cli", "rationale": "...", "created_at": "..."}], "count": 1}`
+**Returns:** `{"relations": [{"from_id": "...", "to_id": "...", "relation": "conflicts_with", "judged_by": "claude-cli", "rationale": "...", "created_at": "..."}], "count": 1, "total": 1}`
 
 **Errors:** `-32603` query failure.
 

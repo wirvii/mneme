@@ -1,9 +1,18 @@
 # API Reference — SDD Tools (`backlog_*`, `spec_*`, `lane_*`, `init`)
 
-19 MCP tools over JSON-RPC 2.0 stdio (`mneme mcp`): `backlog_*` (4), `spec_*`
+20 MCP tools over JSON-RPC 2.0 stdio (`mneme mcp`): `backlog_*` (5), `spec_*`
 (9), `lane_*` (5), `init` (1). Concept guide: [docs/lanes.md](../lanes.md)
 (trivial/standard lanes, auditor thresholds), [docs/init.md](../init.md)
 (managed blocks, drift, legacy migration). Index: [docs/API.md](../API.md).
+
+`backlog_list`/`spec_list` share one acotado convention (SPEC-109): a `limit`
+param (integer, min 1, max 50, default 20 when omitted) and a `total` field
+reporting the number of matches *before* `limit` was applied — a `limit`
+above 50 is silently capped, which is safe only because `total` always tells
+the truth about how many exist. `backlog_list` additionally replaces each
+item's `description` with a 200-rune `excerpt` + `truncated` flag, since
+backlog descriptions are grill ledgers that can run to tens of KB; call the
+new `backlog_get` for the full text.
 
 State machines:
 
@@ -43,14 +52,48 @@ required when `lane=trivial`.
 
 ### backlog_list
 
-List backlog items for the current project.
+List backlog items for the current project. Descriptions are returned as a
+200-character `excerpt` with a `truncated` flag — call `backlog_get` for the
+full description. `total` is the number of matches before `limit` was
+applied. Items beyond `limit` (max 50) are not reachable by listing: narrow
+with `status`, or fetch by ID with `backlog_get` (SPEC-109 D19 — a known,
+documented limitation, not paging).
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `status` | string | no | `raw`, `refined`, `promoted`, `archived` |
 | `project` | string | no | Project slug. Default: auto-detected |
+| `limit` | integer | no | Max items returned. Min 1, max 50, default 20 |
 
-**Returns:** Array of backlog items.
+**Returns:**
+
+```json
+{
+  "items": [
+    {"id": "BL-001", "title": "Push notifications", "excerpt": "...", "truncated": true,
+     "status": "raw", "priority": "medium", "project": "wirvii/mneme",
+     "created_at": "2026-04-30T12:00:00Z", "updated_at": "2026-04-30T12:00:00Z"}
+  ],
+  "total": 25
+}
+```
+
+### backlog_get
+
+Get one backlog item by ID with its FULL description (no excerpt). This is
+the only way to read a grill ledger over MCP: `spec_status` does not include
+the backlog item and the `specs` table has no description column — before
+SPEC-109, `backlog_list` (which can serialize a 461 KB grill ledger in a
+single line) was the only path, and therefore unusable by a read-only
+subagent.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `id` | string | yes | Backlog item ID (e.g. `BL-001`) |
+
+**Returns:** The full backlog item, `description` included in full.
+
+**Errors:** `-32602` missing `id`. `-32000` not found (`model.ErrBacklogNotFound`).
 
 ### backlog_refine
 
@@ -189,14 +232,17 @@ overwrite-or-create — no append, no arbitrary read.
 
 ### spec_list
 
-List specs for the current project.
+List specs for the current project. `total` is the number of matches before
+`limit` was applied. No excerpt field: `model.Spec` has no `description`
+column to truncate.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `status` | string | no | `draft`, `speccing`, `needs_grill`, `specced`, `planning`, `planned`, `implementing`, `qa`, `done`, `rationale`, `audit` |
 | `project` | string | no | Project slug. Default: auto-detected |
+| `limit` | integer | no | Max specs returned. Min 1, max 50, default 20 |
 
-**Returns:** Array of spec objects.
+**Returns:** `{"specs": [ {...spec object...} ], "total": 12}`
 
 ### spec_quick
 
