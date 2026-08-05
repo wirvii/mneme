@@ -76,6 +76,19 @@ var ErrPushbackNotFound = errors.New("pushback not found")
 // that has not been refined yet.
 var ErrBacklogNotRefined = errors.New("backlog item must be refined before promotion")
 
+// ErrBacklogNotRefinable is returned when a backlog item's current status does
+// not admit refinement: only raw and refined do (SPEC-110 D3). promoted is
+// excluded because writing there would be writing where nobody reads —
+// spec_status does not include the originating item (SpecStatusResponse is
+// {Spec,History,Pushbacks}) and the specs table has no description column.
+//
+// Distinct from ErrInvalidBacklogStatus, which means "this status VALUE is not
+// recognised" (BacklogList uses it to reject an unknown filter). Conflating a
+// bad value with a wrong state would make both errors useless. Symmetric with
+// ErrBacklogNotRefined, the state precondition of promote — one precondition
+// sentinel per operation is the established pattern here.
+var ErrBacklogNotRefinable = errors.New("backlog item cannot be refined in its current status")
+
 // ErrQualityGateFailed is returned when a spec fails a quality gate check.
 var ErrQualityGateFailed = errors.New("quality gate check failed")
 

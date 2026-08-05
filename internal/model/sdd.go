@@ -227,6 +227,20 @@ type BacklogItem struct {
 	// Required when Lane is trivial; used by the post-implementation auditor.
 	Scope string `json:"scope,omitempty"`
 
+	// RefinementCount is how many refinements the item has accumulated
+	// (SPEC-110 D12).
+	//
+	// EVERY read path that returns a BacklogItem MUST populate it. A path that
+	// leaves it at zero while rows exist would be exactly the "false datum that
+	// looks real" pathology SPEC-109 fixed. There are only two such paths
+	// (GetBacklogItem, ListBacklogItems) and both derive their projection from
+	// the same const, so the symmetry is structural rather than conventional.
+	//
+	// json name differs from the MCP list view's `refinements` (D18): inside
+	// BacklogGetResponse the array is already called `refinements`, and a
+	// nested integer with the same name would be confusing.
+	RefinementCount int `json:"refinement_count"`
+
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -277,6 +291,63 @@ type BacklogListResponse struct {
 type BacklogRefineRequest struct {
 	ID         string `json:"id"`
 	Refinement string `json:"refinement"`
+
+	// By is who appends the refinement. OPTIONAL, unlike the required `by` of
+	// spec_advance/spec_reject/lane_override: backlog_refine is already in
+	// production and called by every installed project's agents, so making it
+	// mandatory would hard-fail, on the first call, the very flow this change
+	// unblocks (D5).
+	By string `json:"by,omitempty"`
+}
+
+// BacklogRefinement is one appended refinement of a backlog item (SPEC-110 D2).
+//
+// Refinements are rows, not text concatenated into BacklogItem.Description:
+// allowing N refinements while still appending to a single column would CREATE
+// the size problem the item's title wrongly claimed already existed (the largest
+// description measured is 9,438 bytes because the old code accepted exactly one
+// refinement; five would be ~45 KB).
+//
+// Ordering is by Seq, never by At (D21): time.RFC3339Nano is NOT
+// lexicographically chronological — Format trims trailing zeros from the
+// fractional second, so "...52.770018Z" < "...52.77Z" byte-for-byte even though
+// the first denotes the LATER instant. QA rejected exactly that mistake in
+// SPEC-109. At is informational only.
+type BacklogRefinement struct {
+	// ItemID is the backlog item this refinement belongs to.
+	ItemID string `json:"item_id"`
+
+	// Seq is the 1-based position within the item's refinements. Assigned by
+	// the store inside a transaction (MAX(seq)+1), so it is gapless and
+	// monotonic per item.
+	Seq int `json:"seq"`
+
+	// Body is the refinement text, verbatim.
+	Body string `json:"body"`
+
+	// By is who appended it (e.g. "orchestrator", "architect"). Optional:
+	// empty means UNATTRIBUTED, which is an honest absence rather than an
+	// invented value (D5). Same semantics and same column name as
+	// SpecHistory.By — the sibling table of the same SDD engine.
+	By string `json:"by,omitempty"`
+
+	// At is the append timestamp. Informational — never a sort key (see above).
+	At time.Time `json:"at"`
+}
+
+// BacklogGetResponse is what BacklogGet returns: the item plus ALL of its
+// refinements (SPEC-110 D6/D7).
+//
+// No Total field, deliberately: with no window, len(Refinements) and
+// Item.RefinementCount cannot differ, and a third number that always agrees is
+// a future lie waiting for someone to add a window and forget to update it.
+// Their agreement is asserted in tests instead of exposed on the wire.
+//
+// Returned BY VALUE, like BacklogListResponse (SPEC-109 D10): the zero value is
+// a safe empty response instead of a nil-deref.
+type BacklogGetResponse struct {
+	Item        *BacklogItem         `json:"item"`
+	Refinements []*BacklogRefinement `json:"refinements"`
 }
 
 // --- SPEC STATE MACHINE ---
