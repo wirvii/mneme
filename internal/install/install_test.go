@@ -1656,6 +1656,73 @@ func TestRetiredHooksDisjointFromHooks(t *testing.T) {
 	}
 }
 
+// TestOverlappingHookIdentities_DetectsPathVariant exists to prevent
+// TestRetiredHooksDisjointFromHooks from passing VACUOUSLY (SPEC-106
+// precedent: an invariant landing in the same commit as the field it guards
+// can be green because the sets are genuinely disjoint, OR because the
+// helper detects nothing at all — the two are indistinguishable without a
+// separate proof of detection capability). This test supplies that proof: a
+// synthetic *Agent (NOT ClaudeCode/Codex) whose Hooks() registers
+// "mneme hook session-start" and whose RetiredHooks() retires
+// "/usr/local/bin/mneme hook session-start" — the same registration under a
+// different path — exercised through registeredHookCommands/RetiredHooks
+// exactly like the real test, so this runs the identical code path rather
+// than a parallel one.
+func TestOverlappingHookIdentities_DetectsPathVariant(t *testing.T) {
+	dir := t.TempDir()
+	settingsPath := filepath.Join(dir, "settings.json")
+
+	agent := &Agent{
+		Hooks: func() (string, []HookPatch, error) {
+			return settingsPath, []HookPatch{
+				{Event: "SessionStart", Command: "mneme hook session-start"},
+			}, nil
+		},
+		RetiredHooks: func() (string, []HookPatch, error) {
+			return settingsPath, []HookPatch{
+				{Event: "Stop", Command: "/usr/local/bin/mneme hook session-start"},
+			}, nil
+		},
+	}
+
+	registered, err := registeredHookCommands(t, agent)
+	if err != nil {
+		t.Fatalf("registeredHookCommands: %v", err)
+	}
+	_, retiredPatches, err := agent.RetiredHooks()
+	if err != nil {
+		t.Fatalf("RetiredHooks: %v", err)
+	}
+	var retired []string
+	for _, p := range retiredPatches {
+		retired = append(retired, p.Command)
+	}
+
+	// Positive: the helper detects exactly one overlapping pair.
+	overlaps := overlappingHookIdentities(registered, retired)
+	want := [2]string{"mneme hook session-start", "/usr/local/bin/mneme hook session-start"}
+	if len(overlaps) != 1 || overlaps[0] != want {
+		t.Fatalf("overlappingHookIdentities = %v, want exactly [%v]", overlaps, want)
+	}
+
+	// The heart of AC21: the two strings that DO match by identity are
+	// byte-for-byte DIFFERENT — this is exactly what a plain string-equality
+	// disjointness check would have missed, proving the blindness of the
+	// criterion this test replaces.
+	if overlaps[0][0] == overlaps[0][1] {
+		t.Fatal("the overlapping pair's two strings are byte-identical — this test no longer demonstrates the blindness of literal-string comparison")
+	}
+
+	// Negative control: sets genuinely disjoint by subcommand ({session-start}
+	// vs {session-end}) must report no overlap at all.
+	if none := overlappingHookIdentities(
+		[]string{"mneme hook session-start"},
+		[]string{"mneme hook session-end"},
+	); len(none) != 0 {
+		t.Errorf("overlappingHookIdentities on disjoint subcommands = %v, want empty", none)
+	}
+}
+
 // registeredHookCommands returns every hook Command an agent actively
 // registers today, regardless of which mechanism it uses: Hooks() directly
 // (Claude Code), HooksWriter (Codex), or DelegationHook() — precisely the
