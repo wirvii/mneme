@@ -275,7 +275,11 @@ here; use 'mneme search --include-superseded' to see them.`,
 			}
 			defer cleanup()
 
-			rels, err := svc.ConflictList(cmd.Context(), flagProject)
+			// Limit stays zero (no window, SPEC-109 D9): the CLI's contract is
+			// the full, unwindowed list. enc.Encode(resp.Relations) below feeds
+			// the bare slice, not the {relations,total} envelope, so --json
+			// output stays byte-identical to before this spec.
+			resp, err := svc.ConflictList(cmd.Context(), flagProject, 0)
 			if err != nil {
 				return fmt.Errorf("conflicts list: %w", err)
 			}
@@ -283,10 +287,10 @@ here; use 'mneme search --include-superseded' to see them.`,
 			if flagJSON {
 				enc := json.NewEncoder(cmd.OutOrStdout())
 				enc.SetIndent("", "  ")
-				return enc.Encode(rels)
+				return enc.Encode(resp.Relations)
 			}
 
-			if len(rels) == 0 {
+			if len(resp.Relations) == 0 {
 				fmt.Fprintln(cmd.OutOrStdout(), "No conflict relations found.")
 				return nil
 			}
@@ -297,7 +301,7 @@ here; use 'mneme search --include-superseded' to see them.`,
 				"------------", "------------------------------------",
 				"------------------------------------", "--------------", "---------")
 
-			for _, r := range rels {
+			for _, r := range resp.Relations {
 				fmt.Fprintf(cmd.OutOrStdout(), "%-12s  %-36s  %-36s  %-14s  %s\n",
 					r.Relation, r.FromID, r.ToID, r.JudgedBy, r.Rationale)
 			}

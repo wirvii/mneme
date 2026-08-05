@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -28,9 +30,9 @@ func insertTestMemory(t *testing.T, s *MemoryStore, id, title, content, project 
 // first.
 func TestNormalizePair(t *testing.T) {
 	cases := []struct {
-		a, b       string
-		wantFrom   string
-		wantTo     string
+		a, b     string
+		wantFrom string
+		wantTo   string
 	}{
 		{"aaa", "bbb", "aaa", "bbb"},
 		{"bbb", "aaa", "aaa", "bbb"},
@@ -106,6 +108,80 @@ func TestCreateMemoryRelation_NormalizationIdempotent(t *testing.T) {
 	}
 	if len(rels) != 1 {
 		t.Errorf("expected 1 relation after idempotent insert, got %d", len(rels))
+	}
+}
+
+// TestRelationListSource_SharedByCountAndPage is AC9's textual guard: the
+// COUNT and page queries for memory_relations must embed the exact same
+// source+predicate — proven by construction, since both ListMemoryRelations
+// and CountMemoryRelations call the single relationListSource function
+// rather than building their own FROM/JOIN/WHERE.
+func TestRelationListSource_SharedByCountAndPage(t *testing.T) {
+	withProject, args := relationListSource(MemoryRelationListOptions{Project: "proj1"})
+	if !strings.Contains(withProject, "JOIN memories") {
+		t.Error("relationListSource with a project filter must embed the JOIN — the project filter lives there, not in a WHERE (SPEC-109 §0.3)")
+	}
+	if len(args) != 1 || args[0] != "proj1" {
+		t.Errorf("expected args=[proj1], got %v", args)
+	}
+
+	withoutProject, args := relationListSource(MemoryRelationListOptions{})
+	if strings.Contains(withoutProject, "JOIN memories") {
+		t.Error("relationListSource without a project filter must not embed the JOIN")
+	}
+	if len(args) != 0 {
+		t.Errorf("expected no args without a project filter, got %v", args)
+	}
+}
+
+// TestListAndCountMemoryRelations_TotalBehavioralGuard is AC8's memory_relations
+// instance and AC6's analogue: with 25 relations, a limit=10 page returns 10
+// rows but CountMemoryRelations reports 25 — the case that was impossible
+// before SPEC-109 (count could never exceed the limit once one existed).
+func TestListAndCountMemoryRelations_TotalBehavioralGuard(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	project := "reltotaltest"
+
+	for i := 0; i < 25; i++ {
+		fromID := fmt.Sprintf("rel-from-%02d", i)
+		toID := fmt.Sprintf("rel-to-%02d", i)
+		insertTestMemory(t, s, fromID, fmt.Sprintf("from %d", i), "content", project)
+		insertTestMemory(t, s, toID, fmt.Sprintf("to %d", i), "content", project)
+		if err := s.CreateMemoryRelation(ctx, fromID, toID, "conflicts_with", "manual", "test"); err != nil {
+			t.Fatalf("CreateMemoryRelation %d: %v", i, err)
+		}
+	}
+
+	opts := MemoryRelationListOptions{Project: project}
+
+	unwindowed, err := s.ListMemoryRelations(ctx, opts)
+	if err != nil {
+		t.Fatalf("ListMemoryRelations(no limit): %v", err)
+	}
+	if len(unwindowed) != 25 {
+		t.Fatalf("expected 25 relations unwindowed, got %d", len(unwindowed))
+	}
+
+	windowedOpts := opts
+	windowedOpts.Limit = 10
+	windowed, err := s.ListMemoryRelations(ctx, windowedOpts)
+	if err != nil {
+		t.Fatalf("ListMemoryRelations(limit=10): %v", err)
+	}
+	if len(windowed) != 10 {
+		t.Fatalf("expected 10 relations with limit=10, got %d", len(windowed))
+	}
+
+	total, err := s.CountMemoryRelations(ctx, opts)
+	if err != nil {
+		t.Fatalf("CountMemoryRelations: %v", err)
+	}
+	if total != 25 {
+		t.Errorf("CountMemoryRelations = %d, want 25 (the real match count, not the limit)", total)
+	}
+	if total != len(unwindowed) {
+		t.Errorf("CountMemoryRelations (%d) diverges from len(unwindowed) (%d)", total, len(unwindowed))
 	}
 }
 

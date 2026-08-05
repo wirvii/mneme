@@ -107,31 +107,45 @@ func (s *MemoryStore) DeleteMemoryRelation(ctx context.Context, a, b string) err
 	return nil
 }
 
-// ListMemoryRelations returns memory relation rows filtered by opts.
-// When opts.Project is non-empty, only pairs whose from_id exists as an active
-// memory in that project are returned (avoids cross-project leaks).
-func (s *MemoryStore) ListMemoryRelations(ctx context.Context, opts MemoryRelationListOptions) ([]MemoryRelation, error) {
-	var args []any
-
-	q := `
-		SELECT mr.id, mr.from_id, mr.to_id, mr.relation, mr.judged_by, mr.rationale, mr.created_at
-		FROM memory_relations mr`
+// relationListSource is the ONLY definition of memory_relations' listing
+// source+predicate. It includes the FROM and the JOIN — not just the WHERE —
+// because the project filter lives in the JOIN CONDITION, not the WHERE
+// clause: a COUNT that only shared the WHERE would count rows from other
+// projects too, and Total would lie (SPEC-109 D6/§0.3).
+//
+// Replicates the REAL semantics (only from_id is checked), not what
+// MemoryRelationListOptions.Project's godoc promises ("both from_id and
+// to_id"). That doc/implementation mismatch is pre-existing and is left
+// alone on purpose: Total must match what the page query actually returns,
+// not what the documentation claims it does.
+func relationListSource(opts MemoryRelationListOptions) (fromJoinWhere string, args []any) {
+	fromJoinWhere = `FROM memory_relations mr`
 
 	if opts.Project != "" {
-		q += `
+		fromJoinWhere += `
 		JOIN memories m ON m.id = mr.from_id
 		  AND m.project = ? AND m.deleted_at IS NULL`
 		args = append(args, opts.Project)
 	}
 
-	q += ` WHERE 1=1`
+	fromJoinWhere += ` WHERE 1=1`
 
 	if opts.Relation != "" {
-		q += ` AND mr.relation = ?`
+		fromJoinWhere += ` AND mr.relation = ?`
 		args = append(args, opts.Relation)
 	}
 
-	q += relationListOrder
+	return fromJoinWhere, args
+}
+
+// ListMemoryRelations returns memory relation rows filtered by opts.
+// When opts.Project is non-empty, only pairs whose from_id exists as an active
+// memory in that project are returned (avoids cross-project leaks).
+func (s *MemoryStore) ListMemoryRelations(ctx context.Context, opts MemoryRelationListOptions) ([]MemoryRelation, error) {
+	source, args := relationListSource(opts)
+
+	q := `SELECT mr.id, mr.from_id, mr.to_id, mr.relation, mr.judged_by, mr.rationale, mr.created_at ` +
+		source + relationListOrder
 
 	if opts.Limit > 0 {
 		q += ` LIMIT ?`
@@ -160,6 +174,21 @@ func (s *MemoryStore) ListMemoryRelations(ctx context.Context, opts MemoryRelati
 		return nil, fmt.Errorf("store: list memory relations: iterate: %w", err)
 	}
 	return results, nil
+}
+
+// CountMemoryRelations counts the matches of the SAME source+predicate
+// ListMemoryRelations uses (relationListSource, D6), without a LIMIT — the
+// "before Limit was applied" figure conflicts_list's total needs.
+func (s *MemoryStore) CountMemoryRelations(ctx context.Context, opts MemoryRelationListOptions) (int, error) {
+	source, args := relationListSource(opts)
+
+	q := `SELECT COUNT(*) ` + source
+
+	var total int
+	if err := s.db.QueryRowContext(ctx, q, args...).Scan(&total); err != nil {
+		return 0, fmt.Errorf("store: count memory relations: %w", err)
+	}
+	return total, nil
 }
 
 // GetMemoryConflicts returns the IDs of all memories that have a conflicts_with

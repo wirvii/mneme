@@ -1321,14 +1321,22 @@ func allTools() []ToolDefinition {
 			},
 		},
 		{
-			Name:        "conflicts_list",
-			Description: "List all memory conflict relations (conflicts_with and unrelated edges) for the given project.",
+			Name: "conflicts_list",
+			Description: "List all memory conflict relations (conflicts_with and unrelated edges) for the given " +
+				"project. `count` is the number of relations returned; `total` is the number of matches before " +
+				"`limit` was applied.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"project": map[string]any{
 						"type":        "string",
 						"description": "Project slug to filter results. Defaults to the current project.",
+					},
+					"limit": map[string]any{
+						"type":        "integer",
+						"description": "Max relations returned (default 20, max 50). `total` always reports the true number of matches before the limit.",
+						"minimum":     1,
+						"maximum":     model.ListMaxLimit,
 					},
 				},
 			},

@@ -30,13 +30,12 @@ func TestAllTools_ExactlyOneBacklogGet(t *testing.T) {
 	}
 }
 
-// TestListToolSchemas_DeclareLimit is AC21: backlog_list and spec_list each
-// declare a limit property with type integer, minimum 1, maximum 50, and
-// mention the default 20 in their description. conflicts_list's turn comes
-// in step 9, alongside its total field (its data-plane changes land there).
+// TestListToolSchemas_DeclareLimit is AC21: backlog_list, spec_list, and
+// conflicts_list each declare a limit property with type integer, minimum 1,
+// maximum 50, and mention the default 20 in their description.
 func TestListToolSchemas_DeclareLimit(t *testing.T) {
 	tools := allTools()
-	for _, name := range []string{"backlog_list", "spec_list"} {
+	for _, name := range []string{"backlog_list", "spec_list", "conflicts_list"} {
 		tool := findTool(tools, name)
 		if tool == nil {
 			t.Fatalf("%s tool not found in allTools()", name)

@@ -120,18 +120,18 @@ func TestConflictLink_ConflictsWith(t *testing.T) {
 		t.Fatalf("ConflictLink conflicts_with: %v", err)
 	}
 
-	rels, err := svc.ConflictList(ctx, "test/project")
+	resp, err := svc.ConflictList(ctx, "test/project", 0)
 	if err != nil {
 		t.Fatalf("ConflictList: %v", err)
 	}
-	if len(rels) != 1 {
-		t.Fatalf("expected 1 relation, got %d", len(rels))
+	if len(resp.Relations) != 1 {
+		t.Fatalf("expected 1 relation, got %d", len(resp.Relations))
 	}
-	if rels[0].Relation != "conflicts_with" {
-		t.Errorf("Relation = %q, want conflicts_with", rels[0].Relation)
+	if resp.Relations[0].Relation != "conflicts_with" {
+		t.Errorf("Relation = %q, want conflicts_with", resp.Relations[0].Relation)
 	}
-	if rels[0].JudgedBy != "manual" {
-		t.Errorf("JudgedBy = %q, want manual", rels[0].JudgedBy)
+	if resp.Relations[0].JudgedBy != "manual" {
+		t.Errorf("JudgedBy = %q, want manual", resp.Relations[0].JudgedBy)
 	}
 }
 
@@ -193,12 +193,12 @@ func TestConflictUnlink_ConflictsWith(t *testing.T) {
 		t.Fatalf("ConflictUnlink: %v", err)
 	}
 
-	rels, err := svc.ConflictList(ctx, "test/project")
+	resp, err := svc.ConflictList(ctx, "test/project", 0)
 	if err != nil {
 		t.Fatalf("ConflictList: %v", err)
 	}
-	if len(rels) != 0 {
-		t.Errorf("expected 0 relations after unlink, got %d", len(rels))
+	if len(resp.Relations) != 0 {
+		t.Errorf("expected 0 relations after unlink, got %d", len(resp.Relations))
 	}
 }
 
@@ -267,12 +267,15 @@ func TestConflictList(t *testing.T) {
 		t.Fatalf("link B-C: %v", err)
 	}
 
-	rels, err := svc.ConflictList(ctx, "test/project")
+	resp, err := svc.ConflictList(ctx, "test/project", 0)
 	if err != nil {
 		t.Fatalf("ConflictList: %v", err)
 	}
-	if len(rels) != 2 {
-		t.Errorf("expected 2 relations, got %d", len(rels))
+	if len(resp.Relations) != 2 {
+		t.Errorf("expected 2 relations, got %d", len(resp.Relations))
+	}
+	if resp.Total != 2 {
+		t.Errorf("expected Total=2, got %d", resp.Total)
 	}
 }
 

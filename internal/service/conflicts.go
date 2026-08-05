@@ -413,17 +413,39 @@ func (svc *MemoryService) ConflictUnlink(ctx context.Context, from, to string) e
 	return nil
 }
 
-// ConflictList returns all memory relation rows for the given project.
-func (svc *MemoryService) ConflictList(ctx context.Context, project string) ([]ConflictRelation, error) {
+// ConflictListResponse wraps a page of relations with the REAL number of
+// matches. Mirrors model.BacklogListResponse's two-mode Limit semantics
+// (SPEC-109 D5/D16): limit<=0 means no window, limit>model.ListMaxLimit is
+// silently capped. No excerpt: Rationale is a single line by design.
+type ConflictListResponse struct {
+	Relations []ConflictRelation
+	Total     int
+}
+
+// ConflictList returns the memory relation rows matching project, plus the
+// REAL number of matches. Same latent problem mem_timeline had (D3/D18):
+// handleConflictsList used to report count=len(rels), which is only correct
+// by accident because there was no limit yet — the instant a limit exists,
+// count stops saying how many there are. Total fixes that; count is kept
+// (SPEC-109 D16) because it does not break any existing caller.
+func (svc *MemoryService) ConflictList(ctx context.Context, project string, limit int) (ConflictListResponse, error) {
 	if project == "" {
 		project = svc.project
 	}
+	if limit > model.ListMaxLimit {
+		limit = model.ListMaxLimit
+	}
 
-	rows, err := svc.projectStore.ListMemoryRelations(ctx, store.MemoryRelationListOptions{
-		Project: project,
-	})
+	opts := store.MemoryRelationListOptions{Project: project, Limit: limit}
+
+	total, err := svc.projectStore.CountMemoryRelations(ctx, opts)
 	if err != nil {
-		return nil, fmt.Errorf("service: conflict list: %w", err)
+		return ConflictListResponse{}, fmt.Errorf("service: conflict list: count: %w", err)
+	}
+
+	rows, err := svc.projectStore.ListMemoryRelations(ctx, opts)
+	if err != nil {
+		return ConflictListResponse{}, fmt.Errorf("service: conflict list: %w", err)
 	}
 
 	result := make([]ConflictRelation, len(rows))
@@ -437,7 +459,7 @@ func (svc *MemoryService) ConflictList(ctx context.Context, project string) ([]C
 			CreatedAt: r.CreatedAt.Format("2006-01-02T15:04:05Z"),
 		}
 	}
-	return result, nil
+	return ConflictListResponse{Relations: result, Total: total}, nil
 }
 
 // logConflictHint is called after a successful Save as a non-blocking hint.

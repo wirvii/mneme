@@ -1440,23 +1440,36 @@ func (h *handlers) handleConflictsUnlink(ctx context.Context, raw json.RawMessag
 	})
 }
 
-// handleConflictsList processes a conflicts_list tool call.
+// handleConflictsList processes a conflicts_list tool call. The default-20
+// policy mirrors backlog_list/spec_list (D9): a frontend concern, not the
+// service's.
 func (h *handlers) handleConflictsList(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
 	var args struct {
 		Project string `json:"project"`
+		Limit   int    `json:"limit"`
 	}
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &args); err != nil {
 			return nil, &JSONRPCError{Code: CodeInvalidParams, Message: fmt.Sprintf("mcp: handle conflicts_list: invalid arguments: %s", err)}
 		}
 	}
+	if args.Limit <= 0 {
+		args.Limit = model.ListDefaultLimit
+	}
 
-	rels, err := h.svc.ConflictList(ctx, args.Project)
+	resp, err := h.svc.ConflictList(ctx, args.Project, args.Limit)
 	if err != nil {
 		return nil, h.mapServiceError("conflicts_list", err)
 	}
 
-	return resultFromAny(map[string]any{"relations": rels, "count": len(rels)})
+	// count (relations actually returned) is kept for backward compatibility
+	// (D16); total (matches before limit) is new and is what stops count
+	// from silently becoming a lie now that a limit exists.
+	return resultFromAny(map[string]any{
+		"relations": resp.Relations,
+		"count":     len(resp.Relations),
+		"total":     resp.Total,
+	})
 }
 
 // resultFromAny serializes v to a compact JSON string and wraps it in a single
