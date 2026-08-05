@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Personalising a managed hook's registered command produced a silent
+  duplicate on the next `mneme install` (SPEC-107, BL-135).** The predicate
+  that decided "is this hook already registered?" (`hookCommandExists`)
+  compared the registered command by literal string equality, so a user who
+  customised it — most commonly to an absolute path, because the shell
+  launching the agent doesn't resolve `mneme` on its PATH — produced a
+  string install no longer recognised as its own. Confirmed live
+  2026-08-04: hand-editing `~/.codex/hooks.json`'s `SessionStart` entry to
+  an absolute path and re-running `mneme install codex` left TWO
+  registrations, injecting session context twice. A hook registration's
+  identity is now the pair (executable, subcommand) — the basename of the
+  executable (`mneme`/`mneme.exe`, case-insensitive) plus the `mneme hook
+  <subcommand>` subcommand, ignoring the path used to invoke it and any
+  extra arguments — applied uniformly across every surface that compares
+  hook commands: writing without duplicating (`PatchHooks`,
+  `WriteCodexHooks`), reporting status (`ProjectDelegationHookStatus`), and
+  purging what's retired (`removeHookCommands`, `filterOutHookCommands`).
+  See "Hook registration identity" in `docs/HOOKS.md` for the full rules,
+  including what this deliberately does NOT recognise as mneme's own (a
+  user's own wrapper script, shell pipelines/redirections, a different
+  executable basename).
+
 ## [v1.30.3] — 2026-08-04 — `Stop` hook retired; Codex upgrade detection fixed
 
 ### Fixed

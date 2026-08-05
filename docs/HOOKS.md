@@ -529,6 +529,105 @@ so that any settings.json still pointing at the old absolute path keeps
 working (forwarding to the same in-process Go logic) until it is
 re-registered with the portable command.
 
+### Hook registration identity (SPEC-107)
+
+`mneme install` writes hook registrations into third-party JSON files
+(`~/.claude/settings.json`, `~/.codex/hooks.json`,
+`<repoRoot>/.claude/settings.json`) using an append-if-absent merge. The
+question "is this hook already registered?" no longer requires the
+registered command to be the exact literal string mneme would write — it is
+answered by **identity**: the basename of the executable (`mneme` or
+`mneme.exe`, case-insensitive, exact name — never a suffix or prefix match)
+plus the `mneme hook <subcommand>` subcommand, ignoring the path used to
+invoke it and any extra arguments. These three registrations are therefore
+the SAME hook:
+
+```
+mneme hook session-start
+/Users/x/.local/bin/mneme hook session-start
+C:\Users\x\go\bin\mneme.exe hook session-start
+```
+
+This matters in practice when a user customises a registered command —
+most commonly to an absolute path, because the shell that launches the
+agent doesn't resolve `mneme` on its PATH (see "PATH troubleshooting"
+below). Before this identity comparison existed, the next `mneme install`
+did not recognise the customised entry and appended its own canonical one
+alongside it — a silent duplicate, confirmed live 2026-08-04 against a
+hand-edited `~/.codex/hooks.json` (double context injection every
+session). Personalising the command with a path no longer produces a
+duplicate.
+
+What this identity check explicitly does **NOT** recognise as mneme's own
+(and therefore never touches):
+
+- a wrapper script of your own, even one whose *contents* happen to invoke
+  `mneme hook <sub>` internally (e.g. `/Users/x/.codex/mi-script.sh`) — the
+  identity is textual over the registered command string, never over what a
+  script does when it runs;
+- `sh -c "mneme hook session-start"`, `echo "mneme hook session-start"`, or
+  any other shell wrapper — the first word of the command must itself be
+  the `mneme`/`mneme.exe` executable;
+- any command containing a shell pipeline, redirection, or substitution
+  outside quotes (`|`, `&`, `;`, `<`, `>`, `$`, `` ` ``, `(`, `)`) — these are
+  compound expressions mneme cannot safely reason about, so the safe
+  posture is to leave them alone entirely;
+- any other executable basename, even one that looks close —
+  `mnemex hook session-start` and `my-mneme hook session-start` do **not**
+  match (exact basename equality, never a suffix or prefix).
+
+**A note on the destructive side.** The same identity now governs what
+mneme's own purges (retiring a stale hook, disabling a per-repo delegation
+hook) remove. When mneme retires a hook it wrote in the past, the purge
+takes the customised variant with it too — **including any extra flags you
+had added** to that registration. This is the correct semantics (the hook
+is dead either way), but it is a silent loss of a personalisation that is
+worth knowing about upfront rather than discovering after the fact.
+
+If a registered entry doesn't match any of the forms above — for example
+`mneme --data-dir /tmp hook session-start`, where a global flag sits before
+`hook` — the identity check intentionally does not recognise it (skipping
+global flags would require knowing their arity, coupling this code to the
+CLI's flag set). `--reinstall-hooks` is the sanctioned way to sanitise such
+an entry: it replaces the entire `PreToolUse` list unconditionally,
+regardless of what identity check would or wouldn't recognise.
+
+### Troubleshooting: `mneme` not found on PATH
+
+If a hook fails to run because the agent's process can't resolve `mneme`,
+the durable fix is a symlink into a directory that IS on the system PATH:
+
+```bash
+sudo ln -sf "$(command -v mneme)" /usr/local/bin/mneme
+```
+
+`/usr/local/bin` is on the system PATH by default on macOS, so an agent
+launched from anywhere (including Finder/Dock, not just a terminal) will
+resolve `mneme` afterwards.
+
+mneme deliberately does **not** write your shell profile and does **not**
+run a preflight check for this at install time. Both were considered and
+rejected:
+
+- **A preflight check would run in the terminal**, where `mneme install`
+  itself is invoked — and the binary always resolves there, by definition
+  (you just ran it). It would never catch the case that actually matters:
+  an agent launched by a process that does NOT source your shell profile.
+- **Writing the PATH into your shell profile (`.zshrc`, etc.) doesn't cover
+  that case either.** Verified: `/etc/paths` does not contain
+  `~/.local/bin`, and `launchctl getenv PATH` is empty on a stock macOS
+  install — so a process launched from Finder/Dock (as many agent runtimes
+  are) never reads `.zshrc` and never sees a profile-only PATH change.
+
+Because of this, do **not** register a hook with an absolute, user-specific
+path as a substitute for fixing PATH resolution: `.claude/settings.json` at
+**project** scope is committed to git (`.gitignore` only excludes
+`settings.local.json`), so an absolute path baked in there would carry one
+author's `$HOME` to every other machine that checks the repo out, breaking
+silently for everyone else. The symlink above is the durable fix; the
+identity comparison above is what keeps a hand-edited absolute path from
+becoming a permanent duplicate in the meantime.
+
 ---
 
 ## FAQ

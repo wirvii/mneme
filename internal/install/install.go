@@ -969,7 +969,9 @@ func PatchHooks(agent *Agent) error {
 			}
 		}
 
-		// Only append if an identical command is not already present in any group.
+		// Only append if the SAME hook identity (executable + subcommand,
+		// SPEC-107) is not already present in any group — not necessarily an
+		// identical literal string.
 		if !hookCommandExists(eventList, patch.Command) {
 			// Always add as a new matcher-group with an empty matcher (match all).
 			group := map[string]any{

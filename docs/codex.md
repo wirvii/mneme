@@ -64,10 +64,14 @@ it actively removes a pre-existing registration on every run.
 
 If you previously worked around this by pointing `Stop` at your own script
 (e.g. one that wraps the output in valid JSON), that registration is **not**
-touched — mneme only purges the exact command it wrote itself
-(`mneme hook session-end`), never a command you registered yourself. You are
-free to remove it manually from `~/.codex/hooks.json` once you no longer need
-it.
+touched — mneme identifies its own hooks by executable + subcommand
+(SPEC-107), never by matching an unrelated command. Note the purge is
+therefore **not** limited to the literal string mneme originally wrote: if
+you had instead customised mneme's own `Stop` registration (for example to
+an absolute `mneme` path, or with extra flags), that variant is recognised
+as the same registration and purged too, flags and all — see the "Hook registration identity" section in [docs/HOOKS.md](HOOKS.md) for
+the full identity rules. You are free to remove any surviving foreign script
+manually from `~/.codex/hooks.json` once you no longer need it.
 
 ## CLAUDE.md fallback behaviour (S1)
 
