@@ -290,6 +290,117 @@ func (s *SDDStore) UpdateBacklogItem(ctx context.Context, item *model.BacklogIte
 	return nil
 }
 
+// AppendBacklogRefinement appends one refinement row to itemID and leaves the
+// item in status next, atomically (SPEC-110 D14).
+//
+// expected is an OPTIMISTIC LOCK, not policy: the service has already decided
+// which statuses admit refinement (D3), and this method only enforces that the
+// state the service validated is still the state found inside the transaction.
+// It is the same shape as UpdateSpecStatus (store/sdd.go). Without the
+// transaction two concurrent refinements would compute the same seq.
+//
+// Returns model.ErrBacklogNotRefinable when the status drifted, and
+// model.ErrBacklogNotFound when the item does not exist.
+func (s *SDDStore) AppendBacklogRefinement(
+	ctx context.Context, itemID string, expected, next model.BacklogStatus, body, by string,
+) (*model.BacklogRefinement, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("store: append backlog refinement: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// Optimistic lock: the status the service validated must still be the
+	// status found here, inside the transaction.
+	var currentStatus string
+	err = tx.QueryRowContext(ctx, `SELECT status FROM backlog_items WHERE id = ?`, itemID).Scan(&currentStatus)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, model.ErrBacklogNotFound
+		}
+		return nil, fmt.Errorf("store: append backlog refinement: read current status: %w", err)
+	}
+	if model.BacklogStatus(currentStatus) != expected {
+		return nil, fmt.Errorf("store: append backlog refinement: expected %s but found %s: %w",
+			expected, currentStatus, model.ErrBacklogNotRefinable)
+	}
+
+	var lastSeq sql.NullInt64
+	err = tx.QueryRowContext(ctx,
+		`SELECT MAX(seq) FROM backlog_refinements WHERE item_id = ?`, itemID,
+	).Scan(&lastSeq)
+	if err != nil {
+		return nil, fmt.Errorf("store: append backlog refinement: next seq: %w", err)
+	}
+	seq := int(lastSeq.Int64) + 1
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+
+	_, err = tx.ExecContext(ctx,
+		`INSERT INTO backlog_refinements (item_id, seq, body, by, at) VALUES (?, ?, ?, ?, ?)`,
+		itemID, seq, body, by, now,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: append backlog refinement: insert: %w", err)
+	}
+
+	// Only status and updated_at change. description is NEVER touched here
+	// (D15 — description is write-once, written by CreateBacklogItem only).
+	_, err = tx.ExecContext(ctx,
+		`UPDATE backlog_items SET status = ?, updated_at = ? WHERE id = ?`,
+		string(next), now, itemID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: append backlog refinement: update item: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("store: append backlog refinement: commit: %w", err)
+	}
+
+	at, err := parseTime(now)
+	if err != nil {
+		return nil, fmt.Errorf("store: append backlog refinement: parse at: %w", err)
+	}
+
+	return &model.BacklogRefinement{
+		ItemID: itemID,
+		Seq:    seq,
+		Body:   body,
+		By:     by,
+		At:     at,
+	}, nil
+}
+
+// ListBacklogRefinements returns every refinement of itemID ordered by seq
+// ascending — never by at, see BacklogRefinement's godoc (D21). No limit: this
+// is the full-fidelity path (D6).
+func (s *SDDStore) ListBacklogRefinements(ctx context.Context, itemID string) ([]*model.BacklogRefinement, error) {
+	const q = `SELECT item_id, seq, body, by, at FROM backlog_refinements WHERE item_id = ? ORDER BY seq ASC`
+
+	rows, err := s.db.QueryContext(ctx, q, itemID)
+	if err != nil {
+		return nil, fmt.Errorf("store: list backlog refinements: %w", err)
+	}
+	defer rows.Close()
+
+	var refinements []*model.BacklogRefinement
+	for rows.Next() {
+		r := &model.BacklogRefinement{}
+		var atStr string
+		if err := rows.Scan(&r.ItemID, &r.Seq, &r.Body, &r.By, &atStr); err != nil {
+			return nil, fmt.Errorf("store: list backlog refinements: scan: %w", err)
+		}
+		at, err := parseTime(atStr)
+		if err != nil {
+			return nil, fmt.Errorf("store: list backlog refinements: parse at: %w", err)
+		}
+		r.At = at
+		refinements = append(refinements, r)
+	}
+	return refinements, rows.Err()
+}
+
 // BacklogCounts returns the number of backlog items per status for a project.
 func (s *SDDStore) BacklogCounts(ctx context.Context, project string) (map[model.BacklogStatus]int, error) {
 	const q = `SELECT status, COUNT(*) FROM backlog_items WHERE project = ? GROUP BY status`

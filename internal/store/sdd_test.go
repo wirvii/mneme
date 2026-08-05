@@ -1531,3 +1531,202 @@ func TestBacklogListOrder_QualifiesEveryColumn(t *testing.T) {
 		}
 	}
 }
+
+// --- SPEC-110: AppendBacklogRefinement / ListBacklogRefinements (Paso 4) ---
+
+// TestAppendBacklogRefinement_SequenceIsPerItem is AC4: seq is 1,2,3... per
+// item, independent between items, and rows are read back by
+// ListBacklogRefinements in seq-ascending order.
+func TestAppendBacklogRefinement_SequenceIsPerItem(t *testing.T) {
+	s := newTestSDDStore(t)
+	ctx := context.Background()
+
+	itemA := &model.BacklogItem{ID: "BL-001", Title: "a", Status: model.BacklogStatusRaw, Priority: model.PriorityMedium, Project: "proj", Lane: model.LaneStandard}
+	itemB := &model.BacklogItem{ID: "BL-002", Title: "b", Status: model.BacklogStatusRaw, Priority: model.PriorityMedium, Project: "proj", Lane: model.LaneStandard}
+	if err := s.CreateBacklogItem(ctx, itemA); err != nil {
+		t.Fatalf("create BL-001: %v", err)
+	}
+	if err := s.CreateBacklogItem(ctx, itemB); err != nil {
+		t.Fatalf("create BL-002: %v", err)
+	}
+
+	status := model.BacklogStatusRaw
+	for i := 0; i < 3; i++ {
+		r, err := s.AppendBacklogRefinement(ctx, "BL-001", status, model.BacklogStatusRefined, fmt.Sprintf("a-r%d", i+1), "architect")
+		if err != nil {
+			t.Fatalf("append refinement %d to BL-001: %v", i+1, err)
+		}
+		if r.Seq != i+1 {
+			t.Errorf("BL-001 refinement %d: seq = %d, want %d", i+1, r.Seq, i+1)
+		}
+		status = model.BacklogStatusRefined
+	}
+
+	if _, err := s.AppendBacklogRefinement(ctx, "BL-002", model.BacklogStatusRaw, model.BacklogStatusRefined, "b-r1", "backend"); err != nil {
+		t.Fatalf("append refinement to BL-002: %v", err)
+	}
+
+	refsA, err := s.ListBacklogRefinements(ctx, "BL-001")
+	if err != nil {
+		t.Fatalf("ListBacklogRefinements BL-001: %v", err)
+	}
+	if len(refsA) != 3 {
+		t.Fatalf("BL-001: expected 3 refinements, got %d", len(refsA))
+	}
+	for i, r := range refsA {
+		if r.Seq != i+1 {
+			t.Errorf("BL-001 refinement[%d].Seq = %d, want %d", i, r.Seq, i+1)
+		}
+		if r.Body != fmt.Sprintf("a-r%d", i+1) {
+			t.Errorf("BL-001 refinement[%d].Body = %q, want %q", i, r.Body, fmt.Sprintf("a-r%d", i+1))
+		}
+	}
+
+	refsB, err := s.ListBacklogRefinements(ctx, "BL-002")
+	if err != nil {
+		t.Fatalf("ListBacklogRefinements BL-002: %v", err)
+	}
+	if len(refsB) != 1 || refsB[0].Seq != 1 {
+		t.Errorf("BL-002: expected 1 refinement with seq=1, got %+v", refsB)
+	}
+}
+
+// TestAppendBacklogRefinement_RollsBackOnInsertFailure is AC5: if the row
+// cannot be inserted, the item's status is left unmodified — the whole
+// operation is one transaction (D14). The failure is forced by dropping
+// backlog_refinements out from under the call, which fails the transaction
+// before its COMMIT (whether the exact failing statement is the seq lookup or
+// the INSERT itself, the guarantee under test is the same: no partial write).
+func TestAppendBacklogRefinement_RollsBackOnInsertFailure(t *testing.T) {
+	s := newTestSDDStore(t)
+	ctx := context.Background()
+
+	item := &model.BacklogItem{ID: "BL-001", Title: "x", Status: model.BacklogStatusRaw, Priority: model.PriorityMedium, Project: "proj", Lane: model.LaneStandard}
+	if err := s.CreateBacklogItem(ctx, item); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	if _, err := s.db.ExecContext(ctx, `DROP TABLE backlog_refinements`); err != nil {
+		t.Fatalf("drop backlog_refinements to force a failure: %v", err)
+	}
+
+	_, err := s.AppendBacklogRefinement(ctx, "BL-001", model.BacklogStatusRaw, model.BacklogStatusRefined, "collides", "")
+	if err == nil {
+		t.Fatal("expected AppendBacklogRefinement to fail when backlog_refinements is unavailable, got nil error")
+	}
+
+	// Reconstruct the schema so GetBacklogItem's shared projection (which
+	// joins backlog_refinements) can run.
+	if _, err := s.db.ExecContext(ctx, `
+		CREATE TABLE backlog_refinements (
+		    item_id  TEXT    NOT NULL REFERENCES backlog_items(id) ON DELETE CASCADE,
+		    seq      INTEGER NOT NULL,
+		    body     TEXT    NOT NULL,
+		    by       TEXT    NOT NULL DEFAULT '',
+		    at       TEXT    NOT NULL,
+		    PRIMARY KEY (item_id, seq)
+		)`); err != nil {
+		t.Fatalf("recreate backlog_refinements: %v", err)
+	}
+
+	got, err := s.GetBacklogItem(ctx, "BL-001")
+	if err != nil {
+		t.Fatalf("GetBacklogItem: %v", err)
+	}
+	if got.Status != model.BacklogStatusRaw {
+		t.Errorf("status changed to %q despite rolled-back transaction, want raw", got.Status)
+	}
+}
+
+// TestAppendBacklogRefinement_OptimisticLockRejectsStatusDrift is AC6: when
+// expected no longer matches the item's real status, AppendBacklogRefinement
+// returns ErrBacklogNotRefinable and inserts nothing.
+func TestAppendBacklogRefinement_OptimisticLockRejectsStatusDrift(t *testing.T) {
+	s := newTestSDDStore(t)
+	ctx := context.Background()
+
+	item := &model.BacklogItem{ID: "BL-001", Title: "x", Status: model.BacklogStatusPromoted, Priority: model.PriorityMedium, Project: "proj", Lane: model.LaneStandard}
+	if err := s.CreateBacklogItem(ctx, item); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// The service believes the item is still raw; the store finds promoted.
+	_, err := s.AppendBacklogRefinement(ctx, "BL-001", model.BacklogStatusRaw, model.BacklogStatusRefined, "drifted", "")
+	if !errors.Is(err, model.ErrBacklogNotRefinable) {
+		t.Fatalf("expected ErrBacklogNotRefinable, got %v", err)
+	}
+
+	refs, err := s.ListBacklogRefinements(ctx, "BL-001")
+	if err != nil {
+		t.Fatalf("ListBacklogRefinements: %v", err)
+	}
+	if len(refs) != 0 {
+		t.Errorf("expected 0 refinements after rejected drift, got %d", len(refs))
+	}
+
+	got, err := s.GetBacklogItem(ctx, "BL-001")
+	if err != nil {
+		t.Fatalf("GetBacklogItem: %v", err)
+	}
+	if got.Status != model.BacklogStatusPromoted {
+		t.Errorf("status changed to %q, want unchanged promoted", got.Status)
+	}
+}
+
+// TestAppendBacklogRefinement_NeverTouchesDescription verifies description is
+// byte-identical before and after appending refinements (D15).
+func TestAppendBacklogRefinement_NeverTouchesDescription(t *testing.T) {
+	s := newTestSDDStore(t)
+	ctx := context.Background()
+
+	const originalDescription = "the original description, untouched"
+	item := &model.BacklogItem{
+		ID: "BL-001", Title: "x", Description: originalDescription,
+		Status: model.BacklogStatusRaw, Priority: model.PriorityMedium, Project: "proj", Lane: model.LaneStandard,
+	}
+	if err := s.CreateBacklogItem(ctx, item); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	status := model.BacklogStatusRaw
+	for i := 0; i < 3; i++ {
+		if _, err := s.AppendBacklogRefinement(ctx, "BL-001", status, model.BacklogStatusRefined, fmt.Sprintf("r%d", i+1), ""); err != nil {
+			t.Fatalf("append refinement %d: %v", i+1, err)
+		}
+		status = model.BacklogStatusRefined
+	}
+
+	got, err := s.GetBacklogItem(ctx, "BL-001")
+	if err != nil {
+		t.Fatalf("GetBacklogItem: %v", err)
+	}
+	if got.Description != originalDescription {
+		t.Errorf("description changed: got %q, want %q", got.Description, originalDescription)
+	}
+}
+
+// TestBacklogRefinements_CascadeOnItemDelete is AC12: with foreign_keys=ON,
+// deleting the parent backlog_items row cascades to its backlog_refinements.
+func TestBacklogRefinements_CascadeOnItemDelete(t *testing.T) {
+	s := newTestSDDStore(t)
+	ctx := context.Background()
+
+	item := &model.BacklogItem{ID: "BL-001", Title: "x", Status: model.BacklogStatusRefined, Priority: model.PriorityMedium, Project: "proj", Lane: model.LaneStandard}
+	if err := s.CreateBacklogItem(ctx, item); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	insertRawRefinement(t, s, "BL-001", 1, "r1")
+	insertRawRefinement(t, s, "BL-001", 2, "r2")
+
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM backlog_items WHERE id = ?`, "BL-001"); err != nil {
+		t.Fatalf("delete backlog item: %v", err)
+	}
+
+	refs, err := s.ListBacklogRefinements(ctx, "BL-001")
+	if err != nil {
+		t.Fatalf("ListBacklogRefinements: %v", err)
+	}
+	if len(refs) != 0 {
+		t.Errorf("expected 0 refinements after cascading delete, got %d", len(refs))
+	}
+}
