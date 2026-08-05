@@ -193,13 +193,6 @@ func TestBacklogList_TableOutputFormatUnchanged(t *testing.T) {
 	if !strings.Contains(lines[0], "[raw") || !strings.Contains(lines[0], "]") {
 		t.Errorf("expected bracketed status column, got: %q", lines[0])
 	}
-	// SPEC-110 D19: none of these items have refinements, so the "refs:N"
-	// suffix must not appear anywhere — the output stays identical.
-	for i, line := range lines {
-		if strings.Contains(line, "refs:") {
-			t.Errorf("line %d unexpectedly contains a refs: suffix for a zero-refinement item: %q", i, line)
-		}
-	}
 }
 
 // TestBacklogListCmd_ShowsRefinementCountOnlyWhenNonZero is AC24/AC26: the

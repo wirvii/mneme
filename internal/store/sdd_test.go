@@ -1591,13 +1591,24 @@ func TestAppendBacklogRefinement_SequenceIsPerItem(t *testing.T) {
 	}
 }
 
-// TestAppendBacklogRefinement_RollsBackOnInsertFailure is AC5: if the row
-// cannot be inserted, the item's status is left unmodified — the whole
-// operation is one transaction (D14). The failure is forced by dropping
-// backlog_refinements out from under the call, which fails the transaction
-// before its COMMIT (whether the exact failing statement is the seq lookup or
-// the INSERT itself, the guarantee under test is the same: no partial write).
-func TestAppendBacklogRefinement_RollsBackOnInsertFailure(t *testing.T) {
+// TestAppendBacklogRefinement_RollsBackWhenTheTableDisappearsMidTransaction
+// is AC5: if any statement inside the transaction fails, the item's status
+// is left unmodified — the whole operation is one transaction (D14).
+//
+// The failure is forced by dropping backlog_refinements out from under the
+// call, which fails the transaction at the seq lookup (SELECT MAX(seq)),
+// BEFORE it ever reaches the INSERT. A genuine seq collision at the INSERT
+// itself cannot be forced deterministically in a single-threaded test: seq
+// is computed as MAX(seq)+1 inside the SAME transaction that performs the
+// INSERT, and newTestSDDStore sets SetMaxOpenConns(1), so SQLite serializes
+// every transaction through that one connection — a second, concurrent
+// AppendBacklogRefinement call would simply block until the first commits,
+// then compute seq against the now-committed row and never collide.
+// Reproducing a true race would require two real connections racing between
+// the SELECT MAX and the INSERT, which is out of scope for this guarantee.
+// The property under test is the same either way: no partial write survives
+// a failed transaction.
+func TestAppendBacklogRefinement_RollsBackWhenTheTableDisappearsMidTransaction(t *testing.T) {
 	s := newTestSDDStore(t)
 	ctx := context.Background()
 
