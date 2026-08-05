@@ -128,6 +128,8 @@ func (h *handlers) handleToolCall(ctx context.Context, params ToolCallParams) (*
 		return h.handleBacklogRefine(ctx, params.Arguments)
 	case "backlog_promote":
 		return h.handleBacklogPromote(ctx, params.Arguments)
+	case "backlog_get":
+		return h.handleBacklogGet(ctx, params.Arguments)
 	case "spec_new":
 		return h.handleSpecNew(ctx, params.Arguments)
 	case "spec_status":
@@ -861,15 +863,22 @@ func (h *handlers) handleBacklogList(ctx context.Context, raw json.RawMessage) (
 		}
 	}
 
+	// The default lives HERE, not in the service, because it exists to
+	// protect the agent's context window — a frontend concern. The service
+	// treats limit<=0 as "no window", which is what the CLI needs. A
+	// negative value (a minimum:1 schema violation) gets 20, not 461 KB: the
+	// handler never forwards a limit<=0 to the service. There is no way to
+	// request the unwindowed list over MCP, and that is deliberate (D19).
+	if req.Limit <= 0 {
+		req.Limit = model.ListDefaultLimit
+	}
+
 	resp, err := h.sdd.BacklogList(ctx, req)
 	if err != nil {
 		return nil, h.mapServiceError("backlog_list", err)
 	}
 
-	// TODO(SPEC-109 step 7): apply the default limit and project through the
-	// excerpt view instead of returning resp.Items bare. This adaptation only
-	// keeps the package compiling after the service signature change.
-	return resultFromAny(resp.Items)
+	return resultFromAny(newBacklogListView(resp, model.ListExcerptRunes))
 }
 
 // handleBacklogRefine processes a backlog_refine tool call.
@@ -920,6 +929,39 @@ func (h *handlers) handleBacklogPromote(ctx context.Context, raw json.RawMessage
 	}
 
 	return resultFromAny(spec)
+}
+
+// handleBacklogGet processes a backlog_get tool call (SPEC-109 D2/D12): the
+// only way over MCP to read a backlog item's FULL description — no excerpt,
+// no truncation.
+func (h *handlers) handleBacklogGet(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	if h.sdd == nil {
+		return nil, h.sddUnavailable("backlog_get")
+	}
+	var args struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return nil, &JSONRPCError{
+			Code:    CodeInvalidParams,
+			Message: fmt.Sprintf("mcp: handle backlog_get: invalid arguments: %s", err),
+		}
+	}
+	if args.ID == "" {
+		return nil, &JSONRPCError{
+			Code:    CodeInvalidParams,
+			Message: "mcp: handle backlog_get: id is required",
+		}
+	}
+
+	item, err := h.sdd.BacklogGet(ctx, args.ID)
+	if err != nil {
+		// mapServiceError already maps model.ErrBacklogNotFound to
+		// CodeMemoryNotFound (-32000) — no new sentinel or mapping needed (D12).
+		return nil, h.mapServiceError("backlog_get", err)
+	}
+
+	return resultFromAny(item)
 }
 
 // handleSpecNew processes a spec_new tool call.
@@ -1104,15 +1146,18 @@ func (h *handlers) handleSpecList(ctx context.Context, raw json.RawMessage) (*To
 		}
 	}
 
+	// Same default-20 policy as backlog_list (D9): protects the agent's
+	// context window at the frontend, not the service, layer.
+	if req.Limit <= 0 {
+		req.Limit = model.ListDefaultLimit
+	}
+
 	resp, err := h.sdd.SpecList(ctx, req)
 	if err != nil {
 		return nil, h.mapServiceError("spec_list", err)
 	}
 
-	// TODO(SPEC-109 step 7): return {specs,total} instead of the bare slice.
-	// This adaptation only keeps the package compiling after the service
-	// signature change.
-	return resultFromAny(resp.Specs)
+	return resultFromAny(specListView{Specs: resp.Specs, Total: resp.Total})
 }
 
 // handleSpecQuick processes a spec_quick tool call.

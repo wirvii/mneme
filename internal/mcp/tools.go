@@ -1,5 +1,7 @@
 package mcp
 
+import "github.com/wirvii/mneme/internal/model"
+
 // allTools returns the full list of ToolDefinitions exposed by the mneme MCP
 // server. Each tool maps directly to a method on MemoryService. Schemas are
 // defined inline as map[string]any following the JSON Schema draft-07 subset
@@ -436,8 +438,12 @@ func allTools() []ToolDefinition {
 			},
 		},
 		{
-			Name:        "backlog_list",
-			Description: "List backlog items for the current project.",
+			Name: "backlog_list",
+			Description: "List backlog items for the current project. Descriptions are returned as a " +
+				"200-character `excerpt` with a `truncated` flag — call `backlog_get` for the full " +
+				"description. `total` is the number of matches before `limit` was applied. Items beyond " +
+				"`limit` (max 50) are not reachable by listing: narrow with `status`, or fetch by ID with " +
+				"`backlog_get`.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -449,6 +455,28 @@ func allTools() []ToolDefinition {
 					"project": map[string]any{
 						"type":        "string",
 						"description": "Project slug. Defaults to detected project.",
+					},
+					"limit": map[string]any{
+						"type":        "integer",
+						"description": "Max items returned (default 20, max 50). `total` always reports the true number of matches before the limit.",
+						"minimum":     1,
+						"maximum":     model.ListMaxLimit,
+					},
+				},
+			},
+		},
+		{
+			Name: "backlog_get",
+			Description: "Get one backlog item by ID with its FULL description (no excerpt). " +
+				"This is the only way to read a grill ledger over MCP: spec_status does not " +
+				"include the backlog item and the specs table has no description column.",
+			InputSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"id"},
+				"properties": map[string]any{
+					"id": map[string]any{
+						"type":        "string",
+						"description": "Backlog item ID (e.g. BL-001).",
 					},
 				},
 			},
@@ -621,8 +649,9 @@ func allTools() []ToolDefinition {
 			},
 		},
 		{
-			Name:        "spec_list",
-			Description: "List specs for the current project.",
+			Name: "spec_list",
+			Description: "List specs for the current project. `total` is the number of matches before " +
+				"`limit` was applied.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -638,6 +667,12 @@ func allTools() []ToolDefinition {
 					"project": map[string]any{
 						"type":        "string",
 						"description": "Project slug. Defaults to detected project.",
+					},
+					"limit": map[string]any{
+						"type":        "integer",
+						"description": "Max specs returned (default 20, max 50). `total` always reports the true number of matches before the limit.",
+						"minimum":     1,
+						"maximum":     model.ListMaxLimit,
 					},
 				},
 			},

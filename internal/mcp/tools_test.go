@@ -5,14 +5,84 @@ import (
 	"testing"
 )
 
-// TestAllTools_Count76 verifies that describing session_id's role in
-// mem_save/mem_session_end (SPEC-108 D14/step 8) changed no tool's shape —
-// only two Description strings. 76 is the count established by SPEC-105 §8
-// DD21 (profile_deactivate, 75 -> 76); this spec adds zero tools.
-func TestAllTools_Count76(t *testing.T) {
+// TestAllTools_Count77 verifies the tool count after SPEC-109 adds
+// backlog_get (D2/D12): 76 (established by SPEC-105 §8 DD21,
+// profile_deactivate) -> 77.
+func TestAllTools_Count77(t *testing.T) {
 	tools := allTools()
-	if len(tools) != 76 {
-		t.Errorf("allTools() returned %d tools, want 76", len(tools))
+	if len(tools) != 77 {
+		t.Errorf("allTools() returned %d tools, want 77", len(tools))
+	}
+}
+
+// TestAllTools_ExactlyOneBacklogGet is AC20's second half: exactly one tool
+// named backlog_get exists.
+func TestAllTools_ExactlyOneBacklogGet(t *testing.T) {
+	tools := allTools()
+	count := 0
+	for _, tool := range tools {
+		if tool.Name == "backlog_get" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("expected exactly 1 backlog_get tool, found %d", count)
+	}
+}
+
+// TestListToolSchemas_DeclareLimit is AC21: backlog_list and spec_list each
+// declare a limit property with type integer, minimum 1, maximum 50, and
+// mention the default 20 in their description. conflicts_list's turn comes
+// in step 9, alongside its total field (its data-plane changes land there).
+func TestListToolSchemas_DeclareLimit(t *testing.T) {
+	tools := allTools()
+	for _, name := range []string{"backlog_list", "spec_list"} {
+		tool := findTool(tools, name)
+		if tool == nil {
+			t.Fatalf("%s tool not found in allTools()", name)
+		}
+		schema, ok := tool.InputSchema.(map[string]any)
+		if !ok {
+			t.Fatalf("%s InputSchema is not map[string]any", name)
+		}
+		props, ok := schema["properties"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s InputSchema.properties is not map[string]any", name)
+		}
+		limit, ok := props["limit"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s does not declare a 'limit' property", name)
+		}
+		if limit["type"] != "integer" {
+			t.Errorf("%s limit.type = %v, want integer", name, limit["type"])
+		}
+		if limit["minimum"] != 1 {
+			t.Errorf("%s limit.minimum = %v, want 1", name, limit["minimum"])
+		}
+		if limit["maximum"] != 50 {
+			t.Errorf("%s limit.maximum = %v, want 50", name, limit["maximum"])
+		}
+		desc, _ := limit["description"].(string)
+		if !strings.Contains(desc, "20") {
+			t.Errorf("%s limit description does not mention the default 20: %q", name, desc)
+		}
+	}
+}
+
+// TestBacklogGetSchema_RequiresID verifies backlog_get's schema requires id.
+func TestBacklogGetSchema_RequiresID(t *testing.T) {
+	tools := allTools()
+	tool := findTool(tools, "backlog_get")
+	if tool == nil {
+		t.Fatal("backlog_get tool not found in allTools()")
+	}
+	schema, ok := tool.InputSchema.(map[string]any)
+	if !ok {
+		t.Fatal("backlog_get InputSchema is not map[string]any")
+	}
+	required, ok := schema["required"].([]string)
+	if !ok || len(required) != 1 || required[0] != "id" {
+		t.Errorf("backlog_get required = %v, want [\"id\"]", schema["required"])
 	}
 }
 

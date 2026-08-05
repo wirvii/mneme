@@ -869,7 +869,9 @@ func TestMCP_MemExplore_SeedAmbiguous(t *testing.T) {
 	if save1.Error != nil {
 		t.Fatalf("mem_save 1: %v", save1.Error.Message)
 	}
-	var saved1 struct{ ID string `json:"id"` }
+	var saved1 struct {
+		ID string `json:"id"`
+	}
 	unmarshalToolText(t, save1, &saved1)
 
 	save2 := process(t, srv, "tools/call", 2, ToolCallParams{
@@ -882,7 +884,9 @@ func TestMCP_MemExplore_SeedAmbiguous(t *testing.T) {
 	if save2.Error != nil {
 		t.Fatalf("mem_save 2: %v", save2.Error.Message)
 	}
-	var saved2 struct{ ID string `json:"id"` }
+	var saved2 struct {
+		ID string `json:"id"`
+	}
 	unmarshalToolText(t, save2, &saved2)
 
 	// Force both IDs to share the same 8-char hex prefix via direct SQL.
@@ -1977,5 +1981,133 @@ func TestHandleModelReset_ReturnsReset(t *testing.T) {
 	unmarshalToolText(t, resp, &result)
 	if len(result.Reset) != 1 || result.Reset[0] != "backend" {
 		t.Errorf("model_reset returned %v, want [backend]", result.Reset)
+	}
+}
+
+// seedBacklogItems creates n backlog items via the backlog_add tool, all
+// standard lane, and returns nothing — the count is what these tests need.
+func seedBacklogItems(t *testing.T, srv *Server, n int) {
+	t.Helper()
+	for i := 0; i < n; i++ {
+		resp := process(t, srv, "tools/call", 100+i, ToolCallParams{
+			Name: "backlog_add",
+			Arguments: mustMarshal(t, map[string]any{
+				"title": fmt.Sprintf("item %d", i),
+				"lane":  "standard",
+			}),
+		})
+		if resp.Error != nil {
+			t.Fatalf("backlog_add %d: %v", i, resp.Error.Message)
+		}
+	}
+}
+
+// TestHandleBacklogList_NoLimitDefaultsTo20 is AC13: omitting limit returns
+// at most model.ListDefaultLimit (20) items even when more exist.
+func TestHandleBacklogList_NoLimitDefaultsTo20(t *testing.T) {
+	srv := newTestServerWithSDD(t)
+	seedBacklogItems(t, srv, 25)
+
+	resp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name:      "backlog_list",
+		Arguments: mustMarshal(t, map[string]any{}),
+	})
+	if resp.Error != nil {
+		t.Fatalf("backlog_list: %v", resp.Error.Message)
+	}
+
+	var view backlogListView
+	unmarshalToolText(t, resp, &view)
+	if len(view.Items) != model.ListDefaultLimit {
+		t.Errorf("got %d items, want %d (the default limit)", len(view.Items), model.ListDefaultLimit)
+	}
+	if view.Total != 25 {
+		t.Errorf("Total = %d, want 25 (the real match count)", view.Total)
+	}
+}
+
+// TestHandleBacklogList_NegativeLimitDefaultsTo20 is AC14: limit=-1 (a
+// minimum:1 schema violation) must not fall through to the unwindowed CLI
+// path — the handler never forwards limit<=0 to the service.
+func TestHandleBacklogList_NegativeLimitDefaultsTo20(t *testing.T) {
+	srv := newTestServerWithSDD(t)
+	seedBacklogItems(t, srv, 25)
+
+	resp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name:      "backlog_list",
+		Arguments: mustMarshal(t, map[string]any{"limit": -1}),
+	})
+	if resp.Error != nil {
+		t.Fatalf("backlog_list: %v", resp.Error.Message)
+	}
+
+	var view backlogListView
+	unmarshalToolText(t, resp, &view)
+	if len(view.Items) != model.ListDefaultLimit {
+		t.Errorf("got %d items, want %d (limit=-1 must default, not return everything)", len(view.Items), model.ListDefaultLimit)
+	}
+}
+
+// TestHandleBacklogGet_FullDescription is AC18: backlog_get returns the
+// complete description with no excerpt/truncated fields at all.
+func TestHandleBacklogGet_FullDescription(t *testing.T) {
+	srv := newTestServerWithSDD(t)
+
+	longDesc := strings.Repeat("grill ledger content ", 500)
+	addResp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name: "backlog_add",
+		Arguments: mustMarshal(t, map[string]any{
+			"title":       "Ledger item",
+			"lane":        "standard",
+			"description": longDesc,
+		}),
+	})
+	if addResp.Error != nil {
+		t.Fatalf("backlog_add: %v", addResp.Error.Message)
+	}
+	var added struct {
+		Item struct {
+			ID string `json:"id"`
+		} `json:"item"`
+	}
+	unmarshalToolText(t, addResp, &added)
+
+	getResp := process(t, srv, "tools/call", 2, ToolCallParams{
+		Name:      "backlog_get",
+		Arguments: mustMarshal(t, map[string]any{"id": added.Item.ID}),
+	})
+	if getResp.Error != nil {
+		t.Fatalf("backlog_get: %v", getResp.Error.Message)
+	}
+
+	var raw map[string]any
+	unmarshalToolText(t, getResp, &raw)
+	if _, hasExcerpt := raw["excerpt"]; hasExcerpt {
+		t.Error("backlog_get must not emit 'excerpt' — it returns the full item")
+	}
+	if _, hasTruncated := raw["truncated"]; hasTruncated {
+		t.Error("backlog_get must not emit 'truncated' — it returns the full item")
+	}
+	gotDesc, _ := raw["description"].(string)
+	if gotDesc != longDesc {
+		t.Errorf("description = %d runes, want %d (full description)", len([]rune(gotDesc)), len([]rune(longDesc)))
+	}
+}
+
+// TestHandleBacklogGet_NotFound is AC19: an unknown ID surfaces
+// CodeMemoryNotFound (-32000) end-to-end, via the existing
+// model.ErrBacklogNotFound -> mapServiceError mapping — no new sentinel.
+func TestHandleBacklogGet_NotFound(t *testing.T) {
+	srv := newTestServerWithSDD(t)
+
+	resp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name:      "backlog_get",
+		Arguments: mustMarshal(t, map[string]any{"id": "BL-999"}),
+	})
+	if resp.Error == nil {
+		t.Fatal("expected an error for a non-existent backlog item")
+	}
+	if resp.Error.Code != CodeMemoryNotFound {
+		t.Errorf("error code = %d, want %d (CodeMemoryNotFound)", resp.Error.Code, CodeMemoryNotFound)
 	}
 }

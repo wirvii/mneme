@@ -130,7 +130,6 @@ func process(t *testing.T, srv *Server, method string, id int, params any) JSONR
 	return resp
 }
 
-
 // unmarshalResult unmarshals resp.Result into v. Fails the test if resp.Error is set.
 func unmarshalResult(t *testing.T, resp JSONRPCResponse, v any) {
 	t.Helper()
@@ -215,7 +214,7 @@ func TestToolsList(t *testing.T) {
 		"mem_update", "mem_session_end", "mem_suggest_topic_key",
 		"mem_relate", "mem_timeline", "mem_stats", "mem_checkpoint", "mem_forget", "mem_promote",
 		// SDD tools
-		"backlog_add", "backlog_list", "backlog_refine", "backlog_promote",
+		"backlog_add", "backlog_list", "backlog_get", "backlog_refine", "backlog_promote",
 		"spec_new", "spec_status", "spec_advance", "spec_pushback", "spec_resolve",
 		"spec_doc_write", "spec_list",
 		// Lane tools (SPEC-035 + SPEC-036)
