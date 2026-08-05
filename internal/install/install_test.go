@@ -1581,16 +1581,43 @@ func TestRetireStaleHooks_PreservesForeignStopEntries(t *testing.T) {
 	})
 }
 
-// TestRetiredHooksDisjointFromHooks covers AC21 (SPEC-106): the invariant
-// that keeps the install from oscillating between runs. If a Command ever
-// appeared in BOTH the registered hooks (Hooks() or HooksWriter) and
-// RetiredHooks()'s purge list, the "Session hooks" step would write it and
-// the very next "Retire stale hooks" step would delete it again in the SAME
-// run — every install would then produce a different file than the last,
-// silently breaking D5's idempotency guarantee even though every other test
-// stays green. This test intentionally lands AFTER Step 3 (see plan.md D-C):
-// before RetiredHooks was populated for any real agent, the same assertion
-// would have passed VACUOUSLY — green without checking anything.
+// overlappingHookIdentities returns every (registered, retired) pair that
+// identifies the SAME hook by SPEC-107 identity (sameHookCommand) — the set
+// that must be empty for an install to never write and purge the same
+// registration in the same run (SPEC-106 AC21). The comparison is
+// deliberately command-level: it ignores which event either side belongs
+// to, which is STRICTER than removeHookCommands (which groups by event) —
+// and it must stay that way. Loosening it to be event-scoped would let a
+// command that is registered under one event and retired under another
+// (a plausible future mistake) slip through undetected, which is a worse
+// failure mode than an occasional false positive here.
+func overlappingHookIdentities(registered, retired []string) [][2]string {
+	var overlaps [][2]string
+	for _, r := range registered {
+		for _, x := range retired {
+			if sameHookCommand(r, x) {
+				overlaps = append(overlaps, [2]string{r, x})
+			}
+		}
+	}
+	return overlaps
+}
+
+// TestRetiredHooksDisjointFromHooks covers AC20 (SPEC-107, re-expressing the
+// AC21 SPEC-106 invariant by identity): the invariant that keeps the install
+// from oscillating between runs. Comparing by literal string alone missed a
+// failure mode the identity comparison now introduces: two commands that
+// differ only by path (e.g. "mneme hook session-start" registered vs.
+// "/Users/x/bin/mneme hook session-start" retired) are the SAME registration
+// under sameHookCommand, and would pass a plain string-equality disjointness
+// check while still oscillating the file between installs. The test also
+// widens its universe of "registered" commands to include
+// agent.DelegationHook() (not just Hooks()/HooksWriter) — precisely the
+// command (enforce-delegation) with a history of path variants — so it is no
+// longer possible for that command to fall outside the invariant entirely.
+// This test intentionally lands AFTER Step 3 (see plan.md D-C): before
+// RetiredHooks was populated for any real agent, the same assertion would
+// have passed VACUOUSLY — green without checking anything.
 func TestRetiredHooksDisjointFromHooks(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -1622,14 +1649,8 @@ func TestRetiredHooksDisjointFromHooks(t *testing.T) {
 				return // nothing to overlap
 			}
 
-			registeredSet := make(map[string]bool, len(registered))
-			for _, c := range registered {
-				registeredSet[c] = true
-			}
-			for _, c := range retired {
-				if registeredSet[c] {
-					t.Errorf("%s: command %q appears in BOTH the registered hooks and RetiredHooks() — the install would write and purge it in the same run", tc.name, c)
-				}
+			if overlaps := overlappingHookIdentities(registered, retired); len(overlaps) != 0 {
+				t.Errorf("%s: registered and retired hooks overlap by identity: %v — the install would write and purge the same registration in the same run", tc.name, overlaps)
 			}
 		})
 	}
@@ -1637,16 +1658,28 @@ func TestRetiredHooksDisjointFromHooks(t *testing.T) {
 
 // registeredHookCommands returns every hook Command an agent actively
 // registers today, regardless of which mechanism it uses: Hooks() directly
-// (Claude Code), or HooksWriter (Codex) — exercised against a scratch HOME
-// so no real file is ever touched, then introspected by walking the scratch
-// tree for any JSON file shaped like {"hooks": {...}} and collecting every
-// nested "command" value.
+// (Claude Code), HooksWriter (Codex), or DelegationHook() — precisely the
+// command (enforce-delegation) with a history of path variants, and one that
+// TestRetiredHooksDisjointFromHooks would otherwise never check at all —
+// exercised against a scratch HOME so no real file is ever touched, then
+// introspected by walking the scratch tree for any JSON file shaped like
+// {"hooks": {...}} and collecting every nested "command" value.
 func registeredHookCommands(t *testing.T, agent *Agent) ([]string, error) {
 	t.Helper()
 	var commands []string
 
 	if agent.Hooks != nil {
 		_, patches, err := agent.Hooks()
+		if err != nil {
+			return nil, err
+		}
+		for _, p := range patches {
+			commands = append(commands, p.Command)
+		}
+	}
+
+	if agent.DelegationHook != nil {
+		_, patches, err := agent.DelegationHook()
 		if err != nil {
 			return nil, err
 		}
