@@ -161,50 +161,83 @@ func (svc *SDDService) BacklogList(ctx context.Context, req model.BacklogListReq
 	return model.BacklogListResponse{Items: items, Total: total}, nil
 }
 
-// BacklogGet returns a single backlog item by ID with its FULL description —
-// no excerpt, no truncation. This is its reason to exist: before SPEC-109
-// there was no way over MCP to read a backlog item's description at all.
+// BacklogGet returns a single backlog item by ID, plus ALL of its
+// refinements — no excerpt, no limit (SPEC-110 D6/D7). Before SPEC-109 there
+// was no way over MCP to read a backlog item's description at all;
 // spec_status does not include the originating backlog item
 // (model.SpecStatusResponse is {Spec,History,Pushbacks}), and the specs
-// table has no description column (D15/CF1) — so BacklogList (461 KB in one
-// line before this spec) was the only path, and therefore useless to a
-// read-only subagent.
+// table has no description column (D15/CF1).
+//
+// The SPEC-109 windowing convention deliberately does NOT apply here: there,
+// capping backlog_list was legitimate because backlog_get was the escape
+// hatch, while for refinements there is none — no offset, no per-refinement
+// fetch — so a default of 20 would leave rows PERMANENTLY unreachable.
+// backlog_list's counter (D4) makes the size observable BEFORE the fetch
+// instead.
 //
 // Returns model.ErrBacklogNotFound (already mapped to CodeMemoryNotFound by
 // mapServiceError) when id does not exist. No new sentinel is introduced —
 // reusing the existing one beats duplicating the same semantics.
-func (svc *SDDService) BacklogGet(ctx context.Context, id string) (*model.BacklogItem, error) {
+func (svc *SDDService) BacklogGet(ctx context.Context, id string) (model.BacklogGetResponse, error) {
 	item, err := svc.store.GetBacklogItem(ctx, id)
 	if err != nil {
-		return nil, fmt.Errorf("service: backlog get: %w", err)
+		return model.BacklogGetResponse{}, fmt.Errorf("service: backlog get: %w", err)
 	}
-	return item, nil
+	refs, err := svc.store.ListBacklogRefinements(ctx, id)
+	if err != nil {
+		return model.BacklogGetResponse{}, fmt.Errorf("service: backlog get: refinements: %w", err)
+	}
+	return model.BacklogGetResponse{Item: item, Refinements: refs}, nil
 }
 
-// BacklogRefine updates a raw backlog item's description with refinement content
-// and changes its status to refined. Returns ErrBacklogNotFound when the item
-// does not exist. Returns an error when the item is not in raw status.
+// BacklogRefine appends a refinement to a backlog item (SPEC-110 D1/D2/D3).
+//
+// Refinement is ITERATIVE: raw refines and becomes refined; refined refines
+// and STAYS refined. Before this change the second call was rejected outright
+// ("item BL-136 is refined, must be raw"), which is how a real grill ledger
+// was lost on 2026-08-05 — the item could not hold the knowledge the SDD flow
+// had just produced.
+//
+// The refinement goes to its OWN ROW, never into Description: Description is
+// write-once (D15), written by BacklogAdd and by nothing else. Concatenating
+// N refinements into one column would create the 40 KB ledgers the item's
+// title wrongly claimed already existed.
+//
+// promoted and archived are refused with model.ErrBacklogNotRefinable (D3):
+// writing there would be writing where nobody reads.
 func (svc *SDDService) BacklogRefine(ctx context.Context, req model.BacklogRefineRequest) (*model.BacklogItem, error) {
+	// Empty body would burn a seq on a junk row (D16). Today it appends a
+	// bare "\n\n" to the description, so rejecting is strictly better.
+	if strings.TrimSpace(req.Refinement) == "" {
+		return nil, model.ErrContentRequired
+	}
+
 	item, err := svc.store.GetBacklogItem(ctx, req.ID)
 	if err != nil {
 		return nil, fmt.Errorf("service: backlog refine: get: %w", err)
 	}
-	if item.Status != model.BacklogStatusRaw {
-		return nil, fmt.Errorf("service: backlog refine: item %s is %s, must be raw: %w",
-			req.ID, item.Status, model.ErrInvalidBacklogStatus)
+
+	switch item.Status {
+	case model.BacklogStatusRaw, model.BacklogStatusRefined:
+	default:
+		return nil, fmt.Errorf("service: backlog refine: item %s is %s, must be raw or refined: %w",
+			req.ID, item.Status, model.ErrBacklogNotRefinable)
 	}
 
-	if item.Description != "" {
-		item.Description = item.Description + "\n\n" + req.Refinement
-	} else {
-		item.Description = req.Refinement
+	if _, err := svc.store.AppendBacklogRefinement(
+		ctx, req.ID, item.Status, model.BacklogStatusRefined, req.Refinement, req.By,
+	); err != nil {
+		return nil, fmt.Errorf("service: backlog refine: append: %w", err)
 	}
-	item.Status = model.BacklogStatusRefined
 
-	if err := svc.store.UpdateBacklogItem(ctx, item); err != nil {
-		return nil, fmt.Errorf("service: backlog refine: update: %w", err)
+	// Re-read instead of mutating the in-memory item (D17): neither
+	// RefinementCount nor UpdatedAt is ever synthesized here from what this
+	// method BELIEVES it wrote — the DB is the source of truth.
+	fresh, err := svc.store.GetBacklogItem(ctx, req.ID)
+	if err != nil {
+		return nil, fmt.Errorf("service: backlog refine: reload: %w", err)
 	}
-	return item, nil
+	return fresh, nil
 }
 
 // BacklogPromote converts a refined backlog item into a spec.

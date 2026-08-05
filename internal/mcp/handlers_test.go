@@ -317,8 +317,8 @@ func TestMapServiceError_InternalErrorIncludesMessage(t *testing.T) {
 	refineResp := process(t, srv, "tools/call", 2, ToolCallParams{
 		Name: "backlog_refine",
 		Arguments: mustMarshal(t, map[string]any{
-			"id":          addResult.Item.ID,
-			"description": "Refined description with enough detail.",
+			"id":         addResult.Item.ID,
+			"refinement": "Refined description with enough detail.",
 		}),
 	})
 	if refineResp.Error != nil {
@@ -2080,15 +2080,21 @@ func TestHandleBacklogGet_FullDescription(t *testing.T) {
 		t.Fatalf("backlog_get: %v", getResp.Error.Message)
 	}
 
+	// SPEC-110 D7: backlog_get now returns the {item, refinements} envelope
+	// instead of the raw item at the top level.
 	var raw map[string]any
 	unmarshalToolText(t, getResp, &raw)
-	if _, hasExcerpt := raw["excerpt"]; hasExcerpt {
+	item, ok := raw["item"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected top-level 'item' object in the envelope, got %#v", raw)
+	}
+	if _, hasExcerpt := item["excerpt"]; hasExcerpt {
 		t.Error("backlog_get must not emit 'excerpt' — it returns the full item")
 	}
-	if _, hasTruncated := raw["truncated"]; hasTruncated {
+	if _, hasTruncated := item["truncated"]; hasTruncated {
 		t.Error("backlog_get must not emit 'truncated' — it returns the full item")
 	}
-	gotDesc, _ := raw["description"].(string)
+	gotDesc, _ := item["description"].(string)
 	if gotDesc != longDesc {
 		t.Errorf("description = %d runes, want %d (full description)", len([]rune(gotDesc)), len([]rune(longDesc)))
 	}

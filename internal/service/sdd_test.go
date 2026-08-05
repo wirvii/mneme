@@ -118,8 +118,9 @@ func TestBacklogAdd_DefaultPriority(t *testing.T) {
 	}
 }
 
-// TestBacklogGet_Success is AC18: BacklogGet returns the full description,
-// with no excerpt or truncation — its entire reason to exist.
+// TestBacklogGet_Success is AC14/AC18: BacklogGet returns the item plus ALL
+// of its refinements, in full — no excerpt, no truncation, no limit (D6/D7).
+// The refinement body lives in its own row (D2/D15), never in Description.
 func TestBacklogGet_Success(t *testing.T) {
 	svc := newTestSDDService(t, "project")
 	ctx := context.Background()
@@ -141,9 +142,19 @@ func TestBacklogGet_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BacklogGet: %v", err)
 	}
-	if got.Description != longRefinement {
-		t.Errorf("Description was truncated or altered: got %d runes, want %d",
-			len([]rune(got.Description)), len([]rune(longRefinement)))
+	if got.Item.Description != "" {
+		t.Errorf("Description must stay write-once and untouched by refine, got %q", got.Item.Description)
+	}
+	if len(got.Refinements) != 1 {
+		t.Fatalf("expected 1 refinement, got %d", len(got.Refinements))
+	}
+	if got.Refinements[0].Body != longRefinement {
+		t.Errorf("refinement body was truncated or altered: got %d runes, want %d",
+			len([]rune(got.Refinements[0].Body)), len([]rune(longRefinement)))
+	}
+	if len(got.Refinements) != got.Item.RefinementCount {
+		t.Errorf("len(Refinements)=%d, Item.RefinementCount=%d — they must agree (D7)",
+			len(got.Refinements), got.Item.RefinementCount)
 	}
 }
 
@@ -217,12 +228,22 @@ func TestBacklogRefine_Success(t *testing.T) {
 	if refined.Status != model.BacklogStatusRefined {
 		t.Errorf("Status: got %q, want refined", refined.Status)
 	}
-	if refined.Description != "This feature does Y and Z" {
-		t.Errorf("Description: got %q", refined.Description)
+	// Description is write-once (D15): BacklogAdd created the item with no
+	// description, and BacklogRefine must never touch it. The refinement
+	// text lives in its own row instead.
+	if refined.Description != "" {
+		t.Errorf("Description: got %q, want unchanged empty string (D15)", refined.Description)
+	}
+	if refined.RefinementCount != 1 {
+		t.Errorf("RefinementCount: got %d, want 1", refined.RefinementCount)
 	}
 }
 
-func TestBacklogRefine_NotRaw(t *testing.T) {
+// TestBacklogRefine_SecondRefinementAppendsAndStaysRefined is SPEC-110's R6
+// replacement for the deleted TestBacklogRefine_NotRaw: refinement is
+// ITERATIVE (D3). The second refinement must succeed, the item stays
+// refined, RefinementCount reaches 2, and Description never changes.
+func TestBacklogRefine_SecondRefinementAppendsAndStaysRefined(t *testing.T) {
 	svc := newTestSDDService(t, "project")
 	ctx := context.Background()
 
@@ -230,14 +251,218 @@ func TestBacklogRefine_NotRaw(t *testing.T) {
 	if err != nil {
 		t.Fatalf("add: %v", err)
 	}
-	// Refine once.
-	if _, err := svc.BacklogRefine(ctx, model.BacklogRefineRequest{ID: item.ID, Refinement: "r"}); err != nil {
+
+	first, err := svc.BacklogRefine(ctx, model.BacklogRefineRequest{ID: item.ID, Refinement: "r1"})
+	if err != nil {
 		t.Fatalf("first refine: %v", err)
 	}
-	// Second refine should fail because item is now refined, not raw.
-	_, err = svc.BacklogRefine(ctx, model.BacklogRefineRequest{ID: item.ID, Refinement: "r2"})
-	if !errors.Is(err, model.ErrInvalidBacklogStatus) {
-		t.Errorf("expected ErrInvalidBacklogStatus, got %v", err)
+	if first.Status != model.BacklogStatusRefined {
+		t.Fatalf("after first refine: status = %q, want refined", first.Status)
+	}
+	if first.RefinementCount != 1 {
+		t.Fatalf("after first refine: RefinementCount = %d, want 1", first.RefinementCount)
+	}
+
+	second, err := svc.BacklogRefine(ctx, model.BacklogRefineRequest{ID: item.ID, Refinement: "r2"})
+	if err != nil {
+		t.Fatalf("second refine: %v", err)
+	}
+	if second.Status != model.BacklogStatusRefined {
+		t.Errorf("after second refine: status = %q, want refined (stays)", second.Status)
+	}
+	if second.RefinementCount != 2 {
+		t.Errorf("after second refine: RefinementCount = %d, want 2", second.RefinementCount)
+	}
+	if second.Description != "" {
+		t.Errorf("Description changed: got %q, want unchanged empty string (D15)", second.Description)
+	}
+}
+
+// TestBacklogRefine_RejectsPromotedAndArchived is SPEC-110's R6 replacement
+// for the deleted TestBacklogRefine_NotRaw: promoted and archived items
+// cannot be refined (D3), with a typed error, zero rows inserted, and status
+// and description left intact.
+func TestBacklogRefine_RejectsPromotedAndArchived(t *testing.T) {
+	tests := []struct {
+		name   string
+		status model.BacklogStatus
+	}{
+		{"promoted", model.BacklogStatusPromoted},
+		{"archived", model.BacklogStatusArchived},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := newTestSDDService(t, "project")
+			ctx := context.Background()
+
+			item, err := svc.BacklogAdd(ctx, model.BacklogAddRequest{
+				Title: "X", Description: "original", Lane: model.LaneStandard,
+			})
+			if err != nil {
+				t.Fatalf("add: %v", err)
+			}
+			if tt.status == model.BacklogStatusPromoted {
+				if _, err := svc.BacklogRefine(ctx, model.BacklogRefineRequest{ID: item.ID, Refinement: "r"}); err != nil {
+					t.Fatalf("refine before promote: %v", err)
+				}
+				if _, err := svc.BacklogPromote(ctx, item.ID); err != nil {
+					t.Fatalf("promote: %v", err)
+				}
+			} else {
+				if err := svc.BacklogArchive(ctx, item.ID, "no longer needed"); err != nil {
+					t.Fatalf("archive: %v", err)
+				}
+			}
+
+			before, err := svc.BacklogGet(ctx, item.ID)
+			if err != nil {
+				t.Fatalf("get before refine attempt: %v", err)
+			}
+
+			_, err = svc.BacklogRefine(ctx, model.BacklogRefineRequest{ID: item.ID, Refinement: "should not land"})
+			if !errors.Is(err, model.ErrBacklogNotRefinable) {
+				t.Fatalf("expected ErrBacklogNotRefinable, got %v", err)
+			}
+
+			after, err := svc.BacklogGet(ctx, item.ID)
+			if err != nil {
+				t.Fatalf("get after rejected refine: %v", err)
+			}
+			if after.Item.Status != before.Item.Status {
+				t.Errorf("status changed: got %q, want unchanged %q", after.Item.Status, before.Item.Status)
+			}
+			if after.Item.Description != before.Item.Description {
+				t.Errorf("description changed: got %q, want unchanged %q", after.Item.Description, before.Item.Description)
+			}
+			if len(after.Refinements) != len(before.Refinements) {
+				t.Errorf("refinement count changed: got %d rows, want unchanged %d", len(after.Refinements), len(before.Refinements))
+			}
+		})
+	}
+}
+
+// TestBacklogRefine_RejectsEmptyBody is AC16: an empty or whitespace-only
+// refinement body is rejected with model.ErrContentRequired, no row inserted.
+func TestBacklogRefine_RejectsEmptyBody(t *testing.T) {
+	for _, body := range []string{"", "   \n  \t"} {
+		body := body
+		t.Run(fmt.Sprintf("body=%q", body), func(t *testing.T) {
+			svc := newTestSDDService(t, "project")
+			ctx := context.Background()
+
+			item, err := svc.BacklogAdd(ctx, model.BacklogAddRequest{Title: "X", Lane: model.LaneStandard})
+			if err != nil {
+				t.Fatalf("add: %v", err)
+			}
+
+			_, err = svc.BacklogRefine(ctx, model.BacklogRefineRequest{ID: item.ID, Refinement: body})
+			if !errors.Is(err, model.ErrContentRequired) {
+				t.Fatalf("expected ErrContentRequired, got %v", err)
+			}
+
+			got, err := svc.BacklogGet(ctx, item.ID)
+			if err != nil {
+				t.Fatalf("BacklogGet: %v", err)
+			}
+			if len(got.Refinements) != 0 {
+				t.Errorf("expected 0 refinements after rejected empty body, got %d", len(got.Refinements))
+			}
+		})
+	}
+}
+
+// TestBacklogRefine_PersistsByAndAllowsEmpty is AC17: By is persisted
+// verbatim when provided, and omitting it (empty string) is a valid,
+// non-failing call — an honest "unattributed" (D5).
+func TestBacklogRefine_PersistsByAndAllowsEmpty(t *testing.T) {
+	svc := newTestSDDService(t, "project")
+	ctx := context.Background()
+
+	item, err := svc.BacklogAdd(ctx, model.BacklogAddRequest{Title: "X", Lane: model.LaneStandard})
+	if err != nil {
+		t.Fatalf("add: %v", err)
+	}
+
+	if _, err := svc.BacklogRefine(ctx, model.BacklogRefineRequest{ID: item.ID, Refinement: "r1", By: "architect"}); err != nil {
+		t.Fatalf("refine with by: %v", err)
+	}
+	if _, err := svc.BacklogRefine(ctx, model.BacklogRefineRequest{ID: item.ID, Refinement: "r2"}); err != nil {
+		t.Fatalf("refine without by: %v", err)
+	}
+
+	got, err := svc.BacklogGet(ctx, item.ID)
+	if err != nil {
+		t.Fatalf("BacklogGet: %v", err)
+	}
+	if len(got.Refinements) != 2 {
+		t.Fatalf("expected 2 refinements, got %d", len(got.Refinements))
+	}
+	if got.Refinements[0].By != "architect" {
+		t.Errorf("refinement[0].By = %q, want architect", got.Refinements[0].By)
+	}
+	if got.Refinements[1].By != "" {
+		t.Errorf("refinement[1].By = %q, want empty (unattributed)", got.Refinements[1].By)
+	}
+}
+
+// TestBacklogGet_ReturnsRefinementsForPromotedItem is AC18: reading is always
+// allowed, even for a promoted item — only writing (refining) is vedado (D3).
+func TestBacklogGet_ReturnsRefinementsForPromotedItem(t *testing.T) {
+	svc := newTestSDDService(t, "project")
+	ctx := context.Background()
+
+	item, err := svc.BacklogAdd(ctx, model.BacklogAddRequest{Title: "X", Lane: model.LaneStandard})
+	if err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if _, err := svc.BacklogRefine(ctx, model.BacklogRefineRequest{ID: item.ID, Refinement: "r1"}); err != nil {
+		t.Fatalf("refine: %v", err)
+	}
+	if _, err := svc.BacklogPromote(ctx, item.ID); err != nil {
+		t.Fatalf("promote: %v", err)
+	}
+
+	got, err := svc.BacklogGet(ctx, item.ID)
+	if err != nil {
+		t.Fatalf("BacklogGet on promoted item: %v", err)
+	}
+	if got.Item.Status != model.BacklogStatusPromoted {
+		t.Errorf("status = %q, want promoted", got.Item.Status)
+	}
+	if len(got.Refinements) != 1 {
+		t.Errorf("expected 1 refinement to remain readable, got %d", len(got.Refinements))
+	}
+}
+
+// TestBacklogRefine_ReturnsFreshItem is AC19: BacklogRefine's returned item
+// is re-read from the DB — its UpdatedAt is later than before the call, and
+// its RefinementCount matches an immediately subsequent BacklogGet (D17).
+func TestBacklogRefine_ReturnsFreshItem(t *testing.T) {
+	svc := newTestSDDService(t, "project")
+	ctx := context.Background()
+
+	item, err := svc.BacklogAdd(ctx, model.BacklogAddRequest{Title: "X", Lane: model.LaneStandard})
+	if err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	beforeUpdatedAt := item.UpdatedAt
+
+	refined, err := svc.BacklogRefine(ctx, model.BacklogRefineRequest{ID: item.ID, Refinement: "r1"})
+	if err != nil {
+		t.Fatalf("refine: %v", err)
+	}
+	if !refined.UpdatedAt.After(beforeUpdatedAt) {
+		t.Errorf("UpdatedAt = %v, want after %v", refined.UpdatedAt, beforeUpdatedAt)
+	}
+
+	got, err := svc.BacklogGet(ctx, item.ID)
+	if err != nil {
+		t.Fatalf("BacklogGet: %v", err)
+	}
+	if refined.RefinementCount != got.Item.RefinementCount {
+		t.Errorf("BacklogRefine RefinementCount=%d, immediately subsequent BacklogGet RefinementCount=%d — must match",
+			refined.RefinementCount, got.Item.RefinementCount)
 	}
 }
 
