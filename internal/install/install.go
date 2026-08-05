@@ -111,9 +111,14 @@ type Agent struct {
 	// hosts that keep running `mneme install` rather than starting fresh.
 	// nil means the agent has nothing to retire and the step is skipped
 	// entirely (e.g. today, no agent has a second generation of retirements
-	// yet). RetiredHooks and Hooks/HooksWriter MUST be disjoint by Command —
-	// see TestRetiredHooksDisjointFromHooks — or the same run would write and
-	// purge the same registration, oscillating the file between installs.
+	// yet). RetiredHooks and Hooks/HooksWriter MUST be disjoint BY HOOK
+	// IDENTITY (executable + subcommand, SPEC-107 sameHookCommand) — not by
+	// literal Command string — see TestRetiredHooksDisjointFromHooks. Two
+	// commands that differ only by path (e.g. "mneme hook session-start"
+	// registered vs. "/Users/x/bin/mneme hook session-start" retired) are the
+	// SAME registration under the identity comparison; if they ever appeared
+	// on opposite sides of this invariant, the same install run would write
+	// one and purge the other, oscillating the file between installs.
 	RetiredHooks func() (path string, patches []HookPatch, err error)
 
 	// AgentsDir, when non-empty, overrides the directory used by the "Agent models"
@@ -918,7 +923,9 @@ func WriteMCPConfig(agent *Agent, binaryPath string) error {
 //  2. Parse the existing JSON as map[string]any.
 //  3. Ensure "hooks" exists as a map.
 //  4. For each HookPatch, ensure the event key exists as a slice, then append
-//     the command entry only if an identical entry is not already present.
+//     the command entry only if an entry with the same hook IDENTITY —
+//     executable + subcommand, not necessarily the same literal string
+//     (SPEC-107, sameHookCommand) — is not already present.
 //  5. Write the merged result back.
 func PatchHooks(agent *Agent) error {
 	path, patches, err := agent.Hooks()
@@ -991,8 +998,15 @@ func PatchHooks(agent *Agent) error {
 }
 
 // hookCommandExists reports whether the event list (array of matcher-groups)
-// already contains a command entry with the given command string anywhere inside
-// a nested "hooks" array. Used by PatchHooks to prevent duplicate entries.
+// already contains a command entry that is the SAME hook registration as
+// command — by identity (executable + subcommand), not necessarily the same
+// literal string (SPEC-107, sameHookCommand). This is what lets a user's
+// customised registration (most commonly an absolute path, because their
+// shell doesn't resolve `mneme` on the PATH of the process that launches the
+// agent) be recognised as mneme's own instead of duplicated on the next
+// install. Used by PatchHooks/WriteCodexHooks to prevent duplicate entries
+// and by ProjectDelegationHookStatus/removeHookCommands to detect a
+// registration regardless of how it was customised.
 func hookCommandExists(eventList []any, command string) bool {
 	for _, item := range eventList {
 		group, ok := item.(map[string]any)
@@ -1012,12 +1026,54 @@ func hookCommandExists(eventList []any, command string) bool {
 			if !ok {
 				continue
 			}
-			if cmd, ok := entry["command"].(string); ok && cmd == command {
+			if cmd, ok := entry["command"].(string); ok && sameHookCommand(cmd, command) {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+// matchedHookCommands returns every command string ACTUALLY present in
+// eventList that identifies the same hook registration as command (SPEC-107,
+// sameHookCommand), in order of appearance and without duplicates. Unlike
+// hookCommandExists, which only reports presence, this is what lets a
+// caller report the REAL string it is about to purge — which may carry a
+// user's customisation (e.g. an absolute path) rather than the canonical
+// command mneme itself would write — instead of silently claiming to have
+// removed the canonical form when it removed something else (DD14). It
+// shares hookCommandExists's defensive traversal (type-asserting each level
+// with `continue` on mismatch, never panicking on malformed JSON).
+func matchedHookCommands(eventList []any, command string) []string {
+	seen := make(map[string]bool)
+	var matched []string
+	for _, item := range eventList {
+		group, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		innerRaw, ok := group["hooks"]
+		if !ok {
+			continue
+		}
+		inner, ok := innerRaw.([]any)
+		if !ok {
+			continue
+		}
+		for _, h := range inner {
+			entry, ok := h.(map[string]any)
+			if !ok {
+				continue
+			}
+			cmd, ok := entry["command"].(string)
+			if !ok || !sameHookCommand(cmd, command) || seen[cmd] {
+				continue
+			}
+			seen[cmd] = true
+			matched = append(matched, cmd)
+		}
+	}
+	return matched
 }
 
 // InjectManual injects (or updates) the operating manual managed block into
@@ -1137,6 +1193,20 @@ func PatchDelegationHook(agent *Agent) error {
 // the migration (R6: the suffix is specific enough to mneme's own asset name
 // that a false-positive match against an unrelated user hook is considered
 // extremely unlikely).
+//
+// This predicate does NOT converge with sameHookCommand/
+// parseMnemeHookSubcommand (SPEC-107 DD12), even though both exist to widen
+// what mneme recognises as "its own" beyond a literal string: the legacy
+// command names a foreign asset (a shell script, not the mneme executable)
+// with no subcommand to extract, so there is nothing for the SPEC-107 parser
+// to parse — parseMnemeHookSubcommand correctly returns !ok for it. Its
+// consumer, stripLegacyDelegationHookEntries, is also a one-way migration
+// path with a bounded lifetime (hosts installed before SPEC-069); the SPEC-107
+// identity is permanent. Folding a temporary, suffix-based special case into
+// the permanent identity predicate would make the permanent one harder to
+// reason about for no benefit: a host can carry BOTH a legacy .sh entry and a
+// customised "mneme hook enforce-delegation" registration at once, and each
+// predicate independently handles its own half without conflict.
 func isLegacyDelegationScriptCommand(command string) bool {
 	return strings.HasSuffix(command, "enforce_delegation.sh")
 }

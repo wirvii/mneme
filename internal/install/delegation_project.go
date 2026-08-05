@@ -88,7 +88,11 @@ func DisableProjectDelegationHook(repoRoot string) (string, error) {
 
 // ProjectDelegationHookStatus reports whether repoRoot's
 // .claude/settings.json currently registers BOTH delegation-enforcement
-// PreToolUse commands.
+// PreToolUse commands. "Registers" is by hook identity (SPEC-107,
+// sameHookCommand), so a registration customised to an absolute path (or
+// with extra arguments) still reports enabled=true — the status only goes
+// stale for the literal canonical string, which the identity check no
+// longer requires.
 func ProjectDelegationHookStatus(repoRoot string) (enabled bool, settingsPath string, err error) {
 	patches, perr := ProjectDelegationHookPatches()
 	if perr != nil {
@@ -134,7 +138,12 @@ func ProjectDelegationHookStatus(repoRoot string) (enabled bool, settingsPath st
 // adapt for), so this single implementation serves both agents unmodified.
 // A missing file, or one with no matching command registered, is a no-op
 // success: removed is nil and no write is performed — that no-write is what
-// keeps a repeated purge byte-identical (SPEC-106 AC10b).
+// keeps a repeated purge byte-identical (SPEC-106 AC10b). Matching is by hook
+// identity (SPEC-107, sameHookCommand): removed reports the REAL command
+// string(s) found in the file — which may be a customised path, not
+// necessarily the canonical patches.Command — via matchedHookCommands
+// (DD14), so a caller's log output never falsely claims to have purged the
+// canonical form when it purged a user's customisation instead.
 func removeHookCommands(path string, patches []HookPatch) (removed []string, err error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -185,9 +194,7 @@ func removeHookCommands(path string, patches []HookPatch) (removed []string, err
 
 		var removedHere []string
 		for _, cmd := range commands {
-			if hookCommandExists(eventList, cmd) {
-				removedHere = append(removedHere, cmd)
-			}
+			removedHere = append(removedHere, matchedHookCommands(eventList, cmd)...)
 		}
 		if len(removedHere) == 0 {
 			continue
@@ -218,16 +225,24 @@ func removeHookCommands(path string, patches []HookPatch) (removed []string, err
 }
 
 // filterOutHookCommands returns eventList (an array of matcher-groups) with
-// every command entry whose "command" field is in commands removed.
-// Matcher-groups whose inner "hooks" array becomes empty are dropped
-// entirely; every other matcher-group (and every entry within it that
-// doesn't match) is preserved unchanged.
+// every command entry that is the SAME hook registration (SPEC-107,
+// sameHookCommand — executable + subcommand identity, not necessarily the
+// same literal string) as one of commands removed. Matcher-groups whose
+// inner "hooks" array becomes empty are dropped entirely; every other
+// matcher-group (and every entry within it that doesn't match) is preserved
+// unchanged.
+//
+// This MUST share the exact same predicate hookCommandExists uses to detect
+// what removeHookCommands is about to purge (SPEC-107 DD6): before this
+// change, detection and filtering held two independent notions of "same
+// command" (hookCommandExists's identity-aware comparison vs. this
+// function's literal map[string]bool set). Had only detection been widened,
+// removeHookCommands would have reported a customised entry as removed
+// (`removed` non-empty), rewritten the file, and left that same entry in
+// place — a worse defect than the literal-equality status quo: the purge
+// step would misreport success and never converge to a stable state. AC18
+// verifies the two stay in agreement.
 func filterOutHookCommands(eventList []any, commands []string) []any {
-	toRemove := make(map[string]bool, len(commands))
-	for _, c := range commands {
-		toRemove[c] = true
-	}
-
 	filtered := make([]any, 0, len(eventList))
 	for _, item := range eventList {
 		group, ok := item.(map[string]any)
@@ -254,7 +269,7 @@ func filterOutHookCommands(eventList []any, commands []string) []any {
 				continue
 			}
 			cmd, _ := entry["command"].(string)
-			if toRemove[cmd] {
+			if matchesAny(cmd, commands) {
 				continue
 			}
 			keptInner = append(keptInner, h)
@@ -267,4 +282,15 @@ func filterOutHookCommands(eventList []any, commands []string) []any {
 		filtered = append(filtered, group)
 	}
 	return filtered
+}
+
+// matchesAny reports whether cmd is the same hook registration (SPEC-107,
+// sameHookCommand) as any entry in candidates.
+func matchesAny(cmd string, candidates []string) bool {
+	for _, c := range candidates {
+		if sameHookCommand(cmd, c) {
+			return true
+		}
+	}
+	return false
 }

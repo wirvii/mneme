@@ -151,6 +151,90 @@ func TestWriteCodexHooks_NoDuplicateEntries(t *testing.T) {
 	}
 }
 
+// TestWriteCodexHooks_CustomisedPathNotDuplicated is the regression test for
+// the defect confirmed live 2026-08-04 (SPEC-107, BL-135): a hooks.json whose
+// SessionStart entry was hand-edited to an absolute path used to be
+// unrecognised by WriteCodexHooks, so re-running `mneme install codex` added
+// a SECOND SessionStart entry — double context injection every session.
+// Under the identity comparison (sameHookCommand), the customised entry is
+// recognised as the same registration, so WriteCodexHooks must add nothing
+// and the file must come out byte-identical.
+func TestWriteCodexHooks_CustomisedPathNotDuplicated(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hooks.json")
+
+	const customised = "/Users/x/.local/bin/mneme hook session-start"
+
+	// Seed the file via the exact same MarshalIndent format WriteCodexHooks
+	// itself produces, so a byte-identical comparison after WriteCodexHooks
+	// proves "no rewrite happened" rather than merely "the format changed".
+	seed := map[string]any{
+		"hooks": map[string]any{
+			"SessionStart": []any{
+				map[string]any{
+					"hooks": []any{
+						map[string]any{"type": "command", "command": customised},
+					},
+				},
+			},
+		},
+	}
+	data, err := json.MarshalIndent(seed, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal seed: %v", err)
+	}
+	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
+		t.Fatalf("write initial hooks.json: %v", err)
+	}
+
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read before: %v", err)
+	}
+
+	if err := WriteCodexHooks(path); err != nil {
+		t.Fatalf("WriteCodexHooks: %v", err)
+	}
+
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read after: %v", err)
+	}
+
+	hooks := parseCodexHooks(t, path)
+	list, ok := hooks["SessionStart"].([]any)
+	if !ok {
+		t.Fatal("SessionStart event missing")
+	}
+	count := 0
+	for _, item := range list {
+		group, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		inner, ok := group["hooks"].([]any)
+		if !ok {
+			continue
+		}
+		for _, h := range inner {
+			entry, ok := h.(map[string]any)
+			if !ok {
+				continue
+			}
+			if cmd, _ := entry["command"].(string); cmd == customised {
+				count++
+			}
+		}
+	}
+	if count != 1 {
+		t.Errorf("SessionStart has %d entries for the customised command, want exactly 1 (no duplicate)", count)
+	}
+
+	if string(before) != string(after) {
+		t.Errorf("WriteCodexHooks rewrote the file despite no change needed:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
 // TestWriteCodexHooks_PreservesOtherHooks verifies that pre-existing hooks for
 // other events are not removed when WriteCodexHooks merges its entries, and
 // that WriteCodexHooks does not itself (re-)add the retired "Stop" event

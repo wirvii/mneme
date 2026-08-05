@@ -434,6 +434,119 @@ func TestRemoveHookCommands_CodexHooksJSONRoot(t *testing.T) {
 	assertHookEntry(t, hooks, "SessionStart", "mneme hook session-start")
 }
 
+// TestRemoveHookCommands_PurgesCustomisedPathAndReportsActual covers AC16
+// (SPEC-107): a Stop entry registered with an absolute path is purged when
+// the caller asks to remove the canonical "mneme hook session-end" command,
+// and removed reports the REAL string that was actually deleted — the
+// customised one — not the canonical one that was requested (DD14). A
+// second call is then a true no-op: empty removed and a byte-identical file
+// (preserving SPEC-106 AC10b).
+func TestRemoveHookCommands_PurgesCustomisedPathAndReportsActual(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+
+	const customised = "/Users/x/bin/mneme hook session-end"
+
+	existing := `{
+  "hooks": {
+    "Stop": [
+      {"hooks": [{"type": "command", "command": "` + customised + `"}]}
+    ]
+  }
+}`
+	if err := os.WriteFile(path, []byte(existing), 0o644); err != nil {
+		t.Fatalf("write initial settings: %v", err)
+	}
+
+	patches := []HookPatch{{Event: "Stop", Command: "mneme hook session-end"}}
+	removed, err := removeHookCommands(path, patches)
+	if err != nil {
+		t.Fatalf("removeHookCommands: %v", err)
+	}
+	if len(removed) != 1 || removed[0] != customised {
+		t.Errorf("removed = %v, want [%q] (the actual customised string, not the canonical one)", removed, customised)
+	}
+
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read after first purge: %v", err)
+	}
+
+	// A second call finds nothing left to remove: empty removed, and the
+	// file must not be rewritten at all.
+	removed, err = removeHookCommands(path, patches)
+	if err != nil {
+		t.Fatalf("second removeHookCommands: %v", err)
+	}
+	if len(removed) != 0 {
+		t.Errorf("second call: removed = %v, want empty", removed)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read after second purge: %v", err)
+	}
+	if string(before) != string(after) {
+		t.Errorf("second removeHookCommands rewrote the file despite nothing left to remove:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
+// TestRemoveHookCommands_DetectAndFilterAgree covers AC18 (SPEC-107 DD6):
+// after removeHookCommands reports a non-empty removed slice, re-reading the
+// file must show ZERO entries that still match that identity. This is what
+// makes the "detect but don't actually filter" defect impossible — the one
+// DD6 warns a commit that widens hookCommandExists without widening
+// filterOutHookCommands in lockstep would introduce.
+func TestRemoveHookCommands_DetectAndFilterAgree(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+
+	const customised = "/opt/bin/mneme.exe hook session-end"
+
+	existing := `{
+  "hooks": {
+    "Stop": [
+      {"hooks": [{"type": "command", "command": "` + customised + `"}]}
+    ]
+  }
+}`
+	if err := os.WriteFile(path, []byte(existing), 0o644); err != nil {
+		t.Fatalf("write initial settings: %v", err)
+	}
+
+	patches := []HookPatch{{Event: "Stop", Command: "mneme hook session-end"}}
+	removed, err := removeHookCommands(path, patches)
+	if err != nil {
+		t.Fatalf("removeHookCommands: %v", err)
+	}
+	if len(removed) == 0 {
+		t.Fatal("precondition failed: removeHookCommands reported nothing removed")
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read after purge: %v", err)
+	}
+	var settings map[string]any
+	if err := json.Unmarshal(data, &settings); err != nil {
+		t.Fatalf("unmarshal settings: %v", err)
+	}
+	hooksRaw, hasHooks := settings["hooks"]
+	if !hasHooks {
+		return // Stop event was pruned entirely: zero matching entries, trivially satisfied.
+	}
+	hooks, ok := hooksRaw.(map[string]any)
+	if !ok {
+		t.Fatalf("hooks is not an object: %#v", hooksRaw)
+	}
+	stopList, ok := hooks["Stop"].([]any)
+	if !ok {
+		return // no Stop event left at all
+	}
+	if got := matchedHookCommands(stopList, "mneme hook session-end"); len(got) != 0 {
+		t.Errorf("after a purge that reported removed=%v, the file still contains a matching entry: %v", removed, got)
+	}
+}
+
 // TestProjectDelegationHookPatches_MatchGlobal verifies the project patches
 // carry the exact same commands as the global ClaudeCode().DelegationHook
 // registers, so opting in at project scope gives byte-identical enforcement
