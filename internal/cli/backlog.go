@@ -118,25 +118,29 @@ Filter by --status to narrow results. Without a filter all statuses are shown.`,
 			}
 			defer cleanup()
 
+			// Limit stays zero: the CLI's contract is full fidelity, never a
+			// windowed view (SPEC-109 D9) — printJSON below still receives the
+			// bare item slice, not the {items,total} envelope, so --json output
+			// is byte-identical to before this spec.
 			req := model.BacklogListRequest{
 				Status: model.BacklogStatus(flagStatus),
 			}
 
-			items, err := svc.BacklogList(cmd.Context(), req)
+			resp, err := svc.BacklogList(cmd.Context(), req)
 			if err != nil {
 				return err
 			}
 
 			if flagJSON {
-				return printJSON(os.Stdout, items)
+				return printJSON(os.Stdout, resp.Items)
 			}
 
-			if len(items) == 0 {
+			if len(resp.Items) == 0 {
 				fmt.Fprintln(os.Stdout, "No backlog items found.")
 				return nil
 			}
 
-			for _, item := range items {
+			for _, item := range resp.Items {
 				specRef := ""
 				if item.SpecID != "" {
 					specRef = " → " + item.SpecID

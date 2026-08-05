@@ -861,12 +861,15 @@ func (h *handlers) handleBacklogList(ctx context.Context, raw json.RawMessage) (
 		}
 	}
 
-	items, err := h.sdd.BacklogList(ctx, req)
+	resp, err := h.sdd.BacklogList(ctx, req)
 	if err != nil {
 		return nil, h.mapServiceError("backlog_list", err)
 	}
 
-	return resultFromAny(items)
+	// TODO(SPEC-109 step 7): apply the default limit and project through the
+	// excerpt view instead of returning resp.Items bare. This adaptation only
+	// keeps the package compiling after the service signature change.
+	return resultFromAny(resp.Items)
 }
 
 // handleBacklogRefine processes a backlog_refine tool call.
@@ -1101,12 +1104,15 @@ func (h *handlers) handleSpecList(ctx context.Context, raw json.RawMessage) (*To
 		}
 	}
 
-	specs, err := h.sdd.SpecList(ctx, req)
+	resp, err := h.sdd.SpecList(ctx, req)
 	if err != nil {
 		return nil, h.mapServiceError("spec_list", err)
 	}
 
-	return resultFromAny(specs)
+	// TODO(SPEC-109 step 7): return {specs,total} instead of the bare slice.
+	// This adaptation only keeps the package compiling after the service
+	// signature change.
+	return resultFromAny(resp.Specs)
 }
 
 // handleSpecQuick processes a spec_quick tool call.

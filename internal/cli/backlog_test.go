@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"os"
 	"strings"
@@ -101,5 +102,95 @@ func TestBacklogAdd_NoAdvisoryOnTrivialLane(t *testing.T) {
 	}
 	if strings.Contains(stdout, "grill-me") {
 		t.Errorf("stdout unexpectedly contains refinement advisory for a trivial-lane item: %s", stdout)
+	}
+}
+
+// TestBacklogList_JSONIsBareArrayWithFullDescription is AC15: `mneme backlog
+// list --json` must stay a bare JSON array (never the {items,total} MCP
+// envelope) and must carry the FULL description — never the excerpt+truncated
+// pair the MCP view uses (D9: the CLI is the only path left to full
+// fidelity, so the service layer never truncates and printJSON is fed the
+// bare item slice, not the envelope).
+func TestBacklogList_JSONIsBareArrayWithFullDescription(t *testing.T) {
+	dataDir := t.TempDir()
+	project := "test-backlog-list-json"
+
+	longDescription := strings.Repeat("grill ledger content ", 500) // > 200 runes
+	if _, stderr, err := runBacklogCmd(t, dataDir, project,
+		"backlog", "add", "Ledger item", "--lane", "standard", "--description", longDescription); err != nil {
+		t.Fatalf("backlog add: %v (stderr=%s)", err, stderr)
+	}
+
+	stdout, stderr, err := runBacklogCmd(t, dataDir, project, "backlog", "list", "--json")
+	if err != nil {
+		t.Fatalf("backlog list --json: %v (stderr=%s)", err, stderr)
+	}
+
+	var items []map[string]any
+	if err := json.Unmarshal([]byte(stdout), &items); err != nil {
+		t.Fatalf("backlog list --json did not decode as a bare array: %v\nstdout=%s", err, stdout)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(items))
+	}
+
+	item := items[0]
+	if _, hasExcerpt := item["excerpt"]; hasExcerpt {
+		t.Error("CLI --json output must not have an 'excerpt' field — that is the MCP view's field")
+	}
+	if _, hasTruncated := item["truncated"]; hasTruncated {
+		t.Error("CLI --json output must not have a 'truncated' field — that is the MCP view's field")
+	}
+	gotDesc, _ := item["description"].(string)
+	if gotDesc != longDescription {
+		t.Errorf("description was not returned in full: got %d runes, want %d",
+			len([]rune(gotDesc)), len([]rune(longDescription)))
+	}
+}
+
+// TestBacklogList_TableOutputFormatUnchanged is AC15's plain-text half: the
+// table format (`  %-8s  [%-8s]  %-40s  %s%s\n`) is unchanged, and rows are
+// ordered by priority RANK (critical, high, medium, low — SPEC-109 D7/D20),
+// not the priority column's lexicographic order.
+func TestBacklogList_TableOutputFormatUnchanged(t *testing.T) {
+	dataDir := t.TempDir()
+	project := "test-backlog-list-table"
+
+	for _, tc := range []struct {
+		title    string
+		priority string
+	}{
+		{"Low item", "low"},
+		{"Medium item", "medium"},
+		{"Critical item", "critical"},
+		{"High item", "high"},
+	} {
+		if _, stderr, err := runBacklogCmd(t, dataDir, project,
+			"backlog", "add", tc.title, "--lane", "standard", "--priority", tc.priority); err != nil {
+			t.Fatalf("backlog add %q: %v (stderr=%s)", tc.title, err, stderr)
+		}
+	}
+
+	stdout, stderr, err := runBacklogCmd(t, dataDir, project, "backlog", "list")
+	if err != nil {
+		t.Fatalf("backlog list: %v (stderr=%s)", err, stderr)
+	}
+
+	lines := strings.Split(strings.TrimRight(stdout, "\n"), "\n")
+	if len(lines) != 4 {
+		t.Fatalf("expected 4 lines, got %d: %q", len(lines), stdout)
+	}
+
+	wantTitles := []string{"Critical item", "High item", "Medium item", "Low item"}
+	for i, want := range wantTitles {
+		if !strings.Contains(lines[i], want) {
+			t.Errorf("line %d = %q, want it to contain %q (priority-rank order)", i, lines[i], want)
+		}
+	}
+	// The table format itself (column widths, brackets around status) is
+	// untouched by this spec — only the ordering above is new behaviour.
+	// Spot-check its shape without hardcoding exact padding.
+	if !strings.Contains(lines[0], "[raw") || !strings.Contains(lines[0], "]") {
+		t.Errorf("expected bracketed status column, got: %q", lines[0])
 	}
 }

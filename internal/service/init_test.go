@@ -261,12 +261,12 @@ func TestPlan_NoSideEffects(t *testing.T) {
 	}
 
 	// DB should have no backlog items (Plan never writes).
-	items, err := svc.sdd.BacklogList(ctx, model.BacklogListRequest{})
+	resp, err := svc.sdd.BacklogList(ctx, model.BacklogListRequest{})
 	if err != nil {
 		t.Fatalf("BacklogList: %v", err)
 	}
-	if len(items) != 0 {
-		t.Errorf("Plan created %d backlog items, want 0", len(items))
+	if len(resp.Items) != 0 {
+		t.Errorf("Plan created %d backlog items, want 0", len(resp.Items))
 	}
 
 	_ = report
@@ -491,15 +491,15 @@ func TestFindArtifact_MultipleBacklogItems(t *testing.T) {
 	// Verify the backlog item is the open task, not the done task.
 	// This is the core regression: before the fix, the done-task item received
 	// data from the open-task item (the first one with the same SourcePath).
-	items, err := svc.sdd.BacklogList(ctx, model.BacklogListRequest{})
+	resp, err := svc.sdd.BacklogList(ctx, model.BacklogListRequest{})
 	if err != nil {
 		t.Fatalf("BacklogList: %v", err)
 	}
-	if len(items) != 1 {
-		t.Fatalf("expected 1 backlog item in DB, got %d", len(items))
+	if len(resp.Items) != 1 {
+		t.Fatalf("expected 1 backlog item in DB, got %d", len(resp.Items))
 	}
-	if items[0].Title != "only open task" {
-		t.Errorf("backlog item title: got %q, want %q — findArtifact aliased to wrong item", items[0].Title, "only open task")
+	if resp.Items[0].Title != "only open task" {
+		t.Errorf("backlog item title: got %q, want %q — findArtifact aliased to wrong item", resp.Items[0].Title, "only open task")
 	}
 }
 

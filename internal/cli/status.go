@@ -113,21 +113,25 @@ func renderFullStatus(ctx context.Context, svc *service.MemoryService, sddSvc *s
 		globalCount = n
 	}
 
-	// Fetch backlog items (exclude archived).
-	backlogItems, _ := sddSvc.BacklogList(ctx, model.BacklogListRequest{
+	// Fetch backlog items (exclude archived). Limit stays zero (no window,
+	// SPEC-109 D9) — the dashboard wants the same full-fidelity list as
+	// before. Discarding the error is safe because BacklogListResponse is
+	// returned BY VALUE (D10): its zero value has a nil Items slice, and
+	// ranging over nil is zero iterations, not a nil-deref.
+	blResp, _ := sddSvc.BacklogList(ctx, model.BacklogListRequest{
 		Project: slug,
 	})
 	var activeBacklog []*model.BacklogItem
-	for _, item := range backlogItems {
+	for _, item := range blResp.Items {
 		if item.Status != model.BacklogStatusArchived {
 			activeBacklog = append(activeBacklog, item)
 		}
 	}
 
 	// Fetch all specs and split into in-progress vs done.
-	allSpecs, _ := sddSvc.SpecList(ctx, model.SpecListRequest{Project: slug})
+	spResp, _ := sddSvc.SpecList(ctx, model.SpecListRequest{Project: slug})
 	var inProgressSpecs []*model.Spec
-	for _, s := range allSpecs {
+	for _, s := range spResp.Specs {
 		if !s.Status.IsFinal() && s.Status != model.SpecStatusDraft {
 			inProgressSpecs = append(inProgressSpecs, s)
 		}

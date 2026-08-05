@@ -128,24 +128,57 @@ func (svc *SDDService) BacklogAdd(ctx context.Context, req model.BacklogAddReque
 	return item, nil
 }
 
-// BacklogList returns backlog items matching the filter.
-// When req.Project is empty it defaults to the service project slug.
-func (svc *SDDService) BacklogList(ctx context.Context, req model.BacklogListRequest) ([]*model.BacklogItem, error) {
+// BacklogList returns the backlog items matching the filter, plus the REAL
+// number of matches.
+//
+// req.Limit <= 0 does not window the result (the CLI's path). A
+// req.Limit > model.ListMaxLimit is silently capped to ListMaxLimit (D5):
+// capping still satisfies the request ("give me at most N") and loses no
+// information because Total reports how many exist in total. Contrast with
+// mem_explore's depth, which is rejected instead: depth is a SHAPE parameter
+// of the traversal, so changing it silently would return a semantically
+// different graph without the caller being able to notice.
+//
+// NEVER truncates text: full fidelity is what `mneme backlog list --json`
+// consumes. The excerpt is MCP frontend policy (D9), not applied here.
+func (svc *SDDService) BacklogList(ctx context.Context, req model.BacklogListRequest) (model.BacklogListResponse, error) {
 	if req.Project == "" {
 		req.Project = svc.project
 	}
 	if req.Status != "" && !req.Status.Valid() {
-		return nil, model.ErrInvalidBacklogStatus
+		return model.BacklogListResponse{}, model.ErrInvalidBacklogStatus
 	}
 
-	// TODO(SPEC-109 step 6): apply model.ListMaxLimit capping and return the
-	// {Items,Total} envelope. This call passes limit=0 (no window) purely to
-	// keep the package compiling after the store signature change in step 5.
-	items, _, err := svc.store.ListBacklogItems(ctx, req.Project, req.Status, 0)
-	if err != nil {
-		return nil, fmt.Errorf("service: backlog list: %w", err)
+	limit := req.Limit
+	if limit > model.ListMaxLimit {
+		limit = model.ListMaxLimit
 	}
-	return items, nil
+
+	items, total, err := svc.store.ListBacklogItems(ctx, req.Project, req.Status, limit)
+	if err != nil {
+		return model.BacklogListResponse{}, fmt.Errorf("service: backlog list: %w", err)
+	}
+	return model.BacklogListResponse{Items: items, Total: total}, nil
+}
+
+// BacklogGet returns a single backlog item by ID with its FULL description —
+// no excerpt, no truncation. This is its reason to exist: before SPEC-109
+// there was no way over MCP to read a backlog item's description at all.
+// spec_status does not include the originating backlog item
+// (model.SpecStatusResponse is {Spec,History,Pushbacks}), and the specs
+// table has no description column (D15/CF1) — so BacklogList (461 KB in one
+// line before this spec) was the only path, and therefore useless to a
+// read-only subagent.
+//
+// Returns model.ErrBacklogNotFound (already mapped to CodeMemoryNotFound by
+// mapServiceError) when id does not exist. No new sentinel is introduced —
+// reusing the existing one beats duplicating the same semantics.
+func (svc *SDDService) BacklogGet(ctx context.Context, id string) (*model.BacklogItem, error) {
+	item, err := svc.store.GetBacklogItem(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("service: backlog get: %w", err)
+	}
+	return item, nil
 }
 
 // BacklogRefine updates a raw backlog item's description with refinement content
@@ -701,24 +734,29 @@ func (svc *SDDService) RecentlyCompletedSpecs(ctx context.Context, project strin
 	return specs, nil
 }
 
-// SpecList returns specs matching the filter.
+// SpecList returns the specs matching the filter, plus the REAL number of
+// matches. Same two-mode Limit semantics as BacklogList (D5/D9): <= 0 means
+// no window, > model.ListMaxLimit is silently capped. No excerpt field:
+// model.Spec has no Description (D15/CF1).
 // When req.Project is empty it defaults to the service project slug.
-func (svc *SDDService) SpecList(ctx context.Context, req model.SpecListRequest) ([]*model.Spec, error) {
+func (svc *SDDService) SpecList(ctx context.Context, req model.SpecListRequest) (model.SpecListResponse, error) {
 	if req.Project == "" {
 		req.Project = svc.project
 	}
 	if req.Status != "" && !req.Status.Valid() {
-		return nil, model.ErrInvalidSpecStatus
+		return model.SpecListResponse{}, model.ErrInvalidSpecStatus
 	}
 
-	// TODO(SPEC-109 step 6): apply model.ListMaxLimit capping and return the
-	// {Specs,Total} envelope. This call passes limit=0 (no window) purely to
-	// keep the package compiling after the store signature change in step 5.
-	specs, _, err := svc.store.ListSpecs(ctx, req.Project, req.Status, 0)
-	if err != nil {
-		return nil, fmt.Errorf("service: spec list: %w", err)
+	limit := req.Limit
+	if limit > model.ListMaxLimit {
+		limit = model.ListMaxLimit
 	}
-	return specs, nil
+
+	specs, total, err := svc.store.ListSpecs(ctx, req.Project, req.Status, limit)
+	if err != nil {
+		return model.SpecListResponse{}, fmt.Errorf("service: spec list: %w", err)
+	}
+	return model.SpecListResponse{Specs: specs, Total: total}, nil
 }
 
 // SpecHistory returns the full state transition history for a spec.

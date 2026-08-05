@@ -158,25 +158,27 @@ Filter by --status to narrow results. Without a filter all specs are shown.`,
 			}
 			defer cleanup()
 
+			// Limit stays zero (no window, SPEC-109 D9); printJSON receives the
+			// bare spec slice so --json output stays byte-identical.
 			req := model.SpecListRequest{
 				Status: model.SpecStatus(flagStatus),
 			}
 
-			specs, err := svc.SpecList(cmd.Context(), req)
+			resp, err := svc.SpecList(cmd.Context(), req)
 			if err != nil {
 				return err
 			}
 
 			if flagJSON {
-				return printJSON(os.Stdout, specs)
+				return printJSON(os.Stdout, resp.Specs)
 			}
 
-			if len(specs) == 0 {
+			if len(resp.Specs) == 0 {
 				fmt.Fprintln(os.Stdout, "No specs found.")
 				return nil
 			}
 
-			for _, s := range specs {
+			for _, s := range resp.Specs {
 				fmt.Fprintf(os.Stdout, "  %-10s  [%-13s]  %s\n",
 					s.ID, s.Status, s.Title)
 			}

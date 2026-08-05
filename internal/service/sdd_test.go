@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -117,6 +118,47 @@ func TestBacklogAdd_DefaultPriority(t *testing.T) {
 	}
 }
 
+// TestBacklogGet_Success is AC18: BacklogGet returns the full description,
+// with no excerpt or truncation — its entire reason to exist.
+func TestBacklogGet_Success(t *testing.T) {
+	svc := newTestSDDService(t, "project")
+	ctx := context.Background()
+
+	item, err := svc.BacklogAdd(ctx, model.BacklogAddRequest{
+		Title: "Feature X", Lane: model.LaneStandard,
+	})
+	if err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	longRefinement := strings.Repeat("grill ledger content ", 500) // well over 200 runes
+	if _, err := svc.BacklogRefine(ctx, model.BacklogRefineRequest{
+		ID: item.ID, Refinement: longRefinement,
+	}); err != nil {
+		t.Fatalf("refine: %v", err)
+	}
+
+	got, err := svc.BacklogGet(ctx, item.ID)
+	if err != nil {
+		t.Fatalf("BacklogGet: %v", err)
+	}
+	if got.Description != longRefinement {
+		t.Errorf("Description was truncated or altered: got %d runes, want %d",
+			len([]rune(got.Description)), len([]rune(longRefinement)))
+	}
+}
+
+// TestBacklogGet_NotFound is AC19: an unknown ID surfaces
+// model.ErrBacklogNotFound via errors.Is, with no new sentinel introduced.
+func TestBacklogGet_NotFound(t *testing.T) {
+	svc := newTestSDDService(t, "project")
+	ctx := context.Background()
+
+	_, err := svc.BacklogGet(ctx, "BL-999")
+	if !errors.Is(err, model.ErrBacklogNotFound) {
+		t.Errorf("expected ErrBacklogNotFound, got %v", err)
+	}
+}
+
 func TestBacklogList_FilterByStatus(t *testing.T) {
 	svc := newTestSDDService(t, "project")
 	ctx := context.Background()
@@ -135,20 +177,23 @@ func TestBacklogList_FilterByStatus(t *testing.T) {
 		t.Fatalf("refine C: %v", err)
 	}
 
-	rawItems, err := svc.BacklogList(ctx, model.BacklogListRequest{Status: model.BacklogStatusRaw})
+	rawResp, err := svc.BacklogList(ctx, model.BacklogListRequest{Status: model.BacklogStatusRaw})
 	if err != nil {
 		t.Fatalf("BacklogList(raw): %v", err)
 	}
-	if len(rawItems) != 2 {
-		t.Errorf("expected 2 raw items, got %d", len(rawItems))
+	if len(rawResp.Items) != 2 {
+		t.Errorf("expected 2 raw items, got %d", len(rawResp.Items))
+	}
+	if rawResp.Total != 2 {
+		t.Errorf("expected Total=2, got %d", rawResp.Total)
 	}
 
-	refined, err := svc.BacklogList(ctx, model.BacklogListRequest{Status: model.BacklogStatusRefined})
+	refinedResp, err := svc.BacklogList(ctx, model.BacklogListRequest{Status: model.BacklogStatusRefined})
 	if err != nil {
 		t.Fatalf("BacklogList(refined): %v", err)
 	}
-	if len(refined) != 1 {
-		t.Errorf("expected 1 refined item, got %d", len(refined))
+	if len(refinedResp.Items) != 1 {
+		t.Errorf("expected 1 refined item, got %d", len(refinedResp.Items))
 	}
 }
 
@@ -224,11 +269,11 @@ func TestBacklogPromote_Success(t *testing.T) {
 	}
 
 	// Verify backlog item is marked promoted.
-	items, err := svc.BacklogList(ctx, model.BacklogListRequest{Status: model.BacklogStatusPromoted})
+	resp, err := svc.BacklogList(ctx, model.BacklogListRequest{Status: model.BacklogStatusPromoted})
 	if err != nil {
 		t.Fatalf("list promoted: %v", err)
 	}
-	if len(items) != 1 || items[0].SpecID != spec.ID {
+	if len(resp.Items) != 1 || resp.Items[0].SpecID != spec.ID {
 		t.Errorf("expected 1 promoted item with spec_id=%q", spec.ID)
 	}
 }
@@ -261,15 +306,115 @@ func TestBacklogArchive(t *testing.T) {
 		t.Fatalf("BacklogArchive: %v", err)
 	}
 
-	archived, err := svc.BacklogList(ctx, model.BacklogListRequest{Status: model.BacklogStatusArchived})
+	resp, err := svc.BacklogList(ctx, model.BacklogListRequest{Status: model.BacklogStatusArchived})
 	if err != nil {
 		t.Fatalf("list archived: %v", err)
 	}
-	if len(archived) != 1 {
-		t.Fatalf("expected 1 archived item, got %d", len(archived))
+	if len(resp.Items) != 1 {
+		t.Fatalf("expected 1 archived item, got %d", len(resp.Items))
 	}
-	if archived[0].ArchiveReason != "not needed anymore" {
-		t.Errorf("ArchiveReason: got %q", archived[0].ArchiveReason)
+	if resp.Items[0].ArchiveReason != "not needed anymore" {
+		t.Errorf("ArchiveReason: got %q", resp.Items[0].ArchiveReason)
+	}
+}
+
+// TestBacklogList_LimitCapsSilentlyButTotalStaysTrue is AC6 and AC11 at the
+// service level: 25 items with req.Limit=10 returns exactly 10 items but
+// Total is the real count of 25 (AC6 — impossible before SPEC-109, when
+// Total could never exceed the limit); req.Limit=500 (above ListMaxLimit)
+// is silently capped to 50 with no error (AC11).
+func TestBacklogList_LimitCapsSilentlyButTotalStaysTrue(t *testing.T) {
+	svc := newTestSDDService(t, "project")
+	ctx := context.Background()
+
+	for i := 0; i < 25; i++ {
+		if _, err := svc.BacklogAdd(ctx, model.BacklogAddRequest{
+			Title: fmt.Sprintf("item %d", i), Lane: model.LaneStandard,
+		}); err != nil {
+			t.Fatalf("add item %d: %v", i, err)
+		}
+	}
+
+	resp, err := svc.BacklogList(ctx, model.BacklogListRequest{Limit: 10})
+	if err != nil {
+		t.Fatalf("BacklogList(limit=10): %v", err)
+	}
+	if len(resp.Items) != 10 {
+		t.Errorf("expected 10 items, got %d", len(resp.Items))
+	}
+	if resp.Total != 25 {
+		t.Errorf("Total=%d, want 25 (the real match count, not the limit)", resp.Total)
+	}
+
+	over, err := svc.BacklogList(ctx, model.BacklogListRequest{Limit: 500})
+	if err != nil {
+		t.Fatalf("BacklogList(limit=500): %v", err)
+	}
+	if len(over.Items) > model.ListMaxLimit {
+		t.Errorf("expected at most %d items, got %d", model.ListMaxLimit, len(over.Items))
+	}
+	if over.Total != 25 {
+		t.Errorf("Total=%d, want 25", over.Total)
+	}
+}
+
+// TestBacklogList_LimitZeroReturnsEverythingWithTrueTotal is AC12: Limit<=0
+// returns all matching items and Total equals the returned count — the CLI's
+// full-fidelity path.
+func TestBacklogList_LimitZeroReturnsEverythingWithTrueTotal(t *testing.T) {
+	svc := newTestSDDService(t, "project")
+	ctx := context.Background()
+
+	for i := 0; i < 5; i++ {
+		if _, err := svc.BacklogAdd(ctx, model.BacklogAddRequest{
+			Title: fmt.Sprintf("item %d", i), Lane: model.LaneStandard,
+		}); err != nil {
+			t.Fatalf("add item %d: %v", i, err)
+		}
+	}
+
+	resp, err := svc.BacklogList(ctx, model.BacklogListRequest{})
+	if err != nil {
+		t.Fatalf("BacklogList: %v", err)
+	}
+	if len(resp.Items) != 5 {
+		t.Errorf("expected 5 items, got %d", len(resp.Items))
+	}
+	if resp.Total != len(resp.Items) {
+		t.Errorf("Total=%d, want %d (== len(Items))", resp.Total, len(resp.Items))
+	}
+}
+
+// TestBacklogList_TotalRespectsStatusFilter is AC7: Total reflects the
+// number of matches WITHIN the status filter, not the whole project.
+func TestBacklogList_TotalRespectsStatusFilter(t *testing.T) {
+	svc := newTestSDDService(t, "project")
+	ctx := context.Background()
+
+	for i := 0; i < 3; i++ {
+		if _, err := svc.BacklogAdd(ctx, model.BacklogAddRequest{
+			Title: fmt.Sprintf("raw %d", i), Lane: model.LaneStandard,
+		}); err != nil {
+			t.Fatalf("add raw %d: %v", i, err)
+		}
+	}
+	refinedItem, err := svc.BacklogAdd(ctx, model.BacklogAddRequest{Title: "will refine", Lane: model.LaneStandard})
+	if err != nil {
+		t.Fatalf("add refined item: %v", err)
+	}
+	if _, err := svc.BacklogRefine(ctx, model.BacklogRefineRequest{ID: refinedItem.ID, Refinement: "r"}); err != nil {
+		t.Fatalf("refine: %v", err)
+	}
+
+	resp, err := svc.BacklogList(ctx, model.BacklogListRequest{Status: model.BacklogStatusRaw, Limit: 1})
+	if err != nil {
+		t.Fatalf("BacklogList(status=raw, limit=1): %v", err)
+	}
+	if resp.Total != 3 {
+		t.Errorf("Total=%d, want 3 (raw items only, not the 4 total items)", resp.Total)
+	}
+	if len(resp.Items) != 1 {
+		t.Errorf("expected 1 item (limit=1), got %d", len(resp.Items))
 	}
 }
 
@@ -318,8 +463,8 @@ func TestSpecAdvance_ValidTransitions(t *testing.T) {
 	for _, expectedNext := range path {
 		t.Run("advance to "+string(expectedNext), func(t *testing.T) {
 			advanced, err := svc.SpecAdvance(ctx, model.SpecAdvanceRequest{
-				ID:  spec.ID,
-				By:  "orchestrator",
+				ID: spec.ID,
+				By: "orchestrator",
 			})
 			if err != nil {
 				t.Fatalf("SpecAdvance: %v", err)
@@ -550,20 +695,23 @@ func TestSpecList_FilterByStatus(t *testing.T) {
 	}
 	_ = s2
 
-	drafts, err := svc.SpecList(ctx, model.SpecListRequest{Status: model.SpecStatusDraft})
+	draftsResp, err := svc.SpecList(ctx, model.SpecListRequest{Status: model.SpecStatusDraft})
 	if err != nil {
 		t.Fatalf("SpecList(draft): %v", err)
 	}
-	if len(drafts) != 1 {
-		t.Errorf("expected 1 draft, got %d", len(drafts))
+	if len(draftsResp.Specs) != 1 {
+		t.Errorf("expected 1 draft, got %d", len(draftsResp.Specs))
+	}
+	if draftsResp.Total != 1 {
+		t.Errorf("expected Total=1, got %d", draftsResp.Total)
 	}
 
-	speccing, err := svc.SpecList(ctx, model.SpecListRequest{Status: model.SpecStatusSpeccing})
+	speccingResp, err := svc.SpecList(ctx, model.SpecListRequest{Status: model.SpecStatusSpeccing})
 	if err != nil {
 		t.Fatalf("SpecList(speccing): %v", err)
 	}
-	if len(speccing) != 1 {
-		t.Errorf("expected 1 speccing, got %d", len(speccing))
+	if len(speccingResp.Specs) != 1 {
+		t.Errorf("expected 1 speccing, got %d", len(speccingResp.Specs))
 	}
 }
 
