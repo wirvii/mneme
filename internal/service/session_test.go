@@ -2,6 +2,7 @@ package service_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -61,6 +62,153 @@ func TestSessionEnd_CreatesMemory(t *testing.T) {
 	}
 	if mem.SessionID != "test-session-001" {
 		t.Errorf("expected session_id=test-session-001, got %q", mem.SessionID)
+	}
+}
+
+// TestSessionEnd_MetricsWithSessionID verifies that closing a session with a
+// session_id that has attributable work reports the real count and a
+// non-empty duration (AC11).
+func TestSessionEnd_MetricsWithSessionID(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+
+	sessionID := "sess-metrics-001"
+	for i := 0; i < 3; i++ {
+		if _, err := svc.Save(ctx, model.SaveRequest{
+			Title:     "work item",
+			Content:   "some discovery",
+			SessionID: sessionID,
+		}); err != nil {
+			t.Fatalf("Save: %v", err)
+		}
+	}
+
+	resp, err := svc.SessionEnd(ctx, model.SessionEndRequest{
+		Summary:   "closed with real work",
+		SessionID: sessionID,
+	})
+	if err != nil {
+		t.Fatalf("SessionEnd: %v", err)
+	}
+
+	if resp.MemoriesCreated == nil {
+		t.Fatal("expected MemoriesCreated to be present")
+	}
+	if *resp.MemoriesCreated != 3 {
+		t.Errorf("MemoriesCreated: got %d, want 3", *resp.MemoriesCreated)
+	}
+	if resp.SessionDuration == "" {
+		t.Error("expected non-empty SessionDuration")
+	}
+}
+
+// TestSessionEnd_OmitsMetricsWithoutSessionID verifies that the JSON response
+// omits both memories_created and session_duration when the caller does not
+// supply a session_id — mneme just generated one and cannot attribute prior
+// work to it (AC12).
+func TestSessionEnd_OmitsMetricsWithoutSessionID(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+
+	resp, err := svc.SessionEnd(ctx, model.SessionEndRequest{
+		Summary: "closed without session_id",
+	})
+	if err != nil {
+		t.Fatalf("SessionEnd: %v", err)
+	}
+
+	data, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("unmarshal into map: %v", err)
+	}
+
+	if _, ok := raw["memories_created"]; ok {
+		t.Errorf("expected memories_created to be absent, got %s", data)
+	}
+	if _, ok := raw["session_duration"]; ok {
+		t.Errorf("expected session_duration to be absent, got %s", data)
+	}
+}
+
+// TestSessionEnd_ZeroWork verifies that a session_id with no attributable
+// work reports memories_created=0 (present, a true value) while
+// session_duration stays absent — there is nothing to measure a duration
+// over (AC13).
+func TestSessionEnd_ZeroWork(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+
+	resp, err := svc.SessionEnd(ctx, model.SessionEndRequest{
+		Summary:   "closed with no prior work",
+		SessionID: "sess-zero-work",
+	})
+	if err != nil {
+		t.Fatalf("SessionEnd: %v", err)
+	}
+
+	data, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("unmarshal into map: %v", err)
+	}
+
+	got, ok := raw["memories_created"]
+	if !ok {
+		t.Fatalf("expected memories_created to be present, got %s", data)
+	}
+	if string(got) != "0" {
+		t.Errorf("expected memories_created=0, got %s", got)
+	}
+	if _, ok := raw["session_duration"]; ok {
+		t.Errorf("expected session_duration to be absent, got %s", data)
+	}
+}
+
+// TestSessionEnd_Idempotent verifies that closing the same session twice
+// produces exactly one summary memory (upsert by topic_key), not a
+// duplicate row (AC14).
+func TestSessionEnd_Idempotent(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+
+	sessionID := "sess-idempotent-001"
+
+	first, err := svc.SessionEnd(ctx, model.SessionEndRequest{
+		Summary:   "first close",
+		SessionID: sessionID,
+	})
+	if err != nil {
+		t.Fatalf("first SessionEnd: %v", err)
+	}
+
+	second, err := svc.SessionEnd(ctx, model.SessionEndRequest{
+		Summary:   "second close, same session",
+		SessionID: sessionID,
+	})
+	if err != nil {
+		t.Fatalf("second SessionEnd: %v", err)
+	}
+
+	if first.SummaryMemoryID != second.SummaryMemoryID {
+		t.Errorf("expected the same summary memory id across both calls: first=%s second=%s",
+			first.SummaryMemoryID, second.SummaryMemoryID)
+	}
+
+	mem, err := svc.Get(ctx, second.SummaryMemoryID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if mem.Content != "second close, same session" {
+		t.Errorf("expected the summary content to reflect the latest call, got %q", mem.Content)
 	}
 }
 

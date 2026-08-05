@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/gofrs/uuid/v5"
@@ -82,10 +83,42 @@ func (svc *MemoryService) SessionEnd(ctx context.Context, req model.SessionEndRe
 		}
 	}
 
-	return &model.SessionEndResponse{
+	resp := &model.SessionEndResponse{
 		SessionID:       sessionID,
 		SummaryMemoryID: savedMem.ID,
-	}, nil
+	}
+
+	// When the caller omitted session_id, mneme generated a fresh UUID above:
+	// there is no prior work to attribute to a UUID that was just invented,
+	// so neither field is even queried — both stay absent (SPEC-108 D13).
+	if req.SessionID == "" {
+		return resp, nil
+	}
+
+	// A failure here must not fail the close: the summary is already saved,
+	// and losing the metric is preferable to losing the close itself.
+	activity, actErr := svc.projectStore.GetSessionActivity(ctx, req.Project, sessionID)
+	if actErr != nil {
+		slog.WarnContext(ctx, "session end: get session activity failed",
+			"session_id", sessionID, "error", actErr)
+		return resp, nil
+	}
+
+	count := activity.MemoryCount
+	resp.MemoriesCreated = &count
+	if count > 0 {
+		resp.SessionDuration = formatSessionDuration(activity.FirstAt, time.Now().UTC())
+	}
+
+	return resp, nil
+}
+
+// formatSessionDuration es puro para que la corrección numérica se pueda
+// probar con tiempos fijos: en un test de integración toda memoria nace
+// "ahora" y la duración redondearía a "0s", justo el literal que esta spec
+// elimina (SPEC-108 §nota 3 del plan).
+func formatSessionDuration(firstAt, now time.Time) string {
+	return now.Sub(firstAt).Round(time.Second).String()
 }
 
 // Checkpoint saves a snapshot of the agent's current work state as a
