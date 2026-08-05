@@ -39,7 +39,7 @@ func (svc *MemoryService) SessionEnd(ctx context.Context, req model.SessionEndRe
 
 	// Create or update a session_summary memory keyed by the session ID so that
 	// calling SessionEnd twice for the same session is idempotent.
-	topicKey := fmt.Sprintf("session/%s", sessionID)
+	topicKey := model.SessionSummaryTopicKey(sessionID)
 
 	summaryMemory := &model.Memory{
 		Type:       model.TypeSessionSummary,
@@ -85,8 +85,6 @@ func (svc *MemoryService) SessionEnd(ctx context.Context, req model.SessionEndRe
 	return &model.SessionEndResponse{
 		SessionID:       sessionID,
 		SummaryMemoryID: savedMem.ID,
-		MemoriesCreated: 0,    // Phase 2: count via session_id query
-		SessionDuration: "0s", // Phase 2: compute from started_at
 	}, nil
 }
 
