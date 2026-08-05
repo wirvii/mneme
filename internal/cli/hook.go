@@ -227,8 +227,9 @@ func maybeEmitPendingSessionNotice(ctx context.Context, mem *service.MemoryServi
 		CurrentSessionID: currentSessionID,
 	})
 	if err != nil {
+		// No block at all on a store failure — the context section that
+		// follows must still print unmodified (AC22, D15 row 4).
 		fmt.Fprintf(errW, "[mneme] session-start hook: pending session summaries error: %v\n", err)
-		renderPendingSessionNotice(w, nil, 0, currentSessionID)
 		return
 	}
 
