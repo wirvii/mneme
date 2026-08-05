@@ -547,6 +547,163 @@ func TestRemoveHookCommands_DetectAndFilterAgree(t *testing.T) {
 	}
 }
 
+// TestProjectDelegationHookStatus_CustomisedEntries covers AC15 (SPEC-107):
+// ProjectDelegationHookStatus must report enabled=true when BOTH
+// delegation-enforcement PreToolUse commands are registered with a
+// customised absolute path — not merely with the canonical string — and
+// enabled=false when only one of the two is present.
+func TestProjectDelegationHookStatus_CustomisedEntries(t *testing.T) {
+	repoRoot := t.TempDir()
+	settingsDir := filepath.Join(repoRoot, ".claude")
+	if err := os.MkdirAll(settingsDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	settingsPath := filepath.Join(settingsDir, "settings.json")
+
+	// Both entries customised with an absolute path -> enabled.
+	both := `{
+  "hooks": {
+    "PreToolUse": [
+      {"matcher": "", "hooks": [{"type": "command", "command": "/opt/bin/mneme hook pre-tool-use"}]},
+      {"matcher": "", "hooks": [{"type": "command", "command": "/opt/bin/mneme hook enforce-delegation"}]}
+    ]
+  }
+}`
+	if err := os.WriteFile(settingsPath, []byte(both), 0o644); err != nil {
+		t.Fatalf("write both-customised settings: %v", err)
+	}
+	enabled, _, err := ProjectDelegationHookStatus(repoRoot)
+	if err != nil {
+		t.Fatalf("status (both customised): %v", err)
+	}
+	if !enabled {
+		t.Error("expected enabled=true when both PreToolUse entries are customised with an absolute path")
+	}
+
+	// Only one of the two present -> disabled.
+	onlyOne := `{
+  "hooks": {
+    "PreToolUse": [
+      {"matcher": "", "hooks": [{"type": "command", "command": "/opt/bin/mneme hook pre-tool-use"}]}
+    ]
+  }
+}`
+	if err := os.WriteFile(settingsPath, []byte(onlyOne), 0o644); err != nil {
+		t.Fatalf("write only-one settings: %v", err)
+	}
+	enabled, _, err = ProjectDelegationHookStatus(repoRoot)
+	if err != nil {
+		t.Fatalf("status (only one): %v", err)
+	}
+	if enabled {
+		t.Error("expected enabled=false when only one of the two PreToolUse entries is present")
+	}
+}
+
+// TestRemoveHookCommands_ForeignEntriesSurvive covers AC17 (SPEC-107): purging
+// "mneme hook session-end" from a Stop event that ALSO holds a user's own
+// script AND a foreign entry whose text merely CONTAINS the mneme command
+// inside something else (e.g. wrapped in `echo "..."`) must leave both
+// foreign entries completely untouched — the identity match must not become
+// a substring match.
+func TestRemoveHookCommands_ForeignEntriesSurvive(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+
+	const echoWrapped = `echo "mneme hook session-end"`
+
+	seed := map[string]any{
+		"hooks": map[string]any{
+			"Stop": []any{
+				map[string]any{"hooks": []any{map[string]any{"type": "command", "command": "mneme hook session-end"}}},
+				map[string]any{"hooks": []any{map[string]any{"type": "command", "command": "/home/u/my-own-stop.sh"}}},
+				map[string]any{"hooks": []any{map[string]any{"type": "command", "command": echoWrapped}}},
+			},
+		},
+	}
+	data, err := json.MarshalIndent(seed, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal seed: %v", err)
+	}
+	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
+		t.Fatalf("write initial settings: %v", err)
+	}
+
+	patches := []HookPatch{{Event: "Stop", Command: "mneme hook session-end"}}
+	removed, err := removeHookCommands(path, patches)
+	if err != nil {
+		t.Fatalf("removeHookCommands: %v", err)
+	}
+	if len(removed) != 1 || removed[0] != "mneme hook session-end" {
+		t.Errorf("removed = %v, want [\"mneme hook session-end\"]", removed)
+	}
+
+	out, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read after: %v", err)
+	}
+	var settings map[string]any
+	if err := json.Unmarshal(out, &settings); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	hooks := settings["hooks"].(map[string]any)
+
+	assertHookEntry(t, hooks, "Stop", "/home/u/my-own-stop.sh")
+	assertHookEntry(t, hooks, "Stop", echoWrapped)
+	assertHookCount(t, hooks, "Stop", "mneme hook session-end", 0)
+}
+
+// TestPatchDelegationHook_CoexistsWithLegacyStrip covers AC19 (SPEC-107 DD12):
+// a settings.json holding BOTH a legacy absolute-path enforce_delegation.sh
+// entry AND a customised "mneme hook enforce-delegation" registration ends
+// up, after PatchDelegationHook, with the .sh entry gone, exactly ONE
+// enforce-delegation entry (the customised one, preserved rather than
+// duplicated), and pre-tool-use added.
+func TestPatchDelegationHook_CoexistsWithLegacyStrip(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	settingsDir := filepath.Join(tmpHome, ".claude")
+	if err := os.MkdirAll(settingsDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	settingsPath := filepath.Join(settingsDir, "settings.json")
+
+	const legacyCommand = "/home/u/.claude/hooks/enforce_delegation.sh"
+	const customisedEnforce = "/opt/bin/mneme hook enforce-delegation"
+
+	existing := `{
+  "hooks": {
+    "PreToolUse": [
+      {"matcher": "", "hooks": [{"type": "command", "command": "` + legacyCommand + `"}]},
+      {"matcher": "", "hooks": [{"type": "command", "command": "` + customisedEnforce + `"}]}
+    ]
+  }
+}`
+	if err := os.WriteFile(settingsPath, []byte(existing), 0o644); err != nil {
+		t.Fatalf("write initial settings: %v", err)
+	}
+
+	agent := ClaudeCode("/usr/local/bin/mneme")
+	if err := PatchDelegationHook(agent); err != nil {
+		t.Fatalf("PatchDelegationHook: %v", err)
+	}
+
+	data, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("read settings: %v", err)
+	}
+	var settings map[string]any
+	if err := json.Unmarshal(data, &settings); err != nil {
+		t.Fatalf("unmarshal settings: %v", err)
+	}
+	hooks := settings["hooks"].(map[string]any)
+
+	assertHookCount(t, hooks, "PreToolUse", legacyCommand, 0)
+	assertHookCount(t, hooks, "PreToolUse", customisedEnforce, 1)
+	assertHookEntry(t, hooks, "PreToolUse", "mneme hook pre-tool-use")
+}
+
 // TestProjectDelegationHookPatches_MatchGlobal verifies the project patches
 // carry the exact same commands as the global ClaudeCode().DelegationHook
 // registers, so opting in at project scope gives byte-identical enforcement

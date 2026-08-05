@@ -659,6 +659,73 @@ func TestClaudeCode_DelegationHook_RegistersPreToolUse(t *testing.T) {
 	assertHookEntry(t, hooks, "PreToolUse", "mneme hook pre-tool-use")
 }
 
+// TestPatchHooks_CustomisedPathNotDuplicated covers AC13 (SPEC-107): a
+// settings.json whose SessionStart entry was hand-customised to an absolute
+// path is recognised by PatchHooks as the same registration (identity, not
+// literal string) — the personalised entry survives untouched, exactly one
+// entry of that identity remains, and the file is byte-identical to what was
+// there before (no spurious rewrite).
+func TestPatchHooks_CustomisedPathNotDuplicated(t *testing.T) {
+	dir := t.TempDir()
+	settingsPath := filepath.Join(dir, "settings.json")
+
+	const customised = "/Users/x/.local/bin/mneme hook session-start"
+
+	seed := map[string]any{
+		"hooks": map[string]any{
+			"SessionStart": []any{
+				map[string]any{
+					"matcher": "",
+					"hooks": []any{
+						map[string]any{"type": "command", "command": customised},
+					},
+				},
+			},
+		},
+	}
+	data, err := json.MarshalIndent(seed, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal seed: %v", err)
+	}
+	if err := os.WriteFile(settingsPath, append(data, '\n'), 0o644); err != nil {
+		t.Fatalf("write initial settings: %v", err)
+	}
+
+	before, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("read before: %v", err)
+	}
+
+	agent := &Agent{
+		Hooks: func() (string, []HookPatch, error) {
+			return settingsPath, []HookPatch{
+				{Event: "SessionStart", Command: "mneme hook session-start"},
+			}, nil
+		},
+	}
+	if err := PatchHooks(agent); err != nil {
+		t.Fatalf("PatchHooks: %v", err)
+	}
+
+	after, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("read after: %v", err)
+	}
+
+	var settings map[string]any
+	if err := json.Unmarshal(after, &settings); err != nil {
+		t.Fatalf("unmarshal settings: %v", err)
+	}
+	hooks := settings["hooks"].(map[string]any)
+
+	assertHookEntry(t, hooks, "SessionStart", customised)
+	assertHookCount(t, hooks, "SessionStart", customised, 1)
+
+	if string(before) != string(after) {
+		t.Errorf("PatchHooks rewrote the file despite the entry already being present under a different path:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
 // TestReinstallHooks_ReplacesLegacy verifies that ReinstallHooks replaces the
 // existing PreToolUse entries (e.g. enforce-delegation) with the new command.
 func TestReinstallHooks_ReplacesLegacy(t *testing.T) {
