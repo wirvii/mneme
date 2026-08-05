@@ -98,7 +98,7 @@ Events:
 			event := args[0]
 			switch event {
 			case "session-start":
-				return runHookSessionStart(cmd.Context(), os.Stdout, os.Stderr)
+				return runHookSessionStart(cmd.Context(), hookStdin(os.Stdin), os.Stdout, os.Stderr)
 			case "session-end":
 				return runHookSessionEnd(os.Stdout)
 			case "pre-tool-use":
@@ -121,16 +121,39 @@ Events:
 	return cmd
 }
 
+// hookSessionStartInput es el payload que el agente entrega por stdin.
+// Solo se lee session_id: `source` y `transcript_path` existen en el payload de
+// Claude Code pero no se usan — un campo sin consumidor sería código muerto.
+type hookSessionStartInput struct {
+	SessionID string `json:"session_id"`
+}
+
+// isInteractive es puro para poder testear el gate sin una terminal real.
+func isInteractive(mode os.FileMode) bool { return mode&os.ModeCharDevice != 0 }
+
+// hookStdin devuelve un reader VACÍO cuando f es un character device
+// (terminal): session-start pasa a consumir stdin, y json.Decode sobre un pipe
+// abierto bloquea — `mneme hook session-start` a mano debe retornar al instante
+// (SPEC-108 D16).
+func hookStdin(f *os.File) io.Reader {
+	if info, err := f.Stat(); err == nil && isInteractive(info.Mode()) {
+		return strings.NewReader("")
+	}
+	return f
+}
+
 // runHookSessionStart detects the current project, loads its mneme context, and
 // prints a structured message to w. The agent reads this output from the
 // hook's stdout and incorporates it into its context window at session start.
 // w/errW are explicit (rather than hardcoded os.Stdout/os.Stderr) so tests can
 // drive this function directly with buffers — mirrors runHookPreToolUse's own
-// io.Writer parameters.
+// io.Writer parameters. r is the stdin payload (hookSessionStartInput JSON);
+// use hookStdin(os.Stdin) in production so a manual terminal invocation never
+// blocks reading it (SPEC-108 D16).
 //
 // The output is intentionally minimal and machine-readable so the agent can
 // parse or ignore individual sections based on what it needs.
-func runHookSessionStart(ctx context.Context, w, errW io.Writer) error {
+func runHookSessionStart(ctx context.Context, r io.Reader, w, errW io.Writer) error {
 	svc, cleanup, err := initService()
 	if err != nil {
 		// Hook failure must not block the agent from starting. Print a warning
@@ -144,6 +167,11 @@ func runHookSessionStart(ctx context.Context, w, errW io.Writer) error {
 	// the context block — fail-open, exit 0 always, same contract as
 	// maybeEmitCodegraphNudge.
 	maybeActivateProfile(ctx, svc, w, errW)
+
+	// SPEC-108 D17: the pending-session-summary notice comes after the
+	// profile block and before the context block.
+	currentSessionID := decodeSessionStartInput(r, errW)
+	maybeEmitPendingSessionNotice(ctx, svc, currentSessionID, w, errW)
 
 	req := model.ContextRequest{
 		// Budget zero signals the service to use its configured default.
@@ -159,6 +187,81 @@ func runHookSessionStart(ctx context.Context, w, errW io.Writer) error {
 
 	printContextHook(w, resp)
 	return nil
+}
+
+// decodeSessionStartInput reads and decodes the stdin payload, returning the
+// session_id or "" on any fail-open condition (SPEC-108 D15):
+//   - empty stdin (io.EOF): "", no warning — the common case (manual
+//     invocation, or an agent that does not send a payload yet).
+//   - invalid JSON: "", WARN on errW.
+//   - valid JSON without session_id: "", no warning — an empty session_id is
+//     indistinguishable from "the current session genuinely has none", and
+//     warning here would falsely accuse the current session of a problem.
+func decodeSessionStartInput(r io.Reader, errW io.Writer) string {
+	var in hookSessionStartInput
+	if err := json.NewDecoder(r).Decode(&in); err != nil {
+		if !errors.Is(err, io.EOF) {
+			fmt.Fprintf(errW, "[mneme] session-start hook: invalid stdin JSON: %v\n", err)
+		}
+		return ""
+	}
+	return in.SessionID
+}
+
+// maybeEmitPendingSessionNotice implements SPEC-108 D14: it always announces
+// the current session_id (so the detector is never inert — 1729 memories in
+// the real DB have no session_id today) and, when a previous session left
+// work without a summary, asks the agent to close it. currentSessionID == ""
+// means the payload carried no session_id at all: nothing is emitted (D15
+// row 3 — there is no current session to announce, and reporting stale
+// orphans without that anchor would be noise).
+//
+// Fail-open: a PendingSessionSummaries error degrades to a WARN on errW and
+// no block — the context section that follows must still print.
+func maybeEmitPendingSessionNotice(ctx context.Context, mem *service.MemoryService, currentSessionID string, w, errW io.Writer) {
+	if currentSessionID == "" {
+		return
+	}
+
+	resp, err := mem.PendingSessionSummaries(ctx, model.PendingSessionsRequest{
+		CurrentSessionID: currentSessionID,
+	})
+	if err != nil {
+		fmt.Fprintf(errW, "[mneme] session-start hook: pending session summaries error: %v\n", err)
+		renderPendingSessionNotice(w, nil, 0, currentSessionID)
+		return
+	}
+
+	renderPendingSessionNotice(w, resp.Pending, resp.OlderCount, currentSessionID)
+}
+
+// renderPendingSessionNotice writes the mneme:session block. It is emitted
+// whenever the caller knows the current session_id — with or without a
+// pending orphan — because announcing the current id is what keeps the
+// detector from being inert (SPEC-108 D14). pending == nil omits the "Sesión
+// anterior sin resumen" section entirely; olderCount > 0 adds the "Otras N…"
+// line.
+//
+// Never titles or memory content, never an enumeration of sessions — the
+// block stays a small, constant-shape reminder regardless of how many
+// orphaned sessions exist (AC24).
+func renderPendingSessionNotice(w io.Writer, pending *model.SessionActivity, olderCount int, currentSessionID string) {
+	fmt.Fprintf(w, "<!-- mneme:session:start -->\n")
+
+	if pending != nil {
+		fmt.Fprintf(w, "## Sesión anterior sin resumen\n\n")
+		fmt.Fprintf(w, "La sesión `%s` dejó %d memorias sin resumen (última actividad %s).\n",
+			pending.SessionID, pending.MemoryCount, pending.LastAt.UTC().Format(time.RFC3339))
+		fmt.Fprintf(w, "Redáctalo tú y ciérrala con `mem_session_end` (`session_id=%s`) — mneme no inventa el contenido.\n",
+			pending.SessionID)
+		if olderCount > 0 {
+			fmt.Fprintf(w, "Otras %d sesiones más antiguas están igual (no se enumeran).\n", olderCount)
+		}
+		fmt.Fprintf(w, "\n")
+	}
+
+	fmt.Fprintf(w, "Sesión actual: `%s` — pásala como `session_id` en `mem_save` y `mem_session_end`.\n", currentSessionID)
+	fmt.Fprintf(w, "<!-- mneme:session:end -->\n")
 }
 
 // ---- Profile SessionStart integration (SPEC-093 §3.6) -----------------------

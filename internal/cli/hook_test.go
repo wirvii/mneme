@@ -2,13 +2,121 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/wirvii/mneme/internal/model"
 )
+
+// seedSessionWork chdirs into root, sets --data-dir=dataDir, and saves n
+// memories attributed to sessionID via the real service — resolving to the
+// exact same project database runSessionStartHook itself will open for the
+// same root/dataDir pair, so the orphan notice sees this work as belonging
+// to sessionID.
+func seedSessionWork(t *testing.T, root, dataDir, sessionID string, n int) {
+	t.Helper()
+
+	orig, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(orig); err != nil {
+			t.Fatalf("restore cwd: %v", err)
+		}
+	})
+
+	oldDataDir := flagDataDir
+	flagDataDir = dataDir
+	t.Cleanup(func() { flagDataDir = oldDataDir })
+
+	svc, cleanup, err := initService()
+	if err != nil {
+		t.Fatalf("initService: %v", err)
+	}
+	defer cleanup()
+
+	ctx := context.Background()
+	for i := 0; i < n; i++ {
+		if _, err := svc.Save(ctx, model.SaveRequest{
+			Title:     "work",
+			Content:   "some discovery",
+			SessionID: sessionID,
+		}); err != nil {
+			t.Fatalf("Save: %v", err)
+		}
+	}
+}
+
+// sessionStartPayload builds the raw JSON stdin body runSessionStartHook
+// passes through to runHookSessionStart.
+func sessionStartPayload(sessionID string) string {
+	return `{"session_id":"` + sessionID + `"}`
+}
+
+// TestSessionStart_EmitsOrphanNotice verifies the happy path (AC17): a
+// previous session left work without a summary, and the current session_id
+// is announced regardless.
+func TestSessionStart_EmitsOrphanNotice(t *testing.T) {
+	root := t.TempDir()
+	dataDir := t.TempDir()
+
+	orphanSessionID := "sess-orphan-001"
+	currentSessionID := "sess-current-001"
+	seedSessionWork(t, root, dataDir, orphanSessionID, 7)
+
+	stdout, _ := runSessionStartHook(t, root, dataDir, sessionStartPayload(currentSessionID))
+
+	if !strings.Contains(stdout, "<!-- mneme:session:start -->") || !strings.Contains(stdout, "<!-- mneme:session:end -->") {
+		t.Fatalf("expected both mneme:session markers, got: %s", stdout)
+	}
+	if !strings.Contains(stdout, orphanSessionID) {
+		t.Errorf("expected the orphaned session id %q in the block, got: %s", orphanSessionID, stdout)
+	}
+	if !strings.Contains(stdout, "7 memorias") {
+		t.Errorf("expected the memory count (7) in the block, got: %s", stdout)
+	}
+	if !strings.Contains(stdout, "mem_session_end` (`session_id="+orphanSessionID+"`)") {
+		t.Errorf("expected the mem_session_end instruction with the orphaned session_id, got: %s", stdout)
+	}
+	if !strings.Contains(stdout, "Sesión actual: `"+currentSessionID+"`") {
+		t.Errorf("expected the current session line, got: %s", stdout)
+	}
+
+	sessionIdx := strings.Index(stdout, "<!-- mneme:session:start -->")
+	contextIdx := strings.Index(stdout, "<!-- mneme:context:start -->")
+	if sessionIdx == -1 || contextIdx == -1 || sessionIdx > contextIdx {
+		t.Errorf("expected the session block before the context block, got: %s", stdout)
+	}
+}
+
+// TestSessionStart_NeverReportsCurrentSession verifies AC18: when the CURRENT
+// session already owns memories under its own session_id (the resume/compact
+// case, where the agent reenvía the same id), it must never be reported as
+// its own orphan.
+func TestSessionStart_NeverReportsCurrentSession(t *testing.T) {
+	root := t.TempDir()
+	dataDir := t.TempDir()
+
+	currentSessionID := "sess-resumed-001"
+	seedSessionWork(t, root, dataDir, currentSessionID, 3)
+
+	stdout, _ := runSessionStartHook(t, root, dataDir, sessionStartPayload(currentSessionID))
+
+	if strings.Contains(stdout, "## Sesión anterior sin resumen") {
+		t.Errorf("expected no orphan section when the only work belongs to the current session, got: %s", stdout)
+	}
+	if !strings.Contains(stdout, "Sesión actual: `"+currentSessionID+"`") {
+		t.Errorf("expected the current session line, got: %s", stdout)
+	}
+}
 
 // TestRunHookSessionEnd_EmitsEmptyJSONObject covers SPEC-106 AC1 — the first
 // test this handler has ever had. runHookSessionEnd must emit exactly `{}\n`

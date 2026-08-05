@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,7 +21,12 @@ import (
 // (SPEC-085 §5.3/§5.4 note 3) — team-memory is never enabled by these
 // fixtures, so no call is expected, but the reset is defensive per the
 // established pattern.
-func runSessionStartHook(t *testing.T, root, dataDir string) (stdout, stderr string) {
+//
+// payload is variadic (SPEC-108 plan §0.4) so the 13 pre-existing call sites
+// in this file — none of which cares about the session-start stdin payload —
+// stay unchanged; a new test that DOES care passes payload[0] as the raw
+// JSON body.
+func runSessionStartHook(t *testing.T, root, dataDir string, payload ...string) (stdout, stderr string) {
 	t.Helper()
 
 	orig, err := os.Getwd()
@@ -42,8 +48,13 @@ func runSessionStartHook(t *testing.T, root, dataDir string) (stdout, stderr str
 	flagDataDir = dataDir
 	t.Cleanup(func() { flagDataDir = oldDataDir })
 
+	var in io.Reader = strings.NewReader("")
+	if len(payload) > 0 {
+		in = strings.NewReader(payload[0])
+	}
+
 	var outBuf, errBuf bytes.Buffer
-	if err := runHookSessionStart(context.Background(), &outBuf, &errBuf); err != nil {
+	if err := runHookSessionStart(context.Background(), in, &outBuf, &errBuf); err != nil {
 		t.Fatalf("runHookSessionStart: unexpected error: %v", err)
 	}
 	return outBuf.String(), errBuf.String()
