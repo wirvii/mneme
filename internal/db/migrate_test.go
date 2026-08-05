@@ -47,13 +47,13 @@ func TestMigrate_Fresh(t *testing.T) {
 		})
 	}
 
-	t.Run("schema_version_is_15", func(t *testing.T) {
+	t.Run("schema_version_is_16", func(t *testing.T) {
 		var version int
 		if err := db.QueryRow(`SELECT MAX(version) FROM schema_version`).Scan(&version); err != nil {
 			t.Fatalf("query schema_version: %v", err)
 		}
-		if version != 15 {
-			t.Errorf("expected schema version 15, got %d", version)
+		if version != 16 {
+			t.Errorf("expected schema version 16, got %d", version)
 		}
 	})
 }
@@ -77,10 +77,10 @@ func TestMigrate_Idempotent(t *testing.T) {
 		t.Fatalf("query schema_version count: %v", err)
 	}
 	// Each migration file inserts one row with INSERT OR IGNORE, so there
-	// should be exactly one row per applied migration — currently 15.
+	// should be exactly one row per applied migration — currently 16.
 	// A second call to migrate must not insert duplicate rows.
-	if count != 15 {
-		t.Errorf("expected 15 rows in schema_version, got %d", count)
+	if count != 16 {
+		t.Errorf("expected 16 rows in schema_version, got %d", count)
 	}
 }
 
