@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [v1.31.0] — 2026-08-05 — Bounded listings and `backlog_get`; session tracking and hook-duplication fixes
+
 ### Added
 
 - **`backlog_list` no longer serializes an unbounded JSON array — it was
@@ -35,10 +37,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   correct order (a helper production code never called). With a `limit` now
   in play this stopped being cosmetic: it could push the entire `medium`
   bucket outside a 50-item window. Both `backlog_list` and `spec_list` now
-  order by an explicit priority-rank `CASE` (backlog) and a deterministic
-  `created_at`/`id` tie-break (both), since `position` is `0` on every
-  backlog item in practice and an unbroken tie on a `LIMIT`ed query is a
-  lottery, not a window. New leaf function `model.Excerpt(s, maxRunes)
+  order by an explicit priority-rank `CASE` (backlog) followed by a
+  deterministic `rowid` tie-break — `position` is `0` on every backlog item
+  in practice, and an unbroken tie on a `LIMIT`ed query is a lottery, not a
+  window; `rowid` is safe here because `backlog_items`/`specs` rows are
+  archived on status change, never hard-deleted, so it's never reused.
+  `conflicts_list` orders `memory_relations` by its own `id` (an `INTEGER
+  PRIMARY KEY AUTOINCREMENT`) for the same reason. The first cut of this tie-
+  break used `created_at DESC`/`ASC` instead, and QA rejected it: mneme
+  formats timestamps with `time.RFC3339Nano`, which trims trailing zeros
+  from the fractional-second component, so `"...52.77Z"` sorts as *greater*
+  than `"...52.770018Z"` even though it's earlier (`Z` = `0x5A` beats `0` =
+  `0x30` byte-for-byte) — and SQLite compares a TEXT column exactly that way.
+  The result was an intermittent, timestamp-format-dependent inversion of
+  supposedly-deterministic order, caught by `TestListBacklogItems_
+  DeterministicTieBreak` itself flaking on repeat runs. New leaf function
+  `model.Excerpt(s, maxRunes)
   (string, bool)` replaces three separate copies of the same rune-safe
   truncation logic (`store.makePreview`, `service.makeTimelinePreview`, and
   the new SDD view) — cutting by bytes would split a multibyte character
