@@ -212,6 +212,106 @@ func TestSessionEnd_Idempotent(t *testing.T) {
 	}
 }
 
+// TestPendingSessionSummaries_ExcludesCurrent verifies that among two
+// orphaned sessions, the most recent one being the CURRENT session is
+// excluded from the report, leaving the other one and OlderCount==0 (AC15).
+func TestPendingSessionSummaries_ExcludesCurrent(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+
+	older := "sess-older-001"
+	current := "sess-current-001"
+
+	if _, err := svc.Save(ctx, model.SaveRequest{
+		Title: "older work", Content: "content", SessionID: older,
+	}); err != nil {
+		t.Fatalf("Save older: %v", err)
+	}
+	if _, err := svc.Save(ctx, model.SaveRequest{
+		Title: "current work", Content: "content", SessionID: current,
+	}); err != nil {
+		t.Fatalf("Save current: %v", err)
+	}
+
+	resp, err := svc.PendingSessionSummaries(ctx, model.PendingSessionsRequest{
+		CurrentSessionID: current,
+	})
+	if err != nil {
+		t.Fatalf("PendingSessionSummaries: %v", err)
+	}
+	if resp.Pending == nil {
+		t.Fatal("expected a pending session, got nil")
+	}
+	if resp.Pending.SessionID != older {
+		t.Errorf("Pending.SessionID = %q, want %q", resp.Pending.SessionID, older)
+	}
+	if resp.OlderCount != 0 {
+		t.Errorf("OlderCount = %d, want 0", resp.OlderCount)
+	}
+}
+
+// TestPendingSessionSummaries_None verifies that Pending is nil (not an
+// error) when there is no orphaned session (AC15).
+func TestPendingSessionSummaries_None(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+
+	resp, err := svc.PendingSessionSummaries(ctx, model.PendingSessionsRequest{})
+	if err != nil {
+		t.Fatalf("PendingSessionSummaries: %v", err)
+	}
+	if resp.Pending != nil {
+		t.Errorf("expected nil Pending, got %+v", resp.Pending)
+	}
+	if resp.OlderCount != 0 {
+		t.Errorf("OlderCount = %d, want 0", resp.OlderCount)
+	}
+}
+
+// TestPendingCountMatchesSessionEndCount is the cross-check of D19: for the
+// same session, the count PendingSessionSummaries reports must equal what
+// SessionEnd's MemoriesCreated would report — both derive from the same
+// predicate, so they can never diverge (AC16).
+func TestPendingCountMatchesSessionEndCount(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+
+	sessionID := "sess-cross-check-001"
+	for i := 0; i < 4; i++ {
+		if _, err := svc.Save(ctx, model.SaveRequest{
+			Title: "work", Content: "content", SessionID: sessionID,
+		}); err != nil {
+			t.Fatalf("Save: %v", err)
+		}
+	}
+
+	pending, err := svc.PendingSessionSummaries(ctx, model.PendingSessionsRequest{
+		CurrentSessionID: "some-other-current-session",
+	})
+	if err != nil {
+		t.Fatalf("PendingSessionSummaries: %v", err)
+	}
+	if pending.Pending == nil {
+		t.Fatal("expected a pending session")
+	}
+
+	endResp, err := svc.SessionEnd(ctx, model.SessionEndRequest{
+		Summary:   "closing the same session",
+		SessionID: sessionID,
+	})
+	if err != nil {
+		t.Fatalf("SessionEnd: %v", err)
+	}
+	if endResp.MemoriesCreated == nil {
+		t.Fatal("expected MemoriesCreated to be present")
+	}
+
+	if pending.Pending.MemoryCount != *endResp.MemoriesCreated {
+		t.Errorf("PendingSessionSummaries count (%d) diverges from SessionEnd count (%d)",
+			pending.Pending.MemoryCount, *endResp.MemoriesCreated)
+	}
+}
+
 func TestCheckpoint_Success(t *testing.T) {
 	svc := newTestService(t)
 	ctx := context.Background()

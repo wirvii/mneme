@@ -121,6 +121,42 @@ func formatSessionDuration(firstAt, now time.Time) string {
 	return now.Sub(firstAt).Round(time.Second).String()
 }
 
+// PendingSessionSummaries devuelve la sesión huérfana MÁS RECIENTE (la que
+// dejó trabajo y no tiene resumen), excluyendo CurrentSessionID, más cuántas
+// otras más antiguas están igual. Solo la más reciente se reporta y el aviso
+// repite en cada arranque hasta que exista el resumen: es convergente y se
+// autolimita porque cada sesión desplaza a la anterior (SPEC-108 D4).
+// Pending nil + OlderCount 0 cuando no hay ninguna (no es error).
+func (svc *MemoryService) PendingSessionSummaries(ctx context.Context, req model.PendingSessionsRequest) (*model.PendingSessionsResponse, error) {
+	if req.Project == "" {
+		req.Project = svc.project
+	}
+
+	orphaned, err := svc.projectStore.ListSessionsWithoutSummary(ctx, req.Project)
+	if err != nil {
+		return nil, fmt.Errorf("service: pending session summaries: %w", err)
+	}
+
+	filtered := make([]model.SessionActivity, 0, len(orphaned))
+	for _, a := range orphaned {
+		if a.SessionID == req.CurrentSessionID {
+			continue
+		}
+		filtered = append(filtered, a)
+	}
+
+	if len(filtered) == 0 {
+		return &model.PendingSessionsResponse{}, nil
+	}
+
+	pending := filtered[0]
+
+	return &model.PendingSessionsResponse{
+		Pending:    &pending,
+		OlderCount: len(filtered) - 1,
+	}, nil
+}
+
 // Checkpoint saves a snapshot of the agent's current work state as a
 // session_summary memory with topic_key "checkpoint/latest". Because of the
 // upsert-by-topic-key semantics, only one checkpoint is ever retained per
