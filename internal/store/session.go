@@ -129,6 +129,131 @@ func (s *MemoryStore) ListSessionsByProject(ctx context.Context, project string)
 	return sessions, nil
 }
 
+// sessionWorkWhere define qué cuenta como "trabajo" de una sesión y es la
+// ÚNICA definición del predicado: los dos consumidores lo embeben por
+// concatenación, así que no pueden divergir. Precedente y misma exigencia que
+// HardDeleteBySource (memory.go:443-446, "MUST stay byte-identical"): la
+// asimetría entre dos rutas sobre las mismas filas es exactamente lo que en
+// SPEC-105 dejó un guard divergente para siempre.
+//
+// Filtra deleted_at Y superseded_by, los mismos dos filtros de mem_search /
+// mem_stats / store.List, para que el número del aviso siempre cuadre con lo
+// que el usuario ve (SPEC-108 D7). El único `?` es el project.
+const sessionWorkWhere = `m.session_id IS NOT NULL
+	  AND m.session_id != ''
+	  AND m.type != 'session_summary'
+	  AND m.deleted_at IS NULL
+	  AND m.superseded_by IS NULL
+	  AND m.project IS ?`
+
+// listSessionsWithoutSummaryQuery — args: (project, model.SessionSummaryTopicKeyPrefix)
+//
+// El NOT EXISTS filtra SOLO deleted_at, a propósito y en asimetría con el
+// conteo de trabajo (SPEC-108 D8): un resumen *superseded* sí prueba que la
+// sesión se cerró, y filtrarlo dejaría el trabajo contando para siempre =
+// aviso perpetuo sin forma de converger. La asimetría apunta al SILENCIO,
+// nunca a la divergencia. Reproduce además el predicado con que store.Upsert
+// localiza su propia fila (memory.go:254-256), que es quien escribe el resumen.
+// Sin LIMIT: devuelve una fila por session_id distinto (21 en un año de uso
+// real) y un LIMIT haría INCORRECTO el conteo de "otras más antiguas" (D21).
+var listSessionsWithoutSummaryQuery = `
+	SELECT m.session_id, COUNT(*), MIN(m.created_at), MAX(m.created_at)
+	FROM memories m
+	WHERE ` + sessionWorkWhere + `
+	  AND NOT EXISTS (
+	      SELECT 1 FROM memories s
+	      WHERE s.topic_key = ? || m.session_id
+	        AND s.project IS m.project
+	        AND s.deleted_at IS NULL)
+	GROUP BY m.session_id
+	ORDER BY MAX(m.created_at) DESC`
+
+// getSessionActivityQuery — args: (project, sessionID)
+var getSessionActivityQuery = `
+	SELECT COUNT(*), MIN(m.created_at), MAX(m.created_at)
+	FROM memories m
+	WHERE ` + sessionWorkWhere + `
+	  AND m.session_id = ?`
+
+// GetSessionActivity devuelve el trabajo registrado por UNA sesión.
+// MemoryCount 0 con FirstAt/LastAt cero cuando no hay filas (nunca error).
+// Solo mira el project store: una sesión que únicamente guardó memorias
+// global/org no se ve aquí (SPEC-108 D10).
+//
+// Caveat sub-segundo (D20): created_at se escribe siempre como RFC3339Nano
+// (memory.go:124), que recorta ceros de la fracción, así que dentro del MISMO
+// segundo el orden lexicográfico de MIN/MAX puede equivocarse ("…:27Z" ordena
+// después de "…:27.6Z"). Error máximo sub-segundo sobre una duración que se
+// reporta en segundos: aceptado, no mitigado.
+func (s *MemoryStore) GetSessionActivity(ctx context.Context, project, sessionID string) (*model.SessionActivity, error) {
+	row := s.db.QueryRowContext(ctx, getSessionActivityQuery, toNullString(project), sessionID)
+
+	var count int
+	var firstAt, lastAt sql.NullString
+	if err := row.Scan(&count, &firstAt, &lastAt); err != nil {
+		return nil, fmt.Errorf("store: get session activity: %w", err)
+	}
+
+	activity := &model.SessionActivity{
+		SessionID:   sessionID,
+		MemoryCount: count,
+	}
+	if firstAt.Valid {
+		if t, err := parseTime(firstAt.String); err == nil {
+			activity.FirstAt = t
+		}
+	}
+	if lastAt.Valid {
+		if t, err := parseTime(lastAt.String); err == nil {
+			activity.LastAt = t
+		}
+	}
+
+	return activity, nil
+}
+
+// ListSessionsWithoutSummary devuelve una entrada por sesión con trabajo
+// registrado y SIN resumen, ordenadas por última actividad DESC.
+func (s *MemoryStore) ListSessionsWithoutSummary(ctx context.Context, project string) ([]model.SessionActivity, error) {
+	rows, err := s.db.QueryContext(ctx, listSessionsWithoutSummaryQuery,
+		toNullString(project), model.SessionSummaryTopicKeyPrefix)
+	if err != nil {
+		return nil, fmt.Errorf("store: list sessions without summary: %w", err)
+	}
+	defer rows.Close()
+
+	activities := make([]model.SessionActivity, 0)
+	for rows.Next() {
+		var sessionID string
+		var count int
+		var firstAt, lastAt sql.NullString
+		if err := rows.Scan(&sessionID, &count, &firstAt, &lastAt); err != nil {
+			return nil, fmt.Errorf("store: list sessions without summary: scan: %w", err)
+		}
+
+		activity := model.SessionActivity{
+			SessionID:   sessionID,
+			MemoryCount: count,
+		}
+		if firstAt.Valid {
+			if t, err := parseTime(firstAt.String); err == nil {
+				activity.FirstAt = t
+			}
+		}
+		if lastAt.Valid {
+			if t, err := parseTime(lastAt.String); err == nil {
+				activity.LastAt = t
+			}
+		}
+		activities = append(activities, activity)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: list sessions without summary: iterate: %w", err)
+	}
+
+	return activities, nil
+}
+
 // sessionRowScanner is satisfied by both *sql.Row and *sql.Rows.
 type sessionRowScanner interface {
 	Scan(dest ...any) error
