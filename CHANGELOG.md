@@ -6,7 +6,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`SessionStart` now announces the current session_id and warns when a
+  previous session left work without a summary (SPEC-108, BL-136/BL-137).**
+  `mneme hook session-start` reads an optional JSON payload from stdin
+  (`{"session_id": "..."}`) and, when present, emits a new `mneme:session`
+  block **before** the context block: it always states the current session's
+  id — propagate it to `mem_save`/`mem_session_end` — and, when a previous
+  session left memories without a `mem_session_end` call, names it and asks
+  the agent to close it. This is the fix for a detector that was otherwise
+  inert: in mneme's own production database, 1729 memories carry no
+  `session_id` and the only 21 that do are the pre-existing
+  `session_summary` rows. Fail-open on every edge (empty/invalid stdin, a
+  missing `session_id`, a store failure) — see "The `mneme:session` block"
+  in `docs/HOOKS.md`. No new MCP tool, HTTP endpoint, or CLI command; only
+  the `mem_save`/`mem_session_end` tool descriptions were updated (76 tools
+  unchanged).
+
 ### Fixed
+
+- **`mem_session_end` reported hardcoded `memories_created: 0` and
+  `session_duration: "0s"` regardless of what actually happened (SPEC-108,
+  BL-136).** These were literal placeholders from a "Phase 2" that never
+  shipped (`internal/service/session.go`), confirmed live 2026-08-04
+  reporting `0`/`"0s"` for a session that had in fact saved memories over
+  3m38s. Both fields are now real — computed from the memories attributable
+  to the closed `session_id` — **or absent** when the caller omits
+  `session_id` (mneme just generated one and cannot attribute prior work to
+  it). **Contract change**: `memories_created` (now `*int`) and
+  `session_duration` are optional JSON keys in both MCP and HTTP responses —
+  previously always-present literals a consumer could depend on for shape
+  but never for value; a consumer that unmarshals without checking presence
+  will now see its language's zero value instead of the old placeholder.
 
 - **Personalising a managed hook's registered command produced a silent
   duplicate on the next `mneme install` (SPEC-107, BL-135).** The predicate

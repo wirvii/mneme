@@ -1184,10 +1184,13 @@ directory directly (local identity, no network) so those commands have real
 state to read.
 
 `internal/cli`'s SessionStart tests (`profile_sessionstart_test.go`) drive
-`runHookSessionStart(ctx, w, errW)` directly with `bytes.Buffer`s — the
-function's signature changed from hardcoded `os.Stdout`/`os.Stderr` to
-explicit `io.Writer` parameters specifically so this is possible without
-capturing real OS stdout (mirrors `runHookPreToolUse`'s existing shape).
+`runHookSessionStart(ctx, r, w, errW)` directly with `bytes.Buffer`s/
+`strings.Reader`s — the function's signature changed from hardcoded
+`os.Stdout`/`os.Stderr` to explicit `io.Reader`/`io.Writer` parameters
+specifically so this is possible without capturing real OS stdin/stdout
+(mirrors `runHookPreToolUse`'s existing shape; the `r` parameter was added by
+SPEC-108 for the stdin-JSON `session_id` payload the `mneme:session` block
+consumes).
 Each test `os.Chdir`s into an isolated fixture and calls `gitident.Reset()`
 (SPEC-085 §5.3/§5.4 note 3) defensively — `initService()`'s
 `DetectTeamMemory()` resolves the real process cwd via `git rev-parse

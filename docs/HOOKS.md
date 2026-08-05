@@ -58,6 +58,79 @@ Claude Code injects it into the agent's context window.
 
 **Manual equivalent:** `mneme context --budget 4000`
 
+#### stdin contract (SPEC-108)
+
+Since SPEC-108, `session-start` also reads a JSON payload from stdin:
+
+```json
+{"session_id": "019fce58-6c7a-..."}
+```
+
+Only `session_id` is read. Claude Code's real SessionStart payload also
+carries `source` and `transcript_path`, but neither has a consumer here — a
+field without a consumer would be dead code.
+
+#### The `mneme:session` block
+
+When the payload carries `session_id`, the hook emits a block **before** the
+`mneme:context` block, announcing the current session and — when a
+*previous* session left work without a summary — asking the agent to close
+it:
+
+```
+<!-- mneme:session:start -->
+## Sesión anterior sin resumen
+
+La sesión `019fce58-6c7a-…` dejó 7 memorias sin resumen (última actividad 2026-08-04T21:32:19Z).
+Redáctalo tú y ciérrala con `mem_session_end` (`session_id=019fce58-6c7a-…`) — mneme no inventa el contenido.
+Otras 2 sesiones más antiguas están igual (no se enumeran).
+
+Sesión actual: `019fd0aa-…` — pásala como `session_id` en `mem_save` y `mem_session_end`.
+<!-- mneme:session:end -->
+```
+
+The "Sesión actual" line is **always** printed whenever `session_id` is
+present in the payload — independent of whether there is an orphan to
+report. Without it the by-`session_id` detector is inert: `mem_save` has
+always accepted `session_id`, but almost nothing has ever passed it (in
+mneme's own production database, 1729 memories have no `session_id` and the
+only 21 that do are the 21 pre-existing `session_summary` rows). Announcing
+the id here — and the updated `mem_save`/`mem_session_end` tool descriptions
+(SPEC-108 step 8) — is what starts closing that gap.
+
+The block never repeats an orphan's title or content, and never enumerates
+more than the single most recent orphaned session — only a count of how many
+older ones are in the same state ("Otras N sesiones más antiguas…"). This
+keeps the block's size roughly constant (a handful of lines) regardless of
+how many orphaned sessions actually exist.
+
+Two "work" definitions matter here and are asymmetric on purpose (SPEC-108
+D7/D8): a session counts as having left *work* when it has memories that are
+neither soft-deleted nor superseded (same filters as `mem_search`/
+`mem_stats`, so the reported count matches what the user sees); a session
+counts as *closed* the moment its summary memory exists, even if that
+summary was later superseded by a synthesis — a superseded summary still
+proves the session was closed. Filtering the closure check by `superseded_by`
+too would leave the notice nagging forever once a synthesis absorbs the
+summary.
+
+#### Fail-open matrix
+
+| stdin | Result |
+|---|---|
+| empty (`io.EOF`) | No `mneme:session` block, no stderr output, context block unchanged. The common case: a manual invocation, or an agent that hasn't started sending the payload yet. |
+| invalid JSON | WARN on stderr, no block, context block still prints. |
+| valid JSON without `session_id` | No block, **no** WARN — an absent `session_id` is indistinguishable from "this session genuinely has none", and warning would falsely accuse the current session. |
+| `PendingSessionSummaries` store error | WARN on stderr, no block, context block still prints — the summary lookup failing must never suppress the context load that follows. |
+
+#### Manual invocation
+
+Running `mneme hook session-start` by hand from an interactive terminal
+returns immediately instead of blocking on stdin: the hook detects a
+character device (`os.ModeCharDevice`) and substitutes an empty reader before
+decoding, exactly like the empty-stdin row above. From a script, `< /dev/null`
+(or piping a JSON payload) works as expected either way.
+
 ### `mneme hook session-end` (retired, SPEC-106)
 
 This subcommand still exists — it emits `{}` and exits 0 — but `mneme install`
