@@ -6,44 +6,52 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [v1.32.0] — 2026-08-05 — Backlog refinements become iterative, append-only rows; `backlog get` arrives
+
 ### Added
 
 - **Iterative backlog refinement — an item now accepts N refinements, each
   its own row (SPEC-110, BL-142).** The item was originally fichado as
   "`BacklogRefine` concatenates without a ceiling: descriptions become 40 KB
   ledgers" — the grill refuted that with real measurements: the largest
-  `description` in this repo's own backlog is 9,438 bytes, none exceed 10 KB,
-  and the reason is that `BacklogRefine` required `status == raw` and set
-  `refined` on the same call, so a **second** refinement was always
-  rejected outright. That guard is precisely why nothing grew past one
-  concatenation — the real defect was the opposite of the one reported: not
-  too much accumulation, but no way to add more. The case that surfaced it:
-  registering a merge with BL-137 into BL-136 failed with `item BL-136 is
-  refined, must be raw`, and that ledger was lost from the record entirely.
-  New table `backlog_refinements` (migration 017, schema version 16 → 17)
-  holds refinements as append-only rows keyed by `(item_id, seq)`; existing
-  descriptions are left byte-identical — **no backfill, no heuristic split
-  on `"\n\n"`**, which is not a reliable delimiter (it already appears
-  inside pre-existing concatenated ledgers). `description` is now
-  **write-once**, set only by `backlog_add`. `backlog_refine` accepts `raw`
-  **and** `refined` items (still rejecting `promoted`/`archived` with the
-  new typed `ErrBacklogNotRefinable`, mapped to `-32602` like before) and
-  gains an optional `by` field (who appended it — e.g. `orchestrator`,
-  `architect`; omitted means honestly unattributed, unlike the required
-  `by` of `spec_advance`/`lane_override`, because this tool is already in
-  production and a hard requirement would break every existing caller on
-  its first call). `backlog_list` gains a `refinements` counter per item
-  (present even at 0, computed via a single `LEFT JOIN` against an
-  already-aggregated derived table — no N+1, and the join never touches
-  `total`, which still counts items). **Breaking change:** `backlog_get`
-  now returns `{item, refinements}` instead of the raw item — the only way
-  to read a grill ledger's full history over MCP, with no `limit` (there is
-  no escape hatch for refinements the way `backlog_get` itself is one for
-  `backlog_list`, so a default window would leave rows permanently
-  unreachable). New CLI subcommand `mneme backlog get <id> [--json]`
-  restores the CLI's full-fidelity path for refinement bodies, which the
-  move out of `description` would otherwise have taken away. No new MCP
-  tools (still 77).
+  `description` in this repo's own backlog is 9,438 bytes, none exceed 10 KB.
+  There was no ceiling-less concatenation to fix: `BacklogRefine` required
+  `status == raw` and set `refined` on the same call, so a **second**
+  refinement was always rejected outright — that guard is precisely why
+  nothing ever grew past one concatenation. The real defect was the
+  opposite of the one reported: **not** unbounded accumulation, but no way
+  to add information to an item once it had already been refined once. The
+  case that surfaced it: registering a merge with BL-137 into BL-136 failed
+  on 2026-08-05 with `item BL-136 is refined, must be raw`, and that merge
+  ledger was lost from the record entirely — silently, since the caller had
+  no way to append it anywhere else. New table `backlog_refinements`
+  (migration 017, schema version 16 → 17) holds refinements as append-only
+  rows keyed by `(item_id, seq)`. **Existing descriptions are left
+  untouched, byte-identical** — no backfill, no heuristic split on
+  `"\n\n"`, which is not a reliable delimiter (it already appears inside
+  pre-existing concatenated ledgers) and would corrupt legacy data if used
+  to split it; no manual data migration is required from anyone. Going
+  forward, `description` is **write-once**, set only by `backlog_add`.
+  `backlog_refine` accepts `raw` **and** `refined` items (still rejecting
+  `promoted`/`archived` with the new typed `ErrBacklogNotRefinable`, mapped
+  to `-32602` like before) and gains an optional `by` field (who appended
+  it — e.g. `orchestrator`, `architect`; omitted means honestly
+  unattributed, unlike the required `by` of `spec_advance`/`lane_override`,
+  because this tool is already in production and a hard requirement would
+  break every existing caller on its first call). `backlog_list` gains a
+  `refinements` counter per item (present even at 0, computed via a single
+  `LEFT JOIN` against an already-aggregated derived table — no N+1, and the
+  join never touches `total`, which still counts items). **Breaking
+  change:** `backlog_get` now returns `{item, refinements}` instead of the
+  raw item at the response root — the only way to read a grill ledger's
+  full history over MCP, with no `limit` (there is no escape hatch for
+  refinements the way `backlog_get` itself is one for `backlog_list`, so a
+  default window would leave rows permanently unreachable). New CLI
+  subcommand `mneme backlog get <id> [--json]` restores the CLI's
+  full-fidelity path for refinement bodies, which the move out of
+  `description` would otherwise have taken away — it does not add to the
+  top-level command count (it's a subcommand of the existing `backlog`
+  command). No new MCP tools (still 77).
 
 ### Fixed
 
