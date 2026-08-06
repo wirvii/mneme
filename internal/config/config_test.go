@@ -2018,6 +2018,65 @@ func TestProfilesConfig_DefaultIsVanilla(t *testing.T) {
 	}
 }
 
+func TestSpeechDefaultsAreOptIn(t *testing.T) {
+	cfg := Default()
+	if cfg.Speech.Enabled {
+		t.Fatal("speech must be disabled by default")
+	}
+	if cfg.Speech.Mode != "brief" || cfg.Speech.Engine != "auto" || cfg.Speech.Rate != 1.0 {
+		t.Fatalf("unexpected speech defaults: %+v", cfg.Speech)
+	}
+}
+
+func TestSpeechChecksumValidation(t *testing.T) {
+	cfg := Default()
+	cfg.Speech.PiperSHA256 = "xyz"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("short checksum accepted")
+	}
+	cfg.Speech.PiperSHA256 = strings.Repeat("z", 64)
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("non-hex checksum accepted")
+	}
+	cfg.Speech.PiperSHA256 = strings.Repeat("a", 64)
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLoadWithoutSpeechSectionRemainsDisabled(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte("[profiles]\ndefault = \"team\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Speech.Enabled || cfg.Speech.Mode != "brief" {
+		t.Fatalf("legacy config enabled speech: %+v", cfg.Speech)
+	}
+}
+
+func TestSetSpeechPreservesOtherSections(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte("[profiles]\ndefault = \"team\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	speechCfg := Default().Speech
+	speechCfg.Enabled = true
+	if err := SetSpeech(path, speechCfg); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Speech.Enabled || cfg.Profiles.Default != "team" {
+		t.Fatalf("SetSpeech result: %+v", cfg)
+	}
+}
+
 // TestProfilesConfig_EnvOverride verifies MNEME_PROFILES_DEFAULT overrides
 // both Default() and whatever the TOML file says.
 func TestProfilesConfig_EnvOverride(t *testing.T) {

@@ -9,6 +9,29 @@ import "github.com/wirvii/mneme/internal/model"
 func allTools() []ToolDefinition {
 	return []ToolDefinition{
 		{
+			Name:        "speech_emit",
+			Description: "Resolve the current spoken-response turn. Emit only a concise semantic result, decision, useful explanation, question, or blocker; use skip when speech adds no value. Speech is local and opt-in.",
+			InputSchema: map[string]any{
+				"type": "object", "required": []string{"disposition", "session_id"},
+				"properties": map[string]any{
+					"disposition": map[string]any{"type": "string", "enum": []string{"emit", "skip"}},
+					"mode":        map[string]any{"type": "string", "enum": []string{"brief", "full"}},
+					"text":        map[string]any{"type": "string", "description": "Useful spoken text; required for emit and omitted for skip."},
+					"language":    map[string]any{"type": "string", "description": "Detected BCP-47 language or short locale such as es or en."},
+					"session_id":  map[string]any{"type": "string", "description": "Opaque session id supplied by the speech hook."},
+				},
+			},
+		},
+		{
+			Name: "speech_control", Description: "Enable, disable, stop, inspect, or change the mode of mneme's entirely local spoken-response channel.",
+			InputSchema: map[string]any{"type": "object", "required": []string{"action"}, "properties": map[string]any{
+				"action": map[string]any{"type": "string", "enum": []string{"on", "off", "stop", "status", "voices", "setup", "set_mode"}},
+				"mode":   map[string]any{"type": "string", "enum": []string{"brief", "full"}},
+				"model":  map[string]any{"type": "string", "description": "Existing local Piper model path; required for setup."},
+				"sha256": map[string]any{"type": "string", "description": "Expected SHA-256 digest; required for setup."},
+			}},
+		},
+		{
 			Name:        "mem_save",
 			Description: "Save a structured observation to persistent memory.",
 			InputSchema: map[string]any{

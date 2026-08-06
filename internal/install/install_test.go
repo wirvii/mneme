@@ -1465,7 +1465,7 @@ func TestInstallSteps_DefaultSequence(t *testing.T) {
 }
 
 // TestClaudeCode_NoStopHookRegistered verifies that ClaudeCode().Hooks()
-// registers exactly one patch (SessionStart) and none for the retired "Stop"
+// registers SessionStart plus UserPromptSubmit and none for the retired "Stop"
 // event (SPEC-106 AC3).
 func TestClaudeCode_NoStopHookRegistered(t *testing.T) {
 	agent := ClaudeCode("/usr/local/bin/mneme")
@@ -1474,11 +1474,14 @@ func TestClaudeCode_NoStopHookRegistered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Hooks: %v", err)
 	}
-	if len(patches) != 1 {
-		t.Fatalf("Hooks() returned %d patches, want exactly 1: %+v", len(patches), patches)
+	if len(patches) != 2 {
+		t.Fatalf("Hooks() returned %d patches, want exactly 2: %+v", len(patches), patches)
 	}
 	if patches[0].Event != "SessionStart" || patches[0].Command != "mneme hook session-start" {
 		t.Errorf("Hooks()[0] = %+v, want {SessionStart, mneme hook session-start}", patches[0])
+	}
+	if patches[1].Event != "UserPromptSubmit" || patches[1].Command != "mneme hook speech-prompt" {
+		t.Errorf("Hooks()[1] = %+v, want {UserPromptSubmit, mneme hook speech-prompt}", patches[1])
 	}
 	for _, p := range patches {
 		if p.Event == "Stop" {

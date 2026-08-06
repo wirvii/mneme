@@ -103,6 +103,13 @@ ambiguous, grill it or reclassify it to standard.
 
 ## 5. Skills
 
+When the `UserPromptSubmit` hook injects a `<mneme:speech>` block, resolve that
+turn exactly once with `speech_emit`: speak only the concise useful result,
+decision, explanation, question, or blocker, or use `disposition=skip`. Never
+send raw tool output, code, progress chatter, or a copy of the full visual
+answer. The user can ask to enable or disable speech; use `speech_control`.
+Speech is local, opt-in, and disabled by default.
+
 Check installed skills before implementing: `mneme skills list`.
 Validate before relying on: `mneme skills lint [name]` / `mneme skills validate <name>`.
 Manage: `mneme skills install|pin|unpin|remove`.

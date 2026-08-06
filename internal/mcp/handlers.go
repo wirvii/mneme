@@ -30,6 +30,7 @@ type handlers struct {
 	modelsSvc   *service.ModelsService    // optional; nil disables model tools
 	subagentSvc *service.SubagentService  // wraps svc; always available (SPEC-057/SS-4)
 	profileSvc  *service.ProfileService   // wraps cfg.ProfilesDir(); always available (SPEC-091 §1)
+	speechSvc   *service.SpeechService    // host-local speech control; always available
 	logger      *slog.Logger
 }
 
@@ -72,7 +73,8 @@ func newHandlers(svc *service.MemoryService, sdd *service.SDDService, skillsSvc 
 			// generator. A single-layout scaffold never touches it.
 			service.WithProfileBootstrapper(service.NewExecBootstrapper()),
 		),
-		logger: logger,
+		speechSvc: service.NewSpeechService(config.DefaultPath(), cfg.Storage.DataDir),
+		logger:    logger,
 	}
 }
 
@@ -90,6 +92,10 @@ func (h *handlers) handleToolCall(ctx context.Context, params ToolCallParams) (*
 	}
 
 	switch params.Name {
+	case "speech_emit":
+		return h.handleSpeechEmit(ctx, params.Arguments)
+	case "speech_control":
+		return h.handleSpeechControl(ctx, params.Arguments)
 	case "mem_save":
 		return h.handleMemSave(ctx, params.Arguments)
 	case "mem_search":

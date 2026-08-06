@@ -15,7 +15,8 @@ import (
 //
 //	{
 //	  "hooks": {
-//	    "SessionStart": [{"hooks": [{"type":"command","command":"<string>"}]}]
+//	    "SessionStart": [{"hooks": [{"type":"command","command":"<string>"}]}],
+//	    "UserPromptSubmit": [{"hooks": [{"type":"command","command":"<string>"}]}]
 //	  }
 //	}
 //
@@ -62,10 +63,11 @@ func WriteCodexHooks(path string) error {
 		return fmt.Errorf("install: codex hooks: hooks key in %s is not an object", path)
 	}
 
-	// Patches to register: SessionStart only (SPEC-106 D4 — Stop is retired,
+	// Patches to register: SessionStart plus opt-in speech prompt. Stop remains retired,
 	// see the package-level godoc above and Codex().RetiredHooks).
 	patches := []HookPatch{
 		{Event: "SessionStart", Command: "mneme hook session-start"},
+		{Event: "UserPromptSubmit", Command: "mneme hook speech-prompt"},
 	}
 
 	for _, patch := range patches {

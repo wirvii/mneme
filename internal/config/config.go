@@ -5,6 +5,7 @@
 package config
 
 import (
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -35,6 +36,21 @@ type Config struct {
 	Models        ModelsConfig        `toml:"models"`
 	Codegraph     CodegraphConfig     `toml:"codegraph"`
 	Profiles      ProfilesConfig      `toml:"profiles"`
+	Speech        SpeechConfig        `toml:"speech"`
+}
+
+// SpeechConfig controls mneme's local text-to-speech channel. Speech is
+// deliberately opt-in: a missing configuration section always remains off.
+type SpeechConfig struct {
+	Enabled          bool              `toml:"enabled"`
+	Mode             string            `toml:"mode"`
+	Engine           string            `toml:"engine"`
+	Language         string            `toml:"language"`
+	FallbackLanguage string            `toml:"fallback_language"`
+	Rate             float64           `toml:"rate"`
+	PiperModel       string            `toml:"piper_model"`
+	PiperSHA256      string            `toml:"piper_sha256"`
+	Voices           map[string]string `toml:"voices"`
 }
 
 // ProfilesConfig holds the host-level default profile (SPEC-093 §3, decision
@@ -566,19 +582,19 @@ func Default() *Config {
 			},
 		},
 		Graph: GraphConfig{
-			HebbianWindow:        5,
-			HebbianIncrement:     0.05,
-			HebbianInitialWeight: 0.1,
-			HebbianBufferSize:    1000,
-			EdgeDecayRate:        0.02,
-			EdgeDecayAfterDays:   30,
-			ExpansionEnabled:     true,
-			ExpansionThreshold:   0.3,
-			ExpansionFanOutCap:   50,
-			ExpansionSeedTopK:    10,
-			ExploreMaxNodes:      200,
-			ExploreDefaultDepth:  2,
-			ExploreDefaultBudget: 4000,
+			HebbianWindow:             5,
+			HebbianIncrement:          0.05,
+			HebbianInitialWeight:      0.1,
+			HebbianBufferSize:         1000,
+			EdgeDecayRate:             0.02,
+			EdgeDecayAfterDays:        30,
+			ExpansionEnabled:          true,
+			ExpansionThreshold:        0.3,
+			ExpansionFanOutCap:        50,
+			ExpansionSeedTopK:         10,
+			ExploreMaxNodes:           200,
+			ExploreDefaultDepth:       2,
+			ExploreDefaultBudget:      4000,
 			RebuildMinShared:          2,
 			RebuildMaxRelations:       50,
 			WikilinksEnabled:          true,
@@ -606,6 +622,15 @@ func Default() *Config {
 		},
 		Profiles: ProfilesConfig{
 			Default: "",
+		},
+		Speech: SpeechConfig{
+			Enabled:          false,
+			Mode:             "brief",
+			Engine:           "auto",
+			Language:         "auto",
+			FallbackLanguage: "es",
+			Rate:             1.0,
+			Voices:           map[string]string{"es": "", "en": ""},
 		},
 	}
 }
@@ -976,8 +1001,33 @@ func LoadWithOrigins(path string) (*Config, *ConfigOrigins, error) {
 	origins.Sections["graph"] = buildGraphOrigins(cfg, dflt)
 	origins.Sections["suggestions"] = buildSuggestionsOrigins(cfg, dflt)
 	origins.Sections["codegraph"] = buildCodegraphOrigins(cfg, dflt)
+	origins.Sections["speech"] = buildSpeechOrigins(cfg, dflt)
 
 	return cfg, origins, nil
+}
+
+func buildSpeechOrigins(cfg, dflt *Config) []ConfigFieldInfo {
+	values := []struct {
+		key string
+		got any
+		def any
+	}{
+		{"enabled", cfg.Speech.Enabled, dflt.Speech.Enabled},
+		{"mode", cfg.Speech.Mode, dflt.Speech.Mode},
+		{"engine", cfg.Speech.Engine, dflt.Speech.Engine},
+		{"language", cfg.Speech.Language, dflt.Speech.Language},
+		{"fallback_language", cfg.Speech.FallbackLanguage, dflt.Speech.FallbackLanguage},
+		{"rate", cfg.Speech.Rate, dflt.Speech.Rate},
+		{"piper_model", cfg.Speech.PiperModel, dflt.Speech.PiperModel},
+		{"piper_sha256", cfg.Speech.PiperSHA256, dflt.Speech.PiperSHA256},
+		{"voices", cfg.Speech.Voices, dflt.Speech.Voices},
+	}
+	fields := make([]ConfigFieldInfo, 0, len(values))
+	for _, value := range values {
+		o, ev := fieldOrigin(value.got, value.def, true)
+		fields = append(fields, makeField(value.key, value.got, o, ev))
+	}
+	return fields
 }
 
 // fieldOrigin determines the origin for a single field. It checks whether the
@@ -1060,7 +1110,7 @@ func buildConsolidationOrigins(cfg, dflt *Config) []ConfigFieldInfo {
 func buildDecayOrigins(cfg, dflt *Config) []ConfigFieldInfo {
 	var fields []ConfigFieldInfo
 	for _, f := range []struct {
-		key     string
+		key      string
 		got, def float64
 	}{
 		{"architecture", cfg.Decay.Architecture, dflt.Decay.Architecture},
@@ -1247,6 +1297,23 @@ func (c *Config) Validate() error {
 	}
 	if c.Storage.GlobalBudget <= 0 {
 		return errors.New("storage.global_budget must be greater than 0")
+	}
+	if c.Speech.Mode != "brief" && c.Speech.Mode != "full" {
+		return fmt.Errorf("speech.mode %q is not valid; accepted values: brief, full", c.Speech.Mode)
+	}
+	if c.Speech.Engine != "auto" && c.Speech.Engine != "system" && c.Speech.Engine != "piper" {
+		return fmt.Errorf("speech.engine %q is not valid; accepted values: auto, system, piper", c.Speech.Engine)
+	}
+	if c.Speech.Rate < 0.5 || c.Speech.Rate > 2.0 {
+		return errors.New("speech.rate must be in [0.5, 2.0]")
+	}
+	if c.Speech.PiperSHA256 != "" {
+		if len(c.Speech.PiperSHA256) != 64 {
+			return errors.New("speech.piper_sha256 must be a 64-character SHA-256 digest")
+		}
+		if _, err := hex.DecodeString(c.Speech.PiperSHA256); err != nil {
+			return errors.New("speech.piper_sha256 must be hexadecimal")
+		}
 	}
 	if c.Search.DefaultLimit <= 0 {
 		return errors.New("search.default_limit must be greater than 0")

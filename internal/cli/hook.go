@@ -103,6 +103,8 @@ Events:
 				return runHookSessionEnd(os.Stdout)
 			case "pre-tool-use":
 				return runHookPreToolUse(os.Stdin, os.Stdout, os.Stderr)
+			case "speech-prompt":
+				return runHookSpeechPrompt(cmd.Context(), os.Stdin, os.Stdout)
 			case "enforce-delegation":
 				return runHookEnforceDelegation(os.Stdin, os.Stderr)
 			case "tokenize":
@@ -113,12 +115,32 @@ Events:
 				}
 				return runHookPathOwned(args[1])
 			default:
-				return fmt.Errorf("hook: unknown event %q — supported events: session-start, session-end, pre-tool-use, enforce-delegation, tokenize, path-owned", event)
+				return fmt.Errorf("hook: unknown event %q — supported events: session-start, session-end, speech-prompt, pre-tool-use, enforce-delegation, tokenize, path-owned", event)
 			}
 		},
 	}
 
 	return cmd
+}
+
+func runHookSpeechPrompt(ctx context.Context, in io.Reader, out io.Writer) error {
+	var input struct {
+		SessionID string `json:"session_id"`
+	}
+	if err := json.NewDecoder(in).Decode(&input); err != nil && !errors.Is(err, io.EOF) {
+		return fmt.Errorf("hook speech-prompt: decode: %w", err)
+	}
+	if input.SessionID == "" {
+		input.SessionID = fmt.Sprintf("local-%d", time.Now().UnixNano())
+	}
+	protocol, err := service.NewSpeechService(config.DefaultPath(), flagDataDir).RegisterPrompt(ctx, input.SessionID)
+	if err != nil {
+		return nil
+	}
+	if protocol != "" {
+		fmt.Fprintln(out, protocol)
+	}
+	return nil
 }
 
 // hookSessionStartInput es el payload que el agente entrega por stdin.
@@ -756,11 +778,19 @@ type hookPreToolInput struct {
 
 	// The five paths where Claude Code may inject agent_id (SPEC-042 / SPEC-043).
 	// Any non-empty value signals a subagent; all empty / absent means orchestrator.
-	AgentID  string `json:"agent_id"`
-	Session  struct{ AgentID string `json:"agent_id"` } `json:"session"`
-	Subagent struct{ AgentID string `json:"agent_id"` } `json:"subagent"`
-	Context  struct{ AgentID string `json:"agent_id"` } `json:"context"`
-	Metadata struct{ AgentID string `json:"agent_id"` } `json:"metadata"`
+	AgentID string `json:"agent_id"`
+	Session struct {
+		AgentID string `json:"agent_id"`
+	} `json:"session"`
+	Subagent struct {
+		AgentID string `json:"agent_id"`
+	} `json:"subagent"`
+	Context struct {
+		AgentID string `json:"agent_id"`
+	} `json:"context"`
+	Metadata struct {
+		AgentID string `json:"agent_id"`
+	} `json:"metadata"`
 }
 
 // agentID returns the first non-empty value among the five known agent_id
@@ -2308,4 +2338,3 @@ func logUnresolvedRoleEvent(input hookPreToolInput, identity CallerIdentity, cwd
 	}
 	_ = enforcelog.Append(path, ev, enforcelog.DefaultMaxBytes) //nolint:errcheck // best-effort telemetry
 }
-

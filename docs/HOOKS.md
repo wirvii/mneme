@@ -742,3 +742,11 @@ performance.
 - [Architecture](ARCHITECTURE.md) — overall system design and graph layer
 - [Knowledge Graph](GRAPH.md) — weighted relations, Hebbian learning, decay
 - [API reference: CLI](api/cli.md) → — full flag reference for `mneme hook <event>`
+# Spoken-response prompt hook
+
+`UserPromptSubmit` runs `mneme hook speech-prompt`. With speech disabled it is
+a silent no-op. With speech enabled it cancels prior audio, records the current
+session expectation, and injects the short `<mneme:speech>` contract that asks
+the agent to call `speech_emit` exactly once with useful prose or an explicit
+skip. A later prompt counts an unresolved expectation but never reads the raw
+assistant response as fallback.

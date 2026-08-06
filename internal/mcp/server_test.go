@@ -210,6 +210,7 @@ func TestToolsList(t *testing.T) {
 	unmarshalResult(t, resp, &result)
 
 	wantNames := []string{
+		"speech_emit", "speech_control",
 		"mem_save", "mem_search", "mem_get", "mem_context",
 		"mem_update", "mem_session_end", "mem_suggest_topic_key",
 		"mem_relate", "mem_timeline", "mem_stats", "mem_checkpoint", "mem_forget", "mem_promote",

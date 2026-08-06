@@ -10,8 +10,8 @@ import (
 // profile_deactivate) -> 77.
 func TestAllTools_Count77(t *testing.T) {
 	tools := allTools()
-	if len(tools) != 77 {
-		t.Errorf("allTools() returned %d tools, want 77", len(tools))
+	if len(tools) != 79 {
+		t.Errorf("allTools() returned %d tools, want 79", len(tools))
 	}
 }
 

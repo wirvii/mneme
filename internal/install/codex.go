@@ -10,7 +10,7 @@ import (
 // binaryPath as the absolute path to the mneme binary. The returned agent
 // covers:
 //   - MCP server registration in ~/.codex/config.toml under [mcp_servers.mneme]
-//   - Session hooks in ~/.codex/hooks.json (SessionStart + Stop events)
+//   - Session hooks in ~/.codex/hooks.json (SessionStart + UserPromptSubmit)
 //   - Operating manual injected as a managed block in ~/.codex/AGENTS.md
 //   - Workflow templates written to ~/.mneme/templates/ (shared with Claude)
 //   - Bundled skills copied to $HOME/.agents/skills (Codex discovery path, S4)

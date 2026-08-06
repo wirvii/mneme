@@ -199,6 +199,10 @@ func ClaudeCode(binaryPath string) *Agent {
 					Event:   "SessionStart",
 					Command: "mneme hook session-start",
 				},
+				{
+					Event:   "UserPromptSubmit",
+					Command: "mneme hook speech-prompt",
+				},
 			}
 			return path, patches, nil
 		},

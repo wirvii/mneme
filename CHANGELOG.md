@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Opt-in local spoken responses (SPEC-111).** `mneme speech` and the
+  `speech_emit`/`speech_control` MCP tools provide concise semantic TTS on
+  macOS (`say`), Windows (System.Speech/SAPI), and Linux (Piper). Speech is
+  disabled by default, uses one authenticated loopback supervisor with no
+  queue, never persists spoken text, and never calls cloud TTS. Piper setup
+  accepts only an existing local model whose SHA-256 digest matches.
+
 ## [v1.32.0] — 2026-08-05 — Backlog refinements become iterative, append-only rows; `backlog get` arrives
 
 ### Added

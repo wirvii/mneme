@@ -149,3 +149,38 @@ func SetProfilesDefault(path, name string) error {
 
 	return nil
 }
+
+// SetSpeech reads the host configuration, replaces its speech section, and
+// writes it atomically. It preserves every unrelated configuration section.
+func SetSpeech(path string, speech SpeechConfig) error {
+	cfg := Default()
+	if _, err := os.Stat(path); err == nil {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("config: write speech: read %s: %w", path, err)
+		}
+		if err := toml.Unmarshal(data, cfg); err != nil {
+			return fmt.Errorf("config: write speech: parse toml: %w", err)
+		}
+	}
+	cfg.Speech = speech
+	if err := cfg.Validate(); err != nil {
+		return fmt.Errorf("config: write speech: %w", err)
+	}
+	out, err := toml.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("config: write speech: marshal: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("config: write speech: mkdir: %w", err)
+	}
+	tmpPath := path + ".tmp"
+	if err := os.WriteFile(tmpPath, out, 0o644); err != nil {
+		return fmt.Errorf("config: write speech: write tmp: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("config: write speech: rename: %w", err)
+	}
+	return nil
+}

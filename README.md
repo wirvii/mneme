@@ -405,6 +405,7 @@ errors, examples) under [docs/api/](docs/api/):
 | `skills_*` | 7 | Install/pin/lint/validate skills in `~/.claude/skills/` | [docs/api/skills.md](docs/api/skills.md) |
 | `model_*` | 3 | Per-agent model alias assignment | [docs/api/models.md](docs/api/models.md) |
 | `conflicts_*` | 5 | Detect and manage memory conflict relations | [docs/api/conflicts.md](docs/api/conflicts.md) |
+| `speech_*` | 2 | Control and emit concise, entirely local spoken responses | [docs/speech.md](docs/speech.md) |
 | `init` | 1 | Apply managed blocks + drift report (project bootstrap) | [docs/api/sdd.md](docs/api/sdd.md) |
 | `subagent_*` | 6 | Fingerprint, compose, validate, and write per-project subagent profiles | [docs/api/subagents.md](docs/api/subagents.md) |
 
@@ -451,6 +452,7 @@ errors, examples) under [docs/api/](docs/api/):
 | [Team Memory](docs/team-memory.md) | Git-native shared knowledge: what's shared, write-through, import hooks, conflicts, privacy |
 | [Enforcement Model](docs/enforcement-model.md) | Two-layer role enforcement, per-project subagent generation, opt-in delegation-hook |
 | [Configuration](docs/CONFIG.md) | All config sections, env overrides, tuning recipes |
+| [Local Speech](docs/speech.md) | Opt-in semantic TTS on macOS, Windows, and Linux; privacy and setup |
 | [Memory Manifest](docs/MEMORY-MANIFEST.md) | Portable interchange format (JSON Schema 2020-12) |
 | [Technical Spec](docs/SPEC.md) | Original v0.1 specification |
 | [Branding](docs/BRANDING.md) | Logo concept, palette, variants, do's & don'ts, copyable SVG source |

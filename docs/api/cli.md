@@ -1,6 +1,6 @@
 # API Reference — CLI Commands
 
-36 top-level commands (`./mneme --help` and `./mneme <cmd> --help` are the
+41 top-level commands (`./mneme --help` and `./mneme <cmd> --help` are the
 source of truth; this reference mirrors them). Global flags apply to every
 subcommand:
 
@@ -1214,3 +1214,14 @@ mneme completion zsh > ~/.zsh/completions/_mneme
 - [docs/conflicts.md](../conflicts.md) — `mneme conflicts` two-phase workflow
 - [docs/enforcement-model.md](../enforcement-model.md) — `mneme subagents`/`mneme delegation-hook`, per-project subagent generation
 - [docs/team-memory.md](../team-memory.md) — `mneme team-memory`/`mneme promote`, git-native shared vault
+# Speech
+
+`mneme speech on|off|stop|status|voices|mode|test|setup` controls the host-local
+spoken-response channel. It is disabled by default. Linux setup requires an
+existing Piper model and its expected digest:
+
+```bash
+mneme speech setup --model /path/to/voice.onnx --sha256 EXPECTED_DIGEST
+```
+
+No speech command downloads a model or sends spoken text to a network service.
