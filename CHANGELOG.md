@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [v1.33.0] — 2026-08-06 — Local semantic spoken responses
+
 ### Added
 
 - **Opt-in local spoken responses (SPEC-111).** `mneme speech` and the

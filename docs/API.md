@@ -4,7 +4,7 @@
 
 mneme exposes the same service layer through three frontends: **MCP** (79
 tools over JSON-RPC 2.0 stdio, primary), **HTTP** (10 REST endpoints under
-`/v1/`), and **CLI** (36 top-level commands, Cobra). This page is an index --
+`/v1/`), and **CLI** (41 top-level commands, Cobra). This page is an index --
 the full contract for every tool, endpoint, and command lives in
 [docs/api/](api/).
 
@@ -20,7 +20,7 @@ of JSON -- see [docs/api/codegraph.md](api/codegraph.md)).
 {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"my-agent","version":"1.0"}}}
 
 // Response
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"mneme","version":"1.17.0"}}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"mneme","version":"1.33.0"}}}
 
 // Notification (no response expected)
 {"jsonrpc":"2.0","method":"notifications/initialized"}

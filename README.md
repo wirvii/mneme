@@ -342,7 +342,7 @@ See [docs/conflicts.md](docs/conflicts.md) and
 
 ## Commands
 
-36 top-level commands (`mneme --help` is the source of truth for flags; full
+41 top-level commands (`mneme --help` is the source of truth for flags; full
 flag reference in [docs/api/cli.md](docs/api/cli.md)). Cobra's
 auto-generated `completion` is listed below for reference but not counted in
 that figure:
@@ -376,6 +376,11 @@ that figure:
 | `mneme subagents` | Generate and manage per-project subagent profiles (`fingerprint`, `profile`, `compose`, `write`, `manifest-list`) |
 | `mneme delegation-hook` | Register/inspect the project-scoped opt-in delegation-enforcement hook (`enable`, `disable`, `status`) |
 | `mneme team-memory` | Manage git-native team memory sharing (`enable`, `hooks install\|remove`) |
+| `mneme profile` | Manage portable methodology profiles (`new`, `add`, `update`, `list`, `status`, `use`, `default`, `deactivate`) |
+| `mneme project` | Create a project from an active profile scaffold (`new`) |
+| `mneme app` | Add and wire an app in a scaffolded monorepo (`add`) |
+| `mneme scaffold` | Capture an exemplar repository as a profile scaffold (`capture`) |
+| `mneme speech` | Control opt-in, entirely local spoken responses (`on`, `off`, `stop`, `status`, `voices`, `mode`, `test`, `setup`) |
 | `mneme sync` | Sync memories via git (`export`, `import`, `status`) |
 | `mneme vault` | Manage the filesystem vault mirror (`export`, `import`) |
 | `mneme embed` | Manage memory embeddings for semantic search (`backfill`) |
@@ -391,14 +396,14 @@ that figure:
 
 ## MCP Tools
 
-The MCP server (`mneme mcp`) exposes **65 tools** over JSON-RPC 2.0 stdio,
+The MCP server (`mneme mcp`) exposes **79 tools** over JSON-RPC 2.0 stdio,
 grouped by family. Each family has a full contract reference (params, returns,
 errors, examples) under [docs/api/](docs/api/):
 
 | Family | Count | What it covers | Reference |
 |--------|-------|-----------------|-----------|
 | `mem_*` | 15 | Save, search, update, relate, explore, promote, and time-travel through memories | [docs/api/memory.md](docs/api/memory.md) |
-| `backlog_*` | 4 | Raw idea → refined → promoted-to-spec lifecycle | [docs/api/sdd.md](docs/api/sdd.md) |
+| `backlog_*` | 5 | Raw idea → refined → promoted-to-spec lifecycle | [docs/api/sdd.md](docs/api/sdd.md) |
 | `spec_*` | 9 | Spec lifecycle: draft → speccing → ... → done, plus `quick`/`reject`/`doc_write` shortcuts | [docs/api/sdd.md](docs/api/sdd.md) |
 | `lane_*` | 5 | Trivial-lane audit, reclassify, override, status, stats | [docs/api/sdd.md](docs/api/sdd.md) |
 | `codegraph_*` | 10 | Symbol search, callers/callees, impact analysis, call tracing | [docs/api/codegraph.md](docs/api/codegraph.md) |
@@ -408,8 +413,12 @@ errors, examples) under [docs/api/](docs/api/):
 | `speech_*` | 2 | Control and emit concise, entirely local spoken responses | [docs/speech.md](docs/speech.md) |
 | `init` | 1 | Apply managed blocks + drift report (project bootstrap) | [docs/api/sdd.md](docs/api/sdd.md) |
 | `subagent_*` | 6 | Fingerprint, compose, validate, and write per-project subagent profiles | [docs/api/subagents.md](docs/api/subagents.md) |
+| `profile_*` | 8 | Add, select, reconcile, and deactivate portable profiles | [docs/profiles.md](docs/profiles.md) |
+| `project_*` | 1 | Create a repository from a profile scaffold | [docs/profiles.md](docs/profiles.md) |
+| `app_*` | 1 | Add and auto-wire a composable monorepo app | [docs/profiles.md](docs/profiles.md) |
+| `scaffold_*` | 1 | Capture a repository as a draft scaffold | [docs/profiles.md](docs/profiles.md) |
 
-15 + 4 + 9 + 5 + 10 + 7 + 3 + 5 + 1 + 6 = **65**.
+15 + 5 + 9 + 5 + 10 + 7 + 3 + 5 + 2 + 1 + 6 + 8 + 1 + 1 + 1 = **79**.
 
 ---
 
@@ -494,16 +503,16 @@ errors, examples) under [docs/api/](docs/api/):
 
 **Dependency rule:** imports flow inward only. `model` (zero external deps) is the leaf. Frontends (`cli`, `mcp`, `http`) call `service`, which orchestrates `store`, `scoring`, `graph`, and `rules`. No frontend calls `store` or `db` directly.
 
-**Persistence:** two SQLite databases per host -- `~/.mneme/global.db` (global + org scope) and `~/.mneme/projects/<slug>.db` (project scope, slug from git remote). Schema v14 with 14 embedded migrations.
+**Persistence:** two SQLite databases per host -- `~/.mneme/global.db` (global + org scope) and `~/.mneme/projects/<slug>.db` (project scope, slug from git remote). Schema v17 with embedded migrations.
 
-**Three frontends:** MCP (primary, 65 tools over stdio), HTTP (REST API at `:7437`, 10 endpoints under `/v1/` -- no SDD/codegraph/skills/model/conflicts/subagent parity yet), and CLI (Cobra, 36 commands).
+**Three frontends:** MCP (primary, 79 tools over stdio), HTTP (REST API at `:7437`, 10 endpoints under `/v1/` -- no SDD/codegraph/skills/model/conflicts/subagent/speech parity yet), and CLI (Cobra, 41 commands).
 
 ---
 
 ## Status & Roadmap
 
-**Current (main): schema v14, 65 MCP tools, 36 CLI commands, 10 HTTP endpoints.**
-Last tagged release: **v1.17.0**. Full history in [CHANGELOG.md](CHANGELOG.md).
+**Current (main): schema v17, 79 MCP tools, 41 CLI commands, 10 HTTP endpoints.**
+Latest release: **v1.33.0**. Full history in [CHANGELOG.md](CHANGELOG.md).
 
 **Shipped:**
 

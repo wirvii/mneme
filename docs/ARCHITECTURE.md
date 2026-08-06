@@ -38,7 +38,7 @@ mneme is a persistent memory system for AI coding agents. A single Go binary (no
 
 ### The solution
 
-A local SQLite database with FTS5 full-text search, a weighted knowledge graph with Hebbian learning and Personalized PageRank, community detection via Louvain, and automatic synthesis -- all exposed through 64 MCP tools. Agents call `mem_save`, `mem_search`, `mem_context`, `mem_explore`, and `mem_gaps` to manage structured knowledge. Rules are injected automatically and enforced via hooks.
+A local SQLite database with FTS5 full-text search, a weighted knowledge graph with Hebbian learning and Personalized PageRank, community detection via Louvain, and automatic synthesis -- all exposed through 79 MCP tools. Agents call `mem_save`, `mem_search`, `mem_context`, `mem_explore`, and `mem_gaps` to manage structured knowledge. Rules are injected automatically and enforced via hooks.
 
 ---
 
@@ -80,7 +80,7 @@ graph TB
 
     subgraph "Layer 1 — Storage"
         STORE["store/<br/>Repository Pattern"]
-        DB["SQLite + FTS5<br/>(schema v14)"]
+        DB["SQLite + FTS5<br/>(schema v17)"]
     end
 
     CLI --> SVC
@@ -148,7 +148,7 @@ internal/
                            8 relation types, request/response structs). Zero deps.
   project/              -- git remote / project slug detection
   config/               -- TOML config + defaults + env overrides
-  db/                   -- SQLite + FTS5 + embedded migrations (schema v14)
+  db/                   -- SQLite + FTS5 + embedded migrations (schema v17)
   store/                -- repository pattern (CRUD, FTS5, vectors, entities, relations,
                            communities, sessions, unresolved refs)
   scoring/              -- importance, decay (Ebbinghaus), BM25 re-rank, RRF fusion,
@@ -174,9 +174,9 @@ internal/
   frontmatter/          -- surgical YAML frontmatter editor for agent .md files;
                            fixes known keys (name, description, model, tools,
                            permissionMode), preserves every other byte verbatim
-  mcp/                  -- MCP server (JSON-RPC 2.0 over stdio, 64 tools)
+  mcp/                  -- MCP server (JSON-RPC 2.0 over stdio, 79 tools)
   http/                 -- REST API (stdlib net/http, 10 endpoints under /v1/)
-  cli/                  -- Cobra commands (36 top-level commands)
+  cli/                  -- Cobra commands (41 top-level commands)
   install/              -- agent installer: MCP config, hooks, operating manual,
                            slash commands, skills embed. Since SPEC-073 it does
                            NOT install global agent profiles (removes legacy ones);
@@ -725,21 +725,23 @@ of the gap.) No auth, no rate limiting.
 
 ### CLI -- Cobra
 
-36 top-level commands (`completion` is Cobra's auto-generated shell-completion
+41 top-level commands (`completion` is Cobra's auto-generated shell-completion
 command and is not counted in this figure, matching `mneme --help`'s own
 distinction): `save`, `search`, `get`, `update`, `forget`, `promote`,
 `status`, `stats`, `consolidate`, `serve`, `mcp`, `init`, `install`,
 `upgrade`, `version`, `sync export|import|status`, `rule add|list|test`,
 `explore`, `graph rebuild|cleanup-orphan-relations`, `gaps`, `vault
 export|import`, `embed backfill`, `export markdown`, `config show`, `hook`,
-`tui`, `backlog add|list|refine|promote|archive`, `spec
+`tui`, `backlog add|list|get|refine|promote|archive`, `spec
 new|advance|pushback|resolve|quick|reject|list|status|history`, `lane
 audit|reclassify|override|status|stats`, `codegraph
 index|search|node|callers|callees|impact|trace|files|status|hooks`, `skills
 list|install|pin|unpin|remove|lint|validate`, `model list|set|reset`,
 `conflicts candidates|scan|link|unlink|list`, `subagents
 fingerprint|profile|compose|write|manifest-list`, `delegation-hook
-enable|disable|status`, `team-memory enable|hooks`. Full flag reference:
+enable|disable|status`, `team-memory enable|hooks`, `profile
+new|add|update|list|status|use|default|deactivate`, `project new`, `app add`,
+`scaffold capture`, `speech on|off|stop|status|voices|mode|test|setup`. Full flag reference:
 [docs/api/cli.md](api/cli.md).
 
 ### Hooks (`internal/cli/hook.go`)
@@ -1092,4 +1094,4 @@ this interacts with the write-through materialization path itself.
 
 ---
 
-*Originally written 2026-04-30 for EPIC-1 through EPIC-6 (SPEC-001 through SPEC-026); updated for schema v14 / 64 MCP tools / 36 CLI commands after the SDD+lanes, CodeGraph, Skills, Models, Conflicts, agnostic-agents (per-project subagents), and Team Memory EPICs. See [CHANGELOG.md](../CHANGELOG.md) for the full release history.*
+*Originally written 2026-04-30 for EPIC-1 through EPIC-6 (SPEC-001 through SPEC-026); updated through schema v17 / 79 MCP tools / 41 CLI commands, including SDD+lanes, CodeGraph, Skills, Models, Conflicts, per-project subagents, Team Memory, profiles/scaffolds, and local speech. See [CHANGELOG.md](../CHANGELOG.md) for the full release history.*
