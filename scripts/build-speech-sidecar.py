@@ -12,6 +12,8 @@ import shutil
 import subprocess
 import sys
 
+MAX_RELEASE_ASSET_BYTES = 2_147_483_648
+
 
 def main() -> None:
     parser = argparse.ArgumentParser()
@@ -25,6 +27,19 @@ def main() -> None:
     source = root / "speech" / "sidecars" / "kokoro"
     launcher = source / ("launcher.py" if args.backend == "mlx" else "launcher_pytorch.py")
     requirements = source / ("requirements-darwin-arm64.lock" if args.backend == "mlx" else "requirements-pytorch-cpu.lock")
+    if args.backend == "pytorch-cpu":
+        subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pip",
+                "install",
+                "torch==2.13.0",
+                "--index-url",
+                "https://download.pytorch.org/whl/cpu",
+            ],
+            check=True,
+        )
     subprocess.run([sys.executable, "-m", "pip", "install", "--requirement", str(requirements), "pyinstaller==6.21.0"], check=True)
     work = root / "tmp" / "speech-build" / args.target
     shutil.rmtree(work, ignore_errors=True)
@@ -67,6 +82,8 @@ def main() -> None:
     built = work / "bundle" / built_name
     package = output / f"mneme-kokoro-{args.version}-{args.target}{'.exe' if built_name.endswith('.exe') else ''}"
     shutil.copy2(built, package)
+    if package.stat().st_size >= MAX_RELEASE_ASSET_BYTES:
+        raise SystemExit(f"sidecar exceeds GitHub's release-asset limit: {package.stat().st_size}")
     digest = hashlib.sha256(package.read_bytes()).hexdigest()
     manifest = {
         "engine": "kokoro", "version": args.version, "target": args.target,
