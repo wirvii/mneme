@@ -1,0 +1,20 @@
+{
+  "mlx": {
+    "repository": "mlx-community/Kokoro-82M-bf16",
+    "revision": "a71e4d38b236d968966a2002c4c895dbd12b1c3c",
+    "files": [
+      {"path": "config.json", "size": 2351, "sha256": "5abb01e2403b072bf03d04fde160443e209d7a0dad49a423be15196b9b43c17f"},
+      {"path": "kokoro-v1_0.safetensors", "size": 327115152, "sha256": "4e9ecdf03b8b6cf906070390237feda473dc13327cb8d56a43deaa374c02acd8"},
+      {"path": "voices/ef_dora.safetensors", "size": 522320, "sha256": "13f6dfe8a498ce97a384186af045b586db6292869acbfde123a0fa2798229351"}
+    ]
+  },
+  "pytorch-cpu": {
+    "repository": "hexgrad/Kokoro-82M",
+    "revision": "f3ff3571791e39611d31c381e3a41a3af07b4987",
+    "files": [
+      {"path": "config.json", "size": 2351, "sha256": "5abb01e2403b072bf03d04fde160443e209d7a0dad49a423be15196b9b43c17f"},
+      {"path": "kokoro-v1_0.pth", "size": 327212226, "sha256": "496dba118d1a58f5f3db2efc88dbdc216e0483fc89fe6e47ee1f2c53f18ad1e4"},
+      {"path": "voices/ef_dora.pt", "size": 523420, "sha256": "d9d69b0f8a2b87a345f269d89639f89dfbd1a6c9da0c498ae36dd34afcf35530"}
+    ]
+  }
+}

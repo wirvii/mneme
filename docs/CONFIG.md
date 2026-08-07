@@ -412,7 +412,7 @@ configuration always means disabled.
 [speech]
 enabled = false
 mode = "brief"             # brief | full
-engine = "auto"            # auto | system | piper
+engine = "auto"            # auto | system | say | sapi | piper | kokoro
 language = "auto"
 fallback_language = "es"
 rate = 1.0                  # 0.5 .. 2.0
@@ -422,7 +422,14 @@ piper_sha256 = ""
 [speech.voices]
 es = ""
 en = ""
+
+[speech.languages.es]
+engine = "kokoro"
+voice = "ef_dora"
+fallback_engine = "system"
+fallback_voice = "Paulina"
 ```
 
-Use `mneme speech on|off` instead of editing `enabled` manually. See
+Use `mneme speech on|off` instead of editing `enabled` manually. Per-language
+preferences resolve in exact-locale, base-language, then `default` order. See
 [speech.md](speech.md) for platform setup and privacy guarantees.

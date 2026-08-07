@@ -1,0 +1,11 @@
+mlx-audio==0.4.7
+mlx==0.32.0
+mlx-lm==0.31.3
+mlx-metal==0.32.0
+misaki==0.9.4
+num2words==0.5.14
+spacy==3.8.14
+espeakng-loader==0.2.4
+phonemizer-fork==3.3.2
+numpy==2.5.1
+sounddevice==0.5.5

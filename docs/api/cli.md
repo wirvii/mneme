@@ -1216,12 +1216,28 @@ mneme completion zsh > ~/.zsh/completions/_mneme
 - [docs/team-memory.md](../team-memory.md) — `mneme team-memory`/`mneme promote`, git-native shared vault
 # Speech
 
-`mneme speech on|off|stop|status|voices|mode|test|setup` controls the host-local
-spoken-response channel. It is disabled by default. Linux setup requires an
-existing Piper model and its expected digest:
+`mneme speech on|off|stop|status|voices|voice|engine|mode|test|setup` controls
+the host-local spoken-response channel. It is disabled by default. When the
+preferred Kokoro engine is absent, `speech on` prints a content-addressed setup
+plan; `speech on --yes` consents to its verified, transactional installation,
+and `speech on --native` enables the native fallback without installing it.
+
+Per-language selection and managed-engine maintenance use:
+
+```bash
+mneme speech voice set --language es --engine kokoro --voice ef_dora
+mneme speech engine status kokoro
+mneme speech engine rollback kokoro
+mneme speech engine remove kokoro [--apply] [--remove-models]
+```
+
+The legacy Linux Piper setup requires an existing model and expected digest:
 
 ```bash
 mneme speech setup --model /path/to/voice.onnx --sha256 EXPECTED_DIGEST
 ```
 
-No speech command downloads a model or sends spoken text to a network service.
+Normal synthesis never sends spoken text to a network service. Only an
+explicitly consented managed setup downloads engine/model artifacts; size,
+SHA-256, target, and license metadata are verified before offline healthcheck
+and atomic activation.

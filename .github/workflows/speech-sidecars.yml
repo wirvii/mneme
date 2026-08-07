@@ -1,0 +1,82 @@
+name: Speech sidecars
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Immutable sidecar version
+        required: true
+        default: "1"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Kokoro (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {target: darwin-arm64, runner: macos-15, backend: mlx}
+          - {target: linux-amd64, runner: ubuntu-24.04, backend: pytorch-cpu}
+          - {target: linux-arm64, runner: ubuntu-24.04-arm, backend: pytorch-cpu}
+          - {target: windows-amd64, runner: windows-2025, backend: pytorch-cpu}
+          - {target: windows-arm64, runner: windows-11-arm, backend: pytorch-cpu}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: speech/sidecars/kokoro/*.lock
+      - name: Build self-contained launcher
+        run: python scripts/build-speech-sidecar.py --target "${{ matrix.target }}" --backend "${{ matrix.backend }}" --version "${{ inputs.version }}"
+      - name: Verify packaged offline synthesis
+        run: python scripts/smoke-speech-sidecar.py --artifact-dir dist/speech --target "${{ matrix.target }}" --backend "${{ matrix.backend }}" --version "${{ inputs.version }}"
+      - name: Upload verified package
+        uses: actions/upload-artifact@v4
+        with:
+          name: kokoro-${{ matrix.target }}
+          path: |
+            dist/speech/mneme-kokoro-*
+            dist/speech/*.manifest.json
+          if-no-files-found: error
+
+  catalog:
+    name: Assemble catalog candidate
+    runs-on: ubuntu-24.04
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist/speech
+          merge-multiple: true
+      - name: Validate manifests and assemble catalog
+        run: python scripts/build-speech-catalog.py --directory dist/speech --output dist/speech/catalog.json --base-url "https://github.com/wirvii/mneme/releases/download/kokoro-${{ inputs.version }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kokoro-catalog-candidate
+          path: dist/speech/catalog.json
+
+  publish:
+    name: Publish immutable Kokoro assets
+    runs-on: ubuntu-24.04
+    needs: catalog
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist/speech
+          merge-multiple: true
+      - name: Publish immutable sidecar release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          RELEASE="kokoro-${{ inputs.version }}"
+          if gh release view "$RELEASE" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "release $RELEASE already exists; immutable sidecars cannot be overwritten" >&2
+            exit 1
+          fi
+          gh release create "$RELEASE" dist/speech/* --title "Kokoro sidecars ${{ inputs.version }}" --notes "Immutable managed speech artifacts for mneme." --repo "$GITHUB_REPOSITORY"

@@ -1,0 +1,9 @@
+kokoro==0.7.16
+misaki==0.9.4
+num2words==0.5.14
+spacy==3.8.14
+espeakng-loader==0.2.4
+phonemizer-fork==3.3.2
+numpy==1.26.4
+sounddevice==0.5.5
+torch==2.13.0

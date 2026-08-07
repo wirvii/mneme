@@ -229,6 +229,35 @@ func TestSpeakAndVoiceFailures(t *testing.T) {
 	}
 }
 
+func TestKokoroUsesAbsoluteLauncherWithoutTextArguments(t *testing.T) {
+	launcher := filepath.Join(t.TempDir(), "launcher")
+	if err := os.WriteFile(launcher, []byte("managed"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	secret := "texto que no debe ser argumento"
+	old := commandContext
+	var gotName string
+	var gotArgs []string
+	commandContext = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		gotName, gotArgs = name, append([]string(nil), args...)
+		return exec.CommandContext(ctx, os.Args[0], "-test.run=TestHelperProcess")
+	}
+	t.Cleanup(func() { commandContext = old })
+	t.Setenv("GO_WANT_SPEECH_HELPER", "1")
+	if err := speakKokoro(context.Background(), Request{Launcher: launcher, Text: secret, Language: "es", Voice: "ef_dora", Rate: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if gotName != launcher || len(gotArgs) != 0 {
+		t.Fatalf("launcher=%q args=%q", gotName, gotArgs)
+	}
+	if strings.Contains(strings.Join(gotArgs, " "), secret) {
+		t.Fatal("spoken text leaked into arguments")
+	}
+	if err := speakKokoro(context.Background(), Request{Launcher: "relative", Text: secret}); err == nil {
+		t.Fatal("relative launcher accepted")
+	}
+}
+
 func TestLinuxPlayerPreference(t *testing.T) {
 	old := lookPath
 	t.Cleanup(func() { lookPath = old })

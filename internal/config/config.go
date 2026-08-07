@@ -42,15 +42,25 @@ type Config struct {
 // SpeechConfig controls mneme's local text-to-speech channel. Speech is
 // deliberately opt-in: a missing configuration section always remains off.
 type SpeechConfig struct {
-	Enabled          bool              `toml:"enabled"`
-	Mode             string            `toml:"mode"`
-	Engine           string            `toml:"engine"`
-	Language         string            `toml:"language"`
-	FallbackLanguage string            `toml:"fallback_language"`
-	Rate             float64           `toml:"rate"`
-	PiperModel       string            `toml:"piper_model"`
-	PiperSHA256      string            `toml:"piper_sha256"`
-	Voices           map[string]string `toml:"voices"`
+	Enabled          bool                            `toml:"enabled"`
+	Mode             string                          `toml:"mode"`
+	Engine           string                          `toml:"engine"`
+	Language         string                          `toml:"language"`
+	FallbackLanguage string                          `toml:"fallback_language"`
+	Rate             float64                         `toml:"rate"`
+	PiperModel       string                          `toml:"piper_model"`
+	PiperSHA256      string                          `toml:"piper_sha256"`
+	Voices           map[string]string               `toml:"voices"`
+	Languages        map[string]SpeechLanguageConfig `toml:"languages"`
+}
+
+// SpeechLanguageConfig selects a preferred and fallback engine/voice for one
+// locale without forcing every language through the same host voice.
+type SpeechLanguageConfig struct {
+	Engine         string `toml:"engine"`
+	Voice          string `toml:"voice"`
+	FallbackEngine string `toml:"fallback_engine"`
+	FallbackVoice  string `toml:"fallback_voice"`
 }
 
 // ProfilesConfig holds the host-level default profile (SPEC-093 §3, decision
@@ -631,6 +641,7 @@ func Default() *Config {
 			FallbackLanguage: "es",
 			Rate:             1.0,
 			Voices:           map[string]string{"es": "", "en": ""},
+			Languages:        map[string]SpeechLanguageConfig{},
 		},
 	}
 }
@@ -1021,6 +1032,7 @@ func buildSpeechOrigins(cfg, dflt *Config) []ConfigFieldInfo {
 		{"piper_model", cfg.Speech.PiperModel, dflt.Speech.PiperModel},
 		{"piper_sha256", cfg.Speech.PiperSHA256, dflt.Speech.PiperSHA256},
 		{"voices", cfg.Speech.Voices, dflt.Speech.Voices},
+		{"languages", cfg.Speech.Languages, dflt.Speech.Languages},
 	}
 	fields := make([]ConfigFieldInfo, 0, len(values))
 	for _, value := range values {
@@ -1285,6 +1297,18 @@ func (c *Config) ProfilesDir() string {
 	return filepath.Join(c.Storage.DataDir, "profiles")
 }
 
+func validSpeechEngine(engine string, allowEmpty bool) bool {
+	if engine == "" {
+		return allowEmpty
+	}
+	switch engine {
+	case "auto", "system", "say", "sapi", "piper", "kokoro":
+		return true
+	default:
+		return false
+	}
+}
+
 // Validate checks that every required field has an acceptable value.
 // It returns the first validation error encountered so the caller can surface
 // a clear message without needing to inspect the full Config struct.
@@ -1301,8 +1325,19 @@ func (c *Config) Validate() error {
 	if c.Speech.Mode != "brief" && c.Speech.Mode != "full" {
 		return fmt.Errorf("speech.mode %q is not valid; accepted values: brief, full", c.Speech.Mode)
 	}
-	if c.Speech.Engine != "auto" && c.Speech.Engine != "system" && c.Speech.Engine != "piper" {
-		return fmt.Errorf("speech.engine %q is not valid; accepted values: auto, system, piper", c.Speech.Engine)
+	if !validSpeechEngine(c.Speech.Engine, true) {
+		return fmt.Errorf("speech.engine %q is not valid; accepted values: auto, system, say, sapi, piper, kokoro", c.Speech.Engine)
+	}
+	for language, preference := range c.Speech.Languages {
+		if strings.TrimSpace(language) == "" {
+			return errors.New("speech.languages keys must not be empty")
+		}
+		if !validSpeechEngine(preference.Engine, true) {
+			return fmt.Errorf("speech.languages.%s.engine %q is not valid", language, preference.Engine)
+		}
+		if !validSpeechEngine(preference.FallbackEngine, true) {
+			return fmt.Errorf("speech.languages.%s.fallback_engine %q is not valid", language, preference.FallbackEngine)
+		}
 	}
 	if c.Speech.Rate < 0.5 || c.Speech.Rate > 2.0 {
 		return errors.New("speech.rate must be in [0.5, 2.0]")

@@ -35,11 +35,20 @@ jobs:
         id: version
         run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
+      - name: Download pinned managed-speech catalog
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          SIDE_VERSION=$(tr -d '[:space:]' < speech/sidecars/kokoro/VERSION)
+          gh release download "kokoro-${SIDE_VERSION}" --pattern catalog.json --dir "$RUNNER_TEMP/speech" --repo "$GITHUB_REPOSITORY"
+          CATALOG_BASE64=$(base64 < "$RUNNER_TEMP/speech/catalog.json" | tr -d '\n')
+          echo "CATALOG_BASE64=$CATALOG_BASE64" >> "$GITHUB_ENV"
+
       - name: Build binary
         run: |
           GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
             go build \
-            -ldflags "-s -w -X github.com/wirvii/mneme/internal/cli.Version=${{ steps.version.outputs.VERSION }}" \
+            -ldflags "-s -w -X github.com/wirvii/mneme/internal/cli.Version=${{ steps.version.outputs.VERSION }} -X github.com/wirvii/mneme/internal/speech.ManagedCatalogBase64=${CATALOG_BASE64}" \
             -o mneme ./cmd/mneme
 
       - name: Create archive
@@ -83,9 +92,9 @@ jobs:
         run: |
           PREV_TAG=$(git tag --sort=-v:refname | head -2 | tail -1)
           if [ -z "$PREV_TAG" ]; then
-            CHANGELOG=$(git log --pretty=format:"- %s (%h)" ${GITHUB_REF_NAME})
+            CHANGELOG=$(git log --pretty=format:"- %s (%h)" "${GITHUB_REF_NAME}")
           else
-            CHANGELOG=$(git log --pretty=format:"- %s (%h)" ${PREV_TAG}..${GITHUB_REF_NAME})
+            CHANGELOG=$(git log --pretty=format:"- %s (%h)" "${PREV_TAG}..${GITHUB_REF_NAME}")
           fi
           echo "$CHANGELOG" > changelog.txt
 
