@@ -27,7 +27,9 @@ silent and increments `missed_turns`; it never reads the raw answer.
 
 Kokoro is the preferred cross-platform engine. It runs locally on macOS,
 Linux, and Windows; macOS Apple Silicon uses MLX, while the other supported
-targets use the PyTorch CPU runtime. The engine executable and model are
+targets use the PyTorch CPU runtime. Windows ARM runs the verified x64 bundle
+through Windows 11's x64 emulation because Kokoro's pinned NumPy version has no
+native Windows ARM wheel. The engine executable and model are
 versioned separately so upgrades can reuse an already verified model.
 
 When Kokoro is preferred but missing, `mneme speech on` prints the exact setup

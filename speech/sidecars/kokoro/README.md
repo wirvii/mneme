@@ -6,4 +6,5 @@ with a private Python runtime and the platform lockfile; mneme never invokes the
 user's Python installation.
 
 `launcher.py` defines the MLX contract for macOS Apple Silicon;
-`launcher_pytorch.py` implements the same protocol on Linux and Windows CPU.
+`launcher_pytorch.py` implements the same protocol on Linux and Windows CPU;
+Windows ARM uses the x64 bundle under Windows 11 emulation.

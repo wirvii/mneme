@@ -16,7 +16,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   real offline synthesis healthcheck before atomic activation; model storage
   is reusable across engine generations, rollback is retained, and removal is
   dry-run unless `--apply` is supplied. macOS Apple Silicon uses MLX; Linux and
-  Windows targets use PyTorch CPU. Both launchers preserve punctuation and
+  Windows targets use PyTorch CPU (Windows ARM through verified x64 emulation).
+  Both launchers preserve punctuation and
   split long input at natural boundaries to avoid truncation.
 
 ## [v1.33.0] — 2026-08-06 — Local semantic spoken responses

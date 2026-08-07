@@ -19,16 +19,19 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - {target: darwin-arm64, runner: macos-15, backend: mlx}
-          - {target: linux-amd64, runner: ubuntu-24.04, backend: pytorch-cpu}
-          - {target: linux-arm64, runner: ubuntu-24.04-arm, backend: pytorch-cpu}
-          - {target: windows-amd64, runner: windows-2025, backend: pytorch-cpu}
-          - {target: windows-arm64, runner: windows-11-arm, backend: pytorch-cpu}
+          - {target: darwin-arm64, runner: macos-15, backend: mlx, python_arch: arm64}
+          - {target: linux-amd64, runner: ubuntu-24.04, backend: pytorch-cpu, python_arch: x64}
+          - {target: linux-arm64, runner: ubuntu-24.04-arm, backend: pytorch-cpu, python_arch: arm64}
+          - {target: windows-amd64, runner: windows-2025, backend: pytorch-cpu, python_arch: x64}
+          # Kokoro 0.7.16 pins NumPy 1.26.4, which has no win_arm64 wheel.
+          # Validate the x64 bundle under Windows 11 ARM's x64 emulation instead.
+          - {target: windows-arm64, runner: windows-11-arm, backend: pytorch-cpu, python_arch: x64}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          architecture: ${{ matrix.python_arch }}
           cache: pip
           cache-dependency-path: speech/sidecars/kokoro/*.lock
       - name: Build self-contained launcher
