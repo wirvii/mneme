@@ -3,10 +3,22 @@
 
 import json
 import os
+import pathlib
 import sys
 import traceback
 
 from text_chunks import prepare_text
+
+
+def build_pipeline(model_dir: str, lang_code: str):
+    from kokoro import KModel, KPipeline
+
+    root = pathlib.Path(model_dir)
+    model = KModel(
+        config=str(root / "config.json"),
+        model=str(root / "kokoro-v1_0.pth"),
+    ).to("cpu").eval()
+    return KPipeline(lang_code=lang_code, model=model), root
 
 
 def fail(message: str, cause: Exception | None = None) -> None:
@@ -22,7 +34,7 @@ def main() -> None:
     os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
     request = json.loads(sys.stdin.readline())
     try:
-        from kokoro import KPipeline
+        import kokoro
     except Exception as error:
         fail("runtime_import_failed", error)
     if request.get("action") == "healthcheck":
@@ -30,8 +42,9 @@ def main() -> None:
         if not model:
             fail("invalid_request")
         try:
-            pipeline = KPipeline(lang_code="e", repo_id=model)
-            next(iter(pipeline("Prueba.", voice=request.get("voice", "ef_dora"))))
+            pipeline, root = build_pipeline(model, "e")
+            voice = root / "voices" / (request.get("voice", "ef_dora") + ".pt")
+            next(iter(pipeline("Prueba.", voice=str(voice))))
         except Exception as error:
             fail("model_healthcheck_failed", error)
         print(json.dumps({"ok": True, "backend": "pytorch-cpu"}))
@@ -44,8 +57,9 @@ def main() -> None:
     try:
         import sounddevice
 
-        pipeline = KPipeline(lang_code=lang_code, repo_id=model)
-        for _, _, audio in pipeline(prepare_text(text), voice=request.get("voice", "ef_dora"), speed=float(request.get("rate", 1.0))):
+        pipeline, root = build_pipeline(model, lang_code)
+        voice = root / "voices" / (request.get("voice", "ef_dora") + ".pt")
+        for _, _, audio in pipeline(prepare_text(text), voice=str(voice), speed=float(request.get("rate", 1.0))):
             sounddevice.play(audio, 24000, blocking=True)
     except Exception as error:
         fail("synthesis_failed", error)
