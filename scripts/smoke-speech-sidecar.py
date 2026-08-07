@@ -47,7 +47,12 @@ def main() -> None:
                 raise SystemExit(f"model verification failed: {locked_file['path']}")
 
         environment = dict(os.environ)
-        environment.update({"HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1", "NO_PROXY": "*"})
+        environment.update({
+            "HF_HUB_OFFLINE": "1",
+            "TRANSFORMERS_OFFLINE": "1",
+            "NO_PROXY": "*",
+            "MNEME_SPEECH_DIAGNOSTIC": "1",
+        })
         request = json.dumps({"action": "healthcheck", "voice": "ef_dora", "model": str(model_dir)}) + "\n"
         completed = subprocess.run(
             [str(artifact.resolve())], input=request, text=True, capture_output=True,

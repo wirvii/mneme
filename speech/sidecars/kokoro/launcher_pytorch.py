@@ -22,7 +22,6 @@ def main() -> None:
     os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
     request = json.loads(sys.stdin.readline())
     try:
-        import sounddevice
         from kokoro import KPipeline
     except Exception as error:
         fail("runtime_import_failed", error)
@@ -43,6 +42,8 @@ def main() -> None:
     language = request.get("language", "es").lower().split("-")[0]
     lang_code = {"es": "e", "en": "a", "fr": "f", "it": "i", "pt": "p"}.get(language, "e")
     try:
+        import sounddevice
+
         pipeline = KPipeline(lang_code=lang_code, repo_id=model)
         for _, _, audio in pipeline(prepare_text(text), voice=request.get("voice", "ef_dora"), speed=float(request.get("rate", 1.0))):
             sounddevice.play(audio, 24000, blocking=True)
