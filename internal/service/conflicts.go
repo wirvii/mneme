@@ -12,17 +12,25 @@ import (
 )
 
 // ConflictScanRequest parameterises a conflicts scan operation.
+//
+// Fields carry explicit json tags (SPEC-113 C4) so their canonical wire name
+// matches the lowercase names already published in conflicts_scan's
+// InputSchema (internal/mcp/tools.go) exactly, rather than relying on
+// encoding/json's case-insensitive fallback against the bare Go field name
+// (e.g. "Apply"). This changes no accepted input — the fallback still
+// accepts any case variant either way — it only removes a capitalized
+// spelling the schema never advertised.
 type ConflictScanRequest struct {
 	// Project restricts the scan to memories in this project. Defaults to the
 	// service's configured project when empty.
-	Project string
+	Project string `json:"project"`
 
 	// Limit is the maximum number of candidate pairs to judge. Default 5, max 10.
-	Limit int
+	Limit int `json:"limit"`
 
 	// Apply causes the scan to persist judged relations when true. When false
 	// (the default) the scan is a dry-run: results are returned but not stored.
-	Apply bool
+	Apply bool `json:"apply"`
 }
 
 // ConflictPairResult describes the judgment outcome for one memory pair.

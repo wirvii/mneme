@@ -240,6 +240,16 @@ func allTools() []ToolDefinition {
 						"description": "Replacement list of associated source file paths.",
 						"items":       map[string]any{"type": "string"},
 					},
+					"applies_to": map[string]any{
+						"type":        "array",
+						"description": "Replaces the applies_to pattern list. Only valid when the memory is of type 'rule'.",
+						"items":       map[string]any{"type": "string"},
+					},
+					"severity": map[string]any{
+						"type":        "string",
+						"description": "Replaces the enforcement level. Only valid when the memory is of type 'rule'.",
+						"enum":        []string{"info", "warn", "block"},
+					},
 				},
 			},
 		},
