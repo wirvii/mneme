@@ -211,7 +211,7 @@ func (s *SpeechService) emit(ctx context.Context, disposition speech.Disposition
 	if voice != "" {
 		preference.Voice = voice
 	}
-	request := speech.Request{Action: "speak", Engine: preference.Engine, Text: cleaned, Language: language, Voice: preference.Voice, Rate: cfg.Speech.Rate, Model: cfg.Speech.PiperModel}
+	request := speech.Request{Action: "speak", Text: cleaned, Language: language, Voice: preference.Voice, Rate: cfg.Speech.Rate, Model: cfg.Speech.PiperModel}
 	_, err = speech.Send(ctx, cfg.Storage.DataDir, request)
 	if err != nil {
 		_ = s.updateMetadata(cfg, func(m *speechMetadata) { m.LastError = "engine_failed" })

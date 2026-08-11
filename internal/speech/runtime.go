@@ -41,13 +41,11 @@ type RuntimeDescriptor struct {
 type Request struct {
 	Token    string  `json:"token"`
 	Action   string  `json:"action"`
-	Engine   string  `json:"engine,omitempty"`
 	Text     string  `json:"text,omitempty"`
 	Language string  `json:"language,omitempty"`
 	Voice    string  `json:"voice,omitempty"`
 	Rate     float64 `json:"rate,omitempty"`
 	Model    string  `json:"model,omitempty"`
-	Launcher string  `json:"launcher,omitempty"`
 }
 
 // Response reports command success without echoing spoken text.
@@ -60,14 +58,6 @@ type Response struct {
 
 // RuntimeDir returns the private speech state directory below dataDir.
 func RuntimeDir(dataDir string) string { return filepath.Join(dataDir, "speech") }
-
-// LauncherName returns the platform-native managed launcher filename.
-func LauncherName(goos string) string {
-	if goos == "windows" {
-		return "launcher.exe"
-	}
-	return "launcher"
-}
 
 // Send submits a command to a running supervisor.
 func Send(ctx context.Context, dataDir string, req Request) (Response, error) {
@@ -335,54 +325,7 @@ func engineName(goos string) string {
 func EngineName(goos string) string { return engineName(goos) }
 
 func speak(ctx context.Context, req Request) error {
-	if req.Engine == "kokoro" {
-		if err := speakKokoro(ctx, req); err == nil {
-			return nil
-		}
-		req.Engine = ""
-		req.Voice = ""
-	}
 	return speakForOS(ctx, runtimeGOOS, req)
-}
-
-func speakKokoro(ctx context.Context, req Request) error {
-	if req.Launcher == "" || !filepath.IsAbs(req.Launcher) {
-		return errors.New("speech: managed Kokoro launcher is unavailable")
-	}
-	launcherInfo, err := os.Stat(req.Launcher)
-	if err != nil || launcherInfo.IsDir() {
-		return errors.New("speech: managed Kokoro launcher is unavailable")
-	}
-	payload := struct {
-		Text     string  `json:"text"`
-		Language string  `json:"language"`
-		Voice    string  `json:"voice"`
-		Rate     float64 `json:"rate"`
-		Model    string  `json:"model"`
-	}{Text: req.Text, Language: req.Language, Voice: req.Voice, Rate: req.Rate, Model: req.Model}
-	cmd := commandContext(ctx, req.Launcher)
-	cmd.Env = append(os.Environ(), "HF_HUB_OFFLINE=1", "TRANSFORMERS_OFFLINE=1", "NO_PROXY=*")
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return fmt.Errorf("speech: open Kokoro stdin: %w", err)
-	}
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("speech: start Kokoro: %w", err)
-	}
-	encodeErr := json.NewEncoder(stdin).Encode(payload)
-	closeErr := stdin.Close()
-	if encodeErr != nil {
-		_ = cmd.Process.Kill()
-		return fmt.Errorf("speech: send Kokoro request: %w", encodeErr)
-	}
-	if closeErr != nil {
-		_ = cmd.Process.Kill()
-		return fmt.Errorf("speech: close Kokoro stdin: %w", closeErr)
-	}
-	if err := cmd.Wait(); err != nil {
-		return errors.New("speech: Kokoro synthesis failed")
-	}
-	return nil
 }
 
 func speakForOS(ctx context.Context, goos string, req Request) error {

@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -229,32 +230,58 @@ func TestSpeakAndVoiceFailures(t *testing.T) {
 	}
 }
 
-func TestKokoroUsesAbsoluteLauncherWithoutTextArguments(t *testing.T) {
-	launcher := filepath.Join(t.TempDir(), "launcher")
-	if err := os.WriteFile(launcher, []byte("managed"), 0o700); err != nil {
-		t.Fatal(err)
+// TestSpokenTextNeverReachesArgv is the retirement's ported privacy
+// invariant (DD14/AC14): spoken text must reach the native engine only
+// through stdin, never as a process argument, on every supported OS.
+func TestSpokenTextNeverReachesArgv(t *testing.T) {
+	secret := "secreto-que-no-debe-filtrarse"
+
+	tests := []struct {
+		name string
+		goos string
+		req  Request
+	}{
+		{"darwin", "darwin", Request{Text: secret, Voice: "voice", Rate: 1}},
+		{"windows", "windows", Request{Text: secret, Voice: "voice", Rate: 1}},
+		{"linux", "linux", Request{Text: secret, Model: "model.onnx"}},
 	}
-	secret := "texto que no debe ser argumento"
-	old := commandContext
-	var gotName string
-	var gotArgs []string
-	commandContext = func(ctx context.Context, name string, args ...string) *exec.Cmd {
-		gotName, gotArgs = name, append([]string(nil), args...)
-		return exec.CommandContext(ctx, os.Args[0], "-test.run=TestHelperProcess")
-	}
-	t.Cleanup(func() { commandContext = old })
-	t.Setenv("GO_WANT_SPEECH_HELPER", "1")
-	if err := speakKokoro(context.Background(), Request{Launcher: launcher, Text: secret, Language: "es", Voice: "ef_dora", Rate: 1}); err != nil {
-		t.Fatal(err)
-	}
-	if gotName != launcher || len(gotArgs) != 0 {
-		t.Fatalf("launcher=%q args=%q", gotName, gotArgs)
-	}
-	if strings.Contains(strings.Join(gotArgs, " "), secret) {
-		t.Fatal("spoken text leaked into arguments")
-	}
-	if err := speakKokoro(context.Background(), Request{Launcher: "relative", Text: secret}); err == nil {
-		t.Fatal("relative launcher accepted")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var invocations [][]string
+			old := commandContext
+			commandContext = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+				mu.Lock()
+				invocations = append(invocations, append([]string{name}, args...))
+				mu.Unlock()
+				return exec.CommandContext(ctx, os.Args[0], "-test.run=TestHelperProcess")
+			}
+			t.Cleanup(func() { commandContext = old })
+			t.Setenv("GO_WANT_SPEECH_HELPER", "1")
+
+			oldLook := lookPath
+			lookPath = func(name string) (string, error) {
+				if name == "aplay" {
+					return "/fake/aplay", nil
+				}
+				return "", exec.ErrNotFound
+			}
+			t.Cleanup(func() { lookPath = oldLook })
+
+			if err := speakForOS(context.Background(), tt.goos, tt.req); err != nil {
+				t.Fatal(err)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if len(invocations) == 0 {
+				t.Fatal("no process invoked")
+			}
+			for _, invocation := range invocations {
+				if strings.Contains(strings.Join(invocation, " "), secret) {
+					t.Fatalf("spoken text leaked into argv: %q", invocation)
+				}
+			}
+		})
 	}
 }
 
