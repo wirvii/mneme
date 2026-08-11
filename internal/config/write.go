@@ -163,6 +163,7 @@ func SetSpeech(path string, speech SpeechConfig) error {
 			return fmt.Errorf("config: write speech: parse toml: %w", err)
 		}
 	}
+	NormalizeSpeechEngines(&speech)
 	cfg.Speech = speech
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("config: write speech: %w", err)

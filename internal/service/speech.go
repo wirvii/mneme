@@ -41,8 +41,14 @@ type SpeechStatus struct {
 	PreferredEngine  string `json:"preferred_engine,omitempty"`
 	PreferredVoice   string `json:"preferred_voice,omitempty"`
 	EffectiveVoice   string `json:"effective_voice,omitempty"`
-	Degraded         bool   `json:"degraded"`
-	PreferenceSource string `json:"preference_source,omitempty"`
+	// Degraded is true only when the configured preference names an engine
+	// that is not the one this host will actually use — for example a
+	// config.toml shared across machines that names another platform's
+	// native engine. It is never true merely because a once-managed engine
+	// is absent: mneme no longer has a managed engine to be absent.
+	Degraded         bool     `json:"degraded"`
+	PreferenceSource string   `json:"preference_source,omitempty"`
+	Warnings         []string `json:"warnings,omitempty"`
 }
 
 type speechMetadata struct {
@@ -254,7 +260,7 @@ func (s *SpeechService) Status(ctx context.Context) (SpeechStatus, error) {
 	}
 	preference := resolveSpeechPreference(cfg, language)
 	effectiveEngine := speech.EngineName(runtime.GOOS)
-	status := SpeechStatus{Enabled: cfg.Speech.Enabled, Mode: cfg.Speech.Mode, Engine: effectiveEngine, ConfiguredEngine: cfg.Speech.Engine, Language: cfg.Speech.Language, FallbackLanguage: cfg.Speech.FallbackLanguage, SetupReady: setupReady, PreferredEngine: preference.Engine, PreferredVoice: preference.Voice, EffectiveVoice: preference.Voice, PreferenceSource: preference.Source, Degraded: preference.Engine != "" && preference.Engine != "auto" && preference.Engine != "system" && preference.Engine != effectiveEngine}
+	status := SpeechStatus{Enabled: cfg.Speech.Enabled, Mode: cfg.Speech.Mode, Engine: effectiveEngine, ConfiguredEngine: cfg.Speech.Engine, Language: cfg.Speech.Language, FallbackLanguage: cfg.Speech.FallbackLanguage, SetupReady: setupReady, PreferredEngine: preference.Engine, PreferredVoice: preference.Voice, EffectiveVoice: preference.Voice, PreferenceSource: preference.Source, Degraded: preference.Engine != "" && preference.Engine != "auto" && preference.Engine != "system" && preference.Engine != effectiveEngine, Warnings: cfg.Warnings}
 	var metadata speechMetadata
 	if data, readErr := os.ReadFile(s.metadataPath(cfg)); readErr == nil {
 		_ = json.Unmarshal(data, &metadata)

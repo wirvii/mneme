@@ -37,6 +37,12 @@ type Config struct {
 	Codegraph     CodegraphConfig     `toml:"codegraph"`
 	Profiles      ProfilesConfig      `toml:"profiles"`
 	Speech        SpeechConfig        `toml:"speech"`
+
+	// Warnings collects non-fatal degradations produced while loading this
+	// Config — for example a retired speech engine rewritten to its native
+	// replacement (see NormalizeSpeechEngines). It is never serialized: a
+	// warning is a fact about this load, not a setting to persist.
+	Warnings []string `toml:"-"`
 }
 
 // SpeechConfig controls mneme's local text-to-speech channel. Speech is
@@ -720,6 +726,8 @@ func Load(path string) (*Config, error) {
 	cfg.Storage.DataDir = expandHome(cfg.Storage.DataDir)
 	cfg.Workflow.Dir = expandHome(cfg.Workflow.Dir)
 
+	cfg.Warnings = NormalizeSpeechEngines(&cfg.Speech)
+
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("config: load: %w", err)
 	}
@@ -1297,12 +1305,54 @@ func (c *Config) ProfilesDir() string {
 	return filepath.Join(c.Storage.DataDir, "profiles")
 }
 
+// NormalizeSpeechEngines rewrites retired speech engines of speech to their
+// native replacement and returns one warning per rewrite. It is pure and is
+// invoked at the two frontiers of the configuration file — reading (Load)
+// and writing (SetSpeech) — so a retired value never reaches Validate nor
+// gets persisted: a legacy config degrades on read and cures itself the
+// first time any voice setting is written. Degrading is never an error,
+// because there are hosts with engine = 'kokoro' already on disk.
+func NormalizeSpeechEngines(speech *SpeechConfig) []string {
+	var warnings []string
+
+	if speech.Engine == "kokoro" {
+		speech.Engine = "auto"
+		warnings = append(warnings, "speech.engine 'kokoro' is retired; using 'auto'")
+	}
+
+	for key, language := range speech.Languages {
+		changed := false
+		if language.Engine == "kokoro" {
+			if language.FallbackEngine != "" || language.FallbackVoice != "" {
+				fallbackEngine, fallbackVoice := language.FallbackEngine, language.FallbackVoice
+				language.Engine, language.Voice = fallbackEngine, fallbackVoice
+				language.FallbackEngine, language.FallbackVoice = "", ""
+				warnings = append(warnings, fmt.Sprintf("speech.languages.%s.engine 'kokoro' is retired; using '%s'/'%s'", key, fallbackEngine, fallbackVoice))
+			} else {
+				language.Engine, language.Voice = "", ""
+				warnings = append(warnings, fmt.Sprintf("speech.languages.%s.engine 'kokoro' is retired; clearing engine and voice", key))
+			}
+			changed = true
+		}
+		if language.FallbackEngine == "kokoro" {
+			language.FallbackEngine, language.FallbackVoice = "", ""
+			warnings = append(warnings, fmt.Sprintf("speech.languages.%s.fallback_engine 'kokoro' is retired; clearing fallback", key))
+			changed = true
+		}
+		if changed {
+			speech.Languages[key] = language
+		}
+	}
+
+	return warnings
+}
+
 func validSpeechEngine(engine string, allowEmpty bool) bool {
 	if engine == "" {
 		return allowEmpty
 	}
 	switch engine {
-	case "auto", "system", "say", "sapi", "piper", "kokoro":
+	case "auto", "system", "say", "sapi", "piper":
 		return true
 	default:
 		return false
@@ -1326,7 +1376,7 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("speech.mode %q is not valid; accepted values: brief, full", c.Speech.Mode)
 	}
 	if !validSpeechEngine(c.Speech.Engine, true) {
-		return fmt.Errorf("speech.engine %q is not valid; accepted values: auto, system, say, sapi, piper, kokoro", c.Speech.Engine)
+		return fmt.Errorf("speech.engine %q is not valid; accepted values: auto, system, say, sapi, piper", c.Speech.Engine)
 	}
 	for language, preference := range c.Speech.Languages {
 		if strings.TrimSpace(language) == "" {

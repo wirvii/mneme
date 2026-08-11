@@ -2077,6 +2077,166 @@ func TestSetSpeechPreservesOtherSections(t *testing.T) {
 	}
 }
 
+// TestNormalizeSpeechEngines covers the four degradation rules of DD4: a
+// retired 'kokoro' engine is always rewritten to a native one, never left to
+// fail Validate, and a config with no retired value is left untouched.
+func TestNormalizeSpeechEngines(t *testing.T) {
+	tests := []struct {
+		name          string
+		speech        SpeechConfig
+		wantSpeech    SpeechConfig
+		wantWarnCount int
+	}{
+		{
+			name:          "R1 top-level engine",
+			speech:        SpeechConfig{Engine: "kokoro"},
+			wantSpeech:    SpeechConfig{Engine: "auto"},
+			wantWarnCount: 1,
+		},
+		{
+			name: "R2 owner's real config with fallback declared",
+			speech: SpeechConfig{
+				Languages: map[string]SpeechLanguageConfig{
+					"es": {Engine: "kokoro", Voice: "ef_dora", FallbackEngine: "system", FallbackVoice: "Paulina"},
+				},
+			},
+			wantSpeech: SpeechConfig{
+				Languages: map[string]SpeechLanguageConfig{
+					"es": {Engine: "system", Voice: "Paulina", FallbackEngine: "", FallbackVoice: ""},
+				},
+			},
+			wantWarnCount: 1,
+		},
+		{
+			name: "R3 no fallback declared",
+			speech: SpeechConfig{
+				Languages: map[string]SpeechLanguageConfig{
+					"es": {Engine: "kokoro", Voice: "ef_dora"},
+				},
+			},
+			wantSpeech: SpeechConfig{
+				Languages: map[string]SpeechLanguageConfig{
+					"es": {Engine: "", Voice: ""},
+				},
+			},
+			wantWarnCount: 1,
+		},
+		{
+			name: "R4 retired fallback_engine",
+			speech: SpeechConfig{
+				Languages: map[string]SpeechLanguageConfig{
+					"es": {Engine: "system", Voice: "Paulina", FallbackEngine: "kokoro", FallbackVoice: "ef_dora"},
+				},
+			},
+			wantSpeech: SpeechConfig{
+				Languages: map[string]SpeechLanguageConfig{
+					"es": {Engine: "system", Voice: "Paulina", FallbackEngine: "", FallbackVoice: ""},
+				},
+			},
+			wantWarnCount: 1,
+		},
+		{
+			name: "control: native engine is untouched",
+			speech: SpeechConfig{
+				Engine: "system",
+				Languages: map[string]SpeechLanguageConfig{
+					"es": {Engine: "say", Voice: "Paulina"},
+				},
+			},
+			wantSpeech: SpeechConfig{
+				Engine: "system",
+				Languages: map[string]SpeechLanguageConfig{
+					"es": {Engine: "say", Voice: "Paulina"},
+				},
+			},
+			wantWarnCount: 0,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			speech := tt.speech
+			warnings := NormalizeSpeechEngines(&speech)
+			if len(warnings) != tt.wantWarnCount {
+				t.Fatalf("warnings = %v, want %d", warnings, tt.wantWarnCount)
+			}
+			if speech.Engine != tt.wantSpeech.Engine {
+				t.Fatalf("Engine = %q, want %q", speech.Engine, tt.wantSpeech.Engine)
+			}
+			for key, want := range tt.wantSpeech.Languages {
+				got := speech.Languages[key]
+				if got != want {
+					t.Fatalf("Languages[%q] = %+v, want %+v", key, got, want)
+				}
+			}
+		})
+	}
+}
+
+// TestLoadDegradesLegacyKokoroConfig verifies the read frontier (AC4): a
+// config.toml written by a pre-retirement mneme with the owner's exact
+// real-world settings loads without error and degrades to native values.
+func TestLoadDegradesLegacyKokoroConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	toml := `[speech]
+enabled = true
+mode = "brief"
+engine = "kokoro"
+rate = 1.0
+
+[speech.languages.es]
+engine = "kokoro"
+voice = "ef_dora"
+fallback_engine = "system"
+fallback_voice = "Paulina"
+`
+	if err := os.WriteFile(path, []byte(toml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Speech.Engine != "auto" {
+		t.Fatalf("Speech.Engine = %q, want auto", cfg.Speech.Engine)
+	}
+	es := cfg.Speech.Languages["es"]
+	if es.Engine != "system" || es.Voice != "Paulina" {
+		t.Fatalf("Languages[es] = %+v", es)
+	}
+	if len(cfg.Warnings) != 2 {
+		t.Fatalf("Warnings = %v, want 2 entries", cfg.Warnings)
+	}
+}
+
+// TestSetSpeechDegradesKokoroOnWrite verifies the write frontier (AC9,
+// DD3/DD5): SetSpeech with a retired engine never errors, never persists
+// 'kokoro', and never persists the non-serialized Warnings field.
+func TestSetSpeechDegradesKokoroOnWrite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	speechCfg := Default().Speech
+	speechCfg.Engine = "kokoro"
+	if err := SetSpeech(path, speechCfg); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "kokoro") {
+		t.Fatalf("persisted config still contains kokoro:\n%s", data)
+	}
+	if strings.Contains(string(data), "warnings") {
+		t.Fatalf("persisted config leaked the Warnings field:\n%s", data)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Speech.Engine != "auto" {
+		t.Fatalf("Speech.Engine = %q, want auto", cfg.Speech.Engine)
+	}
+}
+
 // TestProfilesConfig_EnvOverride verifies MNEME_PROFILES_DEFAULT overrides
 // both Default() and whatever the TOML file says.
 func TestProfilesConfig_EnvOverride(t *testing.T) {
