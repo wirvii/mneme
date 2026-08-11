@@ -53,42 +53,12 @@ func (h *handlers) handleSpeechControl(ctx context.Context, raw json.RawMessage)
 		Voice          string      `json:"voice"`
 		FallbackEngine string      `json:"fallback_engine"`
 		FallbackVoice  string      `json:"fallback_voice"`
-		InstallMissing bool        `json:"install_missing"`
-		Consent        bool        `json:"consent"`
-		PlanDigest     string      `json:"plan_digest"`
-		Apply          bool        `json:"apply"`
-		RemoveModels   bool        `json:"remove_models"`
 	}
 	if err := json.Unmarshal(raw, &args); err != nil {
 		return nil, &JSONRPCError{Code: CodeInvalidParams, Message: fmt.Sprintf("mcp: speech_control: invalid arguments: %s", err)}
 	}
 	switch args.Action {
 	case "on":
-		before, err := h.speechSvc.Status(ctx)
-		if err != nil {
-			return nil, h.mapServiceError("speech_control", err)
-		}
-		recommended, recommendErr := h.speechSvc.ShouldRecommendKokoro()
-		if recommendErr != nil {
-			return nil, h.mapServiceError("speech_control", recommendErr)
-		}
-		if before.PreferredEngine == "kokoro" && !before.SetupReady || recommended {
-			plan, planErr := h.speechSvc.ManagedEnginePlan("kokoro")
-			if planErr != nil {
-				return nil, h.mapServiceError("speech_control", planErr)
-			}
-			if !args.InstallMissing || !args.Consent {
-				return resultFromAny(map[string]any{"setup_required": true, "plan": plan, "before": before})
-			}
-			if err := h.speechSvc.SetupManagedEngine(ctx, plan, args.Consent, args.PlanDigest); err != nil {
-				return nil, h.mapServiceError("speech_control", err)
-			}
-			if recommended {
-				if err := h.speechSvc.ConfigureRecommendedKokoro(); err != nil {
-					return nil, h.mapServiceError("speech_control", err)
-				}
-			}
-		}
 		if err := h.speechSvc.SetEnabled(ctx, true); err != nil {
 			return nil, h.mapServiceError("speech_control", err)
 		}
@@ -123,62 +93,11 @@ func (h *handlers) handleSpeechControl(ctx context.Context, raw json.RawMessage)
 			return nil, h.mapServiceError("speech_control", err)
 		}
 		return resultFromAny(map[string]any{"voices": voices})
-	case "engine_status":
-		if args.Engine == "" {
-			args.Engine = "kokoro"
-		}
-		state, err := h.speechSvc.ManagedEngineStatus(args.Engine)
-		if err != nil {
-			return nil, h.mapServiceError("speech_control", err)
-		}
-		return resultFromAny(state)
-	case "setup_engine", "upgrade_engine", "repair_engine":
-		if args.Engine == "" {
-			args.Engine = "kokoro"
-		}
-		plan, err := h.speechSvc.ManagedEnginePlan(args.Engine)
-		if err != nil {
-			return nil, h.mapServiceError("speech_control", err)
-		}
-		if !args.Consent {
-			return resultFromAny(map[string]any{"setup_required": true, "plan": plan})
-		}
-		if args.Action == "repair_engine" {
-			err = h.speechSvc.RepairManagedEngine(ctx, plan, true, args.PlanDigest)
-		} else {
-			err = h.speechSvc.SetupManagedEngine(ctx, plan, true, args.PlanDigest)
-		}
-		if err != nil {
-			return nil, h.mapServiceError("speech_control", err)
-		}
-	case "rollback_engine":
-		if args.Engine == "" {
-			args.Engine = "kokoro"
-		}
-		if err := h.speechSvc.RollbackManagedEngine(args.Engine); err != nil {
-			return nil, h.mapServiceError("speech_control", err)
-		}
-	case "remove_engine":
-		if args.Engine == "" {
-			args.Engine = "kokoro"
-		}
-		before, err := h.speechSvc.RemoveManagedEngine(args.Engine, args.Apply, args.RemoveModels)
-		if err != nil {
-			return nil, h.mapServiceError("speech_control", err)
-		}
-		return resultFromAny(map[string]any{"before": before, "after": map[string]any{"engine": args.Engine, "ready": !args.Apply}, "applied": args.Apply})
 	case "setup":
-		if args.Engine == "kokoro" {
-			plan, err := h.speechSvc.ManagedEnginePlan("kokoro")
-			if err != nil {
-				return nil, h.mapServiceError("speech_control", err)
-			}
-			if err := h.speechSvc.SetupManagedEngine(ctx, plan, args.Consent, args.PlanDigest); err != nil {
-				return nil, h.mapServiceError("speech_control", err)
-			}
-		} else if args.Model == "" || args.SHA256 == "" {
+		if args.Model == "" || args.SHA256 == "" {
 			return nil, &JSONRPCError{Code: CodeInvalidParams, Message: "mcp: speech_control: setup requires model and sha256"}
-		} else if err := h.speechSvc.SetupLocalModel(args.Model, args.SHA256); err != nil {
+		}
+		if err := h.speechSvc.SetupLocalModel(args.Model, args.SHA256); err != nil {
 			return nil, h.mapServiceError("speech_control", err)
 		}
 	default:
