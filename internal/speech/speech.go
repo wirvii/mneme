@@ -39,11 +39,15 @@ var (
 	ErrTextRequired       = errors.New("spoken text is required")
 	ErrTextForbidden      = errors.New("skipped speech must not include text")
 	ErrTextTooLong        = errors.New("spoken text exceeds mode limit")
-	markdownLink          = regexp.MustCompile(`\[([^]]+)\]\([^)]*\)`)
-	codeFence             = regexp.MustCompile("(?s)```.*?```")
-	inlineCode            = regexp.MustCompile("`([^`]*)`")
-	markdownPrefix        = regexp.MustCompile(`(?m)^\s{0,3}(?:#{1,6}\s+|[-*+]\s+|>\s*)`)
-	whitespace            = regexp.MustCompile(`\s+`)
+	// ErrUnknownEngine indicates an engine name mneme does not recognize. The
+	// native engines are host globals: voice does not depend on language, so
+	// listing them takes no language filter.
+	ErrUnknownEngine = errors.New("speech: unknown engine")
+	markdownLink     = regexp.MustCompile(`\[([^]]+)\]\([^)]*\)`)
+	codeFence        = regexp.MustCompile("(?s)```.*?```")
+	inlineCode       = regexp.MustCompile("`([^`]*)`")
+	markdownPrefix   = regexp.MustCompile(`(?m)^\s{0,3}(?:#{1,6}\s+|[-*+]\s+|>\s*)`)
+	whitespace       = regexp.MustCompile(`\s+`)
 )
 
 // Clean removes visual-only Markdown while retaining prose worth hearing.

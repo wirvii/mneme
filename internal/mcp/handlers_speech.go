@@ -88,7 +88,7 @@ func (h *handlers) handleSpeechControl(ctx context.Context, raw json.RawMessage)
 		}
 		return resultFromAny(status)
 	case "voices":
-		voices, err := h.speechSvc.ListVoicesFor(ctx, args.Engine, args.Language)
+		voices, err := h.speechSvc.ListVoicesFor(ctx, args.Engine)
 		if err != nil {
 			return nil, h.mapServiceError("speech_control", err)
 		}

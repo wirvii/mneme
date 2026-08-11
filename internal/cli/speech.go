@@ -101,7 +101,7 @@ func newSpeechTestCmd() *cobra.Command {
 		if len(args) > 0 {
 			text = args[0]
 		}
-		return speechService().EmitWithOverrides(cmd.Context(), speech.DispositionEmit, speech.Mode(mode), text, "es", "", voice)
+		return speechService().EmitWithOverrides(cmd.Context(), speech.DispositionEmit, speech.Mode(mode), text, "es", voice)
 	}}
 	cmd.Flags().StringVar(&mode, "mode", "brief", "Speech mode")
 	cmd.Flags().StringVar(&voice, "voice", "", "Temporary voice override")
@@ -112,7 +112,7 @@ func newSpeechVoicesCmd() *cobra.Command {
 	var asJSON bool
 	var engine string
 	cmd := &cobra.Command{Use: "voices", RunE: func(cmd *cobra.Command, _ []string) error {
-		voices, err := speechService().ListVoicesFor(cmd.Context(), engine, "")
+		voices, err := speechService().ListVoicesFor(cmd.Context(), engine)
 		if err != nil {
 			return err
 		}

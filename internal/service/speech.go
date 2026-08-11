@@ -24,69 +24,6 @@ type SpeechService struct {
 	dataDir    string
 }
 
-// ManagedEnginePlan returns the exact release plan that requires consent.
-func (s *SpeechService) ManagedEnginePlan(engine string) (speech.SetupPlan, error) {
-	if engine != "kokoro" {
-		return speech.SetupPlan{}, speech.ErrUnsupportedPlatform
-	}
-	releases, err := speech.ManagedReleases()
-	if err != nil {
-		return speech.SetupPlan{}, err
-	}
-	release, err := speech.HostKokoroRelease(releases)
-	if err != nil {
-		return speech.SetupPlan{}, err
-	}
-	return speech.NewSetupPlan(release)
-}
-
-// SetupManagedEngine installs the exact consented plan without enabling speech.
-func (s *SpeechService) SetupManagedEngine(ctx context.Context, plan speech.SetupPlan, consent bool, digest string) error {
-	cfg, err := s.load()
-	if err != nil {
-		return err
-	}
-	manager := speech.NewManager(speech.RuntimeDir(cfg.Storage.DataDir), speech.HTTPFetcher(nil), speech.LauncherHealthcheck)
-	return manager.Setup(ctx, plan, consent, digest)
-}
-
-// RepairManagedEngine validates and atomically replaces the consented generation.
-func (s *SpeechService) RepairManagedEngine(ctx context.Context, plan speech.SetupPlan, consent bool, digest string) error {
-	cfg, err := s.load()
-	if err != nil {
-		return err
-	}
-	manager := speech.NewManager(speech.RuntimeDir(cfg.Storage.DataDir), speech.HTTPFetcher(nil), speech.LauncherHealthcheck)
-	return manager.Repair(ctx, plan, consent, digest)
-}
-
-// ManagedEngineStatus returns the installed state of one managed engine.
-func (s *SpeechService) ManagedEngineStatus(engine string) (speech.EngineState, error) {
-	cfg, err := s.load()
-	if err != nil {
-		return speech.EngineState{}, err
-	}
-	return speech.NewManager(speech.RuntimeDir(cfg.Storage.DataDir), nil, nil).Status(engine), nil
-}
-
-// RollbackManagedEngine swaps the active and previous verified generations.
-func (s *SpeechService) RollbackManagedEngine(engine string) error {
-	cfg, err := s.load()
-	if err != nil {
-		return err
-	}
-	return speech.NewManager(speech.RuntimeDir(cfg.Storage.DataDir), nil, nil).Rollback(engine)
-}
-
-// RemoveManagedEngine removes runtime generations only with explicit apply.
-func (s *SpeechService) RemoveManagedEngine(engine string, apply, removeModels bool) (speech.EngineState, error) {
-	cfg, err := s.load()
-	if err != nil {
-		return speech.EngineState{}, err
-	}
-	return speech.NewManager(speech.RuntimeDir(cfg.Storage.DataDir), nil, nil).Remove(engine, apply, removeModels)
-}
-
 // SpeechStatus is privacy-safe operational metadata; it never contains text.
 type SpeechStatus struct {
 	Enabled          bool   `json:"enabled"`
@@ -180,56 +117,20 @@ func (s *SpeechService) SetLanguagePreference(language, engine, voice, fallbackE
 	return config.SetSpeech(s.configPath, cfg.Speech)
 }
 
-// ShouldRecommendKokoro reports whether an explicit first activation should
-// offer managed Kokoro without changing or downloading anything.
-func (s *SpeechService) ShouldRecommendKokoro() (bool, error) {
-	cfg, err := s.load()
-	if err != nil {
-		return false, err
-	}
-	if cfg.Speech.Engine != "" && cfg.Speech.Engine != "auto" {
-		return false, nil
-	}
-	language := cfg.Speech.FallbackLanguage
-	base := strings.ToLower(strings.Split(strings.ReplaceAll(language, "_", "-"), "-")[0])
-	for _, key := range []string{language, base, "default"} {
-		if preference, ok := cfg.Speech.Languages[key]; ok && (preference.Engine != "" || preference.Voice != "") {
-			return false, nil
-		}
-		if cfg.Speech.Voices[key] != "" {
-			return false, nil
-		}
-	}
-	return base == "es", nil
-}
-
-// ConfigureRecommendedKokoro persists the recommendation only after setup.
-func (s *SpeechService) ConfigureRecommendedKokoro() error {
-	fallbackVoice := ""
-	if runtime.GOOS == "darwin" {
-		fallbackVoice = "Paulina"
-	}
-	return s.SetLanguagePreference("es", "kokoro", "ef_dora", "system", fallbackVoice)
-}
-
 // ListVoices returns voices installed on the current host.
 func (s *SpeechService) ListVoices(ctx context.Context) ([]string, error) {
 	return speech.ListVoices(ctx)
 }
 
-// ListVoicesFor returns the catalog visible for an engine and optional language.
-func (s *SpeechService) ListVoicesFor(ctx context.Context, engine, language string) ([]string, error) {
-	if engine == "" || engine == "auto" || engine == "system" {
+// ListVoicesFor returns the host voices for a native engine. Native engines
+// are host globals, so the catalog does not depend on language.
+func (s *SpeechService) ListVoicesFor(ctx context.Context, engine string) ([]string, error) {
+	switch engine {
+	case "", "auto", "system", "say", "sapi", "piper":
 		return s.ListVoices(ctx)
+	default:
+		return nil, fmt.Errorf("%w: %s", speech.ErrUnknownEngine, engine)
 	}
-	if engine != "kokoro" {
-		return nil, speech.ErrUnsupportedPlatform
-	}
-	base := strings.ToLower(strings.Split(strings.ReplaceAll(language, "_", "-"), "-")[0])
-	if base != "" && base != "es" {
-		return []string{}, nil
-	}
-	return []string{"ef_dora"}, nil
 }
 
 // SetupLocalModel configures an existing local Piper model without downloading.
@@ -273,15 +174,15 @@ func (s *SpeechService) SetupLocalModel(modelPath, expectedSHA256 string) error 
 
 // Emit resolves one agent turn by speaking useful text or explicitly skipping it.
 func (s *SpeechService) Emit(ctx context.Context, disposition speech.Disposition, mode speech.Mode, text, language string) error {
-	return s.emit(ctx, disposition, mode, text, language, "", "")
+	return s.emit(ctx, disposition, mode, text, language, "")
 }
 
-// EmitWithOverrides speaks a test request without persisting engine or voice overrides.
-func (s *SpeechService) EmitWithOverrides(ctx context.Context, disposition speech.Disposition, mode speech.Mode, text, language, engine, voice string) error {
-	return s.emit(ctx, disposition, mode, text, language, engine, voice)
+// EmitWithOverrides speaks a test request without persisting a voice override.
+func (s *SpeechService) EmitWithOverrides(ctx context.Context, disposition speech.Disposition, mode speech.Mode, text, language, voice string) error {
+	return s.emit(ctx, disposition, mode, text, language, voice)
 }
 
-func (s *SpeechService) emit(ctx context.Context, disposition speech.Disposition, mode speech.Mode, text, language, engine, voice string) error {
+func (s *SpeechService) emit(ctx context.Context, disposition speech.Disposition, mode speech.Mode, text, language, voice string) error {
 	cfg, err := s.load()
 	if err != nil {
 		return err
@@ -307,29 +208,10 @@ func (s *SpeechService) emit(ctx context.Context, disposition speech.Disposition
 		return err
 	}
 	preference := resolveSpeechPreference(cfg, language)
-	if engine != "" {
-		preference.Engine = engine
-	}
 	if voice != "" {
 		preference.Voice = voice
 	}
 	request := speech.Request{Action: "speak", Engine: preference.Engine, Text: cleaned, Language: language, Voice: preference.Voice, Rate: cfg.Speech.Rate, Model: cfg.Speech.PiperModel}
-	if preference.Engine == "kokoro" {
-		manager := speech.NewManager(speech.RuntimeDir(cfg.Storage.DataDir), nil, nil)
-		active, activeErr := manager.ActiveDir("kokoro")
-		if activeErr == nil {
-			request.Launcher = filepath.Join(active, speech.LauncherName(runtime.GOOS))
-			if modelDir, modelErr := manager.ActiveModelDir("kokoro"); modelErr == nil {
-				request.Model = modelDir
-			} else {
-				request.Engine = ""
-				request.Voice = preference.FallbackVoice
-			}
-		} else {
-			request.Engine = ""
-			request.Voice = preference.FallbackVoice
-		}
-	}
 	_, err = speech.Send(ctx, cfg.Storage.DataDir, request)
 	if err != nil {
 		_ = s.updateMetadata(cfg, func(m *speechMetadata) { m.LastError = "engine_failed" })
@@ -371,11 +253,6 @@ func (s *SpeechService) Status(ctx context.Context) (SpeechStatus, error) {
 		language = cfg.Speech.FallbackLanguage
 	}
 	preference := resolveSpeechPreference(cfg, language)
-	if preference.Engine == "kokoro" {
-		manager := speech.NewManager(speech.RuntimeDir(cfg.Storage.DataDir), nil, nil)
-		_, activeErr := manager.ActiveDir("kokoro")
-		setupReady = activeErr == nil
-	}
 	effectiveEngine := speech.EngineName(runtime.GOOS)
 	status := SpeechStatus{Enabled: cfg.Speech.Enabled, Mode: cfg.Speech.Mode, Engine: effectiveEngine, ConfiguredEngine: cfg.Speech.Engine, Language: cfg.Speech.Language, FallbackLanguage: cfg.Speech.FallbackLanguage, SetupReady: setupReady, PreferredEngine: preference.Engine, PreferredVoice: preference.Voice, EffectiveVoice: preference.Voice, PreferenceSource: preference.Source, Degraded: preference.Engine != "" && preference.Engine != "auto" && preference.Engine != "system" && preference.Engine != effectiveEngine}
 	var metadata speechMetadata

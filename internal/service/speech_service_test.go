@@ -4,13 +4,9 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -89,7 +85,7 @@ func TestSpeechLanguagePreferencePersistsAndResolves(t *testing.T) {
 	root := t.TempDir()
 	configPath := filepath.Join(root, "config.toml")
 	svc := NewSpeechService(configPath, filepath.Join(root, "data"))
-	if err := svc.SetLanguagePreference("es_MX", "kokoro", "ef_dora", "say", "Paulina"); err != nil {
+	if err := svc.SetLanguagePreference("es_MX", "system", "Paulina", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := config.Load(configPath)
@@ -97,7 +93,7 @@ func TestSpeechLanguagePreferencePersistsAndResolves(t *testing.T) {
 		t.Fatal(err)
 	}
 	preference := cfg.Speech.Languages["es-MX"]
-	if preference.Engine != "kokoro" || preference.Voice != "ef_dora" || preference.FallbackVoice != "Paulina" {
+	if preference.Engine != "system" || preference.Voice != "Paulina" {
 		t.Fatalf("preference = %+v", preference)
 	}
 	cfg.Speech.Language = "es-MX"
@@ -108,134 +104,47 @@ func TestSpeechLanguagePreferencePersistsAndResolves(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status.PreferredEngine != "kokoro" || status.PreferredVoice != "ef_dora" || status.PreferenceSource != "exact" {
+	if status.PreferredEngine != "system" || status.PreferredVoice != "Paulina" || status.PreferenceSource != "exact" {
 		t.Fatalf("status = %+v", status)
 	}
 }
 
-func TestSpeechListManagedVoicesFiltersByLanguage(t *testing.T) {
+func TestSpeechListVoicesForRejectsUnknownEngine(t *testing.T) {
 	t.Parallel()
 	svc := NewSpeechService(filepath.Join(t.TempDir(), "config.toml"), t.TempDir())
-	voices, err := svc.ListVoicesFor(context.Background(), "kokoro", "es-MX")
-	if err != nil || len(voices) != 1 || voices[0] != "ef_dora" {
-		t.Fatalf("Spanish Kokoro voices=%v err=%v", voices, err)
+	tests := []struct {
+		name      string
+		engine    string
+		wantError bool
+	}{
+		{"empty", "", false},
+		{"auto", "auto", false},
+		{"system", "system", false},
+		{"say", "say", false},
+		{"sapi", "sapi", false},
+		{"piper", "piper", false},
+		{"retired kokoro", "kokoro", true},
+		{"unknown", "banana", true},
 	}
-	voices, err = svc.ListVoicesFor(context.Background(), "kokoro", "fr")
-	if err != nil || len(voices) != 0 {
-		t.Fatalf("French Kokoro voices=%v err=%v", voices, err)
-	}
-}
-
-func TestSpeechKokoroRecommendationIsOnDemandAndNonDestructive(t *testing.T) {
-	t.Parallel()
-	root := t.TempDir()
-	configPath := filepath.Join(root, "config.toml")
-	svc := NewSpeechService(configPath, filepath.Join(root, "data"))
-	recommended, err := svc.ShouldRecommendKokoro()
-	if err != nil || !recommended {
-		t.Fatalf("recommended=%t err=%v", recommended, err)
-	}
-	if _, err := os.Stat(configPath); !os.IsNotExist(err) {
-		t.Fatalf("recommendation mutated config: %v", err)
-	}
-	if err := svc.ConfigureRecommendedKokoro(); err != nil {
-		t.Fatal(err)
-	}
-	recommended, err = svc.ShouldRecommendKokoro()
-	if err != nil || recommended {
-		t.Fatalf("persisted preference still recommended=%t err=%v", recommended, err)
-	}
-	cfg, err := config.Load(configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	preference := cfg.Speech.Languages["es"]
-	if preference.Engine != "kokoro" || preference.Voice != "ef_dora" || preference.FallbackEngine != "system" {
-		t.Fatalf("preference=%+v", preference)
-	}
-}
-
-func TestSpeechManagedEngineServiceLifecycle(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("launcher fixture uses a POSIX shell")
-	}
-	launcher := []byte("#!/bin/sh\ncat >/dev/null\nexit 0\n")
-	model := []byte("model")
-	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/launcher":
-			_, _ = w.Write(launcher)
-		case "/model":
-			_, _ = w.Write(model)
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer server.Close()
-	oldTransport := http.DefaultTransport
-	http.DefaultTransport = server.Client().Transport
-	t.Cleanup(func() { http.DefaultTransport = oldTransport })
-
-	root := t.TempDir()
-	svc := NewSpeechService(filepath.Join(root, "config.toml"), filepath.Join(root, "data"))
-	planFor := func(version string) speech.SetupPlan {
-		release := speech.EngineRelease{Engine: "kokoro", Version: version, ModelVersion: "test-model", GOOS: runtime.GOOS, GOARCH: runtime.GOARCH, Backend: "test", Voice: "ef_dora"}
-		for _, item := range []struct {
-			name, target, kind string
-			body               []byte
-		}{{"launcher", speech.LauncherName(runtime.GOOS), "runtime", launcher}, {"model", "weights", "model", model}} {
-			digest := sha256.Sum256(item.body)
-			release.Artifacts = append(release.Artifacts, speech.Artifact{Name: item.name, Target: item.target, Kind: item.kind, URL: server.URL + "/" + item.name, SHA256: hex.EncodeToString(digest[:]), Size: int64(len(item.body)), License: "Apache-2.0", Executable: item.kind == "runtime"})
-		}
-		plan, err := speech.NewSetupPlan(release)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return plan
-	}
-	first := planFor("1")
-	originalCatalog := speech.ManagedCatalogJSON
-	catalog, err := json.Marshal([]speech.EngineRelease{first.Release})
-	if err != nil {
-		t.Fatal(err)
-	}
-	speech.ManagedCatalogJSON = string(catalog)
-	t.Cleanup(func() { speech.ManagedCatalogJSON = originalCatalog })
-	planned, err := svc.ManagedEnginePlan("kokoro")
-	if err != nil || planned.Digest != first.Digest {
-		t.Fatalf("planned=%+v err=%v", planned, err)
-	}
-	if _, err := svc.ManagedEnginePlan("other"); err == nil {
-		t.Fatal("unsupported managed engine accepted")
-	}
-	if err := svc.SetupManagedEngine(context.Background(), first, true, first.Digest); err != nil {
-		t.Fatal(err)
-	}
-	state, err := svc.ManagedEngineStatus("kokoro")
-	if err != nil || !state.Ready {
-		t.Fatalf("state=%+v err=%v", state, err)
-	}
-	if err := svc.RepairManagedEngine(context.Background(), first, true, first.Digest); err != nil {
-		t.Fatal(err)
-	}
-	second := planFor("2")
-	if err := svc.SetupManagedEngine(context.Background(), second, true, second.Digest); err != nil {
-		t.Fatal(err)
-	}
-	if err := svc.RollbackManagedEngine("kokoro"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := svc.RemoveManagedEngine("kokoro", false, false); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := svc.RemoveManagedEngine("kokoro", true, true); err != nil {
-		t.Fatal(err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := svc.ListVoicesFor(context.Background(), tt.engine)
+			if tt.wantError {
+				if !errors.Is(err, speech.ErrUnknownEngine) {
+					t.Fatalf("engine=%q err=%v, want ErrUnknownEngine", tt.engine, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("engine=%q unexpected err=%v", tt.engine, err)
+			}
+		})
 	}
 }
 
 func TestSpeechEmitOverrideStillHonorsDisabled(t *testing.T) {
 	svc := NewSpeechService(filepath.Join(t.TempDir(), "config.toml"), t.TempDir())
-	err := svc.EmitWithOverrides(context.Background(), speech.DispositionEmit, speech.ModeBrief, "Prueba.", "es", "kokoro", "ef_dora")
+	err := svc.EmitWithOverrides(context.Background(), speech.DispositionEmit, speech.ModeBrief, "Prueba.", "es", "Paulina")
 	if !errors.Is(err, speech.ErrDisabled) {
 		t.Fatalf("err=%v", err)
 	}
