@@ -1000,6 +1000,8 @@ func LoadWithOrigins(path string) (*Config, *ConfigOrigins, error) {
 	cfg.Storage.DataDir = expandHome(cfg.Storage.DataDir)
 	cfg.Workflow.Dir = expandHome(cfg.Workflow.Dir)
 
+	cfg.Warnings = NormalizeSpeechEngines(&cfg.Speech)
+
 	if err := cfg.Validate(); err != nil {
 		return nil, nil, fmt.Errorf("config: load with origins: %w", err)
 	}

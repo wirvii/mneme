@@ -2208,6 +2208,48 @@ fallback_voice = "Paulina"
 	}
 }
 
+// TestLoadWithOriginsDegradesLegacyKokoroConfig is a regression test for a
+// third read frontier `Load` and `SetSpeech` didn't cover: LoadWithOrigins
+// duplicates Load's applyEnvOverrides -> Validate flow (it is the
+// implementation of `mneme config show`) but, before this fix, never called
+// NormalizeSpeechEngines — so a config.toml with a retired speech engine
+// made Validate reject it and `mneme config show` fail entirely, on any
+// section, exactly what D4 forbids. Mirrors
+// TestLoadDegradesLegacyKokoroConfig's fixture and assertions against
+// LoadWithOrigins instead of Load.
+func TestLoadWithOriginsDegradesLegacyKokoroConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	toml := `[speech]
+enabled = true
+mode = "brief"
+engine = "kokoro"
+rate = 1.0
+
+[speech.languages.es]
+engine = "kokoro"
+voice = "ef_dora"
+fallback_engine = "system"
+fallback_voice = "Paulina"
+`
+	if err := os.WriteFile(path, []byte(toml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _, err := LoadWithOrigins(path)
+	if err != nil {
+		t.Fatalf("LoadWithOrigins: %v", err)
+	}
+	if cfg.Speech.Engine != "auto" {
+		t.Fatalf("Speech.Engine = %q, want auto", cfg.Speech.Engine)
+	}
+	es := cfg.Speech.Languages["es"]
+	if es.Engine != "system" || es.Voice != "Paulina" {
+		t.Fatalf("Languages[es] = %+v", es)
+	}
+	if len(cfg.Warnings) != 2 {
+		t.Fatalf("Warnings = %v, want 2 entries", cfg.Warnings)
+	}
+}
+
 // TestSetSpeechDegradesKokoroOnWrite verifies the write frontier (AC9,
 // DD3/DD5): SetSpeech with a retired engine never errors, never persists
 // 'kokoro', and never persists the non-serialized Warnings field.
