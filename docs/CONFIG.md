@@ -412,7 +412,7 @@ configuration always means disabled.
 [speech]
 enabled = false
 mode = "brief"             # brief | full
-engine = "auto"            # auto | system | say | sapi | piper | kokoro
+engine = "auto"            # auto | system | say | sapi | piper
 language = "auto"
 fallback_language = "es"
 rate = 1.0                  # 0.5 .. 2.0
@@ -424,12 +424,21 @@ es = ""
 en = ""
 
 [speech.languages.es]
-engine = "kokoro"
-voice = "ef_dora"
+engine = "system"
+voice = "Paulina"
 fallback_engine = "system"
 fallback_voice = "Paulina"
 ```
 
 Use `mneme speech on|off` instead of editing `enabled` manually. Per-language
-preferences resolve in exact-locale, base-language, then `default` order. See
+preferences resolve in exact-locale, base-language, then `default` order.
+`fallback_engine`/`fallback_voice` are kept even though there is no
+engine-to-engine fallback at runtime anymore: they are the native engine and
+voice a retired or unservable preference degrades to (see below). See
 [speech.md](speech.md) for platform setup and privacy guarantees.
+
+A retired engine value from a pre-retirement mneme is never rejected by
+`Validate`: it is rewritten to a native engine automatically, with a
+warning, the first time the config is read or written — never an error. See
+[speech.md](speech.md#legacy-configuration-degrades-it-never-fails) for the
+exact rules and the CHANGELOG for the retired engine's name.

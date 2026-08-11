@@ -1216,28 +1216,35 @@ mneme completion zsh > ~/.zsh/completions/_mneme
 - [docs/team-memory.md](../team-memory.md) — `mneme team-memory`/`mneme promote`, git-native shared vault
 # Speech
 
-`mneme speech on|off|stop|status|voices|voice|engine|mode|test|setup` controls
-the host-local spoken-response channel. It is disabled by default. When the
-preferred Kokoro engine is absent, `speech on` prints a content-addressed setup
-plan; `speech on --yes` consents to its verified, transactional installation,
-and `speech on --native` enables the native fallback without installing it.
+`mneme speech on|off|stop|status|voices|voice|mode|test|setup|supervise`
+controls the host-local spoken-response channel. It is disabled by default.
+mneme speaks only with the native engine of the host operating system —
+macOS `say`, Windows System.Speech/SAPI, Linux Piper — and never installs or
+downloads anything.
 
-Per-language selection and managed-engine maintenance use:
+Per-language selection uses:
 
 ```bash
-mneme speech voice set --language es --engine kokoro --voice ef_dora
-mneme speech engine status kokoro
-mneme speech engine rollback kokoro
-mneme speech engine remove kokoro [--apply] [--remove-models]
+mneme speech voice set --language es --engine system --voice Paulina
 ```
 
-The legacy Linux Piper setup requires an existing model and expected digest:
+`--fallback-engine`/`--fallback-voice` are still accepted and persisted; they
+are the native engine and voice a preference degrades to if it ever names an
+engine this host cannot serve.
+
+Linux requires an existing Piper model and its expected digest; mneme never
+downloads one:
 
 ```bash
 mneme speech setup --model /path/to/voice.onnx --sha256 EXPECTED_DIGEST
 ```
 
-Normal synthesis never sends spoken text to a network service. Only an
-explicitly consented managed setup downloads engine/model artifacts; size,
-SHA-256, target, and license metadata are verified before offline healthcheck
-and atomic activation.
+Normal synthesis never sends spoken text to a network service or to a process
+argument: it always reaches the native engine through stdin.
+
+A `config.toml` written by a pre-retirement mneme that still names a retired
+managed engine (see the CHANGELOG) is never rejected: `speech.engine`,
+`speech.languages.<lang>.engine`, and `.fallback_engine` values naming it
+degrade to a native engine automatically, with a warning, the next time the
+config is read or written. See [docs/speech.md](../speech.md) for the exact
+degradation rules.
