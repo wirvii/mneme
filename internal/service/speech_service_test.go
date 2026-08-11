@@ -135,8 +135,13 @@ func TestSpeechListVoicesForRejectsUnknownEngine(t *testing.T) {
 				}
 				return
 			}
-			if err != nil {
-				t.Fatalf("engine=%q unexpected err=%v", tt.engine, err)
+			// A recognized engine must never be rejected as unknown. It may
+			// still fail for host-specific reasons (e.g. Linux voices are
+			// Piper model files, not a listable system catalog) — that is
+			// ListVoices' business, not ListVoicesFor's, so this asserts
+			// only the contract under test.
+			if errors.Is(err, speech.ErrUnknownEngine) {
+				t.Fatalf("engine=%q unexpectedly rejected as unknown: %v", tt.engine, err)
 			}
 		})
 	}
