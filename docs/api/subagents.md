@@ -124,6 +124,7 @@ archetype allows.
 | `repo_root` | string | no | Absolute repo root the profile is written under. Default: current working directory |
 | `engine` | string | no | GenerationEngine identifier used to draft layer-3 content (e.g. `passthrough`, `cli-claude`). Default: `passthrough` |
 | `areas` | string[] | no | App/package paths this profile's role/area sections cover |
+| `areas_complete` | boolean | no | Certifies `areas` as an exhaustive list of every path this role may write to — what activates role containment (SPEC-086 D4/D5/D11). Set `true` only as the direct answer to the `mneme-init` grill's explicit completeness question, reviewed by a human. Never infer, default, or backfill it: an uncertified role is reported by `mneme subagents doctor` as `not_verified`, which is the correct and safe state until certified (SPEC-113) |
 
 **Returns:** `{"path": ".claude/agents/backend.md", "checksum": "sha256-hex...", "version": 1}`
 (`version` is the layer-1 managed-block version parsed back out of the
