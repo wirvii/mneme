@@ -1744,6 +1744,10 @@ func allTools() []ToolDefinition {
 						"description": "App/package paths this profile's role/area sections cover.",
 						"items":       map[string]any{"type": "string"},
 					},
+					"areas_complete": map[string]any{
+						"type":        "boolean",
+						"description": "Certifies `areas` as an exhaustive list of every path this role may write to, which is what activates role containment (SPEC-086 D4/D5/D11). Set true ONLY as the direct answer to the mneme-init grill's explicit completeness question, reviewed by a human. NEVER infer it, never default it to true, and never backfill it for an existing role: an uncertified role is reported by `mneme subagents doctor` as `not_verified`, and that is the correct and safe state until a human certifies it. Omit it when unknown.",
+					},
 				},
 			},
 		},
