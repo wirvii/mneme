@@ -4,6 +4,70 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Removed
+
+- **Retirement of the managed Kokoro speech engine (SPEC-114, BL-154).** mneme
+  speaks only with native system engines now and installs or downloads
+  nothing: macOS `say`, Windows System.Speech, Linux Piper with a local
+  model. Gone are the `mneme speech engine {setup,upgrade,repair,status,
+  rollback,remove}` subtree, the six managed actions of `speech_control`
+  (`engine_status`, `setup_engine`, `upgrade_engine`, `repair_engine`,
+  `rollback_engine`, `remove_engine`), and the `kokoro` engine from the
+  configuration enums. **The release build no longer depends on any external
+  artifact** — it previously downloaded a pinned `kokoro-*` GitHub release
+  catalog just to compile.
+- **Breaking change to the speech CLI surface (DD12).** The flags
+  `mneme speech on --yes`, `--native`, `speech test --engine`, and
+  `speech voices --language` are removed — they only made sense with the
+  managed engine. `speech test --voice` and `speech voices --engine` are
+  unaffected. **`mneme speech setup` is unaffected**: it is the Linux Piper
+  path and always was.
+
+### Changed
+
+- **A configuration naming the retired engine degrades to a native one with a
+  warning, never with an error.** Applies to `[speech].engine`,
+  `[speech.languages.<lang>].engine`, and `.fallback_engine`. When the
+  retired preference declares a `fallback_engine`/`fallback_voice`, they are
+  promoted to the active engine and voice (the most common case: `system`/
+  `Paulina`); when it declares none, engine and voice are cleared instead of
+  leaving a managed voice name stranded on a native engine. The
+  configuration cures itself the first time any voice setting is written.
+
+### Migration
+
+- Any previously downloaded managed engine and model are orphaned at
+  `~/.mneme/speech/engines/` and `~/.mneme/speech/models/` (roughly 800 MB
+  combined). **mneme does not delete them** — the purge is manual and
+  deliberate. Run `mneme speech engine remove kokoro --apply
+  --remove-models` **with the previous binary**: the subcommand no longer
+  exists in this release. Verified defect as of 2026-08-11: **without
+  `--remove-models` the command reports success and leaves the models in
+  place** (715 MB on a real host), so both flags are required together. If
+  you have already upgraded, delete both directories by hand instead.
+- Anyone who built the sidecar locally may also have
+  `~/.mneme/speech/kokoro-venv` and `kokoro-venv312` (about 1.8 GB): these
+  are developer artifacts no mneme command ever created, and must be
+  deleted by hand.
+- During an upgrade, a supervisor process from the previous binary may stay
+  alive for up to its 10-minute idle timeout. The client/server version
+  cross is safe in both directions and resolves on its own; on **Linux**
+  with a still-configured Kokoro preference, one emission in that window can
+  fail with `engine_failed` until the old supervisor exits.
+- The `kokoro-1` GitHub release **remains published**: history is immutable
+  and signed binaries built against it are already on other hosts. It
+  simply stops being referenced by anything in this repository.
+
+- **`areas_complete` published in the `subagent_write` input schema, plus an
+  anti-regression guardrail (SPEC-113, BL-156).** The parameter existed in
+  the handler but was never declared in `InputSchema`, making it invisible
+  to MCP clients — 31 of 52 roles were left uncertified across 10 projects.
+  It is now declared, and a guardrail prevents another request parameter
+  from silently going undeclared again. Remediating the 31 existing roles is
+  tracked separately as BL-157.
+
 ## [v1.34.0] — 2026-08-07 — Managed cross-platform Kokoro speech
 
 ### Added
