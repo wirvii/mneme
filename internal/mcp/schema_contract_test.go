@@ -814,8 +814,35 @@ func TestEveryRequestFieldIsDeclaredInInputSchema(t *testing.T) {
 	}
 }
 
-// D6.3/AC7's bool-vs-boolean check (TestBoolRequestFieldsArePublishedAsBoolean)
-// is added in a follow-up commit (SPEC-113 C5) — kept separate from the
-// coverage assertion above because it is a genuinely distinct check (a type
-// agreement, not a presence check) even though it shares this file's
-// resolution machinery.
+// TestBoolRequestFieldsArePublishedAsBoolean is D6.3/AC7: for every request
+// field whose Go type is literally bool or *bool AND whose JSON name IS
+// published in its tool's schema, the published property must declare
+// `"type": "boolean"`. This is the exact shape of the areas_complete defect
+// — a bool field with a schema entry of the wrong declared type — and is
+// deliberately the only cross-type-system check this guard performs (D6.3
+// explains why: mapping all of Go's type system to JSON Schema from the AST
+// is disproportionate to the one failure mode actually observed).
+func TestBoolRequestFieldsArePublishedAsBoolean(t *testing.T) {
+	fx := buildSchemaContractFixture(t)
+
+	for tool, fields := range fx.fields {
+		props := fx.props[tool]
+		for _, f := range fields {
+			if !f.IsBool {
+				continue
+			}
+			prop, declared := props[f.JSONName]
+			if !declared {
+				continue // Undeclared is D7's concern, asserted elsewhere.
+			}
+			propMap, ok := prop.(map[string]any)
+			if !ok {
+				t.Errorf("%s.%s: schema property is not map[string]any (%#v)", tool, f.JSONName, prop)
+				continue
+			}
+			if propMap["type"] != "boolean" {
+				t.Errorf("%s.%s is a Go bool field but its published schema declares type %v, want \"boolean\" (D6.3)", tool, f.JSONName, propMap["type"])
+			}
+		}
+	}
+}
