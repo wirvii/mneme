@@ -581,3 +581,213 @@ func TestGit_IsAncestor(t *testing.T) {
 		t.Error("IsAncestor(sibling, main head) = true, want false (sibling branch, not an ancestor)")
 	}
 }
+
+// TestListFilesAtRef covers AC11's ListFilesAtRef half: HEAD sees a file
+// added in a later commit; a base ref taken before that commit does not.
+func TestListFilesAtRef(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found in PATH")
+	}
+	dir := initTestGitRepo(t)
+	g := &Git{RepoDir: dir}
+
+	baseSHA, err := g.HeadSHA()
+	if err != nil {
+		t.Fatalf("HeadSHA (base): %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "newfile.go"), []byte("package x\n"), 0o644); err != nil {
+		t.Fatalf("write newfile.go: %v", err)
+	}
+	gitRunTest(t, dir, "add", ".")
+	gitRunTest(t, dir, "commit", "-m", "add newfile")
+
+	headFiles, err := g.ListFilesAtRef("HEAD")
+	if err != nil {
+		t.Fatalf("ListFilesAtRef(HEAD): %v", err)
+	}
+	if !containsString(headFiles, "newfile.go") {
+		t.Errorf("ListFilesAtRef(HEAD) = %v, want it to contain newfile.go", headFiles)
+	}
+
+	baseFiles, err := g.ListFilesAtRef(baseSHA)
+	if err != nil {
+		t.Fatalf("ListFilesAtRef(base): %v", err)
+	}
+	if containsString(baseFiles, "newfile.go") {
+		t.Errorf("ListFilesAtRef(base) = %v, want it NOT to contain newfile.go (added after base)", baseFiles)
+	}
+	if !containsString(baseFiles, "committed.txt") {
+		t.Errorf("ListFilesAtRef(base) = %v, want it to contain committed.txt (present at both refs)", baseFiles)
+	}
+}
+
+// TestListFilesAtRef_SpecialCharacters covers R-E: a filename containing a
+// colon and one containing a space are both reported intact — proof the -z/
+// NUL parsing never cuts on ':' or relies on whitespace.
+func TestListFilesAtRef_SpecialCharacters(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found in PATH")
+	}
+	dir := initTestGitRepo(t)
+	g := &Git{RepoDir: dir}
+
+	if err := os.WriteFile(filepath.Join(dir, "weird:name.go"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write weird:name.go: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "with space.go"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write with space.go: %v", err)
+	}
+	gitRunTest(t, dir, "add", ".")
+	gitRunTest(t, dir, "commit", "-m", "special names")
+
+	files, err := g.ListFilesAtRef("HEAD")
+	if err != nil {
+		t.Fatalf("ListFilesAtRef: %v", err)
+	}
+	if !containsString(files, "weird:name.go") {
+		t.Errorf("ListFilesAtRef = %v, want it to contain %q intact", files, "weird:name.go")
+	}
+	if !containsString(files, "with space.go") {
+		t.Errorf("ListFilesAtRef = %v, want it to contain %q intact", files, "with space.go")
+	}
+}
+
+// TestGrepLinesAtRef covers AC11/AC13's GrepLinesAtRef half: line counts
+// (not occurrence counts, D3 point 3), -F literal matching, the exit-1
+// "nothing matched" case, and R-E's filename-with-colon/space fixture.
+func TestGrepLinesAtRef(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found in PATH")
+	}
+	dir := initTestGitRepo(t)
+	g := &Git{RepoDir: dir}
+
+	if err := os.WriteFile(filepath.Join(dir, "a.go"), []byte("foo\nfoo bar\nbaz\n"), 0o644); err != nil {
+		t.Fatalf("write a.go: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "with space.go"), []byte("foo here\n"), 0o644); err != nil {
+		t.Fatalf("write with space.go: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "weird:name.go"), []byte("foo there\n"), 0o644); err != nil {
+		t.Fatalf("write weird:name.go: %v", err)
+	}
+	gitRunTest(t, dir, "add", ".")
+	gitRunTest(t, dir, "commit", "-m", "grep fixture")
+
+	counts, err := g.GrepLinesAtRef("HEAD", "foo", false)
+	if err != nil {
+		t.Fatalf("GrepLinesAtRef: %v", err)
+	}
+	// a.go has TWO lines containing "foo" ("foo" and "foo bar") — a LINE
+	// count, not an occurrence count (D3 point 3): if -c ever became -o this
+	// would jump to a different number without "foo" appearing twice on any
+	// single line.
+	if counts["a.go"] != 2 {
+		t.Errorf("counts[a.go] = %d, want 2 (two matching LINES)", counts["a.go"])
+	}
+	if counts["with space.go"] != 1 {
+		t.Errorf("counts[%q] = %d, want 1", "with space.go", counts["with space.go"])
+	}
+	if counts["weird:name.go"] != 1 {
+		t.Errorf("counts[%q] = %d, want 1 (colon in filename must not break parsing)", "weird:name.go", counts["weird:name.go"])
+	}
+
+	// A file with NO match at all must be absent from the map, never a
+	// zero-count entry — the exit-1 "nothing matched at all" case (when
+	// EVERY file misses) is exercised by the "no matches anywhere" row
+	// below; this row exercises "matches somewhere, but not in every file".
+	if err := os.WriteFile(filepath.Join(dir, "nomatch.go"), []byte("nothing to see\n"), 0o644); err != nil {
+		t.Fatalf("write nomatch.go: %v", err)
+	}
+	gitRunTest(t, dir, "add", ".")
+	gitRunTest(t, dir, "commit", "-m", "add nomatch")
+	counts, err = g.GrepLinesAtRef("HEAD", "foo", false)
+	if err != nil {
+		t.Fatalf("GrepLinesAtRef (with nomatch.go present): %v", err)
+	}
+	if _, ok := counts["nomatch.go"]; ok {
+		t.Error("counts contains nomatch.go, want it absent (zero matches, not a zero-count entry)")
+	}
+
+	// No matches ANYWHERE: git grep exits 1 — must be an empty map, nil
+	// error, never propagated as a failure.
+	counts, err = g.GrepLinesAtRef("HEAD", "nonexistent-needle-xyz", false)
+	if err != nil {
+		t.Fatalf("GrepLinesAtRef (no matches anywhere): %v", err)
+	}
+	if len(counts) != 0 {
+		t.Errorf("counts = %v, want empty map for a needle matching nothing", counts)
+	}
+}
+
+// TestGrepLinesAtRef_Word covers AC12: `-w` is load-bearing — without it
+// "Foo" would match inside "FooBar".
+func TestGrepLinesAtRef_Word(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found in PATH")
+	}
+	dir := initTestGitRepo(t)
+	g := &Git{RepoDir: dir}
+
+	if err := os.WriteFile(filepath.Join(dir, "a.go"), []byte("var FooBar int\n"), 0o644); err != nil {
+		t.Fatalf("write a.go: %v", err)
+	}
+	gitRunTest(t, dir, "add", ".")
+	gitRunTest(t, dir, "commit", "-m", "word fixture")
+
+	withWord, err := g.GrepLinesAtRef("HEAD", "Foo", true)
+	if err != nil {
+		t.Fatalf("GrepLinesAtRef(word=true): %v", err)
+	}
+	if len(withWord) != 0 {
+		t.Errorf("GrepLinesAtRef(word=true) = %v, want empty (FooBar is not the whole word Foo)", withWord)
+	}
+
+	withoutWord, err := g.GrepLinesAtRef("HEAD", "Foo", false)
+	if err != nil {
+		t.Fatalf("GrepLinesAtRef(word=false): %v", err)
+	}
+	if withoutWord["a.go"] != 1 {
+		t.Errorf("GrepLinesAtRef(word=false)[a.go] = %d, want 1 (substring match inside FooBar)", withoutWord["a.go"])
+	}
+}
+
+// TestGrepLinesAtRef_LiteralNotRegex covers D3 point 1: -F treats needle as
+// a literal string — a regex metacharacter in the search text must not be
+// interpreted as one.
+func TestGrepLinesAtRef_LiteralNotRegex(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found in PATH")
+	}
+	dir := initTestGitRepo(t)
+	g := &Git{RepoDir: dir}
+
+	if err := os.WriteFile(filepath.Join(dir, "a.go"), []byte("a.b.c\naxbxc\n"), 0o644); err != nil {
+		t.Fatalf("write a.go: %v", err)
+	}
+	gitRunTest(t, dir, "add", ".")
+	gitRunTest(t, dir, "commit", "-m", "literal fixture")
+
+	counts, err := g.GrepLinesAtRef("HEAD", "a.b.c", false)
+	if err != nil {
+		t.Fatalf("GrepLinesAtRef: %v", err)
+	}
+	// If "." were interpreted as a regex wildcard, "axbxc" would ALSO match
+	// — -F must keep it literal, matching only the exact "a.b.c" line.
+	if counts["a.go"] != 1 {
+		t.Errorf("counts[a.go] = %d, want 1 (literal match only, . must not be a regex wildcard)", counts["a.go"])
+	}
+}
+
+// containsString reports whether s is present in list — a tiny helper kept
+// local to this test file rather than pulled from slices.Contains so this
+// file's own imports stay minimal.
+func containsString(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}

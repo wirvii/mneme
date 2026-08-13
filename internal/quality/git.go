@@ -1,9 +1,11 @@
 package quality
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os/exec"
+	"strconv"
 	"strings"
 )
 
@@ -152,6 +154,127 @@ func (g *Git) ChangedLines(fromSHA, toRef string) (map[string][]int, error) {
 		return nil, fmt.Errorf("quality: git diff --unified=0 %s..%s: %w", fromSHA, toRef, err)
 	}
 	return ParseUnifiedDiff(out)
+}
+
+// ListFilesAtRef returns every file path in ref's tree (SPEC-117 D3/D4) —
+// the whole tree, unfiltered: doublestar glob filtering against a
+// criterion's `in`/`defined_in` happens in Go, in the caller, never here
+// (D4/BL-173 — git is never handed a pathspec). Fixes core.quotePath=false
+// (R-E, mirroring ChangedLines) so a non-ASCII filename is never quoted,
+// and uses -z with NUL-delimited parsing so a filename containing a
+// newline or a colon is never misread as a record boundary.
+func (g *Git) ListFilesAtRef(ref string) ([]string, error) {
+	cmd := exec.Command("git", "-c", "core.quotePath=false", "ls-tree", "-r", "--name-only", "-z", ref)
+	cmd.Dir = g.RepoDir
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("quality: git ls-tree -r --name-only -z %s: %w", ref, err)
+	}
+	return splitNULTerminated(out), nil
+}
+
+// splitNULTerminated splits a NUL-terminated record stream (as emitted by
+// `git ls-tree -z`) into its entries, dropping the trailing empty record a
+// terminator (rather than a separator) always leaves behind.
+func splitNULTerminated(out []byte) []string {
+	trimmed := bytes.TrimSuffix(out, []byte{0})
+	if len(trimmed) == 0 {
+		return nil
+	}
+	parts := bytes.Split(trimmed, []byte{0})
+	result := make([]string, len(parts))
+	for i, p := range parts {
+		result[i] = string(p)
+	}
+	return result
+}
+
+// GrepLinesAtRef returns, for every file at ref containing needle, the
+// number of LINES matching it (SPEC-117 D3) — never occurrences: `-c`
+// counts one per matching line even when needle appears twice on it (D3
+// point 3), which is the semantics this mechanism declares and documents,
+// not the most precise one available. `-F` treats needle as a LITERAL
+// string, never a regex (D3 point 1) — git's own regex dialect is not Go's,
+// and a misread metacharacter would silently produce zero matches, which a
+// criterion asserting comparator=="==" count=0 would read as GREEN. word
+// requests `-w` (D3 point 2) — the only thing standing between `Foo`
+// matching and `Foo` matching inside `FooBar`.
+//
+// git grep's own `ref:path\0count\n` records (verified against a real git
+// binary, not assumed) are parsed by NUL boundaries only, never by cutting
+// on the first ':' or '\n' — either could legitimately appear inside a
+// filename (R-E). The known ref value is stripped as an exact, literal
+// prefix of each path segment: since ref is a caller-supplied ref/SHA, not
+// derived from the path, this can never be confused with a colon the
+// filename itself happens to contain.
+//
+// git grep exits 1 when NOTHING matched at all — the normal "no hits"
+// outcome (IsTracked/IsAncestor already treat their own exit-1 case this
+// way), returned as an empty map with a nil error, never propagated as a
+// failure.
+func (g *Git) GrepLinesAtRef(ref, needle string, word bool) (map[string]int, error) {
+	args := []string{"-c", "core.quotePath=false", "grep", "-c", "-I", "-z", "-F"}
+	if word {
+		args = append(args, "-w")
+	}
+	args = append(args, "-e", needle, ref)
+
+	cmd := exec.Command("git", args...)
+	cmd.Dir = g.RepoDir
+	out, err := cmd.Output()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+			return map[string]int{}, nil
+		}
+		return nil, fmt.Errorf("quality: git grep -c -z -F -e %s %s: %w", needle, ref, err)
+	}
+	return parseGrepCountRecords(out, ref)
+}
+
+// parseGrepCountRecords parses `git grep -c -z`'s own record shape:
+// `<ref>:<path>` then a NUL, then `<count>` then a LITERAL '\n', repeated
+// once per matching file. Splitting purely on NUL bytes yields len(matches)
+// +1 segments: segment 0 is the first "ref:path" prefix, and segment i
+// (i>=1) begins with the PREVIOUS path's decimal count, followed by the one
+// '\n' git itself emits after the count, followed by the NEXT "ref:path"
+// prefix (empty when i is the last segment). Reading only LEADING DIGITS
+// out of each segment — never splitting that segment by '\n' — is what
+// keeps this correct even if a filename itself contains an embedded
+// newline: the digit-run always ends exactly at the '\n' git wrote, however
+// many more newlines the next path's raw bytes might contain later.
+func parseGrepCountRecords(out []byte, ref string) (map[string]int, error) {
+	segs := bytes.Split(out, []byte{0})
+	counts := make(map[string]int, len(segs))
+	if len(segs) < 2 {
+		return counts, nil
+	}
+
+	refPrefix := []byte(ref + ":")
+	pathSeg := segs[0]
+
+	for i := 1; i < len(segs); i++ {
+		j := 0
+		for j < len(segs[i]) && segs[i][j] >= '0' && segs[i][j] <= '9' {
+			j++
+		}
+		if j == 0 {
+			return nil, fmt.Errorf("quality: git grep -c -z %s: malformed count record: %q", ref, segs[i])
+		}
+		count, convErr := strconv.Atoi(string(segs[i][:j]))
+		if convErr != nil {
+			return nil, fmt.Errorf("quality: git grep -c -z %s: parse count %q: %w", ref, segs[i][:j], convErr)
+		}
+
+		path := bytes.TrimPrefix(pathSeg, refPrefix)
+		counts[string(path)] = count
+
+		rest := segs[i][j:]
+		rest = bytes.TrimPrefix(rest, []byte("\n"))
+		pathSeg = rest
+	}
+
+	return counts, nil
 }
 
 // IsTracked reports whether path is tracked by git in the current index
