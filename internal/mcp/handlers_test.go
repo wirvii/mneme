@@ -1585,6 +1585,36 @@ func TestLaneAudit_FailedAuditReturnsBreaches(t *testing.T) {
 	}
 }
 
+// TestLaneAuditResult_SerializesWithLiteralFieldNames covers AC28's own
+// promise precisely: `mneme lane audit`'s / `lane_audit`'s JSON shape is
+// compared against a LITERAL string fixed in this test, never eyeballed or
+// roundtripped through the same struct (a roundtrip can't detect a field
+// RENAME — it would decode right back into whatever name the struct now
+// has). This exercises the exact json.Marshal call handleLaneAudit uses
+// (SPEC-118 P11, internal/mcp/handlers.go) directly against
+// model.LaneAuditResult — neither type ever declared a `json:"..."` tag
+// (SPEC-118 P7), so Go's default field-name-verbatim encoding is what this
+// literal pins.
+func TestLaneAuditResult_SerializesWithLiteralFieldNames(t *testing.T) {
+	result := model.LaneAuditResult{
+		FileCount:           2,
+		LinesChanged:        14,
+		OutOfScopeFiles:     []string{"docs/readme.md"},
+		ForbiddenPaths:      []string{"internal/db/migrations/001.sql"},
+		PublicSymbolChanges: []string{"NewExportedFunc"},
+		Breaches:            []string{"too many files"},
+		Passed:              false,
+	}
+	b, err := json.Marshal(&result)
+	if err != nil {
+		t.Fatalf("json.Marshal(LaneAuditResult): %v", err)
+	}
+	const want = `{"FileCount":2,"LinesChanged":14,"OutOfScopeFiles":["docs/readme.md"],"ForbiddenPaths":["internal/db/migrations/001.sql"],"PublicSymbolChanges":["NewExportedFunc"],"Breaches":["too many files"],"Passed":false}`
+	if string(b) != want {
+		t.Errorf("json.Marshal(LaneAuditResult) = %s, want literal:\n%s", b, want)
+	}
+}
+
 // TestHandleSpecReject_HappyPath verifies that spec_reject transitions a spec
 // from qa (standard lane) to implementing and returns the updated spec.
 func TestHandleSpecReject_HappyPath(t *testing.T) {
