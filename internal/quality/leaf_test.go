@@ -2,6 +2,9 @@ package quality
 
 import (
 	"go/build"
+	"go/parser"
+	"go/token"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -77,6 +80,43 @@ func TestLeafPackage_OnlyImportsStdlibAndTOML(t *testing.T) {
 	for _, a := range allowedNonStdlib {
 		if !found[a] {
 			t.Errorf("internal/quality no longer imports %s — update allowedNonStdlib and this anchor together if that is intentional", a)
+		}
+	}
+}
+
+// pureSourceFiles are the source-of-truth-free files SPEC-117 introduces
+// that must NEVER shell out — the criteria vocabulary is a pure function
+// of already-collected tree facts (D3); all I/O of any kind belongs in
+// git.go, and ONLY git.go (P9 adds report.go to this list too, since
+// RenderReport must be equally pure).
+var pureSourceFiles = []string{"criteria.go", "evaluate.go"}
+
+// TestPureFiles_NeverImportOSExec is AC1's negative hermana: proof, not
+// assertion, that criteria.go/evaluate.go never import os/exec — the
+// evaluator's whole reason for existing is to be testable with tables
+// instead of a real git repo per row, and an accidental `exec.Command`
+// slipped into either file would silently defeat that (G1b).
+func TestPureFiles_NeverImportOSExec(t *testing.T) {
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	dir := filepath.Dir(thisFile)
+
+	fset := token.NewFileSet()
+	for _, name := range pureSourceFiles {
+		path := filepath.Join(dir, name)
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("pureSourceFiles names %s but it does not exist: %v", name, err)
+		}
+		f, err := parser.ParseFile(fset, path, nil, parser.ImportsOnly)
+		if err != nil {
+			t.Fatalf("parse %s: %v", path, err)
+		}
+		for _, imp := range f.Imports {
+			if imp.Path.Value == `"os/exec"` {
+				t.Errorf("%s imports os/exec — this file must stay a pure function of already-collected tree facts", name)
+			}
 		}
 	}
 }
