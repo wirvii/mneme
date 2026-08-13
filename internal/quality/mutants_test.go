@@ -23,7 +23,7 @@ func TestMutant_ID(t *testing.T) {
 // (profile_test.go).
 func TestMutantFormats_IsSortedRegistrySnapshot(t *testing.T) {
 	got := MutantFormats()
-	want := []string{"mutants-v1"}
+	want := []string{"gremlins", "mutants-v1"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("MutantFormats() = %v, want %v", got, want)
 	}
@@ -65,6 +65,7 @@ func TestParseMutantReport_DispatchesToRegisteredParser(t *testing.T) {
 func TestMutantFormats_RegistryContract(t *testing.T) {
 	fixtures := map[string]string{
 		"mutants-v1": "mutants-v1-six-states.json",
+		"gremlins":   "gremlins-v0.6.0.json",
 	}
 
 	formats := MutantFormats()

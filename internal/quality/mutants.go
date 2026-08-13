@@ -149,6 +149,7 @@ type MutantReportParser interface {
 // never against a second, parallel literal list.
 var mutantRegistry = map[string]MutantReportParser{
 	"mutants-v1": mutantsV1Parser{},
+	"gremlins":   gremlinsParser{},
 }
 
 // MutantFormats returns the sorted list of format names ParseMutantReport
