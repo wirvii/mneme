@@ -741,6 +741,194 @@ be trivially true at HEAD (`file_exists("README.md")`) is also true at
 base, which makes it **vacuous**, which costs a finding and a signature.
 That defense works identically before and after certification.
 
+## S4: the budget against the graph, and the absorption of `lane audit` (SPEC-118)
+
+The owner's own original contribution to this EPIC: it converts "escribió
+de más" — a feeling a reviewer gets reading a diff — into a number. The
+architect declares, in `budget.toml`, how much a change is allowed to
+cost against the code graph: a per-directory quota for NEW symbols, a
+nominal list of EXISTING symbols the spec may modify, a radius of paths
+the change may touch, and a single margin of slack shared by both halves.
+`mneme quality verify` computes the REAL delta between the spec's base
+commit and HEAD and compares it against that declaration.
+
+### `budget.toml`: where it lives, and what each half declares
+
+Same channel as `criteria.toml` (S3), for the same reason: the architect
+is read-only on the repository, so `spec_doc_write` (kind `"budget"`) is
+its only write channel. It lives next to `spec.md`/`plan.md`/
+`criteria.toml` in the spec's own workflow directory, is **not** versioned
+in the repository (the same honest limit S3's own `criteria.toml`
+accepted, R9), and its content is written **verbatim** into the
+certificate's `budget/declared` row — so a generous or careless budget is
+visible in the artifact a human reads, never hidden behind a bare
+pass/fail.
+
+```toml
+schema_version = 1
+margin = 2
+radius = ["internal/quality/**", "internal/service/**"]
+
+[[quota]]
+dir             = "internal/quality"
+max_new_symbols = 18
+
+[[modify]]
+file   = "internal/service/quality.go"
+symbol = "runAllChecks"
+
+[revision]
+by        = "architect"
+at        = "2026-08-14T09:12:00Z"
+rationale = "the graph-facts wiring needed more symbols than planned"
+margin    = 2
+  [[revision.quota]]
+  dir             = "internal/service"
+  max_new_symbols = 14
+```
+
+`[[quota]]` is the asymmetric half of D4 of the EPIC grill: what does not
+exist yet can only be BOUNDED (a directory, a count), never named.
+`[[modify]]` is the other half: what already exists CAN be named exactly,
+because the architect read the graph while designing.
+
+### The three layers, in increasing order of what they require
+
+1. **File delta** (`git diff --name-status`/`--numstat`, always available
+   with just git) feeds the trivial form's own thresholds and the radius
+   check.
+2. **Symbol delta** — for every file the layer above touched, `git show
+   <ref>:<path>` (no checkout, no worktree, no build) followed by the SAME
+   in-process extractor the code graph indexer uses. Extracting a file's
+   symbols is a pure function of its bytes, and a symbol's identity is a
+   pure function of `(file, qualified name)` — so diffing the two sets by
+   key is EXACT, never a heuristic, and requires only the extractor, not
+   the indexed graph.
+3. **Graph facts** — who calls a symbol, whether a test reaches it,
+   whether another symbol shares its name and signature. This is the ONE
+   layer that needs the indexed graph (`~/.mneme/projects/<slug>-codegraph.db`),
+   and it is the only one degraded when that graph is stale or absent.
+
+Each layer works even when the next one does not: a spec with no indexed
+graph still gets its file/symbol-delta arithmetic (`fail`, never silently
+skipped); only the six graph-dependent detections degrade to `finding`
+`skipped`, naming the remedy.
+
+### Freshness measured by content, never by a timestamp
+
+`mneme codegraph index` (the full-scan command) does **not** stamp
+`last_indexed_sha` — only the git-hook-driven incremental reindex does.
+A mechanism that judged freshness by that stamp would print a remedy
+(`mneme codegraph index`) that does not actually fix the state it just
+complained about — the exact scar `docs/HOOKS.md` and SPEC-087 AC12
+already describe in a different shape. Instead, for every file the
+delta touched and the graph considers indexable, `budget/graph-index`
+compares the graph's own recorded `ContentHash` against the sha256 of
+that file's blob at HEAD (already in hand from step 2 above) — an exact
+comparison, not an inference. A mismatch, an absence, or no graph at all
+is a `finding` naming `mneme codegraph index` as the remedy — and that
+remedy genuinely fixes it, which is the whole point of not trusting the
+stamp.
+
+This freshness check is **only proven for the files the delta touched**
+(R4): a stale, unrelated file elsewhere in the graph is not detected, and
+the bias this leaves is toward `finding`, never toward a silent pass.
+
+### The eight detections
+
+Two are pure git/budget arithmetic — `fail`, no signature required,
+because mneme calculated them directly:
+
+- **unbudgeted** — the single margin pool (below) is exceeded.
+- **out-of-radius** — a changed file falls outside the declared `radius`
+  (or, for the trivial lane, `scope`). Deliberately **separate** from the
+  margin pool: a file outside radius is a design miss, not a quantity to
+  forgive, however much slack remains.
+
+Six lean on edges the graph **inferred** — `finding`, always firmable,
+never blocking outright (D7 of the EPIC grill), because an inference can
+be wrong in ways arithmetic cannot:
+
+| Detection | Condition | Known false positive |
+|---|---|---|
+| `orphan` | a created, non-test symbol with zero incoming edges | legitimate public API; an interface satisfied structurally (Go never produces an edge for that); a handler registered in a table/switch; a Cobra `RunE` closure |
+| `test-only` | a symbol (created or modified) whose only callers all live in files matching `test_globs` | none known — the cleanest of the six |
+| `dead` | a preexisting symbol with zero incoming edges at HEAD, whose name WAS referenced in the BASE version of a changed file and no longer is | the same as `orphan`'s, plus a caller the resolver failed to resolve |
+| `single-use-indirection` | a created, non-exported symbol with EXACTLY one incoming call | a legitimate extraction for readability |
+| `reinvention` | a created function/struct/interface/type_alias (never a `method`) sharing name AND normalised signature with a preexisting symbol in ANOTHER directory | none beyond the excluded case — excluding `method` is what prevents two interface implementations from being flagged against each other |
+| `untested-reach` | a created, non-test symbol with no caller within `test_reach_depth` hops living in a test file | a resolver gap; an integration test that reaches it by reflection or HTTP |
+
+`untested-reach` overlaps with, but does not duplicate, S2's diff
+coverage: coverage says "these lines executed"; `untested-reach` says
+"which test reaches here, and by what path" — and can fire even when
+coverage is off, or when the covering path exists but the resolver never
+closed it.
+
+Every detection is **one row per detection kind**, never one row per
+subject — the full subject list lives in the row's `detail`, the count in
+its `summary`. Six orphans cost one signature, not six identical ones.
+
+### The margin: one pool, and why radius never joins it
+
+A created symbol is covered if its directory has a `[[quota]]` with
+remaining capacity (imputed deterministically, symbols sorted by key); a
+modified symbol is covered if its `(file, symbol)` pair is declared in
+`[[modify]]`. What is NOT covered is the excess. `excess <= margin` passes
+(with the deviation recorded); `excess > margin` fails the certificate
+outright. One pool for both halves, because a spec that overruns its
+quota in one package AND touches three undeclared functions overran
+TWICE, and two independent margins would only ever say it once.
+
+### The revision: two locks, and why neither is the author's own signature
+
+`[revision]` widens the contract — the architect's signed, after-the-fact
+"this excess is justified." Its presence is **always** a firmable
+`finding` (never silently absorbed), guarded by two independent locks:
+
+1. **Structural.** `quality_ack` (the only verb that clears a finding) is
+   in `lifecycleTools` — denied to every subagent unconditionally. Even an
+   implementer who wrote its own `[revision]` cannot make it effective.
+2. **Role.** `spec_doc_write` with `kind = "budget"` is restricted to the
+   `architect` role (`roleScopedDocKinds`, `internal/cli/hook.go`) — an
+   implementer cannot write the ORIGINAL budget either, closing the gap
+   lock 1 alone leaves: examining oneself by writing an unrevised,
+   generous budget with nothing to sign.
+
+Unlike S3's `quality_sign` (fail-closed when a subagent's role cannot be
+resolved), this rule fails **open**: closing it would leave the architect
+unable to write any budget at all if `agent_type` ever stopped arriving in
+the payload, breaking the common path for every spec, while the document
+that slipped through stays subject to lock 1 downstream.
+
+### A renaming limit, stated plainly (R8)
+
+A file **rename** is resolved exactly (`git diff -M`), and a symbol whose
+file moved without a body change is `moved`, never created+deleted. A
+symbol renamed **within the same file** is indistinguishable from one
+deleted and a different one created — this mechanism does not attempt
+name-similarity heuristics for that case. It costs one quota slot and one
+nominal entry; it is a stated limit, not a hidden defect.
+
+### The absorption of `lane audit`
+
+The trivial lane's own auditor (`mneme lane audit`) now runs on the exact
+same engine: `quality.Git` for the delta, `quality.EvaluateTrivialBudget`
+for the verdict, replacing the deleted `internal/lane` package's own
+duplicated git wrapper and its own (`**`-only) glob matcher. See
+[docs/lanes.md](lanes.md) for the two routes (off/absorbed) and the one
+deliberate behaviour change (`DefaultBaseRef`'s removal).
+
+### The window this spec leaves open too (D16)
+
+Same shape as S3's own R3/H2: `CertificateUsable` compares the
+constitution's hash, but not `budget.toml`'s. The defense that matters is
+already in place — the declaration is verbatim in the certificate's
+`detail`, and `quality status` reports the disk hash next to the one the
+certificate recorded, so a swap after certification is visible, not
+silent. A `document-hash` check (one more row, not a new argument to
+`CertificateUsable`) is registered as a follow-up (BL), the same shape S3
+proposed for its own criteria window.
+
 ## Findings and `ack`: the constitution cannot be quietly weakened
 
 An implementer has write access to the repository and could, without any
@@ -922,17 +1110,10 @@ to implement it, delete it, or document it as inert is a separate item
 
 ## What this does NOT do (yet)
 
-Explicitly out of scope for S1+S2+S3 — each remaining spec in the EPIC
+Explicitly out of scope for S1+S2+S3+S4 — each remaining spec in the EPIC
 builds on this exact registry without a schema change narrowing what came
 before:
 
-- **S4 — Budget and graph, absorbing `lane audit`.** The architect's
-  declared symbol/impact budget, checked against the real code-graph diff;
-  `lane_audit`'s trivial-lane mechanism folds into this same registry. S4 is
-  also the natural point to absorb coverage of BRANCHES and PER-FILE/
-  PACKAGE coverage, plus orphan detection — deliberately left out of S2,
-  which covers lines only (D6 of the EPIC-calidad grill: orphan detection
-  is a graph question, i.e. S4's territory).
 - **S5 — Mutation testing.** A survived mutant fails the certificate
   outright, with a counted, justified "equivalent mutant" escape hatch.
 - **S6 — Visual verification.** Project-declared routes/states/themes
@@ -945,5 +1126,6 @@ before:
   `quality_report`, and the `spec_advance` block's error table
 - [docs/api/http.md](api/http.md) — the HTTP exclusion, in full
 - [docs/init.md](init.md) — the materialization step inside `mneme init`
-- [docs/lanes.md](lanes.md) — the trivial-lane auditor this mechanism does
-  not yet absorb (S4 will)
+- [docs/lanes.md](lanes.md) — the trivial-lane auditor this mechanism now
+  absorbs (SPEC-118 S4), and the one behaviour change that absorption
+  brought

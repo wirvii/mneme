@@ -242,35 +242,46 @@ lane) or `rationale` (trivial lane).
 
 ### spec_doc_write
 
-Write a spec entregable (`spec`/`plan`/`qa-report`/`changes`/`criteria`) to
-its workflow directory (SPEC-087 D3, `criteria` added by SPEC-117 S3 D1) —
-the path a subagent uses instead of copying its report into the workflow
-directory by hand. The destination directory and filename are never
-caller-supplied: the directory is derived from the persisted spec record
-(`spec.Project`, via `GetSpec`) and the filename comes from a closed,
-Go-authored `kind -> filename` map (`spec` → `spec.md`, `plan` → `plan.md`,
-`qa-report` → `qa-report.md`, `changes` → `changes.md`, `criteria` →
-`criteria.toml`). 0644, parent directories created as needed, plain
-overwrite-or-create — no append, no arbitrary read.
+Write a spec entregable (`spec`/`plan`/`qa-report`/`changes`/`criteria`/
+`budget`) to its workflow directory (SPEC-087 D3, `criteria` added by
+SPEC-117 S3 D1, `budget` added by SPEC-118 S4 D2) — the path a subagent
+uses instead of copying its report into the workflow directory by hand.
+The destination directory and filename are never caller-supplied: the
+directory is derived from the persisted spec record (`spec.Project`, via
+`GetSpec`) and the filename comes from a closed, Go-authored `kind ->
+filename` map (`spec` → `spec.md`, `plan` → `plan.md`, `qa-report` →
+`qa-report.md`, `changes` → `changes.md`, `criteria` → `criteria.toml`,
+`budget` → `budget.toml`). 0644, parent directories created as needed,
+plain overwrite-or-create — no append, no arbitrary read.
 
-**`kind = "criteria"` is validated BEFORE anything is written** (D7): the
-content is parsed as strict `criteria.toml` and, when the server's
-`repoDir` is configured, every `new = false` assertion's anchor is
-resolved against the real working tree. Any failure returns without
-writing a single byte — see [docs/quality.md](../quality.md#s3-executable-acceptance-criteria-spec-117)
-for the full vocabulary this validates against.
+**`kind = "criteria"` and `kind = "budget"` are both validated BEFORE
+anything is written** (D7/D11): the content is parsed strictly and, when
+the server's `repoDir` is configured, every anchor is resolved against the
+real working tree — `criteria.toml`'s `new = false` assertions, or
+`budget.toml`'s `[[modify]]` symbols and `[[quota]]` directories. Any
+failure returns without writing a single byte — see
+[docs/quality.md](../quality.md#s3-executable-acceptance-criteria-spec-117)
+and [docs/quality.md](../quality.md#s4-the-budget-against-the-graph-and-the-absorption-of-lane-audit-spec-118)
+for the full vocabulary each validates against.
+
+**`kind = "budget"` and `kind = "criteria"` are BOTH restricted to the
+`architect` role for a subagent caller** (SPEC-118 D10,
+`internal/cli/hook.go`'s `roleScopedDocKinds`) — an implementer writing
+either would be examining itself. The rule fails OPEN when a subagent's
+role cannot be resolved, the opposite of `quality_sign`'s fail-closed
+posture (see docs/quality.md's own note on why).
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `id` | string | yes | Spec ID (e.g. `SPEC-001`) |
-| `kind` | string | yes | `spec`, `plan`, `qa-report`, `changes`, or `criteria` |
+| `kind` | string | yes | `spec`, `plan`, `qa-report`, `changes`, `criteria`, or `budget` |
 | `content` | string | yes | Full document content, written verbatim |
 
 **Returns:** `{"path": "/abs/path/to/qa-report.md", "bytes": 1234, "created": true}`
 
 **Errors:** `-32602` unknown `kind`, missing fields, or (for `kind =
-"criteria"`) an invalid document / an unresolvable anchor. `-32000` spec
-not found.
+"criteria"`/`"budget"`) an invalid document / an unresolvable anchor.
+`-32000` spec not found.
 
 ### spec_list
 
@@ -436,6 +447,16 @@ response shape are unchanged.
 when `[criteria]` is declared and enabled (see
 [docs/quality.md](../quality.md#s3-executable-acceptance-criteria-spec-117)),
 and `spec_doc_write`'s `kind` enum gains `"criteria"` (above).
+
+**SPEC-118 (S4) adds NO new tool.** `quality_verify` also emits up to 12
+(standard lane) or 13 (trivial lane) more `quality_checks` rows
+(`kind=budget`/`detection`) when `[budget]` is declared and enabled (see
+[docs/quality.md](../quality.md#s4-the-budget-against-the-graph-and-the-absorption-of-lane-audit-spec-118));
+`quality_status`'s response gains a `budget` field (path, disk hash,
+certificate hash, margin, budgeted/delivered/overrun); `spec_doc_write`'s
+`kind` enum gains `"budget"` (above); and `lane_audit`'s response type
+changes from `lane.AuditResult` to `model.LaneAuditResult` — same field
+names, same (absent) JSON tags, byte-identical wire shape.
 
 ### quality_verify
 

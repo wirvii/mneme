@@ -71,12 +71,59 @@ The auditor runs when `lane audit <id>` is called on a trivial spec in `audit` s
 | Go public symbols | exported name added/removed | `public symbol changed: <name> in <path>` |
 | TS/JS exports | `export ` added/removed | `public export changed in <path>` |
 
-The base ref defaults to `git merge-base HEAD <default-branch>`. Override with `--base <ref>`.
-
 **Base-SHA binding (v1.6.0):** When a spec enters `implementing`, mneme captures the current HEAD SHA as `base_sha` on the spec. On subsequent `lane_audit` runs the base ref is resolved in this order:
 1. Explicit `--base <ref>` / `base_ref` argument (caller override).
 2. `spec.base_sha` (captured at implementing time — recommended for multi-spec branches).
-3. `""` (auditor falls back to `git merge-base HEAD <default-branch>`).
+
+**Behaviour change (SPEC-118 P11): there is no third step anymore.** The
+old auditor used to guess a default (`git merge-base HEAD <default-branch>`,
+falling back to `HEAD~1`) when neither of the two above resolved. That
+guess is gone, not replaced: with neither a `base_sha` nor an explicit
+override, `lane_audit` now returns a clear error instead of silently
+picking a base the caller never asked for. Adivinar una base y llamarlo
+veredicto is exactly the failure mode this whole EPIC exists to close —
+S3 already made the same call for the standard lane's own criteria
+(`base-unknown`, never a guess).
+
+## The engine underneath (SPEC-118 P11), and the absorption (D12)
+
+`internal/lane` — the package that used to implement this auditor — is
+gone. `lane_audit` now runs on the SAME engine the standard lane's budget
+mechanism uses: `internal/quality`'s own `Git` (file/symbol delta) and
+`EvaluateTrivialBudget` (the verdict), reusing `internal/service`'s own
+`symbolExtractorAdapter` for the (now real, cross-language) public-symbol
+check instead of the old package's Go-only `go/ast` walk plus a regex
+heuristic for TypeScript. The 3/20 limits and the five forbidden globs
+are unchanged, migrated verbatim (`DefaultTrivialBudget`); every field of
+`lane_audits`, the `audit` status, `lane_reclassify`/`lane_override`, and
+the JSON shape `lane_audit` returns are all unchanged.
+
+Two behaviour changes came with the engine swap, both deliberate:
+
+- **`DefaultBaseRef`'s removal**, above.
+- **The public-symbol detector got MORE accurate**, not less: it now uses
+  the real code-graph extractor's `IsExported` for both Go and
+  TypeScript, instead of a `^\+export ` regex heuristic for the latter.
+
+The mechanism's absorption itself (SPEC-118 D12) means the trivial lane's
+own certificate requirement is now conditioned on the SAME `[budget]`
+switch the standard lane's budget checks use — **not** on `.mneme/quality.toml`'s
+top-level `enabled`, which keeps governing gates/coverage/criteria for
+standard work exactly as before:
+
+| `.mneme/quality.toml` | `mneme lane audit` |
+|---|---|
+| absent · schema < 4 · `[budget].enabled = false` | **Direct route.** Computes the delta in-process, evaluates the trivial form, writes `lane_audits`, advances `audit → done`. No certificate, no gates, no graph. This is TODAY's behaviour, on the new engine. |
+| schema 4 with `[budget].enabled = true` | **Absorbed route.** Requires a usable certificate for HEAD (`quality.CertificateUsable`) before advancing; without one, `ErrCertificateMissing` naming `mneme quality verify <ID>` as the remedy. |
+
+**Turning `[budget]` on activates the certificate requirement for the
+trivial lane too** — `ensureCertified`'s own gate at `implementing → audit`
+now checks `[budget].enabled` specifically for trivial specs (leaving the
+standard lane's own top-level `enabled` gate untouched). This is why the
+project constitution ships with `[budget].enabled = false` by default:
+turning it on is a cost decision (a trivial spec now inherits the full
+gate/coverage/criteria/graph suite, R3 of the SPEC-118 design), not a free
+upgrade.
 
 ## Reject (v1.6.0)
 
