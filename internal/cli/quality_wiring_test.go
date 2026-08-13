@@ -55,3 +55,41 @@ func TestInitSDDService_FixesRepoDir(t *testing.T) {
 		t.Errorf("RepoDir() = %q, want it to resolve to the same directory as %q", sddSvc.RepoDir(), repoDir)
 	}
 }
+
+// TestInitQualityService_WiresRunnerAndRepoDir is the P9 wiring test (G10,
+// same mould as G6): initQualityService() must return a QualityService with
+// a non-nil runner and a non-empty repoDir. Mutation (verified manually per
+// the plan): removing the runner argument (passing nil instead of
+// &quality.ExecRunner{}) from initQualityService's NewQualityService call
+// turns HasRunner() false, and this test red.
+func TestInitQualityService_WiresRunnerAndRepoDir(t *testing.T) {
+	repoDir := t.TempDir()
+	initGitRepo(t, repoDir)
+
+	origWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(repoDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(origWD) })
+
+	origDataDir, origProject := flagDataDir, flagProject
+	flagDataDir = t.TempDir()
+	flagProject = "quality-wiring-test-2"
+	t.Cleanup(func() { flagDataDir, flagProject = origDataDir, origProject })
+
+	qualitySvc, cleanup, err := initQualityService()
+	if err != nil {
+		t.Fatalf("initQualityService: %v", err)
+	}
+	defer cleanup()
+
+	if !qualitySvc.HasRunner() {
+		t.Error("initQualityService did not wire a runner — HasRunner() is false")
+	}
+	if qualitySvc.RepoDir() == "" {
+		t.Error("initQualityService did not fix repoDir — RepoDir() is empty")
+	}
+}

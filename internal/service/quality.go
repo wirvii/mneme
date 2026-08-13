@@ -73,6 +73,21 @@ func NewQualityService(sddStore *store.SDDStore, project, repoDir string, runner
 	return s
 }
 
+// RepoDir returns the repository directory this service was constructed
+// with, verbatim — lets a wiring test assert initQualityService (P9) really
+// fixed it, the same shape as SDDService.RepoDir() (G6/G10).
+func (svc *QualityService) RepoDir() string {
+	return svc.repoDir
+}
+
+// HasRunner reports whether a Runner was injected at construction, without
+// exposing the Runner interface value itself — a wiring test's way of
+// asserting initQualityService (P9) never constructs a QualityService with
+// runner==nil (G10).
+func (svc *QualityService) HasRunner() bool {
+	return svc.runner != nil
+}
+
 // Verify runs every gate constitution.Gates declares, in order, stopping at
 // the first REQUIRED gate that fails (the rest are recorded "skipped", D6),
 // alongside the tree check (D8) and the three constitution checks (D9), then
@@ -104,6 +119,15 @@ func (svc *QualityService) Verify(ctx context.Context, req model.QualityVerifyRe
 	constitution, err := quality.Parse(raw)
 	if err != nil {
 		return nil, fmt.Errorf("service: quality: verify: parse constitution: %s: %w", err, model.ErrInvalidConstitution)
+	}
+
+	// Propagate THIS repo's declared execution.output_tail_bytes (D2/D6)
+	// into the injected runner, when it supports reconfiguration (today,
+	// production's *quality.ExecRunner). A test fake that does not
+	// implement TailBytesSetter is left untouched — its fixed GateResult
+	// values never depended on this anyway.
+	if setter, ok := svc.runner.(quality.TailBytesSetter); ok {
+		setter.SetMaxTailBytes(constitution.Execution.OutputTailBytes)
 	}
 
 	g := &quality.Git{RepoDir: svc.repoDir}

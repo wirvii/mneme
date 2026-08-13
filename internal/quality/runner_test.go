@@ -173,6 +173,32 @@ func TestExecRunner_CommandNotFound(t *testing.T) {
 	}
 }
 
+// TestExecRunner_SetMaxTailBytes_Reconfigures verifies the TailBytesSetter
+// seam QualityService.Verify relies on to propagate a constitution's own
+// execution.output_tail_bytes into an already-constructed *ExecRunner:
+// SetMaxTailBytes changes what a SUBSEQUENT Run call retains. Only the
+// pointer type satisfies the interface — that assertion is itself the test
+// of the "deliberate" pointer-receiver choice documented on SetMaxTailBytes.
+func TestExecRunner_SetMaxTailBytes_Reconfigures(t *testing.T) {
+	const size = 5000
+	setHelperEnv(t, "bigoutput", map[string]string{"MNEME_QUALITY_RUNNER_OUTPUT_SIZE": strconv.Itoa(size)})
+
+	r := &ExecRunner{MaxTailBytes: 4096}
+	var _ TailBytesSetter = r // compile-time: only the pointer satisfies it.
+
+	r.SetMaxTailBytes(10)
+	res := r.Run(context.Background(), helperGate("resized", time.Minute), t.TempDir())
+	if res.Status != GateStatusPass {
+		t.Fatalf("Run() status = %q, want pass (summary: %q)", res.Status, res.Summary)
+	}
+	if len(res.OutputTail) > 10 {
+		t.Errorf("len(OutputTail) = %d after SetMaxTailBytes(10), want <= 10", len(res.OutputTail))
+	}
+	if res.OutputBytes != size {
+		t.Errorf("OutputBytes = %d, want %d (SetMaxTailBytes must not affect the reported total)", res.OutputBytes, size)
+	}
+}
+
 // TestExecRunner_NoShell covers AC10: a metacharacter-laden argument is
 // passed through as a single literal argv element, never interpreted by a
 // shell (there is none — exec.CommandContext never invokes sh -c).

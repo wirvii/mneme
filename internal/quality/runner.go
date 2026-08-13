@@ -164,6 +164,27 @@ func (r ExecRunner) Run(ctx context.Context, gate Gate, dir string) GateResult {
 	return result
 }
 
+// TailBytesSetter is implemented by a Runner whose output-retention bound
+// can be reconfigured after construction — today, only *ExecRunner. It
+// exists so QualityService.Verify can propagate a constitution's own
+// execution.output_tail_bytes (per-repo, D2) into an already-constructed
+// production runner for a single Verify call, without widening the Runner
+// interface's fixed 3-parameter Run signature (D14). Optional: a Runner
+// that does not implement it (e.g. a test fake) is simply left alone.
+type TailBytesSetter interface {
+	SetMaxTailBytes(n int)
+}
+
+// SetMaxTailBytes implements TailBytesSetter. Note the pointer receiver: only
+// &ExecRunner{} (not a bare ExecRunner{} value) satisfies TailBytesSetter —
+// deliberate, since Run's own value receiver already lets callers that never
+// need this (e.g. tests constructing ExecRunner{MaxTailBytes: N} directly
+// and calling .Run() without going through the Runner interface) ignore it
+// entirely.
+func (r *ExecRunner) SetMaxTailBytes(n int) {
+	r.MaxTailBytes = n
+}
+
 // tailBuffer is a bounded io.Writer that retains only the last max bytes
 // written to it while total tracks the full length seen — the pairing that
 // lets ExecRunner report an honest OutputBytes/OutputSHA256 for output far
