@@ -1,20 +1,24 @@
 package quality
 
 // templateTOML is the exact content mneme init writes to a repository's
-// .mneme/quality.toml when the file is absent (D15/AC23). Every key Parse
-// requires is present and uncommented (schema_version, enabled,
-// execution.output_tail_bytes) so the written file parses without error the
-// moment it lands; enabled is false so materializing the constitution never
+// .mneme/quality.toml when the file is absent (D15/AC23/AC32). Every key
+// Parse requires is present and uncommented (schema_version 2, enabled,
+// execution.output_tail_bytes, and — new in SPEC-116 — the complete
+// [coverage]/[ratchet] tables, since schema 2 requires both sections in
+// full) so the written file parses without error the moment it lands;
+// every `enabled` switch is false so materializing the constitution never
 // itself starts blocking spec_advance in a repo that never asked for it
-// (R4). The two example gates are commented out — they name the shape a
-// team declares, without inventing gates mneme cannot know are correct for
-// this project (D9 of the grill: mneme stays agnostic of the project's
-// toolchain).
+// (R4). The example gates stay commented out — they name the shape a team
+// declares, without inventing gates mneme cannot know are correct for this
+// project (D9 of the grill). [coverage]/[ratchet], by contrast, CANNOT be
+// left commented out (schema 2 requires the sections to be present with
+// every key), so their values are a generic, harmless illustration —
+// never executed while enabled=false.
 const templateTOML = `# .mneme/quality.toml — constitución de calidad de este repositorio.
 # Versionada y revisable en PR: la calidad es parte del código.
 # mneme NO tiene valores por defecto para nada de este fichero.
 
-schema_version = 1
+schema_version = 2
 
 # El interruptor. Mientras sea false el mecanismo NO bloquea nada.
 # Ponerlo a true es un commit revisable, y volverlo a false dentro del rango
@@ -39,6 +43,48 @@ output_tail_bytes = 4096
 # command = ["make", "test"]
 # timeout = "20m"
 # required = true
+
+[coverage]
+# La cobertura de las lineas AÑADIDAS O MODIFICADAS por una spec (SPEC-116).
+# false = declarado apagado, a proposito. A diferencia de los gates, esta
+# tabla no puede quedar comentada: el schema 2 la exige completa.
+enabled = false
+
+# Formato del perfil de cobertura: "lcov" | "go-cover". Declarado, nunca
+# adivinado (ver docs/quality.md).
+format = "lcov"
+
+# El comando que produce el perfil de cobertura, ejecutado tal cual, sin
+# shell — ajusta esto al toolchain real de tu proyecto antes de encender
+# coverage.enabled.
+command = ["true"]
+
+# Donde deja el comando el perfil, relativo a la raiz del repo. mneme LO
+# BORRA antes de ejecutar el comando: debe estar en .gitignore.
+profile_path = "coverage.lcov"
+
+timeout = "20m"
+
+# Umbral de cobertura de las lineas cambiadas por la spec.
+min_diff_line_pct = 80.0
+
+# Por debajo de este numero de lineas elegibles la comprobacion se salta.
+min_changed_lines = 5
+
+# Ficheros excluidos del numerador Y del denominador (globs doublestar).
+exclude = []
+
+[ratchet]
+# El cliquet: la cobertura global del repositorio no puede caer sin firma.
+# Requiere coverage.enabled = true.
+enabled = false
+
+# Caida tolerada, en puntos porcentuales, respecto a la linea base.
+max_global_line_pct_drop = 0.0
+
+# Cuanto puede la medicion superar la marca registrada antes de declararla
+# obsoleta (ver docs/quality.md). Debe ser >= max_global_line_pct_drop.
+max_baseline_staleness_pct = 1.0
 `
 
 // Template returns the exact content mneme init writes as a repository's

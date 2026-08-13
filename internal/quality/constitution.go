@@ -6,17 +6,30 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
+	"github.com/bmatcuk/doublestar/v4"
 	"github.com/pelletier/go-toml/v2"
 )
 
-// CurrentSchemaVersion is the only schema_version Parse accepts. A
-// constitution written by a newer or older mneme fails closed with
-// ErrUnsupportedSchema rather than being silently reinterpreted.
-const CurrentSchemaVersion = 1
+// MinSchemaVersion is the oldest schema_version Parse still accepts (D5).
+// S1 shipped schema 1 with no [coverage]/[ratchet] tables; S2 adds
+// CurrentSchemaVersion=2 without narrowing what schema 1 means — a
+// schema-1 constitution from before this spec keeps parsing exactly as it
+// always did. Every future spec that adds a schema version widens this
+// accepted set; none may narrow it (R2): narrowing turns every existing
+// constitution in the world into an instant block (V4).
+const MinSchemaVersion = 1
+
+// CurrentSchemaVersion is the newest schema_version Parse accepts. A
+// constitution declaring anything outside [MinSchemaVersion,
+// CurrentSchemaVersion] fails closed with ErrUnsupportedSchema rather than
+// being silently reinterpreted.
+const CurrentSchemaVersion = 2
 
 // ErrInvalid is returned by Parse when the constitution is missing a
 // required key, declares an unknown key, or fails a per-field validation
@@ -79,7 +92,9 @@ type ExecutionConfig struct {
 // fields (D13 of the grill) — every value Parse returns was written by a
 // human, in a committed, revisable file.
 type Constitution struct {
-	// SchemaVersion is always CurrentSchemaVersion after a successful Parse.
+	// SchemaVersion is the document's own declared schema_version — 1 or
+	// CurrentSchemaVersion after a successful Parse (D5), never anything
+	// else.
 	SchemaVersion int
 
 	// Enabled is the mechanism's on/off switch (D3). While false, nothing in
@@ -92,6 +107,89 @@ type Constitution struct {
 	// Gates is the ordered list of declared gates, executed sequentially in
 	// this order (D6).
 	Gates []Gate
+
+	// CoverageDeclared reports whether [coverage] is present in the
+	// document — true only under schema_version 2 (D5/AC3). Distinct from
+	// Coverage.Enabled: a schema-2 document may declare the section with
+	// enabled=false ("apagado por decisión"), which is a different fact
+	// from schema_version=1 not declaring it at all ("apagado por
+	// omisión") — D13's table of skip reasons depends on telling the two
+	// apart.
+	CoverageDeclared bool
+
+	// Coverage is the zero value when CoverageDeclared is false — the
+	// service layer branches on CoverageDeclared, never reads a field of a
+	// zero Coverage as if it meant something (D5: "el binario no rellena
+	// nada").
+	Coverage CoverageConfig
+
+	// RatchetDeclared mirrors CoverageDeclared for [ratchet].
+	RatchetDeclared bool
+
+	Ratchet RatchetConfig
+}
+
+// CoverageConfig is the parsed, validated [coverage] table (D6) — present
+// only when SchemaVersion is 2 and CoverageDeclared is true.
+type CoverageConfig struct {
+	// Enabled is [coverage]'s own switch, independent of the top-level
+	// Constitution.Enabled — the coverage/ratchet mechanism can be off
+	// while gates still run, and vice versa is meaningless (gates are
+	// unconditional today).
+	Enabled bool
+
+	// Format is one of quality.Formats() — declared, never guessed (D18):
+	// a wrong declared format fails loudly via ParseProfile's
+	// ErrInvalidProfile rather than silently producing an empty profile.
+	Format string
+
+	// Command is the argv vector that produces the coverage profile,
+	// executed exactly like a Gate's command — never through a shell (D1
+	// of the grill, mirroring gates' own R2).
+	Command []string
+
+	// ProfilePath is where Command leaves the profile, relative to the
+	// repository root. mneme DELETES this path before running Command
+	// (D12) — validated here to be relative and free of ".." so that
+	// deletion can never escape the repository.
+	ProfilePath string
+
+	Timeout time.Duration
+
+	// MinDiffLinePct is the coverage threshold for the spec's changed
+	// lines, in (0, 100].
+	MinDiffLinePct float64
+
+	// MinChangedLines is the floor below which the diff-coverage check is
+	// skipped rather than evaluated (D6) — the aritmetically-100%-at-tiny-N
+	// trap.
+	MinChangedLines int
+
+	// Exclude is the list of doublestar glob patterns dropped from BOTH the
+	// diff and the aggregate calculations (D6) — every pattern is
+	// validated for syntax here, at parse time, never at evaluation time.
+	Exclude []string
+}
+
+// RatchetConfig is the parsed, validated [ratchet] table (D6) — present
+// only when SchemaVersion is 2 and RatchetDeclared is true.
+type RatchetConfig struct {
+	// Enabled requires CoverageConfig.Enabled (Parse rejects the
+	// inconsistent combination outright, D6) — the ratchet feeds off the
+	// same profile the coverage check produces (D1).
+	Enabled bool
+
+	// MaxGlobalLinePctDrop is the tolerated drop, in percentage points, of
+	// the repository-wide coverage versus the registered baseline. >= 0;
+	// 0 means no tolerated drop at all.
+	MaxGlobalLinePctDrop float64
+
+	// MaxBaselineStalenessPct is how far a fresh measurement may exceed the
+	// registered baseline before the mark is declared stale (D17). Must be
+	// > 0 and >= MaxGlobalLinePctDrop (D6's cross-bound) — a smaller
+	// staleness margin than the tolerated drop would declare two
+	// incompatible things at once.
+	MaxBaselineStalenessPct float64
 }
 
 // rawConstitution is the strict decode target for Parse. Every field a human
@@ -104,6 +202,32 @@ type rawConstitution struct {
 	Enabled       *bool        `toml:"enabled"`
 	Execution     rawExecution `toml:"execution"`
 	Gates         []rawGate    `toml:"gate"`
+	Coverage      *rawCoverage `toml:"coverage"`
+	Ratchet       *rawRatchet  `toml:"ratchet"`
+}
+
+// rawCoverage mirrors CoverageConfig with pointer fields (and a pointer
+// slice for Command/Exclude) so Parse can tell "the key is entirely
+// absent" from "present with its zero value" (e.g. `exclude = []` is
+// present-and-empty, not absent) — the same presence-detection contract
+// rawConstitution's own top-level fields already use.
+type rawCoverage struct {
+	Enabled         *bool     `toml:"enabled"`
+	Format          *string   `toml:"format"`
+	Command         *[]string `toml:"command"`
+	ProfilePath     *string   `toml:"profile_path"`
+	Timeout         *string   `toml:"timeout"`
+	MinDiffLinePct  *float64  `toml:"min_diff_line_pct"`
+	MinChangedLines *int      `toml:"min_changed_lines"`
+	Exclude         *[]string `toml:"exclude"`
+}
+
+// rawRatchet mirrors RatchetConfig with pointer fields for presence
+// detection.
+type rawRatchet struct {
+	Enabled                 *bool    `toml:"enabled"`
+	MaxGlobalLinePctDrop    *float64 `toml:"max_global_line_pct_drop"`
+	MaxBaselineStalenessPct *float64 `toml:"max_baseline_staleness_pct"`
 }
 
 // rawExecution mirrors ExecutionConfig with a pointer field for presence
@@ -139,10 +263,11 @@ func Parse(data []byte) (*Constitution, error) {
 	if raw.SchemaVersion == nil {
 		return nil, fmt.Errorf("quality: missing required key %q: %w", "schema_version", ErrInvalid)
 	}
-	if *raw.SchemaVersion != CurrentSchemaVersion {
+	schemaVersion := *raw.SchemaVersion
+	if schemaVersion != 1 && schemaVersion != CurrentSchemaVersion {
 		return nil, fmt.Errorf(
 			"quality: schema_version %d escrito por una mneme más nueva/vieja: actualiza mneme: %w",
-			*raw.SchemaVersion, ErrUnsupportedSchema)
+			schemaVersion, ErrUnsupportedSchema)
 	}
 
 	if raw.Enabled == nil {
@@ -163,12 +288,221 @@ func Parse(data []byte) (*Constitution, error) {
 		return nil, err
 	}
 
+	coverageDeclared, coverageCfg, ratchetDeclared, ratchetCfg, err := parseCoverageAndRatchet(schemaVersion, raw.Coverage, raw.Ratchet)
+	if err != nil {
+		return nil, err
+	}
+
 	return &Constitution{
-		SchemaVersion: *raw.SchemaVersion,
-		Enabled:       *raw.Enabled,
-		Execution:     ExecutionConfig{OutputTailBytes: *raw.Execution.OutputTailBytes},
-		Gates:         gates,
+		SchemaVersion:    schemaVersion,
+		Enabled:          *raw.Enabled,
+		Execution:        ExecutionConfig{OutputTailBytes: *raw.Execution.OutputTailBytes},
+		Gates:            gates,
+		CoverageDeclared: coverageDeclared,
+		Coverage:         coverageCfg,
+		RatchetDeclared:  ratchetDeclared,
+		Ratchet:          ratchetCfg,
 	}, nil
+}
+
+// parseCoverageAndRatchet implements D5's schema-version branching for
+// [coverage]/[ratchet]: under schema_version 1 both sections MUST be
+// absent (declaring either is an explicit "bump schema_version to 2"
+// error, never a silent tolerance); under CurrentSchemaVersion (2) both
+// are REQUIRED and fully validated. The binary never fills in a default
+// for either — a schema-1 document's CoverageConfig/RatchetConfig are the
+// exact zero value and the service layer branches on the Declared flags,
+// never on a field of an undeclared config (D5).
+func parseCoverageAndRatchet(schemaVersion int, rawCov *rawCoverage, rawRat *rawRatchet) (
+	coverageDeclared bool, coverageCfg CoverageConfig,
+	ratchetDeclared bool, ratchetCfg RatchetConfig,
+	err error,
+) {
+	if schemaVersion == 1 {
+		if rawCov != nil {
+			return false, CoverageConfig{}, false, RatchetConfig{}, fmt.Errorf(
+				"quality: [coverage] declared under schema_version 1 — sube schema_version a 2: %w", ErrInvalid)
+		}
+		if rawRat != nil {
+			return false, CoverageConfig{}, false, RatchetConfig{}, fmt.Errorf(
+				"quality: [ratchet] declared under schema_version 1 — sube schema_version a 2: %w", ErrInvalid)
+		}
+		return false, CoverageConfig{}, false, RatchetConfig{}, nil
+	}
+
+	// schemaVersion == CurrentSchemaVersion (2): both sections required.
+	if rawCov == nil {
+		return false, CoverageConfig{}, false, RatchetConfig{}, fmt.Errorf(
+			"quality: missing required section %q for schema_version %d: %w", "coverage", schemaVersion, ErrInvalid)
+	}
+	if rawRat == nil {
+		return false, CoverageConfig{}, false, RatchetConfig{}, fmt.Errorf(
+			"quality: missing required section %q for schema_version %d: %w", "ratchet", schemaVersion, ErrInvalid)
+	}
+
+	coverageCfg, err = parseCoverageConfig(rawCov)
+	if err != nil {
+		return false, CoverageConfig{}, false, RatchetConfig{}, err
+	}
+	ratchetCfg, err = parseRatchetConfig(rawRat)
+	if err != nil {
+		return false, CoverageConfig{}, false, RatchetConfig{}, err
+	}
+
+	if ratchetCfg.Enabled && !coverageCfg.Enabled {
+		return false, CoverageConfig{}, false, RatchetConfig{}, fmt.Errorf(
+			"quality: ratchet.enabled=true requires coverage.enabled=true (the ratchet feeds off the same profile): %w", ErrInvalid)
+	}
+
+	return true, coverageCfg, true, ratchetCfg, nil
+}
+
+// parseCoverageConfig validates every [coverage] key, each missing or
+// invalid value naming itself in the returned error (D6).
+func parseCoverageConfig(raw *rawCoverage) (CoverageConfig, error) {
+	if raw.Enabled == nil {
+		return CoverageConfig{}, fmt.Errorf("quality: missing required key %q: %w", "coverage.enabled", ErrInvalid)
+	}
+
+	if raw.Format == nil {
+		return CoverageConfig{}, fmt.Errorf("quality: missing required key %q: %w", "coverage.format", ErrInvalid)
+	}
+	accepted := Formats()
+	if !slices.Contains(accepted, *raw.Format) {
+		return CoverageConfig{}, fmt.Errorf(
+			"quality: coverage.format %q must be one of %v: %w", *raw.Format, accepted, ErrInvalid)
+	}
+
+	if raw.Command == nil {
+		return CoverageConfig{}, fmt.Errorf("quality: missing required key %q: %w", "coverage.command", ErrInvalid)
+	}
+	if len(*raw.Command) == 0 {
+		return CoverageConfig{}, fmt.Errorf("quality: missing required key %q: %w", "coverage.command", ErrInvalid)
+	}
+	if msg, bad := argvShellStringProblem(*raw.Command); bad {
+		return CoverageConfig{}, fmt.Errorf("quality: coverage.command %s: %w", msg, ErrInvalid)
+	}
+
+	if raw.ProfilePath == nil {
+		return CoverageConfig{}, fmt.Errorf("quality: missing required key %q: %w", "coverage.profile_path", ErrInvalid)
+	}
+	if err := validateRelativeCleanPath(*raw.ProfilePath, "coverage.profile_path"); err != nil {
+		return CoverageConfig{}, err
+	}
+
+	if raw.Timeout == nil {
+		return CoverageConfig{}, fmt.Errorf("quality: missing required key %q: %w", "coverage.timeout", ErrInvalid)
+	}
+	dur, err := time.ParseDuration(*raw.Timeout)
+	if err != nil || dur <= 0 {
+		return CoverageConfig{}, fmt.Errorf(
+			"quality: coverage.timeout %q must be a positive parseable duration: %w", *raw.Timeout, ErrInvalid)
+	}
+
+	if raw.MinDiffLinePct == nil {
+		return CoverageConfig{}, fmt.Errorf("quality: missing required key %q: %w", "coverage.min_diff_line_pct", ErrInvalid)
+	}
+	if *raw.MinDiffLinePct <= 0 || *raw.MinDiffLinePct > 100 {
+		return CoverageConfig{}, fmt.Errorf(
+			"quality: coverage.min_diff_line_pct %v must be in (0, 100]: %w", *raw.MinDiffLinePct, ErrInvalid)
+	}
+
+	if raw.MinChangedLines == nil {
+		return CoverageConfig{}, fmt.Errorf("quality: missing required key %q: %w", "coverage.min_changed_lines", ErrInvalid)
+	}
+	if *raw.MinChangedLines < 1 {
+		return CoverageConfig{}, fmt.Errorf(
+			"quality: coverage.min_changed_lines %d must be >= 1: %w", *raw.MinChangedLines, ErrInvalid)
+	}
+
+	if raw.Exclude == nil {
+		return CoverageConfig{}, fmt.Errorf("quality: missing required key %q: %w", "coverage.exclude", ErrInvalid)
+	}
+	for _, pattern := range *raw.Exclude {
+		if _, err := doublestar.Match(pattern, "probe"); err != nil {
+			return CoverageConfig{}, fmt.Errorf(
+				"quality: coverage.exclude pattern %q invalid: %s: %w", pattern, err, ErrInvalid)
+		}
+	}
+
+	return CoverageConfig{
+		Enabled:         *raw.Enabled,
+		Format:          *raw.Format,
+		Command:         *raw.Command,
+		ProfilePath:     *raw.ProfilePath,
+		Timeout:         dur,
+		MinDiffLinePct:  *raw.MinDiffLinePct,
+		MinChangedLines: *raw.MinChangedLines,
+		Exclude:         *raw.Exclude,
+	}, nil
+}
+
+// parseRatchetConfig validates every [ratchet] key.
+func parseRatchetConfig(raw *rawRatchet) (RatchetConfig, error) {
+	if raw.Enabled == nil {
+		return RatchetConfig{}, fmt.Errorf("quality: missing required key %q: %w", "ratchet.enabled", ErrInvalid)
+	}
+	if raw.MaxGlobalLinePctDrop == nil {
+		return RatchetConfig{}, fmt.Errorf("quality: missing required key %q: %w", "ratchet.max_global_line_pct_drop", ErrInvalid)
+	}
+	if *raw.MaxGlobalLinePctDrop < 0 {
+		return RatchetConfig{}, fmt.Errorf(
+			"quality: ratchet.max_global_line_pct_drop %v must be >= 0: %w", *raw.MaxGlobalLinePctDrop, ErrInvalid)
+	}
+	if raw.MaxBaselineStalenessPct == nil {
+		return RatchetConfig{}, fmt.Errorf("quality: missing required key %q: %w", "ratchet.max_baseline_staleness_pct", ErrInvalid)
+	}
+	if *raw.MaxBaselineStalenessPct <= 0 {
+		return RatchetConfig{}, fmt.Errorf(
+			"quality: ratchet.max_baseline_staleness_pct %v must be > 0: %w", *raw.MaxBaselineStalenessPct, ErrInvalid)
+	}
+	if *raw.MaxBaselineStalenessPct < *raw.MaxGlobalLinePctDrop {
+		return RatchetConfig{}, fmt.Errorf(
+			"quality: ratchet.max_baseline_staleness_pct (%v) must be >= ratchet.max_global_line_pct_drop (%v): %w",
+			*raw.MaxBaselineStalenessPct, *raw.MaxGlobalLinePctDrop, ErrInvalid)
+	}
+
+	return RatchetConfig{
+		Enabled:                 *raw.Enabled,
+		MaxGlobalLinePctDrop:    *raw.MaxGlobalLinePctDrop,
+		MaxBaselineStalenessPct: *raw.MaxBaselineStalenessPct,
+	}, nil
+}
+
+// validateRelativeCleanPath validates that p is non-empty, relative, and
+// contains no ".." component after cleaning — the shared rule
+// coverage.profile_path needs (D6, R6): the value D12 later deletes must
+// never be able to escape the repository root.
+func validateRelativeCleanPath(p, keyName string) error {
+	if p == "" {
+		return fmt.Errorf("quality: %s must not be empty: %w", keyName, ErrInvalid)
+	}
+	if filepath.IsAbs(p) {
+		return fmt.Errorf("quality: %s %q must be a relative path: %w", keyName, p, ErrInvalid)
+	}
+	slashed := filepath.ToSlash(p)
+	cleaned := strings.TrimPrefix(slashed, "./")
+	if cleaned == ".." || strings.HasPrefix(cleaned, "../") || strings.Contains(cleaned, "/../") || strings.HasSuffix(cleaned, "/..") {
+		return fmt.Errorf("quality: %s %q must not contain '..': %w", keyName, p, ErrInvalid)
+	}
+	return nil
+}
+
+// argvShellStringProblem is the SHARED validator behind both a gate's
+// `command` and `coverage.command` (D6/AC5): a single-element command
+// containing a space looks like a shell string rather than an argv vector.
+// Returning the message fragment (rather than a ready-made error) is what
+// lets both call sites produce byte-identical wording for the shared part
+// of the message while still naming their own subject (a gate's name, or
+// the literal key "coverage.command") — the two can never drift apart
+// because there is only one place this sentence is written.
+func argvShellStringProblem(cmd []string) (msg string, bad bool) {
+	if len(cmd) == 1 && strings.Contains(cmd[0], " ") {
+		return fmt.Sprintf(
+			"command %q looks like a single shell string — command is an argv vector, declare each argument as its own list element (e.g. [\"make\", \"test\"], not [\"make test\"])",
+			cmd[0]), true
+	}
+	return "", false
 }
 
 // parseGates validates every [[gate]] entry: a required name (safe-slug,
@@ -193,10 +527,11 @@ func parseGates(raw []rawGate) ([]Gate, error) {
 		if len(rg.Command) == 0 {
 			return nil, fmt.Errorf("quality: missing required key %q for gate %q: %w", "command", rg.Name, ErrInvalid)
 		}
-		if len(rg.Command) == 1 && strings.Contains(rg.Command[0], " ") {
-			return nil, fmt.Errorf(
-				"quality: gate %q command %q looks like a single shell string — command is an argv vector, declare each argument as its own list element (e.g. [\"make\", \"test\"], not [\"make test\"]): %w",
-				rg.Name, rg.Command[0], ErrInvalid)
+		// The SAME shared validator coverage.command uses (AC5) — the
+		// explanatory sentence is written in exactly one place
+		// (argvShellStringProblem) so the two can never drift apart.
+		if msg, bad := argvShellStringProblem(rg.Command); bad {
+			return nil, fmt.Errorf("quality: gate %q %s: %w", rg.Name, msg, ErrInvalid)
 		}
 
 		if rg.Timeout == "" {
