@@ -1,9 +1,11 @@
-# API Reference — SDD Tools (`backlog_*`, `spec_*`, `lane_*`, `init`)
+# API Reference — SDD Tools (`backlog_*`, `spec_*`, `lane_*`, `quality_*`, `init`)
 
-20 MCP tools over JSON-RPC 2.0 stdio (`mneme mcp`): `backlog_*` (5), `spec_*`
-(9), `lane_*` (5), `init` (1). Concept guide: [docs/lanes.md](../lanes.md)
-(trivial/standard lanes, auditor thresholds), [docs/init.md](../init.md)
-(managed blocks, drift, legacy migration). Index: [docs/API.md](../API.md).
+23 MCP tools over JSON-RPC 2.0 stdio (`mneme mcp`): `backlog_*` (5), `spec_*`
+(9), `lane_*` (5), `quality_*` (3), `init` (1). Concept guide:
+[docs/lanes.md](../lanes.md) (trivial/standard lanes, auditor thresholds),
+[docs/init.md](../init.md) (managed blocks, drift, legacy migration),
+[docs/quality.md](../quality.md) (the quality constitution, certificates,
+and the `spec_advance` block, SPEC-115). Index: [docs/API.md](../API.md).
 
 `backlog_list`/`spec_list` share one acotado convention (SPEC-109): a `limit`
 param (integer, min 1, max 50, default 20 when omitted) and a `total` field
@@ -401,17 +403,120 @@ audit-fail count and rate, override count, reclassify count.
 
 ---
 
-## init
+## Quality Tools (SPEC-115 EPIC-calidad S1)
 
-Initialise a project with mneme managed blocks and report drift. Applies the
-global operating manual and a minimal repo block to `CLAUDE.md` files, then
-runs the drift detector. This is the MCP-tool form of `mneme init`; the
-destructive legacy-project migration (`--apply` DB writes + `rm-rf`) is
-**CLI-only** and not exposed here.
+The quality mechanism replaces an agent's self-reported "it works" with a
+result mneme produced by executing something, bound to the exact commit
+(see [docs/quality.md](../quality.md) for the full design). `quality_verify`
+EMITS a certificate; `spec_advance` only ever COMPARES an already-emitted
+one — the two verbs are deliberately separate (D5): running a project's
+full build+test suite inside a synchronous MCP call would risk a client
+timeout, and `spec_advance` is denied to subagents (see below), so an
+implementer could never verify its own work if verification only happened
+there.
+
+### quality_verify
+
+Run the gates declared in `.mneme/quality.toml` for a spec and emit (or
+deny) a certificate bound to the current commit. Valid only while the spec
+is `implementing` or `qa` (`qa` admits recertification when HEAD moved
+during QA).
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `check` | boolean | no | When `true`, report-only mode: drift is reported but no managed blocks are written. Default: `false` |
+| `id` | string | yes | Spec ID to verify (must be `implementing` or `qa` status) |
+
+**Returns:** the persisted `QualityCertificate` — `id`, `verdict`
+(`pass`/`fail`/`findings`), `head_sha`, `constitution_hash`, `dirty`,
+`started_at`/`finished_at`/`duration_ms`.
+
+**Errors:** `-32602` spec not in `implementing`/`qa`
+(`ErrInvalidTransition`), constitution missing or unparseable
+(`ErrInvalidConstitution`). `-32000` spec not found.
+
+### quality_status
+
+Report the constitution's state (path, hash, `enabled`, declared gates)
+and, when a spec ID is given, its latest certificate and checks. Never
+executes anything — this is the read-only half of the mechanism.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `id` | string | no | Spec ID to report the latest certificate for. Omit to report only the constitution's own state |
+
+**Returns:**
+
+```json
+{
+  "enabled": true, "exists": true, "path": ".mneme/quality.toml",
+  "constitution_hash": "…", "gate_names": ["build", "test"],
+  "note": "mecanismo encendido",
+  "latest_certificate": {"id": "…", "verdict": "pass", "head_sha": "…"},
+  "checks": [{"seq": 1, "kind": "tree", "name": "clean-worktree", "status": "pass"}]
+}
+```
+
+A repo with no constitution at all (the common case) returns
+`{"enabled": false, "exists": false, "note": "mecanismo apagado: no existe .mneme/quality.toml"}`
+— never an error.
+
+### quality_ack
+
+Record a human's justified approval of a quality finding, converting it from
+`finding` to `acked` without re-running anything. The certificate's verdict
+is recalculated in the same operation. **Denied to subagents**
+(`lifecycleTools`, see below) — the author of a change never absolves
+themselves of its own findings.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `cert_id` | string | yes | Certificate ID the finding belongs to |
+| `seq` | integer | yes | Seq of the finding within the certificate's checks |
+| `by` | string | yes | Who is acknowledging the finding — never the author of the change under review |
+| `justification` | string | yes | Why the finding is acceptable (non-empty) |
+
+**Returns:** `{"acked": true, "cert_id": "…", "seq": 1}`
+
+**Errors:** `-32602` missing `by`/`justification` (`ErrReasonRequired`).
+`-32000` no such certificate/finding at that seq (`ErrCertificateNotFound`).
+
+### The `spec_advance` block (D12)
+
+When the mechanism is enabled, `implementing → qa` and `qa → done` of a
+**standard**-lane spec require a usable certificate — `verdict == pass`,
+`head_sha` matches HEAD, `constitution_hash` matches the current file, and
+the worktree is clean. Each broken conjunction has its own error, always
+naming the exact remedy command:
+
+| Error | Cause | Remedy |
+|-------|-------|--------|
+| `ErrCertificateMissing` | No certificate was ever recorded | `mneme quality verify <SPEC-ID>` |
+| `ErrCertificateStale` | HEAD moved since the certificate was issued | re-verify |
+| `ErrCertificateNotGreen` | Verdict is `fail` or `findings` | fix the gates or `quality_ack` the finding, re-verify |
+| `ErrConstitutionChanged` | `.mneme/quality.toml` changed since certification | re-verify |
+| `ErrWorktreeDirty` | Uncommitted changes right now | commit or discard, re-verify |
+| `ErrInvalidConstitution` | The constitution does not parse | fix the file |
+| `ErrConstitutionAblated` | Enabled at the spec's base commit, off now | do not disable the mechanism mid-spec |
+
+**Lane trivial is entirely unaffected** — `implementing → audit → done`
+still runs exactly as before (`lane_audit`); this mechanism does not gate it
+in S1 (see docs/quality.md).
+
+---
+
+## init
+
+Initialise a project with mneme managed blocks and report drift. Applies the
+global operating manual and a minimal repo block to `CLAUDE.md` files,
+materializes `.mneme/quality.toml` when absent (SPEC-115 D15 — always
+`enabled=false`, never overwrites an existing file), then runs the drift
+detector. This is the MCP-tool form of `mneme init`; the destructive
+legacy-project migration (`--apply` DB writes + `rm-rf`) is **CLI-only** and
+not exposed here.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `check` | boolean | no | When `true`, report-only mode: drift is reported but no managed blocks (nor the quality constitution) are written. Default: `false` |
 | `repo_root` | string | no | Absolute path to the repository root. Default: current working directory |
 
 **Returns:**
@@ -419,7 +524,8 @@ destructive legacy-project migration (`--apply` DB writes + `rm-rf`) is
 ```json
 {
   "repo_root": "/path/to/repo", "check_mode": false, "manual_applied": true,
-  "repo_block_applied": true, "drift_findings": ["CLAUDE.md: no drift detected"]
+  "repo_block_applied": true, "quality_constitution_applied": true,
+  "drift_findings": ["CLAUDE.md: no drift detected"]
 }
 ```
 

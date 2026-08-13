@@ -213,9 +213,32 @@ families have **no HTTP route at all**:
 | `model_*` | 3 | -- | Not implemented |
 | `conflicts_*` | 5 | -- | Not implemented |
 | `init` | 1 | -- | Not implemented |
+| `quality_*` | 3 | -- | Excluded on purpose (SPEC-115 D17) — see below |
 
 Before adding a new service capability, decide explicitly whether HTTP gets
 parity -- do not assume it should.
+
+**SPEC-115 D17 note — `quality_*` is excluded DELIBERATELY, not "not yet
+implemented":**
+
+1. `quality_verify` **executes commands declared in a file inside the
+   repository** (`.mneme/quality.toml`). Publishing that over a network
+   surface, even on `localhost`, turns the constitution into a remote
+   code-execution vector for any process that can reach the port. The CLI
+   and MCP frontends run with the identity of a user who could already
+   execute those same commands directly; an HTTP endpoint would not — it is
+   reachable by anything on the machine, unauthenticated. `quality_verify`
+   is not a "parity gap" to close later: it must **never** get an HTTP
+   route, for as long as `mneme serve` has no authentication layer.
+2. `mneme serve` today exposes **no SDD endpoints at all** — no
+   `spec_advance`, no `spec_status`. A bare `quality_status` REST route
+   would be an orphaned surface with nothing SDD-shaped around it.
+
+If HTTP ever gains SDD parity, `quality_status` (a pure read, no
+side-effects) is a candidate for inclusion at that point. `quality_verify`
+is not, and this paragraph is the record of that decision — the same
+posture SPEC-091 §1 AC12 already established for `profile_add`/`profile_update`
+(host-local, interactive-credential operations with no REST semantics).
 
 **SPEC-109 note (D14):** `backlog_list`/`spec_list`/`conflicts_list` (and the
 new `backlog_get`) gained an acotado convention — `limit` (default 20, max

@@ -39,13 +39,24 @@ Rules:
    `mneme install claude-code` is the primary path for this).
 3. **Repo block**: upsert a minimal managed block in `<repo>/CLAUDE.md` pointing to
    the global manual. User prose outside the block is preserved.
-4. **Drift report**: scan `<repo>/CLAUDE.md` outside the managed block and print
-   advisory findings (no file is modified).
-5. **Legacy plan**: show the legacy migration plan in dry-run mode.
+4. **Quality constitution** (SPEC-115): materialize `<repo>/.mneme/quality.toml`
+   when absent — every key present, commented gate examples, always
+   `enabled = false` (materializing the mechanism must never itself start
+   blocking `spec_advance` in a repo that never asked for it). If the file
+   already exists it is **never touched**, no matter what it contains; if its
+   `schema_version` is older than the one this mneme understands, an
+   advisory drift finding is added to step 5 below (never written). See
+   [docs/quality.md](quality.md).
+5. **Drift report**: scan `<repo>/CLAUDE.md` outside the managed block, plus
+   the quality constitution's schema_version, and print advisory findings
+   (no file is modified by this step).
+6. **Legacy plan**: show the legacy migration plan in dry-run mode.
 
 ### `--check` mode
 
-Report-only: runs drift detection and shows the legacy plan without writing anything.
+Report-only: runs drift detection and shows the legacy plan without writing
+anything — including the quality constitution, which is materialized only
+outside `--check`.
 
 ### `--apply` mode
 
