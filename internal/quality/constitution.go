@@ -29,7 +29,14 @@ const MinSchemaVersion = 1
 // constitution declaring anything outside [MinSchemaVersion,
 // CurrentSchemaVersion] fails closed with ErrUnsupportedSchema rather than
 // being silently reinterpreted.
-const CurrentSchemaVersion = 2
+//
+// SPEC-117 S3 bumps this to 3 ([criteria] joins [coverage]/[ratchet]) —
+// and, critically, does so together with correcting the comparison below
+// to a RANGE (D9): the range check is what lets a schema-2 constitution
+// (this repo's own .mneme/quality.toml among them) keep parsing exactly as
+// it always did. Every future spec that adds a schema version widens this
+// range; none may narrow it.
+const CurrentSchemaVersion = 3
 
 // ErrInvalid is returned by Parse when the constitution is missing a
 // required key, declares an unknown key, or fails a per-field validation
@@ -127,6 +134,44 @@ type Constitution struct {
 	RatchetDeclared bool
 
 	Ratchet RatchetConfig
+
+	// CriteriaDeclared reports whether [criteria] is present in the
+	// document — true only under schema_version 3 (SPEC-117 D9), the same
+	// Declared/undeclared distinction CoverageDeclared already establishes.
+	CriteriaDeclared bool
+
+	// Criteria is the zero value when CriteriaDeclared is false — the
+	// service layer branches on CriteriaDeclared, never reads a field of
+	// an undeclared Criteria as if it meant something (D9: "el binario no
+	// rellena nada").
+	Criteria CriteriaConfig
+}
+
+// CriteriaConfig is the parsed, validated [criteria] table (SPEC-117 D9) —
+// present only when SchemaVersion is 3 and CriteriaDeclared is true.
+type CriteriaConfig struct {
+	// Enabled is [criteria]'s own switch, independent of both the
+	// top-level Constitution.Enabled and CoverageConfig.Enabled — the
+	// criteria mechanism does not consume the coverage profile and can be
+	// on or off regardless of it (D9).
+	Enabled bool
+
+	// Timeout bounds the structured phase's ENTIRE evaluation (every
+	// ListFilesAtRef/GrepLinesAtRef call across both refs) — it does NOT
+	// cover a mode=command criterion, which declares its own timeout
+	// (D9).
+	Timeout time.Duration
+
+	// MaxManualPct is the quota, in percent of the total DECLARED
+	// criteria, of mode=manual criteria (D10/D14 of the grill) — exceeding
+	// it FAILS the certificate outright (never a firmable finding): the
+	// remedy is rewriting the criteria, not a signature.
+	MaxManualPct float64
+
+	// MaxCommandPct mirrors MaxManualPct for the mode=command escape
+	// hatch (D10) — not in the grill, added because the hatch has the
+	// exact same degenerate failure mode as the manual quota.
+	MaxCommandPct float64
 }
 
 // CoverageConfig is the parsed, validated [coverage] table (D6) — present
@@ -204,6 +249,17 @@ type rawConstitution struct {
 	Gates         []rawGate    `toml:"gate"`
 	Coverage      *rawCoverage `toml:"coverage"`
 	Ratchet       *rawRatchet  `toml:"ratchet"`
+	Criteria      *rawCriteria `toml:"criteria"`
+}
+
+// rawCriteria mirrors CriteriaConfig with pointer fields for presence
+// detection (SPEC-117 D9) — the same convention rawCoverage/rawRatchet
+// already establish.
+type rawCriteria struct {
+	Enabled       *bool    `toml:"enabled"`
+	Timeout       *string  `toml:"timeout"`
+	MaxManualPct  *float64 `toml:"max_manual_pct"`
+	MaxCommandPct *float64 `toml:"max_command_pct"`
 }
 
 // rawCoverage mirrors CoverageConfig with pointer fields (and a pointer
@@ -264,7 +320,13 @@ func Parse(data []byte) (*Constitution, error) {
 		return nil, fmt.Errorf("quality: missing required key %q: %w", "schema_version", ErrInvalid)
 	}
 	schemaVersion := *raw.SchemaVersion
-	if schemaVersion != 1 && schemaVersion != CurrentSchemaVersion {
+	// SPEC-117 D9: a RANGE, never an equality check against two named
+	// values. The equality form this replaces (`!= 1 && != CurrentSchemaVersion`)
+	// is exactly the trap that bricks every existing schema-2 constitution
+	// the moment CurrentSchemaVersion moves to 3 — Parse would fail BEFORE
+	// ever reading `enabled`, so even an `enabled = false` document (this
+	// repo's own .mneme/quality.toml included) would stop parsing entirely.
+	if schemaVersion < MinSchemaVersion || schemaVersion > CurrentSchemaVersion {
 		return nil, fmt.Errorf(
 			"quality: schema_version %d escrito por una mneme más nueva/vieja: actualiza mneme: %w",
 			schemaVersion, ErrUnsupportedSchema)
@@ -293,6 +355,11 @@ func Parse(data []byte) (*Constitution, error) {
 		return nil, err
 	}
 
+	criteriaDeclared, criteriaCfg, err := parseCriteriaSection(schemaVersion, raw.Criteria)
+	if err != nil {
+		return nil, err
+	}
+
 	return &Constitution{
 		SchemaVersion:    schemaVersion,
 		Enabled:          *raw.Enabled,
@@ -302,6 +369,68 @@ func Parse(data []byte) (*Constitution, error) {
 		Coverage:         coverageCfg,
 		RatchetDeclared:  ratchetDeclared,
 		Ratchet:          ratchetCfg,
+		CriteriaDeclared: criteriaDeclared,
+		Criteria:         criteriaCfg,
+	}, nil
+}
+
+// parseCriteriaSection implements SPEC-117 D9's schema-version branching
+// for [criteria] — the same shape parseCoverageAndRatchet already
+// establishes for [coverage]/[ratchet], but as its OWN function rather
+// than folded into that one: [criteria]'s presence rule is a strict single
+// threshold (only schema 3 accepts it) rather than "schema 1 forbids it,
+// everything else requires it", so sharing the function would smuggle a
+// silent schema-4 assumption into code this spec has no way to test.
+// Declaring [criteria] under schema 1 or 2 is a explicit, named error
+// ("sube schema_version a 3") — never silently ignored — and schema 3
+// requires it present and complete.
+func parseCriteriaSection(schemaVersion int, raw *rawCriteria) (declared bool, cfg CriteriaConfig, err error) {
+	if schemaVersion < 3 {
+		if raw != nil {
+			return false, CriteriaConfig{}, fmt.Errorf(
+				"quality: [criteria] declared under schema_version %d — sube schema_version a 3: %w", schemaVersion, ErrInvalid)
+		}
+		return false, CriteriaConfig{}, nil
+	}
+
+	if raw == nil {
+		return false, CriteriaConfig{}, fmt.Errorf("quality: missing required section %q for schema_version %d: %w", "criteria", schemaVersion, ErrInvalid)
+	}
+
+	if raw.Enabled == nil {
+		return false, CriteriaConfig{}, fmt.Errorf("quality: missing required key %q: %w", "criteria.enabled", ErrInvalid)
+	}
+
+	if raw.Timeout == nil {
+		return false, CriteriaConfig{}, fmt.Errorf("quality: missing required key %q: %w", "criteria.timeout", ErrInvalid)
+	}
+	dur, durErr := time.ParseDuration(*raw.Timeout)
+	if durErr != nil || dur <= 0 {
+		return false, CriteriaConfig{}, fmt.Errorf(
+			"quality: criteria.timeout %q must be a positive parseable duration: %w", *raw.Timeout, ErrInvalid)
+	}
+
+	if raw.MaxManualPct == nil {
+		return false, CriteriaConfig{}, fmt.Errorf("quality: missing required key %q: %w", "criteria.max_manual_pct", ErrInvalid)
+	}
+	if *raw.MaxManualPct < 0 || *raw.MaxManualPct > 100 {
+		return false, CriteriaConfig{}, fmt.Errorf(
+			"quality: criteria.max_manual_pct %v must be in [0, 100]: %w", *raw.MaxManualPct, ErrInvalid)
+	}
+
+	if raw.MaxCommandPct == nil {
+		return false, CriteriaConfig{}, fmt.Errorf("quality: missing required key %q: %w", "criteria.max_command_pct", ErrInvalid)
+	}
+	if *raw.MaxCommandPct < 0 || *raw.MaxCommandPct > 100 {
+		return false, CriteriaConfig{}, fmt.Errorf(
+			"quality: criteria.max_command_pct %v must be in [0, 100]: %w", *raw.MaxCommandPct, ErrInvalid)
+	}
+
+	return true, CriteriaConfig{
+		Enabled:       *raw.Enabled,
+		Timeout:       dur,
+		MaxManualPct:  *raw.MaxManualPct,
+		MaxCommandPct: *raw.MaxCommandPct,
 	}, nil
 }
 

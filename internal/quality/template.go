@@ -2,23 +2,23 @@ package quality
 
 // templateTOML is the exact content mneme init writes to a repository's
 // .mneme/quality.toml when the file is absent (D15/AC23/AC32). Every key
-// Parse requires is present and uncommented (schema_version 2, enabled,
-// execution.output_tail_bytes, and — new in SPEC-116 — the complete
-// [coverage]/[ratchet] tables, since schema 2 requires both sections in
-// full) so the written file parses without error the moment it lands;
-// every `enabled` switch is false so materializing the constitution never
+// Parse requires is present and uncommented (schema_version 3, enabled,
+// execution.output_tail_bytes, and the complete [coverage]/[ratchet]/
+// [criteria] tables, since schema 3 requires all three sections in full)
+// so the written file parses without error the moment it lands; every
+// `enabled` switch is false so materializing the constitution never
 // itself starts blocking spec_advance in a repo that never asked for it
 // (R4). The example gates stay commented out — they name the shape a team
 // declares, without inventing gates mneme cannot know are correct for this
-// project (D9 of the grill). [coverage]/[ratchet], by contrast, CANNOT be
-// left commented out (schema 2 requires the sections to be present with
-// every key), so their values are a generic, harmless illustration —
-// never executed while enabled=false.
+// project (D9 of the grill). [coverage]/[ratchet]/[criteria], by contrast,
+// CANNOT be left commented out (schema 3 requires all three sections
+// present with every key), so their values are a generic, harmless
+// illustration — never executed while enabled=false.
 const templateTOML = `# .mneme/quality.toml — constitución de calidad de este repositorio.
 # Versionada y revisable en PR: la calidad es parte del código.
 # mneme NO tiene valores por defecto para nada de este fichero.
 
-schema_version = 2
+schema_version = 3
 
 # El interruptor. Mientras sea false el mecanismo NO bloquea nada.
 # Ponerlo a true es un commit revisable, y volverlo a false dentro del rango
@@ -85,6 +85,25 @@ max_global_line_pct_drop = 0.0
 # Cuanto puede la medicion superar la marca registrada antes de declararla
 # obsoleta (ver docs/quality.md). Debe ser >= max_global_line_pct_drop.
 max_baseline_staleness_pct = 1.0
+
+[criteria]
+# Los criterios de aceptacion ejecutables (SPEC-117). false = declarado
+# apagado, a proposito, en un commit revisable.
+enabled = false
+
+# Cota de la fase estructurada completa (git ls-tree + git grep sobre los
+# dos refs). No cubre los criterios ` + "`command`" + `: cada uno declara el suyo.
+timeout = "5m"
+
+# Cupo de criterios MANUALES, en porcentaje del total declarado. Superarlo
+# hace FALLAR el certificado: el problema ya no es la verificacion, es que
+# los criterios estan mal escritos (D14 del grill).
+# Aritmetica con N pequeno: con 4 criterios, 25.0 permite exactamente 1.
+max_manual_pct = 25.0
+
+# Cupo de criterios que usan la ESCOTILLA de comando libre. Existe por el
+# mismo motivo: sin el, la escotilla se traga el vocabulario cerrado.
+max_command_pct = 30.0
 `
 
 // Template returns the exact content mneme init writes as a repository's

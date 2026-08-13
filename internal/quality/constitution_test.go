@@ -178,14 +178,14 @@ extra = "nope"
 `,
 		},
 		{
-			// SPEC-116 D5/AC2 retarget: schema_version=2 is now VALID (it
-			// requires [coverage]/[ratchet], covered separately by
-			// TestParse_SchemaVersion2CoverageRatchet below) — this row now
-			// targets schema_version=3, a value Parse still rejects, and
-			// remains the guardian for "outside the accepted set" (R2: the
-			// accepted set only ever WIDENS, never narrows).
-			name:    "schema_version outside {1,2}",
-			doc:     strings.Replace(validDoc, "schema_version = 1", "schema_version = 3", 1),
+			// SPEC-117 D9/AC2 retarget: schema_version=3 is now VALID (it
+			// requires [coverage]/[ratchet]/[criteria], covered separately
+			// by TestParse_SchemaVersion3Criteria below) — this row now
+			// targets schema_version=4, a value Parse still rejects, and
+			// remains the guardian for "outside the accepted set" (R2/D9:
+			// the accepted set only ever WIDENS, never narrows).
+			name:    "schema_version outside {1,2,3}",
+			doc:     strings.Replace(validDoc, "schema_version = 1", "schema_version = 4", 1),
 			wantErr: ErrUnsupportedSchema,
 		},
 		{
@@ -303,14 +303,14 @@ func TestHashBytes_ChangesWithComment(t *testing.T) {
 // Parse itself would reject (e.g. a future, higher schema_version with keys
 // this mneme does not recognise).
 //
-// SPEC-116 D5/AC2 retarget: the fixture used schema_version=2 specifically
-// BECAUSE Parse rejected it before this spec; schema_version=2 is now
-// valid, so the fixture moves to 3 — a value Parse still rejects — to keep
+// SPEC-117 D9/AC2 retarget: the fixture used schema_version=3 specifically
+// BECAUSE Parse rejected it before this spec; schema_version=3 is now
+// valid, so the fixture moves to 4 — a value Parse still rejects — to keep
 // testing the same "PeekSchemaVersion tolerates what Parse would reject"
 // property.
 func TestPeekSchemaVersion_ToleratesRejectedDocument(t *testing.T) {
 	future := `
-schema_version = 3
+schema_version = 4
 a_future_key_this_mneme_does_not_know = true
 `
 	if _, err := Parse([]byte(future)); err == nil {
@@ -321,8 +321,8 @@ a_future_key_this_mneme_does_not_know = true
 	if err != nil {
 		t.Fatalf("PeekSchemaVersion: %v", err)
 	}
-	if v != 3 {
-		t.Errorf("PeekSchemaVersion = %d, want 3", v)
+	if v != 4 {
+		t.Errorf("PeekSchemaVersion = %d, want 4", v)
 	}
 }
 
@@ -330,10 +330,10 @@ a_future_key_this_mneme_does_not_know = true
 // the exact bytes mneme init will one day write must already be valid
 // according to Parse, and must declare enabled=false.
 //
-// SPEC-116 extends the anchor: the template now declares schema_version 2
-// with both [coverage]/[ratchet] present and OFF (AC32) — a template that
-// failed to declare them complete would itself fail to Parse, since
-// schema 2 requires both sections in full.
+// SPEC-117 extends the anchor: the template now declares schema_version 3
+// with [coverage]/[ratchet]/[criteria] all present and OFF (AC33) — a
+// template that failed to declare them complete would itself fail to
+// Parse, since schema 3 requires all three sections in full.
 func TestTemplate_ParsesWithoutError(t *testing.T) {
 	c, err := Parse([]byte(Template()))
 	if err != nil {
@@ -342,14 +342,16 @@ func TestTemplate_ParsesWithoutError(t *testing.T) {
 	if c.Enabled {
 		t.Error("Template() constitution has enabled=true, want false (R4)")
 	}
-	if c.SchemaVersion != 2 {
-		t.Errorf("Template() SchemaVersion = %d, want 2", c.SchemaVersion)
+	if c.SchemaVersion != 3 {
+		t.Errorf("Template() SchemaVersion = %d, want 3", c.SchemaVersion)
 	}
-	if !c.CoverageDeclared || !c.RatchetDeclared {
-		t.Errorf("Template() CoverageDeclared=%v RatchetDeclared=%v, want both true", c.CoverageDeclared, c.RatchetDeclared)
+	if !c.CoverageDeclared || !c.RatchetDeclared || !c.CriteriaDeclared {
+		t.Errorf("Template() CoverageDeclared=%v RatchetDeclared=%v CriteriaDeclared=%v, want all true",
+			c.CoverageDeclared, c.RatchetDeclared, c.CriteriaDeclared)
 	}
-	if c.Coverage.Enabled || c.Ratchet.Enabled {
-		t.Errorf("Template() Coverage.Enabled=%v Ratchet.Enabled=%v, want both false", c.Coverage.Enabled, c.Ratchet.Enabled)
+	if c.Coverage.Enabled || c.Ratchet.Enabled || c.Criteria.Enabled {
+		t.Errorf("Template() Coverage.Enabled=%v Ratchet.Enabled=%v Criteria.Enabled=%v, want all false",
+			c.Coverage.Enabled, c.Ratchet.Enabled, c.Criteria.Enabled)
 	}
 }
 
@@ -674,5 +676,171 @@ func TestParse_FormatSet_MatchesFormats(t *testing.T) {
 	doc := strings.Replace(validDocV2, `format = "go-cover"`, `format = "not-a-registered-format"`, 1)
 	if _, err := Parse([]byte(doc)); err == nil {
 		t.Fatal("Parse(unregistered format): want error, got nil")
+	}
+}
+
+// validDocV3 is a minimal, fully valid schema_version=3 document — adds
+// [criteria] complete-and-off to validDocV2's own shape (SPEC-117 AC2-AC4).
+const validDocV3 = `
+schema_version = 3
+enabled = false
+
+[execution]
+output_tail_bytes = 4096
+
+[[gate]]
+name = "build"
+command = ["make", "build"]
+timeout = "5m"
+required = true
+
+[coverage]
+enabled = false
+format = "go-cover"
+command = ["make", "coverage"]
+profile_path = "tmp/coverage.out"
+timeout = "20m"
+min_diff_line_pct = 80.0
+min_changed_lines = 5
+exclude = []
+
+[ratchet]
+enabled = false
+max_global_line_pct_drop = 0.0
+max_baseline_staleness_pct = 1.0
+
+[criteria]
+enabled = false
+timeout = "5m"
+max_manual_pct = 25.0
+max_command_pct = 30.0
+`
+
+// TestParse_SchemaVersion3Criteria covers AC2's positive row (3, with all
+// three sections complete, parses) and AC3: CriteriaDeclared is true only
+// under schema 3.
+func TestParse_SchemaVersion3Criteria(t *testing.T) {
+	c, err := Parse([]byte(validDocV3))
+	if err != nil {
+		t.Fatalf("Parse(validDocV3): %v", err)
+	}
+	if c.SchemaVersion != 3 {
+		t.Errorf("SchemaVersion = %d, want 3", c.SchemaVersion)
+	}
+	if !c.CriteriaDeclared {
+		t.Error("CriteriaDeclared = false, want true under schema_version 3")
+	}
+	if c.Criteria.Timeout.String() != "5m0s" {
+		t.Errorf("Criteria.Timeout = %v, want 5m0s", c.Criteria.Timeout)
+	}
+	if c.Criteria.MaxManualPct != 25.0 {
+		t.Errorf("Criteria.MaxManualPct = %v, want 25.0", c.Criteria.MaxManualPct)
+	}
+	if c.Criteria.MaxCommandPct != 30.0 {
+		t.Errorf("Criteria.MaxCommandPct = %v, want 30.0", c.Criteria.MaxCommandPct)
+	}
+}
+
+// TestParse_CriteriaDeclaredVsUndeclared covers AC3's three rows for
+// [criteria] specifically: schema 2 (no [criteria]) -> OK, declared false;
+// schema 2 WITH [criteria] -> error naming schema_version; schema 3 ->
+// declared true (already the primary assertion of
+// TestParse_SchemaVersion3Criteria, repeated here as this AC's third row).
+func TestParse_CriteriaDeclaredVsUndeclared(t *testing.T) {
+	c1, err := Parse([]byte(validDocV2))
+	if err != nil {
+		t.Fatalf("Parse(validDocV2): %v", err)
+	}
+	if c1.CriteriaDeclared {
+		t.Error("schema 2 with no [criteria]: CriteriaDeclared = true, want false")
+	}
+
+	withCriteriaUnderSchema2 := validDocV2 + `
+[criteria]
+enabled = false
+timeout = "5m"
+max_manual_pct = 25.0
+max_command_pct = 30.0
+`
+	_, err = Parse([]byte(withCriteriaUnderSchema2))
+	if err == nil {
+		t.Fatal("Parse([criteria] under schema_version 2): want error, got nil")
+	}
+	if !strings.Contains(err.Error(), "schema_version") {
+		t.Errorf("error = %q, want it to name schema_version", err.Error())
+	}
+	if !errors.Is(err, ErrInvalid) {
+		t.Errorf("error = %v, want wrapping ErrInvalid", err)
+	}
+
+	c3, err := Parse([]byte(validDocV3))
+	if err != nil {
+		t.Fatalf("Parse(validDocV3): %v", err)
+	}
+	if !c3.CriteriaDeclared {
+		t.Error("schema 3: CriteriaDeclared = false, want true")
+	}
+}
+
+// TestParse_Criteria_MissingRequiredKey covers AC4: one row per missing
+// [criteria] key, each naming itself, and none filled in with a default.
+func TestParse_Criteria_MissingRequiredKey(t *testing.T) {
+	tests := []struct {
+		wantKey string
+	}{
+		{"criteria.enabled"},
+		{"criteria.timeout"},
+		{"criteria.max_manual_pct"},
+		{"criteria.max_command_pct"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.wantKey, func(t *testing.T) {
+			doc := removeTOMLKeyLine(validDocV3, tt.wantKey)
+			_, err := Parse([]byte(doc))
+			if err == nil {
+				t.Fatalf("Parse missing %s: want error, got nil", tt.wantKey)
+			}
+			if !errors.Is(err, ErrInvalid) {
+				t.Errorf("error = %v, want wrapping ErrInvalid", err)
+			}
+			if !strings.Contains(err.Error(), tt.wantKey) {
+				t.Errorf("error = %q, want it to name key %q", err.Error(), tt.wantKey)
+			}
+		})
+	}
+}
+
+// TestParse_Criteria_FieldValidation covers AC4's paired validation rows:
+// timeout, max_manual_pct, and max_command_pct.
+func TestParse_Criteria_FieldValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(string) string
+		wantErr bool
+	}{
+		{"timeout: 0s rejected", replaceOnce("[criteria]\nenabled = false\ntimeout = \"5m\"", "[criteria]\nenabled = false\ntimeout = \"0s\""), true},
+		{"timeout: 5m accepted", replaceOnce(`max_manual_pct = 25.0`, `max_manual_pct = 25.0`), false},
+		{"max_manual_pct: -1 rejected", replaceOnce(`max_manual_pct = 25.0`, `max_manual_pct = -1`), true},
+		{"max_manual_pct: 101 rejected", replaceOnce(`max_manual_pct = 25.0`, `max_manual_pct = 101`), true},
+		{"max_manual_pct: 25.0 accepted", replaceOnce(`max_manual_pct = 25.0`, `max_manual_pct = 25.0`), false},
+		{"max_command_pct: -1 rejected", replaceOnce(`max_command_pct = 30.0`, `max_command_pct = -1`), true},
+		{"max_command_pct: 101 rejected", replaceOnce(`max_command_pct = 30.0`, `max_command_pct = 101`), true},
+		{"max_command_pct: 30.0 accepted", replaceOnce(`max_command_pct = 30.0`, `max_command_pct = 30.0`), false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			doc := tt.mutate(validDocV3)
+			_, err := Parse([]byte(doc))
+			if tt.wantErr && err == nil {
+				t.Fatalf("Parse(%s): want error, got nil\ndoc:\n%s", tt.name, doc)
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("Parse(%s): want no error, got %v\ndoc:\n%s", tt.name, err, doc)
+			}
+			if tt.wantErr && !errors.Is(err, ErrInvalid) {
+				t.Errorf("error = %v, want wrapping ErrInvalid", err)
+			}
+		})
 	}
 }
