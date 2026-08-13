@@ -267,6 +267,50 @@ func writeBudgetDoc(t *testing.T, workflowDir, project, id, content string) {
 	}
 }
 
+// writeMinimalBudgetConstitution writes a schema_version=4 constitution
+// with everything declared-and-off except [budget].enabled=true — the
+// minimal fixture TestQualityService_Status_ReportsBudgetInfo needs to
+// drive a real Verify call through runBudgetChecks.
+func writeMinimalBudgetConstitution(t *testing.T, repoDir string) {
+	t.Helper()
+	dir := filepath.Join(repoDir, ".mneme")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir .mneme: %v", err)
+	}
+	doc := `
+schema_version = 4
+enabled = false
+[execution]
+output_tail_bytes = 4096
+[coverage]
+enabled = false
+format = "go-cover"
+command = ["true"]
+profile_path = "tmp/coverage.out"
+timeout = "20m"
+min_diff_line_pct = 80.0
+min_changed_lines = 5
+exclude = []
+[ratchet]
+enabled = false
+max_global_line_pct_drop = 0.0
+max_baseline_staleness_pct = 1.0
+[criteria]
+enabled = false
+timeout = "5m"
+max_manual_pct = 25.0
+max_command_pct = 30.0
+[budget]
+enabled = true
+timeout = "2m"
+test_globs = ["**/*_test.go"]
+test_reach_depth = 3
+`
+	if err := os.WriteFile(filepath.Join(dir, "quality.toml"), []byte(doc), 0o644); err != nil {
+		t.Fatalf("write quality.toml: %v", err)
+	}
+}
+
 // findBudgetCheck locates a (kind, name) row in checks or fails the test —
 // named distinctly from criteria_test.go's own findCheck(checks, kind,
 // name) (no *testing.T parameter), so the two coexist without a signature
@@ -654,6 +698,59 @@ max_new_symbols = 5
 			}
 		}
 	})
+}
+
+// TestQualityService_Status_ReportsBudgetInfo covers D16: quality_status
+// pairs budget.toml's CURRENT disk hash with the hash the latest
+// certificate's own budget/declared row recorded, plus the last certified
+// figures (margin/budgeted/delivered/overrun) from detection/unbudgeted —
+// the window closed with a row, not an argument against
+// CertificateUsable.
+func TestQualityService_Status_ReportsBudgetInfo(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found in PATH")
+	}
+	dir, base := budgetTestFixture(t, "internal/x", 1)
+	workflowDir := t.TempDir()
+	docContent := `
+schema_version = 1
+margin = 5
+radius = ["**"]
+
+[[quota]]
+dir = "internal/x"
+max_new_symbols = 5
+`
+	writeBudgetDoc(t, workflowDir, "wirvii/mneme", "SPEC-001", docContent)
+	writeMinimalBudgetConstitution(t, dir)
+	gitRunBudgetTest(t, dir, "add", ".")
+	gitRunBudgetTest(t, dir, "commit", "-m", "add constitution")
+
+	s := newTestQualityStore(t)
+	spec := insertTestSpec(t, s, "SPEC-001", "wirvii/mneme", model.SpecStatusImplementing, base)
+
+	svc := NewQualityService(s, "wirvii/mneme", dir, &fakeGateRunner{}, WithWorkflowDir(workflowDir), WithGraphFacts(&noopGraphFacts{}))
+	if _, err := svc.Verify(context.Background(), model.QualityVerifyRequest{ID: spec.ID}); err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+
+	resp, err := svc.Status(context.Background(), model.QualityStatusRequest{ID: spec.ID})
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if resp.Budget == nil {
+		t.Fatal("resp.Budget = nil, want populated")
+	}
+	if resp.Budget.DiskHash == "" || resp.Budget.CertificateHash == "" {
+		t.Errorf("Budget = %+v, want both hashes populated", resp.Budget)
+	}
+	if resp.Budget.DiskHash != resp.Budget.CertificateHash {
+		t.Errorf("Budget.DiskHash (%s) != Budget.CertificateHash (%s), want equal (document unchanged since certification)",
+			resp.Budget.DiskHash, resp.Budget.CertificateHash)
+	}
+	if resp.Budget.Delivered != 1 {
+		t.Errorf("Budget.Delivered = %d, want 1", resp.Budget.Delivered)
+	}
 }
 
 // TestRunBudgetChecks_Revision covers row 4: no [revision] -> pass; a

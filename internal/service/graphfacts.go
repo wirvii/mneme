@@ -26,6 +26,17 @@ func newGraphFactsAdapter(store *codegraph.Store) *graphFactsAdapter {
 	return &graphFactsAdapter{store: store, query: codegraph.NewQueryEngine(store)}
 }
 
+// NewGraphFacts constructs the production quality.GraphFacts implementation
+// over an ALREADY-OPEN *codegraph.Store — the one exported constructor
+// initQualityService (P14, internal/cli/quality.go) uses to wire
+// WithGraphFacts. Ownership of store's underlying *codegraph.CodeGraphDB
+// is NOT transferred: the caller opened it and must close it, exactly the
+// same posture CodeGraphService already has for every codegraph_* MCP
+// tool/CLI command.
+func NewGraphFacts(store *codegraph.Store) quality.GraphFacts {
+	return newGraphFactsAdapter(store)
+}
+
 // resolveNodeID finds the ONE graph node ref identifies. When ref.File is
 // non-empty it looks up that file's own symbols and matches by qualified
 // name (the exact case for a symbol quality.CollectSymbols itself

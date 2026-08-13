@@ -39,6 +39,9 @@ func TestMapServiceError_QualitySentinels(t *testing.T) {
 		{"ErrCertificateNotGreen", model.ErrCertificateNotGreen, CodeInvalidParams},
 		{"ErrWorktreeDirty", model.ErrWorktreeDirty, CodeInvalidParams},
 		{"ErrCertificateNotFound", model.ErrCertificateNotFound, CodeMemoryNotFound},
+		{"ErrInvalidBudget", model.ErrInvalidBudget, CodeInvalidParams},
+		{"ErrUnsupportedBudgetSchema", model.ErrUnsupportedBudgetSchema, CodeInvalidParams},
+		{"ErrBudgetNotFound", model.ErrBudgetNotFound, CodeMemoryNotFound},
 	}
 
 	for _, tt := range tests {

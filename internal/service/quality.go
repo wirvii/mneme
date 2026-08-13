@@ -927,7 +927,50 @@ func (svc *QualityService) Status(ctx context.Context, req model.QualityStatusRe
 		}
 	}
 
+	// SPEC-118 D16: the budget's disk hash next to the certificate's own
+	// recorded hash — the window closed with a row, not an argument
+	// against CertificateUsable. Reading and reporting only.
+	resp.Budget = svc.buildQualityBudgetInfo(req.ID, checks)
+
 	return resp, nil
+}
+
+// buildQualityBudgetInfo reads a spec's budget.toml from disk (when
+// workflowDir is configured) and pairs its hash with the LATEST
+// certificate's own "budget/declared" and "detection/unbudgeted" rows —
+// never re-parsing the document beyond what ParseBudget/HashBytes already
+// do elsewhere, never executing anything (D16/AC-adjacent to quality
+// status's own read-only contract).
+func (svc *QualityService) buildQualityBudgetInfo(specID string, checks []*model.QualityCheck) *model.QualityBudgetInfo {
+	if svc.workflowDir == "" {
+		return nil
+	}
+	path, pathErr := specDocPath(svc.workflowDir, svc.project, specID, model.SpecDocKindBudget)
+	if pathErr != nil {
+		return nil
+	}
+	raw, readErr := os.ReadFile(path)
+	if readErr != nil {
+		return nil
+	}
+
+	info := &model.QualityBudgetInfo{Path: path, DiskHash: quality.HashBytes(raw)}
+
+	for _, c := range checks {
+		if c.Kind == "budget" && c.Name == "declared" && c.Detail != "" {
+			var d budgetDeclaredDetail
+			if jsonErr := json.Unmarshal([]byte(c.Detail), &d); jsonErr == nil {
+				info.CertificateHash = d.Hash
+			}
+		}
+		if c.Kind == "detection" && c.Name == "unbudgeted" && c.Detail != "" {
+			var d unbudgetedDetail
+			if jsonErr := json.Unmarshal([]byte(c.Detail), &d); jsonErr == nil {
+				info.Margin, info.Budgeted, info.Delivered, info.Overrun = d.Margin, d.Budgeted, d.Delivered, d.Overrun
+			}
+		}
+	}
+	return info
 }
 
 // readBaselineFile reads and parses repoDir's registered ratchet baseline,

@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/wirvii/mneme/internal/codegraph"
 	"github.com/wirvii/mneme/internal/config"
 	"github.com/wirvii/mneme/internal/db"
 	"github.com/wirvii/mneme/internal/model"
@@ -79,10 +80,30 @@ func initQualityService() (*service.QualityService, func(), error) {
 	sddSvcForDocs := service.NewSDDService(sddStore, cfg, slug, nil)
 	sddSvcForDocs.WithRepoDir(root)
 
-	qualitySvc := service.NewQualityService(sddStore, slug, root, &quality.ExecRunner{},
+	opts := []service.QualityOption{
 		service.WithMnemeVersion(Version),
 		service.WithWorkflowDir(cfg.WorkflowDir()),
-		service.WithDocWriter(sddSvcForDocs.SpecDocWrite))
+		service.WithDocWriter(sddSvcForDocs.SpecDocWrite),
+	}
+
+	// SPEC-118 P14: the SAME project's code graph, opened via the exact
+	// codegraph.DBPath route initCodeGraphService already uses for every
+	// codegraph_* command — never a new location. Absent a resolvable
+	// project slug there is no graph to open; runBudgetChecks' own
+	// nil-graphFacts posture (D5/G21) already covers that case correctly
+	// (a firmable finding, never a silent pass).
+	if slug != "" {
+		projectsDir := filepath.Join(cfg.Storage.DataDir, "projects")
+		cdb, graphErr := codegraph.OpenDB(codegraph.DBPath(projectsDir, slug))
+		if graphErr == nil {
+			graphStore := codegraph.NewStore(cdb)
+			opts = append(opts, service.WithGraphFacts(service.NewGraphFacts(graphStore)))
+			prevCleanup := cleanup
+			cleanup = func() { _ = cdb.Close(); prevCleanup() }
+		}
+	}
+
+	qualitySvc := service.NewQualityService(sddStore, slug, root, &quality.ExecRunner{}, opts...)
 
 	return qualitySvc, cleanup, nil
 }
