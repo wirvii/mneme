@@ -51,6 +51,14 @@ type QualityService struct {
 	// Empty unless set via WithMnemeVersion — production wiring (P9/P10)
 	// always sets it from the running binary's own version.
 	mnemeVersion string
+
+	// workflowDir is the un-project-scoped workflow root criteria.toml is
+	// read from (SPEC-117 S3 D13) — the SAME specDocPath function
+	// SpecDocWrite already uses to WRITE it (V5 of the design), so reader
+	// and writer can never resolve a different path. Empty means the
+	// criteria mechanism is OFF: runCriteriaChecks never falls back to
+	// os.Getwd() (the SPEC-085 lesson, applied to a second directory).
+	workflowDir string
 }
 
 // QualityOption configures a QualityService at construction time.
@@ -60,6 +68,15 @@ type QualityOption func(*QualityService)
 // certificate Verify emits.
 func WithMnemeVersion(v string) QualityOption {
 	return func(s *QualityService) { s.mnemeVersion = v }
+}
+
+// WithWorkflowDir sets the workflow root runCriteriaChecks reads a spec's
+// criteria.toml from (SPEC-117 D13). Exported and, until P10 wires it at
+// initQualityService, without any production caller — an exported symbol
+// of an internal/* package is never reported by `unused` (R-A), so this
+// can land ahead of its consumer without a lint violation.
+func WithWorkflowDir(dir string) QualityOption {
+	return func(s *QualityService) { s.workflowDir = dir }
 }
 
 // NewQualityService constructs a QualityService. runner may be nil in a
@@ -255,6 +272,16 @@ func (svc *QualityService) runAllChecks(
 	}
 	checks = append(checks, ratchetChecks...)
 	pure = append(pure, ratchetPure...)
+
+	// SPEC-117: the criteria rows land AFTER the ratchet, respecting the
+	// SAME "a required gate already failed" cascade (D8/D13) they all
+	// share.
+	criteriaChecks, criteriaPure, err := svc.runCriteriaChecks(ctx, g, constitution, spec, gatesStopped)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	checks = append(checks, criteriaChecks...)
+	pure = append(pure, criteriaPure...)
 
 	return checks, pure, dirty, nil
 }
@@ -954,4 +981,323 @@ func (svc *QualityService) BaselineUpdate(ctx context.Context, req model.Quality
 		return nil, fmt.Errorf("service: quality: baseline update: write baseline: %w", err)
 	}
 	return baseline, nil
+}
+
+// --- SPEC-117 EPIC-calidad S3: criteria checks ---
+
+// criterionDetail is the JSON shape of a criterion row's Detail (D8): the
+// declaration VERBATIM (mode, text, its assertions with every key, or its
+// command/evidence_required) plus the outcome and why — this is what
+// makes the certificate self-contained evidence (D1 property 1) instead of
+// a bare "3 criteria, all green".
+type criterionDetail struct {
+	Mode             string            `json:"mode"`
+	Text             string            `json:"text"`
+	Assert           []assertionDetail `json:"assert,omitempty"`
+	Command          []string          `json:"command,omitempty"`
+	Timeout          string            `json:"timeout,omitempty"`
+	EvidenceRequired string            `json:"evidence_required,omitempty"`
+	Outcome          string            `json:"outcome"`
+	Why              string            `json:"why,omitempty"`
+}
+
+// assertionDetail is the JSON shape of one `[[criterion.assert]]` entry
+// inside criterionDetail — every key the verb declared, verbatim.
+type assertionDetail struct {
+	Verb       string   `json:"verb"`
+	Path       string   `json:"path,omitempty"`
+	Contains   string   `json:"contains,omitempty"`
+	In         []string `json:"in,omitempty"`
+	Word       bool     `json:"word,omitempty"`
+	Comparator string   `json:"comparator,omitempty"`
+	Count      int      `json:"count,omitempty"`
+	Symbol     string   `json:"symbol,omitempty"`
+	DefinedIn  []string `json:"defined_in,omitempty"`
+	Ignore     []string `json:"ignore,omitempty"`
+	New        bool     `json:"new"`
+}
+
+// criteriaSkipReason names WHY the criteria rows are being skipped, in
+// D13's own vocabulary — cascade, missing workflowDir (D13's own "no lee
+// nada del disco" rule), "apagado por omision" (schema < 3), and "apagado
+// por decision" (criteria.enabled=false) all produce DIFFERENT summaries
+// (AC23), and none is silent.
+func (svc *QualityService) criteriaSkipReason(gatesStopped bool, constitution *quality.Constitution) string {
+	switch {
+	case gatesStopped:
+		return "un gate required anterior fallo"
+	case svc.workflowDir == "":
+		return "workflowDir no configurado"
+	case !constitution.CriteriaDeclared:
+		return fmt.Sprintf("constitucion schema_version=%d no declara [criteria] (apagado por omision)", constitution.SchemaVersion)
+	case !constitution.Criteria.Enabled:
+		return "criteria.enabled = false (apagado por decision)"
+	default:
+		return ""
+	}
+}
+
+// criteriaRowNames is the fixed, declared order of the three top-level
+// criteria rows (D8 #1-3) — used both to build a uniform "skipped" set and
+// as the single literal instead of three repeated string constants.
+var criteriaRowNames = []string{"declared", "manual-quota", "command-quota"}
+
+// skippedCriteriaChecks builds all three top-level criteria rows as
+// "skipped" with the SAME reason — used whenever the mechanism is off, or
+// an earlier stage's cascade already stopped, before criteria.toml is ever
+// read. No per-criterion rows accompany a skip: without reading the
+// document, N is unknown.
+func skippedCriteriaChecks(reason string) ([]*model.QualityCheck, []quality.CheckResult) {
+	checks := make([]*model.QualityCheck, 0, len(criteriaRowNames))
+	pure := make([]quality.CheckResult, 0, len(criteriaRowNames))
+	for _, name := range criteriaRowNames {
+		checks = append(checks, &model.QualityCheck{Kind: "criteria", Name: name, Status: "skipped", Summary: reason})
+		pure = append(pure, quality.CheckResult{Status: quality.CheckStatusSkipped})
+	}
+	return checks, pure
+}
+
+// criteriaDeclaredFailure builds row 1 ("criteria/declared") as a `fail`,
+// plus rows 2-3 skipped for the same reason (D13: "no se acumulan dos
+// diagnosticos del mismo hecho") — the exit path for "no existe
+// criteria.toml", "existe pero no parsea", and "declara cero criterios"
+// (the last already rejected by quality.ParseCriteria itself).
+func criteriaDeclaredFailure(summary string) ([]*model.QualityCheck, []quality.CheckResult) {
+	checks := []*model.QualityCheck{{Kind: "criteria", Name: "declared", Status: "fail", Summary: summary}}
+	pure := []quality.CheckResult{{Status: quality.CheckStatusFail}}
+	skippedChecks, skippedPure := skippedCriteriaChecks("criteria/declared fallo")
+	return append(checks, skippedChecks[1:]...), append(pure, skippedPure[1:]...)
+}
+
+// collectTreeFacts gathers ONE ref's quality.TreeFacts: its complete file
+// listing, plus a GrepLinesAtRef call for every DISTINCT (needle, word)
+// pair criteria's assert-mode assertions need — memoized within this one
+// call so two assertions searching the same needle never pay for two git
+// invocations (P7's own dependency note). Never shared across goroutines,
+// never cached beyond a single collectTreeFacts call — the memoization
+// lives entirely in this function's local map.
+func collectTreeFacts(g *quality.Git, ref string, criteria []quality.Criterion) (quality.TreeFacts, error) {
+	files, err := g.ListFilesAtRef(ref)
+	if err != nil {
+		return quality.TreeFacts{}, fmt.Errorf("service: quality: verify: criteria: list files at %s: %w", ref, err)
+	}
+
+	matches := make(map[string]map[string]int)
+	for _, c := range criteria {
+		if c.Mode != quality.ModeAssert {
+			continue
+		}
+		for _, a := range c.Assert {
+			var needle string
+			var word bool
+			switch a.Verb {
+			case quality.VerbPatternCount:
+				needle, word = a.Contains, a.Word
+			case quality.VerbSymbolDefined, quality.VerbSymbolReferenced:
+				needle, word = a.Symbol, true
+			default:
+				continue
+			}
+			key := quality.MatchKey(needle, word)
+			if _, already := matches[key]; already {
+				continue
+			}
+			m, grepErr := g.GrepLinesAtRef(ref, needle, word)
+			if grepErr != nil {
+				return quality.TreeFacts{}, fmt.Errorf("service: quality: verify: criteria: grep at %s: %w", ref, grepErr)
+			}
+			matches[key] = m
+		}
+	}
+
+	return quality.TreeFacts{Files: files, Matches: matches}, nil
+}
+
+// assertDetailFor builds criterionDetail for a mode=assert criterion,
+// verbatim from its declaration, plus the classified outcome/why.
+func assertDetailFor(c quality.Criterion, outcome quality.Outcome, why string) string {
+	asserts := make([]assertionDetail, 0, len(c.Assert))
+	for _, a := range c.Assert {
+		asserts = append(asserts, assertionDetail{
+			Verb: string(a.Verb), Path: a.Path, Contains: a.Contains, In: a.In, Word: a.Word,
+			Comparator: string(a.Comparator), Count: a.Count, Symbol: a.Symbol,
+			DefinedIn: a.DefinedIn, Ignore: a.Ignore, New: a.New,
+		})
+	}
+	detail := criterionDetail{Mode: string(c.Mode), Text: c.Text, Assert: asserts, Outcome: string(outcome), Why: why}
+	raw, _ := json.Marshal(detail) //nolint:errcheck // criterionDetail always marshals; no reachable failure mode
+	return string(raw)
+}
+
+// assertCriterionRow classifies a mode=assert criterion via
+// quality.EvaluateCriterion (D5) and builds its "criterion" row. The
+// outcome name itself (e.g. "vacuous", "anchor-not-new", "base-unknown")
+// is always the LEADING word of Summary — never buried — so a caller
+// grepping the certificate's own text finds it (AC16/AC18/AC19).
+func assertCriterionRow(c quality.Criterion, head, base quality.TreeFacts, baseKnown bool) (*model.QualityCheck, quality.CheckResult) {
+	outcome, why := quality.EvaluateCriterion(c, head, base, baseKnown)
+
+	status := "finding"
+	switch outcome {
+	case quality.OutcomePass:
+		status = "pass"
+	case quality.OutcomeFail:
+		status = "fail"
+	}
+
+	return &model.QualityCheck{
+			Kind: "criterion", Name: c.ID, Status: status,
+			Summary: fmt.Sprintf("%s: %s", outcome, why),
+			Detail:  assertDetailFor(c, outcome, why),
+		},
+		quality.CheckResult{Status: quality.CheckStatus(status)}
+}
+
+// evaluateCommandCriterion runs a mode=command criterion's Command through
+// the SAME injected Runner a gate uses (D6/D14 of S1) — as a synthetic,
+// non-required quality.Gate — exactly ONCE, against HEAD only. exit 0 is
+// ALWAYS a `finding` `vacuity-unprovable` (D6): running it against base
+// would require materializing that tree, which S2 already ruled out as a
+// class of effect this mechanism does not have.
+func (svc *QualityService) evaluateCommandCriterion(ctx context.Context, c quality.Criterion) (*model.QualityCheck, quality.CheckResult) {
+	res := svc.runner.Run(ctx, quality.Gate{Name: "criterion-" + c.ID, Command: c.Command, Timeout: c.Timeout}, svc.repoDir)
+
+	detail := criterionDetail{Mode: string(c.Mode), Text: c.Text, Command: c.Command, Timeout: c.Timeout.String()}
+	status := "fail"
+	summary := fmt.Sprintf("exit_code=%d", res.ExitCode)
+	if res.Status == quality.GateStatusPass {
+		status = "finding"
+		summary = "vacuity-unprovable: se cumplio en HEAD; su vacuidad en base no es demostrable sin materializar el arbol"
+	}
+	detail.Outcome = summary
+	raw, _ := json.Marshal(detail) //nolint:errcheck // criterionDetail always marshals; no reachable failure mode
+
+	return &model.QualityCheck{
+			Kind: "criterion-command", Name: c.ID, Status: status, Summary: summary, Detail: string(raw),
+			ExitCode: res.ExitCode, DurationMs: res.DurationMs,
+			OutputSHA256: res.OutputSHA256, OutputBytes: res.OutputBytes, OutputTail: res.OutputTail,
+		},
+		quality.CheckResult{Status: quality.CheckStatus(status)}
+}
+
+// manualCriterionRow builds a mode=manual criterion's row: ALWAYS a fresh
+// `finding` `manual-unverified` — Verify never signs anything itself;
+// turning it into `acked` is exclusively Sign's job (P8), on a LATER
+// certificate, never within the same Verify call.
+func manualCriterionRow(c quality.Criterion) (*model.QualityCheck, quality.CheckResult) {
+	detail := criterionDetail{Mode: string(c.Mode), Text: c.Text, EvidenceRequired: c.EvidenceRequired, Outcome: "manual-unverified"}
+	raw, _ := json.Marshal(detail) //nolint:errcheck // criterionDetail always marshals; no reachable failure mode
+	return &model.QualityCheck{Kind: "criterion-manual", Name: c.ID, Status: "finding", Summary: "manual-unverified", Detail: string(raw)},
+		quality.CheckResult{Status: quality.CheckStatusFinding}
+}
+
+// runCriteriaChecks emits the "3 + N" criteria rows D8 declares: the three
+// top-level rows (declared, manual-quota, command-quota) plus one row per
+// declared criterion, kind'd by mode (criterion / criterion-command /
+// criterion-manual). All are "skipped" under criteriaSkipReason's causes
+// — never silently omitted — and reading criteria.toml uses the EXACT
+// same specDocPath function SpecDocWrite (P6) uses to write it (V5), so
+// reader and writer can never resolve a different path.
+func (svc *QualityService) runCriteriaChecks(
+	ctx context.Context, g *quality.Git, constitution *quality.Constitution, spec *model.Spec, gatesStopped bool,
+) ([]*model.QualityCheck, []quality.CheckResult, error) {
+	if reason := svc.criteriaSkipReason(gatesStopped, constitution); reason != "" {
+		checks, pure := skippedCriteriaChecks(reason)
+		return checks, pure, nil
+	}
+
+	path, pathErr := specDocPath(svc.workflowDir, spec.Project, spec.ID, model.SpecDocKindCriteria)
+	if pathErr != nil {
+		return nil, nil, fmt.Errorf("service: quality: verify: criteria: spec doc path: %w", pathErr)
+	}
+
+	raw, readErr := os.ReadFile(path)
+	if readErr != nil {
+		checks, pure := criteriaDeclaredFailure(fmt.Sprintf("no existe criteria.toml en %s: %s", path, readErr))
+		return checks, pure, nil
+	}
+
+	doc, parseErr := quality.ParseCriteria(raw)
+	if parseErr != nil {
+		checks, pure := criteriaDeclaredFailure(fmt.Sprintf("criteria.toml no parsea: %s", parseErr))
+		return checks, pure, nil
+	}
+
+	counts := map[string]int{}
+	for _, c := range doc.Criteria {
+		counts[string(c.Mode)]++
+	}
+	total := len(doc.Criteria)
+
+	declaredDetail, jsonErr := json.Marshal(map[string]any{
+		"hash": quality.HashBytes(raw), "counts": counts, "total": total,
+	})
+	if jsonErr != nil {
+		return nil, nil, fmt.Errorf("service: quality: verify: criteria: marshal declared detail: %w", jsonErr)
+	}
+	checks := []*model.QualityCheck{{Kind: "criteria", Name: "declared", Status: "pass", Detail: string(declaredDetail)}}
+	pure := []quality.CheckResult{{Status: quality.CheckStatusPass}}
+
+	manualPct, manualBreached := quality.CheckQuota(counts[string(quality.ModeManual)], total, constitution.Criteria.MaxManualPct)
+	manualStatus := "pass"
+	if manualBreached {
+		manualStatus = "fail"
+	}
+	checks = append(checks, &model.QualityCheck{
+		Kind: "criteria", Name: "manual-quota", Status: manualStatus,
+		Summary: fmt.Sprintf("%.2f%% manual (max %.2f%%)", manualPct, constitution.Criteria.MaxManualPct),
+	})
+	pure = append(pure, quality.CheckResult{Status: quality.CheckStatus(manualStatus)})
+
+	commandPct, commandBreached := quality.CheckQuota(counts[string(quality.ModeCommand)], total, constitution.Criteria.MaxCommandPct)
+	commandStatus := "pass"
+	if commandBreached {
+		commandStatus = "fail"
+	}
+	checks = append(checks, &model.QualityCheck{
+		Kind: "criteria", Name: "command-quota", Status: commandStatus,
+		Summary: fmt.Sprintf("%.2f%% command (max %.2f%%)", commandPct, constitution.Criteria.MaxCommandPct),
+	})
+	pure = append(pure, quality.CheckResult{Status: quality.CheckStatus(commandStatus)})
+
+	headFacts, headErr := collectTreeFacts(g, "HEAD", doc.Criteria)
+	if headErr != nil {
+		return nil, nil, headErr
+	}
+
+	// D5: the base ref is the MERGE-BASE of spec.BaseSHA and HEAD, never
+	// BaseSHA alone (the same argument D8 of S2 already established for
+	// the ratchet). Absent BaseSHA, or a merge-base git itself cannot
+	// resolve (an unreachable history — a shallow clone, D5's own
+	// example), leaves baseKnown false: every assert-mode criterion then
+	// classifies as OutcomeBaseUnknown, never OutcomePass.
+	baseKnown := false
+	var baseFacts quality.TreeFacts
+	if spec.BaseSHA != "" {
+		if mergeBase, mbErr := g.MergeBase(spec.BaseSHA, "HEAD"); mbErr == nil {
+			bf, bfErr := collectTreeFacts(g, mergeBase, doc.Criteria)
+			if bfErr != nil {
+				return nil, nil, bfErr
+			}
+			baseFacts = bf
+			baseKnown = true
+		}
+	}
+
+	for _, c := range doc.Criteria {
+		var chk *model.QualityCheck
+		var res quality.CheckResult
+		switch c.Mode {
+		case quality.ModeAssert:
+			chk, res = assertCriterionRow(c, headFacts, baseFacts, baseKnown)
+		case quality.ModeCommand:
+			chk, res = svc.evaluateCommandCriterion(ctx, c)
+		case quality.ModeManual:
+			chk, res = manualCriterionRow(c)
+		}
+		checks = append(checks, chk)
+		pure = append(pure, res)
+	}
+
+	return checks, pure, nil
 }
