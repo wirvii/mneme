@@ -60,12 +60,27 @@ func (g *Git) IsDirty() (dirty bool, paths []string, err error) {
 // PathChangedInRange reports whether path was added, modified, or removed
 // between baseSHA and HEAD (D9 check 2 — covers both a modification and a
 // deletion of the constitution within a spec's commit range).
+//
+// SPEC-118 BL-172/AC30: the range is anchored on MergeBase(baseSHA, HEAD),
+// never a raw two-dot baseSHA..HEAD range — the same correction D8 of S2
+// and D16 of S3 already applied to ChangedLines/the ratchet's own
+// comparisons. A raw two-dot range compares baseSHA's tree against HEAD's
+// tree with no regard for ancestry: when baseSHA is NOT actually an
+// ancestor of HEAD (a stale recorded base_sha, e.g. captured against a
+// since-abandoned branch), it can attribute a path to this spec's range
+// that neither commit's real history ever touched. The merge-base is
+// never worse than baseSHA and is exactly equal to it in the common,
+// linear case — so this is never a regression, only a correction.
 func (g *Git) PathChangedInRange(baseSHA, path string) (bool, error) {
-	cmd := exec.Command("git", "diff", "--name-only", baseSHA+"..HEAD", "--", path)
+	mergeBase, err := g.MergeBase(baseSHA, "HEAD")
+	if err != nil {
+		return false, fmt.Errorf("quality: path changed in range: merge base %s HEAD: %w", baseSHA, err)
+	}
+	cmd := exec.Command("git", "diff", "--name-only", mergeBase+"..HEAD", "--", path)
 	cmd.Dir = g.RepoDir
 	out, err := cmd.Output()
 	if err != nil {
-		return false, fmt.Errorf("quality: git diff --name-only %s..HEAD -- %s: %w", baseSHA, path, err)
+		return false, fmt.Errorf("quality: git diff --name-only %s..HEAD -- %s: %w", mergeBase, path, err)
 	}
 	return strings.TrimSpace(string(out)) != "", nil
 }

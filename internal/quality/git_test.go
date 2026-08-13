@@ -226,6 +226,50 @@ func TestGit_PathChangedInRange_Deletion(t *testing.T) {
 	}
 }
 
+// TestGit_PathChangedInRange_UsesMergeBase covers SPEC-118 BL-172/AC30/G29:
+// a path change made only on a SIBLING branch that is NOT an ancestor of
+// HEAD must NOT be attributed to this spec's range once PathChangedInRange
+// anchors on the merge-base — it WOULD be (a false positive) under the old
+// raw two-dot range. The fixture is buildMergeBaseFixture's sibling-branch
+// topology, deliberately NOT "the branch merged main" (verified in memory
+// bug/spec-116-mutation-verification: merge-base(baseSHA, HEAD) == baseSHA
+// whenever baseSHA is already an ancestor of HEAD, making that fixture a
+// mathematical no-op that would pass identically before and after this
+// fix). The second row preserves what TestGit_PathChangedInRange_Deletion
+// already proves: a deletion made on the ACTUAL history in range still
+// reports true.
+func TestGit_PathChangedInRange_UsesMergeBase(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found in PATH")
+	}
+	dir := initTestGitRepo(t)
+	g := &Git{RepoDir: dir}
+
+	baseSHA := buildMergeBaseFixture(t, dir, g)
+
+	// otro.go was only ever touched on the SIBLING branch (deleted there),
+	// never on the real history between the merge-base and HEAD — the
+	// merge-base's own tree already has it, unchanged, all the way to
+	// HEAD.
+	changed, err := g.PathChangedInRange(baseSHA, "otro.go")
+	if err != nil {
+		t.Fatalf("PathChangedInRange: %v", err)
+	}
+	if changed {
+		t.Error("PathChangedInRange(otro.go) = true, want false (BL-172: the sibling-branch change must not be attributed via merge-base)")
+	}
+
+	// Positive hermana, same fixture: mio.go WAS added on the real history
+	// (the feature branch, in range) — must still report true.
+	changedReal, err := g.PathChangedInRange(baseSHA, "mio.go")
+	if err != nil {
+		t.Fatalf("PathChangedInRange: %v", err)
+	}
+	if !changedReal {
+		t.Error("PathChangedInRange(mio.go) = false, want true (added on the real history in range)")
+	}
+}
+
 // TestGit_FileAtRef_MissingReturnsNotOK verifies FileAtRef distinguishes
 // "did not exist at ref" from an error.
 func TestGit_FileAtRef_MissingReturnsNotOK(t *testing.T) {
