@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
@@ -817,6 +818,17 @@ func (svc *SDDService) SpecDocWrite(ctx context.Context, req model.SpecDocWriteR
 		return nil, fmt.Errorf("service: spec doc write: get: %w", err)
 	}
 
+	// SPEC-117 D7's declare-time half: a criteria document is parsed and
+	// validated BEFORE anything reaches disk (U-E) — an invalid document
+	// that made it to disk would only be rejected later, by `verify`, when
+	// the architect has already handed the spec back as done. Any error
+	// here returns without writing a single byte.
+	if req.Kind == model.SpecDocKindCriteria {
+		if err := svc.validateCriteriaDoc(req.Content); err != nil {
+			return nil, fmt.Errorf("service: spec doc write: %w", err)
+		}
+	}
+
 	path, err := specDocPath(svc.config.WorkflowDir(), spec.Project, spec.ID, req.Kind)
 	if err != nil {
 		return nil, fmt.Errorf("service: spec doc write: %w", err)
@@ -838,6 +850,65 @@ func (svc *SDDService) SpecDocWrite(ctx context.Context, req model.SpecDocWriteR
 		Bytes:   len(req.Content),
 		Created: created,
 	}, nil
+}
+
+// validateCriteriaDoc implements SPEC-117 D7's declare-time half: parse
+// content as strict criteria.toml, then — ONLY when svc.repoDir is
+// configured — resolve every new=false assertion's anchor against the
+// ACTUAL working tree. Structural validation (parsing, mode
+// cross-validation, glob syntax) always runs; anchor resolution is simply
+// skipped when repoDir is empty (D13 — no fallback to os.Getwd(), exactly
+// ensureCertified's own posture), which is the safe state for a test that
+// never configured it.
+func (svc *SDDService) validateCriteriaDoc(content string) error {
+	doc, err := quality.ParseCriteria([]byte(content))
+	if err != nil {
+		return fmt.Errorf("%s: %w", err, model.ErrInvalidCriteria)
+	}
+
+	if svc.repoDir == "" {
+		return nil
+	}
+
+	files, err := listWorkingTreeFiles(svc.repoDir)
+	if err != nil {
+		return fmt.Errorf("service: spec doc write: list working tree: %w", err)
+	}
+	if err := quality.ValidateAnchors(doc, files); err != nil {
+		return fmt.Errorf("%s: %w", err, model.ErrInvalidCriteria)
+	}
+	return nil
+}
+
+// listWorkingTreeFiles walks repoDir and returns every regular file's
+// path, relative to repoDir and slash-separated, skipping .git entirely.
+// This is the actual working tree on disk (D7: "el arbol de trabajo"),
+// deliberately NOT git's tracked-file list — an uncommitted file the
+// architect is about to reference is exactly what a new=false anchor
+// should be able to resolve against at declare time.
+func listWorkingTreeFiles(repoDir string) ([]string, error) {
+	var files []string
+	err := filepath.WalkDir(repoDir, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.IsDir() {
+			if d.Name() == ".git" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		rel, relErr := filepath.Rel(repoDir, path)
+		if relErr != nil {
+			return relErr
+		}
+		files = append(files, filepath.ToSlash(rel))
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("service: list working tree files: %w", err)
+	}
+	return files, nil
 }
 
 // SpecResolve resolves the oldest unresolved pushback and transitions the spec
