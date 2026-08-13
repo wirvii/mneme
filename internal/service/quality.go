@@ -124,6 +124,13 @@ func (svc *QualityService) HasRunner() bool {
 	return svc.runner != nil
 }
 
+// WorkflowDir returns the workflow root this service was constructed
+// with, verbatim — the SPEC-117 P10 wiring test's way of asserting
+// initQualityService fixed it, the same shape as RepoDir()/HasRunner().
+func (svc *QualityService) WorkflowDir() string {
+	return svc.workflowDir
+}
+
 // Verify runs every gate constitution.Gates declares, in order, stopping at
 // the first REQUIRED gate that fails (the rest are recorded "skipped", D6),
 // alongside the tree check (D8) and the three constitution checks (D9), then

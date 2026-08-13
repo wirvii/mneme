@@ -92,4 +92,7 @@ func TestInitQualityService_WiresRunnerAndRepoDir(t *testing.T) {
 	if qualitySvc.RepoDir() == "" {
 		t.Error("initQualityService did not fix repoDir — RepoDir() is empty")
 	}
+	if qualitySvc.WorkflowDir() == "" {
+		t.Error("initQualityService did not wire WorkflowDir (SPEC-117 P10) — WorkflowDir() is empty")
+	}
 }

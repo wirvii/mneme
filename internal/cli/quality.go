@@ -70,20 +70,34 @@ func initQualityService() (*service.QualityService, func(), error) {
 	}
 
 	sddStore := store.NewSDDStore(database)
+
+	// SPEC-117 P10: a second, lightweight SDDService sharing the SAME
+	// store and repoDir, constructed ONLY to hand its SpecDocWrite to
+	// QualityService as the docWriter seam (WithDocWriter) — never a
+	// dependency on *SDDService itself, and never a construction cycle
+	// between the two services (D12's own design note).
+	sddSvcForDocs := service.NewSDDService(sddStore, cfg, slug, nil)
+	sddSvcForDocs.WithRepoDir(root)
+
 	qualitySvc := service.NewQualityService(sddStore, slug, root, &quality.ExecRunner{},
-		service.WithMnemeVersion(Version))
+		service.WithMnemeVersion(Version),
+		service.WithWorkflowDir(cfg.WorkflowDir()),
+		service.WithDocWriter(sddSvcForDocs.SpecDocWrite))
 
 	return qualitySvc, cleanup, nil
 }
 
 // newQualityCmd returns the "mneme quality" subcommand group (SPEC-115 D17,
-// extended by SPEC-116 D15 with the "baseline" group): verify runs the
-// declared gates and emits a certificate; status reports the constitution's
-// and latest certificate's state without executing anything; ack records a
-// human's justified approval of a finding; baseline manages the ratchet's
-// registered coverage mark. The "baseline" subcommand hangs off this SAME
-// AddCommand call, so the top-level command count stays 42 (V10 of the
-// SPEC-116 design) — only `mneme quality --help` gains an entry.
+// extended by SPEC-116 D15 with the "baseline" group, and by SPEC-117 S3
+// with "sign"/"report"): verify runs the declared gates and emits a
+// certificate; status reports the constitution's and latest certificate's
+// state without executing anything; ack records a human's justified
+// approval of a finding; sign records a qa-tester's attestation of a
+// criterion; report generates the QA report from the latest certificate;
+// baseline manages the ratchet's registered coverage mark. Every
+// subcommand hangs off this SAME AddCommand call, so the top-level command
+// count stays 42 (V15 of the SPEC-117 design) — only `mneme quality --help`
+// gains entries.
 func newQualityCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "quality",
@@ -97,6 +111,8 @@ Subcommands:
   verify    Run the declared gates and emit (or deny) a certificate.
   status    Report the constitution's and latest certificate's state.
   ack       Record a human's justified approval of a finding.
+  sign      Record a qa-tester's attestation that a criterion holds (SPEC-117).
+  report    Generate the QA report from the spec's latest certificate (SPEC-117).
   baseline  Manage the ratchet's registered coverage baseline (SPEC-116).`,
 	}
 
@@ -104,8 +120,90 @@ Subcommands:
 		newQualityVerifyCmd(),
 		newQualityStatusCmd(),
 		newQualityAckCmd(),
+		newQualitySignCmd(),
+		newQualityReportCmd(),
 		newQualityBaselineCmd(),
 	)
+
+	return cmd
+}
+
+// newQualitySignCmd returns "mneme quality sign <cert-id>" (SPEC-117 S3
+// D11): a qa-tester's attestation that a criterion row genuinely holds —
+// a verb distinct from ack (an approval), restricted to the qa-tester role
+// for a subagent caller by internal/cli/hook.go's roleScopedTools.
+func newQualitySignCmd() *cobra.Command {
+	var (
+		flagCheck    int
+		flagBy       string
+		flagEvidence string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "sign <cert-id>",
+		Short: "Record a qa-tester's attestation that a criterion holds",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			svc, cleanup, err := initQualityService()
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+
+			err = svc.Sign(cmd.Context(), model.QualitySignRequest{
+				CertificateID: args[0],
+				Seq:           flagCheck,
+				By:            flagBy,
+				Evidence:      flagEvidence,
+			})
+			if err != nil {
+				if errors.Is(err, model.ErrReasonRequired) {
+					return fmt.Errorf("--by and --evidence are both required")
+				}
+				return err
+			}
+
+			fmt.Fprintf(os.Stdout, "%s: check %d signed by %s\n", args[0], flagCheck, flagBy)
+			return nil
+		},
+	}
+
+	cmd.Flags().IntVar(&flagCheck, "check", 0, "Seq of the criterion row to sign")
+	cmd.Flags().StringVar(&flagBy, "by", "", "Who is signing (the qa-tester)")
+	cmd.Flags().StringVar(&flagEvidence, "evidence", "", "What was verified and how (required, non-empty)")
+
+	return cmd
+}
+
+// newQualityReportCmd returns "mneme quality report <spec-id>" (SPEC-117
+// S3 D12): render the QA report from the spec's latest certificate and
+// write it via spec_doc_write's kind qa-report.
+func newQualityReportCmd() *cobra.Command {
+	var flagForce bool
+
+	cmd := &cobra.Command{
+		Use:   "report <spec-id>",
+		Short: "Generate the QA report from the spec's latest certificate",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			svc, cleanup, err := initQualityService()
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+
+			resp, err := svc.Report(cmd.Context(), model.QualityReportRequest{ID: args[0], Force: flagForce})
+			if err != nil {
+				return err
+			}
+
+			fmt.Fprintf(os.Stdout, "%s: qa-report written to %s (%d bytes, certificate %s)\n",
+				args[0], resp.Path, resp.Bytes, resp.CertificateID)
+			return nil
+		},
+	}
+
+	cmd.Flags().BoolVar(&flagForce, "force", false, "Overwrite an existing qa-report.md even if it lacks mneme's generation marker")
 
 	return cmd
 }

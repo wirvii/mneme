@@ -97,6 +97,58 @@ func TestQualityBaselineShowCmd_NoBaseline_ExitsZero(t *testing.T) {
 	}
 }
 
+// TestQualitySignCmd_RequiresByAndEvidence covers SPEC-117 S3's CLI
+// surface: `mneme quality sign` with no --by/--evidence must exit
+// non-zero, naming both flags.
+func TestQualitySignCmd_RequiresByAndEvidence(t *testing.T) {
+	repoDir := t.TempDir()
+	initGitRepo(t, repoDir)
+
+	origWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(repoDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(origWD) })
+
+	root := NewRootCmd()
+	root.SetOut(new(bytes.Buffer))
+	root.SetErr(new(bytes.Buffer))
+	root.SetArgs([]string{"--data-dir", t.TempDir(), "--project", "quality-sign-cmd-test", "quality", "sign", "cert-nope"})
+
+	if err := root.Execute(); err == nil {
+		t.Fatal("mneme quality sign with no --by/--evidence: want error, got nil")
+	}
+}
+
+// TestQualityReportCmd_NoCertificate_Errors covers the negative half at
+// the CLI level: `mneme quality report <spec-id>` with no certificate at
+// all must exit non-zero.
+func TestQualityReportCmd_NoCertificate_Errors(t *testing.T) {
+	repoDir := t.TempDir()
+	initGitRepo(t, repoDir)
+
+	origWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(repoDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(origWD) })
+
+	root := NewRootCmd()
+	root.SetOut(new(bytes.Buffer))
+	root.SetErr(new(bytes.Buffer))
+	root.SetArgs([]string{"--data-dir", t.TempDir(), "--project", "quality-report-cmd-test", "quality", "report", "SPEC-NOPE"})
+
+	if err := root.Execute(); err == nil {
+		t.Fatal("mneme quality report with no certificate: want error, got nil")
+	}
+}
+
 // TestQualityBaselineUpdateCmd_NoCertificate_Errors covers the negative
 // half at the CLI level: `mneme quality baseline update <spec-id>` with no
 // certificate at all must exit non-zero, never silently write a file.
