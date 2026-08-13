@@ -415,6 +415,109 @@ text = "x"
 	}
 }
 
+// TestParseCriteria_SymbolDefinedAssertion covers parseSymbolDefinedAssertion
+// directly through ParseCriteria — previously exercised only by hand-built
+// Assertion structs in evaluate_test.go (its evaluation semantics), leaving
+// the PARSER half at 0% coverage: nothing declared verb = "symbol_defined"
+// through the TOML decode path. Covers both halves (the reason S1 rejected
+// the prior QA pass): the happy path (symbol/in/new required and populated
+// correctly) and the error half (a missing required key each, a prohibited
+// key, and invalid glob syntax in `in`).
+func TestParseCriteria_SymbolDefinedAssertion(t *testing.T) {
+	symbolDefinedCriterion := func(extra string) string {
+		return `
+schema_version = 1
+[[criterion]]
+id = "AC1"
+mode = "assert"
+text = "x"
+  [[criterion.assert]]
+  verb = "symbol_defined"
+` + extra
+	}
+
+	t.Run("valid symbol_defined parses symbol/in/new", func(t *testing.T) {
+		doc, err := ParseCriteria([]byte(symbolDefinedCriterion(`
+  symbol = "ParseCriteria"
+  in = ["internal/quality/*.go"]
+  new = false
+`)))
+		if err != nil {
+			t.Fatalf("ParseCriteria: %v", err)
+		}
+		a := doc.Criteria[0].Assert[0]
+		if a.Verb != VerbSymbolDefined || a.Symbol != "ParseCriteria" ||
+			len(a.In) != 1 || a.In[0] != "internal/quality/*.go" || a.New {
+			t.Errorf("Assert[0] = %+v, want symbol_defined{Symbol: ParseCriteria, In: [internal/quality/*.go], New: false}", a)
+		}
+	})
+
+	tests := []struct {
+		name    string
+		extra   string
+		wantKey string
+	}{
+		{
+			name: "missing symbol",
+			extra: `
+  in = ["internal/quality/*.go"]
+  new = false
+`,
+			wantKey: `"symbol"`,
+		},
+		{
+			name: "missing in",
+			extra: `
+  symbol = "Foo"
+  new = false
+`,
+			wantKey: `"in"`,
+		},
+		{
+			name: "missing new",
+			extra: `
+  symbol = "Foo"
+  in = ["internal/quality/*.go"]
+`,
+			wantKey: `"new"`,
+		},
+		{
+			name: "prohibited key path present",
+			extra: `
+  symbol = "Foo"
+  in = ["internal/quality/*.go"]
+  new = false
+  path = "go.mod"
+`,
+			wantKey: `"path"`,
+		},
+		{
+			name: "invalid glob syntax in in",
+			extra: `
+  symbol = "Foo"
+  in = ["["]
+  new = false
+`,
+			wantKey: `in pattern "["`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ParseCriteria([]byte(symbolDefinedCriterion(tt.extra)))
+			if err == nil {
+				t.Fatalf("ParseCriteria(%s): want error, got nil", tt.name)
+			}
+			if !errors.Is(err, ErrInvalidCriteria) {
+				t.Errorf("ParseCriteria(%s) error = %v, want wrapping ErrInvalidCriteria", tt.name, err)
+			}
+			if !strings.Contains(err.Error(), tt.wantKey) {
+				t.Errorf("ParseCriteria(%s) error = %q, want it to contain %q", tt.name, err.Error(), tt.wantKey)
+			}
+		})
+	}
+}
+
 // TestSymbolReferenced_IgnoreMayBeExplicitlyEmpty confirms `ignore = []` is
 // accepted (present, nothing to exclude) — only its ABSENCE is rejected.
 func TestSymbolReferenced_IgnoreMayBeExplicitlyEmpty(t *testing.T) {
