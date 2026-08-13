@@ -88,6 +88,72 @@ func (g *Git) FileAtRef(ref, path string) (content []byte, ok bool, err error) {
 	return out, true, nil
 }
 
+// MergeBase returns the best common ancestor of a and b — the commit
+// ChangedLines and the ratchet's baseline comparisons anchor on, INSTEAD of
+// a spec's raw BaseSHA (D8 point 1). If the spec's branch merged main along
+// the way, a two-dot range from BaseSHA would attribute someone else's
+// lines to this spec and judge them against its own threshold; the
+// merge-base never does, and in the common linear case it equals BaseSHA
+// exactly, so this is never worse and sometimes correct. (The same
+// argument applies to PathChangedInRange, which still uses a two-dot range
+// — that primitive is untouched here; see BL-172.)
+func (g *Git) MergeBase(a, b string) (string, error) {
+	cmd := exec.Command("git", "merge-base", a, b)
+	cmd.Dir = g.RepoDir
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("quality: git merge-base %s %s: %w", a, b, err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// IsAncestor reports whether ancestor is an ancestor of (or equal to)
+// descendant — `git merge-base --is-ancestor` exits 0 when it is, and
+// non-zero (an expected outcome, not a failure to report upward) otherwise.
+// Used by the ratchet's baseline-comparable check (D11): a baseline
+// measured on a sibling branch does not describe this commit's history and
+// comparing against it means nothing.
+func (g *Git) IsAncestor(ancestor, descendant string) (bool, error) {
+	cmd := exec.Command("git", "merge-base", "--is-ancestor", ancestor, descendant)
+	cmd.Dir = g.RepoDir
+	err := cmd.Run()
+	if err == nil {
+		return true, nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return false, nil
+	}
+	return false, fmt.Errorf("quality: git merge-base --is-ancestor %s %s: %w", ancestor, descendant, err)
+}
+
+// ChangedLines returns, for every file touched between fromSHA and toRef,
+// the set of line numbers added or modified on the new side (D8). The
+// invocation fixes every flag that a repository's or a user's own
+// .gitconfig could otherwise change the parsed text of — core.quotePath
+// (via -c, so a non-ASCII filename is never quoted), diff.noprefix (the
+// explicit --src-prefix/--dst-prefix override it), diff.external
+// (--no-ext-diff), and diff.renames (-M forces rename detection on
+// regardless of the repository's own setting) — so the SAME commit range
+// produces the SAME parsed result no matter whose machine or .gitconfig
+// runs it (AC10). Rename detection (-M) is deliberately ON: without it, a
+// pure rename would appear as a full delete + full add, demanding coverage
+// of a file nobody actually touched.
+func (g *Git) ChangedLines(fromSHA, toRef string) (map[string][]int, error) {
+	cmd := exec.Command("git",
+		"-c", "core.quotePath=false",
+		"diff", "--unified=0", "--no-color", "--no-ext-diff", "--no-textconv", "-M",
+		"--src-prefix=a/", "--dst-prefix=b/",
+		fromSHA+".."+toRef, "--",
+	)
+	cmd.Dir = g.RepoDir
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("quality: git diff --unified=0 %s..%s: %w", fromSHA, toRef, err)
+	}
+	return ParseUnifiedDiff(out)
+}
+
 // IsTracked reports whether path is tracked by git in the current index
 // (D9 check 1): `git ls-files --error-unmatch` exits 0 when the path is
 // tracked and non-zero otherwise, which this treats as the expected "not
