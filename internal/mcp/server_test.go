@@ -221,8 +221,8 @@ func TestToolsList(t *testing.T) {
 		// Lane tools (SPEC-035 + SPEC-036)
 		"spec_quick", "lane_audit", "lane_reclassify", "lane_override", "lane_status",
 		"spec_reject", "lane_stats",
-		// Quality tools (SPEC-115 EPIC-calidad S1)
-		"quality_verify", "quality_status", "quality_ack",
+		// Quality tools (SPEC-115 EPIC-calidad S1 + SPEC-117 S3)
+		"quality_verify", "quality_status", "quality_ack", "quality_sign", "quality_report",
 		// Graph tools
 		"mem_gaps",
 		"mem_explore",

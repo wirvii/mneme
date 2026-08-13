@@ -173,6 +173,10 @@ func (h *handlers) handleToolCall(ctx context.Context, params ToolCallParams) (*
 		return h.handleQualityStatus(ctx, params.Arguments)
 	case "quality_ack":
 		return h.handleQualityAck(ctx, params.Arguments)
+	case "quality_sign":
+		return h.handleQualitySign(ctx, params.Arguments)
+	case "quality_report":
+		return h.handleQualityReport(ctx, params.Arguments)
 
 	// --- SKILLS TOOLS ---
 	case "skills_list":
@@ -769,7 +773,12 @@ func (h *handlers) mapServiceError(method string, err error) *JSONRPCError {
 		errors.Is(err, model.ErrCertificateMissing) ||
 		errors.Is(err, model.ErrCertificateStale) ||
 		errors.Is(err, model.ErrCertificateNotGreen) ||
-		errors.Is(err, model.ErrWorktreeDirty) {
+		errors.Is(err, model.ErrWorktreeDirty) ||
+		errors.Is(err, model.ErrInvalidCriteria) ||
+		errors.Is(err, model.ErrCriteriaNotFound) ||
+		errors.Is(err, model.ErrNotACriterion) ||
+		errors.Is(err, model.ErrCriterionRequiresSign) ||
+		errors.Is(err, model.ErrReportNotGenerated) {
 		return &JSONRPCError{
 			Code:    CodeInvalidParams,
 			Message: fmt.Sprintf("mcp: handle %s: %s", method, err),

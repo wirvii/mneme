@@ -5,13 +5,13 @@ import (
 	"testing"
 )
 
-// TestAllTools_Count77 verifies the tool count after SPEC-109 adds
-// backlog_get (D2/D12): 76 (established by SPEC-105 §8 DD21,
-// profile_deactivate) -> 77.
-func TestAllTools_Count77(t *testing.T) {
+// TestAllTools_Count84 verifies the tool count after SPEC-117 S3 adds
+// quality_sign/quality_report: 82 (established since backlog_get,
+// SPEC-109 D2/D12) -> 84.
+func TestAllTools_Count84(t *testing.T) {
 	tools := allTools()
-	if len(tools) != 82 {
-		t.Errorf("allTools() returned %d tools, want 82", len(tools))
+	if len(tools) != 84 {
+		t.Errorf("allTools() returned %d tools, want 84", len(tools))
 	}
 }
 

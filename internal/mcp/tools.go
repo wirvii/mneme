@@ -685,7 +685,7 @@ func allTools() []ToolDefinition {
 					"kind": map[string]any{
 						"type":        "string",
 						"description": "Which document to write.",
-						"enum":        []string{"spec", "plan", "qa-report", "changes"},
+						"enum":        []string{"spec", "plan", "qa-report", "changes", "criteria"},
 					},
 					"content": map[string]any{
 						"type":        "string",
@@ -914,6 +914,50 @@ func allTools() []ToolDefinition {
 					"justification": map[string]any{
 						"type":        "string",
 						"description": "Why the finding is acceptable (required, non-empty).",
+					},
+				},
+			},
+		},
+		{
+			Name:        "quality_sign",
+			Description: "Record a qa-tester's attestation that a criterion row genuinely holds, converting it from 'finding' to 'acked'. Distinct from quality_ack (an absolution): a criterion is ATTESTED, never absolved. Only accepts rows whose kind starts with 'criterion'. Restricted to the qa-tester role for a subagent caller.",
+			InputSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"cert_id", "seq", "by", "evidence"},
+				"properties": map[string]any{
+					"cert_id": map[string]any{
+						"type":        "string",
+						"description": "Certificate ID the criterion row belongs to.",
+					},
+					"seq": map[string]any{
+						"type":        "integer",
+						"description": "Seq of the criterion row within the certificate's checks.",
+					},
+					"by": map[string]any{
+						"type":        "string",
+						"description": "Who is signing — the qa-tester.",
+					},
+					"evidence": map[string]any{
+						"type":        "string",
+						"description": "What was verified and how (required, non-empty).",
+					},
+				},
+			},
+		},
+		{
+			Name:        "quality_report",
+			Description: "Generate the QA report from the spec's latest certificate and write it via spec_doc_write's qa-report kind. Renders from the certificate's persisted rows, never from criteria.toml — an edit to that document after certification cannot change what the report says.",
+			InputSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"id"},
+				"properties": map[string]any{
+					"id": map[string]any{
+						"type":        "string",
+						"description": "Spec ID to generate the report for.",
+					},
+					"force": map[string]any{
+						"type":        "boolean",
+						"description": "Overwrite an existing qa-report.md even if it lacks mneme's generation marker.",
 					},
 				},
 			},
