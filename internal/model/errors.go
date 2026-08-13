@@ -331,3 +331,52 @@ var ErrProjectSlugRequired = errors.New("profile rules require a resolved projec
 // Reconcile/Deactivate refuse to mutate anything and surface this sentinel
 // with the remedy (`mneme upgrade`) instead.
 var ErrProfileLockUnsupported = errors.New("profile lock written by a newer mneme")
+
+// --- Quality sentinel errors (SPEC-115 EPIC-calidad S1) ---
+//
+// These translate internal/quality's own leaf sentinels (quality.ErrInvalid,
+// quality.ErrUnsupportedSchema) and the five distinct causes of D12's
+// certificate-usability conjunction into model.* — the same
+// leaf-sentinel-to-model-sentinel translation internal/conflicts and
+// internal/lane already establish for their own packages.
+
+// ErrInvalidConstitution is returned when .mneme/quality.toml fails to
+// parse: a missing required key, an unknown key, or a value that fails
+// validation (D2/D3). The mechanism fails CLOSED on this — spec_advance
+// blocks rather than silently treating an unparseable constitution as
+// "disabled".
+var ErrInvalidConstitution = errors.New("quality: constitution is invalid or unparseable")
+
+// ErrConstitutionAblated is returned when the constitution was enabled=true
+// at a spec's base_sha but is now absent or enabled=false (D3 row 5) — the
+// closes-the-obvious-hole case: disabling or deleting the constitution
+// mid-spec must block, not silently let the spec through unverified.
+var ErrConstitutionAblated = errors.New("quality: constitution was enabled at the spec's base commit but is now off")
+
+// ErrConstitutionChanged is returned when a certificate's recorded
+// constitution_hash no longer matches the constitution's current hash
+// (D9/D12) — the constitution was edited after the certificate was issued.
+var ErrConstitutionChanged = errors.New("quality: constitution changed since the certificate was issued")
+
+// ErrCertificateMissing is returned when the mechanism is enabled but no
+// certificate has ever been recorded for the spec (D12) — the remedy is
+// `mneme quality verify`.
+var ErrCertificateMissing = errors.New("quality: no certificate recorded for this spec")
+
+// ErrCertificateStale is returned when the latest certificate's head_sha no
+// longer matches the current HEAD (D12) — a commit landed after the
+// certificate was issued, so it no longer speaks for the code as it stands.
+var ErrCertificateStale = errors.New("quality: certificate is stale (HEAD moved since it was issued)")
+
+// ErrCertificateNotGreen is returned when the latest certificate's verdict
+// is not "pass" — a failed gate or an un-acked finding (D10/D12).
+var ErrCertificateNotGreen = errors.New("quality: certificate verdict is not pass")
+
+// ErrWorktreeDirty is returned when the worktree currently has uncommitted
+// changes (D8/D12), independent of whether it was clean at certification
+// time.
+var ErrWorktreeDirty = errors.New("quality: worktree has uncommitted changes")
+
+// ErrCertificateNotFound is returned when a certificate ID passed to
+// quality_ack (or a direct certificate lookup) does not exist.
+var ErrCertificateNotFound = errors.New("quality: certificate not found")
