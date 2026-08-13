@@ -307,12 +307,17 @@ func initSDDService() (*service.SDDService, func(), error) {
 		cfg.Storage.DataDir = flagDataDir
 	}
 
+	// cwd is resolved unconditionally (not only when flagProject is empty)
+	// because it is also the input to repoRoot below (SPEC-115 D13/P6): the
+	// SDD service's repoDir must be set from a real production call site,
+	// not just from project detection.
+	cwd, cwdErr := os.Getwd()
+	if cwdErr != nil {
+		return nil, nil, fmt.Errorf("cannot determine working directory: %w", cwdErr)
+	}
+
 	slug := flagProject
 	if slug == "" {
-		cwd, cwdErr := os.Getwd()
-		if cwdErr != nil {
-			return nil, nil, fmt.Errorf("cannot determine working directory: %w", cwdErr)
-		}
 		det := project.NewDetector(cwd)
 		detected, _ := det.DetectProject()
 		slug = detected
@@ -336,6 +341,19 @@ func initSDDService() (*service.SDDService, func(), error) {
 	// commands that do not have access to a MemoryService. Completion memories
 	// are saved when SDDService is wired with a MemoryService (e.g. in the MCP server).
 	sddSvc := service.NewSDDService(sddStore, cfg, slug, nil)
+
+	// SPEC-115 D13/P6: initSDDService is the ONE production construction
+	// site for SDDService, serving both the CLI and the MCP server
+	// (internal/cli/mcp.go). Fixing repoDir here — falling back to cwd when
+	// the directory is not (or not yet) a git repository — is what makes
+	// the quality mechanism's certificate/worktree checks see a real
+	// repository root instead of running dormant (repoDir == "") the whole
+	// time in production. root, cwdErr already resolved above.
+	root, rootErr := repoRoot(cwd)
+	if rootErr != nil {
+		root = cwd
+	}
+	sddSvc.WithRepoDir(root)
 
 	return sddSvc, cleanup, nil
 }

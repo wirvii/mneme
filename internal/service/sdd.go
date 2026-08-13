@@ -58,6 +58,20 @@ func (svc *SDDService) WithRepoDir(dir string) {
 	svc.repoDir = dir
 }
 
+// RepoDir returns the raw repoDir field, with NO fallback to os.Getwd()
+// (SPEC-115 D13/G6). This is deliberately different from captureBaseSHA and
+// LaneAudit, which DO fall back to the current working directory when
+// repoDir is empty — a pre-existing behaviour this spec does not touch. The
+// quality mechanism (ensureCertified, QualityService) must be able to tell
+// "repoDir was never set" from "repoDir happens to equal cwd", because in
+// production repoDir is always set by initSDDService (P6) and an empty
+// value here means only one thing: a test, or an unwired call site, that
+// never configured it — in which case the quality mechanism goes OFF rather
+// than silently resolving a real filesystem path (SPEC-085's lesson).
+func (svc *SDDService) RepoDir() string {
+	return svc.repoDir
+}
+
 // ProjectSlug returns the project slug associated with this service instance.
 func (svc *SDDService) ProjectSlug() string {
 	return svc.project
