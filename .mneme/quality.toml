@@ -1,0 +1,37 @@
+# .mneme/quality.toml — constitución de calidad de este repositorio.
+# Versionada y revisable en PR: la calidad es parte del código.
+# mneme NO tiene valores por defecto para nada de este fichero.
+#
+# enabled=false a propósito (SPEC-115 R4/P13): encender el mecanismo antes de
+# que S2..S6 estén implementadas, o antes de que el owner lo decida
+# explícitamente, es una decisión fuera del alcance de esta spec. Ver
+# docs/quality.md.
+
+schema_version = 1
+
+# El interruptor. Mientras sea false el mecanismo NO bloquea nada.
+enabled = false
+
+[execution]
+# Bytes de la cola de salida que se guardan por gate (1..65536).
+output_tail_bytes = 4096
+
+[[gate]]
+name = "build"
+command = ["make", "build"]
+timeout = "5m"
+required = true
+
+[[gate]]
+name = "test"
+command = ["make", "test"]
+timeout = "20m"
+required = true
+
+[[gate]]
+# No "make lint": ese target no existe en el Makefile de este repo
+# (verificado, V10 del diseño de SPEC-115).
+name = "lint"
+command = ["golangci-lint", "run"]
+timeout = "5m"
+required = true
