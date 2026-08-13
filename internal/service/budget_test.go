@@ -1,12 +1,16 @@
 package service
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/wirvii/mneme/internal/model"
 	"github.com/wirvii/mneme/internal/quality"
 )
 
@@ -167,5 +171,572 @@ func TestRealGitChain_SymbolDelta(t *testing.T) {
 	}
 	if delta.Moved[0].OldFile != "before.go" || delta.Moved[0].NewFile != "after.go" {
 		t.Errorf("Moved = %+v, want OldFile=before.go NewFile=after.go", delta.Moved[0])
+	}
+}
+
+// --- SPEC-118 P9: runBudgetChecks ---
+
+// noopGraphFacts implements quality.GraphFacts reporting no edges, no
+// reachability, and no candidates for anything — the "clean graph" fixture
+// runBudgetChecks tests use when they only care about the git-side
+// arithmetic (rows 1-6), never the graph query results.
+type noopGraphFacts struct {
+	contentHash map[string]string
+}
+
+func (f *noopGraphFacts) IncomingEdges(ref quality.SymbolRef) ([]quality.SymbolRef, error) {
+	return nil, nil
+}
+func (f *noopGraphFacts) IncomingCalls(ref quality.SymbolRef) ([]quality.SymbolRef, error) {
+	return nil, nil
+}
+func (f *noopGraphFacts) TestReachable(ref quality.SymbolRef, depth int, testGlobs []string) (bool, error) {
+	return false, nil
+}
+func (f *noopGraphFacts) SameNameAndSignature(s quality.Symbol) ([]quality.SymbolRef, error) {
+	return nil, nil
+}
+func (f *noopGraphFacts) IndexedContentHash(path string) (string, bool, error) {
+	h, ok := f.contentHash[path]
+	return h, ok, nil
+}
+
+// budgetTestFixture builds a real git repo with a base commit (one
+// existing file, one function) and a HEAD commit that adds N new
+// functions in newDir — the minimal shape TestRunBudgetChecks_* tables
+// need, parameterised by how many symbols are "delivered".
+func budgetTestFixture(t *testing.T, newDir string, newFuncCount int) (dir, base string) {
+	t.Helper()
+	dir = t.TempDir()
+	gitRunBudgetTest(t, dir, "init", "-b", "main")
+	gitRunBudgetTest(t, dir, "config", "user.email", "budget-test@example.com")
+	gitRunBudgetTest(t, dir, "config", "user.name", "budget-test")
+	gitRunBudgetTest(t, dir, "config", "commit.gpgsign", "false")
+
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("x\n"), 0o644); err != nil {
+		t.Fatalf("write README.md: %v", err)
+	}
+	// PreExisting.go lives in BOTH commits, untouched — G10's own
+	// regression fixture: a caller that collected symbols over the WHOLE
+	// tree instead of the spec's own delta would wrongly see this symbol
+	// as newly created at HEAD, since it was never told to look for it at
+	// base either.
+	if err := os.MkdirAll(filepath.Join(dir, "internal/untouched"), 0o755); err != nil {
+		t.Fatalf("mkdir internal/untouched: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "internal/untouched/pre.go"), []byte("package untouched\n\nfunc PreExisting() int { return 1 }\n"), 0o644); err != nil {
+		t.Fatalf("write pre.go: %v", err)
+	}
+	gitRunBudgetTest(t, dir, "add", ".")
+	gitRunBudgetTest(t, dir, "commit", "-m", "base")
+	base = strings.TrimSpace(gitRunBudgetTest(t, dir, "rev-parse", "HEAD"))
+
+	if newDir != "" {
+		if err := os.MkdirAll(filepath.Join(dir, newDir), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", newDir, err)
+		}
+		var body strings.Builder
+		body.WriteString("package fixture\n\n")
+		for i := 0; i < newFuncCount; i++ {
+			body.WriteString("func Created")
+			body.WriteString(string(rune('A' + i)))
+			body.WriteString("() int { return 1 }\n\n")
+		}
+		if err := os.WriteFile(filepath.Join(dir, newDir, "new.go"), []byte(body.String()), 0o644); err != nil {
+			t.Fatalf("write new.go: %v", err)
+		}
+		gitRunBudgetTest(t, dir, "add", ".")
+		gitRunBudgetTest(t, dir, "commit", "-m", "head")
+	}
+	return dir, base
+}
+
+// writeBudgetDoc writes budget.toml at the exact path specDocPath resolves
+// for (workflowDir, project, id, kind=budget).
+func writeBudgetDoc(t *testing.T, workflowDir, project, id, content string) {
+	t.Helper()
+	path, err := specDocPath(workflowDir, project, id, model.SpecDocKindBudget)
+	if err != nil {
+		t.Fatalf("specDocPath: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write budget.toml: %v", err)
+	}
+}
+
+// findBudgetCheck locates a (kind, name) row in checks or fails the test —
+// named distinctly from criteria_test.go's own findCheck(checks, kind,
+// name) (no *testing.T parameter), so the two coexist without a signature
+// clash.
+func findBudgetCheck(t *testing.T, checks []*model.QualityCheck, kind, name string) *model.QualityCheck {
+	t.Helper()
+	for _, c := range checks {
+		if c.Kind == kind && c.Name == name {
+			return c
+		}
+	}
+	t.Fatalf("no %s/%s row in %+v", kind, name, checks)
+	return nil
+}
+
+// budgetTestConstitution returns a Constitution with [budget] declared and
+// enabled, and the given test_globs/test_reach_depth.
+func budgetTestConstitution() *quality.Constitution {
+	return &quality.Constitution{
+		SchemaVersion: 4, BudgetDeclared: true,
+		Budget: quality.BudgetConfig{Enabled: true, TestReachDepth: 3, TestGlobs: []string{"**/*_test.go"}},
+	}
+}
+
+// TestRunBudgetChecks_SkipReasons covers the uniform-skip causes: an
+// earlier gate failure, workflowDir unset (D15, NEVER a fallback — G30),
+// schema<4 (apagado por omision), and enabled=false (apagado por
+// decision) — all 12 rows skipped, never silently omitted.
+func TestRunBudgetChecks_SkipReasons(t *testing.T) {
+	spec := &model.Spec{ID: "SPEC-001", Project: "wirvii/mneme", Lane: model.LaneStandard}
+	g := &quality.Git{RepoDir: t.TempDir()}
+
+	tests := []struct {
+		name         string
+		svc          *QualityService
+		constitution *quality.Constitution
+		gatesStopped bool
+	}{
+		{
+			name:         "gate cascade stopped",
+			svc:          &QualityService{workflowDir: "/somewhere"},
+			constitution: budgetTestConstitution(),
+			gatesStopped: true,
+		},
+		{
+			name:         "workflowDir unset (G30: no fallback)",
+			svc:          &QualityService{workflowDir: ""},
+			constitution: budgetTestConstitution(),
+		},
+		{
+			name:         "schema < 4 (budget not declared)",
+			svc:          &QualityService{workflowDir: "/somewhere"},
+			constitution: &quality.Constitution{SchemaVersion: 3, BudgetDeclared: false},
+		},
+		{
+			name:         "budget.enabled = false",
+			svc:          &QualityService{workflowDir: "/somewhere"},
+			constitution: &quality.Constitution{SchemaVersion: 4, BudgetDeclared: true, Budget: quality.BudgetConfig{Enabled: false}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			checks, pure, err := tt.svc.runBudgetChecks(context.Background(), g, tt.constitution, spec, tt.gatesStopped)
+			if err != nil {
+				t.Fatalf("runBudgetChecks: %v", err)
+			}
+			if len(checks) != 12 || len(pure) != 12 {
+				t.Fatalf("len(checks)=%d len(pure)=%d, want 12 each", len(checks), len(pure))
+			}
+			for _, c := range checks {
+				if c.Status != "skipped" {
+					t.Errorf("%s/%s status = %q, want skipped", c.Kind, c.Name, c.Status)
+				}
+			}
+		})
+	}
+}
+
+// TestRunBudgetChecks_BudgetDocMissing covers row 1 = fail, rows 2-12
+// skipped, when budget.toml does not exist.
+func TestRunBudgetChecks_BudgetDocMissing(t *testing.T) {
+	workflowDir := t.TempDir()
+	svc := &QualityService{workflowDir: workflowDir, graphFacts: &noopGraphFacts{}}
+	spec := &model.Spec{ID: "SPEC-001", Project: "wirvii/mneme", Lane: model.LaneStandard, BaseSHA: "deadbeef"}
+	g := &quality.Git{RepoDir: t.TempDir()}
+
+	checks, _, err := svc.runBudgetChecks(context.Background(), g, budgetTestConstitution(), spec, false)
+	if err != nil {
+		t.Fatalf("runBudgetChecks: %v", err)
+	}
+	declared := findBudgetCheck(t, checks, "budget", "declared")
+	if declared.Status != "fail" {
+		t.Errorf("budget/declared status = %q, want fail", declared.Status)
+	}
+	for _, c := range checks[1:] {
+		if c.Status != "skipped" {
+			t.Errorf("%s/%s status = %q, want skipped", c.Kind, c.Name, c.Status)
+		}
+	}
+}
+
+// TestRunBudgetChecks_BaseUnknown covers row 2 = finding "base-unknown",
+// rows 3-12 skipped, when spec.BaseSHA is empty.
+func TestRunBudgetChecks_BaseUnknown(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found in PATH")
+	}
+	dir, _ := budgetTestFixture(t, "", 0)
+	workflowDir := t.TempDir()
+	writeBudgetDoc(t, workflowDir, "wirvii/mneme", "SPEC-001", `
+schema_version = 1
+margin = 0
+radius = ["**"]
+`)
+	svc := &QualityService{workflowDir: workflowDir, repoDir: dir, graphFacts: &noopGraphFacts{}}
+	spec := &model.Spec{ID: "SPEC-001", Project: "wirvii/mneme", Lane: model.LaneStandard, BaseSHA: ""}
+	g := &quality.Git{RepoDir: dir}
+
+	checks, _, err := svc.runBudgetChecks(context.Background(), g, budgetTestConstitution(), spec, false)
+	if err != nil {
+		t.Fatalf("runBudgetChecks: %v", err)
+	}
+	declared := findBudgetCheck(t, checks, "budget", "declared")
+	if declared.Status != "pass" {
+		t.Errorf("budget/declared status = %q, want pass", declared.Status)
+	}
+	symbolDelta := findBudgetCheck(t, checks, "budget", "symbol-delta")
+	if symbolDelta.Status != "finding" || !strings.Contains(symbolDelta.Summary, "base-unknown") {
+		t.Errorf("budget/symbol-delta = %+v, want finding naming base-unknown", symbolDelta)
+	}
+	for _, name := range []string{"graph-index", "revision"} {
+		c := findBudgetCheck(t, checks, "budget", name)
+		if c.Status != "skipped" {
+			t.Errorf("budget/%s status = %q, want skipped", name, c.Status)
+		}
+	}
+}
+
+// TestRunBudgetChecks_G6_BothRefsAreDifferent is THE most important
+// mutation guardian of the whole spec: with a real 2-commit repository
+// where HEAD created 3 new symbols against a quota of 1 (margin 0), the
+// certificate MUST fail — proving the delta was computed against the
+// spec's actual base, not HEAD twice (which would make the delta empty
+// and everything pass).
+func TestRunBudgetChecks_G6_BothRefsAreDifferent(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found in PATH")
+	}
+	dir, base := budgetTestFixture(t, "internal/x", 3)
+	workflowDir := t.TempDir()
+	writeBudgetDoc(t, workflowDir, "wirvii/mneme", "SPEC-001", `
+schema_version = 1
+margin = 0
+radius = ["**"]
+
+[[quota]]
+dir = "internal/x"
+max_new_symbols = 1
+`)
+	svc := &QualityService{workflowDir: workflowDir, repoDir: dir, graphFacts: &noopGraphFacts{}}
+	spec := &model.Spec{ID: "SPEC-001", Project: "wirvii/mneme", Lane: model.LaneStandard, BaseSHA: base}
+	g := &quality.Git{RepoDir: dir}
+
+	checks, _, err := svc.runBudgetChecks(context.Background(), g, budgetTestConstitution(), spec, false)
+	if err != nil {
+		t.Fatalf("runBudgetChecks: %v", err)
+	}
+
+	symbolDelta := findBudgetCheck(t, checks, "budget", "symbol-delta")
+	if symbolDelta.Status != "pass" {
+		t.Fatalf("budget/symbol-delta = %+v, want pass (base is knowable)", symbolDelta)
+	}
+	if !strings.Contains(symbolDelta.Detail, `"created":3`) {
+		t.Errorf("budget/symbol-delta detail = %q, want created:3 (3 new functions since base)", symbolDelta.Detail)
+	}
+
+	unbudgeted := findBudgetCheck(t, checks, "detection", "unbudgeted")
+	if unbudgeted.Status != "fail" {
+		t.Errorf("detection/unbudgeted status = %q, want fail (3 delivered against quota 1, margin 0)", unbudgeted.Status)
+	}
+}
+
+// TestRunBudgetChecks_G10_UntouchedFileNeverCollected is the regression
+// budgetTestFixture's PreExisting.go file exists to catch (G10): a symbol
+// living in a file that was NEVER part of the spec's own delta must never
+// appear in Created (or any bucket at all) — proving basePaths/headPaths
+// come exclusively from the delta, never from a whole-tree listing.
+func TestRunBudgetChecks_G10_UntouchedFileNeverCollected(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found in PATH")
+	}
+	dir, base := budgetTestFixture(t, "internal/x", 1)
+	workflowDir := t.TempDir()
+	writeBudgetDoc(t, workflowDir, "wirvii/mneme", "SPEC-001", `
+schema_version = 1
+margin = 5
+radius = ["**"]
+
+[[quota]]
+dir = "internal/x"
+max_new_symbols = 5
+`)
+	svc := &QualityService{workflowDir: workflowDir, repoDir: dir, graphFacts: &noopGraphFacts{}}
+	spec := &model.Spec{ID: "SPEC-001", Project: "wirvii/mneme", Lane: model.LaneStandard, BaseSHA: base}
+	g := &quality.Git{RepoDir: dir}
+
+	checks, _, err := svc.runBudgetChecks(context.Background(), g, budgetTestConstitution(), spec, false)
+	if err != nil {
+		t.Fatalf("runBudgetChecks: %v", err)
+	}
+	symbolDelta := findBudgetCheck(t, checks, "budget", "symbol-delta")
+	if !strings.Contains(symbolDelta.Detail, `"created":1`) {
+		t.Errorf("budget/symbol-delta detail = %q, want created:1 (PreExisting.go must never be collected)", symbolDelta.Detail)
+	}
+}
+
+// TestRunBudgetChecks_G22_OneRowPerDetection covers D8/AC17/G22: with THREE
+// orphaned symbols (all created, all with zero incoming edges under
+// noopGraphFacts), there must be EXACTLY ONE "detection/orphan" row, never
+// one per subject — the count lives in Summary/Detail, not in row count.
+func TestRunBudgetChecks_G22_OneRowPerDetection(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found in PATH")
+	}
+	dir, base := budgetTestFixture(t, "internal/x", 3)
+	workflowDir := t.TempDir()
+	writeBudgetDoc(t, workflowDir, "wirvii/mneme", "SPEC-001", `
+schema_version = 1
+margin = 5
+radius = ["**"]
+
+[[quota]]
+dir = "internal/x"
+max_new_symbols = 5
+`)
+	spec := &model.Spec{ID: "SPEC-001", Project: "wirvii/mneme", Lane: model.LaneStandard, BaseSHA: base}
+	g := &quality.Git{RepoDir: dir}
+
+	// A FRESH graph is required to reach the detection loop at all (rows
+	// 7-12 are skipped otherwise) — compute the real HEAD hash of the one
+	// changed file so noopGraphFacts reports it fresh.
+	content, ok, ferr := g.FileAtRef("HEAD", "internal/x/new.go")
+	if ferr != nil || !ok {
+		t.Fatalf("FileAtRef: ok=%v err=%v", ok, ferr)
+	}
+	sum := sha256.Sum256(content)
+	facts := &noopGraphFacts{contentHash: map[string]string{"internal/x/new.go": hex.EncodeToString(sum[:])}}
+	svc := &QualityService{workflowDir: workflowDir, repoDir: dir, graphFacts: facts}
+
+	checks, _, err := svc.runBudgetChecks(context.Background(), g, budgetTestConstitution(), spec, false)
+	if err != nil {
+		t.Fatalf("runBudgetChecks: %v", err)
+	}
+
+	orphanRows := 0
+	for _, c := range checks {
+		if c.Kind == "detection" && c.Name == "orphan" {
+			orphanRows++
+		}
+	}
+	if orphanRows != 1 {
+		t.Fatalf("orphan rows = %d, want exactly 1 (D8's own rule: one row per detection, not per subject)", orphanRows)
+	}
+	orphan := findBudgetCheck(t, checks, "detection", "orphan")
+	if !strings.Contains(orphan.Detail, `"count":3`) {
+		t.Errorf("detection/orphan detail = %q, want count:3", orphan.Detail)
+	}
+}
+
+// TestRunBudgetChecks_OutOfRadius covers row 6: a changed file outside the
+// declared radius fails, independent of the margin (G14).
+func TestRunBudgetChecks_OutOfRadius(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found in PATH")
+	}
+	dir, base := budgetTestFixture(t, "internal/x", 1)
+	workflowDir := t.TempDir()
+	writeBudgetDoc(t, workflowDir, "wirvii/mneme", "SPEC-001", `
+schema_version = 1
+margin = 5
+radius = ["internal/other/**"]
+
+[[quota]]
+dir = "internal/x"
+max_new_symbols = 5
+`)
+	svc := &QualityService{workflowDir: workflowDir, repoDir: dir, graphFacts: &noopGraphFacts{}}
+	spec := &model.Spec{ID: "SPEC-001", Project: "wirvii/mneme", Lane: model.LaneStandard, BaseSHA: base}
+	g := &quality.Git{RepoDir: dir}
+
+	checks, _, err := svc.runBudgetChecks(context.Background(), g, budgetTestConstitution(), spec, false)
+	if err != nil {
+		t.Fatalf("runBudgetChecks: %v", err)
+	}
+	outOfRadius := findBudgetCheck(t, checks, "detection", "out-of-radius")
+	if outOfRadius.Status != "fail" {
+		t.Errorf("detection/out-of-radius status = %q, want fail (margin=5 must not save it, G14)", outOfRadius.Status)
+	}
+	unbudgeted := findBudgetCheck(t, checks, "detection", "unbudgeted")
+	if unbudgeted.Status != "pass" {
+		t.Errorf("detection/unbudgeted status = %q, want pass (1 delivered against quota 5)", unbudgeted.Status)
+	}
+}
+
+// TestRunBudgetChecks_GraphFreshness covers AC18's shape end to end: nil
+// graphFacts -> row 3 finding, six graph rows skipped, never pass (G21);
+// a fresh graph (all content hashes matching HEAD) -> row 3 pass, six
+// graph rows evaluated (pass, since noopGraphFacts reports no edges at
+// all — an orphan every time, but never a fail).
+func TestRunBudgetChecks_GraphFreshness(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found in PATH")
+	}
+	dir, base := budgetTestFixture(t, "internal/x", 1)
+	workflowDir := t.TempDir()
+	writeBudgetDoc(t, workflowDir, "wirvii/mneme", "SPEC-001", `
+schema_version = 1
+margin = 5
+radius = ["**"]
+
+[[quota]]
+dir = "internal/x"
+max_new_symbols = 5
+`)
+	spec := &model.Spec{ID: "SPEC-001", Project: "wirvii/mneme", Lane: model.LaneStandard, BaseSHA: base}
+	g := &quality.Git{RepoDir: dir}
+
+	t.Run("nil graphFacts", func(t *testing.T) {
+		svc := &QualityService{workflowDir: workflowDir, repoDir: dir, graphFacts: nil}
+		checks, _, err := svc.runBudgetChecks(context.Background(), g, budgetTestConstitution(), spec, false)
+		if err != nil {
+			t.Fatalf("runBudgetChecks: %v", err)
+		}
+		graphIndex := findBudgetCheck(t, checks, "budget", "graph-index")
+		if graphIndex.Status != "finding" {
+			t.Errorf("budget/graph-index status = %q, want finding", graphIndex.Status)
+		}
+		for _, name := range graphDetectionNames {
+			c := findBudgetCheck(t, checks, "detection", name)
+			if c.Status != "skipped" {
+				t.Errorf("detection/%s status = %q, want skipped (never pass, G21)", name, c.Status)
+			}
+		}
+	})
+
+	t.Run("fresh graph", func(t *testing.T) {
+		// Compute the real HEAD content hash for the one new file so
+		// noopGraphFacts reports it as indexed and matching.
+		content, ok, err := g.FileAtRef("HEAD", "internal/x/new.go")
+		if err != nil || !ok {
+			t.Fatalf("FileAtRef: ok=%v err=%v", ok, err)
+		}
+		sum := sha256.Sum256(content)
+		facts := &noopGraphFacts{contentHash: map[string]string{"internal/x/new.go": hex.EncodeToString(sum[:])}}
+		svc := &QualityService{workflowDir: workflowDir, repoDir: dir, graphFacts: facts}
+
+		checks, _, err := svc.runBudgetChecks(context.Background(), g, budgetTestConstitution(), spec, false)
+		if err != nil {
+			t.Fatalf("runBudgetChecks: %v", err)
+		}
+		graphIndex := findBudgetCheck(t, checks, "budget", "graph-index")
+		if graphIndex.Status != "pass" {
+			t.Errorf("budget/graph-index status = %q, want pass", graphIndex.Status)
+		}
+		// noopGraphFacts reports ZERO incoming edges and ZERO test
+		// reachability for everything — which is the CORRECT, honest
+		// answer for a genuinely new symbol with no callers indexed yet:
+		// orphan and untested-reach must fire (there really are no
+		// callers), while test-only/dead/single-use-indirection/
+		// reinvention all require at least one candidate edge to have
+		// anything to report, so they stay pass.
+		wantStatus := map[string]string{
+			"orphan":                 "finding",
+			"test-only":              "pass",
+			"dead":                   "pass",
+			"single-use-indirection": "pass",
+			"reinvention":            "pass",
+			"untested-reach":         "finding",
+		}
+		for _, name := range graphDetectionNames {
+			c := findBudgetCheck(t, checks, "detection", name)
+			if c.Status != wantStatus[name] {
+				t.Errorf("detection/%s status = %q, want %q", name, c.Status, wantStatus[name])
+			}
+		}
+	})
+}
+
+// TestRunBudgetChecks_Revision covers row 4: no [revision] -> pass; a
+// present [revision] -> finding, with the three figures and the
+// declaration verbatim in Detail.
+func TestRunBudgetChecks_Revision(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found in PATH")
+	}
+	dir, base := budgetTestFixture(t, "internal/x", 1)
+	workflowDir := t.TempDir()
+	writeBudgetDoc(t, workflowDir, "wirvii/mneme", "SPEC-001", `
+schema_version = 1
+margin = 5
+radius = ["**"]
+
+[[quota]]
+dir = "internal/x"
+max_new_symbols = 5
+
+[revision]
+by = "architect"
+at = "2026-08-14T09:12:00Z"
+rationale = "wiring exigio mas simbolos"
+margin = 6
+  [[revision.quota]]
+  dir = "internal/x"
+  max_new_symbols = 7
+`)
+	svc := &QualityService{workflowDir: workflowDir, repoDir: dir, graphFacts: &noopGraphFacts{}}
+	spec := &model.Spec{ID: "SPEC-001", Project: "wirvii/mneme", Lane: model.LaneStandard, BaseSHA: base}
+	g := &quality.Git{RepoDir: dir}
+
+	checks, _, err := svc.runBudgetChecks(context.Background(), g, budgetTestConstitution(), spec, false)
+	if err != nil {
+		t.Fatalf("runBudgetChecks: %v", err)
+	}
+	revision := findBudgetCheck(t, checks, "budget", "revision")
+	if revision.Status != "finding" {
+		t.Errorf("budget/revision status = %q, want finding", revision.Status)
+	}
+	if !strings.Contains(revision.Detail, "architect") || !strings.Contains(revision.Detail, "wiring exigio mas simbolos") {
+		t.Errorf("budget/revision detail = %q, want it to name the revision verbatim", revision.Detail)
+	}
+	// AC12/G13: "revised" is a NUMBER (the revised quota total, 7) now
+	// that a revision with its own [[revision.quota]] exists.
+	if !strings.Contains(revision.Detail, `"revised":7`) {
+		t.Errorf("budget/revision detail = %q, want \"revised\":7 (the revised quota total)", revision.Detail)
+	}
+}
+
+// TestRunBudgetChecks_Revision_NoneIsRevisedNull covers AC12's first row:
+// without [revision], the detail's "revised" key is present as JSON null
+// — never omitted (G13) — so a caller can tell "no revision" from "a
+// revision this parser somehow failed to read".
+func TestRunBudgetChecks_Revision_NoneIsRevisedNull(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found in PATH")
+	}
+	dir, base := budgetTestFixture(t, "internal/x", 1)
+	workflowDir := t.TempDir()
+	writeBudgetDoc(t, workflowDir, "wirvii/mneme", "SPEC-001", `
+schema_version = 1
+margin = 5
+radius = ["**"]
+
+[[quota]]
+dir = "internal/x"
+max_new_symbols = 5
+`)
+	svc := &QualityService{workflowDir: workflowDir, repoDir: dir, graphFacts: &noopGraphFacts{}}
+	spec := &model.Spec{ID: "SPEC-001", Project: "wirvii/mneme", Lane: model.LaneStandard, BaseSHA: base}
+	g := &quality.Git{RepoDir: dir}
+
+	checks, _, err := svc.runBudgetChecks(context.Background(), g, budgetTestConstitution(), spec, false)
+	if err != nil {
+		t.Fatalf("runBudgetChecks: %v", err)
+	}
+	revision := findBudgetCheck(t, checks, "budget", "revision")
+	if revision.Status != "pass" {
+		t.Errorf("budget/revision status = %q, want pass", revision.Status)
+	}
+	if !strings.Contains(revision.Detail, `"revised":null`) {
+		t.Errorf("budget/revision detail = %q, want the literal key \"revised\":null present", revision.Detail)
 	}
 }

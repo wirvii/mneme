@@ -68,6 +68,14 @@ type QualityService struct {
 	// between them (the SAME seam-injection pattern as Runner, D14 of
 	// S1).
 	docWriter func(ctx context.Context, req model.SpecDocWriteRequest) (*model.SpecDocWriteResponse, error)
+
+	// graphFacts is the injected seam runBudgetChecks reads the indexed
+	// code graph through (SPEC-118 D15) — production wires it over an
+	// already-open codegraph.Store (graphFactsAdapter); tests use a fake.
+	// Nil is the safe-by-default state: row budget/graph-index becomes a
+	// finding and the six graph detections are skipped, NEVER a pass by
+	// omission (G21).
+	graphFacts quality.GraphFacts
 }
 
 // QualityOption configures a QualityService at construction time.
@@ -95,6 +103,15 @@ func WithWorkflowDir(dir string) QualityOption {
 // cycle and no construction-order dependency between the two services.
 func WithDocWriter(w func(ctx context.Context, req model.SpecDocWriteRequest) (*model.SpecDocWriteResponse, error)) QualityOption {
 	return func(s *QualityService) { s.docWriter = w }
+}
+
+// WithGraphFacts injects the seam runBudgetChecks reads the indexed code
+// graph through (SPEC-118 D15). Exported and, until P14 wires it at
+// initQualityService, without any production caller — an exported symbol
+// of an internal/* package is never reported by `unused` (R-A), the same
+// posture WithWorkflowDir already established in S3.
+func WithGraphFacts(f quality.GraphFacts) QualityOption {
+	return func(s *QualityService) { s.graphFacts = f }
 }
 
 // NewQualityService constructs a QualityService. runner may be nil in a
@@ -149,8 +166,11 @@ func (svc *QualityService) Verify(ctx context.Context, req model.QualityVerifyRe
 	if err != nil {
 		return nil, fmt.Errorf("service: quality: verify: get spec: %w", err)
 	}
-	if spec.Status != model.SpecStatusImplementing && spec.Status != model.SpecStatusQA {
-		return nil, fmt.Errorf("service: quality: verify: spec %s is %s, must be implementing or qa: %w",
+	// SPEC-118 V16/D12: `audit` joins implementing/qa — the trivial lane's
+	// absorbed route (P12) verifies from that status. One extra condition,
+	// nothing else in this function changes.
+	if spec.Status != model.SpecStatusImplementing && spec.Status != model.SpecStatusQA && spec.Status != model.SpecStatusAudit {
+		return nil, fmt.Errorf("service: quality: verify: spec %s is %s, must be implementing, qa, or audit: %w",
 			spec.ID, spec.Status, model.ErrInvalidTransition)
 	}
 
@@ -307,6 +327,15 @@ func (svc *QualityService) runAllChecks(
 	}
 	checks = append(checks, criteriaChecks...)
 	pure = append(pure, criteriaPure...)
+
+	// SPEC-118: the budget rows land AFTER the criteria, respecting the
+	// SAME "a required gate already failed" cascade every stage shares.
+	budgetChecks, budgetPure, err := svc.runBudgetChecks(ctx, g, constitution, spec, gatesStopped)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	checks = append(checks, budgetChecks...)
+	pure = append(pure, budgetPure...)
 
 	return checks, pure, dirty, nil
 }

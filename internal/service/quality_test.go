@@ -277,9 +277,10 @@ func TestQualityService_Verify_HappyPath_Pass(t *testing.T) {
 	// 1 tree + 3 constitution + 2 gates + 3 coverage + 4 ratchet
 	// (schema_version=1, SPEC-116: all 7 skipped — [coverage]/[ratchet]
 	// are not even declared) + 3 criteria (SPEC-117: skipped — this
-	// service was never given WithWorkflowDir) = 16.
-	if len(checks) != 16 {
-		t.Fatalf("len(checks) = %d, want 16: %+v", len(checks), checks)
+	// service was never given WithWorkflowDir) + 12 budget (SPEC-118:
+	// skipped — same reason) = 28.
+	if len(checks) != 28 {
+		t.Fatalf("len(checks) = %d, want 28: %+v", len(checks), checks)
 	}
 }
 
@@ -481,8 +482,8 @@ func TestQualityService_Status_WithCertificate(t *testing.T) {
 	if resp.LatestCertificate == nil || resp.LatestCertificate.ID != cert.ID {
 		t.Fatalf("LatestCertificate = %+v, want id=%s", resp.LatestCertificate, cert.ID)
 	}
-	if len(resp.Checks) != 16 {
-		t.Errorf("len(Checks) = %d, want 16 (SPEC-116 adds 3 skipped coverage + 4 skipped ratchet rows; SPEC-117 adds 3 skipped criteria rows)", len(resp.Checks))
+	if len(resp.Checks) != 28 {
+		t.Errorf("len(Checks) = %d, want 28 (SPEC-116 adds 3 skipped coverage + 4 skipped ratchet rows; SPEC-117 adds 3 skipped criteria rows; SPEC-118 adds 12 skipped budget rows)", len(resp.Checks))
 	}
 }
 
