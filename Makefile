@@ -1,7 +1,7 @@
 # Makefile for mneme — pure-Go CLI (SQLite via modernc.org/sqlite, FTS5 built
 # in by default). No CGO, no C compiler, no build tags required.
 
-.PHONY: build install test test-race clean setup release-local
+.PHONY: build install test test-race coverage clean setup release-local
 
 # TEST_HOME sandboxes HOME/USERPROFILE for the test suite (SPEC-085 G2): tests
 # must never resolve the real ~/.mneme (or the real shared team-memory vault
@@ -38,6 +38,17 @@ test-race:
 	@mkdir -p "$(TEST_HOME)"
 	$(TEST_ENV) go test -race ./...
 	@TEST_HOME="$(TEST_HOME)" ./scripts/testguard.sh
+
+# coverage produces this repository's own go-cover profile (SPEC-116
+# EPIC-calidad S2 D19) at tmp/coverage.out — ignored three times over by
+# .gitignore (*.out, coverage.*, tmp/). It MUST inherit $(TEST_ENV), exactly
+# like `test`/`test-race`: this command runs the ENTIRE suite, so without
+# the HOME/USERPROFILE sandbox it would write into the real
+# ~/.mneme/projects/*.db and the real team-memory vault — the SPEC-085
+# disaster, this time via `mneme quality verify`'s own declared command.
+coverage:
+	@mkdir -p "$(TEST_HOME)"
+	$(TEST_ENV) go test -coverprofile=tmp/coverage.out -covermode=count ./...
 
 clean:
 	rm -f mneme

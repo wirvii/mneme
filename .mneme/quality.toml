@@ -2,12 +2,12 @@
 # Versionada y revisable en PR: la calidad es parte del código.
 # mneme NO tiene valores por defecto para nada de este fichero.
 #
-# enabled=false a propósito (SPEC-115 R4/P13): encender el mecanismo antes de
-# que S2..S6 estén implementadas, o antes de que el owner lo decida
-# explícitamente, es una decisión fuera del alcance de esta spec. Ver
-# docs/quality.md.
+# enabled=false a propósito (SPEC-115 R4/P13, reafirmado en SPEC-116 D16):
+# encender el mecanismo — gates o cobertura/cliquet — antes de que S3..S6
+# estén implementadas, o antes de que el owner lo decida explícitamente, es
+# una decisión fuera del alcance de esta spec. Ver docs/quality.md.
 
-schema_version = 1
+schema_version = 2
 
 # El interruptor. Mientras sea false el mecanismo NO bloquea nada.
 enabled = false
@@ -35,3 +35,48 @@ name = "lint"
 command = ["golangci-lint", "run"]
 timeout = "5m"
 required = true
+
+[coverage]
+# SPEC-116 (EPIC-calidad S2): la cobertura de las lineas cambiadas por una
+# spec. Apagado a proposito — encenderlo es una decision posterior del
+# owner, la misma postura de D16.
+enabled = false
+
+# go-cover: el perfil nativo de `go test -coverprofile`, sin conversion.
+format = "go-cover"
+
+# El comando real de este repositorio — declarado y ya funcional, aunque el
+# mecanismo este apagado.
+command = ["make", "coverage"]
+
+# Donde `make coverage` deja el perfil (Makefile). Ignorado tres veces por
+# .gitignore (*.out, coverage.*, tmp/) — requisito de D12.
+profile_path = "tmp/coverage.out"
+
+timeout = "20m"
+
+# 80 y no 100: codigo de arranque y rutas de error hacen que 100 sea
+# irreal y entrena a bajar el numero (D13 del grill).
+min_diff_line_pct = 80.0
+
+# Por debajo de este numero de lineas elegibles la comprobacion se salta —
+# ver docs/quality.md para la aritmetica que fija este suelo.
+min_changed_lines = 5
+
+exclude = []
+
+[ratchet]
+# El cliquet: la cobertura global de este repositorio no puede caer sin
+# firma. Requiere [coverage].enabled = true — sigue apagado aqui.
+enabled = false
+
+# Caida tolerada, en puntos porcentuales, respecto a la linea base.
+max_global_line_pct_drop = 0.0
+
+# Cuanto puede la medicion superar la marca antes de declararla obsoleta
+# (D17). Debe ser >= max_global_line_pct_drop.
+max_baseline_staleness_pct = 1.0
+
+# NO se commitea .mneme/quality-baseline.toml: no hay medicion registrada
+# todavia, y un fichero con cifras inventadas seria el peor arranque
+# posible para un mecanismo que existe para que nadie teclee cifras (D16).
