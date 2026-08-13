@@ -1,0 +1,11 @@
+{
+  "schema": "mutants-v1",
+  "mutants": [
+    {"file": "internal/example/a.go", "line": 10, "column": 5, "mutator": "arithmetic", "status": "killed"},
+    {"file": "internal/example/a.go", "line": 20, "column": 5, "mutator": "conditional", "status": "lived"},
+    {"file": "internal/example/b.go", "line": 5, "column": 1, "mutator": "arithmetic", "status": "not_viable"},
+    {"file": "internal/example/b.go", "line": 15, "column": 1, "mutator": "conditional", "status": "not_covered"},
+    {"file": "internal/example/c.go", "line": 3, "column": 8, "mutator": "arithmetic", "status": "timed_out"},
+    {"file": "internal/example/c.go", "line": 9, "column": 8, "mutator": "conditional", "status": "skipped"}
+  ]
+}
