@@ -87,14 +87,14 @@ func TestLeafPackage_OnlyImportsStdlibAndTOML(t *testing.T) {
 // pureSourceFiles are the source-of-truth-free files that must NEVER shell
 // out — the criteria vocabulary (SPEC-117) and the budget/symbol-delta
 // machinery (SPEC-118 S4) are pure functions of already-collected tree
-// facts; all I/O of any kind belongs in git.go, and ONLY git.go. budget.go
-// and symbols.go join in P1/P3; budgeteval.go and detections.go join once
-// P4/P5 land, completing AC1's full four-file list — build.ImportDir
-// aggregates the WHOLE package's imports (G1b), so the eventual mutation
-// must touch all four SPEC-118 files at once, not one.
+// facts; all I/O of any kind belongs in git.go, and ONLY git.go. Now
+// complete with all four SPEC-118 files (budget.go/symbols.go/
+// budgeteval.go/detections.go, P1/P3/P4/P5) — build.ImportDir aggregates
+// the WHOLE package's imports (G1b), so the mutation that proves this
+// guard is not vacuous must touch all four at once, not just one.
 var pureSourceFiles = []string{
 	"criteria.go", "evaluate.go", "report.go",
-	"budget.go", "symbols.go",
+	"budget.go", "symbols.go", "budgeteval.go", "detections.go",
 }
 
 // TestPureFiles_NeverImportOSExec is AC1's negative hermana: proof, not
