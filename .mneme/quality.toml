@@ -2,13 +2,15 @@
 # Versionada y revisable en PR: la calidad es parte del código.
 # mneme NO tiene valores por defecto para nada de este fichero.
 #
-# enabled=false a propósito (SPEC-115 R4/P13, reafirmado en SPEC-116 D16 y
-# SPEC-117 D16): encender el mecanismo — gates, cobertura/cliquet o
-# criterios — antes de que S4..S6 estén implementadas, o antes de que el
-# owner lo decida explícitamente, es una decisión fuera del alcance de
-# esta spec. Ver docs/quality.md.
+# enabled=false a propósito (SPEC-115 R4/P13, reafirmado en SPEC-116 D16,
+# SPEC-117 D16 y SPEC-118 D20): encender el mecanismo — gates, cobertura/
+# cliquet, criterios o presupuesto — antes de que S5/S6 estén implementadas,
+# o antes de que el owner lo decida explícitamente, es una decisión fuera
+# del alcance de esta spec. ATENCIÓN (SPEC-118 D12): encender [budget]
+# activa TAMBIÉN el certificado para la lane TRIVIAL — a partir de ahí
+# `mneme lane audit` exige certificado. Ver docs/quality.md y docs/lanes.md.
 
-schema_version = 3
+schema_version = 4
 
 # El interruptor. Mientras sea false el mecanismo NO bloquea nada.
 enabled = false
@@ -100,3 +102,22 @@ max_manual_pct = 25.0
 # Cupo de criterios que usan la ESCOTILLA de comando libre. Existe por el
 # mismo motivo: sin el, la escotilla se traga el vocabulario cerrado.
 max_command_pct = 30.0
+
+[budget]
+# SPEC-118 (EPIC-calidad S4): el presupuesto contra el grafo y la absorcion
+# de lane audit. Apagado a proposito, misma postura que D16 de S2/S3.
+# Encenderlo activa TAMBIEN el certificado para la lane TRIVIAL (D12).
+enabled = false
+
+# Cota de la fase de presupuesto completa: lectura de blobs, extraccion de
+# simbolos y consultas al grafo. NO ejecuta ningun comando de este proyecto.
+timeout = "2m"
+
+# Los ficheros que NO cuentan contra el presupuesto y que SI cuentan como
+# "llamador de test" para la deteccion solo-tests. UNA sola lista para las
+# dos cosas (D6.2).
+test_globs = ["**/*_test.go"]
+
+# Cuantos saltos de indireccion se aceptan como "un test lo alcanza".
+# 1 = solo llamada directa desde un test.
+test_reach_depth = 3
