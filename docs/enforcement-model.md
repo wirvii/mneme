@@ -253,6 +253,44 @@ that entregable belongs to. See `docs/HOOKS.md`'s own "Lifecycle-tool
 denial" section for the exact block message and `docs/subagents.md` for
 `mneme subagents regen` (the remediation the message names).
 
+### Role-scoped tool denial (SPEC-117 D11)
+
+A THIRD map, `roleScopedTools` (`internal/cli/hook.go`), sits right next
+to `lifecycleTools` and is evaluated immediately after it, with a
+different shape: instead of an unconditional block, it restricts one tool
+to exactly ONE subagent role.
+
+| Tool | Required role | Result |
+|---|---|---|
+| `mcp__mneme__quality_sign` | `qa-tester` | **ALLOW** only for that role; **BLOCK** for every other resolved role |
+
+Why this tool needs its own rule: `quality_sign` is a qa-tester's
+ATTESTATION that an acceptance criterion genuinely holds (SPEC-117 S3
+D11) — letting any other subagent invoke it would let the author of a
+change certify their own work, exactly what the mechanism exists to
+prevent.
+
+**This is the first rule in the repo that fails CLOSED.** Every other
+rule described on this page — subagent containment, lifecycle-tool
+denial — fails OPEN when a subagent's role cannot be resolved
+(`RoleSource=="unresolved"`): the containment loses its signal and warns
+loudly, but the call is still allowed. `roleScopedTools` does the
+opposite on purpose: `RoleSource=="unresolved"` **denies** the call. A
+signature whose signer cannot even be identified is worse than no
+signature at all — SPEC-086's fail-open existed to avoid blocking
+legitimate work, never to let anyone sign. The escape hatch is a human
+using the CLI (`mneme quality sign`), which never passes through this
+hook.
+
+The check runs in the SAME position as `lifecycleTools`'s (before the
+`delegationTools` filter, before the `RoleSource=="unresolved"`
+short-circuit that governs the OTHER rules) — `quality_sign` is an MCP
+tool name, never a file/Bash tool, so it would otherwise never reach a
+guard at all. A best-effort `enforcelog` event is recorded on block
+(`Reason: "role_scoped_tool_denied"`), same as the lifecycle-tool block;
+no discovery memory (the same "a contained subagent did not bypass SDD"
+reasoning).
+
 #### Inherent limits of Layer 2
 
 Layer 2 is designed to stop the **cooperative orchestrator** from accidentally

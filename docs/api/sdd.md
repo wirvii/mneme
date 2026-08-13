@@ -242,25 +242,35 @@ lane) or `rationale` (trivial lane).
 
 ### spec_doc_write
 
-Write a spec entregable (`spec`/`plan`/`qa-report`/`changes`) to its
-workflow directory (SPEC-087 D3) — the path a subagent uses instead of
-copying its report into the workflow directory by hand. The destination
-directory and filename are never caller-supplied: the directory is derived
-from the persisted spec record (`spec.Project`, via `GetSpec`) and the
-filename comes from a closed, Go-authored `kind -> filename` map
-(`spec` → `spec.md`, `plan` → `plan.md`, `qa-report` → `qa-report.md`,
-`changes` → `changes.md`). 0644, parent directories created as needed, plain
+Write a spec entregable (`spec`/`plan`/`qa-report`/`changes`/`criteria`) to
+its workflow directory (SPEC-087 D3, `criteria` added by SPEC-117 S3 D1) —
+the path a subagent uses instead of copying its report into the workflow
+directory by hand. The destination directory and filename are never
+caller-supplied: the directory is derived from the persisted spec record
+(`spec.Project`, via `GetSpec`) and the filename comes from a closed,
+Go-authored `kind -> filename` map (`spec` → `spec.md`, `plan` → `plan.md`,
+`qa-report` → `qa-report.md`, `changes` → `changes.md`, `criteria` →
+`criteria.toml`). 0644, parent directories created as needed, plain
 overwrite-or-create — no append, no arbitrary read.
+
+**`kind = "criteria"` is validated BEFORE anything is written** (D7): the
+content is parsed as strict `criteria.toml` and, when the server's
+`repoDir` is configured, every `new = false` assertion's anchor is
+resolved against the real working tree. Any failure returns without
+writing a single byte — see [docs/quality.md](../quality.md#s3-executable-acceptance-criteria-spec-117)
+for the full vocabulary this validates against.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `id` | string | yes | Spec ID (e.g. `SPEC-001`) |
-| `kind` | string | yes | `spec`, `plan`, `qa-report`, or `changes` |
+| `kind` | string | yes | `spec`, `plan`, `qa-report`, `changes`, or `criteria` |
 | `content` | string | yes | Full document content, written verbatim |
 
 **Returns:** `{"path": "/abs/path/to/qa-report.md", "bytes": 1234, "created": true}`
 
-**Errors:** `-32602` unknown `kind`, missing fields. `-32000` spec not found.
+**Errors:** `-32602` unknown `kind`, missing fields, or (for `kind =
+"criteria"`) an invalid document / an unresolvable anchor. `-32000` spec
+not found.
 
 ### spec_list
 
@@ -403,7 +413,7 @@ audit-fail count and rate, override count, reclassify count.
 
 ---
 
-## Quality Tools (SPEC-115 EPIC-calidad S1, extended by SPEC-116 S2)
+## Quality Tools (SPEC-115 EPIC-calidad S1, extended by SPEC-116 S2 and SPEC-117 S3)
 
 The quality mechanism replaces an agent's self-reported "it works" with a
 result mneme produced by executing something, bound to the exact commit
@@ -415,11 +425,17 @@ timeout, and `spec_advance` is denied to subagents (see below), so an
 implementer could never verify its own work if verification only happened
 there.
 
-**SPEC-116 (S2) adds no new tool.** `quality_verify` now also emits up to
+**SPEC-116 (S2) added no new tool.** `quality_verify` also emits up to
 seven more `quality_checks` rows (`kind=coverage`/`ratchet`) when the
 constitution declares them; `quality_status`'s response gains the
 registered baseline's fields (below). `quality_ack` and its request/
 response shape are unchanged.
+
+**SPEC-117 (S3) adds two tools**, `quality_sign` and `quality_report` (82 →
+84): `quality_verify` also emits a `criteria/*`/`criterion*` set of rows
+when `[criteria]` is declared and enabled (see
+[docs/quality.md](../quality.md#s3-executable-acceptance-criteria-spec-117)),
+and `spec_doc_write`'s `kind` enum gains `"criteria"` (above).
 
 ### quality_verify
 
@@ -502,8 +518,56 @@ themselves of its own findings.
 
 **Returns:** `{"acked": true, "cert_id": "…", "seq": 1}`
 
-**Errors:** `-32602` missing `by`/`justification` (`ErrReasonRequired`).
-`-32000` no such certificate/finding at that seq (`ErrCertificateNotFound`).
+**Errors:** `-32602` missing `by`/`justification` (`ErrReasonRequired`), or
+the targeted row's `kind` starts with `"criterion"` (`ErrCriterionRequiresSign`
+— use `quality_sign` instead). `-32000` no such certificate/finding at that
+seq (`ErrCertificateNotFound`).
+
+### quality_sign
+
+Record a qa-tester's ATTESTATION that a criterion row genuinely holds
+(SPEC-117 S3 D11), converting it from `finding` to `acked`. Distinct from
+`quality_ack` (an ABSOLUTION): `ack` says "I approve this despite it being
+a problem", `sign` says "I verified this and it holds" — mixing the two
+verbs would make a count confuse "we forgave N findings" with "we
+verified M manuals". Only accepts rows whose `kind` starts with
+`"criterion"`. **Restricted to the `qa-tester` role** for a subagent
+caller, and **fails CLOSED** when that role cannot be resolved — the
+first rule in the repo to do so (see docs/quality.md).
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `cert_id` | string | yes | Certificate ID the criterion row belongs to |
+| `seq` | integer | yes | Seq of the criterion row within the certificate's checks |
+| `by` | string | yes | Who is signing — the qa-tester |
+| `evidence` | string | yes | What was verified and how (non-empty) |
+
+**Returns:** `{"signed": true, "cert_id": "…", "seq": 4}`
+
+**Errors:** `-32602` missing `by`/`evidence` (`ErrReasonRequired`), or the
+targeted row's `kind` does NOT start with `"criterion"`
+(`ErrNotACriterion`). `-32000` no such certificate/row at that seq
+(`ErrCertificateNotFound`).
+
+### quality_report
+
+Generate the QA report from the spec's latest certificate and write it
+via `spec_doc_write`'s `qa-report` kind (SPEC-117 S3 D12). Renders from
+the certificate's own persisted rows — **never** from `criteria.toml`, so
+editing that document after certifying cannot change what the report
+says. Deterministic: the same certificate always produces byte-identical
+output.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `id` | string | yes | Spec ID to generate the report for |
+| `force` | boolean | no | Overwrite an existing `qa-report.md` even if it lacks mneme's generation marker |
+
+**Returns:** `{"path": "/abs/path/to/qa-report.md", "bytes": 4096, "certificate_id": "…"}`
+
+**Errors:** `-32602` an existing `qa-report.md` lacks mneme's generation
+marker and `force` was not set (`ErrReportNotGenerated`). `-32000` spec or
+certificate not found.
 
 ### `mneme quality baseline update|show` (SPEC-116, CLI-only)
 

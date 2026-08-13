@@ -481,6 +481,266 @@ first place. **Reading** the baseline has full parity: `quality_status`
 reports its path, SHA, date, percentage, and staleness over MCP — an agent
 can see the problem and hand it to a human, which is its job.
 
+## S3: executable acceptance criteria (SPEC-117)
+
+The cheapest lie in the whole SDD flow: "the criterion is met" is a
+sentence in `spec.md`, and the evidence that it is met is another sentence
+in `qa-report.md`, written by an agent. An agent that did the work and one
+that did not produce the exact same pair of sentences. S3 replaces that
+pair with **a criterion declared in a closed vocabulary mneme itself
+understands, evaluated on the tree at HEAD and at the spec's base
+commit**, with a report generated from those evaluations instead of
+written by hand.
+
+### `criteria.toml`: where it lives, and the honest limit of that choice
+
+The architect writes a spec's criteria in `criteria.toml`, in the spec's
+**workflow directory** (`<workflow-dir>/<project>/specs/<ID>/criteria.toml`)
+— alongside `spec.md`/`plan.md` — via a fifth `spec_doc_write` kind,
+`"criteria"`. This is the architect's **only** write channel: it has no
+`Edit`/`Write`/`MultiEdit` (`internal/subagents/permissions.go`), so the
+criteria document cannot live in a repo file the architect would need to
+create directly, nor can the orchestrator or an implementer write it on
+the architect's behalf — that would be the exam graded by the examinee.
+
+**Said plainly, not hidden:** `criteria.toml` is **not versioned**. It does
+not appear in the PR's diff; a teammate or a CI checking out the branch
+does not have it. This is not a new gap this spec opens — the spec.md and
+the certificate itself are already host-side facts (the same limit S1's
+own design documents) — but it is bounded by three properties this spec
+does guarantee:
+
+1. **The certificate stores the declaration verbatim.** Every criterion
+   row's `detail` (JSON) carries its `mode`, `text`, and every assertion
+   key exactly as declared — the certificate never just says "14 criteria,
+   all green", it says which ones.
+2. **The report is generated from the certificate, never from the file**
+   (see below) — what a human reads always comes from the registry.
+3. **`quality_report` prints the criteria hash the certificate recorded**
+   alongside the constitution hash, so a caller who wants to double-check
+   can compare it against the current file's hash — a divergence after
+   certification is visible, not hidden (see "What this does NOT do (yet)"
+   below for the one gap this does not close).
+
+### The closed vocabulary: four verbs, all pure functions of a tree at a ref
+
+Every verb is evaluated against the **git object database directly** —
+`git ls-tree` for a file listing, `git grep` for a literal search — never
+a checkout, never a `git worktree`, never a build. This is what makes
+evaluating a criterion against the spec's base commit as cheap as
+evaluating it against HEAD: it is the exact same code, with a different
+ref.
+
+| Verb | Keys | Holds when |
+|---|---|---|
+| `file_exists` | `path`, `new` | `path` exists in the ref's tree |
+| `pattern_count` | `contains`, `in`, `word`, `comparator`, `count`, `new` | the number of **lines** containing `contains`, across the files in the ref matching `in`, satisfies `comparator count` |
+| `symbol_defined` | `symbol`, `in`, `new` | `symbol` appears as a **whole word** in at least one file matching `in` |
+| `symbol_referenced` | `symbol`, `defined_in`, `ignore`, `new` | at least one file **not** matching `defined_in` or `ignore` contains `symbol` as a whole word |
+
+Three deliberate limitations, documented so nobody is surprised by them:
+
+- **`-F`, never a regex.** `contains`/`symbol` are matched as **literal
+  strings**. `git grep`'s own regex dialect is not Go's; a misread
+  metacharacter would silently produce zero matches, and a criterion
+  asserting `comparator == "=="` with `count = 0` reads that as **green**
+  — the same family of trap as S2's empty-denominator bug. Expressiveness
+  is traded for a result that never depends on which git binary is
+  installed.
+- **`-w` is the only notion of "identifier".** `symbol_defined`/
+  `symbol_referenced` check that the name appears as a whole word in the
+  declared scope — a symbol named only in a comment counts. This is
+  **not** "the symbol is declared in the language's syntax", and
+  `symbol_referenced` is a **file-level** check, not a call-graph edge —
+  "the graph says this symbol's only callers are `_test.go`" is precise,
+  graph-backed, and belongs to S4.
+- **`-c` counts matching LINES, not occurrences.** Two hits on the same
+  line count once. `-c` is chosen over `-o` because it exists in every git
+  version that matters and because a declared, stable semantics is worth
+  more than a precision that depends on the installed binary.
+
+`in`/`defined_in`/`ignore` are **doublestar** globs (the repo's canonical
+glob engine, already used by `coverage.exclude`) — git is **never** handed
+a pathspec (BL-173): `ls-tree`/`grep` return the whole tree/all matches,
+and the glob filter runs in Go, identically for HEAD and for base.
+
+### The rule that gives it teeth: fail in base, or it proves nothing
+
+Borrowed from TDD: for every `mode = "assert"` criterion, mneme evaluates
+the same conjunction of assertions **twice** — once at HEAD, once at the
+spec's base commit (the **merge-base** of `spec.BaseSHA` and HEAD, never
+`BaseSHA` alone — a branch that merged `main` along the way must not
+attribute someone else's work to this spec).
+
+| Holds at HEAD | Holds at base | Row | Why |
+|---|---|---|---|
+| no | — | `fail` | the criterion is not met. Done. |
+| yes | **yes** | `finding` `vacuous` | it already held before the work — proves nothing |
+| yes | no | `pass` | the criterion distinguishes before from after |
+
+**Vacuous is a firmable finding, not a fail — on purpose.** A legitimate,
+common category exists: the **regression guardian**. "The trivial lane
+does not change" or "`ensureCertified` still requires pass" are real,
+valuable criteria, and vacuous by construction — their entire value is
+that they keep holding. Forcing `fail` here would force deleting
+non-regression criteria, which makes the repository worse. With
+`finding`, the author either rewrites the criterion so it distinguishes
+(the normal case), or **signs** that it is a deliberate regression
+guardian (see "Sign" below) — and signing does not silence it: it is
+recalculated on every `verify`, scoped to one certificate, and the author
+cannot sign their own.
+
+**When vacuity cannot be determined** (no `spec.BaseSHA`, or an
+unreachable merge-base — a shallow clone) the row is `finding`
+`base-unknown`. **Never `pass`**: "I could not check" and "I checked and
+it's fine" must never share a status.
+
+### `new`: the declare-time promise, and what breaks it
+
+Every assertion carries `new` (bool, required): a claim about its
+**anchor** (`file_exists`'s `path`, or the glob(s) in `in`/`defined_in`) —
+never about the searched content. It means "this anchor does not exist in
+the base commit yet".
+
+Checked at **both** ends:
+
+1. **At declare time** (`spec_doc_write` kind `criteria`): if `new =
+   false`, the anchor must resolve **today**, against the real working
+   tree — a `path` that exists, a glob matching at least one file.
+   Otherwise the write is refused, naming the anchor — this is the
+   SPEC-087 AC12 scar (`docs/api/mcp.md` named a file that never existed)
+   caught at the moment it would be written, not after. `new = true`
+   requires nothing: it is a promise to create it.
+2. **At `verify` time**: if `new = true`, mneme checks the BASE tree —
+   if the anchor already existed there, the row is `finding`
+   `anchor-not-new` (a more precise diagnosis than a generic `vacuous`:
+   the author declared one thing and the repository says another). And
+   the case that escapes (1) — a `new = true` path that is never actually
+   created — fails loudly at `verify`: `file_exists` simply does not hold
+   at HEAD.
+
+### The `command` escape hatch: always improbable, on purpose
+
+For the rest — anything the four verbs cannot express — a criterion may
+declare `mode = "command"`: an argv vector (validated by the exact same
+shared validator a gate's own `command` uses, so the rejection message is
+byte-identical) run **once, against HEAD only**, through the injected
+`Runner` — the same seam gates and `coverage.command` already use, never
+a second execution path.
+
+**In base it is never executed.** Running a project's build/test against
+an arbitrary older tree would require materializing it (`git worktree add`
++ install + build); the tree might not even build with today's toolchain,
+and a build failure there would be indistinguishable from a real
+regression. So: **a `command` criterion that passes at HEAD is ALWAYS**
+`finding` `vacuity-unprovable` — costing a signature every time. That cost
+is deliberate: it is what keeps the closed vocabulary the path of least
+resistance instead of the hatch swallowing it within a week.
+
+### The quotas: manual and command, both `fail`, never firmable
+
+`.mneme/quality.toml`'s `[criteria]` table declares two quotas, both a
+percentage of the **total declared** criteria (not of the ones that ran):
+
+- `max_manual_pct` — a cap on `mode = "manual"` criteria.
+- `max_command_pct` — a cap on `mode = "command"` criteria, a decision
+  beyond the original grill (which only names manuals): the escape hatch
+  has the exact same degenerate failure mode (14 criteria, 11 `command`,
+  a green certificate that never exercised the closed vocabulary at all).
+
+Exceeding either **fails the certificate outright** — never a firmable
+finding. The remedy is not a signature: it is rewriting the criteria, and
+a firmable quota would be no quota at all. The comparison is strict
+(`>`, not `>=`): `max_manual_pct = 25.0` with 4 total criteria admits
+**exactly** one manual. Deliberately no floor (no
+`min_changed_lines`-style exemption for a small N): a floor would be the
+door to "declare 3 criteria and make all 3 manual", the exact degenerate
+case the quota exists to prevent. A team that legitimately needs a manual
+in a small spec raises the number in its own constitution, in a revisable
+commit — the visible act this mechanism wants.
+
+### `sign` and `ack`: disjoint domains, and a rule that fails closed
+
+`mneme quality sign <cert-id> --check <seq> --by <who> --evidence "..."` /
+`quality_sign` reuses `store.AckCheck`'s mechanism **verbatim** (the same
+three columns, the same in-transaction verdict recalculation) but
+**never its verb**. The reason has a real consequence for what a
+`COUNT(*)` means:
+
+> `ack` says *"I approve this despite it being a problem"* — an
+> **absolution**. `sign` says *"I verified this and it holds"* — an
+> **attestation**. Mixing the two into one verb would make a count
+> confuse "we forgave 3 findings" with "we verified 4 manuals" — exactly
+> the harm S2's own "one row per fact" rule prevents on the other axis.
+
+The domains are disjoint, checked in **both** directions: `Sign` only
+accepts rows whose `kind` starts with `"criterion"` (`ErrNotACriterion`
+otherwise); `Ack` refuses any row whose `kind` DOES start with
+`"criterion"` (`ErrCriterionRequiresSign`, naming `mneme quality sign`).
+
+**The role rule, and how far it really goes.** `internal/cli/hook.go`
+gains `roleScopedTools`, a sibling of `lifecycleTools`:
+`mcp__mneme__quality_sign` is restricted to the `qa-tester` role for a
+subagent caller. Three precisions:
+
+1. **It fails CLOSED when the role cannot be resolved** — the first rule
+   in the repo that does. This deliberately breaks SPEC-086's fail-open
+   posture for this one tool: a signature whose signer cannot be
+   identified is worse than no signature. If Claude Code ever stops
+   sending `agent_type`, the qa-tester loses the ability to sign over
+   MCP until noticed — the escape hatch is a human, using the CLI (which
+   never passes through this hook).
+2. **The orchestrator can always sign** — it is not a subagent, and it is
+   the human's own channel, the same posture `quality_ack` has had since
+   S1.
+3. **`--by` is free text, not authenticated.** What is enforceable is
+   *who may invoke the tool*, not what they type. What IS deterministic,
+   and comes free from S1's own design: **a signature dies with the
+   commit** — it lives on a certificate bound to `head_sha`; once HEAD
+   moves the certificate goes stale, and re-verifying means re-signing.
+   A signature never inherits across commits.
+
+### The generated report
+
+`mneme quality report <SPEC-ID>` / `quality_report` renders the QA report
+from the spec's **latest certificate** and writes it via `spec_doc_write`
+kind `qa-report` — the same blinded channel, the same registry-derived
+path.
+
+- The renderer (`quality.RenderReport`) is **pure**, lives in the leaf,
+  and takes its own flat `ReportInput` — never a filesystem path, never
+  `criteria.toml`. Changing the file after certifying cannot change what
+  the report says (closes D1's second property).
+- Deterministic: the same certificate produces byte-identical output —
+  ordered by `seq`, no map iteration, no timestamp of "now" anywhere in
+  the body (the only date printed is the certificate's own creation
+  time).
+- **Refuses to overwrite a report it did not generate.** Every rendered
+  report carries a literal marker; if `qa-report.md` already exists
+  without it, `report` fails (`ErrReportNotGenerated`) unless `--force` —
+  `spec_doc_write` overwrites the whole file, so the mechanism's first
+  effect must never be silently destroying someone's hand-written report.
+- The qa-tester's judgment enters the report **through signatures**, not
+  prose: the evidence typed while signing a manual criterion is exactly
+  what the report prints — "generated, not authored" made operational.
+
+### The one window this spec leaves open, on purpose
+
+`CertificateUsable` (the four-way conjunction `spec_advance` checks —
+verdict, `head_sha`, constitution hash, clean tree) does **not** compare a
+hash of `criteria.toml`. So a window exists: certify green, edit
+`criteria.toml` (which lives on the host and touches neither the tree nor
+HEAD), advance with a certificate that attests different criteria than
+the ones now on disk.
+
+Not closed by widening that conjunction — deliberately: it is S1's own
+design surface, and S4 revisits it anyway while absorbing `lane_audit`.
+The defense that DOES work against the actual attack — weak criteria
+rewritten to pass trivially — is already here: a criterion rewritten to
+be trivially true at HEAD (`file_exists("README.md")`) is also true at
+base, which makes it **vacuous**, which costs a finding and a signature.
+That defense works identically before and after certification.
+
 ## Findings and `ack`: the constitution cannot be quietly weakened
 
 An implementer has write access to the repository and could, without any
@@ -610,7 +870,7 @@ reports through for `CLAUDE.md` — never written, never blocking.
 `.mneme/quality-baseline.toml` is ever materialized by `init` — there is
 nothing to measure yet.
 
-## Enforcement: `quality_ack` denied to subagents
+## Enforcement: `quality_ack` denied to subagents; `quality_sign` scoped to qa-tester
 
 `mcp__mneme__quality_ack` is in `lifecycleTools`
 (`internal/cli/hook.go`) alongside `spec_advance`/`spec_quick` — but for a
@@ -621,16 +881,22 @@ finding** — the same "the constitution cannot quietly weaken itself"
 principle the tamper checks above establish. A human's approval, channelled
 through the orchestrator, is the only path.
 
+`mcp__mneme__quality_sign` (SPEC-117 S3) is a **different rule**, in its
+own `roleScopedTools` map: it is restricted to the `qa-tester` role, and
+fails **CLOSED** when a subagent's role cannot be resolved — see "`sign`
+and `ack`: disjoint domains, and a rule that fails closed" above for the
+full reasoning.
+
 ## Surface: CLI, MCP — HTTP excluded on purpose
 
-- **CLI**: `mneme quality verify|status|ack|baseline` (`internal/cli/quality.go`)
-  — `baseline update <spec-id>` and `baseline show` hang off the SAME
-  `quality` command group (S2 adds no new top-level command; it still
-  counts 42).
-- **MCP**: `quality_verify`, `quality_status`, `quality_ack` — surface stays
-  79 → 82 tools; S2 adds **zero** new tools. `quality_status`'s response
-  gains the baseline's path/SHA/date/percentage/staleness fields; no new
-  request field exists to receive a schema-contract exemption for.
+- **CLI**: `mneme quality verify|status|ack|sign|report|baseline`
+  (`internal/cli/quality.go`) — every subcommand hangs off the SAME
+  `quality` command group; the top-level command count stays 42.
+- **MCP**: `quality_verify`, `quality_status`, `quality_ack`,
+  `quality_sign`, `quality_report` — surface is now 84 tools (79 → 82 in
+  S2, zero new; 82 → 84 in S3). `quality_status`'s response gains the
+  baseline's path/SHA/date/percentage/staleness fields; `spec_doc_write`'s
+  `kind` enum gains `"criteria"`.
   **`quality_baseline_update` is deliberately NOT an MCP tool** — see
   "`mneme quality baseline update|show`" above.
 - **HTTP: excluded, and not as a "gap to close later".** `quality_verify`
@@ -656,13 +922,10 @@ to implement it, delete it, or document it as inert is a separate item
 
 ## What this does NOT do (yet)
 
-Explicitly out of scope for S1+S2 — each remaining spec in the EPIC builds
-on this exact registry without a schema change narrowing what came before:
+Explicitly out of scope for S1+S2+S3 — each remaining spec in the EPIC
+builds on this exact registry without a schema change narrowing what came
+before:
 
-- **S3 — Executable acceptance criteria.** A closed vocabulary of automated
-  checks per AC, with an escape hatch for the rest, and a rule that an AC
-  that already passed at the spec's base commit is vacuous and does not
-  count.
 - **S4 — Budget and graph, absorbing `lane audit`.** The architect's
   declared symbol/impact budget, checked against the real code-graph diff;
   `lane_audit`'s trivial-lane mechanism folds into this same registry. S4 is
@@ -678,8 +941,8 @@ on this exact registry without a schema change narrowing what came before:
 ## See also
 
 - [docs/api/sdd.md](api/sdd.md) — full parameter/response contract for
-  `quality_verify`/`quality_status`/`quality_ack`, and the `spec_advance`
-  block's error table
+  `quality_verify`/`quality_status`/`quality_ack`/`quality_sign`/
+  `quality_report`, and the `spec_advance` block's error table
 - [docs/api/http.md](api/http.md) — the HTTP exclusion, in full
 - [docs/init.md](init.md) — the materialization step inside `mneme init`
 - [docs/lanes.md](lanes.md) — the trivial-lane auditor this mechanism does
