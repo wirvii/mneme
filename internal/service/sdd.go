@@ -7,6 +7,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -19,6 +20,7 @@ import (
 	"github.com/wirvii/mneme/internal/install"
 	"github.com/wirvii/mneme/internal/lane"
 	"github.com/wirvii/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/quality"
 	"github.com/wirvii/mneme/internal/store"
 )
 
@@ -391,6 +393,10 @@ func (svc *SDDService) SpecAdvance(ctx context.Context, req model.SpecAdvanceReq
 			spec.Status, nextStatus, model.ErrInvalidTransition)
 	}
 
+	if err := svc.ensureCertified(ctx, spec, nextStatus); err != nil {
+		return nil, fmt.Errorf("service: spec advance: %w", err)
+	}
+
 	if err := svc.store.UpdateSpecStatus(ctx, spec.ID, spec.Status, nextStatus, req.By, req.Reason); err != nil {
 		return nil, fmt.Errorf("service: spec advance: update status: %w", err)
 	}
@@ -461,6 +467,143 @@ func (svc *SDDService) captureBaseSHA(ctx context.Context, spec *model.Spec) {
 	if err := svc.store.UpdateSpecBaseSHA(ctx, spec.ID, sha); err != nil {
 		log.Printf("service: capture base sha: store update for %s: %v", spec.ID, err)
 	}
+}
+
+// ensureCertified is the SPEC-115 D12 block: before SpecAdvance commits
+// implementing→qa or qa→done for a STANDARD-lane spec, it requires a usable
+// quality certificate — but only while the repository's constitution is
+// actually enabled (D3). Every other transition, and trivial-lane specs
+// entirely (AC15 — S4 absorbs lane audit into this mechanism, not S1), pass
+// through untouched: this function returns nil immediately for them.
+//
+// Deliberately independent of QualityService (a structural decision the
+// plan fixes, not left to taste): ensureCertified reads svc.store directly
+// and calls the pure functions of internal/quality — no Runner, no gate
+// execution, nothing optional to wire. A version of this gated by
+// `if svc.qualitySvc != nil` would reintroduce exactly the failure mode this
+// whole mechanism exists to eliminate — a project that forgot to wire the
+// optional service and never notices spec_advance quietly stopped
+// enforcing anything.
+//
+// D13/AC16: if svc.repoDir is empty, the quality mechanism is OFF — there is
+// NO fallback to os.Getwd() anywhere in this function, unlike
+// captureBaseSHA/LaneAudit above (which keep their existing, untouched
+// fallback). A test that advances a spec to qa without configuring repoDir
+// must see the mechanism silently absent, never accidentally resolving a
+// real filesystem path.
+func (svc *SDDService) ensureCertified(ctx context.Context, spec *model.Spec, nextStatus model.SpecStatus) error {
+	if spec.Lane != model.LaneStandard {
+		return nil
+	}
+
+	gated := (spec.Status == model.SpecStatusImplementing && nextStatus == model.SpecStatusQA) ||
+		(spec.Status == model.SpecStatusQA && nextStatus == model.SpecStatusDone)
+	if !gated {
+		return nil
+	}
+
+	repoDir := svc.repoDir
+	if repoDir == "" {
+		return nil
+	}
+
+	constPath := filepath.Join(repoDir, constitutionRelPath)
+	raw, err := os.ReadFile(constPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// D3 row 1: absent -> off, UNLESS it was enabled at base_sha
+			// (row 5, the ablation hole).
+			return svc.checkConstitutionAblation(spec, repoDir)
+		}
+		// An existing-but-unreadable file is anomalous, not one of D3's five
+		// rows — fail closed rather than silently treat it as "absent".
+		return fmt.Errorf("read constitution: %s: %w", err, model.ErrInvalidConstitution)
+	}
+
+	constitution, err := quality.Parse(raw)
+	if err != nil {
+		// D3 row 4: not parseable -> BLOCKS, fails closed.
+		return fmt.Errorf("constitution %s: %w", err, model.ErrInvalidConstitution)
+	}
+
+	if !constitution.Enabled {
+		// D3 row 2: present but enabled=false -> off, UNLESS ablated (row 5).
+		return svc.checkConstitutionAblation(spec, repoDir)
+	}
+
+	// D3 row 3: enabled=true -> a usable certificate is required (D12).
+	cert, err := svc.store.GetLatestCertificate(ctx, spec.Project, spec.ID)
+	if err != nil {
+		if errors.Is(err, model.ErrCertificateNotFound) {
+			return fmt.Errorf("ningun certificado registrado para %s — verifica con `mneme quality verify %s`: %w",
+				spec.ID, spec.ID, model.ErrCertificateMissing)
+		}
+		return fmt.Errorf("get latest certificate: %w", err)
+	}
+
+	g := &quality.Git{RepoDir: repoDir}
+	headSHA, err := g.HeadSHA()
+	if err != nil {
+		return fmt.Errorf("head sha: %w", err)
+	}
+	dirty, _, err := g.IsDirty()
+	if err != nil {
+		return fmt.Errorf("is dirty: %w", err)
+	}
+
+	usable, reason := quality.CertificateUsable(
+		quality.Verdict(cert.Verdict), cert.HeadSHA, headSHA, cert.ConstitutionHash, quality.HashBytes(raw), dirty,
+	)
+	if usable {
+		return nil
+	}
+
+	remedy := fmt.Sprintf("`mneme quality verify %s`", spec.ID)
+	switch reason {
+	case quality.ReasonNotGreen:
+		return fmt.Errorf("certificado %s con veredicto %q (no pass) — vuelve a verificar con %s: %w",
+			cert.ID, cert.Verdict, remedy, model.ErrCertificateNotGreen)
+	case quality.ReasonStale:
+		return fmt.Errorf("certificado %s obsoleto (HEAD se movio desde %s) — vuelve a verificar con %s: %w",
+			cert.ID, cert.HeadSHA, remedy, model.ErrCertificateStale)
+	case quality.ReasonConstitutionChanged:
+		return fmt.Errorf("la constitucion cambio desde el certificado %s — vuelve a verificar con %s: %w",
+			cert.ID, remedy, model.ErrConstitutionChanged)
+	case quality.ReasonWorktreeDirty:
+		return fmt.Errorf("arbol de trabajo sucio — haz commit o descarta los cambios y vuelve a verificar con %s: %w",
+			remedy, model.ErrWorktreeDirty)
+	default:
+		return fmt.Errorf("certificado %s no utilizable — vuelve a verificar con %s: %w", cert.ID, remedy, model.ErrCertificateNotGreen)
+	}
+}
+
+// checkConstitutionAblation implements D3 row 5: the constitution is
+// off/absent NOW but was enabled=true at spec.BaseSHA — disabling or
+// deleting it mid-spec is a BLOCK, not a silent pass-through. When the
+// check cannot be made at all (no BaseSHA, the historic file did not exist,
+// or it is unparseable by today's Parse), the honest, documented limit
+// (D3/docs/quality.md) is to let the mechanism stay off rather than guess.
+func (svc *SDDService) checkConstitutionAblation(spec *model.Spec, repoDir string) error {
+	if spec.BaseSHA == "" {
+		return nil
+	}
+
+	g := &quality.Git{RepoDir: repoDir}
+	historic, ok, err := g.FileAtRef(spec.BaseSHA, constitutionRelPath)
+	if err != nil || !ok {
+		return nil
+	}
+
+	historicConstitution, err := quality.Parse(historic)
+	if err != nil {
+		return nil
+	}
+	if !historicConstitution.Enabled {
+		return nil
+	}
+
+	return fmt.Errorf("la constitucion estaba encendida en %s y ahora esta apagada o ausente: %w",
+		spec.BaseSHA, model.ErrConstitutionAblated)
 }
 
 // createSpecDirectory creates the per-spec workflow directory and copies
