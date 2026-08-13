@@ -264,3 +264,57 @@ type QualityBaselineUpdateRequest struct {
 	// store query. Required.
 	ID string `json:"id"`
 }
+
+// QualitySignRequest is the input for `mneme quality sign` / quality_sign
+// (SPEC-117 S3 D11): a qa-tester's ATTESTATION that one criterion row
+// genuinely holds — a verb distinct from Ack (an ABSOLUTION), reusing
+// AckCheck's mechanism (store.AckCheck is untouched) but never its verb,
+// so a COUNT(*) never confuses "we forgave 3 findings" with "we verified 4
+// manuals".
+type QualitySignRequest struct {
+	// CertificateID is the certificate the criterion row belongs to.
+	CertificateID string `json:"cert_id"`
+
+	// Seq is the criterion row's position within the certificate's checks.
+	// Sign only accepts rows whose Kind starts with "criterion"
+	// (ErrNotACriterion otherwise).
+	Seq int `json:"seq"`
+
+	// By identifies who is signing — the qa-tester, channelled through the
+	// role-scoped hook rule (internal/cli/hook.go's roleScopedTools,
+	// D11) that restricts mcp__mneme__quality_sign to that one role and
+	// fails CLOSED when a subagent's role cannot be resolved.
+	By string `json:"by"`
+
+	// Evidence documents WHAT was verified and how — required and
+	// non-empty (model.ErrReasonRequired), persisted verbatim as the row's
+	// Justification.
+	Evidence string `json:"evidence"`
+}
+
+// QualityReportRequest is the input for `mneme quality report` /
+// quality_report (SPEC-117 S3 D12): render the QA report from the spec's
+// LATEST certificate and write it via SpecDocWrite — never from
+// criteria.toml, which may have changed since certification (D1).
+type QualityReportRequest struct {
+	// ID is the spec whose latest certificate is rendered.
+	ID string `json:"id"`
+
+	// Force allows overwriting an existing qa-report.md that does NOT
+	// carry mneme's own generation marker (D12) — without it, Report
+	// refuses to silently destroy a manually-authored report
+	// (ErrReportNotGenerated).
+	Force bool `json:"force,omitempty"`
+}
+
+// QualityReportResponse is returned by quality_report.
+type QualityReportResponse struct {
+	// Path is the absolute path the report was written to.
+	Path string `json:"path"`
+
+	// Bytes is len(content) as written.
+	Bytes int `json:"bytes"`
+
+	// CertificateID is the certificate the report was rendered from.
+	CertificateID string `json:"certificate_id"`
+}

@@ -802,6 +802,15 @@ const (
 	// SpecDocKindChanges writes changes.md — an implementer's record of
 	// where it diverged from the spec.
 	SpecDocKindChanges SpecDocKind = "changes"
+
+	// SpecDocKindCriteria writes criteria.toml — the spec's executable
+	// acceptance criteria (SPEC-117 S3 D1). The architect is read-only on
+	// the repository (internal/subagents/permissions.go), so this is its
+	// ONLY write channel for the closed-vocabulary criteria document,
+	// exactly like spec.md/plan.md above. A fifth kind inherits
+	// specDocPath's two defenses (id pattern, no directory escape)
+	// unmodified — see internal/service/sdd.go.
+	SpecDocKindCriteria SpecDocKind = "criteria"
 )
 
 // specDocFilenames maps each closed SpecDocKind to the exact filename it
@@ -812,6 +821,7 @@ var specDocFilenames = map[SpecDocKind]string{
 	SpecDocKindPlan:     "plan.md",
 	SpecDocKindQAReport: "qa-report.md",
 	SpecDocKindChanges:  "changes.md",
+	SpecDocKindCriteria: "criteria.toml",
 }
 
 // Filename returns the filename k maps to, and whether k is a recognised
