@@ -92,6 +92,17 @@ type DiffCoverageStats struct {
 	// Missing lists, per file, the eligible-but-uncovered line numbers —
 	// the "which lines" AC24 and a `fail` check's Summary need.
 	Missing map[string][]int
+
+	// FilesConsidered counts the changed files that passed the exclude
+	// filter — the candidate set the coverage/changed-files-in-profile
+	// check (D13/AC16) reasons about.
+	FilesConsidered int
+
+	// FilesMatched counts, of FilesConsidered, how many were found in
+	// profile at ALL (regardless of whether any of their changed lines
+	// were eligible). FilesConsidered > 0 && FilesMatched == 0 is the
+	// path-mapping-is-broken signal AC16/R3 exist to catch.
+	FilesMatched int
 }
 
 // ComputeDiffCoverage computes diff coverage for changed (repo-relative
@@ -118,10 +129,12 @@ func ComputeDiffCoverage(changed map[string][]int, profile *Profile, exclude []s
 		if matchesAnyGlob(exclude, file) {
 			continue
 		}
+		stats.FilesConsidered++
 		fc, ok := profile.Files[file]
 		if !ok {
 			continue
 		}
+		stats.FilesMatched++
 		for _, ln := range changed[file] {
 			if !fc.Instrumented(ln) {
 				continue
