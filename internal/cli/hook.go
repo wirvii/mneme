@@ -1938,6 +1938,49 @@ var lifecycleTools = map[string]bool{
 	"mcp__mneme__quality_ack":  true,
 }
 
+// roleScopedTools maps an MCP tool name to the ONE subagent role allowed
+// to invoke it (SPEC-117 S3 D11) — evaluated right after lifecycleTools,
+// with the same shape, but a DIFFERENT enforcement posture: this is the
+// first rule in the repo that FAILS CLOSED when a subagent's role cannot
+// be resolved (RoleSource=="unresolved"), deliberately breaking SPEC-086's
+// fail-open stance for this one tool. The reason is D14 of the grill: a
+// signing tool that fails open would let the author of a change sign
+// their own manual criteria, which is exactly what D14 forbids — SPEC-086's
+// fail-open existed to avoid blocking work, not to let anyone sign.
+//
+// quality_sign is deliberately NOT in lifecycleTools: the qa-tester MUST
+// be able to call it, and lifecycleTools is an unconditional, no-role
+// block for every subagent.
+var roleScopedTools = map[string]string{
+	"mcp__mneme__quality_sign": "qa-tester",
+}
+
+// roleScopedBlockMessage is the message printed when a subagent's
+// role-scoped MCP call is denied (SPEC-117 D11) — names the required
+// role and the CLI escape hatch (the human's own channel, which never
+// passes through this hook) so a legitimately blocked subagent is not
+// left stuck with no path forward.
+const roleScopedBlockMessage = "⛔ mneme: %s está restringido al rol %q. Este subagente no puede invocarlo. El orquestador (o un humano vía `mneme quality sign`) puede hacerlo en su lugar.\n"
+
+// roleScopedUnresolvedMessage is printed when the role-scoped guard fails
+// CLOSED because the caller's role could not be resolved at all
+// (RoleSource=="unresolved", D2) — distinct from roleScopedBlockMessage's
+// "wrong role" case: here mneme does not even know WHO is calling, and a
+// firma cuyo firmante no se puede identificar es peor que no tener firma.
+const roleScopedUnresolvedMessage = "⛔ mneme: %s exige un rol resuelto (agent_type) y este payload no lo trae — la regla falla CERRADA a propósito (D11), rompiendo la postura fail-open de SPEC-086 solo para esta herramienta. Usa el CLI (`mneme quality sign`) como humano.\n"
+
+// printRoleScopedBlock writes the SPEC-117 D11 role-scoped denial message
+// to w — the "wrong role" message when the role resolved but does not
+// match requiredRole, or the "unresolved" message when it could not be
+// determined at all.
+func printRoleScopedBlock(w io.Writer, tool, requiredRole string, unresolved bool) {
+	if unresolved {
+		fmt.Fprintf(w, roleScopedUnresolvedMessage, tool)
+		return
+	}
+	fmt.Fprintf(w, roleScopedBlockMessage, tool, requiredRole)
+}
+
 // lifecycleBlockMessage is the load-bearing message printed when a
 // subagent's lifecycle-advancing MCP call is denied (SPEC-087 D5/R5). It
 // must name the concrete cause (an out-of-date profile still instructing
@@ -2017,6 +2060,26 @@ func runHookEnforceDelegation(r io.Reader, errW io.Writer) error {
 		//nolint:gocritic // os.Exit(2) is the documented hook exit code for rejection
 		os.Exit(2)
 		return nil
+	}
+
+	// SPEC-117 D11: a SECOND, independent guard, evaluated right after
+	// lifecycleTools with the same shape (before the delegationTools
+	// filter — quality_sign is neither a file tool nor Bash, so that
+	// filter would otherwise short-circuit past it entirely). Unlike
+	// EVERY other subagent rule in this file, this one fails CLOSED when
+	// the role cannot be resolved: a signing tool whose caller cannot be
+	// identified is worse than no signing tool at all.
+	if identity.IsSubagent {
+		if requiredRole, scoped := roleScopedTools[input.ToolName]; scoped {
+			unresolved := identity.RoleSource == "unresolved"
+			if unresolved || identity.Role != requiredRole {
+				printRoleScopedBlock(errW, input.ToolName, requiredRole, unresolved)
+				logRoleScopedToolDeniedEvent(input, identity, requiredRole)
+				//nolint:gocritic // os.Exit(2) is the documented hook exit code for rejection
+				os.Exit(2)
+				return nil
+			}
+		}
 	}
 
 	if !delegationTools[input.ToolName] {
@@ -2326,6 +2389,41 @@ func logLifecycleToolDeniedEvent(input hookPreToolInput, identity CallerIdentity
 		Target:     input.ToolInput.ID,
 		Decision:   enforcelog.DecisionBlock,
 		Reason:     "lifecycle_tool_denied_to_subagent",
+	}
+	_ = enforcelog.Append(path, ev, enforcelog.DefaultMaxBytes) //nolint:errcheck // best-effort telemetry
+}
+
+// logRoleScopedToolDeniedEvent appends a best-effort enforcelog.Event for
+// a SPEC-117 D11 role-scoped tool denial (Reason: "role_scoped_tool_denied")
+// — self-contained (resolves cwd/config/project itself), the same posture
+// as logLifecycleToolDeniedEvent, and for the same reason: this guard also
+// fires before runHookEnforceDelegation's own cwd resolution.
+func logRoleScopedToolDeniedEvent(input hookPreToolInput, identity CallerIdentity, requiredRole string) {
+	cfg, err := config.Load(config.DefaultPath())
+	if err != nil {
+		return
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return
+	}
+	cwd = resolveHookCWD(input, cwd)
+	det := project.NewDetector(cwd)
+	slug, _ := det.DetectProject()
+
+	path := enforcelogPath(cfg.Storage.DataDir, slug)
+	ev := enforcelog.Event{
+		TS:         time.Now().UTC(),
+		Session:    input.SessionID,
+		Project:    slug,
+		Caller:     "subagent",
+		AgentID:    identity.AgentID,
+		Role:       identity.Role,
+		RoleSource: identity.RoleSource,
+		Tool:       input.ToolName,
+		Target:     requiredRole,
+		Decision:   enforcelog.DecisionBlock,
+		Reason:     "role_scoped_tool_denied",
 	}
 	_ = enforcelog.Append(path, ev, enforcelog.DefaultMaxBytes) //nolint:errcheck // best-effort telemetry
 }
