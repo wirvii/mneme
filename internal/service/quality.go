@@ -823,3 +823,81 @@ func (svc *QualityService) Ack(ctx context.Context, req model.QualityAckRequest)
 	}
 	return nil
 }
+
+// BaselineUpdate registers a new ratchet baseline (SPEC-116 D10/D15),
+// writing BaselineRelPath from req.ID's spec's LATEST certificate — but
+// ONLY when that certificate's verdict is "pass" (U-E): a certificate that
+// is not green is exactly the certificate whose numbers must never become
+// the mark everyone else is measured against, and "no certificate at all"
+// is refused identically. Never re-executes anything — the numbers come
+// verbatim from the coverage/profile row's Detail that same certificate's
+// Verify call already computed (coverageProfileDetail), so the baseline
+// can never disagree with its own certificate.
+//
+// CLI-only (D15) — never exposed over MCP: writing this file is an act of
+// governance over a versioned artifact, and offering it to an agent would
+// make "just update the baseline" the path of least resistance the moment
+// the ratchet is inconvenient (D2 of the grill).
+func (svc *QualityService) BaselineUpdate(ctx context.Context, req model.QualityBaselineUpdateRequest) (*quality.Baseline, error) {
+	if req.ID == "" {
+		return nil, fmt.Errorf("service: quality: baseline update: id is required")
+	}
+	if svc.repoDir == "" {
+		return nil, fmt.Errorf("service: quality: baseline update: repoDir not configured")
+	}
+
+	spec, err := svc.store.GetSpec(ctx, req.ID)
+	if err != nil {
+		return nil, fmt.Errorf("service: quality: baseline update: get spec: %w", err)
+	}
+
+	cert, err := svc.store.GetLatestCertificate(ctx, svc.project, spec.ID)
+	if err != nil {
+		return nil, fmt.Errorf("service: quality: baseline update: get latest certificate: %w", err)
+	}
+	if cert.Verdict != model.QualityVerdictPass {
+		return nil, fmt.Errorf(
+			"service: quality: baseline update: el ultimo certificado (%s) tiene veredicto %q, no pass — vuelve a verificar y deja el certificado en verde: %w",
+			cert.ID, cert.Verdict, model.ErrCertificateNotGreen)
+	}
+
+	checks, err := svc.store.ListChecks(ctx, cert.ID)
+	if err != nil {
+		return nil, fmt.Errorf("service: quality: baseline update: list checks: %w", err)
+	}
+	var detail coverageProfileDetail
+	found := false
+	for _, c := range checks {
+		if c.Kind == "coverage" && c.Name == "profile" && c.Status == "pass" {
+			if err := json.Unmarshal([]byte(c.Detail), &detail); err != nil {
+				return nil, fmt.Errorf("service: quality: baseline update: parse coverage/profile detail: %w", err)
+			}
+			found = true
+			break
+		}
+	}
+	if !found {
+		return nil, fmt.Errorf(
+			"service: quality: baseline update: el certificado %s no tiene una fila coverage/profile en pass — enciende [coverage] y vuelve a verificar", cert.ID)
+	}
+
+	baseline := &quality.Baseline{
+		SchemaVersion: quality.BaselineSchemaVersion,
+		MeasuredAtSHA: cert.HeadSHA,
+		MeasuredAt:    time.Now().UTC(),
+		CertificateID: cert.ID,
+		LinesTotal:    detail.LinesTotal,
+		LinesCovered:  detail.LinesCovered,
+		GlobalLinePct: detail.GlobalLinePct,
+		ScopeHash:     detail.ScopeHash,
+	}
+
+	path := filepath.Join(svc.repoDir, quality.BaselineRelPath)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, fmt.Errorf("service: quality: baseline update: mkdir: %w", err)
+	}
+	if err := os.WriteFile(path, []byte(quality.RenderBaseline(baseline)), 0o644); err != nil {
+		return nil, fmt.Errorf("service: quality: baseline update: write baseline: %w", err)
+	}
+	return baseline, nil
+}

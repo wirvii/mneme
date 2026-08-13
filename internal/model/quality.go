@@ -256,9 +256,11 @@ type QualityAckRequest struct {
 // update` (SPEC-116 D10/D15) — CLI-only, deliberately NOT exposed over MCP
 // (D15): writing the ratchet's baseline is an act of governance over a
 // versioned file, the same class of act as hand-editing
-// `.mneme/quality.toml`, which also has no MCP tool. Empty today —
-// BaselineUpdate always reads the PROJECT's own latest `pass` certificate;
-// there is nothing for a caller to parameterize yet, and the type exists so
-// a future field (e.g. a specific certificate ID) never has to change a
-// call signature.
-type QualityBaselineUpdateRequest struct{}
+// `.mneme/quality.toml`, which also has no MCP tool.
+type QualityBaselineUpdateRequest struct {
+	// ID is the spec whose latest certificate BaselineUpdate reads from —
+	// the same per-spec certificate lookup `quality verify`/`quality
+	// status` already use (GetLatestCertificate), so this needs no new
+	// store query. Required.
+	ID string `json:"id"`
+}

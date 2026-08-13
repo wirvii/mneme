@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -1394,5 +1395,106 @@ func TestQualityService_Verify_Ratchet_OffStates(t *testing.T) {
 		if got := ratchetCheckStatus(checks, name); got != "skipped" {
 			t.Errorf("ratchet/%s status = %q, want skipped", name, got)
 		}
+	}
+}
+
+// TestQualityService_BaselineUpdate_NoCertificate_Refuses covers AC23's
+// third row: no certificate at all for the spec — BaselineUpdate refuses,
+// and nothing is written to disk.
+func TestQualityService_BaselineUpdate_NoCertificate_Refuses(t *testing.T) {
+	repoDir := newTestGitRepo(t)
+	s := newTestQualityStore(t)
+	insertTestSpec(t, s, "SPEC-1", "proj", model.SpecStatusImplementing, "")
+	svc := NewQualityService(s, "proj", repoDir, &fakeGateRunner{})
+
+	if _, err := svc.BaselineUpdate(context.Background(), model.QualityBaselineUpdateRequest{ID: "SPEC-1"}); err == nil {
+		t.Fatal("BaselineUpdate with no certificate: want error, got nil")
+	}
+	if _, statErr := os.Stat(filepath.Join(repoDir, quality.BaselineRelPath)); !os.IsNotExist(statErr) {
+		t.Errorf("baseline file exists after a refused BaselineUpdate: %v", statErr)
+	}
+}
+
+// TestQualityService_BaselineUpdate_NonPassCertificate_Refuses covers
+// AC23's second row: the latest certificate exists but is NOT pass —
+// BaselineUpdate refuses, and the file is not modified/created. This is
+// the guardian against the "blanqueo perfecto" U-E warns about: writing a
+// mark from a red certificate.
+func TestQualityService_BaselineUpdate_NonPassCertificate_Refuses(t *testing.T) {
+	repoDir := newTestGitRepo(t)
+	s := newTestQualityStore(t)
+	spec := insertTestSpec(t, s, "SPEC-1", "proj", model.SpecStatusImplementing, "")
+
+	cert := &model.QualityCertificate{
+		Project: "proj", SpecID: spec.ID, HeadSHA: headSHAFor(t, repoDir),
+		ConstitutionHash: "h", SchemaVersion: 2, Verdict: model.QualityVerdictFindings,
+	}
+	detail := coverageProfileDetail{LinesTotal: 100, LinesCovered: 90, GlobalLinePct: 90.0, ScopeHash: "sh"}
+	detailJSON, _ := json.Marshal(detail)
+	checks := []*model.QualityCheck{{Kind: "coverage", Name: "profile", Status: "pass", Detail: string(detailJSON)}}
+	if err := s.InsertCertificate(context.Background(), cert, checks); err != nil {
+		t.Fatalf("InsertCertificate: %v", err)
+	}
+
+	svc := NewQualityService(s, "proj", repoDir, &fakeGateRunner{})
+	if _, err := svc.BaselineUpdate(context.Background(), model.QualityBaselineUpdateRequest{ID: "SPEC-1"}); !errors.Is(err, model.ErrCertificateNotGreen) {
+		t.Fatalf("BaselineUpdate with a non-pass certificate error = %v, want ErrCertificateNotGreen", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(repoDir, quality.BaselineRelPath)); !os.IsNotExist(statErr) {
+		t.Errorf("baseline file exists after a refused BaselineUpdate: %v", statErr)
+	}
+}
+
+// TestQualityService_BaselineUpdate_PassCertificate_WritesExactFigures
+// covers AC23's first row: BaselineUpdate NEVER invents a number — the
+// written lines_total/lines_covered are byte-for-byte the ones in the
+// certificate's coverage/profile Detail.
+func TestQualityService_BaselineUpdate_PassCertificate_WritesExactFigures(t *testing.T) {
+	repoDir := newTestGitRepo(t)
+	headSHA := headSHAFor(t, repoDir)
+	s := newTestQualityStore(t)
+	spec := insertTestSpec(t, s, "SPEC-1", "proj", model.SpecStatusImplementing, "")
+
+	cert := &model.QualityCertificate{
+		Project: "proj", SpecID: spec.ID, HeadSHA: headSHA,
+		ConstitutionHash: "h", SchemaVersion: 2, Verdict: model.QualityVerdictPass,
+	}
+	detail := coverageProfileDetail{LinesTotal: 41230, LinesCovered: 29066, GlobalLinePct: 70.50, ScopeHash: "b21f0000"}
+	detailJSON, err := json.Marshal(detail)
+	if err != nil {
+		t.Fatalf("marshal detail: %v", err)
+	}
+	checks := []*model.QualityCheck{{Kind: "coverage", Name: "profile", Status: "pass", Detail: string(detailJSON)}}
+	if err := s.InsertCertificate(context.Background(), cert, checks); err != nil {
+		t.Fatalf("InsertCertificate: %v", err)
+	}
+
+	svc := NewQualityService(s, "proj", repoDir, &fakeGateRunner{})
+	baseline, err := svc.BaselineUpdate(context.Background(), model.QualityBaselineUpdateRequest{ID: "SPEC-1"})
+	if err != nil {
+		t.Fatalf("BaselineUpdate: %v", err)
+	}
+
+	if baseline.LinesTotal != detail.LinesTotal || baseline.LinesCovered != detail.LinesCovered ||
+		baseline.GlobalLinePct != detail.GlobalLinePct || baseline.ScopeHash != detail.ScopeHash {
+		t.Fatalf("BaselineUpdate figures = %+v, want exactly %+v", baseline, detail)
+	}
+	if baseline.MeasuredAtSHA != headSHA {
+		t.Errorf("MeasuredAtSHA = %q, want %q (the certificate's HeadSHA)", baseline.MeasuredAtSHA, headSHA)
+	}
+	if baseline.CertificateID != cert.ID {
+		t.Errorf("CertificateID = %q, want %q", baseline.CertificateID, cert.ID)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(repoDir, quality.BaselineRelPath))
+	if err != nil {
+		t.Fatalf("read written baseline: %v", err)
+	}
+	roundTripped, err := quality.ParseBaseline(raw)
+	if err != nil {
+		t.Fatalf("ParseBaseline(written): %v", err)
+	}
+	if roundTripped.LinesTotal != detail.LinesTotal || roundTripped.GlobalLinePct != detail.GlobalLinePct {
+		t.Errorf("written baseline on disk = %+v, want figures matching %+v", roundTripped, detail)
 	}
 }

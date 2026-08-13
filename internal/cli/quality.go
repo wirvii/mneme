@@ -76,29 +76,35 @@ func initQualityService() (*service.QualityService, func(), error) {
 	return qualitySvc, cleanup, nil
 }
 
-// newQualityCmd returns the "mneme quality" subcommand group (SPEC-115 D17):
-// verify runs the declared gates and emits a certificate; status reports the
-// constitution's and latest certificate's state without executing anything;
-// ack records a human's justified approval of a finding.
+// newQualityCmd returns the "mneme quality" subcommand group (SPEC-115 D17,
+// extended by SPEC-116 D15 with the "baseline" group): verify runs the
+// declared gates and emits a certificate; status reports the constitution's
+// and latest certificate's state without executing anything; ack records a
+// human's justified approval of a finding; baseline manages the ratchet's
+// registered coverage mark. The "baseline" subcommand hangs off this SAME
+// AddCommand call, so the top-level command count stays 42 (V10 of the
+// SPEC-116 design) — only `mneme quality --help` gains an entry.
 func newQualityCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "quality",
-		Short: "Quality constitution, certificates, and findings (SPEC-115)",
+		Short: "Quality constitution, certificates, findings, and the coverage ratchet",
 		Long: `Manage mneme's quality mechanism: a repository declares its build/test
 gates in .mneme/quality.toml; mneme runs them and emits a certificate bound
 to the exact commit. spec_advance then only COMPARES an already-emitted
 certificate — it never executes anything itself.
 
 Subcommands:
-  verify  Run the declared gates and emit (or deny) a certificate.
-  status  Report the constitution's and latest certificate's state.
-  ack     Record a human's justified approval of a finding.`,
+  verify    Run the declared gates and emit (or deny) a certificate.
+  status    Report the constitution's and latest certificate's state.
+  ack       Record a human's justified approval of a finding.
+  baseline  Manage the ratchet's registered coverage baseline (SPEC-116).`,
 	}
 
 	cmd.AddCommand(
 		newQualityVerifyCmd(),
 		newQualityStatusCmd(),
 		newQualityAckCmd(),
+		newQualityBaselineCmd(),
 	)
 
 	return cmd
@@ -219,5 +225,87 @@ func newQualityAckCmd() *cobra.Command {
 	cmd.Flags().StringVar(&flagBy, "by", "", "Who is acknowledging the finding")
 	cmd.Flags().StringVar(&flagJustification, "justification", "", "Why the finding is acceptable (required, non-empty)")
 
+	return cmd
+}
+
+// newQualityBaselineCmd returns "mneme quality baseline" (SPEC-116 D15):
+// update writes the registered ratchet baseline from a spec's latest PASS
+// certificate; show reports it read-only. Neither is exposed over MCP
+// (D15) — writing the baseline is a governance act over a versioned file,
+// the same class as hand-editing the constitution.
+func newQualityBaselineCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "baseline",
+		Short: "Manage the ratchet's registered coverage baseline (SPEC-116)",
+		Long: `The ratchet compares the repository's current global coverage against a
+REGISTERED baseline — a measurement mneme itself took, never a number
+anyone typed. This baseline is a versioned file
+(.mneme/quality-baseline.toml); these subcommands are the ONLY way it is
+written, and only from an already-green certificate.`,
+	}
+
+	cmd.AddCommand(newQualityBaselineUpdateCmd(), newQualityBaselineShowCmd())
+
+	return cmd
+}
+
+// newQualityBaselineUpdateCmd returns "mneme quality baseline update <spec-id>".
+func newQualityBaselineUpdateCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "update <spec-id>",
+		Short: "Write the baseline from the spec's latest PASS certificate",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			svc, cleanup, err := initQualityService()
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+
+			baseline, err := svc.BaselineUpdate(cmd.Context(), model.QualityBaselineUpdateRequest{ID: args[0]})
+			if err != nil {
+				return err
+			}
+
+			fmt.Fprintf(os.Stdout, "linea base actualizada: %.2f%% (sha=%s, certificado=%s)\n",
+				baseline.GlobalLinePct, baseline.MeasuredAtSHA, baseline.CertificateID)
+			return nil
+		},
+	}
+	return cmd
+}
+
+// newQualityBaselineShowCmd returns "mneme quality baseline show".
+func newQualityBaselineShowCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "show",
+		Short: "Print the registered baseline",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			svc, cleanup, err := initQualityService()
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+
+			path := filepath.Join(svc.RepoDir(), quality.BaselineRelPath)
+			raw, readErr := os.ReadFile(path)
+			if readErr != nil {
+				if os.IsNotExist(readErr) {
+					fmt.Fprintln(os.Stdout, "sin linea base registrada — `mneme quality baseline update <spec-id>`")
+					return nil
+				}
+				return readErr
+			}
+
+			baseline, err := quality.ParseBaseline(raw)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(os.Stdout, "linea base: %.2f%% (sha=%s, medido=%s, certificado=%s)\n",
+				baseline.GlobalLinePct, baseline.MeasuredAtSHA, baseline.MeasuredAt.Format("2006-01-02"), baseline.CertificateID)
+			return nil
+		},
+	}
 	return cmd
 }
