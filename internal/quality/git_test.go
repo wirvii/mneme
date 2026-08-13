@@ -184,6 +184,46 @@ func TestGit_PathChangedInRange(t *testing.T) {
 	}
 }
 
+// TestGit_PathChangedInRange_Deletion covers the "borrarlo" half of AC12 at
+// the primitive level: PathChangedInRange must report a path as changed when
+// it existed at baseSHA and was DELETED (not merely edited) somewhere within
+// baseSHA..HEAD, so the deletion is never silently treated as "unchanged".
+// This is the level where a deletion is genuinely, distinctly observable —
+// `git diff --name-only` compares the two commit endpoints directly, so a
+// service-level test that deletes-then-recreates the file with different
+// content exercises the exact same code path TestQualityService_Verify_
+// ConstitutionChangedInRange already covers (the endpoint content differs
+// either way); only a real absence at HEAD is a distinct case, and only
+// this primitive — not QualityService.Verify, which requires the current
+// constitution to exist and parse before it can reach any check — can
+// observe it directly.
+func TestGit_PathChangedInRange_Deletion(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found in PATH")
+	}
+	dir := initTestGitRepo(t)
+	g := &Git{RepoDir: dir}
+
+	baseSHA, err := g.HeadSHA()
+	if err != nil {
+		t.Fatalf("HeadSHA (base): %v", err)
+	}
+
+	if err := os.Remove(filepath.Join(dir, "committed.txt")); err != nil {
+		t.Fatalf("remove committed.txt: %v", err)
+	}
+	gitRunTest(t, dir, "add", ".")
+	gitRunTest(t, dir, "commit", "-m", "delete committed.txt")
+
+	changed, err := g.PathChangedInRange(baseSHA, "committed.txt")
+	if err != nil {
+		t.Fatalf("PathChangedInRange (deleted): %v", err)
+	}
+	if !changed {
+		t.Error("PathChangedInRange() = false for a file deleted in range, want true")
+	}
+}
+
 // TestGit_FileAtRef_MissingReturnsNotOK verifies FileAtRef distinguishes
 // "did not exist at ref" from an error.
 func TestGit_FileAtRef_MissingReturnsNotOK(t *testing.T) {
