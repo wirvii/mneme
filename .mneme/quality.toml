@@ -2,12 +2,13 @@
 # Versionada y revisable en PR: la calidad es parte del código.
 # mneme NO tiene valores por defecto para nada de este fichero.
 #
-# enabled=false a propósito (SPEC-115 R4/P13, reafirmado en SPEC-116 D16):
-# encender el mecanismo — gates o cobertura/cliquet — antes de que S3..S6
-# estén implementadas, o antes de que el owner lo decida explícitamente, es
-# una decisión fuera del alcance de esta spec. Ver docs/quality.md.
+# enabled=false a propósito (SPEC-115 R4/P13, reafirmado en SPEC-116 D16 y
+# SPEC-117 D16): encender el mecanismo — gates, cobertura/cliquet o
+# criterios — antes de que S4..S6 estén implementadas, o antes de que el
+# owner lo decida explícitamente, es una decisión fuera del alcance de
+# esta spec. Ver docs/quality.md.
 
-schema_version = 2
+schema_version = 3
 
 # El interruptor. Mientras sea false el mecanismo NO bloquea nada.
 enabled = false
@@ -80,3 +81,22 @@ max_baseline_staleness_pct = 1.0
 # NO se commitea .mneme/quality-baseline.toml: no hay medicion registrada
 # todavia, y un fichero con cifras inventadas seria el peor arranque
 # posible para un mecanismo que existe para que nadie teclee cifras (D16).
+
+[criteria]
+# SPEC-117 (EPIC-calidad S3): los criterios de aceptacion ejecutables.
+# Apagado a proposito, misma postura que D16 de S2.
+enabled = false
+
+# Cota de la fase estructurada completa (git ls-tree + git grep sobre los
+# dos refs). No cubre los criterios `command`: cada uno declara el suyo.
+timeout = "5m"
+
+# Cupo de criterios MANUALES, en porcentaje del total declarado. Superarlo
+# hace FALLAR el certificado: el problema ya no es la verificacion, es que
+# los criterios estan mal escritos (D14 del grill).
+# Aritmetica con N pequeno: con 4 criterios, 25.0 permite exactamente 1.
+max_manual_pct = 25.0
+
+# Cupo de criterios que usan la ESCOTILLA de comando libre. Existe por el
+# mismo motivo: sin el, la escotilla se traga el vocabulario cerrado.
+max_command_pct = 30.0
