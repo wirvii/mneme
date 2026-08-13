@@ -59,6 +59,15 @@ type QualityService struct {
 	// criteria mechanism is OFF: runCriteriaChecks never falls back to
 	// os.Getwd() (the SPEC-085 lesson, applied to a second directory).
 	workflowDir string
+
+	// docWriter is the seam Report uses to write the rendered QA report
+	// through SpecDocWrite — an injected FUNCTION, not a dependency on
+	// *SDDService (D12/P9): this is what lets QualityService stay
+	// testable without constructing a full SDDService, and lets
+	// initQualityService wire the two without a construction cycle
+	// between them (the SAME seam-injection pattern as Runner, D14 of
+	// S1).
+	docWriter func(ctx context.Context, req model.SpecDocWriteRequest) (*model.SpecDocWriteResponse, error)
 }
 
 // QualityOption configures a QualityService at construction time.
@@ -77,6 +86,15 @@ func WithMnemeVersion(v string) QualityOption {
 // can land ahead of its consumer without a lint violation.
 func WithWorkflowDir(dir string) QualityOption {
 	return func(s *QualityService) { s.workflowDir = dir }
+}
+
+// WithDocWriter injects the function Report uses to write the rendered
+// document — production wiring (P10) passes SDDService.SpecDocWrite,
+// sharing the same store and repoDir this QualityService was built with.
+// Never wired to a *SDDService directly, so this package incurs no import
+// cycle and no construction-order dependency between the two services.
+func WithDocWriter(w func(ctx context.Context, req model.SpecDocWriteRequest) (*model.SpecDocWriteResponse, error)) QualityOption {
+	return func(s *QualityService) { s.docWriter = w }
 }
 
 // NewQualityService constructs a QualityService. runner may be nil in a
@@ -1360,4 +1378,122 @@ func (svc *QualityService) runCriteriaChecks(
 	}
 
 	return checks, pure, nil
+}
+
+// --- SPEC-117 EPIC-calidad S3 P9: generated QA report ---
+
+// Report renders req.ID's spec's LATEST certificate into a QA report and
+// writes it via the injected docWriter (SpecDocWrite kind qa-report,
+// D12). It NEVER reads criteria.toml — every fact printed comes from the
+// certificate's own persisted rows, so editing the document after
+// certification cannot change what a human reads. Refuses to overwrite an
+// existing qa-report.md that does not carry quality.ReportGenerationMarker
+// unless req.Force is set (model.ErrReportNotGenerated) — SpecDocWrite's
+// whole-file overwrite semantics (BL-130) make silently destroying a
+// manually-authored report the worst possible first effect of this
+// mechanism.
+func (svc *QualityService) Report(ctx context.Context, req model.QualityReportRequest) (*model.QualityReportResponse, error) {
+	if svc.docWriter == nil {
+		return nil, fmt.Errorf("service: quality: report: doc writer not configured")
+	}
+	if svc.workflowDir == "" {
+		return nil, fmt.Errorf("service: quality: report: workflowDir not configured")
+	}
+
+	spec, err := svc.store.GetSpec(ctx, req.ID)
+	if err != nil {
+		return nil, fmt.Errorf("service: quality: report: get spec: %w", err)
+	}
+
+	cert, err := svc.store.GetLatestCertificate(ctx, svc.project, spec.ID)
+	if err != nil {
+		return nil, fmt.Errorf("service: quality: report: get latest certificate: %w", err)
+	}
+
+	checks, err := svc.store.ListChecks(ctx, cert.ID)
+	if err != nil {
+		return nil, fmt.Errorf("service: quality: report: list checks: %w", err)
+	}
+
+	if !req.Force {
+		if usable, checkErr := svc.existingReportIsMneme(spec, cert.Project); checkErr != nil {
+			return nil, checkErr
+		} else if !usable {
+			return nil, fmt.Errorf("service: quality: report: %w", model.ErrReportNotGenerated)
+		}
+	}
+
+	content := quality.RenderReport(svc.buildReportInput(spec, cert, checks))
+
+	resp, err := svc.docWriter(ctx, model.SpecDocWriteRequest{
+		ID: spec.ID, Kind: model.SpecDocKindQAReport, Content: content,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("service: quality: report: write: %w", err)
+	}
+
+	return &model.QualityReportResponse{Path: resp.Path, Bytes: resp.Bytes, CertificateID: cert.ID}, nil
+}
+
+// existingReportIsMneme reports whether qa-report.md is either ABSENT
+// (nothing to protect) or carries quality.ReportGenerationMarker (mneme's
+// own, safe to overwrite) — false means a manually-authored report is
+// sitting there and Report must refuse without --force.
+func (svc *QualityService) existingReportIsMneme(spec *model.Spec, project string) (bool, error) {
+	path, err := specDocPath(svc.workflowDir, project, spec.ID, model.SpecDocKindQAReport)
+	if err != nil {
+		return false, fmt.Errorf("service: quality: report: spec doc path: %w", err)
+	}
+	existing, readErr := os.ReadFile(path)
+	if readErr != nil {
+		if os.IsNotExist(readErr) {
+			return true, nil
+		}
+		return false, fmt.Errorf("service: quality: report: read existing report: %w", readErr)
+	}
+	return strings.Contains(string(existing), quality.ReportGenerationMarker), nil
+}
+
+// buildReportInput translates the certificate and its persisted checks
+// into quality.ReportInput — the ONE place model.* is translated into the
+// leaf's own flat shape (the same posture CheckResult/Baseline already
+// establish). criterion*-kind rows have their Mode/Text read back from
+// their own Detail JSON, verbatim, never re-derived.
+func (svc *QualityService) buildReportInput(spec *model.Spec, cert *model.QualityCertificate, checks []*model.QualityCheck) quality.ReportInput {
+	criteriaHash := ""
+	reportChecks := make([]quality.ReportCheck, 0, len(checks))
+	for _, c := range checks {
+		rc := quality.ReportCheck{
+			Seq: c.Seq, Kind: c.Kind, Name: c.Name, Status: c.Status, Summary: c.Summary,
+			AckedBy: c.AckedBy, Justification: c.Justification,
+		}
+		if c.AckedAt != nil {
+			rc.AckedAt = c.AckedAt.UTC().Format("2006-01-02T15:04:05Z")
+		}
+		if strings.HasPrefix(c.Kind, "criterion") && c.Detail != "" {
+			var d struct {
+				Mode string `json:"mode"`
+				Text string `json:"text"`
+			}
+			if jsonErr := json.Unmarshal([]byte(c.Detail), &d); jsonErr == nil {
+				rc.Mode, rc.Text = d.Mode, d.Text
+			}
+		}
+		if c.Kind == "criteria" && c.Name == "declared" && c.Status == "pass" && c.Detail != "" {
+			var d struct {
+				Hash string `json:"hash"`
+			}
+			if jsonErr := json.Unmarshal([]byte(c.Detail), &d); jsonErr == nil {
+				criteriaHash = d.Hash
+			}
+		}
+		reportChecks = append(reportChecks, rc)
+	}
+
+	return quality.ReportInput{
+		SpecID: spec.ID, CertificateID: cert.ID, HeadSHA: cert.HeadSHA, BaseSHA: cert.BaseSHA,
+		Verdict: string(cert.Verdict), ConstitutionHash: cert.ConstitutionHash, CriteriaHash: criteriaHash,
+		MnemeVersion: svc.mnemeVersion, GeneratedAtUTC: cert.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+		Checks: reportChecks,
+	}
 }

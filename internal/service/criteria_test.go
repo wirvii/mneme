@@ -947,3 +947,192 @@ func TestAck_StillWorksForNonCriterionRows(t *testing.T) {
 		t.Fatalf("Ack(constitution/tracked): unexpected error: %v", err)
 	}
 }
+
+// --- SPEC-117 EPIC-calidad S3 P9: Report ---
+
+// fakeDocWriter is the seam every Report test injects instead of a real
+// SDDService.SpecDocWrite — it just writes content to a fixed path,
+// recording every call so a test can assert what was written without
+// constructing a full SDDService.
+type fakeDocWriter struct {
+	// workflowDir and project mirror SDDService.SpecDocWrite's OWN
+	// resolution (specDocPath) — Report's existingReportIsMneme check
+	// reads from that same real location, so the fake must write there
+	// too, not to an unrelated directory.
+	workflowDir string
+	project     string
+	calls       []model.SpecDocWriteRequest
+}
+
+func (f *fakeDocWriter) write(_ context.Context, req model.SpecDocWriteRequest) (*model.SpecDocWriteResponse, error) {
+	f.calls = append(f.calls, req)
+	path, err := specDocPath(f.workflowDir, f.project, req.ID, req.Kind)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(path, []byte(req.Content), 0o644); err != nil {
+		return nil, err
+	}
+	return &model.SpecDocWriteResponse{Path: path, Bytes: len(req.Content), Created: true}, nil
+}
+
+// verifyWithAssertCriterion runs a full Verify producing ONE assert-mode
+// criterion whose text is exactly text, returning the service (already
+// wired with workflowDir/docWriter) and the spec.
+func verifyWithAssertCriterion(t *testing.T, s *store.SDDStore, specID, text string) (*QualityService, *model.Spec, string) {
+	t.Helper()
+	repoDir := newTestGitRepo(t)
+	writeConstitutionV3Criteria(t, repoDir, true, "5m", 60.0, 60.0)
+	commitAll(t, repoDir, "add constitution")
+
+	spec := insertTestSpec(t, s, specID, "proj", model.SpecStatusImplementing, "")
+	workflowDir := t.TempDir()
+	doc := fmt.Sprintf(`
+schema_version = 1
+[[criterion]]
+id = "AC1"
+mode = "assert"
+text = %q
+  [[criterion.assert]]
+  verb = "file_exists"
+  path = "main.go"
+  new = false
+`, text)
+	writeCriteriaDocAt(t, workflowDir, "proj", spec.ID, doc)
+
+	docWriter := &fakeDocWriter{workflowDir: workflowDir, project: "proj"}
+	svc := NewQualityService(s, "proj", repoDir, &fakeGateRunner{}, WithWorkflowDir(workflowDir), WithDocWriter(docWriter.write))
+	if _, err := svc.Verify(context.Background(), model.QualityVerifyRequest{ID: spec.ID}); err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	return svc, spec, workflowDir
+}
+
+// TestReport_RendersFromCertificateNotFile covers AC27: verify with
+// "texto A", rewrite criteria.toml to "texto B", generate the report — it
+// must contain "texto A" and must NOT contain "texto B".
+func TestReport_RendersFromCertificateNotFile(t *testing.T) {
+	s := newTestQualityStore(t)
+	svc, spec, workflowDir := verifyWithAssertCriterion(t, s, "SPEC-001", "texto A")
+
+	// Rewrite criteria.toml AFTER certifying.
+	rewritten := strings.Replace(`
+schema_version = 1
+[[criterion]]
+id = "AC1"
+mode = "assert"
+text = "texto A"
+  [[criterion.assert]]
+  verb = "file_exists"
+  path = "main.go"
+  new = false
+`, "texto A", "texto B", 1)
+	writeCriteriaDocAt(t, workflowDir, "proj", spec.ID, rewritten)
+
+	resp, err := svc.Report(context.Background(), model.QualityReportRequest{ID: spec.ID})
+	if err != nil {
+		t.Fatalf("Report: %v", err)
+	}
+	content, err := os.ReadFile(resp.Path)
+	if err != nil {
+		t.Fatalf("read report: %v", err)
+	}
+	if !strings.Contains(string(content), "texto A") {
+		t.Error("report does not contain 'texto A' (the certified text)")
+	}
+	if strings.Contains(string(content), "texto B") {
+		t.Error("report contains 'texto B' — it must render from the CERTIFICATE, never from the (rewritten) file")
+	}
+}
+
+// TestReport_Deterministic covers AC28: two invocations on the same
+// certificate produce byte-identical output.
+func TestReport_Deterministic(t *testing.T) {
+	s := newTestQualityStore(t)
+	svc, spec, _ := verifyWithAssertCriterion(t, s, "SPEC-002", "texto A")
+
+	resp1, err := svc.Report(context.Background(), model.QualityReportRequest{ID: spec.ID, Force: true})
+	if err != nil {
+		t.Fatalf("Report (1st): %v", err)
+	}
+	content1, err := os.ReadFile(resp1.Path)
+	if err != nil {
+		t.Fatalf("read report 1: %v", err)
+	}
+
+	resp2, err := svc.Report(context.Background(), model.QualityReportRequest{ID: spec.ID, Force: true})
+	if err != nil {
+		t.Fatalf("Report (2nd): %v", err)
+	}
+	content2, err := os.ReadFile(resp2.Path)
+	if err != nil {
+		t.Fatalf("read report 2: %v", err)
+	}
+
+	if string(content1) != string(content2) {
+		t.Error("two Report invocations on the same certificate produced different bytes")
+	}
+}
+
+// TestReport_RefusesToOverwriteManualReport covers AC29: an existing
+// qa-report.md without the generation marker is protected unless --force.
+func TestReport_RefusesToOverwriteManualReport(t *testing.T) {
+	s := newTestQualityStore(t)
+	svc, spec, workflowDir := verifyWithAssertCriterion(t, s, "SPEC-003", "texto A")
+
+	path, err := specDocPath(workflowDir, "proj", spec.ID, model.SpecDocKindQAReport)
+	if err != nil {
+		t.Fatalf("specDocPath: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	manualContent := "# Escrito a mano por el qa-tester\n\nAPROBADO tras revision manual.\n"
+	if err := os.WriteFile(path, []byte(manualContent), 0o644); err != nil {
+		t.Fatalf("write manual report: %v", err)
+	}
+
+	_, err = svc.Report(context.Background(), model.QualityReportRequest{ID: spec.ID})
+	if !errors.Is(err, model.ErrReportNotGenerated) {
+		t.Fatalf("Report(no force) error = %v, want ErrReportNotGenerated", err)
+	}
+
+	after, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatalf("read report after rejected call: %v", readErr)
+	}
+	if string(after) != manualContent {
+		t.Error("qa-report.md was modified despite the rejection — the manual report must survive byte for byte")
+	}
+
+	if _, err := svc.Report(context.Background(), model.QualityReportRequest{ID: spec.ID, Force: true}); err != nil {
+		t.Fatalf("Report(--force): unexpected error: %v", err)
+	}
+	overwritten, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatalf("read report after --force: %v", readErr)
+	}
+	if !strings.Contains(string(overwritten), quality.ReportGenerationMarker) {
+		t.Error("Report(--force) did not overwrite the manual report with a generated one")
+	}
+}
+
+// TestReport_OverwritesItsOwnPriorReport covers AC29's second row: a
+// PREVIOUSLY generated report (carrying the marker) is overwritten WITHOUT
+// --force.
+func TestReport_OverwritesItsOwnPriorReport(t *testing.T) {
+	s := newTestQualityStore(t)
+	svc, spec, _ := verifyWithAssertCriterion(t, s, "SPEC-004", "texto A")
+
+	if _, err := svc.Report(context.Background(), model.QualityReportRequest{ID: spec.ID}); err != nil {
+		t.Fatalf("Report (1st, no prior file): %v", err)
+	}
+	// Second call, still without --force: the file now carries the
+	// marker from the first call, so this must succeed.
+	if _, err := svc.Report(context.Background(), model.QualityReportRequest{ID: spec.ID}); err != nil {
+		t.Fatalf("Report (2nd, over its own marker): unexpected error: %v", err)
+	}
+}
