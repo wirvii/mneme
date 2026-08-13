@@ -30,13 +30,18 @@ const MinSchemaVersion = 1
 // CurrentSchemaVersion] fails closed with ErrUnsupportedSchema rather than
 // being silently reinterpreted.
 //
-// SPEC-117 S3 bumps this to 3 ([criteria] joins [coverage]/[ratchet]) —
-// and, critically, does so together with correcting the comparison below
+// SPEC-117 S3 bumped this to 3 ([criteria] joins [coverage]/[ratchet]) —
+// and, critically, did so together with correcting the comparison below
 // to a RANGE (D9): the range check is what lets a schema-2 constitution
 // (this repo's own .mneme/quality.toml among them) keep parsing exactly as
-// it always did. Every future spec that adds a schema version widens this
-// range; none may narrow it.
-const CurrentSchemaVersion = 3
+// it always did.
+//
+// SPEC-118 S4 bumps this to 4 ([budget] joins the other three) — the
+// range is ALREADY in place (S3's own fix), so this bump is purely
+// additive: nothing that parsed under schema 1/2/3 stops parsing. Every
+// future spec that adds a schema version widens this range; none may
+// narrow it.
+const CurrentSchemaVersion = 4
 
 // ErrInvalid is returned by Parse when the constitution is missing a
 // required key, declares an unknown key, or fails a per-field validation
@@ -145,6 +150,14 @@ type Constitution struct {
 	// an undeclared Criteria as if it meant something (D9: "el binario no
 	// rellena nada").
 	Criteria CriteriaConfig
+
+	// BudgetDeclared reports whether [budget] is present — true only under
+	// schema_version 4 (SPEC-118 D14), the same Declared/undeclared
+	// distinction CoverageDeclared/CriteriaDeclared already establish.
+	BudgetDeclared bool
+
+	// Budget is the zero value when BudgetDeclared is false.
+	Budget BudgetConfig
 }
 
 // CriteriaConfig is the parsed, validated [criteria] table (SPEC-117 D9) —
@@ -243,13 +256,26 @@ type RatchetConfig struct {
 // or int field would make a missing `enabled = false` indistinguishable from
 // an explicitly declared one, defeating D13's "no defaults in the binary".
 type rawConstitution struct {
-	SchemaVersion *int         `toml:"schema_version"`
-	Enabled       *bool        `toml:"enabled"`
-	Execution     rawExecution `toml:"execution"`
-	Gates         []rawGate    `toml:"gate"`
-	Coverage      *rawCoverage `toml:"coverage"`
-	Ratchet       *rawRatchet  `toml:"ratchet"`
-	Criteria      *rawCriteria `toml:"criteria"`
+	SchemaVersion *int              `toml:"schema_version"`
+	Enabled       *bool             `toml:"enabled"`
+	Execution     rawExecution      `toml:"execution"`
+	Gates         []rawGate         `toml:"gate"`
+	Coverage      *rawCoverage      `toml:"coverage"`
+	Ratchet       *rawRatchet       `toml:"ratchet"`
+	Criteria      *rawCriteria      `toml:"criteria"`
+	Budget        *rawBudgetSection `toml:"budget"`
+}
+
+// rawBudgetSection mirrors BudgetConfig with pointer fields for presence
+// detection (SPEC-118 D14) — named distinctly from budget.go's own
+// rawBudget (the SEPARATE document, a spec's budget.toml) so the two can
+// never be confused: this one decodes the constitution's `[budget]` TABLE,
+// that one decodes an entire budget.toml FILE.
+type rawBudgetSection struct {
+	Enabled        *bool     `toml:"enabled"`
+	Timeout        *string   `toml:"timeout"`
+	TestGlobs      *[]string `toml:"test_globs"`
+	TestReachDepth *int      `toml:"test_reach_depth"`
 }
 
 // rawCriteria mirrors CriteriaConfig with pointer fields for presence
@@ -360,6 +386,11 @@ func Parse(data []byte) (*Constitution, error) {
 		return nil, err
 	}
 
+	budgetDeclared, budgetCfg, err := parseBudgetSection(schemaVersion, raw.Budget)
+	if err != nil {
+		return nil, err
+	}
+
 	return &Constitution{
 		SchemaVersion:    schemaVersion,
 		Enabled:          *raw.Enabled,
@@ -371,6 +402,64 @@ func Parse(data []byte) (*Constitution, error) {
 		Ratchet:          ratchetCfg,
 		CriteriaDeclared: criteriaDeclared,
 		Criteria:         criteriaCfg,
+		BudgetDeclared:   budgetDeclared,
+		Budget:           budgetCfg,
+	}, nil
+}
+
+// parseBudgetSection implements SPEC-118 D14's schema-version branching for
+// `[budget]` — the same shape parseCriteriaSection already establishes for
+// `[criteria]`: a strict single threshold (only schema 4 accepts it,
+// declaring it under 1/2/3 is an explicit, named "sube schema_version a 4"
+// error), schema 4 requires it present and complete. test_reach_depth is
+// bounded to [1, 10] (D14): above 10 the traversal stops being a check and
+// becomes a whole-repository walk.
+func parseBudgetSection(schemaVersion int, raw *rawBudgetSection) (declared bool, cfg BudgetConfig, err error) {
+	if schemaVersion < 4 {
+		if raw != nil {
+			return false, BudgetConfig{}, fmt.Errorf(
+				"quality: [budget] declared under schema_version %d — sube schema_version a 4: %w", schemaVersion, ErrInvalid)
+		}
+		return false, BudgetConfig{}, nil
+	}
+
+	if raw == nil {
+		return false, BudgetConfig{}, fmt.Errorf("quality: missing required section %q for schema_version %d: %w", "budget", schemaVersion, ErrInvalid)
+	}
+
+	if raw.Enabled == nil {
+		return false, BudgetConfig{}, fmt.Errorf("quality: missing required key %q: %w", "budget.enabled", ErrInvalid)
+	}
+
+	if raw.Timeout == nil {
+		return false, BudgetConfig{}, fmt.Errorf("quality: missing required key %q: %w", "budget.timeout", ErrInvalid)
+	}
+	dur, durErr := time.ParseDuration(*raw.Timeout)
+	if durErr != nil || dur <= 0 {
+		return false, BudgetConfig{}, fmt.Errorf(
+			"quality: budget.timeout %q must be a positive parseable duration: %w", *raw.Timeout, ErrInvalid)
+	}
+
+	if raw.TestGlobs == nil || len(*raw.TestGlobs) == 0 {
+		return false, BudgetConfig{}, fmt.Errorf("quality: missing required key %q: %w", "budget.test_globs", ErrInvalid)
+	}
+	for _, pattern := range *raw.TestGlobs {
+		if _, matchErr := doublestar.Match(pattern, "probe"); matchErr != nil {
+			return false, BudgetConfig{}, fmt.Errorf(
+				"quality: budget.test_globs pattern %q invalid: %s: %w", pattern, matchErr, ErrInvalid)
+		}
+	}
+
+	if raw.TestReachDepth == nil {
+		return false, BudgetConfig{}, fmt.Errorf("quality: missing required key %q: %w", "budget.test_reach_depth", ErrInvalid)
+	}
+	if *raw.TestReachDepth < 1 || *raw.TestReachDepth > 10 {
+		return false, BudgetConfig{}, fmt.Errorf(
+			"quality: budget.test_reach_depth %d must be in [1, 10]: %w", *raw.TestReachDepth, ErrInvalid)
+	}
+
+	return true, BudgetConfig{
+		Enabled: *raw.Enabled, Timeout: dur, TestGlobs: *raw.TestGlobs, TestReachDepth: *raw.TestReachDepth,
 	}, nil
 }
 

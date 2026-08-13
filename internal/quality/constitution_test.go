@@ -160,7 +160,7 @@ func TestParse_Rejections(t *testing.T) {
 	}{
 		{
 			name: "unknown top-level key",
-			doc: validDoc + "\nunknown_key = true\n",
+			doc:  validDoc + "\nunknown_key = true\n",
 		},
 		{
 			name: "unknown gate key",
@@ -178,14 +178,16 @@ extra = "nope"
 `,
 		},
 		{
-			// SPEC-117 D9/AC2 retarget: schema_version=3 is now VALID (it
-			// requires [coverage]/[ratchet]/[criteria], covered separately
-			// by TestParse_SchemaVersion3Criteria below) — this row now
-			// targets schema_version=4, a value Parse still rejects, and
+			// SPEC-118 D2/AC2 retarget (second consecutive retarget of this
+			// same row — SPEC-117 already moved it from 3 to 4):
+			// schema_version=4 is now VALID (it requires
+			// [coverage]/[ratchet]/[criteria]/[budget], covered separately
+			// by TestParse_SchemaVersion4Budget below) — this row now
+			// targets schema_version=5, a value Parse still rejects, and
 			// remains the guardian for "outside the accepted set" (R2/D9:
 			// the accepted set only ever WIDENS, never narrows).
-			name:    "schema_version outside {1,2,3}",
-			doc:     strings.Replace(validDoc, "schema_version = 1", "schema_version = 4", 1),
+			name:    "schema_version outside {1,2,3,4}",
+			doc:     strings.Replace(validDoc, "schema_version = 1", "schema_version = 5", 1),
 			wantErr: ErrUnsupportedSchema,
 		},
 		{
@@ -303,14 +305,15 @@ func TestHashBytes_ChangesWithComment(t *testing.T) {
 // Parse itself would reject (e.g. a future, higher schema_version with keys
 // this mneme does not recognise).
 //
-// SPEC-117 D9/AC2 retarget: the fixture used schema_version=3 specifically
-// BECAUSE Parse rejected it before this spec; schema_version=3 is now
-// valid, so the fixture moves to 4 — a value Parse still rejects — to keep
-// testing the same "PeekSchemaVersion tolerates what Parse would reject"
-// property.
+// SPEC-118 D2/AC2 retarget (second consecutive retarget — SPEC-117 already
+// moved this fixture from 3 to 4): the fixture used schema_version=4
+// specifically BECAUSE Parse rejected it before this spec; schema_version=4
+// is now valid, so the fixture moves to 5 — a value Parse still rejects —
+// to keep testing the same "PeekSchemaVersion tolerates what Parse would
+// reject" property.
 func TestPeekSchemaVersion_ToleratesRejectedDocument(t *testing.T) {
 	future := `
-schema_version = 4
+schema_version = 5
 a_future_key_this_mneme_does_not_know = true
 `
 	if _, err := Parse([]byte(future)); err == nil {
@@ -321,8 +324,8 @@ a_future_key_this_mneme_does_not_know = true
 	if err != nil {
 		t.Fatalf("PeekSchemaVersion: %v", err)
 	}
-	if v != 4 {
-		t.Errorf("PeekSchemaVersion = %d, want 4", v)
+	if v != 5 {
+		t.Errorf("PeekSchemaVersion = %d, want 5", v)
 	}
 }
 
@@ -330,10 +333,11 @@ a_future_key_this_mneme_does_not_know = true
 // the exact bytes mneme init will one day write must already be valid
 // according to Parse, and must declare enabled=false.
 //
-// SPEC-117 extends the anchor: the template now declares schema_version 3
-// with [coverage]/[ratchet]/[criteria] all present and OFF (AC33) — a
-// template that failed to declare them complete would itself fail to
-// Parse, since schema 3 requires all three sections in full.
+// SPEC-118 extends the anchor again: the template now declares
+// schema_version 4 with [coverage]/[ratchet]/[criteria]/[budget] all
+// present and OFF (AC34) — a template that failed to declare them complete
+// would itself fail to Parse, since schema 4 requires all four sections in
+// full.
 func TestTemplate_ParsesWithoutError(t *testing.T) {
 	c, err := Parse([]byte(Template()))
 	if err != nil {
@@ -342,16 +346,16 @@ func TestTemplate_ParsesWithoutError(t *testing.T) {
 	if c.Enabled {
 		t.Error("Template() constitution has enabled=true, want false (R4)")
 	}
-	if c.SchemaVersion != 3 {
-		t.Errorf("Template() SchemaVersion = %d, want 3", c.SchemaVersion)
+	if c.SchemaVersion != 4 {
+		t.Errorf("Template() SchemaVersion = %d, want 4", c.SchemaVersion)
 	}
-	if !c.CoverageDeclared || !c.RatchetDeclared || !c.CriteriaDeclared {
-		t.Errorf("Template() CoverageDeclared=%v RatchetDeclared=%v CriteriaDeclared=%v, want all true",
-			c.CoverageDeclared, c.RatchetDeclared, c.CriteriaDeclared)
+	if !c.CoverageDeclared || !c.RatchetDeclared || !c.CriteriaDeclared || !c.BudgetDeclared {
+		t.Errorf("Template() CoverageDeclared=%v RatchetDeclared=%v CriteriaDeclared=%v BudgetDeclared=%v, want all true",
+			c.CoverageDeclared, c.RatchetDeclared, c.CriteriaDeclared, c.BudgetDeclared)
 	}
-	if c.Coverage.Enabled || c.Ratchet.Enabled || c.Criteria.Enabled {
-		t.Errorf("Template() Coverage.Enabled=%v Ratchet.Enabled=%v Criteria.Enabled=%v, want all false",
-			c.Coverage.Enabled, c.Ratchet.Enabled, c.Criteria.Enabled)
+	if c.Coverage.Enabled || c.Ratchet.Enabled || c.Criteria.Enabled || c.Budget.Enabled {
+		t.Errorf("Template() Coverage.Enabled=%v Ratchet.Enabled=%v Criteria.Enabled=%v Budget.Enabled=%v, want all false",
+			c.Coverage.Enabled, c.Ratchet.Enabled, c.Criteria.Enabled, c.Budget.Enabled)
 	}
 }
 
@@ -831,6 +835,179 @@ func TestParse_Criteria_FieldValidation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			doc := tt.mutate(validDocV3)
+			_, err := Parse([]byte(doc))
+			if tt.wantErr && err == nil {
+				t.Fatalf("Parse(%s): want error, got nil\ndoc:\n%s", tt.name, doc)
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("Parse(%s): want no error, got %v\ndoc:\n%s", tt.name, err, doc)
+			}
+			if tt.wantErr && !errors.Is(err, ErrInvalid) {
+				t.Errorf("error = %v, want wrapping ErrInvalid", err)
+			}
+		})
+	}
+}
+
+// --- SPEC-118 EPIC-calidad S4 P6: schema 4, [budget] ---
+
+// validDocV4 is a minimal, fully valid schema_version=4 document — adds
+// [budget] complete-and-off to validDocV3's own shape.
+const validDocV4 = `
+schema_version = 4
+enabled = false
+
+[execution]
+output_tail_bytes = 4096
+
+[[gate]]
+name = "build"
+command = ["make", "build"]
+timeout = "5m"
+required = true
+
+[coverage]
+enabled = false
+format = "go-cover"
+command = ["make", "coverage"]
+profile_path = "tmp/coverage.out"
+timeout = "20m"
+min_diff_line_pct = 80.0
+min_changed_lines = 5
+exclude = []
+
+[ratchet]
+enabled = false
+max_global_line_pct_drop = 0.0
+max_baseline_staleness_pct = 1.0
+
+[criteria]
+enabled = false
+timeout = "5m"
+max_manual_pct = 25.0
+max_command_pct = 30.0
+
+[budget]
+enabled = false
+timeout = "2m"
+test_globs = ["**/*_test.go"]
+test_reach_depth = 3
+`
+
+// TestParse_SchemaVersion4Budget covers AC2's positive row (4, with all
+// four sections complete, parses) and AC3: BudgetDeclared is true only
+// under schema 4.
+func TestParse_SchemaVersion4Budget(t *testing.T) {
+	c, err := Parse([]byte(validDocV4))
+	if err != nil {
+		t.Fatalf("Parse(validDocV4): %v", err)
+	}
+	if c.SchemaVersion != 4 {
+		t.Errorf("SchemaVersion = %d, want 4", c.SchemaVersion)
+	}
+	if !c.BudgetDeclared {
+		t.Error("BudgetDeclared = false, want true under schema_version 4")
+	}
+	if c.Budget.Timeout.String() != "2m0s" {
+		t.Errorf("Budget.Timeout = %v, want 2m0s", c.Budget.Timeout)
+	}
+	if len(c.Budget.TestGlobs) != 1 || c.Budget.TestGlobs[0] != "**/*_test.go" {
+		t.Errorf("Budget.TestGlobs = %v, want [**/*_test.go]", c.Budget.TestGlobs)
+	}
+	if c.Budget.TestReachDepth != 3 {
+		t.Errorf("Budget.TestReachDepth = %d, want 3", c.Budget.TestReachDepth)
+	}
+}
+
+// TestParse_BudgetDeclaredVsUndeclared covers AC3's three rows for
+// [budget] specifically: schema 3 (no [budget]) -> OK, declared false;
+// schema 3 WITH [budget] -> error naming schema_version; schema 4 ->
+// declared true.
+func TestParse_BudgetDeclaredVsUndeclared(t *testing.T) {
+	c3, err := Parse([]byte(validDocV3))
+	if err != nil {
+		t.Fatalf("Parse(validDocV3): %v", err)
+	}
+	if c3.BudgetDeclared {
+		t.Error("schema 3 with no [budget]: BudgetDeclared = true, want false")
+	}
+
+	withBudgetUnderSchema3 := validDocV3 + `
+[budget]
+enabled = false
+timeout = "2m"
+test_globs = ["**/*_test.go"]
+test_reach_depth = 3
+`
+	_, err = Parse([]byte(withBudgetUnderSchema3))
+	if err == nil {
+		t.Fatal("Parse([budget] under schema_version 3): want error, got nil")
+	}
+	if !strings.Contains(err.Error(), "schema_version") {
+		t.Errorf("error = %q, want it to name schema_version", err.Error())
+	}
+	if !errors.Is(err, ErrInvalid) {
+		t.Errorf("error = %v, want wrapping ErrInvalid", err)
+	}
+
+	c4, err := Parse([]byte(validDocV4))
+	if err != nil {
+		t.Fatalf("Parse(validDocV4): %v", err)
+	}
+	if !c4.BudgetDeclared {
+		t.Error("schema 4: BudgetDeclared = false, want true")
+	}
+}
+
+// TestParse_Budget_MissingRequiredKey covers AC4: one row per missing
+// [budget] key, each naming itself, and none filled in with a default.
+func TestParse_Budget_MissingRequiredKey(t *testing.T) {
+	tests := []struct {
+		wantKey string
+	}{
+		{"budget.enabled"},
+		{"budget.timeout"},
+		{"budget.test_globs"},
+		{"budget.test_reach_depth"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.wantKey, func(t *testing.T) {
+			doc := removeTOMLKeyLine(validDocV4, tt.wantKey)
+			_, err := Parse([]byte(doc))
+			if err == nil {
+				t.Fatalf("Parse missing %s: want error, got nil", tt.wantKey)
+			}
+			if !errors.Is(err, ErrInvalid) {
+				t.Errorf("error = %v, want wrapping ErrInvalid", err)
+			}
+			if !strings.Contains(err.Error(), tt.wantKey) {
+				t.Errorf("error = %q, want it to name key %q", err.Error(), tt.wantKey)
+			}
+		})
+	}
+}
+
+// TestParse_Budget_FieldValidation covers AC4's paired validation rows:
+// timeout, test_globs (empty and invalid glob), and test_reach_depth.
+func TestParse_Budget_FieldValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(string) string
+		wantErr bool
+	}{
+		{"timeout: 0s rejected", replaceOnce(`timeout = "2m"`, `timeout = "0s"`), true},
+		{"timeout: 2m accepted", replaceOnce(`timeout = "2m"`, `timeout = "2m"`), false},
+		{"test_globs: empty rejected", replaceOnce(`test_globs = ["**/*_test.go"]`, `test_globs = []`), true},
+		{"test_globs: one pattern accepted", replaceOnce(`test_globs = ["**/*_test.go"]`, `test_globs = ["**/*_test.go"]`), false},
+		{"test_globs: invalid glob rejected", replaceOnce(`test_globs = ["**/*_test.go"]`, `test_globs = ["["]`), true},
+		{"test_reach_depth: 0 rejected", replaceOnce("test_reach_depth = 3", "test_reach_depth = 0"), true},
+		{"test_reach_depth: 11 rejected", replaceOnce("test_reach_depth = 3", "test_reach_depth = 11"), true},
+		{"test_reach_depth: 3 accepted", replaceOnce("test_reach_depth = 3", "test_reach_depth = 3"), false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			doc := tt.mutate(validDocV4)
 			_, err := Parse([]byte(doc))
 			if tt.wantErr && err == nil {
 				t.Fatalf("Parse(%s): want error, got nil\ndoc:\n%s", tt.name, doc)
