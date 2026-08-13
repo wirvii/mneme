@@ -1,4 +1,4 @@
-# Quality mechanism (SPEC-115, EPIC-calidad S1)
+# Quality mechanism (SPEC-115 S1 + SPEC-116 S2, EPIC-calidad)
 
 mneme's quality mechanism replaces an agent's self-reported "it works" with
 a result mneme itself produced by **executing something**, bound to the
@@ -7,11 +7,14 @@ longer applies — it has to be earned again.
 
 This document covers the **cimiento** (S1): a repository's own declared
 constitution, the certificate mneme emits by running it, and the block in
-`spec_advance` that requires one. The five specs that follow in the
-EPIC (`EPIC-calidad`) build coverage-of-the-diff, executable acceptance
-criteria, budget/graph checks (absorbing `lane audit`), mutation testing,
-and visual verification **on top of this same registry** — none of that is
-implemented here (see "What this does NOT do" below).
+`spec_advance` that requires one — plus **S2** (SPEC-116): the first
+comprehension that judges *the work* rather than the process — coverage of
+the lines a spec actually added or modified — and the **ratchet**, which
+keeps the repository's aggregate coverage from silently regressing. The
+four specs that remain in the EPIC (`EPIC-calidad`) build executable
+acceptance criteria, budget/graph checks (absorbing `lane audit`), mutation
+testing, and visual verification **on top of this same registry** — none of
+that is implemented here (see "What this does NOT do" below).
 
 ## The problem this solves
 
@@ -36,7 +39,7 @@ declares its own gates and, when ready, flips `enabled = true` in its own
 commit.
 
 ```toml
-schema_version = 1
+schema_version = 2
 enabled = false
 
 [execution]
@@ -53,15 +56,45 @@ name = "test"
 command = ["make", "test"]
 timeout = "20m"
 required = true
+
+[coverage]
+enabled = false
+format = "go-cover"
+command = ["make", "coverage"]
+profile_path = "tmp/coverage.out"
+timeout = "20m"
+min_diff_line_pct = 80.0
+min_changed_lines = 5
+exclude = []
+
+[ratchet]
+enabled = false
+max_global_line_pct_drop = 0.0
+max_baseline_staleness_pct = 1.0
 ```
 
+- **`schema_version` accepts `{1, 2}`, never narrower.** A schema-1
+  document (no `[coverage]`/`[ratchet]`) keeps parsing exactly as it always
+  did — S2 is additive, not a breaking migration. Declaring `[coverage]` or
+  `[ratchet]` under `schema_version = 1` is an explicit error naming the fix
+  ("bump schema_version to 2"), never a silent tolerance. Every future spec
+  in this EPIC widens the accepted set further; **none may narrow it** —
+  narrowing turns every existing constitution in the world into an instant
+  block.
 - **`enabled`** is the interruptor. While `false` (materialized default),
   nothing in this file blocks anything — `mneme init` never turns a repo
-  into a project with a live quality gate nobody asked for.
+  into a project with a live quality gate nobody asked for. `[coverage]`
+  and `[ratchet]` have their OWN independent `enabled` switches — the
+  aggregate/delta coverage mechanism can be on while gates are unconditional
+  (they always run), and `[ratchet].enabled = true` REQUIRES
+  `[coverage].enabled = true` (`Parse` rejects the inconsistent
+  combination outright — the ratchet feeds off the same profile).
 - **No defaults anywhere in the binary.** Every key above is required;
   `quality.Parse` rejects a missing key by NAME, and rejects any key it does
   not recognise (`DisallowUnknownFields`) — a typo must explode, not
-  silently govern nothing.
+  silently govern nothing. This applies identically to `[coverage]`/
+  `[ratchet]`: a schema-2 document declaring either section must declare it
+  **completely**.
 - **`command` is an argv vector, never a shell string.** `["make", "test"]`
   is executed via `exec.CommandContext(argv[0], argv[1:]...)` directly — no
   `sh -c`, ever. Portable to Windows, no quoting ambiguity, nothing for a
@@ -119,6 +152,335 @@ checks is `fail` — a certificate that verified nothing is not a green
 certificate, it is an absence of evidence, and treating absence as success
 is exactly the dishonest report this whole mechanism exists to eliminate.
 
+## S2: coverage of the diff, and the ratchet (SPEC-116)
+
+S1's gates prove the SUITE passes. They do not prove the suite **looked
+at** the new code — an agent that adds 400 lines with zero tests produces
+the exact same green `make test` a careful implementer does. S2 closes
+that concrete lie: after the gates run, seven MORE rows land in the SAME
+`quality_checks` table, under two new `kind`s (`coverage`, `ratchet`) —
+**no migration, no new column**. This is the first real proof the S1
+registry can absorb a whole new spec's worth of checks without a schema
+change.
+
+### One execution, two measurements
+
+The declared `[coverage].command` runs **once** per `mneme quality verify`.
+Its output feeds BOTH halves at the same time:
+
+- restricted to the lines the spec actually **added or modified** →
+  `coverage/diff-lines` (the delta a human should read the diff for);
+- aggregated over the WHOLE repository → the ratchet's `global-line-pct`
+  and its staleness check, further down.
+
+This is not an optimization — it is what makes the ratchet free to compute
+and therefore viable at all (see "The ratchet" below).
+
+### The two profile formats: LCOV and go-cover
+
+`[coverage].format` is a **declared**, closed-set key (`"lcov"` |
+`"go-cover"`) — never sniffed from the file's bytes. Guessing wrong from
+content is exactly the kind of failure that produces zero matched files,
+which reads as a 100% percentage on an empty denominator — the single
+riskiest failure mode in this entire spec (see "The empty-denominator
+trap" below).
+
+- **LCOV** is the lingua franca most non-Go ecosystems already produce.
+  mneme reads `SF:`/`DA:<line>,<hits>`/`end_of_record`; every other
+  directive (`FN:`, `FNDA:`, `BRDA:`, `LF:`, `LH:`, `TN:`, `BRF:`, …) is
+  ignored **without error** — a real-world LCOV file mixes tool-specific
+  dialects, and rejecting them would be fragile against a producer mneme
+  does not control. The producer's OWN summary counters (`LF:`/`LH:`) are
+  **never read** — they can lie or drift, so the per-line `DA:` records are
+  recomputed independently every time.
+- **go-cover** is Go's own native `go test -coverprofile` format — an
+  explicit exception to "stay agnostic of the ecosystem", approved because
+  Go is mneme's own implementation language and dogfooding its own coverage
+  needs to read its own toolchain's output directly. Its first line
+  (`mode: set|count|atomic`) is **mandatory**; its absence is exactly the
+  signal that catches an LCOV file mistakenly declared `go-cover`.
+  **Approximation, stated plainly:** Go's coverage unit is a BLOCK spanning
+  a line range, not a single line — every line in the block is marked with
+  its count, matching the ecosystem's standard converters. Blank lines and
+  comments inside a covered block therefore count as covered. This is
+  accepted so that **the same repository produces the same percentage
+  whether measured via LCOV conversion or this native profile** — the
+  alternative (marking only the block's first line) would drastically
+  undervalue any multi-line function body.
+- **The shared rule, declared once, applied to both:** a line is
+  *instrumented* if any record mentions it; it is *covered* if **any**
+  record that mentions it declares `hits > 0` — never a sum, never "the
+  last record wins". This single rule is what makes merged LCOV tracefiles
+  (several `DA:` for the same line) and overlapping go-cover blocks behave
+  correctly without special-casing either format.
+- Adding a THIRD format is additive: a type implementing `ProfileParser`
+  plus one entry in `internal/quality`'s registry (the same registry shape
+  `internal/codegraph/extractor.go` already uses for language extractors).
+  `Formats()` is the single source of truth `Parse` validates the `format`
+  key against — never a second, parallel literal list that could drift.
+
+### Extracting the diff: merge-base, not the raw base commit
+
+`Git.ChangedLines(fromSHA, toRef)` runs `git diff --unified=0` with every
+flag that a repository's or a user's own `.gitconfig` could otherwise
+change the parsed text of, fixed explicitly on the command line:
+`core.quotePath=false` (a non-ASCII filename is never quoted/escaped),
+`--src-prefix=a/ --dst-prefix=b/` (defeats `diff.noprefix`), `--no-ext-diff`
+(defeats `diff.external`), and `-M` (rename detection stays ON regardless
+of `diff.renames` — without it a pure rename looks like a full delete plus
+a full add, demanding fresh coverage of a file nobody actually touched).
+
+The range is computed from **`MergeBase(spec.BaseSHA, HEAD)`**, not from
+`spec.BaseSHA` directly. In the common, linear case this is a no-op — the
+merge-base of an ancestor and its descendant IS that ancestor, so nothing
+changes. It matters when `BaseSHA` is not (or is no longer) a true ancestor
+of HEAD: a raw two-dot diff against a non-ancestor commit compares two
+trees directly, with no regard for shared history, and can attribute
+completely unrelated content to a spec that never touched it. Anchoring on
+the merge-base is never worse than the raw commit, and is sometimes the
+only correct answer. (`Git.PathChangedInRange`, the constitution's own
+tamper check from S1, still uses a raw two-dot range — that primitive is
+intentionally untouched here; unifying it is a separate item, BL-172.)
+
+### Reconciling paths: `NormalizeSourcePath`
+
+A coverage profile's own paths rarely match git's repo-relative form
+exactly — go-cover's native output carries the full module import path
+(`github.com/wirvii/mneme/internal/quality/git.go`), and some producers
+emit absolute paths. `NormalizeSourcePath` reconciles a raw profile path
+against the set of files git actually reports changed, by progressively
+shrinking the raw path from the front and requiring an EXACT match (or a
+`/`-bounded suffix match) at each length — the first length with **exactly
+one** match wins.
+
+**A sufix that matches more than one file does NOT match at all.** Picking
+"the first" of an ambiguous match is exactly how a mechanism starts
+silently misattributing coverage to the wrong file — a wrong answer is
+worse than no answer here.
+
+### The empty-denominator trap (`coverage/changed-files-in-profile`)
+
+If path reconciliation is broken — the producer emits paths in a form
+mneme cannot map at all — **no changed file appears in the profile**, the
+diff-coverage denominator becomes 0, and a 0/0 ratio reads as **100%**: a
+green certificate with the mechanism entirely dead. This is the same shape
+of scar as SPEC-087 AC12, and it is treated with the same seriousness.
+
+`coverage/changed-files-in-profile` catches it deterministically: if at
+least one non-excluded changed file exists AND the profile has at least
+one file AND their intersection is empty → a `finding`. Not a `skipped`
+(that would BE the silent green) and not a `fail` (mneme cannot tell "this
+spec only touched docs/SQL/markdown" from "the path mapping is broken"
+apart — that would require ecosystem knowledge mneme deliberately does not
+have). A `finding` puts the ambiguity in front of a human, who can.
+
+### The seven new rows
+
+| # | `kind` | `name` | Asserts |
+|---|---|---|---|
+| 1 | `coverage` | `profile` | the declared command ran and produced a parseable, non-empty profile in the declared format |
+| 2 | `coverage` | `changed-files-in-profile` | at least one changed file appears in the profile |
+| 3 | `coverage` | `diff-lines` | coverage of the added/modified lines meets `min_diff_line_pct` |
+| 4 | `ratchet` | `baseline-integrity` | the registered baseline was not weakened or deleted within this spec's commit range |
+| 5 | `ratchet` | `baseline-comparable` | the baseline was measured on an ancestor of HEAD, under the SAME measurement scope |
+| 6 | `ratchet` | `global-line-pct` | the repository's aggregate coverage has not dropped past the declared tolerance |
+| 7 | `ratchet` | `baseline-stale` | the registered mark still describes the repository, within a declared margin |
+
+**One row per ASSERTION, never per topic** — `AckCheck` signs exactly one
+row. If the three baseline assertions shared a row, acking "yes, I moved
+the mark on purpose" would also silently ack "yes, I measured it on the
+right branch" and "yes, I know it's stale" — three different remedies
+sharing one signature is exactly how a signature stops meaning anything.
+
+### `coverage/profile`: the destructive step
+
+`[coverage].profile_path` is treated as an OUTPUT of `[coverage].command`,
+never an input mneme trusts blindly. Before running the command, mneme
+**deletes any pre-existing file at that path** — the first destructive
+effect this mechanism has ever had on a working tree, and it is guarded
+accordingly:
+
+1. The path is already validated relative, `..`-free, by `Parse`.
+2. mneme refuses to delete a **directory**.
+3. mneme refuses to delete a path **tracked by git** — checked with `git
+   ls-files --error-unmatch` BEFORE any deletion is attempted. A tracked
+   profile means the constitution itself is misconfigured (the profile
+   belongs in `.gitignore`, being a command's OUTPUT); the check fails
+   with that exact message, and the file is left untouched.
+4. Only after all three hold does the delete happen, and its error IS
+   handled explicitly — `.golangci.yml` excludes `os.Remove` from
+   `errcheck`, so the linter will not catch a dropped error here; this was
+   handled by hand, not delegated to tooling.
+
+Without this delete, a stale profile left over from a previous run or
+branch could produce a certificate that looks green for a commit it was
+never measured against — a false pass indistinguishable from a real one
+without this guarantee.
+
+### The ratchet: where the baseline comes from, and what it does NOT guarantee
+
+Comparing "did coverage drop" requires the metric at the commit being
+compared against — and nobody has it. Three tempting alternatives were
+considered and rejected:
+
+1. **Re-run the suite against the base tree.** Doubles the most expensive
+   part of an already-minutes-long operation, may not even build (a
+   different toolchain state, generated code, migrations), and would
+   require mneme to create and clean up a `git worktree` — a class of
+   filesystem side effect this mechanism does not otherwise have.
+2. **Require a certificate at the base commit.** Certificates live in a
+   HOST-level database (`~/.mneme/projects/<slug>.db`) — a teammate, a CI
+   runner, or a clean machine has none. The same commit would produce
+   different ratchet verdicts depending on WHERE it runs, destroying the
+   determinism this whole mechanism exists for. It would also make the
+   first spec in any repository's history impossible to satisfy.
+3. **Derive it from the current profile alone, without re-running
+   anything.** Wrong, not just expensive: if a spec deletes a test file,
+   HEAD's profile shows the tested code newly uncovered, but the diff
+   against that file is EMPTY (nothing in it changed) — the derivation is
+   blind exactly where the ratchet exists to look.
+
+**What mneme does instead:** a REGISTERED baseline, `.mneme/quality-baseline.toml`
+— versioned, like the constitution itself — written ONLY by `mneme quality
+baseline update <spec-id>`, and only from the `coverage/profile` row's
+figures of the spec's LATEST **`pass`** certificate. Nobody types a number
+into this file, ever.
+
+```toml
+schema_version  = 1
+measured_at_sha = "9f3c…"
+measured_at     = "2026-08-13T11:04:22Z"
+certificate_id  = "0193…"
+lines_total     = 41230
+lines_covered   = 29066
+global_line_pct = 70.50
+scope_hash      = "b21f…"
+```
+
+**What this guarantees:** the repository's aggregate coverage cannot fall
+below a mark mneme itself measured, on an ancestor commit, without someone
+signing off in writing; and the mark cannot silently go stale while the
+codebase improves around it (see "Staleness" below). **What it does NOT
+guarantee:** that a baseline someone else registered came from a
+certificate mneme's OWN database can verify — certificates are host-local
+(above), so a teammate's baseline is not independently checkable against
+this machine's certificate history. The real guarantee is structural, not
+cryptographic: every change to the baseline file is visible in a normal
+`git diff`, and weakening it costs a signed acknowledgment — the mark is
+never silently editable, even though its provenance cannot be re-verified
+byte for byte.
+
+### Baseline integrity is DIRECTIONAL (`ratchet/baseline-integrity`)
+
+| Before (at merge-base) | After (at HEAD) | Result | Why |
+|---|---|---|---|
+| absent | absent | `pass` | nothing to compare |
+| absent | present | `pass` | no mark existed to weaken — an honest bootstrap |
+| present | **absent** | **`finding`** | deleting it returns the ratchet to `skipped` — the obvious leak |
+| present | present, pct **≥** | `pass` | raising the mark only hardens the ratchet — must be free |
+| present | present, pct **<** | **`finding`** | weakening the mark mid-spec is the attack |
+
+The asymmetry is the entire point: raising the mark is monotonically safe
+and costs nothing; lowering or deleting it costs a signature with a name
+and a date. A guardian that flags EVERY change (never letting an
+improvement pass for free) is exactly as useless as one that flags NO
+change (never catching a real weakening) — both are vacuous in their own
+direction, which is why this table's two middle rows are load-bearing, not
+decorative.
+
+### `ratchet/baseline-comparable`: is the mark even meaningful right now?
+
+Two independent causes, each a `finding` on its own:
+
+1. **`measured_at_sha` is not an ancestor of HEAD.** A mark measured on a
+   sibling branch does not describe this commit's history — comparing
+   against it means nothing.
+2. **`scope_hash` mismatch.** `ScopeHash(format, exclude)` — sha256 of the
+   format plus the sorted, deduplicated exclude patterns. If a PAST spec
+   widened `exclude` or switched `format` (which changes what gets
+   instrumented at all), the repository's aggregate coverage changed
+   without a single test being written, that spec's OWN ratchet check
+   passed easily (a wider exclude list only ever raises the visible
+   percentage), and the registered mark is now stale **forever** unless
+   this check catches it. Widening `exclude` is otherwise a silent,
+   permanent way to loosen the ratchet.
+
+### Staleness (`ratchet/baseline-stale`, D17): the margin that closes the loophole
+
+Baseline integrity alone leaves a gap: if coverage improves and nobody
+updates the mark, the repository could regress right back down to the OLD
+mark without anything firing — a number that does not actually obligate
+anyone to anything. `baseline-stale` closes it: when the CURRENT
+measurement exceeds the registered mark by more than
+`max_baseline_staleness_pct`, it is a `finding`.
+
+- **The margin defaults to `1.0` point.** Below one point is noise (a test
+  entering/leaving, a file moving); above it is a real improvement that
+  deserves to be registered. `0.0` is deliberately rejected by `Parse` — a
+  single covered line in a 40,000-line repo moves the aggregate by
+  thousandths of a point, and treating that as a finding would train a
+  team to sign without reading.
+- **Why a `finding`, never a `fail`:** the remedy is `baseline update`,
+  which is a COMMIT — it moves HEAD and invalidates the certificate that
+  produced it, forcing a full re-verify (the same minutes-long operation
+  S1 already documented as expensive). A `fail` here would impose a
+  mandatory double `verify` on every single spec that improves coverage —
+  exactly the kind of friction that ends with someone raising the margin
+  to 100 just to make the nuisance stop.
+- **Why signing it repeatedly does NOT disable it, by construction:**
+  1. **No signature covers a future certificate.** Each `verify` recomputes
+     the finding fresh against the current measurement; an `ack` is scoped
+     to the exact certificate row it was recorded against.
+  2. **The number grows.** Each successive finding's `summary` carries a
+     bigger gap and an older mark, side by side in the certificate
+     history — a repeated finding does not disappear, it visibly
+     accumulates.
+  3. **The author cannot sign it.** `quality_ack` is denied to subagents
+     (same mechanism as every other finding in this document) — a human
+     has to do it, by name, every single time.
+
+### `make coverage`, and this repository's own constitution
+
+This repository's `.mneme/quality.toml` is now `schema_version = 2`, with
+`[coverage]`/`[ratchet]` fully declared and **both `enabled = false`** —
+the same posture S1 shipped: materialize the doctrine so it is read and
+revised, never turn on a live block nobody asked for. `format = "go-cover"`,
+`command = ["make", "coverage"]`, `profile_path = "tmp/coverage.out"` are
+real and already functional; enabling the mechanism is a decision for the
+owner, outside this spec's scope. **No `.mneme/quality-baseline.toml` is
+committed** — there is no measurement yet, and a file with invented figures
+would be the worst possible start for a mechanism whose entire point is
+that nobody types a number into it.
+
+```make
+coverage:
+	@mkdir -p "$(TEST_HOME)"
+	$(TEST_ENV) go test -coverprofile=tmp/coverage.out -covermode=count ./...
+```
+
+This target **must inherit `$(TEST_ENV)`**, exactly like `test`/`test-race`
+— the coverage command IS the entire test suite with instrumentation
+turned on, so without the HOME/USERPROFILE sandbox it would write into the
+REAL `~/.mneme/projects/*.db` and the real team-memory vault, the SPEC-085
+disaster, this time triggered by mneme's own declared command.
+`tmp/coverage.out` is ignored three separate times over
+(`*.out`/`coverage.*`/`tmp/`) — the requirement behind the destructive
+delete above.
+
+### `mneme quality baseline update|show`: CLI-only, deliberately not on MCP
+
+Writing the baseline is an act of governance over a versioned file — the
+same class of act as hand-editing `.mneme/quality.toml`, which also has no
+MCP tool. Offering `baseline update` to an agent would make "just update
+the mark" the path of least resistance the very first time the ratchet is
+inconvenient — precisely the failure this whole mechanism is designed to
+resist (no bad faith required: a stuck agent "fixing" its own blocker
+produces the identical effect). `baseline-integrity` would still surface it
+eventually, but not offering the tool at all keeps it from happening in the
+first place. **Reading** the baseline has full parity: `quality_status`
+reports its path, SHA, date, percentage, and staleness over MCP — an agent
+can see the problem and hand it to a human, which is its job.
+
 ## Findings and `ack`: the constitution cannot be quietly weakened
 
 An implementer has write access to the repository and could, without any
@@ -150,10 +512,12 @@ Two tables, migration 018, in the **same project database** as `specs` and
   with `kind`/`name`/`status`, and for gates the exit code, duration, output
   hash, and a bounded output tail.
 
-`kind` is an **open vocabulary** — S2 (coverage), S3 (criteria), S4
-(budget, absorbing `lane_audit` as `kind=lane-scope`), S5 (mutation), and S6
-(visual) all add new `kind` values to this same `quality_checks` table
-without any schema change. The verdict derivation and the `ack` mechanism
+`kind` is an **open vocabulary** — **S2 (`coverage`, `ratchet`) already
+proves this**: seven new rows landed with zero migrations, zero new
+columns, all of their structured data in the existing `detail` (JSON) and
+`summary` fields. S3 (criteria), S4 (budget, absorbing `lane_audit` as
+`kind=lane-scope`), S5 (mutation), and S6 (visual) add further `kind`
+values the exact same way. The verdict derivation and the `ack` mechanism
 already work for whatever `kind` a future spec introduces.
 
 ## The two verbs, and why they are separate
@@ -232,13 +596,19 @@ SHA binding, which is the entire point of the mechanism.
 ## Materialization (`mneme init`)
 
 `mneme init` writes `.mneme/quality.toml` when it does not exist — every
-key present, `enabled = false`, two example gates commented out (the
-project declares its own toolchain; mneme does not guess it). If the file
+key present, `enabled = false` throughout (including `[coverage]` and
+`[ratchet]`, both now mandatory sections under `schema_version = 2`), two
+example gates commented out (the project declares its own toolchain; mneme
+does not guess it) — `[coverage]`/`[ratchet]`, by contrast, cannot be left
+commented out (the schema requires them complete), so their values are a
+generic, harmless illustration, never executed while disabled. If the file
 already exists, it is **never touched**, regardless of content. If its
 `schema_version` is older than the one this mneme understands, an advisory
 drift finding is added to the same drift channel `mneme init` already
 reports through for `CLAUDE.md` — never written, never blocking.
-`--check` never writes anything, in either frontend (CLI or MCP).
+`--check` never writes anything, in either frontend (CLI or MCP). No
+`.mneme/quality-baseline.toml` is ever materialized by `init` — there is
+nothing to measure yet.
 
 ## Enforcement: `quality_ack` denied to subagents
 
@@ -253,9 +623,16 @@ through the orchestrator, is the only path.
 
 ## Surface: CLI, MCP — HTTP excluded on purpose
 
-- **CLI**: `mneme quality verify|status|ack` (`internal/cli/quality.go`).
-- **MCP**: `quality_verify`, `quality_status`, `quality_ack` — surface
-  79 → 82 tools.
+- **CLI**: `mneme quality verify|status|ack|baseline` (`internal/cli/quality.go`)
+  — `baseline update <spec-id>` and `baseline show` hang off the SAME
+  `quality` command group (S2 adds no new top-level command; it still
+  counts 42).
+- **MCP**: `quality_verify`, `quality_status`, `quality_ack` — surface stays
+  79 → 82 tools; S2 adds **zero** new tools. `quality_status`'s response
+  gains the baseline's path/SHA/date/percentage/staleness fields; no new
+  request field exists to receive a schema-contract exemption for.
+  **`quality_baseline_update` is deliberately NOT an MCP tool** — see
+  "`mneme quality baseline update|show`" above.
 - **HTTP: excluded, and not as a "gap to close later".** `quality_verify`
   executes commands declared in a repository file; publishing that on a
   network surface — even `localhost` — turns the constitution into a remote
@@ -279,18 +656,20 @@ to implement it, delete it, or document it as inert is a separate item
 
 ## What this does NOT do (yet)
 
-Explicitly out of scope for S1 — each is its own spec in the EPIC, building
-on this exact registry without a schema change:
+Explicitly out of scope for S1+S2 — each remaining spec in the EPIC builds
+on this exact registry without a schema change narrowing what came before:
 
-- **S2 — Coverage of the diff.** Line coverage of NEW code via LCOV, plus a
-  ratchet so aggregate metrics can never silently regress.
 - **S3 — Executable acceptance criteria.** A closed vocabulary of automated
   checks per AC, with an escape hatch for the rest, and a rule that an AC
   that already passed at the spec's base commit is vacuous and does not
   count.
 - **S4 — Budget and graph, absorbing `lane audit`.** The architect's
   declared symbol/impact budget, checked against the real code-graph diff;
-  `lane_audit`'s trivial-lane mechanism folds into this same registry.
+  `lane_audit`'s trivial-lane mechanism folds into this same registry. S4 is
+  also the natural point to absorb coverage of BRANCHES and PER-FILE/
+  PACKAGE coverage, plus orphan detection — deliberately left out of S2,
+  which covers lines only (D6 of the EPIC-calidad grill: orphan detection
+  is a graph question, i.e. S4's territory).
 - **S5 — Mutation testing.** A survived mutant fails the certificate
   outright, with a counted, justified "equivalent mutant" escape hatch.
 - **S6 — Visual verification.** Project-declared routes/states/themes

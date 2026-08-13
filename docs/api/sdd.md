@@ -403,7 +403,7 @@ audit-fail count and rate, override count, reclassify count.
 
 ---
 
-## Quality Tools (SPEC-115 EPIC-calidad S1)
+## Quality Tools (SPEC-115 EPIC-calidad S1, extended by SPEC-116 S2)
 
 The quality mechanism replaces an agent's self-reported "it works" with a
 result mneme produced by executing something, bound to the exact commit
@@ -414,6 +414,12 @@ full build+test suite inside a synchronous MCP call would risk a client
 timeout, and `spec_advance` is denied to subagents (see below), so an
 implementer could never verify its own work if verification only happened
 there.
+
+**SPEC-116 (S2) adds no new tool.** `quality_verify` now also emits up to
+seven more `quality_checks` rows (`kind=coverage`/`ratchet`) when the
+constitution declares them; `quality_status`'s response gains the
+registered baseline's fields (below). `quality_ack` and its request/
+response shape are unchanged.
 
 ### quality_verify
 
@@ -452,9 +458,28 @@ executes anything — this is the read-only half of the mechanism.
   "constitution_hash": "…", "gate_names": ["build", "test"],
   "note": "mecanismo encendido",
   "latest_certificate": {"id": "…", "verdict": "pass", "head_sha": "…"},
-  "checks": [{"seq": 1, "kind": "tree", "name": "clean-worktree", "status": "pass"}]
+  "checks": [{"seq": 1, "kind": "tree", "name": "clean-worktree", "status": "pass"}],
+  "baseline": {
+    "path": ".mneme/quality-baseline.toml",
+    "measured_at_sha": "9f3c…",
+    "measured_at": "2026-08-13T11:04:22Z",
+    "global_line_pct": 70.5,
+    "staleness_known": true,
+    "staleness_pct": 0.3,
+    "stale": false
+  }
 }
 ```
+
+`baseline` (SPEC-116) is the ratchet's registered baseline — omitted
+entirely when `.mneme/quality-baseline.toml` does not exist (the normal
+state before the repository's first `mneme quality baseline update`,
+which is CLI-only and never exposed over MCP, see docs/quality.md).
+`staleness_known`/`staleness_pct`/`stale` are populated only when `id` was
+supplied AND that spec's latest certificate has a usable
+`coverage/profile` row to compare against; otherwise `staleness_known` is
+`false` and the other two fields are absent. Reading and reporting only —
+`quality_status` never executes anything to compute this.
 
 A repo with no constitution at all (the common case) returns
 `{"enabled": false, "exists": false, "note": "mecanismo apagado: no existe .mneme/quality.toml"}`
@@ -479,6 +504,15 @@ themselves of its own findings.
 
 **Errors:** `-32602` missing `by`/`justification` (`ErrReasonRequired`).
 `-32000` no such certificate/finding at that seq (`ErrCertificateNotFound`).
+
+### `mneme quality baseline update|show` (SPEC-116, CLI-only)
+
+Not exposed over MCP, by design (docs/quality.md). `mneme quality baseline
+update <spec-id>` writes `.mneme/quality-baseline.toml` from that spec's
+latest **`pass`** certificate — refusing outright (no write) if the latest
+certificate is not `pass`, or none exists. `mneme quality baseline show`
+prints the registered baseline, or a note that none is registered yet;
+never an error either way.
 
 ### The `spec_advance` block (D12)
 
