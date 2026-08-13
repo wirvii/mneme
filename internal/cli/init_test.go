@@ -99,6 +99,37 @@ Follow the existing code style.
 	}
 }
 
+// TestInit_QualityConstitution_CheckModeNoWrite covers AC23's --check half
+// at the CLI wiring level: EnsureQualityConstitution(cwd, true) must never
+// create .mneme/quality.toml, mirroring the --check contract every other
+// init step in newInitCmd's RunE already honours.
+func TestInit_QualityConstitution_CheckModeNoWrite(t *testing.T) {
+	tmpDir := t.TempDir()
+	svc := newCheckTestInitService(t)
+
+	if _, err := svc.EnsureQualityConstitution(tmpDir, true); err != nil {
+		t.Fatalf("EnsureQualityConstitution: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(tmpDir, ".mneme", "quality.toml")); !os.IsNotExist(err) {
+		t.Errorf("expected no quality.toml to be written in --check mode, stat err = %v", err)
+	}
+}
+
+// TestInit_QualityConstitution_AppliesWhenAbsent covers the non-check half:
+// EnsureQualityConstitution(cwd, false) writes a template that mneme quality
+// status can read immediately.
+func TestInit_QualityConstitution_AppliesWhenAbsent(t *testing.T) {
+	tmpDir := t.TempDir()
+	svc := newCheckTestInitService(t)
+
+	if _, err := svc.EnsureQualityConstitution(tmpDir, false); err != nil {
+		t.Fatalf("EnsureQualityConstitution: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(tmpDir, ".mneme", "quality.toml")); err != nil {
+		t.Errorf("expected quality.toml to be written, stat err = %v", err)
+	}
+}
+
 // dirEntries returns the top-level entries in dir as a name→size map.
 // Size is used as a lightweight content fingerprint alongside the name.
 func dirEntries(t *testing.T, dir string) map[string]int64 {

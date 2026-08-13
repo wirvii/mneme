@@ -112,13 +112,23 @@ The command is idempotent: re-running on an already-configured project is safe.`
 				}
 			}
 
+			// Step 3b: materialize the quality constitution (SPEC-115 D15).
+			// Absent -> written with enabled=false. Present -> NEVER touched.
+			qualityFindings, qualityErr := initSvc.EnsureQualityConstitution(cwd, flagCheck)
+			if qualityErr != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "Warning: quality constitution: %v\n", qualityErr)
+			} else if !flagCheck {
+				fmt.Fprintln(cmd.OutOrStdout(), "[ok] Quality constitution present (.mneme/quality.toml, enabled=false)")
+			}
+
 			// Step 4: drift report (always, even in --check mode).
 			findings, driftErr := initSvc.RunDrift(cwd)
 			if driftErr != nil {
 				fmt.Fprintf(cmd.ErrOrStderr(), "Warning: drift detection: %v\n", driftErr)
 			}
+			findings = append(findings, qualityFindings...)
 			if len(findings) > 0 {
-				fmt.Fprintln(cmd.OutOrStdout(), "\n[drift] Advisory findings in CLAUDE.md:")
+				fmt.Fprintln(cmd.OutOrStdout(), "\n[drift] Advisory findings:")
 				for _, f := range findings {
 					fmt.Fprintf(cmd.OutOrStdout(), "  %s\n", f)
 				}

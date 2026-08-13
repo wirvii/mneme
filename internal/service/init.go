@@ -20,6 +20,7 @@ import (
 
 	"github.com/wirvii/mneme/internal/config"
 	"github.com/wirvii/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/quality"
 )
 
 // ArtifactKind classifies the type of a legacy workflow artifact.
@@ -1292,6 +1293,69 @@ func (s *InitService) EnsureGreenfieldScaffold(repoRoot string) error {
 		return fmt.Errorf("service: init: greenfield scaffold: write: %w", err)
 	}
 	return nil
+}
+
+// qualityConstitutionRelPath mirrors service/quality.go's constitutionRelPath
+// — duplicated as a literal rather than imported because init.go predates
+// (and is deliberately independent of) QualityService; both name the exact
+// same repo-relative path, ".mneme/quality.toml".
+const qualityConstitutionRelPath = ".mneme/quality.toml"
+
+// EnsureQualityConstitution materializes repoRoot/.mneme/quality.toml
+// (SPEC-115 D15/AC23) — the quality mechanism's opt-in switch. Absent ->
+// writes quality.Template() (every key present, enabled=false — R4: never
+// silently starts blocking spec_advance). Present -> NEVER touched, no
+// matter what it contains; if its schema_version differs from
+// quality.CurrentSchemaVersion, a single advisory DriftFinding is returned
+// (the same shape RunDrift's CLAUDE.md findings use) so a caller can
+// surface it without inventing a second reporting channel — never written,
+// never blocking. checkMode mirrors every other init step's --check
+// contract: no file is ever written.
+func (s *InitService) EnsureQualityConstitution(repoRoot string, checkMode bool) ([]DriftFinding, error) {
+	path := filepath.Join(repoRoot, qualityConstitutionRelPath)
+
+	exists, err := s.statDir(path)
+	if err != nil {
+		return nil, fmt.Errorf("service: init: ensure quality constitution: stat: %w", err)
+	}
+
+	if !exists {
+		if checkMode {
+			return nil, nil
+		}
+		if err := s.mkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return nil, fmt.Errorf("service: init: ensure quality constitution: mkdir: %w", err)
+		}
+		if err := s.writeFile(path, []byte(quality.Template()), 0o644); err != nil {
+			return nil, fmt.Errorf("service: init: ensure quality constitution: write: %w", err)
+		}
+		return nil, nil
+	}
+
+	raw, err := s.readFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("service: init: ensure quality constitution: read: %w", err)
+	}
+
+	version, peekErr := quality.PeekSchemaVersion(raw)
+	if peekErr != nil {
+		// Cannot even determine a schema_version — nothing to compare
+		// against. This is not init's problem to diagnose further; `mneme
+		// quality status`/`verify` will surface the parse failure loudly
+		// when the mechanism is actually used.
+		return nil, nil
+	}
+	if version == quality.CurrentSchemaVersion {
+		return nil, nil
+	}
+
+	return []DriftFinding{{
+		File: path,
+		Line: 1,
+		Message: fmt.Sprintf(
+			"quality.toml schema_version %d is behind the current schema (%d) — no fields were changed; review docs/quality.md for what changed",
+			version, quality.CurrentSchemaVersion),
+	}}, nil
 }
 
 // RunDrift runs the drift detector on repoRoot/CLAUDE.md and returns the

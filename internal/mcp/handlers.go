@@ -2411,11 +2411,12 @@ func (h *handlers) handleInit(ctx context.Context, raw json.RawMessage) (*ToolCa
 	initSvc := service.NewInitService(cfg, h.sdd, h.svc, h.svc.ProjectSlug(), opts)
 
 	type initResult struct {
-		RepoRoot      string   `json:"repo_root"`
-		CheckMode     bool     `json:"check_mode"`
-		ManualApplied bool     `json:"manual_applied"`
-		RepoBlock     bool     `json:"repo_block_applied"`
-		DriftFindings []string `json:"drift_findings"`
+		RepoRoot                string   `json:"repo_root"`
+		CheckMode               bool     `json:"check_mode"`
+		ManualApplied           bool     `json:"manual_applied"`
+		RepoBlock               bool     `json:"repo_block_applied"`
+		QualityConstitutionInit bool     `json:"quality_constitution_applied"`
+		DriftFindings           []string `json:"drift_findings"`
 	}
 
 	result := initResult{
@@ -2446,11 +2447,21 @@ func (h *handlers) handleInit(ctx context.Context, raw json.RawMessage) (*ToolCa
 		}
 	}
 
+	// Quality constitution (SPEC-115 D15): absent -> written with
+	// enabled=false; present -> never touched. --check never writes.
+	qualityFindings, qualityErr := initSvc.EnsureQualityConstitution(repoRoot, args.Check)
+	if qualityErr != nil {
+		h.logger.Warn("mcp: init: quality constitution", "error", qualityErr)
+	} else if !args.Check {
+		result.QualityConstitutionInit = true
+	}
+
 	// Drift detection.
 	findings, driftErr := initSvc.RunDrift(repoRoot)
 	if driftErr != nil {
 		h.logger.Warn("mcp: init: drift", "error", driftErr)
 	}
+	findings = append(findings, qualityFindings...)
 	for _, f := range findings {
 		result.DriftFindings = append(result.DriftFindings, f.String())
 	}

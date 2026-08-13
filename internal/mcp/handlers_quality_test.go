@@ -187,6 +187,35 @@ func TestDispatch_QualityVerifyStatusAck_EndToEnd(t *testing.T) {
 	}
 }
 
+// TestDispatch_Init_MaterializesQualityConstitution covers SPEC-115 D15/P12
+// through the real "init" MCP tool: a repo_root with no .mneme/quality.toml
+// gets one written (enabled=false) after a real dispatch call, and the
+// response's quality_constitution_applied field reflects it.
+func TestDispatch_Init_MaterializesQualityConstitution(t *testing.T) {
+	srv := newTestServerWithSDD(t)
+	repoRoot := t.TempDir()
+
+	resp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name:      "init",
+		Arguments: mustMarshal(t, map[string]any{"repo_root": repoRoot}),
+	})
+	if resp.Error != nil {
+		t.Fatalf("init: unexpected error code=%d message=%s", resp.Error.Code, resp.Error.Message)
+	}
+
+	var result struct {
+		QualityConstitutionApplied bool `json:"quality_constitution_applied"`
+	}
+	unmarshalToolText(t, resp, &result)
+	if !result.QualityConstitutionApplied {
+		t.Error("quality_constitution_applied = false, want true")
+	}
+
+	if _, err := os.Stat(filepath.Join(repoRoot, ".mneme", "quality.toml")); err != nil {
+		t.Errorf("expected .mneme/quality.toml to be written, stat err = %v", err)
+	}
+}
+
 // TestDispatch_QualityTools_UnavailableWhenNotWired covers the
 // qualityUnavailable path: a server that never called WithQualityService
 // reports the service unavailable, never a nil-pointer panic.
