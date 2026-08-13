@@ -190,6 +190,46 @@ type QualityStatusResponse struct {
 
 	// Checks lists LatestCertificate's checks, in seq order.
 	Checks []*QualityCheck `json:"checks,omitempty"`
+
+	// Baseline reports the ratchet's registered baseline (SPEC-116 D10),
+	// when the file exists. Nil is the common state before the repository's
+	// first `mneme quality baseline update` — quality_status never invents
+	// one. Reading and reporting only: computing Baseline never executes
+	// anything (AC29).
+	Baseline *QualityBaselineInfo `json:"baseline,omitempty"`
+}
+
+// QualityBaselineInfo is quality_status's read-only projection of the
+// registered ratchet baseline (SPEC-116 D10) — path, provenance, and its
+// own recorded percentage, plus how stale it is against the LATEST
+// certificate's own measurement, when one with a comparable coverage
+// profile is available. model does not import internal/quality (the leaf
+// of leaves, zero external deps) — the service layer translates, exactly
+// as it already does for QualityVerdict.
+type QualityBaselineInfo struct {
+	// Path is BaselineRelPath, repeated here so a caller never has to know
+	// the constant.
+	Path string `json:"path"`
+
+	MeasuredAtSHA string    `json:"measured_at_sha"`
+	MeasuredAt    time.Time `json:"measured_at"`
+	GlobalLinePct float64   `json:"global_line_pct"`
+
+	// StalenessKnown reports whether StalenessPct/Stale below were
+	// actually computed against a recent measurement — false when no
+	// certificate with a usable coverage/profile detail exists yet, in
+	// which case StalenessPct/Stale are both the zero value and must not
+	// be read as "not stale".
+	StalenessKnown bool `json:"staleness_known"`
+
+	// StalenessPct is how far the latest known measurement exceeds
+	// GlobalLinePct, in percentage points (0 when at or below the mark —
+	// D17's CompareStaleness never returns a negative value).
+	StalenessPct float64 `json:"staleness_pct,omitempty"`
+
+	// Stale reports whether StalenessPct exceeds the constitution's
+	// declared ratchet.max_baseline_staleness_pct (D17).
+	Stale bool `json:"stale,omitempty"`
 }
 
 // QualityAckRequest is the input for `mneme quality ack` / quality_ack: a
@@ -211,3 +251,14 @@ type QualityAckRequest struct {
 	// non-empty (ErrReasonRequired).
 	Justification string `json:"justification"`
 }
+
+// QualityBaselineUpdateRequest is the input for `mneme quality baseline
+// update` (SPEC-116 D10/D15) — CLI-only, deliberately NOT exposed over MCP
+// (D15): writing the ratchet's baseline is an act of governance over a
+// versioned file, the same class of act as hand-editing
+// `.mneme/quality.toml`, which also has no MCP tool. Empty today —
+// BaselineUpdate always reads the PROJECT's own latest `pass` certificate;
+// there is nothing for a caller to parameterize yet, and the type exists so
+// a future field (e.g. a specific certificate ID) never has to change a
+// call signature.
+type QualityBaselineUpdateRequest struct{}
