@@ -910,6 +910,30 @@ func TestParseNumStat(t *testing.T) {
 	}
 }
 
+// TestParseNumStat_MalformedRecords is R-F's migration of
+// lane.TestParseNumStatLine's two error rows (internal/lane is deleted in
+// P11): a non-numeric count, and a record with too few fields.
+func TestParseNumStat_MalformedRecords(t *testing.T) {
+	build := func(records ...string) []byte {
+		return []byte(strings.Join(records, "\x00") + "\x00")
+	}
+
+	tests := []struct {
+		name string
+		data []byte
+	}{
+		{name: "non-numeric added count", data: build("not-a-number\t0\tfile.go")},
+		{name: "too few fields (no tabs at all)", data: build("only-one-field")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := ParseNumStat(tt.data); err == nil {
+				t.Error("ParseNumStat() error = nil, want error")
+			}
+		})
+	}
+}
+
 // TestGit_ChangedFilesInRange_RenameIsNotDeletePlusAdd is G8 over a REAL
 // repository: renaming a file between two commits must classify as ONE
 // FileStatusRenamed entry, never a delete of the old path plus an add of

@@ -14,7 +14,6 @@ import (
 	"github.com/wirvii/mneme/internal/config"
 	"github.com/wirvii/mneme/internal/db"
 	"github.com/wirvii/mneme/internal/embed"
-	"github.com/wirvii/mneme/internal/lane"
 	"github.com/wirvii/mneme/internal/model"
 	"github.com/wirvii/mneme/internal/service"
 	"github.com/wirvii/mneme/internal/store"
@@ -1574,7 +1573,7 @@ func TestLaneAudit_FailedAuditReturnsBreaches(t *testing.T) {
 	if len(toolResult.Content) == 0 {
 		t.Fatal("ToolCallResult has no content blocks")
 	}
-	var auditResult lane.AuditResult
+	var auditResult model.LaneAuditResult
 	if err := json.Unmarshal([]byte(toolResult.Content[0].Text), &auditResult); err != nil {
 		t.Fatalf("unmarshal AuditResult: %v (text: %s)", err, toolResult.Content[0].Text)
 	}

@@ -19,7 +19,6 @@ import (
 
 	"github.com/wirvii/mneme/internal/config"
 	"github.com/wirvii/mneme/internal/install"
-	"github.com/wirvii/mneme/internal/lane"
 	"github.com/wirvii/mneme/internal/model"
 	"github.com/wirvii/mneme/internal/quality"
 	"github.com/wirvii/mneme/internal/store"
@@ -458,8 +457,8 @@ func (svc *SDDService) captureBaseSHA(ctx context.Context, spec *model.Spec) {
 		}
 	}
 
-	differ := &lane.GitDiffer{RepoDir: repoDir}
-	sha, err := differ.HeadSHA()
+	g := &quality.Git{RepoDir: repoDir}
+	sha, err := g.HeadSHA()
 	if err != nil {
 		log.Printf("service: capture base sha: git rev-parse HEAD for %s: %v", spec.ID, err)
 		return
@@ -1194,20 +1193,28 @@ func (svc *SDDService) SpecQuick(ctx context.Context, req model.SpecQuickRequest
 }
 
 // LaneAudit runs the deterministic post-implementation auditor for a
-// trivial-lane spec in audit status. If all checks pass the spec advances to
-// done and a completion memory is saved. If any check fails the spec stays in
-// audit, a discovery memory is saved listing the breaches, and ErrAuditFailed
-// is returned (the caller can inspect the returned AuditResult for details).
+// trivial-lane spec in audit status, on the SAME engine standard's budget
+// mechanism uses (SPEC-118 P11): quality.Git for the file/symbol delta,
+// quality.EvaluateTrivialBudget for the veredicto. If all checks pass the
+// spec advances to done and a completion memory is saved. If any check
+// fails the spec stays in audit, a discovery memory is saved listing the
+// breaches, and ErrAuditFailed is returned (the caller can inspect the
+// returned LaneAuditResult for details).
 //
 // Base ref precedence for the git diff:
 //  1. req.BaseRef (explicit caller override)
 //  2. spec.BaseSHA (captured when the spec entered implementing)
-//  3. "" (auditor falls back to its DefaultBaseRef logic)
+//
+// Unlike the deleted internal/lane, there is NO third step: the old
+// GitDiffer.DefaultBaseRef guess (origin/HEAD → merge-base → HEAD~1) is
+// NOT replicated (P11 point 4) — without a resolvable base, LaneAudit
+// returns a clear error rather than adivinar one. This is a deliberate
+// behaviour change, documented in docs/lanes.md and the delivered changes
+// document.
 //
 // Every run — pass and fail — inserts a row in lane_audits so LaneStatus can
-// read the latest outcome without parsing spec_history text. The former hack
-// of writing audit→audit history entries has been removed.
-func (svc *SDDService) LaneAudit(ctx context.Context, req model.LaneAuditRequest) (*lane.AuditResult, error) {
+// read the latest outcome without parsing spec_history text.
+func (svc *SDDService) LaneAudit(ctx context.Context, req model.LaneAuditRequest) (*model.LaneAuditResult, error) {
 	spec, err := svc.store.GetSpec(ctx, req.ID)
 	if err != nil {
 		return nil, fmt.Errorf("service: lane audit: get: %w", err)
@@ -1226,34 +1233,25 @@ func (svc *SDDService) LaneAudit(ctx context.Context, req model.LaneAuditRequest
 		repoDir, _ = os.Getwd()
 	}
 
-	// Resolve the base ref using the precedence rule from D5:
-	//   req.BaseRef → spec.BaseSHA → "" (let auditor use its DefaultBaseRef)
 	baseRef := req.BaseRef
 	if baseRef == "" {
 		baseRef = spec.BaseSHA
 	}
+	if baseRef == "" {
+		return nil, fmt.Errorf(
+			"service: lane audit: spec %s has no base ref (base_sha empty and no BaseRef supplied) — "+
+				"the old guess-a-default behaviour was removed (SPEC-118 P11 point 4): %w",
+			req.ID, model.ErrInvalidTransition)
+	}
 
-	result, err := lane.Audit(lane.AuditInput{
-		Scope:   spec.Scope,
-		BaseRef: baseRef,
-		RepoDir: repoDir,
-	})
+	result, breaches, err := svc.runLaneAuditEngine(repoDir, baseRef, spec.Scope)
 	if err != nil {
 		return nil, fmt.Errorf("service: lane audit: run auditor: %w", err)
 	}
 
-	// Determine the base ref label stored in lane_audits. When neither caller
-	// nor spec provided a ref the auditor used its internal DefaultBaseRef logic.
-	auditBaseSHA := baseRef
-	if auditBaseSHA == "" {
-		auditBaseSHA = "(default)"
-	}
-
-	// Persist the structured audit record (both pass and fail) so LaneStatus
-	// reads from the table instead of parsing spec_history text.
 	breachStr := ""
 	if !result.Passed {
-		breachStr = strings.Join(result.Breaches, "\n")
+		breachStr = strings.Join(breaches, "\n")
 	}
 	auditRec := &model.LaneAuditRecord{
 		SpecID:       spec.ID,
@@ -1261,7 +1259,7 @@ func (svc *SDDService) LaneAudit(ctx context.Context, req model.LaneAuditRequest
 		FileCount:    result.FileCount,
 		LinesChanged: result.LinesChanged,
 		Breaches:     breachStr,
-		BaseSHA:      auditBaseSHA,
+		BaseSHA:      baseRef,
 	}
 	if insertErr := svc.store.InsertLaneAudit(ctx, auditRec); insertErr != nil {
 		log.Printf("service: lane audit: insert audit record for %s: %v", spec.ID, insertErr)
@@ -1283,8 +1281,117 @@ func (svc *SDDService) LaneAudit(ctx context.Context, req model.LaneAuditRequest
 
 	// Audit failed — save a discovery memory; the structured record is already
 	// in lane_audits above. No longer writes the same-status history hack.
-	svc.saveAuditFailureMemory(ctx, spec, result.Breaches)
+	svc.saveAuditFailureMemory(ctx, spec, breaches)
 	return result, model.ErrAuditFailed
+}
+
+// runLaneAuditEngine computes the file/symbol delta between baseRef and
+// HEAD and evaluates it against quality.DefaultTrivialBudget — the SAME
+// machine standard's budget mechanism uses, with the trivial lane's own
+// limits (D12). Returns the assembled model.LaneAuditResult plus the raw
+// breach strings (used for the discovery memory's own bullet list).
+func (svc *SDDService) runLaneAuditEngine(repoDir, baseRef, scope string) (*model.LaneAuditResult, []string, error) {
+	g := &quality.Git{RepoDir: repoDir}
+
+	numStats, err := g.NumStat(baseRef, "HEAD")
+	if err != nil {
+		return nil, nil, fmt.Errorf("numstat: %w", err)
+	}
+	changes, err := g.ChangedFilesInRange(baseRef, "HEAD")
+	if err != nil {
+		return nil, nil, fmt.Errorf("changed files: %w", err)
+	}
+	changedLines, err := g.ChangedLines(baseRef, "HEAD")
+	if err != nil {
+		return nil, nil, fmt.Errorf("changed lines: %w", err)
+	}
+
+	basePaths, headPaths, renames := splitChangePaths(changes)
+	ex := symbolExtractorAdapter{}
+	baseSymbols, _, err := quality.CollectSymbols(g, baseRef, basePaths, ex)
+	if err != nil {
+		return nil, nil, fmt.Errorf("collect symbols at base: %w", err)
+	}
+	headSymbols, _, err := quality.CollectSymbols(g, "HEAD", headPaths, ex)
+	if err != nil {
+		return nil, nil, fmt.Errorf("collect symbols at head: %w", err)
+	}
+	// No test_globs exclusion here (nil): the trivial lane's public-symbol
+	// check never excluded _test.go files either (its predecessor,
+	// lane.checkGoPublicSymbols, diffed every changed .go file's exported
+	// names regardless of name) — passing nil preserves that behaviour.
+	delta := quality.DiffSymbols(baseSymbols, headSymbols, renames, changedLines, nil)
+
+	breaches := quality.EvaluateTrivialBudget(numStats, delta, scope, quality.DefaultTrivialBudget)
+	breachStrs := make([]string, 0, len(breaches))
+	for _, b := range breaches {
+		breachStrs = append(breachStrs, string(b))
+	}
+
+	fileCount := len(numStats)
+	linesChanged := 0
+	for _, fs := range numStats {
+		linesChanged += fs.Added + fs.Removed
+	}
+
+	result := &model.LaneAuditResult{
+		FileCount:           fileCount,
+		LinesChanged:        linesChanged,
+		OutOfScopeFiles:     laneOutOfScopeFiles(numStats, scope),
+		ForbiddenPaths:      laneForbiddenPaths(numStats),
+		PublicSymbolChanges: lanePublicSymbolChanges(delta),
+		Breaches:            breachStrs,
+		Passed:              len(breachStrs) == 0,
+	}
+	return result, breachStrs, nil
+}
+
+// laneOutOfScopeFiles lists changed paths outside scope, or nil when scope
+// is empty (the scope check is skipped entirely, mirroring
+// EvaluateTrivialBudget's own posture).
+func laneOutOfScopeFiles(stats []quality.FileStat, scope string) []string {
+	if scope == "" {
+		return nil
+	}
+	var out []string
+	for _, fs := range stats {
+		if !quality.MatchGlobs(fs.Path, []string{scope}) {
+			out = append(out, fs.Path)
+		}
+	}
+	return out
+}
+
+// laneForbiddenPaths lists changed paths matching
+// quality.DefaultTrivialBudget's forbidden globs.
+func laneForbiddenPaths(stats []quality.FileStat) []string {
+	var out []string
+	for _, fs := range stats {
+		if quality.MatchGlobs(fs.Path, quality.DefaultTrivialBudget.ForbiddenGlobs) {
+			out = append(out, fs.Path)
+		}
+	}
+	return out
+}
+
+// lanePublicSymbolChanges lists every exported symbol created or deleted
+// between base and HEAD, outside test files — the trivial lane's own
+// public-API-change detector, now the delta of symbols (D12 point 3)
+// instead of internal/lane's go/ast-only checkGoPublicSymbols and its
+// TypeScript regex heuristic.
+func lanePublicSymbolChanges(delta quality.SymbolDelta) []string {
+	var out []string
+	for _, s := range delta.Created {
+		if s.Exported {
+			out = append(out, s.QualifiedName)
+		}
+	}
+	for _, s := range delta.Deleted {
+		if s.Exported {
+			out = append(out, s.QualifiedName)
+		}
+	}
+	return out
 }
 
 // LaneReclassify changes a spec's lane from trivial to standard. After
