@@ -811,6 +811,17 @@ const (
 	// specDocPath's two defenses (id pattern, no directory escape)
 	// unmodified — see internal/service/sdd.go.
 	SpecDocKindCriteria SpecDocKind = "criteria"
+
+	// SpecDocKindBudget writes budget.toml — the spec's presupuesto contra
+	// el grafo (SPEC-118 S4 D2). The sixth kind, and the same reason as
+	// SpecDocKindCriteria: the architect is read-only on the repository, so
+	// spec_doc_write is its only write channel. Restricted to the
+	// architect role specifically for a subagent caller (SPEC-118 D10,
+	// internal/cli/hook.go's roleScopedDocKinds) — D10's cerrojo 2, closing
+	// the hole cerrojo 1 (quality_ack denied to every subagent) alone does
+	// not: an implementer could otherwise write its OWN original budget
+	// with no [revision] to sign, and examine itself.
+	SpecDocKindBudget SpecDocKind = "budget"
 )
 
 // specDocFilenames maps each closed SpecDocKind to the exact filename it
@@ -822,6 +833,7 @@ var specDocFilenames = map[SpecDocKind]string{
 	SpecDocKindQAReport: "qa-report.md",
 	SpecDocKindChanges:  "changes.md",
 	SpecDocKindCriteria: "criteria.toml",
+	SpecDocKindBudget:   "budget.toml",
 }
 
 // Filename returns the filename k maps to, and whether k is a recognised

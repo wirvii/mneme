@@ -1972,6 +1972,7 @@ func TestSpecDocPath_ValidatesSpecID(t *testing.T) {
 		{"empty id", "", model.SpecDocKindSpec, true},
 		{"lowercase id rejected", "spec-087", model.SpecDocKindSpec, true},
 		{"absolute path id", "/etc/passwd", model.SpecDocKindSpec, true},
+		{"path traversal via id, kind budget (AC22)", "../../../etc", model.SpecDocKindBudget, true},
 	}
 
 	for _, tt := range tests {

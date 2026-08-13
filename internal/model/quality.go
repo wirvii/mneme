@@ -197,6 +197,72 @@ type QualityStatusResponse struct {
 	// one. Reading and reporting only: computing Baseline never executes
 	// anything (AC29).
 	Baseline *QualityBaselineInfo `json:"baseline,omitempty"`
+
+	// Budget reports the spec's budget.toml state (SPEC-118 S4 D16): the
+	// disk hash alongside the hash the LATEST certificate recorded, so a
+	// divergence between the two is visible without ampliar
+	// CertificateUsable's own conjunction (the window D16 documents, closed
+	// with a row, not an argument). Nil when ID was not supplied, or no
+	// budget.toml exists for it yet.
+	Budget *QualityBudgetInfo `json:"budget,omitempty"`
+}
+
+// QualityBudgetInfo is quality_status's read-only projection of a spec's
+// declared budget (SPEC-118 D16) — the disk hash next to the certificate's
+// own recorded hash, plus the last certified figures, when one exists.
+type QualityBudgetInfo struct {
+	// Path is budget.toml's path relative to the workflow directory.
+	Path string `json:"path"`
+
+	// DiskHash is the sha256 hex digest of budget.toml's CURRENT bytes on
+	// disk.
+	DiskHash string `json:"disk_hash"`
+
+	// CertificateHash is the hash the latest certificate's budget/declared
+	// row recorded — "" when no certificate has evaluated it yet. A
+	// mismatch against DiskHash means the document changed since
+	// certification (D16's own window, made visible here).
+	CertificateHash string `json:"certificate_hash,omitempty"`
+
+	// Margin, Budgeted, Delivered, Overrun are the last certified figures
+	// (D3 of the grill) — zero when no certificate has evaluated the
+	// budget yet.
+	Margin    int `json:"margin"`
+	Budgeted  int `json:"budgeted"`
+	Delivered int `json:"delivered"`
+	Overrun   int `json:"overrun"`
+}
+
+// LaneAuditResult is the trivial lane's audit outcome (SPEC-118 P11) — it
+// replaces lane.AuditResult once internal/lane is deleted, with the EXACT
+// SAME field names and (absent) JSON tags, so `mneme lane audit`'s and
+// `lane_audit`'s serialised shape does not change by one byte (AC28):
+// neither type declared a `json:"..."` tag, so Go's default
+// field-name-verbatim encoding is what AC28's literal-string comparison
+// pins.
+type LaneAuditResult struct {
+	// FileCount is the number of files changed in the diff.
+	FileCount int
+
+	// LinesChanged is the total added+removed lines across all changed files.
+	LinesChanged int
+
+	// OutOfScopeFiles lists files that fall outside the declared scope glob.
+	OutOfScopeFiles []string
+
+	// ForbiddenPaths lists files that match the forbidden-path patterns.
+	ForbiddenPaths []string
+
+	// PublicSymbolChanges lists exported symbols whose existence changed
+	// (created or deleted) between base and HEAD, outside test files.
+	PublicSymbolChanges []string
+
+	// Breaches is the union of all threshold violations as human-readable
+	// strings. An audit passes when len(Breaches)==0.
+	Breaches []string
+
+	// Passed is true when len(Breaches)==0.
+	Passed bool
 }
 
 // QualityBaselineInfo is quality_status's read-only projection of the

@@ -278,6 +278,7 @@ func TestSpecDocKindFilename(t *testing.T) {
 		{SpecDocKindQAReport, "qa-report.md", true},
 		{SpecDocKindChanges, "changes.md", true},
 		{SpecDocKindCriteria, "criteria.toml", true},
+		{SpecDocKindBudget, "budget.toml", true},
 		{SpecDocKind("bogus"), "", false},
 		{SpecDocKind(""), "", false},
 	}

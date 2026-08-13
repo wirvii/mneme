@@ -411,6 +411,22 @@ var ErrNotACriterion = errors.New("quality: sign only applies to criterion rows 
 // error actionable rather than a dead end (D11).
 var ErrCriterionRequiresSign = errors.New("quality: criterion rows require quality sign, not quality ack")
 
+// ErrInvalidBudget is returned when a spec's budget.toml fails to parse or
+// fails ValidateBudgetAnchors — spec_doc_write with kind "budget" refuses
+// to write the document at all (SPEC-118 D11's declare-time half).
+var ErrInvalidBudget = errors.New("quality: budget document is invalid or unparseable")
+
+// ErrBudgetNotFound is returned when `verify` looks for a spec's
+// budget.toml and finds none — the budget/declared row's own `fail` cause
+// (SPEC-118 D9), never silently skipped once [budget] is enabled.
+var ErrBudgetNotFound = errors.New("quality: no budget.toml found for this spec")
+
+// ErrUnsupportedBudgetSchema is returned when budget.toml declares a
+// schema_version mneme does not recognise — mirrors
+// ErrUnsupportedSchema/ErrUnsupportedCriteriaSchema's own posture: the
+// remedy is upgrading mneme, not fixing a typo.
+var ErrUnsupportedBudgetSchema = errors.New("quality: budget schema_version unsupported")
+
 // ErrReportNotGenerated is returned by Report when qa-report.md already
 // exists and does NOT carry mneme's own generation marker — Report
 // refuses to silently overwrite a manually-authored report unless --force
