@@ -749,6 +749,11 @@ type hookPreToolInput struct {
 		// SPEC-087 D5 records it on the lifecycle-tool-denied enforcelog
 		// event so the report shows which spec a blocked call targeted.
 		ID string `json:"id"`
+		// Kind is spec_doc_write's own argument (SPEC-118 D10) — which
+		// SpecDocKind the call is writing. roleScopedDocKinds evaluates
+		// this, never the tool name alone, so a subagent writing its OWN
+		// legitimate kind (e.g. "changes") is unaffected.
+		Kind string `json:"kind"`
 	} `json:"tool_input"`
 
 	// SessionID is the per-session identifier injected by Claude Code (SPEC-044).
@@ -1981,6 +1986,54 @@ func printRoleScopedBlock(w io.Writer, tool, requiredRole string, unresolved boo
 	fmt.Fprintf(w, roleScopedBlockMessage, tool, requiredRole)
 }
 
+// roleScopedDocKinds maps a spec_doc_write `kind` argument to the ONE
+// subagent role allowed to write it (SPEC-118 D10) — evaluated ONLY when
+// input.ToolName == "mcp__mneme__spec_doc_write", after both
+// lifecycleTools and roleScopedTools above, and indexed by KIND rather
+// than by tool name: spec_doc_write itself stays open to every
+// implementer (its "changes" kind is exactly their entregable channel) —
+// only the specific kinds below are restricted.
+//
+// "budget" is D10's own case: the architect's ONLY write channel for the
+// budget document, and cerrojo 2 against an implementer examining itself
+// (cerrojo 1 — quality_ack denied to every subagent — does not alone
+// close the hole: an implementer could otherwise write its OWN original
+// budget with no [revision] to sign).
+//
+// "criteria" is the ORCHESTRATOR's addition to this map, not part of the
+// architect's original SPEC-118 design: the same gap H4 of the design
+// names but declines to close ("cambiar una decision razonada de S3 no me
+// corresponde") — today an implementer can still write criteria.toml (the
+// S3 kind, "criteria"), rewriting the very exam it is judged by, which is
+// literally what D14 of the grill prohibits. Closing it here costs one
+// map entry, reusing the SAME mechanism this spec already builds.
+var roleScopedDocKinds = map[string]string{
+	"budget":   "architect",
+	"criteria": "architect",
+}
+
+// roleScopedDocKindBlockMessage mirrors roleScopedBlockMessage's own shape
+// but names the KIND, not the tool (spec_doc_write itself is not
+// restricted — only specific kinds are).
+const roleScopedDocKindBlockMessage = "⛔ mneme: spec_doc_write kind %q está restringido al rol %q. Este subagente no puede escribirlo. El orquestador (o el arquitecto) puede hacerlo en su lugar.\n"
+
+// roleScopedDocKindUnresolvedMessage documents D10's deliberate asymmetry
+// with roleScopedTools/quality_sign: THIS rule fails OPEN when the role
+// cannot be resolved, the opposite of quality_sign's fail-closed posture.
+// Closing it would leave the architect unable to write ANY budget/criteria
+// document the moment agent_type stopped arriving in the payload, breaking
+// the common path for every spec; the document that slips through stays
+// subject to the structural cerrojo downstream (a revision is always a
+// firmable finding, and quality_ack is denied to every subagent
+// regardless of role resolution).
+const roleScopedDocKindUnresolvedMessage = "⚠ mneme: spec_doc_write kind %q está restringido al rol %q, pero el rol de este subagente no se pudo resolver — se permite (D10 falla ABIERTO a propósito, al revés que quality_sign): el documento sigue sujeto al cerrojo estructural (quality_ack denegado a todo subagente).\n"
+
+// printRoleScopedDocKindBlock writes the SPEC-118 D10 role-scoped-by-kind
+// denial message to w.
+func printRoleScopedDocKindBlock(w io.Writer, kind, requiredRole string) {
+	fmt.Fprintf(w, roleScopedDocKindBlockMessage, kind, requiredRole)
+}
+
 // lifecycleBlockMessage is the load-bearing message printed when a
 // subagent's lifecycle-advancing MCP call is denied (SPEC-087 D5/R5). It
 // must name the concrete cause (an out-of-date profile still instructing
@@ -2075,6 +2128,28 @@ func runHookEnforceDelegation(r io.Reader, errW io.Writer) error {
 			if unresolved || identity.Role != requiredRole {
 				printRoleScopedBlock(errW, input.ToolName, requiredRole, unresolved)
 				logRoleScopedToolDeniedEvent(input, identity, requiredRole)
+				//nolint:gocritic // os.Exit(2) is the documented hook exit code for rejection
+				os.Exit(2)
+				return nil
+			}
+		}
+	}
+
+	// SPEC-118 D10: a THIRD, independent guard, evaluated right after
+	// roleScopedTools, and only for spec_doc_write specifically — indexed
+	// by the call's own `kind` argument (roleScopedDocKinds), never by
+	// tool name: every OTHER kind (changes, spec, plan, qa-report) stays
+	// open to whichever implementer already writes it. Deliberately fails
+	// OPEN when the role cannot be resolved (the opposite of
+	// roleScopedTools' fail-closed posture above) — see
+	// roleScopedDocKindUnresolvedMessage's own godoc for why.
+	if identity.IsSubagent && input.ToolName == "mcp__mneme__spec_doc_write" {
+		if requiredRole, scoped := roleScopedDocKinds[input.ToolInput.Kind]; scoped {
+			if identity.RoleSource == "unresolved" {
+				fmt.Fprintf(errW, roleScopedDocKindUnresolvedMessage, input.ToolInput.Kind, requiredRole)
+			} else if identity.Role != requiredRole {
+				printRoleScopedDocKindBlock(errW, input.ToolInput.Kind, requiredRole)
+				logRoleScopedDocKindDeniedEvent(input, identity, requiredRole)
 				//nolint:gocritic // os.Exit(2) is the documented hook exit code for rejection
 				os.Exit(2)
 				return nil
@@ -2348,6 +2423,41 @@ func logContainmentEvent(cfg *config.Config, slug string, input hookPreToolInput
 		Mode:       mode,
 		Reason:     result.Reason,
 		Owner:      result.Owner,
+	}
+	_ = enforcelog.Append(path, ev, enforcelog.DefaultMaxBytes) //nolint:errcheck // best-effort telemetry
+}
+
+// logRoleScopedDocKindDeniedEvent appends a best-effort enforcelog.Event for
+// a SPEC-118 D10 role-scoped-by-kind denial (Reason:
+// "role_scoped_dockind_denied") — mirrors logRoleScopedToolDeniedEvent's own
+// shape, with Target naming "<kind>:<requiredRole>" so a report can tell
+// which document kind was denied without a schema change to enforcelog.Event.
+func logRoleScopedDocKindDeniedEvent(input hookPreToolInput, identity CallerIdentity, requiredRole string) {
+	cfg, err := config.Load(config.DefaultPath())
+	if err != nil {
+		return
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return
+	}
+	cwd = resolveHookCWD(input, cwd)
+	det := project.NewDetector(cwd)
+	slug, _ := det.DetectProject()
+
+	path := enforcelogPath(cfg.Storage.DataDir, slug)
+	ev := enforcelog.Event{
+		TS:         time.Now().UTC(),
+		Session:    input.SessionID,
+		Project:    slug,
+		Caller:     "subagent",
+		AgentID:    identity.AgentID,
+		Role:       identity.Role,
+		RoleSource: identity.RoleSource,
+		Tool:       input.ToolName,
+		Target:     input.ToolInput.Kind + ":" + requiredRole,
+		Decision:   enforcelog.DecisionBlock,
+		Reason:     "role_scoped_dockind_denied",
 	}
 	_ = enforcelog.Append(path, ev, enforcelog.DefaultMaxBytes) //nolint:errcheck // best-effort telemetry
 }
