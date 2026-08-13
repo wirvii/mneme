@@ -239,12 +239,22 @@ func (svc *QualityService) runAllChecks(
 	// SPEC-116: the three coverage rows land AFTER the gates, respecting
 	// the SAME "a required gate already failed" cascade (D6/D13) — they
 	// are never evaluated once gatesStopped is true.
-	coverageChecks, coveragePure, err := svc.runCoverageChecks(ctx, g, constitution, spec, gatesStopped)
+	coverageChecks, coveragePure, coverageDetail, err := svc.runCoverageChecks(ctx, g, constitution, spec, gatesStopped)
 	if err != nil {
 		return nil, nil, false, err
 	}
 	checks = append(checks, coverageChecks...)
 	pure = append(pure, coveragePure...)
+
+	// SPEC-116: the four ratchet rows consume row 1's measurement
+	// DIRECTLY (coverageDetail) — never re-parsing the JSON this same call
+	// just produced (P7 feeds P8, the plan's own dependency note).
+	ratchetChecks, ratchetPure, err := svc.runRatchetChecks(g, constitution, spec, gatesStopped, coverageDetail)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	checks = append(checks, ratchetChecks...)
+	pure = append(pure, ratchetPure...)
 
 	return checks, pure, dirty, nil
 }
@@ -360,12 +370,17 @@ func coverageProfileFailure(summary string, res quality.GateResult) ([]*model.Qu
 // evaluate against an empty changed-set, which naturally never triggers
 // row 2's finding (no changed file to fail to find) and always skips row 3
 // (D13's own "spec.BaseSHA vacio -> fila 3 skipped").
+//
+// The fourth return value is row 1's aggregate measurement — nil unless
+// row 1 reached "pass" — which runRatchetChecks (P8) consumes DIRECTLY,
+// in-memory, rather than re-parsing row 1's persisted JSON Detail: both
+// come from the SAME Verify call, so there is nothing to re-derive.
 func (svc *QualityService) runCoverageChecks(
 	ctx context.Context, g *quality.Git, constitution *quality.Constitution, spec *model.Spec, gatesStopped bool,
-) ([]*model.QualityCheck, []quality.CheckResult, error) {
+) ([]*model.QualityCheck, []quality.CheckResult, *coverageProfileDetail, error) {
 	if reason := coverageSkipReason(gatesStopped, constitution); reason != "" {
 		checks, pure := skippedCoverageChecks(reason)
-		return checks, pure, nil
+		return checks, pure, nil, nil
 	}
 
 	cov := constitution.Coverage
@@ -373,14 +388,14 @@ func (svc *QualityService) runCoverageChecks(
 
 	tracked, err := g.IsTracked(cov.ProfilePath)
 	if err != nil {
-		return nil, nil, fmt.Errorf("service: quality: verify: coverage: is tracked: %w", err)
+		return nil, nil, nil, fmt.Errorf("service: quality: verify: coverage: is tracked: %w", err)
 	}
 	if tracked {
 		checks, pure := coverageProfileFailure(fmt.Sprintf(
 			"%s esta versionado por git (git ls-files --error-unmatch) — el perfil de cobertura es una SALIDA del comando declarado y debe estar en .gitignore, no en el arbol de trabajo",
 			cov.ProfilePath,
 		), quality.GateResult{})
-		return checks, pure, nil
+		return checks, pure, nil, nil
 	}
 
 	// D12: delete any STALE profile before running Command. R6's
@@ -393,19 +408,19 @@ func (svc *QualityService) runCoverageChecks(
 			checks, pure := coverageProfileFailure(fmt.Sprintf(
 				"%s es un directorio — mneme se niega a borrarlo", cov.ProfilePath,
 			), quality.GateResult{})
-			return checks, pure, nil
+			return checks, pure, nil, nil
 		}
 		if rmErr := os.Remove(profilePath); rmErr != nil {
 			checks, pure := coverageProfileFailure(fmt.Sprintf(
 				"no se pudo borrar el perfil rancio %s: %s", cov.ProfilePath, rmErr,
 			), quality.GateResult{})
-			return checks, pure, nil
+			return checks, pure, nil, nil
 		}
 	} else if !os.IsNotExist(statErr) {
 		checks, pure := coverageProfileFailure(fmt.Sprintf(
 			"no se pudo comprobar %s antes de borrarlo: %s", cov.ProfilePath, statErr,
 		), quality.GateResult{})
-		return checks, pure, nil
+		return checks, pure, nil, nil
 	}
 
 	// Run the declared command through the SAME Runner seam a gate uses
@@ -418,7 +433,7 @@ func (svc *QualityService) runCoverageChecks(
 			summary = fmt.Sprintf("el comando de cobertura salio con exit_code=%d", res.ExitCode)
 		}
 		checks, pure := coverageProfileFailure(summary, res)
-		return checks, pure, nil
+		return checks, pure, nil, nil
 	}
 
 	raw, readErr := os.ReadFile(profilePath)
@@ -426,27 +441,27 @@ func (svc *QualityService) runCoverageChecks(
 		checks, pure := coverageProfileFailure(fmt.Sprintf(
 			"el comando salio 0 pero %s no existe: %s", cov.ProfilePath, readErr,
 		), res)
-		return checks, pure, nil
+		return checks, pure, nil, nil
 	}
 
 	profile, parseErr := quality.ParseProfile(cov.Format, raw)
 	if parseErr != nil {
 		checks, pure := coverageProfileFailure(fmt.Sprintf("perfil no parseable como %s: %s", cov.Format, parseErr), res)
-		return checks, pure, nil
+		return checks, pure, nil, nil
 	}
 	if len(profile.Files) == 0 {
 		checks, pure := coverageProfileFailure(fmt.Sprintf("perfil %s parseo sin ningun fichero", cov.ProfilePath), res)
-		return checks, pure, nil
+		return checks, pure, nil, nil
 	}
 
 	linesTotal, linesCovered, globalPct := quality.ComputeGlobalStats(profile, cov.Exclude)
-	detail := coverageProfileDetail{
+	detail := &coverageProfileDetail{
 		LinesTotal: linesTotal, LinesCovered: linesCovered, GlobalLinePct: globalPct,
 		ScopeHash: quality.ScopeHash(cov.Format, cov.Exclude),
 	}
 	detailJSON, jsonErr := json.Marshal(detail)
 	if jsonErr != nil {
-		return nil, nil, fmt.Errorf("service: quality: verify: coverage: marshal detail: %w", jsonErr)
+		return nil, nil, nil, fmt.Errorf("service: quality: verify: coverage: marshal detail: %w", jsonErr)
 	}
 
 	checks := []*model.QualityCheck{{
@@ -464,11 +479,11 @@ func (svc *QualityService) runCoverageChecks(
 	if spec.BaseSHA != "" {
 		mergeBase, mbErr := g.MergeBase(spec.BaseSHA, "HEAD")
 		if mbErr != nil {
-			return nil, nil, fmt.Errorf("service: quality: verify: coverage: merge base: %w", mbErr)
+			return nil, nil, nil, fmt.Errorf("service: quality: verify: coverage: merge base: %w", mbErr)
 		}
 		changed, err = g.ChangedLines(mergeBase, "HEAD")
 		if err != nil {
-			return nil, nil, fmt.Errorf("service: quality: verify: coverage: changed lines: %w", err)
+			return nil, nil, nil, fmt.Errorf("service: quality: verify: coverage: changed lines: %w", err)
 		}
 	}
 
@@ -523,6 +538,189 @@ func (svc *QualityService) runCoverageChecks(
 	}
 	checks = append(checks, &model.QualityCheck{Kind: "coverage", Name: "diff-lines", Status: row3Status, Summary: row3Summary})
 	pure = append(pure, quality.CheckResult{Status: quality.CheckStatus(row3Status)})
+
+	return checks, pure, detail, nil
+}
+
+// ratchetRowNames is the fixed, declared order of the four ratchet rows
+// (D3 #4-7) — used both to build a uniform "skipped" set and to keep the
+// row order a single literal instead of four repeated string constants.
+var ratchetRowNames = []string{"baseline-integrity", "baseline-comparable", "global-line-pct", "baseline-stale"}
+
+// skippedRatchetChecks builds all four ratchet rows as "skipped" with the
+// SAME reason — used whenever the mechanism (or just the ratchet half of
+// it) is off, or an earlier stage's cascade already stopped, before any
+// baseline is ever read.
+func skippedRatchetChecks(reason string) ([]*model.QualityCheck, []quality.CheckResult) {
+	checks := make([]*model.QualityCheck, 0, len(ratchetRowNames))
+	pure := make([]quality.CheckResult, 0, len(ratchetRowNames))
+	for _, name := range ratchetRowNames {
+		checks = append(checks, &model.QualityCheck{Kind: "ratchet", Name: name, Status: "skipped", Summary: reason})
+		pure = append(pure, quality.CheckResult{Status: quality.CheckStatusSkipped})
+	}
+	return checks, pure
+}
+
+// ratchetSkipReason names WHY all four rows are being skipped — mirrors
+// coverageSkipReason's vocabulary (D13/AC26), extended with the two
+// ratchet-specific causes: [ratchet] undeclared/off, and "row 1 never
+// produced a usable measurement" (D13's "no se acumulan dos diagnosticos
+// del mismo hecho" — a coverage/profile failure already explains itself;
+// the ratchet has nothing new to add on top of it).
+func ratchetSkipReason(gatesStopped bool, constitution *quality.Constitution, coverageDetail *coverageProfileDetail) string {
+	switch {
+	case gatesStopped:
+		return "un gate required anterior fallo"
+	case !constitution.CoverageDeclared:
+		return fmt.Sprintf("constitucion schema_version=%d no declara [coverage] (apagado por omision)", constitution.SchemaVersion)
+	case !constitution.Coverage.Enabled:
+		return "coverage.enabled = false (apagado por decision)"
+	case !constitution.RatchetDeclared:
+		return fmt.Sprintf("constitucion schema_version=%d no declara [ratchet]", constitution.SchemaVersion)
+	case !constitution.Ratchet.Enabled:
+		return "ratchet.enabled = false — el cliquet apagado no apaga la cobertura del delta"
+	case coverageDetail == nil:
+		return "coverage/profile no produjo una medicion utilizable"
+	default:
+		return ""
+	}
+}
+
+// runRatchetChecks emits the four ratchet rows D3 declares (#4-7):
+// ratchet/baseline-integrity, ratchet/baseline-comparable,
+// ratchet/global-line-pct, ratchet/baseline-stale. All four are "skipped"
+// under ratchetSkipReason's causes — never silently omitted.
+//
+// Row 4 (D11) reads the registered baseline BOTH at the spec's merge-base
+// ("before") and at the current working tree ("after"), then hands both
+// to the pure quality.BaselineDirection (exhaustively tested in P4) —
+// this function only ever wires I/O, never re-derives the direction
+// logic (the plan's own U-G dependency: any decision logic written HERE
+// instead of P4 would be tested via real git repos instead of tables).
+// When spec.BaseSHA is empty there is no rango to read "before" from, so
+// row 4 is "skipped" — the same honest limit row 3 (P7) already
+// documents, never evaluated as a vacuous "pass".
+//
+// Rows 5-7 all require "after" (the CURRENTLY registered baseline) to
+// exist; its absence is the normal pre-adoption state and skips all
+// three with one shared reason (D13).
+func (svc *QualityService) runRatchetChecks(
+	g *quality.Git, constitution *quality.Constitution, spec *model.Spec, gatesStopped bool, coverageDetail *coverageProfileDetail,
+) ([]*model.QualityCheck, []quality.CheckResult, error) {
+	if reason := ratchetSkipReason(gatesStopped, constitution, coverageDetail); reason != "" {
+		checks, pure := skippedRatchetChecks(reason)
+		return checks, pure, nil
+	}
+
+	rat := constitution.Ratchet
+	baselinePath := filepath.Join(svc.repoDir, quality.BaselineRelPath)
+
+	var after *quality.Baseline
+	afterRaw, readErr := os.ReadFile(baselinePath)
+	switch {
+	case readErr == nil:
+		parsed, parseErr := quality.ParseBaseline(afterRaw)
+		if parseErr != nil {
+			return nil, nil, fmt.Errorf("service: quality: verify: ratchet: parse baseline: %w", parseErr)
+		}
+		after = parsed
+	case os.IsNotExist(readErr):
+		after = nil
+	default:
+		return nil, nil, fmt.Errorf("service: quality: verify: ratchet: read baseline: %w", readErr)
+	}
+
+	// Row 4: baseline-integrity — needs a rango (spec.BaseSHA) to read
+	// "before" from; without one it is "skipped", exactly like row 3.
+	var status4, summary4 string
+	if spec.BaseSHA == "" {
+		status4 = "skipped"
+		summary4 = "spec sin base_sha, no hay rango que evaluar"
+	} else {
+		mergeBase, mbErr := g.MergeBase(spec.BaseSHA, "HEAD")
+		if mbErr != nil {
+			return nil, nil, fmt.Errorf("service: quality: verify: ratchet: merge base: %w", mbErr)
+		}
+		var before *quality.Baseline
+		beforeRaw, existed, faErr := g.FileAtRef(mergeBase, quality.BaselineRelPath)
+		if faErr != nil {
+			return nil, nil, fmt.Errorf("service: quality: verify: ratchet: file at ref: %w", faErr)
+		}
+		if existed {
+			parsed, parseErr := quality.ParseBaseline(beforeRaw)
+			if parseErr != nil {
+				return nil, nil, fmt.Errorf("service: quality: verify: ratchet: parse baseline at merge-base: %w", parseErr)
+			}
+			before = parsed
+		}
+
+		finding, reason := quality.BaselineDirection(before, after)
+		status4 = "pass"
+		if finding {
+			status4 = "finding"
+		}
+		summary4 = reason
+	}
+	checks := []*model.QualityCheck{{Kind: "ratchet", Name: "baseline-integrity", Status: status4, Summary: summary4}}
+	pure := []quality.CheckResult{{Status: quality.CheckStatus(status4)}}
+
+	if after == nil {
+		// D13: the normal pre-adoption state — nothing registered yet.
+		skippedChecks, skippedPure := skippedRatchetChecks("sin linea base registrada (mneme quality baseline update)")
+		// Row 4 was already evaluated above (never skipped just because
+		// "after" is absent — D11's own "ausente -> ausente: pass" and
+		// "ausente -> presente: pass" rows depend on evaluating it) —
+		// only rows 5-7 come from the shared skip set.
+		return append(checks, skippedChecks[1:]...), append(pure, skippedPure[1:]...), nil
+	}
+
+	// Row 5: baseline-comparable — two independent causes (D11 point 2).
+	isAncestor, iaErr := g.IsAncestor(after.MeasuredAtSHA, "HEAD")
+	if iaErr != nil {
+		return nil, nil, fmt.Errorf("service: quality: verify: ratchet: is ancestor: %w", iaErr)
+	}
+	currentScopeHash := quality.ScopeHash(constitution.Coverage.Format, constitution.Coverage.Exclude)
+
+	status5, summary5 := "pass", ""
+	switch {
+	case !isAncestor:
+		status5 = "finding"
+		summary5 = fmt.Sprintf("measured_at_sha %s de la marca no es ancestro de HEAD", after.MeasuredAtSHA)
+	case after.ScopeHash != currentScopeHash:
+		status5 = "finding"
+		summary5 = fmt.Sprintf("scope_hash de la marca (%s) no coincide con el ambito vigente (%s) — format o exclude cambiaron", after.ScopeHash, currentScopeHash)
+	}
+	checks = append(checks, &model.QualityCheck{Kind: "ratchet", Name: "baseline-comparable", Status: status5, Summary: summary5})
+	pure = append(pure, quality.CheckResult{Status: quality.CheckStatus(status5)})
+
+	// Row 6: global-line-pct (D4) — a finding, never a fail (the aggregate
+	// has legitimate reasons to drop that a single untested new line does
+	// not).
+	drop, finding6 := quality.CompareRatchet(coverageDetail.GlobalLinePct, after.GlobalLinePct, rat.MaxGlobalLinePctDrop)
+	status6 := "pass"
+	summary6 := fmt.Sprintf("cobertura global %.2f%% (marca %.2f%%)", coverageDetail.GlobalLinePct, after.GlobalLinePct)
+	if finding6 {
+		status6 = "finding"
+		summary6 = fmt.Sprintf(
+			"cobertura global cayo %.2f puntos respecto a la marca (marca %.2f%%, medido %.2f%%), tolerancia %.2f",
+			drop, after.GlobalLinePct, coverageDetail.GlobalLinePct, rat.MaxGlobalLinePctDrop)
+	}
+	checks = append(checks, &model.QualityCheck{Kind: "ratchet", Name: "global-line-pct", Status: status6, Summary: summary6})
+	pure = append(pure, quality.CheckResult{Status: quality.CheckStatus(status6)})
+
+	// Row 7: baseline-stale (D17) — firmable, and firming it repeatedly
+	// never silences it: each certificate recalculates against the
+	// CURRENT measurement (see quality.CompareStaleness's own godoc).
+	staleness, finding7 := quality.CompareStaleness(coverageDetail.GlobalLinePct, after.GlobalLinePct, rat.MaxBaselineStalenessPct)
+	status7, summary7 := "pass", ""
+	if finding7 {
+		status7 = "finding"
+		summary7 = fmt.Sprintf(
+			"marca %.2f%% (sha %s, %s), medido %.2f%% — obsoleta en %.2f puntos (margen %.2f) — `mneme quality baseline update`",
+			after.GlobalLinePct, after.MeasuredAtSHA, after.MeasuredAt.Format("2006-01-02"), coverageDetail.GlobalLinePct, staleness, rat.MaxBaselineStalenessPct)
+	}
+	checks = append(checks, &model.QualityCheck{Kind: "ratchet", Name: "baseline-stale", Status: status7, Summary: summary7})
+	pure = append(pure, quality.CheckResult{Status: quality.CheckStatus(status7)})
 
 	return checks, pure, nil
 }

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/wirvii/mneme/internal/db"
 	"github.com/wirvii/mneme/internal/model"
@@ -272,10 +273,11 @@ func TestQualityService_Verify_HappyPath_Pass(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListChecks: %v", err)
 	}
-	// 1 tree + 3 constitution + 2 gates + 3 coverage (schema_version=1,
-	// SPEC-116: skipped — [coverage] is not even declared) = 9.
-	if len(checks) != 9 {
-		t.Fatalf("len(checks) = %d, want 9: %+v", len(checks), checks)
+	// 1 tree + 3 constitution + 2 gates + 3 coverage + 4 ratchet
+	// (schema_version=1, SPEC-116: all 7 skipped — [coverage]/[ratchet]
+	// are not even declared) = 13.
+	if len(checks) != 13 {
+		t.Fatalf("len(checks) = %d, want 13: %+v", len(checks), checks)
 	}
 }
 
@@ -477,8 +479,8 @@ func TestQualityService_Status_WithCertificate(t *testing.T) {
 	if resp.LatestCertificate == nil || resp.LatestCertificate.ID != cert.ID {
 		t.Fatalf("LatestCertificate = %+v, want id=%s", resp.LatestCertificate, cert.ID)
 	}
-	if len(resp.Checks) != 9 {
-		t.Errorf("len(Checks) = %d, want 9 (SPEC-116 adds 3 skipped coverage rows)", len(resp.Checks))
+	if len(resp.Checks) != 13 {
+		t.Errorf("len(Checks) = %d, want 13 (SPEC-116 adds 3 skipped coverage + 4 skipped ratchet rows)", len(resp.Checks))
 	}
 }
 
@@ -906,4 +908,491 @@ func TestQualityService_Verify_Coverage_OffStates(t *testing.T) {
 			t.Error("the two skip summaries (schema-1 vs enabled=false) must differ — this one must NOT mention schema_version")
 		}
 	})
+}
+
+// writeConstitutionV2Full writes a schema_version=2 constitution with both
+// [coverage] and [ratchet] fully configured — SPEC-116's P8 tests need
+// [ratchet] independently tunable from [coverage], unlike
+// writeConstitutionV2Coverage (P7), which always disables it.
+func writeConstitutionV2Full(t *testing.T, repoDir string, ratchetEnabled bool, maxDrop, maxStaleness float64, exclude []string) {
+	t.Helper()
+	dir := filepath.Join(repoDir, ".mneme")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir .mneme: %v", err)
+	}
+	quotedExclude := make([]string, len(exclude))
+	for i, e := range exclude {
+		quotedExclude[i] = fmt.Sprintf("%q", e)
+	}
+	doc := fmt.Sprintf(`
+schema_version = 2
+enabled = true
+[execution]
+output_tail_bytes = 4096
+[[gate]]
+name = "build"
+command = ["true"]
+timeout = "5m"
+required = true
+[coverage]
+enabled = true
+format = "lcov"
+command = ["true"]
+profile_path = "tmp/coverage.out"
+timeout = "5m"
+min_diff_line_pct = 1.0
+min_changed_lines = 1
+exclude = [%s]
+[ratchet]
+enabled = %v
+max_global_line_pct_drop = %v
+max_baseline_staleness_pct = %v
+`, strings.Join(quotedExclude, ", "), ratchetEnabled, maxDrop, maxStaleness)
+	if err := os.WriteFile(filepath.Join(dir, "quality.toml"), []byte(doc), 0o644); err != nil {
+		t.Fatalf("write quality.toml: %v", err)
+	}
+}
+
+// newTestBaseline builds a *quality.Baseline with sensible defaults, letting
+// a test override just the fields it cares about.
+func newTestBaseline(measuredAtSHA string, globalPct float64, scopeHash string) *quality.Baseline {
+	return &quality.Baseline{
+		SchemaVersion: quality.BaselineSchemaVersion,
+		MeasuredAtSHA: measuredAtSHA,
+		MeasuredAt:    time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		CertificateID: "test-cert",
+		LinesTotal:    100,
+		LinesCovered:  int(globalPct),
+		GlobalLinePct: globalPct,
+		ScopeHash:     scopeHash,
+	}
+}
+
+// writeBaseline writes b to repoDir/.mneme/quality-baseline.toml.
+func writeBaseline(t *testing.T, repoDir string, b *quality.Baseline) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(repoDir, quality.BaselineRelPath), []byte(quality.RenderBaseline(b)), 0o644); err != nil {
+		t.Fatalf("write baseline: %v", err)
+	}
+}
+
+// ratchetCheckStatus returns the status of the ratchet row named name.
+func ratchetCheckStatus(checks []*model.QualityCheck, name string) string {
+	for _, c := range checks {
+		if c.Kind == "ratchet" && c.Name == name {
+			return c.Status
+		}
+	}
+	return ""
+}
+
+// TestQualityService_Verify_Ratchet_GlobalLinePct covers AC19: a drop
+// beyond tolerance is a finding; within tolerance, or an improvement, is
+// not; and with no baseline registered at all, the row is skipped naming
+// the remedy command.
+func TestQualityService_Verify_Ratchet_GlobalLinePct(t *testing.T) {
+	tests := []struct {
+		name            string
+		baselinePct     float64
+		maxDrop         float64
+		measuredContent string // LCOV content for foo.go (3 lines)
+		wantStatus      string
+	}{
+		{
+			name: "drop beyond tolerance: finding", baselinePct: 90.0, maxDrop: 1.0,
+			measuredContent: "SF:foo.go\nDA:1,0\nDA:2,0\nDA:3,1\nend_of_record\n", // 33%
+			wantStatus:      "finding",
+		},
+		{
+			name: "drop within tolerance: pass", baselinePct: 34.0, maxDrop: 5.0,
+			measuredContent: "SF:foo.go\nDA:1,0\nDA:2,0\nDA:3,1\nend_of_record\n", // 33%
+			wantStatus:      "pass",
+		},
+		{
+			name: "improvement: pass", baselinePct: 10.0, maxDrop: 0.0,
+			measuredContent: "SF:foo.go\nDA:1,1\nDA:2,1\nDA:3,1\nend_of_record\n", // 100%
+			wantStatus:      "pass",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repoDir := newTestGitRepo(t)
+			baseSHA := headSHAFor(t, repoDir)
+			// A huge staleness margin isolates row 6 from row 7 in this table.
+			writeConstitutionV2Full(t, repoDir, true, tt.maxDrop, 1000.0, nil)
+			if err := os.WriteFile(filepath.Join(repoDir, "foo.go"), []byte("package main\n\nfunc Foo() {}\n"), 0o644); err != nil {
+				t.Fatalf("write foo.go: %v", err)
+			}
+			writeBaseline(t, repoDir, newTestBaseline(baseSHA, tt.baselinePct, quality.ScopeHash("lcov", nil)))
+			commitAll(t, repoDir, "add constitution, foo.go, baseline")
+
+			s := newTestQualityStore(t)
+			insertTestSpec(t, s, "SPEC-1", "proj", model.SpecStatusImplementing, baseSHA)
+			runner := &fakeGateRunner{writeFiles: map[string]map[string]string{
+				"coverage-profile": {"tmp/coverage.out": tt.measuredContent},
+			}}
+			svc := NewQualityService(s, "proj", repoDir, runner)
+
+			cert, err := svc.Verify(context.Background(), model.QualityVerifyRequest{ID: "SPEC-1"})
+			if err != nil {
+				t.Fatalf("Verify: %v", err)
+			}
+			checks, err := s.ListChecks(context.Background(), cert.ID)
+			if err != nil {
+				t.Fatalf("ListChecks: %v", err)
+			}
+			if got := ratchetCheckStatus(checks, "global-line-pct"); got != tt.wantStatus {
+				t.Errorf("ratchet/global-line-pct status = %q, want %q", got, tt.wantStatus)
+			}
+		})
+	}
+
+	t.Run("no baseline registered: skipped, names the remedy", func(t *testing.T) {
+		repoDir := newTestGitRepo(t)
+		writeConstitutionV2Full(t, repoDir, true, 0.0, 1.0, nil)
+		commitAll(t, repoDir, "add constitution")
+
+		s := newTestQualityStore(t)
+		insertTestSpec(t, s, "SPEC-1", "proj", model.SpecStatusImplementing, "")
+		runner := &fakeGateRunner{writeFiles: map[string]map[string]string{
+			"coverage-profile": {"tmp/coverage.out": "SF:x.go\nDA:1,1\nend_of_record\n"},
+		}}
+		svc := NewQualityService(s, "proj", repoDir, runner)
+
+		cert, err := svc.Verify(context.Background(), model.QualityVerifyRequest{ID: "SPEC-1"})
+		if err != nil {
+			t.Fatalf("Verify: %v", err)
+		}
+		checks, err := s.ListChecks(context.Background(), cert.ID)
+		if err != nil {
+			t.Fatalf("ListChecks: %v", err)
+		}
+		if got := ratchetCheckStatus(checks, "global-line-pct"); got != "skipped" {
+			t.Fatalf("ratchet/global-line-pct status = %q, want skipped", got)
+		}
+		var summary string
+		for _, c := range checks {
+			if c.Kind == "ratchet" && c.Name == "global-line-pct" {
+				summary = c.Summary
+			}
+		}
+		if !strings.Contains(summary, "baseline update") {
+			t.Errorf("summary %q does not name `mneme quality baseline update`", summary)
+		}
+	})
+}
+
+// baselineIntegrityFixture builds the git history AC20's table needs:
+// commit c1 (constitution + foo.go, with `before`'s baseline content if
+// non-nil) becomes spec.BaseSHA; if `after` differs from `before` (or
+// `before` is nil and `after` is not, or vice versa), a second commit c2
+// applies that change and becomes HEAD.
+func baselineIntegrityFixture(t *testing.T, before, after *quality.Baseline) (repoDir, baseSHA string) {
+	t.Helper()
+	repoDir = newTestGitRepo(t)
+	writeConstitutionV2Full(t, repoDir, true, 0.0, 1000.0, nil) // staleness margin huge: isolate row 4 from row 7
+	if err := os.WriteFile(filepath.Join(repoDir, "foo.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("write foo.go: %v", err)
+	}
+	beforeContent := ""
+	if before != nil {
+		beforeContent = quality.RenderBaseline(before)
+		writeBaseline(t, repoDir, before)
+	}
+	commitAll(t, repoDir, "base commit")
+	baseSHA = headSHAFor(t, repoDir)
+
+	afterContent := ""
+	if after != nil {
+		afterContent = quality.RenderBaseline(after)
+	}
+
+	switch {
+	case beforeContent == afterContent:
+		// Nothing to change — HEAD (== baseSHA, no second commit) already
+		// reflects "after" because it never differed from "before".
+	case after == nil:
+		if err := os.Remove(filepath.Join(repoDir, quality.BaselineRelPath)); err != nil {
+			t.Fatalf("remove baseline: %v", err)
+		}
+		commitAll(t, repoDir, "delete baseline")
+	default:
+		writeBaseline(t, repoDir, after)
+		commitAll(t, repoDir, "update baseline")
+	}
+	return repoDir, baseSHA
+}
+
+// TestQualityService_Verify_Ratchet_BaselineIntegrity covers AC20's five-
+// row table end-to-end, over a REAL git repo (unlike TestBaselineDirection
+// in internal/quality, which tests the pure function directly) — this is
+// where P8's I/O wiring (MergeBase + FileAtRef) is proven correct.
+func TestQualityService_Verify_Ratchet_BaselineIntegrity(t *testing.T) {
+	scopeHash := quality.ScopeHash("lcov", nil)
+
+	tests := []struct {
+		name       string
+		before     *quality.Baseline
+		after      *quality.Baseline
+		wantStatus string
+	}{
+		{"absent -> absent: pass", nil, nil, "pass"},
+		{"absent -> present: pass (honest bootstrap)", nil, newTestBaseline("x", 70.0, scopeHash), "pass"},
+		{"present -> absent: FINDING (the obvious leak)", newTestBaseline("x", 70.0, scopeHash), nil, "finding"},
+		{"present -> present, pct higher: pass", newTestBaseline("x", 60.0, scopeHash), newTestBaseline("x", 75.0, scopeHash), "pass"},
+		{"present -> present, pct lower: FINDING", newTestBaseline("x", 75.0, scopeHash), newTestBaseline("x", 60.0, scopeHash), "finding"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repoDir, baseSHA := baselineIntegrityFixture(t, tt.before, tt.after)
+
+			s := newTestQualityStore(t)
+			insertTestSpec(t, s, "SPEC-1", "proj", model.SpecStatusImplementing, baseSHA)
+			runner := &fakeGateRunner{writeFiles: map[string]map[string]string{
+				"coverage-profile": {"tmp/coverage.out": "SF:x.go\nDA:1,1\nend_of_record\n"},
+			}}
+			svc := NewQualityService(s, "proj", repoDir, runner)
+
+			cert, err := svc.Verify(context.Background(), model.QualityVerifyRequest{ID: "SPEC-1"})
+			if err != nil {
+				t.Fatalf("Verify: %v", err)
+			}
+			checks, err := s.ListChecks(context.Background(), cert.ID)
+			if err != nil {
+				t.Fatalf("ListChecks: %v", err)
+			}
+			if got := ratchetCheckStatus(checks, "baseline-integrity"); got != tt.wantStatus {
+				t.Errorf("ratchet/baseline-integrity status = %q, want %q", got, tt.wantStatus)
+			}
+		})
+	}
+}
+
+// TestQualityService_Verify_Ratchet_BaselineComparable covers AC21's two
+// independent causes, plus their joint pass.
+func TestQualityService_Verify_Ratchet_BaselineComparable(t *testing.T) {
+	t.Run("measured_at_sha not an ancestor of HEAD: finding", func(t *testing.T) {
+		// A sibling branch's tip is registered as the baseline's SHA —
+		// never an ancestor of the eventual HEAD.
+		repoDir := newTestGitRepo(t)
+		writeConstitutionV2Full(t, repoDir, true, 0.0, 1000.0, nil)
+		commitAll(t, repoDir, "add constitution") // c0
+
+		env := append(os.Environ(), "GIT_AUTHOR_NAME=Test", "GIT_AUTHOR_EMAIL=test@test.com", "GIT_COMMITTER_NAME=Test", "GIT_COMMITTER_EMAIL=test@test.com")
+		gitRun := func(args ...string) {
+			t.Helper()
+			cmd := exec.Command("git", args...)
+			cmd.Dir = repoDir
+			cmd.Env = env
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("git %v: %v\n%s", args, err, out)
+			}
+		}
+		c0 := headSHAFor(t, repoDir)
+		gitRun("checkout", "-b", "sibling", c0)
+		if err := os.WriteFile(filepath.Join(repoDir, "sibling.go"), []byte("package main\n"), 0o644); err != nil {
+			t.Fatalf("write sibling.go: %v", err)
+		}
+		commitAll(t, repoDir, "sibling commit")
+		siblingSHA := headSHAFor(t, repoDir)
+
+		gitRun("checkout", "main")
+		if err := os.WriteFile(filepath.Join(repoDir, "foo.go"), []byte("package main\n"), 0o644); err != nil {
+			t.Fatalf("write foo.go: %v", err)
+		}
+		writeBaseline(t, repoDir, newTestBaseline(siblingSHA, 70.0, quality.ScopeHash("lcov", nil)))
+		commitAll(t, repoDir, "add foo.go and a baseline pointing at the sibling")
+
+		s := newTestQualityStore(t)
+		insertTestSpec(t, s, "SPEC-1", "proj", model.SpecStatusImplementing, "")
+		runner := &fakeGateRunner{writeFiles: map[string]map[string]string{"coverage-profile": {"tmp/coverage.out": "SF:x.go\nDA:1,1\nend_of_record\n"}}}
+		svc := NewQualityService(s, "proj", repoDir, runner)
+
+		cert, err := svc.Verify(context.Background(), model.QualityVerifyRequest{ID: "SPEC-1"})
+		if err != nil {
+			t.Fatalf("Verify: %v", err)
+		}
+		checks, err := s.ListChecks(context.Background(), cert.ID)
+		if err != nil {
+			t.Fatalf("ListChecks: %v", err)
+		}
+		if got := ratchetCheckStatus(checks, "baseline-comparable"); got != "finding" {
+			t.Errorf("ratchet/baseline-comparable status = %q, want finding", got)
+		}
+	})
+
+	t.Run("scope_hash mismatch (exclude widened): finding", func(t *testing.T) {
+		repoDir := newTestGitRepo(t)
+		baseSHA := headSHAFor(t, repoDir)
+		writeConstitutionV2Full(t, repoDir, true, 0.0, 1000.0, []string{"**/*_gen.go"})
+		// The registered baseline's scope_hash reflects an EMPTY exclude
+		// list — stale relative to the constitution's current scope.
+		writeBaseline(t, repoDir, newTestBaseline(baseSHA, 70.0, quality.ScopeHash("lcov", nil)))
+		commitAll(t, repoDir, "add constitution with widened exclude and a stale-scope baseline")
+
+		s := newTestQualityStore(t)
+		insertTestSpec(t, s, "SPEC-1", "proj", model.SpecStatusImplementing, "")
+		runner := &fakeGateRunner{writeFiles: map[string]map[string]string{"coverage-profile": {"tmp/coverage.out": "SF:x.go\nDA:1,1\nend_of_record\n"}}}
+		svc := NewQualityService(s, "proj", repoDir, runner)
+
+		cert, err := svc.Verify(context.Background(), model.QualityVerifyRequest{ID: "SPEC-1"})
+		if err != nil {
+			t.Fatalf("Verify: %v", err)
+		}
+		checks, err := s.ListChecks(context.Background(), cert.ID)
+		if err != nil {
+			t.Fatalf("ListChecks: %v", err)
+		}
+		if got := ratchetCheckStatus(checks, "baseline-comparable"); got != "finding" {
+			t.Errorf("ratchet/baseline-comparable status = %q, want finding", got)
+		}
+	})
+
+	t.Run("ancestor and scope both satisfied: pass", func(t *testing.T) {
+		repoDir := newTestGitRepo(t)
+		baseSHA := headSHAFor(t, repoDir)
+		writeConstitutionV2Full(t, repoDir, true, 0.0, 1000.0, nil)
+		writeBaseline(t, repoDir, newTestBaseline(baseSHA, 70.0, quality.ScopeHash("lcov", nil)))
+		commitAll(t, repoDir, "add constitution and a comparable baseline")
+
+		s := newTestQualityStore(t)
+		insertTestSpec(t, s, "SPEC-1", "proj", model.SpecStatusImplementing, "")
+		runner := &fakeGateRunner{writeFiles: map[string]map[string]string{"coverage-profile": {"tmp/coverage.out": "SF:x.go\nDA:1,1\nend_of_record\n"}}}
+		svc := NewQualityService(s, "proj", repoDir, runner)
+
+		cert, err := svc.Verify(context.Background(), model.QualityVerifyRequest{ID: "SPEC-1"})
+		if err != nil {
+			t.Fatalf("Verify: %v", err)
+		}
+		checks, err := s.ListChecks(context.Background(), cert.ID)
+		if err != nil {
+			t.Fatalf("ListChecks: %v", err)
+		}
+		if got := ratchetCheckStatus(checks, "baseline-comparable"); got != "pass" {
+			t.Errorf("ratchet/baseline-comparable status = %q, want pass", got)
+		}
+	})
+}
+
+// TestQualityService_Verify_Ratchet_BaselineStale covers AC22: exceeding
+// the margin is a finding (with the gap named); within the margin, or
+// below the mark entirely, passes; and no baseline skips.
+func TestQualityService_Verify_Ratchet_BaselineStale(t *testing.T) {
+	tests := []struct {
+		name         string
+		baselinePct  float64
+		maxStaleness float64
+		measuredLCOV string
+		wantStatus   string
+	}{
+		{
+			name: "exceeds margin: finding", baselinePct: 70.0, maxStaleness: 1.0,
+			measuredLCOV: "SF:foo.go\nDA:1,1\nDA:2,1\nDA:3,1\nend_of_record\n", wantStatus: "finding", // 100%
+		},
+		{
+			name: "within margin: pass", baselinePct: 99.9, maxStaleness: 1.0,
+			measuredLCOV: "SF:foo.go\nDA:1,1\nDA:2,1\nDA:3,1\nend_of_record\n", wantStatus: "pass", // 100%, 0.1pt over
+		},
+		{
+			name: "below the mark: pass (that direction is row 6's problem)", baselinePct: 100.0, maxStaleness: 1.0,
+			measuredLCOV: "SF:foo.go\nDA:1,0\nDA:2,0\nDA:3,0\nend_of_record\n", wantStatus: "pass", // 0%
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repoDir := newTestGitRepo(t)
+			baseSHA := headSHAFor(t, repoDir)
+			// max_global_line_pct_drop=0.0: every fixture here measures AT
+			// or ABOVE the baseline (never a drop), so row 6 always passes
+			// regardless — isolating row 7 without violating Parse's own
+			// cross-bound rule (staleness must be >= drop, D6).
+			writeConstitutionV2Full(t, repoDir, true, 0.0, tt.maxStaleness, nil)
+			if err := os.WriteFile(filepath.Join(repoDir, "foo.go"), []byte("package main\n\nfunc Foo() {}\n"), 0o644); err != nil {
+				t.Fatalf("write foo.go: %v", err)
+			}
+			writeBaseline(t, repoDir, newTestBaseline(baseSHA, tt.baselinePct, quality.ScopeHash("lcov", nil)))
+			commitAll(t, repoDir, "add constitution, foo.go, baseline")
+
+			s := newTestQualityStore(t)
+			insertTestSpec(t, s, "SPEC-1", "proj", model.SpecStatusImplementing, baseSHA)
+			runner := &fakeGateRunner{writeFiles: map[string]map[string]string{"coverage-profile": {"tmp/coverage.out": tt.measuredLCOV}}}
+			svc := NewQualityService(s, "proj", repoDir, runner)
+
+			cert, err := svc.Verify(context.Background(), model.QualityVerifyRequest{ID: "SPEC-1"})
+			if err != nil {
+				t.Fatalf("Verify: %v", err)
+			}
+			checks, err := s.ListChecks(context.Background(), cert.ID)
+			if err != nil {
+				t.Fatalf("ListChecks: %v", err)
+			}
+			if got := ratchetCheckStatus(checks, "baseline-stale"); got != tt.wantStatus {
+				t.Errorf("ratchet/baseline-stale status = %q, want %q", got, tt.wantStatus)
+			}
+		})
+	}
+
+	t.Run("no baseline: skipped", func(t *testing.T) {
+		repoDir := newTestGitRepo(t)
+		writeConstitutionV2Full(t, repoDir, true, 0.0, 1.0, nil)
+		commitAll(t, repoDir, "add constitution")
+
+		s := newTestQualityStore(t)
+		insertTestSpec(t, s, "SPEC-1", "proj", model.SpecStatusImplementing, "")
+		runner := &fakeGateRunner{writeFiles: map[string]map[string]string{"coverage-profile": {"tmp/coverage.out": "SF:x.go\nDA:1,1\nend_of_record\n"}}}
+		svc := NewQualityService(s, "proj", repoDir, runner)
+
+		cert, err := svc.Verify(context.Background(), model.QualityVerifyRequest{ID: "SPEC-1"})
+		if err != nil {
+			t.Fatalf("Verify: %v", err)
+		}
+		checks, err := s.ListChecks(context.Background(), cert.ID)
+		if err != nil {
+			t.Fatalf("ListChecks: %v", err)
+		}
+		if got := ratchetCheckStatus(checks, "baseline-stale"); got != "skipped" {
+			t.Errorf("ratchet/baseline-stale status = %q, want skipped", got)
+		}
+	})
+}
+
+// TestQualityService_Verify_Ratchet_OffStates covers the rest of AC26:
+// [ratchet].enabled=false skips rows 4-7 while rows 1-3 still evaluate
+// normally — the ratchet being off does not turn off diff coverage.
+func TestQualityService_Verify_Ratchet_OffStates(t *testing.T) {
+	repoDir := newTestGitRepo(t)
+	baseSHA := headSHAFor(t, repoDir)
+	writeConstitutionV2Full(t, repoDir, false, 0.0, 1.0, nil)
+	if err := os.WriteFile(filepath.Join(repoDir, "foo.go"), []byte("package main\n\nfunc Foo() {}\n"), 0o644); err != nil {
+		t.Fatalf("write foo.go: %v", err)
+	}
+	commitAll(t, repoDir, "add constitution and foo.go")
+
+	s := newTestQualityStore(t)
+	insertTestSpec(t, s, "SPEC-1", "proj", model.SpecStatusImplementing, baseSHA)
+	runner := &fakeGateRunner{writeFiles: map[string]map[string]string{
+		"coverage-profile": {"tmp/coverage.out": "SF:foo.go\nDA:1,1\nDA:2,1\nDA:3,1\nend_of_record\n"},
+	}}
+	svc := NewQualityService(s, "proj", repoDir, runner)
+
+	cert, err := svc.Verify(context.Background(), model.QualityVerifyRequest{ID: "SPEC-1"})
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	checks, err := s.ListChecks(context.Background(), cert.ID)
+	if err != nil {
+		t.Fatalf("ListChecks: %v", err)
+	}
+
+	if got := coverageCheckStatus(checks, "diff-lines"); got != "pass" {
+		t.Errorf("coverage/diff-lines status = %q, want pass (ratchet being off must not affect coverage rows)", got)
+	}
+	for _, name := range []string{"baseline-integrity", "baseline-comparable", "global-line-pct", "baseline-stale"} {
+		if got := ratchetCheckStatus(checks, name); got != "skipped" {
+			t.Errorf("ratchet/%s status = %q, want skipped", name, got)
+		}
+	}
 }

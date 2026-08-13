@@ -481,3 +481,60 @@ func TestEnsureCertified_QAToDone_AlsoGated(t *testing.T) {
 		t.Errorf("status = %s, want done", done.Status)
 	}
 }
+
+// TestEnsureCertified_RatchetFinding_BlocksThenAckUnblocks covers AC28
+// end-to-end, with ensureCertified/sdd.go completely UNCHANGED (D4/V2): a
+// certificate whose ONLY imperfection is a `ratchet/global-line-pct`
+// finding still blocks implementing->qa via the exact same generic
+// verdict-derived mechanism S1 built (ensureCertified never learned about
+// "ratchet" — DeriveVerdict already treats any un-acked finding as
+// verdict=findings, degrading CertificateUsable just like any other
+// finding kind), and acking that ONE row flips the SAME certificate's
+// verdict to pass, letting the SAME transition through.
+func TestEnsureCertified_RatchetFinding_BlocksThenAckUnblocks(t *testing.T) {
+	svc := newTestSDDService(t, "proj")
+	ctx := context.Background()
+
+	repoDir := newTestGitRepo(t)
+	writeTestConstitution(t, repoDir, true)
+	commitAllQuality(t, repoDir, "add constitution")
+	svc.WithRepoDir(repoDir)
+
+	spec := advanceToImplementing(t, svc, ctx, "AC28 ratchet finding")
+
+	sha := headSHA(t, repoDir)
+	raw, err := os.ReadFile(filepath.Join(repoDir, ".mneme", "quality.toml"))
+	if err != nil {
+		t.Fatalf("read constitution: %v", err)
+	}
+
+	cert := &model.QualityCertificate{
+		Project: "proj", SpecID: spec.ID, HeadSHA: sha, BaseSHA: spec.BaseSHA,
+		ConstitutionHash: quality.HashBytes(raw), SchemaVersion: 2, Verdict: model.QualityVerdictFindings,
+	}
+	checks := []*model.QualityCheck{
+		{Kind: "gate", Name: "build", Status: "pass"},
+		{Kind: "ratchet", Name: "global-line-pct", Status: "finding", Summary: "cobertura global cayo 3 puntos"},
+	}
+	if err := svc.store.InsertCertificate(ctx, cert, checks); err != nil {
+		t.Fatalf("InsertCertificate: %v", err)
+	}
+
+	if _, err := svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: "backend"}); !errors.Is(err, model.ErrCertificateNotGreen) {
+		t.Fatalf("SpecAdvance with a ratchet finding = %v, want ErrCertificateNotGreen", err)
+	}
+
+	// The finding row is checks[1] (seq=2, 1-based, per InsertCertificate's
+	// own contract).
+	if err := svc.store.AckCheck(ctx, cert.ID, 2, "human-reviewer", "caida legitima, codigo de arranque nuevo"); err != nil {
+		t.Fatalf("AckCheck: %v", err)
+	}
+
+	advanced, err := svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: "backend"})
+	if err != nil {
+		t.Fatalf("SpecAdvance after acking the ratchet finding: %v", err)
+	}
+	if advanced.Status != model.SpecStatusQA {
+		t.Errorf("status = %s, want qa", advanced.Status)
+	}
+}
