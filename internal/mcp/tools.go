@@ -864,6 +864,61 @@ func allTools() []ToolDefinition {
 			},
 		},
 
+		// Quality tools (SPEC-115 EPIC-calidad S1)
+		{
+			Name:        "quality_verify",
+			Description: "Run the gates declared in .mneme/quality.toml for a spec and emit (or deny) a certificate bound to the current commit. Valid only while the spec is implementing or qa (qa admits recertification when HEAD moved during QA).",
+			InputSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"id"},
+				"properties": map[string]any{
+					"id": map[string]any{
+						"type":        "string",
+						"description": "Spec ID to verify (must be implementing or qa status).",
+					},
+				},
+			},
+		},
+		{
+			Name:        "quality_status",
+			Description: "Report the quality constitution's state (path, hash, enabled, declared gates) and, when a spec ID is given, its latest certificate and checks. Never executes anything.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"id": map[string]any{
+						"type":        "string",
+						"description": "Spec ID to report the latest certificate for. Omit to report only the constitution's own state.",
+					},
+				},
+			},
+		},
+		{
+			Name:        "quality_ack",
+			Description: "Record a human's justified approval of a quality finding, converting it from 'finding' to 'acked' without re-running anything. The certificate's verdict is recalculated in the same operation.",
+			InputSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"cert_id", "seq", "by", "justification"},
+				"properties": map[string]any{
+					"cert_id": map[string]any{
+						"type":        "string",
+						"description": "Certificate ID the finding belongs to.",
+					},
+					"seq": map[string]any{
+						"type":        "integer",
+						"description": "Seq of the finding within the certificate's checks.",
+					},
+					"by": map[string]any{
+						"type":        "string",
+						"description": "Who is acknowledging the finding — never the author of the change under review.",
+					},
+					"justification": map[string]any{
+						"type":        "string",
+						"description": "Why the finding is acceptable (required, non-empty).",
+					},
+				},
+			},
+		},
+
 		// mem_gaps
 		{
 			Name:        "mem_gaps",

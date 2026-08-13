@@ -58,6 +58,19 @@ func NewServer(svc *service.MemoryService, sddSvc *service.SDDService, skillsSvc
 	}
 }
 
+// WithQualityService wires a QualityService into the server's handlers,
+// enabling quality_verify/quality_status/quality_ack (SPEC-115 P10). It is a
+// setter rather than a NewServer positional parameter deliberately: NewServer
+// has 15 call sites (1 production, 14 across other packages' tests), and a
+// new required parameter would force editing all of them for no safety gain
+// — a caller could still pass nil. The precedent is
+// SDDService.WithMemoryService: the failure mode of "forgot to wire it" is
+// h.qualityUnavailable, loud and immediate, exactly like h.sddUnavailable
+// today when sddSvc is nil. Safe to call multiple times; the last call wins.
+func (s *Server) WithQualityService(qualitySvc *service.QualityService) {
+	s.handlers.qualitySvc = qualitySvc
+}
+
 // Run starts the JSON-RPC 2.0 message loop, reading line-delimited JSON from
 // reader and writing responses to writer. It returns when reader reaches EOF,
 // when ctx is cancelled, or when a fatal I/O error occurs.

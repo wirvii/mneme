@@ -31,6 +31,7 @@ type handlers struct {
 	subagentSvc *service.SubagentService  // wraps svc; always available (SPEC-057/SS-4)
 	profileSvc  *service.ProfileService   // wraps cfg.ProfilesDir(); always available (SPEC-091 §1)
 	speechSvc   *service.SpeechService    // host-local speech control; always available
+	qualitySvc  *service.QualityService   // optional; nil until wired via Server.WithQualityService (SPEC-115 P10)
 	logger      *slog.Logger
 }
 
@@ -164,6 +165,14 @@ func (h *handlers) handleToolCall(ctx context.Context, params ToolCallParams) (*
 		return h.handleSpecReject(ctx, params.Arguments)
 	case "lane_stats":
 		return h.handleLaneStats(ctx, params.Arguments)
+
+	// --- QUALITY TOOLS (SPEC-115 EPIC-calidad S1) ---
+	case "quality_verify":
+		return h.handleQualityVerify(ctx, params.Arguments)
+	case "quality_status":
+		return h.handleQualityStatus(ctx, params.Arguments)
+	case "quality_ack":
+		return h.handleQualityAck(ctx, params.Arguments)
 
 	// --- SKILLS TOOLS ---
 	case "skills_list":
@@ -701,7 +710,8 @@ func (h *handlers) mapServiceError(method string, err error) *JSONRPCError {
 		errors.Is(err, model.ErrPushbackNotFound) ||
 		errors.Is(err, model.ErrSkillNotFound) ||
 		errors.Is(err, model.ErrProfileNotFound) ||
-		errors.Is(err, model.ErrScaffoldNotFound) {
+		errors.Is(err, model.ErrScaffoldNotFound) ||
+		errors.Is(err, model.ErrCertificateNotFound) {
 		return &JSONRPCError{
 			Code:    CodeMemoryNotFound,
 			Message: fmt.Sprintf("mcp: handle %s: %s", method, err),
@@ -752,7 +762,14 @@ func (h *handlers) mapServiceError(method string, err error) *JSONRPCError {
 		errors.Is(err, model.ErrUnknownWiringAction) ||
 		errors.Is(err, model.ErrAppAddNotApplicable) ||
 		errors.Is(err, model.ErrProjectSlugRequired) ||
-		errors.Is(err, model.ErrProfileLockUnsupported) {
+		errors.Is(err, model.ErrProfileLockUnsupported) ||
+		errors.Is(err, model.ErrInvalidConstitution) ||
+		errors.Is(err, model.ErrConstitutionAblated) ||
+		errors.Is(err, model.ErrConstitutionChanged) ||
+		errors.Is(err, model.ErrCertificateMissing) ||
+		errors.Is(err, model.ErrCertificateStale) ||
+		errors.Is(err, model.ErrCertificateNotGreen) ||
+		errors.Is(err, model.ErrWorktreeDirty) {
 		return &JSONRPCError{
 			Code:    CodeInvalidParams,
 			Message: fmt.Sprintf("mcp: handle %s: %s", method, err),
@@ -817,6 +834,16 @@ func (h *handlers) sddUnavailable(method string) *JSONRPCError {
 	return &JSONRPCError{
 		Code:    CodeInternalError,
 		Message: fmt.Sprintf("mcp: handle %s: SDD service not available", method),
+	}
+}
+
+// qualityUnavailable returns a JSONRPCError indicating the quality service
+// was never wired via Server.WithQualityService — the mirror of
+// sddUnavailable for the three quality_* tools (SPEC-115 P10).
+func (h *handlers) qualityUnavailable(method string) *JSONRPCError {
+	return &JSONRPCError{
+		Code:    CodeInternalError,
+		Message: fmt.Sprintf("mcp: handle %s: quality service not available", method),
 	}
 }
 
