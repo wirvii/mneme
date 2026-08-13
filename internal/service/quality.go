@@ -759,6 +759,14 @@ func (svc *QualityService) Status(ctx context.Context, req model.QualityStatusRe
 		return resp, nil
 	}
 
+	// SPEC-116/AC29: the baseline is a repo-wide fact, independent of the
+	// constitution's own parseability — reported whenever the file exists
+	// and parses, reading only (never executing anything). A missing OR
+	// unparseable baseline is simply reported as absent (nil) here — Status
+	// never fails on it, the same posture it already has for the
+	// constitution's own absence.
+	baseline := readBaselineFile(svc.repoDir)
+
 	constPath := filepath.Join(svc.repoDir, constitutionRelPath)
 	raw, err := os.ReadFile(constPath)
 	if err != nil {
@@ -789,6 +797,15 @@ func (svc *QualityService) Status(ctx context.Context, req model.QualityStatusRe
 		resp.Note = "mecanismo apagado (enabled=false)"
 	}
 
+	if baseline != nil {
+		resp.Baseline = &model.QualityBaselineInfo{
+			Path:          quality.BaselineRelPath,
+			MeasuredAtSHA: baseline.MeasuredAtSHA,
+			MeasuredAt:    baseline.MeasuredAt,
+			GlobalLinePct: baseline.GlobalLinePct,
+		}
+	}
+
 	if req.ID == "" {
 		return resp, nil
 	}
@@ -808,7 +825,44 @@ func (svc *QualityService) Status(ctx context.Context, req model.QualityStatusRe
 	}
 	resp.Checks = checks
 
+	// Obsolescence (D17) needs a "current" measurement — the SAME
+	// certificate's own coverage/profile row, read back, never
+	// recomputed. Only meaningful when the constitution actually declares
+	// [ratchet] (its margin is otherwise the zero value, which would
+	// misreport every baseline as maximally stale).
+	if resp.Baseline != nil && constitution.RatchetDeclared {
+		for _, c := range checks {
+			if c.Kind != "coverage" || c.Name != "profile" || c.Status != "pass" {
+				continue
+			}
+			var detail coverageProfileDetail
+			if jsonErr := json.Unmarshal([]byte(c.Detail), &detail); jsonErr == nil {
+				staleness, stale := quality.CompareStaleness(detail.GlobalLinePct, baseline.GlobalLinePct, constitution.Ratchet.MaxBaselineStalenessPct)
+				resp.Baseline.StalenessKnown = true
+				resp.Baseline.StalenessPct = staleness
+				resp.Baseline.Stale = stale
+			}
+			break
+		}
+	}
+
 	return resp, nil
+}
+
+// readBaselineFile reads and parses repoDir's registered ratchet baseline,
+// returning nil whenever it is absent OR unparseable — Status (D3's
+// read-only contract, AC29) never fails on either state, the same posture
+// it already has for a missing or invalid constitution.
+func readBaselineFile(repoDir string) *quality.Baseline {
+	raw, err := os.ReadFile(filepath.Join(repoDir, quality.BaselineRelPath))
+	if err != nil {
+		return nil
+	}
+	baseline, err := quality.ParseBaseline(raw)
+	if err != nil {
+		return nil
+	}
+	return baseline
 }
 
 // Ack converts a "finding" check into "acked", recording who approved it and

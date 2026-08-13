@@ -1498,3 +1498,74 @@ func TestQualityService_BaselineUpdate_PassCertificate_WritesExactFigures(t *tes
 		t.Errorf("written baseline on disk = %+v, want figures matching %+v", roundTripped, detail)
 	}
 }
+
+// TestQualityService_Status_ReportsBaseline covers AC29's positive half: a
+// registered baseline appears in the response with its recorded figures,
+// plus obsolescence computed from the spec's own latest certificate.
+func TestQualityService_Status_ReportsBaseline(t *testing.T) {
+	repoDir := newTestGitRepo(t)
+	headSHA := headSHAFor(t, repoDir)
+	writeConstitutionV2Full(t, repoDir, true, 0.0, 1.0, nil)
+	commitAll(t, repoDir, "add constitution")
+
+	writeBaseline(t, repoDir, newTestBaseline(headSHA, 70.0, quality.ScopeHash("lcov", nil)))
+
+	s := newTestQualityStore(t)
+	spec := insertTestSpec(t, s, "SPEC-1", "proj", model.SpecStatusImplementing, "")
+
+	cert := &model.QualityCertificate{
+		Project: "proj", SpecID: spec.ID, HeadSHA: headSHA,
+		ConstitutionHash: "h", SchemaVersion: 2, Verdict: model.QualityVerdictPass,
+	}
+	detail := coverageProfileDetail{LinesTotal: 100, LinesCovered: 75, GlobalLinePct: 75.0, ScopeHash: quality.ScopeHash("lcov", nil)}
+	detailJSON, err := json.Marshal(detail)
+	if err != nil {
+		t.Fatalf("marshal detail: %v", err)
+	}
+	checks := []*model.QualityCheck{{Kind: "coverage", Name: "profile", Status: "pass", Detail: string(detailJSON)}}
+	if err := s.InsertCertificate(context.Background(), cert, checks); err != nil {
+		t.Fatalf("InsertCertificate: %v", err)
+	}
+
+	svc := NewQualityService(s, "proj", repoDir, &fakeGateRunner{})
+	resp, err := svc.Status(context.Background(), model.QualityStatusRequest{ID: "SPEC-1"})
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+
+	if resp.Baseline == nil {
+		t.Fatal("resp.Baseline is nil, want it populated")
+	}
+	if resp.Baseline.GlobalLinePct != 70.0 {
+		t.Errorf("Baseline.GlobalLinePct = %v, want 70.0", resp.Baseline.GlobalLinePct)
+	}
+	if resp.Baseline.MeasuredAtSHA != headSHA {
+		t.Errorf("Baseline.MeasuredAtSHA = %q, want %q", resp.Baseline.MeasuredAtSHA, headSHA)
+	}
+	if !resp.Baseline.StalenessKnown {
+		t.Fatal("Baseline.StalenessKnown = false, want true (a usable certificate was supplied)")
+	}
+	if !resp.Baseline.Stale {
+		t.Error("Baseline.Stale = false, want true (measured 75% vs baseline 70%, margin 1.0)")
+	}
+}
+
+// TestQualityService_Status_NoBaseline_OmitsField is AC29's paired
+// negative row: no baseline file at all -> resp.Baseline stays nil.
+func TestQualityService_Status_NoBaseline_OmitsField(t *testing.T) {
+	repoDir := newTestGitRepo(t)
+	writeConstitutionV2Full(t, repoDir, true, 0.0, 1.0, nil)
+	commitAll(t, repoDir, "add constitution")
+
+	s := newTestQualityStore(t)
+	insertTestSpec(t, s, "SPEC-1", "proj", model.SpecStatusImplementing, "")
+	svc := NewQualityService(s, "proj", repoDir, &fakeGateRunner{})
+
+	resp, err := svc.Status(context.Background(), model.QualityStatusRequest{ID: "SPEC-1"})
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if resp.Baseline != nil {
+		t.Errorf("resp.Baseline = %+v, want nil (no baseline file exists)", resp.Baseline)
+	}
+}

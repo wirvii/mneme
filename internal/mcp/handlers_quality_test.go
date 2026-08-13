@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/wirvii/mneme/internal/config"
 	"github.com/wirvii/mneme/internal/db"
@@ -232,4 +233,94 @@ func TestDispatch_QualityTools_UnavailableWhenNotWired(t *testing.T) {
 	if resp.Error.Code != CodeInternalError {
 		t.Errorf("code = %d, want CodeInternalError", resp.Error.Code)
 	}
+}
+
+// TestDispatch_QualityStatus_ReportsBaseline covers AC29's dispatch-level
+// requirement (SPEC-116 P10): quality_status's real JSON-RPC response
+// carries the registered baseline's fields when the file exists, and
+// omits them when it does not — over the exact SAME dispatch path (no new
+// tool, no tools.go/handlers.go/server.go change).
+func TestDispatch_QualityStatus_ReportsBaseline(t *testing.T) {
+	projectDB, err := db.OpenMemory()
+	if err != nil {
+		t.Fatalf("open project db: %v", err)
+	}
+	projectDB.SetMaxOpenConns(1)
+	t.Cleanup(func() { projectDB.Close() })
+
+	globalDB, err := db.OpenMemory()
+	if err != nil {
+		t.Fatalf("open global db: %v", err)
+	}
+	t.Cleanup(func() { globalDB.Close() })
+
+	projectStore := store.NewMemoryStore(projectDB)
+	globalStore := store.NewMemoryStore(globalDB)
+	cfg := config.Default()
+	svc := service.NewMemoryService(projectStore, globalStore, cfg, "test-project", embed.NopEmbedder{})
+
+	sddStore := store.NewSDDStore(projectDB)
+	sddSvc := service.NewSDDService(sddStore, cfg, "test-project", svc)
+
+	repoDir := initQualityTestGitRepo(t)
+	qualitySvc := service.NewQualityService(sddStore, "test-project", repoDir, fakeQualityRunner{})
+
+	srv := NewServer(svc, sddSvc, nil, nil, slog.Default(), "all", "test")
+	srv.WithQualityService(qualitySvc)
+
+	// (a) No baseline file yet: the field must be absent.
+	beforeResp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name:      "quality_status",
+		Arguments: mustMarshal(t, map[string]any{}),
+	})
+	if beforeResp.Error != nil {
+		t.Fatalf("quality_status (no baseline): unexpected error %+v", beforeResp.Error)
+	}
+	var beforeOut model.QualityStatusResponse
+	unmarshalToolText(t, beforeResp, &beforeOut)
+	if beforeOut.Baseline != nil {
+		t.Fatalf("quality_status (no baseline) Baseline = %+v, want nil", beforeOut.Baseline)
+	}
+
+	// (b) Register a baseline, then dispatch again: the field must appear
+	// with the exact registered figures.
+	baseline := &quality.Baseline{
+		SchemaVersion: quality.BaselineSchemaVersion,
+		MeasuredAtSHA: "abc123",
+		MeasuredAt:    mustParseRFC3339(t, "2026-01-01T00:00:00Z"),
+		CertificateID: "cert-x",
+		LinesTotal:    100,
+		LinesCovered:  70,
+		GlobalLinePct: 70.0,
+		ScopeHash:     "h",
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, quality.BaselineRelPath), []byte(quality.RenderBaseline(baseline)), 0o644); err != nil {
+		t.Fatalf("write baseline: %v", err)
+	}
+
+	afterResp := process(t, srv, "tools/call", 2, ToolCallParams{
+		Name:      "quality_status",
+		Arguments: mustMarshal(t, map[string]any{}),
+	})
+	if afterResp.Error != nil {
+		t.Fatalf("quality_status (with baseline): unexpected error %+v", afterResp.Error)
+	}
+	var afterOut model.QualityStatusResponse
+	unmarshalToolText(t, afterResp, &afterOut)
+	if afterOut.Baseline == nil {
+		t.Fatal("quality_status (with baseline) Baseline is nil, want it populated")
+	}
+	if afterOut.Baseline.GlobalLinePct != 70.0 || afterOut.Baseline.MeasuredAtSHA != "abc123" {
+		t.Errorf("quality_status Baseline = %+v, want global_line_pct=70 measured_at_sha=abc123", afterOut.Baseline)
+	}
+}
+
+// mustParseRFC3339 is a small test helper for building baseline fixtures.
+func mustParseRFC3339(t *testing.T, s string) (parsed time.Time) {
+	t.Helper()
+	parsed, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		t.Fatalf("time.Parse(%q): %v", s, err)
+	}
+	return parsed
 }
