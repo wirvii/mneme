@@ -277,6 +277,210 @@ func parseGrepCountRecords(out []byte, ref string) (map[string]int, error) {
 	return counts, nil
 }
 
+// FileStatus classifies how a single file changed between two refs, in the
+// closed vocabulary git's own `--name-status` letters map to (SPEC-118 S4
+// D1/P2). Renamed and Copied both carry an OldPath — D4 of the grill's own
+// distinction between a genuine rename (the symbols inside move) and a copy
+// (the source is untouched, only the destination is new).
+type FileStatus string
+
+const (
+	FileStatusAdded       FileStatus = "A"
+	FileStatusModified    FileStatus = "M"
+	FileStatusDeleted     FileStatus = "D"
+	FileStatusRenamed     FileStatus = "R"
+	FileStatusCopied      FileStatus = "C"
+	FileStatusTypeChanged FileStatus = "T"
+)
+
+// FileChange is one entry of a `git diff --name-status` result, in the
+// git-agnostic shape ParseNameStatus produces.
+type FileChange struct {
+	// Path is the current path (the destination path for a rename/copy).
+	Path string
+
+	// OldPath is populated only for FileStatusRenamed/FileStatusCopied: the
+	// source path git detected via -M/-C.
+	OldPath string
+
+	Status FileStatus
+}
+
+// FileStat is one entry of a `git diff --numstat` result: how many lines a
+// single file gained and lost. Binary files report Added=Removed=0 (git
+// itself reports "-" for both columns).
+type FileStat struct {
+	Path    string
+	Added   int
+	Removed int
+}
+
+// ParseNameStatus is the PURE parser behind ChangedFilesInRange (P2/R-E): it
+// never touches git or the filesystem, so every rare shape (a rename, a
+// copy, a type-change, an unknown status) is a table row in git_test.go
+// instead of a fixture repository per case — the same separation S2 already
+// established between ParseUnifiedDiff and ChangedLines.
+//
+// data is expected to be the NUL-terminated output of
+// `git -c core.quotePath=false diff --name-status -M -z <range> --`: a
+// simple status is "A\0path\0"; a rename or copy is "R100\0old\0new\0" or
+// "C100\0old\0new\0" — THREE records, not two (G8) — and the parser reads
+// the second path only when the status byte is 'R' or 'C'. An unrecognised
+// leading status byte, or a record whose expected path token is missing, is
+// skipped rather than erroring: `git diff` itself is the only source of
+// this text and mneme does not invent statuses it has never observed.
+func ParseNameStatus(data []byte) ([]FileChange, error) {
+	toks := splitNULTerminated(data)
+	changes := make([]FileChange, 0, len(toks))
+
+	for i := 0; i < len(toks); {
+		status := toks[i]
+		i++
+		if status == "" {
+			continue
+		}
+		switch status[0] {
+		case 'A':
+			if i >= len(toks) {
+				return nil, fmt.Errorf("quality: parse name-status: truncated A record")
+			}
+			changes = append(changes, FileChange{Path: toks[i], Status: FileStatusAdded})
+			i++
+		case 'M':
+			if i >= len(toks) {
+				return nil, fmt.Errorf("quality: parse name-status: truncated M record")
+			}
+			changes = append(changes, FileChange{Path: toks[i], Status: FileStatusModified})
+			i++
+		case 'D':
+			if i >= len(toks) {
+				return nil, fmt.Errorf("quality: parse name-status: truncated D record")
+			}
+			changes = append(changes, FileChange{Path: toks[i], Status: FileStatusDeleted})
+			i++
+		case 'T':
+			if i >= len(toks) {
+				return nil, fmt.Errorf("quality: parse name-status: truncated T record")
+			}
+			changes = append(changes, FileChange{Path: toks[i], Status: FileStatusModified})
+			i++
+		case 'R':
+			if i+1 >= len(toks) {
+				return nil, fmt.Errorf("quality: parse name-status: truncated R record")
+			}
+			changes = append(changes, FileChange{OldPath: toks[i], Path: toks[i+1], Status: FileStatusRenamed})
+			i += 2
+		case 'C':
+			if i+1 >= len(toks) {
+				return nil, fmt.Errorf("quality: parse name-status: truncated C record")
+			}
+			changes = append(changes, FileChange{OldPath: toks[i], Path: toks[i+1], Status: FileStatusCopied})
+			i += 2
+		default:
+			// Unknown or unmerged status (e.g. "U") — skip the one path
+			// token that follows it, best-effort, rather than error: mneme
+			// does not invent semantics for a status git itself does not
+			// document for a two-ref diff.
+			if i < len(toks) {
+				i++
+			}
+		}
+	}
+	return changes, nil
+}
+
+// ChangedFilesInRange returns the file-level delta between fromSHA and toRef
+// (SPEC-118 S4 layer 1): every added, modified, deleted, renamed, or copied
+// path, with rename/copy detection ALWAYS on (-M, R-E/G8) so a moved file
+// is never misread as a delete+add pair. -z and NUL-delimited parsing (R-E)
+// so a filename containing a tab or newline never corrupts the result, and
+// -c core.quotePath=false so a non-ASCII filename is never quoted
+// differently depending on the caller's own .gitconfig.
+func (g *Git) ChangedFilesInRange(fromSHA, toRef string) ([]FileChange, error) {
+	cmd := exec.Command("git",
+		"-c", "core.quotePath=false",
+		"diff", "--name-status", "-M", "-z", fromSHA+".."+toRef, "--",
+	)
+	cmd.Dir = g.RepoDir
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("quality: git diff --name-status -M -z %s..%s: %w", fromSHA, toRef, err)
+	}
+	return ParseNameStatus(out)
+}
+
+// ParseNumStat is the PURE parser behind NumStat: `git diff --numstat -z`
+// emits one NUL-terminated record per file, "<added>\t<removed>\t<path>",
+// except for a rename/copy where the path field is left EMPTY and is
+// followed by two more NUL-terminated records (old path, then new path) —
+// mirrored from the same three-record shape ParseNameStatus already
+// handles for --name-status (G8). Binary files report "-" in both count
+// columns (D2 point 3) and are recorded as FileStat{Added:0, Removed:0} —
+// never an error — exactly what lane.parseNumStatLine already did for its
+// own (non -z) numstat lines; that behaviour is migrated here verbatim
+// (R-F).
+func ParseNumStat(data []byte) ([]FileStat, error) {
+	toks := splitNULTerminated(data)
+	stats := make([]FileStat, 0, len(toks))
+
+	for i := 0; i < len(toks); {
+		record := toks[i]
+		i++
+		if record == "" {
+			continue
+		}
+		parts := strings.SplitN(record, "\t", 3)
+		if len(parts) != 3 {
+			return nil, fmt.Errorf("quality: parse numstat: malformed record %q", record)
+		}
+		added, removed, path := parts[0], parts[1], parts[2]
+
+		if path == "" {
+			// Rename/copy: the next two records are the old and new paths.
+			if i+1 >= len(toks) {
+				return nil, fmt.Errorf("quality: parse numstat: truncated rename record")
+			}
+			path = toks[i+1]
+			i += 2
+		}
+
+		fs := FileStat{Path: path}
+		if added == "-" || removed == "-" {
+			stats = append(stats, fs)
+			continue
+		}
+		a, convErr := strconv.Atoi(added)
+		if convErr != nil {
+			return nil, fmt.Errorf("quality: parse numstat: added count %q: %w", added, convErr)
+		}
+		r, convErr := strconv.Atoi(removed)
+		if convErr != nil {
+			return nil, fmt.Errorf("quality: parse numstat: removed count %q: %w", removed, convErr)
+		}
+		fs.Added, fs.Removed = a, r
+		stats = append(stats, fs)
+	}
+	return stats, nil
+}
+
+// NumStat returns per-file added/removed line counts between fromSHA and
+// toRef — the second file-level delta primitive (SPEC-118 S4 layer 1),
+// migrated from lane.GitDiffer.NumStat's behaviour (binary files contribute
+// zero lines) but over -z/NUL parsing (R-E) instead of tab-splitting a
+// newline-delimited line, and rename-aware (-M) like ChangedFilesInRange.
+func (g *Git) NumStat(fromSHA, toRef string) ([]FileStat, error) {
+	cmd := exec.Command("git",
+		"-c", "core.quotePath=false",
+		"diff", "--numstat", "-M", "-z", fromSHA+".."+toRef, "--",
+	)
+	cmd.Dir = g.RepoDir
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("quality: git diff --numstat -M -z %s..%s: %w", fromSHA, toRef, err)
+	}
+	return ParseNumStat(out)
+}
+
 // IsTracked reports whether path is tracked by git in the current index
 // (D9 check 1): `git ls-files --error-unmatch` exits 0 when the path is
 // tracked and non-zero otherwise, which this treats as the expected "not

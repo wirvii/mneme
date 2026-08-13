@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -790,4 +791,211 @@ func containsString(list []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// --- SPEC-118 EPIC-calidad S4 P2: file-delta primitives ---
+
+// TestParseNameStatus covers the closed vocabulary ParseNameStatus accepts:
+// added, modified, deleted, type-change, rename (G8's three-record shape),
+// copy, and an unrecognised status skipped rather than erroring.
+func TestParseNameStatus(t *testing.T) {
+	build := func(records ...string) []byte {
+		return []byte(strings.Join(records, "\x00") + "\x00")
+	}
+
+	tests := []struct {
+		name string
+		data []byte
+		want []FileChange
+	}{
+		{
+			name: "added",
+			data: build("A", "new.go"),
+			want: []FileChange{{Path: "new.go", Status: FileStatusAdded}},
+		},
+		{
+			name: "modified",
+			data: build("M", "existing.go"),
+			want: []FileChange{{Path: "existing.go", Status: FileStatusModified}},
+		},
+		{
+			name: "deleted",
+			data: build("D", "gone.go"),
+			want: []FileChange{{Path: "gone.go", Status: FileStatusDeleted}},
+		},
+		{
+			name: "type change treated as modified",
+			data: build("T", "link.go"),
+			want: []FileChange{{Path: "link.go", Status: FileStatusModified}},
+		},
+		{
+			name: "rename is THREE records, not two (G8)",
+			data: build("R100", "old.go", "new.go"),
+			want: []FileChange{{OldPath: "old.go", Path: "new.go", Status: FileStatusRenamed}},
+		},
+		{
+			name: "copy is also three records",
+			data: build("C100", "src.go", "dst.go"),
+			want: []FileChange{{OldPath: "src.go", Path: "dst.go", Status: FileStatusCopied}},
+		},
+		{
+			name: "unknown status skipped, not an error",
+			data: build("U", "conflicted.go", "A", "after.go"),
+			want: []FileChange{{Path: "after.go", Status: FileStatusAdded}},
+		},
+		{
+			name: "multiple records in sequence",
+			data: build("A", "a.go", "M", "b.go", "D", "c.go"),
+			want: []FileChange{
+				{Path: "a.go", Status: FileStatusAdded},
+				{Path: "b.go", Status: FileStatusModified},
+				{Path: "c.go", Status: FileStatusDeleted},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ParseNameStatus(tt.data)
+			if err != nil {
+				t.Fatalf("ParseNameStatus() error = %v", err)
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("ParseNameStatus() = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestParseNumStat covers the numstat -z record shape: a regular file, a
+// binary file ("-\t-", D2 point 3, migrated from lane.parseNumStatLine),
+// and a rename's three-record shape (mirroring ParseNameStatus's own).
+func TestParseNumStat(t *testing.T) {
+	build := func(records ...string) []byte {
+		return []byte(strings.Join(records, "\x00") + "\x00")
+	}
+
+	tests := []struct {
+		name string
+		data []byte
+		want []FileStat
+	}{
+		{
+			name: "regular file",
+			data: build("5\t3\tfoo.go"),
+			want: []FileStat{{Path: "foo.go", Added: 5, Removed: 3}},
+		},
+		{
+			name: "binary file reports zero lines, not an error",
+			data: build("-\t-\timage.png"),
+			want: []FileStat{{Path: "image.png", Added: 0, Removed: 0}},
+		},
+		{
+			name: "rename: empty path field, then two path records",
+			data: build("2\t1\t", "old.go", "new.go"),
+			want: []FileStat{{Path: "new.go", Added: 2, Removed: 1}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ParseNumStat(tt.data)
+			if err != nil {
+				t.Fatalf("ParseNumStat() error = %v", err)
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("ParseNumStat() = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestGit_ChangedFilesInRange_RenameIsNotDeletePlusAdd is G8 over a REAL
+// repository: renaming a file between two commits must classify as ONE
+// FileStatusRenamed entry, never a delete of the old path plus an add of
+// the new one.
+func TestGit_ChangedFilesInRange_RenameIsNotDeletePlusAdd(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found in PATH")
+	}
+	dir := initTestGitRepo(t)
+	g := &Git{RepoDir: dir}
+
+	content := []byte("package foo\n\nfunc Foo() {}\n")
+	if err := os.WriteFile(filepath.Join(dir, "foo.go"), content, 0o644); err != nil {
+		t.Fatalf("write foo.go: %v", err)
+	}
+	gitRunTest(t, dir, "add", ".")
+	gitRunTest(t, dir, "commit", "-m", "add foo.go")
+
+	// base is captured AFTER foo.go exists, so the rename below has
+	// something to be detected against — diffing from before foo.go
+	// existed would see only a plain add of bar.go, since foo.go is absent
+	// on BOTH sides of that wider range (the bug this comment protects
+	// against: the fix was verified against exactly that mistake).
+	base := strings.TrimSpace(gitRunTest(t, dir, "rev-parse", "HEAD"))
+
+	if err := os.Rename(filepath.Join(dir, "foo.go"), filepath.Join(dir, "bar.go")); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+	gitRunTest(t, dir, "add", "-A")
+	gitRunTest(t, dir, "commit", "-m", "rename foo.go to bar.go")
+
+	changes, err := g.ChangedFilesInRange(base, "HEAD")
+	if err != nil {
+		t.Fatalf("ChangedFilesInRange: %v", err)
+	}
+
+	var renamed *FileChange
+	for i := range changes {
+		if changes[i].Status == FileStatusRenamed {
+			renamed = &changes[i]
+		}
+		if changes[i].Status == FileStatusAdded || changes[i].Status == FileStatusDeleted {
+			t.Errorf("changes contains a %s entry (%+v) — a pure rename must not appear as delete+add", changes[i].Status, changes[i])
+		}
+	}
+	if renamed == nil {
+		t.Fatalf("no FileStatusRenamed entry found in %+v", changes)
+	}
+	if renamed.OldPath != "foo.go" || renamed.Path != "bar.go" {
+		t.Errorf("renamed = %+v, want OldPath=foo.go Path=bar.go", renamed)
+	}
+}
+
+// TestGit_NumStat_BinaryFile covers D2 point 3 over a real repository: a
+// binary file added between two commits reports zero lines, never an
+// error.
+func TestGit_NumStat_BinaryFile(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found in PATH")
+	}
+	dir := initTestGitRepo(t)
+	g := &Git{RepoDir: dir}
+
+	base := strings.TrimSpace(gitRunTest(t, dir, "rev-parse", "HEAD"))
+
+	// A NUL byte in the content forces git to treat the file as binary.
+	if err := os.WriteFile(filepath.Join(dir, "blob.bin"), []byte{0x00, 0x01, 0x02, 0x03}, 0o644); err != nil {
+		t.Fatalf("write blob.bin: %v", err)
+	}
+	gitRunTest(t, dir, "add", ".")
+	gitRunTest(t, dir, "commit", "-m", "add binary")
+
+	stats, err := g.NumStat(base, "HEAD")
+	if err != nil {
+		t.Fatalf("NumStat: %v", err)
+	}
+	found := false
+	for _, s := range stats {
+		if s.Path == "blob.bin" {
+			found = true
+			if s.Added != 0 || s.Removed != 0 {
+				t.Errorf("blob.bin stat = %+v, want Added=0 Removed=0", s)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("blob.bin not found in %+v", stats)
+	}
 }
