@@ -829,6 +829,18 @@ func (svc *SDDService) SpecDocWrite(ctx context.Context, req model.SpecDocWriteR
 		}
 	}
 
+	// SPEC-118 D11's declare-time half: a budget document is parsed and
+	// its anchors validated BEFORE anything reaches disk (G24) — same
+	// posture as criteria above. A [[modify]] entry naming a symbol the
+	// extractor cannot find, or a [[quota]] directory that does not exist,
+	// is rejected here, never discovered later by `verify` when the
+	// architect has already handed the spec back.
+	if req.Kind == model.SpecDocKindBudget {
+		if err := svc.validateBudgetDoc(req.Content); err != nil {
+			return nil, fmt.Errorf("service: spec doc write: %w", err)
+		}
+	}
+
 	path, err := specDocPath(svc.config.WorkflowDir(), spec.Project, spec.ID, req.Kind)
 	if err != nil {
 		return nil, fmt.Errorf("service: spec doc write: %w", err)
@@ -876,6 +888,58 @@ func (svc *SDDService) validateCriteriaDoc(content string) error {
 	}
 	if err := quality.ValidateAnchors(doc, files); err != nil {
 		return fmt.Errorf("%s: %w", err, model.ErrInvalidCriteria)
+	}
+	return nil
+}
+
+// validateBudgetDoc implements SPEC-118 D11's declare-time half: parse
+// content as strict budget.toml, then — ONLY when svc.repoDir is
+// configured — resolve every [[quota]].dir and [[modify]] entry against
+// the ACTUAL working tree (D11's own asymmetry: what already exists can be
+// required to resolve; a new quota directory only needs to exist as a
+// place new files could land). Structural validation always runs; anchor
+// resolution is skipped when repoDir is empty (D15 — no fallback to
+// os.Getwd()), the safe state for a test that never configured it.
+func (svc *SDDService) validateBudgetDoc(content string) error {
+	doc, err := quality.ParseBudget([]byte(content))
+	if err != nil {
+		return fmt.Errorf("%s: %w", err, model.ErrInvalidBudget)
+	}
+
+	if svc.repoDir == "" {
+		return nil
+	}
+
+	dirs := make([]string, 0, len(doc.Quota))
+	for _, q := range doc.Quota {
+		info, statErr := os.Stat(filepath.Join(svc.repoDir, q.Dir))
+		if statErr == nil && info.IsDir() {
+			dirs = append(dirs, q.Dir)
+		}
+	}
+
+	ex := symbolExtractorAdapter{}
+	symbolsByFile := make(map[string][]quality.Symbol, len(doc.Modify))
+	for _, m := range doc.Modify {
+		if _, seen := symbolsByFile[m.File]; seen {
+			continue
+		}
+		raw, readErr := os.ReadFile(filepath.Join(svc.repoDir, m.File))
+		if readErr != nil {
+			// Left absent from the map on purpose: ValidateBudgetAnchors
+			// reads a missing map entry as "the file does not exist" (D11),
+			// naming the path in its own error.
+			continue
+		}
+		syms, _, exErr := ex.Symbols(m.File, raw)
+		if exErr != nil {
+			continue
+		}
+		symbolsByFile[m.File] = syms
+	}
+
+	if err := quality.ValidateBudgetAnchors(doc, dirs, symbolsByFile); err != nil {
+		return fmt.Errorf("%s: %w", err, model.ErrInvalidBudget)
 	}
 	return nil
 }
