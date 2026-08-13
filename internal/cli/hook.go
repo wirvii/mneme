@@ -1924,9 +1924,18 @@ var delegationTools = map[string]bool{
 //
 // spec_pushback, spec_resolve, spec_status, spec_doc_write, mem_*, and
 // codegraph_* are deliberately NOT in this set — see AC6.
+// mcp__mneme__quality_ack joins the set for a DIFFERENT reason than
+// spec_advance/spec_quick (SPEC-115 D11): it is not the SDD lifecycle, it is
+// the same "the author does not absolve themselves" principle D3/D9 already
+// establish for the constitution itself. A quality_ack is a human's
+// approval, channelled by the orchestrator — an implementer acking their
+// own finding reproduces the exact dishonest green report this whole
+// mechanism exists to eliminate. printLifecycleBlock names the correct
+// reason for this tool specifically; see its godoc.
 var lifecycleTools = map[string]bool{
 	"mcp__mneme__spec_advance": true,
 	"mcp__mneme__spec_quick":   true,
+	"mcp__mneme__quality_ack":  true,
 }
 
 // lifecycleBlockMessage is the load-bearing message printed when a
@@ -1944,7 +1953,17 @@ const lifecycleBlockMessage = "⛔ mneme: spec_advance es del orquestador, no de
 // agent does not mistake the message for a spec_advance-only rule.
 func printLifecycleBlock(w io.Writer, tool string) {
 	fmt.Fprint(w, lifecycleBlockMessage)
-	if tool != "mcp__mneme__spec_advance" {
+	switch tool {
+	case "mcp__mneme__spec_advance":
+		// Canonical message only — byte-for-byte identical to before
+		// SPEC-115 (verified by the pre-existing SPEC-087 test).
+	case "mcp__mneme__quality_ack":
+		// SPEC-115 D11: the WRONG reason here is "the lifecycle SDD lo
+		// gobierna el orquestador" (that is spec_advance/spec_quick's
+		// reason) — a quality_ack is a human's approval of a finding,
+		// channelled by the orchestrator, never the change's own author.
+		fmt.Fprintf(w, "(bloqueado: %s — motivo distinto: la aprobación de un hallazgo de calidad es del humano vía el orquestador, nunca del autor del cambio bajo revisión.)\n", tool)
+	default:
 		fmt.Fprintf(w, "(bloqueado: %s — mismo motivo: el lifecycle SDD lo gobierna el orquestador, no un subagente.)\n", tool)
 	}
 }

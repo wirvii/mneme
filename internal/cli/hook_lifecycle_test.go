@@ -133,6 +133,21 @@ func TestRunHookEnforceDelegation_LifecycleTools_Table(t *testing.T) {
 			wantExit: 2,
 		},
 		{
+			name:     "quality_ack denied to a resolved subagent",
+			payload:  `{"agent_id":"x","agent_type":"qa-tester","tool_name":"mcp__mneme__quality_ack","tool_input":{"cert_id":"c1"}}`,
+			wantExit: 2,
+		},
+		{
+			name:     "quality_verify allowed (mneme executes, nothing to falsify)",
+			payload:  `{"agent_id":"x","agent_type":"backend","tool_name":"mcp__mneme__quality_verify"}`,
+			wantExit: 0,
+		},
+		{
+			name:     "quality_status allowed (read-only)",
+			payload:  `{"agent_id":"x","agent_type":"backend","tool_name":"mcp__mneme__quality_status"}`,
+			wantExit: 0,
+		},
+		{
 			name:     "spec_pushback allowed",
 			payload:  `{"agent_id":"x","agent_type":"qa-tester","tool_name":"mcp__mneme__spec_pushback"}`,
 			wantExit: 0,
@@ -176,6 +191,40 @@ func TestRunHookEnforceDelegation_LifecycleBlock_MentionsRegenCommand(t *testing
 		`{"agent_id":"x","agent_type":"qa-tester","tool_name":"mcp__mneme__spec_advance"}`)
 	if !strings.Contains(stderr, "mneme subagents regen") {
 		t.Errorf("expected the block message to name the regen command, got: %q", stderr)
+	}
+}
+
+// TestLifecycleTools_ExactlyThreeMcpPrefixedEntries is the G5 anchor (SPEC-115
+// P11 plan): the two negative rows above ("quality_verify"/"quality_status"
+// allowed) would pass VACUOUSLY if either tool were renamed or stopped
+// existing — an absent tool is not in the map either. Anchoring the map's
+// SIZE (not just membership) makes a silent rename visible: exactly 3
+// entries, every one an "mcp__mneme__"-prefixed name.
+func TestLifecycleTools_ExactlyThreeMcpPrefixedEntries(t *testing.T) {
+	if len(lifecycleTools) != 3 {
+		t.Fatalf("len(lifecycleTools) = %d, want 3: %v", len(lifecycleTools), lifecycleTools)
+	}
+	for tool := range lifecycleTools {
+		if !strings.HasPrefix(tool, "mcp__mneme__") {
+			t.Errorf("lifecycleTools key %q does not start with mcp__mneme__", tool)
+		}
+	}
+}
+
+// TestRunHookEnforceDelegation_QualityAck_NamesTheHumanApprovalReason covers
+// SPEC-115 D11/AC22: the quality_ack block message must NOT reuse the
+// spec_advance/spec_quick "lifecycle SDD lo gobierna el orquestador" line —
+// that would be the WRONG reason for this tool. It must name the actual
+// reason: a human's approval via the orchestrator, never the change's own
+// author.
+func TestRunHookEnforceDelegation_QualityAck_NamesTheHumanApprovalReason(t *testing.T) {
+	_, stderr := runHookLifecycleSubprocess(t,
+		`{"agent_id":"x","agent_type":"backend","tool_name":"mcp__mneme__quality_ack"}`)
+	if !strings.Contains(stderr, "aprobación de un hallazgo de calidad es del humano") {
+		t.Errorf("expected the quality_ack-specific reason on stderr, got: %q", stderr)
+	}
+	if strings.Contains(stderr, "el lifecycle SDD lo gobierna el orquestador") {
+		t.Errorf("quality_ack block reused the spec_advance/spec_quick reason, want its own: %q", stderr)
 	}
 }
 
