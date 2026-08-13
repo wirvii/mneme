@@ -483,6 +483,38 @@ func TestRunCriteriaChecks_MissingCriteriaToml(t *testing.T) {
 	}
 }
 
+// TestRunCriteriaChecks_MissingCriteriaToml_TrivialLane_Skipped covers
+// SPEC-118 AC27/G27: a TRIVIAL spec has no architect and therefore no
+// criteria.toml by design — its absence is `skipped`, naming the lane,
+// never `fail`. Without this branch, absorbing the trivial lane into
+// ensureCertified (P12) would block every trivial spec's certificate
+// forever.
+func TestRunCriteriaChecks_MissingCriteriaToml_TrivialLane_Skipped(t *testing.T) {
+	repoDir := newTestGitRepo(t)
+	writeConstitutionV3Criteria(t, repoDir, true, "5m", 25.0, 30.0)
+
+	s := newTestQualityStore(t)
+	spec := &model.Spec{ID: "SPEC-001", Title: "trivial", Status: model.SpecStatusAudit, Project: "proj", Lane: model.LaneTrivial, Scope: "internal/**"}
+	if err := s.CreateSpec(context.Background(), spec); err != nil {
+		t.Fatalf("CreateSpec: %v", err)
+	}
+	workflowDir := t.TempDir() // no criteria.toml written
+
+	svc := NewQualityService(s, "proj", repoDir, &fakeGateRunner{}, WithWorkflowDir(workflowDir))
+	cert, err := svc.Verify(context.Background(), model.QualityVerifyRequest{ID: spec.ID})
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	checks, _ := s.ListChecks(context.Background(), cert.ID)
+	declared := findCheck(checks, "criteria", "declared")
+	if declared == nil || declared.Status != "skipped" {
+		t.Fatalf("criteria/declared = %+v, want skipped (trivial lane, no architect)", declared)
+	}
+	if !strings.Contains(declared.Summary, "trivial") {
+		t.Errorf("criteria/declared summary = %q, want it to name the lane", declared.Summary)
+	}
+}
+
 // TestRunCriteriaChecks_ThreeModes runs a real two-commit git repo through
 // all three modes end to end: assert (pass), command (invoked exactly
 // once, finding vacuity-unprovable), and manual (finding

@@ -472,9 +472,16 @@ func (svc *SDDService) captureBaseSHA(ctx context.Context, spec *model.Spec) {
 // ensureCertified is the SPEC-115 D12 block: before SpecAdvance commits
 // implementing→qa or qa→done for a STANDARD-lane spec, it requires a usable
 // quality certificate — but only while the repository's constitution is
-// actually enabled (D3). Every other transition, and trivial-lane specs
-// entirely (AC15 — S4 absorbs lane audit into this mechanism, not S1), pass
-// through untouched: this function returns nil immediately for them.
+// actually enabled (D3). SPEC-118 D12 absorbs the TRIVIAL lane's own
+// implementing→audit transition into this SAME gate (V2's "lane exemption"
+// is gone): a trivial spec now also requires a usable certificate before
+// entering audit, but ONLY while `[budget].enabled = true` specifically —
+// the flag D12's own absorption narrative names, deliberately NOT the
+// top-level constitution.Enabled the standard-lane gate above still uses
+// (a project can run gates/coverage/criteria for standard work while the
+// budget/lane-audit absorption for trivial work stays off, or vice versa).
+// Every other transition passes through untouched: this function returns
+// nil immediately for them.
 //
 // Deliberately independent of QualityService (a structural decision the
 // plan fixes, not left to taste): ensureCertified reads svc.store directly
@@ -491,14 +498,20 @@ func (svc *SDDService) captureBaseSHA(ctx context.Context, spec *model.Spec) {
 // fallback). A test that advances a spec to qa without configuring repoDir
 // must see the mechanism silently absent, never accidentally resolving a
 // real filesystem path.
+//
+// U-I WARNING (SPEC-118 P12, the single most dangerous unit of the whole
+// EPIC): this function's trivial-lane branch must NEVER land without
+// runCriteriaChecks' own lane-aware skip (quality.go) in the SAME commit.
+// Without that pairing, a trivial spec has no architect and therefore no
+// criteria.toml — criteria/declared would `fail` forever, and no trivial
+// spec in this or any repository could ever certify again.
 func (svc *SDDService) ensureCertified(ctx context.Context, spec *model.Spec, nextStatus model.SpecStatus) error {
-	if spec.Lane != model.LaneStandard {
-		return nil
-	}
-
-	gated := (spec.Status == model.SpecStatusImplementing && nextStatus == model.SpecStatusQA) ||
-		(spec.Status == model.SpecStatusQA && nextStatus == model.SpecStatusDone)
-	if !gated {
+	trivialGate := spec.Lane == model.LaneTrivial &&
+		spec.Status == model.SpecStatusImplementing && nextStatus == model.SpecStatusAudit
+	standardGate := spec.Lane == model.LaneStandard &&
+		((spec.Status == model.SpecStatusImplementing && nextStatus == model.SpecStatusQA) ||
+			(spec.Status == model.SpecStatusQA && nextStatus == model.SpecStatusDone))
+	if !trivialGate && !standardGate {
 		return nil
 	}
 
@@ -512,7 +525,10 @@ func (svc *SDDService) ensureCertified(ctx context.Context, spec *model.Spec, ne
 	if err != nil {
 		if os.IsNotExist(err) {
 			// D3 row 1: absent -> off, UNLESS it was enabled at base_sha
-			// (row 5, the ablation hole).
+			// (row 5, the ablation hole) — STANDARD lane only (see below).
+			if trivialGate {
+				return nil
+			}
 			return svc.checkConstitutionAblation(spec, repoDir)
 		}
 		// An existing-but-unreadable file is anomalous, not one of D3's five
@@ -526,8 +542,30 @@ func (svc *SDDService) ensureCertified(ctx context.Context, spec *model.Spec, ne
 		return fmt.Errorf("constitution %s: %w", err, model.ErrInvalidConstitution)
 	}
 
-	if !constitution.Enabled {
-		// D3 row 2: present but enabled=false -> off, UNLESS ablated (row 5).
+	// SPEC-118 D12: the trivial gate reads [budget].enabled specifically;
+	// the standard gate keeps reading the top-level Enabled, exactly as
+	// before this spec.
+	mechanismEnabled := constitution.Enabled
+	if trivialGate {
+		mechanismEnabled = constitution.BudgetDeclared && constitution.Budget.Enabled
+	}
+	if !mechanismEnabled {
+		// D3 row 2: present but off -> off, UNLESS ablated (row 5).
+		//
+		// checkConstitutionAblation is untouched (protected, P11/P12) and
+		// compares the HISTORIC constitution's TOP-LEVEL Enabled against
+		// the current state — a comparison that only makes sense for the
+		// STANDARD gate's own flag. Calling it for the trivial gate would
+		// misfire on the (extremely common) combination of top
+		// Enabled=true with [budget] undeclared or off: the historic
+		// constitution WAS "enabled" all along, and nothing was ever
+		// ablated — only the unrelated budget flag was never on. The
+		// trivial gate therefore skips ablation detection entirely
+		// (a narrower, documented simplification relative to the
+		// standard lane's own fully-protected ablation check).
+		if trivialGate {
+			return nil
+		}
 		return svc.checkConstitutionAblation(spec, repoDir)
 	}
 
@@ -1244,6 +1282,22 @@ func (svc *SDDService) LaneAudit(ctx context.Context, req model.LaneAuditRequest
 			req.ID, model.ErrInvalidTransition)
 	}
 
+	// SPEC-118 D12's absorbed route: with [budget].enabled = true, a
+	// usable certificate is required for HEAD before this audit may pass
+	// — the SAME requirement ensureCertified already applied at
+	// implementing→audit, checked again here because LaneAudit can run
+	// independently (a caller may re-run it without going through
+	// SpecAdvance again).
+	absorbed, err := svc.laneAuditAbsorptionActive(repoDir)
+	if err != nil {
+		return nil, fmt.Errorf("service: lane audit: check absorption: %w", err)
+	}
+	if absorbed {
+		if err := svc.requireUsableCertificateForTrivial(ctx, spec, repoDir); err != nil {
+			return nil, err
+		}
+	}
+
 	result, breaches, err := svc.runLaneAuditEngine(repoDir, baseRef, spec.Scope)
 	if err != nil {
 		return nil, fmt.Errorf("service: lane audit: run auditor: %w", err)
@@ -1283,6 +1337,92 @@ func (svc *SDDService) LaneAudit(ctx context.Context, req model.LaneAuditRequest
 	// in lane_audits above. No longer writes the same-status history hack.
 	svc.saveAuditFailureMemory(ctx, spec, breaches)
 	return result, model.ErrAuditFailed
+}
+
+// laneAuditAbsorptionActive reports whether SPEC-118 D12's absorption is
+// switched on for repoDir: constitution present, schema 4, [budget]
+// declared and enabled. An absent or unparseable constitution is treated
+// as "not absorbed" — the same posture ensureCertified's own D3 row 1/row
+// 4 distinction would apply, simplified here since LaneAudit only needs
+// the boolean, never the fully parsed Constitution beyond this flag.
+func (svc *SDDService) laneAuditAbsorptionActive(repoDir string) (bool, error) {
+	raw, err := os.ReadFile(filepath.Join(repoDir, constitutionRelPath))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("read constitution: %w", err)
+	}
+	constitution, err := quality.Parse(raw)
+	if err != nil {
+		// An unparseable constitution already blocks spec_advance via
+		// ensureCertified's own ErrInvalidConstitution path before a spec
+		// could ever reach `audit` in the first place — LaneAudit itself
+		// simply reports "not absorbed" rather than duplicating that
+		// fail-closed behaviour a second time.
+		return false, nil
+	}
+	return constitution.BudgetDeclared && constitution.Budget.Enabled, nil
+}
+
+// requireUsableCertificateForTrivial implements D12's own gate for the
+// absorbed route: the SAME quality.CertificateUsable check
+// ensureCertified applies for the standard lane, evaluated here so
+// LaneAudit can be re-run independently of SpecAdvance and still enforce
+// it. Returns model.ErrCertificateMissing (naming `mneme quality verify
+// <ID>`) when no certificate exists, or the specific
+// ErrCertificateNotGreen/ErrCertificateStale/ErrConstitutionChanged/
+// ErrWorktreeDirty sentinel otherwise — mirroring ensureCertified's own
+// message shapes so the remedy reads identically from either entry point.
+func (svc *SDDService) requireUsableCertificateForTrivial(ctx context.Context, spec *model.Spec, repoDir string) error {
+	cert, err := svc.store.GetLatestCertificate(ctx, spec.Project, spec.ID)
+	if err != nil {
+		if errors.Is(err, model.ErrCertificateNotFound) {
+			return fmt.Errorf("ningun certificado registrado para %s — verifica con `mneme quality verify %s`: %w",
+				spec.ID, spec.ID, model.ErrCertificateMissing)
+		}
+		return fmt.Errorf("get latest certificate: %w", err)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(repoDir, constitutionRelPath))
+	if err != nil {
+		return fmt.Errorf("read constitution: %w", err)
+	}
+
+	g := &quality.Git{RepoDir: repoDir}
+	headSHA, err := g.HeadSHA()
+	if err != nil {
+		return fmt.Errorf("head sha: %w", err)
+	}
+	dirty, _, err := g.IsDirty()
+	if err != nil {
+		return fmt.Errorf("is dirty: %w", err)
+	}
+
+	usable, reason := quality.CertificateUsable(
+		quality.Verdict(cert.Verdict), cert.HeadSHA, headSHA, cert.ConstitutionHash, quality.HashBytes(raw), dirty,
+	)
+	if usable {
+		return nil
+	}
+
+	remedy := fmt.Sprintf("`mneme quality verify %s`", spec.ID)
+	switch reason {
+	case quality.ReasonNotGreen:
+		return fmt.Errorf("certificado %s con veredicto %q (no pass) — vuelve a verificar con %s: %w",
+			cert.ID, cert.Verdict, remedy, model.ErrCertificateNotGreen)
+	case quality.ReasonStale:
+		return fmt.Errorf("certificado %s obsoleto (HEAD se movio desde %s) — vuelve a verificar con %s: %w",
+			cert.ID, cert.HeadSHA, remedy, model.ErrCertificateStale)
+	case quality.ReasonConstitutionChanged:
+		return fmt.Errorf("la constitucion cambio desde el certificado %s — vuelve a verificar con %s: %w",
+			cert.ID, remedy, model.ErrConstitutionChanged)
+	case quality.ReasonWorktreeDirty:
+		return fmt.Errorf("arbol de trabajo sucio — haz commit o descarta los cambios y vuelve a verificar con %s: %w",
+			remedy, model.ErrWorktreeDirty)
+	default:
+		return fmt.Errorf("certificado %s no utilizable — vuelve a verificar con %s: %w", cert.ID, remedy, model.ErrCertificateMissing)
+	}
 }
 
 // runLaneAuditEngine computes the file/symbol delta between baseRef and

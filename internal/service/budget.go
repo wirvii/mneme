@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/wirvii/mneme/internal/codegraph"
@@ -382,6 +383,15 @@ func (svc *QualityService) runBudgetChecks(
 		return checks, pure, nil
 	}
 
+	// SPEC-118 D12/P12: the trivial lane has no architect and therefore
+	// no budget.toml — its own form (row 1 asks for `scope`, not a
+	// document; rows 13/14 replace row 4) is assembled by a dedicated
+	// function rather than forcing this one's budget.toml-centric shape
+	// onto a lane that was never meant to have one.
+	if spec.Lane == model.LaneTrivial {
+		return svc.runBudgetChecksTrivial(g, constitution, spec)
+	}
+
 	path, pathErr := specDocPath(svc.workflowDir, spec.Project, spec.ID, model.SpecDocKindBudget)
 	if pathErr != nil {
 		return nil, nil, fmt.Errorf("service: quality: verify: budget: spec doc path: %w", pathErr)
@@ -463,38 +473,13 @@ func (svc *QualityService) runBudgetChecks(
 	pure = append(pure, quality.CheckResult{Status: quality.CheckStatusPass})
 
 	// Row 3: graph freshness (D5) — measured by CONTENT, never a "last
-	// indexed" stamp (V9).
-	eligiblePaths, headHashes, err := collectFreshnessFacts(g, changes)
+	// indexed" stamp (V9). Shared with the trivial form.
+	graphIndexCheck, graphIndexPure, fresh, err := svc.computeGraphIndexRow(g, changes)
 	if err != nil {
-		return nil, nil, fmt.Errorf("service: quality: verify: budget: freshness facts: %w", err)
+		return nil, nil, err
 	}
-
-	var fresh bool
-	var divergent []string
-	if svc.graphFacts == nil {
-		fresh = false
-	} else {
-		fresh, divergent, err = quality.GraphFreshness(eligiblePaths, headHashes, svc.graphFacts)
-		if err != nil {
-			return nil, nil, fmt.Errorf("service: quality: verify: budget: graph freshness: %w", err)
-		}
-	}
-
-	row3Status, row3Summary := "pass", ""
-	switch {
-	case svc.graphFacts == nil:
-		row3Status = "finding"
-		row3Summary = "sin grafo indexado para este proyecto — `mneme codegraph index`"
-	case !fresh:
-		row3Status = "finding"
-		row3Summary = fmt.Sprintf("%d fichero(s) divergente(s) — `mneme codegraph index`", len(divergent))
-	}
-	graphIndexDetailJSON, jsonErr := marshalDetail(graphIndexDetail{Divergent: divergent})
-	if jsonErr != nil {
-		return nil, nil, jsonErr
-	}
-	checks = append(checks, &model.QualityCheck{Kind: "budget", Name: "graph-index", Status: row3Status, Summary: row3Summary, Detail: graphIndexDetailJSON})
-	pure = append(pure, quality.CheckResult{Status: quality.CheckStatus(row3Status)})
+	checks = append(checks, graphIndexCheck)
+	pure = append(pure, graphIndexPure)
 
 	// Row 4: revision (D9 #4) — always evaluated once the delta and
 	// budget document are both in hand; never gated on graph freshness.
@@ -549,9 +534,65 @@ func (svc *QualityService) runBudgetChecks(
 	})
 	pure = append(pure, quality.CheckResult{Status: quality.CheckStatus(row6Status)})
 
-	// Rows 7-12: the six graph detections — SKIPPED, never `pass`, when
-	// the graph is not fresh (G21).
-	if row3Status != "pass" {
+	// Rows 7-12: the six graph detections — SHARED with the trivial form
+	// (D9: identical in both lanes) — extracted into its own helper.
+	detectionRows, detectionPure, err := svc.computeGraphDetectionRows(fresh, delta, baseSymRefs, headSymRefs, constitution.Budget)
+	if err != nil {
+		return nil, nil, err
+	}
+	checks = append(checks, detectionRows...)
+	pure = append(pure, detectionPure...)
+
+	return checks, pure, nil
+}
+
+// computeGraphIndexRow computes row 3 ("budget/graph-index", D9) — SHARED
+// by the standard and trivial forms of the budget mechanism, since D5's
+// freshness question does not depend on lane.
+func (svc *QualityService) computeGraphIndexRow(g *quality.Git, changes []quality.FileChange) (*model.QualityCheck, quality.CheckResult, bool, error) {
+	eligiblePaths, headHashes, err := collectFreshnessFacts(g, changes)
+	if err != nil {
+		return nil, quality.CheckResult{}, false, fmt.Errorf("service: quality: verify: budget: freshness facts: %w", err)
+	}
+
+	var fresh bool
+	var divergent []string
+	if svc.graphFacts == nil {
+		fresh = false
+	} else {
+		fresh, divergent, err = quality.GraphFreshness(eligiblePaths, headHashes, svc.graphFacts)
+		if err != nil {
+			return nil, quality.CheckResult{}, false, fmt.Errorf("service: quality: verify: budget: graph freshness: %w", err)
+		}
+	}
+
+	status, summary := "pass", ""
+	switch {
+	case svc.graphFacts == nil:
+		status = "finding"
+		summary = "sin grafo indexado para este proyecto — `mneme codegraph index`"
+	case !fresh:
+		status = "finding"
+		summary = fmt.Sprintf("%d fichero(s) divergente(s) — `mneme codegraph index`", len(divergent))
+	}
+	detailJSON, jsonErr := marshalDetail(graphIndexDetail{Divergent: divergent})
+	if jsonErr != nil {
+		return nil, quality.CheckResult{}, false, jsonErr
+	}
+	check := &model.QualityCheck{Kind: "budget", Name: "graph-index", Status: status, Summary: summary, Detail: detailJSON}
+	return check, quality.CheckResult{Status: quality.CheckStatus(status)}, status == "pass", nil
+}
+
+// computeGraphDetectionRows computes rows 7-12 (the six graph detections,
+// D9) — SHARED by the standard and trivial forms (D9: "las seis
+// detecciones de grafo idénticas" in both lanes). When fresh is false, all
+// six are `skipped`, never `pass` (G21).
+func (svc *QualityService) computeGraphDetectionRows(
+	fresh bool, delta quality.SymbolDelta, baseSymRefs, headSymRefs map[string][]quality.SymbolRef, cfg quality.BudgetConfig,
+) ([]*model.QualityCheck, []quality.CheckResult, error) {
+	if !fresh {
+		checks := make([]*model.QualityCheck, 0, len(graphDetectionNames))
+		pure := make([]quality.CheckResult, 0, len(graphDetectionNames))
 		for _, name := range graphDetectionNames {
 			checks = append(checks, &model.QualityCheck{Kind: "detection", Name: name, Status: "skipped", Summary: "budget/graph-index no esta fresco"})
 			pure = append(pure, quality.CheckResult{Status: quality.CheckStatusSkipped})
@@ -559,10 +600,12 @@ func (svc *QualityService) runBudgetChecks(
 		return checks, pure, nil
 	}
 
-	detections, err := quality.DetectGraph(delta, baseSymRefs, headSymRefs, svc.graphFacts, constitution.Budget)
+	detections, err := quality.DetectGraph(delta, baseSymRefs, headSymRefs, svc.graphFacts, cfg)
 	if err != nil {
 		return nil, nil, fmt.Errorf("service: quality: verify: budget: detect graph: %w", err)
 	}
+	checks := make([]*model.QualityCheck, 0, len(detections))
+	pure := make([]quality.CheckResult, 0, len(detections))
 	for _, d := range detections {
 		status := "pass"
 		if len(d.Subjects) > 0 {
@@ -575,6 +618,158 @@ func (svc *QualityService) runBudgetChecks(
 		checks = append(checks, &model.QualityCheck{Kind: "detection", Name: string(d.Kind), Status: status, Summary: d.Summary, Detail: detailJSON})
 		pure = append(pure, quality.CheckResult{Status: quality.CheckStatus(status)})
 	}
+	return checks, pure, nil
+}
+
+// runBudgetChecksTrivial emits the TRIVIAL form of the budget mechanism
+// (SPEC-118 D12/P12): row 1 ("declared") asks whether the spec has `scope`
+// declared, never whether budget.toml exists (a trivial spec has no
+// architect, hence no budget.toml, D12 consequence). Row 4 ("revision")
+// does not apply and is `skipped` naming the lane — there is no budget
+// document to revise. Rows 5/6 ("unbudgeted"/"out-of-radius") come from
+// quality.EvaluateTrivialBudget/EvaluateRadius against spec.Scope, exactly
+// runLaneAuditEngine's own arithmetic (P11) — this function and that one
+// necessarily compute the SAME veredicto for the SAME commit range. Rows
+// 7-12 (the six graph detections) are IDENTICAL to the standard form
+// (D9). Rows 13/14 ("lane-forbidden"/"lane-public-symbols") are new,
+// trivial-only rows.
+func (svc *QualityService) runBudgetChecksTrivial(g *quality.Git, constitution *quality.Constitution, spec *model.Spec) ([]*model.QualityCheck, []quality.CheckResult, error) {
+	if spec.Scope == "" {
+		checks, pure := budgetDeclaredFailure("spec trivial sin scope declarado")
+		return checks, pure, nil
+	}
+	checks := []*model.QualityCheck{{Kind: "budget", Name: "declared", Status: "pass", Summary: fmt.Sprintf("scope=%s", spec.Scope)}}
+	pure := []quality.CheckResult{{Status: quality.CheckStatusPass}}
+
+	if spec.BaseSHA == "" {
+		rows, prows := budgetBaseUnknownRows()
+		return append(checks, rows...), append(pure, prows...), nil
+	}
+	mergeBase, mbErr := g.MergeBase(spec.BaseSHA, "HEAD")
+	if mbErr != nil {
+		rows, prows := budgetBaseUnknownRows()
+		return append(checks, rows...), append(pure, prows...), nil
+	}
+	const headRef = "HEAD"
+
+	changes, err := g.ChangedFilesInRange(mergeBase, headRef)
+	if err != nil {
+		return nil, nil, fmt.Errorf("service: quality: verify: budget: changed files: %w", err)
+	}
+	changedLines, err := g.ChangedLines(mergeBase, headRef)
+	if err != nil {
+		return nil, nil, fmt.Errorf("service: quality: verify: budget: changed lines: %w", err)
+	}
+	numStats, err := g.NumStat(mergeBase, headRef)
+	if err != nil {
+		return nil, nil, fmt.Errorf("service: quality: verify: budget: numstat: %w", err)
+	}
+
+	basePaths, headPaths, renames := splitChangePaths(changes)
+	ex := symbolExtractorAdapter{}
+	baseSymbols, baseSymRefs, err := quality.CollectSymbols(g, mergeBase, basePaths, ex)
+	if err != nil {
+		if errors.Is(err, codegraph.ErrExtractorIncompatible) {
+			rows, prows := budgetSymbolDeltaFailure(err.Error())
+			return append(checks, rows...), append(pure, prows...), nil
+		}
+		return nil, nil, fmt.Errorf("service: quality: verify: budget: collect symbols at base: %w", err)
+	}
+	headSymbols, headSymRefs, err := quality.CollectSymbols(g, headRef, headPaths, ex)
+	if err != nil {
+		if errors.Is(err, codegraph.ErrExtractorIncompatible) {
+			rows, prows := budgetSymbolDeltaFailure(err.Error())
+			return append(checks, rows...), append(pure, prows...), nil
+		}
+		return nil, nil, fmt.Errorf("service: quality: verify: budget: collect symbols at head: %w", err)
+	}
+
+	// No test_globs exclusion (nil): the trivial lane's own public-symbol
+	// check never excluded _test.go files either (P11's own migration
+	// note).
+	delta := quality.DiffSymbols(baseSymbols, headSymbols, renames, changedLines, nil)
+
+	symbolDeltaDetailJSON, jsonErr := marshalDetail(buildSymbolDeltaDetail(delta))
+	if jsonErr != nil {
+		return nil, nil, jsonErr
+	}
+	checks = append(checks, &model.QualityCheck{Kind: "budget", Name: "symbol-delta", Status: "pass", Detail: symbolDeltaDetailJSON})
+	pure = append(pure, quality.CheckResult{Status: quality.CheckStatusPass})
+
+	graphIndexCheck, graphIndexPure, fresh, err := svc.computeGraphIndexRow(g, changes)
+	if err != nil {
+		return nil, nil, err
+	}
+	checks = append(checks, graphIndexCheck)
+	pure = append(pure, graphIndexPure)
+
+	// Row 4 does not apply to the trivial lane: there is no budget.toml,
+	// hence no [revision] to speak of.
+	checks = append(checks, &model.QualityCheck{Kind: "budget", Name: "revision", Status: "skipped", Summary: fmt.Sprintf("lane %s: no hay budget.toml, no aplica revision", spec.Lane)})
+	pure = append(pure, quality.CheckResult{Status: quality.CheckStatusSkipped})
+
+	breaches := quality.EvaluateTrivialBudget(numStats, delta, spec.Scope, quality.DefaultTrivialBudget)
+	sizeBreach := false
+	for _, b := range breaches {
+		s := string(b)
+		if strings.HasPrefix(s, "file count") || strings.HasPrefix(s, "line count") || strings.HasPrefix(s, "forbidden path") {
+			sizeBreach = true
+		}
+	}
+	row5Status := "pass"
+	if sizeBreach {
+		row5Status = "fail"
+	}
+	checks = append(checks, &model.QualityCheck{
+		Kind: "detection", Name: "unbudgeted", Status: row5Status,
+		Summary: fmt.Sprintf("%d ficheros, %d lineas (limite trivial %d/%d)", len(numStats), sumLaneLines(numStats), quality.DefaultTrivialBudget.MaxFiles, quality.DefaultTrivialBudget.MaxLines),
+	})
+	pure = append(pure, quality.CheckResult{Status: quality.CheckStatus(row5Status)})
+
+	outside := quality.EvaluateRadius(radiusPaths(changes), []string{spec.Scope})
+	row6Status := "pass"
+	if len(outside) > 0 {
+		row6Status = "fail"
+	}
+	outOfRadiusDetailJSON, jsonErr := marshalDetail(outOfRadiusDetail{Outside: outside})
+	if jsonErr != nil {
+		return nil, nil, jsonErr
+	}
+	checks = append(checks, &model.QualityCheck{Kind: "detection", Name: "out-of-radius", Status: row6Status, Summary: fmt.Sprintf("%d fichero(s) fuera de scope", len(outside)), Detail: outOfRadiusDetailJSON})
+	pure = append(pure, quality.CheckResult{Status: quality.CheckStatus(row6Status)})
+
+	detectionRows, detectionPure, err := svc.computeGraphDetectionRows(fresh, delta, baseSymRefs, headSymRefs, constitution.Budget)
+	if err != nil {
+		return nil, nil, err
+	}
+	checks = append(checks, detectionRows...)
+	pure = append(pure, detectionPure...)
+
+	forbiddenPaths := laneForbiddenPaths(numStats)
+	row13Status := "pass"
+	if len(forbiddenPaths) > 0 {
+		row13Status = "fail"
+	}
+	checks = append(checks, &model.QualityCheck{Kind: "budget", Name: "lane-forbidden", Status: row13Status, Summary: fmt.Sprintf("%d ruta(s) prohibida(s)", len(forbiddenPaths))})
+	pure = append(pure, quality.CheckResult{Status: quality.CheckStatus(row13Status)})
+
+	publicSymbolChanges := lanePublicSymbolChanges(delta)
+	row14Status := "pass"
+	if len(publicSymbolChanges) > 0 {
+		row14Status = "fail"
+	}
+	checks = append(checks, &model.QualityCheck{Kind: "budget", Name: "lane-public-symbols", Status: row14Status, Summary: fmt.Sprintf("%d simbolo(s) publico(s) cambiado(s)", len(publicSymbolChanges))})
+	pure = append(pure, quality.CheckResult{Status: quality.CheckStatus(row14Status)})
 
 	return checks, pure, nil
+}
+
+// sumLaneLines totals Added+Removed across stats — used only for row 5's
+// human-readable Summary in the trivial form.
+func sumLaneLines(stats []quality.FileStat) int {
+	total := 0
+	for _, fs := range stats {
+		total += fs.Added + fs.Removed
+	}
+	return total
 }

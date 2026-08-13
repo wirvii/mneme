@@ -1327,6 +1327,18 @@ func (svc *QualityService) runCriteriaChecks(
 
 	raw, readErr := os.ReadFile(path)
 	if readErr != nil {
+		// SPEC-118 D12 consecuencia 2 / G27: a TRIVIAL spec has no
+		// architect and therefore no criteria.toml by design — its
+		// absence is `skipped`, naming the lane, never `fail`. Without
+		// this branch, absorbing the trivial lane into ensureCertified
+		// (P12) would block every trivial spec's certificate forever,
+		// since criteria/declared would fail and nothing signs it. A
+		// STANDARD spec's absence is unchanged: `fail`, exactly S3's
+		// original behaviour.
+		if spec.Lane == model.LaneTrivial {
+			checks, pure := skippedCriteriaChecks(fmt.Sprintf("lane trivial (%s): no hay architect, no hay criteria.toml", spec.Lane))
+			return checks, pure, nil
+		}
 		checks, pure := criteriaDeclaredFailure(fmt.Sprintf("no existe criteria.toml en %s: %s", path, readErr))
 		return checks, pure, nil
 	}

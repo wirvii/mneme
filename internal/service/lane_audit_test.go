@@ -10,6 +10,9 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,6 +20,7 @@ import (
 	"testing"
 
 	"github.com/wirvii/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/quality"
 )
 
 // gitRunLaneTest mirrors gitRunBudgetTest — local identity, signing off
@@ -286,5 +290,142 @@ func TestLaneAudit_HappyPath_AdvancesToDone(t *testing.T) {
 	}
 	if latest == nil || !latest.Passed || latest.BaseSHA != base {
 		t.Errorf("LatestLaneAudit = %+v, want Passed=true BaseSHA=%s", latest, base)
+	}
+}
+
+// writeQuality4BudgetOnConstitution writes a schema_version=4 constitution
+// with [budget].enabled = true (and everything else declared-and-off) at
+// repoDir/.mneme/quality.toml — the AC25/D12 absorption fixture for
+// LaneAudit's own gate (distinct from the ensureCertified-focused
+// writeTestConstitutionV4BudgetEnabled in sdd_quality_test.go, kept local
+// to this file to avoid a cross-file test-only dependency).
+func writeQuality4BudgetOnConstitution(t *testing.T, repoDir string) {
+	t.Helper()
+	dir := filepath.Join(repoDir, ".mneme")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir .mneme: %v", err)
+	}
+	doc := `
+schema_version = 4
+enabled = false
+[execution]
+output_tail_bytes = 4096
+[[gate]]
+name = "build"
+command = ["true"]
+timeout = "5m"
+required = true
+[coverage]
+enabled = false
+format = "go-cover"
+command = ["true"]
+profile_path = "tmp/coverage.out"
+timeout = "20m"
+min_diff_line_pct = 80.0
+min_changed_lines = 5
+exclude = []
+[ratchet]
+enabled = false
+max_global_line_pct_drop = 0.0
+max_baseline_staleness_pct = 1.0
+[criteria]
+enabled = false
+timeout = "5m"
+max_manual_pct = 25.0
+max_command_pct = 30.0
+[budget]
+enabled = true
+timeout = "2m"
+test_globs = ["**/*_test.go"]
+test_reach_depth = 3
+`
+	if err := os.WriteFile(filepath.Join(dir, "quality.toml"), []byte(doc), 0o644); err != nil {
+		t.Fatalf("write quality.toml: %v", err)
+	}
+}
+
+// TestLaneAudit_Absorbed_RequiresCertificate covers D12/AC25's own half
+// for LaneAudit specifically (point 4 of P12): with [budget].enabled =
+// true, LaneAudit refuses without a usable certificate
+// (ErrCertificateMissing, naming `mneme quality verify`), and passes once
+// one exists.
+func TestLaneAudit_Absorbed_RequiresCertificate(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found in PATH")
+	}
+
+	svc, workflowDir, repoDir := newTestSDDServiceWithRepoDir(t, "wirvii/mneme")
+	ctx := context.Background()
+
+	gitRunLaneTest(t, repoDir, "init", "-b", "main")
+	gitRunLaneTest(t, repoDir, "config", "user.email", "lane-test@example.com")
+	gitRunLaneTest(t, repoDir, "config", "user.name", "lane-test")
+	writeLaneFile(t, repoDir, "internal/store/existing.go", "package store\n\nfunc Existing() {}\n")
+	writeQuality4BudgetOnConstitution(t, repoDir)
+	gitRunLaneTest(t, repoDir, "add", ".")
+	gitRunLaneTest(t, repoDir, "commit", "-m", "base")
+	base := strings.TrimSpace(gitRunLaneTest(t, repoDir, "rev-parse", "HEAD"))
+
+	// A comment-only change: no NEW symbol is created, so the six graph
+	// detections (which only ever inspect delta.Created) have nothing to
+	// report — the certificate can be genuinely green. Creating a new
+	// symbol here would legitimately fire orphan/untested-reach against
+	// noopGraphFacts (which reports zero edges/reachability for
+	// everything), which is correct detector behaviour, not something
+	// this fixture should paper over.
+	writeLaneFile(t, repoDir, "internal/store/existing.go", "package store\n\n// Existing does something.\nfunc Existing() {}\n")
+	gitRunLaneTest(t, repoDir, "add", "-A")
+	gitRunLaneTest(t, repoDir, "commit", "-m", "head")
+
+	spec := &model.Spec{
+		ID: "SPEC-003", Title: "Trivial spec", Status: model.SpecStatusAudit,
+		Project: "wirvii/mneme", Lane: model.LaneTrivial, Scope: "internal/store/**", BaseSHA: base,
+	}
+	if err := svc.store.CreateSpec(ctx, spec); err != nil {
+		t.Fatalf("create spec: %v", err)
+	}
+
+	// No certificate yet — must refuse.
+	_, err := svc.LaneAudit(ctx, model.LaneAuditRequest{ID: spec.ID})
+	if !errors.Is(err, model.ErrCertificateMissing) {
+		t.Fatalf("LaneAudit error = %v, want ErrCertificateMissing", err)
+	}
+
+	// Verify to produce a green certificate for HEAD, sharing the SAME
+	// store svc itself uses. WithGraphFacts is required for a truly GREEN
+	// certificate: without an injected graph, budget/graph-index is a
+	// firmable `finding` (D5), which alone keeps the certificate at
+	// "findings", never "pass" — CertificateUsable requires "pass"
+	// specifically. The fake must also report the CORRECT content hash
+	// for the one changed file, or D5's freshness check itself finds it
+	// divergent.
+	g := &quality.Git{RepoDir: repoDir}
+	headContent, ok, ferr := g.FileAtRef("HEAD", "internal/store/existing.go")
+	if ferr != nil || !ok {
+		t.Fatalf("FileAtRef: ok=%v err=%v", ok, ferr)
+	}
+	sum := sha256.Sum256(headContent)
+	facts := &noopGraphFacts{contentHash: map[string]string{"internal/store/existing.go": hex.EncodeToString(sum[:])}}
+
+	qsvc := NewQualityService(svc.store, "wirvii/mneme", repoDir, &fakeGateRunner{},
+		WithWorkflowDir(workflowDir), WithGraphFacts(facts))
+	cert, err := qsvc.Verify(ctx, model.QualityVerifyRequest{ID: spec.ID})
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if cert.Verdict != model.QualityVerdictPass {
+		checks, _ := svc.store.ListChecks(ctx, cert.ID)
+		for _, c := range checks {
+			t.Logf("check: kind=%s name=%s status=%s summary=%s", c.Kind, c.Name, c.Status, c.Summary)
+		}
+		t.Fatalf("Verify produced verdict=%q, want pass", cert.Verdict)
+	}
+
+	result, err := svc.LaneAudit(ctx, model.LaneAuditRequest{ID: spec.ID})
+	if err != nil {
+		t.Fatalf("LaneAudit (with certificate): %v", err)
+	}
+	if !result.Passed {
+		t.Errorf("Passed = false, want true: %+v", result)
 	}
 }

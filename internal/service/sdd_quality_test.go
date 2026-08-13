@@ -148,12 +148,19 @@ func TestEnsureCertified_RepoDirSetEnabled_BlocksWithoutCertificate(t *testing.T
 	}
 }
 
-// --- AC15 pair: trivial lane advances without a certificate (unaffected by
-// S1) vs standard lane, otherwise identical fixture, blocks. ---
+// --- AC24 pair (SPEC-118 retarget of S1's own AC15 — the mechanism
+// ABSORBS the trivial lane, D12; this fixture has schema_version=1, so
+// [budget] cannot even be declared, which is AC24's own "apagado por
+// omision" row): trivial lane advances without a certificate vs standard
+// lane, otherwise identical fixture, blocks. ---
 
-// TestEnsureCertified_TrivialLane_Passes is the "passes" half of the AC15
-// pair: a trivial-lane spec's implementing→audit transition is entirely
-// untouched by this mechanism (D12 — S1 explicitly leaves lane trivial out).
+// TestEnsureCertified_TrivialLane_Passes is the "passes" half of AC24: a
+// trivial-lane spec's implementing→audit transition is UNCHANGED while
+// [budget] is not declared/enabled — the retargeted half of S1's own AC15
+// (which used to say trivial is out of this mechanism ENTIRELY; SPEC-118
+// D12 absorbs it, conditionally on [budget].enabled — see
+// TestEnsureCertified_TrivialLane_Absorbed_BlocksWithoutCertificate for the
+// OTHER half, encendido).
 func TestEnsureCertified_TrivialLane_Passes(t *testing.T) {
 	svc := newTestSDDService(t, "proj")
 	ctx := context.Background()
@@ -204,6 +211,121 @@ func TestEnsureCertified_StandardLane_BlocksWithIdenticalFixture(t *testing.T) {
 	_, err := svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: "backend"})
 	if !errors.Is(err, model.ErrCertificateMissing) {
 		t.Errorf("SpecAdvance error = %v, want ErrCertificateMissing", err)
+	}
+}
+
+// writeTestConstitutionV4BudgetEnabled writes a schema_version=4
+// constitution with [budget].enabled = budgetEnabled and every other
+// section declared-and-off — the AC25 fixture (SPEC-118 D12's absorption
+// switch specifically, distinct from writeTestConstitution's own
+// top-level `enabled`).
+func writeTestConstitutionV4BudgetEnabled(t *testing.T, repoDir string, budgetEnabled bool) {
+	t.Helper()
+	dir := filepath.Join(repoDir, ".mneme")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir .mneme: %v", err)
+	}
+	doc := `
+schema_version = 4
+enabled = false
+[execution]
+output_tail_bytes = 4096
+[[gate]]
+name = "build"
+command = ["true"]
+timeout = "5m"
+required = true
+[coverage]
+enabled = false
+format = "go-cover"
+command = ["true"]
+profile_path = "tmp/coverage.out"
+timeout = "20m"
+min_diff_line_pct = 80.0
+min_changed_lines = 5
+exclude = []
+[ratchet]
+enabled = false
+max_global_line_pct_drop = 0.0
+max_baseline_staleness_pct = 1.0
+[criteria]
+enabled = false
+timeout = "5m"
+max_manual_pct = 25.0
+max_command_pct = 30.0
+[budget]
+enabled = ` + boolTOML(budgetEnabled) + `
+timeout = "2m"
+test_globs = ["**/*_test.go"]
+test_reach_depth = 3
+`
+	if err := os.WriteFile(filepath.Join(dir, "quality.toml"), []byte(doc), 0o644); err != nil {
+		t.Fatalf("write quality.toml: %v", err)
+	}
+}
+
+// TestEnsureCertified_TrivialLane_BudgetOff_Passes covers AC24's OTHER two
+// fixtures (schema 4 with [budget].enabled = false, and — via
+// TestEnsureCertified_TrivialLane_Passes above — schema_version=1 where
+// [budget] cannot even be declared): a trivial spec still advances
+// implementing→audit without any certificate. Top-level `enabled` is
+// FALSE in this fixture too, on purpose — proving the trivial gate reads
+// [budget].enabled specifically, never the top-level flag.
+func TestEnsureCertified_TrivialLane_BudgetOff_Passes(t *testing.T) {
+	svc := newTestSDDService(t, "proj")
+	ctx := context.Background()
+
+	repoDir := newTestGitRepo(t)
+	writeTestConstitutionV4BudgetEnabled(t, repoDir, false)
+	commitAllQuality(t, repoDir, "add constitution")
+	svc.WithRepoDir(repoDir)
+
+	spec, err := svc.SpecNew(ctx, model.SpecNewRequest{Title: "trivial", Lane: model.LaneTrivial, Scope: "internal/**/*.go"})
+	if err != nil {
+		t.Fatalf("SpecNew: %v", err)
+	}
+	spec, err = svc.SpecQuick(ctx, model.SpecQuickRequest{ID: spec.ID, Rationale: "tiny fix", By: "orch"})
+	if err != nil {
+		t.Fatalf("SpecQuick: %v", err)
+	}
+
+	advanced, err := svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: "backend"})
+	if err != nil {
+		t.Fatalf("trivial-lane SpecAdvance with [budget].enabled=false should pass without any certificate, got: %v", err)
+	}
+	if advanced.Status != model.SpecStatusAudit {
+		t.Errorf("status = %s, want audit", advanced.Status)
+	}
+}
+
+// TestEnsureCertified_TrivialLane_Absorbed_BlocksWithoutCertificate covers
+// AC25: with schema 4 and [budget].enabled = true, a trivial spec's
+// implementing→audit transition NOW requires a usable certificate, just
+// like the standard lane's implementing→qa — the absorption D12 mandates.
+// Without this test (and without runCriteriaChecks' own lane-aware skip,
+// G27, verified elsewhere), turning this mechanism on would brick every
+// trivial spec in the repository forever (U-I).
+func TestEnsureCertified_TrivialLane_Absorbed_BlocksWithoutCertificate(t *testing.T) {
+	svc := newTestSDDService(t, "proj")
+	ctx := context.Background()
+
+	repoDir := newTestGitRepo(t)
+	writeTestConstitutionV4BudgetEnabled(t, repoDir, true)
+	commitAllQuality(t, repoDir, "add constitution")
+	svc.WithRepoDir(repoDir)
+
+	spec, err := svc.SpecNew(ctx, model.SpecNewRequest{Title: "trivial", Lane: model.LaneTrivial, Scope: "internal/**/*.go"})
+	if err != nil {
+		t.Fatalf("SpecNew: %v", err)
+	}
+	spec, err = svc.SpecQuick(ctx, model.SpecQuickRequest{ID: spec.ID, Rationale: "tiny fix", By: "orch"})
+	if err != nil {
+		t.Fatalf("SpecQuick: %v", err)
+	}
+
+	_, err = svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: "backend"})
+	if !errors.Is(err, model.ErrCertificateMissing) {
+		t.Errorf("SpecAdvance error = %v, want ErrCertificateMissing (G26b)", err)
 	}
 }
 
