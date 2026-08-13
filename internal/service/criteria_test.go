@@ -6,6 +6,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -788,4 +789,161 @@ text = "a2"
 	// "criterion*" — verified against Sign's own guard in
 	// TestSign_RejectsNonCriterionRow (P8), which exercises this SAME kind
 	// distinction directly rather than duplicating it here.
+}
+
+// --- SPEC-117 EPIC-calidad S3 P8: Sign/Ack disjoint domains ---
+
+// verifyWithManualCriterion runs a full Verify producing a manual-mode
+// criterion finding, returning the certificate and the manual row's Seq.
+func verifyWithManualCriterion(t *testing.T, s *store.SDDStore, specID string) (*model.QualityCertificate, int) {
+	t.Helper()
+	repoDir := newTestGitRepo(t)
+	// max_manual_pct=100.0: the single manual criterion below is 100% of
+	// the document, which must NOT itself breach the quota — this fixture
+	// exists to exercise Sign/Ack, not D10's quota mechanism.
+	writeConstitutionV3Criteria(t, repoDir, true, "5m", 100.0, 100.0)
+	commitAll(t, repoDir, "add constitution")
+
+	spec := insertTestSpec(t, s, specID, "proj", model.SpecStatusImplementing, "")
+	workflowDir := t.TempDir()
+	doc := `
+schema_version = 1
+[[criterion]]
+id = "AC1"
+mode = "manual"
+text = "revision visual"
+evidence_required = "captura"
+`
+	writeCriteriaDocAt(t, workflowDir, "proj", spec.ID, doc)
+
+	svc := NewQualityService(s, "proj", repoDir, &fakeGateRunner{}, WithWorkflowDir(workflowDir))
+	cert, err := svc.Verify(context.Background(), model.QualityVerifyRequest{ID: spec.ID})
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	checks, err := s.ListChecks(context.Background(), cert.ID)
+	if err != nil {
+		t.Fatalf("ListChecks: %v", err)
+	}
+	row := findCheck(checks, "criterion-manual", "AC1")
+	if row == nil || row.Status != "finding" {
+		t.Fatalf("criterion-manual/AC1 = %+v, want finding", row)
+	}
+	return cert, row.Seq
+}
+
+// TestSign_ConvertsManualFindingToAcked covers AC24's first row: Sign
+// turns a criterion-manual finding into acked, recalculating the
+// certificate's verdict from findings to pass (via the UNTOUCHED
+// store.AckCheck).
+func TestSign_ConvertsManualFindingToAcked(t *testing.T) {
+	s := newTestQualityStore(t)
+	cert, seq := verifyWithManualCriterion(t, s, "SPEC-001")
+
+	if cert.Verdict == model.QualityVerdictPass {
+		t.Fatal("certificate verdict is already pass before signing — the fixture is not exercising a real finding")
+	}
+
+	svc := NewQualityService(s, "proj", t.TempDir(), &fakeGateRunner{})
+	if err := svc.Sign(context.Background(), model.QualitySignRequest{
+		CertificateID: cert.ID, Seq: seq, By: "qa-tester", Evidence: "captura adjunta, contraste 7:1",
+	}); err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+
+	checks, err := s.ListChecks(context.Background(), cert.ID)
+	if err != nil {
+		t.Fatalf("ListChecks: %v", err)
+	}
+	row := findCheck(checks, "criterion-manual", "AC1")
+	if row.Status != "acked" || row.AckedBy != "qa-tester" || row.Justification != "captura adjunta, contraste 7:1" {
+		t.Fatalf("criterion-manual/AC1 = %+v, want acked by qa-tester with the evidence persisted verbatim", row)
+	}
+
+	updated, err := s.GetCertificate(context.Background(), cert.ID)
+	if err != nil {
+		t.Fatalf("GetCertificate: %v", err)
+	}
+	if updated.Verdict != model.QualityVerdictPass {
+		t.Errorf("certificate verdict after signing = %s, want pass", updated.Verdict)
+	}
+}
+
+// TestSign_RejectsNonCriterionRow covers AC24's second row (G17a's
+// guardian): Sign refuses a non-criterion row (a "criteria" cupo row here)
+// with model.ErrNotACriterion.
+func TestSign_RejectsNonCriterionRow(t *testing.T) {
+	s := newTestQualityStore(t)
+	cert, _ := verifyWithManualCriterion(t, s, "SPEC-002")
+
+	checks, err := s.ListChecks(context.Background(), cert.ID)
+	if err != nil {
+		t.Fatalf("ListChecks: %v", err)
+	}
+	quotaRow := findCheck(checks, "criteria", "manual-quota")
+	if quotaRow == nil {
+		t.Fatal("criteria/manual-quota row not found")
+	}
+
+	svc := NewQualityService(s, "proj", t.TempDir(), &fakeGateRunner{})
+	err = svc.Sign(context.Background(), model.QualitySignRequest{
+		CertificateID: cert.ID, Seq: quotaRow.Seq, By: "qa-tester", Evidence: "x",
+	})
+	if !errors.Is(err, model.ErrNotACriterion) {
+		t.Errorf("Sign(criteria/manual-quota) error = %v, want ErrNotACriterion", err)
+	}
+}
+
+// TestAck_RejectsCriterionRow covers AC24's third row (G17b's guardian):
+// Ack refuses a criterion-manual row with model.ErrCriterionRequiresSign,
+// naming `mneme quality sign` in the message.
+func TestAck_RejectsCriterionRow(t *testing.T) {
+	s := newTestQualityStore(t)
+	cert, seq := verifyWithManualCriterion(t, s, "SPEC-003")
+
+	svc := NewQualityService(s, "proj", t.TempDir(), &fakeGateRunner{})
+	err := svc.Ack(context.Background(), model.QualityAckRequest{
+		CertificateID: cert.ID, Seq: seq, By: "orch", Justification: "x",
+	})
+	if !errors.Is(err, model.ErrCriterionRequiresSign) {
+		t.Fatalf("Ack(criterion-manual) error = %v, want ErrCriterionRequiresSign", err)
+	}
+	if !strings.Contains(err.Error(), "mneme quality sign") {
+		t.Errorf("Ack(criterion-manual) error = %q, want it to name `mneme quality sign`", err.Error())
+	}
+}
+
+// TestAck_StillWorksForNonCriterionRows covers AC24's fourth row: Ack
+// keeps working EXACTLY as before for a non-criterion finding (here, S1's
+// own "constitution not tracked by git" finding) — proof P8 did not break
+// S1/S2.
+func TestAck_StillWorksForNonCriterionRows(t *testing.T) {
+	repoDir := newTestGitRepo(t)
+	// newTestGitRepo already leaves an initial commit WITHOUT the
+	// constitution. Writing it here, with no subsequent commit, is what
+	// makes S1's constitution/tracked check report a finding.
+	writeConstitution(t, repoDir)
+
+	s := newTestQualityStore(t)
+	insertTestSpec(t, s, "SPEC-004", "proj", model.SpecStatusImplementing, "")
+
+	svc := NewQualityService(s, "proj", repoDir, &fakeGateRunner{})
+	cert, err := svc.Verify(context.Background(), model.QualityVerifyRequest{ID: "SPEC-004"})
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	checks, err := s.ListChecks(context.Background(), cert.ID)
+	if err != nil {
+		t.Fatalf("ListChecks: %v", err)
+	}
+	row := findCheck(checks, "constitution", "tracked")
+	if row == nil || row.Status != "finding" {
+		t.Fatalf("constitution/tracked = %+v, want finding (untracked constitution)", row)
+	}
+
+	if err := svc.Ack(context.Background(), model.QualityAckRequest{
+		CertificateID: cert.ID, Seq: row.Seq, By: "orch", Justification: "sandbox fixture, no versioning needed",
+	}); err != nil {
+		t.Fatalf("Ack(constitution/tracked): unexpected error: %v", err)
+	}
 }

@@ -895,14 +895,74 @@ func readBaselineFile(repoDir string) *quality.Baseline {
 // Ack converts a "finding" check into "acked", recording who approved it and
 // why (D10/D11) — never re-running anything. by and justification must both
 // be non-empty (model.ErrReasonRequired).
+//
+// SPEC-117 D11's ONE guard: a "criterion*"-kind row is ATTESTED, never
+// absolved — Ack refuses it with model.ErrCriterionRequiresSign, naming
+// `mneme quality sign` in the wrapped message, so a caller lands on the
+// correct verb instead of a dead end. Every other kind (a gate, a ratchet
+// finding, a cliquet row) is entirely unaffected — this is the ONLY
+// modification Ack receives, and it is additive.
 func (svc *QualityService) Ack(ctx context.Context, req model.QualityAckRequest) error {
 	if req.By == "" || req.Justification == "" {
 		return model.ErrReasonRequired
+	}
+	if isCriterionRow, err := svc.checkKindStartsWithCriterion(ctx, req.CertificateID, req.Seq); err != nil {
+		return err
+	} else if isCriterionRow {
+		return fmt.Errorf("service: quality: ack: %w (usa `mneme quality sign`)", model.ErrCriterionRequiresSign)
 	}
 	if err := svc.store.AckCheck(ctx, req.CertificateID, req.Seq, req.By, req.Justification); err != nil {
 		return fmt.Errorf("service: quality: ack: %w", err)
 	}
 	return nil
+}
+
+// Sign converts a criterion row's "finding" into "acked" — SPEC-117 S3
+// D11's own verb, an ATTESTATION ("I verified this and it holds") kept
+// deliberately DISJOINT from Ack's ABSOLUTION ("I approve this despite
+// being a problem"): mixing the two into one verb would make a COUNT(*)
+// confuse "we forgave 3 findings" with "we verified 4 manuals" — exactly
+// the harm S2's "one row per fact" rule already guards against on the
+// other axis. Sign reuses store.AckCheck's mechanism VERBATIM (same three
+// columns, same in-transaction verdict recalculation) — not a single line
+// of store change. Only accepts rows whose Kind starts with "criterion"
+// (model.ErrNotACriterion otherwise); by and evidence must both be
+// non-empty (model.ErrReasonRequired).
+func (svc *QualityService) Sign(ctx context.Context, req model.QualitySignRequest) error {
+	if req.By == "" || req.Evidence == "" {
+		return model.ErrReasonRequired
+	}
+	isCriterionRow, err := svc.checkKindStartsWithCriterion(ctx, req.CertificateID, req.Seq)
+	if err != nil {
+		return err
+	}
+	if !isCriterionRow {
+		return fmt.Errorf("service: quality: sign: %w", model.ErrNotACriterion)
+	}
+	if err := svc.store.AckCheck(ctx, req.CertificateID, req.Seq, req.By, req.Evidence); err != nil {
+		return fmt.Errorf("service: quality: sign: %w", err)
+	}
+	return nil
+}
+
+// checkKindStartsWithCriterion looks up the (certificateID, seq) row and
+// reports whether its Kind begins with "criterion" — the ONE fact both
+// Sign's and Ack's domain guards need. A row that does not exist is
+// reported as NOT a criterion row (false, nil): the subsequent
+// store.AckCheck call is what surfaces model.ErrCertificateNotFound for
+// that case, exactly as it always has — this helper only ever ADDS a
+// guard, it never removes AckCheck's own not-found detection.
+func (svc *QualityService) checkKindStartsWithCriterion(ctx context.Context, certificateID string, seq int) (bool, error) {
+	checks, err := svc.store.ListChecks(ctx, certificateID)
+	if err != nil {
+		return false, fmt.Errorf("service: quality: list checks: %w", err)
+	}
+	for _, c := range checks {
+		if c.Seq == seq {
+			return strings.HasPrefix(c.Kind, "criterion"), nil
+		}
+	}
+	return false, nil
 }
 
 // BaselineUpdate registers a new ratchet baseline (SPEC-116 D10/D15),
