@@ -81,7 +81,7 @@ type IndexOptions struct {
 	// list of candidate paths (relative to RootDir) for a FULL scan (SPEC-102).
 	// The CLI populates it from `git ls-files` so the index honours .gitignore
 	// without this package knowing anything about git. Each path is still run
-	// through isEligibleSource, and pruneDeleted STILL runs (unlike scoped mode
+	// through IsEligibleSource, and pruneDeleted STILL runs (unlike scoped mode
 	// via Changes), so nodes for paths no longer in the list are purged — this
 	// is what auto-heals a graph previously polluted by a gitignored directory.
 	// A nil slice (the default) preserves the legacy walk (the non-git
@@ -169,7 +169,7 @@ func (ix *Indexer) Index(opts IndexOptions) (*IndexResult, error) {
 
 		// Eligibility is decided by the shared predicate so the full walk and the
 		// scoped path agree exactly on what counts as an indexable source file.
-		lang, ok := isEligibleSource(relPath)
+		lang, ok := IsEligibleSource(relPath)
 		if !ok {
 			return nil
 		}
@@ -215,11 +215,11 @@ func (ix *Indexer) Index(opts IndexOptions) (*IndexResult, error) {
 // paths git considers part of the working tree, and indexList applies exactly
 // the same eligibility, extraction, and pruning logic the walk does.
 //
-// Each entry is still filtered through isEligibleSource — belt-and-suspenders
+// Each entry is still filtered through IsEligibleSource — belt-and-suspenders
 // against a caller-supplied path that falls under a hidden or ignoredDirs
 // directory (e.g. a tracked file inside vendor/) — so the walk and the list
 // path agree exactly on what is indexable, mirroring the walk/scoped
-// symmetry documented on isEligibleSource.
+// symmetry documented on IsEligibleSource.
 //
 // Unlike indexScoped (Changes), indexList still runs pruneDeleted: it is a
 // full scan, so any store record whose path is absent from the (now
@@ -235,7 +235,7 @@ func (ix *Indexer) indexList(opts IndexOptions) (*IndexResult, error) {
 	for _, rel := range opts.Include {
 		rel = filepath.Clean(rel)
 
-		lang, ok := isEligibleSource(rel)
+		lang, ok := IsEligibleSource(rel)
 		if !ok {
 			continue
 		}
@@ -266,7 +266,7 @@ func (ix *Indexer) indexList(opts IndexOptions) (*IndexResult, error) {
 	return result, nil
 }
 
-// isEligibleSource reports whether the file at relPath (a path relative to the
+// IsEligibleSource reports whether the file at relPath (a path relative to the
 // index root) is one the indexer should process, and if so its detected
 // language. It is the single source of truth shared by the full walk and the
 // scoped path (SPEC-101), so both agree exactly on what is indexable:
@@ -281,7 +281,15 @@ func (ix *Indexer) indexList(opts IndexOptions) (*IndexResult, error) {
 // callback; in the walk it is redundant (ignored dirs are pruned before their
 // files are visited) but harmless, and it is essential in scoped mode where
 // there is no walk to prune anything.
-func isEligibleSource(relPath string) (lang string, ok bool) {
+//
+// Exported since SPEC-118 (D6 point 4): the budget mechanism
+// (internal/quality/internal/service) needs the SAME elegibilidad this
+// indexer already enforces — a `.md`, a `.sql`, or a file under `vendor/`
+// contributes no budgetable symbols and must produce no finding for not
+// contributing them. Reimplementing this predicate in another package would
+// create the second source of truth this function's own name exists to
+// prevent; its LOGIC is unchanged by this export, only its visibility.
+func IsEligibleSource(relPath string) (lang string, ok bool) {
 	slashed := filepath.ToSlash(relPath)
 	parts := strings.Split(slashed, "/")
 	for _, dir := range parts[:len(parts)-1] {
@@ -358,7 +366,7 @@ func (ix *Indexer) indexScoped(opts IndexOptions) (*IndexResult, error) {
 // systemic ErrExtractorIncompatible aborts scoped mode just as it aborts the
 // walk; any other per-file error is recorded and processing continues.
 func (ix *Indexer) indexScopedFile(relPath string, opts IndexOptions, result *IndexResult) error {
-	lang, ok := isEligibleSource(relPath)
+	lang, ok := IsEligibleSource(relPath)
 	if !ok {
 		return nil
 	}

@@ -434,7 +434,7 @@ func Hello() {}
 
 // ---------------------------------------------------------------------------
 // SPEC-102 — full-scan-by-list (Include) respects a caller-supplied candidate
-// set instead of walking the tree, while still applying isEligibleSource and
+// set instead of walking the tree, while still applying IsEligibleSource and
 // pruneDeleted.
 // ---------------------------------------------------------------------------
 
@@ -476,7 +476,7 @@ func TestIndexer_IncludeList_IndexesOnlyListedFiles(t *testing.T) {
 	}
 }
 
-// TestIndexer_IncludeList_AppliesEligibility verifies that isEligibleSource
+// TestIndexer_IncludeList_AppliesEligibility verifies that IsEligibleSource
 // still filters entries from the Include list — the list and the walk must
 // agree exactly on what is indexable (hidden dirs, ignoredDirs, unsupported
 // extensions).

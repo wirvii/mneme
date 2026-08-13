@@ -99,7 +99,7 @@ func TestMetadata_DBClosedErrors(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// isEligibleSource (SPEC-101)
+// IsEligibleSource (SPEC-101)
 // ---------------------------------------------------------------------------
 
 func TestIsEligibleSource(t *testing.T) {
@@ -122,9 +122,9 @@ func TestIsEligibleSource(t *testing.T) {
 		{"a/b/c/deep.ts", "typescript", true},    // deep eligible
 	}
 	for _, tc := range cases {
-		lang, ok := isEligibleSource(tc.path)
+		lang, ok := IsEligibleSource(tc.path)
 		if ok != tc.wantOK || lang != tc.wantLang {
-			t.Errorf("isEligibleSource(%q) = (%q,%v), want (%q,%v)",
+			t.Errorf("IsEligibleSource(%q) = (%q,%v), want (%q,%v)",
 				tc.path, lang, ok, tc.wantLang, tc.wantOK)
 		}
 	}
