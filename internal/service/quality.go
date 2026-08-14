@@ -337,6 +337,28 @@ func (svc *QualityService) runAllChecks(
 	checks = append(checks, budgetChecks...)
 	pure = append(pure, budgetPure...)
 
+	// SPEC-119: the mutation rows land LAST. Their premise is STRICTER
+	// than every prior stage's own gatesStopped cascade (D1 pata a): a
+	// non-required gate sitting in `fail` does not stop the coverage or
+	// criteria checks, but it DOES stop mutation — the inference "the
+	// mutation broke the compile/tests" only holds if the unmutated tree
+	// was already known-green in THIS SAME certificate, and gatesStopped
+	// alone cannot promise that (a project may declare its test gate
+	// required=false).
+	anyGateFailed := false
+	for _, c := range gateChecks {
+		if c.Status == string(quality.GateStatusFail) {
+			anyGateFailed = true
+			break
+		}
+	}
+	mutationChecks, mutationPure, err := svc.runMutationChecks(ctx, g, constitution, spec, gatesStopped, anyGateFailed)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	checks = append(checks, mutationChecks...)
+	pure = append(pure, mutationPure...)
+
 	return checks, pure, dirty, nil
 }
 
@@ -1622,4 +1644,327 @@ func (svc *QualityService) buildReportInput(spec *model.Spec, cert *model.Qualit
 		MnemeVersion: svc.mnemeVersion, GeneratedAtUTC: cert.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 		Checks: reportChecks,
 	}
+}
+
+// --- SPEC-119 EPIC-calidad S5: mutation over the diff ---
+
+// mutationRowNames is the fixed, declared order of the six top-level
+// mutation rows (D5 #1-6) — used both to build a uniform "skipped" set
+// and as the single literal instead of six repeated Kind/Name pairs.
+var mutationRowNames = []string{"report", "scope", "viability", "timeouts", "not-covered", "score"}
+
+// skippedMutationChecks builds all six mutation rows as "skipped" with the
+// SAME reason — used whenever the mechanism is off, or an earlier stage's
+// cascade already stopped, before the mutation command is ever run.
+func skippedMutationChecks(reason string) ([]*model.QualityCheck, []quality.CheckResult) {
+	checks := make([]*model.QualityCheck, 0, len(mutationRowNames))
+	pure := make([]quality.CheckResult, 0, len(mutationRowNames))
+	for _, name := range mutationRowNames {
+		checks = append(checks, &model.QualityCheck{Kind: "mutation", Name: name, Status: "skipped", Summary: reason})
+		pure = append(pure, quality.CheckResult{Status: quality.CheckStatusSkipped})
+	}
+	return checks, pure
+}
+
+// mutationSkipReason names WHY all six rows are being skipped, in D13's
+// own vocabulary, extended with mutation's OWN, stricter premise (D1 pata
+// a): a gate in `fail` — even a non-required one — stops mutation, because
+// the entire inference "the mutation broke something" depends on the
+// UNMUTATED tree being known green in THIS certificate; gatesStopped alone
+// (the cascade every other stage shares) does not promise that, since a
+// project may declare its own test gate with required=false.
+func mutationSkipReason(gatesStopped, anyGateFailed bool, constitution *quality.Constitution) string {
+	switch {
+	case gatesStopped:
+		return "un gate required anterior fallo"
+	case !constitution.MutationDeclared:
+		return fmt.Sprintf("constitucion schema_version=%d no declara [mutation] (apagado por omision)", constitution.SchemaVersion)
+	case !constitution.Mutation.Enabled:
+		return "mutation.enabled = false (apagado por decision)"
+	case anyGateFailed:
+		return "al menos un gate esta en fail (aunque no sea required) — la premisa de la mutacion exige un arbol sin mutar verde en este certificado"
+	default:
+		return ""
+	}
+}
+
+// mutationReportFailure builds row 1 ("mutation/report") as a `fail`, plus
+// rows 2-6 skipped for the same reason (D13's "no se acumulan dos
+// diagnosticos del mismo hecho") — the exit path for a stale/tracked/
+// undeleteable report path, a non-zero exit, a missing file after exit 0,
+// and an unparseable report.
+func mutationReportFailure(summary string, res quality.GateResult) ([]*model.QualityCheck, []quality.CheckResult) {
+	checks := []*model.QualityCheck{{
+		Kind: "mutation", Name: "report", Status: "fail",
+		ExitCode: res.ExitCode, DurationMs: res.DurationMs,
+		OutputSHA256: res.OutputSHA256, OutputBytes: res.OutputBytes, OutputTail: res.OutputTail,
+		Summary: summary,
+	}}
+	pure := []quality.CheckResult{{Status: quality.CheckStatusFail}}
+	skippedChecks, skippedPure := skippedMutationChecks("mutation/report fallo")
+	return append(checks, skippedChecks[1:]...), append(pure, skippedPure[1:]...)
+}
+
+// mutationReportBudgetExceeded builds row 1 as a `finding` `budget-exceeded`
+// (D12) — the mutation command exhausted its declared timeout, which is
+// NOT the observation of a survivor: the suite hung, nobody asserted
+// anything. Firmable only via `quality ack` (D8/D12), never `quality
+// sign` — RequiresSignature("mutation") is false.
+func mutationReportBudgetExceeded(res quality.GateResult) ([]*model.QualityCheck, []quality.CheckResult) {
+	checks := []*model.QualityCheck{{
+		Kind: "mutation", Name: "report", Status: "finding", Summary: "budget-exceeded: " + res.Summary,
+		ExitCode: res.ExitCode, DurationMs: res.DurationMs,
+		OutputSHA256: res.OutputSHA256, OutputBytes: res.OutputBytes, OutputTail: res.OutputTail,
+	}}
+	pure := []quality.CheckResult{{Status: quality.CheckStatusFinding}}
+	skippedChecks, skippedPure := skippedMutationChecks("mutation/report budget-exceeded")
+	return append(checks, skippedChecks[1:]...), append(pure, skippedPure[1:]...)
+}
+
+// isMutationTimeout reports whether res is ExecRunner's own timeout shape
+// (runner.go's Run: ExitCode=-1, Summary="timeout tras <d>") — the ONE
+// distinguishing fact that separates "the suite hung" (D12, a finding)
+// from every other non-zero exit (a fail). A launch failure (command not
+// found) uses a DIFFERENT Summary text ("comando no encontrado en
+// PATH: …"), so this never misclassifies one as the other.
+func isMutationTimeout(res quality.GateResult) bool {
+	return res.ExitCode == -1 && strings.HasPrefix(res.Summary, "timeout tras ")
+}
+
+// mutantScoreDetail is the JSON shape of the "mutation/score" row's Detail
+// (D5 #6): the full per-status recount, VERBATIM, plus max_equivalent —
+// the ONE place Sign (P9) reads the cupo OF RECORD from, per certificate,
+// never from the constitution file on disk (D9).
+type mutantScoreDetail struct {
+	ByStatus      map[string]int `json:"by_status"`
+	Total         int            `json:"total"`
+	SurvivorCount int            `json:"survivor_count"`
+	MaxEquivalent int            `json:"max_equivalent"`
+}
+
+// mutantSurvivorDetail is the JSON shape of a `mutant/<id>` row's Detail —
+// the mutant recorded VERBATIM (D18 point 1: mneme never attributes a
+// kill or a survival to a specific test, but a human can audit the exact
+// mutation from this).
+type mutantSurvivorDetail struct {
+	File    string `json:"file"`
+	Line    int    `json:"line"`
+	Column  int    `json:"column"`
+	Mutator string `json:"mutator"`
+}
+
+// runMutationChecks emits the "6 + N" mutation rows D5 declares. All six
+// top-level rows are "skipped" under mutationSkipReason's causes — never
+// silently omitted: D1's four legs depend on every state being a NAMED
+// row, never an absence.
+//
+// Row 1 (the report) runs regardless of whether the spec's base is known
+// — report generation does not depend on scoping. Row 2 (scope) is the
+// FIRST row that can be "base-unknown" (D18 point 4/AC13): never a pass,
+// never a silent skip. Only once the base IS known does mneme re-derive
+// the changed-line set and re-scope the report by its OWN primitives
+// (D3) — the mutator's own --diff, if it has one, is an optimisation
+// ExpandCommand's {{BASE_SHA}} token pays for, never the boundary of
+// correctness.
+func (svc *QualityService) runMutationChecks(
+	ctx context.Context, g *quality.Git, constitution *quality.Constitution, spec *model.Spec, gatesStopped, anyGateFailed bool,
+) ([]*model.QualityCheck, []quality.CheckResult, error) {
+	if reason := mutationSkipReason(gatesStopped, anyGateFailed, constitution); reason != "" {
+		checks, pure := skippedMutationChecks(reason)
+		return checks, pure, nil
+	}
+
+	cfg := constitution.Mutation
+
+	// Best-effort merge-base: NEVER a hard error when it cannot be
+	// resolved (spec.BaseSHA empty, or unreachable history) — that
+	// condition is row 2's own finding (base-unknown, D18 point 4), never
+	// a failure of the whole stage.
+	baseKnown := false
+	var mergeBase string
+	if spec.BaseSHA != "" {
+		if mb, mbErr := g.MergeBase(spec.BaseSHA, "HEAD"); mbErr == nil {
+			mergeBase = mb
+			baseKnown = true
+		}
+	}
+
+	problem, ready, prepErr := prepareDeclaredOutput(g, svc.repoDir, cfg.ReportPath, "el informe de mutacion", "informe")
+	if prepErr != nil {
+		return nil, nil, fmt.Errorf("service: quality: verify: mutation: is tracked: %w", prepErr)
+	}
+	if !ready {
+		checks, pure := mutationReportFailure(problem, quality.GateResult{})
+		return checks, pure, nil
+	}
+
+	// {{BASE_SHA}} is substituted with the best-effort merge-base — an
+	// EMPTY string when the base is unknown. That is fine: the token is
+	// an optimisation (D3), and if the base is unknown the mutator either
+	// mutates more than it needs to (slower, never wrong) or the command
+	// itself declares no token at all.
+	expandedCommand := quality.ExpandCommand(cfg.Command, mergeBase)
+	res := svc.runner.Run(ctx, quality.Gate{Name: "mutation-report", Command: expandedCommand, Timeout: cfg.Timeout}, svc.repoDir)
+
+	if res.Status != quality.GateStatusPass {
+		if isMutationTimeout(res) {
+			checks, pure := mutationReportBudgetExceeded(res)
+			return checks, pure, nil
+		}
+		summary := res.Summary
+		if summary == "" {
+			summary = fmt.Sprintf("el comando de mutacion salio con exit_code=%d", res.ExitCode)
+		}
+		checks, pure := mutationReportFailure(summary, res)
+		return checks, pure, nil
+	}
+
+	reportPath := filepath.Join(svc.repoDir, cfg.ReportPath)
+	raw, readErr := os.ReadFile(reportPath)
+	if readErr != nil {
+		checks, pure := mutationReportFailure(fmt.Sprintf(
+			"el comando salio 0 pero %s no existe: %s", cfg.ReportPath, readErr,
+		), res)
+		return checks, pure, nil
+	}
+
+	report, parseErr := quality.ParseMutantReport(cfg.Format, raw)
+	if parseErr != nil {
+		checks, pure := mutationReportFailure(fmt.Sprintf("informe no parseable como %s: %s", cfg.Format, parseErr), res)
+		return checks, pure, nil
+	}
+
+	checks := []*model.QualityCheck{{
+		Kind: "mutation", Name: "report", Status: "pass",
+		ExitCode: res.ExitCode, DurationMs: res.DurationMs,
+		OutputSHA256: res.OutputSHA256, OutputBytes: res.OutputBytes, OutputTail: res.OutputTail,
+	}}
+	pure := []quality.CheckResult{{Status: quality.CheckStatusPass}}
+
+	// Row 2, base-unknown branch: NEVER a pass, never a silent skip
+	// (D18 point 4/AC13). Rows 3-6 skip, naming it.
+	if !baseKnown {
+		checks = append(checks, &model.QualityCheck{
+			Kind: "mutation", Name: "scope", Status: "finding",
+			Summary: "base-unknown: spec sin base_sha, o merge-base con HEAD inalcanzable",
+		})
+		pure = append(pure, quality.CheckResult{Status: quality.CheckStatusFinding})
+		skippedChecks, skippedPure := skippedMutationChecks("mutation/scope: base-unknown")
+		return append(checks, skippedChecks[2:]...), append(pure, skippedPure[2:]...), nil
+	}
+
+	changed, clErr := g.ChangedLines(mergeBase, "HEAD")
+	if clErr != nil {
+		return nil, nil, fmt.Errorf("service: quality: verify: mutation: changed lines: %w", clErr)
+	}
+	repoFiles, lfErr := g.ListFilesAtRef("HEAD")
+	if lfErr != nil {
+		return nil, nil, fmt.Errorf("service: quality: verify: mutation: list files at HEAD: %w", lfErr)
+	}
+
+	inDiff, _, _ := quality.ScopeMutants(report, changed, repoFiles)
+	tally := quality.Tally(inDiff)
+	outcome := quality.EvaluateMutation(tally, quality.MutationThresholds{
+		MaxEquivalent: cfg.MaxEquivalent, MaxNotViablePct: cfg.MaxNotViablePct,
+	})
+
+	// Row 2 (continued): the empty-denominator trap, mutation's own
+	// version of S2's diff-coverage row 2 — this is scope's OWN finding,
+	// never the parser's (D1 pata b's own carve-out).
+	if tally.Total == 0 {
+		checks = append(checks, &model.QualityCheck{Kind: "mutation", Name: "scope", Status: "finding", Summary: "no-mutants-in-diff"})
+		pure = append(pure, quality.CheckResult{Status: quality.CheckStatusFinding})
+	} else {
+		checks = append(checks, &model.QualityCheck{
+			Kind: "mutation", Name: "scope", Status: "pass",
+			Summary: fmt.Sprintf("%d mutante(s) en el rango", tally.Total),
+		})
+		pure = append(pure, quality.CheckResult{Status: quality.CheckStatusPass})
+	}
+
+	// Row 3: viability (D1 pata d) — the guardian that closes the
+	// catastrophic green: an informe where EVERYTHING is not_viable has
+	// ZERO survivors, and without this row that reads as an unqualified
+	// pass.
+	viabilityStatus := "pass"
+	if outcome.ViabilityBreached {
+		viabilityStatus = "finding"
+	}
+	checks = append(checks, &model.QualityCheck{
+		Kind: "mutation", Name: "viability", Status: viabilityStatus,
+		Summary: fmt.Sprintf("%.2f%% no viables (max %.2f%%)", outcome.ViabilityPct, cfg.MaxNotViablePct),
+	})
+	pure = append(pure, quality.CheckResult{Status: quality.CheckStatus(viabilityStatus)})
+
+	// Row 4: timeouts — a finding, never a death (D10/D1 pata c): a
+	// mutant that timed out is neither killed nor survived, it is a
+	// hung run.
+	timeoutsStatus := "pass"
+	if outcome.HasTimeouts {
+		timeoutsStatus = "finding"
+	}
+	checks = append(checks, &model.QualityCheck{
+		Kind: "mutation", Name: "timeouts", Status: timeoutsStatus,
+		Summary: fmt.Sprintf("%d mutante(s) agotaron el tiempo", tally.ByStatus[quality.MutantTimedOut]),
+	})
+	pure = append(pure, quality.CheckResult{Status: quality.CheckStatus(timeoutsStatus)})
+
+	// Row 5: not-covered — ALWAYS pass, informative only (D10/AC23):
+	// never condemns twice what S2's own min_diff_line_pct already
+	// judges, and always present (never absent, even at zero) so
+	// "nothing uncovered" and "nobody looked" stay distinguishable.
+	checks = append(checks, &model.QualityCheck{
+		Kind: "mutation", Name: "not-covered", Status: "pass",
+		Summary: fmt.Sprintf("%d mutante(s) sin cobertura de test", outcome.NotCoveredCount),
+	})
+	pure = append(pure, quality.CheckResult{Status: quality.CheckStatusPass})
+
+	// Row 6: score — the full recount, verbatim, plus max_equivalent for
+	// Sign (P9) to read later as the cupo OF RECORD. `fail` ONLY when the
+	// survivor cap (MaxSurvivorRows) was exceeded (D6) — otherwise
+	// `pass`; the verdict already degrades via the N `mutant` rows below
+	// when there is at least one survivor, never via this row.
+	byStatus := make(map[string]int, len(tally.ByStatus))
+	for status, count := range tally.ByStatus {
+		byStatus[string(status)] = count
+	}
+	scoreDetail, jsonErr := json.Marshal(mutantScoreDetail{
+		ByStatus: byStatus, Total: tally.Total, SurvivorCount: len(tally.Survivors), MaxEquivalent: cfg.MaxEquivalent,
+	})
+	if jsonErr != nil {
+		return nil, nil, fmt.Errorf("service: quality: verify: mutation: marshal score detail: %w", jsonErr)
+	}
+	scoreStatus := "pass"
+	scoreSummary := fmt.Sprintf("killed=%d lived=%d not_viable=%d not_covered=%d timed_out=%d skipped=%d",
+		tally.ByStatus[quality.MutantKilled], tally.ByStatus[quality.MutantLived], tally.ByStatus[quality.MutantNotViable],
+		tally.ByStatus[quality.MutantNotCovered], tally.ByStatus[quality.MutantTimedOut], tally.ByStatus[quality.MutantSkipped])
+	if outcome.SurvivorsTruncated {
+		scoreStatus = "fail"
+		scoreSummary = fmt.Sprintf("%s — %d supervivientes superan MaxSurvivorRows (%d): no se firma, se escriben tests",
+			scoreSummary, len(tally.Survivors), quality.MaxSurvivorRows)
+	}
+	checks = append(checks, &model.QualityCheck{
+		Kind: "mutation", Name: "score", Status: scoreStatus, Summary: scoreSummary, Detail: string(scoreDetail),
+	})
+	pure = append(pure, quality.CheckResult{Status: quality.CheckStatus(scoreStatus)})
+
+	// Rows 7..6+N: one per survivor, capped at MaxSurvivorRows and in the
+	// deterministic order Tally already sorted (D6/AC17) — never a single
+	// aggregated row, and never unbounded.
+	survivors := tally.Survivors
+	if outcome.SurvivorsTruncated {
+		survivors = survivors[:quality.MaxSurvivorRows]
+	}
+	for _, m := range survivors {
+		detail, jsonErr := json.Marshal(mutantSurvivorDetail{File: m.File, Line: m.Line, Column: m.Column, Mutator: m.Mutator})
+		if jsonErr != nil {
+			return nil, nil, fmt.Errorf("service: quality: verify: mutation: marshal survivor detail: %w", jsonErr)
+		}
+		checks = append(checks, &model.QualityCheck{
+			Kind: "mutant", Name: m.ID(), Status: "finding", Summary: "survivor", Detail: string(detail),
+		})
+		pure = append(pure, quality.CheckResult{Status: quality.CheckStatusFinding})
+	}
+
+	return checks, pure, nil
 }
