@@ -2,26 +2,26 @@ package quality
 
 // templateTOML is the exact content mneme init writes to a repository's
 // .mneme/quality.toml when the file is absent (D15/AC23/AC32). Every key
-// Parse requires is present and uncommented (schema_version 5, enabled,
+// Parse requires is present and uncommented (schema_version 6, enabled,
 // execution.output_tail_bytes, and the complete [coverage]/[ratchet]/
-// [criteria]/[budget]/[mutation] tables, since schema 5 requires all five
-// sections in full) so the written file parses without error the moment it
-// lands; every `enabled` switch is false so materializing the constitution
-// never itself starts blocking spec_advance in a repo that never asked for
-// it (R4) — and, since SPEC-118 D12, turning [budget] on ALSO starts
-// requiring a certificate for the trivial lane, so this template leaves it
-// off by construction. The example gates stay commented out — they name
-// the shape a team declares, without inventing gates mneme cannot know are
-// correct for this project (D9 of the grill).
-// [coverage]/[ratchet]/[criteria]/[budget]/[mutation], by contrast, CANNOT
-// be left commented out (schema 5 requires all five sections present with
-// every key), so their values are a generic, harmless illustration — never
-// executed while enabled=false.
+// [criteria]/[budget]/[mutation]/[visual]/[visual.compare] tables, since
+// schema 6 requires all six sections in full) so the written file parses
+// without error the moment it lands; every `enabled` switch is false so
+// materializing the constitution never itself starts blocking spec_advance
+// in a repo that never asked for it (R4) — and, since SPEC-118 D12, turning
+// [budget] on ALSO starts requiring a certificate for the trivial lane, so
+// this template leaves it off by construction. The example gates stay
+// commented out — they name the shape a team declares, without inventing
+// gates mneme cannot know are correct for this project (D9 of the grill).
+// [coverage]/[ratchet]/[criteria]/[budget]/[mutation]/[visual]/
+// [visual.compare], by contrast, CANNOT be left commented out (schema 6
+// requires all six sections present with every key), so their values are a
+// generic, harmless illustration — never executed while enabled=false.
 const templateTOML = `# .mneme/quality.toml — constitución de calidad de este repositorio.
 # Versionada y revisable en PR: la calidad es parte del código.
 # mneme NO tiene valores por defecto para nada de este fichero.
 
-schema_version = 5
+schema_version = 6
 
 # El interruptor. Mientras sea false el mecanismo NO bloquea nada.
 # Ponerlo a true es un commit revisable, y volverlo a false dentro del rango
@@ -160,6 +160,58 @@ max_equivalent = 2
 # Por encima de esta proporcion de mutantes NO VIABLES (los que ni
 # siquiera compilan) el informe habla del mutador y no de los tests.
 max_not_viable_pct = 25.0
+
+[visual]
+# SPEC-120 (S6): la verificacion visual declarativa. false = declarado
+# apagado, a proposito. NO exige que el proyecto tenga interfaz grafica: un
+# repositorio sin una puede declarar esta seccion completa y apagada, con
+# targets = [].
+enabled = false
+
+# Formato del informe. Hoy solo "visual-v1". Declarado, nunca adivinado.
+format = "visual-v1"
+
+# El comando que levanta la interfaz, la recorre y deja el informe. mneme
+# lo ejecuta tal cual, sin shell, y ESPERA a que termine: el ciclo de vida
+# del servidor es del comando, nunca de mneme.
+command = ["true"]
+
+# Donde el comando deja el informe, relativo a la raiz del repo. mneme LO
+# BORRA antes de ejecutar: debe estar en .gitignore.
+report_path = "tmp/visual/report.json"
+
+# Cota de la fase completa: arrancar, recorrer y apagar.
+timeout = "15m"
+
+# QUE se verifica. Identificadores OPACOS: mneme no interpreta ni un
+# caracter. Ruta, estado, tema y ancho son doctrina del PROYECTO. Con
+# enabled = true, la lista vacia es un ERROR.
+targets = []
+
+# true convierte cualquier console.error en fallo. Las excepciones no
+# capturadas fallan SIEMPRE, con independencia de esta clave.
+fail_on_console_error = false
+
+# Impactos de accesibilidad que hacen fallar. Vocabulario cerrado:
+# critical | serious | moderate | minor. Vacio = se mide y se registra,
+# pero no bloquea.
+a11y_fail_impacts = []
+
+[visual.compare]
+# El NIVEL 2, separado a proposito: la comparacion pixel a pixel falla sola
+# y cada falso positivo entrena a aprobar a ciegas. Quien no lo quiera, no
+# lo enciende.
+enabled = false
+
+# Donde viven las referencias. VERSIONADO: mneme NUNCA escribe aqui.
+reference_dir = ".mneme/visual/reference"
+
+# Donde el comando deja las capturas. SALIDA: ignorado por git.
+capture_dir = "tmp/visual/captures"
+
+# Tolerancia, en porcentaje de pixeles distintos. La comparacion es
+# estricta: con la tolerancia justa, pasa.
+max_diff_pct = 0.1
 `
 
 // Template returns the exact content mneme init writes as a repository's

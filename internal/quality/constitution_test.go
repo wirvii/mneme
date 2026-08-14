@@ -347,16 +347,19 @@ func TestTemplate_ParsesWithoutError(t *testing.T) {
 	if c.Enabled {
 		t.Error("Template() constitution has enabled=true, want false (R4)")
 	}
-	if c.SchemaVersion != 5 {
-		t.Errorf("Template() SchemaVersion = %d, want 5", c.SchemaVersion)
+	if c.SchemaVersion != 6 {
+		t.Errorf("Template() SchemaVersion = %d, want 6", c.SchemaVersion)
 	}
-	if !c.CoverageDeclared || !c.RatchetDeclared || !c.CriteriaDeclared || !c.BudgetDeclared || !c.MutationDeclared {
-		t.Errorf("Template() CoverageDeclared=%v RatchetDeclared=%v CriteriaDeclared=%v BudgetDeclared=%v MutationDeclared=%v, want all true",
-			c.CoverageDeclared, c.RatchetDeclared, c.CriteriaDeclared, c.BudgetDeclared, c.MutationDeclared)
+	if !c.CoverageDeclared || !c.RatchetDeclared || !c.CriteriaDeclared || !c.BudgetDeclared || !c.MutationDeclared || !c.VisualDeclared {
+		t.Errorf("Template() CoverageDeclared=%v RatchetDeclared=%v CriteriaDeclared=%v BudgetDeclared=%v MutationDeclared=%v VisualDeclared=%v, want all true",
+			c.CoverageDeclared, c.RatchetDeclared, c.CriteriaDeclared, c.BudgetDeclared, c.MutationDeclared, c.VisualDeclared)
 	}
-	if c.Coverage.Enabled || c.Ratchet.Enabled || c.Criteria.Enabled || c.Budget.Enabled || c.Mutation.Enabled {
-		t.Errorf("Template() Coverage.Enabled=%v Ratchet.Enabled=%v Criteria.Enabled=%v Budget.Enabled=%v Mutation.Enabled=%v, want all false",
-			c.Coverage.Enabled, c.Ratchet.Enabled, c.Criteria.Enabled, c.Budget.Enabled, c.Mutation.Enabled)
+	if c.Coverage.Enabled || c.Ratchet.Enabled || c.Criteria.Enabled || c.Budget.Enabled || c.Mutation.Enabled || c.Visual.Enabled {
+		t.Errorf("Template() Coverage.Enabled=%v Ratchet.Enabled=%v Criteria.Enabled=%v Budget.Enabled=%v Mutation.Enabled=%v Visual.Enabled=%v, want all false",
+			c.Coverage.Enabled, c.Ratchet.Enabled, c.Criteria.Enabled, c.Budget.Enabled, c.Mutation.Enabled, c.Visual.Enabled)
+	}
+	if c.Visual.Compare.Enabled {
+		t.Error("Template() Visual.Compare.Enabled = true, want false")
 	}
 }
 
@@ -532,10 +535,14 @@ func TestParse_CoverageRatchet_MissingRequiredKey(t *testing.T) {
 // would delete the wrong section's line and silently test a different row
 // than the one named.
 func removeTOMLKeyLine(doc, dottedKey string) string {
-	parts := strings.SplitN(dottedKey, ".", 2)
+	// SPEC-120 P5: split on the LAST dot, not the first — a nested table
+	// key like "visual.compare.enabled" has section "visual.compare" and
+	// key "enabled", not section "visual" and key "compare.enabled". Every
+	// PRIOR call site (single-level sections like "mutation.enabled") gets
+	// the exact same result either way, so this is a pure generalisation.
 	wantSection, key := "", dottedKey
-	if len(parts) == 2 {
-		wantSection, key = parts[0], parts[1]
+	if idx := strings.LastIndex(dottedKey, "."); idx >= 0 {
+		wantSection, key = dottedKey[:idx], dottedKey[idx+1:]
 	}
 
 	lines := strings.Split(doc, "\n")
@@ -1337,5 +1344,457 @@ func TestExpandCommand_TokenAbsent_ReturnsUnchanged(t *testing.T) {
 	got := ExpandCommand(argv, "abc123")
 	if len(got) != 2 || got[0] != "make" || got[1] != "mutation" {
 		t.Fatalf("ExpandCommand(no token) = %v, want unchanged %v", got, argv)
+	}
+}
+
+// validDocV6 is a minimal, fully valid schema_version=6 document — adds
+// [visual] and its nested [visual.compare] complete-and-off to validDocV5's
+// own shape (SPEC-120 AC2-AC6).
+const validDocV6 = `
+schema_version = 6
+enabled = false
+
+[execution]
+output_tail_bytes = 4096
+
+[[gate]]
+name = "build"
+command = ["make", "build"]
+timeout = "5m"
+required = true
+
+[coverage]
+enabled = false
+format = "go-cover"
+command = ["make", "coverage"]
+profile_path = "tmp/coverage.out"
+timeout = "20m"
+min_diff_line_pct = 80.0
+min_changed_lines = 5
+exclude = []
+
+[ratchet]
+enabled = false
+max_global_line_pct_drop = 0.0
+max_baseline_staleness_pct = 1.0
+
+[criteria]
+enabled = false
+timeout = "5m"
+max_manual_pct = 25.0
+max_command_pct = 30.0
+
+[budget]
+enabled = false
+timeout = "2m"
+test_globs = ["**/*_test.go"]
+test_reach_depth = 3
+
+[mutation]
+enabled = false
+format = "gremlins"
+command = ["make", "mutation", "BASE={{BASE_SHA}}"]
+report_path = "tmp/mutants.json"
+timeout = "30m"
+max_equivalent = 2
+max_not_viable_pct = 25.0
+
+[visual]
+enabled = false
+format = "visual-v1"
+command = ["make", "visual"]
+report_path = "tmp/visual/report.json"
+timeout = "15m"
+targets = []
+fail_on_console_error = false
+a11y_fail_impacts = []
+
+[visual.compare]
+enabled = false
+reference_dir = ".mneme/visual/reference"
+capture_dir = "tmp/visual/captures"
+max_diff_pct = 0.1
+`
+
+// TestParse_SchemaVersion6Visual covers AC2's positive row (6, with all six
+// sections complete, parses) and AC3: VisualDeclared is true only under
+// schema 6.
+func TestParse_SchemaVersion6Visual(t *testing.T) {
+	c, err := Parse([]byte(validDocV6))
+	if err != nil {
+		t.Fatalf("Parse(validDocV6): %v", err)
+	}
+	if c.SchemaVersion != 6 {
+		t.Errorf("SchemaVersion = %d, want 6", c.SchemaVersion)
+	}
+	if !c.VisualDeclared {
+		t.Error("VisualDeclared = false, want true under schema_version 6")
+	}
+	if c.Visual.Format != "visual-v1" {
+		t.Errorf("Visual.Format = %q, want visual-v1", c.Visual.Format)
+	}
+	if c.Visual.ReportPath != "tmp/visual/report.json" {
+		t.Errorf("Visual.ReportPath = %q, want tmp/visual/report.json", c.Visual.ReportPath)
+	}
+	if c.Visual.Timeout.String() != "15m0s" {
+		t.Errorf("Visual.Timeout = %v, want 15m0s", c.Visual.Timeout)
+	}
+	if len(c.Visual.Targets) != 0 {
+		t.Errorf("Visual.Targets = %v, want empty (enabled=false)", c.Visual.Targets)
+	}
+	if c.Visual.Compare.ReferenceDir != ".mneme/visual/reference" {
+		t.Errorf("Visual.Compare.ReferenceDir = %q, want .mneme/visual/reference", c.Visual.Compare.ReferenceDir)
+	}
+	if c.Visual.Compare.CaptureDir != "tmp/visual/captures" {
+		t.Errorf("Visual.Compare.CaptureDir = %q, want tmp/visual/captures", c.Visual.Compare.CaptureDir)
+	}
+	if c.Visual.Compare.MaxDiffPct != 0.1 {
+		t.Errorf("Visual.Compare.MaxDiffPct = %v, want 0.1", c.Visual.Compare.MaxDiffPct)
+	}
+}
+
+// TestParse_VisualDeclaredVsUndeclared covers AC3's three rows for [visual]
+// specifically: schema 5 (no [visual]) -> OK, declared false; schema 5 WITH
+// [visual] -> error naming schema_version; schema 6 -> declared true. This
+// is G2's positive hermana: the range must NOT narrow, so every prior
+// schema keeps parsing.
+func TestParse_VisualDeclaredVsUndeclared(t *testing.T) {
+	c5, err := Parse([]byte(validDocV5))
+	if err != nil {
+		t.Fatalf("Parse(validDocV5): %v", err)
+	}
+	if c5.VisualDeclared {
+		t.Error("schema 5 with no [visual]: VisualDeclared = true, want false")
+	}
+
+	withVisualUnderSchema5 := validDocV5 + `
+[visual]
+enabled = false
+format = "visual-v1"
+command = ["make", "visual"]
+report_path = "tmp/visual/report.json"
+timeout = "15m"
+targets = []
+fail_on_console_error = false
+a11y_fail_impacts = []
+
+[visual.compare]
+enabled = false
+reference_dir = ".mneme/visual/reference"
+capture_dir = "tmp/visual/captures"
+max_diff_pct = 0.1
+`
+	_, err = Parse([]byte(withVisualUnderSchema5))
+	if err == nil {
+		t.Fatal("Parse([visual] under schema_version 5): want error, got nil")
+	}
+	if !strings.Contains(err.Error(), "schema_version") {
+		t.Errorf("error = %q, want it to name schema_version", err.Error())
+	}
+	if !errors.Is(err, ErrInvalid) {
+		t.Errorf("error = %v, want wrapping ErrInvalid", err)
+	}
+
+	c6, err := Parse([]byte(validDocV6))
+	if err != nil {
+		t.Fatalf("Parse(validDocV6): %v", err)
+	}
+	if !c6.VisualDeclared {
+		t.Error("schema 6: VisualDeclared = false, want true")
+	}
+}
+
+// TestParse_Visual_MissingRequiredKey covers AC4: one row per missing
+// [visual]/[visual.compare] key, each naming itself, and none filled in
+// with a default.
+func TestParse_Visual_MissingRequiredKey(t *testing.T) {
+	tests := []struct {
+		wantKey string
+	}{
+		{"visual.enabled"},
+		{"visual.format"},
+		{"visual.command"},
+		{"visual.report_path"},
+		{"visual.timeout"},
+		{"visual.targets"},
+		{"visual.fail_on_console_error"},
+		{"visual.a11y_fail_impacts"},
+		{"visual.compare.enabled"},
+		{"visual.compare.reference_dir"},
+		{"visual.compare.capture_dir"},
+		{"visual.compare.max_diff_pct"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.wantKey, func(t *testing.T) {
+			doc := removeTOMLKeyLine(validDocV6, tt.wantKey)
+			_, err := Parse([]byte(doc))
+			if err == nil {
+				t.Fatalf("Parse missing %s: want error, got nil", tt.wantKey)
+			}
+			if !errors.Is(err, ErrInvalid) {
+				t.Errorf("error = %v, want wrapping ErrInvalid", err)
+			}
+			if !strings.Contains(err.Error(), tt.wantKey) {
+				t.Errorf("error = %q, want it to name key %q", err.Error(), tt.wantKey)
+			}
+		})
+	}
+}
+
+// TestParse_Visual_TargetsEmptyDenominator covers AC5's two opposite
+// hermanas (G4a/G4b): enabled=true with an empty targets list is an error
+// naming targets; enabled=false with an empty list is OK — the shape this
+// repository's own constitution needs (D15).
+func TestParse_Visual_TargetsEmptyDenominator(t *testing.T) {
+	// G4b (already true in validDocV6): enabled=false, targets=[] -> OK.
+	if _, err := Parse([]byte(validDocV6)); err != nil {
+		t.Fatalf("Parse(validDocV6, enabled=false targets=[]): %v", err)
+	}
+
+	// G4a: flip enabled to true with targets still empty -> error naming
+	// targets.
+	doc := strings.Replace(validDocV6, "[visual]\nenabled = false", "[visual]\nenabled = true", 1)
+	_, err := Parse([]byte(doc))
+	if err == nil {
+		t.Fatal("Parse(visual.enabled=true, targets=[]): want error, got nil")
+	}
+	if !strings.Contains(err.Error(), "targets") {
+		t.Errorf("error = %q, want it to name targets", err.Error())
+	}
+
+	// Hermana: enabled=true WITH a declared target -> OK.
+	docWithTarget := strings.Replace(doc, "targets = []", `targets = ["home-light-360"]`, 1)
+	if _, err := Parse([]byte(docWithTarget)); err != nil {
+		t.Fatalf("Parse(visual.enabled=true, targets=[home-light-360]): %v", err)
+	}
+}
+
+// TestParse_Visual_TargetsValidation covers the rest of AC5: duplicate and
+// whitespace-containing identifiers are rejected.
+func TestParse_Visual_TargetsValidation(t *testing.T) {
+	enabledDoc := strings.Replace(validDocV6, "[visual]\nenabled = false", "[visual]\nenabled = true", 1)
+
+	tests := []struct {
+		name    string
+		targets string
+		wantErr bool
+	}{
+		{"duplicate identifier rejected", `targets = ["a", "a"]`, true},
+		{"whitespace identifier rejected", `targets = ["home light"]`, true},
+		{"empty-string identifier rejected", `targets = [""]`, true},
+		{"distinct identifiers accepted", `targets = ["a", "b"]`, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			doc := strings.Replace(enabledDoc, "targets = []", tt.targets, 1)
+			_, err := Parse([]byte(doc))
+			if tt.wantErr && err == nil {
+				t.Fatalf("Parse(%s): want error, got nil", tt.name)
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("Parse(%s): want no error, got %v", tt.name, err)
+			}
+		})
+	}
+}
+
+// TestParse_Visual_FieldValidation covers AC4's paired validation rows for
+// the scalar [visual] keys (format/command/report_path/timeout).
+func TestParse_Visual_FieldValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(string) string
+		wantErr bool
+	}{
+		{"format: lcov rejected (not a visual format)", replaceOnce(`format = "visual-v1"`, `format = "lcov"`), true},
+		{"format: visual-v1 accepted", replaceOnce(`format = "visual-v1"`, `format = "visual-v1"`), false},
+		{"command: single-element shell string rejected", replaceOnce(`command = ["make", "visual"]`, `command = ["make visual"]`), true},
+		{"report_path: empty rejected", replaceOnce(`report_path = "tmp/visual/report.json"`, `report_path = ""`), true},
+		{"report_path: traversal rejected", replaceOnce(`report_path = "tmp/visual/report.json"`, `report_path = "../report.json"`), true},
+		{"timeout: 0s rejected", replaceOnce(`timeout = "15m"`, `timeout = "0s"`), true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			doc := tt.mutate(validDocV6)
+			_, err := Parse([]byte(doc))
+			if tt.wantErr && err == nil {
+				t.Fatalf("Parse(%s): want error, got nil\ndoc:\n%s", tt.name, doc)
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("Parse(%s): want no error, got %v\ndoc:\n%s", tt.name, err, doc)
+			}
+			if tt.wantErr && !errors.Is(err, ErrInvalid) {
+				t.Errorf("error = %v, want wrapping ErrInvalid", err)
+			}
+		})
+	}
+}
+
+// TestParse_VisualA11yImpacts covers AC4/D6: an impact outside the closed
+// vocabulary is rejected; the four accepted values are OK; a duplicate is
+// rejected.
+func TestParse_VisualA11yImpacts(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		wantErr bool
+	}{
+		{"unknown impact rejected", `["catastrophic"]`, true},
+		{"duplicate impact rejected", `["critical", "critical"]`, true},
+		{"all four accepted", `["critical", "serious", "moderate", "minor"]`, false},
+		{"empty accepted (measure, never block)", `[]`, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			doc := strings.Replace(validDocV6, "a11y_fail_impacts = []", "a11y_fail_impacts = "+tt.value, 1)
+			_, err := Parse([]byte(doc))
+			if tt.wantErr && err == nil {
+				t.Fatalf("Parse(%s): want error, got nil", tt.name)
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("Parse(%s): want no error, got %v", tt.name, err)
+			}
+		})
+	}
+}
+
+// TestParse_VisualCompare_DirectoryValidation covers AC6: distinct and
+// non-nested directories, with its permissive hermana (sibling directories
+// sharing a string prefix are OK, G5b), and the enabled=false shape where
+// both may be empty.
+func TestParse_VisualCompare_DirectoryValidation(t *testing.T) {
+	enabledDoc := strings.Replace(validDocV6, "[visual.compare]\nenabled = false", "[visual.compare]\nenabled = true", 1)
+
+	tests := []struct {
+		name    string
+		mutate  func(string) string
+		wantErr bool
+	}{
+		{
+			"capture_dir inside reference_dir rejected",
+			replaceOnce(`capture_dir = "tmp/visual/captures"`, `capture_dir = ".mneme/visual/reference/captures"`),
+			true,
+		},
+		{
+			"reference_dir inside capture_dir rejected",
+			func(doc string) string {
+				doc = strings.Replace(doc, `capture_dir = "tmp/visual/captures"`, `capture_dir = "tmp/visual"`, 1)
+				doc = strings.Replace(doc, `reference_dir = ".mneme/visual/reference"`, `reference_dir = "tmp/visual/reference"`, 1)
+				return doc
+			},
+			true,
+		},
+		{
+			"identical directories rejected",
+			replaceOnce(`capture_dir = "tmp/visual/captures"`, `capture_dir = ".mneme/visual/reference"`),
+			true,
+		},
+		{
+			"report_path inside reference_dir rejected",
+			replaceOnce(`report_path = "tmp/visual/report.json"`, `report_path = ".mneme/visual/reference/report.json"`),
+			true,
+		},
+		{
+			"sibling directories sharing a string prefix accepted (G5b)",
+			replaceOnce(`reference_dir = ".mneme/visual/reference"`, `reference_dir = ".mneme/visual/reference-old"`),
+			false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			doc := tt.mutate(enabledDoc)
+			_, err := Parse([]byte(doc))
+			if tt.wantErr && err == nil {
+				t.Fatalf("Parse(%s): want error, got nil\ndoc:\n%s", tt.name, doc)
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("Parse(%s): want no error, got %v\ndoc:\n%s", tt.name, err, doc)
+			}
+		})
+	}
+
+	// enabled=false with BOTH directories empty is legitimate (D15's own
+	// shape for a repository with no graphical interface).
+	offEmptyDoc := strings.Replace(validDocV6, `reference_dir = ".mneme/visual/reference"`, `reference_dir = ""`, 1)
+	offEmptyDoc = strings.Replace(offEmptyDoc, `capture_dir = "tmp/visual/captures"`, `capture_dir = ""`, 1)
+	if _, err := Parse([]byte(offEmptyDoc)); err != nil {
+		t.Fatalf("Parse(compare.enabled=false, both dirs empty): %v", err)
+	}
+}
+
+// TestParse_VisualCompare_MaxDiffPct covers the tolerance's own bounds.
+func TestParse_VisualCompare_MaxDiffPct(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		wantErr bool
+	}{
+		{"negative rejected", "-0.1", true},
+		{"101 rejected", "101", true},
+		{"0 accepted (zero tolerance is legitimate)", "0", false},
+		{"100 accepted (boundary)", "100", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			doc := strings.Replace(validDocV6, "max_diff_pct = 0.1", "max_diff_pct = "+tt.value, 1)
+			_, err := Parse([]byte(doc))
+			if tt.wantErr && err == nil {
+				t.Fatalf("Parse(%s): want error, got nil", tt.name)
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("Parse(%s): want no error, got %v", tt.name, err)
+			}
+		})
+	}
+}
+
+// TestParse_VisualFormatSet_MatchesFormats covers AC7's contract at the
+// constitution layer: the set of `format` values Parse accepts for
+// [visual] is EXACTLY VisualFormats() — never a second, parallel literal
+// list, and never the coverage or mutation format lists.
+func TestParse_VisualFormatSet_MatchesFormats(t *testing.T) {
+	for _, format := range VisualFormats() {
+		t.Run(format, func(t *testing.T) {
+			doc := strings.Replace(validDocV6, `format = "visual-v1"`, fmt.Sprintf("format = %q", format), 1)
+			if _, err := Parse([]byte(doc)); err != nil {
+				t.Errorf("Parse(visual.format=%s), a registered visual format: %v", format, err)
+			}
+		})
+	}
+
+	doc := strings.Replace(validDocV6, `format = "visual-v1"`, `format = "gremlins"`, 1)
+	_, err := Parse([]byte(doc))
+	if err == nil {
+		t.Fatal("Parse(visual.format=gremlins, a MUTATION format): want error, got nil")
+	}
+	if !strings.Contains(err.Error(), "visual.format") {
+		t.Errorf("error = %q, want it to name visual.format specifically", err.Error())
+	}
+}
+
+// TestParse_VisualCommand_SharesArgvMessageWithGate covers the shared argv
+// validator (D6 of S1): a visual.command shell-string rejection shares its
+// explanatory sentence with a gate's own rejection, byte for byte.
+func TestParse_VisualCommand_SharesArgvMessageWithGate(t *testing.T) {
+	gateDoc := strings.Replace(validDocV6, `command = ["make", "build"]`, `command = ["make build"]`, 1)
+	_, gateErr := Parse([]byte(gateDoc))
+	if gateErr == nil {
+		t.Fatal("Parse(gate shell-string command): want error, got nil")
+	}
+
+	visualDoc := strings.Replace(validDocV6, `command = ["make", "visual"]`, `command = ["make visual"]`, 1)
+	_, visualErr := Parse([]byte(visualDoc))
+	if visualErr == nil {
+		t.Fatal("Parse(visual shell-string command): want error, got nil")
+	}
+
+	const sharedSentence = "command is an argv vector, declare each argument as its own list element"
+	if !strings.Contains(gateErr.Error(), sharedSentence) {
+		t.Fatalf("gate error %q does not contain shared sentence %q", gateErr.Error(), sharedSentence)
+	}
+	if !strings.Contains(visualErr.Error(), sharedSentence) {
+		t.Fatalf("visual.command error %q does not contain shared sentence %q", visualErr.Error(), sharedSentence)
 	}
 }

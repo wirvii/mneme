@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/bmatcuk/doublestar/v4"
 	"github.com/pelletier/go-toml/v2"
@@ -49,7 +50,13 @@ const MinSchemaVersion = 1
 // so [mutation] takes the NEXT number rather than colliding with
 // [budget]'s. The range is already in place; this bump is, again, purely
 // additive.
-const CurrentSchemaVersion = 5
+//
+// SPEC-120 S6 bumps this to 6 ([visual] and its nested [visual.compare]
+// join the other five) — verified per THIS plan's own paso 0: S4 and S5
+// had both already landed on this branch (CurrentSchemaVersion already
+// read 5), so [visual] takes the next number. The range check below is
+// already in place; this bump is, again, purely additive.
+const CurrentSchemaVersion = 6
 
 // ErrInvalid is returned by Parse when the constitution is missing a
 // required key, declares an unknown key, or fails a per-field validation
@@ -174,6 +181,112 @@ type Constitution struct {
 
 	// Mutation is the zero value when MutationDeclared is false.
 	Mutation MutationConfig
+
+	// VisualDeclared reports whether [visual] (and its nested
+	// [visual.compare]) is present — true only under schema_version 6
+	// (SPEC-120 D11), the same Declared/undeclared distinction every prior
+	// section already establishes. There is a SINGLE flag for both tables,
+	// never a separate VisualCompareDeclared: [visual.compare] is nested
+	// syntactically inside [visual] and required whenever [visual] is (the
+	// same posture the schema-2 bump gave [coverage]/[ratchet] together,
+	// except here it is ONE section with a subtable, not two siblings).
+	VisualDeclared bool
+
+	// Visual is the zero value when VisualDeclared is false.
+	Visual VisualConfig
+}
+
+// VisualConfig is the parsed, validated `[visual]` table (SPEC-120
+// EPIC-calidad S6 D3/D11) — present only when SchemaVersion is 6 and
+// VisualDeclared is true. Compare holds the nested `[visual.compare]`
+// subtable (D7), always present alongside it.
+type VisualConfig struct {
+	// Enabled is [visual]'s own switch, independent of the top-level
+	// Constitution.Enabled — the visual mechanism can be off while gates
+	// still run, exactly like coverage/criteria/budget/mutation.
+	Enabled bool
+
+	// Format is one of VisualFormats() — declared, never guessed (D2): a
+	// wrong declared format fails loudly via ParseVisualReport's
+	// ErrInvalidVisualReport rather than silently producing an empty
+	// report.
+	Format string
+
+	// Command is the argv vector that arranca, recorre, y apaga la
+	// interfaz, ejecutado exactamente como un Gate's command — never
+	// through a shell (D1/D7 of S1, mirrored by every prior command-bearing
+	// section). The ENTIRE server lifecycle belongs to this command (D1):
+	// mneme only waits for it to terminate.
+	Command []string
+
+	// ReportPath is where Command leaves the visual report, relative to
+	// the repository root. mneme DELETES this path before running Command
+	// (D4, mirroring coverage's/mutation's own posture) — validated here to
+	// be relative and free of ".." so deletion can never escape the
+	// repository.
+	ReportPath string
+
+	// Timeout bounds the ENTIRE visual phase: arrancar, recorrer, y apagar
+	// la interfaz (D1). Exceeding it is a firmable `finding`
+	// `budget-exceeded`, never a silent `fail`.
+	Timeout time.Duration
+
+	// Targets is the project-declared list of OPAQUE identifiers (D3):
+	// mneme never interprets a single character of any entry — a route, a
+	// theme, a width, a UI state are all doctrine of the PROJECT, never of
+	// mneme. Presence of this key is ALWAYS required; an EMPTY list is only
+	// a value-level error when Enabled is true (G4a/G4b) — a schema-6
+	// document with `enabled = false` and `targets = []` is exactly the
+	// legitimate "declared and off" shape D15 depends on.
+	Targets []string
+
+	// FailOnConsoleError mirrors the constitution's own
+	// fail_on_console_error key (D5): a REQUIRED key with NO binary default
+	// (D13 of the grill) — a project must decide explicitly whether
+	// console.error blocks. An uncaught exception (page_errors) fails
+	// regardless of this key's value; only console.error is conditioned on
+	// it.
+	FailOnConsoleError bool
+
+	// A11yFailImpacts is the closed set of A11yImpact values that degrade
+	// the verdict (D6) — REQUIRED, but may be the empty list: measuring
+	// accessibility and never blocking on it is a legitimate, explicit
+	// choice, the same posture MaxEquivalent=0 already establishes for S5.
+	A11yFailImpacts []A11yImpact
+
+	// Compare is the nested `[visual.compare]` subtable — the OPTIONAL,
+	// separately-switched nivel 2 (D7).
+	Compare VisualCompareConfig
+}
+
+// VisualCompareConfig is the parsed, validated `[visual.compare]` subtable
+// (SPEC-120 D7/D11) — nested syntactically inside `[visual]`, but switched
+// independently via its own Enabled: pixel comparison fails on its own
+// (fonts, antialiasing, animations, timestamps in the UI) and every false
+// positive trains a team to approve blindly, so a project that does not
+// want it never turns it on.
+type VisualCompareConfig struct {
+	// Enabled is nivel 2's own switch.
+	Enabled bool
+
+	// ReferenceDir is where the VERSIONED reference images live, relative
+	// to the repository root (D8) — mneme NEVER writes here; the only write
+	// path is a human's own `cp` + commit. Validated non-empty, relative,
+	// and clean ONLY when Enabled is true (D13's "presence always,
+	// value-constraint conditional" posture) — an empty string is the
+	// legitimate shape of a declared-and-off nivel 2.
+	ReferenceDir string
+
+	// CaptureDir is where Command leaves the CAPTURED screenshots, relative
+	// to the repository root — an OUTPUT, ignored by git: mneme deletes
+	// `<CaptureDir>/<id>.png` for every declared target before running
+	// Command (D4). Same conditional-validation posture as ReferenceDir.
+	CaptureDir string
+
+	// MaxDiffPct is the tolerance, in percentage of differing pixels (D7).
+	// The comparison is STRICT (`>`, never `>=`): with the tolerance
+	// declared exactly at the measured difference, it passes.
+	MaxDiffPct float64
 }
 
 // MutationConfig is the parsed, validated [mutation] table (SPEC-119
@@ -333,6 +446,32 @@ type rawConstitution struct {
 	Criteria      *rawCriteria      `toml:"criteria"`
 	Budget        *rawBudgetSection `toml:"budget"`
 	Mutation      *rawMutation      `toml:"mutation"`
+	Visual        *rawVisual        `toml:"visual"`
+}
+
+// rawVisual mirrors VisualConfig with pointer fields for presence detection
+// (SPEC-120 D11) — the same convention every prior section's raw
+// counterpart already establishes. Compare is itself a pointer to detect
+// whether the nested `[visual.compare]` subtable is present at all.
+type rawVisual struct {
+	Enabled            *bool             `toml:"enabled"`
+	Format             *string           `toml:"format"`
+	Command            *[]string         `toml:"command"`
+	ReportPath         *string           `toml:"report_path"`
+	Timeout            *string           `toml:"timeout"`
+	Targets            *[]string         `toml:"targets"`
+	FailOnConsoleError *bool             `toml:"fail_on_console_error"`
+	A11yFailImpacts    *[]string         `toml:"a11y_fail_impacts"`
+	Compare            *rawVisualCompare `toml:"compare"`
+}
+
+// rawVisualCompare mirrors VisualCompareConfig with pointer fields for
+// presence detection.
+type rawVisualCompare struct {
+	Enabled      *bool    `toml:"enabled"`
+	ReferenceDir *string  `toml:"reference_dir"`
+	CaptureDir   *string  `toml:"capture_dir"`
+	MaxDiffPct   *float64 `toml:"max_diff_pct"`
 }
 
 // rawMutation mirrors MutationConfig with pointer fields for presence
@@ -478,6 +617,11 @@ func Parse(data []byte) (*Constitution, error) {
 		return nil, err
 	}
 
+	visualDeclared, visualCfg, err := parseVisualSection(schemaVersion, raw.Visual)
+	if err != nil {
+		return nil, err
+	}
+
 	return &Constitution{
 		SchemaVersion:    schemaVersion,
 		Enabled:          *raw.Enabled,
@@ -493,6 +637,8 @@ func Parse(data []byte) (*Constitution, error) {
 		Budget:           budgetCfg,
 		MutationDeclared: mutationDeclared,
 		Mutation:         mutationCfg,
+		VisualDeclared:   visualDeclared,
+		Visual:           visualCfg,
 	}, nil
 }
 
@@ -616,6 +762,195 @@ func ExpandCommand(argv []string, baseSHA string) []string {
 		expanded[i] = strings.ReplaceAll(elem, mutationBaseSHAToken, baseSHA)
 	}
 	return expanded
+}
+
+// parseVisualSection implements SPEC-120 D11's schema-version branching for
+// `[visual]` (and its nested `[visual.compare]`) — the same shape
+// parseMutationSection/parseCriteriaSection/parseBudgetSection already
+// establish: a strict single threshold (only schema 6 accepts it, declaring
+// it under 1-5 is an explicit, named "sube schema_version a 6" error),
+// schema 6 requires it present and complete. Deliberately its OWN function,
+// never folded into any other section's parser (D11 point 1, mirroring
+// S3/S4/S5's own reasoning): [visual] is an independent section with its
+// own parser, so which of S4/S5/S6 lands first on a branch changes nothing
+// about any one section's logic — only a number and this function's own
+// threshold.
+func parseVisualSection(schemaVersion int, raw *rawVisual) (declared bool, cfg VisualConfig, err error) {
+	if schemaVersion < 6 {
+		if raw != nil {
+			return false, VisualConfig{}, fmt.Errorf(
+				"quality: [visual] declared under schema_version %d — sube schema_version a 6: %w", schemaVersion, ErrInvalid)
+		}
+		return false, VisualConfig{}, nil
+	}
+
+	if raw == nil {
+		return false, VisualConfig{}, fmt.Errorf("quality: missing required section %q for schema_version %d: %w", "visual", schemaVersion, ErrInvalid)
+	}
+
+	if raw.Enabled == nil {
+		return false, VisualConfig{}, fmt.Errorf("quality: missing required key %q: %w", "visual.enabled", ErrInvalid)
+	}
+
+	if raw.Format == nil {
+		return false, VisualConfig{}, fmt.Errorf("quality: missing required key %q: %w", "visual.format", ErrInvalid)
+	}
+	acceptedFormats := VisualFormats()
+	if !slices.Contains(acceptedFormats, *raw.Format) {
+		return false, VisualConfig{}, fmt.Errorf(
+			"quality: visual.format %q must be one of %v: %w", *raw.Format, acceptedFormats, ErrInvalid)
+	}
+
+	if raw.Command == nil || len(*raw.Command) == 0 {
+		return false, VisualConfig{}, fmt.Errorf("quality: missing required key %q: %w", "visual.command", ErrInvalid)
+	}
+	if msg, bad := argvShellStringProblem(*raw.Command); bad {
+		return false, VisualConfig{}, fmt.Errorf("quality: visual.command %s: %w", msg, ErrInvalid)
+	}
+
+	if raw.ReportPath == nil {
+		return false, VisualConfig{}, fmt.Errorf("quality: missing required key %q: %w", "visual.report_path", ErrInvalid)
+	}
+	if err := validateRelativeCleanPath(*raw.ReportPath, "visual.report_path"); err != nil {
+		return false, VisualConfig{}, err
+	}
+
+	if raw.Timeout == nil {
+		return false, VisualConfig{}, fmt.Errorf("quality: missing required key %q: %w", "visual.timeout", ErrInvalid)
+	}
+	dur, durErr := time.ParseDuration(*raw.Timeout)
+	if durErr != nil || dur <= 0 {
+		return false, VisualConfig{}, fmt.Errorf(
+			"quality: visual.timeout %q must be a positive parseable duration: %w", *raw.Timeout, ErrInvalid)
+	}
+
+	// D3/G4a/G4b: presence of `targets` is ALWAYS required; an EMPTY list
+	// is a value-level error ONLY when `enabled = true` — a schema-6
+	// document with enabled=false and targets=[] is exactly what lets a
+	// project without a graphical interface (this repository included, D15)
+	// declare the section honestly, without inventing objectives.
+	if raw.Targets == nil {
+		return false, VisualConfig{}, fmt.Errorf("quality: missing required key %q: %w", "visual.targets", ErrInvalid)
+	}
+	seenTargets := make(map[string]bool, len(*raw.Targets))
+	for _, id := range *raw.Targets {
+		if id == "" || strings.ContainsFunc(id, unicode.IsSpace) {
+			return false, VisualConfig{}, fmt.Errorf("quality: visual.targets contains an empty or whitespace identifier %q: %w", id, ErrInvalid)
+		}
+		if seenTargets[id] {
+			return false, VisualConfig{}, fmt.Errorf("quality: visual.targets contains duplicate identifier %q: %w", id, ErrInvalid)
+		}
+		seenTargets[id] = true
+	}
+	if *raw.Enabled && len(*raw.Targets) == 0 {
+		return false, VisualConfig{}, fmt.Errorf(
+			"quality: visual.targets must not be empty when visual.enabled=true (declare at least one, or set enabled=false): %w", ErrInvalid)
+	}
+
+	if raw.FailOnConsoleError == nil {
+		return false, VisualConfig{}, fmt.Errorf("quality: missing required key %q: %w", "visual.fail_on_console_error", ErrInvalid)
+	}
+
+	if raw.A11yFailImpacts == nil {
+		return false, VisualConfig{}, fmt.Errorf("quality: missing required key %q: %w", "visual.a11y_fail_impacts", ErrInvalid)
+	}
+	impacts := make([]A11yImpact, 0, len(*raw.A11yFailImpacts))
+	seenImpacts := make(map[string]bool, len(*raw.A11yFailImpacts))
+	for _, rawImpact := range *raw.A11yFailImpacts {
+		impact, ok := parseA11yImpact(rawImpact)
+		if !ok {
+			return false, VisualConfig{}, fmt.Errorf(
+				"quality: visual.a11y_fail_impacts contains %q, must be one of %v: %w", rawImpact, a11yImpacts, ErrInvalid)
+		}
+		if seenImpacts[rawImpact] {
+			return false, VisualConfig{}, fmt.Errorf("quality: visual.a11y_fail_impacts contains duplicate %q: %w", rawImpact, ErrInvalid)
+		}
+		seenImpacts[rawImpact] = true
+		impacts = append(impacts, impact)
+	}
+
+	if raw.Compare == nil {
+		return false, VisualConfig{}, fmt.Errorf("quality: missing required section %q for schema_version %d: %w", "visual.compare", schemaVersion, ErrInvalid)
+	}
+	compareCfg, err := parseVisualCompareConfig(raw.Compare, *raw.ReportPath)
+	if err != nil {
+		return false, VisualConfig{}, err
+	}
+
+	return true, VisualConfig{
+		Enabled: *raw.Enabled, Format: *raw.Format, Command: *raw.Command, ReportPath: *raw.ReportPath,
+		Timeout: dur, Targets: *raw.Targets, FailOnConsoleError: *raw.FailOnConsoleError,
+		A11yFailImpacts: impacts, Compare: compareCfg,
+	}, nil
+}
+
+// parseVisualCompareConfig validates every `[visual.compare]` key (D4/D7).
+// Presence of every key is ALWAYS required; the DIRECTORY constraints
+// (non-empty, relative, clean, distinct, non-nested, and clear of
+// reportPath) apply ONLY when Enabled is true (D13's posture) — with
+// enabled=false, both directories may legitimately be empty strings, the
+// shape D15 needs for a repository with no graphical interface.
+func parseVisualCompareConfig(raw *rawVisualCompare, reportPath string) (VisualCompareConfig, error) {
+	if raw.Enabled == nil {
+		return VisualCompareConfig{}, fmt.Errorf("quality: missing required key %q: %w", "visual.compare.enabled", ErrInvalid)
+	}
+	if raw.ReferenceDir == nil {
+		return VisualCompareConfig{}, fmt.Errorf("quality: missing required key %q: %w", "visual.compare.reference_dir", ErrInvalid)
+	}
+	if raw.CaptureDir == nil {
+		return VisualCompareConfig{}, fmt.Errorf("quality: missing required key %q: %w", "visual.compare.capture_dir", ErrInvalid)
+	}
+	if raw.MaxDiffPct == nil {
+		return VisualCompareConfig{}, fmt.Errorf("quality: missing required key %q: %w", "visual.compare.max_diff_pct", ErrInvalid)
+	}
+	if *raw.MaxDiffPct < 0 || *raw.MaxDiffPct > 100 {
+		return VisualCompareConfig{}, fmt.Errorf(
+			"quality: visual.compare.max_diff_pct %v must be in [0, 100]: %w", *raw.MaxDiffPct, ErrInvalid)
+	}
+
+	referenceDir, captureDir := *raw.ReferenceDir, *raw.CaptureDir
+
+	if *raw.Enabled {
+		if err := validateRelativeCleanPath(referenceDir, "visual.compare.reference_dir"); err != nil {
+			return VisualCompareConfig{}, err
+		}
+		if err := validateRelativeCleanPath(captureDir, "visual.compare.capture_dir"); err != nil {
+			return VisualCompareConfig{}, err
+		}
+		// D4: distinct and NON-NESTED in either direction, compared WITH a
+		// separator (the same G5b lesson FilterUnderDir already applies) —
+		// two sibling directories that merely share a string prefix
+		// (".mneme/visual/reference" vs ".mneme/visual/reference-old") must
+		// both be accepted.
+		if referenceDir == captureDir {
+			return VisualCompareConfig{}, fmt.Errorf(
+				"quality: visual.compare.reference_dir and visual.compare.capture_dir must not be the same directory (%q): %w", referenceDir, ErrInvalid)
+		}
+		if dirContains(referenceDir, captureDir) || dirContains(captureDir, referenceDir) {
+			return VisualCompareConfig{}, fmt.Errorf(
+				"quality: visual.compare.reference_dir (%q) and visual.compare.capture_dir (%q) must not be nested inside one another: %w",
+				referenceDir, captureDir, ErrInvalid)
+		}
+		if dirContains(referenceDir, reportPath) {
+			return VisualCompareConfig{}, fmt.Errorf(
+				"quality: visual.report_path (%q) must not fall inside visual.compare.reference_dir (%q): %w", reportPath, referenceDir, ErrInvalid)
+		}
+	}
+
+	return VisualCompareConfig{
+		Enabled: *raw.Enabled, ReferenceDir: referenceDir, CaptureDir: captureDir, MaxDiffPct: *raw.MaxDiffPct,
+	}, nil
+}
+
+// dirContains reports whether child is parent itself or falls strictly
+// under it, compared WITH a trailing separator after normalizing both to
+// forward slashes (R-G/G5b) — never a bare string prefix: without the
+// separator, ".mneme/visual/reference-old" would count as being "inside"
+// ".mneme/visual/reference".
+func dirContains(parent, child string) bool {
+	p := strings.TrimSuffix(filepath.ToSlash(parent), "/")
+	c := filepath.ToSlash(child)
+	return c == p || strings.HasPrefix(c, p+"/")
 }
 
 // parseBudgetSection implements SPEC-118 D14's schema-version branching for
