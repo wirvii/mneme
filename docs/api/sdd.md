@@ -458,6 +458,18 @@ certificate hash, margin, budgeted/delivered/overrun); `spec_doc_write`'s
 changes from `lane.AuditResult` to `model.LaneAuditResult` — same field
 names, same (absent) JSON tags, byte-identical wire shape.
 
+**SPEC-119 (S5) adds NO new tool.** `quality_verify` also emits `6 + N`
+more `quality_checks` rows (`kind=mutation`/`kind=mutant`) when
+`[mutation]` is declared and enabled (see
+[docs/quality.md](../quality.md#s5-mutation-over-the-diff-and-the-equivalent-mutant-escape-hatch-spec-119));
+`quality_status`'s response gains a `mutation` field (declared
+format/`report_path`/cupo, plus the latest certificate's signed-equivalent
+count, survivor count, and full per-status recount); and `quality_sign`'s
+domain GENERALIZES to also accept a `mutant` survivor row (below) —
+`quality_ack`'s domain narrows in exact lockstep, since the two are now
+decided by one predicate, negated. No change to either tool's request or
+response SHAPE.
+
 ### quality_verify
 
 Run the gates declared in `.mneme/quality.toml` for a spec and emit (or
@@ -504,9 +516,20 @@ executes anything — this is the read-only half of the mechanism.
     "staleness_known": true,
     "staleness_pct": 0.3,
     "stale": false
+  },
+  "mutation": {
+    "format": "gremlins", "report_path": "tmp/mutants.json",
+    "max_equivalent": 2, "signed_equivalent": 0, "survivor_count": 0,
+    "by_status": {"killed": 24, "not_covered": 2, "timed_out": 36}
   }
 }
 ```
+
+`mutation` (SPEC-119) is omitted entirely when the constitution does not
+declare `[mutation]` (schema < 5). `signed_equivalent`/`survivor_count`/
+`by_status` are populated only when `id` was supplied and a certificate
+exists; `by_status` is the LATEST certificate's `mutation/score` recount,
+verbatim.
 
 `baseline` (SPEC-116) is the ratchet's registered baseline — omitted
 entirely when `.mneme/quality-baseline.toml` does not exist (the normal
@@ -540,34 +563,45 @@ themselves of its own findings.
 **Returns:** `{"acked": true, "cert_id": "…", "seq": 1}`
 
 **Errors:** `-32602` missing `by`/`justification` (`ErrReasonRequired`), or
-the targeted row's `kind` starts with `"criterion"` (`ErrCriterionRequiresSign`
+the targeted row requires a signature — a criterion, or (SPEC-119 S5) a
+`mutant` survivor row (`ErrRequiresSign`, alias `ErrCriterionRequiresSign`
 — use `quality_sign` instead). `-32000` no such certificate/finding at that
 seq (`ErrCertificateNotFound`).
 
 ### quality_sign
 
-Record a qa-tester's ATTESTATION that a criterion row genuinely holds
-(SPEC-117 S3 D11), converting it from `finding` to `acked`. Distinct from
-`quality_ack` (an ABSOLUTION): `ack` says "I approve this despite it being
-a problem", `sign` says "I verified this and it holds" — mixing the two
-verbs would make a count confuse "we forgave N findings" with "we
-verified M manuals". Only accepts rows whose `kind` starts with
-`"criterion"`. **Restricted to the `qa-tester` role** for a subagent
-caller, and **fails CLOSED** when that role cannot be resolved — the
-first rule in the repo to do so (see docs/quality.md).
+Record an ATTESTATION that a row genuinely holds, converting it from
+`finding` to `acked`. Distinct from `quality_ack` (an ABSOLUTION): `ack`
+says "I approve this despite it being a problem", `sign` says "I verified
+this and it holds" — mixing the two verbs would make a count confuse "we
+forgave N findings" with "we verified M manuals". Accepts a row iff
+`quality.RequiresSignature(kind)` — a criterion row (SPEC-117 S3 D11), OR
+(SPEC-119 S5 D8) a `mutant` survivor row, the equivalent-mutant escape
+hatch. **Restricted to the `qa-tester` role** for a subagent caller, and
+**fails CLOSED** when that role cannot be resolved — the first rule in the
+repo to do so (see docs/quality.md).
+
+**SPEC-119 D9: signing a `mutant` row additionally enforces the
+certificate's own `max_equivalent` cupo** — read from that SAME
+certificate's `mutation/score` row, never from `.mneme/quality.toml` on
+disk. Past the cupo, `Sign` refuses (`ErrEquivalentQuotaExceeded`) and the
+row stays `finding`; a certificate with no `mutation/score` row at all
+refuses ANY `mutant` signature (fails closed, never "unlimited").
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `cert_id` | string | yes | Certificate ID the criterion row belongs to |
-| `seq` | integer | yes | Seq of the criterion row within the certificate's checks |
+| `cert_id` | string | yes | Certificate ID the attested row belongs to |
+| `seq` | integer | yes | Seq of the row within the certificate's checks |
 | `by` | string | yes | Who is signing — the qa-tester |
 | `evidence` | string | yes | What was verified and how (non-empty) |
 
 **Returns:** `{"signed": true, "cert_id": "…", "seq": 4}`
 
 **Errors:** `-32602` missing `by`/`evidence` (`ErrReasonRequired`), or the
-targeted row's `kind` does NOT start with `"criterion"`
-(`ErrNotACriterion`). `-32000` no such certificate/row at that seq
+targeted row is not one `RequiresSignature` accepts (`ErrNotSignable`,
+alias `ErrNotACriterion`). `-32602` the certificate's `max_equivalent` cupo
+is already reached, for a `mutant` row (`ErrEquivalentQuotaExceeded`,
+SPEC-119). `-32000` no such certificate/row at that seq
 (`ErrCertificateNotFound`).
 
 ### quality_report

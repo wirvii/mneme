@@ -678,6 +678,16 @@ accepts rows whose `kind` starts with `"criterion"` (`ErrNotACriterion`
 otherwise); `Ack` refuses any row whose `kind` DOES start with
 `"criterion"` (`ErrCriterionRequiresSign`, naming `mneme quality sign`).
 
+> **SPEC-119 S5 generalizes this to a single predicate.**
+> `quality.RequiresSignature(kind)` now decides both domains, negated —
+> a `mutant` survivor row (S5's own equivalent-mutant escotilla) is an
+> ATTESTATION exactly like a criterion, and the two verbs' domains can no
+> longer independently drift apart. `ErrNotACriterion`/
+> `ErrCriterionRequiresSign` are kept as **aliases** of the newly-generic
+> `ErrNotSignable`/`ErrRequiresSign`, so every check written against the
+> old names still holds. See "S5: mutation over the diff" below for the
+> full reasoning.
+
 **The role rule, and how far it really goes.** `internal/cli/hook.go`
 gains `roleScopedTools`, a sibling of `lifecycleTools`:
 `mcp__mneme__quality_sign` is restricted to the `qa-tester` role for a
@@ -929,6 +939,258 @@ silent. A `document-hash` check (one more row, not a new argument to
 `CertificateUsable`) is registered as a follow-up (BL), the same shape S3
 proposed for its own criteria window.
 
+## S5: mutation over the diff, and the equivalent-mutant escape hatch (SPEC-119)
+
+S1 proves the suite passes. S2 proves the suite **executes** the new lines.
+Neither proves the suite **checks** anything: a test that runs a hundred
+lines and asserts nothing produces the identical green in both. S5 closes
+that with the only evidence that closes it: **change the behaviour of the
+new code and see whether a test notices.**
+
+### The decision that matters most: distinguishing a real red from a build failure
+
+A mutation tool that cannot tell "a test's own assertion caught this" apart
+from "this simply failed to compile" produces exactly the fabricated
+evidence this EPIC exists to eliminate — and the failure mode is not
+imprecision, it is **a perfect green**: if every mutation breaks
+compilation, there are no survivors, the certificate comes back `pass`, and
+the mechanism is dead and green at the same time. This is closed with
+**four independent legs**, not one mechanism — each sufficient on its own
+for the absence of the others to be noticed:
+
+1. **The premise: the unmutated tree is proven green in THIS SAME
+   certificate.** The mutation stage does not evaluate while ANY `gate` row
+   is `fail` — not just when a `required` one stops the cascade
+   (`gatesStopped`, the condition every earlier stage shares). A project can
+   declare its test gate `required = false`; if it is red, every subsequent
+   red is unattributable, so mutation's own premise is **stricter**: *zero
+   gates in `fail`*, full stop.
+2. **The report format itself must be able to say "this never compiled."**
+   `MutantReportParser`'s registry contract (`TestMutantFormats_RegistryContract`,
+   G5) mechanically refuses to admit a format whose fixture cannot produce
+   at least one `not_viable`, one `killed`, one `lived` mutant — a mutator
+   whose vocabulary folds "didn't compile" into "killed" can never be
+   registered.
+3. **The arithmetic never counts `not_viable` as a death.** `quality.Tally`
+   never adds a `not_viable` mutant to `Survivors`, and its `ByStatus` count
+   is reported, never silently dropped (`mutation/score`'s recount is
+   verbatim).
+4. **The viability quota (`mutation/viability`) is the guardian that closes
+   the loophole the other three legs leave open.** An informe where
+   EVERY in-diff mutant is `not_viable` has **zero survivors** — and would
+   read as an unqualified pass without this row. Above
+   `max_not_viable_pct`, `mutation/viability` is a `finding`: the certificate
+   cannot be `pass` even though nothing "survived". This is the single most
+   important guardian in the spec (`TestRunMutationChecks_Viability`'s
+   all-not-viable case, verified with the mutation applied and reverted by
+   hand: forcing the row to always `pass` makes the all-not-viable
+   certificate come back `pass` — exactly the fabricated green this design
+   exists to prevent).
+
+### The mutant vocabulary (`internal/quality/mutants.go`)
+
+A **closed, six-value** set every registered format's raw status is mapped
+into: `killed` (the only one that counts as a death), `lived` (a survivor —
+its own `mutant/<id>` row), `not_viable` (never a death, never a
+survivor — leg 3 above), `not_covered` (informative only), `timed_out`
+(neither death nor survival — the suite hung, nobody asserted anything),
+`skipped` (counted, nothing else). The registry
+(`ParseMutantReport`/`MutantFormats`) is the literal mold of S2's own
+`ParseProfile`/`Formats` — a format is a `MutantReportParser`
+implementation plus one map entry, nothing else in the package changes.
+
+Two formats ship:
+
+- **`mutants-v1`** — the lingua franca, the role LCOV plays for coverage: a
+  minimal JSON any tool in any language can produce with a small adapter,
+  strict in both directions (`DisallowUnknownFields`, an exact `schema`
+  string, the six-value vocabulary enumerated in every rejection message).
+- **`gremlins`** (`go-gremlins/gremlins`) — the native Go entry, chosen
+  because its own vocabulary already distinguishes `NOT VIABLE` as a
+  first-class state, distinct from `KILLED`/`LIVED` — satisfying leg 2
+  above **by construction**, without mneme having to interpret anything.
+  `mutate4go` (the tool the doctrine's own anecdote references) does not
+  exist as a verifiable public tool; the classic Go mutation testers
+  (`go-mutesting` and its forks) do not distinguish non-viability as a
+  status of its own, which would industrialize exactly the trap leg 2
+  closes.
+
+**The gremlins parser is written against a REAL captured report, never
+against the tool's documentation** (`internal/quality/testdata/`, see the
+provenance note in `testdata/README.md`): if the tool's real schema ever
+disagrees with what its own docs describe, the file wins.
+
+### A real, verified limitation of `gremlins` this dogfooding surfaced
+
+**`gremlins` v0.6.0 cannot reliably produce `NOT VIABLE` on a modern Go
+toolchain.** Its own source maps the `go test <pkg>` subprocess's exit code
+to a status (`1 → KILLED`, `2 → NOT VIABLE`) — but on Go 1.26, `go test`
+returns exit status **1** for every failure this project's own testing
+observed, including a genuine compile error (a string-concatenation
+mutation turned into an invalid `-` operation) and even a raw, unrecovered
+panic at package-init time (which, run as a bare compiled test binary
+rather than through the `go` command, DOES exit 2 — `go test` itself
+normalizes that back down to 1 before returning). The practical
+consequence: on this toolchain, a mutation that breaks compilation is
+reported by gremlins as **`KILLED`**, not `NOT VIABLE`. The captured
+`testdata/gremlins-v0.6.0.json` fixture's one `NOT VIABLE` entry is
+hand-forced for exactly this reason — documented, never silently invented
+as if it were captured. This is a real weakness of the CHOSEN TOOL, not of
+mneme's own design: mneme's four legs (above) defend against a mutator
+whose *vocabulary* cannot express non-viability; they do not — and cannot
+— correct a mutator that *mislabels* one real state as another inside its
+own vocabulary. A project depending on gremlins for the viability signal on
+this class of failure should know this limitation exists.
+
+**`gremlins`'s own `--diff <ref>` flag was found unusable in this
+dogfooding.** Invoked with `--diff`, every candidate mutation in a package
+this spec unambiguously changed came back `SKIPPED` — none evaluated —
+even though the equivalent `git diff --merge-base <ref>` run by hand, from
+the same working directory, produced a correct and substantial diff. This
+is exactly why D3 below treats a mutator's own `--diff` as an
+**optimisation, never the boundary of correctness**: mneme re-derives the
+in-diff set from its own git primitives regardless of what the mutator's
+flag does or does not do, so this tool-specific breakage costs nothing but
+a slower run (mutating more than strictly necessary) — it does not corrupt
+the certificate.
+
+### The acotado: mneme re-derives the diff, the mutator's own `--diff` is only an optimisation
+
+Same doctrine as S2's diff coverage, extended to a mutation report:
+
+1. `base = MergeBase(spec.BaseSHA, HEAD)` — never `BaseSHA` alone (D8 of S2,
+   D5 of S3: a merged-in `main` would misattribute someone else's lines).
+2. `changed = ChangedLines(base, HEAD)`.
+3. `repoFiles = ListFilesAtRef(HEAD)`, and every mutant's path is
+   reconciled through `NormalizeSourcePath` (S2's own function, reused
+   **verbatim** — rule 5 still applies: an ambiguous suffix match never
+   counts, it is unresolved).
+4. **In-diff ⇔ the path normalizes AND the mutant's line is in the changed
+   set.** Everything else is counted separately (`outside`/`unresolved`)
+   and never judged.
+
+**Zero new git primitives.** The bridge to the mutator is a single
+substitution token, `{{BASE_SHA}}` (`ExpandCommand`), replaced with the
+merge-base mneme just computed — optional (a command that never mentions
+it is passed through unchanged), and the ONLY token accepted: `Parse`
+rejects any other `{{...}}` sequence at constitution-parse time, naming it,
+so a typo can never travel as an inert literal to the mutator (the same
+scar SPEC-087 AC12 left on a shell flag, here on a substitution token).
+
+### The `6 + N` rows (D5), and their severities
+
+| # | `kind`/`name` | What it asserts |
+|---|---|---|
+| 1 | `mutation`/`report` | the declared command ran, left the report at `report_path`, and it parses in the declared format |
+| 2 | `mutation`/`scope` | the base is known **and** at least one mutant lands on a line this spec changed |
+| 3 | `mutation`/`viability` | the proportion of in-diff `not_viable` mutants is within the declared quota |
+| 4 | `mutation`/`timeouts` | no in-diff mutant timed out |
+| 5 | `mutation`/`not-covered` | informative recount of in-diff mutants no test executes at all (D10) |
+| 6 | `mutation`/`score` | the full per-status recount, verbatim, plus `max_equivalent` — the row `sign` reads the cupo from |
+| 7..6+N | `mutant`/`<file>:<line>:<column>:<mutator>` | one survivor, `finding`, capped at `MaxSurvivorRows` (50) |
+
+Row 1 is a `fail` for a stale/tracked/undeleteable report path (the SAME
+`prepareDeclaredOutput` helper S2's own `coverage/profile` uses — extracted
+into its own function in its own commit, guarded by S2's existing tests
+passing unmodified, with byte-identical wording for coverage's own call
+site), for a non-zero exit, or for an unparseable report — and a `finding`
+`budget-exceeded`, distinct from a plain non-zero exit, when the declared
+`timeout` is exhausted (D12): a timeout is not the observation of a
+survivor, the suite simply hung.
+
+Row 2 is `finding` `base-unknown` — never `pass`, never a silent `skipped`
+— when `spec.BaseSHA` is empty or its merge-base with HEAD is unreachable;
+`finding` `no-mutants-in-diff` when the report has mutants but none land
+in the changed set (mutation's own version of S2's empty-denominator trap).
+
+**Not-covered is informative, timed-out is a finding — and the asymmetry
+is deliberate (D10).** Every uncovered mutable line reads as a moral
+survivor at first glance — but S2 already judges test coverage of the diff
+with a number the constitution declares (`min_diff_line_pct`); turning
+every one into a finding here would impose a silent, binary-authored 100%
+on top of it. A timed-out mutant, by contrast, genuinely changed behaviour
+observably (it hung) and nobody asserted anything — neither a death nor a
+survival, but not nothing either.
+
+### `MaxSurvivorRows`: a storage cap on the registry, not a quality threshold
+
+Past 50 survivors in one certificate, mneme emits the first 50 (in the
+deterministic order below) and fails `mutation/score` outright, naming the
+real total. **A certificate with 97 survivors is not signed — it is
+rewritten.** The cap lives in the binary, not the constitution, for the
+same reason S4's `BudgetedKinds` does: it bounds how much of one row-shape
+the registry holds, not a number a project calibrates.
+
+**Survivor order is a contract, not cosmetics** — ascending by
+`(file, line, column, mutator)` — because it is what makes the certificate
+reproducible across two runs of the SAME report, and what makes the
+50-row cap deterministic rather than "whichever 50 happened first".
+
+### The escotilla: equivalent mutants, signed by the `qa-tester`, with a hard cupo
+
+A survivor is a `finding`, never a `fail` — `AckCheck` only ever converts a
+`finding` row (V3 of the design), so "a survivor blocks the certificate"
+and "the only way out is a signed equivalence" cannot both be expressed
+with `status='fail'` without redefining what `fail` has meant across four
+specs. The dureza D12 of the grill asks for is delivered on four axes
+instead:
+
+| Axis | A graph finding (S4) | A mutant survivor (S5) |
+|---|---|---|
+| Granularity | one row per **detection** — six orphans, one signature | one row per **mutant** — six survivors, six signatures |
+| Who signs | `quality ack` — the orchestrator, on the human's behalf | **`quality sign` — the `qa-tester`**, the role that cannot edit code |
+| What is claimed | "I approve this despite it being a problem" | "I read the mutant and **demonstrate** it changes nothing observable" |
+| Limit | none | **`max_equivalent`**: past the cupo, `Sign` **refuses** |
+
+**`Sign`'s domain generalizes from S3's own, via one predicate, negated
+(D8).** `quality.RequiresSignature(kind)` reports whether a row is an
+ATTESTATION (a criterion, or now a `mutant` survivor) rather than an
+ABSOLUTION — `Sign` accepts iff it is true, `Ack` accepts iff it is false.
+Before this predicate existed, the two verbs each carried their own,
+independently-written condition (`Sign` required a `"criterion"` prefix;
+`Ack` required its absence) — two assertions that happened to agree and
+that nothing forced to keep agreeing. `model.ErrNotACriterion` and
+`model.ErrCriterionRequiresSign` are now **aliases** of the newly-generic
+`model.ErrNotSignable`/`model.ErrRequiresSign` — every S3 test that checks
+`errors.Is(err, model.ErrNotACriterion)` still passes, unmodified, because
+the two names now resolve to the exact same value.
+
+**The cupo (`max_equivalent`) is absolute, never a percentage** — the same
+arithmetic-with-small-N lesson S3 already learned for its own manual quota
+— and it is enforced **at signing time**, reading `mutation/score`'s
+`detail` from the SAME certificate being signed, never from
+`.mneme/quality.toml` on disk: editing the file between certifying and
+signing buys not one extra signature. A certificate with no
+`mutation/score` row at all refuses ANY `mutant` signature outright — the
+absence of a recorded cupo is never read as "unlimited".
+
+### Cost, and why `[mutation]` is the last stage
+
+A mutator runs the covering test(s) **once per mutant** — the most
+expensive check in the EPIC by a wide margin. It is bounded three ways:
+mutating only the diff (above), evaluating **once per spec** (`verify`
+emits, `spec_advance` only ever compares — the same two-verb split every
+earlier stage shares), and the declared `timeout`. When `budget-exceeded`
+becomes routine, the fix documented here explicitly is **not** raising the
+number — it is narrowing the mutator's scope, speeding up the suite, or
+accepting the spec was too large.
+
+### The limits, said before QA finds them (D18)
+
+1. **mneme never attributes a kill to a specific test.** The certificate's
+   claim is exactly this, no more: *"behaviour changed on this line, and
+   some test in the project went from green to red running it — not that
+   it did not compile, not that it timed out."* Every survivor's `detail`
+   keeps the mutant verbatim (file/line/column/mutator) so a human can
+   audit any of them.
+2. **Mutant equivalence is undecidable in general** — the escotilla exists
+   because of this, with a signature, evidence, and a hard cupo.
+3. **mneme does not implement mutators** (a standing rule of this EPIC). A
+   language without one declares `enabled = false`; a mutator whose
+   vocabulary cannot separate non-viability is not enchufable at all.
+4. **The acotado depends on `spec.BaseSHA`.** Without it, `mutation/scope`
+   is `finding` `base-unknown` — never a `pass`.
+
 ## Findings and `ack`: the constitution cannot be quietly weakened
 
 An implementer has write access to the repository and could, without any
@@ -964,9 +1226,13 @@ Two tables, migration 018, in the **same project database** as `specs` and
 proves this**: seven new rows landed with zero migrations, zero new
 columns, all of their structured data in the existing `detail` (JSON) and
 `summary` fields. S3 (criteria), S4 (budget, absorbing `lane_audit` as
-`kind=lane-scope`), S5 (mutation), and S6 (visual) add further `kind`
-values the exact same way. The verdict derivation and the `ack` mechanism
-already work for whatever `kind` a future spec introduces.
+`kind=lane-scope`), and S5 (mutation, `kind=mutation`/`kind=mutant`) all
+add further `kind` values the exact same way — S5 is the fourth
+confirmation in a row that this point of extension holds, and D16 of S1
+predicted it by name ("S5 mutación: filas `kind='mutant'`… y el recuento
+es un `COUNT(*)`"). S6 (visual) will be the fifth. The verdict derivation
+and the `ack`/`sign` mechanism already work for whatever `kind` a future
+spec introduces.
 
 ## The two verbs, and why they are separate
 
@@ -1079,12 +1345,18 @@ full reasoning.
 
 - **CLI**: `mneme quality verify|status|ack|sign|report|baseline`
   (`internal/cli/quality.go`) — every subcommand hangs off the SAME
-  `quality` command group; the top-level command count stays 42.
+  `quality` command group; the top-level command count stays **42**
+  through S2/S3/S4/S5. `quality status` gains a `mutation:` summary line
+  (format, `report_path`, signed-equivalent count against the cupo,
+  survivor count) — no new flag, no new subcommand.
 - **MCP**: `quality_verify`, `quality_status`, `quality_ack`,
-  `quality_sign`, `quality_report` — surface is now 84 tools (79 → 82 in
-  S2, zero new; 82 → 84 in S3). `quality_status`'s response gains the
-  baseline's path/SHA/date/percentage/staleness fields; `spec_doc_write`'s
-  `kind` enum gains `"criteria"`.
+  `quality_sign`, `quality_report` — **zero new tools in S5**; the surface
+  stays at **84 tools**. `quality_status`'s response gains a `mutation`
+  object with the same figures the CLI line above prints;
+  `quality_sign`/`quality_ack`'s error mapping gains three sentinels
+  (`ErrNotSignable`, `ErrRequiresSign`, `ErrEquivalentQuotaExceeded`) in
+  `mapServiceError` — the only line `internal/mcp/handlers.go` gains.
+  `internal/mcp/tools.go` is untouched.
   **`quality_baseline_update` is deliberately NOT an MCP tool** — see
   "`mneme quality baseline update|show`" above.
 - **HTTP: excluded, and not as a "gap to close later".** `quality_verify`
@@ -1110,12 +1382,10 @@ to implement it, delete it, or document it as inert is a separate item
 
 ## What this does NOT do (yet)
 
-Explicitly out of scope for S1+S2+S3+S4 — each remaining spec in the EPIC
+Explicitly out of scope for S1+S2+S3+S4+S5 — the remaining spec in the EPIC
 builds on this exact registry without a schema change narrowing what came
 before:
 
-- **S5 — Mutation testing.** A survived mutant fails the certificate
-  outright, with a counted, justified "equivalent mutant" escape hatch.
 - **S6 — Visual verification.** Project-declared routes/states/themes
   rendered and checked; an optional, project-declared screenshot-diff tier.
 
