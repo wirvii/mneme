@@ -989,7 +989,42 @@ func (svc *QualityService) Status(ctx context.Context, req model.QualityStatusRe
 	// against CertificateUsable. Reading and reporting only.
 	resp.Budget = svc.buildQualityBudgetInfo(req.ID, checks)
 
+	// SPEC-119 D14: the mutation mechanism's declared configuration plus
+	// this certificate's own recorded figures — reading and reporting
+	// only, nil when [mutation] is not declared at all.
+	if constitution.MutationDeclared {
+		resp.Mutation = svc.buildQualityMutationInfo(constitution.Mutation, checks)
+	}
+
 	return resp, nil
+}
+
+// buildQualityMutationInfo projects the declared [mutation] config plus
+// the LATEST certificate's own mutation/score detail (signed-equivalent
+// count against the declared cupo, and the per-status recount) — never
+// re-parsing a mutation report, never executing anything (D14, mirroring
+// buildQualityBudgetInfo's own read-only posture).
+func (svc *QualityService) buildQualityMutationInfo(cfg quality.MutationConfig, checks []*model.QualityCheck) *model.QualityMutationInfo {
+	info := &model.QualityMutationInfo{
+		Format: cfg.Format, ReportPath: cfg.ReportPath, MaxEquivalent: cfg.MaxEquivalent,
+	}
+
+	for _, c := range checks {
+		if c.Kind == "mutant" && c.Status == string(quality.CheckStatusAcked) {
+			info.SignedEquivalent++
+		}
+		if c.Kind == "mutant" && c.Status == "finding" {
+			info.SurvivorCount++
+		}
+		if c.Kind == "mutation" && c.Name == "score" && c.Detail != "" {
+			var d mutantScoreDetail
+			if jsonErr := json.Unmarshal([]byte(c.Detail), &d); jsonErr == nil {
+				info.ByStatus = d.ByStatus
+			}
+		}
+	}
+
+	return info
 }
 
 // buildQualityBudgetInfo reads a spec's budget.toml from disk (when

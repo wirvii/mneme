@@ -294,6 +294,13 @@ func newQualityStatusCmd() *cobra.Command {
 					fmt.Fprintf(os.Stdout, "  [%d] %s/%s: %s\n", chk.Seq, chk.Kind, chk.Name, chk.Status)
 				}
 			}
+			// SPEC-119 D14: the declared mutation config plus the latest
+			// certificate's own equivalent-signature count against the
+			// declared cupo — read-only, never re-parses a report.
+			if m := resp.Mutation; m != nil {
+				fmt.Fprintf(os.Stdout, "mutation: format=%s report_path=%s equivalent=%d/%d survivors=%d\n",
+					m.Format, m.ReportPath, m.SignedEquivalent, m.MaxEquivalent, m.SurvivorCount)
+			}
 			// AC24: status is a read command — it always exits 0, even when
 			// the mechanism is off or no certificate exists yet. Reporting
 			// the truth is its entire job.

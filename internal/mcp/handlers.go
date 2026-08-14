@@ -779,6 +779,9 @@ func (h *handlers) mapServiceError(method string, err error) *JSONRPCError {
 		errors.Is(err, model.ErrCriteriaNotFound) ||
 		errors.Is(err, model.ErrNotACriterion) ||
 		errors.Is(err, model.ErrCriterionRequiresSign) ||
+		errors.Is(err, model.ErrNotSignable) ||
+		errors.Is(err, model.ErrRequiresSign) ||
+		errors.Is(err, model.ErrEquivalentQuotaExceeded) ||
 		errors.Is(err, model.ErrReportNotGenerated) ||
 		errors.Is(err, model.ErrInvalidBudget) ||
 		errors.Is(err, model.ErrUnsupportedBudgetSchema) {

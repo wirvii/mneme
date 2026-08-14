@@ -1161,3 +1161,82 @@ func TestSign_NoScoreRow_RefusesClosed(t *testing.T) {
 		t.Fatalf("Sign(mutant, no mutation/score row on the certificate) error = %v, want ErrEquivalentQuotaExceeded (fail closed)", err)
 	}
 }
+
+// TestQualityService_Status_ReportsMutationInfo covers D14: quality_status
+// reports the declared [mutation] config plus the latest certificate's own
+// figures (signed-equivalent count against the cupo, survivor count, full
+// recount) — read-only, no re-execution, mirroring
+// TestQualityService_Status_ReportsBudgetInfo's own shape.
+func TestQualityService_Status_ReportsMutationInfo(t *testing.T) {
+	repoDir := newTestGitRepo(t)
+	writeConstitutionV5Mutation(t, repoDir, 2)
+	commitAll(t, repoDir, "add constitution")
+	baseSHA := headSHAFor(t, repoDir)
+
+	if err := os.WriteFile(filepath.Join(repoDir, "foo.go"), []byte("package main\n\nfunc Foo() {}\n"), 0o644); err != nil {
+		t.Fatalf("write foo.go: %v", err)
+	}
+	commitAll(t, repoDir, "add foo.go")
+
+	s := newTestQualityStore(t)
+	spec := insertTestSpec(t, s, "SPEC-908", "proj", model.SpecStatusImplementing, baseSHA)
+
+	runner := &fakeGateRunner{writeFiles: map[string]map[string]string{
+		"mutation-report": {"tmp/mutants.json": mutantsV1Doc("foo.go:1:a:lived", "foo.go:1:b:killed")},
+	}}
+	svc := NewQualityService(s, "proj", repoDir, runner)
+	if _, err := svc.Verify(context.Background(), model.QualityVerifyRequest{ID: spec.ID}); err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+
+	resp, err := svc.Status(context.Background(), model.QualityStatusRequest{ID: spec.ID})
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if resp.Mutation == nil {
+		t.Fatal("resp.Mutation = nil, want populated")
+	}
+	if resp.Mutation.Format != "mutants-v1" || resp.Mutation.ReportPath != "tmp/mutants.json" {
+		t.Errorf("Mutation = %+v, want format=mutants-v1 report_path=tmp/mutants.json", resp.Mutation)
+	}
+	if resp.Mutation.MaxEquivalent != 2 {
+		t.Errorf("Mutation.MaxEquivalent = %d, want 2", resp.Mutation.MaxEquivalent)
+	}
+	if resp.Mutation.SurvivorCount != 1 {
+		t.Errorf("Mutation.SurvivorCount = %d, want 1 (unsigned so far)", resp.Mutation.SurvivorCount)
+	}
+	if resp.Mutation.SignedEquivalent != 0 {
+		t.Errorf("Mutation.SignedEquivalent = %d, want 0 (nothing signed yet)", resp.Mutation.SignedEquivalent)
+	}
+	if resp.Mutation.ByStatus["killed"] != 1 || resp.Mutation.ByStatus["lived"] != 1 {
+		t.Errorf("Mutation.ByStatus = %v, want killed=1 lived=1", resp.Mutation.ByStatus)
+	}
+
+	// Sign the survivor and confirm Status reflects it without re-running
+	// anything.
+	checks, err := s.ListChecks(context.Background(), resp.LatestCertificate.ID)
+	if err != nil {
+		t.Fatalf("ListChecks: %v", err)
+	}
+	var survivorSeq int
+	for _, c := range checks {
+		if c.Kind == "mutant" {
+			survivorSeq = c.Seq
+		}
+	}
+	if err := svc.Sign(context.Background(), model.QualitySignRequest{
+		CertificateID: resp.LatestCertificate.ID, Seq: survivorSeq, By: "qa-tester", Evidence: "x",
+	}); err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	resp2, err := svc.Status(context.Background(), model.QualityStatusRequest{ID: spec.ID})
+	if err != nil {
+		t.Fatalf("Status (after sign): %v", err)
+	}
+	if resp2.Mutation.SignedEquivalent != 1 {
+		t.Errorf("Mutation.SignedEquivalent after Sign = %d, want 1", resp2.Mutation.SignedEquivalent)
+	}
+	if resp2.Mutation.SurvivorCount != 0 {
+		t.Errorf("Mutation.SurvivorCount after Sign = %d, want 0 (the survivor is now acked, not a finding)", resp2.Mutation.SurvivorCount)
+	}
+}
