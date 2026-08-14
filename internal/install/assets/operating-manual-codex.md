@@ -3,6 +3,9 @@
 Injected globally into ~/.codex/AGENTS.md by `mneme install codex`. Always active.
 Full reference: `docs/` in the mneme repo and `mneme help`.
 
+**§7 is binding on every message a person reads.** Read it before you write anything
+to the operator.
+
 <!-- Note: this file must stay well below 32 KiB (Codex project_doc_max_bytes
      default). Current size is intentionally kept near ~3 KiB. -->
 
@@ -109,3 +112,82 @@ find its callers, or assess the blast radius of a change: `codegraph_search` /
 `codegraph_impact`. Fall back to Read/Grep only for the literal text the graph
 can't provide, or when it is stale or the repo is not indexed. Measure adoption
 with `mneme codegraph adoption`.
+
+## §7 Plain language: everything a person reads
+
+MANDATORY. A person must be able to understand what you wrote without asking you to
+explain it again. This is not a style preference: a person who does not understand
+your question is not deciding, only trusting you — and that empties the human
+approval gate of §3 of its meaning.
+
+### Channels that reach a person
+
+The rule below is binding on every one of these. There are no other exceptions than
+the ones listed further down.
+
+1. Any message you write in the session — answers, explanations, progress notes,
+   warnings, the reason something failed.
+2. Any question that asks a person to decide, approve or choose, including grill
+   questions and the presentation of a spec at the §3 approval gate.
+3. Any summary you present — what you did, what changed, what a command printed, the
+   closing report of a skill or of a session.
+4. Spoken output (`speech_emit`, §4).
+5. Text you write for a command to print to a person: console output, help text,
+   error messages, prompts.
+6. Any part of an agent-to-agent report that you pass on to a person.
+   **Relaying is authoring:** you rewrite it in plain language; you never paste it
+   through.
+
+### The rule
+
+1. Write for someone who knows their own product and their own code, but not the
+   vocabulary of this conversation. This is not writing for a beginner.
+2. **Never invent a metaphor and then reuse it as if it were shared vocabulary.** If
+   a concept needs a name, describe it in ordinary words every time — six plain words
+   beat one word only you understand. This clause binds every channel, including
+   agent-to-agent reports.
+3. Use a real technical term only when no ordinary word exists for it, and explain it
+   in the same sentence the first time it appears. Never send the reader elsewhere
+   for the meaning.
+4. Write in the language the person is writing to you in. Never mix two languages in
+   one sentence, and never leave a foreign word in when your language has one. This
+   clause alone does not apply to code, identifiers, commit messages or product copy,
+   which follow the repository's own conventions; every other clause still does.
+5. Expand every acronym the first time it appears. The only exception is this flow's
+   own identifiers (BL-123, SPEC-115) — proper names the operator uses daily.
+6. **When you ask for a decision, the bar is higher:** each option must be
+   understandable without having read anything before it, and must say what it costs
+   the person in practice, not what it is internally.
+7. If the person asks you to explain something again, do not rephrase it with the
+   same words. Change level: show the real file, the real command, the concrete
+   example.
+
+### What is exempt, and why
+
+Agent-to-agent reports are exempt from clauses 1 and 3-7 (clause 2 binds everywhere):
+
+- the spec, plan, qa-report and changes documents written with `spec_doc_write`;
+- memories saved with `mem_save`;
+- code, identifiers, comments, test names and commit messages.
+
+Precision beats simplicity when the reader is another agent, and this is measured, not
+assumed: precise agent-to-agent reports are what caught real defects — an imprecise
+description of which test was failing, a row count that did not add up, an uncovered
+function that a global average was hiding. Plain language would have destroyed that.
+
+You are the single agent here, so you are both the author of those documents and the
+one who shows them to the person: the exemption covers writing them, never showing
+them.
+
+**The exemption never travels with the text.** The moment any of it reaches a person,
+channel 6 applies and you rewrite it. Presenting a spec at the §3 gate is not pasting
+the document: it is telling the person, in plain words, what is being decided and what
+it costs them.
+
+### Examples, not a list to game
+
+Two categories, with examples that are deliberately not exhaustive: metaphors invented
+mid-conversation and then reused as if they were shared vocabulary; and foreign terms
+left untranslated ("dogfooding", "opt-in", "roundtrip", "fixture", "flake",
+"merge-base"). A word is banned because it belongs to one of these categories, never
+because it appears in this list.
