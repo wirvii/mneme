@@ -29,13 +29,33 @@ func RenderCodex(contract AgentContract) (string, error) {
 	fmt.Fprintf(&out, "description = %s\n", strconv.Quote(contract.Description))
 	fmt.Fprintf(&out, "developer_instructions = %s\n", strconv.Quote(instructions))
 	if contract.Model != "" {
-		fmt.Fprintf(&out, "model = %s\n", strconv.Quote(contract.Model))
+		model, err := codexModel(contract.Model)
+		if err != nil {
+			return "", err
+		}
+		fmt.Fprintf(&out, "model = %s\n", strconv.Quote(model))
 	}
 	if contract.Reasoning != "" {
 		fmt.Fprintf(&out, "model_reasoning_effort = %s\n", strconv.Quote(contract.Reasoning))
 	}
 	fmt.Fprintf(&out, "sandbox_mode = %s\n", strconv.Quote(sandbox))
 	return out.String(), nil
+}
+
+func codexModel(model string) (string, error) {
+	switch model {
+	case "opus":
+		return "gpt-5.6-sol", nil
+	case "sonnet":
+		return "gpt-5.6-terra", nil
+	case "haiku":
+		return "gpt-5.6-luna", nil
+	default:
+		if strings.HasPrefix(model, "gpt-") {
+			return model, nil
+		}
+		return "", fmt.Errorf("subagents: render codex: model %q has no safe Codex mapping", model)
+	}
 }
 
 func codexCapabilityInstructions(archetype Role, perm Permission) string {

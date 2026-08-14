@@ -89,6 +89,7 @@ func ContractFromClaude(content string, archetype Role) (AgentContract, error) {
 		Role:         Role(fields["name"]),
 		Archetype:    archetype,
 		Description:  fields["description"],
+		Model:        fields["model"],
 		Instructions: strings.TrimSpace(strings.Join(lines[closeAt+1:], "\n")),
 	}
 	// Early profile fixtures and third-party profiles may carry only a name.

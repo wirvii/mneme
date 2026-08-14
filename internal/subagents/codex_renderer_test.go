@@ -67,8 +67,19 @@ func TestContractFromClaude_ImportsSemanticsNotCapabilities(t *testing.T) {
 	if contract.Role != "payments" || contract.Description != "owns payments" || contract.Instructions != "Use the ledger." {
 		t.Fatalf("unexpected contract: %#v", contract)
 	}
-	if contract.Model != "" {
-		t.Fatalf("Claude model leaked into canonical Codex projection: %q", contract.Model)
+	if contract.Model != "sonnet" {
+		t.Fatalf("canonical model alias = %q, want sonnet", contract.Model)
+	}
+}
+
+func TestRenderCodex_MapsModelsWithoutVendorLeak(t *testing.T) {
+	got, err := RenderCodex(AgentContract{Role: RoleArchitect, Description: "x", Instructions: "x", Model: "opus"})
+	if err != nil || !strings.Contains(got, `model = "gpt-5.6-sol"`) {
+		t.Fatalf("mapped model: err=%v output=%s", err, got)
+	}
+	_, err = RenderCodex(AgentContract{Role: RoleBackend, Description: "x", Instructions: "x", Model: "unknown-vendor-model"})
+	if err == nil || !strings.Contains(err.Error(), "no safe Codex mapping") {
+		t.Fatalf("expected visible unsafe mapping error, got %v", err)
 	}
 }
 
