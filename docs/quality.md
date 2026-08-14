@@ -1317,21 +1317,123 @@ the day a project needs one is additive, never a redesign.
   violations", because D6's own "declared and not measured is `fail`" rule
   depends on telling the two apart.
 
-A ~20-line Node reporter (the shape any Playwright/Cypress/Puppeteer
-harness writes at the end of its own run) is enough to emit this:
+**A real reporter, actually run against a real Chromium as this spec's own
+AC31b reality check, not a sketch**: 57 lines total with comments (`npm
+install playwright axe-core`, then `npx playwright install chromium`),
+navigating two real pages with a real browser, recording real console
+events and real uncaught exceptions, running a real `axe-core` scan, and
+writing `visual-v1`. This is the exact script that produced the certificate
+`visual/console: fail` / `visual/a11y: fail` this section's own EPIC
+verified end to end — copy-pasteable as a starting point for any
+Playwright-based harness:
 
 ```js
+// reporter.js -- navigates two real pages with a real Chromium, records
+// real console events and real uncaught exceptions, runs a real axe-core
+// scan, and writes visual-v1.
+const { chromium } = require('playwright');
 const fs = require('fs');
-const report = { schema: 'visual-v1', harness: 'toy', harness_version: '0.1.0', targets: [] };
-for (const t of collectedTargets) {           // whatever the harness already tracked
-  report.targets.push({
-    id: t.id, rendered: t.rendered, error: t.error ?? '',
-    page_errors: t.pageErrors, console: t.consoleCounts,
-    ...(t.a11y ? { a11y: t.a11y } : {}),
-  });
-}
-fs.writeFileSync(process.env.VISUAL_REPORT_PATH, JSON.stringify(report));
+const path = require('path');
+const axeSource = fs.readFileSync(require.resolve('axe-core/axe.min.js'), 'utf8');
+
+const targets = [
+  { id: 'home-light', file: 'pages/home-light.html' },
+  { id: 'home-dark', file: 'pages/home-dark.html' },
+];
+
+(async () => {
+  const browser = await chromium.launch();
+  const report = { schema: 'visual-v1', harness: 'playwright-reality-check', harness_version: '1.62.1', targets: [] };
+
+  for (const t of targets) {
+    const page = await browser.newPage();
+    const pageErrors = [];
+    const console_ = { error: 0, warning: 0, info: 0 };
+    page.on('pageerror', (err) => pageErrors.push(String(err)));
+    page.on('console', (msg) => {
+      if (msg.type() === 'error') console_.error++;
+      else if (msg.type() === 'warning') console_.warning++;
+      else console_.info++;
+    });
+
+    let rendered = true, error = '';
+    try {
+      await page.goto('file://' + path.resolve(t.file));
+      await page.waitForTimeout(200); // let the setTimeout throw actually fire
+      await page.screenshot({ path: `captures/${t.id}.png` });
+    } catch (e) { rendered = false; error = String(e); }
+
+    let a11y;
+    try {
+      await page.evaluate(axeSource);
+      const results = await page.evaluate(async () => await window.axe.run());
+      a11y = {
+        engine: 'axe-core', engine_version: '4.10.2',
+        violations: results.violations.map((v) => ({ rule: v.id, impact: v.impact || 'minor', nodes: v.nodes.length })),
+      };
+    } catch (e) { /* a11y omitted on purpose if axe itself fails to run */ }
+
+    const target = { id: t.id, rendered, error, page_errors: pageErrors, console: console_ };
+    if (a11y) target.a11y = a11y;
+    report.targets.push(target);
+    await page.close();
+  }
+
+  await browser.close();
+  fs.mkdirSync('captures', { recursive: true });
+  fs.writeFileSync('report.json', JSON.stringify(report, null, 2));
+  console.log(JSON.stringify(report, null, 2));
+})();
 ```
+
+The two fixture pages the script above navigates — `home-light` is clean;
+`home-dark` carries a **deliberate, real** accessibility violation
+(`color-contrast`, caught by a real `axe.run()`) and a **deliberate, real**
+uncaught exception (`window.__themeConfig.someMethod()` on `undefined`,
+caught by Playwright's own `pageerror` event) plus a real
+`console.error()`:
+
+```html
+<!-- pages/home-light.html -->
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Home (light)</title>
+<style>body{background:#ffffff;color:#111111;font-family:sans-serif;padding:2rem}</style>
+</head>
+<body>
+  <h1>Home</h1>
+  <p>Good contrast text on a light background.</p>
+  <button>Click me</button>
+</body>
+</html>
+```
+
+```html
+<!-- pages/home-dark.html -->
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Home (dark)</title>
+<style>
+  body{background:#1a1a1a;font-family:sans-serif;padding:2rem}
+  /* Deliberate low-contrast text -- a real color-contrast violation for axe-core */
+  p{color:#3a3a3a}
+</style>
+</head>
+<body>
+  <h1 style="color:#eeeeee">Home (dark)</h1>
+  <p>Low contrast text a real accessibility scanner should flag.</p>
+  <script>
+    // A genuine uncaught exception -- undefined.someMethod() throws for real.
+    setTimeout(() => { window.__themeConfig.someMethod(); }, 10);
+    console.error("boom: a real console.error the harness will record");
+  </script>
+</body>
+</html>
+```
+
+Run it with `[visual].command = ["node", "reporter.js"]` and
+`report_path` pointing at `report.json` — `mneme` launches `node` itself,
+through the same argv-only `Runner` a gate uses, exactly as D1 describes.
 
 ### The seven rows, plus one per failing target
 
