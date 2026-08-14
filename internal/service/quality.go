@@ -1011,7 +1011,51 @@ func (svc *QualityService) Status(ctx context.Context, req model.QualityStatusRe
 		resp.Mutation = svc.buildQualityMutationInfo(constitution.Mutation, checks)
 	}
 
+	// SPEC-120 D14: the visual mechanism's declared configuration plus
+	// this certificate's own recorded figures — reading and reporting
+	// only, nil when [visual] is not declared at all.
+	if constitution.VisualDeclared {
+		resp.Visual = svc.buildQualityVisualInfo(constitution.Visual, checks)
+	}
+
 	return resp, nil
+}
+
+// buildQualityVisualInfo projects the declared [visual] config plus the
+// LATEST certificate's own visual rows — never re-parsing a visual report,
+// never executing anything (D14, mirroring buildQualityMutationInfo's own
+// read-only posture). VerifiedTargets is read back from visual/console's
+// own Detail (its ByTarget map is keyed by every target the REPORT actually
+// covered, D5) rather than re-deriving it — the same "read the certificate,
+// never the source document" discipline every other mechanism's status
+// projection already follows.
+func (svc *QualityService) buildQualityVisualInfo(cfg quality.VisualConfig, checks []*model.QualityCheck) *model.QualityVisualInfo {
+	info := &model.QualityVisualInfo{
+		Format: cfg.Format, DeclaredTargets: len(cfg.Targets), CompareEnabled: cfg.Compare.Enabled,
+	}
+	if cfg.Compare.Enabled {
+		info.ReferenceDir = cfg.Compare.ReferenceDir
+	}
+
+	for _, c := range checks {
+		switch {
+		case c.Kind == "visual" && c.Name == "console" && c.Detail != "":
+			var d visualConsoleDetail
+			if jsonErr := json.Unmarshal([]byte(c.Detail), &d); jsonErr == nil {
+				info.VerifiedTargets = len(d.ByTarget)
+			}
+		case c.Kind == "visual-target" && c.Status == "fail":
+			info.FailedTargets++
+		case c.Kind == "visual" && c.Name == "compare" && c.Status == "finding" && strings.HasPrefix(c.Summary, "reference-missing:"):
+			for _, id := range strings.Split(strings.TrimPrefix(c.Summary, "reference-missing:"), ",") {
+				if strings.TrimSpace(id) != "" {
+					info.MissingReferences++
+				}
+			}
+		}
+	}
+
+	return info
 }
 
 // buildQualityMutationInfo projects the declared [mutation] config plus

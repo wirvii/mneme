@@ -1135,3 +1135,46 @@ func TestQualityService_Verify_Visual_ReferenceMissingFinding_AckLiftsBlock(t *t
 		t.Fatalf("Verdict after Ack = %q, want pass", updated.Verdict)
 	}
 }
+
+// TestQualityService_Status_ReportsVisualInfo covers D14: the declared
+// visual config plus the LATEST certificate's own figures, read back
+// WITHOUT re-parsing a report.
+func TestQualityService_Status_ReportsVisualInfo(t *testing.T) {
+	repoDir := newTestGitRepo(t)
+	writeConstitutionV6Visual(t, repoDir, []string{"a", "b"}, false)
+	commitAll(t, repoDir, "add constitution")
+	baseSHA := headSHAFor(t, repoDir)
+
+	s := newTestQualityStore(t)
+	spec := insertTestSpec(t, s, "SPEC-909", "proj", model.SpecStatusImplementing, baseSHA)
+
+	doc := visualV1Doc(
+		visualTargetJSON{ID: "a", Rendered: true},
+		visualTargetJSON{ID: "b", Rendered: false, Error: "boom"},
+	)
+	runner := &fakeGateRunner{writeFiles: map[string]map[string]string{"visual": {"tmp/visual/report.json": doc}}}
+	svc := NewQualityService(s, "proj", repoDir, runner)
+	if _, err := svc.Verify(context.Background(), model.QualityVerifyRequest{ID: spec.ID}); err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+
+	resp, err := svc.Status(context.Background(), model.QualityStatusRequest{ID: spec.ID})
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if resp.Visual == nil {
+		t.Fatal("resp.Visual = nil, want populated")
+	}
+	if resp.Visual.Format != "visual-v1" || resp.Visual.DeclaredTargets != 2 {
+		t.Errorf("Visual = %+v, want format=visual-v1 declared_targets=2", resp.Visual)
+	}
+	if resp.Visual.CompareEnabled {
+		t.Errorf("Visual.CompareEnabled = true, want false")
+	}
+	if resp.Visual.VerifiedTargets != 2 {
+		t.Errorf("Visual.VerifiedTargets = %d, want 2", resp.Visual.VerifiedTargets)
+	}
+	if resp.Visual.FailedTargets != 1 {
+		t.Errorf("Visual.FailedTargets = %d, want 1 (target b never rendered)", resp.Visual.FailedTargets)
+	}
+}

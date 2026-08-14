@@ -301,6 +301,12 @@ func newQualityStatusCmd() *cobra.Command {
 				fmt.Fprintf(os.Stdout, "mutation: format=%s report_path=%s equivalent=%d/%d survivors=%d\n",
 					m.Format, m.ReportPath, m.SignedEquivalent, m.MaxEquivalent, m.SurvivorCount)
 			}
+			// SPEC-120 D14: the declared visual config plus the latest
+			// certificate's own figures — read-only, never re-parses a report.
+			if v := resp.Visual; v != nil {
+				fmt.Fprintf(os.Stdout, "visual: format=%s declared_targets=%d compare_enabled=%v verified=%d failed=%d missing_references=%d\n",
+					v.Format, v.DeclaredTargets, v.CompareEnabled, v.VerifiedTargets, v.FailedTargets, v.MissingReferences)
+			}
 			// AC24: status is a read command — it always exits 0, even when
 			// the mechanism is off or no certificate exists yet. Reporting
 			// the truth is its entire job.
