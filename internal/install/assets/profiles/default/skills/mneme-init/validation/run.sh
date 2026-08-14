@@ -40,5 +40,15 @@ if ! grep -q 'tools:' "$SKILL_FILE" || ! grep -q 'permissionMode:' "$SKILL_FILE"
   exit 1
 fi
 
+# SPEC-121: the plain-language rule (rule 14) must stay documented in this
+# skill. These are the three anchors shared with both operating manuals — a
+# skill that drops one has silently stopped teaching the rule.
+for anchor in "Plain language" "Channels that reach a person" "The exemption never travels with the text"; do
+  if ! grep -q "$anchor" "$SKILL_FILE"; then
+    echo "mneme-init: missing plain-language anchor: $anchor" >&2
+    exit 1
+  fi
+done
+
 echo "mneme-init: validation passed"
 exit 0
