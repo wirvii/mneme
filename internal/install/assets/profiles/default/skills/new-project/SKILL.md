@@ -42,7 +42,7 @@ Do NOT use this skill to add an app to an existing monorepo (that is `/new-app`,
 - Run `mneme skills validate new-project` to execute the deterministic validation script (confirms this file still defers to `project_new`, forbids a floating bootstrap version, and chains `mneme-init`).
 - Run `mneme skills lint new-project` to confirm the structural format (5 sections, 3-column Automated Checks table, semver, `name==directory`).
 - After `project_new`: the destination directory exists, contains the scaffold's files with variables substituted, has a `.git` directory (no commits), and a `.mneme-profile` pin recording `scaffold=<name>`.
-- After chaining `mneme-init`: the fresh repo has materialized agents under `.claude/agents/` and seeded memory — confirm before telling the user the project is ready.
+- After chaining `mneme-init`: the fresh repo has materialized agents under both `.claude/agents/` and `.codex/agents/` and seeded one shared memory — confirm before telling the user the project is ready.
 
 ## Workflow
 

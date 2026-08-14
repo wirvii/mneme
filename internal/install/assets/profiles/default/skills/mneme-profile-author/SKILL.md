@@ -70,7 +70,7 @@ This skill is the SIBLING of `mneme-init`, never a sub-phase of it: `mneme-init`
 
 ### Step 5 — Blocks / models / policy / templates
 
-7. Curate `<dest>/blocks/*.md` (managed CLAUDE.md blocks the orchestrator applies on activation), `<dest>/models.toml` (per-agent model assignment), `<dest>/policy.toml` (`subagent_containment` + lanes/SDD policy), and `<dest>/templates/{spec,plan,qa-report}.md` (the entregables `spec_doc_write` renders).
+7. Curate `<dest>/blocks/*.md` (shared managed project instructions), `<dest>/models.toml` (per-role model assignment), `<dest>/policy.toml` (`subagent_containment` + lanes/SDD policy), and `<dest>/templates/{spec,plan,qa-report}.md`. Profile activation renders each agent source into both Claude and Codex project artifacts.
 
 ### Step 6 — Skills
 
