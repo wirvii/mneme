@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/wirvii/mneme/internal/codexhome"
 )
 
 // Codex returns a fully configured *Agent for the OpenAI Codex CLI using
@@ -43,7 +45,7 @@ func Codex(binaryPath string) *Agent {
 			if err != nil {
 				return fmt.Errorf("install: codex: mcp config: home dir: %w", err)
 			}
-			path := filepath.Join(home, ".codex", "config.toml")
+			path := filepath.Join(codexhome.Resolve(home), "config.toml")
 			return WriteCodexConfig(path, binaryPath)
 		},
 
@@ -57,7 +59,7 @@ func Codex(binaryPath string) *Agent {
 			if err != nil {
 				return fmt.Errorf("install: codex: hooks: home dir: %w", err)
 			}
-			path := filepath.Join(home, ".codex", "hooks.json")
+			path := filepath.Join(codexhome.Resolve(home), "hooks.json")
 			return WriteCodexHooks(path)
 		},
 
@@ -79,7 +81,7 @@ func Codex(binaryPath string) *Agent {
 			if err != nil {
 				return "", nil, fmt.Errorf("install: codex: retired hooks: home dir: %w", err)
 			}
-			path := filepath.Join(home, ".codex", "hooks.json")
+			path := filepath.Join(codexhome.Resolve(home), "hooks.json")
 			patches := []HookPatch{
 				{Event: "Stop", Command: "mneme hook session-end"},
 			}
@@ -94,7 +96,7 @@ func Codex(binaryPath string) *Agent {
 			if err != nil {
 				return "", nil, fmt.Errorf("install: codex: manual: home dir: %w", err)
 			}
-			path := filepath.Join(home, ".codex", "AGENTS.md")
+			path := filepath.Join(codexhome.Resolve(home), "AGENTS.md")
 			return path, []byte(operatingManualCodex()), nil
 		},
 

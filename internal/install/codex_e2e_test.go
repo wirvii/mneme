@@ -79,6 +79,34 @@ func TestCodexInstall_Idempotency(t *testing.T) {
 	}
 }
 
+func TestCodexInstall_HonorsCodexHome(t *testing.T) {
+	tmpHome := t.TempDir()
+	codexHome := filepath.Join(t.TempDir(), "configured-codex-home")
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("CODEX_HOME", codexHome)
+
+	const binPath = "/usr/local/bin/mneme"
+	if err := Install(Codex(binPath), binPath); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+
+	for _, name := range []string{"config.toml", "hooks.json", "AGENTS.md"} {
+		if _, err := os.Stat(filepath.Join(codexHome, name)); err != nil {
+			t.Errorf("configured CODEX_HOME artifact %s: %v", name, err)
+		}
+		if _, err := os.Stat(filepath.Join(tmpHome, ".codex", name)); !os.IsNotExist(err) {
+			t.Errorf("default path unexpectedly contains %s: %v", name, err)
+		}
+	}
+
+	// Codex skills follow the runtime's cross-client discovery convention and
+	// intentionally remain under HOME/.agents rather than CODEX_HOME.
+	skill := filepath.Join(tmpHome, ".agents", "skills", "mneme-init", "SKILL.md")
+	if _, err := os.Stat(skill); err != nil {
+		t.Fatalf("Codex skill missing from discovery path: %v", err)
+	}
+}
+
 // TestCodexInstall_IdempotencyWithPreexistingStopHook covers AC10(b) for
 // Codex: a HOME whose hooks.json already carries the retired Stop
 // registration has it purged on the first install; a second install finds

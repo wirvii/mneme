@@ -24,6 +24,7 @@ import (
 	"syscall"
 
 	"github.com/pelletier/go-toml/v2"
+	"github.com/wirvii/mneme/internal/codexhome"
 )
 
 // HTTPClient is the minimal interface required for HTTP GET requests.
@@ -492,7 +493,7 @@ func hasClaudeCodeMCPEntry(home string) bool {
 // `[mcp_servers.mneme.tools]` sub-table are NOT interpreted, and any read or
 // parse failure is "not installed", never an error.
 func hasCodexMCPEntry(home string) bool {
-	data, err := os.ReadFile(filepath.Join(home, ".codex", "config.toml"))
+	data, err := os.ReadFile(filepath.Join(codexhome.Resolve(home), "config.toml"))
 	if err != nil {
 		return false
 	}
