@@ -212,6 +212,55 @@ type QualityStatusResponse struct {
 	// when the constitution does not declare [mutation] at all (schema <
 	// 5).
 	Mutation *QualityMutationInfo `json:"mutation,omitempty"`
+
+	// Visual reports the visual mechanism's declared state and, when
+	// req.ID was supplied and a certificate exists, its last certified
+	// figures (SPEC-120 S6 D14) — read-only, never executes anything. Nil
+	// when the constitution does not declare [visual] at all (schema < 6).
+	Visual *QualityVisualInfo `json:"visual,omitempty"`
+}
+
+// QualityVisualInfo is quality_status's read-only projection of the visual
+// mechanism's declared configuration plus the latest certificate's own
+// recorded figures (SPEC-120 D14) — mirrors QualityMutationInfo's/
+// QualityBudgetInfo's shape for the same reason: a human running `mneme
+// quality status` should see the declared format, how many targets are
+// declared, and whether the nivel-2 comparison is switched on WITHOUT
+// having to open .mneme/quality.toml, and the last certified figures
+// WITHOUT re-parsing a visual report.
+type QualityVisualInfo struct {
+	// Format is the declared [visual].format ("visual-v1" today).
+	Format string `json:"format"`
+
+	// DeclaredTargets is len([visual].targets) — how many opaque objetivos
+	// the project has committed to verifying (D3). mneme does not know, and
+	// this field does not reveal, what any of them MEAN.
+	DeclaredTargets int `json:"declared_targets"`
+
+	// CompareEnabled mirrors [visual.compare].enabled — whether nivel 2
+	// (pixel comparison against versioned references, D7) is switched on.
+	CompareEnabled bool `json:"compare_enabled"`
+
+	// ReferenceDir is [visual.compare].reference_dir, repeated here so a
+	// caller never has to know the constitution's own key. Empty when
+	// CompareEnabled is false.
+	ReferenceDir string `json:"reference_dir,omitempty"`
+
+	// VerifiedTargets is how many targets the LATEST certificate's report
+	// actually verified (the report's own target count) — zero when no
+	// certificate exists yet.
+	VerifiedTargets int `json:"verified_targets"`
+
+	// FailedTargets is the LATEST certificate's count of `visual-target`
+	// rows in `fail` — zero when there is none, or when no certificate
+	// exists yet.
+	FailedTargets int `json:"failed_targets"`
+
+	// MissingReferences is the LATEST certificate's count of objetivos
+	// named by the `visual/compare` row's `reference-missing` finding —
+	// zero when there is none, when nivel 2 is off, or when no certificate
+	// exists yet.
+	MissingReferences int `json:"missing_references"`
 }
 
 // QualityMutationInfo is quality_status's read-only projection of the
