@@ -9,10 +9,13 @@ to use mneme as its persistent memory and SDD engine.
 |---|---|---|
 | MCP server | `~/.codex/config.toml` → `[mcp_servers.mneme]` | Exposes all mneme tools to Codex |
 | Session hooks | `~/.codex/hooks.json` → `SessionStart` | Auto-inject context at session start |
-| Operating manual | `~/.codex/AGENTS.md` (managed block) | Single-agent memory + SDD instructions |
+| Operating manual | `$CODEX_HOME/AGENTS.md` (managed block) | Memory, SDD and role instructions |
 | CLAUDE.md fallback | `project_doc_fallback_filenames` in `config.toml` | Codex reads existing CLAUDE.md files |
 | Workflow templates | `~/.mneme/templates/` | Shared with Claude (agent-agnostic) |
 | Skills | `$HOME/.agents/skills/` | Codex discovery path (S4) |
+| Role enforcement | `$CODEX_HOME/hooks.json` → `PreToolUse` | Enforces ownership and reserved tools |
+
+`CODEX_HOME` is honored when set; otherwise it defaults to `~/.codex`.
 
 ## Installation
 
@@ -25,17 +28,18 @@ mneme install codex --dry-run
 The install is **non-destructive and idempotent** — running it multiple times produces
 the same result. All existing keys in `config.toml` and `hooks.json` are preserved.
 
-## Single-agent model
+## Shared role model
 
-Unlike the Claude Code integration, **Codex uses a single-agent setup**:
+`mneme init` generates project roles for both runtimes from one canonical
+contract:
 
-- There is no orchestrator/implementer separation.
-- There is no delegation hook or edit-blocking hook.
-- One agent reads memory, follows SDD, and implements changes directly.
+- Claude Code profiles live under `.claude/agents/*.md`.
+- Codex profiles live under `.codex/agents/*.toml`.
+- Both share responsibilities, ownership areas, memory and SDD state.
+- PreToolUse hooks enforce ownership and reserved lifecycle tools.
 
-This reflects the Codex philosophy and the owner's explicit decision (see memory
-`codex/design-single-agent`). Self-discipline replaces role enforcement: follow
-SDD, save memories, do not skip steps.
+The formats differ because each runtime uses its native configuration. A
+project initialized from either runtime is ready for both.
 
 ## Session hooks and trust (D3b)
 
@@ -83,18 +87,11 @@ This means existing repos with `CLAUDE.md` (no `AGENTS.md`) work transparently.
 If a repo adds its own `AGENTS.md`, its `CLAUDE.md` is no longer read in that
 directory — this is the expected Codex behaviour.
 
-## Skills note (R3)
+## Skills
 
-Bundled mneme skills are installed to `$HOME/.agents/skills/` for Codex to
-discover. However, the MCP tools `skills_*` manage `~/.claude/skills/` (hardcoded
-in the mneme server), not the Codex path. This means:
-
-- Codex can **use** the installed skills via the `/skills` command or implicit invocation.
-- Managing skills via `mneme skills install|pin|unpin|remove` operates on `~/.claude/skills/`,
-  not `$HOME/.agents/skills/`.
-
-This desalignment is documented as R3 in SPEC-049 and will be addressed in a
-future spec when the skills service is made agent-aware.
+Bundled mneme skills are installed to `$HOME/.agents/skills/` for Codex.
+The CLI and MCP skill-management operations mirror installation, pinning,
+unpinning and removal across Claude and Codex discovery directories.
 
 ## Flags
 
@@ -102,7 +99,7 @@ future spec when the skills service is made agent-aware.
 |---|---|---|
 | `--dry-run` | Yes | Preview steps without writing |
 | `--personal` | No (silently ignored) | No personal ecosystem for codex in v1 |
-| `--reinstall-hooks` | No (silently ignored) | No delegation hook for codex |
+| `--reinstall-hooks` | No | Codex hooks are reconciled on every install |
 | `--force` | Partial | Affects skill pin-bypass only |
 
 ## Differences from `mneme install claude-code`
@@ -113,9 +110,9 @@ future spec when the skills service is made agent-aware.
 | Session hooks file | `~/.claude/settings.json` | `~/.codex/hooks.json` |
 | Hook trust | Automatic | Requires `/hooks` in Codex TUI |
 | Operating manual | `~/.claude/CLAUDE.md` | `~/.codex/AGENTS.md` |
-| Agent profiles | None global (per-project via `mneme-init` grill; SPEC-073) | None (single-agent) |
-| Delegation hook | Yes (enforces roles) | None |
+| Agent profiles | Per-project `.claude/agents/*.md` | Per-project `.codex/agents/*.toml` |
+| Delegation hook | Yes | Yes |
 | Slash commands | `/mneme-init` (thin wrapper invoking the `mneme-init` skill) | None (deprecated in Codex) |
 | Skills path | `~/.claude/skills/` | `$HOME/.agents/skills/` |
-| Model assignments | Per-project at grill time (`subagent_compose`) | Skipped (no profiles) |
-| Role model | Multi-agent (orchestrator + implementers) | Single-agent |
+| Model assignments | Per-project contract | Per-project contract rendered to native TOML |
+| Role model | Coordinator + project roles | Coordinator + project roles |

@@ -38,6 +38,17 @@ func TestEnableProjectDelegationHook_RegistersBothEntries(t *testing.T) {
 		t.Fatalf("ProjectDelegationHookPatches: %v", err)
 	}
 	assertHookEntry(t, hooks, "PreToolUse", patches[1].Command)
+	codexData, err := os.ReadFile(filepath.Join(repoRoot, ".codex", "hooks.json"))
+	if err != nil {
+		t.Fatalf("read Codex project hooks: %v", err)
+	}
+	var codexSettings map[string]any
+	if err := json.Unmarshal(codexData, &codexSettings); err != nil {
+		t.Fatalf("unmarshal Codex project hooks: %v", err)
+	}
+	codexHooks := codexSettings["hooks"].(map[string]any)
+	assertHookEntry(t, codexHooks, "PreToolUse", patches[0].Command)
+	assertHookEntry(t, codexHooks, "PreToolUse", patches[1].Command)
 }
 
 // TestEnableProjectDelegationHook_Idempotent verifies that enabling twice
@@ -571,6 +582,13 @@ func TestProjectDelegationHookStatus_CustomisedEntries(t *testing.T) {
 }`
 	if err := os.WriteFile(settingsPath, []byte(both), 0o644); err != nil {
 		t.Fatalf("write both-customised settings: %v", err)
+	}
+	codexDir := filepath.Join(repoRoot, ".codex")
+	if err := os.MkdirAll(codexDir, 0o755); err != nil {
+		t.Fatalf("mkdir Codex hooks: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(codexDir, "hooks.json"), []byte(both), 0o644); err != nil {
+		t.Fatalf("write Codex customised hooks: %v", err)
 	}
 	enabled, _, err := ProjectDelegationHookStatus(repoRoot)
 	if err != nil {

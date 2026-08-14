@@ -38,7 +38,7 @@ func ProjectDelegationHookPatches() ([]HookPatch, error) {
 }
 
 // EnableProjectDelegationHook merges the delegation-enforcement PreToolUse
-// entries into <repoRoot>/.claude/settings.json. It reuses PatchHooks'
+// entries into both runtime project hook files. It reuses PatchHooks'
 // append-if-absent merge via a temporary proxy Agent — the same pattern
 // PatchDelegationHook already uses for the global settings path — so the
 // result is idempotent and never duplicates entries.
@@ -66,6 +66,14 @@ func EnableProjectDelegationHook(repoRoot string) (string, error) {
 	if err := PatchHooks(proxy); err != nil {
 		return "", fmt.Errorf("install: enable project delegation hook: %w", err)
 	}
+	codexPath := filepath.Join(repoRoot, ".codex", "hooks.json")
+	codexProxy := &Agent{Hooks: func() (string, []HookPatch, error) {
+		return codexPath, patches, nil
+	}}
+	if err := PatchHooks(codexProxy); err != nil {
+		_, _ = removeHookCommands(settingsPath, patches)
+		return "", fmt.Errorf("install: enable project delegation hook for Codex: %w", err)
+	}
 	return settingsPath, nil
 }
 
@@ -82,6 +90,9 @@ func DisableProjectDelegationHook(repoRoot string) (string, error) {
 
 	if _, err := removeHookCommands(settingsPath, patches); err != nil {
 		return "", fmt.Errorf("install: disable project delegation hook: %w", err)
+	}
+	if _, err := removeHookCommands(filepath.Join(repoRoot, ".codex", "hooks.json"), patches); err != nil {
+		return "", fmt.Errorf("install: disable project delegation hook for Codex: %w", err)
 	}
 	return settingsPath, nil
 }
@@ -114,18 +125,35 @@ func ProjectDelegationHookStatus(repoRoot string) (enabled bool, settingsPath st
 			return false, settingsPath, fmt.Errorf("install: project delegation hook status: parse settings: %w", jerr)
 		}
 	}
-	hooks, _ := settings["hooks"].(map[string]any)
-	if hooks == nil {
+	if !containsAllHookPatches(settings, patches) {
 		return false, settingsPath, nil
 	}
+	codexData, codexErr := os.ReadFile(filepath.Join(repoRoot, ".codex", "hooks.json"))
+	if codexErr != nil {
+		if os.IsNotExist(codexErr) {
+			return false, settingsPath, nil
+		}
+		return false, settingsPath, fmt.Errorf("install: project delegation hook status: read Codex hooks: %w", codexErr)
+	}
+	var codexSettings map[string]any
+	if err := json.Unmarshal(codexData, &codexSettings); err != nil {
+		return false, settingsPath, fmt.Errorf("install: project delegation hook status: parse Codex hooks: %w", err)
+	}
+	return containsAllHookPatches(codexSettings, patches), settingsPath, nil
+}
 
+func containsAllHookPatches(settings map[string]any, patches []HookPatch) bool {
+	hooks, _ := settings["hooks"].(map[string]any)
+	if hooks == nil {
+		return false
+	}
 	for _, patch := range patches {
 		eventList, _ := hooks[patch.Event].([]any)
 		if !hookCommandExists(eventList, patch.Command) {
-			return false, settingsPath, nil
+			return false
 		}
 	}
-	return true, settingsPath, nil
+	return true
 }
 
 // removeHookCommands deletes every command entry matching one of patches
