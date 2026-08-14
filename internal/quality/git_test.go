@@ -1,6 +1,10 @@
 package quality
 
 import (
+	"bytes"
+	"image"
+	"image/color"
+	"image/png"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1065,5 +1069,120 @@ func TestGit_NumStat_BinaryFile(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("blob.bin not found in %+v", stats)
+	}
+}
+
+// encodePNGForGitTest is a tiny helper to produce a real PNG's bytes for a
+// git fixture — the SAME "real bytes, not synthetic" posture pixel_test.go
+// already establishes (Trampa 5): a fixture built from real image/png
+// encoding is what makes this test's own claim about git's behaviour
+// trustworthy.
+func encodePNGForGitTest(t *testing.T, fill color.RGBA) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, 4, 4))
+	for y := 0; y < 4; y++ {
+		for x := 0; x < 4; x++ {
+			img.Set(x, y, fill)
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatalf("encode test PNG: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// TestGit_ChangedFilePathsInRange_SeesBinaryChangeChangedLinesCannot is
+// P4's OBLIGATORY guardian (D8/G13a/V6), proven from the other side, over a
+// REAL repository with a REAL PNG: a modified binary file must NOT appear
+// in ChangedLines' result (ParseUnifiedDiff cannot see it — it has neither
+// a `+++ b/` line nor an `@@` hunk) and MUST appear in
+// ChangedFilePathsInRange's result. Without this test, a future refactor
+// could "simplify" the reference-drift check down to ChangedLines and the
+// finding would silently stop firing forever — this is the test that makes
+// that mistake visible immediately.
+func TestGit_ChangedFilePathsInRange_SeesBinaryChangeChangedLinesCannot(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found in PATH")
+	}
+	dir := initTestGitRepo(t)
+	g := &Git{RepoDir: dir}
+
+	pngPath := filepath.Join(dir, "reference.png")
+	if err := os.WriteFile(pngPath, encodePNGForGitTest(t, color.RGBA{R: 10, G: 20, B: 30, A: 255}), 0o644); err != nil {
+		t.Fatalf("write reference.png: %v", err)
+	}
+	gitRunTest(t, dir, "add", ".")
+	gitRunTest(t, dir, "commit", "-m", "add reference.png")
+
+	base := strings.TrimSpace(gitRunTest(t, dir, "rev-parse", "HEAD"))
+
+	if err := os.WriteFile(pngPath, encodePNGForGitTest(t, color.RGBA{R: 250, G: 5, B: 5, A: 255}), 0o644); err != nil {
+		t.Fatalf("rewrite reference.png: %v", err)
+	}
+	gitRunTest(t, dir, "add", ".")
+	gitRunTest(t, dir, "commit", "-m", "change reference.png")
+
+	changedLines, err := g.ChangedLines(base, "HEAD")
+	if err != nil {
+		t.Fatalf("ChangedLines: %v", err)
+	}
+	if _, ok := changedLines["reference.png"]; ok {
+		t.Errorf("ChangedLines contains reference.png = %v — a modified binary file must be INVISIBLE to it (V6), or this test no longer proves anything", changedLines["reference.png"])
+	}
+
+	paths, err := g.ChangedFilePathsInRange(base, "HEAD")
+	if err != nil {
+		t.Fatalf("ChangedFilePathsInRange: %v", err)
+	}
+	found := false
+	for _, p := range paths {
+		if p == "reference.png" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("ChangedFilePathsInRange() = %v, want it to contain reference.png", paths)
+	}
+}
+
+// TestGit_ChangedFilePathsInRange_RenameIsTwoEntries covers R-E: with
+// rename detection explicitly off, a renamed file appears as an add of the
+// new path AND a delete of the old one — BOTH visible — never folded into
+// a single rename record that would hide the old name from a drift check.
+func TestGit_ChangedFilePathsInRange_RenameIsTwoEntries(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found in PATH")
+	}
+	dir := initTestGitRepo(t)
+	g := &Git{RepoDir: dir}
+
+	content := []byte("package foo\n\nfunc Foo() {}\n")
+	if err := os.WriteFile(filepath.Join(dir, "foo.go"), content, 0o644); err != nil {
+		t.Fatalf("write foo.go: %v", err)
+	}
+	gitRunTest(t, dir, "add", ".")
+	gitRunTest(t, dir, "commit", "-m", "add foo.go")
+
+	base := strings.TrimSpace(gitRunTest(t, dir, "rev-parse", "HEAD"))
+
+	if err := os.Rename(filepath.Join(dir, "foo.go"), filepath.Join(dir, "bar.go")); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+	gitRunTest(t, dir, "add", "-A")
+	gitRunTest(t, dir, "commit", "-m", "rename foo.go to bar.go")
+
+	paths, err := g.ChangedFilePathsInRange(base, "HEAD")
+	if err != nil {
+		t.Fatalf("ChangedFilePathsInRange: %v", err)
+	}
+
+	want := map[string]bool{"foo.go": true, "bar.go": true}
+	got := map[string]bool{}
+	for _, p := range paths {
+		got[p] = true
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ChangedFilePathsInRange() paths = %v, want both foo.go AND bar.go present (rename detection off)", paths)
 	}
 }

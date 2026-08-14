@@ -496,6 +496,60 @@ func (g *Git) NumStat(fromSHA, toRef string) ([]FileStat, error) {
 	return ParseNumStat(out)
 }
 
+// ChangedFilePathsInRange returns every file path touched between fromSHA
+// and toRef, at FILE level only, with rename detection explicitly OFF
+// (SPEC-120 EPIC-calidad S6 D8) — the ONE new git primitive this spec adds,
+// and the reason it exists is a single, verifiable fact: ChangedLines
+// (above) parses git's UNIFIED diff via ParseUnifiedDiff (diff.go), which
+// only indexes a file when it sees a `+++ b/<path>` line followed by an
+// `@@` hunk header. A MODIFIED BINARY FILE produces NEITHER — git instead
+// emits a line reading "Binary files a/x.png and b/x.png differ" — so a
+// changed PNG reference can NEVER appear in ChangedLines' result. Computing
+// the visual mechanism's reference-drift check (D8) from ChangedLines would
+// therefore be the perfect empty-denominator trap: a finding that is
+// structurally incapable of ever firing (G13a) — see
+// TestGit_ChangedFilePathsInRange_SeesBinaryChangeChangedLinesCannot, which
+// demonstrates the blindness FROM THE OTHER SIDE, over a real repository
+// with a real PNG.
+//
+// NAMING NOTE, verified against this branch's tree at implementation time
+// (not assumed at design time, per the plan's own paso 0): SPEC-118 S4
+// already landed a function of this exact name on this branch —
+// Git.ChangedFilesInRange(fromSHA, toRef string) ([]FileChange, error) —
+// for an UNRELATED purpose (the budget mechanism's file-level delta), with
+// rename detection (-M) ON and a richer --name-status/FileChange-shaped
+// result. That is a genuinely different primitive serving a different
+// mechanism; reusing its name here would either collide or silently change
+// S4's own contract. This one is named ChangedFilePathsInRange instead —
+// the substance D8/G13a needs (seeing a binary file ChangedLines cannot
+// see) is unaffected by the name it is given.
+//
+// --no-renames is deliberate, not an oversight (R-E): with rename detection
+// OFF, a RENAMED reference image is reported as a plain delete of the old
+// path plus an add of the new one — BOTH paths appear in the result, so
+// BOTH are visible to FilterUnderDir's drift check, rather than being
+// folded into a single rename record naming only the new path (a renamed
+// reference is drift on BOTH names, D8's own reasoning). -z and
+// NUL-delimited parsing (splitNULTerminated, already used by
+// ListFilesAtRef) so a filename containing a tab or newline is never
+// misread as a record boundary; -c core.quotePath=false and --no-ext-diff
+// so neither a non-ASCII filename nor a user's own diff.external setting
+// can change the result — the same flags ChangedLines/ListFilesAtRef
+// already fix for the same reason.
+func (g *Git) ChangedFilePathsInRange(fromSHA, toRef string) ([]string, error) {
+	cmd := exec.Command("git",
+		"-c", "core.quotePath=false",
+		"diff", "-z", "--name-only", "--no-renames", "--no-ext-diff",
+		fromSHA+".."+toRef, "--",
+	)
+	cmd.Dir = g.RepoDir
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("quality: git diff -z --name-only --no-renames %s..%s: %w", fromSHA, toRef, err)
+	}
+	return splitNULTerminated(out), nil
+}
+
 // IsTracked reports whether path is tracked by git in the current index
 // (D9 check 1): `git ls-files --error-unmatch` exits 0 when the path is
 // tracked and non-zero otherwise, which this treats as the expected "not
