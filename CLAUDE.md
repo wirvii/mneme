@@ -534,8 +534,17 @@ be safe against, at zero cost beyond a slower run. Also verified for real:
 `gremlins` v0.6.0 cannot reliably produce `NOT VIABLE` on a modern Go
 toolchain (`go test`'s exit code for a build failure is 1, not 2, on
 Go 1.26 — gremlins' own `KILLED`/`NOT VIABLE` split depends on that exit
-code) — a real limitation of the CHOSEN TOOL, documented in
-`internal/quality/testdata/README.md`, not a gap in mneme's own four legs.
+code). The limitation originates in the tool, but its consequence lands on
+mneme's own design: leg (b) turns out to enforce only that a format *can
+express* non-viability, not that the tool *emits* it faithfully at runtime,
+and leg (d) (`max_not_viable_pct`) never fires because the percentage reads
+~0 no matter how many mutants actually failed to build. **Every mutant that
+does not compile is counted as `KILLED`, so the mutation score is inflated:
+the effect is not a false red, it is false confidence** — the very thing this
+mechanism exists to eliminate. Legs (a) and (c) still hold. Documented in
+`internal/quality/testdata/README.md` and `docs/quality.md`; the real fix is
+tracked as BL-178 (deriving the signal from `go test -json`, which separates
+a build failure from a red test without reading the exit code).
 
 A survivor is a `finding`, never a `fail` (`store.AckCheck` only ever
 converts a `finding` row) — one row per survivor (`kind=mutant`), capped at
