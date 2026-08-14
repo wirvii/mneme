@@ -1,0 +1,18 @@
+# Runtime state that must never be committed.
+profile.lock
+
+# El vault de team-memory NO se versiona en este repositorio.
+#
+# Motivo: `github.com/wirvii/mneme` es un repo PÚBLICO, y el vault materializa
+# memorias durables del proyecto con el nombre y el email del autor en el
+# frontmatter de cada nota. En julio de 2026 se decidió desactivar team-memory
+# aquí (BL-104) y se borró el vault, pero un commit posterior volvió a trackear
+# 8 notas — ya publicadas, y no se reescribe la historia por ellas: el email ya
+# era público vía la autoría de cada commit, y el contenido es técnico sobre
+# este mismo repo abierto. Esta regla impide que vuelva a crecer.
+#
+# OJO al ampliar esta regla: `.mneme/quality.toml` (y su baseline) SÍ deben
+# versionarse — son la constitución de calidad, y SPEC-115 D2 exige que viva en
+# el repo, revisable en PR, con su hash registrado en cada certificado. Ignorar
+# `.mneme/` entero apagaría el mecanismo entero.
+shared/
