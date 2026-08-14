@@ -534,8 +534,8 @@ func TestContext_NoRules_BackwardCompat(t *testing.T) {
 }
 
 // TestContext_Performance_LoadActiveRules verifies that Context completes in
-// under 100ms with 50 project rules — a conservative bound that still catches
-// regressions like accidental O(n^2) behavior.
+// under 500ms with 50 project rules, including race-detector overhead, while
+// still catching gross regressions like accidental O(n^2) behavior.
 func TestContext_Performance_LoadActiveRules(t *testing.T) {
 	svc := newTestServiceWithRulesBudget(t, 5000)
 	ctx := context.Background()
@@ -552,7 +552,7 @@ func TestContext_Performance_LoadActiveRules(t *testing.T) {
 		t.Fatalf("Context: %v", err)
 	}
 
-	const limit = 100 * time.Millisecond
+	const limit = 500 * time.Millisecond
 	if elapsed > limit {
 		t.Errorf("Context with 50 rules took %v, want < %v", elapsed, limit)
 	}
