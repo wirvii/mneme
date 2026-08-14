@@ -1222,6 +1222,281 @@ accepting the spec was too large.
 4. **The acotado depends on `spec.BaseSHA`.** Without it, `mutation/scope`
    is `finding` `base-unknown` — never a `pass`.
 
+## S6: declarative visual verification (SPEC-120)
+
+The last check this EPIC closes: a gate says the build passed and the
+suite passed, coverage says the new lines executed, mutation says
+something noticed when they changed — and **none of the three ever looks
+at the screen.** A component can compile, be covered, and kill mutants,
+and still throw an uncaught exception in dark mode at 360px. `[visual]`
+adds that missing check as a **sixth (fifth, if S4/S5 have not landed yet
+on a given branch — the order between stages never changes an
+assertion, D16) tramo** of the same `runAllChecks` pipeline S1 built.
+
+### The one decision that matters most: mneme does not supervise a server
+
+A "visual harness" usually means a dev server that starts, a browser that
+drives it, and a shutdown at the end — a **long-lived process**, not a
+command that terminates like every gate the `Runner` (`internal/quality/
+runner.go`, untouched by this spec) has ever executed. The obvious design
+— `serve_command` + `ready_url` + polling + a supervised shutdown — is
+**not what this spec does**, and the reason is structural, not a
+preference:
+
+`exec.CommandContext` (the primitive `ExecRunner.Run` already uses) kills
+**the direct child only**. Killing a whole process tree portably requires
+`syscall.SysProcAttr.Setpgid` on Unix or Job Objects on Windows — which
+means per-OS files or build tags, exactly what this repository's posture
+forbids (`CLAUDE.md`: OS branches are `runtime.GOOS` checked inline, never
+`_windows.go` files). `GOOS=windows go build ./...` staying green is the
+standing proof this premise holds.
+
+So `[visual].command` is executed **exactly like a gate**: the same
+argv-no-shell `Runner`, the same `timeout`, the same exit code. **The
+entire server lifecycle — start, wait until ready, drive the browser,
+shut down — belongs to the declared command.** mneme only waits for it to
+terminate. The honest residue: if the timeout is hit, mneme kills the
+process it launched, not its descendants, and a dev server can be left
+holding a port. Mitigated three ways: the report and every declared
+capture are deleted **before** the command runs (so a zombie can never
+produce a stale, green-looking artifact), the timeout is calibrated by the
+project, and this paragraph is the disclosure — not a hidden limitation.
+
+### Why `visual-v1` is the ONLY registered format, unlike S2 and S5
+
+S2 registered `lcov`/`go-cover` and S5 registered `gremlins` for the same
+reason: without a native format, **this repository itself** could never
+exercise the coverage/mutation chain at all. That argument does not apply
+here. The gap S6 cannot close is not a format — it is that **mneme itself
+has no graphical interface** (it has a TUI, Bubble Tea). Adding a native
+browser-test-runner parser would not fix that, and a native runner's own
+report is a *test-result* report anyway: it does not carry console output
+or accessibility violations as first-class data, so any harness ends up
+emitting `visual-v1` through a small reporter regardless. `visual-v1` is
+therefore the lingua franca and the registry's only member
+(`internal/quality/visual.go`'s `visualRegistry`) — adding a second format
+the day a project needs one is additive, never a redesign.
+
+### The `visual-v1` schema, and a minimal reporter
+
+```json
+{
+  "schema": "visual-v1",
+  "harness": "playwright-toy",
+  "harness_version": "0.1.0",
+  "targets": [
+    {
+      "id": "home-light-360",
+      "rendered": true,
+      "error": "",
+      "page_errors": [],
+      "console": {"error": 0, "warning": 1, "info": 3},
+      "a11y": {
+        "engine": "axe-core",
+        "engine_version": "4.9.1",
+        "violations": [
+          {"rule": "color-contrast", "impact": "serious", "nodes": 2}
+        ]
+      }
+    }
+  ]
+}
+```
+
+- `id` is an **opaque** string mneme never interprets — a route, a UI
+  state, a theme, a width are all doctrine of the *project* (a skill like
+  `wirvii-ui-premium` can require its own four states; mneme never does).
+- `rendered`/`error` are complementary in **both** directions: `false`
+  requires a non-empty `error`; `true` forbids one.
+- `page_errors` (uncaught exceptions / unhandled promise rejections) is a
+  **fact**: it fails `visual/console` unconditionally.
+- `console` counts are always recorded; `console.error` only degrades the
+  verdict when the project declares `fail_on_console_error = true`.
+- `a11y` is **optional per target** — its absence (`Reported == false` in
+  the parsed model) is a distinct, meaningful state from "present with zero
+  violations", because D6's own "declared and not measured is `fail`" rule
+  depends on telling the two apart.
+
+A ~20-line Node reporter (the shape any Playwright/Cypress/Puppeteer
+harness writes at the end of its own run) is enough to emit this:
+
+```js
+const fs = require('fs');
+const report = { schema: 'visual-v1', harness: 'toy', harness_version: '0.1.0', targets: [] };
+for (const t of collectedTargets) {           // whatever the harness already tracked
+  report.targets.push({
+    id: t.id, rendered: t.rendered, error: t.error ?? '',
+    page_errors: t.pageErrors, console: t.consoleCounts,
+    ...(t.a11y ? { a11y: t.a11y } : {}),
+  });
+}
+fs.writeFileSync(process.env.VISUAL_REPORT_PATH, JSON.stringify(report));
+```
+
+### The seven rows, plus one per failing target
+
+| # | `kind` | `name` | Asserts |
+|---|---|---|---|
+| 1 | `visual` | `report` | the declared command ran, left the report at `report_path`, and it parses in the declared format |
+| 2 | `visual` | `scope` | every declared target is covered (and none extra, undeclared) |
+| 3 | `visual` | `render` | every reported target rendered |
+| 4 | `visual` | `console` | no uncaught exception anywhere (and, if declared, no `console.error`) |
+| 5 | `visual` | `a11y` | no violation of a declared impact, and no target left unmeasured when impacts are declared |
+| 6 | `visual` | `compare` | every captured screenshot matches its reference within `max_diff_pct` |
+| 7 | `visual` | `reference-drift` | no reference image changed within the spec's own commit range |
+| 8..7+N | `visual-target` | `<id>` | one failing target, with **every** reason it failed |
+
+Nothing here touches `DeriveVerdict`/`CertificateUsable`
+(`internal/quality/verdict.go`) or `ensureCertified`
+(`internal/service/sdd.go`) — the block is the same one every prior
+mechanism already gets for free: any `fail` row wins, any un-acked
+`finding` degrades to `findings`.
+
+### The empty-denominator trap, closed twice (D3)
+
+A declared-but-unverified target is the same "green report that proves
+nothing" this whole EPIC exists to close, so it is closed in **two**
+independent places: `Parse` rejects `enabled = true` with `targets = []`
+outright (naming the key); at verify time, `visual/scope` is `fail` when a
+declared target is **missing** from the report, and `finding`
+`target-drift` when the report has one **extra** — never silently
+tolerated either way.
+
+### Console: the fact, and the opinion (D5)
+
+"Zero console messages" cannot be required on a real app without false
+positives — framework dev-mode notices, a missing favicon, third-party
+deprecations. A gate that is red on day one gets turned off, or signed
+without reading (the pattern this EPIC's grill rejected three times). So
+this splits, deliberately:
+
+- **An uncaught exception or unhandled promise rejection is a FACT.**
+  `visual/console` fails, always, with no knob.
+- **`console.error` is an OPINION**, gated by the REQUIRED
+  `fail_on_console_error` key — no binary default. mneme keeps **no**
+  exclusion list; a project that needs to filter third-party noise does it
+  in its own harness, which is reviewable code, not a list buried in the
+  binary.
+
+### Accessibility: measured always, blocking only when declared (D6)
+
+`a11y_fail_impacts` is a REQUIRED key whose value may legitimately be
+empty — "measured and recorded, never blocking" is an explicit choice, not
+an omission. Engine and version are always recorded in `visual/a11y`'s
+`detail`, because the day an automatic tool update silently changes a
+verdict, that is the one fact that explains why. And the rule that closes
+the other half of the trap: **a target with no `a11y` block at all, when
+`a11y_fail_impacts` is non-empty, is `fail`** — a check that was never run
+must never look like one that passed.
+
+### `visual.compare`: the optional pixel-comparison tier (D7)
+
+The capture is the harness's job; **the comparison is mneme's**, in pure
+Go, stdlib only (`image/png`) — `internal/quality/pixel.go`'s `ComparePNG`.
+Dimension mismatch is `fail` with **no** invented percentage.
+`png.DecodeConfig` (header only) runs before `png.Decode`, bounded by
+`MaxComparePixels`, so a hostile or merely corrupt PNG declaring absurd
+dimensions cannot make `quality verify` allocate gigabytes of pixel
+buffer. The threshold comparison is **strict** (`>`): with the tolerance
+declared exactly at the measured difference, it passes.
+
+### References: who approves the first one, and how (D8)
+
+**mneme never writes a reference.** The first capture is approved by a
+human with `cp <capture> <reference_dir>/<id>.png && git add && git
+commit` — a normal, reviewable action that shows up in the PR as a new
+binary someone looks at. A missing reference is a **grouped** `finding`
+`reference-missing` (one row, not one per target) — it costs a signature
+and is not a permanent block. A verb like `quality visual accept` was
+considered and rejected: it would add surface (a command that writes
+versioned files) to automate a `cp` + `git add`, erasing exactly the human
+review moment the reference needs.
+
+**A reference changed inside the spec's own commit range is a `finding`
+`reference-changed-in-range`**, never silently accepted — the same
+doctrine S1 already applies to its own constitution (a change that must be
+visible, not a change that is forbidden). The primitive behind it,
+`Git.ChangedFilePathsInRange` (`internal/quality/git.go`), exists for one
+verifiable reason: `ChangedLines`/`ParseUnifiedDiff` only index a file when
+they see a `+++ b/<path>` line followed by an `@@` hunk — a **modified
+binary file produces neither** (git instead prints `Binary files … differ`),
+so a changed PNG can never appear in `ChangedLines`' result. Computing
+reference drift from `ChangedLines` would be the empty-denominator trap in
+image form: a finding that can structurally never fire. The primitive is
+anchored on `MergeBase(spec.BaseSHA, "HEAD")`, never the raw `base_sha` —
+the same correction S2/S3/S4 already established for their own range
+comparisons.
+
+*(Naming note for anyone diffing this repository's history against the
+design: `internal/quality/git.go` already had a function named
+`ChangedFilesInRange` — added by S4/SPEC-118, with rename-detection ON and
+a richer `[]FileChange` result, for the unrelated budget mechanism. This
+spec's own primitive needed the OPPOSITE semantics — rename detection OFF,
+so a renamed reference lists both its old and new path as drift — and a
+plain `[]string` result, so it is named `ChangedFilePathsInRange` instead.
+Same substance, different name, discovered as a real collision during
+implementation rather than assumed at design time.)*
+
+### `MaxVisualTargetRows`: the second cap of this shape
+
+`MaxVisualTargetRows = 50` (`internal/quality/visualscope.go`) bounds how
+many `visual-target/<id>` rows one certificate emits — a storage cap on
+the *registry*, never a quality threshold a project tunes, the same
+distinction `MaxSurvivorRows` (S5) already draws. Past the cap, the first
+50 (ascending by id, deterministic) are emitted and `visual/render`'s own
+summary names the real total — regardless of whether the overflow actually
+came from rendering, console, accessibility, or pixel comparison, since
+that row is where D10 puts the note.
+
+### The two firmable findings are `ack`, never `sign`
+
+`reference-missing` and `reference-changed-in-range` are governance calls —
+"I accept there is no reference yet" / "I approve this reference update" —
+not technical re-verifications a `qa-tester` attests to by reading code.
+`RequiresSignature("visual")` and `RequiresSignature("visual-target")` are
+both `false`; both kinds are firmed with `quality ack`, never `quality
+sign`.
+
+### Dogfooding: honestly impossible here, and what was done instead (D15)
+
+**This repository has no graphical interface** — a TUI (`internal/tui`,
+Bubble Tea), not a web UI. Unlike S2 (where the missing native format was
+the gap, closed by registering one), there is no equivalent fix here: the
+gap is the absence of a screen, and no product decision closes that. A TUI
+screenshot harness was considered and rejected — it would be a subproduct
+built inside mneme, with a font-rasterisation dependency the module does
+not have today, purely to satisfy an acceptance criterion. That is exactly
+the "fake work" this EPIC exists to eliminate.
+
+What *was* exercised, honestly:
+
+1. **This repository's own `.mneme/quality.toml` declares `[visual]` and
+   `[visual.compare]` complete and switched OFF, with `targets = []`** — a
+   declared, deliberate "off", distinct from never having been written at
+   all, and exactly the shape D3's own value-conditional validation makes
+   possible.
+2. **The half that IS mneme's own code runs against real data**: pixel
+   comparison runs on real PNGs encoded with `image/png` inside the test
+   (exact match, under/over/exactly-at tolerance, mismatched dimensions, a
+   corrupt file, a header declaring absurd dimensions); reference drift
+   runs on a real git repository with a real binary committed and modified
+   — the same fixture that proves `ChangedLines`' blindness from the other
+   side.
+3. **A full walkthrough with a TOY harness** that emits `visual-v1` over a
+   throwaway git repository — the same principle S5 used for its own
+   mutation walkthrough (a toy mutator, not `gremlins`, so the walkthrough
+   proves the *mechanism*, not a third-party tool). See the changes
+   document for the exact commands and output.
+4. **A reality check with a real browser harness**, reported with real
+   numbers — or an explicit statement that the environment could not
+   install one, never silently substituted by (3). See the changes
+   document.
+
+The honest limit, stated once more: the first real project that turns this
+on will hit friction this repository cannot surface — a declared target
+list that needs maintaining, a `command` that has to actually start and
+stop a server, a first reference someone has to approve by eye.
+
 ## Findings and `ack`: the constitution cannot be quietly weakened
 
 An implementer has write access to the repository and could, without any
@@ -1377,17 +1652,21 @@ full reasoning.
 - **CLI**: `mneme quality verify|status|ack|sign|report|baseline`
   (`internal/cli/quality.go`) — every subcommand hangs off the SAME
   `quality` command group; the top-level command count stays **42**
-  through S2/S3/S4/S5. `quality status` gains a `mutation:` summary line
-  (format, `report_path`, signed-equivalent count against the cupo,
-  survivor count) — no new flag, no new subcommand.
+  through S2/S3/S4/S5/S6. `quality status` gains a `visual:` summary line
+  (format, declared target count, whether nivel-2 comparison is on,
+  verified/failed target counts, missing-reference count) in S6, the same
+  shape the `mutation:` line already established — no new flag, no new
+  subcommand.
 - **MCP**: `quality_verify`, `quality_status`, `quality_ack`,
-  `quality_sign`, `quality_report` — **zero new tools in S5**; the surface
-  stays at **84 tools**. `quality_status`'s response gains a `mutation`
-  object with the same figures the CLI line above prints;
+  `quality_sign`, `quality_report` — **zero new tools in S5 or S6**; the
+  surface stays at **84 tools**. `quality_status`'s response gains a
+  `visual` object (S6) mirroring `mutation`'s own shape;
   `quality_sign`/`quality_ack`'s error mapping gains three sentinels
   (`ErrNotSignable`, `ErrRequiresSign`, `ErrEquivalentQuotaExceeded`) in
-  `mapServiceError` — the only line `internal/mcp/handlers.go` gains.
-  `internal/mcp/tools.go` is untouched.
+  `mapServiceError` — the only line `internal/mcp/handlers.go` gains. S6
+  adds **zero** new sentinels: a broken visual report is a `fail` row you
+  can query, never a `Verify` call that errors. `internal/mcp/tools.go` is
+  untouched by either S5 or S6.
   **`quality_baseline_update` is deliberately NOT an MCP tool** — see
   "`mneme quality baseline update|show`" above.
 - **HTTP: excluded, and not as a "gap to close later".** `quality_verify`
@@ -1411,14 +1690,25 @@ does not touch, rename, or remove `[spec.quality_gates]` — deciding whether
 to implement it, delete it, or document it as inert is a separate item
 (BL-170).
 
-## What this does NOT do (yet)
+## What this does NOT do
 
-Explicitly out of scope for S1+S2+S3+S4+S5 — the remaining spec in the EPIC
-builds on this exact registry without a schema change narrowing what came
-before:
+S1 through S6 — gates, coverage/ratchet, executable criteria, the budget
+against the graph, mutation over the diff, and now declarative visual
+verification — complete the EPIC's original plan (BL-163). None of the six
+narrowed the schema range any prior one already parsed. What none of them
+do, and what remains explicitly out of scope:
 
-- **S6 — Visual verification.** Project-declared routes/states/themes
-  rendered and checked; an optional, project-declared screenshot-diff tier.
+- **mneme does not know what "correct" looks like.** Every mechanism
+  measures a project-declared property (a threshold, a criterion, a
+  budget, a mutation score, a rendered screen) — it never invents doctrine
+  about what a correct program is.
+- **mneme does not supervise long-lived processes** (S6 D1) — a project's
+  own harness owns starting and stopping a server; mneme only runs a
+  command that terminates.
+- **mneme does not judge whether a screen is USABLE**, only whether it
+  rendered without an uncaught exception, whether declared accessibility
+  impacts are absent, and whether a capture matches its reference within a
+  declared tolerance (S6 D18).
 
 ## See also
 
