@@ -1240,3 +1240,53 @@ func TestQualityService_Status_ReportsMutationInfo(t *testing.T) {
 		t.Errorf("Mutation.SurvivorCount after Sign = %d, want 0 (the survivor is now acked, not a finding)", resp2.Mutation.SurvivorCount)
 	}
 }
+
+// TestBudgetExceeded_AckWorks_SignRefuses covers AC15's fourth row: a
+// `mutation/report` row in `finding` `budget-exceeded` is a GOVERNANCE
+// decision (the suite hung, nobody asserted anything) — `quality ack`
+// accepts it, `quality sign` refuses it (`ErrNotSignable`), since
+// RequiresSignature("mutation") is false.
+func TestBudgetExceeded_AckWorks_SignRefuses(t *testing.T) {
+	repoDir := newTestGitRepo(t)
+	spec := &model.Spec{ID: "SPEC-909", Project: "proj", Lane: model.LaneStandard, BaseSHA: headSHAFor(t, repoDir)}
+	g := &quality.Git{RepoDir: repoDir}
+	runner := &fakeGateRunner{results: map[string]quality.GateResult{
+		"mutation-report": {Status: quality.GateStatusFail, ExitCode: -1, Summary: "timeout tras 30m0s"},
+	}}
+	svcInternal := &QualityService{repoDir: repoDir, runner: runner}
+	checks, _, err := svcInternal.runMutationChecks(context.Background(), g, mutationTestConstitution(), spec, false, false)
+	if err != nil {
+		t.Fatalf("runMutationChecks: %v", err)
+	}
+	reportRow := findMutationCheck(t, checks, "mutation", "report")
+	if reportRow.Status != "finding" {
+		t.Fatalf("mutation/report status = %q, want finding", reportRow.Status)
+	}
+
+	// Persist this shape as a real certificate so Ack/Sign can be exercised
+	// through the store.
+	s := newTestQualityStore(t)
+	cert := &model.QualityCertificate{Project: "proj", SpecID: spec.ID, HeadSHA: "deadbeef", Verdict: model.QualityVerdictFindings}
+	if err := s.InsertCertificate(context.Background(), cert, checks); err != nil {
+		t.Fatalf("InsertCertificate: %v", err)
+	}
+	persisted, err := s.ListChecks(context.Background(), cert.ID)
+	if err != nil {
+		t.Fatalf("ListChecks: %v", err)
+	}
+	persistedReportRow := findMutationCheck(t, persisted, "mutation", "report")
+
+	svc := NewQualityService(s, "proj", t.TempDir(), &fakeGateRunner{})
+
+	if err := svc.Sign(context.Background(), model.QualitySignRequest{
+		CertificateID: cert.ID, Seq: persistedReportRow.Seq, By: "qa-tester", Evidence: "x",
+	}); !errors.Is(err, model.ErrNotSignable) {
+		t.Errorf("Sign(mutation/report budget-exceeded) error = %v, want ErrNotSignable", err)
+	}
+
+	if err := svc.Ack(context.Background(), model.QualityAckRequest{
+		CertificateID: cert.ID, Seq: persistedReportRow.Seq, By: "orch", Justification: "suite lenta, se acelerara en spec aparte",
+	}); err != nil {
+		t.Errorf("Ack(mutation/report budget-exceeded) = %v, want nil", err)
+	}
+}
