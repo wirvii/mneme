@@ -19,6 +19,7 @@ import (
 // bundle accessed through the install package. No database access is performed.
 type SkillsService struct {
 	skillsDir string
+	mirrors   []string
 }
 
 // NewSkillsService constructs a SkillsService targeting skillsDir as the
@@ -26,6 +27,14 @@ type SkillsService struct {
 // does not write to the filesystem.
 func NewSkillsService(skillsDir string) *SkillsService {
 	return &SkillsService{skillsDir: skillsDir}
+}
+
+// NewMirroredSkillsService constructs a service whose mutations are applied
+// to the primary directory and every runtime mirror. Reads and validation use
+// the primary copy; successful installs keep all runtime discovery paths in
+// sync from the same embedded bytes.
+func NewMirroredSkillsService(primary string, mirrors ...string) *SkillsService {
+	return &SkillsService{skillsDir: primary, mirrors: mirrors}
 }
 
 // SkillInfo summarises the combined state of a skill as seen from both the
@@ -114,6 +123,18 @@ func (s *SkillsService) List() ([]SkillInfo, error) {
 // is already installed and pinned:true, it returns model.ErrSkillPinned unless
 // force is true.
 func (s *SkillsService) Install(name string, force bool) error {
+	if err := s.installOne(name, force); err != nil {
+		return err
+	}
+	for _, mirror := range s.mirrors {
+		if err := (&SkillsService{skillsDir: mirror}).installOne(name, force); err != nil {
+			return fmt.Errorf("service: skills: mirror %s: %w", mirror, err)
+		}
+	}
+	return nil
+}
+
+func (s *SkillsService) installOne(name string, force bool) error {
 	if !s.isBundled(name) {
 		return fmt.Errorf("service: skills: install %q: %w", name, model.ErrSkillNotFound)
 	}
@@ -163,18 +184,30 @@ func (s *SkillsService) Install(name string, force bool) error {
 // Pin sets pinned:true in the installed SKILL.md for name.
 // Returns model.ErrSkillNotFound when the skill is not installed.
 func (s *SkillsService) Pin(name string) error {
-	return s.rewritePinned(name, true)
+	return s.rewritePinnedEverywhere(name, true)
 }
 
 // Unpin sets pinned:false in the installed SKILL.md for name.
 // Returns model.ErrSkillNotFound when the skill is not installed.
 func (s *SkillsService) Unpin(name string) error {
-	return s.rewritePinned(name, false)
+	return s.rewritePinnedEverywhere(name, false)
 }
 
 // Remove deletes the skill directory for name. Returns model.ErrSkillPinned
 // when the skill is pinned and force is false.
 func (s *SkillsService) Remove(name string, force bool) error {
+	if err := s.removeOne(name, force); err != nil {
+		return err
+	}
+	for _, mirror := range s.mirrors {
+		if err := (&SkillsService{skillsDir: mirror}).removeOne(name, force); err != nil && !errors.Is(err, model.ErrSkillNotFound) {
+			return fmt.Errorf("service: skills: mirror %s: %w", mirror, err)
+		}
+	}
+	return nil
+}
+
+func (s *SkillsService) removeOne(name string, force bool) error {
 	skillDir := filepath.Join(s.skillsDir, name)
 	skillMD := filepath.Join(skillDir, "SKILL.md")
 
@@ -304,6 +337,18 @@ func (s *SkillsService) rewritePinned(name string, pinned bool) error {
 
 	if err := os.WriteFile(skillMD, updated, 0o644); err != nil {
 		return fmt.Errorf("service: skills: write %s: %w", skillMD, err)
+	}
+	return nil
+}
+
+func (s *SkillsService) rewritePinnedEverywhere(name string, pinned bool) error {
+	if err := s.rewritePinned(name, pinned); err != nil {
+		return err
+	}
+	for _, mirror := range s.mirrors {
+		if err := (&SkillsService{skillsDir: mirror}).rewritePinned(name, pinned); err != nil {
+			return fmt.Errorf("service: skills: mirror %s: %w", mirror, err)
+		}
 	}
 	return nil
 }

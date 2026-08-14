@@ -9,6 +9,7 @@ import (
 
 	"github.com/wirvii/mneme/internal/model"
 	"github.com/wirvii/mneme/internal/service"
+	"github.com/wirvii/mneme/internal/skill"
 )
 
 // writeMinimalSkill creates a minimal skill directory in skillsDir for testing.
@@ -76,6 +77,40 @@ func TestSkillsService_List(t *testing.T) {
 	}
 	if !found {
 		t.Error("example-skill not found in List output")
+	}
+}
+
+func TestSkillsService_MirrorsRuntimeDestinations(t *testing.T) {
+	claudeDir := filepath.Join(t.TempDir(), ".claude", "skills")
+	codexDir := filepath.Join(t.TempDir(), ".agents", "skills")
+	svc := service.NewMirroredSkillsService(claudeDir, codexDir)
+
+	if err := svc.Install("mneme-init", false); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	for _, root := range []string{claudeDir, codexDir} {
+		if _, err := os.Stat(filepath.Join(root, "mneme-init", "SKILL.md")); err != nil {
+			t.Errorf("missing mirrored skill under %s: %v", root, err)
+		}
+	}
+
+	if err := svc.Pin("mneme-init"); err != nil {
+		t.Fatalf("Pin: %v", err)
+	}
+	for _, root := range []string{claudeDir, codexDir} {
+		parsed, err := skill.ParseFile(filepath.Join(root, "mneme-init", "SKILL.md"))
+		if err != nil || !parsed.Pinned {
+			t.Errorf("mirror %s pinned=%v err=%v", root, parsed != nil && parsed.Pinned, err)
+		}
+	}
+
+	if err := svc.Remove("mneme-init", true); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	for _, root := range []string{claudeDir, codexDir} {
+		if _, err := os.Stat(filepath.Join(root, "mneme-init")); !os.IsNotExist(err) {
+			t.Errorf("skill survived removal under %s: %v", root, err)
+		}
 	}
 }
 

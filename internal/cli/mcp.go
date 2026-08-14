@@ -81,11 +81,14 @@ Configure your agent to run: mneme mcp`,
 				toolsMode = cfg.MCP.Tools
 			}
 
-			// Build a SkillsService targeting ~/.claude/skills/.
+			// Build a SkillsService targeting both runtime discovery paths.
 			home, homeErr := os.UserHomeDir()
 			var skillsSvc *service.SkillsService
 			if homeErr == nil {
-				skillsSvc = service.NewSkillsService(filepath.Join(home, ".claude", "skills"))
+				skillsSvc = service.NewMirroredSkillsService(
+					filepath.Join(home, ".claude", "skills"),
+					filepath.Join(home, ".agents", "skills"),
+				)
 			}
 
 			// Build a ModelsService targeting the default config path.

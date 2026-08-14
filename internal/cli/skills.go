@@ -49,15 +49,18 @@ Subcommands:
 	return cmd
 }
 
-// skillsSvc constructs a SkillsService targeting the default skills directory
-// (~/.claude/skills/). CLI commands call this inline so they do not depend on
+// skillsSvc constructs a SkillsService targeting both supported runtime
+// discovery directories. CLI commands call this inline so they do not depend on
 // the shared initService() / initSDDService() infrastructure.
 func newSkillsSvc() (*service.SkillsService, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, fmt.Errorf("cannot determine home directory: %w", err)
 	}
-	return service.NewSkillsService(filepath.Join(home, ".claude", "skills")), nil
+	return service.NewMirroredSkillsService(
+		filepath.Join(home, ".claude", "skills"),
+		filepath.Join(home, ".agents", "skills"),
+	), nil
 }
 
 // newSkillsListCmd returns the "mneme skills list" subcommand.
@@ -367,4 +370,3 @@ If no validation/run.sh exists, reports an informational message and exits 1.`,
 
 	return cmd
 }
-
