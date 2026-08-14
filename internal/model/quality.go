@@ -205,6 +205,47 @@ type QualityStatusResponse struct {
 	// with a row, not an argument). Nil when ID was not supplied, or no
 	// budget.toml exists for it yet.
 	Budget *QualityBudgetInfo `json:"budget,omitempty"`
+
+	// Mutation reports the mutation mechanism's declared state and, when
+	// req.ID was supplied and a certificate exists, its last certified
+	// figures (SPEC-119 S5 D14) — read-only, never executes anything. Nil
+	// when the constitution does not declare [mutation] at all (schema <
+	// 5).
+	Mutation *QualityMutationInfo `json:"mutation,omitempty"`
+}
+
+// QualityMutationInfo is quality_status's read-only projection of the
+// mutation mechanism's declared configuration plus the latest
+// certificate's own recorded figures (SPEC-119 D14) — mirrors
+// QualityBudgetInfo's shape for the same reason: a human running `mneme
+// quality status` should see the declared format/report_path/cupo
+// WITHOUT having to open .mneme/quality.toml, and the last certified
+// counts WITHOUT re-parsing a mutation report.
+type QualityMutationInfo struct {
+	// Format is the declared [mutation].format ("gremlins" | "mutants-v1").
+	Format string `json:"format"`
+
+	// ReportPath is [mutation].report_path, relative to the repository root.
+	ReportPath string `json:"report_path"`
+
+	// MaxEquivalent is the declared cupo (D9) — 0 means no escape hatch at
+	// all, a legitimate, explicit choice.
+	MaxEquivalent int `json:"max_equivalent"`
+
+	// SignedEquivalent is how many `mutant` rows are currently `acked` on
+	// the LATEST certificate — the count D9's own cupo is compared
+	// against.
+	SignedEquivalent int `json:"signed_equivalent"`
+
+	// SurvivorCount is the LATEST certificate's total count of unsigned
+	// `mutant` rows still in `finding` — zero when there is none, or when
+	// no certificate exists yet.
+	SurvivorCount int `json:"survivor_count"`
+
+	// ByStatus is the LATEST certificate's full per-status mutant tally,
+	// verbatim from mutation/score's own detail (D1 pata c's vocabulary) —
+	// nil when no certificate has evaluated the mutation mechanism yet.
+	ByStatus map[string]int `json:"by_status,omitempty"`
 }
 
 // QualityBudgetInfo is quality_status's read-only projection of a spec's
@@ -341,9 +382,10 @@ type QualitySignRequest struct {
 	// CertificateID is the certificate the criterion row belongs to.
 	CertificateID string `json:"cert_id"`
 
-	// Seq is the criterion row's position within the certificate's checks.
-	// Sign only accepts rows whose Kind starts with "criterion"
-	// (ErrNotACriterion otherwise).
+	// Seq is the attested row's position within the certificate's checks.
+	// Sign accepts a row iff quality.RequiresSignature(kind) — a criterion
+	// row (SPEC-117) or a `mutant` survivor row (SPEC-119 D8) —
+	// ErrNotSignable otherwise.
 	Seq int `json:"seq"`
 
 	// By identifies who is signing — the qa-tester, channelled through the
