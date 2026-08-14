@@ -78,6 +78,13 @@ func ContractFromClaude(content string, archetype Role) (AgentContract, error) {
 	if closeAt < 0 {
 		return AgentContract{}, fmt.Errorf("subagents: contract from claude: unterminated frontmatter")
 	}
+	if _, known := PermissionTable[archetype]; !known {
+		matched, matchErr := archetypeFromClaudeCapabilities(fields["tools"], fields["permissionMode"])
+		if matchErr != nil {
+			return AgentContract{}, matchErr
+		}
+		archetype = matched
+	}
 	contract := AgentContract{
 		Role:         Role(fields["name"]),
 		Archetype:    archetype,
@@ -100,4 +107,25 @@ func ContractFromClaude(content string, archetype Role) (AgentContract, error) {
 		return AgentContract{}, fmt.Errorf("subagents: contract from claude: %w", err)
 	}
 	return contract, nil
+}
+
+func archetypeFromClaudeCapabilities(tools, permissionMode string) (Role, error) {
+	var matches []Role
+	for role, permission := range PermissionTable {
+		if permission.ToolsString() == tools && permission.PermissionMode == permissionMode {
+			matches = append(matches, role)
+		}
+	}
+	if len(matches) == 0 {
+		return "", fmt.Errorf("subagents: contract from claude: capability envelope has no safe canonical archetype")
+	}
+	// Several implementer roles intentionally share the same envelope. Their
+	// Codex security projection is identical, so use the stable generic
+	// backend archetype rather than depending on map iteration order.
+	for _, role := range matches {
+		if role == RoleBackend {
+			return role, nil
+		}
+	}
+	return matches[0], nil
 }

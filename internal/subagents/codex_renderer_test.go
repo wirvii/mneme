@@ -71,3 +71,14 @@ func TestContractFromClaude_ImportsSemanticsNotCapabilities(t *testing.T) {
 		t.Fatalf("Claude model leaked into canonical Codex projection: %q", contract.Model)
 	}
 }
+
+func TestContractFromClaude_CustomRoleInfersSafeArchetype(t *testing.T) {
+	content := "---\nname: payments\ndescription: owns payments\ntools: " + PermissionTable[RoleBackend].ToolsString() + "\npermissionMode: bypassPermissions\n---\n\nUse the ledger.\n"
+	contract, err := ContractFromClaude(content, "payments")
+	if err != nil {
+		t.Fatalf("ContractFromClaude: %v", err)
+	}
+	if contract.Role != "payments" || contract.EffectiveArchetype() != RoleBackend {
+		t.Fatalf("unexpected custom contract: %#v", contract)
+	}
+}
