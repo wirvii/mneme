@@ -1122,6 +1122,11 @@ func regenerateManifestEntries(entries []service.ManifestEntry, role string, dry
 			}
 			if writeErr := os.WriteFile(codexAbs, []byte(codexContent), 0o644); writeErr != nil {
 				_ = os.WriteFile(abs, existing, 0o644)
+				if codexReadErr == nil {
+					_ = os.WriteFile(codexAbs, codexExisting, 0o644)
+				} else if os.IsNotExist(codexReadErr) {
+					_ = os.Remove(codexAbs)
+				}
 				result.Error = writeErr.Error()
 				results = append(results, result)
 				continue

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"slices"
 	"strings"
 
 	"github.com/wirvii/mneme/internal/model"
@@ -34,12 +35,12 @@ type ProfileService struct {
 	// NewProfileService.
 	sub *SubagentService
 
-	// skillsDir is the host-level Claude Code skills directory
-	// (~/.claude/skills), injected the same way SkillsService's own
+	// skillsDir is the primary host-level skills directory, injected the same way SkillsService's own
 	// skillsDir is — this package never resolves HOME itself. Empty unless
 	// WithProfileSkillsDir is passed; Activate errors if a profile declares
 	// skills but this is unset.
-	skillsDir string
+	skillsDir    string
+	skillMirrors []string
 
 	// configPath is the config.toml path (typically config.DefaultPath())
 	// this service reads/writes [profiles].default against (SPEC-093 §3).
@@ -91,11 +92,24 @@ func WithProfileSubagentService(sub *SubagentService) ProfileOption {
 	return func(s *ProfileService) { s.sub = sub }
 }
 
-// WithProfileSkillsDir wires the host-level skills directory
-// (~/.claude/skills) into the ProfileService, so Activate/Deactivate know
-// where to materialize/remove a profile's skills/ entries.
+// WithProfileSkillsDir wires the primary host-level skills directory into
+// the ProfileService, so Activate/Deactivate know where to materialize/remove
+// a profile's skills/ entries.
 func WithProfileSkillsDir(dir string) ProfileOption {
 	return func(s *ProfileService) { s.skillsDir = dir }
+}
+
+// WithProfileSkillMirrors adds runtime discovery directories that receive
+// the same profile-declared skills as the primary directory.
+func WithProfileSkillMirrors(dirs ...string) ProfileOption {
+	return func(s *ProfileService) {
+		for _, dir := range dirs {
+			if dir == "" || dir == s.skillsDir || slices.Contains(s.skillMirrors, dir) {
+				continue
+			}
+			s.skillMirrors = append(s.skillMirrors, dir)
+		}
+	}
 }
 
 // WithProfileConfigPath wires the config.toml path into the ProfileService

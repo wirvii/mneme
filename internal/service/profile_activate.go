@@ -204,7 +204,7 @@ func (s *ProfileService) Activate(ctx context.Context, in ActivationInput) (*Act
 		return nil, fmt.Errorf("service: profile: activate: read project profile: %w", err)
 	}
 
-	if failures := preflightActivate(in.RepoRoot, contents, s.skillsDir, at); len(failures) > 0 {
+	if failures := preflightActivate(in.RepoRoot, contents, append([]string{s.skillsDir}, s.skillMirrors...), at); len(failures) > 0 {
 		return nil, fmt.Errorf("service: profile: activate: preflight failed: %s", strings.Join(failures, "; "))
 	}
 
@@ -375,25 +375,31 @@ func (s *ProfileService) materializeSkills(c *profile.Contents, repoRoot string,
 	var artifacts []profile.LockArtifact
 	var installed []string
 	for _, name := range c.Skills {
-		dest := filepath.Join(s.skillsDir, name)
+		installedThisSkill := false
+		for _, skillsRoot := range append([]string{s.skillsDir}, s.skillMirrors...) {
+			dest := filepath.Join(skillsRoot, name)
 
-		if existing, readErr := os.ReadFile(filepath.Join(dest, "SKILL.md")); readErr == nil {
-			if parsed, parseErr := skill.Parse(existing); parseErr == nil && parsed.Pinned {
-				continue
+			if existing, readErr := os.ReadFile(filepath.Join(dest, "SKILL.md")); readErr == nil {
+				if parsed, parseErr := skill.Parse(existing); parseErr == nil && parsed.Pinned {
+					continue
+				}
 			}
-		}
 
-		artifact, err := displaceAndBuildArtifact(profile.LockArtifactKindSkill, dest, repoRoot, at, prevOwned)
-		if err != nil {
-			return nil, nil, fmt.Errorf("skill %s: %w", name, err)
-		}
+			artifact, err := displaceAndBuildArtifact(profile.LockArtifactKindSkill, dest, repoRoot, at, prevOwned)
+			if err != nil {
+				return nil, nil, fmt.Errorf("skill %s: %w", name, err)
+			}
 
-		src := path.Join(c.SkillsDir, name)
-		if err := copyFSDir(c.FS, src, dest); err != nil {
-			return nil, nil, fmt.Errorf("copy skill %s: %w", name, err)
+			src := path.Join(c.SkillsDir, name)
+			if err := copyFSDir(c.FS, src, dest); err != nil {
+				return nil, nil, fmt.Errorf("copy skill %s: %w", name, err)
+			}
+			artifacts = append(artifacts, artifact)
+			installedThisSkill = true
 		}
-		artifacts = append(artifacts, artifact)
-		installed = append(installed, name)
+		if installedThisSkill {
+			installed = append(installed, name)
+		}
 	}
 	return artifacts, installed, nil
 }
@@ -1010,21 +1016,26 @@ func (s *ProfileService) DetectStaleness(repoRoot string, cached profile.Snapsho
 // restrictions a bare os.Stat can't see — and so it behaves identically on
 // Windows, where Unix permission bits do not apply (this repo's other
 // OS-specific branches are all runtime.GOOS checks, never build tags).
-func preflightActivate(repoRoot string, c *profile.Contents, skillsDir string, at time.Time) []string {
+func preflightActivate(repoRoot string, c *profile.Contents, skillsDirs []string, at time.Time) []string {
 	var failures []string
 
 	if len(c.Agents) > 0 {
-		agentsDir := filepath.Join(repoRoot, ".claude", "agents")
-		if msg := checkDirWritable(agentsDir); msg != "" {
-			failures = append(failures, msg)
+		for _, agentsDir := range []string{filepath.Join(repoRoot, ".claude", "agents"), filepath.Join(repoRoot, ".codex", "agents")} {
+			if msg := checkDirWritable(agentsDir); msg != "" {
+				failures = append(failures, msg)
+			}
 		}
 	}
 
 	if len(c.Skills) > 0 {
-		if skillsDir == "" {
+		if len(skillsDirs) == 0 || skillsDirs[0] == "" {
 			failures = append(failures, "profile declares skills but no skills directory is configured")
-		} else if msg := checkDirWritable(skillsDir); msg != "" {
-			failures = append(failures, msg)
+		} else {
+			for _, skillsDir := range skillsDirs {
+				if msg := checkDirWritable(skillsDir); msg != "" {
+					failures = append(failures, msg)
+				}
+			}
 		}
 	}
 

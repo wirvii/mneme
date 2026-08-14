@@ -41,8 +41,10 @@ func newHandlers(svc *service.MemoryService, sdd *service.SDDService, skillsSvc 
 	subagentSvc := service.NewSubagentService(svc)
 
 	skillsDir := ""
+	codexSkillsDir := ""
 	if home, err := os.UserHomeDir(); err == nil {
 		skillsDir = filepath.Join(home, ".claude", "skills")
+		codexSkillsDir = filepath.Join(home, ".agents", "skills")
 	}
 
 	return &handlers{
@@ -62,6 +64,7 @@ func newHandlers(svc *service.MemoryService, sdd *service.SDDService, skillsSvc 
 			service.WithProfileMemoryService(svc),
 			service.WithProfileSubagentService(subagentSvc),
 			service.WithProfileSkillsDir(skillsDir),
+			service.WithProfileSkillMirrors(codexSkillsDir),
 			service.WithProfileConfigPath(config.DefaultPath()),
 			// SPEC-096 §6: parity with the CLI's SessionStart/newActivatingProfileSvc
 			// wiring — profile_use is not officially routed at the embedded

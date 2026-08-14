@@ -541,4 +541,3 @@ func buildTarGz(t *testing.T, entryName string, content []byte) []byte {
 	}
 	return buf.Bytes()
 }
-

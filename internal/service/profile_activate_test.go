@@ -231,6 +231,54 @@ func TestActivate_MaterializesEverythingAndWritesLock(t *testing.T) {
 	}
 }
 
+func TestActivate_MirrorsProfileSkillsAcrossRuntimes(t *testing.T) {
+	profilesDir := t.TempDir()
+	repoRoot := t.TempDir()
+	claudeSkillsDir := t.TempDir()
+	codexSkillsDir := t.TempDir()
+	profileDir := filepath.Join(profilesDir, "acme")
+	writeProfileFile(t, filepath.Join(profileDir, profile.ManifestFileName), "name=\"acme\"\nversion=\"1.0.0\"\n")
+	writeProfileFile(t, filepath.Join(profileDir, "skills", "shared-skill", "SKILL.md"), "---\nname: shared-skill\npinned: false\n---\n\n# Shared skill\n")
+
+	mem := newTestService(t)
+	svc := service.NewProfileService(profilesDir, false,
+		service.WithProfileMemoryService(mem),
+		service.WithProfileSubagentService(service.NewSubagentService(mem)),
+		service.WithProfileSkillsDir(claudeSkillsDir),
+		service.WithProfileSkillMirrors(codexSkillsDir, "", claudeSkillsDir, codexSkillsDir),
+	)
+
+	result, err := svc.Activate(context.Background(), service.ActivationInput{
+		RepoRoot: repoRoot,
+		Name:     "acme",
+		Commit:   "abc123",
+	})
+	if err != nil {
+		t.Fatalf("Activate: %v", err)
+	}
+	if len(result.Skills) != 1 || result.Skills[0] != "shared-skill" {
+		t.Fatalf("Skills = %v, want [shared-skill]", result.Skills)
+	}
+	for _, root := range []string{claudeSkillsDir, codexSkillsDir} {
+		if _, statErr := os.Stat(filepath.Join(root, "shared-skill", "SKILL.md")); statErr != nil {
+			t.Errorf("expected mirrored skill under %s: %v", root, statErr)
+		}
+	}
+	lock, _, err := svc.ActiveLock(repoRoot)
+	if err != nil {
+		t.Fatalf("ActiveLock: %v", err)
+	}
+	got := 0
+	for _, artifact := range lock.Artifacts {
+		if artifact.Kind == profile.LockArtifactKindSkill {
+			got++
+		}
+	}
+	if got != 2 {
+		t.Errorf("skill artifacts = %d, want 2", got)
+	}
+}
+
 // TestActivate_SkillPinnedIsSkipped verifies that an already-installed,
 // pinned skill is never overwritten by Activate.
 func TestActivate_SkillPinnedIsSkipped(t *testing.T) {

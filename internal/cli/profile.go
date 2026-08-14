@@ -106,14 +106,17 @@ func newActivatingProfileSvc() (*service.ProfileService, func(), error) {
 	cfg := mem.Config()
 	sub := service.NewSubagentService(mem)
 	skillsDir := ""
+	codexSkillsDir := ""
 	if home, herr := os.UserHomeDir(); herr == nil {
 		skillsDir = filepath.Join(home, ".claude", "skills")
+		codexSkillsDir = filepath.Join(home, ".agents", "skills")
 	}
 
 	svc := service.NewProfileService(cfg.ProfilesDir(), false,
 		service.WithProfileMemoryService(mem),
 		service.WithProfileSubagentService(sub),
 		service.WithProfileSkillsDir(skillsDir),
+		service.WithProfileSkillMirrors(codexSkillsDir),
 		service.WithProfileConfigPath(config.DefaultPath()),
 		service.WithDefaultProfileFS(install.DefaultProfileFS()),
 	)
