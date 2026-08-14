@@ -3,6 +3,8 @@ package subagents
 import (
 	"strings"
 	"testing"
+
+	"github.com/pelletier/go-toml/v2"
 )
 
 func TestRenderCodex_AllBuiltinsAndCustomRole(t *testing.T) {
@@ -22,6 +24,10 @@ func TestRenderCodex_AllBuiltinsAndCustomRole(t *testing.T) {
 				if !strings.Contains(first, key) {
 					t.Errorf("missing %q in:\n%s", key, first)
 				}
+			}
+			var parsed map[string]any
+			if err := toml.Unmarshal([]byte(first), &parsed); err != nil {
+				t.Fatalf("native TOML does not parse: %v", err)
 			}
 		})
 	}

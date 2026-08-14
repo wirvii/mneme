@@ -1088,11 +1088,40 @@ func regenerateManifestEntries(entries []service.ManifestEntry, role string, dry
 
 		_, newVersion, _ := managedblock.ReadText(regenerated, "agent-fixed")
 		newChecksum := checksumOfSubagentContent(regenerated)
+		contract, contractErr := subagents.ContractFromClaude(regenerated, e.EffectiveArchetype())
+		if contractErr != nil {
+			result.Error = contractErr.Error()
+			results = append(results, result)
+			continue
+		}
+		codexContent, codexErr := subagents.RenderCodex(contract)
+		if codexErr != nil {
+			result.Error = codexErr.Error()
+			results = append(results, result)
+			continue
+		}
+		codexRel := filepath.ToSlash(filepath.Join(".codex", "agents", string(e.Role)+".toml"))
+		codexAbs := filepath.Join(root, filepath.FromSlash(codexRel))
+		codexChecksum := checksumOfSubagentContent(codexContent)
+		codexExisting, codexReadErr := os.ReadFile(codexAbs)
+		codexChanged := codexReadErr != nil || checksumOfSubagentContent(string(codexExisting)) != codexChecksum
 		result.NewVersion = newVersion
-		result.Changed = newChecksum != e.Checksum
+		result.Changed = newChecksum != e.Checksum || codexChanged
 
 		if !dryRun {
 			if writeErr := os.WriteFile(abs, []byte(regenerated), 0o644); writeErr != nil {
+				result.Error = writeErr.Error()
+				results = append(results, result)
+				continue
+			}
+			if mkdirErr := os.MkdirAll(filepath.Dir(codexAbs), 0o755); mkdirErr != nil {
+				_ = os.WriteFile(abs, existing, 0o644)
+				result.Error = mkdirErr.Error()
+				results = append(results, result)
+				continue
+			}
+			if writeErr := os.WriteFile(codexAbs, []byte(codexContent), 0o644); writeErr != nil {
+				_ = os.WriteFile(abs, existing, 0o644)
 				result.Error = writeErr.Error()
 				results = append(results, result)
 				continue
@@ -1109,6 +1138,10 @@ func regenerateManifestEntries(entries []service.ManifestEntry, role string, dry
 			updated[i].Path = relSlash
 			updated[i].Version = newVersion
 			updated[i].Checksum = newChecksum
+			updated[i].Artifacts = []service.AgentArtifact{
+				{Runtime: subagents.RuntimeClaudeCode, Path: relSlash, Checksum: newChecksum},
+				{Runtime: subagents.RuntimeCodex, Path: codexRel, Checksum: codexChecksum},
+			}
 			updated[i].GeneratedAt = time.Now().UTC()
 			changedAny = changedAny || result.Changed || pathMigrated
 		}

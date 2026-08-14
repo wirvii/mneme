@@ -144,8 +144,8 @@ func TestRegenerateManifestEntries_MigratesLegacyAbsolutePath_ZeroBehaviorDiff(t
 	if len(results) != 1 || results[0].Error != "" {
 		t.Fatalf("results = %+v, want one error-free result", results)
 	}
-	if results[0].Changed {
-		t.Error("results[0].Changed = true, want false — content was already current, only Path migrates")
+	if !results[0].Changed {
+		t.Error("results[0].Changed = false, want true — the missing Codex projection must be created")
 	}
 
 	// The hard restriction: the file on disk is byte-for-byte unchanged, at
@@ -159,6 +159,9 @@ func TestRegenerateManifestEntries_MigratesLegacyAbsolutePath_ZeroBehaviorDiff(t
 	}
 	if _, statErr := os.Stat(path); statErr != nil {
 		t.Fatalf("file must still exist at the exact same location: %v", statErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, ".codex", "agents", "backend.toml")); statErr != nil {
+		t.Fatalf("Codex projection must be created: %v", statErr)
 	}
 
 	// Only the PERSISTED Path representation changes, to the relative form.
