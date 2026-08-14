@@ -433,6 +433,68 @@ func coverageProfileFailure(summary string, res quality.GateResult) ([]*model.Qu
 	return append(checks, skippedChecks[1:]...), append(pure, skippedPure[1:]...)
 }
 
+// prepareDeclaredOutput readies relPath to receive a declared command's
+// OUTPUT (SPEC-115 D12, extracted verbatim from runCoverageChecks by
+// SPEC-119 P7 with NO change in behaviour — S2's own coverage tests are
+// this refactor's guardian): it refuses if relPath is tracked by git (an
+// output must be a .gitignore'd artifact, never a file the command's own
+// producer shares with the working tree across runs), refuses if relPath
+// is a directory, and deletes any stale file left over from a previous
+// run — so the caller's own execution can never read leftover data from a
+// different commit and mistake it for this run's evidence.
+//
+// outputName is the full noun phrase used in the "is tracked" message
+// (coverage's own wording is "el perfil de cobertura"; mutation's is "el
+// informe de mutación") and staleNoun is the bare noun used in the
+// "couldn't delete the stale X" message ("perfil" / "informe") — two
+// parameters, not one, because the ORIGINAL coverage wording ("el perfil
+// de cobertura es una SALIDA…" vs "el perfil rancio…") uses the noun two
+// different ways, and this refactor's whole guardian is that neither
+// sentence changes by even one word for coverage's own call site.
+//
+// problem is empty and ok is true when relPath is ready (absent, or
+// successfully deleted); problem is non-empty and ok is false when the
+// caller's own `fail` row should use problem as its Summary; err is
+// non-nil ONLY when git itself could not answer IsTracked — a condition
+// the ORIGINAL runCoverageChecks propagated as a hard error (not a check
+// row) via Verify's own %w-wrapped return, and this refactor preserves
+// that exactly: it is not this helper's call to turn an infrastructure
+// failure into evidence about the project's output file.
+func prepareDeclaredOutput(g *quality.Git, repoDir, relPath, outputName, staleNoun string) (problem string, ok bool, err error) {
+	fullPath := filepath.Join(repoDir, relPath)
+
+	tracked, trackErr := g.IsTracked(relPath)
+	if trackErr != nil {
+		return "", false, trackErr
+	}
+	if tracked {
+		return fmt.Sprintf(
+			"%s esta versionado por git (git ls-files --error-unmatch) — %s es una SALIDA del comando declarado y debe estar en .gitignore, no en el arbol de trabajo",
+			relPath, outputName,
+		), false, nil
+	}
+
+	// D12: delete any STALE output before running Command. Guardrails:
+	// never a directory, never a tracked file (ruled out above), and the
+	// path is already validated relative-without-".." by Parse.
+	// .golangci.yml excludes os.Remove from errcheck (R6/CLAUDE.md) — its
+	// error is handled explicitly here regardless.
+	info, statErr := os.Stat(fullPath)
+	switch {
+	case statErr == nil:
+		if info.IsDir() {
+			return fmt.Sprintf("%s es un directorio — mneme se niega a borrarlo", relPath), false, nil
+		}
+		if rmErr := os.Remove(fullPath); rmErr != nil {
+			return fmt.Sprintf("no se pudo borrar el %s rancio %s: %s", staleNoun, relPath, rmErr), false, nil
+		}
+	case !os.IsNotExist(statErr):
+		return fmt.Sprintf("no se pudo comprobar %s antes de borrarlo: %s", relPath, statErr), false, nil
+	}
+
+	return "", true, nil
+}
+
 // runCoverageChecks emits the three coverage rows D3 declares (#1-3):
 // coverage/profile, coverage/changed-files-in-profile, coverage/diff-lines.
 // All three are "skipped" when gatesStopped, or when [coverage] is
@@ -467,40 +529,12 @@ func (svc *QualityService) runCoverageChecks(
 	cov := constitution.Coverage
 	profilePath := filepath.Join(svc.repoDir, cov.ProfilePath)
 
-	tracked, err := g.IsTracked(cov.ProfilePath)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("service: quality: verify: coverage: is tracked: %w", err)
+	problem, ready, prepErr := prepareDeclaredOutput(g, svc.repoDir, cov.ProfilePath, "el perfil de cobertura", "perfil")
+	if prepErr != nil {
+		return nil, nil, nil, fmt.Errorf("service: quality: verify: coverage: is tracked: %w", prepErr)
 	}
-	if tracked {
-		checks, pure := coverageProfileFailure(fmt.Sprintf(
-			"%s esta versionado por git (git ls-files --error-unmatch) — el perfil de cobertura es una SALIDA del comando declarado y debe estar en .gitignore, no en el arbol de trabajo",
-			cov.ProfilePath,
-		), quality.GateResult{})
-		return checks, pure, nil, nil
-	}
-
-	// D12: delete any STALE profile before running Command. R6's
-	// guardrails: never a directory, never a tracked file (ruled out
-	// above), and the path is already validated relative-without-".." by
-	// Parse. .golangci.yml excludes os.Remove from errcheck (R6/CLAUDE.md)
-	// — its error is handled explicitly here regardless.
-	if info, statErr := os.Stat(profilePath); statErr == nil {
-		if info.IsDir() {
-			checks, pure := coverageProfileFailure(fmt.Sprintf(
-				"%s es un directorio — mneme se niega a borrarlo", cov.ProfilePath,
-			), quality.GateResult{})
-			return checks, pure, nil, nil
-		}
-		if rmErr := os.Remove(profilePath); rmErr != nil {
-			checks, pure := coverageProfileFailure(fmt.Sprintf(
-				"no se pudo borrar el perfil rancio %s: %s", cov.ProfilePath, rmErr,
-			), quality.GateResult{})
-			return checks, pure, nil, nil
-		}
-	} else if !os.IsNotExist(statErr) {
-		checks, pure := coverageProfileFailure(fmt.Sprintf(
-			"no se pudo comprobar %s antes de borrarlo: %s", cov.ProfilePath, statErr,
-		), quality.GateResult{})
+	if !ready {
+		checks, pure := coverageProfileFailure(problem, quality.GateResult{})
 		return checks, pure, nil, nil
 	}
 
@@ -562,10 +596,11 @@ func (svc *QualityService) runCoverageChecks(
 		if mbErr != nil {
 			return nil, nil, nil, fmt.Errorf("service: quality: verify: coverage: merge base: %w", mbErr)
 		}
-		changed, err = g.ChangedLines(mergeBase, "HEAD")
-		if err != nil {
-			return nil, nil, nil, fmt.Errorf("service: quality: verify: coverage: changed lines: %w", err)
+		changedLines, clErr := g.ChangedLines(mergeBase, "HEAD")
+		if clErr != nil {
+			return nil, nil, nil, fmt.Errorf("service: quality: verify: coverage: changed lines: %w", clErr)
 		}
+		changed = changedLines
 	}
 
 	// NormalizeSourcePath (D14) reconciles each profile entry against the
