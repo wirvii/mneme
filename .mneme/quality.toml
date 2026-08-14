@@ -129,10 +129,18 @@ test_reach_depth = 3
 # suite completa UNA VEZ POR MUTANTE, la comprobacion mas cara del EPIC.
 enabled = false
 
-# gremlins (go-gremlins/gremlins) es un mutador de Go vivo cuyo vocabulario
-# de estados YA distingue el mutante no viable (NOT VIABLE) del que compilo
-# y fallo un test (KILLED) — el requisito de D1 pata b para admitir un
-# formato. Declarado, nunca adivinado.
+# gremlins (go-gremlins/gremlins) es un mutador de Go vivo. Su VOCABULARIO
+# declara el estado NOT VIABLE (el mutante que no compilo), distinto de
+# KILLED — el minimo que el registro de formatos exige (D1 pata b: PUEDE
+# expresar la no viabilidad). PERO, verificado durante SPEC-119: en Go
+# 1.26+, `go test` devuelve el MISMO exit code (1) tanto si un test falla
+# como si el paquete no compila, asi que gremlins en la practica NUNCA
+# reporta NOT VIABLE en este toolchain — un fallo de compilacion se
+# clasifica como KILLED. Efecto real, sin suavizar: la puntuacion de
+# mutacion puede venir INFLADA (no falsos rojos — falsa confianza), y el
+# cupo de no-viables (max_not_viable_pct, mas abajo) no cazara ese caso
+# concreto con gremlins hoy. Ver docs/quality.md (S5) y BL-178 (las
+# salidas posibles para cerrar esta brecha). Declarado, nunca adivinado.
 format = "gremlins"
 
 # El target de este mismo Makefile. {{BASE_SHA}} se sustituye por la

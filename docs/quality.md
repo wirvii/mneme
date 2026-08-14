@@ -965,27 +965,42 @@ for the absence of the others to be noticed:
    declare its test gate `required = false`; if it is red, every subsequent
    red is unattributable, so mutation's own premise is **stricter**: *zero
    gates in `fail`*, full stop.
-2. **The report format itself must be able to say "this never compiled."**
+2. **The report format itself must be able to EXPRESS "this never
+   compiled" — a requirement on the format's VOCABULARY, not a guarantee
+   the tool actually EMITS it faithfully at runtime.**
    `MutantReportParser`'s registry contract (`TestMutantFormats_RegistryContract`,
    G5) mechanically refuses to admit a format whose fixture cannot produce
    at least one `not_viable`, one `killed`, one `lived` mutant — a mutator
-   whose vocabulary folds "didn't compile" into "killed" can never be
-   registered.
+   whose vocabulary lacks that state ENTIRELY can never be registered. What
+   this does **not** guarantee, verified during this spec's own
+   implementation and not as a hypothesis: `gremlins` declares `NOT VIABLE`
+   in its vocabulary (satisfies the letter of this leg) but, on Go 1.26+,
+   never actually emits it — see "A real, verified limitation" below and
+   R2 in `spec.md`. The registry contract still closes the worst case (a
+   format whose vocabulary could NEVER express non-viability); it does not
+   close the case of a format that declares the right vocabulary but whose
+   implementation doesn't exercise it faithfully.
 3. **The arithmetic never counts `not_viable` as a death.** `quality.Tally`
    never adds a `not_viable` mutant to `Survivors`, and its `ByStatus` count
    is reported, never silently dropped (`mutation/score`'s recount is
    verbatim).
 4. **The viability quota (`mutation/viability`) is the guardian that closes
-   the loophole the other three legs leave open.** An informe where
-   EVERY in-diff mutant is `not_viable` has **zero survivors** — and would
-   read as an unqualified pass without this row. Above
-   `max_not_viable_pct`, `mutation/viability` is a `finding`: the certificate
-   cannot be `pass` even though nothing "survived". This is the single most
-   important guardian in the spec (`TestRunMutationChecks_Viability`'s
-   all-not-viable case, verified with the mutation applied and reverted by
-   hand: forcing the row to always `pass` makes the all-not-viable
-   certificate come back `pass` — exactly the fabricated green this design
-   exists to prevent).
+   the loophole the other three legs leave open — PROVIDED the tool
+   reports `not_viable` faithfully.** An informe where EVERY in-diff
+   mutant is genuinely `not_viable` has **zero survivors** — and would read
+   as an unqualified pass without this row. Above `max_not_viable_pct`,
+   `mutation/viability` is a `finding`: the certificate cannot be `pass`
+   even though nothing "survived". This is the single most important
+   guardian in the spec (`TestRunMutationChecks_Viability`'s all-not-viable
+   case, verified with the mutation applied and reverted by hand: forcing
+   the row to always `pass` makes the all-not-viable certificate come back
+   `pass` — exactly the fabricated green this design exists to prevent).
+   **This leg only fires when the tool's `not_viable` signal is honest** —
+   with `gremlins` on Go 1.26+, verified, it is not: a compile failure
+   counts as `killed`, so the measured `not_viable` proportion trends
+   toward 0% even while the mutator is silently failing to compile. This
+   specific case is NOT caught by this leg with this format on this
+   toolchain — see below.
 
 ### The mutant vocabulary (`internal/quality/mutants.go`)
 
@@ -1006,21 +1021,24 @@ Two formats ship:
   strict in both directions (`DisallowUnknownFields`, an exact `schema`
   string, the six-value vocabulary enumerated in every rejection message).
 - **`gremlins`** (`go-gremlins/gremlins`) — the native Go entry, chosen
-  because its own vocabulary already distinguishes `NOT VIABLE` as a
-  first-class state, distinct from `KILLED`/`LIVED` — satisfying leg 2
-  above **by construction**, without mneme having to interpret anything.
+  because its own vocabulary DECLARES `NOT VIABLE` as a first-class state,
+  distinct from `KILLED`/`LIVED` — satisfying the LETTER of leg 2 above,
+  without mneme having to interpret anything. **Verified during
+  implementation that declaring the vocabulary is not the same as
+  emitting it faithfully** — see "A real, verified limitation" below.
   `mutate4go` (the tool the doctrine's own anecdote references) does not
   exist as a verifiable public tool; the classic Go mutation testers
   (`go-mutesting` and its forks) do not distinguish non-viability as a
-  status of its own, which would industrialize exactly the trap leg 2
-  closes.
+  status of its own AT ALL, which would industrialize exactly the trap
+  leg 2 closes — `gremlins` remains the best available choice even with
+  its own verified gap, because no evaluated alternative does better.
 
 **The gremlins parser is written against a REAL captured report, never
 against the tool's documentation** (`internal/quality/testdata/`, see the
 provenance note in `testdata/README.md`): if the tool's real schema ever
 disagrees with what its own docs describe, the file wins.
 
-### A real, verified limitation of `gremlins` this dogfooding surfaced
+### A real, verified limitation of `gremlins` this dogfooding surfaced — and what it actually costs (BL-178)
 
 **`gremlins` v0.6.0 cannot reliably produce `NOT VIABLE` on a modern Go
 toolchain.** Its own source maps the `go test <pkg>` subprocess's exit code
@@ -1041,6 +1059,19 @@ whose *vocabulary* cannot express non-viability; they do not — and cannot
 — correct a mutator that *mislabels* one real state as another inside its
 own vocabulary. A project depending on gremlins for the viability signal on
 this class of failure should know this limitation exists.
+
+**Said without softening it, because this is the number someone needs to
+decide how much to trust: the effect is an INFLATED mutation score.**
+Every mutant that failed to compile counts as a death nobody's test
+actually proved, so a weak suite reads as stronger than it is. **This is
+not a false red — it is FALSE CONFIDENCE**, which is exactly what this
+EPIC exists to close. The registry contract (leg 2 above) still closes the
+worst case — a format whose vocabulary could never express non-viability
+at all — but it does not close this one: a format that declares the right
+vocabulary and simply isn't exercised faithfully by its own tool on this
+toolchain. **BL-178** records the four possible ways to close this
+remaining gap in a future spec; this spec does not close it, and its own
+deliverable should not be read as if it had.
 
 **`gremlins`'s own `--diff <ref>` flag was found unusable in this
 dogfooding.** Invoked with `--diff`, every candidate mutation in a package
