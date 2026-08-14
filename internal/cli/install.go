@@ -10,6 +10,7 @@ import (
 
 	"github.com/wirvii/mneme/internal/config"
 	"github.com/wirvii/mneme/internal/install"
+	"github.com/wirvii/mneme/internal/runtimecompat"
 )
 
 // newInstallCmd returns the "mneme install" subcommand. It configures a
@@ -24,10 +25,10 @@ import (
 // All steps are attempted; errors are printed as [fail] lines and returned
 // as a combined error at the end.
 func newInstallCmd() *cobra.Command {
-	var flagDryRun        bool
-	var flagPersonal      bool
-	var flagForce         bool
-	var flagSource        string
+	var flagDryRun bool
+	var flagPersonal bool
+	var flagForce bool
+	var flagSource string
 	var flagReinstallHooks bool
 
 	cmd := &cobra.Command{
@@ -40,7 +41,7 @@ memory system. This command:
   2. Installs the session-start hook
   3. Injects the memory protocol into the agent's system prompt file
   4. Installs workflow templates and bundled skills
-  5. Applies per-agent model assignments (from config or defaults, Claude only)
+  5. Installs role-enforcement hooks for both supported runtimes
 
 Optionally, pass --personal to also copy your personal Claude Code ecosystem
 (agents, commands, templates, hooks, CLAUDE.md, settings.json) from a git
@@ -49,7 +50,7 @@ The --personal flag has no effect when installing for codex.
 
 Supported agents:
   claude-code  — Claude Code (full multi-agent setup with delegation hook)
-  codex        — OpenAI Codex CLI (single-agent, no delegation enforcement)
+  codex        — OpenAI Codex CLI (native project roles and enforcement)
 
 The install is non-destructive and idempotent — running it multiple times
 produces the same result without clobbering existing configuration.`,
@@ -64,6 +65,16 @@ produces the same result without clobbering existing configuration.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			slug := args[0]
+			compat, compatErr := runtimecompat.Detect(slug)
+			if compatErr != nil {
+				return fmt.Errorf("install: verify agent version: %w", compatErr)
+			}
+			if compat.Installed && !compat.Supported {
+				return fmt.Errorf("install: %s %s is below the supported minimum %s; update %s before installing mneme", compat.Command, compat.Version, compat.Minimum, compat.Command)
+			}
+			if !compat.Installed {
+				fmt.Fprintf(os.Stdout, "  [info] %s CLI is not installed; host configuration will be prepared but runtime verification is not run.\n", compat.Command)
+			}
 
 			// Resolve the mneme binary path so the MCP config points to the
 			// exact binary the user is running, not a PATH lookup at runtime.

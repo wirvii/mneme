@@ -28,6 +28,15 @@ mneme install codex --dry-run
 The install is **non-destructive and idempotent** — running it multiple times produces
 the same result. All existing keys in `config.toml` and `hooks.json` are preserved.
 
+## Supported versions
+
+v1.40 requires Codex CLI 0.147.0 or newer and Claude Code 2.1.232 or newer.
+These are the oldest versions verified against the native project-agent and
+hook formats used by the parity contract. `mneme install` reads the installed
+CLI version and refuses to configure an older runtime. If a CLI is absent,
+mneme can still prepare and statically validate project assets, but reports
+that the real runtime verification was not run.
+
 ## Shared role model
 
 `mneme init` generates project roles for both runtimes from one canonical
