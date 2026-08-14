@@ -297,4 +297,18 @@ func TestClaudeCodeOperatingManual_AntiDrift(t *testing.T) {
 	if !strings.Contains(content, "no hook that reminds you") {
 		t.Error("operating-manual.md: expected the no-automatic-net phrase for session end not found")
 	}
+	// SPEC-121: la regla de lenguaje llano y su frontera enumerada. Un manual
+	// que pierda cualquiera de estos anclajes ha dejado de enseñar la regla.
+	for _, want := range []string{
+		"## 9. Plain language: everything a person reads",
+		"MANDATORY",
+		"Channels that reach a person",
+		"Relaying is authoring",
+		"The exemption never travels with the text",
+		"binding on every message a person reads",
+	} {
+		if !strings.Contains(content, want) {
+			t.Errorf("operating-manual.md: missing plain-language anchor %q", want)
+		}
+	}
 }

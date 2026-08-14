@@ -407,6 +407,9 @@ func TestCodexOperatingManual_AntiDrift(t *testing.T) {
 		"## §3 SDD + lanes",
 		"## §4 Skills",
 		"## §5 Memory & conflicts",
+		// SPEC-121: la sección de lenguaje llano, añadida al final sin
+		// renumerar las anteriores.
+		"## §7 Plain language: everything a person reads",
 	}
 	for _, sec := range sections {
 		if !strings.Contains(content, sec) {
@@ -426,6 +429,10 @@ func TestCodexOperatingManual_AntiDrift(t *testing.T) {
 		"AGENTS.md",
 		"grill-me",
 		"Do NOT use `superpowers:brainstorming`",
+		// SPEC-121: los dos anclajes compartidos que cierran la frontera de
+		// «lo que lee una persona» y su cláusula de reenvío.
+		"Channels that reach a person",
+		"The exemption never travels with the text",
 	}
 	for _, kw := range keywords {
 		if !strings.Contains(content, kw) {
