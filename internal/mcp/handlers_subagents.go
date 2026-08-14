@@ -205,7 +205,7 @@ func (h *handlers) handleSubagentProfileGet(ctx context.Context, raw json.RawMes
 
 // subagentProfileSaveRequest is the input to subagent_profile_save.
 type subagentProfileSaveRequest struct {
-	Project     string                `json:"project"`
+	Project     string                 `json:"project"`
 	ProfileJSON service.ProjectProfile `json:"profile_json"`
 }
 
@@ -232,11 +232,11 @@ func (h *handlers) handleSubagentProfileSave(ctx context.Context, raw json.RawMe
 
 // subagentComposeRequest is the input to subagent_compose.
 type subagentComposeRequest struct {
-	Role          string                `json:"role"`
-	Archetype     string                `json:"archetype"`
-	Model         string                `json:"model"`
-	Description   string                `json:"description"`
-	AreasLayer3MD string                `json:"areas_layer3_md"`
+	Role          string                 `json:"role"`
+	Archetype     string                 `json:"archetype"`
+	Model         string                 `json:"model"`
+	Description   string                 `json:"description"`
+	AreasLayer3MD string                 `json:"areas_layer3_md"`
 	ProfileJSON   service.ProjectProfile `json:"profile_json"`
 }
 
@@ -460,9 +460,10 @@ type subagentWriteRequest struct {
 
 // subagentWriteResponse is the output of subagent_write.
 type subagentWriteResponse struct {
-	Path     string `json:"path"`
-	Checksum string `json:"checksum"`
-	Version  int    `json:"version"`
+	Path      string                  `json:"path"`
+	Checksum  string                  `json:"checksum"`
+	Version   int                     `json:"version"`
+	Artifacts []service.AgentArtifact `json:"artifacts,omitempty"`
 	// BackupPath is the path subagent_write backed up the pre-existing
 	// developer-authored file to (SPEC-090 D9), or "" when no backup was
 	// made (the destination did not exist, or was already ours).
@@ -558,6 +559,15 @@ func (h *handlers) handleSubagentWrite(ctx context.Context, raw json.RawMessage)
 			Message: fmt.Sprintf("mcp: handle subagent_write: role %q resolves outside the agents directory", req.Role),
 		}
 	}
+	contract, err := subagents.ContractFromClaude(req.ComposedMD, archetype)
+	if err != nil {
+		return nil, &JSONRPCError{Code: CodeInvalidParams, Message: fmt.Sprintf("mcp: handle subagent_write: derive canonical contract: %s", err)}
+	}
+	codexContent, err := subagents.RenderCodex(contract)
+	if err != nil {
+		return nil, &JSONRPCError{Code: CodeInvalidParams, Message: fmt.Sprintf("mcp: handle subagent_write: render Codex profile: %s", err)}
+	}
+	codexPath := filepath.Join(root, ".codex", "agents", req.Role+".toml")
 
 	originalBytes, readErr := os.ReadFile(path)
 	existed := readErr == nil
@@ -586,8 +596,15 @@ func (h *handlers) handleSubagentWrite(ctx context.Context, raw json.RawMessage)
 		}
 	}
 
+	codexOriginal, codexReadErr := os.ReadFile(codexPath)
+	codexExisted := codexReadErr == nil
+	if codexReadErr != nil && !os.IsNotExist(codexReadErr) {
+		return nil, &JSONRPCError{Code: CodeInternalError, Message: fmt.Sprintf("mcp: handle subagent_write: read existing %s: %s", codexPath, codexReadErr)}
+	}
+
 	if _, err := h.subagentSvc.WriteAgentProfiles([]service.WriteAgentFile{
 		{Role: subagents.Role(req.Role), Path: path, Content: req.ComposedMD},
+		{Role: subagents.Role(req.Role), Path: codexPath, Content: codexContent},
 	}); err != nil {
 		return nil, &JSONRPCError{
 			Code:    CodeInternalError,
@@ -597,6 +614,7 @@ func (h *handlers) handleSubagentWrite(ctx context.Context, raw json.RawMessage)
 
 	_, version, _ := managedblock.ReadText(req.ComposedMD, "agent-fixed")
 	checksum := checksumOf(req.ComposedMD)
+	codexChecksum := checksumOf(codexContent)
 	engine := req.Engine
 	if engine == "" {
 		engine = "passthrough"
@@ -605,6 +623,7 @@ func (h *handlers) handleSubagentWrite(ctx context.Context, raw json.RawMessage)
 	entries, err := h.subagentSvc.ReadManifest(ctx, req.Project)
 	if err != nil {
 		rollbackAgentFile(path, existed, originalBytes)
+		rollbackAgentFile(codexPath, codexExisted, codexOriginal)
 		return nil, &JSONRPCError{
 			Code:    CodeInternalError,
 			Message: fmt.Sprintf("mcp: handle subagent_write: read manifest: %s (file write rolled back)", err),
@@ -612,10 +631,14 @@ func (h *handlers) handleSubagentWrite(ctx context.Context, raw json.RawMessage)
 	}
 
 	entries = upsertManifestEntry(entries, service.ManifestEntry{
-		Role:            subagents.Role(req.Role),
-		Path:            manifestRelativePath(req.Role),
-		Version:         version,
-		Checksum:        checksum,
+		Role:     subagents.Role(req.Role),
+		Path:     manifestRelativePath(req.Role),
+		Version:  version,
+		Checksum: checksum,
+		Artifacts: []service.AgentArtifact{
+			{Runtime: subagents.RuntimeClaudeCode, Path: manifestRelativePath(req.Role), Checksum: checksum},
+			{Runtime: subagents.RuntimeCodex, Path: filepath.ToSlash(filepath.Join(".codex", "agents", req.Role+".toml")), Checksum: codexChecksum},
+		},
 		Areas:           req.Areas,
 		Archetype:       archetype,
 		AreasComplete:   req.AreasComplete,
@@ -626,6 +649,7 @@ func (h *handlers) handleSubagentWrite(ctx context.Context, raw json.RawMessage)
 
 	if _, err := h.subagentSvc.SaveManifest(ctx, req.Project, entries); err != nil {
 		rollbackAgentFile(path, existed, originalBytes)
+		rollbackAgentFile(codexPath, codexExisted, codexOriginal)
 		return nil, &JSONRPCError{
 			Code:    CodeInternalError,
 			Message: fmt.Sprintf("mcp: handle subagent_write: save manifest: %s (file write rolled back)", err),
@@ -633,9 +657,13 @@ func (h *handlers) handleSubagentWrite(ctx context.Context, raw json.RawMessage)
 	}
 
 	return resultFromAny(subagentWriteResponse{
-		Path:       path,
-		Checksum:   checksum,
-		Version:    version,
+		Path:     path,
+		Checksum: checksum,
+		Version:  version,
+		Artifacts: []service.AgentArtifact{
+			{Runtime: subagents.RuntimeClaudeCode, Path: path, Checksum: checksum},
+			{Runtime: subagents.RuntimeCodex, Path: codexPath, Checksum: codexChecksum},
+		},
 		BackupPath: backupPath,
 	})
 }

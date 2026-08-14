@@ -645,9 +645,10 @@ func escapeSubagentMarkers(s string) string {
 // --- write ---
 
 type subagentWriteOutput struct {
-	Path     string `json:"path"`
-	Checksum string `json:"checksum"`
-	Version  int    `json:"version"`
+	Path      string                  `json:"path"`
+	Checksum  string                  `json:"checksum"`
+	Version   int                     `json:"version"`
+	Artifacts []service.AgentArtifact `json:"artifacts,omitempty"`
 }
 
 func newSubagentsWriteCmd() *cobra.Command {
@@ -668,7 +669,8 @@ func newSubagentsWriteCmd() *cobra.Command {
 		Use:   "write",
 		Short: "Write a composed subagent profile and update the manifest",
 		Long: `Writes composed markdown (from "subagents compose", a file, or stdin) to
-<repo-root>/.claude/agents/<role>.md and updates the subagent manifest.
+<repo-root>/.claude/agents/<role>.md plus the native Codex TOML projection
+under .codex/agents/<role>.toml, then updates the shared subagent manifest.
 
 Two hard security invariants are enforced before anything is written:
   - role must be a safe slug (rejects path traversal).
@@ -725,11 +727,25 @@ already written, the file is rolled back to its exact pre-call state.`,
 			if rel, rerr := filepath.Rel(agentsDir, path); rerr != nil || rel != flagRole+".md" {
 				return fmt.Errorf("subagents write: role %q resolves outside the agents directory", flagRole)
 			}
+			contract, err := subagents.ContractFromClaude(composedMD, archetype)
+			if err != nil {
+				return fmt.Errorf("subagents write: derive canonical contract: %w", err)
+			}
+			codexContent, err := subagents.RenderCodex(contract)
+			if err != nil {
+				return fmt.Errorf("subagents write: render Codex profile: %w", err)
+			}
+			codexPath := filepath.Join(root, ".codex", "agents", flagRole+".toml")
 
 			originalBytes, readErr := os.ReadFile(path)
 			existed := readErr == nil
 			if readErr != nil && !os.IsNotExist(readErr) {
 				return fmt.Errorf("subagents write: read existing %s: %w", path, readErr)
+			}
+			codexOriginal, codexReadErr := os.ReadFile(codexPath)
+			codexExisted := codexReadErr == nil
+			if codexReadErr != nil && !os.IsNotExist(codexReadErr) {
+				return fmt.Errorf("subagents write: read existing %s: %w", codexPath, codexReadErr)
 			}
 
 			svc, cleanup, err := initSubagentService()
@@ -741,12 +757,14 @@ already written, the file is rolled back to its exact pre-call state.`,
 			ctx := cmd.Context()
 			if _, err := svc.WriteAgentProfiles([]service.WriteAgentFile{
 				{Role: subagents.Role(flagRole), Path: path, Content: composedMD},
+				{Role: subagents.Role(flagRole), Path: codexPath, Content: codexContent},
 			}); err != nil {
 				return fmt.Errorf("subagents write: %w", err)
 			}
 
 			_, version, _ := managedblock.ReadText(composedMD, "agent-fixed")
 			checksum := checksumOfSubagentContent(composedMD)
+			codexChecksum := checksumOfSubagentContent(codexContent)
 			engine := flagEngine
 			if engine == "" {
 				engine = "passthrough"
@@ -755,14 +773,19 @@ already written, the file is rolled back to its exact pre-call state.`,
 			entries, err := svc.ReadManifest(ctx, flagProject)
 			if err != nil {
 				rollbackSubagentFile(path, existed, originalBytes)
+				rollbackSubagentFile(codexPath, codexExisted, codexOriginal)
 				return fmt.Errorf("subagents write: read manifest: %w (file write rolled back)", err)
 			}
 
 			entries = upsertSubagentManifestEntry(entries, service.ManifestEntry{
-				Role:            subagents.Role(flagRole),
-				Path:            manifestRelativePath(flagRole),
-				Version:         version,
-				Checksum:        checksum,
+				Role:     subagents.Role(flagRole),
+				Path:     manifestRelativePath(flagRole),
+				Version:  version,
+				Checksum: checksum,
+				Artifacts: []service.AgentArtifact{
+					{Runtime: subagents.RuntimeClaudeCode, Path: manifestRelativePath(flagRole), Checksum: checksum},
+					{Runtime: subagents.RuntimeCodex, Path: filepath.ToSlash(filepath.Join(".codex", "agents", flagRole+".toml")), Checksum: codexChecksum},
+				},
 				Areas:           flagAreas,
 				Archetype:       archetype,
 				AreasComplete:   flagAreasComplete,
@@ -773,13 +796,17 @@ already written, the file is rolled back to its exact pre-call state.`,
 
 			if _, err := svc.SaveManifest(ctx, flagProject, entries); err != nil {
 				rollbackSubagentFile(path, existed, originalBytes)
+				rollbackSubagentFile(codexPath, codexExisted, codexOriginal)
 				return fmt.Errorf("subagents write: save manifest: %w (file write rolled back)", err)
 			}
 
 			if flagJSON {
-				return printJSON(cmd.OutOrStdout(), subagentWriteOutput{Path: path, Checksum: checksum, Version: version})
+				return printJSON(cmd.OutOrStdout(), subagentWriteOutput{Path: path, Checksum: checksum, Version: version, Artifacts: []service.AgentArtifact{
+					{Runtime: subagents.RuntimeClaudeCode, Path: path, Checksum: checksum},
+					{Runtime: subagents.RuntimeCodex, Path: codexPath, Checksum: codexChecksum},
+				}})
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "written: %s (checksum %s, version %d)\n", path, checksum, version)
+			fmt.Fprintf(cmd.OutOrStdout(), "written: %s, %s (version %d)\n", path, codexPath, version)
 			return nil
 		},
 	}

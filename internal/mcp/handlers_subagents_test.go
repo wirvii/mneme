@@ -883,6 +883,17 @@ func TestSubagentWrite_UpsertsExistingManifestEntry(t *testing.T) {
 	if len(entries) != 1 {
 		t.Fatalf("expected upsert to keep a single entry for role backend, got %d", len(entries))
 	}
+	if len(entries[0].Artifacts) != 2 {
+		t.Fatalf("expected Claude and Codex manifest artifacts, got %+v", entries[0].Artifacts)
+	}
+	for _, path := range []string{
+		filepath.Join(dir, ".claude", "agents", "backend.md"),
+		filepath.Join(dir, ".codex", "agents", "backend.toml"),
+	} {
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("expected dual profile at %s: %v", path, err)
+		}
+	}
 }
 
 func TestSubagentWrite_MissingRequiredFields(t *testing.T) {
