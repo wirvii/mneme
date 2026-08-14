@@ -178,16 +178,17 @@ extra = "nope"
 `,
 		},
 		{
-			// SPEC-118 D2/AC2 retarget (second consecutive retarget of this
-			// same row — SPEC-117 already moved it from 3 to 4):
-			// schema_version=4 is now VALID (it requires
-			// [coverage]/[ratchet]/[criteria]/[budget], covered separately
-			// by TestParse_SchemaVersion4Budget below) — this row now
-			// targets schema_version=5, a value Parse still rejects, and
-			// remains the guardian for "outside the accepted set" (R2/D9:
-			// the accepted set only ever WIDENS, never narrows).
-			name:    "schema_version outside {1,2,3,4}",
-			doc:     strings.Replace(validDoc, "schema_version = 1", "schema_version = 5", 1),
+			// SPEC-119 D11 point 4 retarget (third consecutive retarget of
+			// this same row — SPEC-117 moved it 3->4, SPEC-118 moved it
+			// 4->5): this row now derives its rejected value from
+			// CurrentSchemaVersion+1 INSTEAD OF a literal, so the NEXT
+			// schema bump no longer has to touch this test at all — it is
+			// the guardian for "outside the accepted set" (R2/D9: the
+			// accepted set only ever WIDENS, never narrows), and that
+			// property should survive every future bump automatically.
+			name: "schema_version outside the accepted range",
+			doc: strings.Replace(validDoc, "schema_version = 1",
+				fmt.Sprintf("schema_version = %d", CurrentSchemaVersion+1), 1),
 			wantErr: ErrUnsupportedSchema,
 		},
 		{
@@ -305,17 +306,16 @@ func TestHashBytes_ChangesWithComment(t *testing.T) {
 // Parse itself would reject (e.g. a future, higher schema_version with keys
 // this mneme does not recognise).
 //
-// SPEC-118 D2/AC2 retarget (second consecutive retarget — SPEC-117 already
-// moved this fixture from 3 to 4): the fixture used schema_version=4
-// specifically BECAUSE Parse rejected it before this spec; schema_version=4
-// is now valid, so the fixture moves to 5 — a value Parse still rejects —
-// to keep testing the same "PeekSchemaVersion tolerates what Parse would
-// reject" property.
+// SPEC-119 D11 point 4 retarget (third consecutive retarget — SPEC-117
+// moved this fixture 3->4, SPEC-118 moved it 4->5): the fixture now derives
+// its rejected value from CurrentSchemaVersion+1 INSTEAD OF a literal, so
+// it stays immune to every future schema bump — this is the LAST time this
+// retarget should need to happen in the EPIC (D11 point 4's own promise).
 func TestPeekSchemaVersion_ToleratesRejectedDocument(t *testing.T) {
-	future := `
-schema_version = 5
+	future := fmt.Sprintf(`
+schema_version = %d
 a_future_key_this_mneme_does_not_know = true
-`
+`, CurrentSchemaVersion+1)
 	if _, err := Parse([]byte(future)); err == nil {
 		t.Fatal("expected Parse to reject the future document")
 	}
@@ -324,8 +324,8 @@ a_future_key_this_mneme_does_not_know = true
 	if err != nil {
 		t.Fatalf("PeekSchemaVersion: %v", err)
 	}
-	if v != 5 {
-		t.Errorf("PeekSchemaVersion = %d, want 5", v)
+	if v != CurrentSchemaVersion+1 {
+		t.Errorf("PeekSchemaVersion = %d, want %d", v, CurrentSchemaVersion+1)
 	}
 }
 
@@ -333,11 +333,12 @@ a_future_key_this_mneme_does_not_know = true
 // the exact bytes mneme init will one day write must already be valid
 // according to Parse, and must declare enabled=false.
 //
-// SPEC-118 extends the anchor again: the template now declares
-// schema_version 4 with [coverage]/[ratchet]/[criteria]/[budget] all
-// present and OFF (AC34) — a template that failed to declare them complete
-// would itself fail to Parse, since schema 4 requires all four sections in
-// full.
+// SPEC-118 extended the anchor: the template declared schema_version 4
+// with [coverage]/[ratchet]/[criteria]/[budget] all present and OFF
+// (AC34). SPEC-119 extends it again: schema_version 5, with [mutation]
+// joining the other four, all present and OFF (AC29) — a template that
+// failed to declare any of the five complete would itself fail to Parse,
+// since schema 5 requires all five sections in full.
 func TestTemplate_ParsesWithoutError(t *testing.T) {
 	c, err := Parse([]byte(Template()))
 	if err != nil {
@@ -346,16 +347,16 @@ func TestTemplate_ParsesWithoutError(t *testing.T) {
 	if c.Enabled {
 		t.Error("Template() constitution has enabled=true, want false (R4)")
 	}
-	if c.SchemaVersion != 4 {
-		t.Errorf("Template() SchemaVersion = %d, want 4", c.SchemaVersion)
+	if c.SchemaVersion != 5 {
+		t.Errorf("Template() SchemaVersion = %d, want 5", c.SchemaVersion)
 	}
-	if !c.CoverageDeclared || !c.RatchetDeclared || !c.CriteriaDeclared || !c.BudgetDeclared {
-		t.Errorf("Template() CoverageDeclared=%v RatchetDeclared=%v CriteriaDeclared=%v BudgetDeclared=%v, want all true",
-			c.CoverageDeclared, c.RatchetDeclared, c.CriteriaDeclared, c.BudgetDeclared)
+	if !c.CoverageDeclared || !c.RatchetDeclared || !c.CriteriaDeclared || !c.BudgetDeclared || !c.MutationDeclared {
+		t.Errorf("Template() CoverageDeclared=%v RatchetDeclared=%v CriteriaDeclared=%v BudgetDeclared=%v MutationDeclared=%v, want all true",
+			c.CoverageDeclared, c.RatchetDeclared, c.CriteriaDeclared, c.BudgetDeclared, c.MutationDeclared)
 	}
-	if c.Coverage.Enabled || c.Ratchet.Enabled || c.Criteria.Enabled || c.Budget.Enabled {
-		t.Errorf("Template() Coverage.Enabled=%v Ratchet.Enabled=%v Criteria.Enabled=%v Budget.Enabled=%v, want all false",
-			c.Coverage.Enabled, c.Ratchet.Enabled, c.Criteria.Enabled, c.Budget.Enabled)
+	if c.Coverage.Enabled || c.Ratchet.Enabled || c.Criteria.Enabled || c.Budget.Enabled || c.Mutation.Enabled {
+		t.Errorf("Template() Coverage.Enabled=%v Ratchet.Enabled=%v Criteria.Enabled=%v Budget.Enabled=%v Mutation.Enabled=%v, want all false",
+			c.Coverage.Enabled, c.Ratchet.Enabled, c.Criteria.Enabled, c.Budget.Enabled, c.Mutation.Enabled)
 	}
 }
 
@@ -1019,5 +1020,322 @@ func TestParse_Budget_FieldValidation(t *testing.T) {
 				t.Errorf("error = %v, want wrapping ErrInvalid", err)
 			}
 		})
+	}
+}
+
+// --- SPEC-119 EPIC-calidad S5 P5: schema 5, [mutation] ---
+
+// validDocV5 is a minimal, fully valid schema_version=5 document — adds
+// [mutation] complete-and-off to validDocV4's own shape.
+const validDocV5 = `
+schema_version = 5
+enabled = false
+
+[execution]
+output_tail_bytes = 4096
+
+[[gate]]
+name = "build"
+command = ["make", "build"]
+timeout = "5m"
+required = true
+
+[coverage]
+enabled = false
+format = "go-cover"
+command = ["make", "coverage"]
+profile_path = "tmp/coverage.out"
+timeout = "20m"
+min_diff_line_pct = 80.0
+min_changed_lines = 5
+exclude = []
+
+[ratchet]
+enabled = false
+max_global_line_pct_drop = 0.0
+max_baseline_staleness_pct = 1.0
+
+[criteria]
+enabled = false
+timeout = "5m"
+max_manual_pct = 25.0
+max_command_pct = 30.0
+
+[budget]
+enabled = false
+timeout = "2m"
+test_globs = ["**/*_test.go"]
+test_reach_depth = 3
+
+[mutation]
+enabled = false
+format = "gremlins"
+command = ["make", "mutation", "BASE={{BASE_SHA}}"]
+report_path = "tmp/mutants.json"
+timeout = "30m"
+max_equivalent = 2
+max_not_viable_pct = 25.0
+`
+
+// TestParse_SchemaVersion5Mutation covers AC2's positive row (5, with all
+// five sections complete, parses) and AC3: MutationDeclared is true only
+// under schema 5.
+func TestParse_SchemaVersion5Mutation(t *testing.T) {
+	c, err := Parse([]byte(validDocV5))
+	if err != nil {
+		t.Fatalf("Parse(validDocV5): %v", err)
+	}
+	if c.SchemaVersion != 5 {
+		t.Errorf("SchemaVersion = %d, want 5", c.SchemaVersion)
+	}
+	if !c.MutationDeclared {
+		t.Error("MutationDeclared = false, want true under schema_version 5")
+	}
+	if c.Mutation.Format != "gremlins" {
+		t.Errorf("Mutation.Format = %q, want gremlins", c.Mutation.Format)
+	}
+	if c.Mutation.ReportPath != "tmp/mutants.json" {
+		t.Errorf("Mutation.ReportPath = %q, want tmp/mutants.json", c.Mutation.ReportPath)
+	}
+	if c.Mutation.Timeout.String() != "30m0s" {
+		t.Errorf("Mutation.Timeout = %v, want 30m0s", c.Mutation.Timeout)
+	}
+	if c.Mutation.MaxEquivalent != 2 {
+		t.Errorf("Mutation.MaxEquivalent = %d, want 2", c.Mutation.MaxEquivalent)
+	}
+	if c.Mutation.MaxNotViablePct != 25.0 {
+		t.Errorf("Mutation.MaxNotViablePct = %v, want 25.0", c.Mutation.MaxNotViablePct)
+	}
+	if len(c.Mutation.Command) != 3 || c.Mutation.Command[2] != "BASE={{BASE_SHA}}" {
+		t.Errorf("Mutation.Command = %v, want the raw {{BASE_SHA}} token preserved (ExpandCommand substitutes it later, not Parse)", c.Mutation.Command)
+	}
+}
+
+// TestParse_MutationDeclaredVsUndeclared covers AC3's three rows for
+// [mutation] specifically: schema 4 (no [mutation]) -> OK, declared false;
+// schema 4 WITH [mutation] -> error naming schema_version; schema 5 ->
+// declared true. This is G2's positive hermana: the range must NOT
+// narrow, so every prior schema keeps parsing.
+func TestParse_MutationDeclaredVsUndeclared(t *testing.T) {
+	c4, err := Parse([]byte(validDocV4))
+	if err != nil {
+		t.Fatalf("Parse(validDocV4): %v", err)
+	}
+	if c4.MutationDeclared {
+		t.Error("schema 4 with no [mutation]: MutationDeclared = true, want false")
+	}
+
+	withMutationUnderSchema4 := validDocV4 + `
+[mutation]
+enabled = false
+format = "gremlins"
+command = ["make", "mutation"]
+report_path = "tmp/mutants.json"
+timeout = "30m"
+max_equivalent = 2
+max_not_viable_pct = 25.0
+`
+	_, err = Parse([]byte(withMutationUnderSchema4))
+	if err == nil {
+		t.Fatal("Parse([mutation] under schema_version 4): want error, got nil")
+	}
+	if !strings.Contains(err.Error(), "schema_version") {
+		t.Errorf("error = %q, want it to name schema_version", err.Error())
+	}
+	if !errors.Is(err, ErrInvalid) {
+		t.Errorf("error = %v, want wrapping ErrInvalid", err)
+	}
+
+	c5, err := Parse([]byte(validDocV5))
+	if err != nil {
+		t.Fatalf("Parse(validDocV5): %v", err)
+	}
+	if !c5.MutationDeclared {
+		t.Error("schema 5: MutationDeclared = false, want true")
+	}
+}
+
+// TestParse_Mutation_MissingRequiredKey covers AC4: one row per missing
+// [mutation] key, each naming itself, and none filled in with a default.
+func TestParse_Mutation_MissingRequiredKey(t *testing.T) {
+	tests := []struct {
+		wantKey string
+	}{
+		{"mutation.enabled"},
+		{"mutation.format"},
+		{"mutation.command"},
+		{"mutation.report_path"},
+		{"mutation.timeout"},
+		{"mutation.max_equivalent"},
+		{"mutation.max_not_viable_pct"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.wantKey, func(t *testing.T) {
+			doc := removeTOMLKeyLine(validDocV5, tt.wantKey)
+			_, err := Parse([]byte(doc))
+			if err == nil {
+				t.Fatalf("Parse missing %s: want error, got nil", tt.wantKey)
+			}
+			if !errors.Is(err, ErrInvalid) {
+				t.Errorf("error = %v, want wrapping ErrInvalid", err)
+			}
+			if !strings.Contains(err.Error(), tt.wantKey) {
+				t.Errorf("error = %q, want it to name key %q", err.Error(), tt.wantKey)
+			}
+		})
+	}
+}
+
+// TestParse_Mutation_FieldValidation covers AC4's paired validation rows
+// (G3 for format, hermanas for the rest).
+func TestParse_Mutation_FieldValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(string) string
+		wantErr bool
+	}{
+		{"format: lcov rejected (not a mutation format)", replaceOnce(`format = "gremlins"`, `format = "lcov"`), true},
+		{"format: mutants-v1 accepted", replaceOnce(`format = "gremlins"`, `format = "mutants-v1"`), false},
+		{"command: single-element shell string rejected", replaceOnce(`command = ["make", "mutation", "BASE={{BASE_SHA}}"]`, `command = ["make mutation"]`), true},
+		{"report_path: empty rejected", replaceOnce(`report_path = "tmp/mutants.json"`, `report_path = ""`), true},
+		{"report_path: traversal rejected", replaceOnce(`report_path = "tmp/mutants.json"`, `report_path = "../mutants.json"`), true},
+		{"timeout: 0s rejected", replaceOnce(`timeout = "30m"`, `timeout = "0s"`), true},
+		{"max_equivalent: -1 rejected", replaceOnce("max_equivalent = 2", "max_equivalent = -1"), true},
+		{"max_equivalent: 0 accepted (no escape hatch is legitimate)", replaceOnce("max_equivalent = 2", "max_equivalent = 0"), false},
+		{"max_not_viable_pct: 0 rejected", replaceOnce("max_not_viable_pct = 25.0", "max_not_viable_pct = 0"), true},
+		{"max_not_viable_pct: 101 rejected", replaceOnce("max_not_viable_pct = 25.0", "max_not_viable_pct = 101"), true},
+		{"max_not_viable_pct: 100 accepted (boundary)", replaceOnce("max_not_viable_pct = 25.0", "max_not_viable_pct = 100"), false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			doc := tt.mutate(validDocV5)
+			_, err := Parse([]byte(doc))
+			if tt.wantErr && err == nil {
+				t.Fatalf("Parse(%s): want error, got nil\ndoc:\n%s", tt.name, doc)
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("Parse(%s): want no error, got %v\ndoc:\n%s", tt.name, err, doc)
+			}
+			if tt.wantErr && !errors.Is(err, ErrInvalid) {
+				t.Errorf("error = %v, want wrapping ErrInvalid", err)
+			}
+		})
+	}
+}
+
+// TestParse_MutationFormatSet_MatchesMutantFormats covers AC6's own
+// contract at the constitution layer: the set of `format` values Parse
+// accepts for [mutation] is EXACTLY MutantFormats() — never a second,
+// parallel literal list, and never the COVERAGE format list (a wrong
+// error message here would send an implementer looking for "lcov" in the
+// wrong registry).
+func TestParse_MutationFormatSet_MatchesMutantFormats(t *testing.T) {
+	for _, format := range MutantFormats() {
+		t.Run(format, func(t *testing.T) {
+			doc := strings.Replace(validDocV5, `format = "gremlins"`, fmt.Sprintf("format = %q", format), 1)
+			if _, err := Parse([]byte(doc)); err != nil {
+				t.Errorf("Parse(mutation.format=%s), a registered mutant format: %v", format, err)
+			}
+		})
+	}
+
+	doc := strings.Replace(validDocV5, `format = "gremlins"`, `format = "lcov"`, 1)
+	_, err := Parse([]byte(doc))
+	if err == nil {
+		t.Fatal("Parse(mutation.format=lcov, a COVERAGE format): want error, got nil")
+	}
+	if !strings.Contains(err.Error(), "mutation.format") {
+		t.Errorf("error = %q, want it to name mutation.format specifically (not coverage.format)", err.Error())
+	}
+}
+
+// TestParse_MutationCommand_SharesArgvMessageWithGate covers the shared
+// argv validator (D6): a mutation.command shell-string rejection shares
+// its explanatory sentence with a gate's own rejection, byte for byte —
+// both call argvShellStringProblem.
+func TestParse_MutationCommand_SharesArgvMessageWithGate(t *testing.T) {
+	gateDoc := strings.Replace(validDocV5, `command = ["make", "build"]`, `command = ["make build"]`, 1)
+	_, gateErr := Parse([]byte(gateDoc))
+	if gateErr == nil {
+		t.Fatal("Parse(gate shell-string command): want error, got nil")
+	}
+
+	mutationDoc := strings.Replace(validDocV5, `command = ["make", "mutation", "BASE={{BASE_SHA}}"]`, `command = ["make mutation"]`, 1)
+	_, mutationErr := Parse([]byte(mutationDoc))
+	if mutationErr == nil {
+		t.Fatal("Parse(mutation.command shell-string): want error, got nil")
+	}
+
+	const sharedSentence = "command is an argv vector, declare each argument as its own list element"
+	if !strings.Contains(gateErr.Error(), sharedSentence) {
+		t.Fatalf("gate error %q does not contain shared sentence %q", gateErr.Error(), sharedSentence)
+	}
+	if !strings.Contains(mutationErr.Error(), sharedSentence) {
+		t.Fatalf("mutation.command error %q does not contain shared sentence %q", mutationErr.Error(), sharedSentence)
+	}
+}
+
+// TestParse_MutationCommand_UnknownToken covers AC5's third row / G4b: any
+// `{{...}}` sequence other than {{BASE_SHA}} is rejected AT PARSE TIME,
+// naming the unknown token — it must never survive as a literal all the
+// way to ExpandCommand.
+func TestParse_MutationCommand_UnknownToken(t *testing.T) {
+	doc := strings.Replace(validDocV5, `"BASE={{BASE_SHA}}"`, `"BASE={{BASESHA}}"`, 1)
+	_, err := Parse([]byte(doc))
+	if err == nil {
+		t.Fatal("Parse(unknown {{...}} token): want error, got nil")
+	}
+	if !strings.Contains(err.Error(), "{{BASESHA}}") {
+		t.Errorf("error = %q, want it to name the unknown token {{BASESHA}}", err.Error())
+	}
+	if !errors.Is(err, ErrInvalid) {
+		t.Errorf("error = %v, want wrapping ErrInvalid", err)
+	}
+}
+
+// TestParse_MutationCommand_TokenIsOptional covers AC5's second row: a
+// command that never mentions {{BASE_SHA}} at all is valid, passed
+// through untouched — the token is an optimisation, never a requirement
+// (D3).
+func TestParse_MutationCommand_TokenIsOptional(t *testing.T) {
+	doc := strings.Replace(validDocV5, `command = ["make", "mutation", "BASE={{BASE_SHA}}"]`, `command = ["make", "mutation"]`, 1)
+	c, err := Parse([]byte(doc))
+	if err != nil {
+		t.Fatalf("Parse(command without {{BASE_SHA}}): %v", err)
+	}
+	if len(c.Mutation.Command) != 2 {
+		t.Fatalf("Mutation.Command = %v, want exactly [\"make\",\"mutation\"]", c.Mutation.Command)
+	}
+}
+
+// TestExpandCommand_SubstitutesOnlyTheToken covers AC5's first row: the
+// token is substituted in every element that carries it, byte for byte,
+// and every OTHER element is left completely unchanged.
+func TestExpandCommand_SubstitutesOnlyTheToken(t *testing.T) {
+	argv := []string{"make", "mutation", "BASE={{BASE_SHA}}"}
+	got := ExpandCommand(argv, "abc123")
+	want := []string{"make", "mutation", "BASE=abc123"}
+	if len(got) != len(want) {
+		t.Fatalf("ExpandCommand() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("ExpandCommand()[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+	// The original argv must not have been mutated in place.
+	if argv[2] != "BASE={{BASE_SHA}}" {
+		t.Errorf("ExpandCommand mutated its input argv in place: %v", argv)
+	}
+}
+
+// TestExpandCommand_TokenAbsent_ReturnsUnchanged is TestExpandCommand's own
+// hermana: an argv with no token at all round-trips byte for byte.
+func TestExpandCommand_TokenAbsent_ReturnsUnchanged(t *testing.T) {
+	argv := []string{"make", "mutation"}
+	got := ExpandCommand(argv, "abc123")
+	if len(got) != 2 || got[0] != "make" || got[1] != "mutation" {
+		t.Fatalf("ExpandCommand(no token) = %v, want unchanged %v", got, argv)
 	}
 }

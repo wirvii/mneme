@@ -2,26 +2,26 @@ package quality
 
 // templateTOML is the exact content mneme init writes to a repository's
 // .mneme/quality.toml when the file is absent (D15/AC23/AC32). Every key
-// Parse requires is present and uncommented (schema_version 4, enabled,
+// Parse requires is present and uncommented (schema_version 5, enabled,
 // execution.output_tail_bytes, and the complete [coverage]/[ratchet]/
-// [criteria]/[budget] tables, since schema 4 requires all four sections in
-// full) so the written file parses without error the moment it lands;
-// every `enabled` switch is false so materializing the constitution never
-// itself starts blocking spec_advance in a repo that never asked for it
-// (R4) — and, since SPEC-118 D12, turning [budget] on ALSO starts
+// [criteria]/[budget]/[mutation] tables, since schema 5 requires all five
+// sections in full) so the written file parses without error the moment it
+// lands; every `enabled` switch is false so materializing the constitution
+// never itself starts blocking spec_advance in a repo that never asked for
+// it (R4) — and, since SPEC-118 D12, turning [budget] on ALSO starts
 // requiring a certificate for the trivial lane, so this template leaves it
 // off by construction. The example gates stay commented out — they name
 // the shape a team declares, without inventing gates mneme cannot know are
 // correct for this project (D9 of the grill).
-// [coverage]/[ratchet]/[criteria]/[budget], by contrast, CANNOT be left
-// commented out (schema 4 requires all four sections present with every
-// key), so their values are a generic, harmless illustration — never
+// [coverage]/[ratchet]/[criteria]/[budget]/[mutation], by contrast, CANNOT
+// be left commented out (schema 5 requires all five sections present with
+// every key), so their values are a generic, harmless illustration — never
 // executed while enabled=false.
 const templateTOML = `# .mneme/quality.toml — constitución de calidad de este repositorio.
 # Versionada y revisable en PR: la calidad es parte del código.
 # mneme NO tiene valores por defecto para nada de este fichero.
 
-schema_version = 4
+schema_version = 5
 
 # El interruptor. Mientras sea false el mecanismo NO bloquea nada.
 # Ponerlo a true es un commit revisable, y volverlo a false dentro del rango
@@ -126,6 +126,40 @@ test_globs = ["**/*_test.go", "**/*.test.ts", "**/*.test.tsx", "**/*.spec.ts", "
 
 # Cuantos saltos de indireccion se aceptan como "un test lo alcanza".
 test_reach_depth = 3
+
+[mutation]
+# La mutacion sobre el diff (SPEC-119). false = declarado apagado, a
+# proposito. Correr un mutador ejecuta la suite del proyecto una vez POR
+# MUTANTE — es la comprobacion mas cara del EPIC. Ver docs/quality.md
+# antes de encenderlo.
+enabled = false
+
+# Formato del informe de mutantes: "gremlins" | "mutants-v1". Declarado,
+# nunca adivinado — un formato mal declarado produce cero mutantes y un
+# VERDE que no demuestra nada.
+format = "mutants-v1"
+
+# El comando que produce el informe, ejecutado tal cual, sin shell. El
+# token {{BASE_SHA}} (opcional) se sustituye por la merge-base que mneme
+# calcula, si tu mutador sabe acotarse a un rango — mneme reacota el
+# informe por su cuenta de todos modos, asi que omitir el token solo
+# cuesta tiempo, nunca correccion.
+command = ["true"]
+
+# Donde deja el comando el informe, relativo a la raiz del repo. mneme LO
+# BORRA antes de ejecutar: debe estar en .gitignore.
+report_path = "tmp/mutants.json"
+
+# Presupuesto de la fase completa de mutacion.
+timeout = "30m"
+
+# Cupo ABSOLUTO (nunca porcentual) de mutantes que un qa-tester puede
+# firmar como equivalentes en un mismo certificado. 0 = sin escotilla.
+max_equivalent = 2
+
+# Por encima de esta proporcion de mutantes NO VIABLES (los que ni
+# siquiera compilan) el informe habla del mutador y no de los tests.
+max_not_viable_pct = 25.0
 `
 
 // Template returns the exact content mneme init writes as a repository's

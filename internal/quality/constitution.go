@@ -36,12 +36,20 @@ const MinSchemaVersion = 1
 // (this repo's own .mneme/quality.toml among them) keep parsing exactly as
 // it always did.
 //
-// SPEC-118 S4 bumps this to 4 ([budget] joins the other three) — the
+// SPEC-118 S4 bumped this to 4 ([budget] joins the other three) — the
 // range is ALREADY in place (S3's own fix), so this bump is purely
 // additive: nothing that parsed under schema 1/2/3 stops parsing. Every
 // future spec that adds a schema version widens this range; none may
 // narrow it.
-const CurrentSchemaVersion = 4
+//
+// SPEC-119 S5 bumps this to 5 ([mutation] joins the other four) — S4 had
+// already landed on this branch by the time S5 was implemented (verified
+// per plan paso 0: `internal/quality/{criteria.go,evaluate.go,report.go}`
+// and `budget.go` all existed, and CurrentSchemaVersion already read 4),
+// so [mutation] takes the NEXT number rather than colliding with
+// [budget]'s. The range is already in place; this bump is, again, purely
+// additive.
+const CurrentSchemaVersion = 5
 
 // ErrInvalid is returned by Parse when the constitution is missing a
 // required key, declares an unknown key, or fails a per-field validation
@@ -158,6 +166,66 @@ type Constitution struct {
 
 	// Budget is the zero value when BudgetDeclared is false.
 	Budget BudgetConfig
+
+	// MutationDeclared reports whether [mutation] is present — true only
+	// under schema_version 5 (SPEC-119 D11), the same Declared/undeclared
+	// distinction every prior section already establishes.
+	MutationDeclared bool
+
+	// Mutation is the zero value when MutationDeclared is false.
+	Mutation MutationConfig
+}
+
+// MutationConfig is the parsed, validated [mutation] table (SPEC-119
+// EPIC-calidad S5 D1/D11) — present only when SchemaVersion is 5 and
+// MutationDeclared is true. Every value here is either used verbatim by
+// the mutation checks (P8) or carried, unread by Parse itself, straight
+// into a certificate's mutation/score row for Sign to consult later (D9).
+type MutationConfig struct {
+	// Enabled is [mutation]'s own switch, independent of Constitution.Enabled
+	// — the mutation mechanism does not consume the coverage/criteria/budget
+	// state and can be on or off regardless of them.
+	Enabled bool
+
+	// Format is one of MutantFormats() — declared, never guessed (D1 pata
+	// b/D2): a wrong declared format fails loudly via ParseMutantReport's
+	// ErrInvalidMutantReport rather than silently producing an empty
+	// report.
+	Format string
+
+	// Command is the argv vector that produces the mutation report,
+	// executed exactly like a Gate's command — never through a shell (D7 of
+	// S1, mirrored here). May contain the {{BASE_SHA}} substitution token
+	// (ExpandCommand) any number of times, in any element; any OTHER
+	// `{{...}}` sequence is rejected here, at Parse time (D3) — never
+	// tolerated as a literal that would travel unexpanded to the mutator.
+	Command []string
+
+	// ReportPath is where Command leaves the mutation report, relative to
+	// the repository root. mneme DELETES this path before running Command
+	// (D4, mirroring coverage's own D12) — validated here to be relative
+	// and free of ".." so deletion can never escape the repository.
+	ReportPath string
+
+	// Timeout bounds the ENTIRE mutation phase — mutating typically means
+	// running the project's test suite once per mutant, the most expensive
+	// check in the EPIC (D12). Exceeding it is a firmable `finding`
+	// `budget-exceeded`, never a silent `fail` (D12).
+	Timeout time.Duration
+
+	// MaxEquivalent is the ABSOLUTE (never percentage, D9 — a percentage of
+	// a small N means nothing) cap on mutants a qa-tester may sign as
+	// equivalent for ONE certificate. 0 is a valid, meaningful value: no
+	// escape hatch at all. Enforced by Sign (service layer, P9), never by
+	// Verify — at verification time no signature has happened yet.
+	MaxEquivalent int
+
+	// MaxNotViablePct is the quota (D1 pata d): the proportion, in percent,
+	// of in-diff mutants that may be MutantNotViable before mneme judges
+	// the informe is talking about the mutator rather than about the
+	// tests. Must be in (0, 100] — 0 would reject every real run outright,
+	// which is never what a project means by declaring this key.
+	MaxNotViablePct float64
 }
 
 // CriteriaConfig is the parsed, validated [criteria] table (SPEC-117 D9) —
@@ -264,6 +332,20 @@ type rawConstitution struct {
 	Ratchet       *rawRatchet       `toml:"ratchet"`
 	Criteria      *rawCriteria      `toml:"criteria"`
 	Budget        *rawBudgetSection `toml:"budget"`
+	Mutation      *rawMutation      `toml:"mutation"`
+}
+
+// rawMutation mirrors MutationConfig with pointer fields for presence
+// detection (SPEC-119 D11) — the same convention every prior section's raw
+// counterpart already establishes.
+type rawMutation struct {
+	Enabled         *bool     `toml:"enabled"`
+	Format          *string   `toml:"format"`
+	Command         *[]string `toml:"command"`
+	ReportPath      *string   `toml:"report_path"`
+	Timeout         *string   `toml:"timeout"`
+	MaxEquivalent   *int      `toml:"max_equivalent"`
+	MaxNotViablePct *float64  `toml:"max_not_viable_pct"`
 }
 
 // rawBudgetSection mirrors BudgetConfig with pointer fields for presence
@@ -391,6 +473,11 @@ func Parse(data []byte) (*Constitution, error) {
 		return nil, err
 	}
 
+	mutationDeclared, mutationCfg, err := parseMutationSection(schemaVersion, raw.Mutation)
+	if err != nil {
+		return nil, err
+	}
+
 	return &Constitution{
 		SchemaVersion:    schemaVersion,
 		Enabled:          *raw.Enabled,
@@ -404,7 +491,131 @@ func Parse(data []byte) (*Constitution, error) {
 		Criteria:         criteriaCfg,
 		BudgetDeclared:   budgetDeclared,
 		Budget:           budgetCfg,
+		MutationDeclared: mutationDeclared,
+		Mutation:         mutationCfg,
 	}, nil
+}
+
+// mutationTokenPattern matches every `{{...}}` occurrence in a mutation
+// command element — used to validate that the ONLY token present is
+// {{BASE_SHA}} (D3): an unrecognised token (a typo like {{BASESHA}}, or
+// anything else) must explode HERE, at Parse time, rather than travel as
+// an inert literal all the way to the mutator — the SPEC-087 AC12 scar,
+// applied to a substitution token instead of a shell flag.
+var mutationTokenPattern = regexp.MustCompile(`\{\{[^{}]*\}\}`)
+
+// mutationBaseSHAToken is the ONLY substitution token ExpandCommand
+// recognises (D3). Declared once so Parse's validation and ExpandCommand's
+// own substitution can never name it differently.
+const mutationBaseSHAToken = "{{BASE_SHA}}"
+
+// parseMutationSection implements SPEC-119 D11's schema-version branching
+// for `[mutation]` — the same shape parseBudgetSection/parseCriteriaSection
+// already establish: a strict single threshold (only schema 5 accepts it,
+// declaring it under 1-4 is an explicit, named "sube schema_version a 5"
+// error), schema 5 requires it present and complete. Deliberately its OWN
+// function, never folded into parseBudgetSection or any other section's
+// parser (D11 point 5, mirroring S3/S4's own reasoning): [mutation] and
+// [budget] are independent sections with independent parsers, so which of
+// S4/S5 lands first on a branch changes nothing about either one's logic —
+// only a number and this function's own threshold.
+func parseMutationSection(schemaVersion int, raw *rawMutation) (declared bool, cfg MutationConfig, err error) {
+	if schemaVersion < 5 {
+		if raw != nil {
+			return false, MutationConfig{}, fmt.Errorf(
+				"quality: [mutation] declared under schema_version %d — sube schema_version a 5: %w", schemaVersion, ErrInvalid)
+		}
+		return false, MutationConfig{}, nil
+	}
+
+	if raw == nil {
+		return false, MutationConfig{}, fmt.Errorf("quality: missing required section %q for schema_version %d: %w", "mutation", schemaVersion, ErrInvalid)
+	}
+
+	if raw.Enabled == nil {
+		return false, MutationConfig{}, fmt.Errorf("quality: missing required key %q: %w", "mutation.enabled", ErrInvalid)
+	}
+
+	if raw.Format == nil {
+		return false, MutationConfig{}, fmt.Errorf("quality: missing required key %q: %w", "mutation.format", ErrInvalid)
+	}
+	acceptedFormats := MutantFormats()
+	if !slices.Contains(acceptedFormats, *raw.Format) {
+		return false, MutationConfig{}, fmt.Errorf(
+			"quality: mutation.format %q must be one of %v: %w", *raw.Format, acceptedFormats, ErrInvalid)
+	}
+
+	if raw.Command == nil || len(*raw.Command) == 0 {
+		return false, MutationConfig{}, fmt.Errorf("quality: missing required key %q: %w", "mutation.command", ErrInvalid)
+	}
+	if msg, bad := argvShellStringProblem(*raw.Command); bad {
+		return false, MutationConfig{}, fmt.Errorf("quality: mutation.command %s: %w", msg, ErrInvalid)
+	}
+	for _, elem := range *raw.Command {
+		for _, tok := range mutationTokenPattern.FindAllString(elem, -1) {
+			if tok != mutationBaseSHAToken {
+				return false, MutationConfig{}, fmt.Errorf(
+					"quality: mutation.command element %q contains unknown substitution token %q (only %q is recognised): %w",
+					elem, tok, mutationBaseSHAToken, ErrInvalid)
+			}
+		}
+	}
+
+	if raw.ReportPath == nil {
+		return false, MutationConfig{}, fmt.Errorf("quality: missing required key %q: %w", "mutation.report_path", ErrInvalid)
+	}
+	if err := validateRelativeCleanPath(*raw.ReportPath, "mutation.report_path"); err != nil {
+		return false, MutationConfig{}, err
+	}
+
+	if raw.Timeout == nil {
+		return false, MutationConfig{}, fmt.Errorf("quality: missing required key %q: %w", "mutation.timeout", ErrInvalid)
+	}
+	dur, durErr := time.ParseDuration(*raw.Timeout)
+	if durErr != nil || dur <= 0 {
+		return false, MutationConfig{}, fmt.Errorf(
+			"quality: mutation.timeout %q must be a positive parseable duration: %w", *raw.Timeout, ErrInvalid)
+	}
+
+	if raw.MaxEquivalent == nil {
+		return false, MutationConfig{}, fmt.Errorf("quality: missing required key %q: %w", "mutation.max_equivalent", ErrInvalid)
+	}
+	if *raw.MaxEquivalent < 0 {
+		return false, MutationConfig{}, fmt.Errorf(
+			"quality: mutation.max_equivalent %d must be >= 0 (0 is valid: no escape hatch at all): %w", *raw.MaxEquivalent, ErrInvalid)
+	}
+
+	if raw.MaxNotViablePct == nil {
+		return false, MutationConfig{}, fmt.Errorf("quality: missing required key %q: %w", "mutation.max_not_viable_pct", ErrInvalid)
+	}
+	if *raw.MaxNotViablePct <= 0 || *raw.MaxNotViablePct > 100 {
+		return false, MutationConfig{}, fmt.Errorf(
+			"quality: mutation.max_not_viable_pct %v must be in (0, 100]: %w", *raw.MaxNotViablePct, ErrInvalid)
+	}
+
+	return true, MutationConfig{
+		Enabled: *raw.Enabled, Format: *raw.Format, Command: *raw.Command, ReportPath: *raw.ReportPath,
+		Timeout: dur, MaxEquivalent: *raw.MaxEquivalent, MaxNotViablePct: *raw.MaxNotViablePct,
+	}, nil
+}
+
+// ExpandCommand substitutes every occurrence of {{BASE_SHA}} in argv with
+// baseSHA, leaving every other element untouched — PURE, no I/O, and never
+// splitting or joining an element (D3/D7 of S1): the substitution happens
+// WITHIN an element's own string, so a command declared as
+// ["make", "mutation", "BASE={{BASE_SHA}}"] with baseSHA "abc123" becomes
+// ["make", "mutation", "BASE=abc123"], never four elements or three
+// differently-shaped ones. The token is optional (a command that never
+// mentions it is returned unchanged, D3's own "omitting it is legitimate,
+// it just costs more time") — Parse (parseMutationSection) is what already
+// guarantees, before this function ever runs, that no OTHER `{{...}}`
+// sequence survived in argv.
+func ExpandCommand(argv []string, baseSHA string) []string {
+	expanded := make([]string, len(argv))
+	for i, elem := range argv {
+		expanded[i] = strings.ReplaceAll(elem, mutationBaseSHAToken, baseSHA)
+	}
+	return expanded
 }
 
 // parseBudgetSection implements SPEC-118 D14's schema-version branching for
