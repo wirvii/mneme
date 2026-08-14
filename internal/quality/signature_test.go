@@ -25,6 +25,14 @@ func TestRequiresSignature_AllEmittedKinds(t *testing.T) {
 		{"mutant", true},
 		{"budget", false},
 		{"detection", false},
+		// SPEC-120 S6: the visual mechanism's two firmable findings
+		// (reference-missing, reference-changed-in-range) are ABSOLUCIONES
+		// — a human's governance call ("I accept there is no reference
+		// yet" / "I approve this reference update"), never a technical
+		// re-verification a qa-tester attests to by reading code. Both are
+		// `ack`, never `sign`.
+		{"visual", false},
+		{"visual-target", false},
 	}
 
 	for _, tt := range tests {

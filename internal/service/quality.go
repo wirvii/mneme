@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -358,6 +359,20 @@ func (svc *QualityService) runAllChecks(
 	}
 	checks = append(checks, mutationChecks...)
 	pure = append(pure, mutationPure...)
+
+	// SPEC-120: the visual rows land LAST, sixth (fifth if any prior stage
+	// has not landed — the order between stages never changes an
+	// assertion, D16). UNLIKE mutation's own premise, this cascade is the
+	// STANDARD one every earlier stage shares (gatesStopped alone, AC26):
+	// a non-required gate sitting in `fail` does NOT stop the visual
+	// checks — a screen that crashes is an observed fact, not an inference
+	// over an unmutated tree that a stricter premise would need to protect.
+	visualChecks, visualPure, err := svc.runVisualChecks(ctx, g, constitution, spec, gatesStopped)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	checks = append(checks, visualChecks...)
+	pure = append(pure, visualPure...)
 
 	return checks, pure, dirty, nil
 }
@@ -2061,6 +2076,486 @@ func (svc *QualityService) runMutationChecks(
 			Kind: "mutant", Name: m.ID(), Status: "finding", Summary: "survivor", Detail: string(detail),
 		})
 		pure = append(pure, quality.CheckResult{Status: quality.CheckStatusFinding})
+	}
+
+	return checks, pure, nil
+}
+
+// visualRowNames is the fixed, declared order of the seven top-level visual
+// rows (SPEC-120 EPIC-calidad S6 D9 #1-7) — used both to build a uniform
+// "skipped" set and to keep the row order a single literal instead of seven
+// repeated string constants, mirroring ratchetRowNames/mutationRowNames.
+var visualRowNames = []string{"report", "scope", "render", "console", "a11y", "compare", "reference-drift"}
+
+// skippedVisualChecks builds all seven visual rows as "skipped" with the
+// SAME reason — used whenever the mechanism is off, or an earlier stage's
+// cascade already stopped, before any command is ever run.
+func skippedVisualChecks(reason string) ([]*model.QualityCheck, []quality.CheckResult) {
+	checks := make([]*model.QualityCheck, 0, len(visualRowNames))
+	pure := make([]quality.CheckResult, 0, len(visualRowNames))
+	for _, name := range visualRowNames {
+		checks = append(checks, &model.QualityCheck{Kind: "visual", Name: name, Status: "skipped", Summary: reason})
+		pure = append(pure, quality.CheckResult{Status: quality.CheckStatusSkipped})
+	}
+	return checks, pure
+}
+
+// visualSkipReason names WHY all seven rows are being skipped, in D13's own
+// vocabulary — "apagado por omisión" (schema < 6) and "apagado por
+// decisión" (visual.enabled=false) must produce DIFFERENT summaries
+// (AC22/G23), and BOTH must differ from the gate-cascade text. UNLIKE
+// mutationSkipReason, this uses ONLY the STANDARD gatesStopped cascade
+// (AC26): a non-required gate sitting in `fail` does not stop the visual
+// checks — the evidence a screen crashed is an OBSERVATION, never an
+// inference over an unmutated tree that would need mutation's own stricter
+// premise (D1 pata a is mutation-specific, not shared).
+func visualSkipReason(gatesStopped bool, constitution *quality.Constitution) string {
+	switch {
+	case gatesStopped:
+		return "un gate required anterior fallo"
+	case !constitution.VisualDeclared:
+		return fmt.Sprintf("constitucion schema_version=%d no declara [visual] (apagado por omision)", constitution.SchemaVersion)
+	case !constitution.Visual.Enabled:
+		return "visual.enabled = false (apagado por decision)"
+	default:
+		return ""
+	}
+}
+
+// visualReportFailure builds row 1 ("visual/report") as a `fail`, plus rows
+// 2-7 skipped for the same reason (D13's "no se acumulan dos diagnosticos
+// del mismo hecho") — the exit path for a stale/tracked/undeleteable report
+// path, a non-zero exit, a missing file after exit 0, and an unparseable
+// report.
+func visualReportFailure(summary string, res quality.GateResult) ([]*model.QualityCheck, []quality.CheckResult) {
+	checks := []*model.QualityCheck{{
+		Kind: "visual", Name: "report", Status: "fail",
+		ExitCode: res.ExitCode, DurationMs: res.DurationMs,
+		OutputSHA256: res.OutputSHA256, OutputBytes: res.OutputBytes, OutputTail: res.OutputTail,
+		Summary: summary,
+	}}
+	pure := []quality.CheckResult{{Status: quality.CheckStatusFail}}
+	skippedChecks, skippedPure := skippedVisualChecks("visual/report fallo")
+	return append(checks, skippedChecks[1:]...), append(pure, skippedPure[1:]...)
+}
+
+// visualReportBudgetExceeded builds row 1 as a `finding` `budget-exceeded`
+// (D1) — the visual command exhausted its declared timeout, which is NOT
+// evidence about any screen: the harness never finished. Firmable only via
+// `quality ack` (RequiresSignature("visual") is false), never `quality
+// sign`.
+func visualReportBudgetExceeded(res quality.GateResult) ([]*model.QualityCheck, []quality.CheckResult) {
+	checks := []*model.QualityCheck{{
+		Kind: "visual", Name: "report", Status: "finding", Summary: "budget-exceeded: " + res.Summary,
+		ExitCode: res.ExitCode, DurationMs: res.DurationMs,
+		OutputSHA256: res.OutputSHA256, OutputBytes: res.OutputBytes, OutputTail: res.OutputTail,
+	}}
+	pure := []quality.CheckResult{{Status: quality.CheckStatusFinding}}
+	skippedChecks, skippedPure := skippedVisualChecks("visual/report budget-exceeded")
+	return append(checks, skippedChecks[1:]...), append(pure, skippedPure[1:]...)
+}
+
+// isVisualTimeout reports whether res is ExecRunner's own timeout shape —
+// the SAME discriminator isMutationTimeout already implements (ExitCode=-1,
+// Summary="timeout tras <d>"), reused here rather than duplicated: the
+// shape is a property of quality.ExecRunner (runner.go), not of any one
+// mechanism that consumes it.
+func isVisualTimeout(res quality.GateResult) bool {
+	return isMutationTimeout(res)
+}
+
+// visualConsoleCounts is the JSON shape of one target's console tally
+// within visual/console's Detail (D5) — recorded for EVERY target,
+// regardless of verdict: a recount is never hidden just because it did not
+// block.
+type visualConsoleCounts struct {
+	Error   int `json:"error"`
+	Warning int `json:"warning"`
+	Info    int `json:"info"`
+}
+
+// visualConsoleDetail is visual/console's Detail: per-target console
+// counts, keyed by target id.
+type visualConsoleDetail struct {
+	ByTarget map[string]visualConsoleCounts `json:"by_target"`
+}
+
+// visualA11yTargetDetail is one target's accessibility summary within
+// visual/a11y's Detail (D6): Engine/EngineVersion make visible the day an
+// updated tool silently changes the verdict; Reported distinguishes
+// "measured and clean" from "never measured".
+type visualA11yTargetDetail struct {
+	Reported      bool   `json:"reported"`
+	Engine        string `json:"engine,omitempty"`
+	EngineVersion string `json:"engine_version,omitempty"`
+}
+
+// visualA11yDetail is visual/a11y's Detail: per-target accessibility
+// summary, keyed by target id.
+type visualA11yDetail struct {
+	ByTarget map[string]visualA11yTargetDetail `json:"by_target"`
+}
+
+// visualTargetDetail is a `visual-target/<id>` row's Detail (D10): EVERY
+// reason that target failed, verbatim, in the order EvaluateVisual (and
+// this function's own pixel-comparison phase) appended them — never a
+// single reason when more than one applied.
+type visualTargetDetail struct {
+	Reasons []string `json:"reasons"`
+}
+
+// appendVisualBreach records one more failure reason for id in outcome's
+// Breaches map (D10) — used by the pixel-comparison phase below to fold
+// its own findings into the SAME per-target row EvaluateVisual's
+// render/console/a11y classification already populates, so a target that
+// fails to render AND fails to match its reference gets ONE row with BOTH
+// reasons, never two.
+func appendVisualBreach(outcome quality.VisualOutcome, id, reason string) {
+	outcome.Breaches[id] = append(outcome.Breaches[id], reason)
+}
+
+// visualCompareOutcome is the pixel-comparison phase's own pure-ish result
+// (it reads files, so it cannot live in the leaf package) — missingRefs is
+// D8's own AGGREGATED finding (no per-target row); failedTargets is every
+// target whose capture is absent, undecodable, mismatched in dimension, or
+// over max_diff_pct (each WITH its own visual-target row, merged into
+// outcome.Breaches by the caller as it is discovered).
+type visualCompareOutcome struct {
+	missingRefs   []string
+	failedTargets []string
+}
+
+// runVisualCompare implements D7/D8 for every declared target the report
+// actually covers (i.e. NOT already counted as visual/scope's own
+// "missing"): reads `<reference_dir>/<id>.png` and `<capture_dir>/<id>.png`
+// under svc.repoDir, and folds every failure reason directly into outcome's
+// Breaches map via appendVisualBreach — so the caller never has to merge
+// two separate result shapes back together.
+func (svc *QualityService) runVisualCompare(cfg quality.VisualCompareConfig, presentTargets []string, outcome quality.VisualOutcome) visualCompareOutcome {
+	result := visualCompareOutcome{}
+
+	for _, id := range presentTargets {
+		refPath := filepath.Join(svc.repoDir, cfg.ReferenceDir, id+".png")
+		capPath := filepath.Join(svc.repoDir, cfg.CaptureDir, id+".png")
+
+		refBytes, refErr := os.ReadFile(refPath)
+		if refErr != nil {
+			// D8: a MISSING reference is a grouped `finding`, never a `fail`
+			// and never a per-target row (G18a/G18b) — regardless of
+			// whether the capture itself exists.
+			result.missingRefs = append(result.missingRefs, id)
+			continue
+		}
+
+		capBytes, capErr := os.ReadFile(capPath)
+		if capErr != nil {
+			// G18c: a MISSING capture, with comparison ON, is `fail` WITH
+			// its own row — the opposite severity of a missing reference.
+			result.failedTargets = append(result.failedTargets, id)
+			appendVisualBreach(outcome, id, "falta la captura declarada para la comparacion")
+			continue
+		}
+
+		diff, cmpErr := quality.ComparePNG(refBytes, capBytes)
+		if cmpErr != nil {
+			result.failedTargets = append(result.failedTargets, id)
+			appendVisualBreach(outcome, id, fmt.Sprintf("comparacion de pixeles fallo: %s", cmpErr))
+			continue
+		}
+		if diff.DimensionMismatch {
+			result.failedTargets = append(result.failedTargets, id)
+			appendVisualBreach(outcome, id, fmt.Sprintf(
+				"dimensiones distintas: referencia %dx%d, captura %dx%d", diff.RefWidth, diff.RefHeight, diff.Width, diff.Height))
+			continue
+		}
+		if diff.ExceedsTolerance(cfg.MaxDiffPct) {
+			result.failedTargets = append(result.failedTargets, id)
+			appendVisualBreach(outcome, id, fmt.Sprintf(
+				"diferencia de pixeles %.4f%% supera max_diff_pct (%.4f%%)", diff.DiffPct, cfg.MaxDiffPct))
+			continue
+		}
+		// Coincide dentro de la tolerancia: sin fila, sin hallazgo.
+	}
+
+	return result
+}
+
+// runVisualChecks emits the "7 + N" visual rows D9 declares (SPEC-120
+// EPIC-calidad S6). All seven top-level rows are "skipped" under
+// visualSkipReason's causes — never silently omitted.
+//
+// Row 1 (the report) runs regardless of whether the spec's base is known —
+// report generation does not depend on scoping. Rows 2-5 (scope, render,
+// console, a11y) are evaluated by the leaf's OWN pure functions
+// (ScopeTargets/EvaluateVisual) over the parsed report — never re-deriving
+// any classification here. Rows 6-7 (compare, reference-drift) exist ONLY
+// when nivel 2 is switched on (D7); switching it off skips ONLY those two
+// rows, never rows 1-5 (AC22/G24). The `visual-target/<id>` rows are
+// assembled LAST, after every phase (including pixel comparison) has had a
+// chance to append its own reasons to the SAME per-target Breaches map —
+// which is also what lets row 3 (render)'s own summary name the REAL total
+// of failing targets when MaxVisualTargetRows truncates the emitted rows
+// (D10), even when the excess comes from a11y or pixel-comparison failures
+// rather than from rendering itself.
+func (svc *QualityService) runVisualChecks(
+	ctx context.Context, g *quality.Git, constitution *quality.Constitution, spec *model.Spec, gatesStopped bool,
+) ([]*model.QualityCheck, []quality.CheckResult, error) {
+	if reason := visualSkipReason(gatesStopped, constitution); reason != "" {
+		checks, pure := skippedVisualChecks(reason)
+		return checks, pure, nil
+	}
+
+	cfg := constitution.Visual
+
+	problem, ready, prepErr := prepareDeclaredOutput(g, svc.repoDir, cfg.ReportPath, "el informe visual", "informe")
+	if prepErr != nil {
+		return nil, nil, fmt.Errorf("service: quality: verify: visual: is tracked: %w", prepErr)
+	}
+	if !ready {
+		checks, pure := visualReportFailure(problem, quality.GateResult{})
+		return checks, pure, nil
+	}
+
+	// D4: every declared capture is ALSO an output mneme owns — deleted
+	// (never a directory, never a tracked file) before the harness runs,
+	// exactly like the report itself, so a stale capture from a previous
+	// run can never be mistaken for this run's evidence.
+	if cfg.Compare.Enabled {
+		for _, id := range cfg.Targets {
+			captureRel := filepath.ToSlash(filepath.Join(cfg.Compare.CaptureDir, id+".png"))
+			problem, ready, prepErr := prepareDeclaredOutput(g, svc.repoDir, captureRel, "la captura visual", "captura")
+			if prepErr != nil {
+				return nil, nil, fmt.Errorf("service: quality: verify: visual: captura %s: is tracked: %w", captureRel, prepErr)
+			}
+			if !ready {
+				checks, pure := visualReportFailure(problem, quality.GateResult{})
+				return checks, pure, nil
+			}
+		}
+	}
+
+	res := svc.runner.Run(ctx, quality.Gate{Name: "visual", Command: cfg.Command, Timeout: cfg.Timeout}, svc.repoDir)
+	if res.Status != quality.GateStatusPass {
+		if isVisualTimeout(res) {
+			checks, pure := visualReportBudgetExceeded(res)
+			return checks, pure, nil
+		}
+		summary := res.Summary
+		if summary == "" {
+			summary = fmt.Sprintf("el comando visual salio con exit_code=%d", res.ExitCode)
+		}
+		checks, pure := visualReportFailure(summary, res)
+		return checks, pure, nil
+	}
+
+	reportPath := filepath.Join(svc.repoDir, cfg.ReportPath)
+	raw, readErr := os.ReadFile(reportPath)
+	if readErr != nil {
+		checks, pure := visualReportFailure(fmt.Sprintf(
+			"el comando salio 0 pero %s no existe: %s", cfg.ReportPath, readErr,
+		), res)
+		return checks, pure, nil
+	}
+
+	report, parseErr := quality.ParseVisualReport(cfg.Format, raw)
+	if parseErr != nil {
+		checks, pure := visualReportFailure(fmt.Sprintf("informe no parseable como %s: %s", cfg.Format, parseErr), res)
+		return checks, pure, nil
+	}
+
+	reportRow := &model.QualityCheck{
+		Kind: "visual", Name: "report", Status: "pass",
+		ExitCode: res.ExitCode, DurationMs: res.DurationMs,
+		OutputSHA256: res.OutputSHA256, OutputBytes: res.OutputBytes, OutputTail: res.OutputTail,
+	}
+
+	// Row 2: scope (D3). G8a/G8b/G8c.
+	missing, extra := quality.ScopeTargets(cfg.Targets, report)
+	var scopeStatus, scopeSummary string
+	switch {
+	case len(missing) > 0:
+		scopeStatus = "fail"
+		scopeSummary = fmt.Sprintf("objetivo(s) declarado(s) sin verificar: %s", strings.Join(missing, ", "))
+	case len(extra) > 0:
+		scopeStatus = "finding"
+		scopeSummary = fmt.Sprintf("target-drift: objetivo(s) no declarado(s) en el informe: %s", strings.Join(extra, ", "))
+	default:
+		scopeStatus = "pass"
+	}
+
+	// Evaluation (D5/D6/D10) — pure, over the leaf's own classification.
+	outcome := quality.EvaluateVisual(report, quality.VisualThresholds{
+		FailOnConsoleError: cfg.FailOnConsoleError, A11yFailImpacts: cfg.A11yFailImpacts,
+	})
+
+	// Row 3's status is fixed HERE, from outcome.RenderFailed alone — its
+	// SUMMARY text is finalised only after every later phase (including
+	// pixel comparison) has had a chance to append a reason, so it can
+	// carry MaxVisualTargetRows' own truncation note (D10) without needing
+	// row 3 to be appended to the result slice before rows 4-7 exist.
+	renderStatus, renderSummary := "pass", "todos los objetivos renderizaron"
+	if len(outcome.RenderFailed) > 0 {
+		renderStatus = "fail"
+		renderSummary = fmt.Sprintf("%d objetivo(s) no renderizaron: %s", len(outcome.RenderFailed), strings.Join(outcome.RenderFailed, ", "))
+	}
+
+	// Row 4: console (D5). G10a/G10b.
+	consoleDetail := visualConsoleDetail{ByTarget: make(map[string]visualConsoleCounts, len(report.Targets))}
+	for _, t := range report.Targets {
+		consoleDetail.ByTarget[t.ID] = visualConsoleCounts{Error: t.Console.Error, Warning: t.Console.Warning, Info: t.Console.Info}
+	}
+	consoleDetailJSON, jsonErr := json.Marshal(consoleDetail)
+	if jsonErr != nil {
+		return nil, nil, fmt.Errorf("service: quality: verify: visual: marshal console detail: %w", jsonErr)
+	}
+	var consoleStatus, consoleSummary string
+	switch {
+	case len(outcome.PageErrorFailed) > 0:
+		consoleStatus = "fail"
+		consoleSummary = fmt.Sprintf("%d objetivo(s) con excepcion no capturada: %s", len(outcome.PageErrorFailed), strings.Join(outcome.PageErrorFailed, ", "))
+	case len(outcome.ConsoleErrorFailed) > 0:
+		consoleStatus = "fail"
+		consoleSummary = fmt.Sprintf(
+			"%d objetivo(s) con console.error>0 (fail_on_console_error=true): %s", len(outcome.ConsoleErrorFailed), strings.Join(outcome.ConsoleErrorFailed, ", "))
+	default:
+		consoleStatus = "pass"
+		consoleSummary = "sin excepciones no capturadas"
+	}
+	consoleRow := &model.QualityCheck{Kind: "visual", Name: "console", Status: consoleStatus, Summary: consoleSummary, Detail: string(consoleDetailJSON)}
+
+	// Row 5: a11y (D6). G11a/G11b/G11c.
+	a11yDetail := visualA11yDetail{ByTarget: make(map[string]visualA11yTargetDetail, len(report.Targets))}
+	for _, t := range report.Targets {
+		a11yDetail.ByTarget[t.ID] = visualA11yTargetDetail{Reported: t.A11y.Reported, Engine: t.A11y.Engine, EngineVersion: t.A11y.EngineVersion}
+	}
+	a11yDetailJSON, jsonErr := json.Marshal(a11yDetail)
+	if jsonErr != nil {
+		return nil, nil, fmt.Errorf("service: quality: verify: visual: marshal a11y detail: %w", jsonErr)
+	}
+	var a11yStatus, a11ySummary string
+	switch {
+	case len(outcome.A11yNotReported) > 0:
+		a11yStatus = "fail"
+		a11ySummary = fmt.Sprintf(
+			"%d objetivo(s) sin bloque de accesibilidad (a11y_fail_impacts declarado): %s", len(outcome.A11yNotReported), strings.Join(outcome.A11yNotReported, ", "))
+	case len(outcome.A11yFailed) > 0:
+		a11yStatus = "fail"
+		a11ySummary = fmt.Sprintf(
+			"%d objetivo(s) con violaciones de accesibilidad declaradas: %s", len(outcome.A11yFailed), strings.Join(outcome.A11yFailed, ", "))
+	default:
+		a11yStatus = "pass"
+		a11ySummary = fmt.Sprintf("%d objetivo(s) medidos", len(a11yDetail.ByTarget))
+	}
+	a11yRow := &model.QualityCheck{Kind: "visual", Name: "a11y", Status: a11yStatus, Summary: a11ySummary, Detail: string(a11yDetailJSON)}
+
+	// Rows 6-7: nivel 2 (D7/D8) — switched OFF does not switch off rows 1-5
+	// (AC22/G24).
+	var compareRow, driftRow *model.QualityCheck
+	if !cfg.Compare.Enabled {
+		compareRow = &model.QualityCheck{Kind: "visual", Name: "compare", Status: "skipped", Summary: "comparacion apagada (visual.compare.enabled = false)"}
+		driftRow = &model.QualityCheck{Kind: "visual", Name: "reference-drift", Status: "skipped", Summary: "comparacion apagada (visual.compare.enabled = false)"}
+	} else {
+		missingSet := make(map[string]bool, len(missing))
+		for _, id := range missing {
+			missingSet[id] = true
+		}
+		presentTargets := make([]string, 0, len(cfg.Targets))
+		for _, id := range cfg.Targets {
+			if !missingSet[id] {
+				presentTargets = append(presentTargets, id)
+			}
+		}
+		sort.Strings(presentTargets)
+
+		compareOutcome := svc.runVisualCompare(cfg.Compare, presentTargets, outcome)
+		sort.Strings(compareOutcome.missingRefs)
+		sort.Strings(compareOutcome.failedTargets)
+
+		var compareStatus, compareSummary string
+		switch {
+		case len(compareOutcome.failedTargets) > 0:
+			compareStatus = "fail"
+			compareSummary = fmt.Sprintf("%d objetivo(s) no coinciden con su referencia: %s", len(compareOutcome.failedTargets), strings.Join(compareOutcome.failedTargets, ", "))
+		case len(compareOutcome.missingRefs) > 0:
+			compareStatus = "finding"
+			compareSummary = fmt.Sprintf("reference-missing: %s", strings.Join(compareOutcome.missingRefs, ", "))
+		default:
+			compareStatus = "pass"
+		}
+		compareRow = &model.QualityCheck{Kind: "visual", Name: "compare", Status: compareStatus, Summary: compareSummary}
+
+		// Row 7: reference-drift (D8) — the ONLY caller of
+		// ChangedFilePathsInRange (G13a/G13b), never ChangedLines.
+		var driftStatus, driftSummary string
+		switch spec.BaseSHA {
+		case "":
+			driftStatus = "finding"
+			driftSummary = "base-unknown: spec sin base_sha"
+		default:
+			mergeBase, mbErr := g.MergeBase(spec.BaseSHA, "HEAD")
+			if mbErr != nil {
+				driftStatus = "finding"
+				driftSummary = "base-unknown: merge-base con HEAD inalcanzable"
+			} else {
+				changedPaths, cErr := g.ChangedFilePathsInRange(mergeBase, "HEAD")
+				if cErr != nil {
+					return nil, nil, fmt.Errorf("service: quality: verify: visual: changed file paths in range: %w", cErr)
+				}
+				drifted := quality.FilterUnderDir(changedPaths, cfg.Compare.ReferenceDir)
+				if len(drifted) > 0 {
+					driftStatus = "finding"
+					driftSummary = fmt.Sprintf("reference-changed-in-range: %s", strings.Join(drifted, ", "))
+				} else {
+					driftStatus = "pass"
+				}
+			}
+		}
+		driftRow = &model.QualityCheck{Kind: "visual", Name: "reference-drift", Status: driftStatus, Summary: driftSummary}
+	}
+
+	// Rows 8..7+N: one per failing target (D10), in the deterministic
+	// ascending order BreachedTargetIDs fixes (G19), capped at
+	// MaxVisualTargetRows (D10/G20) — computed HERE, after every phase
+	// (including pixel comparison) has had its chance to append reasons,
+	// which is what lets row 3 (render)'s summary name the REAL total even
+	// when the excess comes from a11y or pixel-comparison failures.
+	targetIDs := quality.BreachedTargetIDs(outcome)
+	totalFailing := len(targetIDs)
+	emitIDs := targetIDs
+	if totalFailing > quality.MaxVisualTargetRows {
+		emitIDs = targetIDs[:quality.MaxVisualTargetRows]
+		renderSummary = fmt.Sprintf(
+			"%s (total real de objetivos con incumplimientos: %d, supera MaxVisualTargetRows=%d: se emiten solo los primeros %d)",
+			renderSummary, totalFailing, quality.MaxVisualTargetRows, quality.MaxVisualTargetRows)
+	}
+	renderRow := &model.QualityCheck{Kind: "visual", Name: "render", Status: renderStatus, Summary: renderSummary}
+
+	// Assemble rows 1-7 in their FIXED, declared order (D9) — every row was
+	// built above as an independent local variable precisely so this final
+	// assembly never has to insert into or re-slice an already-built list.
+	checks := []*model.QualityCheck{reportRow,
+		{Kind: "visual", Name: "scope", Status: scopeStatus, Summary: scopeSummary},
+		renderRow, consoleRow, a11yRow, compareRow, driftRow,
+	}
+	pure := []quality.CheckResult{
+		{Status: quality.CheckStatusPass},
+		{Status: quality.CheckStatus(scopeStatus)},
+		{Status: quality.CheckStatus(renderStatus)},
+		{Status: quality.CheckStatus(consoleStatus)},
+		{Status: quality.CheckStatus(a11yStatus)},
+		{Status: quality.CheckStatus(compareRow.Status)},
+		{Status: quality.CheckStatus(driftRow.Status)},
+	}
+
+	for _, id := range emitIDs {
+		detail, jsonErr := json.Marshal(visualTargetDetail{Reasons: outcome.Breaches[id]})
+		if jsonErr != nil {
+			return nil, nil, fmt.Errorf("service: quality: verify: visual: marshal target detail: %w", jsonErr)
+		}
+		checks = append(checks, &model.QualityCheck{
+			Kind: "visual-target", Name: id, Status: "fail", Summary: "objetivo con incumplimientos", Detail: string(detail),
+		})
+		pure = append(pure, quality.CheckResult{Status: quality.CheckStatusFail})
 	}
 
 	return checks, pure, nil

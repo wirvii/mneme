@@ -279,9 +279,10 @@ func TestQualityService_Verify_HappyPath_Pass(t *testing.T) {
 	// are not even declared) + 3 criteria (SPEC-117: skipped — this
 	// service was never given WithWorkflowDir) + 12 budget (SPEC-118:
 	// skipped — same reason) + 6 mutation (SPEC-119: skipped — schema
-	// version 1 does not declare [mutation] either) = 34.
-	if len(checks) != 34 {
-		t.Fatalf("len(checks) = %d, want 34: %+v", len(checks), checks)
+	// version 1 does not declare [mutation] either) + 7 visual (SPEC-120:
+	// skipped — schema version 1 does not declare [visual] either) = 41.
+	if len(checks) != 41 {
+		t.Fatalf("len(checks) = %d, want 41: %+v", len(checks), checks)
 	}
 }
 
@@ -483,8 +484,8 @@ func TestQualityService_Status_WithCertificate(t *testing.T) {
 	if resp.LatestCertificate == nil || resp.LatestCertificate.ID != cert.ID {
 		t.Fatalf("LatestCertificate = %+v, want id=%s", resp.LatestCertificate, cert.ID)
 	}
-	if len(resp.Checks) != 34 {
-		t.Errorf("len(Checks) = %d, want 34 (SPEC-116 adds 3 skipped coverage + 4 skipped ratchet rows; SPEC-117 adds 3 skipped criteria rows; SPEC-118 adds 12 skipped budget rows; SPEC-119 adds 6 skipped mutation rows)", len(resp.Checks))
+	if len(resp.Checks) != 41 {
+		t.Errorf("len(Checks) = %d, want 41 (SPEC-116 adds 3 skipped coverage + 4 skipped ratchet rows; SPEC-117 adds 3 skipped criteria rows; SPEC-118 adds 12 skipped budget rows; SPEC-119 adds 6 skipped mutation rows; SPEC-120 adds 7 skipped visual rows)", len(resp.Checks))
 	}
 }
 
