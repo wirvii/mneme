@@ -371,7 +371,7 @@ func TestCodexInstall_NoDryRunSteps(t *testing.T) {
 	}
 
 	// Steps that must be present.
-	required := []string{"MCP server", "Session hooks", "Retire stale hooks", "Operating manual", "Workflow templates", "Skills", "Workflow directories"}
+	required := []string{"MCP server", "Session hooks", "Retire stale hooks", "Operating manual", "Workflow templates", "Skills", "Delegation hook", "Workflow directories"}
 	for _, req := range required {
 		found := false
 		for _, n := range names {
@@ -391,12 +391,12 @@ func TestCodexInstall_NoDryRunSteps(t *testing.T) {
 		t.Errorf("\"Retire stale hooks\" must sit immediately after \"Session hooks\": got indices %d and %d in %v", sessionHooksIdx, retireIdx, names)
 	}
 
-	// Steps that must NOT be present for Codex.
-	forbidden := []string{"Agent profiles", "Agent models", "Delegation hook", "Delegation hook (reinstall)", "Slash commands"}
+	// Global profiles and slash commands remain project/skill concerns.
+	forbidden := []string{"Agent profiles", "Agent models", "Delegation hook (reinstall)", "Slash commands"}
 	for _, forb := range forbidden {
 		for _, n := range names {
 			if n == forb {
-				t.Errorf("Codex steps: step %q must not be present for single-agent Codex; got %v", forb, names)
+				t.Errorf("Codex steps: step %q must not be present; got %v", forb, names)
 			}
 		}
 	}
@@ -431,7 +431,7 @@ func TestCodexOperatingManual_AntiDrift(t *testing.T) {
 	// Canonical sections that must be present (§1–§5, SPEC-049 D4).
 	sections := []string{
 		"## §1 How to launch",
-		"## §2 Single-agent model",
+		"## §2 Role model",
 		"## §3 SDD + lanes",
 		"## §4 Skills",
 		"## §5 Memory & conflicts",
@@ -447,7 +447,8 @@ func TestCodexOperatingManual_AntiDrift(t *testing.T) {
 
 	// Key concepts that must be present.
 	keywords := []string{
-		"single agent",
+		".codex/agents/*.toml",
+		"PreToolUse hooks enforce",
 		"mem_context",
 		"mem_search",
 		"mem_save",
@@ -512,8 +513,8 @@ func TestCodexBuilder_Fields(t *testing.T) {
 	if agent.Agents != nil {
 		t.Error("Agents must be nil for Codex (no subagent profiles)")
 	}
-	if agent.DelegationHook != nil {
-		t.Error("DelegationHook must be nil for Codex (no role enforcement)")
+	if agent.DelegationHook == nil {
+		t.Error("DelegationHook must not be nil for Codex role enforcement")
 	}
 	if agent.Skills == nil {
 		t.Error("Skills must not be nil (bundled skills are installed)")

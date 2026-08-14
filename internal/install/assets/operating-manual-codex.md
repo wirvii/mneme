@@ -13,24 +13,26 @@ to the operator.
 
 Run Codex as: `codex`
 
-You are the **single agent**: there are no subagents, no orchestrator, and no
-read-only roles. One agent reads memory, follows SDD, and implements changes.
-Do not expect role separation — it does not exist in this setup.
+Codex uses mneme's project roles from `.codex/agents/*.toml`. The coordinator
+owns the SDD lifecycle and delegates design, implementation and QA when the
+project manifest provides the corresponding role. `mneme init` generates both
+Codex and Claude Code projections from one project contract.
 
-## §2 Single-agent model
+## §2 Role model
 
-In the Claude Code integration, mneme separates an orchestrator (read-only, delegates)
-from implementer subagents. That model does NOT apply here.
+Claude Code and Codex use the same semantic roles and guarantees. Their file
+formats differ, but responsibilities, ownership areas and reserved lifecycle
+transitions do not.
 
-In Codex you:
+As coordinator you:
 1. Read relevant memories with `mem_context` + `mem_search`.
-2. Manage the backlog and spec lifecycle yourself (no handoffs).
-3. Implement, test, commit — all in the same session.
+2. Manage the backlog and spec lifecycle; subagents never advance it.
+3. Delegate to the project role named by `spec_advance` when available.
 4. Save discoveries and decisions before ending.
 
-There is no hook blocking edits. There are no role boundaries enforced by the
-toolset. Self-discipline is the only gate: follow SDD, save memories, do not
-skip steps.
+PreToolUse hooks enforce reserved tools and project ownership. Native Codex
+sandbox settings provide an additional boundary. If a required role cannot be
+resolved safely, stop and report the gap instead of weakening its permissions.
 
 ## §3 SDD + lanes
 
@@ -44,22 +46,20 @@ State machine: `backlog_add` → refine → `backlog_promote` → `spec_advance`
 `spec_reject` bounces a failed QA back to implementing.
 `spec_pushback` pauses a spec at `needs_grill` until ambiguity is resolved.
 
-**Human approval gate (unbreakable).** Even as the single agent that both designs and
-implements, you MUST present the complete spec to the human and wait for EXPLICIT
+**Human approval gate (unbreakable).** You MUST present the complete spec to the human and wait for EXPLICIT
 approval before advancing a spec past `specced` into planning/implementation.
 Answering design questions is NOT approval. The only exception is an explicit,
 one-time authorization from the human to skip the gate for that specific spec; it is
 never inherited and never a default.
 
-As the single agent you traverse the full cycle: backlog → spec → implement → qa → done.
+The coordinator traverses the full cycle: backlog → spec → implement → qa → done.
 
 **Refinamiento: grill-me, no brainstorming.** For a **standard**-lane item,
 refine it with `grill-me` (one question at a time, recommending an answer at
 each step) before `backlog_refine`. **Do NOT use `superpowers:brainstorming`
 to refine it** — it clashes with the SDD flow (writes its own design doc and
 plan, stepping on the spec you are about to write) and doesn't ship with
-mneme. This applies even though you are the same agent doing both refinement
-and implementation. For **trivial** items the grill is optional — grill it or
+mneme. For **trivial** items the grill is optional — grill it or
 reclassify to standard if it turns out ambiguous.
 
 ## §4 Skills
@@ -76,9 +76,8 @@ Bundled skills are installed to `$HOME/.agents/skills` for Codex to discover.
 Check available skills: `mneme skills list`.
 Validate before relying on: `mneme skills lint [name]` / `mneme skills validate <name>`.
 
-**Note:** the MCP tools `skills_*` manage `~/.claude/skills` (hardcoded in the
-mneme server). Skills copied to `$HOME/.agents/skills` at install time are
-available to Codex but not managed by the tools in this session.
+The CLI and MCP `skills_*` operations keep Claude's and Codex's discovery
+directories synchronized. Pinning, removal and installation apply to both.
 
 ## §5 Memory & conflicts
 
@@ -175,9 +174,7 @@ assumed: precise agent-to-agent reports are what caught real defects — an impr
 description of which test was failing, a row count that did not add up, an uncovered
 function that a global average was hiding. Plain language would have destroyed that.
 
-You are the single agent here, so you are both the author of those documents and the
-one who shows them to the person: the exemption covers writing them, never showing
-them.
+The exemption covers writing internal documents, never showing them to the person.
 
 **The exemption never travels with the text.** The moment any of it reaches a person,
 channel 6 applies and you rewrite it. Presenting a spec at the §3 gate is not pasting
