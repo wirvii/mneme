@@ -50,6 +50,11 @@ contract:
 The formats differ because each runtime uses its native configuration. A
 project initialized from either runtime is ready for both.
 
+At SessionStart, mneme compares the manifest's recorded checksums with both
+native projections. A legacy manifest, missing projection, or checksum drift
+produces one actionable `mneme-init` nudge and never rewrites the repo from the
+hook. Once reconciled, the nudge disappears.
+
 ## Session hooks and trust (D3b)
 
 Codex hooks in `~/.codex/hooks.json` require explicit trust before they run:

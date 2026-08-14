@@ -189,6 +189,7 @@ func runHookSessionStart(ctx context.Context, r io.Reader, w, errW io.Writer) er
 	// the context block — fail-open, exit 0 always, same contract as
 	// maybeEmitCodegraphNudge.
 	maybeActivateProfile(ctx, svc, w, errW)
+	maybeEmitAgentProjectionNudge(ctx, svc, w, errW)
 
 	// SPEC-108 D17: the pending-session-summary notice comes after the
 	// profile block and before the context block.
@@ -209,6 +210,50 @@ func runHookSessionStart(ctx context.Context, r io.Reader, w, errW io.Writer) er
 
 	printContextHook(w, resp)
 	return nil
+}
+
+// maybeEmitAgentProjectionNudge keeps SessionStart passive but actionable for
+// legacy manifests, missing runtime projections, and checksum drift. It never
+// rewrites project files: mneme-init remains the single reconciler and asks
+// for confirmation before applying its plan.
+func maybeEmitAgentProjectionNudge(ctx context.Context, mem *service.MemoryService, w, errW io.Writer) {
+	entries, err := service.NewSubagentService(mem).ReadManifest(ctx, "")
+	if err != nil {
+		fmt.Fprintf(errW, "[mneme] agent projection check error: %v\n", err)
+		return
+	}
+	if len(entries) == 0 {
+		return
+	}
+
+	root, err := os.Getwd()
+	if err != nil {
+		return
+	}
+	root = resolveProfileProjectRoot(root)
+	for _, entry := range entries {
+		for _, runtimeName := range []subagents.Runtime{subagents.RuntimeClaudeCode, subagents.RuntimeCodex} {
+			artifact, ok := entry.ArtifactFor(runtimeName)
+			if !ok || projectionNeedsReconcile(root, artifact) {
+				fmt.Fprintln(w, "<mneme:agent-projection-drift>")
+				fmt.Fprintln(w, "Project agent projections need reconciliation. Run the mneme-init skill; it will plan both Claude Code and Codex artifacts without creating duplicate mneme state.")
+				fmt.Fprintln(w, "</mneme:agent-projection-drift>")
+				return
+			}
+		}
+	}
+}
+
+func projectionNeedsReconcile(root string, artifact service.AgentArtifact) bool {
+	abs, _, ok := subagents.ResolveManifestPath(artifact.Path, root)
+	if !ok {
+		return true
+	}
+	data, err := os.ReadFile(abs)
+	if err != nil {
+		return true
+	}
+	return artifact.Checksum == "" || checksumOfSubagentContent(string(data)) != artifact.Checksum
 }
 
 // decodeSessionStartInput reads and decodes the stdin payload, returning the

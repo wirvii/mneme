@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/wirvii/mneme/internal/model"
 	"github.com/wirvii/mneme/internal/service"
 	"github.com/wirvii/mneme/internal/store"
+	"github.com/wirvii/mneme/internal/subagents"
 )
 
 // seedSessionWork chdirs into root, sets --data-dir=dataDir, and saves n
@@ -156,11 +158,11 @@ func TestRunHookSessionEnd_EmitsEmptyJSONObject(t *testing.T) {
 // _Applies to:_ line for each rule.
 func TestPrintContextHook_WithRules(t *testing.T) {
 	blockRule := model.Memory{
-		ID:       "rule-1",
-		Title:    "Never store plain passwords",
-		Content:  "Always use bcrypt with cost >= 12.",
-		Type:     model.TypeRule,
-		Severity: model.SeverityBlock,
+		ID:        "rule-1",
+		Title:     "Never store plain passwords",
+		Content:   "Always use bcrypt with cost >= 12.",
+		Type:      model.TypeRule,
+		Severity:  model.SeverityBlock,
 		AppliesTo: []string{"internal/**/*.go"},
 	}
 	warnRule := model.Memory{
@@ -186,8 +188,8 @@ func TestPrintContextHook_WithRules(t *testing.T) {
 	got := buf.String()
 
 	checks := []struct {
-		name    string
-		want    string
+		name string
+		want string
 	}{
 		{"active rules heading", "## Active Rules (2 rules, ~42 tokens)"},
 		{"block tag", "[BLOCK] Never store plain passwords"},
@@ -607,6 +609,32 @@ func TestMaybeEmitPendingSessionNotice_StoreFailure_WarnsNoBlock(t *testing.T) {
 	}
 	if !strings.Contains(errW.String(), "pending session summaries error") {
 		t.Errorf("expected a WARN about the failure, got: %q", errW.String())
+	}
+}
+
+func TestProjectionNeedsReconcile_DualArtifactStates(t *testing.T) {
+	root := t.TempDir()
+	rel := filepath.ToSlash(filepath.Join(".codex", "agents", "backend.toml"))
+	abs := filepath.Join(root, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const content = "name = \"backend\"\n"
+	if err := os.WriteFile(abs, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	matching := service.AgentArtifact{Runtime: subagents.RuntimeCodex, Path: rel, Checksum: checksumOfSubagentContent(content)}
+	if projectionNeedsReconcile(root, matching) {
+		t.Fatal("matching projection reported as drift")
+	}
+	matching.Checksum = "stale"
+	if !projectionNeedsReconcile(root, matching) {
+		t.Fatal("checksum drift was not reported")
+	}
+	matching.Path = ".codex/agents/missing.toml"
+	if !projectionNeedsReconcile(root, matching) {
+		t.Fatal("missing projection was not reported")
 	}
 }
 
