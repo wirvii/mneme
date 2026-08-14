@@ -112,7 +112,7 @@ var pureSourceFiles = []string{
 	"criteria.go", "evaluate.go", "report.go",
 	"budget.go", "symbols.go", "budgeteval.go", "detections.go",
 	"mutants.go", "gremlins.go", "mutscope.go", "signature.go",
-	"visual.go",
+	"visual.go", "pixel.go",
 }
 
 // TestPureFiles_NeverImportOSExec is AC1's negative hermana: proof, not
