@@ -1,10 +1,11 @@
 # mneme Skills — Authoring Guide
 
-mneme acts as a **package manager** for Claude Code skills. It embeds a set of
-bundled skills and installs them to `~/.claude/skills/`. This document explains
+mneme acts as a **cross-runtime package manager** for skills. It embeds a set of
+bundled skills and mirrors them to `~/.claude/skills/` for Claude Code and
+`$HOME/.agents/skills/` for Codex. This document explains
 how to author a conformant skill.
 
-> **Note:** mneme does NOT implement the Claude Code skill runtime. It manages
+> **Note:** mneme does NOT implement either agent's skill runtime. It manages
 > installation, linting, and validation only.
 
 ---
@@ -191,7 +192,7 @@ bundled (embedded in mneme binary)
   ├─ mneme skills install <name>
   │
   ▼
-installed (~/.claude/skills/<name>/)
+installed in both runtime destinations
   │
   ├─ mneme skills pin <name>    → protected from overwrite/remove
   ├─ mneme skills lint <name>   → structural check

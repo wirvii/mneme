@@ -759,8 +759,9 @@ mneme subagents compose --role backend --archetype backend \
 
 ### mneme subagents write
 
-Writes composed markdown to `<repo-root>/.claude/agents/<role>.md` and
-updates the manifest. Validates `composed_md` against `--archetype`'s
+Writes Claude Code Markdown and Codex TOML projections under
+`<repo-root>/.claude/agents/` and `<repo-root>/.codex/agents/`, then updates
+the manifest. Validates `composed_md` against `--archetype`'s
 Go-authored permission table before writing anything (tools/permissionMode
 can never be widened). Atomic: a manifest-save failure after the file write
 rolls the file back.

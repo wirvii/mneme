@@ -4,8 +4,9 @@
 [docs/skills.md](../skills.md) (SKILL.md format, pin semantics, bundled
 skills). Index: [docs/API.md](../API.md).
 
-mneme is the **package manager** for skills in `~/.claude/skills/` — it does
-not implement the Claude Code skill runtime.
+mneme is the **cross-runtime package manager** for skills. It mirrors managed
+content to `~/.claude/skills/` and `$HOME/.agents/skills/`; it does not
+implement either runtime's skill loader.
 
 ---
 
@@ -26,8 +27,8 @@ No parameters.
 
 ## skills_install
 
-Install a bundled skill to `~/.claude/skills/`. Respects pin protection unless
-`force` is true.
+Install a bundled skill to both runtime destinations. Respects pin protection
+unless `force` is true.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|

@@ -337,7 +337,7 @@ subagents via the `mneme-init` skill (SPEC-058):
   same two PreToolUse commands into **`<repo>/.claude/settings.json`**
   instead of the global file.
 - If no implementer subagents exist, the hook is **not** offered — the
-  project operates single-agent (same precedent as Codex/SPEC-049, which
+  project operates without delegated roles (the zero-role fallback, which
   never installs this hook).
 - The choice is recorded per role in the subagent manifest's
   `enforcement_hook` field (`subagent_write`'s `enforcement_hook` parameter),

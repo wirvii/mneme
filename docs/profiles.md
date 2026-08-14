@@ -248,7 +248,7 @@ answer — so the endpoint count stays 8, unchanged.
 
 ## §2: Activation, lockfile, and provenance
 
-Claude Code has no `PATH`-style indirection the way `nvm` does, so
+Agent runtimes have no `PATH`-style indirection the way `nvm` does, so
 "activating" a profile is **hybrid** (`docs/profiles-design.md` §7):
 
 - **Repunta runtime** — what mneme resolves in memory: rules are inserted
@@ -257,9 +257,9 @@ Claude Code has no `PATH`-style indirection the way `nvm` does, so
   (registered on the lock via `profile`+`commit`) — their runtime *consumption*
   by each subsystem (scoring, lanes, `spec_doc_write`) is a later follow-up,
   not §2.
-- **Materializa file-based** — what Claude Code needs as real files: `agents/`
-  → `.claude/agents/`, `skills/` → `~/.claude/skills/`, `blocks/` → a single
-  managed block in `CLAUDE.md`.
+- **Materializa file-based** — what both runtimes need as real files: `agents/`
+  → `.claude/agents/` + `.codex/agents/`, `skills/` → `~/.claude/skills/` +
+  `$HOME/.agents/skills/`, `blocks/` → a single managed block in `CLAUDE.md`.
 
 ### The profile store's layout
 
@@ -943,9 +943,9 @@ diverging from vanilla. The default OSS profile's `blocks/` directory ships
 only a non-`.md` keep file (`blocks/README`, since `go:embed` cannot embed an
 empty directory) — `LoadContentsFS` parses it to zero blocks (its loader
 only picks up `*.md` files). One observable consequence: activating
-`mneme-default` in a repo only ever adds the 6 layer-1 agents to
-`.claude/agents/` — skills/models already match what the global install
-leaves on the host (idempotent).
+`mneme-default` in a repo adds both native projections of the 6 layer-1
+agents; skills/models already match what the global install leaves on the
+host (idempotent).
 
 ### `TestDefaultProfile_DriftAgainstAssets` — the parity guard
 
@@ -957,15 +957,11 @@ without the other breaks CI immediately — the same guard
 
 ### No-regression — the vanilla path never routes through the default
 
-**`installSteps`/`ClaudeCode()` are untouched.** A `PinAbsent` repo resolves
-to `SourceVanilla` (§3.5) unconditionally — SessionStart emits nothing, and
-`mneme install claude-code` runs exactly the pre-§6 sequence: MCP config,
-hooks, the global manual, `/mneme-init`, skills, templates, the delegation
-hook. `TestClaudeCodeInstall_VanillaGolden`/`TestClaudeCodeInstall_Idempotency`
-(`internal/install`) freeze that contract — including an explicit assertion
-that `.claude/agents/` and `.mneme/profile.lock` never appear after a
-vanilla `Install()` call. `TestInstallSteps_DefaultSequence` (pre-existing)
-needed zero changes.
+The global installers remain separate from project activation. A `PinAbsent`
+repo resolves to `SourceVanilla` (§3.5) unconditionally — SessionStart emits nothing, and
+global install configures only host integration. Project role files and
+`.mneme/profile.lock` appear only after explicit initialization or profile
+activation, and every such activation writes both runtime projections.
 
 ### No new surface
 

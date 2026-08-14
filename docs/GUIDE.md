@@ -719,7 +719,8 @@ All agents integrate with mneme memory at start (search + spec_status) and end (
 Instead of the fixed global six, a project can run the `mneme-init` skill and
 walk its grill to generate subagents tailored to its own stack: one profile
 per role (`backend`, `frontend`, ...), each covering every app/area that role
-owns, written to `<repo>/.claude/agents/<role>.md`. Permissions (the
+owns, projected to `<repo>/.claude/agents/<role>.md` and
+`<repo>/.codex/agents/<role>.toml`. Permissions (the
 `tools:` allowlist) are always inherited from a fixed Go-authored archetype —
 never LLM-generated — so a generated `backend` subagent has exactly the same
 capability boundary as the global one, just a project-specific prompt. See
@@ -849,7 +850,7 @@ spec_advance({ "id": "SPEC-042", "by": "architect" })
 |---------|-------------|
 | `mneme subagents fingerprint` | Detect project root, apps, stack markers |
 | `mneme subagents compose --role <r> --archetype <a> ...` | Preview a composed subagent profile |
-| `mneme subagents write --role <r> --archetype <a> ...` | Write the profile to `.claude/agents/<r>.md` |
+| `mneme subagents write --role <r> --archetype <a> ...` | Write both runtime projections for the role |
 | `mneme delegation-hook enable` | Register the project-scoped opt-in delegation hook |
 | `mneme team-memory enable` | Activate git-native shared memory for this repo |
 | `mneme promote <id>` | Mark one memory as team-curated (`shared=2`) |

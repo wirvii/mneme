@@ -90,7 +90,7 @@ make install
 
 # 2. Wire into your agent
 mneme install claude-code
-# or, for OpenAI Codex CLI (single-agent, no delegation enforcement):
+# or, for OpenAI Codex CLI (native project roles and delegation enforcement):
 mneme install codex
 
 # 3. Start using it
@@ -104,7 +104,7 @@ On Windows, only the first line applies: `go install` is the sole supported
 install (and upgrade) path there — `curl | sh` and `make install`'s `sudo cp`
 step are both Unix-only. See [Windows](#windows) below.
 
-`mneme install claude-code` registers MCP tools, session hooks, and the rules enforcement hook in `~/.claude/settings.json` -- it no longer writes any global subagent profiles (SPEC-073); it also removes the six profiles a previous install may have left in `~/.claude/agents/`, provided they were never customised (see [Subagents](#subagents) for the per-project generation model that replaced the global set). After install, the agent automatically loads context at session start, saves session summaries at end, and evaluates rules before every file edit. `mneme install codex` wires the same MCP server and memory protocol into OpenAI Codex CLI's single-agent model -- see [docs/codex.md](docs/codex.md) for the differences.
+`mneme install claude-code` and `mneme install codex` register the same MCP, memory lifecycle and role-enforcement guarantees using each runtime's native configuration. Neither installs global role profiles: `mneme init` generates both `.claude/agents/*.md` and `.codex/agents/*.toml` per project from one shared contract. See [Subagents](#subagents) and [docs/codex.md](docs/codex.md).
 
 ---
 
@@ -216,13 +216,13 @@ and [docs/api/codegraph.md](docs/api/codegraph.md) (full tool contracts).
 
 ## Skills
 
-mneme is the **package manager for Claude Code skills** -- it embeds a bundle of
-skills and installs them to `~/.claude/skills/`. It does not implement the skill
-runtime itself.
+mneme is a **cross-runtime skill package manager** -- it embeds a bundle of
+skills and mirrors them to Claude Code's `~/.claude/skills/` and Codex's
+`$HOME/.agents/skills/`. It does not implement either runtime's skill loader.
 
 ```bash
 mneme skills list                       # bundled + installed, with lint status
-mneme skills install example-skill      # copy to ~/.claude/skills/
+mneme skills install example-skill      # mirror to both runtime destinations
 mneme skills pin example-skill          # protect from overwrite/removal
 mneme skills lint example-skill         # deterministic structural check
 mneme skills validate example-skill     # run validation/run.sh (120s timeout)
@@ -248,7 +248,7 @@ grill:
 #   1. elicit repo/org knowledge once (commit style, cross-cutting rules)
 #   2. propose roles + app<->role mapping, let the user adjust
 #   3. draft role x area x stack content for each role
-#   4. compose, validate, preview, and write .claude/agents/<role>.md
+#   4. compose, validate, preview, and write both runtime projections
 ```
 
 Every generated profile still inherits its `tools:` permission envelope from
@@ -370,7 +370,7 @@ that figure:
 | `mneme spec` | Manage specs in the SDD lifecycle (`new`, `advance`, `pushback`, `resolve`, `quick`, `reject`, `list`, `status`, `history`) |
 | `mneme lane` | Manage trivial-lane SDD classification and auditing (`audit`, `reclassify`, `override`, `status`, `stats`) |
 | `mneme codegraph` | Semantic code graph -- index and query code structure (`index`, `search`, `node`, `callers`, `callees`, `impact`, `trace`, `files`, `status`, `hooks`) |
-| `mneme skills` | Manage mneme skills in `~/.claude/skills/` (`list`, `install`, `pin`, `unpin`, `remove`, `lint`, `validate`) |
+| `mneme skills` | Manage mirrored skills for Claude Code and Codex (`list`, `install`, `pin`, `unpin`, `remove`, `lint`, `validate`) |
 | `mneme model` | Manage per-agent model assignments (`list`, `set`, `reset`) |
 | `mneme conflicts` | Detect and manage memory conflict relations (`candidates`, `scan`, `link`, `unlink`, `list`) |
 | `mneme subagents` | Generate and manage per-project subagent profiles (`fingerprint`, `profile`, `compose`, `write`, `manifest-list`) |
@@ -407,7 +407,7 @@ errors, examples) under [docs/api/](docs/api/):
 | `spec_*` | 9 | Spec lifecycle: draft → speccing → ... → done, plus `quick`/`reject`/`doc_write` shortcuts | [docs/api/sdd.md](docs/api/sdd.md) |
 | `lane_*` | 5 | Trivial-lane audit, reclassify, override, status, stats | [docs/api/sdd.md](docs/api/sdd.md) |
 | `codegraph_*` | 10 | Symbol search, callers/callees, impact analysis, call tracing | [docs/api/codegraph.md](docs/api/codegraph.md) |
-| `skills_*` | 7 | Install/pin/lint/validate skills in `~/.claude/skills/` | [docs/api/skills.md](docs/api/skills.md) |
+| `skills_*` | 7 | Install/pin/lint/validate mirrored skills for Claude Code and Codex | [docs/api/skills.md](docs/api/skills.md) |
 | `model_*` | 3 | Per-agent model alias assignment | [docs/api/models.md](docs/api/models.md) |
 | `conflicts_*` | 5 | Detect and manage memory conflict relations | [docs/api/conflicts.md](docs/api/conflicts.md) |
 | `speech_*` | 2 | Control and emit concise, entirely local spoken responses | [docs/speech.md](docs/speech.md) |

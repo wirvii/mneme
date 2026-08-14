@@ -106,9 +106,9 @@ mneme subagents compose --role backend --archetype backend \
 
 ## subagent_write
 
-Atomically write a composed subagent profile to `.claude/agents/<role>.md`
-and update the manifest. Rolls back the file write if the manifest update
-fails. `role` must be a safe slug (lowercase letters/digits/hyphens) —
+Atomically write `.claude/agents/<role>.md` and `.codex/agents/<role>.toml`
+from the same role contract and update the manifest. Rolls back file writes if
+the manifest update fails. `role` must be a safe slug (lowercase letters/digits/hyphens) —
 rejects path traversal. `composed_md` is **re-validated** against
 `archetype`'s Go-authored permission envelope before anything is written, so
 a hand-crafted `composed_md` can never grant a role more capability than its
@@ -116,7 +116,7 @@ archetype allows.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `role` | string | yes | Subagent role name; determines the destination filename `.claude/agents/<role>.md`. Must match `^[a-z][a-z0-9-]*$` |
+| `role` | string | yes | Subagent role name; determines both runtime destination filenames. Must match `^[a-z][a-z0-9-]*$` |
 | `archetype` | string | yes | Built-in role whose Go-authored permission envelope `composed_md` is validated against before writing |
 | `composed_md` | string | yes | Full composed profile content, as returned by `subagent_compose`'s preview |
 | `enforcement_hook` | boolean | no | Whether the project's delegation-enforcement hook is enabled. Recorded in the manifest only — use `mneme delegation-hook enable` to actually register it |
@@ -126,8 +126,9 @@ archetype allows.
 | `areas` | string[] | no | App/package paths this profile's role/area sections cover |
 | `areas_complete` | boolean | no | Certifies `areas` as an exhaustive list of every path this role may write to — what activates role containment (SPEC-086 D4/D5/D11). Set `true` only as the direct answer to the `mneme-init` grill's explicit completeness question, reviewed by a human. Never infer, default, or backfill it: an uncertified role is reported by `mneme subagents doctor` as `not_verified`, which is the correct and safe state until certified (SPEC-113) |
 
-**Returns:** `{"path": ".claude/agents/backend.md", "checksum": "sha256-hex...", "version": 1}`
-(`version` is the layer-1 managed-block version parsed back out of the
+**Returns:** the legacy Claude `path`/`checksum` fields plus an `artifacts`
+array containing the Claude Code and Codex paths and checksums (`version` is
+the layer-1 managed-block version parsed back out of the
 written file.)
 
 **Errors:** `-32602` missing required params, invalid `role` slug (including
