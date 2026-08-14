@@ -1050,20 +1050,24 @@ func readBaselineFile(repoDir string) *quality.Baseline {
 // why (D10/D11) — never re-running anything. by and justification must both
 // be non-empty (model.ErrReasonRequired).
 //
-// SPEC-117 D11's ONE guard: a "criterion*"-kind row is ATTESTED, never
-// absolved — Ack refuses it with model.ErrCriterionRequiresSign, naming
-// `mneme quality sign` in the wrapped message, so a caller lands on the
-// correct verb instead of a dead end. Every other kind (a gate, a ratchet
-// finding, a cliquet row) is entirely unaffected — this is the ONLY
-// modification Ack receives, and it is additive.
+// SPEC-119 D8 generalizes SPEC-117's own ONE guard: a row whose Kind
+// REQUIRES SIGNATURE (quality.RequiresSignature — a criterion, or a
+// `mutant` survivor's claimed equivalence) is ATTESTED, never absolved —
+// Ack refuses it with model.ErrRequiresSign, naming the row's REAL kind
+// (never always "criterion", now that a `mutant` row can trigger this too)
+// and `mneme quality sign` in the wrapped message. Every other kind (a
+// gate, a ratchet finding, a mutation/viability finding) is entirely
+// unaffected.
 func (svc *QualityService) Ack(ctx context.Context, req model.QualityAckRequest) error {
 	if req.By == "" || req.Justification == "" {
 		return model.ErrReasonRequired
 	}
-	if isCriterionRow, err := svc.checkKindStartsWithCriterion(ctx, req.CertificateID, req.Seq); err != nil {
+	requiresSignature, kind, err := svc.checkRequiresSignature(ctx, req.CertificateID, req.Seq)
+	if err != nil {
 		return err
-	} else if isCriterionRow {
-		return fmt.Errorf("service: quality: ack: %w (usa `mneme quality sign`)", model.ErrCriterionRequiresSign)
+	}
+	if requiresSignature {
+		return fmt.Errorf("service: quality: ack: fila de kind %q exige firma (usa `mneme quality sign`): %w", kind, model.ErrRequiresSign)
 	}
 	if err := svc.store.AckCheck(ctx, req.CertificateID, req.Seq, req.By, req.Justification); err != nil {
 		return fmt.Errorf("service: quality: ack: %w", err)
@@ -1071,27 +1075,37 @@ func (svc *QualityService) Ack(ctx context.Context, req model.QualityAckRequest)
 	return nil
 }
 
-// Sign converts a criterion row's "finding" into "acked" — SPEC-117 S3
-// D11's own verb, an ATTESTATION ("I verified this and it holds") kept
+// Sign converts an ATTESTED row's "finding" into "acked" — SPEC-117 S3's
+// own verb, an ATTESTATION ("I verified this and it holds") kept
 // deliberately DISJOINT from Ack's ABSOLUTION ("I approve this despite
-// being a problem"): mixing the two into one verb would make a COUNT(*)
-// confuse "we forgave 3 findings" with "we verified 4 manuals" — exactly
-// the harm S2's "one row per fact" rule already guards against on the
-// other axis. Sign reuses store.AckCheck's mechanism VERBATIM (same three
-// columns, same in-transaction verdict recalculation) — not a single line
-// of store change. Only accepts rows whose Kind starts with "criterion"
-// (model.ErrNotACriterion otherwise); by and evidence must both be
-// non-empty (model.ErrReasonRequired).
+// being a problem"). SPEC-119 D8 generalizes its domain: Sign now accepts
+// iff quality.RequiresSignature(kind) — a criterion row, OR a `mutant`
+// survivor row (the equivalence escape hatch, D8) — via the SAME predicate
+// Ack's own refusal is built on, negated; the two domains can no longer
+// drift apart because they are the same function. Sign reuses
+// store.AckCheck's mechanism VERBATIM (same three columns, same
+// in-transaction verdict recalculation) — not a single line of store
+// change. by and evidence must both be non-empty (model.ErrReasonRequired).
+//
+// SPEC-119 D9: signing a `mutant` row additionally enforces the
+// certificate's own equivalence cupo (checkEquivalentQuota) BEFORE ever
+// touching the row — a cupo already exhausted leaves the row untouched, in
+// `finding`.
 func (svc *QualityService) Sign(ctx context.Context, req model.QualitySignRequest) error {
 	if req.By == "" || req.Evidence == "" {
 		return model.ErrReasonRequired
 	}
-	isCriterionRow, err := svc.checkKindStartsWithCriterion(ctx, req.CertificateID, req.Seq)
+	requiresSignature, kind, err := svc.checkRequiresSignature(ctx, req.CertificateID, req.Seq)
 	if err != nil {
 		return err
 	}
-	if !isCriterionRow {
-		return fmt.Errorf("service: quality: sign: %w", model.ErrNotACriterion)
+	if !requiresSignature {
+		return fmt.Errorf("service: quality: sign: fila de kind %q no es firmable: %w", kind, model.ErrNotSignable)
+	}
+	if kind == "mutant" {
+		if quotaErr := svc.checkEquivalentQuota(ctx, req.CertificateID); quotaErr != nil {
+			return quotaErr
+		}
 	}
 	if err := svc.store.AckCheck(ctx, req.CertificateID, req.Seq, req.By, req.Evidence); err != nil {
 		return fmt.Errorf("service: quality: sign: %w", err)
@@ -1099,24 +1113,72 @@ func (svc *QualityService) Sign(ctx context.Context, req model.QualitySignReques
 	return nil
 }
 
-// checkKindStartsWithCriterion looks up the (certificateID, seq) row and
-// reports whether its Kind begins with "criterion" — the ONE fact both
-// Sign's and Ack's domain guards need. A row that does not exist is
-// reported as NOT a criterion row (false, nil): the subsequent
-// store.AckCheck call is what surfaces model.ErrCertificateNotFound for
-// that case, exactly as it always has — this helper only ever ADDS a
-// guard, it never removes AckCheck's own not-found detection.
-func (svc *QualityService) checkKindStartsWithCriterion(ctx context.Context, certificateID string, seq int) (bool, error) {
-	checks, err := svc.store.ListChecks(ctx, certificateID)
-	if err != nil {
-		return false, fmt.Errorf("service: quality: list checks: %w", err)
+// checkRequiresSignature looks up the (certificateID, seq) row and reports
+// whether its Kind requires a signature (quality.RequiresSignature) — the
+// ONE fact both Sign's and Ack's domain guards need (SPEC-119 D8,
+// generalizing S3's own checkKindStartsWithCriterion): the two verbs'
+// domains are now decided by ONE predicate, negated, instead of two
+// independently-written conditions that happened to agree. Also returns
+// the row's raw Kind so BOTH callers can name the ACTUAL row in their
+// error message, rather than a message that always says "criterion" even
+// when the rejected row is a `mutation/viability` finding. A row that does
+// not exist reports (false, "", nil): the subsequent store.AckCheck call
+// is what surfaces model.ErrCertificateNotFound for that case, exactly as
+// it always has — this helper only ever ADDS a guard, it never removes
+// AckCheck's own not-found detection.
+func (svc *QualityService) checkRequiresSignature(ctx context.Context, certificateID string, seq int) (requiresSignature bool, kind string, err error) {
+	checks, listErr := svc.store.ListChecks(ctx, certificateID)
+	if listErr != nil {
+		return false, "", fmt.Errorf("service: quality: list checks: %w", listErr)
 	}
 	for _, c := range checks {
 		if c.Seq == seq {
-			return strings.HasPrefix(c.Kind, "criterion"), nil
+			return quality.RequiresSignature(c.Kind), c.Kind, nil
 		}
 	}
-	return false, nil
+	return false, "", nil
+}
+
+// checkEquivalentQuota enforces D9's ABSOLUTE cupo on ONE certificate's
+// `mutant` survivor rows: reads max_equivalent from THAT SAME
+// certificate's own mutation/score row Detail — never re-parsing
+// .mneme/quality.toml, which is D9's whole point ("lo que gobierna es lo
+// que se registro al certificar, editar la constitucion entre certificar
+// y firmar no compra ni una firma mas") — counts how many `mutant` rows
+// are ALREADY `acked` on that SAME certificate, and refuses with
+// model.ErrEquivalentQuotaExceeded once the cupo is reached, leaving the
+// targeted row untouched. Fails CLOSED (the same sentinel) when the
+// certificate has no mutation/score row at all: the ABSENCE of a
+// recorded cupo must never read as "unlimited" (D9's own explicit rule).
+func (svc *QualityService) checkEquivalentQuota(ctx context.Context, certificateID string) error {
+	checks, err := svc.store.ListChecks(ctx, certificateID)
+	if err != nil {
+		return fmt.Errorf("service: quality: sign: list checks: %w", err)
+	}
+
+	var scoreDetail *mutantScoreDetail
+	signedCount := 0
+	for _, c := range checks {
+		if c.Kind == "mutation" && c.Name == "score" && c.Detail != "" {
+			var d mutantScoreDetail
+			if jsonErr := json.Unmarshal([]byte(c.Detail), &d); jsonErr == nil {
+				scoreDetail = &d
+			}
+		}
+		if c.Kind == "mutant" && c.Status == string(quality.CheckStatusAcked) {
+			signedCount++
+		}
+	}
+
+	if scoreDetail == nil {
+		return fmt.Errorf("service: quality: sign: certificado %s no tiene fila mutation/score — el cupo nunca es ilimitado: %w", certificateID, model.ErrEquivalentQuotaExceeded)
+	}
+	if signedCount >= scoreDetail.MaxEquivalent {
+		return fmt.Errorf(
+			"service: quality: sign: %w (cupo=%d, ya firmados=%d en este certificado)",
+			model.ErrEquivalentQuotaExceeded, scoreDetail.MaxEquivalent, signedCount)
+	}
+	return nil
 }
 
 // BaselineUpdate registers a new ratchet baseline (SPEC-116 D10/D15),

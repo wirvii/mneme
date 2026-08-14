@@ -3,6 +3,8 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +13,7 @@ import (
 
 	"github.com/wirvii/mneme/internal/model"
 	"github.com/wirvii/mneme/internal/quality"
+	"github.com/wirvii/mneme/internal/store"
 )
 
 // mutationTestConstitution returns a Constitution with [mutation] declared
@@ -855,4 +858,306 @@ func itoa(n int) string {
 		buf[i] = '-'
 	}
 	return string(buf[i:])
+}
+
+// --- SPEC-119 EPIC-calidad S5 P9: the escotilla — Sign/Ack + cupo ---
+
+// writeConstitutionV5Mutation writes a full schema_version=5 constitution
+// — every prior section declared-and-off, [mutation] configured with the
+// given enabled/maxEquivalent — the mold of writeConstitutionV3Criteria/
+// writeMinimalBudgetConstitution, extended one schema further.
+func writeConstitutionV5Mutation(t *testing.T, repoDir string, maxEquivalent int) {
+	t.Helper()
+	dir := filepath.Join(repoDir, ".mneme")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir .mneme: %v", err)
+	}
+	doc := fmt.Sprintf(`
+schema_version = 5
+enabled = true
+[execution]
+output_tail_bytes = 4096
+[coverage]
+enabled = false
+format = "go-cover"
+command = ["true"]
+profile_path = "tmp/coverage.out"
+timeout = "20m"
+min_diff_line_pct = 80.0
+min_changed_lines = 5
+exclude = []
+[ratchet]
+enabled = false
+max_global_line_pct_drop = 0.0
+max_baseline_staleness_pct = 1.0
+[criteria]
+enabled = false
+timeout = "5m"
+max_manual_pct = 25.0
+max_command_pct = 30.0
+[budget]
+enabled = false
+timeout = "2m"
+test_globs = ["**/*_test.go"]
+test_reach_depth = 3
+[mutation]
+enabled = true
+format = "mutants-v1"
+command = ["true"]
+report_path = "tmp/mutants.json"
+timeout = "30m"
+max_equivalent = %d
+max_not_viable_pct = 25.0
+`, maxEquivalent)
+	if err := os.WriteFile(filepath.Join(dir, "quality.toml"), []byte(doc), 0o644); err != nil {
+		t.Fatalf("write quality.toml: %v", err)
+	}
+}
+
+// verifyWithSurvivors drives a REAL Verify() call (through the full
+// constitution-on-disk path, unlike this file's other tests that call
+// runMutationChecks directly) producing exactly n `mutant` survivor rows
+// on a single changed line — the fixture Sign/Ack's escotilla tests need,
+// since the cupo (D9) is read back from a PERSISTED certificate's
+// mutation/score row, which only a real Verify()+InsertCertificate
+// round-trip can produce.
+func verifyWithSurvivors(t *testing.T, s *store.SDDStore, specID string, maxEquivalent, n int) (*model.QualityCertificate, []int64) {
+	t.Helper()
+	repoDir := newTestGitRepo(t)
+	writeConstitutionV5Mutation(t, repoDir, maxEquivalent)
+	commitAll(t, repoDir, "add constitution")
+	// baseSHA is captured AFTER the constitution lands, so the
+	// constitution itself is NOT part of the spec's own range — otherwise
+	// constitution/unchanged-in-range would be a permanent finding on
+	// every certificate this fixture produces, independent of anything
+	// this test is actually about.
+	baseSHA := headSHAFor(t, repoDir)
+
+	if err := os.WriteFile(filepath.Join(repoDir, "foo.go"), []byte("package main\n\nfunc Foo() {}\n"), 0o644); err != nil {
+		t.Fatalf("write foo.go: %v", err)
+	}
+	commitAll(t, repoDir, "add foo.go")
+
+	spec := insertTestSpec(t, s, specID, "proj", model.SpecStatusImplementing, baseSHA)
+
+	entries := make([]string, n)
+	for i := range entries {
+		entries[i] = "foo.go:1:m" + itoa(i) + ":lived"
+	}
+	runner := &fakeGateRunner{writeFiles: map[string]map[string]string{
+		"mutation-report": {"tmp/mutants.json": mutantsV1Doc(entries...)},
+	}}
+	svc := NewQualityService(s, "proj", repoDir, runner)
+
+	cert, err := svc.Verify(context.Background(), model.QualityVerifyRequest{ID: spec.ID})
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+
+	checks, err := s.ListChecks(context.Background(), cert.ID)
+	if err != nil {
+		t.Fatalf("ListChecks: %v", err)
+	}
+	var seqs []int64
+	for _, c := range checks {
+		if c.Kind == "mutant" {
+			seqs = append(seqs, int64(c.Seq))
+		}
+	}
+	if len(seqs) != n {
+		t.Fatalf("verifyWithSurvivors: got %d mutant rows, want %d: %+v", len(seqs), n, checks)
+	}
+	return cert, seqs
+}
+
+// TestSign_MutantSurvivor_LiftsBlock covers AC19/G19b: signing a survivor
+// converts it to `acked` and the certificate's stored verdict, recomputed
+// by AckCheck in the SAME transaction (store.go, untouched), becomes
+// `pass` — the certificate-level proof the escotilla actually reopens the
+// door Verify's own finding closed.
+func TestSign_MutantSurvivor_LiftsBlock(t *testing.T) {
+	s := newTestQualityStore(t)
+	cert, seqs := verifyWithSurvivors(t, s, "SPEC-901", 2, 1)
+	if cert.Verdict != model.QualityVerdictFindings {
+		t.Fatalf("cert.Verdict = %q, want findings before signing", cert.Verdict)
+	}
+
+	svc := NewQualityService(s, "proj", t.TempDir(), &fakeGateRunner{})
+	if err := svc.Sign(context.Background(), model.QualitySignRequest{
+		CertificateID: cert.ID, Seq: int(seqs[0]), By: "qa-tester", Evidence: "equivalente: no cambia comportamiento observable",
+	}); err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+
+	updated, err := s.GetLatestCertificate(context.Background(), "proj", "SPEC-901")
+	if err != nil {
+		t.Fatalf("GetLatestCertificate: %v", err)
+	}
+	if updated.Verdict != model.QualityVerdictPass {
+		t.Errorf("cert.Verdict after Sign = %q, want pass — the escotilla must actually lift the block", updated.Verdict)
+	}
+}
+
+// TestSignAck_Complementarity_AtServiceLayer covers AC20's rows at the
+// SERVICE layer (internal/quality/signature_test.go already covers the
+// predicate itself in isolation): Sign accepts a `mutant` row and refuses
+// a `mutation/viability` finding; Ack does the exact opposite. The fourth
+// AC20 row — Ack keeps working EXACTLY as before for a non-attested
+// finding — is already proven, UNMODIFIED, by
+// TestAck_StillWorksForNonCriterionRows (criteria_test.go), which ran
+// earlier in this same suite without a single line changed.
+func TestSignAck_Complementarity_AtServiceLayer(t *testing.T) {
+	s := newTestQualityStore(t)
+	cert, seqs := verifyWithSurvivors(t, s, "SPEC-902", 2, 1)
+
+	checks, err := s.ListChecks(context.Background(), cert.ID)
+	if err != nil {
+		t.Fatalf("ListChecks: %v", err)
+	}
+	viabilityRow := findMutationCheck(t, checks, "mutation", "viability")
+
+	svc := NewQualityService(s, "proj", t.TempDir(), &fakeGateRunner{})
+
+	// Sign on mutation/viability: ErrNotSignable (checked FIRST — the mutant
+	// row below still needs to be an unsigned `finding` afterward).
+	if err := svc.Sign(context.Background(), model.QualitySignRequest{
+		CertificateID: cert.ID, Seq: viabilityRow.Seq, By: "qa-tester", Evidence: "x",
+	}); !errors.Is(err, model.ErrNotSignable) {
+		t.Errorf("Sign(mutation/viability) error = %v, want ErrNotSignable", err)
+	}
+
+	// Ack on the mutant row: ErrRequiresSign.
+	if err := svc.Ack(context.Background(), model.QualityAckRequest{
+		CertificateID: cert.ID, Seq: int(seqs[0]), By: "orch", Justification: "x",
+	}); !errors.Is(err, model.ErrRequiresSign) {
+		t.Errorf("Ack(mutant) error = %v, want ErrRequiresSign", err)
+	}
+
+	// Sign on the mutant row: OK — checked LAST since it converts the row.
+	if err := svc.Sign(context.Background(), model.QualitySignRequest{
+		CertificateID: cert.ID, Seq: int(seqs[0]), By: "qa-tester", Evidence: "x",
+	}); err != nil {
+		t.Errorf("Sign(mutant) = %v, want nil", err)
+	}
+}
+
+// TestSignAlias_S3ErrorsStillHold covers AC21: errors.Is(err,
+// model.ErrNotACriterion) and errors.Is(err, model.ErrCriterionRequiresSign)
+// still hold for the SAME S3 cases — verified here explicitly, in BOTH
+// directions, without touching a single S3 test (criteria_test.go's
+// TestSign_RejectsNonCriterionRow/TestAck_RejectsCriterionRow already ran,
+// unmodified, earlier in this suite).
+func TestSignAlias_S3ErrorsStillHold(t *testing.T) {
+	if !errors.Is(model.ErrNotSignable, model.ErrNotACriterion) || !errors.Is(model.ErrNotACriterion, model.ErrNotSignable) {
+		t.Error("ErrNotACriterion is not a true alias of ErrNotSignable in both directions")
+	}
+	if !errors.Is(model.ErrRequiresSign, model.ErrCriterionRequiresSign) || !errors.Is(model.ErrCriterionRequiresSign, model.ErrRequiresSign) {
+		t.Error("ErrCriterionRequiresSign is not a true alias of ErrRequiresSign in both directions")
+	}
+
+	s := newTestQualityStore(t)
+	cert, seqs := verifyWithSurvivors(t, s, "SPEC-904", 2, 1)
+	svc := NewQualityService(s, "proj", t.TempDir(), &fakeGateRunner{})
+
+	// A mutant row rejected by Ack must ALSO satisfy errors.Is against the
+	// OLD S3 sentinel name, since it is now the same value.
+	err := svc.Ack(context.Background(), model.QualityAckRequest{CertificateID: cert.ID, Seq: int(seqs[0]), By: "orch", Justification: "x"})
+	if !errors.Is(err, model.ErrCriterionRequiresSign) {
+		t.Errorf("Ack(mutant) error = %v, want it to ALSO satisfy errors.Is(_, ErrCriterionRequiresSign) via the alias", err)
+	}
+}
+
+// TestSign_EquivalentQuota covers AC22's four rows: with max_equivalent=2,
+// the first two signatures succeed; the third is refused with
+// model.ErrEquivalentQuotaExceeded and the row stays in `finding`
+// (re-read from the store, not from memory); and a certificate with NO
+// mutation/score row at all refuses ANY mutant signature outright (fails
+// CLOSED, never "unlimited").
+func TestSign_EquivalentQuota(t *testing.T) {
+	s := newTestQualityStore(t)
+	cert, seqs := verifyWithSurvivors(t, s, "SPEC-905", 2, 3)
+	svc := NewQualityService(s, "proj", t.TempDir(), &fakeGateRunner{})
+
+	for i := 0; i < 2; i++ {
+		if err := svc.Sign(context.Background(), model.QualitySignRequest{
+			CertificateID: cert.ID, Seq: int(seqs[i]), By: "qa-tester", Evidence: "equivalente",
+		}); err != nil {
+			t.Fatalf("Sign #%d: %v", i+1, err)
+		}
+	}
+
+	thirdErr := svc.Sign(context.Background(), model.QualitySignRequest{
+		CertificateID: cert.ID, Seq: int(seqs[2]), By: "qa-tester", Evidence: "equivalente",
+	})
+	if !errors.Is(thirdErr, model.ErrEquivalentQuotaExceeded) {
+		t.Fatalf("third Sign error = %v, want ErrEquivalentQuotaExceeded", thirdErr)
+	}
+
+	checks, err := s.ListChecks(context.Background(), cert.ID)
+	if err != nil {
+		t.Fatalf("ListChecks: %v", err)
+	}
+	var thirdRow *model.QualityCheck
+	for _, c := range checks {
+		if int64(c.Seq) == seqs[2] {
+			thirdRow = c
+		}
+	}
+	if thirdRow == nil || thirdRow.Status != "finding" {
+		t.Fatalf("third mutant row (re-read from store) = %+v, want status finding (unsigned)", thirdRow)
+	}
+}
+
+// TestSign_EquivalentQuota_ReadsFromCertificateNotDisk covers AC22's own
+// D9 guardian (G22b): the cupo that governs is the one recorded on the
+// CERTIFICATE at verification time — editing .mneme/quality.toml's
+// max_equivalent AFTER certifying, but BEFORE signing, buys not one extra
+// signature.
+func TestSign_EquivalentQuota_ReadsFromCertificateNotDisk(t *testing.T) {
+	s := newTestQualityStore(t)
+	cert, seqs := verifyWithSurvivors(t, s, "SPEC-906", 2, 3)
+	svc := NewQualityService(s, "proj", t.TempDir(), &fakeGateRunner{})
+
+	for i := 0; i < 2; i++ {
+		if err := svc.Sign(context.Background(), model.QualitySignRequest{
+			CertificateID: cert.ID, Seq: int(seqs[i]), By: "qa-tester", Evidence: "equivalente",
+		}); err != nil {
+			t.Fatalf("Sign #%d: %v", i+1, err)
+		}
+	}
+
+	// The constitution on THIS service's repoDir is irrelevant — svc here
+	// was constructed with an unrelated t.TempDir() and never reads it for
+	// Sign at all; the point this test pins is structural: Sign never
+	// calls os.ReadFile/quality.Parse. The third signature must still be
+	// refused, using ONLY the certificate's own recorded cupo.
+	thirdErr := svc.Sign(context.Background(), model.QualitySignRequest{
+		CertificateID: cert.ID, Seq: int(seqs[2]), By: "qa-tester", Evidence: "equivalente",
+	})
+	if !errors.Is(thirdErr, model.ErrEquivalentQuotaExceeded) {
+		t.Fatalf("third Sign (after a would-be constitution edit) error = %v, want ErrEquivalentQuotaExceeded — the cupo of record is the certificate's, never the disk file's", thirdErr)
+	}
+}
+
+// TestSign_NoScoreRow_RefusesClosed covers AC22's fourth row (G22c): a
+// certificate with no mutation/score row at all refuses ANY `mutant`
+// signature — the absence of a recorded cupo must never read as
+// "unlimited".
+func TestSign_NoScoreRow_RefusesClosed(t *testing.T) {
+	s := newTestQualityStore(t)
+	ctx := context.Background()
+
+	cert := &model.QualityCertificate{
+		Project: "proj", SpecID: "SPEC-907", HeadSHA: "deadbeef", Verdict: model.QualityVerdictFindings,
+	}
+	mutantCheck := &model.QualityCheck{Kind: "mutant", Name: "a.go:1:1:x", Status: "finding"}
+	if err := s.InsertCertificate(ctx, cert, []*model.QualityCheck{mutantCheck}); err != nil {
+		t.Fatalf("InsertCertificate: %v", err)
+	}
+
+	svc := NewQualityService(s, "proj", t.TempDir(), &fakeGateRunner{})
+	err := svc.Sign(ctx, model.QualitySignRequest{CertificateID: cert.ID, Seq: 1, By: "qa-tester", Evidence: "x"})
+	if !errors.Is(err, model.ErrEquivalentQuotaExceeded) {
+		t.Fatalf("Sign(mutant, no mutation/score row on the certificate) error = %v, want ErrEquivalentQuotaExceeded (fail closed)", err)
+	}
 }
