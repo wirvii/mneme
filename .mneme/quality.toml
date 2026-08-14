@@ -3,15 +3,20 @@
 # mneme NO tiene valores por defecto para nada de este fichero.
 #
 # enabled=false a propósito (SPEC-115 R4/P13, reafirmado en SPEC-116 D16,
-# SPEC-117 D16, SPEC-118 D20 y SPEC-119 D15): encender el mecanismo —
-# gates, cobertura/cliquet, criterios, presupuesto o mutación — antes de
-# que S6 esté implementada, o antes de que el owner lo decida
-# explícitamente, es una decisión fuera del alcance de esta spec. ATENCIÓN
-# (SPEC-118 D12): encender [budget] activa TAMBIÉN el certificado para la
-# lane TRIVIAL — a partir de ahí `mneme lane audit` exige certificado. Ver
-# docs/quality.md y docs/lanes.md.
+# SPEC-117 D16, SPEC-118 D20, SPEC-119 D15 y SPEC-120 D15): encender el
+# mecanismo — gates, cobertura/cliquet, criterios, presupuesto, mutación o
+# verificación visual — antes de que el owner lo decida explícitamente, es
+# una decisión fuera del alcance de esta spec. ATENCIÓN (SPEC-118 D12):
+# encender [budget] activa TAMBIÉN el certificado para la lane TRIVIAL — a
+# partir de ahí `mneme lane audit` exige certificado. Ver docs/quality.md
+# y docs/lanes.md.
+#
+# [visual] queda declarada y APAGADA con targets = [] (SPEC-120 D15): este
+# repositorio no tiene interfaz gráfica (tiene una TUI, internal/tui) y no
+# hay pantalla real que declarar aquí. Encenderla sin objetivos sería
+# inventarse verificación que nadie mide.
 
-schema_version = 5
+schema_version = 6
 
 # El interruptor. Mientras sea false el mecanismo NO bloquea nada.
 enabled = false
@@ -165,3 +170,61 @@ max_equivalent = 2
 # la comprobacion que impide el verde catastrofico de "todo no viable,
 # cero supervivientes" (D1 pata d).
 max_not_viable_pct = 25.0
+
+[visual]
+# SPEC-120 (S6): la verificacion visual declarativa. Apagado a proposito
+# (D15): este repositorio no tiene interfaz grafica, asi que no hay nada
+# real que declarar como objetivo visual. targets = [] es lo que la
+# validacion condicional del schema permite -- encender esta seccion sin
+# inventarse objetivos seria fabricar verificacion sobre nada.
+enabled = false
+
+# Formato del informe. Hoy solo "visual-v1". Declarado, nunca adivinado.
+format = "visual-v1"
+
+# El comando que levantaria la interfaz, la recorreria y dejaria el
+# informe -- no aplica a este repositorio (D15), asi que no hay comando
+# real que declarar. mneme lo ejecutaria tal cual, sin shell, y ESPERARIA
+# a que termine: el ciclo de vida del servidor es del comando, nunca de
+# mneme (D1).
+command = ["true"]
+
+# Donde el comando dejaria el informe, relativo a la raiz del repo. mneme
+# LO BORRA antes de ejecutar: debe estar en .gitignore (verificado con
+# git check-ignore -v: tmp/ ya cubre esta ruta).
+report_path = "tmp/visual/report.json"
+
+# Cota de la fase completa: arrancar, recorrer y apagar.
+timeout = "15m"
+
+# QUE se verifica. Identificadores OPACOS: mneme no interpreta ni un
+# caracter. Vacio a proposito -- este repositorio no tiene pantallas que
+# declarar (D15). Con enabled = true la lista vacia seria un ERROR.
+targets = []
+
+# true convierte cualquier console.error en fallo. Las excepciones no
+# capturadas fallarian SIEMPRE, con independencia de esta clave.
+fail_on_console_error = false
+
+# Impactos de accesibilidad que harian fallar. Vocabulario cerrado:
+# critical | serious | moderate | minor. Vacio = se mediria y registraria,
+# pero no bloquearia.
+a11y_fail_impacts = []
+
+[visual.compare]
+# El NIVEL 2: comparacion de pixeles contra referencias versionadas.
+# Apagado a proposito -- sin interfaz grafica no hay capturas que comparar.
+enabled = false
+
+# Donde vivirian las referencias. VERSIONADO: mneme NUNCA escribe aqui
+# (verificado con git check-ignore -v: esta ruta NO esta ignorada, a
+# diferencia de tmp/).
+reference_dir = ".mneme/visual/reference"
+
+# Donde el comando dejaria las capturas. SALIDA: ignorado por git
+# (verificado con git check-ignore -v: tmp/ ya cubre esta ruta).
+capture_dir = "tmp/visual/captures"
+
+# Tolerancia, en porcentaje de pixeles distintos. La comparacion es
+# estricta: con la tolerancia justa, pasa.
+max_diff_pct = 0.1
