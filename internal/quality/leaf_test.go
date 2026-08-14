@@ -85,16 +85,31 @@ func TestLeafPackage_OnlyImportsStdlibAndTOML(t *testing.T) {
 }
 
 // pureSourceFiles are the source-of-truth-free files that must NEVER shell
-// out — the criteria vocabulary (SPEC-117) and the budget/symbol-delta
-// machinery (SPEC-118 S4) are pure functions of already-collected tree
-// facts; all I/O of any kind belongs in git.go, and ONLY git.go. Now
-// complete with all four SPEC-118 files (budget.go/symbols.go/
-// budgeteval.go/detections.go, P1/P3/P4/P5) — build.ImportDir aggregates
-// the WHOLE package's imports (G1b), so the mutation that proves this
-// guard is not vacuous must touch all four at once, not just one.
+// out — the criteria vocabulary (SPEC-117), the budget/symbol-delta
+// machinery (SPEC-118 S4), and now the mutation model/parsers/scoring/
+// signature predicate (SPEC-119 S5) are pure functions of already-collected
+// facts; all I/O of any kind belongs in git.go, and ONLY git.go. Complete
+// with all four SPEC-118 files (budget.go/symbols.go/budgeteval.go/
+// detections.go) AND all four SPEC-119 files (mutants.go/gremlins.go/
+// mutscope.go/signature.go).
+//
+// CORRECTION (SPEC-119 orchestrator, verified empirically): an earlier
+// version of this comment claimed the guardian mutation "must touch all
+// four files at once, not just one" — that claim is WRONG for THIS test.
+// TestPureFiles_NeverImportOSExec below parses pureSourceFiles ONE FILE AT
+// A TIME (the loop calls parser.ParseFile per name and checks that file's
+// own Imports) — so stubbing os/exec into a SINGLE listed file already
+// fails it; there is no aggregation here to defeat with a lone mutation.
+// The OTHER leaf guardian, TestLeafPackage_OnlyImportsStdlibAndTOML, DOES
+// aggregate the whole package's imports via build.ImportDir — but it
+// checks for a NON-STDLIB dependency, and os/exec is stdlib, so it would
+// not catch this mutation at all, aggregated or not. The "all four at
+// once" framing conflated the two tests; only a single, arbitrary file
+// needs to gain os/exec to prove this specific guardian is not vacuous.
 var pureSourceFiles = []string{
 	"criteria.go", "evaluate.go", "report.go",
 	"budget.go", "symbols.go", "budgeteval.go", "detections.go",
+	"mutants.go", "gremlins.go", "mutscope.go", "signature.go",
 }
 
 // TestPureFiles_NeverImportOSExec is AC1's negative hermana: proof, not
