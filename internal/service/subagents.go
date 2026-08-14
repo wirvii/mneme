@@ -134,6 +134,11 @@ type ManifestEntry struct {
 	// used by callers to detect drift without re-reading the full file.
 	Checksum string `json:"checksum"`
 
+	// Artifacts records every runtime projection generated for this role.
+	// Path and Checksum above remain the Claude-compatible legacy alias so
+	// pre-v1.40 manifests and clients continue to load unchanged.
+	Artifacts []AgentArtifact `json:"artifacts,omitempty"`
+
 	// Areas lists the app/package paths this profile's role/area sections
 	// cover (subset or all of ProjectProfile.Mapping for this Role).
 	Areas []string `json:"areas,omitempty"`
@@ -179,6 +184,28 @@ type ManifestEntry struct {
 	// EnforcementHook reports whether the delegation-enforcement hook is
 	// enabled for this project (SPEC-052 D9).
 	EnforcementHook bool `json:"enforcement_hook"`
+}
+
+// AgentArtifact identifies one runtime-specific projection of a canonical
+// role contract.
+type AgentArtifact struct {
+	Runtime  subagents.Runtime `json:"runtime"`
+	Path     string            `json:"path"`
+	Checksum string            `json:"checksum"`
+}
+
+// ArtifactFor returns the projection for runtime. Legacy entries synthesize
+// their Claude artifact from Path and Checksum.
+func (e ManifestEntry) ArtifactFor(runtime subagents.Runtime) (AgentArtifact, bool) {
+	for _, artifact := range e.Artifacts {
+		if artifact.Runtime == runtime {
+			return artifact, true
+		}
+	}
+	if runtime == subagents.RuntimeClaudeCode && e.Path != "" {
+		return AgentArtifact{Runtime: runtime, Path: e.Path, Checksum: e.Checksum}, true
+	}
+	return AgentArtifact{}, false
 }
 
 // EffectiveArchetype returns Archetype when set, falling back to Role when

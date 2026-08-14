@@ -151,8 +151,16 @@ func TestActivate_MaterializesEverythingAndWritesLock(t *testing.T) {
 	if !strings.Contains(string(agentData), "Capa-1 backend content.") {
 		t.Errorf("expected capa-1 content in agent file, got %q", string(agentData))
 	}
-	if len(result.Agents) != 1 || result.Agents[0] != agentPath {
-		t.Errorf("ActivateResult.Agents: got %v, want [%s]", result.Agents, agentPath)
+	codexAgentPath := filepath.Join(repoRoot, ".codex", "agents", "backend.toml")
+	codexAgentData, err := os.ReadFile(codexAgentPath)
+	if err != nil {
+		t.Fatalf("read Codex agent file: %v", err)
+	}
+	if !strings.Contains(string(codexAgentData), `name = "backend"`) {
+		t.Errorf("expected native Codex profile, got %q", string(codexAgentData))
+	}
+	if len(result.Agents) != 2 || result.Agents[0] != agentPath || result.Agents[1] != codexAgentPath {
+		t.Errorf("ActivateResult.Agents: got %v, want [%s %s]", result.Agents, agentPath, codexAgentPath)
 	}
 
 	// Skill directory copied.
@@ -209,8 +217,8 @@ func TestActivate_MaterializesEverythingAndWritesLock(t *testing.T) {
 	if lock.Profile != "acme" || lock.Commit != "abc123" || lock.Ref != "v1" {
 		t.Errorf("unexpected lock identity: %+v", lock)
 	}
-	if len(lock.Artifacts) != 3 {
-		t.Errorf("expected 3 artifacts (agent+skill+block), got %d: %+v", len(lock.Artifacts), lock.Artifacts)
+	if len(lock.Artifacts) != 4 {
+		t.Errorf("expected 4 artifacts (two agents+skill+block), got %d: %+v", len(lock.Artifacts), lock.Artifacts)
 	}
 	if len(lock.Rules) != 1 || lock.Rules[0].ID != result.RulesInserted[0] || lock.Rules[0].Source != "profile:acme" {
 		t.Errorf("unexpected lock rules: %+v", lock.Rules)
@@ -275,7 +283,7 @@ func TestActivate_BacksUpDisplacedAgent(t *testing.T) {
 
 	var agentArtifact *profile.LockArtifact
 	for i := range lock.Artifacts {
-		if lock.Artifacts[i].Kind == profile.LockArtifactKindAgent {
+		if lock.Artifacts[i].Kind == profile.LockArtifactKindAgent && lock.Artifacts[i].Path == agentPath {
 			agentArtifact = &lock.Artifacts[i]
 		}
 	}
@@ -325,7 +333,7 @@ func TestDeactivate_RestoresBackedUpAgent(t *testing.T) {
 	}
 	var backupPath string
 	for _, a := range lock.Artifacts {
-		if a.Kind == profile.LockArtifactKindAgent {
+		if a.Kind == profile.LockArtifactKindAgent && a.Path == agentPath {
 			backupPath = a.Backup
 		}
 	}
@@ -644,7 +652,8 @@ func TestSwitch_RemovesOnlyDepartingProfileArtifacts(t *testing.T) {
 	if _, err := os.ReadFile(frontendPath); err != nil {
 		t.Errorf("expected B's agent file, got err: %v", err)
 	}
-	if len(resultB.Agents) != 1 || resultB.Agents[0] != frontendPath {
+	codexFrontendPath := filepath.Join(repoRoot, ".codex", "agents", "frontend.toml")
+	if len(resultB.Agents) != 2 || resultB.Agents[0] != frontendPath || resultB.Agents[1] != codexFrontendPath {
 		t.Errorf("Switch result Agents: got %v", resultB.Agents)
 	}
 
@@ -718,7 +727,7 @@ func TestSwitch_NoExistingLockActivatesFresh(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Switch: %v", err)
 	}
-	if len(result.Agents) != 1 {
+	if len(result.Agents) != 2 {
 		t.Errorf("expected a fresh activation to materialize agents, got %+v", result)
 	}
 }
@@ -1246,7 +1255,7 @@ func TestActivate_NoSlugDegradesRulesButMaterializesTheRest(t *testing.T) {
 		t.Fatalf("Activate: %v", err)
 	}
 
-	if len(result.Agents) != 1 {
+	if len(result.Agents) != 2 {
 		t.Errorf("expected agents to still materialize, got %v", result.Agents)
 	}
 	if len(result.Skills) != 1 {

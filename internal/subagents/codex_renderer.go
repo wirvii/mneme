@@ -1,0 +1,53 @@
+package subagents
+
+import (
+	"fmt"
+	"strconv"
+	"strings"
+)
+
+// RenderCodex renders a canonical role contract as a native Codex agent TOML
+// file. Capability limits that Codex cannot express as a static tools list
+// are stated in developer instructions and enforced by mneme's PreToolUse
+// hook; sandbox_mode supplies the native first line of defence.
+func RenderCodex(contract AgentContract) (string, error) {
+	if err := contract.Validate(); err != nil {
+		return "", fmt.Errorf("subagents: render codex: %w", err)
+	}
+
+	perm := PermissionTable[contract.EffectiveArchetype()]
+	sandbox := "read-only"
+	if IsImplementer(contract.EffectiveArchetype()) || contract.EffectiveArchetype() == RoleQATester {
+		sandbox = "workspace-write"
+	}
+
+	restrictions := codexCapabilityInstructions(contract.EffectiveArchetype(), perm)
+	instructions := strings.TrimSpace(contract.Instructions) + "\n\n" + restrictions
+
+	var out strings.Builder
+	fmt.Fprintf(&out, "name = %s\n", strconv.Quote(string(contract.Role)))
+	fmt.Fprintf(&out, "description = %s\n", strconv.Quote(contract.Description))
+	fmt.Fprintf(&out, "developer_instructions = %s\n", strconv.Quote(instructions))
+	if contract.Model != "" {
+		fmt.Fprintf(&out, "model = %s\n", strconv.Quote(contract.Model))
+	}
+	if contract.Reasoning != "" {
+		fmt.Fprintf(&out, "model_reasoning_effort = %s\n", strconv.Quote(contract.Reasoning))
+	}
+	fmt.Fprintf(&out, "sandbox_mode = %s\n", strconv.Quote(sandbox))
+	return out.String(), nil
+}
+
+func codexCapabilityInstructions(archetype Role, perm Permission) string {
+	if IsImplementer(archetype) {
+		return "mneme capability contract: editing and command execution are allowed only inside the role areas declared by the project manifest. Lifecycle transitions remain reserved to the coordinator."
+	}
+	if archetype == RoleQATester {
+		return "mneme capability contract: commands may be executed for verification, but source files must not be edited. quality_sign is allowed only for this QA role; lifecycle transitions remain reserved to the coordinator."
+	}
+	if archetype == RoleDiagnostician {
+		return "mneme capability contract: commands may be executed only for diagnosis and log inspection; source files must not be edited and lifecycle transitions remain reserved to the coordinator."
+	}
+	_ = perm
+	return "mneme capability contract: this role is read-only. Do not edit files or execute shell commands; lifecycle transitions remain reserved to the coordinator."
+}

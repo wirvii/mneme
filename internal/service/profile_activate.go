@@ -307,24 +307,39 @@ func (s *ProfileService) materializeAgents(agents []profile.AgentAsset, repoRoot
 		return nil, nil, nil
 	}
 
-	files := make([]WriteAgentFile, 0, len(agents))
-	paths := make([]string, 0, len(agents))
-	artifacts := make([]profile.LockArtifact, 0, len(agents))
+	files := make([]WriteAgentFile, 0, len(agents)*2)
+	paths := make([]string, 0, len(agents)*2)
+	artifacts := make([]profile.LockArtifact, 0, len(agents)*2)
 	for _, a := range agents {
 		fused, err := s.fuseAgent(a.Content, a.Role, pp)
 		if err != nil {
 			return nil, nil, fmt.Errorf("fuse agent %s: %w", a.Role, err)
 		}
-		path := filepath.Join(repoRoot, ".claude", "agents", a.Role+".md")
-
-		artifact, err := displaceAndBuildArtifact(profile.LockArtifactKindAgent, path, repoRoot, at, prevOwned)
+		contract, err := subagents.ContractFromClaude(fused, subagents.Role(a.Role))
 		if err != nil {
-			return nil, nil, fmt.Errorf("agent %s: %w", a.Role, err)
+			return nil, nil, fmt.Errorf("import canonical agent contract %s: %w", a.Role, err)
 		}
-		artifacts = append(artifacts, artifact)
+		codexTOML, err := subagents.RenderCodex(contract)
+		if err != nil {
+			return nil, nil, fmt.Errorf("render Codex agent %s: %w", a.Role, err)
+		}
 
-		files = append(files, WriteAgentFile{Role: subagents.Role(a.Role), Path: path, Content: fused})
-		paths = append(paths, path)
+		projections := []struct {
+			path    string
+			content string
+		}{
+			{filepath.Join(repoRoot, ".claude", "agents", a.Role+".md"), fused},
+			{filepath.Join(repoRoot, ".codex", "agents", a.Role+".toml"), codexTOML},
+		}
+		for _, projection := range projections {
+			artifact, artifactErr := displaceAndBuildArtifact(profile.LockArtifactKindAgent, projection.path, repoRoot, at, prevOwned)
+			if artifactErr != nil {
+				return nil, nil, fmt.Errorf("agent %s: %w", a.Role, artifactErr)
+			}
+			artifacts = append(artifacts, artifact)
+			files = append(files, WriteAgentFile{Role: subagents.Role(a.Role), Path: projection.path, Content: projection.content})
+			paths = append(paths, projection.path)
+		}
 	}
 
 	if _, err := s.sub.WriteAgentProfiles(files); err != nil {

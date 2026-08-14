@@ -25,7 +25,7 @@ func TestReconcile_FirstCallActivates(t *testing.T) {
 	if result.Action != service.ReconcileActivated {
 		t.Errorf("Action: got %q, want %q", result.Action, service.ReconcileActivated)
 	}
-	if result.Activation == nil || len(result.Activation.Agents) != 1 {
+	if result.Activation == nil || len(result.Activation.Agents) != 2 {
 		t.Errorf("expected a fresh activation, got %+v", result.Activation)
 	}
 }
