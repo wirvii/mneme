@@ -86,12 +86,14 @@ func TestLeafPackage_OnlyImportsStdlibAndTOML(t *testing.T) {
 
 // pureSourceFiles are the source-of-truth-free files that must NEVER shell
 // out — the criteria vocabulary (SPEC-117), the budget/symbol-delta
-// machinery (SPEC-118 S4), and now the mutation model/parsers/scoring/
-// signature predicate (SPEC-119 S5) are pure functions of already-collected
-// facts; all I/O of any kind belongs in git.go, and ONLY git.go. Complete
-// with all four SPEC-118 files (budget.go/symbols.go/budgeteval.go/
-// detections.go) AND all four SPEC-119 files (mutants.go/gremlins.go/
-// mutscope.go/signature.go).
+// machinery (SPEC-118 S4), the mutation model/parsers/scoring/signature
+// predicate (SPEC-119 S5), and now the visual-report model/pixel comparison/
+// scope-and-evaluation trio (SPEC-120 S6, added incrementally as each file
+// lands: P1 adds visual.go, P2 adds pixel.go, P3 adds visualscope.go) are
+// pure functions of already-collected facts; all I/O of any kind belongs in
+// git.go, and ONLY git.go. Complete with all four SPEC-118 files
+// (budget.go/symbols.go/budgeteval.go/detections.go) and all four SPEC-119
+// files (mutants.go/gremlins.go/mutscope.go/signature.go).
 //
 // CORRECTION (SPEC-119 orchestrator, verified empirically): an earlier
 // version of this comment claimed the guardian mutation "must touch all
@@ -110,6 +112,7 @@ var pureSourceFiles = []string{
 	"criteria.go", "evaluate.go", "report.go",
 	"budget.go", "symbols.go", "budgeteval.go", "detections.go",
 	"mutants.go", "gremlins.go", "mutscope.go", "signature.go",
+	"visual.go",
 }
 
 // TestPureFiles_NeverImportOSExec is AC1's negative hermana: proof, not

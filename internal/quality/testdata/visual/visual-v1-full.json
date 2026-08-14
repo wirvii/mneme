@@ -1,0 +1,28 @@
+{
+  "schema": "visual-v1",
+  "harness": "toy-visual-harness",
+  "harness_version": "0.1.0",
+  "targets": [
+    {
+      "id": "home-light-360",
+      "rendered": true,
+      "error": "",
+      "page_errors": [],
+      "console": {"error": 0, "warning": 1, "info": 3},
+      "a11y": {
+        "engine": "axe-core",
+        "engine_version": "4.9.1",
+        "violations": [
+          {"rule": "color-contrast", "impact": "serious", "nodes": 2}
+        ]
+      }
+    },
+    {
+      "id": "home-dark-360",
+      "rendered": false,
+      "error": "TypeError: cannot read properties of undefined",
+      "page_errors": ["TypeError: cannot read properties of undefined"],
+      "console": {"error": 2, "warning": 0, "info": 0}
+    }
+  ]
+}
