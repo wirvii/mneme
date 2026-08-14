@@ -1,7 +1,7 @@
 # Makefile for mneme — pure-Go CLI (SQLite via modernc.org/sqlite, FTS5 built
 # in by default). No CGO, no C compiler, no build tags required.
 
-.PHONY: build install test test-race coverage clean setup release-local
+.PHONY: build install test test-race coverage mutation clean setup release-local
 
 # TEST_HOME sandboxes HOME/USERPROFILE for the test suite (SPEC-085 G2): tests
 # must never resolve the real ~/.mneme (or the real shared team-memory vault
@@ -49,6 +49,27 @@ test-race:
 coverage:
 	@mkdir -p "$(TEST_HOME)"
 	$(TEST_ENV) go test -coverprofile=tmp/coverage.out -covermode=count ./...
+
+# mutation runs gremlins (a DEVELOPMENT dependency — not in go.mod, not
+# required by `build`/`test`: a repository without it installed still
+# builds and tests mneme just fine) over this repository's own diff
+# (SPEC-119 EPIC-calidad S5), writing its JSON report to tmp/mutants.json
+# — ignored by .gitignore (tmp/). It MUST inherit $(TEST_ENV), exactly
+# like `coverage`: gremlins runs the ENTIRE test suite once PER MUTANT, so
+# without the HOME/USERPROFILE sandbox it would write into the real
+# ~/.mneme/projects/*.db and the real team-memory vault — the SPEC-085
+# disaster, once per mutant instead of once. BASE is the merge-base SHA
+# mneme substitutes for {{BASE_SHA}} (D3) — it is required and checked
+# explicitly with a clear message, rather than handing gremlins a --diff
+# flag with an empty argument, which is the kind of half-declared bandera
+# D3/D7 of S1 both refuse to allow.
+mutation:
+	@if [ -z "$(BASE)" ]; then \
+		echo "make mutation: BASE es obligatorio (ej. make mutation BASE=<merge-base-sha>) — mneme sustituye {{BASE_SHA}} por este valor (D3)"; \
+		exit 1; \
+	fi
+	@mkdir -p "$(TEST_HOME)"
+	$(TEST_ENV) gremlins unleash -o tmp/mutants.json --diff $(BASE) .
 
 clean:
 	rm -f mneme

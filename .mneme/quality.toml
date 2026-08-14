@@ -3,14 +3,15 @@
 # mneme NO tiene valores por defecto para nada de este fichero.
 #
 # enabled=false a propósito (SPEC-115 R4/P13, reafirmado en SPEC-116 D16,
-# SPEC-117 D16 y SPEC-118 D20): encender el mecanismo — gates, cobertura/
-# cliquet, criterios o presupuesto — antes de que S5/S6 estén implementadas,
-# o antes de que el owner lo decida explícitamente, es una decisión fuera
-# del alcance de esta spec. ATENCIÓN (SPEC-118 D12): encender [budget]
-# activa TAMBIÉN el certificado para la lane TRIVIAL — a partir de ahí
-# `mneme lane audit` exige certificado. Ver docs/quality.md y docs/lanes.md.
+# SPEC-117 D16, SPEC-118 D20 y SPEC-119 D15): encender el mecanismo —
+# gates, cobertura/cliquet, criterios, presupuesto o mutación — antes de
+# que S6 esté implementada, o antes de que el owner lo decida
+# explícitamente, es una decisión fuera del alcance de esta spec. ATENCIÓN
+# (SPEC-118 D12): encender [budget] activa TAMBIÉN el certificado para la
+# lane TRIVIAL — a partir de ahí `mneme lane audit` exige certificado. Ver
+# docs/quality.md y docs/lanes.md.
 
-schema_version = 4
+schema_version = 5
 
 # El interruptor. Mientras sea false el mecanismo NO bloquea nada.
 enabled = false
@@ -121,3 +122,38 @@ test_globs = ["**/*_test.go"]
 # Cuantos saltos de indireccion se aceptan como "un test lo alcanza".
 # 1 = solo llamada directa desde un test.
 test_reach_depth = 3
+
+[mutation]
+# SPEC-119 (EPIC-calidad S5): la mutacion sobre el diff. Apagado a
+# proposito, misma postura que D16 de S2/S3/S4 — encenderlo corre la
+# suite completa UNA VEZ POR MUTANTE, la comprobacion mas cara del EPIC.
+enabled = false
+
+# gremlins (go-gremlins/gremlins) es un mutador de Go vivo cuyo vocabulario
+# de estados YA distingue el mutante no viable (NOT VIABLE) del que compilo
+# y fallo un test (KILLED) — el requisito de D1 pata b para admitir un
+# formato. Declarado, nunca adivinado.
+format = "gremlins"
+
+# El target de este mismo Makefile. {{BASE_SHA}} se sustituye por la
+# merge-base que mneme calcula — una OPTIMIZACION de coste (mneme reacota
+# el informe por su cuenta, D3), nunca la frontera de correccion.
+command = ["make", "mutation", "BASE={{BASE_SHA}}"]
+
+# Donde `make mutation` deja el informe. Ignorado por .gitignore (tmp/).
+report_path = "tmp/mutants.json"
+
+# Presupuesto de la fase completa. Agotarlo NO es un fallo: es un hallazgo
+# firmable por un humano, contado (D12) — y la salida, si se vuelve
+# rutina, no es subir este numero (docs/quality.md).
+timeout = "30m"
+
+# Cupo ABSOLUTO de mutantes declarados equivalentes en un mismo
+# certificado. Pasado el cupo, `mneme quality sign` se NIEGA (D9).
+max_equivalent = 2
+
+# Por encima de esta proporcion de mutantes NO VIABLES (los que ni
+# siquiera compilan) el informe habla del mutador y no de los tests: es
+# la comprobacion que impide el verde catastrofico de "todo no viable,
+# cero supervivientes" (D1 pata d).
+max_not_viable_pct = 25.0
