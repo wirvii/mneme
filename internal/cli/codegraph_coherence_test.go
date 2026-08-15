@@ -23,7 +23,7 @@ func TestCodegraphVocabularyCoherence(t *testing.T) {
 	// Orchestrator operating manual (English).
 	assertContainsAll(t, "operating-manual", install.OperatingManual(), "MANDATORY", "codegraph_search", "codegraph adoption")
 
-	// Codex operating manual (English, single-agent).
+	// Codex operating manual (English, project-role runtime).
 	assertContainsAll(t, "operating-manual-codex", install.OperatingManualCodex(), "MANDATORY", "codegraph_search")
 
 	// Subagent policy asset (Spanish): mandatory tone + tool reference.

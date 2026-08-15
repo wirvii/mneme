@@ -123,7 +123,8 @@ type Agent struct {
 
 	// AgentsDir, when non-empty, overrides the directory used by the "Agent models"
 	// step. When empty, the step is skipped entirely — appropriate for agents
-	// that do not use per-agent profile files (e.g. Codex in single-agent mode).
+	// whose host install does not materialize global per-agent profile files.
+	// Claude Code and Codex both receive role profiles at project scope.
 	// When unset (empty string), Claude Code falls back to ~/.claude/agents.
 	AgentsDir string
 

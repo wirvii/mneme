@@ -4,6 +4,53 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [v1.40.0] — 2026-08-15 — Quality evidence and Claude Code/Codex parity
+
+### Added
+
+- **Complete Claude Code and Codex project-role parity (SPEC-123).** `mneme
+  init` now reconciles both `.claude/agents/*.md` and
+  `.codex/agents/*.toml` from one canonical project contract. Both runtimes
+  share the same memory, backlog, specs, role models, skills, profiles,
+  codegraph, quality certificates, and team-memory state. The four supported
+  workflow skills (`mneme-init`, `mneme-profile-author`, `new-project`, and
+  `new-app`) are installed for and executable from either runtime.
+- **Codex role enforcement with two independent boundaries.** Codex
+  0.148.0-alpha.19 is the minimum verified version because it emits child
+  `SubagentStart` and `PreToolUse` identity. Project hooks enforce ownership;
+  a role-bound mneme MCP server separately filters and revalidates reserved
+  lifecycle, quality-signature, and architect-only document operations.
+  Older or unparseable runtimes fail installation visibly instead of silently
+  degrading permissions.
+- **The complete quality-evidence pipeline (SPEC-115 through SPEC-120).** A
+  versioned `.mneme/quality.toml` can declare build/test/lint gates, coverage
+  of changed lines and ratchets, executable acceptance criteria, graph-backed
+  symbol budgets, mutation testing over the diff, and declarative visual
+  verification. Certificates are bound to an exact commit and QA reports are
+  rendered from stored evidence rather than mutable source files.
+
+### Changed
+
+- `CODEX_HOME` is now honored consistently by installation, hooks, MCP,
+  manuals, diagnostics, and upgrades. A missing runtime still allows static
+  project generation but is reported as `not-run`; incompatible installed
+  versions are rejected.
+- Skill install, pin, unpin, remove, lint, and validation now reconcile the
+  Claude Code and Codex discovery directories without changing their native
+  formats.
+- The trivial-lane auditor now uses the same cross-language symbol and git
+  engine as quality budgets, eliminating the former Go/TypeScript-specific
+  duplicate implementation.
+
+### Verification
+
+- Real isolated runs completed host installation, project initialization,
+  delegated role work, shared-memory access, quality verification, and
+  byte-identical reconciliation with Claude Code 2.1.233 and Codex
+  0.148.0-alpha.19. A Claude → Codex → Claude alternation read and wrote the
+  same project database, while delegated roles remained unable to advance the
+  SDD lifecycle.
+
 ## [v1.35.0] — 2026-08-11 — Managed Kokoro speech engine retired, native-only TTS
 
 ### Removed

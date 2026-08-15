@@ -16,8 +16,8 @@ import (
 // opt-in path to register these SAME entries into
 // <repoRoot>/.claude/settings.json instead of (or in addition to, during the
 // transition) the global ~/.claude/settings.json: a project with no
-// implementer subagents stays single-agent (precedent: Codex/SPEC-049,
-// which never installs this hook at all) and never enables it, while a
+// implementer subagents does not need delegation containment and never
+// enables it, while a
 // project that DOES generate implementer subagents (backend/frontend/
 // bug-hunter) can opt in without touching every other project's
 // configuration.

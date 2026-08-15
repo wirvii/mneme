@@ -524,7 +524,7 @@ Latest release: **v1.33.0**. Full history in [CHANGELOG.md](CHANGELOG.md).
 | Skills package manager (v1.7.0) | Bundled skill install/pin/lint/validate | Done |
 | Models (v1.8.0) | Per-agent model alias assignment | Done |
 | Conflicts (v1.9.0) | FTS5 candidate detection + LLM judgment via `claude` CLI | Done |
-| `mneme install codex` (v1.17.0) | Single-agent OpenAI Codex CLI support | Done |
+| `mneme install codex` (v1.17.0; role parity v1.40.0) | OpenAI Codex CLI with project roles and shared SDD/memory | Done |
 | Agnostic agents (EPIC SPEC-052, SS-1..SS-6) | Per-project subagent generation via `mneme-init` grill, `subagent_*` tools, `mneme subagents`, project-scoped opt-in delegation-hook | Done |
 | Team Memory (EPIC SPEC-053, SS-A..SS-F) | Git-native shared knowledge: `shared`/`author` columns (schema v14), write-through, `mneme promote`, import hooks, `mneme team-memory enable` | Done |
 | SS-7 -- retire global subagent installation (SPEC-073) | `mneme install claude-code` no longer writes `~/.claude/agents/*.md`; it also cleans up unmodified profiles left by earlier installs. Per-project generation via `mneme-init` is the only supported path. | Done |

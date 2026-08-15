@@ -508,7 +508,7 @@ func TestCodexBuilder_Fields(t *testing.T) {
 		t.Error("Manual must not be nil (injects operating manual into AGENTS.md)")
 	}
 	if agent.Commands != nil {
-		t.Error("Commands must be nil for Codex (single-agent, no slash commands)")
+		t.Error("Commands must be nil for Codex (skills are its native workflow entry, not slash commands)")
 	}
 	if agent.Agents != nil {
 		t.Error("Agents must be nil for Codex (no subagent profiles)")
