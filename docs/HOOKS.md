@@ -1,7 +1,7 @@
-# mneme — Claude Code Hooks Integration
+# mneme — Claude Code and Codex Hooks Integration
 
-mneme integrates with Claude Code's hook system to provide three complementary
-capabilities:
+mneme integrates with the native hook systems of Claude Code and Codex to
+provide three complementary capabilities:
 
 1. **Session lifecycle hooks** — load/save context at session boundaries.
 2. **Pre-tool-use hook** — evaluate rules just-in-time before file edits.
@@ -10,10 +10,11 @@ capabilities:
 
 ## Quick Setup
 
-Run once to configure all hooks automatically:
+Run the installer for the runtime you use; a project may safely install both:
 
 ```bash
 mneme install claude-code
+mneme install codex
 ```
 
 This adds the following to `~/.claude/settings.json`:
@@ -41,10 +42,19 @@ This adds the following to `~/.claude/settings.json`:
 }
 ```
 
-Both `PreToolUse` entries are portable `mneme` subcommands — neither embeds a
+Both runtimes register the same portable `mneme` subcommands for
+`PreToolUse` — neither embeds a
 path to the home directory (SPEC-069), so a committed `.claude/settings.json`
 works on any machine with `mneme` on `PATH`, without requiring `mneme install`
 to have run there first.
+
+Codex v1.40 support starts at 0.148.0-alpha.19, the first empirically verified
+build that propagates `SubagentStart` and child `PreToolUse` with `agent_id`
+and `agent_type`. Codex 0.147.0 can create a child but does not expose that
+identity to hooks, so mneme refuses to install against it instead of silently
+claiming containment. Codex hooks also require the operator to trust them with
+`/hooks`; until then, delegated containment is intentionally reported as not
+verified.
 
 ---
 

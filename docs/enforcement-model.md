@@ -33,12 +33,25 @@
 
 ## Two-Layer Enforcement
 
-### Layer 1 — Capability allowlist (primary)
+### Layer 1 — Native capability projection (primary)
 
-Every subagent `.md` file under `internal/install/assets/agents/` declares an
-explicit `tools:` allowlist in its YAML frontmatter. Claude Code enforces this
-natively: when a tool is absent from the allowlist, the subagent cannot invoke
-it, regardless of what the prompt says.
+Every canonical project role is rendered into both native formats. Claude Code
+receives an explicit `tools:` allowlist in `.claude/agents/*.md` and enforces it
+directly. Codex receives the role's sandbox intent in
+`.codex/agents/*.toml`, but mneme does not count that declaration as a security
+boundary: real Codex 0.147.0 testing showed that a child can inherit the
+parent's workspace permissions. Codex 0.148.0-alpha.19 or newer instead
+supplies identity-bearing `SubagentStart` and child `PreToolUse` events, which
+let the same Go guard enforce the role and its declared ownership areas.
+
+Each Codex role also receives its own local, role-bound mneme MCP server. The
+server filters the advertised tools and repeats the authorization check when a
+tool is called: delegated roles cannot advance lifecycle state or acknowledge
+quality findings; only `qa-tester` can sign attested findings; and only
+`architect` can write criteria or budget documents. Those allowed calls are
+pre-approved for that local server because a child running under
+`approval_policy = "never"` cannot answer an MCP approval prompt. Pre-approval
+therefore follows, and never replaces, the role filter.
 
 | Role | `tools:` allowlist |
 |---|---|
@@ -211,8 +224,9 @@ optional per-project `[delegation.projects."<slug>"]` overrides via
 `Config.SubagentContainmentMode`) controls whether the project **acts** on
 it yet. Incomplete data never blocks, no matter what the mode is set to.
 
-`agent_type` is Claude Code **observed behavior**, not a published contract
-— a future version could stop sending it. That is exactly what
+`agent_type` is a runtime-observed contract. It is present in the repository's
+minimum-version fixtures for Claude Code and Codex and is checked by install
+diagnostics. A future version could still stop sending it. That is exactly what
 `RoleSource="unresolved"` detects: the guard fails open (never blocks 8+
 repos' worth of subagents over a version bump) but never silently — the
 precedent is SPEC-042 D2's "noisy jq guard" for the equivalent situation

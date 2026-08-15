@@ -30,9 +30,14 @@ As coordinator you:
 3. Delegate to the project role named by `spec_advance` when available.
 4. Save discoveries and decisions before ending.
 
-PreToolUse hooks enforce reserved tools and project ownership. Native Codex
-sandbox settings provide an additional boundary. If a required role cannot be
-resolved safely, stop and report the gap instead of weakening its permissions.
+PreToolUse hooks enforce project ownership. Each generated role also starts a
+role-bound mneme MCP server whose filtered tool list and call-time checks keep
+reserved lifecycle and quality operations unavailable to the wrong role.
+Do not treat the role's declared sandbox as an independent boundary: Codex can
+inherit the coordinator's workspace permissions. These guarantees require
+Codex 0.148.0-alpha.19 or newer and trusted hooks (`/hooks`). If a
+required role or hook identity cannot be resolved safely, stop and report the
+gap instead of weakening its permissions.
 
 ## §3 SDD + lanes
 
