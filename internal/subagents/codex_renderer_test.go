@@ -20,7 +20,7 @@ func TestRenderCodex_AllBuiltinsAndCustomRole(t *testing.T) {
 			if err != nil || first != second {
 				t.Fatalf("renderer is not deterministic: err=%v", err)
 			}
-			for _, key := range []string{"name = ", "description = ", "developer_instructions = ", "sandbox_mode = "} {
+			for _, key := range []string{"name = ", "description = ", "developer_instructions = ", "sandbox_mode = ", "[mcp_servers.mneme]", `"--caller-role"`, `"--caller-archetype"`} {
 				if !strings.Contains(first, key) {
 					t.Errorf("missing %q in:\n%s", key, first)
 				}
@@ -38,6 +38,11 @@ func TestRenderCodex_AllBuiltinsAndCustomRole(t *testing.T) {
 	})
 	if err != nil || !strings.Contains(custom, `name = "payments"`) {
 		t.Fatalf("custom role: err=%v output=%s", err, custom)
+	}
+	for _, want := range []string{`"--caller-role", "payments"`, `"--caller-archetype", "backend"`} {
+		if !strings.Contains(custom, want) {
+			t.Fatalf("custom role missing %q: %s", want, custom)
+		}
 	}
 }
 

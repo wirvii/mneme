@@ -7,7 +7,7 @@ to use mneme as its persistent memory and SDD engine.
 
 | Artefact | Location | Purpose |
 |---|---|---|
-| MCP server | `~/.codex/config.toml` → `[mcp_servers.mneme]` | Exposes all mneme tools to Codex |
+| MCP server | `~/.codex/config.toml` → `[mcp_servers.mneme]` | Exposes the coordinator's mneme tools to Codex |
 | Session hooks | `~/.codex/hooks.json` → `SessionStart` | Auto-inject context at session start |
 | Operating manual | `$CODEX_HOME/AGENTS.md` (managed block) | Memory, SDD and role instructions |
 | CLAUDE.md fallback | `project_doc_fallback_filenames` in `config.toml` | Codex reads existing CLAUDE.md files |
@@ -30,9 +30,12 @@ the same result. All existing keys in `config.toml` and `hooks.json` are preserv
 
 ## Supported versions
 
-v1.40 requires Codex CLI 0.147.0 or newer and Claude Code 2.1.232 or newer.
+v1.40 requires Codex CLI 0.148.0-alpha.19 or newer and Claude Code 2.1.232 or newer.
 These are the oldest versions verified against the native project-agent and
-hook formats used by the parity contract. `mneme install` reads the installed
+hook formats used by the parity contract. Codex 0.147.0 can spawn project
+agents, but does not propagate child hooks or identity; 0.148.0-alpha.19 is
+the first build verified to emit identity-bearing `SubagentStart` and child
+`PreToolUse` payloads. `mneme install` reads the installed
 CLI version and refuses to configure an older runtime. If a CLI is absent,
 mneme can still prepare and statically validate project assets, but reports
 that the real runtime verification was not run.
@@ -45,7 +48,11 @@ contract:
 - Claude Code profiles live under `.claude/agents/*.md`.
 - Codex profiles live under `.codex/agents/*.toml`.
 - Both share responsibilities, ownership areas, memory and SDD state.
-- PreToolUse hooks enforce ownership and reserved lifecycle tools.
+- Identity-bearing PreToolUse hooks enforce ownership and coordinator
+  protection in both runtimes.
+- Every Codex role starts a role-bound mneme MCP server. Its tool list and
+  call-time authorization independently keep lifecycle transitions,
+  `quality_ack`, `quality_sign`, and architect-only documents fail-closed.
 
 The formats differ because each runtime uses its native configuration. A
 project initialized from either runtime is ready for both.
@@ -70,6 +77,12 @@ cover the discipline manually: call `mem_context` on first message,
 before ending. There is no hook that reminds you of the last step: `mneme
 hook session-end` is a retired no-op (SPEC-106) — see "Retired: the `Stop`
 session hook" below.
+
+Trust is also a security prerequisite for delegated work. mneme does not
+claim role containment until Codex activates its `SubagentStart` and
+`PreToolUse` hooks; the version gate rejects releases that predate the child
+identity payload, and the role-bound MCP remains a second independent gate
+for reserved mneme operations.
 
 ### Retired: the `Stop` session hook (SPEC-106)
 

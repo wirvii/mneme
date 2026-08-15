@@ -80,6 +80,35 @@ func TestResolveIdentity_Codex0147SpawnAttemptHasNoCallerIdentity(t *testing.T) 
 	}
 }
 
+func TestResolveIdentity_Codex0148ChildPreToolUse(t *testing.T) {
+	input := loadFixture(t, "codex-0.148.0-alpha.19-child-pretooluse.json")
+	identity := input.resolveIdentity()
+	if !identity.IsSubagent || identity.AgentID != "codex-child-session-sanitized" || identity.Role != "architect" {
+		t.Fatalf("Codex child identity = %+v", identity)
+	}
+	if identity.RoleSource != "payload" {
+		t.Fatalf("RoleSource = %q, want payload", identity.RoleSource)
+	}
+}
+
+func TestCodex0148SubagentStartFixtureCarriesIdentity(t *testing.T) {
+	data, err := os.ReadFile("testdata/codex-0.148.0-alpha.19-subagent-start.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		HookEventName string `json:"hook_event_name"`
+		AgentID       string `json:"agent_id"`
+		AgentType     string `json:"agent_type"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.HookEventName != "SubagentStart" || payload.AgentID == "" || payload.AgentType != "architect" {
+		t.Fatalf("invalid SubagentStart fixture: %+v", payload)
+	}
+}
+
 // TestResolveIdentity_GoldenFixture_ResolveCallerAgrees is a mutation guard
 // against D1's own supersession claim: resolveIdentity's IsSubagent must
 // always agree with the older boolean resolveCaller() on the same real

@@ -1,0 +1,18 @@
+{
+  "session_id": "codex-parent-session-sanitized",
+  "turn_id": "codex-child-turn-sanitized",
+  "agent_id": "codex-child-session-sanitized",
+  "agent_type": "architect",
+  "transcript_path": "/repo/.codex/sessions/child.jsonl",
+  "cwd": "/repo",
+  "hook_event_name": "PreToolUse",
+  "model": "gpt-5.6-sol",
+  "permission_mode": "bypassPermissions",
+  "tool_name": "mcp__mneme__mem_search",
+  "tool_input": {
+    "query": "SPEC-123",
+    "project": "wirvii/mneme",
+    "limit": 5
+  },
+  "tool_use_id": "codex-child-tool-use-sanitized"
+}

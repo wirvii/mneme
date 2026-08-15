@@ -14,10 +14,10 @@ import (
 // subagent, hooks and MCP configuration contracts.
 const (
 	MinimumClaudeCode = "2.1.232"
-	MinimumCodex      = "0.147.0"
+	MinimumCodex      = "0.148.0-alpha.19"
 )
 
-var versionPattern = regexp.MustCompile(`\d+\.\d+\.\d+`)
+var versionPattern = regexp.MustCompile(`\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?`)
 
 // Status describes the local runtime compatibility result.
 type Status struct {
@@ -65,6 +65,8 @@ func ParseVersion(output string) (string, error) {
 }
 
 // Compare returns -1, 0 or 1 when left is lower, equal or higher than right.
+// It follows SemVer prerelease ordering so a runtime cannot satisfy a
+// capability minimum merely by sharing the same three numeric components.
 func Compare(left, right string) int {
 	l := versionPattern.FindStringSubmatch(left)
 	r := versionPattern.FindStringSubmatch(right)
@@ -78,7 +80,55 @@ func Compare(left, right string) int {
 			return 1
 		}
 	}
-	return 0
+	return comparePrerelease(prerelease(left), prerelease(right))
+}
+
+func prerelease(version string) string {
+	match := versionPattern.FindString(version)
+	_, suffix, ok := strings.Cut(match, "-")
+	if !ok {
+		return ""
+	}
+	return suffix
+}
+
+func comparePrerelease(left, right string) int {
+	if left == right {
+		return 0
+	}
+	if left == "" {
+		return 1
+	}
+	if right == "" {
+		return -1
+	}
+	lparts, rparts := strings.Split(left, "."), strings.Split(right, ".")
+	for i := 0; i < len(lparts) && i < len(rparts); i++ {
+		if lparts[i] == rparts[i] {
+			continue
+		}
+		ln, lerr := strconv.Atoi(lparts[i])
+		rn, rerr := strconv.Atoi(rparts[i])
+		switch {
+		case lerr == nil && rerr == nil:
+			if ln < rn {
+				return -1
+			}
+			return 1
+		case lerr == nil:
+			return -1
+		case rerr == nil:
+			return 1
+		case lparts[i] < rparts[i]:
+			return -1
+		default:
+			return 1
+		}
+	}
+	if len(lparts) < len(rparts) {
+		return -1
+	}
+	return 1
 }
 
 func component(match []string, index int) string {

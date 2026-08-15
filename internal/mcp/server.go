@@ -24,6 +24,7 @@ type Server struct {
 	handlers  *handlers
 	logger    *slog.Logger
 	version   string
+	caller    *CallerPolicy
 	// maxMessage is the per-message size ceiling Run enforces (SPEC-104 D2).
 	// It is seeded from maxMessageBytes by NewServer rather than read as a
 	// global directly so tests can lower it (srv.maxMessage = ...) to exercise
@@ -31,6 +32,20 @@ type Server struct {
 	// ever allocating a real 10 MiB buffer per test case (DD1/DD2). Production
 	// code never sets this field to anything but maxMessageBytes.
 	maxMessage int
+}
+
+// WithCallerPolicy binds this server to a generated subagent role and removes
+// tools that role must never see. Call authorization repeats the check so a
+// handcrafted JSON-RPC request cannot bypass tools/list filtering.
+func (s *Server) WithCallerPolicy(policy CallerPolicy) {
+	s.caller = &policy
+	filtered := make([]ToolDefinition, 0, len(s.tools))
+	for _, tool := range s.tools {
+		if policy.allowsTool(tool.Name) {
+			filtered = append(filtered, tool)
+		}
+	}
+	s.tools = filtered
 }
 
 // NewServer constructs a Server. toolsMode selects which tool set to expose:
@@ -220,6 +235,11 @@ func (s *Server) dispatchMethod(ctx context.Context, req JSONRPCRequest) (any, *
 			return nil, &JSONRPCError{
 				Code:    CodeInvalidParams,
 				Message: fmt.Sprintf("mcp: tools/call: invalid params: %s", err),
+			}
+		}
+		if s.caller != nil {
+			if rpcErr := s.caller.authorizeCall(params); rpcErr != nil {
+				return nil, rpcErr
 			}
 		}
 		result, rpcErr := s.handlers.handleToolCall(ctx, params)

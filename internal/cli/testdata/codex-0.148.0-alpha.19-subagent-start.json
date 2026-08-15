@@ -1,0 +1,11 @@
+{
+  "session_id": "codex-parent-session-sanitized",
+  "turn_id": "codex-child-turn-sanitized",
+  "transcript_path": "/repo/.codex/sessions/child.jsonl",
+  "cwd": "/repo",
+  "hook_event_name": "SubagentStart",
+  "model": "gpt-5.6-sol",
+  "permission_mode": "bypassPermissions",
+  "agent_id": "codex-child-session-sanitized",
+  "agent_type": "architect"
+}

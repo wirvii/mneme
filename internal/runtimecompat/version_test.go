@@ -4,7 +4,7 @@ import "testing"
 
 func TestParseVersion(t *testing.T) {
 	for _, tc := range []struct{ input, want string }{
-		{"codex-cli 0.147.0", "0.147.0"},
+		{"codex-cli 0.148.0-alpha.19", "0.148.0-alpha.19"},
 		{"2.1.232 (Claude Code)", "2.1.232"},
 	} {
 		got, err := ParseVersion(tc.input)
@@ -22,7 +22,10 @@ func TestCompare(t *testing.T) {
 		left, right string
 		want        int
 	}{
-		{"0.147.0", "0.147.0", 0}, {"0.148.0", "0.147.0", 1}, {"0.146.9", "0.147.0", -1},
+		{"0.148.0-alpha.19", "0.148.0-alpha.19", 0},
+		{"0.148.0-alpha.18", "0.148.0-alpha.19", -1},
+		{"0.148.0-alpha.20", "0.148.0-alpha.19", 1},
+		{"0.148.0", "0.148.0-alpha.19", 1}, {"0.147.0", "0.148.0-alpha.19", -1},
 		{"2.1.232", "2.1.200", 1},
 	} {
 		if got := Compare(tc.left, tc.right); got != tc.want {

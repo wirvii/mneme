@@ -7,9 +7,9 @@ import (
 )
 
 // RenderCodex renders a canonical role contract as a native Codex agent TOML
-// file. Capability limits that Codex cannot express as a static tools list
-// are stated in developer instructions and enforced by mneme's PreToolUse
-// hook; sandbox_mode supplies the native first line of defence.
+// file. The role starts a role-bound mneme MCP server so lifecycle and
+// role-scoped tools remain fail-closed even when Codex does not propagate
+// project hooks into child threads.
 func RenderCodex(contract AgentContract) (string, error) {
 	if err := contract.Validate(); err != nil {
 		return "", fmt.Errorf("subagents: render codex: %w", err)
@@ -39,6 +39,12 @@ func RenderCodex(contract AgentContract) (string, error) {
 		fmt.Fprintf(&out, "model_reasoning_effort = %s\n", strconv.Quote(contract.Reasoning))
 	}
 	fmt.Fprintf(&out, "sandbox_mode = %s\n", strconv.Quote(sandbox))
+	fmt.Fprintf(&out, "\n[mcp_servers.mneme]\n")
+	fmt.Fprintf(&out, "command = %s\n", strconv.Quote("mneme"))
+	fmt.Fprintf(&out, "args = [%s, %s, %s, %s, %s, %s]\n",
+		strconv.Quote("mcp"), strconv.Quote("--tools=agent"),
+		strconv.Quote("--caller-role"), strconv.Quote(string(contract.Role)),
+		strconv.Quote("--caller-archetype"), strconv.Quote(string(contract.EffectiveArchetype())))
 	return out.String(), nil
 }
 

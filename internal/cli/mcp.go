@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -10,6 +12,7 @@ import (
 	"github.com/wirvii/mneme/internal/config"
 	"github.com/wirvii/mneme/internal/mcp"
 	"github.com/wirvii/mneme/internal/service"
+	"github.com/wirvii/mneme/internal/subagents"
 )
 
 // newMCPCmd returns the "mneme mcp" subcommand. It starts the MCP server over
@@ -18,6 +21,8 @@ import (
 // is intended to be launched as a subprocess by the agent's MCP client.
 func newMCPCmd() *cobra.Command {
 	var flagTools string
+	var flagCallerRole string
+	var flagCallerArchetype string
 
 	cmd := &cobra.Command{
 		Use:   "mcp",
@@ -30,6 +35,17 @@ over stdin/stdout. The server exposes mneme's memory operations as MCP tools.
 
 Configure your agent to run: mneme mcp`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if (flagCallerRole == "") != (flagCallerArchetype == "") {
+				return errors.New("mcp: --caller-role and --caller-archetype must be provided together")
+			}
+			if flagCallerRole != "" {
+				if !subagentRoleNamePattern.MatchString(flagCallerRole) {
+					return fmt.Errorf("mcp: invalid caller role %q", flagCallerRole)
+				}
+				if _, ok := subagents.PermissionTable[subagents.Role(flagCallerArchetype)]; !ok {
+					return fmt.Errorf("mcp: invalid caller archetype %q", flagCallerArchetype)
+				}
+			}
 			svc, cleanup, err := initService()
 			if err != nil {
 				return err
@@ -95,6 +111,9 @@ Configure your agent to run: mneme mcp`,
 			modelsSvc := service.NewModelsService(config.DefaultPath())
 
 			srv := mcp.NewServer(svc, sddSvc, skillsSvc, modelsSvc, logger, toolsMode, Version)
+			if flagCallerRole != "" {
+				srv.WithCallerPolicy(mcp.CallerPolicy{Role: flagCallerRole, Archetype: flagCallerArchetype})
+			}
 			if qualityErr == nil {
 				srv.WithQualityService(qualitySvc)
 			}
@@ -103,6 +122,8 @@ Configure your agent to run: mneme mcp`,
 	}
 
 	cmd.Flags().StringVar(&flagTools, "tools", "", "Tool visibility: \"all\" or \"agent\" (default from config)")
+	cmd.Flags().StringVar(&flagCallerRole, "caller-role", "", "Bind this server to a generated subagent role")
+	cmd.Flags().StringVar(&flagCallerArchetype, "caller-archetype", "", "Canonical capability archetype for --caller-role")
 
 	return cmd
 }

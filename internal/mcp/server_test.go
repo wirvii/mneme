@@ -260,6 +260,40 @@ func TestToolsList(t *testing.T) {
 	}
 }
 
+func TestCallerPolicyFiltersAndAuthorizesSubagentTools(t *testing.T) {
+	srv := newTestServer(t)
+	srv.WithCallerPolicy(CallerPolicy{Role: "backend", Archetype: "backend"})
+
+	for _, tool := range srv.tools {
+		if tool.Name == "spec_advance" || tool.Name == "spec_quick" || tool.Name == "quality_ack" || tool.Name == "quality_sign" {
+			t.Fatalf("restricted tool %q remained visible", tool.Name)
+		}
+	}
+
+	denied := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"spec_advance","arguments":{}}}`)
+	resp, ok := srv.handleMessage(denied)
+	if !ok || resp.Error == nil || !strings.Contains(resp.Error.Message, "caller policy") {
+		t.Fatalf("direct restricted call was not denied: %#v", resp)
+	}
+
+	docDenied := []byte(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"spec_doc_write","arguments":{"kind":"budget"}}}`)
+	resp, ok = srv.handleMessage(docDenied)
+	if !ok || resp.Error == nil || !strings.Contains(resp.Error.Message, `kind "budget"`) {
+		t.Fatalf("role-scoped document was not denied: %#v", resp)
+	}
+}
+
+func TestCallerPolicyAllowsArchitectDocsAndQASign(t *testing.T) {
+	architect := CallerPolicy{Role: "architect", Archetype: "architect"}
+	if err := architect.authorizeCall(ToolCallParams{Name: "spec_doc_write", Arguments: json.RawMessage(`{"kind":"budget"}`)}); err != nil {
+		t.Fatalf("architect budget denied: %v", err)
+	}
+	qa := CallerPolicy{Role: "qa-tester", Archetype: "qa-tester"}
+	if !qa.allowsTool("quality_sign") {
+		t.Fatal("qa-tester quality_sign denied")
+	}
+}
+
 func TestMemSave(t *testing.T) {
 	srv := newTestServer(t)
 
