@@ -7,3 +7,4 @@ sandbox_mode = "read-only"
 [mcp_servers.mneme]
 command = "mneme"
 args = ["mcp", "--tools=agent", "--caller-role", "architect", "--caller-archetype", "architect"]
+default_tools_approval_mode = "approve"

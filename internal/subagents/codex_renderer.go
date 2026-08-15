@@ -45,6 +45,7 @@ func RenderCodex(contract AgentContract) (string, error) {
 		strconv.Quote("mcp"), strconv.Quote("--tools=agent"),
 		strconv.Quote("--caller-role"), strconv.Quote(string(contract.Role)),
 		strconv.Quote("--caller-archetype"), strconv.Quote(string(contract.EffectiveArchetype())))
+	fmt.Fprintf(&out, "default_tools_approval_mode = %s\n", strconv.Quote("approve"))
 	return out.String(), nil
 }
 

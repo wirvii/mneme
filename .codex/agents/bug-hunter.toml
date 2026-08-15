@@ -7,3 +7,4 @@ sandbox_mode = "workspace-write"
 [mcp_servers.mneme]
 command = "mneme"
 args = ["mcp", "--tools=agent", "--caller-role", "bug-hunter", "--caller-archetype", "bug-hunter"]
+default_tools_approval_mode = "approve"

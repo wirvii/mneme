@@ -13,9 +13,9 @@ type ParityCapability struct {
 func ParityMatrix() []ParityCapability {
 	return []ParityCapability{
 		{"project roles", ".claude/agents/*.md", ".codex/agents/*.toml"},
-		{"role ownership", "PreToolUse enforcement", "PreToolUse enforcement"},
-		{"reserved SDD transitions", "lifecycle tool denial", "lifecycle tool denial"},
-		{"QA signatures", "role-scoped fail-closed hook", "role-scoped fail-closed hook"},
+		{"role ownership", "PreToolUse enforcement", "identity-bearing PreToolUse enforcement"},
+		{"reserved SDD transitions", "lifecycle tool denial", "role-bound MCP denial"},
+		{"QA signatures", "role-scoped fail-closed hook", "role-bound MCP fail-closed policy"},
 		{"models by role", "agent frontmatter", "agent TOML"},
 		{"memory", "mneme MCP", "mneme MCP"},
 		{"SDD", "mneme MCP and CLI", "mneme MCP and CLI"},

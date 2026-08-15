@@ -20,7 +20,7 @@ func TestRenderCodex_AllBuiltinsAndCustomRole(t *testing.T) {
 			if err != nil || first != second {
 				t.Fatalf("renderer is not deterministic: err=%v", err)
 			}
-			for _, key := range []string{"name = ", "description = ", "developer_instructions = ", "sandbox_mode = ", "[mcp_servers.mneme]", `"--caller-role"`, `"--caller-archetype"`} {
+			for _, key := range []string{"name = ", "description = ", "developer_instructions = ", "sandbox_mode = ", "[mcp_servers.mneme]", `"--caller-role"`, `"--caller-archetype"`, `default_tools_approval_mode = "approve"`} {
 				if !strings.Contains(first, key) {
 					t.Errorf("missing %q in:\n%s", key, first)
 				}

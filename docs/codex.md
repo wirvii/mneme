@@ -53,6 +53,9 @@ contract:
 - Every Codex role starts a role-bound mneme MCP server. Its tool list and
   call-time authorization independently keep lifecycle transitions,
   `quality_ack`, `quality_sign`, and architect-only documents fail-closed.
+  Allowed calls are pre-approved for that local server because Codex child
+  sessions cannot answer MCP approval prompts; the role-bound filter is
+  applied before this approval setting.
 
 The formats differ because each runtime uses its native configuration. A
 project initialized from either runtime is ready for both.
