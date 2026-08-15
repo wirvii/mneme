@@ -69,6 +69,17 @@ func TestResolveIdentity_GoldenFixture_Orchestrator(t *testing.T) {
 	}
 }
 
+func TestResolveIdentity_Codex0147SpawnAttemptHasNoCallerIdentity(t *testing.T) {
+	input := loadFixture(t, "codex-0.147.0-pretooluse-spawn.json")
+	identity := input.resolveIdentity()
+	if identity.IsSubagent || identity.AgentID != "" || identity.Role != "" {
+		t.Fatalf("Codex spawn payload unexpectedly resolved caller identity: %+v", identity)
+	}
+	if input.ToolName != "collaborationspawn_agent" {
+		t.Fatalf("ToolName = %q, want collaborationspawn_agent", input.ToolName)
+	}
+}
+
 // TestResolveIdentity_GoldenFixture_ResolveCallerAgrees is a mutation guard
 // against D1's own supersession claim: resolveIdentity's IsSubagent must
 // always agree with the older boolean resolveCaller() on the same real

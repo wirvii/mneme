@@ -1,0 +1,17 @@
+{
+  "session_id": "codex-session-sanitized",
+  "turn_id": "codex-turn-sanitized",
+  "transcript_path": null,
+  "cwd": "/repo",
+  "hook_event_name": "PreToolUse",
+  "model": "gpt-5.6-sol",
+  "permission_mode": "bypassPermissions",
+  "tool_name": "collaborationspawn_agent",
+  "tool_input": {
+    "agent_type": "architect",
+    "fork_turns": "none",
+    "message": "sanitized",
+    "task_name": "hook-capture"
+  },
+  "tool_use_id": "codex-tool-use-sanitized"
+}
