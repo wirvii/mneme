@@ -342,7 +342,7 @@ See [docs/conflicts.md](docs/conflicts.md) and
 
 ## Commands
 
-41 top-level commands (`mneme --help` is the source of truth for flags; full
+42 mneme-registered top-level commands (`mneme --help` is the source of truth for flags; full
 flag reference in [docs/api/cli.md](docs/api/cli.md)). Cobra's
 auto-generated `completion` is listed below for reference but not counted in
 that figure:
@@ -396,7 +396,7 @@ that figure:
 
 ## MCP Tools
 
-The MCP server (`mneme mcp`) exposes **79 tools** over JSON-RPC 2.0 stdio,
+The MCP server (`mneme mcp`) exposes **84 tools** over JSON-RPC 2.0 stdio,
 grouped by family. Each family has a full contract reference (params, returns,
 errors, examples) under [docs/api/](docs/api/):
 
@@ -505,13 +505,13 @@ errors, examples) under [docs/api/](docs/api/):
 
 **Persistence:** two SQLite databases per host -- `~/.mneme/global.db` (global + org scope) and `~/.mneme/projects/<slug>.db` (project scope, slug from git remote). Schema v17 with embedded migrations.
 
-**Three frontends:** MCP (primary, 79 tools over stdio), HTTP (REST API at `:7437`, 10 endpoints under `/v1/` -- no SDD/codegraph/skills/model/conflicts/subagent/speech parity yet), and CLI (Cobra, 41 commands).
+**Three frontends:** MCP (primary, 84 tools over stdio), HTTP (REST API at `:7437`, 10 endpoints under `/v1/` -- no SDD/codegraph/skills/model/conflicts/subagent/speech parity yet), and CLI (Cobra, 42 mneme-registered commands).
 
 ---
 
 ## Status & Roadmap
 
-**Current (main): schema v17, 79 MCP tools, 41 CLI commands, 10 HTTP endpoints.**
+**Current (main): schema v18, 84 MCP tools, 42 mneme-registered CLI commands, 10 HTTP endpoints.**
 Latest release: **v1.33.0**. Full history in [CHANGELOG.md](CHANGELOG.md).
 
 **Shipped:**

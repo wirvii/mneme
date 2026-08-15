@@ -520,11 +520,9 @@ mem_session_end({
 })
 ```
 
-Or via CLI:
-
-```bash
-mneme session-end "Implemented JWT RS256 authentication..."
-```
+Session summaries are an MCP operation. There is no `mneme session-end` CLI
+command; `mneme hook session-end` is a retired compatibility no-op and must
+not be used as a substitute.
 
 ### Checkpoints (long tasks)
 

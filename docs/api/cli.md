@@ -1,6 +1,6 @@
 # API Reference — CLI Commands
 
-41 top-level commands (`./mneme --help` and `./mneme <cmd> --help` are the
+42 mneme-registered top-level commands (`./mneme --help` and `./mneme <cmd> --help` are the
 source of truth; this reference mirrors them). Global flags apply to every
 subcommand:
 

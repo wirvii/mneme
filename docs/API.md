@@ -2,9 +2,9 @@
 
 # mneme -- API Reference
 
-mneme exposes the same service layer through three frontends: **MCP** (79
+mneme exposes the same service layer through three frontends: **MCP** (84
 tools over JSON-RPC 2.0 stdio, primary), **HTTP** (10 REST endpoints under
-`/v1/`), and **CLI** (41 top-level commands, Cobra). This page is an index --
+`/v1/`), and **CLI** (42 mneme-registered top-level commands, Cobra). This page is an index --
 the full contract for every tool, endpoint, and command lives in
 [docs/api/](api/).
 
@@ -31,7 +31,7 @@ not a fixed string -- expect it to match `mneme version`.
 
 ---
 
-## MCP tool families (79 tools)
+## MCP tool families (84 tools)
 
 Rule: every MCP tool appears in exactly **one** of these files.
 
@@ -46,8 +46,9 @@ Rule: every MCP tool appears in exactly **one** of these files.
 | `subagent_*` | 6 | [docs/api/subagents.md](api/subagents.md) | [docs/enforcement-model.md](enforcement-model.md) |
 | `profile_*` + `project_*` + `app_*` + `scaffold_*` | 8+1+1+1=11 | [docs/profiles.md](profiles.md) (no dedicated `docs/api/` split yet) | [docs/profiles.md](profiles.md) |
 | `speech_*` | 2 | [docs/speech.md](speech.md) | [docs/speech.md](speech.md) |
+| `quality_*` | 5 | [docs/api/sdd.md](api/sdd.md) | [docs/quality.md](quality.md) |
 
-15 + 20 + 10 + 7 + 3 + 5 + 6 + 11 + 2 = **79**. The two host-local
+15 + 20 + 10 + 7 + 3 + 5 + 6 + 11 + 2 + 5 = **84**. The two host-local
 `speech_*` tools intentionally have no HTTP counterpart because they control
 the current user's audio device.
 
