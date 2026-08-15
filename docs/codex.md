@@ -30,13 +30,17 @@ the same result. All existing keys in `config.toml` and `hooks.json` are preserv
 
 ## Supported versions
 
-v1.40 requires Codex CLI 0.148.0-alpha.19 or newer and Claude Code 2.1.232 or newer.
-These are the oldest versions verified against the native project-agent and
-hook formats used by the parity contract. Codex 0.147.0 can spawn project
-agents, but does not propagate child hooks or identity; 0.148.0-alpha.19 is
-the first build verified to emit identity-bearing `SubagentStart` and child
-`PreToolUse` payloads. `mneme install` reads the installed
-CLI version and refuses to configure an older runtime. If a CLI is absent,
+v1.40.1 can be installed with Codex CLI 0.147.0 or newer and requires Claude
+Code 2.1.232 or newer. Codex 0.147.0 supports mneme's MCP, memory, skills,
+project-role assets, and coordinator mode, but does not propagate child hooks
+or identity. Therefore `mneme install codex` warns—without blocking—that
+native multi-agent delegation and containment are not fully verified on that
+stable release. Codex 0.148.0-alpha.19 is the first build verified to emit
+identity-bearing `SubagentStart` and child `PreToolUse` payloads; a future
+0.148.0 stable release also satisfies that capability floor by SemVer.
+
+mneme never recommends switching to an alpha channel. `mneme install` refuses
+only Codex versions older than 0.147.0. If a CLI is absent,
 mneme can still prepare and statically validate project assets, but reports
 that the real runtime verification was not run.
 

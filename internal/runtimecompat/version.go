@@ -14,7 +14,12 @@ import (
 // subagent, hooks and MCP configuration contracts.
 const (
 	MinimumClaudeCode = "2.1.232"
-	MinimumCodex      = "0.148.0-alpha.19"
+	// MinimumCodex is the oldest stable Codex release that can install and
+	// use mneme's MCP, memory, skills, and project-role assets.
+	MinimumCodex = "0.147.0"
+	// MinimumCodexFull is the oldest empirically verified Codex build that
+	// propagates identity-bearing child hooks for full multi-agent containment.
+	MinimumCodexFull = "0.148.0-alpha.19"
 )
 
 var versionPattern = regexp.MustCompile(`\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?`)
@@ -27,17 +32,23 @@ type Status struct {
 	Version   string
 	Minimum   string
 	Supported bool
+	// CapabilityMinimum is the minimum for every advertised runtime
+	// capability, which may be newer than the installable minimum.
+	CapabilityMinimum string
+	// FullySupported reports whether every advertised runtime capability was
+	// empirically verified for this version.
+	FullySupported bool
 }
 
 // Detect executes the runtime's version command. A missing CLI is a
 // reportable state rather than an error so project assets can still be
 // generated and statically validated for that runtime.
 func Detect(slug string) (Status, error) {
-	command, minimum, err := contract(slug)
+	command, minimum, capabilityMinimum, err := contract(slug)
 	if err != nil {
 		return Status{}, err
 	}
-	status := Status{Slug: slug, Command: command, Minimum: minimum}
+	status := Status{Slug: slug, Command: command, Minimum: minimum, CapabilityMinimum: capabilityMinimum}
 	if _, err := exec.LookPath(command); err != nil {
 		return status, nil
 	}
@@ -52,6 +63,7 @@ func Detect(slug string) (Status, error) {
 	status.Installed = true
 	status.Version = version
 	status.Supported = Compare(version, minimum) >= 0
+	status.FullySupported = Compare(version, capabilityMinimum) >= 0
 	return status, nil
 }
 
@@ -142,13 +154,13 @@ func component(match []string, index int) string {
 	return parts[index]
 }
 
-func contract(slug string) (string, string, error) {
+func contract(slug string) (string, string, string, error) {
 	switch slug {
 	case "claude-code":
-		return "claude", MinimumClaudeCode, nil
+		return "claude", MinimumClaudeCode, MinimumClaudeCode, nil
 	case "codex":
-		return "codex", MinimumCodex, nil
+		return "codex", MinimumCodex, MinimumCodexFull, nil
 	default:
-		return "", "", fmt.Errorf("runtime compatibility: unsupported agent %q", slug)
+		return "", "", "", fmt.Errorf("runtime compatibility: unsupported agent %q", slug)
 	}
 }

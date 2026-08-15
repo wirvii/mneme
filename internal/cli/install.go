@@ -69,8 +69,12 @@ produces the same result without clobbering existing configuration.`,
 			if compatErr != nil {
 				return fmt.Errorf("install: verify agent version: %w", compatErr)
 			}
-			if compat.Installed && !compat.Supported {
-				return fmt.Errorf("install: %s %s is below the supported minimum %s; update %s before installing mneme", compat.Command, compat.Version, compat.Minimum, compat.Command)
+			notice, validationErr := runtimeInstallNotice(compat)
+			if validationErr != nil {
+				return validationErr
+			}
+			if notice != "" {
+				fmt.Fprintln(os.Stdout, notice)
 			}
 			if !compat.Installed {
 				fmt.Fprintf(os.Stdout, "  [info] %s CLI is not installed; host configuration will be prepared but runtime verification is not run.\n", compat.Command)
@@ -206,6 +210,21 @@ produces the same result without clobbering existing configuration.`,
 		"Replace all existing PreToolUse hook entries with mneme hook pre-tool-use (migration from enforce-delegation)")
 
 	return cmd
+}
+
+// runtimeInstallNotice distinguishes the version needed to install mneme
+// from the newer version needed for every native multi-agent guarantee.
+func runtimeInstallNotice(status runtimecompat.Status) (string, error) {
+	if !status.Installed {
+		return "", nil
+	}
+	if !status.Supported {
+		return "", fmt.Errorf("install: %s %s is below the installable minimum %s; update %s before installing mneme", status.Command, status.Version, status.Minimum, status.Command)
+	}
+	if !status.FullySupported {
+		return fmt.Sprintf("  [warn] %s %s can install mneme, but native multi-agent delegation with identity-bearing hooks is not verified until %s; MCP, memory, skills, project roles, and coordinator mode will still be configured.", status.Command, status.Version, status.CapabilityMinimum), nil
+	}
+	return "", nil
 }
 
 // resolvePersonalSource returns the source to use for the personal ecosystem.

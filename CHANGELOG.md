@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [v1.40.1] — 2026-08-15 — Codex stable installation hotfix
+
+### Fixed
+
+- **`mneme install codex` once again works with the official stable channel.**
+  v1.40.0 incorrectly used Codex `0.148.0-alpha.19`—the first build where
+  identity-bearing child hooks were empirically verified—as the minimum for
+  installation itself. The official `latest` channel remains at `0.147.0`,
+  so ordinary users were blocked by a version they could not obtain through
+  a normal stable update.
+- Compatibility now has two explicit floors: Codex `0.147.0` can install and
+  use mneme's MCP, memory, skills, project-role assets, and coordinator mode;
+  `0.148.0-alpha.19` remains the minimum for verified native multi-agent
+  delegation and containment. Stable users receive a precise warning, never
+  a false full-compatibility result or a recommendation to install an alpha.
+
 ## [v1.40.0] — 2026-08-15 — Quality evidence and Claude Code/Codex parity
 
 ### Added
@@ -16,12 +32,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   workflow skills (`mneme-init`, `mneme-profile-author`, `new-project`, and
   `new-app`) are installed for and executable from either runtime.
 - **Codex role enforcement with two independent boundaries.** Codex
-  0.148.0-alpha.19 is the minimum verified version because it emits child
+  0.148.0-alpha.19 is the minimum for full verified delegation because it emits child
   `SubagentStart` and `PreToolUse` identity. Project hooks enforce ownership;
   a role-bound mneme MCP server separately filters and revalidates reserved
   lifecycle, quality-signature, and architect-only document operations.
-  Older or unparseable runtimes fail installation visibly instead of silently
-  degrading permissions.
+  Codex 0.147.0 installs with an explicit capability warning; older or
+  unparseable runtimes fail visibly instead of silently degrading permissions.
 - **The complete quality-evidence pipeline (SPEC-115 through SPEC-120).** A
   versioned `.mneme/quality.toml` can declare build/test/lint gates, coverage
   of changed lines and ratchets, executable acceptance criteria, graph-backed

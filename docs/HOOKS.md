@@ -48,11 +48,14 @@ path to the home directory (SPEC-069), so a committed `.claude/settings.json`
 works on any machine with `mneme` on `PATH`, without requiring `mneme install`
 to have run there first.
 
-Codex v1.40 support starts at 0.148.0-alpha.19, the first empirically verified
-build that propagates `SubagentStart` and child `PreToolUse` with `agent_id`
-and `agent_type`. Codex 0.147.0 can create a child but does not expose that
-identity to hooks, so mneme refuses to install against it instead of silently
-claiming containment. Codex hooks also require the operator to trust them with
+Codex v1.40.1 installation support starts at the stable 0.147.0 release. That
+version receives MCP, memory, skills, role assets, and coordinator support,
+but mneme emits a capability warning because it does not expose child identity
+to hooks. Full native multi-agent containment starts at 0.148.0-alpha.19, the
+first empirically verified build that propagates `SubagentStart` and child
+`PreToolUse` with `agent_id` and `agent_type`. mneme does not recommend an
+alpha update and does not claim full containment on 0.147.0. Codex hooks also
+require the operator to trust them with
 `/hooks`; until then, delegated containment is intentionally reported as not
 verified.
 

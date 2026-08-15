@@ -40,9 +40,11 @@ receives an explicit `tools:` allowlist in `.claude/agents/*.md` and enforces it
 directly. Codex receives the role's sandbox intent in
 `.codex/agents/*.toml`, but mneme does not count that declaration as a security
 boundary: real Codex 0.147.0 testing showed that a child can inherit the
-parent's workspace permissions. Codex 0.148.0-alpha.19 or newer instead
-supplies identity-bearing `SubagentStart` and child `PreToolUse` events, which
-let the same Go guard enforce the role and its declared ownership areas.
+parent's workspace permissions. mneme therefore permits installation on the
+stable 0.147.0 release but warns that native multi-agent containment is not
+verified there. Codex 0.148.0-alpha.19 or newer supplies identity-bearing
+`SubagentStart` and child `PreToolUse` events, which let the same Go guard
+enforce the role and its declared ownership areas.
 
 Each Codex role also receives its own local, role-bound mneme MCP server. The
 server filters the advertised tools and repeats the authorization check when a
