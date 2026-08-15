@@ -97,96 +97,21 @@ func (k doctorFindingKind) actionable() bool {
 // feeds subagents.DetectLayer23Leaks for the lifecycle_in_layer23 finding —
 // injected in parallel to actualChecksum, for the same reason.
 func diagnoseManifestEntry(e service.ManifestEntry, root string, fileExists func(string) bool, actualChecksum func(string) (string, bool), readContent func(string) (string, bool)) []doctorFinding {
-	var findings []doctorFinding
-	role := string(e.Role)
-	archetype := e.EffectiveArchetype()
-
-	if _, known := subagents.PermissionTable[archetype]; !known {
+	shared := subagents.DiagnoseManifestEntry(doctorEntry(e), root, fileExists, actualChecksum, readContent)
+	findings := make([]doctorFinding, 0, len(shared))
+	for _, finding := range shared {
 		findings = append(findings, doctorFinding{
-			Role: role, Kind: doctorKindUnknownRole,
-			Detail: fmt.Sprintf("archetype/role %q no está en PermissionTable — no es implementador para el hook, su área está desprotegida", archetype),
-		})
-	} else if subagents.IsImplementer(archetype) && len(e.Areas) == 0 {
-		findings = append(findings, doctorFinding{
-			Role: role, Kind: doctorKindDegenerateAreas,
-			Detail: "rol implementador sin áreas declaradas (degenerado)",
+			Role: string(e.Role), Kind: doctorFindingKind(finding.Kind), Detail: finding.Detail,
 		})
 	}
-
-	if e.Archetype == "" {
-		findings = append(findings, doctorFinding{
-			Role: role, Kind: doctorKindArchetypeMissing,
-			Detail: "archetype ausente — backfill mecánico disponible (--fix)",
-		})
-	}
-	if !e.AreasComplete {
-		findings = append(findings, doctorFinding{
-			Role: role, Kind: doctorKindNotVerified,
-			Detail: "areas_complete ausente o false — no verificado (re-grillar para certificar)",
-		})
-	}
-	if e.Version < subagents.AgentFixedVersion {
-		findings = append(findings, doctorFinding{
-			Role: role, Kind: doctorKindStaleAgentFixed,
-			Detail: fmt.Sprintf("agent-fixed block en v%d, la versión actual es v%d — regenerar con `mneme subagents regen --role %s`", e.Version, subagents.AgentFixedVersion, role),
-		})
-	}
-
-	if e.Path != "" {
-		if _, _, ok := subagents.ResolveManifestPath(e.Path, root); !ok {
-			findings = append(findings, doctorFinding{
-				Role: role, Kind: doctorKindForeignPath,
-				Detail: fmt.Sprintf("path %q está fuera de la raíz del proyecto o es foráneo-de-otro-SO — `regen` la omite, nunca la toca (SPEC-089)", e.Path),
-			})
-		} else if !fileExists(e.Path) {
-			findings = append(findings, doctorFinding{
-				Role: role, Kind: doctorKindOrphanPath,
-				Detail: fmt.Sprintf("path %q no existe en disco (huérfano)", e.Path),
-			})
-		} else {
-			if e.Checksum != "" {
-				if actual, ok := actualChecksum(e.Path); ok && actual != e.Checksum {
-					findings = append(findings, doctorFinding{
-						Role: role, Kind: doctorKindDrift,
-						Detail: "checksum en disco no coincide con el manifest (drift)",
-					})
-				}
-			}
-			for _, leak := range subagents.DetectLayer23Leaks(e.Path, readContent) {
-				findings = append(findings, doctorFinding{
-					Role: role, Kind: doctorKindLifecycleInLayer23,
-					Detail: fmt.Sprintf("fuga de capa 1 (%s) en la región de capa 2/3: %q, línea %d — re-grillar el rol para limpiarlo", leak.Kind, leak.Token, leak.Line),
-				})
-			}
-		}
-	}
-
-	for _, area := range e.Areas {
-		cleaned, ignore := cleanArea(area)
-		if ignore {
-			continue
-		}
-		if cleaned == area && !isGlobLike(area) {
-			findings = append(findings, doctorFinding{
-				Role: role, Kind: doctorKindBareDirOK,
-				Detail: fmt.Sprintf("area %q es un directorio desnudo — areaMatches ya lo resuelve, sano", area),
-			})
-		}
-	}
-
 	return findings
 }
 
-// isGlobLike reports whether area already contains glob metacharacters
-// (already the shape "internal/**" rather than a bare "internal" directory).
-func isGlobLike(area string) bool {
-	for _, r := range area {
-		switch r {
-		case '*', '?', '[':
-			return true
-		}
+func doctorEntry(e service.ManifestEntry) subagents.DoctorEntry {
+	return subagents.DoctorEntry{
+		Role: string(e.Role), Archetype: string(e.Archetype), Areas: e.Areas,
+		AreasComplete: e.AreasComplete, Path: e.Path, Checksum: e.Checksum, Version: e.Version,
 	}
-	return false
 }
 
 // realFileExists/realChecksum are the production fileExists/actualChecksum

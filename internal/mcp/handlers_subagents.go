@@ -873,95 +873,21 @@ type mcpDoctorFinding struct {
 // for the lifecycle_in_layer23 finding — injected in parallel to
 // actualChecksum, for the same reason.
 func diagnoseManifestEntryMCP(e service.ManifestEntry, root string, fileExists func(string) bool, actualChecksum func(string) (string, bool), readContent func(string) (string, bool)) []mcpDoctorFinding {
-	var findings []mcpDoctorFinding
-	archetype := e.EffectiveArchetype()
-
-	if _, known := subagents.PermissionTable[archetype]; !known {
+	shared := subagents.DiagnoseManifestEntry(doctorEntryMCP(e), root, fileExists, actualChecksum, readContent)
+	findings := make([]mcpDoctorFinding, 0, len(shared))
+	for _, finding := range shared {
 		findings = append(findings, mcpDoctorFinding{
-			Kind:   mcpDoctorKindUnknownRole,
-			Detail: fmt.Sprintf("archetype/role %q no está en PermissionTable — no es implementador para el hook, su área está desprotegida", archetype),
-		})
-	} else if subagents.IsImplementer(archetype) && len(e.Areas) == 0 {
-		findings = append(findings, mcpDoctorFinding{
-			Kind:   mcpDoctorKindDegenerateAreas,
-			Detail: "rol implementador sin áreas declaradas (degenerado)",
+			Kind: mcpDoctorFindingKind(finding.Kind), Detail: finding.Detail,
 		})
 	}
-
-	if e.Archetype == "" {
-		findings = append(findings, mcpDoctorFinding{
-			Kind:   mcpDoctorKindArchetypeMissing,
-			Detail: "archetype ausente — backfill mecánico disponible (mneme subagents doctor --fix)",
-		})
-	}
-	if !e.AreasComplete {
-		findings = append(findings, mcpDoctorFinding{
-			Kind:   mcpDoctorKindNotVerified,
-			Detail: "areas_complete ausente o false — no verificado (re-grillar para certificar)",
-		})
-	}
-	if e.Version < subagents.AgentFixedVersion {
-		findings = append(findings, mcpDoctorFinding{
-			Kind:   mcpDoctorKindStaleAgentFixed,
-			Detail: fmt.Sprintf("agent-fixed block en v%d, la versión actual es v%d — regenerar con `mneme subagents regen --role %s`", e.Version, subagents.AgentFixedVersion, e.Role),
-		})
-	}
-
-	if e.Path != "" {
-		if _, _, ok := subagents.ResolveManifestPath(e.Path, root); !ok {
-			findings = append(findings, mcpDoctorFinding{
-				Kind:   mcpDoctorKindForeignPath,
-				Detail: fmt.Sprintf("path %q está fuera de la raíz del proyecto o es foráneo-de-otro-SO — `regen` la omite, nunca la toca (SPEC-089)", e.Path),
-			})
-		} else if !fileExists(e.Path) {
-			findings = append(findings, mcpDoctorFinding{
-				Kind:   mcpDoctorKindOrphanPath,
-				Detail: fmt.Sprintf("path %q no existe en disco (huérfano)", e.Path),
-			})
-		} else {
-			if e.Checksum != "" {
-				if actual, ok := actualChecksum(e.Path); ok && actual != e.Checksum {
-					findings = append(findings, mcpDoctorFinding{
-						Kind:   mcpDoctorKindDrift,
-						Detail: "checksum en disco no coincide con el manifest (drift)",
-					})
-				}
-			}
-			for _, leak := range subagents.DetectLayer23Leaks(e.Path, readContent) {
-				findings = append(findings, mcpDoctorFinding{
-					Kind:   mcpDoctorKindLifecycleInLayer23,
-					Detail: fmt.Sprintf("fuga de capa 1 (%s) en la región de capa 2/3: %q, línea %d — re-grillar el rol para limpiarlo", leak.Kind, leak.Token, leak.Line),
-				})
-			}
-		}
-	}
-
-	for _, area := range e.Areas {
-		trimmed := strings.TrimSpace(area)
-		if trimmed == "" || trimmed == "." || trimmed == "./" {
-			continue
-		}
-		if !mcpIsGlobLike(trimmed) {
-			findings = append(findings, mcpDoctorFinding{
-				Kind:   mcpDoctorKindBareDirOK,
-				Detail: fmt.Sprintf("area %q es un directorio desnudo — areaMatches ya lo resuelve, sano", area),
-			})
-		}
-	}
-
 	return findings
 }
 
-// mcpIsGlobLike reports whether area already contains glob metacharacters
-// (mirrors cli's isGlobLike).
-func mcpIsGlobLike(area string) bool {
-	for _, r := range area {
-		switch r {
-		case '*', '?', '[':
-			return true
-		}
+func doctorEntryMCP(e service.ManifestEntry) subagents.DoctorEntry {
+	return subagents.DoctorEntry{
+		Role: string(e.Role), Archetype: string(e.Archetype), Areas: e.Areas,
+		AreasComplete: e.AreasComplete, Path: e.Path, Checksum: e.Checksum, Version: e.Version,
 	}
-	return false
 }
 
 // mcpRealFileExists/mcpRealChecksum/mcpRealReadContent are the production
