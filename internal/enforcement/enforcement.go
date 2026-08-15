@@ -390,7 +390,7 @@ func evaluateWordToken(tokens []shell.Token, i int, value, fullCommand string, p
 	case "bash", "sh", "zsh":
 		return evaluateShellDashC(tokens, i, pc, own, depth)
 	case "sed", "perl":
-		return evaluateInPlaceEditor(tokens, i, value, fullCommand)
+		return evaluateInPlaceEditor(tokens, i, value, pc)
 	case "dd":
 		return evaluateDD(tokens, i, pc, own)
 	case "python", "python2", "python3":
@@ -537,15 +537,33 @@ func evaluateShellDashC(tokens []shell.Token, i int, pc PathContext, own Ownersh
 
 // evaluateInPlaceEditor hard-blocks sed/perl invocations using an in-place
 // flag (e.g. -i, -i.bak) outside the .claude/ or CLAUDE.md whitelist. The
-// target of an in-place edit cannot be resolved to a single path from the
-// token stream alone, so this is a hard-block (no OwnershipFunc consultation,
-// Owner stays "").
-func evaluateInPlaceEditor(tokens []shell.Token, i int, name, fullCommand string) Decision {
+// target of an in-place edit is checked only within that command's token
+// segment. Mentions of a whitelisted path in comments or later commands must
+// never exempt a different target (BL-105). This remains a hard-block with no
+// OwnershipFunc consultation, so Owner stays empty.
+func evaluateInPlaceEditor(tokens []shell.Token, i int, name string, pc PathContext) Decision {
 	next, ok := tokenValueAt(tokens, i+1)
 	if !ok || !strings.HasPrefix(next, "-") || !strings.Contains(next, "i") {
 		return Decision{}
 	}
-	if strings.Contains(fullCommand, ".claude/") || strings.Contains(fullCommand, "CLAUDE.md") {
+
+	hasWhitelistedTarget := false
+	for _, token := range tokens[i+1:] {
+		if token.Type == shell.TypeSeparator || token.Type == shell.TypeRedirect {
+			break
+		}
+		if token.Type != shell.TypeWord || token.Quoted || strings.HasPrefix(token.Value, "-") {
+			continue
+		}
+		if token.Value != "CLAUDE.md" && !looksLikePath(token.Value) {
+			continue
+		}
+		if !IsWhitelisted(token.Value, pc) {
+			return Decision{Block: true, Reason: fmt.Sprintf("%s -i fuera de .claude/", name)}
+		}
+		hasWhitelistedTarget = true
+	}
+	if hasWhitelistedTarget {
 		return Decision{}
 	}
 	return Decision{Block: true, Reason: fmt.Sprintf("%s -i fuera de .claude/", name)}
