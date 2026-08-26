@@ -1760,6 +1760,112 @@ func TestSpecList_ReportsFreeze(t *testing.T) {
 	})
 }
 
+// TestSpecList_AgreesWithSpecAdvance is SPEC-126 AC12 — the criterion that
+// sustains the whole spec: in the SAME database, what spec_list marks as
+// frozen and what spec_advance actually does must never disagree, across
+// all three freeze states (viva, archivada, ausente).
+//
+// The "viva" row runs a REAL SpecAdvance (draft -> speccing): its initial
+// status is chosen deliberately so that transition is valid — an
+// ErrInvalidTransition here would give a false green in the bidirectional
+// assertion below, since it is also an error (plan.md paso 6's mounting
+// trap).
+func TestSpecList_AgreesWithSpecAdvance(t *testing.T) {
+	svc := newTestSDDService(t, "project")
+	ctx := context.Background()
+
+	// --- viva: promoted item, spec starts in draft, so SpecAdvance is a
+	// valid draft -> speccing transition. ---
+	liveItem, err := svc.BacklogAdd(ctx, model.BacklogAddRequest{Title: "Live item", Lane: model.LaneStandard})
+	if err != nil {
+		t.Fatalf("add live item: %v", err)
+	}
+	if _, err := svc.BacklogRefine(ctx, model.BacklogRefineRequest{ID: liveItem.ID, Refinement: "details"}); err != nil {
+		t.Fatalf("refine live item: %v", err)
+	}
+	liveSpec, err := svc.BacklogPromote(ctx, liveItem.ID)
+	if err != nil {
+		t.Fatalf("promote live item: %v", err)
+	}
+	if liveSpec.Status != model.SpecStatusDraft {
+		t.Fatalf("expected the live spec to start in draft (so SpecAdvance is valid), got %s", liveSpec.Status)
+	}
+
+	// --- archivada: item archived with a recorded reason, spec still open. ---
+	archivedItem, err := svc.BacklogAdd(ctx, model.BacklogAddRequest{Title: "To be archived", Lane: model.LaneStandard})
+	if err != nil {
+		t.Fatalf("add archived item: %v", err)
+	}
+	archivedSpec, err := svc.SpecNew(ctx, model.SpecNewRequest{
+		Title: "Archived-item spec", Lane: model.LaneStandard, BacklogID: archivedItem.ID,
+	})
+	if err != nil {
+		t.Fatalf("SpecNew archived: %v", err)
+	}
+	const archiveReason = "AC12 fixture: superseded"
+	if _, err := svc.BacklogArchive(ctx, model.BacklogArchiveRequest{ID: archivedItem.ID, Reason: archiveReason}); err != nil {
+		t.Fatalf("archive: %v", err)
+	}
+
+	// --- ausente: BacklogID names an item that was never created. ---
+	missingSpec, err := svc.SpecNew(ctx, model.SpecNewRequest{
+		Title: "Dangling-link spec", Lane: model.LaneStandard, BacklogID: "BL-999",
+	})
+	if err != nil {
+		t.Fatalf("SpecNew missing: %v", err)
+	}
+
+	// Read ONCE, before any SpecAdvance call below mutates state — "the same
+	// database" AC12 requires.
+	resp, err := svc.SpecList(ctx, model.SpecListRequest{Project: "project"})
+	if err != nil {
+		t.Fatalf("SpecList: %v", err)
+	}
+
+	tests := []struct {
+		name       string
+		spec       *model.Spec
+		wantFrozen bool
+		wantErr    error
+	}{
+		{"viva", liveSpec, false, nil},
+		{"archivada", archivedSpec, true, model.ErrSpecFrozen},
+		{"ausente", missingSpec, true, model.ErrBacklogNotFound},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, isFrozen := resp.Frozen[tc.spec.ID]
+			if isFrozen != tc.wantFrozen {
+				t.Errorf("Frozen[%s] presence: got %v, want %v", tc.spec.ID, isFrozen, tc.wantFrozen)
+			}
+
+			_, advErr := svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: tc.spec.ID, By: "orchestrator"})
+			switch {
+			case tc.wantErr == nil && advErr != nil:
+				t.Errorf("SpecAdvance: expected success, got %v", advErr)
+			case tc.wantErr != nil && !errors.Is(advErr, tc.wantErr):
+				t.Errorf("SpecAdvance: expected %v, got %v", tc.wantErr, advErr)
+			}
+
+			// The bidirectional core of AC12: whether the listing marked
+			// this spec as frozen must EXACTLY match whether the verb
+			// refused it, independent of which specific error each row
+			// expects — this is what would catch the two routes drifting
+			// apart even if each row's own assertion above still looked
+			// individually correct.
+			verbFailed := advErr != nil
+			if isFrozen != verbFailed {
+				t.Errorf("AC12 disagreement: SpecList marked frozen=%v but SpecAdvance failed=%v", isFrozen, verbFailed)
+			}
+		})
+	}
+
+	if archivedFreeze := resp.Frozen[archivedSpec.ID]; archivedFreeze.Reason != archiveReason {
+		t.Errorf("archived row's Reason: got %q, want %q", archivedFreeze.Reason, archiveReason)
+	}
+}
+
 // --- LANE TESTS ---
 
 // TestBacklogAdd_LaneRequired verifies that omitting lane returns ErrLaneRequired.
