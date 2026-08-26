@@ -1658,6 +1658,108 @@ func TestSpecList_FilterByStatus(t *testing.T) {
 	}
 }
 
+// TestSpecList_ReportsFreeze is SPEC-126 AC10, AC11, AC13: spec_list marks
+// every spec that can no longer move, decorates none of the live ones, and
+// the marker survives across projects — the property that keeps the
+// listing from ever contradicting loadMutableSpec's own project-blind
+// GetBacklogItem lookup (DD4's "no WHERE project = ?").
+func TestSpecList_ReportsFreeze(t *testing.T) {
+	t.Run("mix of live and frozen (AC10)", func(t *testing.T) {
+		svc := newTestSDDService(t, "project")
+		ctx := context.Background()
+
+		// The live spec is created FIRST: newFrozenSpecFixture seeds its spec
+		// with a synthetic, non-numeric-suffix ID that would otherwise break
+		// NextSpecID's parsing for any SpecNew call made afterward.
+		liveSpec, err := svc.SpecNew(ctx, model.SpecNewRequest{Title: "Live spec", Lane: model.LaneStandard})
+		if err != nil {
+			t.Fatalf("SpecNew: %v", err)
+		}
+		_, frozenSpec := newFrozenSpecFixture(t, svc, ctx, "SPEC-frozen-list", model.SpecStatusImplementing, model.LaneStandard, "", "")
+
+		resp, err := svc.SpecList(ctx, model.SpecListRequest{Project: "project"})
+		if err != nil {
+			t.Fatalf("SpecList: %v", err)
+		}
+		if len(resp.Frozen) != 1 {
+			t.Fatalf("expected exactly 1 frozen entry, got %d: %+v", len(resp.Frozen), resp.Frozen)
+		}
+		freeze, ok := resp.Frozen[frozenSpec.ID]
+		if !ok {
+			t.Fatalf("expected %s to be frozen", frozenSpec.ID)
+		}
+		if freeze.State != model.SpecFreezeArchived {
+			t.Errorf("State: got %q, want archived", freeze.State)
+		}
+		if _, ok := resp.Frozen[liveSpec.ID]; ok {
+			t.Errorf("expected %s NOT to be frozen", liveSpec.ID)
+		}
+	})
+
+	t.Run("none frozen (AC11)", func(t *testing.T) {
+		svc := newTestSDDService(t, "project")
+		ctx := context.Background()
+
+		if _, err := svc.SpecNew(ctx, model.SpecNewRequest{Title: "Live spec", Lane: model.LaneStandard}); err != nil {
+			t.Fatalf("SpecNew: %v", err)
+		}
+
+		resp, err := svc.SpecList(ctx, model.SpecListRequest{Project: "project"})
+		if err != nil {
+			t.Fatalf("SpecList: %v", err)
+		}
+		if len(resp.Frozen) != 0 {
+			t.Errorf("expected no frozen entries, got %+v", resp.Frozen)
+		}
+	})
+
+	t.Run("cross-project coherence (AC13)", func(t *testing.T) {
+		database, err := db.OpenMemory()
+		if err != nil {
+			t.Fatalf("open memory db: %v", err)
+		}
+		database.SetMaxOpenConns(1)
+		t.Cleanup(func() { database.Close() })
+
+		sddStore := store.NewSDDStore(database)
+		cfg := config.Default()
+		svcA := NewSDDService(sddStore, cfg, "project-a", nil)
+		svcB := NewSDDService(sddStore, cfg, "project-b", nil)
+		ctx := context.Background()
+
+		// An item archived in project B...
+		itemB, err := svcB.BacklogAdd(ctx, model.BacklogAddRequest{Title: "B item", Lane: model.LaneStandard})
+		if err != nil {
+			t.Fatalf("add B: %v", err)
+		}
+		if _, err := svcB.BacklogArchive(ctx, model.BacklogArchiveRequest{ID: itemB.ID, Reason: "cross-project fixture"}); err != nil {
+			t.Fatalf("archive B: %v", err)
+		}
+
+		// ...names a spec that lives in project A.
+		specA := &model.Spec{
+			ID: "SPEC-cross-a", Title: "Cross-project spec", Status: model.SpecStatusImplementing,
+			Project: "project-a", BacklogID: itemB.ID, Lane: model.LaneStandard,
+		}
+		if err := sddStore.CreateSpec(ctx, specA); err != nil {
+			t.Fatalf("create spec A: %v", err)
+		}
+
+		respA, err := svcA.SpecList(ctx, model.SpecListRequest{Project: "project-a"})
+		if err != nil {
+			t.Fatalf("SpecList(project-a): %v", err)
+		}
+		freeze, ok := respA.Frozen[specA.ID]
+		if !ok {
+			t.Fatalf("expected %s to be marked frozen from project A's own listing (BL of project B), got %+v",
+				specA.ID, respA.Frozen)
+		}
+		if freeze.State != model.SpecFreezeArchived {
+			t.Errorf("State: got %q, want archived", freeze.State)
+		}
+	})
+}
+
 // --- LANE TESTS ---
 
 // TestBacklogAdd_LaneRequired verifies that omitting lane returns ErrLaneRequired.

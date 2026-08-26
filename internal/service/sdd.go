@@ -1267,7 +1267,42 @@ func (svc *SDDService) SpecList(ctx context.Context, req model.SpecListRequest) 
 	if err != nil {
 		return model.SpecListResponse{}, fmt.Errorf("service: spec list: %w", err)
 	}
-	return model.SpecListResponse{Specs: specs, Total: total}, nil
+
+	// SPEC-126 DD4/AC14: at most ONE extra read for the whole page, never
+	// one GetBacklogItem per spec — the N+1 R4 explicitly forbids (up to 50
+	// on the MCP page, up to 127 unwindowed in this repo today). A page
+	// where no spec has a BacklogID — the common case — pays nothing extra:
+	// BacklogStatusIndex is not called at all.
+	var frozen map[string]model.SpecFreeze
+	needsIndex := false
+	for _, spec := range specs {
+		if spec.BacklogID != "" {
+			needsIndex = true
+			break
+		}
+	}
+	if needsIndex {
+		index, indexErr := svc.store.BacklogStatusIndex(ctx)
+		if indexErr != nil {
+			return model.SpecListResponse{}, fmt.Errorf("service: spec list: backlog status index: %w", indexErr)
+		}
+		for _, spec := range specs {
+			if spec.BacklogID == "" {
+				continue
+			}
+			entry, found := index[spec.BacklogID]
+			freeze := specFreeze(spec, entry, found)
+			if freeze == nil {
+				continue
+			}
+			if frozen == nil {
+				frozen = make(map[string]model.SpecFreeze, len(specs))
+			}
+			frozen[spec.ID] = *freeze
+		}
+	}
+
+	return model.SpecListResponse{Specs: specs, Total: total, Frozen: frozen}, nil
 }
 
 // SpecHistory returns the full state transition history for a spec.
