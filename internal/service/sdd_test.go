@@ -623,6 +623,384 @@ func promoteAndAdvance(t *testing.T, svc *SDDService, ctx context.Context, steps
 	return item, spec
 }
 
+// newFrozenSpecFixture archives a fresh backlog item and creates a spec
+// linked to it via BacklogID, seeded directly at the caller's chosen
+// status/lane/scope/baseSHA (SPEC-125's freeze fixture). Seeding the spec
+// directly — rather than driving it there through the full lifecycle —
+// mirrors the established pattern in lane_audit_test.go
+// (TestLaneAudit_NoBaseRefReturnsError): the spec's OWN status/lane
+// preconditions are irrelevant here, since the freeze gate in
+// loadMutableSpec fires before any of them are consulted (DD5).
+func newFrozenSpecFixture(
+	t *testing.T, svc *SDDService, ctx context.Context,
+	specID string, status model.SpecStatus, lane model.Lane, scope, baseSHA string,
+) (*model.BacklogItem, *model.Spec) {
+	t.Helper()
+
+	item, err := svc.BacklogAdd(ctx, model.BacklogAddRequest{Title: "Frozen fixture", Lane: model.LaneStandard})
+	if err != nil {
+		t.Fatalf("add backlog item: %v", err)
+	}
+	if _, err := svc.BacklogArchive(ctx, model.BacklogArchiveRequest{ID: item.ID, Reason: "fixture archive"}); err != nil {
+		t.Fatalf("archive backlog item: %v", err)
+	}
+
+	spec := &model.Spec{
+		ID:        specID,
+		Title:     "Frozen spec",
+		Status:    status,
+		Project:   svc.project,
+		BacklogID: item.ID,
+		Lane:      lane,
+		Scope:     scope,
+		BaseSHA:   baseSHA,
+	}
+	if err := svc.store.CreateSpec(ctx, spec); err != nil {
+		t.Fatalf("create spec: %v", err)
+	}
+	return item, spec
+}
+
+// TestSpecVerbs_FrozenByArchivedBacklogItem is SPEC-125 AC11/AC12: every one
+// of the eight spec-mutating verbs refuses with ErrSpecFrozen, naming the
+// archived backlog item, when the spec's originating item is archived.
+func TestSpecVerbs_FrozenByArchivedBacklogItem(t *testing.T) {
+	tests := []struct {
+		name string
+		call func(svc *SDDService, ctx context.Context, id string) error
+	}{
+		{"SpecAdvance", func(svc *SDDService, ctx context.Context, id string) error {
+			_, err := svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: id, By: "orchestrator"})
+			return err
+		}},
+		{"SpecPushback", func(svc *SDDService, ctx context.Context, id string) error {
+			_, err := svc.SpecPushback(ctx, model.SpecPushbackRequest{ID: id, FromAgent: "qa", Questions: []string{"still unclear?"}})
+			return err
+		}},
+		{"SpecReject", func(svc *SDDService, ctx context.Context, id string) error {
+			_, err := svc.SpecReject(ctx, model.SpecRejectRequest{ID: id, Reason: "defect found", By: "qa-agent"})
+			return err
+		}},
+		{"SpecResolve", func(svc *SDDService, ctx context.Context, id string) error {
+			_, err := svc.SpecResolve(ctx, model.SpecResolveRequest{ID: id, Resolution: "resolved"})
+			return err
+		}},
+		{"SpecQuick", func(svc *SDDService, ctx context.Context, id string) error {
+			_, err := svc.SpecQuick(ctx, model.SpecQuickRequest{ID: id, Rationale: "one-liner", By: "orchestrator"})
+			return err
+		}},
+		{"LaneAudit", func(svc *SDDService, ctx context.Context, id string) error {
+			_, err := svc.LaneAudit(ctx, model.LaneAuditRequest{ID: id})
+			return err
+		}},
+		{"LaneOverride", func(svc *SDDService, ctx context.Context, id string) error {
+			_, err := svc.LaneOverride(ctx, model.LaneOverrideRequest{ID: id, Reason: "override anyway", By: "orchestrator"})
+			return err
+		}},
+		{"LaneReclassify", func(svc *SDDService, ctx context.Context, id string) error {
+			_, err := svc.LaneReclassify(ctx, model.LaneReclassifyRequest{ID: id, Lane: model.LaneStandard, By: "orchestrator"})
+			return err
+		}},
+	}
+
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := newTestSDDService(t, "project")
+			ctx := context.Background()
+			specID := fmt.Sprintf("SPEC-frozen-%02d", i+1)
+			item, _ := newFrozenSpecFixture(t, svc, ctx, specID, model.SpecStatusDraft, model.LaneTrivial, "internal/model/*.go", "")
+
+			err := tt.call(svc, ctx, specID)
+			if !errors.Is(err, model.ErrSpecFrozen) {
+				t.Fatalf("expected ErrSpecFrozen, got %v", err)
+			}
+			if !strings.Contains(err.Error(), item.ID) {
+				t.Errorf("expected the error to name %s, got %q", item.ID, err.Error())
+			}
+		})
+	}
+}
+
+// TestSpecPushback_Frozen_CreatesNoPushbackRow is SPEC-125 AC14: the gate
+// sits in loadMutableSpec, entered BEFORE SpecPushback's own CreatePushback
+// call — so a rejected pushback attempt against a frozen spec must leave
+// zero unresolved pushback rows behind, not merely fail the transition.
+func TestSpecPushback_Frozen_CreatesNoPushbackRow(t *testing.T) {
+	svc := newTestSDDService(t, "project")
+	ctx := context.Background()
+
+	_, spec := newFrozenSpecFixture(t, svc, ctx, "SPEC-frozen-pb", model.SpecStatusSpeccing, model.LaneStandard, "", "")
+
+	before, err := svc.store.GetUnresolvedPushbacks(ctx, spec.ID)
+	if err != nil {
+		t.Fatalf("GetUnresolvedPushbacks (before): %v", err)
+	}
+
+	_, err = svc.SpecPushback(ctx, model.SpecPushbackRequest{ID: spec.ID, FromAgent: "qa", Questions: []string{"q"}})
+	if !errors.Is(err, model.ErrSpecFrozen) {
+		t.Fatalf("expected ErrSpecFrozen, got %v", err)
+	}
+
+	after, err := svc.store.GetUnresolvedPushbacks(ctx, spec.ID)
+	if err != nil {
+		t.Fatalf("GetUnresolvedPushbacks (after): %v", err)
+	}
+	if len(after) != len(before) {
+		t.Errorf("expected no new pushback row: before=%d after=%d", len(before), len(after))
+	}
+}
+
+// TestSpecResolve_Frozen_ResolvesNoPushback is SPEC-125 AC15: an existing
+// unresolved pushback must NOT be marked resolved when the spec has since
+// been frozen — the gate sits before ResolvePushback is ever called.
+func TestSpecResolve_Frozen_ResolvesNoPushback(t *testing.T) {
+	svc := newTestSDDService(t, "project")
+	ctx := context.Background()
+
+	item, err := svc.BacklogAdd(ctx, model.BacklogAddRequest{Title: "Freeze after pushback", Lane: model.LaneStandard})
+	if err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if _, err := svc.BacklogRefine(ctx, model.BacklogRefineRequest{ID: item.ID, Refinement: "details"}); err != nil {
+		t.Fatalf("refine: %v", err)
+	}
+	spec, err := svc.BacklogPromote(ctx, item.ID)
+	if err != nil {
+		t.Fatalf("promote: %v", err)
+	}
+	spec, err = svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: "orchestrator"}) // draft -> speccing
+	if err != nil {
+		t.Fatalf("advance to speccing: %v", err)
+	}
+	if _, err := svc.SpecPushback(ctx, model.SpecPushbackRequest{
+		ID: spec.ID, FromAgent: "architect", Questions: []string{"what about X?"},
+	}); err != nil {
+		t.Fatalf("pushback: %v", err)
+	}
+
+	if _, err := svc.BacklogArchive(ctx, model.BacklogArchiveRequest{ID: item.ID, Reason: "abandoned while blocked"}); err != nil {
+		t.Fatalf("archive: %v", err)
+	}
+
+	before, err := svc.store.GetUnresolvedPushbacks(ctx, spec.ID)
+	if err != nil {
+		t.Fatalf("GetUnresolvedPushbacks (before resolve attempt): %v", err)
+	}
+	if len(before) != 1 {
+		t.Fatalf("expected 1 unresolved pushback before the attempt, got %d", len(before))
+	}
+
+	_, err = svc.SpecResolve(ctx, model.SpecResolveRequest{ID: spec.ID, Resolution: "no longer relevant"})
+	if !errors.Is(err, model.ErrSpecFrozen) {
+		t.Fatalf("expected ErrSpecFrozen, got %v", err)
+	}
+
+	after, err := svc.store.GetUnresolvedPushbacks(ctx, spec.ID)
+	if err != nil {
+		t.Fatalf("GetUnresolvedPushbacks (after resolve attempt): %v", err)
+	}
+	if len(after) != 1 {
+		t.Errorf("expected the pushback to remain unresolved, got %d unresolved", len(after))
+	}
+}
+
+// TestFrozenSpec_ReadOnlyPathsStillWork is SPEC-125 AC13: a frozen spec
+// stays fully readable through every read-only path — none of them enter
+// loadMutableSpec, so none of them are affected by the freeze.
+func TestFrozenSpec_ReadOnlyPathsStillWork(t *testing.T) {
+	svc := newTestSDDService(t, "project")
+	ctx := context.Background()
+
+	// A real SpecNew-created spec (proper "SPEC-NNN" ID, an initial history
+	// row) advanced once, then frozen by archiving its backlog item — the
+	// realistic shape a frozen spec has, unlike newFrozenSpecFixture's
+	// synthetic ID (which specDocPath's format guard would reject).
+	item, spec := promoteAndAdvance(t, svc, ctx, 1) // draft -> speccing
+	if _, err := svc.BacklogArchive(ctx, model.BacklogArchiveRequest{ID: item.ID, Reason: "freeze for read-only test"}); err != nil {
+		t.Fatalf("archive: %v", err)
+	}
+
+	if status, err := svc.SpecStatus(ctx, spec.ID); err != nil || status.Spec.ID != spec.ID {
+		t.Errorf("SpecStatus on a frozen spec: status=%+v err=%v", status, err)
+	}
+	if list, err := svc.SpecList(ctx, model.SpecListRequest{Project: "project"}); err != nil || len(list.Specs) != 1 {
+		t.Errorf("SpecList on a frozen spec: list=%+v err=%v", list, err)
+	}
+	if hist, err := svc.SpecHistory(ctx, spec.ID); err != nil || len(hist) == 0 {
+		t.Errorf("SpecHistory on a frozen spec: hist=%+v err=%v", hist, err)
+	}
+	if _, err := svc.SpecDocWrite(ctx, model.SpecDocWriteRequest{ID: spec.ID, Kind: model.SpecDocKindChanges, Content: "notes"}); err != nil {
+		t.Errorf("SpecDocWrite on a frozen spec: %v", err)
+	}
+	if laneStatus, err := svc.LaneStatus(ctx, spec.ID); err != nil || laneStatus.Spec.ID != spec.ID {
+		t.Errorf("LaneStatus on a frozen spec: laneStatus=%+v err=%v", laneStatus, err)
+	}
+	if _, err := svc.LaneStats(ctx, "project"); err != nil {
+		t.Errorf("LaneStats with a frozen spec present: %v", err)
+	}
+}
+
+// TestSpecVerbs_FrozenPrecedence is SPEC-125 AC21/AC22: the three-step
+// precedence DD5 fixes — argument validation, then the freeze, then a
+// verb's own state preconditions.
+func TestSpecVerbs_FrozenPrecedence(t *testing.T) {
+	t.Run("SpecReject: empty reason wins over the freeze (AC21)", func(t *testing.T) {
+		svc := newTestSDDService(t, "project")
+		ctx := context.Background()
+		_, spec := newFrozenSpecFixture(t, svc, ctx, "SPEC-frozen-rej1", model.SpecStatusQA, model.LaneStandard, "", "")
+
+		_, err := svc.SpecReject(ctx, model.SpecRejectRequest{ID: spec.ID, By: "qa"})
+		if !errors.Is(err, model.ErrReasonRequired) {
+			t.Fatalf("expected ErrReasonRequired, got %v", err)
+		}
+	})
+
+	t.Run("SpecReject: with reason, the freeze wins (AC21)", func(t *testing.T) {
+		svc := newTestSDDService(t, "project")
+		ctx := context.Background()
+		_, spec := newFrozenSpecFixture(t, svc, ctx, "SPEC-frozen-rej2", model.SpecStatusQA, model.LaneStandard, "", "")
+
+		_, err := svc.SpecReject(ctx, model.SpecRejectRequest{ID: spec.ID, Reason: "found a bug", By: "qa"})
+		if !errors.Is(err, model.ErrSpecFrozen) {
+			t.Fatalf("expected ErrSpecFrozen, got %v", err)
+		}
+	})
+
+	t.Run("LaneOverride: empty reason wins over the freeze (AC21)", func(t *testing.T) {
+		svc := newTestSDDService(t, "project")
+		ctx := context.Background()
+		_, spec := newFrozenSpecFixture(t, svc, ctx, "SPEC-frozen-lo1", model.SpecStatusAudit, model.LaneTrivial, "internal/model/*.go", "")
+
+		_, err := svc.LaneOverride(ctx, model.LaneOverrideRequest{ID: spec.ID, By: "orchestrator"})
+		if !errors.Is(err, model.ErrReasonRequired) {
+			t.Fatalf("expected ErrReasonRequired, got %v", err)
+		}
+	})
+
+	t.Run("LaneOverride: with reason, the freeze wins (AC21)", func(t *testing.T) {
+		svc := newTestSDDService(t, "project")
+		ctx := context.Background()
+		_, spec := newFrozenSpecFixture(t, svc, ctx, "SPEC-frozen-lo2", model.SpecStatusAudit, model.LaneTrivial, "internal/model/*.go", "")
+
+		_, err := svc.LaneOverride(ctx, model.LaneOverrideRequest{ID: spec.ID, Reason: "force it", By: "orchestrator"})
+		if !errors.Is(err, model.ErrSpecFrozen) {
+			t.Fatalf("expected ErrSpecFrozen, got %v", err)
+		}
+	})
+
+	t.Run("LaneAudit: freeze wins over lane/status preconditions (AC22)", func(t *testing.T) {
+		svc := newTestSDDService(t, "project")
+		ctx := context.Background()
+		// Standard lane AND not in audit status: either alone would already
+		// fail with ErrLaneMismatch or ErrInvalidTransition if the freeze
+		// gate did not run first.
+		_, spec := newFrozenSpecFixture(t, svc, ctx, "SPEC-frozen-la", model.SpecStatusImplementing, model.LaneStandard, "", "")
+
+		_, err := svc.LaneAudit(ctx, model.LaneAuditRequest{ID: spec.ID})
+		if !errors.Is(err, model.ErrSpecFrozen) {
+			t.Fatalf("expected ErrSpecFrozen, got %v", err)
+		}
+		if errors.Is(err, model.ErrLaneMismatch) || errors.Is(err, model.ErrInvalidTransition) {
+			t.Errorf("expected the freeze to win, got a state-precondition error instead: %v", err)
+		}
+	})
+
+	t.Run("LaneReclassify: freeze wins over already-standard precondition (AC22)", func(t *testing.T) {
+		svc := newTestSDDService(t, "project")
+		ctx := context.Background()
+		_, spec := newFrozenSpecFixture(t, svc, ctx, "SPEC-frozen-lr", model.SpecStatusDraft, model.LaneStandard, "", "")
+
+		_, err := svc.LaneReclassify(ctx, model.LaneReclassifyRequest{ID: spec.ID, Lane: model.LaneStandard, By: "orchestrator"})
+		if !errors.Is(err, model.ErrSpecFrozen) {
+			t.Fatalf("expected ErrSpecFrozen, got %v", err)
+		}
+		if errors.Is(err, model.ErrLaneMismatch) {
+			t.Errorf("expected the freeze to win, got ErrLaneMismatch instead: %v", err)
+		}
+	})
+}
+
+// TestSpecVerbs_NotFrozenWhenBacklogItemIsLive is SPEC-125 AC23/AC24: a spec
+// whose BacklogID is empty, or whose linked item is raw/refined/promoted
+// (never archived), is never frozen — every verb behaves exactly as before
+// this spec.
+func TestSpecVerbs_NotFrozenWhenBacklogItemIsLive(t *testing.T) {
+	t.Run("no BacklogID at all (AC23)", func(t *testing.T) {
+		svc := newTestSDDService(t, "project")
+		ctx := context.Background()
+
+		spec, err := svc.SpecNew(ctx, model.SpecNewRequest{Title: "Standalone spec", Lane: model.LaneStandard})
+		if err != nil {
+			t.Fatalf("SpecNew: %v", err)
+		}
+		if spec.BacklogID != "" {
+			t.Fatalf("expected no BacklogID, got %q", spec.BacklogID)
+		}
+
+		if _, err := svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: "orchestrator"}); err != nil {
+			t.Errorf("SpecAdvance on a spec with no BacklogID must succeed, got %v", err)
+		}
+	})
+
+	for _, status := range []model.BacklogStatus{model.BacklogStatusRaw, model.BacklogStatusRefined, model.BacklogStatusPromoted} {
+		t.Run(fmt.Sprintf("linked item is %s (AC24)", status), func(t *testing.T) {
+			svc := newTestSDDService(t, "project")
+			ctx := context.Background()
+
+			item, err := svc.BacklogAdd(ctx, model.BacklogAddRequest{Title: "Live item", Lane: model.LaneStandard})
+			if err != nil {
+				t.Fatalf("add: %v", err)
+			}
+			if status == model.BacklogStatusRaw {
+				// Already raw; nothing else to do.
+			} else if _, err := svc.BacklogRefine(ctx, model.BacklogRefineRequest{ID: item.ID, Refinement: "details"}); err != nil {
+				t.Fatalf("refine: %v", err)
+			}
+
+			var spec *model.Spec
+			if status == model.BacklogStatusPromoted {
+				spec, err = svc.BacklogPromote(ctx, item.ID)
+				if err != nil {
+					t.Fatalf("promote: %v", err)
+				}
+			} else {
+				spec, err = svc.SpecNew(ctx, model.SpecNewRequest{Title: "Manually linked", Lane: model.LaneStandard, BacklogID: item.ID})
+				if err != nil {
+					t.Fatalf("SpecNew: %v", err)
+				}
+			}
+
+			if _, err := svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: "orchestrator"}); err != nil {
+				t.Errorf("SpecAdvance on a spec linked to a %s item must succeed, got %v", status, err)
+			}
+		})
+	}
+}
+
+// TestSpecVerbs_DanglingBacklogItemFailsClosed is SPEC-125 AC25: a spec
+// whose BacklogID names a backlog item that does not exist fails closed
+// with ErrBacklogNotFound, naming the missing item — only a manual edit
+// produces this state, and loadMutableSpec must not archive-by-omission.
+func TestSpecVerbs_DanglingBacklogItemFailsClosed(t *testing.T) {
+	svc := newTestSDDService(t, "project")
+	ctx := context.Background()
+
+	spec, err := svc.SpecNew(ctx, model.SpecNewRequest{
+		Title: "Dangling backlog link", Lane: model.LaneStandard, BacklogID: "BL-does-not-exist",
+	})
+	if err != nil {
+		t.Fatalf("SpecNew: %v", err)
+	}
+
+	_, err = svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: "orchestrator"})
+	if !errors.Is(err, model.ErrBacklogNotFound) {
+		t.Fatalf("expected ErrBacklogNotFound (fail closed), got %v", err)
+	}
+	if !strings.Contains(err.Error(), "BL-does-not-exist") {
+		t.Errorf("expected the error to name the missing item, got %q", err.Error())
+	}
+}
+
 // TestBacklogArchive_SpecDoneVetoed is SPEC-125 AC4/AC5: archiving an item
 // whose linked spec already reached done is refused, naming the spec, and
 // leaves the item exactly as it was.

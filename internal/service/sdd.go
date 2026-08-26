@@ -351,6 +351,43 @@ func (svc *SDDService) BacklogArchive(ctx context.Context, req model.BacklogArch
 
 // --- SPEC METHODS ---
 
+// loadMutableSpec loads a spec that the caller intends to CHANGE. It is the
+// single definition of SPEC-125 D4's freeze: GetSpec, plus — only when the
+// spec has an originating backlog item — one lookup of that item, refusing
+// with ErrSpecFrozen when it is archived.
+//
+// Every verb that changes a spec's state MUST enter through this function
+// instead of svc.store.GetSpec. Read-only paths (SpecStatus, SpecList,
+// SpecHistory, SpecDocWrite, LaneStatus, LaneStats) and post-transition
+// re-reads deliberately do NOT: a frozen spec stays fully readable, and
+// re-reading an already-gated spec would pay the lookup twice.
+//
+// Returns exactly what store.GetSpec would (same *model.Spec, same
+// ErrSpecNotFound) when the spec is not frozen — a pure addition that
+// changes nothing for a spec without a BacklogID, or with a live one.
+func (svc *SDDService) loadMutableSpec(ctx context.Context, id string) (*model.Spec, error) {
+	spec, err := svc.store.GetSpec(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if spec.BacklogID == "" {
+		return spec, nil
+	}
+
+	item, err := svc.store.GetBacklogItem(ctx, spec.BacklogID)
+	if err != nil {
+		// Fail closed (DD5, symmetric to DD2/R3): backlog_items rows are
+		// never hard-deleted either (archiving is a status, not a delete),
+		// so a dangling link only comes from a manual edit. Without reading
+		// the item we cannot assert the spec is unfrozen.
+		return nil, fmt.Errorf("load backlog item %s: %w", spec.BacklogID, err)
+	}
+	if item.Status == model.BacklogStatusArchived {
+		return nil, fmt.Errorf("backlog item %s is archived: %w", item.ID, model.ErrSpecFrozen)
+	}
+	return spec, nil
+}
+
 // SpecNew creates a new spec with status draft.
 // Validation:
 //   - Title must not be empty (ErrTitleRequired)
@@ -425,7 +462,7 @@ func (svc *SDDService) SpecNew(ctx context.Context, req model.SpecNewRequest) (*
 //     creates the spec directory and copies spec-template.md into it.
 //   - done: saves a completion memory via MemoryService (when configured).
 func (svc *SDDService) SpecAdvance(ctx context.Context, req model.SpecAdvanceRequest) (*model.Spec, error) {
-	spec, err := svc.store.GetSpec(ctx, req.ID)
+	spec, err := svc.loadMutableSpec(ctx, req.ID)
 	if err != nil {
 		return nil, fmt.Errorf("service: spec advance: get: %w", err)
 	}
@@ -767,7 +804,7 @@ func (svc *SDDService) saveCompletionMemory(ctx context.Context, spec *model.Spe
 // to needs_grill status. The spec must be in a state that allows the
 // needs_grill transition (speccing, implementing, or qa).
 func (svc *SDDService) SpecPushback(ctx context.Context, req model.SpecPushbackRequest) (*model.Spec, error) {
-	spec, err := svc.store.GetSpec(ctx, req.ID)
+	spec, err := svc.loadMutableSpec(ctx, req.ID)
 	if err != nil {
 		return nil, fmt.Errorf("service: spec pushback: get: %w", err)
 	}
@@ -815,7 +852,7 @@ func (svc *SDDService) SpecReject(ctx context.Context, req model.SpecRejectReque
 		return nil, model.ErrReasonRequired
 	}
 
-	spec, err := svc.store.GetSpec(ctx, req.ID)
+	spec, err := svc.loadMutableSpec(ctx, req.ID)
 	if err != nil {
 		return nil, fmt.Errorf("service: spec reject: get: %w", err)
 	}
@@ -1062,7 +1099,7 @@ func listWorkingTreeFiles(repoDir string) ([]string, error) {
 // SpecResolve resolves the oldest unresolved pushback and transitions the spec
 // back to speccing. The spec must be in needs_grill status.
 func (svc *SDDService) SpecResolve(ctx context.Context, req model.SpecResolveRequest) (*model.Spec, error) {
-	spec, err := svc.store.GetSpec(ctx, req.ID)
+	spec, err := svc.loadMutableSpec(ctx, req.ID)
 	if err != nil {
 		return nil, fmt.Errorf("service: spec resolve: get: %w", err)
 	}
@@ -1229,7 +1266,7 @@ func nextForwardStatusForLane(current model.SpecStatus, l model.Lane) (model.Spe
 // rationale→implementing. Returns the spec in implementing status.
 // Returns ErrLaneMismatch when the spec is not on the trivial lane.
 func (svc *SDDService) SpecQuick(ctx context.Context, req model.SpecQuickRequest) (*model.Spec, error) {
-	spec, err := svc.store.GetSpec(ctx, req.ID)
+	spec, err := svc.loadMutableSpec(ctx, req.ID)
 	if err != nil {
 		return nil, fmt.Errorf("service: spec quick: get: %w", err)
 	}
@@ -1300,7 +1337,7 @@ func (svc *SDDService) SpecQuick(ctx context.Context, req model.SpecQuickRequest
 // Every run — pass and fail — inserts a row in lane_audits so LaneStatus can
 // read the latest outcome without parsing spec_history text.
 func (svc *SDDService) LaneAudit(ctx context.Context, req model.LaneAuditRequest) (*model.LaneAuditResult, error) {
-	spec, err := svc.store.GetSpec(ctx, req.ID)
+	spec, err := svc.loadMutableSpec(ctx, req.ID)
 	if err != nil {
 		return nil, fmt.Errorf("service: lane audit: get: %w", err)
 	}
@@ -1586,7 +1623,7 @@ func lanePublicSymbolChanges(delta quality.SymbolDelta) []string {
 // Upgrading from standard to trivial is forbidden. Lane cannot be changed
 // after implementing has started (ErrLaneImmutable).
 func (svc *SDDService) LaneReclassify(ctx context.Context, req model.LaneReclassifyRequest) (*model.Spec, error) {
-	spec, err := svc.store.GetSpec(ctx, req.ID)
+	spec, err := svc.loadMutableSpec(ctx, req.ID)
 	if err != nil {
 		return nil, fmt.Errorf("service: lane reclassify: get: %w", err)
 	}
@@ -1637,7 +1674,7 @@ func (svc *SDDService) LaneOverride(ctx context.Context, req model.LaneOverrideR
 		return nil, model.ErrReasonRequired
 	}
 
-	spec, err := svc.store.GetSpec(ctx, req.ID)
+	spec, err := svc.loadMutableSpec(ctx, req.ID)
 	if err != nil {
 		return nil, fmt.Errorf("service: lane override: get: %w", err)
 	}

@@ -429,3 +429,124 @@ func TestLaneAudit_Absorbed_RequiresCertificate(t *testing.T) {
 		t.Errorf("Passed = false, want true: %+v", result)
 	}
 }
+
+// --- SPEC-125: freezing a spec via its archived backlog item ---
+//
+// These three tests exercise the exact defect the owner's pushback (spec.md
+// §3) widened D4 to catch: LaneAudit/LaneOverride reaching `done` — and
+// saving a completion memory asserting the work finished — over a spec
+// whose backlog item was archived (i.e. the work was discarded). Because
+// loadMutableSpec's freeze gate is the FIRST thing each of these three
+// verbs does, none of the git/memory/lane_audits side effects below it ever
+// run: there is no repo fixture here because LaneAudit/LaneOverride never
+// reach the code that would need one.
+
+// TestLaneAudit_Frozen_NoCompletionMemoryNoAuditRow is SPEC-125 AC16/AC17/
+// AC18: a frozen spec's LaneAudit call saves no completion memory, inserts
+// no lane_audits row, and leaves the spec's status unchanged.
+func TestLaneAudit_Frozen_NoCompletionMemoryNoAuditRow(t *testing.T) {
+	svc := newTestSDDServiceWithMemory(t, "project")
+	ctx := context.Background()
+
+	_, spec := newFrozenSpecFixture(t, svc, ctx, "SPEC-frozen-audit", model.SpecStatusAudit, model.LaneTrivial, "internal/model/*.go", "")
+
+	before, err := svc.memorySvc.Search(ctx, model.SearchRequest{Query: spec.ID, Project: "project"})
+	if err != nil {
+		t.Fatalf("Search (before): %v", err)
+	}
+
+	_, err = svc.LaneAudit(ctx, model.LaneAuditRequest{ID: spec.ID})
+	if !errors.Is(err, model.ErrSpecFrozen) {
+		t.Fatalf("expected ErrSpecFrozen, got %v", err)
+	}
+
+	after, err := svc.memorySvc.Search(ctx, model.SearchRequest{Query: spec.ID, Project: "project"})
+	if err != nil {
+		t.Fatalf("Search (after): %v", err)
+	}
+	if len(after.Results) != len(before.Results) {
+		t.Errorf("expected no completion memory saved: before=%d after=%d", len(before.Results), len(after.Results))
+	}
+
+	latest, err := svc.store.LatestLaneAudit(ctx, spec.ID)
+	if err != nil {
+		t.Fatalf("LatestLaneAudit: %v", err)
+	}
+	if latest != nil {
+		t.Errorf("expected no lane_audits row for a frozen spec, got %+v", latest)
+	}
+
+	updated, err := svc.store.GetSpec(ctx, spec.ID)
+	if err != nil {
+		t.Fatalf("GetSpec: %v", err)
+	}
+	if updated.Status != model.SpecStatusAudit {
+		t.Errorf("expected status unchanged (audit), got %s", updated.Status)
+	}
+}
+
+// TestLaneOverride_Frozen_NoMemoriesNoStatusChange is SPEC-125 AC19: a
+// frozen spec's LaneOverride call saves neither the override memory nor the
+// completion memory, and leaves the spec's status unchanged.
+func TestLaneOverride_Frozen_NoMemoriesNoStatusChange(t *testing.T) {
+	svc := newTestSDDServiceWithMemory(t, "project")
+	ctx := context.Background()
+
+	_, spec := newFrozenSpecFixture(t, svc, ctx, "SPEC-frozen-override", model.SpecStatusAudit, model.LaneTrivial, "internal/model/*.go", "")
+
+	before, err := svc.memorySvc.Search(ctx, model.SearchRequest{Query: spec.ID, Project: "project"})
+	if err != nil {
+		t.Fatalf("Search (before): %v", err)
+	}
+
+	_, err = svc.LaneOverride(ctx, model.LaneOverrideRequest{ID: spec.ID, Reason: "force it through", By: "orchestrator"})
+	if !errors.Is(err, model.ErrSpecFrozen) {
+		t.Fatalf("expected ErrSpecFrozen, got %v", err)
+	}
+
+	after, err := svc.memorySvc.Search(ctx, model.SearchRequest{Query: spec.ID, Project: "project"})
+	if err != nil {
+		t.Fatalf("Search (after): %v", err)
+	}
+	if len(after.Results) != len(before.Results) {
+		t.Errorf("expected no override/completion memory saved: before=%d after=%d", len(before.Results), len(after.Results))
+	}
+
+	updated, err := svc.store.GetSpec(ctx, spec.ID)
+	if err != nil {
+		t.Fatalf("GetSpec: %v", err)
+	}
+	if updated.Status != model.SpecStatusAudit {
+		t.Errorf("expected status unchanged (audit), got %s", updated.Status)
+	}
+}
+
+// TestLaneReclassify_Frozen_LaneAndScopeUnchanged is SPEC-125 AC20: the
+// direct proof that the freeze gate sits BEFORE any effect — including
+// UpdateSpecLaneScope, which LaneReclassify calls eight lines before its
+// own status transition (sdd.go). A gate placed after that call would leave
+// lane/scope changed even though the transition itself was refused.
+func TestLaneReclassify_Frozen_LaneAndScopeUnchanged(t *testing.T) {
+	svc := newTestSDDService(t, "project")
+	ctx := context.Background()
+
+	_, spec := newFrozenSpecFixture(t, svc, ctx, "SPEC-frozen-reclassify", model.SpecStatusDraft, model.LaneTrivial, "internal/model/*.go", "")
+
+	_, err := svc.LaneReclassify(ctx, model.LaneReclassifyRequest{
+		ID: spec.ID, Lane: model.LaneStandard, Scope: "internal/**", By: "orchestrator",
+	})
+	if !errors.Is(err, model.ErrSpecFrozen) {
+		t.Fatalf("expected ErrSpecFrozen, got %v", err)
+	}
+
+	updated, err := svc.store.GetSpec(ctx, spec.ID)
+	if err != nil {
+		t.Fatalf("GetSpec: %v", err)
+	}
+	if updated.Lane != model.LaneTrivial {
+		t.Errorf("expected lane unchanged (trivial), got %s", updated.Lane)
+	}
+	if updated.Scope != "internal/model/*.go" {
+		t.Errorf("expected scope unchanged, got %q", updated.Scope)
+	}
+}
