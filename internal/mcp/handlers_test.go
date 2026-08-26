@@ -2548,3 +2548,205 @@ func TestHandleLaneVerbs_FrozenSpec_ReturnsInvalidParams(t *testing.T) {
 		})
 	}
 }
+
+// TestHandleSpecStatus_FrozenKeyPresenceByFreeze is SPEC-126 AC28: spec_status
+// exposes "frozen" (state/backlog_id/reason) only when the spec's originating
+// backlog item was archived — absent, not null, for a live spec.
+func TestHandleSpecStatus_FrozenKeyPresenceByFreeze(t *testing.T) {
+	srv := newTestServerWithSDD(t)
+
+	t.Run("live spec: frozen is absent", func(t *testing.T) {
+		newResp := process(t, srv, "tools/call", 1, ToolCallParams{
+			Name:      "spec_new",
+			Arguments: mustMarshal(t, map[string]any{"title": "Live spec", "lane": "standard"}),
+		})
+		if newResp.Error != nil {
+			t.Fatalf("spec_new: %v", newResp.Error.Message)
+		}
+		var spec struct {
+			ID string `json:"id"`
+		}
+		unmarshalToolText(t, newResp, &spec)
+
+		statusResp := process(t, srv, "tools/call", 2, ToolCallParams{
+			Name:      "spec_status",
+			Arguments: mustMarshal(t, map[string]any{"id": spec.ID}),
+		})
+		if statusResp.Error != nil {
+			t.Fatalf("spec_status: %v", statusResp.Error.Message)
+		}
+		var raw map[string]any
+		unmarshalToolText(t, statusResp, &raw)
+		if _, ok := raw["frozen"]; ok {
+			t.Errorf("expected 'frozen' ABSENT for a live spec, got %#v", raw["frozen"])
+		}
+	})
+
+	t.Run("archived item: frozen is present with state/backlog_id/reason", func(t *testing.T) {
+		addResp := process(t, srv, "tools/call", 3, ToolCallParams{
+			Name:      "backlog_add",
+			Arguments: mustMarshal(t, map[string]any{"title": "AC28 fixture", "lane": "standard"}),
+		})
+		if addResp.Error != nil {
+			t.Fatalf("backlog_add: %v", addResp.Error.Message)
+		}
+		var added struct {
+			Item struct {
+				ID string `json:"id"`
+			} `json:"item"`
+		}
+		unmarshalToolText(t, addResp, &added)
+
+		if resp := process(t, srv, "tools/call", 4, ToolCallParams{
+			Name:      "backlog_refine",
+			Arguments: mustMarshal(t, map[string]any{"id": added.Item.ID, "refinement": "details"}),
+		}); resp.Error != nil {
+			t.Fatalf("backlog_refine: %v", resp.Error.Message)
+		}
+
+		promoteResp := process(t, srv, "tools/call", 5, ToolCallParams{
+			Name:      "backlog_promote",
+			Arguments: mustMarshal(t, map[string]any{"id": added.Item.ID}),
+		})
+		if promoteResp.Error != nil {
+			t.Fatalf("backlog_promote: %v", promoteResp.Error.Message)
+		}
+		var spec struct {
+			ID string `json:"id"`
+		}
+		unmarshalToolText(t, promoteResp, &spec)
+
+		const reason = "AC28 fixture reason"
+		archiveResp := process(t, srv, "tools/call", 6, ToolCallParams{
+			Name:      "backlog_archive",
+			Arguments: mustMarshal(t, map[string]any{"id": added.Item.ID, "reason": reason}),
+		})
+		if archiveResp.Error != nil {
+			t.Fatalf("backlog_archive: %v", archiveResp.Error.Message)
+		}
+
+		statusResp := process(t, srv, "tools/call", 7, ToolCallParams{
+			Name:      "spec_status",
+			Arguments: mustMarshal(t, map[string]any{"id": spec.ID}),
+		})
+		if statusResp.Error != nil {
+			t.Fatalf("spec_status: %v", statusResp.Error.Message)
+		}
+		var raw map[string]any
+		unmarshalToolText(t, statusResp, &raw)
+		frozen, ok := raw["frozen"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected 'frozen' as an object, got %#v", raw["frozen"])
+		}
+		if frozen["state"] != "archived" {
+			t.Errorf("frozen.state = %v, want archived", frozen["state"])
+		}
+		if frozen["backlog_id"] != added.Item.ID {
+			t.Errorf("frozen.backlog_id = %v, want %q", frozen["backlog_id"], added.Item.ID)
+		}
+		if frozen["reason"] != reason {
+			t.Errorf("frozen.reason = %v, want %q", frozen["reason"], reason)
+		}
+	})
+}
+
+// TestHandleSpecList_FrozenMapByFreeze is SPEC-126 AC11/AC29: spec_list
+// exposes "frozen" as an object keyed by spec ID, present only when at least
+// one returned spec can no longer move, and absent entirely (not an empty
+// object) when none is.
+func TestHandleSpecList_FrozenMapByFreeze(t *testing.T) {
+	srv := newTestServerWithSDD(t)
+
+	t.Run("no spec frozen: frozen key is absent", func(t *testing.T) {
+		newResp := process(t, srv, "tools/call", 1, ToolCallParams{
+			Name:      "spec_new",
+			Arguments: mustMarshal(t, map[string]any{"title": "Live spec", "lane": "standard"}),
+		})
+		if newResp.Error != nil {
+			t.Fatalf("spec_new: %v", newResp.Error.Message)
+		}
+
+		listResp := process(t, srv, "tools/call", 2, ToolCallParams{
+			Name:      "spec_list",
+			Arguments: mustMarshal(t, map[string]any{}),
+		})
+		if listResp.Error != nil {
+			t.Fatalf("spec_list: %v", listResp.Error.Message)
+		}
+		var raw map[string]any
+		unmarshalToolText(t, listResp, &raw)
+		if _, ok := raw["frozen"]; ok {
+			t.Errorf("expected 'frozen' ABSENT when nothing is frozen, got %#v", raw["frozen"])
+		}
+	})
+
+	t.Run("one spec frozen: frozen keyed by spec ID, live spec absent from it", func(t *testing.T) {
+		liveResp := process(t, srv, "tools/call", 3, ToolCallParams{
+			Name:      "spec_new",
+			Arguments: mustMarshal(t, map[string]any{"title": "Another live spec", "lane": "standard"}),
+		})
+		if liveResp.Error != nil {
+			t.Fatalf("spec_new (live): %v", liveResp.Error.Message)
+		}
+		var liveSpec struct {
+			ID string `json:"id"`
+		}
+		unmarshalToolText(t, liveResp, &liveSpec)
+
+		addResp := process(t, srv, "tools/call", 4, ToolCallParams{
+			Name:      "backlog_add",
+			Arguments: mustMarshal(t, map[string]any{"title": "AC29 fixture", "lane": "standard"}),
+		})
+		if addResp.Error != nil {
+			t.Fatalf("backlog_add: %v", addResp.Error.Message)
+		}
+		var added struct {
+			Item struct {
+				ID string `json:"id"`
+			} `json:"item"`
+		}
+		unmarshalToolText(t, addResp, &added)
+
+		frozenNewResp := process(t, srv, "tools/call", 5, ToolCallParams{
+			Name: "spec_new",
+			Arguments: mustMarshal(t, map[string]any{
+				"title": "To-be-frozen spec", "lane": "standard", "backlog_id": added.Item.ID,
+			}),
+		})
+		if frozenNewResp.Error != nil {
+			t.Fatalf("spec_new (to be frozen): %v", frozenNewResp.Error.Message)
+		}
+		var frozenSpec struct {
+			ID string `json:"id"`
+		}
+		unmarshalToolText(t, frozenNewResp, &frozenSpec)
+
+		archiveResp := process(t, srv, "tools/call", 6, ToolCallParams{
+			Name:      "backlog_archive",
+			Arguments: mustMarshal(t, map[string]any{"id": added.Item.ID, "reason": "AC29 fixture reason"}),
+		})
+		if archiveResp.Error != nil {
+			t.Fatalf("backlog_archive: %v", archiveResp.Error.Message)
+		}
+
+		listResp := process(t, srv, "tools/call", 7, ToolCallParams{
+			Name:      "spec_list",
+			Arguments: mustMarshal(t, map[string]any{}),
+		})
+		if listResp.Error != nil {
+			t.Fatalf("spec_list: %v", listResp.Error.Message)
+		}
+		var raw map[string]any
+		unmarshalToolText(t, listResp, &raw)
+		frozenMap, ok := raw["frozen"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected 'frozen' as an object, got %#v", raw["frozen"])
+		}
+		if _, ok := frozenMap[frozenSpec.ID]; !ok {
+			t.Errorf("expected %s in the frozen map, got %#v", frozenSpec.ID, frozenMap)
+		}
+		if _, ok := frozenMap[liveSpec.ID]; ok {
+			t.Errorf("expected %s NOT in the frozen map, got %#v", liveSpec.ID, frozenMap)
+		}
+	})
+}

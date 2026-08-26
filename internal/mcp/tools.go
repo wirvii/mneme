@@ -618,8 +618,11 @@ func allTools() []ToolDefinition {
 			},
 		},
 		{
-			Name:        "spec_status",
-			Description: "Get the full status of a spec including history and pushbacks.",
+			Name: "spec_status",
+			Description: "Get the full status of a spec including history and pushbacks. `frozen` is present " +
+				"(with `state`, `backlog_id`, and `reason` when known) only when the spec's originating " +
+				"backlog item was archived or is missing — either way the spec can no longer change status, " +
+				"though it stays fully readable. The key is absent, not null, when the spec can still move.",
 			InputSchema: map[string]any{
 				"type":     "object",
 				"required": []string{"id"},
@@ -721,7 +724,9 @@ func allTools() []ToolDefinition {
 		{
 			Name: "spec_list",
 			Description: "List specs for the current project. `total` is the number of matches before " +
-				"`limit` was applied.",
+				"`limit` was applied. `frozen` is an object keyed by spec ID naming which of the returned " +
+				"specs can no longer change status (their originating backlog item was archived or is " +
+				"missing); the key is absent from the response entirely when none is frozen.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
