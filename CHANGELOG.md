@@ -28,6 +28,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   new backlog item that references the archived one, never to resurrect
   the old one.
 
+- **The archive reason and a frozen spec's status are now both visible,
+  not just persisted (SPEC-126).** `mneme backlog list`/`backlog get` print
+  the archive reason for an archived item, which used to only appear with
+  `--json`. `mneme spec list`/`spec status`, `mneme status`, and the
+  `spec_status`/`spec_list` MCP tools now show when a spec can no longer
+  change status because its originating backlog item was archived (or is
+  missing from the database entirely) — a frozen spec used to look
+  identical to a live one everywhere except at the moment it was archived.
+  Both changes are purely additive: a caller that never looks at the new
+  output or the new `frozen` field sees no difference.
+
 ## [v1.40.1] — 2026-08-15 — Codex stable installation hotfix
 
 ### Fixed
