@@ -22,10 +22,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   eight verbs that change a spec's status — `spec_advance`,
   `spec_pushback`, `spec_reject`, `spec_resolve`, `spec_quick`,
   `lane_audit`, `lane_reclassify`, `lane_override` — can move it again,
-  though the spec stays fully readable (`spec_status`, `spec_list`,
-  `spec_doc_write`, `lane_status`). This is irreversible: there is no
-  unarchive. The agreed way back is to create a new backlog item that
-  references the archived one, never to resurrect the old one.
+  though the spec stays fully readable and documentable (`spec_status`,
+  `spec_list`, `spec_doc_write`, `lane_status`, `lane_stats`). This is
+  irreversible: there is no unarchive. The agreed way back is to create a
+  new backlog item that references the archived one, never to resurrect
+  the old one.
 
 ## [v1.40.1] — 2026-08-15 — Codex stable installation hotfix
 
