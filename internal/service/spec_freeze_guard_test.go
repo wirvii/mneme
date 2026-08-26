@@ -3,6 +3,18 @@
 // tree, that every function mutating a spec's status enters through
 // loadMutableSpec (the SPEC-125 D4 freeze gate), and that the inventory
 // below is exact — neither missing a verb nor carrying a stale one.
+//
+// SPEC-126 DD3 widens this file's job: it ALSO proves that exactly two
+// functions in sdd.go know what an archived backlog item is —
+// BacklogArchive (the veto) and specFreeze (the single freeze predicate) —
+// so a listing (spec_list) can never disagree with a verb (loadMutableSpec)
+// about whether a spec is frozen.
+//
+// Limit, inherited from SPEC-125 R4/R6: today this guard parses ONE file,
+// internal/service/sdd.go. A third definition born in another file of this
+// package would not be seen. It is written to admit a list of files rather
+// than a single path so widening it later is a one-line change, not a
+// rewrite.
 package service
 
 import (
@@ -116,6 +128,178 @@ func funcCallsSelector(fn *ast.FuncDecl, name string) bool {
 	return found
 }
 
+// backlogArchivedReferences is the CLOSED inventory of every function in
+// internal/service/sdd.go that references the identifier
+// model.BacklogStatusArchived at all — comparison OR assignment, not just a
+// call (SPEC-126 DD3). Exactly TWO are admissible, and they answer two
+// different questions: BacklogArchive is the veto that refuses a repeat
+// archive AND the assignment that performs one; specFreeze is the single
+// place that DECIDES whether a spec is frozen because of it. A third
+// function referencing this identifier would be a second, undeclared
+// definition of "archived" — exactly what would let a listing and a verb
+// disagree.
+var backlogArchivedReferences = map[string]string{
+	"BacklogArchive": "SPEC-125 D3's veto (refuse to re-archive) plus the assignment that archives",
+	"specFreeze":     "SPEC-126 DD3: the single definition of a spec's freeze",
+}
+
+// sddAllFuncs parses sdd.go and returns EVERY top-level function
+// declaration, methods AND free functions alike, keyed by name. It is a
+// superset of sddServiceMethods — needed here because specFreeze (SPEC-126
+// DD3) is a free function with no receiver, so sddServiceMethods' *SDDService
+// filter would never see it.
+//
+// sddServiceMethods itself is left untouched: the three SPEC-125 guard
+// tests read through it exactly as before this spec.
+func sddAllFuncs(t *testing.T) map[string]*ast.FuncDecl {
+	t.Helper()
+
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, sddGoPath(t), nil, 0)
+	if err != nil {
+		t.Fatalf("spec freeze guard: parse sdd.go: %v", err)
+	}
+
+	funcs := make(map[string]*ast.FuncDecl)
+	for _, decl := range f.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok {
+			continue
+		}
+		funcs[fn.Name.Name] = fn
+	}
+	return funcs
+}
+
+// funcReferencesIdent reports whether fn's body contains ANY reference to
+// pkg.name — as opposed to funcCallsSelector, which only matches CALLS.
+// BacklogArchive uses model.BacklogStatusArchived in both an equality
+// comparison and a plain field assignment; neither is a call, so
+// funcCallsSelector cannot see either of them. ast.Inspect walks every node
+// in the body regardless of the statement kind it sits in, so this matches
+// both forms (and any other, e.g. a future switch case) without needing to
+// enumerate statement types.
+func funcReferencesIdent(fn *ast.FuncDecl, pkg, name string) bool {
+	if fn.Body == nil {
+		return false
+	}
+	found := false
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		if found {
+			return false
+		}
+		sel, ok := n.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		ident, ok := sel.X.(*ast.Ident)
+		if !ok || ident.Name != pkg || sel.Sel.Name != name {
+			return true
+		}
+		found = true
+		return false
+	})
+	return found
+}
+
+// TestBacklogArchivedReferences_InventoryIsExact is SPEC-126 AC22: the set
+// of sdd.go functions that reference model.BacklogStatusArchived must be
+// IDENTICAL, in both directions, to backlogArchivedReferences' keys. A third
+// function that starts comparing against it fails until declared; a
+// declared name that stops referencing it fails too — the same two-way,
+// exact-set shape TestSpecStatusMutators_InventoryIsExact already uses
+// above, so an empty or partial set can never coincide with the two real
+// names (SPEC-125 DD6's anti-vacuity argument, restated for this pair).
+func TestBacklogArchivedReferences_InventoryIsExact(t *testing.T) {
+	funcs := sddAllFuncs(t)
+
+	var actual []string
+	for name, fn := range funcs {
+		if funcReferencesIdent(fn, "model", "BacklogStatusArchived") {
+			actual = append(actual, name)
+		}
+	}
+	sort.Strings(actual)
+
+	declared := make([]string, 0, len(backlogArchivedReferences))
+	for name := range backlogArchivedReferences {
+		declared = append(declared, name)
+	}
+	sort.Strings(declared)
+
+	actualSet := make(map[string]bool, len(actual))
+	for _, name := range actual {
+		actualSet[name] = true
+	}
+	declaredSet := make(map[string]bool, len(declared))
+	for _, name := range declared {
+		declaredSet[name] = true
+	}
+
+	for _, name := range actual {
+		if !declaredSet[name] {
+			t.Errorf("sdd.go's %s references model.BacklogStatusArchived, but backlogArchivedReferences does not "+
+				"declare it — a new function that knows what an archived item is must be added to the inventory "+
+				"(SPEC-126 DD3), or the reference removed", name)
+		}
+	}
+	for _, name := range declared {
+		if !actualSet[name] {
+			t.Errorf("backlogArchivedReferences declares %s, but sdd.go's %s no longer references "+
+				"model.BacklogStatusArchived — remove the stale entry (SPEC-126 DD3)", name, name)
+		}
+	}
+}
+
+// TestSpecList_NoPerSpecBacklogQuery is SPEC-126 AC14: SpecList's body must
+// never call GetBacklogItem — that would be the N+1 R4 forbids (up to 50 on
+// an MCP page, up to 127 unwindowed in this repo today) — and its call to
+// BacklogStatusIndex must not sit inside any for/range statement, so a page
+// of N specs never costs more than ONE extra query regardless of N.
+func TestSpecList_NoPerSpecBacklogQuery(t *testing.T) {
+	funcs := sddAllFuncs(t)
+	fn, ok := funcs["SpecList"]
+	if !ok {
+		t.Fatal("sdd.go has no SpecList function")
+	}
+
+	if funcCallsSelector(fn, "GetBacklogItem") {
+		t.Error("SpecList calls GetBacklogItem — that is the per-spec N+1 SPEC-126 DD4 forbids")
+	}
+
+	// For every for/range statement anywhere in SpecList's body, look INSIDE
+	// that loop's own body for a BacklogStatusIndex call. This scopes the
+	// search to "inside a loop" correctly (a call found only after a loop,
+	// as a sibling statement, must not trip this check).
+	callInsideLoop := false
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		var loopBody ast.Node
+		switch s := n.(type) {
+		case *ast.ForStmt:
+			loopBody = s.Body
+		case *ast.RangeStmt:
+			loopBody = s.Body
+		default:
+			return true
+		}
+		ast.Inspect(loopBody, func(inner ast.Node) bool {
+			call, ok := inner.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if ok && sel.Sel.Name == "BacklogStatusIndex" {
+				callInsideLoop = true
+			}
+			return true
+		})
+		return true
+	})
+	if callInsideLoop {
+		t.Error("SpecList calls BacklogStatusIndex inside a for/range — that reintroduces the N+1 SPEC-126 DD4 forbids")
+	}
+}
+
 // mutatorFunctionNames returns the sorted names of every *SDDService method
 // in sdd.go whose body calls UpdateSpecStatus — the ACTUAL set the file
 // contains, independent of specStatusMutators.
@@ -225,3 +409,22 @@ func TestSpecStatusMutators_TodayAllEightAreTrue(t *testing.T) {
 //     makes an empty or partial inventory structurally unable to pass
 //     (AC27): with only 7 (or 9) names, an exact two-way set comparison
 //     against sdd.go's real 8 mutators can never agree.
+//
+// Mutation guards (SPEC-126 AC23, manually verified during implementation,
+// same pattern as the SPEC-125 block above — all three reverted byte for
+// byte immediately after each check):
+//
+//   - Adding a third function in sdd.go that references
+//     model.BacklogStatusArchived (verified against SpecHistory: a plain
+//     `_ = someStatus == model.BacklogStatusArchived` inside its body) turns
+//     TestBacklogArchivedReferences_InventoryIsExact red, naming SpecHistory
+//     as an undeclared referencer.
+//   - Removing the "specFreeze" entry from backlogArchivedReferences turns
+//     the same test red, naming specFreeze as an undeclared referencer —
+//     the other direction of the same two-way comparison.
+//   - Rewriting SpecList to call svc.store.GetBacklogItem(ctx,
+//     spec.BacklogID) inside its decoration loop turns
+//     TestSpecList_NoPerSpecBacklogQuery red, naming the GetBacklogItem call
+//     directly (the funcCallsSelector check fires before the loop-scoped
+//     one even runs, since ANY GetBacklogItem call in the function body —
+//     inside a loop or not — is already the N+1 DD4 forbids).
