@@ -89,6 +89,27 @@ var ErrBacklogNotRefined = errors.New("backlog item must be refined before promo
 // sentinel per operation is the established pattern here.
 var ErrBacklogNotRefinable = errors.New("backlog item cannot be refined in its current status")
 
+// ErrBacklogAlreadyArchived is returned when archiving an item that is
+// already archived (SPEC-125 D3). Today the second call overwrites
+// archive_reason with no trace, so the ORIGINAL decision — the only thing an
+// archived item carries — is silently lost. Refusing is strictly better than
+// a no-op: a no-op would hide that the caller believed it was recording
+// something.
+var ErrBacklogAlreadyArchived = errors.New("backlog item is already archived")
+
+// ErrBacklogSpecCompleted is returned when archiving an item whose linked
+// spec is already done (SPEC-125 D2). A backlog item has no "done" state of
+// its own — its spec has it. Archiving means "discarded"; asserting that of
+// delivered work leaves the record lying.
+var ErrBacklogSpecCompleted = errors.New("backlog item cannot be archived: its spec is already done")
+
+// ErrSpecFrozen is returned by every spec verb that changes state when the
+// spec's originating backlog item has been archived (SPEC-125 D4). The spec
+// stays fully readable — status, list, history, doc write — it simply can no
+// longer move. The wrapping message always names the archived BL, since the
+// remedy lives there, not in the spec.
+var ErrSpecFrozen = errors.New("spec is frozen: its backlog item was archived")
+
 // ErrQualityGateFailed is returned when a spec fails a quality gate check.
 var ErrQualityGateFailed = errors.New("quality gate check failed")
 

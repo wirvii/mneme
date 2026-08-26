@@ -350,6 +350,34 @@ type BacklogGetResponse struct {
 	Refinements []*BacklogRefinement `json:"refinements"`
 }
 
+// BacklogArchiveRequest is the input for archiving a backlog item. Reason is
+// mandatory (SPEC-125 D1) — the service, not the CLI, is what enforces it.
+type BacklogArchiveRequest struct {
+	ID     string `json:"id"`
+	Reason string `json:"reason"`
+}
+
+// FrozenSpec names the spec an archive froze, and the state it was left in
+// (SPEC-125 D5). Deliberately NOT a *Spec: what the caller gets back is a
+// spec it can no longer act on, and handing over the full live-looking
+// object would invite treating it as one.
+type FrozenSpec struct {
+	ID     string     `json:"id"`
+	Title  string     `json:"title"`
+	Status SpecStatus `json:"status"`
+}
+
+// BacklogArchiveResult is what an archive returns. FrozenSpec == nil means
+// nothing was frozen — the item had no spec, and that is the common case.
+//
+// Returned BY VALUE, like BacklogListResponse/BacklogGetResponse (SPEC-109
+// D10): the zero value is a safe empty result instead of a nil dereference
+// for a caller that discards the error.
+type BacklogArchiveResult struct {
+	Item       *BacklogItem `json:"item"`
+	FrozenSpec *FrozenSpec  `json:"frozen_spec,omitempty"`
+}
+
 // --- SPEC STATE MACHINE ---
 
 // SpecStatus represents the lifecycle state of a spec.
