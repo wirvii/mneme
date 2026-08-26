@@ -1202,10 +1202,32 @@ func (svc *SDDService) SpecStatus(ctx context.Context, id string) (*model.SpecSt
 		return nil, fmt.Errorf("service: spec status: pushbacks: %w", err)
 	}
 
+	// SPEC-126 DD5: SpecStatus does NOT enter through loadMutableSpec — that
+	// would turn a read of a frozen spec into an error, breaking SPEC-125
+	// AC13 (a frozen spec stays fully readable). It makes its own directed
+	// GetBacklogItem lookup instead, and divides the result the same way
+	// DD5 requires: an absent item reports as SpecFreezeMissing WITHOUT
+	// failing the call, but any OTHER store error propagates — a real
+	// database failure must never disguise itself as "item not found".
+	var frozen *model.SpecFreeze
+	if spec.BacklogID != "" {
+		item, itemErr := svc.store.GetBacklogItem(ctx, spec.BacklogID)
+		switch {
+		case itemErr == nil:
+			entry := model.BacklogIndexEntry{Status: item.Status, ArchiveReason: item.ArchiveReason}
+			frozen = specFreeze(spec, entry, true)
+		case errors.Is(itemErr, model.ErrBacklogNotFound):
+			frozen = specFreeze(spec, model.BacklogIndexEntry{}, false)
+		default:
+			return nil, fmt.Errorf("service: spec status: backlog item: %w", itemErr)
+		}
+	}
+
 	return &model.SpecStatusResponse{
 		Spec:      spec,
 		History:   history,
 		Pushbacks: pushbacks,
+		Frozen:    frozen,
 	}, nil
 }
 

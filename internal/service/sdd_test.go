@@ -1511,6 +1511,121 @@ func TestSpecStatus(t *testing.T) {
 	}
 }
 
+// TestSpecStatus_ReportsFreeze is SPEC-126 AC6-AC9: spec_status reports why
+// a spec can no longer move, and — unlike loadMutableSpec — NEVER fails the
+// read because of it: a frozen spec (or one whose link is dangling) stays
+// fully readable (SPEC-125 AC13).
+func TestSpecStatus_ReportsFreeze(t *testing.T) {
+	t.Run("archived item (AC6)", func(t *testing.T) {
+		svc := newTestSDDService(t, "project")
+		ctx := context.Background()
+		item, spec := newFrozenSpecFixture(t, svc, ctx, "SPEC-frozen-status", model.SpecStatusImplementing, model.LaneStandard, "", "")
+
+		resp, err := svc.SpecStatus(ctx, spec.ID)
+		if err != nil {
+			t.Fatalf("SpecStatus: %v", err)
+		}
+		if resp.Frozen == nil {
+			t.Fatal("expected Frozen != nil")
+		}
+		if resp.Frozen.State != model.SpecFreezeArchived {
+			t.Errorf("State: got %q, want archived", resp.Frozen.State)
+		}
+		if resp.Frozen.BacklogID != item.ID {
+			t.Errorf("BacklogID: got %q, want %q", resp.Frozen.BacklogID, item.ID)
+		}
+		// newFrozenSpecFixture archives with this literal reason (item, as
+		// returned by BacklogAdd, predates the archive and still carries the
+		// zero-value ArchiveReason).
+		const wantReason = "fixture archive"
+		if resp.Frozen.Reason != wantReason {
+			t.Errorf("Reason: got %q, want %q", resp.Frozen.Reason, wantReason)
+		}
+	})
+
+	for _, status := range []model.BacklogStatus{model.BacklogStatusRaw, model.BacklogStatusRefined, model.BacklogStatusPromoted} {
+		t.Run(fmt.Sprintf("live item %s (AC7)", status), func(t *testing.T) {
+			svc := newTestSDDService(t, "project")
+			ctx := context.Background()
+
+			item, err := svc.BacklogAdd(ctx, model.BacklogAddRequest{Title: "Live item", Lane: model.LaneStandard})
+			if err != nil {
+				t.Fatalf("add: %v", err)
+			}
+			if status != model.BacklogStatusRaw {
+				if _, err := svc.BacklogRefine(ctx, model.BacklogRefineRequest{ID: item.ID, Refinement: "details"}); err != nil {
+					t.Fatalf("refine: %v", err)
+				}
+			}
+
+			var spec *model.Spec
+			if status == model.BacklogStatusPromoted {
+				spec, err = svc.BacklogPromote(ctx, item.ID)
+				if err != nil {
+					t.Fatalf("promote: %v", err)
+				}
+			} else {
+				spec, err = svc.SpecNew(ctx, model.SpecNewRequest{Title: "Linked", Lane: model.LaneStandard, BacklogID: item.ID})
+				if err != nil {
+					t.Fatalf("SpecNew: %v", err)
+				}
+			}
+
+			resp, err := svc.SpecStatus(ctx, spec.ID)
+			if err != nil {
+				t.Fatalf("SpecStatus: %v", err)
+			}
+			if resp.Frozen != nil {
+				t.Errorf("expected Frozen == nil for a %s item, got %+v", status, resp.Frozen)
+			}
+		})
+	}
+
+	t.Run("no BacklogID, empty backlog table (AC8)", func(t *testing.T) {
+		svc := newTestSDDService(t, "project")
+		ctx := context.Background()
+
+		spec, err := svc.SpecNew(ctx, model.SpecNewRequest{Title: "Standalone", Lane: model.LaneStandard})
+		if err != nil {
+			t.Fatalf("SpecNew: %v", err)
+		}
+
+		resp, err := svc.SpecStatus(ctx, spec.ID)
+		if err != nil {
+			t.Fatalf("SpecStatus must succeed, got %v", err)
+		}
+		if resp.Frozen != nil {
+			t.Errorf("expected Frozen == nil, got %+v", resp.Frozen)
+		}
+	})
+
+	t.Run("BacklogID names a missing item (AC9)", func(t *testing.T) {
+		svc := newTestSDDService(t, "project")
+		ctx := context.Background()
+
+		spec, err := svc.SpecNew(ctx, model.SpecNewRequest{
+			Title: "Dangling", Lane: model.LaneStandard, BacklogID: "BL-does-not-exist",
+		})
+		if err != nil {
+			t.Fatalf("SpecNew: %v", err)
+		}
+
+		resp, err := svc.SpecStatus(ctx, spec.ID)
+		if err != nil {
+			t.Fatalf("SpecStatus must succeed even with a dangling BacklogID, got %v", err)
+		}
+		if resp.Frozen == nil {
+			t.Fatal("expected Frozen != nil")
+		}
+		if resp.Frozen.State != model.SpecFreezeMissing {
+			t.Errorf("State: got %q, want missing", resp.Frozen.State)
+		}
+		if resp.Frozen.BacklogID != "BL-does-not-exist" {
+			t.Errorf("BacklogID: got %q, want BL-does-not-exist", resp.Frozen.BacklogID)
+		}
+	})
+}
+
 func TestSpecList_FilterByStatus(t *testing.T) {
 	svc := newTestSDDService(t, "project")
 	ctx := context.Background()
