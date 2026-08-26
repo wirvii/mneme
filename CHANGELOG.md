@@ -4,6 +4,29 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- **`backlog_archive` — a new MCP tool (the 85th) for archiving a backlog
+  item with a mandatory reason (SPEC-125).** The service layer, not just
+  the CLI, now enforces a non-empty reason. Archiving is refused when the
+  item is already archived, and when its linked spec has already reached
+  `done`. Denied to subagents, alongside `spec_advance`/`spec_quick`/
+  `quality_ack`.
+
+### Changed
+
+- **Archiving a backlog item can permanently freeze its linked spec
+  (SPEC-125).** When the archived item's spec is still open, none of the
+  eight verbs that change a spec's status — `spec_advance`,
+  `spec_pushback`, `spec_reject`, `spec_resolve`, `spec_quick`,
+  `lane_audit`, `lane_reclassify`, `lane_override` — can move it again,
+  though the spec stays fully readable (`spec_status`, `spec_list`,
+  `spec_doc_write`, `lane_status`). This is irreversible: there is no
+  unarchive. The agreed way back is to create a new backlog item that
+  references the archived one, never to resurrect the old one.
+
 ## [v1.40.1] — 2026-08-15 — Codex stable installation hotfix
 
 ### Fixed
