@@ -1511,6 +1511,121 @@ func TestSpecStatus(t *testing.T) {
 	}
 }
 
+// TestSpecStatus_ReportsFreeze is SPEC-126 AC6-AC9: spec_status reports why
+// a spec can no longer move, and — unlike loadMutableSpec — NEVER fails the
+// read because of it: a frozen spec (or one whose link is dangling) stays
+// fully readable (SPEC-125 AC13).
+func TestSpecStatus_ReportsFreeze(t *testing.T) {
+	t.Run("archived item (AC6)", func(t *testing.T) {
+		svc := newTestSDDService(t, "project")
+		ctx := context.Background()
+		item, spec := newFrozenSpecFixture(t, svc, ctx, "SPEC-frozen-status", model.SpecStatusImplementing, model.LaneStandard, "", "")
+
+		resp, err := svc.SpecStatus(ctx, spec.ID)
+		if err != nil {
+			t.Fatalf("SpecStatus: %v", err)
+		}
+		if resp.Frozen == nil {
+			t.Fatal("expected Frozen != nil")
+		}
+		if resp.Frozen.State != model.SpecFreezeArchived {
+			t.Errorf("State: got %q, want archived", resp.Frozen.State)
+		}
+		if resp.Frozen.BacklogID != item.ID {
+			t.Errorf("BacklogID: got %q, want %q", resp.Frozen.BacklogID, item.ID)
+		}
+		// newFrozenSpecFixture archives with this literal reason (item, as
+		// returned by BacklogAdd, predates the archive and still carries the
+		// zero-value ArchiveReason).
+		const wantReason = "fixture archive"
+		if resp.Frozen.Reason != wantReason {
+			t.Errorf("Reason: got %q, want %q", resp.Frozen.Reason, wantReason)
+		}
+	})
+
+	for _, status := range []model.BacklogStatus{model.BacklogStatusRaw, model.BacklogStatusRefined, model.BacklogStatusPromoted} {
+		t.Run(fmt.Sprintf("live item %s (AC7)", status), func(t *testing.T) {
+			svc := newTestSDDService(t, "project")
+			ctx := context.Background()
+
+			item, err := svc.BacklogAdd(ctx, model.BacklogAddRequest{Title: "Live item", Lane: model.LaneStandard})
+			if err != nil {
+				t.Fatalf("add: %v", err)
+			}
+			if status != model.BacklogStatusRaw {
+				if _, err := svc.BacklogRefine(ctx, model.BacklogRefineRequest{ID: item.ID, Refinement: "details"}); err != nil {
+					t.Fatalf("refine: %v", err)
+				}
+			}
+
+			var spec *model.Spec
+			if status == model.BacklogStatusPromoted {
+				spec, err = svc.BacklogPromote(ctx, item.ID)
+				if err != nil {
+					t.Fatalf("promote: %v", err)
+				}
+			} else {
+				spec, err = svc.SpecNew(ctx, model.SpecNewRequest{Title: "Linked", Lane: model.LaneStandard, BacklogID: item.ID})
+				if err != nil {
+					t.Fatalf("SpecNew: %v", err)
+				}
+			}
+
+			resp, err := svc.SpecStatus(ctx, spec.ID)
+			if err != nil {
+				t.Fatalf("SpecStatus: %v", err)
+			}
+			if resp.Frozen != nil {
+				t.Errorf("expected Frozen == nil for a %s item, got %+v", status, resp.Frozen)
+			}
+		})
+	}
+
+	t.Run("no BacklogID, empty backlog table (AC8)", func(t *testing.T) {
+		svc := newTestSDDService(t, "project")
+		ctx := context.Background()
+
+		spec, err := svc.SpecNew(ctx, model.SpecNewRequest{Title: "Standalone", Lane: model.LaneStandard})
+		if err != nil {
+			t.Fatalf("SpecNew: %v", err)
+		}
+
+		resp, err := svc.SpecStatus(ctx, spec.ID)
+		if err != nil {
+			t.Fatalf("SpecStatus must succeed, got %v", err)
+		}
+		if resp.Frozen != nil {
+			t.Errorf("expected Frozen == nil, got %+v", resp.Frozen)
+		}
+	})
+
+	t.Run("BacklogID names a missing item (AC9)", func(t *testing.T) {
+		svc := newTestSDDService(t, "project")
+		ctx := context.Background()
+
+		spec, err := svc.SpecNew(ctx, model.SpecNewRequest{
+			Title: "Dangling", Lane: model.LaneStandard, BacklogID: "BL-does-not-exist",
+		})
+		if err != nil {
+			t.Fatalf("SpecNew: %v", err)
+		}
+
+		resp, err := svc.SpecStatus(ctx, spec.ID)
+		if err != nil {
+			t.Fatalf("SpecStatus must succeed even with a dangling BacklogID, got %v", err)
+		}
+		if resp.Frozen == nil {
+			t.Fatal("expected Frozen != nil")
+		}
+		if resp.Frozen.State != model.SpecFreezeMissing {
+			t.Errorf("State: got %q, want missing", resp.Frozen.State)
+		}
+		if resp.Frozen.BacklogID != "BL-does-not-exist" {
+			t.Errorf("BacklogID: got %q, want BL-does-not-exist", resp.Frozen.BacklogID)
+		}
+	})
+}
+
 func TestSpecList_FilterByStatus(t *testing.T) {
 	svc := newTestSDDService(t, "project")
 	ctx := context.Background()
@@ -1540,6 +1655,214 @@ func TestSpecList_FilterByStatus(t *testing.T) {
 	}
 	if len(speccingResp.Specs) != 1 {
 		t.Errorf("expected 1 speccing, got %d", len(speccingResp.Specs))
+	}
+}
+
+// TestSpecList_ReportsFreeze is SPEC-126 AC10, AC11, AC13: spec_list marks
+// every spec that can no longer move, decorates none of the live ones, and
+// the marker survives across projects — the property that keeps the
+// listing from ever contradicting loadMutableSpec's own project-blind
+// GetBacklogItem lookup (DD4's "no WHERE project = ?").
+func TestSpecList_ReportsFreeze(t *testing.T) {
+	t.Run("mix of live and frozen (AC10)", func(t *testing.T) {
+		svc := newTestSDDService(t, "project")
+		ctx := context.Background()
+
+		// The live spec is created FIRST: newFrozenSpecFixture seeds its spec
+		// with a synthetic, non-numeric-suffix ID that would otherwise break
+		// NextSpecID's parsing for any SpecNew call made afterward.
+		liveSpec, err := svc.SpecNew(ctx, model.SpecNewRequest{Title: "Live spec", Lane: model.LaneStandard})
+		if err != nil {
+			t.Fatalf("SpecNew: %v", err)
+		}
+		_, frozenSpec := newFrozenSpecFixture(t, svc, ctx, "SPEC-frozen-list", model.SpecStatusImplementing, model.LaneStandard, "", "")
+
+		resp, err := svc.SpecList(ctx, model.SpecListRequest{Project: "project"})
+		if err != nil {
+			t.Fatalf("SpecList: %v", err)
+		}
+		if len(resp.Frozen) != 1 {
+			t.Fatalf("expected exactly 1 frozen entry, got %d: %+v", len(resp.Frozen), resp.Frozen)
+		}
+		freeze, ok := resp.Frozen[frozenSpec.ID]
+		if !ok {
+			t.Fatalf("expected %s to be frozen", frozenSpec.ID)
+		}
+		if freeze.State != model.SpecFreezeArchived {
+			t.Errorf("State: got %q, want archived", freeze.State)
+		}
+		if _, ok := resp.Frozen[liveSpec.ID]; ok {
+			t.Errorf("expected %s NOT to be frozen", liveSpec.ID)
+		}
+	})
+
+	t.Run("none frozen (AC11)", func(t *testing.T) {
+		svc := newTestSDDService(t, "project")
+		ctx := context.Background()
+
+		if _, err := svc.SpecNew(ctx, model.SpecNewRequest{Title: "Live spec", Lane: model.LaneStandard}); err != nil {
+			t.Fatalf("SpecNew: %v", err)
+		}
+
+		resp, err := svc.SpecList(ctx, model.SpecListRequest{Project: "project"})
+		if err != nil {
+			t.Fatalf("SpecList: %v", err)
+		}
+		if len(resp.Frozen) != 0 {
+			t.Errorf("expected no frozen entries, got %+v", resp.Frozen)
+		}
+	})
+
+	t.Run("cross-project coherence (AC13)", func(t *testing.T) {
+		database, err := db.OpenMemory()
+		if err != nil {
+			t.Fatalf("open memory db: %v", err)
+		}
+		database.SetMaxOpenConns(1)
+		t.Cleanup(func() { database.Close() })
+
+		sddStore := store.NewSDDStore(database)
+		cfg := config.Default()
+		svcA := NewSDDService(sddStore, cfg, "project-a", nil)
+		svcB := NewSDDService(sddStore, cfg, "project-b", nil)
+		ctx := context.Background()
+
+		// An item archived in project B...
+		itemB, err := svcB.BacklogAdd(ctx, model.BacklogAddRequest{Title: "B item", Lane: model.LaneStandard})
+		if err != nil {
+			t.Fatalf("add B: %v", err)
+		}
+		if _, err := svcB.BacklogArchive(ctx, model.BacklogArchiveRequest{ID: itemB.ID, Reason: "cross-project fixture"}); err != nil {
+			t.Fatalf("archive B: %v", err)
+		}
+
+		// ...names a spec that lives in project A.
+		specA := &model.Spec{
+			ID: "SPEC-cross-a", Title: "Cross-project spec", Status: model.SpecStatusImplementing,
+			Project: "project-a", BacklogID: itemB.ID, Lane: model.LaneStandard,
+		}
+		if err := sddStore.CreateSpec(ctx, specA); err != nil {
+			t.Fatalf("create spec A: %v", err)
+		}
+
+		respA, err := svcA.SpecList(ctx, model.SpecListRequest{Project: "project-a"})
+		if err != nil {
+			t.Fatalf("SpecList(project-a): %v", err)
+		}
+		freeze, ok := respA.Frozen[specA.ID]
+		if !ok {
+			t.Fatalf("expected %s to be marked frozen from project A's own listing (BL of project B), got %+v",
+				specA.ID, respA.Frozen)
+		}
+		if freeze.State != model.SpecFreezeArchived {
+			t.Errorf("State: got %q, want archived", freeze.State)
+		}
+	})
+}
+
+// TestSpecList_AgreesWithSpecAdvance is SPEC-126 AC12 — the criterion that
+// sustains the whole spec: in the SAME database, what spec_list marks as
+// frozen and what spec_advance actually does must never disagree, across
+// all three freeze states (viva, archivada, ausente).
+//
+// The "viva" row runs a REAL SpecAdvance (draft -> speccing): its initial
+// status is chosen deliberately so that transition is valid — an
+// ErrInvalidTransition here would give a false green in the bidirectional
+// assertion below, since it is also an error (plan.md paso 6's mounting
+// trap).
+func TestSpecList_AgreesWithSpecAdvance(t *testing.T) {
+	svc := newTestSDDService(t, "project")
+	ctx := context.Background()
+
+	// --- viva: promoted item, spec starts in draft, so SpecAdvance is a
+	// valid draft -> speccing transition. ---
+	liveItem, err := svc.BacklogAdd(ctx, model.BacklogAddRequest{Title: "Live item", Lane: model.LaneStandard})
+	if err != nil {
+		t.Fatalf("add live item: %v", err)
+	}
+	if _, err := svc.BacklogRefine(ctx, model.BacklogRefineRequest{ID: liveItem.ID, Refinement: "details"}); err != nil {
+		t.Fatalf("refine live item: %v", err)
+	}
+	liveSpec, err := svc.BacklogPromote(ctx, liveItem.ID)
+	if err != nil {
+		t.Fatalf("promote live item: %v", err)
+	}
+	if liveSpec.Status != model.SpecStatusDraft {
+		t.Fatalf("expected the live spec to start in draft (so SpecAdvance is valid), got %s", liveSpec.Status)
+	}
+
+	// --- archivada: item archived with a recorded reason, spec still open. ---
+	archivedItem, err := svc.BacklogAdd(ctx, model.BacklogAddRequest{Title: "To be archived", Lane: model.LaneStandard})
+	if err != nil {
+		t.Fatalf("add archived item: %v", err)
+	}
+	archivedSpec, err := svc.SpecNew(ctx, model.SpecNewRequest{
+		Title: "Archived-item spec", Lane: model.LaneStandard, BacklogID: archivedItem.ID,
+	})
+	if err != nil {
+		t.Fatalf("SpecNew archived: %v", err)
+	}
+	const archiveReason = "AC12 fixture: superseded"
+	if _, err := svc.BacklogArchive(ctx, model.BacklogArchiveRequest{ID: archivedItem.ID, Reason: archiveReason}); err != nil {
+		t.Fatalf("archive: %v", err)
+	}
+
+	// --- ausente: BacklogID names an item that was never created. ---
+	missingSpec, err := svc.SpecNew(ctx, model.SpecNewRequest{
+		Title: "Dangling-link spec", Lane: model.LaneStandard, BacklogID: "BL-999",
+	})
+	if err != nil {
+		t.Fatalf("SpecNew missing: %v", err)
+	}
+
+	// Read ONCE, before any SpecAdvance call below mutates state — "the same
+	// database" AC12 requires.
+	resp, err := svc.SpecList(ctx, model.SpecListRequest{Project: "project"})
+	if err != nil {
+		t.Fatalf("SpecList: %v", err)
+	}
+
+	tests := []struct {
+		name       string
+		spec       *model.Spec
+		wantFrozen bool
+		wantErr    error
+	}{
+		{"viva", liveSpec, false, nil},
+		{"archivada", archivedSpec, true, model.ErrSpecFrozen},
+		{"ausente", missingSpec, true, model.ErrBacklogNotFound},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, isFrozen := resp.Frozen[tc.spec.ID]
+			if isFrozen != tc.wantFrozen {
+				t.Errorf("Frozen[%s] presence: got %v, want %v", tc.spec.ID, isFrozen, tc.wantFrozen)
+			}
+
+			_, advErr := svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: tc.spec.ID, By: "orchestrator"})
+			switch {
+			case tc.wantErr == nil && advErr != nil:
+				t.Errorf("SpecAdvance: expected success, got %v", advErr)
+			case tc.wantErr != nil && !errors.Is(advErr, tc.wantErr):
+				t.Errorf("SpecAdvance: expected %v, got %v", tc.wantErr, advErr)
+			}
+
+			// The bidirectional core of AC12: whether the listing marked
+			// this spec as frozen must EXACTLY match whether the verb
+			// refused it, independent of which specific error each row
+			// expects — this is what would catch the two routes drifting
+			// apart even if each row's own assertion above still looked
+			// individually correct.
+			verbFailed := advErr != nil
+			if isFrozen != verbFailed {
+				t.Errorf("AC12 disagreement: SpecList marked frozen=%v but SpecAdvance failed=%v", isFrozen, verbFailed)
+			}
+		})
+	}
+
+	if archivedFreeze := resp.Frozen[archivedSpec.ID]; archivedFreeze.Reason != archiveReason {
+		t.Errorf("archived row's Reason: got %q, want %q", archivedFreeze.Reason, archiveReason)
 	}
 }
 

@@ -17,7 +17,9 @@ change a spec's status — `spec_advance`, `spec_pushback`, `spec_reject`,
 `spec_list`, `spec_doc_write`, `lane_status` keep working). This cannot be
 undone: there is no unarchive. The agreed way back is to create a NEW
 backlog item that references the archived one — never to resurrect the old
-one.
+one. **The freeze itself is now visible (SPEC-126):** `spec_status` and
+`spec_list` both gain a `frozen` field naming why a spec can no longer
+change status — see their own entries below for its exact shape.
 
 `backlog_list`/`spec_list` share one acotado convention (SPEC-109): a `limit`
 param (integer, min 1, max 50, default 20 when omitted) and a `total` field
@@ -230,9 +232,19 @@ Get the full status of a spec including history and pushbacks.
   "history": [{"from_status": "draft", "to_status": "speccing", "by": "orchestrator",
     "reason": "Ready for architect", "at": "2026-04-30T12:30:00Z"}],
   "pushbacks": [{"from_agent": "backend", "questions": ["API contract with auth?"],
-    "resolution": "Use service accounts", "resolved": true, "created_at": "2026-04-30T13:00:00Z"}]
+    "resolution": "Use service accounts", "resolved": true, "created_at": "2026-04-30T13:00:00Z"}],
+  "frozen": {"state": "archived", "backlog_id": "BL-001", "reason": "Superseded by BL-207"}
 }
 ```
+
+**`frozen` (SPEC-126) is present ONLY when this spec can no longer change
+status**, and absent — not `null` — otherwise. `state` is `"archived"` (the
+originating backlog item was read and is archived; `reason` carries its
+recorded archive reason, possibly empty) or `"missing"` (the item named by
+`backlog_id` is not in this database at all — a different problem, since it
+was never actually read, so `reason` is absent). Either state means every
+`spec_*`/`lane_*` verb that changes status will fail — `spec_status` itself
+never does, so a frozen spec stays fully readable.
 
 **Errors:** `-32000` not found, `-32602` missing `id`.
 
@@ -334,7 +346,13 @@ column to truncate.
 | `project` | string | no | Project slug. Default: auto-detected |
 | `limit` | integer | no | Max specs returned. Min 1, max 50, default 20 |
 
-**Returns:** `{"specs": [ {...spec object...} ], "total": 12}`
+**Returns:** `{"specs": [ {...spec object...} ], "total": 12, "frozen": {"SPEC-007": {"state": "archived", "backlog_id": "BL-001", "reason": "Superseded by BL-207"}}}`
+
+**`frozen` (SPEC-126) is an object keyed by spec ID**, holding one entry
+for every spec in `specs` that can no longer change status — same shape as
+`spec_status`'s own `frozen` field above. **Absent entirely — not an empty
+object — when none of the returned specs is frozen.** A spec ID missing from
+this object can still change status normally.
 
 ### spec_quick
 

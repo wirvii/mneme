@@ -205,6 +205,12 @@ frozen spec stays fully readable — `lane status`, `spec status`, and
 `spec doc write` keep working — it just cannot close, be reclassified, or be
 forced through.
 
+**You do not have to attempt a move to find this out (SPEC-126).** `spec
+status <id>` prints a `Frozen:` block naming the archived item and its
+reason before you ever call `lane override`; `spec list` marks the row with
+`— frozen`. Check either one first instead of learning it from a rejected
+`lane override`.
+
 **There is no unarchive.** If the work needs to be picked back up, the
 agreed way back is to create a NEW backlog item that references the
 archived one (e.g. "supersedes BL-190") and start a fresh spec from it —

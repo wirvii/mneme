@@ -178,6 +178,69 @@ func idsOf(items []*model.BacklogItem) []string {
 	return ids
 }
 
+// TestBacklogStatusIndex_CrossesProjects is SPEC-126 AC26: the index returns
+// EVERY backlog item regardless of project — the property that keeps a spec
+// listing from ever contradicting loadMutableSpec's own (project-blind)
+// GetBacklogItem lookup. This is the test that would go red the moment
+// someone "fixes" BacklogStatusIndex by adding "WHERE project = ?".
+func TestBacklogStatusIndex_CrossesProjects(t *testing.T) {
+	s := newTestSDDStore(t)
+	ctx := context.Background()
+
+	items := []*model.BacklogItem{
+		{ID: "BL-001", Title: "Project A item", Status: model.BacklogStatusRaw, Priority: model.PriorityMedium, Project: "project-a", Lane: model.LaneStandard},
+		{ID: "BL-002", Title: "Project B item, archived", Status: model.BacklogStatusArchived, Priority: model.PriorityMedium, Project: "project-b", Lane: model.LaneStandard, ArchiveReason: "superseded"},
+	}
+	for _, item := range items {
+		if err := s.CreateBacklogItem(ctx, item); err != nil {
+			t.Fatalf("create %s: %v", item.ID, err)
+		}
+	}
+
+	index, err := s.BacklogStatusIndex(ctx)
+	if err != nil {
+		t.Fatalf("BacklogStatusIndex: %v", err)
+	}
+	if len(index) != 2 {
+		t.Fatalf("expected 2 entries across both projects, got %d: %+v", len(index), index)
+	}
+
+	entryA, ok := index["BL-001"]
+	if !ok {
+		t.Fatal("expected BL-001 (project-a) in the index")
+	}
+	if entryA.Status != model.BacklogStatusRaw || entryA.ArchiveReason != "" {
+		t.Errorf("BL-001: got %+v, want status=raw, archive_reason=\"\"", entryA)
+	}
+
+	entryB, ok := index["BL-002"]
+	if !ok {
+		t.Fatal("expected BL-002 (project-b) in the index")
+	}
+	if entryB.Status != model.BacklogStatusArchived || entryB.ArchiveReason != "superseded" {
+		t.Errorf("BL-002: got %+v, want status=archived, archive_reason=superseded", entryB)
+	}
+}
+
+// TestBacklogStatusIndex_EmptyTableReturnsEmptyNotNilMap is SPEC-126 AC27:
+// on an empty backlog_items table the index is an empty map, never nil and
+// never an error — a caller can index into it without a prior nil check.
+func TestBacklogStatusIndex_EmptyTableReturnsEmptyNotNilMap(t *testing.T) {
+	s := newTestSDDStore(t)
+	ctx := context.Background()
+
+	index, err := s.BacklogStatusIndex(ctx)
+	if err != nil {
+		t.Fatalf("BacklogStatusIndex on an empty table: %v", err)
+	}
+	if index == nil {
+		t.Fatal("expected a non-nil empty map, got nil")
+	}
+	if len(index) != 0 {
+		t.Fatalf("expected an empty map, got %d entries: %+v", len(index), index)
+	}
+}
+
 // TestListBacklogItems_PriorityRankOrder is AC27: with one item of each
 // priority, ListBacklogItems must return critical, high, medium, low — NOT
 // the lexicographic order of the priority TEXT column ('critical' < 'high'

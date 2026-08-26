@@ -88,7 +88,13 @@ func newBacklogListView(resp model.BacklogListResponse, excerptRunes int) backlo
 // specListView is the MCP wire shape for spec_list: the raw specs plus the
 // true match count. No per-field projection — model.Spec has no Description
 // field (SPEC-109 D15/CF1), so there is nothing to excerpt.
+//
+// Frozen (SPEC-126 DD6) carries a SpecFreeze entry for every spec in Specs
+// that can no longer change status, keyed by spec ID. Absent from the wire
+// (nil map, omitempty) when nothing is frozen — a caller that has never seen
+// this key sees no change in the common case.
 type specListView struct {
-	Specs []*model.Spec `json:"specs"`
-	Total int           `json:"total"`
+	Specs  []*model.Spec               `json:"specs"`
+	Total  int                         `json:"total"`
+	Frozen map[string]model.SpecFreeze `json:"frozen,omitempty"`
 }

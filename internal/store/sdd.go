@@ -135,6 +135,13 @@ const backlogListSelect = backlogSelectColumns + backlogSelectFrom
 // count of items, not of refinements (SPEC-109 D3).
 const backlogCountSelect = `SELECT COUNT(*) FROM backlog_items`
 
+// backlogStatusIndexSelect is BacklogStatusIndex's own projection (SPEC-126
+// DD4): only the three columns the freeze decision needs. Deliberately NOT
+// built from backlogSelectColumns/backlogListWhere — no description (the
+// whole reason this method exists instead of reusing ListBacklogItems), and
+// no WHERE at all (see BacklogStatusIndex's godoc for why).
+const backlogStatusIndexSelect = `SELECT id, status, archive_reason FROM backlog_items`
+
 // specListWhere / specListWhereStatus mirror backlogListWhere for specs (D6).
 const specListWhere = ` WHERE project = ?`
 const specListWhereStatus = specListWhere + ` AND status = ?`
@@ -257,6 +264,47 @@ func (s *SDDStore) ListBacklogItems(ctx context.Context, project string, status 
 		return nil, 0, err
 	}
 	return items, total, nil
+}
+
+// BacklogStatusIndex returns the status and archive reason of EVERY backlog
+// item in the database, keyed by item ID (SPEC-126 DD4). It is the
+// set-shaped counterpart of GetBacklogItem: one query, three narrow columns,
+// no description.
+//
+// There is deliberately NO project filter and NO WHERE clause at all.
+// backlog_items.id is a single-column TEXT PRIMARY KEY (migration 004,
+// never altered), so an ID identifies at most ONE row in the whole file:
+// this index resolves EXACTLY the same relation GetBacklogItem resolves —
+// which also does not filter by project — and that is what makes a spec
+// listing structurally unable to contradict loadMutableSpec's refusal.
+// Adding "WHERE project = ?" would reintroduce that disagreement for a spec
+// whose BacklogID names an item of a DIFFERENT project. Do not "fix" this.
+//
+// The store does not decide what counts as archived: it returns raw
+// statuses, and the comparison against BacklogStatusArchived lives only in
+// service.specFreeze (SPEC-126 DD3) — comparing here would create a third
+// place that knows what an archived item is, outside that decision's
+// structural guardian.
+func (s *SDDStore) BacklogStatusIndex(ctx context.Context) (map[string]model.BacklogIndexEntry, error) {
+	rows, err := s.db.QueryContext(ctx, backlogStatusIndexSelect)
+	if err != nil {
+		return nil, fmt.Errorf("store: backlog status index: query: %w", err)
+	}
+	defer rows.Close()
+
+	index := make(map[string]model.BacklogIndexEntry)
+	for rows.Next() {
+		var id string
+		var entry model.BacklogIndexEntry
+		if err := rows.Scan(&id, &entry.Status, &entry.ArchiveReason); err != nil {
+			return nil, fmt.Errorf("store: backlog status index: scan: %w", err)
+		}
+		index[id] = entry
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: backlog status index: rows: %w", err)
+	}
+	return index, nil
 }
 
 // UpdateBacklogItem updates the mutable fields of a backlog item.

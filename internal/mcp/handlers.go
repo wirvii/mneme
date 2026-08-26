@@ -1252,7 +1252,7 @@ func (h *handlers) handleSpecList(ctx context.Context, raw json.RawMessage) (*To
 		return nil, h.mapServiceError("spec_list", err)
 	}
 
-	return resultFromAny(specListView{Specs: resp.Specs, Total: resp.Total})
+	return resultFromAny(specListView{Specs: resp.Specs, Total: resp.Total, Frozen: resp.Frozen})
 }
 
 // handleSpecQuick processes a spec_quick tool call.

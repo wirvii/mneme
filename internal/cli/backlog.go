@@ -154,8 +154,16 @@ Filter by --status to narrow results. Without a filter all statuses are shown.`,
 				if item.RefinementCount > 0 {
 					refs = fmt.Sprintf("  refs:%d", item.RefinementCount)
 				}
-				fmt.Fprintf(os.Stdout, "  %-8s  [%-8s]  %-40s  %s%s%s\n",
-					item.ID, item.Status, item.Title, item.Priority, specRef, refs)
+				// SPEC-126 DD8/AC3: a third suffix, on the SAME row — no new
+				// line — following the mold of the two above. Only an
+				// archived item gets one, so a non-archived row's output
+				// stays byte-identical to before this spec.
+				archived := ""
+				if item.Status == model.BacklogStatusArchived {
+					archived = fmt.Sprintf("  archived: %s", archiveReasonOrPlaceholder(item.ArchiveReason))
+				}
+				fmt.Fprintf(os.Stdout, "  %-8s  [%-8s]  %-40s  %s%s%s%s\n",
+					item.ID, item.Status, item.Title, item.Priority, specRef, refs, archived)
 			}
 			return nil
 		},
@@ -262,6 +270,13 @@ the way "backlog list --json" already is for the item fields.`,
 			}
 			fmt.Fprintf(os.Stdout, "%s: %q [%s] priority:%s lane:%s%s\n",
 				item.ID, item.Title, item.Status, item.Priority, item.Lane, specRef)
+			// SPEC-126 DD8/AC1: the archive reason, printed only for an
+			// archived item — everything else about this header is
+			// unchanged, so a non-archived item's output stays identical to
+			// before this spec (AC2).
+			if item.Status == model.BacklogStatusArchived {
+				fmt.Fprintf(os.Stdout, "archived: %s\n", archiveReasonOrPlaceholder(item.ArchiveReason))
+			}
 			if item.Description != "" {
 				fmt.Fprintf(os.Stdout, "\ndescription:\n%s\n", item.Description)
 			}
@@ -316,6 +331,19 @@ linked to the backlog item.`,
 	}
 
 	return cmd
+}
+
+// archiveReasonOrPlaceholder returns reason verbatim, or a placeholder that
+// SAYS there is none (SPEC-126 DD8) rather than printing an empty label with
+// nothing after it. Empty is a reachable case: archive_reason defaults to ”
+// at the schema level (004_sdd.sql) and only became mandatory in the
+// service with SPEC-125 D1, so an item archived before that spec can carry
+// none.
+func archiveReasonOrPlaceholder(reason string) string {
+	if reason == "" {
+		return "(no reason recorded)"
+	}
+	return reason
 }
 
 // newBacklogArchiveCmd returns the "mneme backlog archive" subcommand.

@@ -178,9 +178,38 @@ Filter by --status to narrow results. Without a filter all specs are shown.`,
 				return nil
 			}
 
+			// SPEC-126 DD7/AC15-AC16: a suffix per row, printed ONLY for a
+			// spec resp.Frozen names — with nothing frozen (the common
+			// case), this loop prints byte-identical to before this spec.
+			var firstMarkedID string
+			marked := 0
 			for _, s := range resp.Specs {
-				fmt.Fprintf(os.Stdout, "  %-10s  [%-13s]  %s\n",
-					s.ID, s.Status, s.Title)
+				suffix := ""
+				if freeze, ok := resp.Frozen[s.ID]; ok {
+					marked++
+					if firstMarkedID == "" {
+						firstMarkedID = s.ID
+					}
+					suffix = "  — frozen"
+					if freeze.State == model.SpecFreezeMissing {
+						suffix = "  — frozen (link missing)"
+					}
+				}
+				fmt.Fprintf(os.Stdout, "  %-10s  [%-13s]  %s%s\n",
+					s.ID, s.Status, s.Title, suffix)
+			}
+
+			if marked > 0 {
+				specWord, verb := "specs", "are"
+				if marked == 1 {
+					specWord, verb = "spec", "is"
+				}
+				fmt.Fprintf(os.Stdout,
+					"\n%d %s %s marked. \"frozen\" means the backlog item the spec came from was archived, so the\n"+
+						"spec's status can no longer change; it can still be read. \"link missing\" means the backlog\n"+
+						"item it names is not in this database, so its status cannot change either until that is\n"+
+						"fixed. Run \"mneme spec status %s\" to see which item, and why it was archived.\n",
+					marked, specWord, verb, firstMarkedID)
 			}
 			return nil
 		},
@@ -226,6 +255,13 @@ triggered it. Pushbacks are summarised at the bottom.`,
 			fmt.Fprintf(os.Stdout, "%s: %s\n", s.ID, s.Title)
 			fmt.Fprintf(os.Stdout, "Status: %s\n", s.Status)
 
+			// SPEC-126 DD7/AC17-AC19: immediately after Status, before the
+			// timeline — it changes how everything else here should be
+			// read. Absent entirely for a live spec (resp.Frozen == nil).
+			if resp.Frozen != nil {
+				printSpecFreezeBlock(resp.Frozen)
+			}
+
 			if len(resp.History) > 0 {
 				fmt.Fprintln(os.Stdout, "\nTimeline:")
 				for _, h := range resp.History {
@@ -260,6 +296,51 @@ triggered it. Pushbacks are summarised at the bottom.`,
 	cmd.Flags().BoolVar(&flagJSON, "json", false, "Output as JSON")
 
 	return cmd
+}
+
+// printSpecFreezeBlock writes the "Frozen:" block "spec status" prints
+// immediately after "Status:", before the timeline (SPEC-126 DD7) — it
+// changes how everything else in the output should be read, so it comes
+// first. Two mutually exclusive shapes, both written for a person who has
+// not read any prior spec about this: the backlog item was archived (names
+// the item, its reason, the irreversibility, and the agreed way back — a
+// NEW backlog item, never resurrecting the old one), or the item is not in
+// this database at all — a different problem with a different remedy, so
+// it is never described using the word "archived", which would claim
+// something that was never actually read.
+//
+// Neither shape prints a date: backlog_items has no archived-at instant to
+// show (AC19) — see archiveReasonQuotedOrPlaceholder's sibling in
+// backlog.go for the same rule applied to the archive reason itself.
+func printSpecFreezeBlock(freeze *model.SpecFreeze) {
+	if freeze.State == model.SpecFreezeMissing {
+		fmt.Fprintf(os.Stdout,
+			"Frozen: backlog item %s is not in this database, so mneme cannot check whether it was\n"+
+				"        archived. Every attempt to change this spec's status will fail with an error naming\n"+
+				"        %s until that item exists again.\n",
+			freeze.BacklogID, freeze.BacklogID)
+		return
+	}
+	fmt.Fprintf(os.Stdout,
+		"Frozen: backlog item %s was archived — %s\n"+
+			"        This spec can still be read and documented, but its status can never change again,\n"+
+			"        and that cannot be undone. To pick this work up again, create a new backlog item\n"+
+			"        that mentions %s. This one does not reopen.\n",
+		freeze.BacklogID, archiveReasonQuotedOrPlaceholder(freeze.Reason), freeze.BacklogID)
+}
+
+// archiveReasonQuotedOrPlaceholder mirrors backlog.go's
+// archiveReasonOrPlaceholder for the one place that quotes the reason
+// inline in a sentence rather than printing it as its own labelled line:
+// an empty reason is a reachable case (archive_reason defaults to an empty
+// string at the schema level, and only became mandatory in the service
+// with SPEC-125 D1), so it is named as absent rather than shown as an empty
+// pair of quotes.
+func archiveReasonQuotedOrPlaceholder(reason string) string {
+	if reason == "" {
+		return "(no reason recorded)"
+	}
+	return fmt.Sprintf("%q", reason)
 }
 
 // newSpecAdvanceCmd returns the "mneme spec advance" subcommand.

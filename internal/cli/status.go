@@ -137,6 +137,23 @@ func renderFullStatus(ctx context.Context, svc *service.MemoryService, sddSvc *s
 		}
 	}
 
+	// SPEC-126 AC20: filter spResp.Frozen down to only the specs actually
+	// shown in SPECS IN PROGRESS below — this dashboard NEVER recomputes the
+	// freeze itself (that would be a second definition of "archived" outside
+	// specFreeze's structural guardian, DD3); it only decorates what SpecList
+	// already decided.
+	var frozenInProgress map[string]model.SpecFreeze
+	for _, s := range inProgressSpecs {
+		freeze, ok := spResp.Frozen[s.ID]
+		if !ok {
+			continue
+		}
+		if frozenInProgress == nil {
+			frozenInProgress = make(map[string]model.SpecFreeze, len(inProgressSpecs))
+		}
+		frozenInProgress[s.ID] = freeze
+	}
+
 	recentDone, _ := sddSvc.RecentlyCompletedSpecs(ctx, slug, 5)
 
 	// SPEC-086 D7/AC15: best-effort delegation-hook promotion nag. Reuses
@@ -157,6 +174,13 @@ func renderFullStatus(ctx context.Context, svc *service.MemoryService, sddSvc *s
 			Backlog       []*model.BacklogItem `json:"backlog"`
 			InProgress    []*model.Spec        `json:"specs_in_progress"`
 			RecentDone    []*model.Spec        `json:"recently_completed"`
+			// FrozenSpecs is a sibling key (SPEC-126 AC20/AC21), NOT a field
+			// inside each spec: an entry for every spec in InProgress that
+			// can no longer change status, keyed by spec ID. Absent (nil
+			// map, omitempty) when none is — Backlog and InProgress stay
+			// bare arrays exactly as TestStatus_JSONBacklogAndSpecsAreBareArrays
+			// already pins, and this is the only new key.
+			FrozenSpecs map[string]model.SpecFreeze `json:"frozen_specs,omitempty"`
 		}
 		var dbPath string
 		if slug != "" {
@@ -174,6 +198,7 @@ func renderFullStatus(ctx context.Context, svc *service.MemoryService, sddSvc *s
 			Backlog:       activeBacklog,
 			InProgress:    inProgressSpecs,
 			RecentDone:    recentDone,
+			FrozenSpecs:   frozenInProgress,
 		})
 	}
 
@@ -220,7 +245,15 @@ func renderFullStatus(ctx context.Context, svc *service.MemoryService, sddSvc *s
 				statusTag(string(s.Status)),
 				s.Title,
 			)
-			fmt.Fprintf(os.Stdout, "    updated %s ago\n\n", formatAge(age))
+			// SPEC-126 AC20: the mark is added to the SAME second line this
+			// section already prints — a frozen spec is NOT pulled out of
+			// this section (hiding it would be the very defect this spec
+			// fixes, from the other side).
+			mark := ""
+			if freeze, ok := frozenInProgress[s.ID]; ok {
+				mark = "  ·  " + frozenDashboardNote(freeze)
+			}
+			fmt.Fprintf(os.Stdout, "    updated %s ago%s\n\n", formatAge(age), mark)
 		}
 	}
 
@@ -244,6 +277,18 @@ func renderFullStatus(ctx context.Context, svc *service.MemoryService, sddSvc *s
 	fmt.Fprintln(os.Stdout)
 
 	return nil
+}
+
+// frozenDashboardNote is the short mark SPECS IN PROGRESS adds to a frozen
+// spec's second line (SPEC-126 DD7/AC20) — dense enough to fit alongside
+// "updated Xd ago", never a date (backlog_items has no archived-at instant
+// to show), and pointing at "mneme spec status" for the full explanation
+// rather than repeating it here.
+func frozenDashboardNote(freeze model.SpecFreeze) string {
+	if freeze.State == model.SpecFreezeMissing {
+		return fmt.Sprintf("frozen: %s is missing from this database, so this status can no longer change", freeze.BacklogID)
+	}
+	return fmt.Sprintf("frozen: %s was archived, so this status can no longer change", freeze.BacklogID)
 }
 
 // section returns a section header line with a fixed width divider.
