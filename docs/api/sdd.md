@@ -1,11 +1,23 @@
 # API Reference — SDD Tools (`backlog_*`, `spec_*`, `lane_*`, `quality_*`, `init`)
 
-23 MCP tools over JSON-RPC 2.0 stdio (`mneme mcp`): `backlog_*` (5), `spec_*`
-(9), `lane_*` (5), `quality_*` (3), `init` (1). Concept guide:
+26 MCP tools over JSON-RPC 2.0 stdio (`mneme mcp`): `backlog_*` (6), `spec_*`
+(9), `lane_*` (5), `quality_*` (5), `init` (1). Concept guide:
 [docs/lanes.md](../lanes.md) (trivial/standard lanes, auditor thresholds),
 [docs/init.md](../init.md) (managed blocks, drift, legacy migration),
 [docs/quality.md](../quality.md) (the quality constitution, certificates,
 and the `spec_advance` block, SPEC-115). Index: [docs/API.md](../API.md).
+
+**Archiving a backlog item can freeze its spec (SPEC-125):** `backlog_archive`
+requires a reason and is refused when the item is already archived, or when
+its linked spec already reached `done`. When the linked spec is still alive,
+archiving the item ALSO freezes that spec: none of the eight verbs that
+change a spec's status — `spec_advance`, `spec_pushback`, `spec_reject`,
+`spec_resolve`, `spec_quick`, `lane_audit`, `lane_reclassify`, `lane_override`
+— can move it again, though it stays fully readable (`spec_status`,
+`spec_list`, `spec_doc_write`, `lane_status` keep working). This cannot be
+undone: there is no unarchive. The agreed way back is to create a NEW
+backlog item that references the archived one — never to resurrect the old
+one.
 
 `backlog_list`/`spec_list` share one acotado convention (SPEC-109): a `limit`
 param (integer, min 1, max 50, default 20 when omitted) and a `total` field
@@ -151,6 +163,33 @@ Promote a refined backlog item to a spec. The item must have status `refined`.
 **Returns:** New spec object with `status: "draft"` and the item's `lane`/`scope` carried over.
 
 **Errors:** `-32602` item not refined, missing `id`. `-32000` not found.
+
+### backlog_archive
+
+Archive a backlog item with a mandatory reason (SPEC-125). Refused when the
+item is already archived, or when its linked spec is already `done`. When
+the linked spec is still alive, the item IS archived and the spec is
+FROZEN — see the note at the top of this page for what freezing means and
+the way back.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `id` | string | yes | Backlog item ID to archive (e.g. `BL-001`) |
+| `reason` | string | yes | Why the item is being discarded. Required and never blank |
+
+**Returns:** `{item, frozen_spec}` — `item` is the archived backlog item.
+`frozen_spec` is present (`{id, title, status}`, the spec's status at the
+moment of archiving) only when a live spec was frozen; it is ABSENT
+(not `null`) when the item had no spec or the spec was already done.
+
+**Errors:** `-32602` missing `reason` (empty or whitespace-only), item
+already archived, linked spec already `done`. `-32000` item not found, or
+(fail-closed) the linked spec does not exist.
+
+**Denied to subagents:** `backlog_archive` is a lifecycle tool — like
+`spec_advance`/`spec_quick` — and is unconditionally denied to every
+subagent regardless of role. Discarding work and freezing its record
+irreversibly is the owner's call, channelled by the orchestrator.
 
 ---
 
@@ -353,7 +392,9 @@ within declared scope, no exported Go/TS symbol changes.
 
 **Returns (fail):** `IsError: true` with the full `AuditResult` payload (`breaches` populated, `out_of_scope_files`, `forbidden_paths`, `public_symbol_changes`) so the caller can decide whether to reclassify or override — the spec stays in `audit`.
 
-**Errors:** `-32602` spec is not trivial lane / not in audit status.
+**Errors:** `-32602` spec is not trivial lane / not in audit status; spec is
+frozen (its backlog item was archived, SPEC-125) — checked before the audit
+runs, so a frozen spec never executes git or writes a `lane_audits` row.
 
 ### lane_reclassify
 
@@ -369,7 +410,8 @@ is allowed. Moves the spec to `speccing` so the full SDD workflow can proceed.
 
 **Returns:** Updated spec object with `lane: "standard"`, `status: "speccing"`.
 
-**Errors:** `-32602` target lane is not `standard`, spec already standard.
+**Errors:** `-32602` target lane is not `standard`, spec already standard,
+spec is frozen (its backlog item was archived, SPEC-125).
 
 ### lane_override
 
@@ -385,7 +427,10 @@ sparingly — prefer `lane_reclassify` when possible.
 
 **Returns:** Updated spec object with `status: "done"`.
 
-**Errors:** `-32602` missing fields, spec not trivial lane / not in audit.
+**Errors:** `-32602` missing fields, spec not trivial lane / not in audit,
+spec is frozen (its backlog item was archived, SPEC-125) — the reason
+check for `reason` runs before the freeze check, so an empty reason still
+surfaces first.
 
 ### lane_status
 

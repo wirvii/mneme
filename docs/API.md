@@ -2,7 +2,7 @@
 
 # mneme -- API Reference
 
-mneme exposes the same service layer through three frontends: **MCP** (84
+mneme exposes the same service layer through three frontends: **MCP** (85
 tools over JSON-RPC 2.0 stdio, primary), **HTTP** (10 REST endpoints under
 `/v1/`), and **CLI** (42 mneme-registered top-level commands, Cobra). This page is an index --
 the full contract for every tool, endpoint, and command lives in
@@ -31,14 +31,14 @@ not a fixed string -- expect it to match `mneme version`.
 
 ---
 
-## MCP tool families (84 tools)
+## MCP tool families (85 tools)
 
 Rule: every MCP tool appears in exactly **one** of these files.
 
 | Family | Count | Reference | Concept guide |
 |--------|-------|-----------|---------------|
 | `mem_*` (incl. `mem_promote`) | 15 | [docs/api/memory.md](api/memory.md) | [docs/GRAPH.md](GRAPH.md), [docs/RULES.md](RULES.md), [docs/team-memory.md](team-memory.md) |
-| `backlog_*` + `spec_*` + `lane_*` + `init` | 5+9+5+1=20 | [docs/api/sdd.md](api/sdd.md) | [docs/lanes.md](lanes.md), [docs/init.md](init.md) |
+| `backlog_*` + `spec_*` + `lane_*` + `init` | 6+9+5+1=21 | [docs/api/sdd.md](api/sdd.md) | [docs/lanes.md](lanes.md), [docs/init.md](init.md) |
 | `codegraph_*` | 10 | [docs/api/codegraph.md](api/codegraph.md) | [docs/codegraph.md](codegraph.md) |
 | `skills_*` | 7 | [docs/api/skills.md](api/skills.md) | [docs/skills.md](skills.md) |
 | `model_*` | 3 | [docs/api/models.md](api/models.md) | [docs/models.md](models.md) |
@@ -48,7 +48,7 @@ Rule: every MCP tool appears in exactly **one** of these files.
 | `speech_*` | 2 | [docs/speech.md](speech.md) | [docs/speech.md](speech.md) |
 | `quality_*` | 5 | [docs/api/sdd.md](api/sdd.md) | [docs/quality.md](quality.md) |
 
-15 + 20 + 10 + 7 + 3 + 5 + 6 + 11 + 2 + 5 = **84**. The two host-local
+15 + 21 + 10 + 7 + 3 + 5 + 6 + 11 + 2 + 5 = **85**. The two host-local
 `speech_*` tools intentionally have no HTTP counterpart because they control
 the current user's audio device.
 

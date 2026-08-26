@@ -19,6 +19,7 @@ Read this document when:
 6. **Only trivial→standard reclassification is allowed.** You cannot upgrade a standard spec to trivial.
 7. **The auditor is deterministic.** Same diff + same item always produce the same result. No LLM, no subagent, pure Go reading the diff and comparing numbers.
 8. **Override is the last resort.** `lane override` advances a failed audit to done but requires a documented reason that is persisted as a discovery memory.
+9. **Archiving a spec's backlog item freezes the spec permanently (SPEC-125).** If the backlog item that originated a spec is archived while the spec is still open, the spec can never move again — not even `lane audit`, `lane override`, or `lane reclassify`. This is not a bug: archiving is a deliberate decision to discard the work, and a spec that cannot close is exactly what "discarded" means. There is no unarchive; the way back is to create a NEW backlog item that references the archived one. See "A trivial spec frozen by an archived backlog item" below.
 
 ## Trivial vs Standard: Definitions
 
@@ -189,6 +190,25 @@ A discovery memory is saved with the reason. The spec advances to `done`.
 - Declare a tight `scope` at creation time. If you need to touch more files than the scope allows, the spec should be standard.
 - Keep trivial items genuinely small. If the implementation expands, use `lane reclassify` before advancing to `implementing`.
 - Never add, remove, or rename exported Go symbols in a trivial item. Even renaming a constant is a public API change.
+
+### A trivial spec frozen by an archived backlog item (SPEC-125)
+
+Neither Option A nor Option B above is available once the spec's originating
+backlog item has been archived (`backlog_archive`). `lane reclassify` and
+`lane override` — like every other verb that changes a spec's status — are
+refused with the same error a frozen spec gives anywhere: the spec's status
+can never change again.
+
+This is deliberate, not a gap: archiving requires a reason and cannot be
+repeated, so if it happened, someone decided this work was abandoned. A
+frozen spec stays fully readable — `lane status`, `spec status`, and
+`spec doc write` keep working — it just cannot close, be reclassified, or be
+forced through.
+
+**There is no unarchive.** If the work needs to be picked back up, the
+agreed way back is to create a NEW backlog item that references the
+archived one (e.g. "supersedes BL-190") and start a fresh spec from it —
+never to try to reopen the old one.
 
 ---
 

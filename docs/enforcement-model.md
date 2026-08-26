@@ -249,6 +249,7 @@ lifecycle tools to any resolved subagent — total block, no mode:
 |---|---|
 | `mcp__mneme__spec_advance` | **BLOCK** — the observed defect (SPEC-063's premature `done`) |
 | `mcp__mneme__spec_quick` | **BLOCK** — disguised advance (draft→rationale→implementing) and an orchestrator-only operation |
+| `mcp__mneme__backlog_archive` | **BLOCK** — discarding work and irreversibly freezing the spec it governs is the owner's call, channelled by the orchestrator (SPEC-125 D11/DD11) |
 | `mcp__mneme__spec_pushback`, `mcp__mneme__spec_reject`, `mcp__mneme__spec_doc_write`, `mcp__mneme__mem_*`, `mcp__mneme__codegraph_*` | **ALLOW** |
 
 `lifecycleTools` (`internal/cli/hook.go`) is an **exact-match** set —
