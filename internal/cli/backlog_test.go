@@ -2,11 +2,16 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/wirvii/mneme/internal/db"
+	"github.com/wirvii/mneme/internal/store"
 )
 
 // runBacklogCmd executes "mneme backlog <argv...>" against an isolated
@@ -431,5 +436,214 @@ func TestBacklogArchiveCmd_PrintsFreezeMessageWhenSpecIsAlive(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "new backlog item") || !strings.Contains(stdout, "BL-001") {
 		t.Errorf("expected the agreed way back (new item referencing BL-001) in the output, got %q", stdout)
+	}
+}
+
+// TestBacklogGetCmd_ArchiveReasonLine is SPEC-126 AC1/AC2: "backlog get"
+// prints "archived: <reason>" verbatim right after the header, and ONLY for
+// an archived item — a non-archived item's output is untouched.
+func TestBacklogGetCmd_ArchiveReasonLine(t *testing.T) {
+	dataDir := t.TempDir()
+	project := "test-backlog-get-archive-reason"
+
+	if _, stderr, err := runBacklogCmd(t, dataDir, project,
+		"backlog", "add", "Archived item", "--lane", "standard"); err != nil {
+		t.Fatalf("backlog add: %v (stderr=%s)", err, stderr)
+	}
+	if _, stderr, err := runBacklogCmd(t, dataDir, project,
+		"backlog", "add", "Live item", "--lane", "standard"); err != nil {
+		t.Fatalf("backlog add (live): %v (stderr=%s)", err, stderr)
+	}
+
+	const reason = "Superseded by BL-207"
+	if _, stderr, err := runBacklogCmd(t, dataDir, project,
+		"backlog", "archive", "BL-001", "--reason", reason); err != nil {
+		t.Fatalf("backlog archive: %v (stderr=%s)", err, stderr)
+	}
+
+	archivedOut, stderr, err := runBacklogCmd(t, dataDir, project, "backlog", "get", "BL-001")
+	if err != nil {
+		t.Fatalf("backlog get BL-001: %v (stderr=%s)", err, stderr)
+	}
+	if !strings.Contains(archivedOut, "archived: "+reason) {
+		t.Errorf("expected the archive reason line, got %q", archivedOut)
+	}
+
+	liveOut, stderr, err := runBacklogCmd(t, dataDir, project, "backlog", "get", "BL-002")
+	if err != nil {
+		t.Fatalf("backlog get BL-002: %v (stderr=%s)", err, stderr)
+	}
+	if strings.Contains(liveOut, "archived:") {
+		t.Errorf("expected NO archive reason line for a non-archived item, got %q", liveOut)
+	}
+}
+
+// TestBacklogListCmd_ArchiveReasonSuffix is SPEC-126 AC3: "backlog list"
+// prints the archive reason as a suffix on the SAME row — no extra line, one
+// line per item still, and non-archived rows unaffected.
+// TestBacklogList_TableOutputFormatUnchanged already pins the non-archived
+// case; this test adds the archived one.
+func TestBacklogListCmd_ArchiveReasonSuffix(t *testing.T) {
+	dataDir := t.TempDir()
+	project := "test-backlog-list-archive-reason"
+
+	if _, stderr, err := runBacklogCmd(t, dataDir, project,
+		"backlog", "add", "Archived item", "--lane", "standard"); err != nil {
+		t.Fatalf("backlog add: %v (stderr=%s)", err, stderr)
+	}
+	if _, stderr, err := runBacklogCmd(t, dataDir, project,
+		"backlog", "add", "Live item", "--lane", "standard"); err != nil {
+		t.Fatalf("backlog add (live): %v (stderr=%s)", err, stderr)
+	}
+
+	const reason = "Superseded by BL-207"
+	if _, stderr, err := runBacklogCmd(t, dataDir, project,
+		"backlog", "archive", "BL-001", "--reason", reason); err != nil {
+		t.Fatalf("backlog archive: %v (stderr=%s)", err, stderr)
+	}
+
+	stdout, stderr, err := runBacklogCmd(t, dataDir, project, "backlog", "list")
+	if err != nil {
+		t.Fatalf("backlog list: %v (stderr=%s)", err, stderr)
+	}
+
+	lines := strings.Split(strings.TrimRight(stdout, "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 lines (one per item), got %d: %q", len(lines), stdout)
+	}
+
+	var archivedLine, liveLine string
+	for _, line := range lines {
+		if strings.Contains(line, "BL-001") {
+			archivedLine = line
+		}
+		if strings.Contains(line, "BL-002") {
+			liveLine = line
+		}
+	}
+	if !strings.Contains(archivedLine, "archived: "+reason) {
+		t.Errorf("expected the archive reason suffix on BL-001's row, got %q", archivedLine)
+	}
+	if strings.Contains(liveLine, "archived:") {
+		t.Errorf("expected NO archive reason suffix on the live item's row, got %q", liveLine)
+	}
+}
+
+// TestBacklogArchive_EmptyReason_PlaceholderInBothCommands is SPEC-126 AC4:
+// an archived item whose archive_reason is EMPTY prints the placeholder
+// "(no reason recorded)" in both "backlog get" and "backlog list" — never a
+// bare "archived:" with nothing after it. The empty reason is inserted via
+// the STORE directly (bypassing the service, which has required a non-empty
+// reason since SPEC-125 D1) since that is the only way to reach this state.
+func TestBacklogArchive_EmptyReason_PlaceholderInBothCommands(t *testing.T) {
+	dataDir := t.TempDir()
+	project := "test-backlog-archive-empty-reason"
+
+	if _, stderr, err := runBacklogCmd(t, dataDir, project,
+		"backlog", "add", "Legacy archived item", "--lane", "standard"); err != nil {
+		t.Fatalf("backlog add: %v (stderr=%s)", err, stderr)
+	}
+	// A real reason first (the service requires one), then cleared directly
+	// via the store — mirroring an item archived before SPEC-125 made the
+	// reason mandatory.
+	if _, stderr, err := runBacklogCmd(t, dataDir, project,
+		"backlog", "archive", "BL-001", "--reason", "temporary, cleared below"); err != nil {
+		t.Fatalf("backlog archive: %v (stderr=%s)", err, stderr)
+	}
+
+	dbPath := filepath.Join(dataDir, "projects", project+".db")
+	database, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	sddStore := store.NewSDDStore(database)
+	ctx := context.Background()
+	item, err := sddStore.GetBacklogItem(ctx, "BL-001")
+	if err != nil {
+		t.Fatalf("GetBacklogItem: %v", err)
+	}
+	item.ArchiveReason = ""
+	if err := sddStore.UpdateBacklogItem(ctx, item); err != nil {
+		t.Fatalf("UpdateBacklogItem: %v", err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+
+	getOut, stderr, err := runBacklogCmd(t, dataDir, project, "backlog", "get", "BL-001")
+	if err != nil {
+		t.Fatalf("backlog get: %v (stderr=%s)", err, stderr)
+	}
+	if !strings.Contains(getOut, "archived: (no reason recorded)") {
+		t.Errorf("backlog get: expected the placeholder, got %q", getOut)
+	}
+
+	listOut, stderr, err := runBacklogCmd(t, dataDir, project, "backlog", "list")
+	if err != nil {
+		t.Fatalf("backlog list: %v (stderr=%s)", err, stderr)
+	}
+	if !strings.Contains(listOut, "archived: (no reason recorded)") {
+		t.Errorf("backlog list: expected the placeholder, got %q", listOut)
+	}
+}
+
+// TestBacklogGetAndList_JSONKeysUnchanged is SPEC-126 AC5: neither
+// "backlog get --json" nor "backlog list --json" gains or loses a key —
+// the archive reason already travelled through the JSON encoding of
+// model.BacklogItem.ArchiveReason before this spec; the fix is exclusively
+// to the readable output.
+func TestBacklogGetAndList_JSONKeysUnchanged(t *testing.T) {
+	dataDir := t.TempDir()
+	project := "test-backlog-json-keys-unchanged"
+
+	if _, stderr, err := runBacklogCmd(t, dataDir, project,
+		"backlog", "add", "Archived item", "--lane", "standard"); err != nil {
+		t.Fatalf("backlog add: %v (stderr=%s)", err, stderr)
+	}
+	if _, stderr, err := runBacklogCmd(t, dataDir, project,
+		"backlog", "archive", "BL-001", "--reason", "for the JSON key check"); err != nil {
+		t.Fatalf("backlog archive: %v (stderr=%s)", err, stderr)
+	}
+
+	listOut, stderr, err := runBacklogCmd(t, dataDir, project, "backlog", "list", "--json")
+	if err != nil {
+		t.Fatalf("backlog list --json: %v (stderr=%s)", err, stderr)
+	}
+	var items []map[string]any
+	if err := json.Unmarshal([]byte(listOut), &items); err != nil {
+		t.Fatalf("decode backlog list --json: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(items))
+	}
+	wantKeys := []string{
+		"id", "title", "status", "priority", "project", "archive_reason",
+		"position", "lane", "refinement_count", "created_at", "updated_at",
+	}
+	for _, k := range wantKeys {
+		if _, ok := items[0][k]; !ok {
+			t.Errorf("backlog list --json: missing expected key %q in %v", k, items[0])
+		}
+	}
+	if _, ok := items[0]["frozen"]; ok {
+		t.Error("backlog list --json: unexpected 'frozen' key — this spec adds no field to BacklogItem")
+	}
+
+	getOut, stderr, err := runBacklogCmd(t, dataDir, project, "backlog", "get", "BL-001", "--json")
+	if err != nil {
+		t.Fatalf("backlog get --json: %v (stderr=%s)", err, stderr)
+	}
+	var envelope map[string]any
+	if err := json.Unmarshal([]byte(getOut), &envelope); err != nil {
+		t.Fatalf("decode backlog get --json: %v", err)
+	}
+	item, ok := envelope["item"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected an 'item' object, got %#v", envelope["item"])
+	}
+	for _, k := range wantKeys {
+		if _, ok := item[k]; !ok {
+			t.Errorf("backlog get --json: missing expected key %q in %v", k, item)
+		}
 	}
 }
