@@ -1,6 +1,9 @@
 package model
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 // TestBacklogStatusValid verifies the canonical set of valid backlog statuses.
 func TestBacklogStatusValid(t *testing.T) {
@@ -291,4 +294,82 @@ func TestSpecDocKindFilename(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestFreezeJSON_AdditiveContract is SPEC-126 plan.md paso 1's closure: the
+// freeze fields on SpecStatusResponse/SpecListResponse must stay ABSENT from
+// the wire when there is nothing to report (DD6's additive contract), and
+// present with the exact key set when there is. A missing omitempty here
+// would silently break every existing spec_status/spec_list consumer that
+// has never seen a "frozen" key before.
+func TestFreezeJSON_AdditiveContract(t *testing.T) {
+	tests := []struct {
+		name     string
+		v        any
+		wantKeys []string
+	}{
+		{
+			name:     "SpecStatusResponse zero value has no frozen key",
+			v:        SpecStatusResponse{},
+			wantKeys: []string{"spec", "history", "pushbacks"},
+		},
+		{
+			name:     "SpecListResponse zero value has no frozen key",
+			v:        SpecListResponse{},
+			wantKeys: []string{"specs", "total"},
+		},
+		{
+			name:     "SpecListResponse with an empty (non-nil) Frozen map has no frozen key",
+			v:        SpecListResponse{Frozen: map[string]SpecFreeze{}},
+			wantKeys: []string{"specs", "total"},
+		},
+		{
+			name: "SpecFreeze archived carries state, backlog_id, reason",
+			v: SpecFreeze{
+				State:     SpecFreezeArchived,
+				BacklogID: "BL-1",
+				Reason:    "x",
+			},
+			wantKeys: []string{"state", "backlog_id", "reason"},
+		},
+		{
+			name: "SpecFreeze missing carries state, backlog_id but no reason",
+			v: SpecFreeze{
+				State:     SpecFreezeMissing,
+				BacklogID: "BL-1",
+			},
+			wantKeys: []string{"state", "backlog_id"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, err := json.Marshal(tc.v)
+			if err != nil {
+				t.Fatalf("json.Marshal: %v", err)
+			}
+			var decoded map[string]json.RawMessage
+			if err := json.Unmarshal(raw, &decoded); err != nil {
+				t.Fatalf("json.Unmarshal: %v", err)
+			}
+			if len(decoded) != len(tc.wantKeys) {
+				t.Errorf("key count: got %d (%v), want %d (%v)", len(decoded), keysOf(decoded), len(tc.wantKeys), tc.wantKeys)
+			}
+			for _, k := range tc.wantKeys {
+				if _, ok := decoded[k]; !ok {
+					t.Errorf("missing expected key %q in %s", k, raw)
+				}
+			}
+		})
+	}
+}
+
+// keysOf returns the keys of a decoded JSON object, for readable test
+// failure messages in TestFreezeJSON_AdditiveContract.
+func keysOf(m map[string]json.RawMessage) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
 }

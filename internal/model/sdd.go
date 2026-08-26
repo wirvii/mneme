@@ -361,6 +361,12 @@ type BacklogArchiveRequest struct {
 // (SPEC-125 D5). Deliberately NOT a *Spec: what the caller gets back is a
 // spec it can no longer act on, and handing over the full live-looking
 // object would invite treating it as one.
+//
+// FrozenSpec is the INVERSE direction of SPEC-126's SpecFreeze: FrozenSpec
+// answers "which spec did this archive just freeze" (from backlog_archive's
+// response); SpecFreeze answers "what is freezing this spec" (from
+// spec_status/spec_list). The two never appear in the same response — never
+// confuse them because their names are similar.
 type FrozenSpec struct {
 	ID     string     `json:"id"`
 	Title  string     `json:"title"`
@@ -376,6 +382,58 @@ type FrozenSpec struct {
 type BacklogArchiveResult struct {
 	Item       *BacklogItem `json:"item"`
 	FrozenSpec *FrozenSpec  `json:"frozen_spec,omitempty"`
+}
+
+// BacklogIndexEntry is the narrow projection of a backlog item that the
+// freeze decision (SpecFreeze, below) needs: just enough to tell whether the
+// item is archived and, if so, why. It exists so a spec listing can be
+// decorated with the freeze without loading every item's full description —
+// a grill ledger that can run to tens of KB per item (SPEC-126 DD4).
+type BacklogIndexEntry struct {
+	Status        BacklogStatus `json:"status"`
+	ArchiveReason string        `json:"archive_reason,omitempty"`
+}
+
+// SpecFreezeState is the CLOSED vocabulary of why a spec can no longer
+// change status (SPEC-126 DD2). There is deliberately NO "live" value: a
+// spec that can still move carries no SpecFreeze at all, so the reading rule
+// is the single unambiguous one SPEC-125 DD7 already established for
+// BacklogArchiveResult.FrozenSpec — presence, not a value, means frozen.
+type SpecFreezeState string
+
+const (
+	// SpecFreezeArchived means the originating backlog item was read and is
+	// archived — SPEC-125 D4's freeze, computed by the single predicate
+	// service.specFreeze from the same comparison loadMutableSpec makes.
+	SpecFreezeArchived SpecFreezeState = "archived"
+
+	// SpecFreezeMissing means the originating backlog item is not in the
+	// database at all. The spec cannot move either — loadMutableSpec fails
+	// closed with ErrBacklogNotFound (SPEC-125 DD5/AC25) — but for a
+	// different reason and with a different remedy than an archived item, so
+	// it is NOT collapsed into SpecFreezeArchived.
+	SpecFreezeMissing SpecFreezeState = "missing"
+)
+
+// SpecFreeze reports that a spec can no longer change status, and why
+// (SPEC-126 DD2). It is the INVERSE direction of FrozenSpec (see that type's
+// godoc): FrozenSpec answers "which spec did this archive just freeze",
+// SpecFreeze answers "what is freezing this spec". The two appear in
+// different responses and must never be confused.
+//
+// Reading rule, single and without exception: presence of a non-nil
+// SpecFreeze means this spec can no longer change status. It holds for both
+// values — SpecFreezeArchived produces ErrSpecFrozen and SpecFreezeMissing
+// produces ErrBacklogNotFound, both from loadMutableSpec, in all eight
+// spec-mutating verbs.
+type SpecFreeze struct {
+	State     SpecFreezeState `json:"state"`
+	BacklogID string          `json:"backlog_id"`
+	// Reason is the archive reason recorded for that item. Empty is possible
+	// and legitimate: archive_reason defaults to '' at the schema level and
+	// only became mandatory in the service with SPEC-125 D1, so an older row
+	// can carry none.
+	Reason string `json:"reason,omitempty"`
 }
 
 // --- SPEC STATE MACHINE ---
@@ -796,6 +854,15 @@ type SpecListRequest struct {
 type SpecListResponse struct {
 	Specs []*Spec `json:"specs"`
 	Total int     `json:"total"`
+
+	// Frozen holds a SpecFreeze entry for each spec in Specs that can no
+	// longer change status, keyed by spec ID (SPEC-126 DD6). Absent from the
+	// JSON (nil map, omitempty) when none is frozen — a listing where
+	// nothing is marked looks byte-identical to the response shape before
+	// this spec. A separate map instead of a field inside each Spec: the
+	// freeze is a derived fact, and burying it inside the entity would
+	// invite caching it as part of the entity (DD1).
+	Frozen map[string]SpecFreeze `json:"frozen,omitempty"`
 }
 
 // SpecStatusResponse is returned by spec_status with full context:
@@ -804,6 +871,10 @@ type SpecStatusResponse struct {
 	Spec      *Spec           `json:"spec"`
 	History   []*SpecHistory  `json:"history"`
 	Pushbacks []*SpecPushback `json:"pushbacks"`
+
+	// Frozen is nil — and its JSON key absent (omitempty) — when the spec
+	// can still change status. Non-nil names why it cannot (SPEC-126 DD6).
+	Frozen *SpecFreeze `json:"frozen,omitempty"`
 }
 
 // --- SPEC DOCUMENTS (SPEC-087 D3) ---
