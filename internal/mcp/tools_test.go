@@ -5,13 +5,13 @@ import (
 	"testing"
 )
 
-// TestAllTools_Count84 verifies the tool count after SPEC-117 S3 adds
-// quality_sign/quality_report: 82 (established since backlog_get,
-// SPEC-109 D2/D12) -> 84.
-func TestAllTools_Count84(t *testing.T) {
+// TestAllTools_Count85 verifies the tool count after SPEC-125 adds
+// backlog_archive: 84 (established since quality_sign/quality_report,
+// SPEC-117 S3) -> 85.
+func TestAllTools_Count85(t *testing.T) {
 	tools := allTools()
-	if len(tools) != 84 {
-		t.Errorf("allTools() returned %d tools, want 84", len(tools))
+	if len(tools) != 85 {
+		t.Errorf("allTools() returned %d tools, want 85", len(tools))
 	}
 }
 
@@ -232,5 +232,41 @@ func TestMemSessionEndDescription_MentionsOptionalMetrics(t *testing.T) {
 	desc := propertyDescription(t, sessionEnd, "session_id")
 	if !strings.Contains(desc, "SessionStart") {
 		t.Errorf("mem_session_end session_id description does not mention the SessionStart block: %q", desc)
+	}
+}
+
+// TestBacklogArchiveSchema_RequiresIDAndReason is SPEC-125 AC36:
+// backlog_archive declares both "id" and "reason" as required properties.
+func TestBacklogArchiveSchema_RequiresIDAndReason(t *testing.T) {
+	tools := allTools()
+	tool := findTool(tools, "backlog_archive")
+	if tool == nil {
+		t.Fatal("backlog_archive tool not found in allTools()")
+	}
+	schema, ok := tool.InputSchema.(map[string]any)
+	if !ok {
+		t.Fatal("backlog_archive InputSchema is not map[string]any")
+	}
+
+	required, ok := schema["required"].([]string)
+	if !ok || len(required) != 2 || required[0] != "id" || required[1] != "reason" {
+		t.Errorf(`backlog_archive required = %v, want ["id", "reason"]`, schema["required"])
+	}
+
+	properties, ok := schema["properties"].(map[string]any)
+	if !ok {
+		t.Fatal("backlog_archive properties is not map[string]any")
+	}
+	for _, name := range []string{"id", "reason"} {
+		prop, ok := properties[name].(map[string]any)
+		if !ok {
+			t.Fatalf("backlog_archive properties missing %q", name)
+		}
+		if prop["type"] != "string" {
+			t.Errorf("backlog_archive properties[%q].type = %v, want \"string\"", name, prop["type"])
+		}
+		if desc, _ := prop["description"].(string); desc == "" {
+			t.Errorf("backlog_archive properties[%q] has no description", name)
+		}
 	}
 }

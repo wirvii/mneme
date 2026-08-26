@@ -559,6 +559,30 @@ func allTools() []ToolDefinition {
 				},
 			},
 		},
+		{
+			Name: "backlog_archive",
+			Description: "Archive a backlog item with a mandatory reason. Refused when the item is " +
+				"already archived, or when its linked spec is already done. When the linked spec is " +
+				"still alive the item IS archived and the spec is FROZEN: it stays readable " +
+				"(spec_status/spec_list/spec_doc_write keep working) but its state can never change " +
+				"again — no spec_* or lane_* verb will move it, and there is no unarchive: the agreed " +
+				"way back is a NEW backlog item referencing the archived one, never resurrecting it. " +
+				"Returns {item, frozen_spec}.",
+			InputSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"id", "reason"},
+				"properties": map[string]any{
+					"id": map[string]any{
+						"type":        "string",
+						"description": "Backlog item ID to archive (e.g. BL-001).",
+					},
+					"reason": map[string]any{
+						"type":        "string",
+						"description": "Why the item is being discarded. Required and never blank.",
+					},
+				},
+			},
+		},
 
 		// --- SPEC TOOLS ---
 

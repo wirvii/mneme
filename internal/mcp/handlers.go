@@ -140,6 +140,8 @@ func (h *handlers) handleToolCall(ctx context.Context, params ToolCallParams) (*
 		return h.handleBacklogPromote(ctx, params.Arguments)
 	case "backlog_get":
 		return h.handleBacklogGet(ctx, params.Arguments)
+	case "backlog_archive":
+		return h.handleBacklogArchive(ctx, params.Arguments)
 	case "spec_new":
 		return h.handleSpecNew(ctx, params.Arguments)
 	case "spec_status":
@@ -737,6 +739,9 @@ func (h *handlers) mapServiceError(method string, err error) *JSONRPCError {
 		errors.Is(err, model.ErrInvalidTransition) ||
 		errors.Is(err, model.ErrBacklogNotRefined) ||
 		errors.Is(err, model.ErrBacklogNotRefinable) ||
+		errors.Is(err, model.ErrBacklogAlreadyArchived) ||
+		errors.Is(err, model.ErrBacklogSpecCompleted) ||
+		errors.Is(err, model.ErrSpecFrozen) ||
 		errors.Is(err, model.ErrQualityGateFailed) ||
 		errors.Is(err, model.ErrInvalidBacklogStatus) ||
 		errors.Is(err, model.ErrInvalidPriority) ||
@@ -981,6 +986,43 @@ func (h *handlers) handleBacklogPromote(ctx context.Context, raw json.RawMessage
 	}
 
 	return resultFromAny(spec)
+}
+
+// handleBacklogArchive processes a backlog_archive tool call (SPEC-125).
+// Deserializes into the named model.BacklogArchiveRequest — not an inline
+// struct — so schema_contract_test.go's field-by-field comparison against
+// the declared InputSchema properties has a reusable type to walk, the same
+// posture backlog_add/backlog_refine already take.
+//
+// reason is deliberately NOT validated here: an empty reason falls through
+// to the service, which returns ErrReasonRequired (DD1) — validating it in
+// both places would put the safety net back in the frontend, the exact
+// defect D1 corrects. id emptiness IS checked here, for consistency with
+// every other single-ID backlog handler (backlog_promote, backlog_get).
+func (h *handlers) handleBacklogArchive(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	if h.sdd == nil {
+		return nil, h.sddUnavailable("backlog_archive")
+	}
+	var req model.BacklogArchiveRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return nil, &JSONRPCError{
+			Code:    CodeInvalidParams,
+			Message: fmt.Sprintf("mcp: handle backlog_archive: invalid arguments: %s", err),
+		}
+	}
+	if req.ID == "" {
+		return nil, &JSONRPCError{
+			Code:    CodeInvalidParams,
+			Message: "mcp: handle backlog_archive: id is required",
+		}
+	}
+
+	result, err := h.sdd.BacklogArchive(ctx, req)
+	if err != nil {
+		return nil, h.mapServiceError("backlog_archive", err)
+	}
+
+	return resultFromAny(result)
 }
 
 // handleBacklogGet processes a backlog_get tool call (SPEC-109 D2/D12,

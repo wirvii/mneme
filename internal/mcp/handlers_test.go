@@ -2313,3 +2313,238 @@ func TestHandleBacklogGet_NotFound(t *testing.T) {
 		t.Errorf("error code = %d, want %d (CodeMemoryNotFound)", resp.Error.Code, CodeMemoryNotFound)
 	}
 }
+
+// TestMapServiceError_BacklogArchiveSentinels is SPEC-125 AC39: each of the
+// three new sentinels — ErrBacklogAlreadyArchived, ErrBacklogSpecCompleted,
+// ErrSpecFrozen — maps to CodeInvalidParams (-32602), checked one by one.
+func TestMapServiceError_BacklogArchiveSentinels(t *testing.T) {
+	h := &handlers{}
+
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{"already archived", model.ErrBacklogAlreadyArchived},
+		{"spec completed", model.ErrBacklogSpecCompleted},
+		{"spec frozen", model.ErrSpecFrozen},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := h.mapServiceError("backlog_archive", tt.err)
+			if got == nil {
+				t.Fatal("expected a non-nil JSONRPCError")
+			}
+			if got.Code != CodeInvalidParams {
+				t.Errorf("Code = %d, want %d (CodeInvalidParams)", got.Code, CodeInvalidParams)
+			}
+		})
+	}
+}
+
+// TestHandleBacklogArchive_MissingIDAndReason is SPEC-125 AC40: a missing
+// id is rejected by the handler itself; a present id with no reason falls
+// through to the service and surfaces ErrReasonRequired. Both are
+// CodeInvalidParams.
+func TestHandleBacklogArchive_MissingIDAndReason(t *testing.T) {
+	srv := newTestServerWithSDD(t)
+
+	missingID := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name:      "backlog_archive",
+		Arguments: mustMarshal(t, map[string]any{"reason": "no id given"}),
+	})
+	if missingID.Error == nil || missingID.Error.Code != CodeInvalidParams {
+		t.Fatalf("missing id: error = %+v, want CodeInvalidParams", missingID.Error)
+	}
+
+	missingReason := process(t, srv, "tools/call", 2, ToolCallParams{
+		Name:      "backlog_archive",
+		Arguments: mustMarshal(t, map[string]any{"id": "BL-999"}),
+	})
+	if missingReason.Error == nil || missingReason.Error.Code != CodeInvalidParams {
+		t.Fatalf("missing reason: error = %+v, want CodeInvalidParams", missingReason.Error)
+	}
+}
+
+// TestHandleBacklogArchive_EnvelopeShapesByFreeze is SPEC-125 AC34: the
+// response always carries "item"; "frozen_spec" is present only when the
+// archive froze a live spec, and ABSENT (not present-as-null) otherwise —
+// the FrozenSpec field's `omitempty` tag is what this test pins.
+func TestHandleBacklogArchive_EnvelopeShapesByFreeze(t *testing.T) {
+	srv := newTestServerWithSDD(t)
+
+	t.Run("no linked spec: frozen_spec is absent", func(t *testing.T) {
+		addResp := process(t, srv, "tools/call", 1, ToolCallParams{
+			Name:      "backlog_add",
+			Arguments: mustMarshal(t, map[string]any{"title": "No spec link", "lane": "standard"}),
+		})
+		if addResp.Error != nil {
+			t.Fatalf("backlog_add: %v", addResp.Error.Message)
+		}
+		var added struct {
+			Item struct {
+				ID string `json:"id"`
+			} `json:"item"`
+		}
+		unmarshalToolText(t, addResp, &added)
+
+		archiveResp := process(t, srv, "tools/call", 2, ToolCallParams{
+			Name:      "backlog_archive",
+			Arguments: mustMarshal(t, map[string]any{"id": added.Item.ID, "reason": "not needed"}),
+		})
+		if archiveResp.Error != nil {
+			t.Fatalf("backlog_archive: %v", archiveResp.Error.Message)
+		}
+
+		var raw map[string]any
+		unmarshalToolText(t, archiveResp, &raw)
+		if _, hasItem := raw["item"]; !hasItem {
+			t.Error("expected an 'item' key in the envelope")
+		}
+		if _, hasFrozen := raw["frozen_spec"]; hasFrozen {
+			t.Errorf("expected 'frozen_spec' to be ABSENT (not null) when nothing was frozen, got %#v", raw["frozen_spec"])
+		}
+	})
+
+	t.Run("linked live spec: frozen_spec is present", func(t *testing.T) {
+		addResp := process(t, srv, "tools/call", 3, ToolCallParams{
+			Name:      "backlog_add",
+			Arguments: mustMarshal(t, map[string]any{"title": "Frozen via MCP", "lane": "standard"}),
+		})
+		if addResp.Error != nil {
+			t.Fatalf("backlog_add: %v", addResp.Error.Message)
+		}
+		var added struct {
+			Item struct {
+				ID string `json:"id"`
+			} `json:"item"`
+		}
+		unmarshalToolText(t, addResp, &added)
+
+		if resp := process(t, srv, "tools/call", 4, ToolCallParams{
+			Name:      "backlog_refine",
+			Arguments: mustMarshal(t, map[string]any{"id": added.Item.ID, "refinement": "details"}),
+		}); resp.Error != nil {
+			t.Fatalf("backlog_refine: %v", resp.Error.Message)
+		}
+
+		promoteResp := process(t, srv, "tools/call", 5, ToolCallParams{
+			Name:      "backlog_promote",
+			Arguments: mustMarshal(t, map[string]any{"id": added.Item.ID}),
+		})
+		if promoteResp.Error != nil {
+			t.Fatalf("backlog_promote: %v", promoteResp.Error.Message)
+		}
+		var spec struct {
+			ID     string `json:"id"`
+			Title  string `json:"title"`
+			Status string `json:"status"`
+		}
+		unmarshalToolText(t, promoteResp, &spec)
+
+		archiveResp := process(t, srv, "tools/call", 6, ToolCallParams{
+			Name:      "backlog_archive",
+			Arguments: mustMarshal(t, map[string]any{"id": added.Item.ID, "reason": "abandoned"}),
+		})
+		if archiveResp.Error != nil {
+			t.Fatalf("backlog_archive: %v", archiveResp.Error.Message)
+		}
+
+		var raw map[string]any
+		unmarshalToolText(t, archiveResp, &raw)
+		frozen, ok := raw["frozen_spec"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected 'frozen_spec' as an object, got %#v", raw["frozen_spec"])
+		}
+		if frozen["id"] != spec.ID {
+			t.Errorf("frozen_spec.id = %v, want %q", frozen["id"], spec.ID)
+		}
+		if frozen["status"] != "draft" {
+			t.Errorf("frozen_spec.status = %v, want %q (the spec's status at archive time)", frozen["status"], "draft")
+		}
+	})
+}
+
+// TestHandleLaneVerbs_FrozenSpec_ReturnsInvalidParams is SPEC-125 AC41: the
+// three lane_* tools reject a frozen spec with CodeInvalidParams, reusing
+// the existing ErrSpecFrozen -> mapServiceError mapping — no new tool,
+// sentinel, or mapping was added for them.
+func TestHandleLaneVerbs_FrozenSpec_ReturnsInvalidParams(t *testing.T) {
+	srv := newTestServerWithSDD(t)
+
+	addResp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name: "backlog_add",
+		Arguments: mustMarshal(t, map[string]any{
+			"title": "Frozen for lane verbs", "lane": "trivial", "scope": "internal/mcp/*.go",
+		}),
+	})
+	if addResp.Error != nil {
+		t.Fatalf("backlog_add: %v", addResp.Error.Message)
+	}
+	var added struct {
+		Item struct {
+			ID string `json:"id"`
+		} `json:"item"`
+	}
+	unmarshalToolText(t, addResp, &added)
+
+	if resp := process(t, srv, "tools/call", 2, ToolCallParams{
+		Name:      "backlog_refine",
+		Arguments: mustMarshal(t, map[string]any{"id": added.Item.ID, "refinement": "details"}),
+	}); resp.Error != nil {
+		t.Fatalf("backlog_refine: %v", resp.Error.Message)
+	}
+
+	promoteResp := process(t, srv, "tools/call", 3, ToolCallParams{
+		Name:      "backlog_promote",
+		Arguments: mustMarshal(t, map[string]any{"id": added.Item.ID}),
+	})
+	if promoteResp.Error != nil {
+		t.Fatalf("backlog_promote: %v", promoteResp.Error.Message)
+	}
+	var spec struct {
+		ID string `json:"id"`
+	}
+	unmarshalToolText(t, promoteResp, &spec)
+
+	if resp := process(t, srv, "tools/call", 4, ToolCallParams{
+		Name: "spec_quick",
+		Arguments: mustMarshal(t, map[string]any{
+			"id": spec.ID, "rationale": "tiny fix", "by": "orchestrator",
+		}),
+	}); resp.Error != nil {
+		t.Fatalf("spec_quick: %v", resp.Error.Message)
+	}
+
+	archiveResp := process(t, srv, "tools/call", 5, ToolCallParams{
+		Name:      "backlog_archive",
+		Arguments: mustMarshal(t, map[string]any{"id": added.Item.ID, "reason": "abandoned"}),
+	})
+	if archiveResp.Error != nil {
+		t.Fatalf("backlog_archive: %v", archiveResp.Error.Message)
+	}
+
+	tests := []struct {
+		name string
+		args map[string]any
+	}{
+		{"lane_audit", map[string]any{"id": spec.ID}},
+		{"lane_override", map[string]any{"id": spec.ID, "reason": "force it", "by": "orchestrator"}},
+		{"lane_reclassify", map[string]any{"id": spec.ID, "lane": "standard", "by": "orchestrator"}},
+	}
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := process(t, srv, "tools/call", 10+i, ToolCallParams{
+				Name:      tt.name,
+				Arguments: mustMarshal(t, tt.args),
+			})
+			if resp.Error == nil {
+				t.Fatalf("%s on a frozen spec: expected an error, got none", tt.name)
+			}
+			if resp.Error.Code != CodeInvalidParams {
+				t.Errorf("%s: error code = %d, want %d (CodeInvalidParams); message=%s",
+					tt.name, resp.Error.Code, CodeInvalidParams, resp.Error.Message)
+			}
+		})
+	}
+}
