@@ -351,6 +351,41 @@ func (svc *SDDService) BacklogArchive(ctx context.Context, req model.BacklogArch
 
 // --- SPEC METHODS ---
 
+// specFreeze is the SINGLE definition of "this spec can no longer move"
+// (SPEC-126 DD3). Given the originating backlog item's index entry and
+// whether that entry was found at all, it returns nil when the spec is
+// still live.
+//
+// BOTH paths enter here: loadMutableSpec (the refusal, SPEC-125 D4) and the
+// two reporting paths (SpecStatus, SpecList, SPEC-126 DD5). That is what
+// makes it impossible for a listing to disagree with the verb — there is
+// nowhere else in the package this decision is made.
+//
+// The store never decides what counts as archived (SPEC-126 DD4): it hands
+// back raw entries, and the comparison lives only here — the single place
+// the structural guardian (spec_freeze_guard_test.go) verifies.
+//
+// Callers are expected to have already checked spec.BacklogID != "":
+// specFreeze does not special-case an empty BacklogID because a spec
+// without one is never frozen, and none of its three callers look one up
+// in that case.
+func specFreeze(spec *model.Spec, entry model.BacklogIndexEntry, found bool) *model.SpecFreeze {
+	if !found {
+		// SPEC-126 DD2: informing this differs from loadMutableSpec's own
+		// fail-closed handling of the same missing-item case (see that
+		// function's godoc) — this is the reporting half, not the refusal.
+		return &model.SpecFreeze{State: model.SpecFreezeMissing, BacklogID: spec.BacklogID}
+	}
+	if entry.Status != model.BacklogStatusArchived {
+		return nil
+	}
+	return &model.SpecFreeze{
+		State:     model.SpecFreezeArchived,
+		BacklogID: spec.BacklogID,
+		Reason:    entry.ArchiveReason,
+	}
+}
+
 // loadMutableSpec loads a spec that the caller intends to CHANGE. It is the
 // single definition of SPEC-125 D4's freeze: GetSpec, plus — only when the
 // spec has an originating backlog item — one lookup of that item, refusing
@@ -365,6 +400,13 @@ func (svc *SDDService) BacklogArchive(ctx context.Context, req model.BacklogArch
 // Returns exactly what store.GetSpec would (same *model.Spec, same
 // ErrSpecNotFound) when the spec is not frozen — a pure addition that
 // changes nothing for a spec without a BacklogID, or with a live one.
+//
+// SPEC-126: the archived-or-not decision is now made by specFreeze, the
+// single definition DD3 requires — but this function's own shape and error
+// precedence are UNCHANGED byte for byte in behavior: it still fails closed
+// (propagating the store's own wrapped error, never a SpecFreeze) when the
+// item cannot be read at all. That asymmetry against specFreeze's own
+// "missing" reporting is deliberate — see specFreeze's godoc.
 func (svc *SDDService) loadMutableSpec(ctx context.Context, id string) (*model.Spec, error) {
 	spec, err := svc.store.GetSpec(ctx, id)
 	if err != nil {
@@ -382,7 +424,8 @@ func (svc *SDDService) loadMutableSpec(ctx context.Context, id string) (*model.S
 		// the item we cannot assert the spec is unfrozen.
 		return nil, fmt.Errorf("load backlog item %s: %w", spec.BacklogID, err)
 	}
-	if item.Status == model.BacklogStatusArchived {
+	entry := model.BacklogIndexEntry{Status: item.Status, ArchiveReason: item.ArchiveReason}
+	if specFreeze(spec, entry, true) != nil {
 		return nil, fmt.Errorf("backlog item %s is archived: %w", item.ID, model.ErrSpecFrozen)
 	}
 	return spec, nil
