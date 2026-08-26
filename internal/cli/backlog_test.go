@@ -628,6 +628,15 @@ func TestBacklogGetAndList_JSONKeysUnchanged(t *testing.T) {
 	if _, ok := items[0]["frozen"]; ok {
 		t.Error("backlog list --json: unexpected 'frozen' key — this spec adds no field to BacklogItem")
 	}
+	// Exact count, not just presence/absence (mirrors
+	// TestFreezeJSON_AdditiveContract in internal/model/sdd_test.go): a key
+	// added for an unrelated reason in the future — one this loop never
+	// thought to check for by name — must still turn this red instead of
+	// passing silently.
+	if len(items[0]) != len(wantKeys) {
+		t.Errorf("backlog list --json: key count: got %d (%v), want %d (%v)",
+			len(items[0]), keysOfAny(items[0]), len(wantKeys), wantKeys)
+	}
 
 	getOut, stderr, err := runBacklogCmd(t, dataDir, project, "backlog", "get", "BL-001", "--json")
 	if err != nil {
@@ -646,4 +655,18 @@ func TestBacklogGetAndList_JSONKeysUnchanged(t *testing.T) {
 			t.Errorf("backlog get --json: missing expected key %q in %v", k, item)
 		}
 	}
+	if len(item) != len(wantKeys) {
+		t.Errorf("backlog get --json: key count: got %d (%v), want %d (%v)",
+			len(item), keysOfAny(item), len(wantKeys), wantKeys)
+	}
+}
+
+// keysOfAny returns the keys of a decoded JSON object (map[string]any), for
+// readable failure messages in TestBacklogGetAndList_JSONKeysUnchanged.
+func keysOfAny(m map[string]any) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
 }
