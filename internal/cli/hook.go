@@ -1986,9 +1986,10 @@ var delegationTools = map[string]bool{
 // mechanism exists to eliminate. printLifecycleBlock names the correct
 // reason for this tool specifically; see its godoc.
 var lifecycleTools = map[string]bool{
-	"mcp__mneme__spec_advance": true,
-	"mcp__mneme__spec_quick":   true,
-	"mcp__mneme__quality_ack":  true,
+	"mcp__mneme__spec_advance":    true,
+	"mcp__mneme__spec_quick":      true,
+	"mcp__mneme__quality_ack":     true,
+	"mcp__mneme__backlog_archive": true,
 }
 
 // roleScopedTools maps an MCP tool name to the ONE subagent role allowed
@@ -2107,6 +2108,14 @@ func printLifecycleBlock(w io.Writer, tool string) {
 		// reason) — a quality_ack is a human's approval of a finding,
 		// channelled by the orchestrator, never the change's own author.
 		fmt.Fprintf(w, "(bloqueado: %s — motivo distinto: la aprobación de un hallazgo de calidad es del humano vía el orquestador, nunca del autor del cambio bajo revisión.)\n", tool)
+	case "mcp__mneme__backlog_archive":
+		// SPEC-125 DD11: the WRONG reason here is also "el lifecycle SDD lo
+		// gobierna el orquestador" — archiving a backlog item is the
+		// owner's call, channelled by the orchestrator, and it freezes the
+		// spec's own record irreversibly. A subagent that archives the BL
+		// governing its own spec would be cancelling its own work and
+		// freezing the very record that judges it.
+		fmt.Fprintf(w, "(bloqueado: %s — motivo distinto: descartar trabajo y congelar su registro de forma irreversible es una decisión del owner, canalizada por el orquestador, nunca del subagente que lo está ejecutando.)\n", tool)
 	default:
 		fmt.Fprintf(w, "(bloqueado: %s — mismo motivo: el lifecycle SDD lo gobierna el orquestador, no un subagente.)\n", tool)
 	}
