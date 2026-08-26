@@ -341,11 +341,27 @@ The --reason flag is required to ensure the archive decision is documented.`,
 			}
 			defer cleanup()
 
-			if err := svc.BacklogArchive(cmd.Context(), args[0], flagReason); err != nil {
+			result, err := svc.BacklogArchive(cmd.Context(), model.BacklogArchiveRequest{
+				ID:     args[0],
+				Reason: flagReason,
+			})
+			if err != nil {
 				return err
 			}
 
+			// Byte-identical to the pre-SPEC-125 line: anyone already
+			// scripting against this output sees no change (DD8).
 			fmt.Fprintf(os.Stdout, "Archived %s: %s\n", args[0], flagReason)
+
+			if result.FrozenSpec != nil {
+				fs := result.FrozenSpec
+				fmt.Fprintf(os.Stdout,
+					"%s (%q) is now frozen in status %s: it can still be read and "+
+						"documented, but its status can never change again, and this cannot be undone.\n"+
+						"If you want to pick this work back up later, create a new backlog item that "+
+						"mentions %s. This one does not reopen.\n",
+					fs.ID, fs.Title, fs.Status, args[0])
+			}
 			return nil
 		},
 	}

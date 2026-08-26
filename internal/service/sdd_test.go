@@ -310,7 +310,9 @@ func TestBacklogRefine_RejectsPromotedAndArchived(t *testing.T) {
 					t.Fatalf("promote: %v", err)
 				}
 			} else {
-				if err := svc.BacklogArchive(ctx, item.ID, "no longer needed"); err != nil {
+				if _, err := svc.BacklogArchive(ctx, model.BacklogArchiveRequest{
+					ID: item.ID, Reason: "no longer needed",
+				}); err != nil {
 					t.Fatalf("archive: %v", err)
 				}
 			}
@@ -518,7 +520,10 @@ func TestBacklogPromote_NotRefined(t *testing.T) {
 	}
 }
 
-func TestBacklogArchive(t *testing.T) {
+// TestBacklogArchive_Success is SPEC-125 AC31: archiving an item with no
+// linked spec returns FrozenSpec == nil and an Item reflecting the new
+// status and reason, matching what a subsequent list would show.
+func TestBacklogArchive_Success(t *testing.T) {
 	svc := newTestSDDService(t, "project")
 	ctx := context.Background()
 
@@ -527,8 +532,18 @@ func TestBacklogArchive(t *testing.T) {
 		t.Fatalf("add: %v", err)
 	}
 
-	if err := svc.BacklogArchive(ctx, item.ID, "not needed anymore"); err != nil {
+	result, err := svc.BacklogArchive(ctx, model.BacklogArchiveRequest{ID: item.ID, Reason: "not needed anymore"})
+	if err != nil {
 		t.Fatalf("BacklogArchive: %v", err)
+	}
+	if result.FrozenSpec != nil {
+		t.Errorf("expected FrozenSpec == nil for an item with no linked spec, got %+v", result.FrozenSpec)
+	}
+	if result.Item == nil || result.Item.Status != model.BacklogStatusArchived {
+		t.Fatalf("expected Item with status archived, got %+v", result.Item)
+	}
+	if result.Item.ArchiveReason != "not needed anymore" {
+		t.Errorf("ArchiveReason: got %q", result.Item.ArchiveReason)
 	}
 
 	resp, err := svc.BacklogList(ctx, model.BacklogListRequest{Status: model.BacklogStatusArchived})
@@ -540,6 +555,216 @@ func TestBacklogArchive(t *testing.T) {
 	}
 	if resp.Items[0].ArchiveReason != "not needed anymore" {
 		t.Errorf("ArchiveReason: got %q", resp.Items[0].ArchiveReason)
+	}
+}
+
+// TestBacklogArchive_ReasonRequired is SPEC-125 AC1/AC2: an empty or
+// whitespace-only reason is rejected with ErrReasonRequired, and — because
+// the ID used does not exist — the error proves no read ran: a store read
+// would have surfaced ErrBacklogNotFound instead.
+func TestBacklogArchive_ReasonRequired(t *testing.T) {
+	tests := []struct {
+		name   string
+		reason string
+	}{
+		{"empty", ""},
+		{"whitespace only", "  \t\n  "},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := newTestSDDService(t, "project")
+			ctx := context.Background()
+
+			_, err := svc.BacklogArchive(ctx, model.BacklogArchiveRequest{ID: "BL-does-not-exist", Reason: tt.reason})
+			if !errors.Is(err, model.ErrReasonRequired) {
+				t.Fatalf("expected ErrReasonRequired, got %v", err)
+			}
+			if errors.Is(err, model.ErrBacklogNotFound) {
+				t.Fatalf("got ErrBacklogNotFound: the item lookup ran before the reason check")
+			}
+		})
+	}
+}
+
+// promoteAndAdvance is a small test helper: it adds+refines+promotes a
+// backlog item to a standard-lane spec, then advances the spec `steps` times
+// (starting from draft), returning the item and the spec at its final state.
+func promoteAndAdvance(t *testing.T, svc *SDDService, ctx context.Context, steps int) (*model.BacklogItem, *model.Spec) {
+	t.Helper()
+
+	item, err := svc.BacklogAdd(ctx, model.BacklogAddRequest{Title: "Linked to a spec", Lane: model.LaneStandard})
+	if err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if _, err := svc.BacklogRefine(ctx, model.BacklogRefineRequest{ID: item.ID, Refinement: "details"}); err != nil {
+		t.Fatalf("refine: %v", err)
+	}
+	spec, err := svc.BacklogPromote(ctx, item.ID)
+	if err != nil {
+		t.Fatalf("promote: %v", err)
+	}
+
+	bys := []string{"orch", "arch", "arch", "arch", "backend", "backend", "qa"}
+	if steps > len(bys) {
+		t.Fatalf("promoteAndAdvance: steps=%d exceeds the standard lane's %d transitions", steps, len(bys))
+	}
+	for i := range steps {
+		spec, err = svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: bys[i]})
+		if err != nil {
+			t.Fatalf("SpecAdvance step %d (status=%s): %v", i, spec.Status, err)
+		}
+	}
+
+	item, err = svc.store.GetBacklogItem(ctx, item.ID)
+	if err != nil {
+		t.Fatalf("reload item: %v", err)
+	}
+	return item, spec
+}
+
+// TestBacklogArchive_SpecDoneVetoed is SPEC-125 AC4/AC5: archiving an item
+// whose linked spec already reached done is refused, naming the spec, and
+// leaves the item exactly as it was.
+func TestBacklogArchive_SpecDoneVetoed(t *testing.T) {
+	svc := newTestSDDService(t, "project")
+	ctx := context.Background()
+
+	item, spec := promoteAndAdvance(t, svc, ctx, 7) // draft -> ... -> done
+	if spec.Status != model.SpecStatusDone {
+		t.Fatalf("expected spec done, got %s", spec.Status)
+	}
+
+	_, err := svc.BacklogArchive(ctx, model.BacklogArchiveRequest{ID: item.ID, Reason: "trying to discard delivered work"})
+	if !errors.Is(err, model.ErrBacklogSpecCompleted) {
+		t.Fatalf("expected ErrBacklogSpecCompleted, got %v", err)
+	}
+	if !strings.Contains(err.Error(), spec.ID) {
+		t.Errorf("expected error to name %s, got %q", spec.ID, err.Error())
+	}
+
+	after, err := svc.store.GetBacklogItem(ctx, item.ID)
+	if err != nil {
+		t.Fatalf("reload item: %v", err)
+	}
+	if after.Status != model.BacklogStatusPromoted {
+		t.Errorf("expected item to remain promoted, got %s", after.Status)
+	}
+	if after.ArchiveReason != "" {
+		t.Errorf("expected ArchiveReason untouched (empty), got %q", after.ArchiveReason)
+	}
+}
+
+// TestBacklogArchive_SpecAliveAllowed is SPEC-125 AC6/AC32: archiving an
+// item whose linked spec is NOT in a final state is allowed and freezes the
+// spec, reported back with the exact status it held at archive time.
+func TestBacklogArchive_SpecAliveAllowed(t *testing.T) {
+	svc := newTestSDDService(t, "project")
+	ctx := context.Background()
+
+	item, spec := promoteAndAdvance(t, svc, ctx, 1) // draft -> speccing
+	if spec.Status != model.SpecStatusSpeccing {
+		t.Fatalf("expected spec speccing, got %s", spec.Status)
+	}
+
+	result, err := svc.BacklogArchive(ctx, model.BacklogArchiveRequest{ID: item.ID, Reason: "work abandoned mid-flight"})
+	if err != nil {
+		t.Fatalf("BacklogArchive: %v", err)
+	}
+	if result.FrozenSpec == nil {
+		t.Fatalf("expected FrozenSpec != nil for a live spec")
+	}
+	if result.FrozenSpec.ID != spec.ID || result.FrozenSpec.Title != spec.Title || result.FrozenSpec.Status != model.SpecStatusSpeccing {
+		t.Errorf("FrozenSpec = %+v, want ID=%s Title=%s Status=%s", result.FrozenSpec, spec.ID, spec.Title, model.SpecStatusSpeccing)
+	}
+}
+
+// TestBacklogArchive_DanglingSpecFailsClosed is SPEC-125 AC7 / DD2's fail-
+// closed edge: item.SpecID is non-empty but points at a spec that does not
+// exist. Only a manual DB edit produces this; the operation must refuse
+// rather than archive blindly.
+func TestBacklogArchive_DanglingSpecFailsClosed(t *testing.T) {
+	svc := newTestSDDService(t, "project")
+	ctx := context.Background()
+
+	item, err := svc.BacklogAdd(ctx, model.BacklogAddRequest{Title: "Dangling link", Lane: model.LaneStandard})
+	if err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	item.SpecID = "SPEC-does-not-exist"
+	item.Status = model.BacklogStatusPromoted
+	if err := svc.store.UpdateBacklogItem(ctx, item); err != nil {
+		t.Fatalf("simulate dangling link: %v", err)
+	}
+
+	_, err = svc.BacklogArchive(ctx, model.BacklogArchiveRequest{ID: item.ID, Reason: "should fail closed"})
+	if !errors.Is(err, model.ErrSpecNotFound) {
+		t.Fatalf("expected ErrSpecNotFound (fail closed), got %v", err)
+	}
+
+	after, err := svc.store.GetBacklogItem(ctx, item.ID)
+	if err != nil {
+		t.Fatalf("reload item: %v", err)
+	}
+	if after.Status == model.BacklogStatusArchived {
+		t.Errorf("item must not be archived when the dangling link fails closed")
+	}
+}
+
+// TestBacklogArchive_AlreadyArchived is SPEC-125 AC8/AC9: archiving an
+// already-archived item is refused, and the ORIGINAL archive_reason is left
+// untouched — the defect this veto exists to fix is a silent overwrite.
+func TestBacklogArchive_AlreadyArchived(t *testing.T) {
+	svc := newTestSDDService(t, "project")
+	ctx := context.Background()
+
+	item, err := svc.BacklogAdd(ctx, model.BacklogAddRequest{Title: "Archive twice", Lane: model.LaneStandard})
+	if err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if _, err := svc.BacklogArchive(ctx, model.BacklogArchiveRequest{ID: item.ID, Reason: "original decision"}); err != nil {
+		t.Fatalf("first archive: %v", err)
+	}
+
+	_, err = svc.BacklogArchive(ctx, model.BacklogArchiveRequest{ID: item.ID, Reason: "second, different reason"})
+	if !errors.Is(err, model.ErrBacklogAlreadyArchived) {
+		t.Fatalf("expected ErrBacklogAlreadyArchived, got %v", err)
+	}
+
+	after, err := svc.store.GetBacklogItem(ctx, item.ID)
+	if err != nil {
+		t.Fatalf("reload item: %v", err)
+	}
+	if after.ArchiveReason != "original decision" {
+		t.Errorf("ArchiveReason must stay the original: got %q", after.ArchiveReason)
+	}
+}
+
+// TestBacklogArchive_AlreadyArchivedResolvesWithoutReadingSpec is SPEC-125
+// AC10: the already-archived veto must fire BEFORE the spec is ever read —
+// proven with an archived item whose spec_id points nowhere. A read-the-
+// spec-first implementation would surface ErrSpecNotFound instead.
+func TestBacklogArchive_AlreadyArchivedResolvesWithoutReadingSpec(t *testing.T) {
+	svc := newTestSDDService(t, "project")
+	ctx := context.Background()
+
+	item, err := svc.BacklogAdd(ctx, model.BacklogAddRequest{Title: "Archived with dangling link", Lane: model.LaneStandard})
+	if err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	item.Status = model.BacklogStatusArchived
+	item.ArchiveReason = "already gone"
+	item.SpecID = "SPEC-does-not-exist"
+	if err := svc.store.UpdateBacklogItem(ctx, item); err != nil {
+		t.Fatalf("simulate archived+dangling: %v", err)
+	}
+
+	_, err = svc.BacklogArchive(ctx, model.BacklogArchiveRequest{ID: item.ID, Reason: "trying again"})
+	if !errors.Is(err, model.ErrBacklogAlreadyArchived) {
+		t.Fatalf("expected ErrBacklogAlreadyArchived, got %v", err)
+	}
+	if errors.Is(err, model.ErrSpecNotFound) {
+		t.Fatalf("got ErrSpecNotFound: the spec was read before the already-archived veto")
 	}
 }
 

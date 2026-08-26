@@ -287,19 +287,66 @@ func (svc *SDDService) BacklogPromote(ctx context.Context, id string) (*model.Sp
 	return spec, nil
 }
 
-// BacklogArchive marks a backlog item as archived with a reason.
-func (svc *SDDService) BacklogArchive(ctx context.Context, id, reason string) error {
-	item, err := svc.store.GetBacklogItem(ctx, id)
+// BacklogArchive marks a backlog item as archived with a mandatory reason
+// (SPEC-125 D1). Two vetoes guard the operation, checked cheapest-first
+// (DD2): archiving an already-archived item is refused with
+// ErrBacklogAlreadyArchived before any second read, and archiving an item
+// whose linked spec is already done is refused with ErrBacklogSpecCompleted.
+//
+// When the archived item names a still-live spec, that spec is FROZEN: the
+// returned result's FrozenSpec is non-nil and names it (DD7). Freezing is
+// derived, not persisted — see loadMutableSpec, the single gate every
+// spec-mutating verb now passes through (DD5/DD13).
+func (svc *SDDService) BacklogArchive(ctx context.Context, req model.BacklogArchiveRequest) (model.BacklogArchiveResult, error) {
+	// Validated first and before any read (DD1): a call with no reason must
+	// not cost even one query, and the error must be the same regardless of
+	// whether the item exists.
+	if strings.TrimSpace(req.Reason) == "" {
+		return model.BacklogArchiveResult{}, model.ErrReasonRequired
+	}
+
+	item, err := svc.store.GetBacklogItem(ctx, req.ID)
 	if err != nil {
-		return fmt.Errorf("service: backlog archive: get: %w", err)
+		return model.BacklogArchiveResult{}, fmt.Errorf("service: backlog archive: get: %w", err)
+	}
+
+	// Cheap veto before the expensive one (DD2): already-archived is
+	// resolved without a second read, so a dangling spec_id on an already
+	// archived item can never surface ErrSpecNotFound instead.
+	if item.Status == model.BacklogStatusArchived {
+		return model.BacklogArchiveResult{}, fmt.Errorf(
+			"service: backlog archive: %s: %w", req.ID, model.ErrBacklogAlreadyArchived)
+	}
+
+	var frozen *model.FrozenSpec
+	if item.SpecID != "" {
+		spec, err := svc.store.GetSpec(ctx, item.SpecID)
+		if err != nil {
+			// Fail closed (DD2, R3): specs are never hard-deleted, so a
+			// dangling link only comes from a manual edit. Without reading
+			// the spec the D2 veto cannot be applied, and archiving anyway
+			// would risk asserting "discarded" over delivered work.
+			return model.BacklogArchiveResult{}, fmt.Errorf(
+				"service: backlog archive: load linked spec %s: %w", item.SpecID, err)
+		}
+		if spec.Status.IsFinal() {
+			return model.BacklogArchiveResult{}, fmt.Errorf(
+				"service: backlog archive: %s: linked spec %s is already done: %w",
+				req.ID, spec.ID, model.ErrBacklogSpecCompleted)
+		}
+		frozen = &model.FrozenSpec{ID: spec.ID, Title: spec.Title, Status: spec.Status}
 	}
 
 	item.Status = model.BacklogStatusArchived
-	item.ArchiveReason = reason
+	item.ArchiveReason = req.Reason
 	if err := svc.store.UpdateBacklogItem(ctx, item); err != nil {
-		return fmt.Errorf("service: backlog archive: update: %w", err)
+		return model.BacklogArchiveResult{}, fmt.Errorf("service: backlog archive: update: %w", err)
 	}
-	return nil
+
+	// Not re-read (DD7): UpdateBacklogItem mutates the struct it was given
+	// (store/sdd.go), so item already reflects Status/ArchiveReason/UpdatedAt —
+	// a reload here would be a third query that can discover nothing new.
+	return model.BacklogArchiveResult{Item: item, FrozenSpec: frozen}, nil
 }
 
 // --- SPEC METHODS ---

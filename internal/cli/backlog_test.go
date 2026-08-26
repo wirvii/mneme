@@ -359,3 +359,77 @@ func TestBacklogGetCmd_JSONIsEnvelope(t *testing.T) {
 		t.Errorf("refinement = %+v, want body=r1 by=backend", envelope.Refinements[0])
 	}
 }
+
+// TestBacklogArchiveCmd_RequiresReasonWithoutTouchingTheStore is SPEC-125
+// AC3: the CLI keeps its own --reason precondition, unchanged in behaviour
+// and message, so a caller without a reason never opens the database.
+func TestBacklogArchiveCmd_RequiresReasonWithoutTouchingTheStore(t *testing.T) {
+	dataDir := t.TempDir()
+	project := "test-backlog-archive-no-reason"
+
+	stdout, _, err := runBacklogCmd(t, dataDir, project, "backlog", "archive", "BL-001")
+	if err == nil {
+		t.Fatalf("expected an error when --reason is omitted, got none (stdout=%s)", stdout)
+	}
+	if !strings.Contains(err.Error(), "--reason is required") {
+		t.Errorf("expected the existing --reason message, got %q", err.Error())
+	}
+
+	entries, readErr := os.ReadDir(dataDir)
+	if readErr != nil {
+		t.Fatalf("read data dir: %v", readErr)
+	}
+	if len(entries) != 0 {
+		t.Errorf("expected the data dir to stay empty (no DB opened), found %v", entries)
+	}
+}
+
+// TestBacklogArchiveCmd_PrintsFreezeMessageWhenSpecIsAlive is SPEC-125 AC33:
+// the first line stays byte-identical to the pre-SPEC-125 output, and — only
+// when the archived item froze a live spec — the CLI additionally names the
+// spec, its status, that the freeze cannot be undone, and the agreed way
+// back (a new backlog item referencing the archived one).
+func TestBacklogArchiveCmd_PrintsFreezeMessageWhenSpecIsAlive(t *testing.T) {
+	dataDir := t.TempDir()
+	project := "test-backlog-archive-freeze"
+
+	if _, stderr, err := runBacklogCmd(t, dataDir, project,
+		"backlog", "add", "Frozen work", "--lane", "standard"); err != nil {
+		t.Fatalf("backlog add: %v (stderr=%s)", err, stderr)
+	}
+	if _, stderr, err := runBacklogCmd(t, dataDir, project,
+		"backlog", "refine", "BL-001", "--refinement", "r1"); err != nil {
+		t.Fatalf("refine: %v (stderr=%s)", err, stderr)
+	}
+	if _, stderr, err := runBacklogCmd(t, dataDir, project,
+		"backlog", "promote", "BL-001"); err != nil {
+		t.Fatalf("promote: %v (stderr=%s)", err, stderr)
+	}
+	if _, stderr, err := runBacklogCmd(t, dataDir, project,
+		"spec", "advance", "SPEC-001", "--by", "orchestrator"); err != nil {
+		t.Fatalf("spec advance: %v (stderr=%s)", err, stderr)
+	}
+
+	stdout, stderr, err := runBacklogCmd(t, dataDir, project,
+		"backlog", "archive", "BL-001", "--reason", "abandoned mid-flight")
+	if err != nil {
+		t.Fatalf("backlog archive: %v (stderr=%s)", err, stderr)
+	}
+
+	lines := strings.SplitN(stdout, "\n", 2)
+	if lines[0] != "Archived BL-001: abandoned mid-flight" {
+		t.Errorf("first line = %q, want the byte-identical pre-SPEC-125 line", lines[0])
+	}
+	if !strings.Contains(stdout, "SPEC-001") {
+		t.Errorf("expected the frozen spec's ID in the output, got %q", stdout)
+	}
+	if !strings.Contains(stdout, "speccing") {
+		t.Errorf("expected the frozen spec's status in the output, got %q", stdout)
+	}
+	if !strings.Contains(stdout, "cannot be undone") {
+		t.Errorf("expected the irreversibility warning in the output, got %q", stdout)
+	}
+	if !strings.Contains(stdout, "new backlog item") || !strings.Contains(stdout, "BL-001") {
+		t.Errorf("expected the agreed way back (new item referencing BL-001) in the output, got %q", stdout)
+	}
+}
