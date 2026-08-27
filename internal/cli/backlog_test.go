@@ -619,6 +619,10 @@ func TestBacklogGetAndList_JSONKeysUnchanged(t *testing.T) {
 	wantKeys := []string{
 		"id", "title", "status", "priority", "project", "archive_reason",
 		"position", "lane", "refinement_count", "created_at", "updated_at",
+		// "uuid" is SPEC-128 D1/D9's own anchor: present in every domain
+		// object's JSON (never in readable output), always non-empty since
+		// CreateBacklogItem mints it on every insert.
+		"uuid",
 	}
 	for _, k := range wantKeys {
 		if _, ok := items[0][k]; !ok {
