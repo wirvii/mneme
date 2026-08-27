@@ -56,6 +56,13 @@ type speechMetadata struct {
 	Skipped     int    `json:"skipped"`
 	MissedTurns int    `json:"missed_turns"`
 	LastError   string `json:"last_error,omitempty"`
+	// Version marks the schema of missed_turns. Version 0 (or absent) is the
+	// pre-SPEC-129 counter, which conflated "the agent never resolved this
+	// turn" with "another session overwrote the shared expectation file" — a
+	// number whose own definition changed is not comparable to its history,
+	// so updateMetadata resets MissedTurns to 0 the first time it sees a
+	// pre-migration document (D4).
+	Version int `json:"version,omitempty"`
 }
 
 // NewSpeechService constructs a service over the host config and data paths.
@@ -292,7 +299,33 @@ func resolveSpeechPreference(cfg *config.Config, language string) speech.Resolve
 	return speech.ResolvePreference(language, preferences, cfg.Speech.Voices, defaultEngine)
 }
 
-// RegisterPrompt cancels audio and records an unresolved turn expectation.
+// expectationFile is the per-session turn expectation persisted under
+// expectationsDir (D2). The file name is a hash of sessionID purely for path
+// safety — a session_id is opaque and could contain path separators — and is
+// never a secret: it is stored in clear inside the file too. Ownership is
+// always decided by comparing SessionID here, in the content, never the
+// file name: a hash collision or truncation must never grant someone else's
+// expectation.
+type expectationFile struct {
+	SessionID string    `json:"session_id"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// expectationsDir is where SPEC-129 keeps one turn expectation file per
+// session, replacing the single host-wide expectations.json that let any
+// session's RegisterPrompt clobber another's (BL-198, D2).
+func expectationsDir(cfg *config.Config) string {
+	return filepath.Join(speech.RuntimeDir(cfg.Storage.DataDir), "expectations")
+}
+
+// expectationPath returns the per-session expectation file path.
+func expectationPath(cfg *config.Config, sessionID string) string {
+	sum := sha256.Sum256([]byte(sessionID))
+	return filepath.Join(expectationsDir(cfg), hex.EncodeToString(sum[:])[:32]+".json")
+}
+
+// RegisterPrompt cancels audio and records an unresolved turn expectation
+// for sessionID.
 func (s *SpeechService) RegisterPrompt(ctx context.Context, sessionID string) (string, error) {
 	cfg, err := s.load()
 	if err != nil {
@@ -302,32 +335,78 @@ func (s *SpeechService) RegisterPrompt(ctx context.Context, sessionID string) (s
 		return "", nil
 	}
 	_ = s.Stop(ctx)
-	path := filepath.Join(speech.RuntimeDir(cfg.Storage.DataDir), "expectations.json")
-	type expectation struct {
-		SessionID string    `json:"session_id"`
-		CreatedAt time.Time `json:"created_at"`
+
+	// Reading the caller's own expectation must happen BEFORE the sweep
+	// below: sweeping first could delete an expectation older than
+	// ExpectationTTL before it is ever counted as a missed turn.
+	path := expectationPath(cfg, sessionID)
+	hasUnresolvedOwnTurn := false
+	if data, readErr := os.ReadFile(path); readErr == nil {
+		var previous expectationFile
+		if json.Unmarshal(data, &previous) == nil && previous.SessionID != "" {
+			hasUnresolvedOwnTurn = true
+		}
 	}
-	var previous expectation
-	if data, readErr := os.ReadFile(path); readErr == nil && json.Unmarshal(data, &previous) == nil && previous.SessionID != "" {
-		_ = s.incrementMissed(cfg)
-	}
+	// updateMetadata runs on every prompt, not only when this session had an
+	// unresolved turn: it is also the one place a pre-SPEC-129 missed_turns
+	// document gets migrated (D4), and that migration cannot wait for a
+	// second prompt to happen.
+	_ = s.updateMetadata(cfg, func(metadata *speechMetadata) {
+		if hasUnresolvedOwnTurn {
+			metadata.MissedTurns++
+		}
+	})
+	s.sweepExpectations(cfg)
+
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return "", err
 	}
-	data, _ := json.Marshal(expectation{SessionID: sessionID, CreatedAt: time.Now().UTC()})
+	data, _ := json.Marshal(expectationFile{SessionID: sessionID, CreatedAt: time.Now().UTC()})
 	if err := writePrivateAtomic(path, data); err != nil {
 		return "", fmt.Errorf("speech: save expectation: %w", err)
 	}
 	return fmt.Sprintf("<mneme:speech>Speech is enabled in %s mode. Before your final response, call speech_emit exactly once with disposition=emit and a concise semantic spoken summary, or disposition=skip when nothing adds value. Use session_id=%q. Never read raw tool output or code.</mneme:speech>", cfg.Speech.Mode, sessionID), nil
 }
 
-// ResolveExpectation clears a matching turn expectation without persisting text.
+// sweepExpectations removes per-session expectation files older than
+// speech.ExpectationTTL, plus the legacy host-wide expectations.json from
+// before SPEC-129, if still present. Best-effort: RegisterPrompt cannot let
+// housekeeping failures block a prompt from resolving, so every error here
+// is swallowed.
+func (s *SpeechService) sweepExpectations(cfg *config.Config) {
+	dir := expectationsDir(cfg)
+	if entries, err := os.ReadDir(dir); err == nil {
+		for _, entry := range entries {
+			if entry.IsDir() {
+				continue
+			}
+			entryPath := filepath.Join(dir, entry.Name())
+			data, readErr := os.ReadFile(entryPath)
+			if readErr != nil {
+				continue
+			}
+			var stale expectationFile
+			if json.Unmarshal(data, &stale) != nil {
+				continue
+			}
+			if time.Since(stale.CreatedAt) > speech.ExpectationTTL {
+				_ = os.Remove(entryPath)
+			}
+		}
+	}
+	legacy := filepath.Join(speech.RuntimeDir(cfg.Storage.DataDir), "expectations.json")
+	if _, statErr := os.Stat(legacy); statErr == nil {
+		_ = os.Remove(legacy)
+	}
+}
+
+// ResolveExpectation clears sessionID's turn expectation without persisting text.
 func (s *SpeechService) ResolveExpectation(sessionID string) error {
 	cfg, err := s.load()
 	if err != nil {
 		return err
 	}
-	path := filepath.Join(speech.RuntimeDir(cfg.Storage.DataDir), "expectations.json")
+	path := expectationPath(cfg, sessionID)
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -335,9 +414,7 @@ func (s *SpeechService) ResolveExpectation(sessionID string) error {
 	if err != nil {
 		return err
 	}
-	var current struct {
-		SessionID string `json:"session_id"`
-	}
+	var current expectationFile
 	if err := json.Unmarshal(data, &current); err != nil {
 		return err
 	}
@@ -347,19 +424,17 @@ func (s *SpeechService) ResolveExpectation(sessionID string) error {
 	return os.Remove(path)
 }
 
-// CheckExpectation verifies that sessionID owns the unresolved current turn.
+// CheckExpectation verifies that sessionID owns its unresolved current turn.
 func (s *SpeechService) CheckExpectation(sessionID string) error {
 	cfg, err := s.load()
 	if err != nil {
 		return err
 	}
-	data, err := os.ReadFile(filepath.Join(speech.RuntimeDir(cfg.Storage.DataDir), "expectations.json"))
+	data, err := os.ReadFile(expectationPath(cfg, sessionID))
 	if err != nil {
 		return fmt.Errorf("speech: read expectation: %w", err)
 	}
-	var current struct {
-		SessionID string `json:"session_id"`
-	}
+	var current expectationFile
 	if err := json.Unmarshal(data, &current); err != nil {
 		return fmt.Errorf("speech: parse expectation: %w", err)
 	}
@@ -372,15 +447,19 @@ func (s *SpeechService) CheckExpectation(sessionID string) error {
 func (s *SpeechService) metadataPath(cfg *config.Config) string {
 	return filepath.Join(speech.RuntimeDir(cfg.Storage.DataDir), "status.json")
 }
-func (s *SpeechService) incrementMissed(cfg *config.Config) error {
-	return s.updateMetadata(cfg, func(metadata *speechMetadata) { metadata.MissedTurns++ })
-}
 
 func (s *SpeechService) updateMetadata(cfg *config.Config, update func(*speechMetadata)) error {
 	path := s.metadataPath(cfg)
 	var metadata speechMetadata
 	if data, err := os.ReadFile(path); err == nil {
 		_ = json.Unmarshal(data, &metadata)
+	}
+	// A document written before SPEC-129 (or one with no version at all)
+	// carries missed_turns counted under the old, misattributing definition
+	// (D4): reset it once, here, before applying this call's own update.
+	if metadata.Version < 1 {
+		metadata.MissedTurns = 0
+		metadata.Version = 1
 	}
 	update(&metadata)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {

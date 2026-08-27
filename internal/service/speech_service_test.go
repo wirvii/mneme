@@ -14,6 +14,14 @@ import (
 	"github.com/wirvii/mneme/internal/speech"
 )
 
+// TestSpeechRegisterPromptOptInAndMissedTurns used to assert that
+// CheckExpectation("turn-1") failed once "turn-2" registered — that
+// assertion WAS the BL-198 bug (a single host-wide expectation file, so any
+// other session's prompt clobbered this one's). SPEC-129 D2 gives every
+// session its own file: two different sessions registering in sequence must
+// both stay valid, and neither should count as a missed turn for the other
+// (D4). See TestExpectationsAreIsolatedPerSession and
+// TestMissedTurnsCountOnlyOwnSession for the dedicated regression coverage.
 func TestSpeechRegisterPromptOptInAndMissedTurns(t *testing.T) {
 	root := t.TempDir()
 	configPath := filepath.Join(root, "config.toml")
@@ -41,18 +49,125 @@ func TestSpeechRegisterPromptOptInAndMissedTurns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status.MissedTurns != 1 {
-		t.Fatalf("missed turns = %d, want 1", status.MissedTurns)
+	if status.MissedTurns != 0 {
+		t.Fatalf("missed turns = %d, want 0: turn-2 is a different session, not a missed turn of turn-1", status.MissedTurns)
 	}
-	if err := svc.CheckExpectation("turn-1"); err == nil {
-		t.Fatal("stale session unexpectedly owns current expectation")
+	if err := svc.CheckExpectation("turn-1"); err != nil {
+		t.Fatalf("turn-1's own expectation must survive turn-2 registering: %v", err)
 	}
 	if err := svc.CheckExpectation("turn-2"); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.ResolveExpectation("turn-1"); err != nil {
 		t.Fatal(err)
 	}
 	if err := svc.ResolveExpectation("turn-2"); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// TestExpectationsAreIsolatedPerSession is AC7, the direct regression of
+// BL-198 symptoms 1 and 3: resolving one session's expectation must never
+// invalidate another's.
+func TestExpectationsAreIsolatedPerSession(t *testing.T) {
+	root := t.TempDir()
+	svc := newEnabledSpeechService(t, root)
+
+	if _, err := svc.RegisterPrompt(context.Background(), "A"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.RegisterPrompt(context.Background(), "B"); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.CheckExpectation("A"); err != nil {
+		t.Fatalf("CheckExpectation(A) = %v", err)
+	}
+	if err := svc.CheckExpectation("B"); err != nil {
+		t.Fatalf("CheckExpectation(B) = %v", err)
+	}
+	if err := svc.ResolveExpectation("A"); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.CheckExpectation("B"); err != nil {
+		t.Fatalf("resolving A invalidated B's expectation: %v", err)
+	}
+}
+
+// TestMissedTurnsCountOnlyOwnSession is AC8: missed_turns only rises when a
+// session's OWN previous expectation was left unresolved — never because a
+// different session registered in between.
+func TestMissedTurnsCountOnlyOwnSession(t *testing.T) {
+	root := t.TempDir()
+	svc := newEnabledSpeechService(t, root)
+
+	if _, err := svc.RegisterPrompt(context.Background(), "A"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.RegisterPrompt(context.Background(), "B"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.RegisterPrompt(context.Background(), "A"); err != nil {
+		t.Fatal(err)
+	}
+	status, err := svc.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.MissedTurns != 1 {
+		t.Fatalf("missed turns = %d, want 1 (A's own second prompt, not B's)", status.MissedTurns)
+	}
+}
+
+// TestMissedTurnsResetOnMetadataMigration is AC9: the pre-SPEC-129
+// missed_turns accumulator (391 on the owner's host, counting collisions
+// between sessions, not real negligence — D4) does not survive the first
+// write under the new definition.
+func TestMissedTurnsResetOnMetadataMigration(t *testing.T) {
+	root := t.TempDir()
+	svc := newEnabledSpeechService(t, root)
+	cfg, err := svc.load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := []byte(`{"missed_turns":391}`)
+	if err := os.MkdirAll(filepath.Dir(svc.metadataPath(cfg)), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(svc.metadataPath(cfg), legacy, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := svc.RegisterPrompt(context.Background(), "A"); err != nil {
+		t.Fatal(err)
+	}
+	status, err := svc.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.MissedTurns != 0 {
+		t.Fatalf("missed turns after migration = %d, want 0", status.MissedTurns)
+	}
+	data, err := os.ReadFile(svc.metadataPath(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"version":1`) {
+		t.Fatalf("metadata after migration = %s, want version:1", data)
+	}
+}
+
+// newEnabledSpeechService returns a SpeechService with speech persistently
+// enabled, rooted under a fresh temp directory.
+func newEnabledSpeechService(t *testing.T, root string) *SpeechService {
+	t.Helper()
+	configPath := filepath.Join(root, "config.toml")
+	dataDir := filepath.Join(root, "data")
+	speechCfg := config.Default().Speech
+	speechCfg.Enabled = true
+	if err := config.SetSpeech(configPath, speechCfg); err != nil {
+		t.Fatal(err)
+	}
+	return NewSpeechService(configPath, dataDir)
 }
 
 func TestSpeechSetupLocalModelVerifiesChecksum(t *testing.T) {

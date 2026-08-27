@@ -93,6 +93,13 @@ const MaxQueuedEmissions = 8
 // silently, measured from the moment it was enqueued.
 const EmissionTTL = 2 * time.Minute
 
+// ExpectationTTL is how long an unresolved per-session turn expectation
+// (internal/service's RegisterPrompt/CheckExpectation/ResolveExpectation)
+// may sit before it is swept away. It lives here, next to the queue
+// constants, because it is the same kind of decision: how long a per-session
+// artifact is worth keeping around before it is just clutter.
+const ExpectationTTL = 24 * time.Hour
+
 // RuntimeDir returns the private speech state directory below dataDir.
 func RuntimeDir(dataDir string) string { return filepath.Join(dataDir, "speech") }
 
