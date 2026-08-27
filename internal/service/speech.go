@@ -185,32 +185,50 @@ func (s *SpeechService) SetupLocalModel(modelPath, expectedSHA256 string) error 
 	return config.SetSpeech(s.configPath, cfg.Speech)
 }
 
-// Emit resolves one agent turn by speaking useful text or explicitly skipping it.
-func (s *SpeechService) Emit(ctx context.Context, disposition speech.Disposition, mode speech.Mode, text, language string) error {
-	return s.emit(ctx, disposition, mode, text, language, "")
+// SpeechEmitRequest is one agent turn resolution. SessionID and Label carry
+// what the queue needs to attribute the emission (D19): who owns it, and
+// what to call it out loud if it plays while another session has focus.
+// Voice is a temporary override that is never persisted.
+type SpeechEmitRequest struct {
+	Disposition speech.Disposition
+	Mode        speech.Mode
+	Text        string
+	Language    string
+	Voice       string
+	SessionID   string
+	Label       string
 }
 
-// EmitWithOverrides speaks a test request without persisting a voice override.
-func (s *SpeechService) EmitWithOverrides(ctx context.Context, disposition speech.Disposition, mode speech.Mode, text, language, voice string) error {
-	return s.emit(ctx, disposition, mode, text, language, voice)
+// SpeechEmitResult reports what happened to one SpeechEmitRequest. Started
+// means the audio began playing now — never that it finished (D15): mneme
+// does not wait out the whole synthesis, which would block the calling
+// frontend for the entire playback. QueuePosition is meaningful only when
+// Started is false.
+type SpeechEmitResult struct {
+	Started       bool
+	QueuePosition int
+	Skipped       bool
 }
 
-func (s *SpeechService) emit(ctx context.Context, disposition speech.Disposition, mode speech.Mode, text, language, voice string) error {
+// Emit resolves one agent turn: speaking useful text (queued behind
+// whatever else is already playing), or explicitly skipping it.
+func (s *SpeechService) Emit(ctx context.Context, req SpeechEmitRequest) (SpeechEmitResult, error) {
 	cfg, err := s.load()
 	if err != nil {
-		return err
+		return SpeechEmitResult{}, err
 	}
 	if !cfg.Speech.Enabled {
-		return speech.ErrDisabled
+		return SpeechEmitResult{}, speech.ErrDisabled
 	}
-	cleaned, err := speech.ValidateEmit(disposition, mode, text)
+	cleaned, err := speech.ValidateEmit(req.Disposition, req.Mode, req.Text)
 	if err != nil {
-		return err
+		return SpeechEmitResult{}, err
 	}
-	if disposition == speech.DispositionSkip {
+	if req.Disposition == speech.DispositionSkip {
 		_ = s.updateMetadata(cfg, func(m *speechMetadata) { m.Skipped++ })
-		return nil
+		return SpeechEmitResult{Skipped: true}, nil
 	}
+	language := req.Language
 	if language == "" || language == "auto" {
 		language = cfg.Speech.Language
 	}
@@ -218,20 +236,24 @@ func (s *SpeechService) emit(ctx context.Context, disposition speech.Disposition
 		language = cfg.Speech.FallbackLanguage
 	}
 	if err := speech.EnsureSupervisor(ctx, cfg.Storage.DataDir); err != nil {
-		return err
+		return SpeechEmitResult{}, err
 	}
 	preference := resolveSpeechPreference(cfg, language)
-	if voice != "" {
-		preference.Voice = voice
+	if req.Voice != "" {
+		preference.Voice = req.Voice
 	}
-	request := speech.Request{Action: "speak", Text: cleaned, Language: language, Voice: preference.Voice, Rate: cfg.Speech.Rate, Model: cfg.Speech.PiperModel}
-	_, err = speech.Send(ctx, cfg.Storage.DataDir, request)
+	request := speech.Request{
+		Action: "speak", Text: cleaned, Language: language, Voice: preference.Voice,
+		Rate: cfg.Speech.Rate, Model: cfg.Speech.PiperModel,
+		SessionID: req.SessionID, Origin: req.Label,
+	}
+	response, err := speech.Send(ctx, cfg.Storage.DataDir, request)
 	if err != nil {
 		_ = s.updateMetadata(cfg, func(m *speechMetadata) { m.LastError = "engine_failed" })
-		return err
+		return SpeechEmitResult{}, err
 	}
 	_ = s.updateMetadata(cfg, func(m *speechMetadata) { m.Emitted++; m.LastError = "" })
-	return err
+	return SpeechEmitResult{Started: response.Started, QueuePosition: response.Position}, nil
 }
 
 // Stop cancels current audio without changing the persistent enabled flag.

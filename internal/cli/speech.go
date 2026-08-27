@@ -104,7 +104,13 @@ func newSpeechTestCmd() *cobra.Command {
 		if len(args) > 0 {
 			text = args[0]
 		}
-		return speechService().EmitWithOverrides(cmd.Context(), speech.DispositionEmit, speech.Mode(mode), text, "es", voice)
+		// SessionID and Label stay empty on purpose (D10/D11): "mneme speech
+		// test" does not speak on behalf of an agent session, so it never
+		// carries a spoken origin prefix.
+		_, err := speechService().Emit(cmd.Context(), service.SpeechEmitRequest{
+			Disposition: speech.DispositionEmit, Mode: speech.Mode(mode), Text: text, Language: "es", Voice: voice,
+		})
+		return err
 	}}
 	cmd.Flags().StringVar(&mode, "mode", "brief", "Speech mode")
 	cmd.Flags().StringVar(&voice, "voice", "", "Temporary voice override")

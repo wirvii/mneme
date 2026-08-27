@@ -268,7 +268,9 @@ func TestSpeechListVoicesForRejectsUnknownEngine(t *testing.T) {
 
 func TestSpeechEmitOverrideStillHonorsDisabled(t *testing.T) {
 	svc := NewSpeechService(filepath.Join(t.TempDir(), "config.toml"), t.TempDir())
-	err := svc.EmitWithOverrides(context.Background(), speech.DispositionEmit, speech.ModeBrief, "Prueba.", "es", "Paulina")
+	_, err := svc.Emit(context.Background(), SpeechEmitRequest{
+		Disposition: speech.DispositionEmit, Mode: speech.ModeBrief, Text: "Prueba.", Language: "es", Voice: "Paulina",
+	})
 	if !errors.Is(err, speech.ErrDisabled) {
 		t.Fatalf("err=%v", err)
 	}
