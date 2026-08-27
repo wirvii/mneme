@@ -155,6 +155,9 @@ revision_count: 0
 	if fm.SupersededBy != "" {
 		t.Errorf("SupersededBy should be empty, got %q", fm.SupersededBy)
 	}
+	if len(fm.SDDRefs) != 0 {
+		t.Errorf("SDDRefs should be empty, got %v", fm.SDDRefs)
+	}
 }
 
 func TestParseFrontmatter_ListFields(t *testing.T) {
@@ -531,14 +534,14 @@ func TestIsValidUUID(t *testing.T) {
 
 func TestToSaveRequest_Full(t *testing.T) {
 	fm := Frontmatter{
-		ID:        "019ddc45-a39b-76da-9ab7-c4546f962418",
-		Type:      "decision",
-		Scope:     "project",
-		Title:     "My decision",
-		TopicKey:  "arch/decision",
-		Project:   "test/project",
-		CreatedBy: "claude-code",
-		Files:     []string{"internal/service/memory.go"},
+		ID:         "019ddc45-a39b-76da-9ab7-c4546f962418",
+		Type:       "decision",
+		Scope:      "project",
+		Title:      "My decision",
+		TopicKey:   "arch/decision",
+		Project:    "test/project",
+		CreatedBy:  "claude-code",
+		Files:      []string{"internal/service/memory.go"},
 		Importance: 0.85,
 	}
 	body := "The decision content"

@@ -202,6 +202,8 @@ func parseFrontmatter(data []byte) (Frontmatter, int, error) {
 			currentList = &fm.Files
 		case "applies_to":
 			currentList = &fm.AppliesTo
+		case "sdd_refs":
+			currentList = &fm.SDDRefs
 		default:
 			// Unknown field — ignore for forward compatibility.
 		}

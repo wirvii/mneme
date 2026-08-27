@@ -115,7 +115,7 @@ func TestFrontmatter_OmitEmpty(t *testing.T) {
 	out := buf.String()
 
 	// Optional fields should be absent.
-	absent := []string{"topic_key:", "project:", "created_by:", "files:", "applies_to:", "severity:", "superseded_by:", "shared:", "author:", "source:"}
+	absent := []string{"topic_key:", "project:", "created_by:", "files:", "applies_to:", "severity:", "superseded_by:", "shared:", "author:", "source:", "sdd_refs:"}
 	for _, f := range absent {
 		if strings.Contains(out, f) {
 			t.Errorf("frontmatter should not contain %q for memory with no value\nGot:\n%s", f, out)
@@ -374,5 +374,154 @@ func TestFrontmatter_SupersededBy(t *testing.T) {
 	out := buf.String()
 	if !strings.Contains(out, "superseded_by: 019ddc45-0000-0000-0000-000000000099") {
 		t.Errorf("superseded_by not found in frontmatter\nGot:\n%s", out)
+	}
+}
+
+// TestFrontmatter_SDDRefs_RoundTrip is AC13's write-then-read half: two
+// anchored references round-trip through FromMemory -> WriteTo ->
+// parseFrontmatter as "REF=UUID" lines, an UNANCHORED reference (empty
+// TargetUUID) is never emitted at all, and Status/LocalID — which
+// MemoryService.Get computes, never the vault (D8) — never appear in the
+// written YAML no matter what a caller sets them to.
+func TestFrontmatter_SDDRefs_RoundTrip(t *testing.T) {
+	m := &model.Memory{
+		ID:        "019ddc45-0000-0000-0000-000000000005",
+		Type:      model.TypeDecision,
+		Scope:     model.ScopeProject,
+		Title:     "Cites two specs",
+		CreatedAt: mustParseTime("2026-01-01T00:00:00Z"),
+		UpdatedAt: mustParseTime("2026-01-01T00:00:00Z"),
+		SDDRefs: []model.SDDRef{
+			{
+				RefID:      "SPEC-125",
+				TargetUUID: "0198f2c1-4a7b-7c3d-9e10-3f4a5b6c7d8e",
+				Status:     model.SDDRefLocal,
+				LocalID:    "SPEC-999", // must never leak into the file.
+			},
+			{RefID: "BL-001", TargetUUID: "0198f2c1-4a7b-7c3d-9e10-3f4a5b6c7d99"},
+			{RefID: "SPEC-200", TargetUUID: ""}, // unanchored: must be omitted.
+		},
+	}
+
+	fm := FromMemory(m)
+	var buf bytes.Buffer
+	if _, err := fm.WriteTo(&buf); err != nil {
+		t.Fatalf("WriteTo returned error: %v", err)
+	}
+	out := buf.String()
+
+	if !strings.Contains(out, "sdd_refs:\n") {
+		t.Fatalf("expected sdd_refs: header in frontmatter\nGot:\n%s", out)
+	}
+	if !strings.Contains(out, "  - SPEC-125=0198f2c1-4a7b-7c3d-9e10-3f4a5b6c7d8e\n") {
+		t.Errorf("expected SPEC-125 entry\nGot:\n%s", out)
+	}
+	if !strings.Contains(out, "  - BL-001=0198f2c1-4a7b-7c3d-9e10-3f4a5b6c7d99\n") {
+		t.Errorf("expected BL-001 entry\nGot:\n%s", out)
+	}
+	if strings.Contains(out, "SPEC-200") {
+		t.Errorf("unanchored SPEC-200 must never be written\nGot:\n%s", out)
+	}
+	if strings.Contains(out, "SPEC-999") || strings.Contains(out, "local") {
+		t.Errorf("Status/LocalID must never appear in the frontmatter\nGot:\n%s", out)
+	}
+
+	parsed, _, err := parseFrontmatter(buf.Bytes())
+	if err != nil {
+		t.Fatalf("parseFrontmatter returned error: %v", err)
+	}
+	if len(parsed.SDDRefs) != 2 {
+		t.Fatalf("expected 2 parsed sdd_refs lines, got %d: %v", len(parsed.SDDRefs), parsed.SDDRefs)
+	}
+
+	got := ParseSDDRefLines(parsed.SDDRefs)
+	want := map[string]string{
+		"SPEC-125": "0198f2c1-4a7b-7c3d-9e10-3f4a5b6c7d8e",
+		"BL-001":   "0198f2c1-4a7b-7c3d-9e10-3f4a5b6c7d99",
+	}
+	if len(got) != 2 {
+		t.Fatalf("ParseSDDRefLines: expected 2 refs, got %d: %+v", len(got), got)
+	}
+	for _, ref := range got {
+		if want[ref.RefID] != ref.TargetUUID {
+			t.Errorf("ParseSDDRefLines: unexpected ref %+v", ref)
+		}
+		if ref.Status != "" || ref.LocalID != "" {
+			t.Errorf("ParseSDDRefLines must never populate Status/LocalID: got %+v", ref)
+		}
+	}
+}
+
+// TestParseSDDRefLines_DiscardsOnlyMalformed proves the tolerance D6/D7
+// require: a hand-edited file with some entries broken must still yield
+// every well-formed entry, never fail outright.
+func TestParseSDDRefLines_DiscardsOnlyMalformed(t *testing.T) {
+	lines := []string{
+		"SPEC-125=0198f2c1-4a7b-7c3d-9e10-3f4a5b6c7d8e", // valid
+		"no-equals-sign-here",                           // malformed: no "="
+		"=0198f2c1-4a7b-7c3d-9e10-3f4a5b6c7d8e",         // malformed: empty ref_id
+		"BL-001=",                                       // malformed: empty uuid
+		"SPEC-126=not-a-valid-uuid",                     // malformed: bad uuid
+		"BL-002=0198f2c1-4a7b-7c3d-9e10-3f4a5b6c7d99",   // valid
+	}
+
+	got := ParseSDDRefLines(lines)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 well-formed refs to survive, got %d: %+v", len(got), got)
+	}
+	want := map[string]string{
+		"SPEC-125": "0198f2c1-4a7b-7c3d-9e10-3f4a5b6c7d8e",
+		"BL-002":   "0198f2c1-4a7b-7c3d-9e10-3f4a5b6c7d99",
+	}
+	for _, ref := range got {
+		if want[ref.RefID] != ref.TargetUUID {
+			t.Errorf("unexpected surviving ref %+v", ref)
+		}
+	}
+}
+
+// TestParseSDDRefLines_Empty covers the empty-input contract explicitly.
+func TestParseSDDRefLines_Empty(t *testing.T) {
+	if got := ParseSDDRefLines(nil); got != nil {
+		t.Errorf("ParseSDDRefLines(nil) = %v, want nil", got)
+	}
+	if got := ParseSDDRefLines([]string{}); got != nil {
+		t.Errorf("ParseSDDRefLines([]string{}) = %v, want nil", got)
+	}
+}
+
+// TestParseUpdatedAt_UnaffectedBySDDRefs is the plan's explicit paso 5
+// check: sdd_refs is written LAST, after updated_at, so parseUpdatedAt's
+// first-512-bytes probe keeps finding updated_at regardless of whether the
+// note carries anchored references.
+func TestParseUpdatedAt_UnaffectedBySDDRefs(t *testing.T) {
+	m := &model.Memory{
+		ID:        "019ddc45-0000-0000-0000-000000000006",
+		Type:      model.TypeDecision,
+		Scope:     model.ScopeProject,
+		Title:     "Cites a spec",
+		CreatedAt: mustParseTime("2026-01-01T00:00:00Z"),
+		UpdatedAt: mustParseTime("2026-04-30T20:41:14Z"),
+		SDDRefs: []model.SDDRef{
+			{RefID: "SPEC-125", TargetUUID: "0198f2c1-4a7b-7c3d-9e10-3f4a5b6c7d8e"},
+		},
+	}
+	fm := FromMemory(m)
+	var buf bytes.Buffer
+	if _, err := fm.WriteTo(&buf); err != nil {
+		t.Fatalf("WriteTo returned error: %v", err)
+	}
+
+	header := buf.Bytes()
+	if len(header) > 512 {
+		header = header[:512]
+	}
+	got, ok := parseUpdatedAt(header)
+	if !ok {
+		t.Fatal("parseUpdatedAt returned ok=false")
+	}
+	want := mustParseTime("2026-04-30T20:41:14Z")
+	if !got.Equal(want) {
+		t.Errorf("parseUpdatedAt got %v; want %v", got, want)
 	}
 }
