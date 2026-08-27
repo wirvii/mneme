@@ -28,6 +28,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `speech_control status` report the queue's counters and now name the
   reasons behind `degraded`. See `docs/speech.md`.
 
+## [v1.41.0] — 2026-08-26 — Backlog archiving over MCP and spec freezing
+
 ### Added
 
 - **`backlog_archive` — a new MCP tool (the 85th) for archiving a backlog
