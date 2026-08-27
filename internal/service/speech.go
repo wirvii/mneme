@@ -41,14 +41,24 @@ type SpeechStatus struct {
 	PreferredEngine  string `json:"preferred_engine,omitempty"`
 	PreferredVoice   string `json:"preferred_voice,omitempty"`
 	EffectiveVoice   string `json:"effective_voice,omitempty"`
-	// Degraded is true only when the configured preference names an engine
-	// that is not the one this host will actually use — for example a
-	// config.toml shared across machines that names another platform's
-	// native engine. It is never true merely because a once-managed engine
-	// is absent: mneme no longer has a managed engine to be absent.
-	Degraded         bool     `json:"degraded"`
-	PreferenceSource string   `json:"preference_source,omitempty"`
-	Warnings         []string `json:"warnings,omitempty"`
+	// Degraded is true whenever DegradedReasons is non-empty (SPEC-129 D17).
+	// It deliberately does NOT try to detect BL-198's three inter-session
+	// collisions (a shared expectation file, a host-wide stop, a single
+	// unattributed voice): after this spec they are no longer possible by
+	// construction, so promising to watch for them would be promising
+	// vigilance over something that cannot happen anymore.
+	Degraded bool `json:"degraded"`
+	// DegradedReasons names every cause behind Degraded, one entry per
+	// cause: a configured engine that is not this host's, the supervisor's
+	// last synthesis having failed, or spoken messages discarded before
+	// they could play. The last two are only observable while a supervisor
+	// is alive to report them in its status reply — the supervisor starts
+	// lazily, so their absence right after enabling speech is expected, not
+	// a gap.
+	DegradedReasons  []string           `json:"degraded_reasons,omitempty"`
+	Queue            *speech.QueueStats `json:"queue,omitempty"`
+	PreferenceSource string             `json:"preference_source,omitempty"`
+	Warnings         []string           `json:"warnings,omitempty"`
 }
 
 type speechMetadata struct {
@@ -289,20 +299,41 @@ func (s *SpeechService) Status(ctx context.Context) (SpeechStatus, error) {
 	}
 	preference := resolveSpeechPreference(cfg, language)
 	effectiveEngine := speech.EngineName(runtime.GOOS)
-	status := SpeechStatus{Enabled: cfg.Speech.Enabled, Mode: cfg.Speech.Mode, Engine: effectiveEngine, ConfiguredEngine: cfg.Speech.Engine, Language: cfg.Speech.Language, FallbackLanguage: cfg.Speech.FallbackLanguage, SetupReady: setupReady, PreferredEngine: preference.Engine, PreferredVoice: preference.Voice, EffectiveVoice: preference.Voice, PreferenceSource: preference.Source, Degraded: preference.Engine != "" && preference.Engine != "auto" && preference.Engine != "system" && preference.Engine != effectiveEngine, Warnings: cfg.Warnings}
+	status := SpeechStatus{Enabled: cfg.Speech.Enabled, Mode: cfg.Speech.Mode, Engine: effectiveEngine, ConfiguredEngine: cfg.Speech.Engine, Language: cfg.Speech.Language, FallbackLanguage: cfg.Speech.FallbackLanguage, SetupReady: setupReady, PreferredEngine: preference.Engine, PreferredVoice: preference.Voice, EffectiveVoice: preference.Voice, PreferenceSource: preference.Source, Warnings: cfg.Warnings}
 	var metadata speechMetadata
 	if data, readErr := os.ReadFile(s.metadataPath(cfg)); readErr == nil {
 		_ = json.Unmarshal(data, &metadata)
 	}
 	status.MissedTurns = metadata.MissedTurns
 	status.Emitted, status.Skipped, status.LastError = metadata.Emitted, metadata.Skipped, metadata.LastError
+
+	var reasons []string
+	// Cause 1, unchanged from before SPEC-129: the configured preference
+	// names an engine that is not this host's — e.g. a config.toml shared
+	// across machines that names another platform's native engine.
+	if preference.Engine != "" && preference.Engine != "auto" && preference.Engine != "system" && preference.Engine != effectiveEngine {
+		reasons = append(reasons, fmt.Sprintf("configured engine %s is not this host's engine %s", preference.Engine, effectiveEngine))
+	}
 	if response, sendErr := speech.Send(ctx, cfg.Storage.DataDir, speech.Request{Action: "status"}); sendErr == nil {
 		status.Engine = response.Engine
 		status.Speaking = response.Speaking
 		if response.Error != "" {
 			status.LastError = response.Error
 		}
+		// Cause 2: the supervisor's own last synthesis failed.
+		if response.Error == "engine_failed" {
+			reasons = append(reasons, "the last synthesis failed")
+		}
+		if response.Queue != nil {
+			status.Queue = response.Queue
+			// Cause 3: something was discarded before it could ever play.
+			if discarded := response.Queue.DroppedExpired + response.Queue.DroppedOverflow; discarded > 0 {
+				reasons = append(reasons, fmt.Sprintf("%d spoken messages were discarded before they could play", discarded))
+			}
+		}
 	}
+	status.DegradedReasons = reasons
+	status.Degraded = len(reasons) > 0
 	return status, nil
 }
 

@@ -358,3 +358,86 @@ func TestRegisterPromptSurvivesOldSupervisor(t *testing.T) {
 		t.Fatalf("call sequence = %q, want %q", got, want)
 	}
 }
+
+// TestSpeechStatusDegradedReasons is AC11: Degraded is true and
+// DegradedReasons names the cause when something was discarded before it
+// could play (D17 cause 3), and Degraded is false with an empty
+// DegradedReasons when no supervisor is reachable at all — the clean case,
+// with none of the three causes observable.
+func TestSpeechStatusDegradedReasons(t *testing.T) {
+	t.Run("clean", func(t *testing.T) {
+		root := t.TempDir()
+		svc := newEnabledSpeechService(t, root)
+		status, err := svc.Status(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if status.Degraded || len(status.DegradedReasons) != 0 {
+			t.Fatalf("status = %+v, want Degraded:false and no reasons", status)
+		}
+	})
+
+	t.Run("discards reported", func(t *testing.T) {
+		root := t.TempDir()
+		svc := newEnabledSpeechService(t, root)
+		cfg, err := svc.load()
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = listener.Close() })
+		go func() {
+			for {
+				conn, acceptErr := listener.Accept()
+				if acceptErr != nil {
+					return
+				}
+				go func() {
+					defer func() { _ = conn.Close() }()
+					var req speech.Request
+					if decodeErr := json.NewDecoder(conn).Decode(&req); decodeErr != nil {
+						return
+					}
+					resp := speech.Response{OK: true, Queue: &speech.QueueStats{DroppedExpired: 2}}
+					_ = json.NewEncoder(conn).Encode(resp)
+				}()
+			}
+		}()
+		runtimeDir := speech.RuntimeDir(cfg.Storage.DataDir)
+		if err := os.MkdirAll(runtimeDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		desc := speech.RuntimeDescriptor{Address: listener.Addr().String(), Token: "test-token"}
+		data, err := json.Marshal(desc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(runtimeDir, "runtime.json"), data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		status, err := svc.Status(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !status.Degraded {
+			t.Fatalf("status.Degraded = false, want true: %+v", status)
+		}
+		found := false
+		for _, reason := range status.DegradedReasons {
+			if strings.Contains(reason, "discarded") {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("DegradedReasons = %v, want one mentioning discarded messages", status.DegradedReasons)
+		}
+		if status.Queue == nil || status.Queue.DroppedExpired != 2 {
+			t.Fatalf("status.Queue = %+v, want DroppedExpired:2", status.Queue)
+		}
+	})
+}
