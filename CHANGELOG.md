@@ -34,6 +34,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   command, or HTTP endpoint: 85 tools, 42 commands, 10 endpoints, exactly
   as before.
 
+### Changed
+
+- **The spoken-response channel now queues audio per session instead of
+  silencing the whole machine (SPEC-129).** Several `mneme`-backed agent
+  sessions can run on the same host at once; before this change they shared
+  one turn expectation file, one "be quiet" signal, and one voice, so any
+  session's prompt could invalidate another session's turn, cut off its
+  audio mid-sentence, or make `missed_turns` count collisions between
+  sessions as agent negligence. Now: typing in a session cancels only that
+  session's own audio — what is playing and what is still queued, never
+  another session's; emissions from different sessions queue and play one
+  after another instead of interrupting each other; an emission that plays
+  while you are looking at a different session says where it came from
+  first; a queued emission that waits too long is dropped silently, and the
+  queue caps how many emissions can wait at once; `speech_emit`'s
+  `spoken:true` now means "started playing now", never "played to
+  completion", with new `queued`/`queue_position` fields for the waiting
+  case; and `missed_turns` resets once, since its old count mixed in
+  turns another session had overwritten. `mneme speech status` and
+  `speech_control status` report the queue's counters and now name the
+  reasons behind `degraded`. See `docs/speech.md`.
+
 ## [v1.41.0] — 2026-08-26 — Backlog archiving over MCP and spec freezing
 
 ### Added

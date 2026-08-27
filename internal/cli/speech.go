@@ -56,6 +56,12 @@ func newSpeechStatusCmd() *cobra.Command {
 			return json.NewEncoder(cmd.OutOrStdout()).Encode(status)
 		}
 		fmt.Fprintf(cmd.OutOrStdout(), "enabled: %t\nmode: %s\nconfigured engine: %s\npreferred engine: %s\neffective engine: %s\npreferred voice: %s\neffective voice: %s\npreference source: %s\ndegraded: %t\nlanguage: %s\nfallback language: %s\nsetup ready: %t\nspeaking: %t\nemitted: %d\nskipped: %d\nmissed turns: %d\nlast error: %s\n", status.Enabled, status.Mode, status.ConfiguredEngine, status.PreferredEngine, status.Engine, status.PreferredVoice, status.EffectiveVoice, status.PreferenceSource, status.Degraded, status.Language, status.FallbackLanguage, status.SetupReady, status.Speaking, status.Emitted, status.Skipped, status.MissedTurns, status.LastError)
+		if status.Queue != nil {
+			fmt.Fprintf(cmd.OutOrStdout(), "queued: %d\ndiscarded before playing: %d\ncancelled because you kept typing: %d\n", status.Queue.Pending, status.Queue.DroppedExpired+status.Queue.DroppedOverflow, status.Queue.CancelledByPrompt)
+		}
+		for _, reason := range status.DegradedReasons {
+			fmt.Fprintf(cmd.OutOrStdout(), "degraded because: %s\n", reason)
+		}
 		for _, warning := range status.Warnings {
 			fmt.Fprintln(cmd.ErrOrStderr(), warning)
 		}
@@ -104,7 +110,13 @@ func newSpeechTestCmd() *cobra.Command {
 		if len(args) > 0 {
 			text = args[0]
 		}
-		return speechService().EmitWithOverrides(cmd.Context(), speech.DispositionEmit, speech.Mode(mode), text, "es", voice)
+		// SessionID and Label stay empty on purpose (D10/D11): "mneme speech
+		// test" does not speak on behalf of an agent session, so it never
+		// carries a spoken origin prefix.
+		_, err := speechService().Emit(cmd.Context(), service.SpeechEmitRequest{
+			Disposition: speech.DispositionEmit, Mode: speech.Mode(mode), Text: text, Language: "es", Voice: voice,
+		})
+		return err
 	}}
 	cmd.Flags().StringVar(&mode, "mode", "brief", "Speech mode")
 	cmd.Flags().StringVar(&voice, "voice", "", "Temporary voice override")

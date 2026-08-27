@@ -4,16 +4,28 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/wirvii/mneme/internal/config"
 	"github.com/wirvii/mneme/internal/speech"
 )
 
+// TestSpeechRegisterPromptOptInAndMissedTurns used to assert that
+// CheckExpectation("turn-1") failed once "turn-2" registered — that
+// assertion WAS the BL-198 bug (a single host-wide expectation file, so any
+// other session's prompt clobbered this one's). SPEC-129 D2 gives every
+// session its own file: two different sessions registering in sequence must
+// both stay valid, and neither should count as a missed turn for the other
+// (D4). See TestExpectationsAreIsolatedPerSession and
+// TestMissedTurnsCountOnlyOwnSession for the dedicated regression coverage.
 func TestSpeechRegisterPromptOptInAndMissedTurns(t *testing.T) {
 	root := t.TempDir()
 	configPath := filepath.Join(root, "config.toml")
@@ -41,18 +53,125 @@ func TestSpeechRegisterPromptOptInAndMissedTurns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status.MissedTurns != 1 {
-		t.Fatalf("missed turns = %d, want 1", status.MissedTurns)
+	if status.MissedTurns != 0 {
+		t.Fatalf("missed turns = %d, want 0: turn-2 is a different session, not a missed turn of turn-1", status.MissedTurns)
 	}
-	if err := svc.CheckExpectation("turn-1"); err == nil {
-		t.Fatal("stale session unexpectedly owns current expectation")
+	if err := svc.CheckExpectation("turn-1"); err != nil {
+		t.Fatalf("turn-1's own expectation must survive turn-2 registering: %v", err)
 	}
 	if err := svc.CheckExpectation("turn-2"); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.ResolveExpectation("turn-1"); err != nil {
 		t.Fatal(err)
 	}
 	if err := svc.ResolveExpectation("turn-2"); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// TestExpectationsAreIsolatedPerSession is AC7, the direct regression of
+// BL-198 symptoms 1 and 3: resolving one session's expectation must never
+// invalidate another's.
+func TestExpectationsAreIsolatedPerSession(t *testing.T) {
+	root := t.TempDir()
+	svc := newEnabledSpeechService(t, root)
+
+	if _, err := svc.RegisterPrompt(context.Background(), "A"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.RegisterPrompt(context.Background(), "B"); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.CheckExpectation("A"); err != nil {
+		t.Fatalf("CheckExpectation(A) = %v", err)
+	}
+	if err := svc.CheckExpectation("B"); err != nil {
+		t.Fatalf("CheckExpectation(B) = %v", err)
+	}
+	if err := svc.ResolveExpectation("A"); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.CheckExpectation("B"); err != nil {
+		t.Fatalf("resolving A invalidated B's expectation: %v", err)
+	}
+}
+
+// TestMissedTurnsCountOnlyOwnSession is AC8: missed_turns only rises when a
+// session's OWN previous expectation was left unresolved — never because a
+// different session registered in between.
+func TestMissedTurnsCountOnlyOwnSession(t *testing.T) {
+	root := t.TempDir()
+	svc := newEnabledSpeechService(t, root)
+
+	if _, err := svc.RegisterPrompt(context.Background(), "A"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.RegisterPrompt(context.Background(), "B"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.RegisterPrompt(context.Background(), "A"); err != nil {
+		t.Fatal(err)
+	}
+	status, err := svc.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.MissedTurns != 1 {
+		t.Fatalf("missed turns = %d, want 1 (A's own second prompt, not B's)", status.MissedTurns)
+	}
+}
+
+// TestMissedTurnsResetOnMetadataMigration is AC9: the pre-SPEC-129
+// missed_turns accumulator (391 on the owner's host, counting collisions
+// between sessions, not real negligence — D4) does not survive the first
+// write under the new definition.
+func TestMissedTurnsResetOnMetadataMigration(t *testing.T) {
+	root := t.TempDir()
+	svc := newEnabledSpeechService(t, root)
+	cfg, err := svc.load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := []byte(`{"missed_turns":391}`)
+	if err := os.MkdirAll(filepath.Dir(svc.metadataPath(cfg)), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(svc.metadataPath(cfg), legacy, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := svc.RegisterPrompt(context.Background(), "A"); err != nil {
+		t.Fatal(err)
+	}
+	status, err := svc.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.MissedTurns != 0 {
+		t.Fatalf("missed turns after migration = %d, want 0", status.MissedTurns)
+	}
+	data, err := os.ReadFile(svc.metadataPath(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"version":1`) {
+		t.Fatalf("metadata after migration = %s, want version:1", data)
+	}
+}
+
+// newEnabledSpeechService returns a SpeechService with speech persistently
+// enabled, rooted under a fresh temp directory.
+func newEnabledSpeechService(t *testing.T, root string) *SpeechService {
+	t.Helper()
+	configPath := filepath.Join(root, "config.toml")
+	dataDir := filepath.Join(root, "data")
+	speechCfg := config.Default().Speech
+	speechCfg.Enabled = true
+	if err := config.SetSpeech(configPath, speechCfg); err != nil {
+		t.Fatal(err)
+	}
+	return NewSpeechService(configPath, dataDir)
 }
 
 func TestSpeechSetupLocalModelVerifiesChecksum(t *testing.T) {
@@ -149,8 +268,176 @@ func TestSpeechListVoicesForRejectsUnknownEngine(t *testing.T) {
 
 func TestSpeechEmitOverrideStillHonorsDisabled(t *testing.T) {
 	svc := NewSpeechService(filepath.Join(t.TempDir(), "config.toml"), t.TempDir())
-	err := svc.EmitWithOverrides(context.Background(), speech.DispositionEmit, speech.ModeBrief, "Prueba.", "es", "Paulina")
+	_, err := svc.Emit(context.Background(), SpeechEmitRequest{
+		Disposition: speech.DispositionEmit, Mode: speech.ModeBrief, Text: "Prueba.", Language: "es", Voice: "Paulina",
+	})
 	if !errors.Is(err, speech.ErrDisabled) {
 		t.Fatalf("err=%v", err)
 	}
+}
+
+// TestRegisterPromptSurvivesOldSupervisor is AC13's service half: a
+// supervisor left running by an older mneme binary answers "cancel" with
+// "unknown action", and RegisterPrompt must climb D18's compatibility
+// ladder (cancel -> shutdown -> status -> cancel -> stop) and still return
+// its protocol block with no error.
+//
+// The fake listener answers "status" with ok:true UNCONDITIONALLY, even
+// after "shutdown" — it must keep doing so, or EnsureSupervisor's own
+// initial status check fails and it tries to launch the real test binary as
+// a supervisor, which then waits out its own 5s startup timeout. This test
+// exercises the CALL LADDER, not a real process launch — that is already
+// covered by TestEnsureSupervisorStartsReusesAndRecoversStaleLock in
+// internal/speech.
+func TestRegisterPromptSurvivesOldSupervisor(t *testing.T) {
+	root := t.TempDir()
+	svc := newEnabledSpeechService(t, root)
+	cfg, err := svc.load()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = listener.Close() }()
+
+	var mu sync.Mutex
+	var sequence []string
+	go func() {
+		for {
+			conn, acceptErr := listener.Accept()
+			if acceptErr != nil {
+				return
+			}
+			go func() {
+				defer func() { _ = conn.Close() }()
+				var req speech.Request
+				if decodeErr := json.NewDecoder(conn).Decode(&req); decodeErr != nil {
+					return
+				}
+				mu.Lock()
+				sequence = append(sequence, req.Action)
+				mu.Unlock()
+				var resp speech.Response
+				switch req.Action {
+				case "status", "shutdown", "stop":
+					resp = speech.Response{OK: true}
+				case "cancel":
+					resp = speech.Response{Error: "unknown action"}
+				}
+				_ = json.NewEncoder(conn).Encode(resp)
+			}()
+		}
+	}()
+
+	runtimeDir := speech.RuntimeDir(cfg.Storage.DataDir)
+	if err := os.MkdirAll(runtimeDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	desc := speech.RuntimeDescriptor{Address: listener.Addr().String(), Token: "secret", PID: 1, StartedAt: time.Now().UTC()}
+	data, _ := json.Marshal(desc)
+	if err := os.WriteFile(filepath.Join(runtimeDir, "runtime.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	protocol, err := svc.RegisterPrompt(context.Background(), "session-1")
+	if err != nil {
+		t.Fatalf("RegisterPrompt = %v", err)
+	}
+	if !strings.Contains(protocol, "speech_emit exactly once") {
+		t.Fatalf("protocol block missing: %q", protocol)
+	}
+
+	mu.Lock()
+	got := strings.Join(sequence, ",")
+	mu.Unlock()
+	want := "cancel,shutdown,status,cancel,stop"
+	if got != want {
+		t.Fatalf("call sequence = %q, want %q", got, want)
+	}
+}
+
+// TestSpeechStatusDegradedReasons is AC11: Degraded is true and
+// DegradedReasons names the cause when something was discarded before it
+// could play (D17 cause 3), and Degraded is false with an empty
+// DegradedReasons when no supervisor is reachable at all — the clean case,
+// with none of the three causes observable.
+func TestSpeechStatusDegradedReasons(t *testing.T) {
+	t.Run("clean", func(t *testing.T) {
+		root := t.TempDir()
+		svc := newEnabledSpeechService(t, root)
+		status, err := svc.Status(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if status.Degraded || len(status.DegradedReasons) != 0 {
+			t.Fatalf("status = %+v, want Degraded:false and no reasons", status)
+		}
+	})
+
+	t.Run("discards reported", func(t *testing.T) {
+		root := t.TempDir()
+		svc := newEnabledSpeechService(t, root)
+		cfg, err := svc.load()
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = listener.Close() })
+		go func() {
+			for {
+				conn, acceptErr := listener.Accept()
+				if acceptErr != nil {
+					return
+				}
+				go func() {
+					defer func() { _ = conn.Close() }()
+					var req speech.Request
+					if decodeErr := json.NewDecoder(conn).Decode(&req); decodeErr != nil {
+						return
+					}
+					resp := speech.Response{OK: true, Queue: &speech.QueueStats{DroppedExpired: 2}}
+					_ = json.NewEncoder(conn).Encode(resp)
+				}()
+			}
+		}()
+		runtimeDir := speech.RuntimeDir(cfg.Storage.DataDir)
+		if err := os.MkdirAll(runtimeDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		desc := speech.RuntimeDescriptor{Address: listener.Addr().String(), Token: "test-token"}
+		data, err := json.Marshal(desc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(runtimeDir, "runtime.json"), data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		status, err := svc.Status(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !status.Degraded {
+			t.Fatalf("status.Degraded = false, want true: %+v", status)
+		}
+		found := false
+		for _, reason := range status.DegradedReasons {
+			if strings.Contains(reason, "discarded") {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("DegradedReasons = %v, want one mentioning discarded messages", status.DegradedReasons)
+		}
+		if status.Queue == nil || status.Queue.DroppedExpired != 2 {
+			t.Fatalf("status.Queue = %+v, want DroppedExpired:2", status.Queue)
+		}
+	})
 }

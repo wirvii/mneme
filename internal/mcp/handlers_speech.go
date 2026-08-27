@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/wirvii/mneme/internal/service"
 	"github.com/wirvii/mneme/internal/speech"
 )
 
@@ -31,11 +32,28 @@ func (h *handlers) handleSpeechEmit(ctx context.Context, raw json.RawMessage) (*
 	if err := h.speechSvc.CheckExpectation(args.SessionID); err != nil {
 		return nil, h.mapServiceError("speech_emit", err)
 	}
-	emitErr := h.speechSvc.Emit(ctx, args.Disposition, args.Mode, args.Text, args.Language)
+	emitResult, emitErr := h.speechSvc.Emit(ctx, service.SpeechEmitRequest{
+		Disposition: args.Disposition,
+		Mode:        args.Mode,
+		Text:        args.Text,
+		Language:    args.Language,
+		SessionID:   args.SessionID,
+		Label:       speech.SpokenLabel(h.svc.ProjectSlug()),
+	})
 	if err := h.speechSvc.ResolveExpectation(args.SessionID); err != nil {
 		return nil, h.mapServiceError("speech_emit", err)
 	}
-	result := map[string]any{"resolved": true, "spoken": args.Disposition == speech.DispositionEmit && emitErr == nil, "skipped": args.Disposition == speech.DispositionSkip}
+	// spoken means "this emission started playing now" — never "played to
+	// completion": mneme does not wait out the whole synthesis, which would
+	// block this MCP call for the entire playback (D15). queued/
+	// queue_position are additive and only appear while the emission is
+	// still waiting its turn.
+	spoken := args.Disposition == speech.DispositionEmit && emitErr == nil && emitResult.Started
+	result := map[string]any{"resolved": true, "spoken": spoken, "skipped": args.Disposition == speech.DispositionSkip}
+	if emitErr == nil && args.Disposition == speech.DispositionEmit && !emitResult.Started && !emitResult.Skipped {
+		result["queued"] = true
+		result["queue_position"] = emitResult.QueuePosition
+	}
 	if emitErr != nil {
 		result["engine_error"] = "local synthesis failed"
 	}

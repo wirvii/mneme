@@ -41,14 +41,24 @@ type SpeechStatus struct {
 	PreferredEngine  string `json:"preferred_engine,omitempty"`
 	PreferredVoice   string `json:"preferred_voice,omitempty"`
 	EffectiveVoice   string `json:"effective_voice,omitempty"`
-	// Degraded is true only when the configured preference names an engine
-	// that is not the one this host will actually use — for example a
-	// config.toml shared across machines that names another platform's
-	// native engine. It is never true merely because a once-managed engine
-	// is absent: mneme no longer has a managed engine to be absent.
-	Degraded         bool     `json:"degraded"`
-	PreferenceSource string   `json:"preference_source,omitempty"`
-	Warnings         []string `json:"warnings,omitempty"`
+	// Degraded is true whenever DegradedReasons is non-empty (SPEC-129 D17).
+	// It deliberately does NOT try to detect BL-198's three inter-session
+	// collisions (a shared expectation file, a host-wide stop, a single
+	// unattributed voice): after this spec they are no longer possible by
+	// construction, so promising to watch for them would be promising
+	// vigilance over something that cannot happen anymore.
+	Degraded bool `json:"degraded"`
+	// DegradedReasons names every cause behind Degraded, one entry per
+	// cause: a configured engine that is not this host's, the supervisor's
+	// last synthesis having failed, or spoken messages discarded before
+	// they could play. The last two are only observable while a supervisor
+	// is alive to report them in its status reply — the supervisor starts
+	// lazily, so their absence right after enabling speech is expected, not
+	// a gap.
+	DegradedReasons  []string           `json:"degraded_reasons,omitempty"`
+	Queue            *speech.QueueStats `json:"queue,omitempty"`
+	PreferenceSource string             `json:"preference_source,omitempty"`
+	Warnings         []string           `json:"warnings,omitempty"`
 }
 
 type speechMetadata struct {
@@ -56,6 +66,13 @@ type speechMetadata struct {
 	Skipped     int    `json:"skipped"`
 	MissedTurns int    `json:"missed_turns"`
 	LastError   string `json:"last_error,omitempty"`
+	// Version marks the schema of missed_turns. Version 0 (or absent) is the
+	// pre-SPEC-129 counter, which conflated "the agent never resolved this
+	// turn" with "another session overwrote the shared expectation file" — a
+	// number whose own definition changed is not comparable to its history,
+	// so updateMetadata resets MissedTurns to 0 the first time it sees a
+	// pre-migration document (D4).
+	Version int `json:"version,omitempty"`
 }
 
 // NewSpeechService constructs a service over the host config and data paths.
@@ -178,32 +195,50 @@ func (s *SpeechService) SetupLocalModel(modelPath, expectedSHA256 string) error 
 	return config.SetSpeech(s.configPath, cfg.Speech)
 }
 
-// Emit resolves one agent turn by speaking useful text or explicitly skipping it.
-func (s *SpeechService) Emit(ctx context.Context, disposition speech.Disposition, mode speech.Mode, text, language string) error {
-	return s.emit(ctx, disposition, mode, text, language, "")
+// SpeechEmitRequest is one agent turn resolution. SessionID and Label carry
+// what the queue needs to attribute the emission (D19): who owns it, and
+// what to call it out loud if it plays while another session has focus.
+// Voice is a temporary override that is never persisted.
+type SpeechEmitRequest struct {
+	Disposition speech.Disposition
+	Mode        speech.Mode
+	Text        string
+	Language    string
+	Voice       string
+	SessionID   string
+	Label       string
 }
 
-// EmitWithOverrides speaks a test request without persisting a voice override.
-func (s *SpeechService) EmitWithOverrides(ctx context.Context, disposition speech.Disposition, mode speech.Mode, text, language, voice string) error {
-	return s.emit(ctx, disposition, mode, text, language, voice)
+// SpeechEmitResult reports what happened to one SpeechEmitRequest. Started
+// means the audio began playing now — never that it finished (D15): mneme
+// does not wait out the whole synthesis, which would block the calling
+// frontend for the entire playback. QueuePosition is meaningful only when
+// Started is false.
+type SpeechEmitResult struct {
+	Started       bool
+	QueuePosition int
+	Skipped       bool
 }
 
-func (s *SpeechService) emit(ctx context.Context, disposition speech.Disposition, mode speech.Mode, text, language, voice string) error {
+// Emit resolves one agent turn: speaking useful text (queued behind
+// whatever else is already playing), or explicitly skipping it.
+func (s *SpeechService) Emit(ctx context.Context, req SpeechEmitRequest) (SpeechEmitResult, error) {
 	cfg, err := s.load()
 	if err != nil {
-		return err
+		return SpeechEmitResult{}, err
 	}
 	if !cfg.Speech.Enabled {
-		return speech.ErrDisabled
+		return SpeechEmitResult{}, speech.ErrDisabled
 	}
-	cleaned, err := speech.ValidateEmit(disposition, mode, text)
+	cleaned, err := speech.ValidateEmit(req.Disposition, req.Mode, req.Text)
 	if err != nil {
-		return err
+		return SpeechEmitResult{}, err
 	}
-	if disposition == speech.DispositionSkip {
+	if req.Disposition == speech.DispositionSkip {
 		_ = s.updateMetadata(cfg, func(m *speechMetadata) { m.Skipped++ })
-		return nil
+		return SpeechEmitResult{Skipped: true}, nil
 	}
+	language := req.Language
 	if language == "" || language == "auto" {
 		language = cfg.Speech.Language
 	}
@@ -211,20 +246,24 @@ func (s *SpeechService) emit(ctx context.Context, disposition speech.Disposition
 		language = cfg.Speech.FallbackLanguage
 	}
 	if err := speech.EnsureSupervisor(ctx, cfg.Storage.DataDir); err != nil {
-		return err
+		return SpeechEmitResult{}, err
 	}
 	preference := resolveSpeechPreference(cfg, language)
-	if voice != "" {
-		preference.Voice = voice
+	if req.Voice != "" {
+		preference.Voice = req.Voice
 	}
-	request := speech.Request{Action: "speak", Text: cleaned, Language: language, Voice: preference.Voice, Rate: cfg.Speech.Rate, Model: cfg.Speech.PiperModel}
-	_, err = speech.Send(ctx, cfg.Storage.DataDir, request)
+	request := speech.Request{
+		Action: "speak", Text: cleaned, Language: language, Voice: preference.Voice,
+		Rate: cfg.Speech.Rate, Model: cfg.Speech.PiperModel,
+		SessionID: req.SessionID, Origin: req.Label,
+	}
+	response, err := speech.Send(ctx, cfg.Storage.DataDir, request)
 	if err != nil {
 		_ = s.updateMetadata(cfg, func(m *speechMetadata) { m.LastError = "engine_failed" })
-		return err
+		return SpeechEmitResult{}, err
 	}
 	_ = s.updateMetadata(cfg, func(m *speechMetadata) { m.Emitted++; m.LastError = "" })
-	return err
+	return SpeechEmitResult{Started: response.Started, QueuePosition: response.Position}, nil
 }
 
 // Stop cancels current audio without changing the persistent enabled flag.
@@ -260,20 +299,41 @@ func (s *SpeechService) Status(ctx context.Context) (SpeechStatus, error) {
 	}
 	preference := resolveSpeechPreference(cfg, language)
 	effectiveEngine := speech.EngineName(runtime.GOOS)
-	status := SpeechStatus{Enabled: cfg.Speech.Enabled, Mode: cfg.Speech.Mode, Engine: effectiveEngine, ConfiguredEngine: cfg.Speech.Engine, Language: cfg.Speech.Language, FallbackLanguage: cfg.Speech.FallbackLanguage, SetupReady: setupReady, PreferredEngine: preference.Engine, PreferredVoice: preference.Voice, EffectiveVoice: preference.Voice, PreferenceSource: preference.Source, Degraded: preference.Engine != "" && preference.Engine != "auto" && preference.Engine != "system" && preference.Engine != effectiveEngine, Warnings: cfg.Warnings}
+	status := SpeechStatus{Enabled: cfg.Speech.Enabled, Mode: cfg.Speech.Mode, Engine: effectiveEngine, ConfiguredEngine: cfg.Speech.Engine, Language: cfg.Speech.Language, FallbackLanguage: cfg.Speech.FallbackLanguage, SetupReady: setupReady, PreferredEngine: preference.Engine, PreferredVoice: preference.Voice, EffectiveVoice: preference.Voice, PreferenceSource: preference.Source, Warnings: cfg.Warnings}
 	var metadata speechMetadata
 	if data, readErr := os.ReadFile(s.metadataPath(cfg)); readErr == nil {
 		_ = json.Unmarshal(data, &metadata)
 	}
 	status.MissedTurns = metadata.MissedTurns
 	status.Emitted, status.Skipped, status.LastError = metadata.Emitted, metadata.Skipped, metadata.LastError
+
+	var reasons []string
+	// Cause 1, unchanged from before SPEC-129: the configured preference
+	// names an engine that is not this host's — e.g. a config.toml shared
+	// across machines that names another platform's native engine.
+	if preference.Engine != "" && preference.Engine != "auto" && preference.Engine != "system" && preference.Engine != effectiveEngine {
+		reasons = append(reasons, fmt.Sprintf("configured engine %s is not this host's engine %s", preference.Engine, effectiveEngine))
+	}
 	if response, sendErr := speech.Send(ctx, cfg.Storage.DataDir, speech.Request{Action: "status"}); sendErr == nil {
 		status.Engine = response.Engine
 		status.Speaking = response.Speaking
 		if response.Error != "" {
 			status.LastError = response.Error
 		}
+		// Cause 2: the supervisor's own last synthesis failed.
+		if response.Error == "engine_failed" {
+			reasons = append(reasons, "the last synthesis failed")
+		}
+		if response.Queue != nil {
+			status.Queue = response.Queue
+			// Cause 3: something was discarded before it could ever play.
+			if discarded := response.Queue.DroppedExpired + response.Queue.DroppedOverflow; discarded > 0 {
+				reasons = append(reasons, fmt.Sprintf("%d spoken messages were discarded before they could play", discarded))
+			}
+		}
 	}
+	status.DegradedReasons = reasons
+	status.Degraded = len(reasons) > 0
 	return status, nil
 }
 
@@ -292,7 +352,36 @@ func resolveSpeechPreference(cfg *config.Config, language string) speech.Resolve
 	return speech.ResolvePreference(language, preferences, cfg.Speech.Voices, defaultEngine)
 }
 
-// RegisterPrompt cancels audio and records an unresolved turn expectation.
+// expectationFile is the per-session turn expectation persisted under
+// expectationsDir (D2). The file name is a hash of sessionID purely for path
+// safety — a session_id is opaque and could contain path separators — and is
+// never a secret: it is stored in clear inside the file too. Ownership is
+// always decided by comparing SessionID here, in the content, never the
+// file name: a hash collision or truncation must never grant someone else's
+// expectation.
+type expectationFile struct {
+	SessionID string    `json:"session_id"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// expectationsDir is where SPEC-129 keeps one turn expectation file per
+// session, replacing the single host-wide expectations.json that let any
+// session's RegisterPrompt clobber another's (BL-198, D2).
+func expectationsDir(cfg *config.Config) string {
+	return filepath.Join(speech.RuntimeDir(cfg.Storage.DataDir), "expectations")
+}
+
+// expectationPath returns the per-session expectation file path.
+func expectationPath(cfg *config.Config, sessionID string) string {
+	sum := sha256.Sum256([]byte(sessionID))
+	return filepath.Join(expectationsDir(cfg), hex.EncodeToString(sum[:])[:32]+".json")
+}
+
+// RegisterPrompt records the current session as focused, cancels only that
+// session's audio (what is playing and what is waiting), and records an
+// unresolved turn expectation for sessionID. RegisterPrompt never returns an
+// error along this path: runHookSpeechPrompt already swallows one, and a
+// failure here must not cost the agent its protocol block.
 func (s *SpeechService) RegisterPrompt(ctx context.Context, sessionID string) (string, error) {
 	cfg, err := s.load()
 	if err != nil {
@@ -301,33 +390,125 @@ func (s *SpeechService) RegisterPrompt(ctx context.Context, sessionID string) (s
 	if !cfg.Speech.Enabled {
 		return "", nil
 	}
-	_ = s.Stop(ctx)
-	path := filepath.Join(speech.RuntimeDir(cfg.Storage.DataDir), "expectations.json")
-	type expectation struct {
-		SessionID string    `json:"session_id"`
-		CreatedAt time.Time `json:"created_at"`
+	_ = s.writeFocus(cfg, sessionID)
+	s.cancelSessionAudio(ctx, cfg, sessionID)
+
+	// Reading the caller's own expectation must happen BEFORE the sweep
+	// below: sweeping first could delete an expectation older than
+	// ExpectationTTL before it is ever counted as a missed turn.
+	path := expectationPath(cfg, sessionID)
+	hasUnresolvedOwnTurn := false
+	if data, readErr := os.ReadFile(path); readErr == nil {
+		var previous expectationFile
+		if json.Unmarshal(data, &previous) == nil && previous.SessionID != "" {
+			hasUnresolvedOwnTurn = true
+		}
 	}
-	var previous expectation
-	if data, readErr := os.ReadFile(path); readErr == nil && json.Unmarshal(data, &previous) == nil && previous.SessionID != "" {
-		_ = s.incrementMissed(cfg)
-	}
+	// updateMetadata runs on every prompt, not only when this session had an
+	// unresolved turn: it is also the one place a pre-SPEC-129 missed_turns
+	// document gets migrated (D4), and that migration cannot wait for a
+	// second prompt to happen.
+	_ = s.updateMetadata(cfg, func(metadata *speechMetadata) {
+		if hasUnresolvedOwnTurn {
+			metadata.MissedTurns++
+		}
+	})
+	s.sweepExpectations(cfg)
+
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return "", err
 	}
-	data, _ := json.Marshal(expectation{SessionID: sessionID, CreatedAt: time.Now().UTC()})
+	data, _ := json.Marshal(expectationFile{SessionID: sessionID, CreatedAt: time.Now().UTC()})
 	if err := writePrivateAtomic(path, data); err != nil {
 		return "", fmt.Errorf("speech: save expectation: %w", err)
 	}
 	return fmt.Sprintf("<mneme:speech>Speech is enabled in %s mode. Before your final response, call speech_emit exactly once with disposition=emit and a concise semantic spoken summary, or disposition=skip when nothing adds value. Use session_id=%q. Never read raw tool output or code.</mneme:speech>", cfg.Speech.Mode, sessionID), nil
 }
 
-// ResolveExpectation clears a matching turn expectation without persisting text.
+// writeFocus records sessionID as the session the user is currently typing
+// in (D9). "Last write wins" is the semantics wanted, not an accident: the
+// focus IS the last session where the user typed, and it deliberately does
+// not expire — an hour-old focus is still the best data available, and
+// prefixing origin too often costs verbosity, never confusion.
+func (s *SpeechService) writeFocus(cfg *config.Config, sessionID string) error {
+	path := filepath.Join(speech.RuntimeDir(cfg.Storage.DataDir), "focus.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	data, _ := json.Marshal(struct {
+		SessionID string    `json:"session_id"`
+		UpdatedAt time.Time `json:"updated_at"`
+	}{SessionID: sessionID, UpdatedAt: time.Now().UTC()})
+	return writePrivateAtomic(path, data)
+}
+
+// cancelSessionAudio implements D7/D18's compatibility ladder for the
+// session-scoped cancel: it never starts a supervisor on the normal path
+// (without one there is no audio to cancel, and spawning a process on every
+// prompt would be pure waste), and it never returns an error — a failure
+// here must not cost the caller its protocol block.
+func (s *SpeechService) cancelSessionAudio(ctx context.Context, cfg *config.Config, sessionID string) {
+	_, err := speech.Send(ctx, cfg.Storage.DataDir, speech.Request{Action: "cancel", SessionID: sessionID})
+	if err == nil || !errors.Is(err, speech.ErrUnknownAction) {
+		// Either it worked, or the failure is something else entirely (no
+		// supervisor running yet, connection refused, ...) — exactly what
+		// Stop already treated as "already stopped" before SPEC-129.
+		return
+	}
+	// The listener answered "unknown action": it is a supervisor left
+	// running by an older mneme binary (D18). Replace it once — there is no
+	// bounce-back risk, since the new supervisor understands every action an
+	// old client can send — and retry the cancel a single time.
+	_, _ = speech.Send(ctx, cfg.Storage.DataDir, speech.Request{Action: "shutdown"})
+	if ensureErr := speech.EnsureSupervisor(ctx, cfg.Storage.DataDir); ensureErr == nil {
+		if _, retryErr := speech.Send(ctx, cfg.Storage.DataDir, speech.Request{Action: "cancel", SessionID: sessionID}); retryErr == nil {
+			return
+		}
+	}
+	// The replacement did not work out; fall back to the old, host-scoped
+	// stop rather than leaving nothing cancelled.
+	_, _ = speech.Send(ctx, cfg.Storage.DataDir, speech.Request{Action: "stop"})
+}
+
+// sweepExpectations removes per-session expectation files older than
+// speech.ExpectationTTL, plus the legacy host-wide expectations.json from
+// before SPEC-129, if still present. Best-effort: RegisterPrompt cannot let
+// housekeeping failures block a prompt from resolving, so every error here
+// is swallowed.
+func (s *SpeechService) sweepExpectations(cfg *config.Config) {
+	dir := expectationsDir(cfg)
+	if entries, err := os.ReadDir(dir); err == nil {
+		for _, entry := range entries {
+			if entry.IsDir() {
+				continue
+			}
+			entryPath := filepath.Join(dir, entry.Name())
+			data, readErr := os.ReadFile(entryPath)
+			if readErr != nil {
+				continue
+			}
+			var stale expectationFile
+			if json.Unmarshal(data, &stale) != nil {
+				continue
+			}
+			if time.Since(stale.CreatedAt) > speech.ExpectationTTL {
+				_ = os.Remove(entryPath)
+			}
+		}
+	}
+	legacy := filepath.Join(speech.RuntimeDir(cfg.Storage.DataDir), "expectations.json")
+	if _, statErr := os.Stat(legacy); statErr == nil {
+		_ = os.Remove(legacy)
+	}
+}
+
+// ResolveExpectation clears sessionID's turn expectation without persisting text.
 func (s *SpeechService) ResolveExpectation(sessionID string) error {
 	cfg, err := s.load()
 	if err != nil {
 		return err
 	}
-	path := filepath.Join(speech.RuntimeDir(cfg.Storage.DataDir), "expectations.json")
+	path := expectationPath(cfg, sessionID)
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -335,9 +516,7 @@ func (s *SpeechService) ResolveExpectation(sessionID string) error {
 	if err != nil {
 		return err
 	}
-	var current struct {
-		SessionID string `json:"session_id"`
-	}
+	var current expectationFile
 	if err := json.Unmarshal(data, &current); err != nil {
 		return err
 	}
@@ -347,19 +526,17 @@ func (s *SpeechService) ResolveExpectation(sessionID string) error {
 	return os.Remove(path)
 }
 
-// CheckExpectation verifies that sessionID owns the unresolved current turn.
+// CheckExpectation verifies that sessionID owns its unresolved current turn.
 func (s *SpeechService) CheckExpectation(sessionID string) error {
 	cfg, err := s.load()
 	if err != nil {
 		return err
 	}
-	data, err := os.ReadFile(filepath.Join(speech.RuntimeDir(cfg.Storage.DataDir), "expectations.json"))
+	data, err := os.ReadFile(expectationPath(cfg, sessionID))
 	if err != nil {
 		return fmt.Errorf("speech: read expectation: %w", err)
 	}
-	var current struct {
-		SessionID string `json:"session_id"`
-	}
+	var current expectationFile
 	if err := json.Unmarshal(data, &current); err != nil {
 		return fmt.Errorf("speech: parse expectation: %w", err)
 	}
@@ -372,15 +549,19 @@ func (s *SpeechService) CheckExpectation(sessionID string) error {
 func (s *SpeechService) metadataPath(cfg *config.Config) string {
 	return filepath.Join(speech.RuntimeDir(cfg.Storage.DataDir), "status.json")
 }
-func (s *SpeechService) incrementMissed(cfg *config.Config) error {
-	return s.updateMetadata(cfg, func(metadata *speechMetadata) { metadata.MissedTurns++ })
-}
 
 func (s *SpeechService) updateMetadata(cfg *config.Config, update func(*speechMetadata)) error {
 	path := s.metadataPath(cfg)
 	var metadata speechMetadata
 	if data, err := os.ReadFile(path); err == nil {
 		_ = json.Unmarshal(data, &metadata)
+	}
+	// A document written before SPEC-129 (or one with no version at all)
+	// carries missed_turns counted under the old, misattributing definition
+	// (D4): reset it once, here, before applying this call's own update.
+	if metadata.Version < 1 {
+		metadata.MissedTurns = 0
+		metadata.Version = 1
 	}
 	update(&metadata)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {

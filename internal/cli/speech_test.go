@@ -1,6 +1,18 @@
 package cli
 
-import "testing"
+import (
+	"bytes"
+	"encoding/json"
+	"net"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/wirvii/mneme/internal/config"
+	"github.com/wirvii/mneme/internal/service"
+	"github.com/wirvii/mneme/internal/speech"
+)
 
 func TestSpeechCommandSurfaceIsNativeOnly(t *testing.T) {
 	root := newSpeechCmd()
@@ -61,4 +73,90 @@ func TestSpeechCommandSurfaceIsNativeOnly(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestSpeechStatusCommandPrintsQueue is AC22: `mneme speech status` prints
+// the new queue/degradation lines in text mode, and exposes the same data
+// under "queue"/"degraded_reasons" in --json mode. flagDataDir is pinned to
+// an isolated temp directory and restored in t.Cleanup, the pattern
+// internal/cli/hook_test.go and profile_sessionstart_test.go already use.
+func TestSpeechStatusCommandPrintsQueue(t *testing.T) {
+	dataDir := t.TempDir()
+	oldDataDir := flagDataDir
+	flagDataDir = dataDir
+	t.Cleanup(func() { flagDataDir = oldDataDir })
+
+	speechCfg := config.Default().Speech
+	speechCfg.Enabled = true
+	if err := config.SetSpeech(config.DefaultPath(), speechCfg); err != nil {
+		t.Fatal(err)
+	}
+
+	// A fake supervisor whose status reply reports one overflow discard —
+	// enough to make Degraded true via cause 3 (D17).
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	go func() {
+		for {
+			conn, acceptErr := listener.Accept()
+			if acceptErr != nil {
+				return
+			}
+			go func() {
+				defer func() { _ = conn.Close() }()
+				var req speech.Request
+				if decodeErr := json.NewDecoder(conn).Decode(&req); decodeErr != nil {
+					return
+				}
+				resp := speech.Response{OK: true, Queue: &speech.QueueStats{Pending: 1, DroppedOverflow: 1}}
+				_ = json.NewEncoder(conn).Encode(resp)
+			}()
+		}
+	}()
+	runtimeDir := speech.RuntimeDir(dataDir)
+	if err := os.MkdirAll(runtimeDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	desc := speech.RuntimeDescriptor{Address: listener.Addr().String(), Token: "test-token"}
+	data, err := json.Marshal(desc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(runtimeDir, "runtime.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var textOut bytes.Buffer
+	textCmd := newSpeechStatusCmd()
+	textCmd.SetOut(&textOut)
+	if err := textCmd.Execute(); err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	text := textOut.String()
+	for _, want := range []string{"queued: 1", "discarded before playing: 1", "degraded because:"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("status text missing %q:\n%s", want, text)
+		}
+	}
+
+	var jsonOut bytes.Buffer
+	jsonCmd := newSpeechStatusCmd()
+	jsonCmd.SetOut(&jsonOut)
+	jsonCmd.SetArgs([]string{"--json"})
+	if err := jsonCmd.Execute(); err != nil {
+		t.Fatalf("status --json: %v", err)
+	}
+	var status service.SpeechStatus
+	if err := json.Unmarshal(jsonOut.Bytes(), &status); err != nil {
+		t.Fatalf("unmarshal status --json: %v", err)
+	}
+	if status.Queue == nil || status.Queue.Pending != 1 || status.Queue.DroppedOverflow != 1 {
+		t.Fatalf("status.Queue = %+v, want Pending:1 DroppedOverflow:1", status.Queue)
+	}
+	if !status.Degraded || len(status.DegradedReasons) == 0 {
+		t.Fatalf("status.Degraded=%v DegradedReasons=%v, want degraded with at least one reason", status.Degraded, status.DegradedReasons)
+	}
 }
