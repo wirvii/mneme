@@ -1999,3 +1999,41 @@ func TestRefsForUUIDs(t *testing.T) {
 		t.Errorf("RefsForUUIDs(nil) = %v, want empty map", empty)
 	}
 }
+
+// TestSDDReferenceBackfillMarker covers the one-row completion marker the
+// migration seeds with completed_at NULL: incomplete until marked, and the
+// marked totals round-trip.
+func TestSDDReferenceBackfillMarker(t *testing.T) {
+	s := newTestSDDStore(t)
+	ctx := context.Background()
+
+	complete, err := s.IsSDDReferenceBackfillComplete(ctx)
+	if err != nil {
+		t.Fatalf("IsSDDReferenceBackfillComplete (initial): %v", err)
+	}
+	if complete {
+		t.Fatal("expected the backfill marker to start incomplete")
+	}
+
+	if err := s.MarkSDDReferenceBackfillComplete(ctx, 42, 7); err != nil {
+		t.Fatalf("MarkSDDReferenceBackfillComplete: %v", err)
+	}
+
+	complete, err = s.IsSDDReferenceBackfillComplete(ctx)
+	if err != nil {
+		t.Fatalf("IsSDDReferenceBackfillComplete (after mark): %v", err)
+	}
+	if !complete {
+		t.Fatal("expected the backfill marker to be complete after marking")
+	}
+
+	var scanned, created int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT memories_scanned, refs_created FROM sdd_reference_backfill WHERE id = 1`,
+	).Scan(&scanned, &created); err != nil {
+		t.Fatalf("query totals: %v", err)
+	}
+	if scanned != 42 || created != 7 {
+		t.Errorf("totals: got scanned=%d created=%d, want 42/7", scanned, created)
+	}
+}

@@ -993,6 +993,38 @@ func collectRefUUIDPairs(ctx context.Context, database *db.DB, q string, args []
 	return rows.Err()
 }
 
+// IsSDDReferenceBackfillComplete reports whether the one-shot SDD reference
+// backfill (SPEC-128 D7 mitad B) has already run against this database —
+// the cheap guard MemoryService.BackfillSDDRefs checks first, mirroring
+// ensureSDDUUIDs' own "microsegundos en el caso normal" posture (D7 mitad
+// A): this runs from initService on every invocation, so the common case
+// (already done) must cost one indexed row read, never a memory scan.
+func (s *SDDStore) IsSDDReferenceBackfillComplete(ctx context.Context) (bool, error) {
+	var completedAt sql.NullString
+	err := s.db.QueryRowContext(ctx,
+		`SELECT completed_at FROM sdd_reference_backfill WHERE id = 1`,
+	).Scan(&completedAt)
+	if err != nil {
+		return false, fmt.Errorf("store: is sdd reference backfill complete: %w", err)
+	}
+	return completedAt.Valid, nil
+}
+
+// MarkSDDReferenceBackfillComplete records that the one-shot SDD reference
+// backfill finished, along with the totals it produced — the single row
+// AC8 checks for.
+func (s *SDDStore) MarkSDDReferenceBackfillComplete(ctx context.Context, scanned, created int) error {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE sdd_reference_backfill SET completed_at = ?, memories_scanned = ?, refs_created = ? WHERE id = 1`,
+		now, scanned, created,
+	)
+	if err != nil {
+		return fmt.Errorf("store: mark sdd reference backfill complete: %w", err)
+	}
+	return nil
+}
+
 // --- PUSHBACK OPERATIONS ---
 
 // CreatePushback inserts a new pushback for a spec.

@@ -4,7 +4,9 @@
 package cli
 
 import (
+	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -287,6 +289,19 @@ func initService() (*service.MemoryService, func(), error) {
 	svc := service.NewMemoryService(projectStore, globalStore, cfg, slug, emb,
 		service.WithTeamMemory(service.DetectTeamMemory()),
 		service.WithSDDStore(sddStore))
+
+	// 8. One-shot backfill of SDD reference anchors in memories written
+	//    before SPEC-128 existed (D7 mitad B). Best-effort: BackfillSDDRefs
+	//    itself checks a completion marker first, so every invocation after
+	//    the first one costs a single indexed read — safe to call
+	//    unconditionally here, mirroring internal/db.ensureSDDUUIDs' own
+	//    posture. A failure is logged and never blocks the command in
+	//    progress.
+	if scanned, created, backfillErr := svc.BackfillSDDRefs(context.Background()); backfillErr != nil {
+		slog.Warn("sdd_reference_backfill_failed", "error", backfillErr)
+	} else if created > 0 {
+		slog.Info("sdd_reference_backfill", "memories_scanned", scanned, "refs_created", created)
+	}
 
 	return svc, cleanup, nil
 }
