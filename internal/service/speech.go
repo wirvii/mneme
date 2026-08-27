@@ -324,8 +324,11 @@ func expectationPath(cfg *config.Config, sessionID string) string {
 	return filepath.Join(expectationsDir(cfg), hex.EncodeToString(sum[:])[:32]+".json")
 }
 
-// RegisterPrompt cancels audio and records an unresolved turn expectation
-// for sessionID.
+// RegisterPrompt records the current session as focused, cancels only that
+// session's audio (what is playing and what is waiting), and records an
+// unresolved turn expectation for sessionID. RegisterPrompt never returns an
+// error along this path: runHookSpeechPrompt already swallows one, and a
+// failure here must not cost the agent its protocol block.
 func (s *SpeechService) RegisterPrompt(ctx context.Context, sessionID string) (string, error) {
 	cfg, err := s.load()
 	if err != nil {
@@ -334,7 +337,8 @@ func (s *SpeechService) RegisterPrompt(ctx context.Context, sessionID string) (s
 	if !cfg.Speech.Enabled {
 		return "", nil
 	}
-	_ = s.Stop(ctx)
+	_ = s.writeFocus(cfg, sessionID)
+	s.cancelSessionAudio(ctx, cfg, sessionID)
 
 	// Reading the caller's own expectation must happen BEFORE the sweep
 	// below: sweeping first could delete an expectation older than
@@ -366,6 +370,51 @@ func (s *SpeechService) RegisterPrompt(ctx context.Context, sessionID string) (s
 		return "", fmt.Errorf("speech: save expectation: %w", err)
 	}
 	return fmt.Sprintf("<mneme:speech>Speech is enabled in %s mode. Before your final response, call speech_emit exactly once with disposition=emit and a concise semantic spoken summary, or disposition=skip when nothing adds value. Use session_id=%q. Never read raw tool output or code.</mneme:speech>", cfg.Speech.Mode, sessionID), nil
+}
+
+// writeFocus records sessionID as the session the user is currently typing
+// in (D9). "Last write wins" is the semantics wanted, not an accident: the
+// focus IS the last session where the user typed, and it deliberately does
+// not expire — an hour-old focus is still the best data available, and
+// prefixing origin too often costs verbosity, never confusion.
+func (s *SpeechService) writeFocus(cfg *config.Config, sessionID string) error {
+	path := filepath.Join(speech.RuntimeDir(cfg.Storage.DataDir), "focus.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	data, _ := json.Marshal(struct {
+		SessionID string    `json:"session_id"`
+		UpdatedAt time.Time `json:"updated_at"`
+	}{SessionID: sessionID, UpdatedAt: time.Now().UTC()})
+	return writePrivateAtomic(path, data)
+}
+
+// cancelSessionAudio implements D7/D18's compatibility ladder for the
+// session-scoped cancel: it never starts a supervisor on the normal path
+// (without one there is no audio to cancel, and spawning a process on every
+// prompt would be pure waste), and it never returns an error — a failure
+// here must not cost the caller its protocol block.
+func (s *SpeechService) cancelSessionAudio(ctx context.Context, cfg *config.Config, sessionID string) {
+	_, err := speech.Send(ctx, cfg.Storage.DataDir, speech.Request{Action: "cancel", SessionID: sessionID})
+	if err == nil || !errors.Is(err, speech.ErrUnknownAction) {
+		// Either it worked, or the failure is something else entirely (no
+		// supervisor running yet, connection refused, ...) — exactly what
+		// Stop already treated as "already stopped" before SPEC-129.
+		return
+	}
+	// The listener answered "unknown action": it is a supervisor left
+	// running by an older mneme binary (D18). Replace it once — there is no
+	// bounce-back risk, since the new supervisor understands every action an
+	// old client can send — and retry the cancel a single time.
+	_, _ = speech.Send(ctx, cfg.Storage.DataDir, speech.Request{Action: "shutdown"})
+	if ensureErr := speech.EnsureSupervisor(ctx, cfg.Storage.DataDir); ensureErr == nil {
+		if _, retryErr := speech.Send(ctx, cfg.Storage.DataDir, speech.Request{Action: "cancel", SessionID: sessionID}); retryErr == nil {
+			return
+		}
+	}
+	// The replacement did not work out; fall back to the old, host-scoped
+	// stop rather than leaving nothing cancelled.
+	_, _ = speech.Send(ctx, cfg.Storage.DataDir, speech.Request{Action: "stop"})
 }
 
 // sweepExpectations removes per-session expectation files older than

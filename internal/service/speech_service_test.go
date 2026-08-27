@@ -4,11 +4,15 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/wirvii/mneme/internal/config"
 	"github.com/wirvii/mneme/internal/speech"
@@ -267,5 +271,88 @@ func TestSpeechEmitOverrideStillHonorsDisabled(t *testing.T) {
 	err := svc.EmitWithOverrides(context.Background(), speech.DispositionEmit, speech.ModeBrief, "Prueba.", "es", "Paulina")
 	if !errors.Is(err, speech.ErrDisabled) {
 		t.Fatalf("err=%v", err)
+	}
+}
+
+// TestRegisterPromptSurvivesOldSupervisor is AC13's service half: a
+// supervisor left running by an older mneme binary answers "cancel" with
+// "unknown action", and RegisterPrompt must climb D18's compatibility
+// ladder (cancel -> shutdown -> status -> cancel -> stop) and still return
+// its protocol block with no error.
+//
+// The fake listener answers "status" with ok:true UNCONDITIONALLY, even
+// after "shutdown" — it must keep doing so, or EnsureSupervisor's own
+// initial status check fails and it tries to launch the real test binary as
+// a supervisor, which then waits out its own 5s startup timeout. This test
+// exercises the CALL LADDER, not a real process launch — that is already
+// covered by TestEnsureSupervisorStartsReusesAndRecoversStaleLock in
+// internal/speech.
+func TestRegisterPromptSurvivesOldSupervisor(t *testing.T) {
+	root := t.TempDir()
+	svc := newEnabledSpeechService(t, root)
+	cfg, err := svc.load()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = listener.Close() }()
+
+	var mu sync.Mutex
+	var sequence []string
+	go func() {
+		for {
+			conn, acceptErr := listener.Accept()
+			if acceptErr != nil {
+				return
+			}
+			go func() {
+				defer func() { _ = conn.Close() }()
+				var req speech.Request
+				if decodeErr := json.NewDecoder(conn).Decode(&req); decodeErr != nil {
+					return
+				}
+				mu.Lock()
+				sequence = append(sequence, req.Action)
+				mu.Unlock()
+				var resp speech.Response
+				switch req.Action {
+				case "status", "shutdown", "stop":
+					resp = speech.Response{OK: true}
+				case "cancel":
+					resp = speech.Response{Error: "unknown action"}
+				}
+				_ = json.NewEncoder(conn).Encode(resp)
+			}()
+		}
+	}()
+
+	runtimeDir := speech.RuntimeDir(cfg.Storage.DataDir)
+	if err := os.MkdirAll(runtimeDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	desc := speech.RuntimeDescriptor{Address: listener.Addr().String(), Token: "secret", PID: 1, StartedAt: time.Now().UTC()}
+	data, _ := json.Marshal(desc)
+	if err := os.WriteFile(filepath.Join(runtimeDir, "runtime.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	protocol, err := svc.RegisterPrompt(context.Background(), "session-1")
+	if err != nil {
+		t.Fatalf("RegisterPrompt = %v", err)
+	}
+	if !strings.Contains(protocol, "speech_emit exactly once") {
+		t.Fatalf("protocol block missing: %q", protocol)
+	}
+
+	mu.Lock()
+	got := strings.Join(sequence, ",")
+	mu.Unlock()
+	want := "cancel,shutdown,status,cancel,stop"
+	if got != want {
+		t.Fatalf("call sequence = %q, want %q", got, want)
 	}
 }
