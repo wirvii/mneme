@@ -1587,3 +1587,258 @@ func stringContains(s, sub string) bool {
 	}
 	return false
 }
+
+// --- SPEC-128 SDD REF TESTS ---
+
+// TestSDDRefs_InsertLoadPrune covers the alta/carga/poda cycle: refs set at
+// Create are loaded back by Get, and a subsequent Update that drops one
+// ref_id and adds another prunes the dropped one while keeping the
+// survivor's anchor untouched.
+func TestSDDRefs_InsertLoadPrune(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	m := makeMemory()
+	m.SDDRefs = []model.SDDRef{
+		{RefID: "SPEC-001", TargetUUID: "anchor-spec-1"},
+		{RefID: "BL-001", TargetUUID: "anchor-bl-1"},
+	}
+
+	created, err := s.Create(ctx, m)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	got, err := s.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if len(got.SDDRefs) != 2 {
+		t.Fatalf("expected 2 refs after create, got %d: %+v", len(got.SDDRefs), got.SDDRefs)
+	}
+	want := map[string]string{"SPEC-001": "anchor-spec-1", "BL-001": "anchor-bl-1"}
+	for _, ref := range got.SDDRefs {
+		if want[ref.RefID] != ref.TargetUUID {
+			t.Errorf("unexpected ref %+v", ref)
+		}
+		if ref.Status != "" || ref.LocalID != "" {
+			t.Errorf("store-layer Get must never populate Status/LocalID (that is MemoryService.Get's job, D8): got %+v", ref)
+		}
+	}
+
+	// Update: drop BL-001, keep SPEC-001's anchor, add a new SPEC-002.
+	newRefs := []model.SDDRef{
+		{RefID: "SPEC-001", TargetUUID: "anchor-spec-1"},
+		{RefID: "SPEC-002", TargetUUID: "anchor-spec-2"},
+	}
+	if err := s.Update(ctx, created.ID, &model.UpdateRequest{SDDRefs: &newRefs}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	got, err = s.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("Get after update: %v", err)
+	}
+	if len(got.SDDRefs) != 2 {
+		t.Fatalf("expected 2 refs after update, got %d: %+v", len(got.SDDRefs), got.SDDRefs)
+	}
+	want = map[string]string{"SPEC-001": "anchor-spec-1", "SPEC-002": "anchor-spec-2"}
+	for _, ref := range got.SDDRefs {
+		if want[ref.RefID] != ref.TargetUUID {
+			t.Errorf("unexpected ref after update %+v", ref)
+		}
+		if ref.RefID == "BL-001" {
+			t.Error("BL-001 should have been pruned by the update")
+		}
+	}
+}
+
+// TestSDDRefs_InsertOrIgnoreNeverRecalculatesAnchor is the SQL-level
+// enforcement of D5: once (memory_id, ref_id) has a target_uuid, a later
+// write for the SAME ref_id that resolves to a DIFFERENT anchor must never
+// overwrite it.
+func TestSDDRefs_InsertOrIgnoreNeverRecalculatesAnchor(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	m := makeMemory()
+	m.SDDRefs = []model.SDDRef{{RefID: "SPEC-001", TargetUUID: "original-anchor"}}
+	created, err := s.Create(ctx, m)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	changed := []model.SDDRef{{RefID: "SPEC-001", TargetUUID: "different-anchor"}}
+	if err := s.Update(ctx, created.ID, &model.UpdateRequest{SDDRefs: &changed}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	got, err := s.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if len(got.SDDRefs) != 1 || got.SDDRefs[0].TargetUUID != "original-anchor" {
+		t.Fatalf("expected the original anchor to survive unchanged, got %+v", got.SDDRefs)
+	}
+}
+
+// TestSDDRefs_CascadeOnMemoryDelete verifies ON DELETE CASCADE: deleting the
+// parent memories row removes its memory_sdd_refs rows too.
+func TestSDDRefs_CascadeOnMemoryDelete(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	m := makeMemory()
+	m.SDDRefs = []model.SDDRef{{RefID: "SPEC-001", TargetUUID: "anchor-1"}}
+	created, err := s.Create(ctx, m)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM memories WHERE id = ?`, created.ID); err != nil {
+		t.Fatalf("delete memory: %v", err)
+	}
+
+	var count int
+	if err := s.db.QueryRowContext(
+		ctx, `SELECT COUNT(*) FROM memory_sdd_refs WHERE memory_id = ?`, created.ID,
+	).Scan(&count); err != nil {
+		t.Fatalf("count memory_sdd_refs: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("expected memory_sdd_refs to cascade-delete, got %d rows", count)
+	}
+}
+
+// TestSDDRefs_LoadedByEveryReadPath is the store-layer half of the "if a
+// read path forgets refs, the vault materializes a note without anchors"
+// guarantee (SPEC-128 §3.3, C1's six sites): Get, List, GetByIDPrefix,
+// GetByTopicKey, FTS5Search, and ListMemoriesInRange must all load SDDRefs
+// exactly as they already load Files.
+func TestSDDRefs_LoadedByEveryReadPath(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	m := makeMemory()
+	m.Title = "SDD refs read path coverage"
+	m.Content = "Unique marker content for FTS5: zzqrefpathmarker."
+	m.TopicKey = "sdd-refs-read-path"
+	m.SDDRefs = []model.SDDRef{{RefID: "SPEC-001", TargetUUID: "anchor-1"}}
+
+	created, err := s.Create(ctx, m)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	assertHasRef := func(t *testing.T, label string, refs []model.SDDRef) {
+		t.Helper()
+		if len(refs) != 1 || refs[0].RefID != "SPEC-001" || refs[0].TargetUUID != "anchor-1" {
+			t.Errorf("%s: expected SDDRefs = [{SPEC-001 anchor-1}], got %+v", label, refs)
+		}
+	}
+
+	got, err := s.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	assertHasRef(t, "Get", got.SDDRefs)
+
+	listed, err := s.List(ctx, ListOptions{Project: "myproject"})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	var foundInList bool
+	for _, item := range listed {
+		if item.ID == created.ID {
+			assertHasRef(t, "List", item.SDDRefs)
+			foundInList = true
+		}
+	}
+	if !foundInList {
+		t.Fatal("List: created memory not found")
+	}
+
+	byPrefix, err := s.GetByIDPrefix(ctx, created.ID[:8])
+	if err != nil {
+		t.Fatalf("GetByIDPrefix: %v", err)
+	}
+	if byPrefix == nil {
+		t.Fatal("GetByIDPrefix: no match")
+	}
+	assertHasRef(t, "GetByIDPrefix", byPrefix.SDDRefs)
+
+	byTopic, err := s.GetByTopicKey(ctx, "sdd-refs-read-path", "myproject")
+	if err != nil {
+		t.Fatalf("GetByTopicKey: %v", err)
+	}
+	if byTopic == nil {
+		t.Fatal("GetByTopicKey: no match")
+	}
+	assertHasRef(t, "GetByTopicKey", byTopic.SDDRefs)
+
+	results, err := s.FTS5Search(ctx, "zzqrefpathmarker", SearchOptions{Project: "myproject"})
+	if err != nil {
+		t.Fatalf("FTS5Search: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("FTS5Search: expected 1 result, got %d", len(results))
+	}
+	assertHasRef(t, "FTS5Search", results[0].SDDRefs)
+
+	from := created.CreatedAt.Add(-time.Hour)
+	to := created.CreatedAt.Add(time.Hour)
+	inRange, err := s.ListMemoriesInRange(ctx, from, to, "myproject", 0)
+	if err != nil {
+		t.Fatalf("ListMemoriesInRange: %v", err)
+	}
+	var foundInRange bool
+	for _, item := range inRange {
+		if item.ID == created.ID {
+			assertHasRef(t, "ListMemoriesInRange", item.SDDRefs)
+			foundInRange = true
+		}
+	}
+	if !foundInRange {
+		t.Fatal("ListMemoriesInRange: created memory not found")
+	}
+}
+
+// TestSetSDDRefs_ForcedReplace covers D6's escape hatch: unlike
+// insertSDDRefs's INSERT OR IGNORE, SetSDDRefs forces a different anchor
+// for a ref_id that already had one — the import path's whole point, since
+// the incoming note is the record of what the WRITING machine anchored.
+func TestSetSDDRefs_ForcedReplace(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	m := makeMemory()
+	m.SDDRefs = []model.SDDRef{{RefID: "SPEC-001", TargetUUID: "local-anchor"}}
+	created, err := s.Create(ctx, m)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	forced := []model.SDDRef{{RefID: "SPEC-001", TargetUUID: "forced-anchor"}}
+	if err := s.SetSDDRefs(ctx, created.ID, forced); err != nil {
+		t.Fatalf("SetSDDRefs: %v", err)
+	}
+
+	got, err := s.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if len(got.SDDRefs) != 1 || got.SDDRefs[0].TargetUUID != "forced-anchor" {
+		t.Fatalf("expected forced anchor, got %+v", got.SDDRefs)
+	}
+}
+
+// TestSetSDDRefs_NotFound mirrors TestSetTeamMemoryFields_NotFound.
+func TestSetSDDRefs_NotFound(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	err := s.SetSDDRefs(ctx, "does-not-exist", []model.SDDRef{{RefID: "SPEC-001", TargetUUID: "x"}})
+	if !errors.Is(err, model.ErrNotFound) {
+		t.Fatalf("expected model.ErrNotFound, got %v", err)
+	}
+}

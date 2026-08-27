@@ -412,6 +412,21 @@ type UpdateRequest struct {
 	// Files replaces the associated file list when non-nil.
 	Files *[]string `json:"files,omitempty"`
 
+	// SDDRefs replaces the associated SDD reference set when non-nil — the
+	// caller is MemoryService.bakeSDDRefs (SPEC-128 D5), which computes it
+	// from the memory's post-update content before calling store.Update.
+	// Every element here must already carry a resolved TargetUUID: the
+	// store never recalculates one, only inserts brand-new (memory_id,
+	// ref_id) pairs (INSERT OR IGNORE) and prunes ref_ids no longer
+	// present.
+	//
+	// json:"-": this is populated ONLY by bakeSDDRefs's Go struct literal,
+	// never by an external caller — mem_update has no new field (D10, no
+	// API surface growth) and the mem_update schema contract test
+	// (SPEC-113) requires exactly this exclusion for a request field no
+	// client may ever set directly.
+	SDDRefs *[]SDDRef `json:"-"`
+
 	// AppliesTo replaces the applies_to list when non-nil.
 	// Only valid when the memory is of TypeRule.
 	AppliesTo *[]string `json:"applies_to,omitempty"`
