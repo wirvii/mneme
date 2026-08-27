@@ -52,6 +52,8 @@ created_by: claude-code
 files:
   - internal/model/memory.go
   - README.md
+sdd_refs:
+  - SPEC-125=0198f2c1-4a7b-7c3d-9e10-3f4a5b6c7d8e
 ---
 
 <Memory content verbatim>
@@ -59,7 +61,7 @@ files:
 
 **Always present:** `id`, `type`, `scope`, `title`, `importance`, `confidence`, `decay_rate`, `created_at`, `updated_at`, `revision_count`.
 
-**Present when non-empty:** `topic_key`, `project`, `created_by`, `files`, `superseded_by`.
+**Present when non-empty:** `topic_key`, `project`, `created_by`, `files`, `superseded_by`, `sdd_refs` (SPEC-128 — one `REF=UUID` line per `BL-<n>`/`SPEC-<n>` mention that resolved to a real anchor when the memory was written; see [team-memory.md](team-memory.md#sdd-reference-anchors-spec-128)).
 
 **Rule memories only:** `applies_to`, `severity`.
 

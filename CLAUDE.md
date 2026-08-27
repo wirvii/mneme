@@ -78,7 +78,7 @@ Two SQLite databases per host:
 - `~/.mneme/global.db` — global + org scope memories
 - `~/.mneme/projects/<slug>.db` — project-scoped memories (slug derived from git remote)
 
-Scopes (`global` / `org` / `project`) never leak between projects. Migrations are embedded via `embed.FS`.
+Scopes (`global` / `org` / `project`) never leak between projects. Migrations are embedded via `embed.FS`. Since migration 019 (SPEC-128), every `backlog_items`/`specs` row also carries its own UUIDv7 anchor (`uuid`, unique, immutable, invisible in every readable command) — the identity a memory's `SPEC-125`/`BL-001` mention resolves against on the machine that reads it, so a mention that was true when written stays honest (`local`/`foreign`/`unanchored`) instead of silently matching an unrelated row with the same correlative on a different machine. `internal/db.ensureSDDUUIDs` fills any row still missing one on every `Open`, not just once at migration time.
 
 ### Pre-tool-use hook (important when editing source)
 
@@ -394,6 +394,13 @@ mneme promote <id>                # explicitly share one memory (shared=2)
   background after every pull/checkout.
 - Every shared memory is its own file (`notes/<uuid>.md`) — concurrent
   creations by different teammates never collide at the git level.
+- Since SPEC-128, a note's frontmatter may carry `sdd_refs:` — one
+  `REF=UUID` line per anchored `BL-<n>`/`SPEC-<n>` mention the memory's
+  text carries (e.g. `SPEC-125=<uuid>`), written last and omitted entirely
+  when the memory anchors nothing, so a note with no mentions stays
+  byte-identical to one written before this field existed. Import forces
+  it verbatim onto the local row (never re-derives it), and an older
+  mneme reading a newer note ignores the field for forward compatibility.
 - Conflict detection after import is the same deterministic FTS5 candidate
   count `mneme conflicts` uses — judgment is always a separate, manual
   `mneme conflicts scan` step, never automatic.

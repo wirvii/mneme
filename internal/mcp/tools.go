@@ -153,7 +153,7 @@ func allTools() []ToolDefinition {
 		},
 		{
 			Name:        "mem_get",
-			Description: "Retrieve the full content of a memory by ID.",
+			Description: "Retrieve the full content of a memory by ID. The returned memory's sdd_refs field resolves every BL-<n>/SPEC-<n> mention against this machine's own database: local (found here), foreign (an anchor is recorded but nothing here carries it), or unanchored (SPEC-128).",
 			InputSchema: map[string]any{
 				"type":     "object",
 				"required": []string{"id"},
@@ -622,7 +622,10 @@ func allTools() []ToolDefinition {
 			Description: "Get the full status of a spec including history and pushbacks. `frozen` is present " +
 				"(with `state`, `backlog_id`, and `reason` when known) only when the spec's originating " +
 				"backlog item was archived or is missing — either way the spec can no longer change status, " +
-				"though it stays fully readable. The key is absent, not null, when the spec can still move.",
+				"though it stays fully readable. The key is absent, not null, when the spec can still move. " +
+				"The spec's `uuid` is its own permanent identity, distinct from `id` — never shown in " +
+				"readable output, present here so a memory citing this spec can be resolved correctly " +
+				"even on a machine whose own numbering differs (SPEC-128).",
 			InputSchema: map[string]any{
 				"type":     "object",
 				"required": []string{"id"},

@@ -179,6 +179,21 @@ Author and shared-level attribution round-trip through the file's
 frontmatter and are **never** overwritten by the importing peer's own git
 identity — the note keeps the identity of whoever originally shared it.
 
+### SDD reference anchors (SPEC-128)
+
+A note's frontmatter may carry `sdd_refs:` — one `REF=UUID` line per
+`BL-<n>`/`SPEC-<n>` mention the memory's text carries and that resolved to
+a real anchor on the machine that wrote it (e.g. `SPEC-125=<uuid>`).
+Written last in the frontmatter and omitted entirely when the memory
+anchors nothing, so a memory with no such mentions still produces a file
+byte-identical to one written before this field existed. Import **forces**
+whatever the file says onto the local row — it never re-derives the
+anchors from the imported text — so the reference always means what it
+meant on the machine that wrote it, even when the importing machine's own
+`SPEC-125` names different work entirely (see `mem_get`'s `sdd_refs` field
+and `mneme get`'s foreign-reference warning). An older mneme reading a note
+with `sdd_refs:` simply ignores the field (forward compatibility).
+
 ## Profile provenance exclusion (SPEC-094 §4)
 
 An [mneme profile](profiles.md) can inject its rules (commits/PRs/branches/
