@@ -88,3 +88,31 @@ func ValidateEmit(disposition Disposition, mode Mode, text string) (string, erro
 	}
 	return cleaned, nil
 }
+
+// OriginPrefix returns the spoken provenance phrase for a project label, so a
+// listener knows which session an emission belongs to when it is not the one
+// they are looking at (SPEC-129 D10). It returns the empty string when label
+// is empty: an emission with nothing to attribute gets no prefix, never a
+// dangling "From: ".
+func OriginPrefix(language, label string) string {
+	if label == "" {
+		return ""
+	}
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(language)), "es") {
+		return "En " + label + ": "
+	}
+	return "From " + label + ": "
+}
+
+// SpokenLabel reduces a project slug to its last path segment, which is the
+// part worth pronouncing out loud: "wirvii/mneme" becomes "mneme". A slug
+// with no separator is returned unchanged; an empty slug stays empty.
+func SpokenLabel(slug string) string {
+	if slug == "" {
+		return ""
+	}
+	if idx := strings.LastIndexByte(slug, '/'); idx >= 0 {
+		return slug[idx+1:]
+	}
+	return slug
+}

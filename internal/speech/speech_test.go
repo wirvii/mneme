@@ -37,3 +37,44 @@ func TestValidateEmit(t *testing.T) {
 		})
 	}
 }
+
+func TestOriginPrefix(t *testing.T) {
+	tests := []struct {
+		name     string
+		language string
+		label    string
+		want     string
+	}{
+		{"empty label", "es", "", ""},
+		{"spanish", "es", "mneme", "En mneme: "},
+		{"spanish region", "es-MX", "mneme", "En mneme: "},
+		{"english", "en", "mneme", "From mneme: "},
+		{"empty language", "", "mneme", "From mneme: "},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := OriginPrefix(tc.language, tc.label); got != tc.want {
+				t.Fatalf("OriginPrefix(%q, %q) = %q, want %q", tc.language, tc.label, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSpokenLabel(t *testing.T) {
+	tests := []struct {
+		name string
+		slug string
+		want string
+	}{
+		{"empty", "", ""},
+		{"with slash", "wirvii/mneme", "mneme"},
+		{"without slash", "mneme", "mneme"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := SpokenLabel(tc.slug); got != tc.want {
+				t.Fatalf("SpokenLabel(%q) = %q, want %q", tc.slug, got, tc.want)
+			}
+		})
+	}
+}
