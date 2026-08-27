@@ -208,6 +208,92 @@ func TestSDDAnchor_Save_UnanchoredMention(t *testing.T) {
 	}
 }
 
+// TestSDDAnchor_Update_LocallyAuthored covers bakeSDDRefsForUpdate's main
+// branches directly through MemoryService.Update (not Save's topic_key
+// re-save path, which TestSDDAnchor_NeverRecomputed already exercises):
+// updating a field OTHER than Title/Content never touches refs; updating
+// only Content (Title stays nil, falls back to existing.Title) anchors a
+// brand-new mention; updating only Title (Content stays nil, falls back to
+// existing.Content) still re-resolves the SAME mention already anchored
+// (idempotent, since D5's INSERT OR IGNORE keeps the original anchor).
+func TestSDDAnchor_Update_LocallyAuthored(t *testing.T) {
+	fx := newSDDTestFixture(t, false, "Team Member", "team@example.com")
+	ctx := context.Background()
+
+	spec1 := &model.Spec{ID: "SPEC-001", Title: "s1", Status: model.SpecStatusDraft, Project: "test/project", Lane: model.LaneStandard}
+	if err := fx.sddStore.CreateSpec(ctx, spec1); err != nil {
+		t.Fatalf("CreateSpec SPEC-001: %v", err)
+	}
+	spec2 := &model.Spec{ID: "SPEC-002", Title: "s2", Status: model.SpecStatusDraft, Project: "test/project", Lane: model.LaneStandard}
+	if err := fx.sddStore.CreateSpec(ctx, spec2); err != nil {
+		t.Fatalf("CreateSpec SPEC-002: %v", err)
+	}
+
+	resp, err := fx.svc.Save(ctx, model.SaveRequest{
+		Title:   "No mentions yet",
+		Content: "Nothing anchorable here.",
+		Type:    model.TypeDecision,
+	})
+	if err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	// Updating a field OTHER than Title/Content (Importance) must leave
+	// SDDRefs untouched (bakeSDDRefsForUpdate's early return when both are
+	// nil) — still zero refs.
+	imp := 0.5
+	if _, err := fx.svc.Update(ctx, resp.ID, model.UpdateRequest{Importance: &imp}); err != nil {
+		t.Fatalf("Update (importance only): %v", err)
+	}
+	got, err := fx.svc.Get(ctx, resp.ID)
+	if err != nil {
+		t.Fatalf("Get (after importance update): %v", err)
+	}
+	if len(got.SDDRefs) != 0 {
+		t.Fatalf("expected 0 refs after a non-title/content update, got %+v", got.SDDRefs)
+	}
+
+	// Updating ONLY Content (Title stays nil -> falls back to existing.Title,
+	// which has no mention) anchors the new SPEC-001 mention.
+	newContent := "Now cites SPEC-001."
+	if _, err := fx.svc.Update(ctx, resp.ID, model.UpdateRequest{Content: &newContent}); err != nil {
+		t.Fatalf("Update (content only): %v", err)
+	}
+	got, err = fx.svc.Get(ctx, resp.ID)
+	if err != nil {
+		t.Fatalf("Get (after content update): %v", err)
+	}
+	if len(got.SDDRefs) != 1 || got.SDDRefs[0].RefID != "SPEC-001" || got.SDDRefs[0].Status != model.SDDRefLocal {
+		t.Fatalf("expected SPEC-001 anchored locally, got %+v", got.SDDRefs)
+	}
+
+	// Updating ONLY Title (Content stays nil -> falls back to existing.Content,
+	// which still mentions SPEC-001) re-resolves the SAME mention: the
+	// anchor must be unchanged (D5), and the title's own new mention
+	// (SPEC-002) gets anchored too.
+	newTitle := "Now the title also cites SPEC-002"
+	if _, err := fx.svc.Update(ctx, resp.ID, model.UpdateRequest{Title: &newTitle}); err != nil {
+		t.Fatalf("Update (title only): %v", err)
+	}
+	got, err = fx.svc.Get(ctx, resp.ID)
+	if err != nil {
+		t.Fatalf("Get (after title update): %v", err)
+	}
+	if len(got.SDDRefs) != 2 {
+		t.Fatalf("expected 2 refs, got %d: %+v", len(got.SDDRefs), got.SDDRefs)
+	}
+	byRef := map[string]model.SDDRef{}
+	for _, ref := range got.SDDRefs {
+		byRef[ref.RefID] = ref
+	}
+	if byRef["SPEC-001"].TargetUUID != spec1.UUID {
+		t.Errorf("SPEC-001's anchor should survive unchanged, got %+v", byRef["SPEC-001"])
+	}
+	if byRef["SPEC-002"].Status != model.SDDRefLocal || byRef["SPEC-002"].LocalID != "SPEC-002" {
+		t.Errorf("SPEC-002 should have been freshly anchored from the title, got %+v", byRef["SPEC-002"])
+	}
+}
+
 // TestSDDAnchor_ForeignAuthorNeverAnchored is AC9: a memory whose author is
 // someone else never receives new anchors, even when its content is
 // updated to add a fresh mention — the mention resolves "unanchored", not
