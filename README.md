@@ -37,7 +37,7 @@ Persistent memory for AI coding agents -- with a spec-driven workflow engine, se
 
 ## What is mneme?
 
-mneme gives AI coding agents a brain that survives between sessions. It stores structured knowledge -- decisions, patterns, rules, conventions, architecture -- in a local SQLite database with full-text search, a weighted knowledge graph, and automatic consolidation. Any MCP-compatible agent (Claude Code, Cursor, Windsurf, OpenCode, Gemini CLI) can save and retrieve persistent memory through 65 tools over JSON-RPC stdio.
+mneme gives AI coding agents a brain that survives between sessions. It stores structured knowledge -- decisions, patterns, rules, conventions, architecture -- in a local SQLite database with full-text search, a weighted knowledge graph, and automatic consolidation. Any MCP-compatible agent (Claude Code, Cursor, Windsurf, OpenCode, Gemini CLI) can save and retrieve persistent memory through 85 tools over JSON-RPC stdio.
 
 ## Why mneme?
 
@@ -380,7 +380,7 @@ that figure:
 | `mneme project` | Create a project from an active profile scaffold (`new`) |
 | `mneme app` | Add and wire an app in a scaffolded monorepo (`add`) |
 | `mneme scaffold` | Capture an exemplar repository as a profile scaffold (`capture`) |
-| `mneme speech` | Control opt-in, entirely local spoken responses (`on`, `off`, `stop`, `status`, `voices`, `mode`, `test`, `setup`) |
+| `mneme speech` | Control opt-in, entirely local spoken responses (`on`, `off`, `stop`, `status`, `voice`, `voices`, `mode`, `test`, `setup`) |
 | `mneme sync` | Sync memories via git (`export`, `import`, `status`) |
 | `mneme vault` | Manage the filesystem vault mirror (`export`, `import`) |
 | `mneme embed` | Manage memory embeddings for semantic search (`backfill`) |
@@ -396,16 +396,17 @@ that figure:
 
 ## MCP Tools
 
-The MCP server (`mneme mcp`) exposes **84 tools** over JSON-RPC 2.0 stdio,
+The MCP server (`mneme mcp`) exposes **85 tools** over JSON-RPC 2.0 stdio,
 grouped by family. Each family has a full contract reference (params, returns,
 errors, examples) under [docs/api/](docs/api/):
 
 | Family | Count | What it covers | Reference |
 |--------|-------|-----------------|-----------|
 | `mem_*` | 15 | Save, search, update, relate, explore, promote, and time-travel through memories | [docs/api/memory.md](docs/api/memory.md) |
-| `backlog_*` | 5 | Raw idea → refined → promoted-to-spec lifecycle | [docs/api/sdd.md](docs/api/sdd.md) |
+| `backlog_*` | 6 | Raw idea → refined → promoted-to-spec lifecycle, plus archiving | [docs/api/sdd.md](docs/api/sdd.md) |
 | `spec_*` | 9 | Spec lifecycle: draft → speccing → ... → done, plus `quick`/`reject`/`doc_write` shortcuts | [docs/api/sdd.md](docs/api/sdd.md) |
 | `lane_*` | 5 | Trivial-lane audit, reclassify, override, status, stats | [docs/api/sdd.md](docs/api/sdd.md) |
+| `quality_*` | 5 | Run declared gates, emit certificates, sign/ack findings, render QA reports | [docs/api/sdd.md](docs/api/sdd.md) |
 | `codegraph_*` | 10 | Symbol search, callers/callees, impact analysis, call tracing | [docs/api/codegraph.md](docs/api/codegraph.md) |
 | `skills_*` | 7 | Install/pin/lint/validate mirrored skills for Claude Code and Codex | [docs/api/skills.md](docs/api/skills.md) |
 | `model_*` | 3 | Per-agent model alias assignment | [docs/api/models.md](docs/api/models.md) |
@@ -418,7 +419,7 @@ errors, examples) under [docs/api/](docs/api/):
 | `app_*` | 1 | Add and auto-wire a composable monorepo app | [docs/profiles.md](docs/profiles.md) |
 | `scaffold_*` | 1 | Capture a repository as a draft scaffold | [docs/profiles.md](docs/profiles.md) |
 
-15 + 5 + 9 + 5 + 10 + 7 + 3 + 5 + 2 + 1 + 6 + 8 + 1 + 1 + 1 = **79**.
+15 + 6 + 9 + 5 + 5 + 10 + 7 + 3 + 5 + 2 + 1 + 6 + 8 + 1 + 1 + 1 = **85**.
 
 ---
 
@@ -503,15 +504,15 @@ errors, examples) under [docs/api/](docs/api/):
 
 **Dependency rule:** imports flow inward only. `model` (zero external deps) is the leaf. Frontends (`cli`, `mcp`, `http`) call `service`, which orchestrates `store`, `scoring`, `graph`, and `rules`. No frontend calls `store` or `db` directly.
 
-**Persistence:** two SQLite databases per host -- `~/.mneme/global.db` (global + org scope) and `~/.mneme/projects/<slug>.db` (project scope, slug from git remote). Schema v17 with embedded migrations.
+**Persistence:** two SQLite databases per host -- `~/.mneme/global.db` (global + org scope) and `~/.mneme/projects/<slug>.db` (project scope, slug from git remote). Schema v19 with embedded migrations.
 
-**Three frontends:** MCP (primary, 84 tools over stdio), HTTP (REST API at `:7437`, 10 endpoints under `/v1/` -- no SDD/codegraph/skills/model/conflicts/subagent/speech parity yet), and CLI (Cobra, 42 mneme-registered commands).
+**Three frontends:** MCP (primary, 85 tools over stdio), HTTP (REST API at `:7437`, 10 endpoints under `/v1/` -- no SDD/codegraph/skills/model/conflicts/subagent/speech parity yet), and CLI (Cobra, 42 mneme-registered commands).
 
 ---
 
 ## Status & Roadmap
 
-**Current (main): schema v18, 84 MCP tools, 42 mneme-registered CLI commands, 10 HTTP endpoints.**
+**Current (main): schema v19, 85 MCP tools, 42 mneme-registered CLI commands, 10 HTTP endpoints.**
 Latest release: **v1.33.0**. Full history in [CHANGELOG.md](CHANGELOG.md).
 
 **Shipped:**
