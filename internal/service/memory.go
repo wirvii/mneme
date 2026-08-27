@@ -51,6 +51,17 @@ type MemoryService struct {
 	// this process and, when so, its root directory (SPEC-053 D3). Resolved
 	// once at construction time in NewMemoryService.
 	teamMemory TeamMemoryState
+
+	// sddStore is the LOCAL project's SDD store — backlog_items/specs live
+	// there, never in globalStore (D12: global.db's SDD tables exist but
+	// are always empty). Wired via WithSDDStore, apagado por defecto like
+	// teamMemory (SPEC-085's "a constructor that resolves solo lo que el
+	// entorno le da" is the defect this mirrors the fix for, not
+	// reintroduces): nil means every SDD-anchor operation
+	// (bakeSDDRefs/resolveSDDRefs) is a no-op, which is exactly what every
+	// existing test call site needs to keep compiling and behaving as
+	// before this field existed.
+	sddStore *store.SDDStore
 }
 
 // NewMemoryService constructs a MemoryService. The caller must provide fully
@@ -117,6 +128,18 @@ type Option func(*MemoryService)
 func WithTeamMemory(s TeamMemoryState) Option {
 	return func(svc *MemoryService) {
 		svc.teamMemory = s
+	}
+}
+
+// WithSDDStore wires the local project's SDD store (backlog_items/specs)
+// into a MemoryService, enabling SPEC-128's anchor mechanism:
+// bakeSDDRefs/resolveSDDRefs are a no-op without it. Pass the SDDStore built
+// over the SAME project database connection the MemoryService's
+// projectStore already uses — never a second connection — mirroring
+// WithTeamMemory's "opt in explicitly, default OFF" shape.
+func WithSDDStore(s *store.SDDStore) Option {
+	return func(svc *MemoryService) {
+		svc.sddStore = s
 	}
 }
 
@@ -239,6 +262,11 @@ func (svc *MemoryService) Save(ctx context.Context, req model.SaveRequest) (*mod
 	// before this feature existed (SPEC-061 SS-A).
 	svc.bakeTeamMemoryFields(m, req.Shared)
 
+	// SPEC-128 D5: anchor m's SDD mentions BEFORE the store write, right
+	// alongside bakeTeamMemoryFields, so materializeTeamMemory below sees
+	// the anchors on the note's first write.
+	svc.bakeSDDRefs(ctx, m)
+
 	targetStore := svc.storeFor(m.Scope)
 	result, created, err := targetStore.Upsert(ctx, m)
 	if err != nil {
@@ -315,6 +343,12 @@ func (svc *MemoryService) Get(ctx context.Context, id string) (*model.Memory, er
 	// The tracker itself filters rules/session_summaries and cross-scope pairs.
 	svc.recordHebbianAccess(ctx, foundIn, m)
 
+	// SPEC-128 D8: Get is the ONE place that resolves a reference's
+	// Status/LocalID against the local database — search, mem_context, and
+	// every other multi-memory read path leave m.SDDRefs exactly as the
+	// store loaded it (RefID+TargetUUID only).
+	svc.resolveSDDRefs(ctx, m)
+
 	return m, nil
 }
 
@@ -361,13 +395,19 @@ func (svc *MemoryService) getFromEitherStore(ctx context.Context, id string) (*m
 // Only non-nil fields in req are applied; other fields remain unchanged.
 // Returns ErrNotFound when no active memory exists with that id in either store.
 func (svc *MemoryService) Update(ctx context.Context, id string, req model.UpdateRequest) (*model.SaveResponse, error) {
-	_, targetStore, err := svc.getFromEitherStore(ctx, id)
+	existing, targetStore, err := svc.getFromEitherStore(ctx, id)
 	if err != nil {
 		return nil, fmt.Errorf("service: update: %w", err)
 	}
 	if targetStore == nil {
 		return nil, fmt.Errorf("service: update: %w", model.ErrNotFound)
 	}
+
+	// SPEC-128 D5: recompute the anchored SDD reference set from the
+	// RESULTANT title+content before applying the update, so store.Update's
+	// insertSDDRefs+pruneSDDRefs (triggered by req.SDDRefs != nil) run in
+	// the same call that changes the text.
+	svc.bakeSDDRefsForUpdate(ctx, existing, &req)
 
 	if err := targetStore.Update(ctx, id, &req); err != nil {
 		return nil, fmt.Errorf("service: update: %w", err)

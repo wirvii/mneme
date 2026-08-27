@@ -264,6 +264,12 @@ func initService() (*service.MemoryService, func(), error) {
 	projectStore := store.NewMemoryStore(projectDB)
 	globalStore := store.NewMemoryStore(globalDB)
 
+	// 5b. SDD store for the SDD-anchor mechanism (SPEC-128), built over the
+	//     SAME projectDB connection opened above — never a second one.
+	//     D12: only the project store's own backlog_items/specs are ever
+	//     anchored against; global.db's SDD tables exist but are empty.
+	sddStore := store.NewSDDStore(projectDB)
+
 	// 6. Construct the embedder based on config.
 	var emb embed.Embedder
 	switch cfg.Embedding.Provider {
@@ -279,7 +285,8 @@ func initService() (*service.MemoryService, func(), error) {
 	//    environment-derived state — DetectTeamMemory() checks whether cwd is
 	//    inside a git repository with an active shared vault marker.
 	svc := service.NewMemoryService(projectStore, globalStore, cfg, slug, emb,
-		service.WithTeamMemory(service.DetectTeamMemory()))
+		service.WithTeamMemory(service.DetectTeamMemory()),
+		service.WithSDDStore(sddStore))
 
 	return svc, cleanup, nil
 }
