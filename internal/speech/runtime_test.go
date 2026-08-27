@@ -6,10 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -20,6 +22,15 @@ import (
 func TestHelperProcess(t *testing.T) {
 	if os.Getenv("GO_WANT_SPEECH_HELPER") != "1" {
 		return
+	}
+	// SPEECH_HELPER_DELAY_MS is only set by tests that need the fake process
+	// to stay "in flight" long enough to observe a queued (not yet started)
+	// emission — see TestSpokenTextNeverReachesDisk. Every other caller of
+	// withHelperCommands leaves it unset, so this is a no-op for them.
+	if delay := os.Getenv("SPEECH_HELPER_DELAY_MS"); delay != "" {
+		if ms, err := strconv.Atoi(delay); err == nil {
+			time.Sleep(time.Duration(ms) * time.Millisecond)
+		}
 	}
 	_, _ = io.Copy(io.Discard, os.Stdin)
 	if out := os.Getenv("SPEECH_HELPER_OUTPUT"); out != "" {
@@ -613,6 +624,78 @@ func TestSpokenTextNeverReachesArgv(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestSpokenTextNeverReachesDisk is AC12's queue-with-owner half: after a
+// full cycle through a REAL supervisor (register a session, speak, queue a
+// second session behind it, cancel the queued one), no file under
+// RuntimeDir ever contains the spoken text — the queue keeps it in memory
+// only (D14), same as before SPEC-129. If this test ever fails, the fix is
+// never to relax the assertion: it means something on the new path started
+// persisting text and that must be removed. TestSpokenTextNeverReachesArgv
+// covers the sibling invariant for process arguments and is untouched.
+func TestSpokenTextNeverReachesDisk(t *testing.T) {
+	secret := "el-secreto-que-nunca-debe-tocar-disco"
+	withHelperCommands(t, "", false)
+	// Keep the fake process "speaking" long enough to observe the second
+	// emission sitting in the queue, unstarted, before it is cancelled.
+	t.Setenv("SPEECH_HELPER_DELAY_MS", "150")
+
+	dataDir := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- Supervise(ctx, dataDir) }()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, statErr := os.Stat(descriptorPath(dataDir)); statErr == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	first, err := Send(context.Background(), dataDir, Request{Action: "speak", Text: secret, SessionID: "A", Origin: "mneme"})
+	if err != nil || !first.Started {
+		t.Fatalf("first speak = %+v, %v", first, err)
+	}
+	second, err := Send(context.Background(), dataDir, Request{Action: "speak", Text: secret + "-queued", SessionID: "B", Origin: "mneme"})
+	if err != nil || second.Started {
+		t.Fatalf("second speak = %+v, %v, want accepted and queued (not started)", second, err)
+	}
+	if _, err := Send(context.Background(), dataDir, Request{Action: "cancel", SessionID: "B"}); err != nil {
+		t.Fatal(err)
+	}
+
+	walkErr := filepath.WalkDir(RuntimeDir(dataDir), func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil || entry.IsDir() {
+			return walkErr
+		}
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		if strings.Contains(string(data), secret) {
+			t.Fatalf("spoken text leaked into %s: %q", path, data)
+		}
+		return nil
+	})
+	if walkErr != nil {
+		t.Fatal(walkErr)
+	}
+
+	if _, err := Send(context.Background(), dataDir, Request{Action: "shutdown"}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("supervisor did not stop")
 	}
 }
 
