@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -126,39 +127,369 @@ func TestDescriptorValidationAndEngineNames(t *testing.T) {
 	}
 }
 
+// TestSupervisorActionsReplaceAndStop used to assert that a second "speak"
+// cancelled the first — exactly the behaviour D6 (SPEC-129) revokes: with a
+// queue, the second waits its turn instead of silencing the first. Kept
+// under its original name (it is not a regression, and exercises the same
+// speak/status/stop/shutdown surface); only the middle assertion changed.
 func TestSupervisorActionsReplaceAndStop(t *testing.T) {
 	started := make(chan struct{}, 2)
+	var calls atomic.Int32
 	var cancelled atomic.Int32
+	release := make(chan struct{})
 	s := &supervisor{token: "token", done: make(chan struct{}), engine: "fake", synth: func(ctx context.Context, _ Request) error {
+		call := calls.Add(1)
 		started <- struct{}{}
-		<-ctx.Done()
-		cancelled.Add(1)
+		if call == 1 {
+			<-release
+		}
+		if ctx.Err() != nil {
+			cancelled.Add(1)
+		}
 		return ctx.Err()
 	}}
 	if got := s.execute(Request{Action: "wat"}); got.OK || got.Error == "" {
 		t.Fatalf("unknown=%+v", got)
 	}
-	if got := s.execute(Request{Action: "speak", Text: "one"}); !got.OK || !got.Speaking {
+	if got := s.execute(Request{Action: "speak", Text: "one"}); !got.OK || !got.Speaking || !got.Started {
 		t.Fatalf("speak=%+v", got)
 	}
 	<-started
 	if got := s.execute(Request{Action: "status"}); !got.Speaking || got.Engine != "fake" {
 		t.Fatalf("status=%+v", got)
 	}
-	_ = s.execute(Request{Action: "speak", Text: "two"})
-	<-started
-	deadline := time.Now().Add(time.Second)
-	for cancelled.Load() < 1 && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
+	second := s.execute(Request{Action: "speak", Text: "two"})
+	if !second.OK || second.Started || second.Position != 1 {
+		t.Fatalf("second speak = %+v, want accepted and queued at position 1", second)
 	}
-	if cancelled.Load() < 1 {
-		t.Fatal("replacement did not cancel first synthesis")
+	select {
+	case <-started:
+		t.Fatal("second synthesis started before the first finished")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	<-started // the second now starts, once the first returns
+	if cancelled.Load() != 0 {
+		t.Fatalf("cancelled=%d, want 0: a second speak must never cancel the first (D6)", cancelled.Load())
 	}
 	if got := s.execute(Request{Action: "stop"}); !got.OK {
 		t.Fatal("stop failed")
 	}
 	if got := s.execute(Request{Action: "shutdown"}); !got.OK || !s.isDone() {
 		t.Fatal("shutdown failed")
+	}
+}
+
+// TestSupervisorCancelIsSessionScoped is AC1, the central criterion of
+// SPEC-129: writing in one session must never silence another's audio.
+func TestSupervisorCancelIsSessionScoped(t *testing.T) {
+	started := make(chan struct{}, 1)
+	var cancelledA atomic.Int32
+	s := &supervisor{token: "token", done: make(chan struct{}), engine: "fake", synth: func(ctx context.Context, _ Request) error {
+		started <- struct{}{}
+		<-ctx.Done()
+		cancelledA.Add(1)
+		return ctx.Err()
+	}}
+	if got := s.execute(Request{Action: "speak", Text: "a", SessionID: "A"}); !got.OK || !got.Started {
+		t.Fatalf("speak A = %+v", got)
+	}
+	<-started
+
+	if got := s.execute(Request{Action: "cancel", SessionID: "B"}); !got.OK {
+		t.Fatalf("cancel B = %+v", got)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if cancelledA.Load() != 0 {
+		t.Fatal("session B's cancel touched session A's audio")
+	}
+	if status := s.execute(Request{Action: "status"}); !status.Speaking {
+		t.Fatal("A stopped speaking after an unrelated session's cancel")
+	}
+
+	if got := s.execute(Request{Action: "cancel", SessionID: "A"}); !got.OK {
+		t.Fatalf("cancel A = %+v", got)
+	}
+	deadline := time.Now().Add(time.Second)
+	for cancelledA.Load() < 1 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if cancelledA.Load() < 1 {
+		t.Fatal("cancel A did not cancel A's own audio")
+	}
+}
+
+// TestCancelDropsOnlyOwnQueued is AC2: cancelling a session removes only
+// that session's queued entries, in place, leaving the rest untouched.
+func TestCancelDropsOnlyOwnQueued(t *testing.T) {
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	s := &supervisor{token: "token", done: make(chan struct{}), engine: "fake", synth: func(context.Context, Request) error {
+		started <- struct{}{}
+		<-release
+		return nil
+	}}
+	if got := s.execute(Request{Action: "speak", Text: "seed", SessionID: "seed"}); !got.Started {
+		t.Fatalf("seed = %+v", got)
+	}
+	<-started
+	if got := s.execute(Request{Action: "speak", Text: "a1", SessionID: "A"}); got.Started || got.Position != 1 {
+		t.Fatalf("A1 = %+v", got)
+	}
+	if got := s.execute(Request{Action: "speak", Text: "b1", SessionID: "B"}); got.Started || got.Position != 2 {
+		t.Fatalf("B1 = %+v", got)
+	}
+	if got := s.execute(Request{Action: "speak", Text: "a2", SessionID: "A"}); got.Started || got.Position != 3 {
+		t.Fatalf("A2 = %+v", got)
+	}
+	if got := s.execute(Request{Action: "cancel", SessionID: "A"}); !got.OK {
+		t.Fatalf("cancel A = %+v", got)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.queue) != 1 || s.queue[0].sessionID != "B" {
+		t.Fatalf("queue after cancelling A = %+v, want exactly B1", s.queue)
+	}
+}
+
+// TestQueueSerializesEmissions is AC3: never two voices at once — the
+// second speak waits for the first to finish before its synth is invoked.
+func TestQueueSerializesEmissions(t *testing.T) {
+	started := make(chan struct{}, 2)
+	release := make(chan struct{})
+	s := &supervisor{token: "token", done: make(chan struct{}), engine: "fake", synth: func(context.Context, Request) error {
+		started <- struct{}{}
+		<-release
+		return nil
+	}}
+	first := s.execute(Request{Action: "speak", Text: "one", SessionID: "A"})
+	if !first.OK || !first.Started {
+		t.Fatalf("first = %+v", first)
+	}
+	<-started
+	second := s.execute(Request{Action: "speak", Text: "two", SessionID: "B"})
+	if !second.OK || second.Started || second.Position != 1 {
+		t.Fatalf("second = %+v, want accepted and queued at position 1", second)
+	}
+	select {
+	case <-started:
+		t.Fatal("second synthesis started before the first finished")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	<-started
+}
+
+// TestOriginPrefixIsSpoken is AC4 (the supervisor half): the text handed to
+// synth carries the spoken origin prefix exactly when D10's four conditions
+// all hold, and never otherwise.
+func TestOriginPrefixIsSpoken(t *testing.T) {
+	writeFocus := func(t *testing.T, dataDir, sessionID string) {
+		t.Helper()
+		if sessionID == "" {
+			return
+		}
+		if err := os.MkdirAll(RuntimeDir(dataDir), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		data, _ := json.Marshal(struct {
+			SessionID string `json:"session_id"`
+		}{SessionID: sessionID})
+		if err := os.WriteFile(focusPath(dataDir), data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	tests := []struct {
+		name       string
+		focus      string
+		sessionID  string
+		origin     string
+		wantPrefix bool
+	}{
+		{"all four conditions hold", "other-session", "mine", "mneme", true},
+		{"empty focus: nobody has typed yet", "", "mine", "mneme", false},
+		{"empty owner: legacy client", "other-session", "", "mneme", false},
+		{"owner equals focus: user is looking at it", "mine", "mine", "mneme", false},
+		{"empty label: nothing to attribute", "other-session", "mine", "", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dataDir := t.TempDir()
+			writeFocus(t, dataDir, tc.focus)
+			var text string
+			done := make(chan struct{})
+			s := &supervisor{token: "token", done: make(chan struct{}), engine: "fake", dataDir: dataDir, synth: func(_ context.Context, req Request) error {
+				text = req.Text
+				close(done)
+				return nil
+			}}
+			if got := s.execute(Request{Action: "speak", Text: "hola", Language: "es", SessionID: tc.sessionID, Origin: tc.origin}); !got.OK {
+				t.Fatalf("speak = %+v", got)
+			}
+			<-done
+			gotPrefix := strings.HasPrefix(text, "En mneme: ")
+			if gotPrefix != tc.wantPrefix {
+				t.Fatalf("text=%q, wantPrefix=%v", text, tc.wantPrefix)
+			}
+		})
+	}
+}
+
+// TestExpiredEmissionIsDiscardedSilently is AC5: an emission that waited
+// past EmissionTTL is dropped without ever reaching synth, and without
+// producing any text — the whole point of a silent discard.
+func TestExpiredEmissionIsDiscardedSilently(t *testing.T) {
+	mockNow := time.Now()
+	release := make(chan struct{})
+	started := make(chan struct{}, 1)
+	var lateCalled atomic.Bool
+	s := &supervisor{token: "token", done: make(chan struct{}), engine: "fake", now: func() time.Time { return mockNow }, synth: func(_ context.Context, req Request) error {
+		if req.SessionID == "seed" {
+			started <- struct{}{}
+			<-release
+			return nil
+		}
+		lateCalled.Store(true)
+		return nil
+	}}
+	if got := s.execute(Request{Action: "speak", Text: "seed", SessionID: "seed"}); !got.Started {
+		t.Fatalf("seed = %+v", got)
+	}
+	<-started
+	if got := s.execute(Request{Action: "speak", Text: "late", SessionID: "A"}); got.Started || got.Position != 1 {
+		t.Fatalf("queued = %+v", got)
+	}
+	mockNow = mockNow.Add(EmissionTTL + time.Second)
+	close(release)
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		s.mu.Lock()
+		dropped, speaking := s.stats.DroppedExpired, s.speaking
+		s.mu.Unlock()
+		if dropped == 1 && !speaking {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("dropped_expired=%d speaking=%v, want 1 and false", dropped, speaking)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if lateCalled.Load() {
+		t.Fatal("an expired emission reached synth")
+	}
+}
+
+// TestQueueOverflowDropsOldestPending is AC6: with the queue full, encolar
+// evicts the oldest PENDING entry, never the one currently playing.
+func TestQueueOverflowDropsOldestPending(t *testing.T) {
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	s := &supervisor{token: "token", done: make(chan struct{}), engine: "fake", synth: func(context.Context, Request) error {
+		started <- struct{}{}
+		<-release
+		return nil
+	}}
+	if got := s.execute(Request{Action: "speak", Text: "seed", SessionID: "seed"}); !got.Started {
+		t.Fatalf("seed = %+v", got)
+	}
+	<-started
+	for i := 0; i < MaxQueuedEmissions; i++ {
+		sessionID := fmt.Sprintf("s%d", i)
+		if got := s.execute(Request{Action: "speak", Text: "x", SessionID: sessionID}); got.Started {
+			t.Fatalf("pending entry %d unexpectedly started: %+v", i, got)
+		}
+	}
+	s.mu.Lock()
+	queueLen, oldest := len(s.queue), s.queue[0].sessionID
+	s.mu.Unlock()
+	if queueLen != MaxQueuedEmissions || oldest != "s0" {
+		t.Fatalf("queue = %d entries, oldest=%q, want %d and s0", queueLen, oldest, MaxQueuedEmissions)
+	}
+
+	if got := s.execute(Request{Action: "speak", Text: "y", SessionID: "overflow"}); got.Started {
+		t.Fatalf("overflow entry unexpectedly started: %+v", got)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.queue) != MaxQueuedEmissions {
+		t.Fatalf("queue length after overflow = %d, want %d", len(s.queue), MaxQueuedEmissions)
+	}
+	if s.queue[0].sessionID != "s1" {
+		t.Fatalf("oldest pending after overflow = %q, want s1 (s0 must have been evicted)", s.queue[0].sessionID)
+	}
+	if s.stats.DroppedOverflow != 1 {
+		t.Fatalf("dropped_overflow = %d, want 1", s.stats.DroppedOverflow)
+	}
+	if !s.speaking || s.current == nil || s.current.sessionID != "seed" {
+		t.Fatal("overflow evicted the entry that is playing instead of the oldest pending one")
+	}
+}
+
+// TestLegacyClientActionsStillWork is AC14 — the "old client, new
+// supervisor" half of D18's compatibility. The message is sent as raw JSON
+// with exactly the fields a pre-SPEC-129 client emits (token, action, text,
+// language, voice, rate, model), never session_id or origin: constructing a
+// Request{} with the new fields left at zero would only prove Go's zero
+// values work, not that the decoder accepts what an old binary really sends.
+func TestLegacyClientActionsStillWork(t *testing.T) {
+	dataDir := t.TempDir()
+	if err := os.MkdirAll(RuntimeDir(dataDir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	focusData, _ := json.Marshal(struct {
+		SessionID string `json:"session_id"`
+	}{SessionID: "someone-else"})
+	if err := os.WriteFile(focusPath(dataDir), focusData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	started := make(chan struct{}, 1)
+	var gotText string
+	s := &supervisor{token: "secret", done: make(chan struct{}), engine: "fake", dataDir: dataDir, synth: func(_ context.Context, req Request) error {
+		gotText = req.Text
+		started <- struct{}{}
+		return nil
+	}}
+
+	sendRaw := func(t *testing.T, raw string) Response {
+		t.Helper()
+		server, client := net.Pipe()
+		done := make(chan struct{})
+		go func() { s.handle(server); close(done) }()
+		if _, err := client.Write([]byte(raw)); err != nil {
+			t.Fatal(err)
+		}
+		var response Response
+		if err := json.NewDecoder(client).Decode(&response); err != nil {
+			t.Fatal(err)
+		}
+		_ = client.Close()
+		<-done
+		return response
+	}
+
+	legacySpeak := `{"token":"secret","action":"speak","text":"hola","language":"es","voice":"","rate":0,"model":""}`
+	if resp := sendRaw(t, legacySpeak); !resp.OK || !resp.Started {
+		t.Fatalf("legacy speak = %+v", resp)
+	}
+	<-started
+	if strings.HasPrefix(gotText, "En ") || strings.HasPrefix(gotText, "From ") {
+		t.Fatalf("legacy speak with no session_id got a spoken origin prefix: %q", gotText)
+	}
+
+	legacyStop := `{"token":"secret","action":"stop"}`
+	if resp := sendRaw(t, legacyStop); !resp.OK {
+		t.Fatalf("legacy stop = %+v", resp)
+	}
+	s.mu.Lock()
+	speaking, queueLen := s.speaking, len(s.queue)
+	s.mu.Unlock()
+	if speaking || queueLen != 0 {
+		t.Fatalf("stop without a session did not cancel and empty the whole queue: speaking=%v queue=%d", speaking, queueLen)
 	}
 }
 

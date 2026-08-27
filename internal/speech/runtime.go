@@ -38,23 +38,60 @@ type RuntimeDescriptor struct {
 }
 
 // Request is one authenticated supervisor command. Text is never persisted.
+// SessionID identifies the emission's owner (empty for a client older than
+// SPEC-129, which never queues under a session and never gets a spoken
+// origin prefix). Origin is the spoken project label used to prefix the
+// text when it plays while another session has focus (D10).
 type Request struct {
-	Token    string  `json:"token"`
-	Action   string  `json:"action"`
-	Text     string  `json:"text,omitempty"`
-	Language string  `json:"language,omitempty"`
-	Voice    string  `json:"voice,omitempty"`
-	Rate     float64 `json:"rate,omitempty"`
-	Model    string  `json:"model,omitempty"`
+	Token     string  `json:"token"`
+	Action    string  `json:"action"`
+	Text      string  `json:"text,omitempty"`
+	Language  string  `json:"language,omitempty"`
+	Voice     string  `json:"voice,omitempty"`
+	Rate      float64 `json:"rate,omitempty"`
+	Model     string  `json:"model,omitempty"`
+	SessionID string  `json:"session_id,omitempty"`
+	Origin    string  `json:"origin,omitempty"`
 }
 
-// Response reports command success without echoing spoken text.
+// Response reports command success without echoing spoken text. Speaking
+// keeps its pre-SPEC-129 meaning: something is playing right now, of any
+// session. Started reports whether THIS emission is the one playing;
+// Position is its 1-based place in the queue while it waits (0 once it
+// starts). Queue is only populated by the status action.
 type Response struct {
-	OK       bool   `json:"ok"`
-	Speaking bool   `json:"speaking,omitempty"`
-	Engine   string `json:"engine,omitempty"`
-	Error    string `json:"error,omitempty"`
+	OK       bool        `json:"ok"`
+	Speaking bool        `json:"speaking,omitempty"`
+	Engine   string      `json:"engine,omitempty"`
+	Error    string      `json:"error,omitempty"`
+	Started  bool        `json:"started,omitempty"`
+	Position int         `json:"position,omitempty"`
+	Queue    *QueueStats `json:"queue,omitempty"`
 }
+
+// QueueStats are the audio-path counters the supervisor keeps in memory.
+// They report since the supervisor started, not a lifetime total: a fresh,
+// low number after a restart tells the truth about whether the channel is
+// working now, which matters more than an eternal accumulator that never
+// resets (D16).
+type QueueStats struct {
+	Pending             int       `json:"pending"`
+	Started             int       `json:"started"`
+	DroppedExpired      int       `json:"dropped_expired"`
+	DroppedOverflow     int       `json:"dropped_overflow"`
+	CancelledByPrompt   int       `json:"cancelled_by_prompt"`
+	SupervisorStartedAt time.Time `json:"supervisor_started_at"`
+}
+
+// MaxQueuedEmissions is the maximum number of emissions waiting their turn,
+// not counting the one currently playing. With EmissionTTL at two minutes,
+// eight pending emissions are at most about a minute of audio, all of it
+// recent.
+const MaxQueuedEmissions = 8
+
+// EmissionTTL is how long a queued emission may wait before it is discarded
+// silently, measured from the moment it was enqueued.
+const EmissionTTL = 2 * time.Minute
 
 // RuntimeDir returns the private speech state directory below dataDir.
 func RuntimeDir(dataDir string) string { return filepath.Join(dataDir, "speech") }
@@ -153,6 +190,32 @@ func waitForSupervisor(ctx context.Context, dataDir string) error {
 
 func descriptorPath(dataDir string) string { return filepath.Join(RuntimeDir(dataDir), "runtime.json") }
 
+// focusPath is where RegisterPrompt records the session the user last wrote
+// in (D9).
+func focusPath(dataDir string) string { return filepath.Join(RuntimeDir(dataDir), "focus.json") }
+
+// readFocus returns the session_id last recorded in focus.json, or "" when
+// dataDir is empty, the file is absent, or it cannot be parsed — an absent
+// focus means no session has claimed it yet (typically a supervisor that
+// just started for this very emission), which correctly yields no spoken
+// origin prefix (D9/D10).
+func readFocus(dataDir string) string {
+	if dataDir == "" {
+		return ""
+	}
+	data, err := os.ReadFile(focusPath(dataDir))
+	if err != nil {
+		return ""
+	}
+	var focus struct {
+		SessionID string `json:"session_id"`
+	}
+	if err := json.Unmarshal(data, &focus); err != nil {
+		return ""
+	}
+	return focus.SessionID
+}
+
 func readDescriptor(dataDir string) (RuntimeDescriptor, error) {
 	data, err := os.ReadFile(descriptorPath(dataDir))
 	if err != nil {
@@ -194,7 +257,7 @@ func Supervise(ctx context.Context, dataDir string) error {
 	}
 	defer os.Remove(descriptorPath(dataDir))
 
-	s := &supervisor{token: desc.Token, done: make(chan struct{}), synth: speak, engine: engineName(runtimeGOOS)}
+	s := &supervisor{token: desc.Token, done: make(chan struct{}), synth: speak, engine: engineName(runtimeGOOS), dataDir: dataDir, startedAt: time.Now().UTC()}
 	go func() {
 		select {
 		case <-ctx.Done():
@@ -221,6 +284,16 @@ func Supervise(ctx context.Context, dataDir string) error {
 	}
 }
 
+// queuedEmission is one emission waiting its turn. The text lives here, in
+// memory, and nowhere else: it is never written to disk (AC12).
+type queuedEmission struct {
+	seq       uint64
+	sessionID string // owner; empty means a client older than SPEC-129
+	origin    string // spoken project label; may be empty
+	req       Request
+	enqueued  time.Time
+}
+
 type supervisor struct {
 	mu         sync.Mutex
 	token      string
@@ -232,6 +305,28 @@ type supervisor struct {
 	synth      func(context.Context, Request) error
 	engine     string
 	lastError  string
+
+	// Queue-with-owner state (SPEC-129). current/queue/seq track the cola;
+	// dataDir lets startLocked read focus.json; now is an injectable clock
+	// so caducidad tests never need time.Sleep; startedAt/stats back the
+	// QueueStats a status response reports.
+	current   *queuedEmission
+	queue     []*queuedEmission
+	seq       uint64
+	dataDir   string
+	now       func() time.Time
+	startedAt time.Time
+	stats     QueueStats
+}
+
+// nowFn returns the injected clock when the test sets one, or time.Now
+// otherwise. It is a method, not a package variable, because existing tests
+// already build &supervisor{...} by hand (see TestSupervisorActionsReplaceAndStop).
+func (s *supervisor) nowFn() time.Time {
+	if s.now != nil {
+		return s.now()
+	}
+	return time.Now()
 }
 
 func (s *supervisor) isDone() bool {
@@ -264,8 +359,11 @@ func (s *supervisor) execute(req Request) Response {
 	defer s.mu.Unlock()
 	switch req.Action {
 	case "status":
-		return Response{OK: true, Speaking: s.speaking, Engine: s.engine, Error: s.lastError}
+		return Response{OK: true, Speaking: s.speaking, Engine: s.engine, Error: s.lastError, Queue: s.queueStatsLocked()}
 	case "stop":
+		// A host-scoped "be quiet" from the person: cancels whatever is
+		// playing and empties the queue entirely. Discards here are NOT
+		// counted (D8) — this is an explicit request, not a loss.
 		s.stopLocked()
 		return Response{OK: true}
 	case "shutdown":
@@ -273,39 +371,163 @@ func (s *supervisor) execute(req Request) Response {
 		s.once.Do(func() { close(s.done) })
 		return Response{OK: true}
 	case "speak":
-		s.stopLocked()
-		ctx, cancel := context.WithCancel(context.Background())
-		s.cancel = cancel
-		s.speaking = true
-		s.generation++
-		generation := s.generation
-		go func() {
-			err := s.synth(ctx, req)
-			s.mu.Lock()
-			if s.generation == generation {
-				s.cancel = nil
-				s.speaking = false
-				if err != nil && !errors.Is(err, context.Canceled) {
-					s.lastError = "engine_failed"
-				} else {
-					s.lastError = ""
-				}
-			}
-			s.mu.Unlock()
-		}()
-		return Response{OK: true, Speaking: true, Engine: s.engine}
+		return s.enqueueLocked(req)
+	case "cancel":
+		return s.cancelSessionLocked(req)
 	default:
 		return Response{Error: "unknown action"}
 	}
 }
 
-func (s *supervisor) stopLocked() {
+// queueStatsLocked snapshots the audio-path counters for a status response.
+// Must be called with s.mu held.
+func (s *supervisor) queueStatsLocked() *QueueStats {
+	stats := s.stats
+	stats.Pending = len(s.queue)
+	stats.SupervisorStartedAt = s.startedAt
+	return &stats
+}
+
+// enqueueLocked appends req to the queue under its session's ownership and
+// pumps the queue once. It never cancels whatever is already playing —
+// that is the entire point of D6/D7: writing a new emission no longer
+// silences the machine, only the sessions cancel does. Must be called with
+// s.mu held.
+func (s *supervisor) enqueueLocked(req Request) Response {
+	s.seq++
+	entry := &queuedEmission{seq: s.seq, sessionID: req.SessionID, origin: req.Origin, req: req, enqueued: s.nowFn()}
+	if len(s.queue) >= MaxQueuedEmissions {
+		// Overflow evicts the oldest PENDING entry, never the one playing:
+		// current lives outside s.queue (D13).
+		s.queue = s.queue[1:]
+		s.stats.DroppedOverflow++
+	}
+	s.queue = append(s.queue, entry)
+	s.pumpLocked()
+	if s.current == entry {
+		return Response{OK: true, Speaking: true, Started: true, Engine: s.engine}
+	}
+	position := 0
+	for i, queued := range s.queue {
+		if queued == entry {
+			position = i + 1
+			break
+		}
+	}
+	return Response{OK: true, Speaking: s.speaking, Started: false, Position: position, Engine: s.engine}
+}
+
+// cancelSessionLocked implements the queue-with-owner cancellation rule
+// (D7/D8): writing in a session cancels ALL of that session's audio — what
+// is playing and what is waiting — and touches nothing that belongs to
+// another session. Must be called with s.mu held.
+func (s *supervisor) cancelSessionLocked(req Request) Response {
+	if req.SessionID == "" {
+		return Response{Error: "cancel requires session_id"}
+	}
+	if s.current != nil && s.current.sessionID == req.SessionID {
+		s.cancelCurrentLocked()
+		s.stats.CancelledByPrompt++
+	}
+	s.stats.CancelledByPrompt += s.dropSessionLocked(req.SessionID)
+	s.pumpLocked()
+	return Response{OK: true}
+}
+
+// pumpLocked starts the next queued emission when nothing is playing,
+// discarding any entry that has been waiting longer than EmissionTTL along
+// the way (silently: no summary, no text produced — D13). Must be called
+// with s.mu held.
+func (s *supervisor) pumpLocked() {
+	if s.speaking {
+		return
+	}
+	for len(s.queue) > 0 {
+		entry := s.queue[0]
+		s.queue = s.queue[1:]
+		if s.nowFn().Sub(entry.enqueued) > EmissionTTL {
+			s.stats.DroppedExpired++
+			continue
+		}
+		s.startLocked(entry)
+		return
+	}
+}
+
+// startLocked begins synthesizing entry. It decides the spoken origin
+// prefix here, at the moment playback actually starts, never at enqueue
+// time — an emission can sit in the queue while the user switches windows,
+// and deciding earlier would make the prefix lie (D9). Must be called with
+// s.mu held.
+func (s *supervisor) startLocked(entry *queuedEmission) {
+	req := entry.req
+	focus := readFocus(s.dataDir)
+	if focus != "" && entry.sessionID != "" && entry.sessionID != focus && entry.origin != "" {
+		req.Text = OriginPrefix(req.Language, entry.origin) + req.Text
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	s.cancel = cancel
+	s.speaking = true
+	s.current = entry
+	s.generation++
+	s.stats.Started++
+	generation := s.generation
+	go func() {
+		err := s.synth(ctx, req)
+		s.mu.Lock()
+		if s.generation == generation {
+			s.cancel = nil
+			s.speaking = false
+			s.current = nil
+			if err != nil && !errors.Is(err, context.Canceled) {
+				s.lastError = "engine_failed"
+			} else {
+				s.lastError = ""
+			}
+			s.pumpLocked()
+		}
+		s.mu.Unlock()
+	}()
+}
+
+// cancelCurrentLocked stops whatever is playing without touching the
+// queue — the mechanism `stop` and `cancel` both build on. Must be called
+// with s.mu held.
+func (s *supervisor) cancelCurrentLocked() {
 	s.generation++
 	if s.cancel != nil {
 		s.cancel()
 		s.cancel = nil
 	}
 	s.speaking = false
+	s.current = nil
+}
+
+// dropSessionLocked removes every queued entry owned by sessionID and
+// reports how many were dropped. Must be called with s.mu held.
+func (s *supervisor) dropSessionLocked(sessionID string) int {
+	if sessionID == "" {
+		return 0
+	}
+	kept := s.queue[:0]
+	dropped := 0
+	for _, entry := range s.queue {
+		if entry.sessionID == sessionID {
+			dropped++
+			continue
+		}
+		kept = append(kept, entry)
+	}
+	s.queue = kept
+	return dropped
+}
+
+// stopLocked cancels whatever is playing and empties the queue entirely —
+// the host-scoped "be quiet" that `stop`/`shutdown` use. Must be called
+// with s.mu held.
+func (s *supervisor) stopLocked() {
+	s.cancelCurrentLocked()
+	s.queue = nil
 }
 
 func engineName(goos string) string {
