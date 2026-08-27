@@ -664,6 +664,47 @@ func TestSendProtocolErrors(t *testing.T) {
 	}
 }
 
+// TestSendMapsUnknownAction is AC13's hoja half: a supervisor that replies
+// with exactly "unknown action" (the text execute's default branch sends)
+// must produce an error errors.Is-comparable to ErrUnknownAction — the
+// convention this repository uses instead of matching raw error strings —
+// and any other error text must NOT satisfy that comparison.
+func TestSendMapsUnknownAction(t *testing.T) {
+	respond := func(t *testing.T, errText string) error {
+		t.Helper()
+		dir := t.TempDir()
+		if err := os.MkdirAll(RuntimeDir(dir), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = listener.Close() }()
+		desc := RuntimeDescriptor{Address: listener.Addr().String(), Token: "secret"}
+		data, _ := json.Marshal(desc)
+		if err := os.WriteFile(descriptorPath(dir), data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		go func() {
+			conn, _ := listener.Accept()
+			defer func() { _ = conn.Close() }()
+			var req Request
+			_ = json.NewDecoder(conn).Decode(&req)
+			_ = json.NewEncoder(conn).Encode(Response{Error: errText})
+		}()
+		_, err = Send(context.Background(), dir, Request{Action: "cancel"})
+		return err
+	}
+
+	if err := respond(t, "unknown action"); !errors.Is(err, ErrUnknownAction) {
+		t.Fatalf("Send error=%v, want errors.Is ErrUnknownAction", err)
+	}
+	if err := respond(t, "denied"); errors.Is(err, ErrUnknownAction) {
+		t.Fatalf("Send error=%v unexpectedly matched ErrUnknownAction (control case)", err)
+	}
+}
+
 func TestEnsureSupervisorStartsReusesAndRecoversStaleLock(t *testing.T) {
 	dir := t.TempDir()
 	ctx, cancel := context.WithCancel(context.Background())

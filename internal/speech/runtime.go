@@ -96,6 +96,17 @@ const EmissionTTL = 2 * time.Minute
 // RuntimeDir returns the private speech state directory below dataDir.
 func RuntimeDir(dataDir string) string { return filepath.Join(dataDir, "speech") }
 
+// unknownActionError is the exact text execute's default branch replies
+// with. It is the supervisor's own signal that it does not recognize an
+// action — in practice, a supervisor left running by an older mneme binary.
+const unknownActionError = "unknown action"
+
+// ErrUnknownAction means the supervisor on the other end does not know the
+// requested action: in practice, a supervisor from an older mneme version.
+// RegisterPrompt's compatibility ladder (D18) starts by recognizing this
+// sentinel with errors.Is, never by comparing the raw response text.
+var ErrUnknownAction = errors.New("speech: supervisor does not know this action")
+
 // Send submits a command to a running supervisor.
 func Send(ctx context.Context, dataDir string, req Request) (Response, error) {
 	desc, err := readDescriptor(dataDir)
@@ -120,6 +131,9 @@ func Send(ctx context.Context, dataDir string, req Request) (Response, error) {
 		return Response{}, fmt.Errorf("speech: read response: %w", err)
 	}
 	if !response.OK {
+		if response.Error == unknownActionError {
+			return response, fmt.Errorf("speech: %s: %w", response.Error, ErrUnknownAction)
+		}
 		return response, errors.New(response.Error)
 	}
 	return response, nil
@@ -375,7 +389,7 @@ func (s *supervisor) execute(req Request) Response {
 	case "cancel":
 		return s.cancelSessionLocked(req)
 	default:
-		return Response{Error: "unknown action"}
+		return Response{Error: unknownActionError}
 	}
 }
 
