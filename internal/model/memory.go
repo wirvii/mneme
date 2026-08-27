@@ -249,6 +249,15 @@ type Memory struct {
 	// Enables "show me memories about this file" queries.
 	Files []string `json:"files,omitempty"`
 
+	// SDDRefs is the list of BL-<n>/SPEC-<n> mentions this memory's text
+	// carries, each resolved to the anchor (UUIDv7) it pointed to ON THE
+	// MACHINE THAT WROTE IT (SPEC-128 D3). It is the twin of Files: a model
+	// field backed by a lateral table (memory_sdd_refs), populated at write
+	// time and completed with a resolution Status only by
+	// MemoryService.Get — see SDDRef's own godoc for what an empty Status
+	// means.
+	SDDRefs []SDDRef `json:"sdd_refs,omitempty"`
+
 	// AppliesTo holds the list of patterns that determine when this rule is
 	// relevant. Patterns can be file path globs (e.g. "internal/**/*.go"),
 	// tool selectors (e.g. "tool:Edit"), combined selectors
