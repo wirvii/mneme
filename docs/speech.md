@@ -26,10 +26,15 @@ mneme speech stop
 mneme speech off
 ```
 
-The `UserPromptSubmit` hook cancels speech from the previous turn and asks the
-agent to resolve the new turn exactly once through `speech_emit`. The agent may
-emit useful prose or explicitly skip speech. If it forgets, mneme remains
-silent and increments `missed_turns`; it never reads the raw answer.
+The `UserPromptSubmit` hook cancels speech from the previous turn **in that
+same session** — never audio belonging to a different session, even when
+several sessions share this host at once (see "Several sessions at once"
+below) — and asks the agent to resolve the new turn exactly once through
+`speech_emit`. The agent may emit useful prose or explicitly skip speech. If
+it forgets to resolve its own previous turn before prompting again, mneme
+remains silent and increments `missed_turns`; that counter only ever counts a
+session's own unresolved turns, never a collision with another session's
+prompt. It never reads the raw answer.
 
 ## Linux: configuring a local Piper model
 
@@ -61,8 +66,49 @@ external TTS service is supported.
 `mneme speech voices` lists the voices installed on the host for a given
 native engine.
 
-Only one session owns audio at a time. A newer spoken response cancels the
-current process before it starts, with no queue.
+Never two voices talk over each other: a second emission waits its turn
+behind whatever is already playing instead of cutting it off (see "Several
+sessions at once" below for what does cancel it).
+
+## Several sessions at once
+
+It is normal to have more than one `mneme`-backed agent session running on
+the same machine at the same time. mneme accounts for that with a queue that
+knows who owns each emission:
+
+- **A queue, not a single slot.** Emissions from different sessions wait
+  their turn and play one after another — nothing is dropped just because
+  something else is already speaking.
+- **One cancellation rule.** Typing in a session cancels **all** of that
+  session's own audio: whatever is playing right now, and anything of it
+  still waiting in the queue. Nothing belonging to any other session is
+  touched. The reasoning: if you just typed in that session, you are looking
+  at it and have already read what mattered there, so anything of yours still
+  queued is stale — but a different session's audio is not stale just because
+  you typed somewhere else.
+- **Spoken provenance.** When an emission plays while you are not looking at
+  its session (your last keystroke went to a different one), mneme says
+  where it came from first — for example "In mneme: I finished the spec" —
+  so a voice you did not expect never plays anonymously.
+- **Silent expiry, with a cap.** A queued emission that waits too long is
+  dropped without ever playing and without any summary or announcement: the
+  text is already sitting in its own session's transcript, so re-announcing
+  something old later would be exactly the noise this limit exists to avoid.
+  The queue also caps how many emissions can wait at once, dropping the
+  oldest pending one (never the one currently playing) when it is full.
+- **What `spoken` means.** `speech_emit`'s `spoken:true` means the audio
+  **started playing just now** — never that it finished. mneme does not wait
+  out the whole narration before answering, because that would block the
+  call for as long as the speech lasts. When an emission has to wait its
+  turn instead, the response carries `queued:true` and `queue_position`
+  (1 = next) rather than `spoken:true`.
+- **Seeing the queue.** `mneme speech status` (and `speech_control status`)
+  reports how many emissions are waiting, how many were discarded before
+  they could play, and how many were cancelled because a session's own
+  prompt cut them off. `degraded` now also turns true when the last
+  synthesis failed, or when something was discarded before playing — on top
+  of its original reason, a configured engine that does not match this
+  host's own engine.
 
 ## Legacy configuration degrades, it never fails
 
