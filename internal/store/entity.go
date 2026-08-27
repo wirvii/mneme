@@ -680,6 +680,9 @@ func (s *MemoryStore) ListMemoriesInRange(ctx context.Context, from, to time.Tim
 		if err := s.loadFiles(ctx, m); err != nil {
 			return nil, err
 		}
+		if err := s.loadSDDRefs(ctx, m); err != nil {
+			return nil, err
+		}
 	}
 
 	return memories, nil

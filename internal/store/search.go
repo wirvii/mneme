@@ -122,6 +122,9 @@ func (s *MemoryStore) FTS5Search(ctx context.Context, query string, opts SearchO
 		if err := s.loadFiles(ctx, it.m); err != nil {
 			return nil, err
 		}
+		if err := s.loadSDDRefs(ctx, it.m); err != nil {
+			return nil, err
+		}
 		results = append(results, model.SearchResult{
 			Memory:         it.m,
 			Preview:        makePreview(it.m.Content, opts.PreviewLength),

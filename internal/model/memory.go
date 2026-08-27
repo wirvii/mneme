@@ -249,6 +249,15 @@ type Memory struct {
 	// Enables "show me memories about this file" queries.
 	Files []string `json:"files,omitempty"`
 
+	// SDDRefs is the list of BL-<n>/SPEC-<n> mentions this memory's text
+	// carries, each resolved to the anchor (UUIDv7) it pointed to ON THE
+	// MACHINE THAT WROTE IT (SPEC-128 D3). It is the twin of Files: a model
+	// field backed by a lateral table (memory_sdd_refs), populated at write
+	// time and completed with a resolution Status only by
+	// MemoryService.Get — see SDDRef's own godoc for what an empty Status
+	// means.
+	SDDRefs []SDDRef `json:"sdd_refs,omitempty"`
+
 	// AppliesTo holds the list of patterns that determine when this rule is
 	// relevant. Patterns can be file path globs (e.g. "internal/**/*.go"),
 	// tool selectors (e.g. "tool:Edit"), combined selectors
@@ -402,6 +411,21 @@ type UpdateRequest struct {
 
 	// Files replaces the associated file list when non-nil.
 	Files *[]string `json:"files,omitempty"`
+
+	// SDDRefs replaces the associated SDD reference set when non-nil — the
+	// caller is MemoryService.bakeSDDRefs (SPEC-128 D5), which computes it
+	// from the memory's post-update content before calling store.Update.
+	// Every element here must already carry a resolved TargetUUID: the
+	// store never recalculates one, only inserts brand-new (memory_id,
+	// ref_id) pairs (INSERT OR IGNORE) and prunes ref_ids no longer
+	// present.
+	//
+	// json:"-": this is populated ONLY by bakeSDDRefs's Go struct literal,
+	// never by an external caller — mem_update has no new field (D10, no
+	// API surface growth) and the mem_update schema contract test
+	// (SPEC-113) requires exactly this exclusion for a request field no
+	// client may ever set directly.
+	SDDRefs *[]SDDRef `json:"-"`
 
 	// AppliesTo replaces the applies_to list when non-nil.
 	// Only valid when the memory is of TypeRule.

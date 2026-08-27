@@ -1804,3 +1804,236 @@ func TestBacklogRefinements_CascadeOnItemDelete(t *testing.T) {
 		t.Errorf("expected 0 refinements after cascading delete, got %d", len(refs))
 	}
 }
+
+// --- SPEC-128 SDD ANCHOR TESTS ---
+
+// TestCreateAssignsUUID is AC5: CreateBacklogItem and CreateSpec produce a
+// non-empty anchor, and two creations in a row never collide.
+func TestCreateAssignsUUID(t *testing.T) {
+	s := newTestSDDStore(t)
+	ctx := context.Background()
+
+	item1 := &model.BacklogItem{ID: "BL-001", Title: "one", Status: model.BacklogStatusRaw, Priority: model.PriorityMedium, Project: "proj", Lane: model.LaneStandard}
+	item2 := &model.BacklogItem{ID: "BL-002", Title: "two", Status: model.BacklogStatusRaw, Priority: model.PriorityMedium, Project: "proj", Lane: model.LaneStandard}
+	if err := s.CreateBacklogItem(ctx, item1); err != nil {
+		t.Fatalf("create item1: %v", err)
+	}
+	if err := s.CreateBacklogItem(ctx, item2); err != nil {
+		t.Fatalf("create item2: %v", err)
+	}
+	if item1.UUID == "" || item2.UUID == "" {
+		t.Fatalf("expected non-empty anchors, got %q and %q", item1.UUID, item2.UUID)
+	}
+	if item1.UUID == item2.UUID {
+		t.Fatalf("expected distinct anchors, both are %q", item1.UUID)
+	}
+
+	spec1 := &model.Spec{ID: "SPEC-001", Title: "one", Status: model.SpecStatusDraft, Project: "proj", Lane: model.LaneStandard}
+	spec2 := &model.Spec{ID: "SPEC-002", Title: "two", Status: model.SpecStatusDraft, Project: "proj", Lane: model.LaneStandard}
+	if err := s.CreateSpec(ctx, spec1); err != nil {
+		t.Fatalf("create spec1: %v", err)
+	}
+	if err := s.CreateSpec(ctx, spec2); err != nil {
+		t.Fatalf("create spec2: %v", err)
+	}
+	if spec1.UUID == "" || spec2.UUID == "" {
+		t.Fatalf("expected non-empty spec anchors, got %q and %q", spec1.UUID, spec2.UUID)
+	}
+	if spec1.UUID == spec2.UUID {
+		t.Fatalf("expected distinct spec anchors, both are %q", spec1.UUID)
+	}
+}
+
+// TestSDDProjectionsAgreeOnUUID is AC7, and the one that makes the store's
+// tripled spec projection (BL-193) structural rather than conventional: for
+// the SAME row, every read path — GetSpec, ListSpecs, RecentlyCompletedSpecs,
+// GetBacklogItem, ListBacklogItems — must return the SAME non-empty anchor.
+// A projection that forgets the uuid column produces an empty string that
+// looks like a plausible datum, not an error, so this is a test on purpose,
+// not a recommendation (R1).
+func TestSDDProjectionsAgreeOnUUID(t *testing.T) {
+	s := newTestSDDStore(t)
+	ctx := context.Background()
+
+	item := &model.BacklogItem{ID: "BL-001", Title: "item", Status: model.BacklogStatusRaw, Priority: model.PriorityMedium, Project: "proj", Lane: model.LaneStandard}
+	if err := s.CreateBacklogItem(ctx, item); err != nil {
+		t.Fatalf("CreateBacklogItem: %v", err)
+	}
+
+	spec := &model.Spec{ID: "SPEC-001", Title: "spec", Status: model.SpecStatusDone, Project: "proj", Lane: model.LaneStandard}
+	if err := s.CreateSpec(ctx, spec); err != nil {
+		t.Fatalf("CreateSpec: %v", err)
+	}
+
+	if item.UUID == "" {
+		t.Fatal("CreateBacklogItem left UUID empty")
+	}
+	if spec.UUID == "" {
+		t.Fatal("CreateSpec left UUID empty")
+	}
+
+	// GetBacklogItem
+	gotItem, err := s.GetBacklogItem(ctx, "BL-001")
+	if err != nil {
+		t.Fatalf("GetBacklogItem: %v", err)
+	}
+	if gotItem.UUID != item.UUID {
+		t.Errorf("GetBacklogItem: uuid = %q, want %q", gotItem.UUID, item.UUID)
+	}
+
+	// ListBacklogItems
+	listedItems, _, err := s.ListBacklogItems(ctx, "proj", "", 0)
+	if err != nil {
+		t.Fatalf("ListBacklogItems: %v", err)
+	}
+	if len(listedItems) != 1 || listedItems[0].UUID != item.UUID {
+		t.Errorf("ListBacklogItems: got %+v, want single item with uuid %q", listedItems, item.UUID)
+	}
+
+	// GetSpec
+	gotSpec, err := s.GetSpec(ctx, "SPEC-001")
+	if err != nil {
+		t.Fatalf("GetSpec: %v", err)
+	}
+	if gotSpec.UUID != spec.UUID {
+		t.Errorf("GetSpec: uuid = %q, want %q", gotSpec.UUID, spec.UUID)
+	}
+
+	// ListSpecs
+	listedSpecs, _, err := s.ListSpecs(ctx, "proj", "", 0)
+	if err != nil {
+		t.Fatalf("ListSpecs: %v", err)
+	}
+	if len(listedSpecs) != 1 || listedSpecs[0].UUID != spec.UUID {
+		t.Errorf("ListSpecs: got %+v, want single spec with uuid %q", listedSpecs, spec.UUID)
+	}
+
+	// RecentlyCompletedSpecs
+	recent, err := s.RecentlyCompletedSpecs(ctx, "proj", 10)
+	if err != nil {
+		t.Fatalf("RecentlyCompletedSpecs: %v", err)
+	}
+	if len(recent) != 1 || recent[0].UUID != spec.UUID {
+		t.Errorf("RecentlyCompletedSpecs: got %+v, want single spec with uuid %q", recent, spec.UUID)
+	}
+}
+
+// TestUUIDsForRefs covers the correlative -> anchor lookup that anchors a
+// mention at write time: one query per table with IN, an empty map (no
+// query) for an empty input, and non-existent correlatives simply absent
+// from the result rather than an error.
+func TestUUIDsForRefs(t *testing.T) {
+	s := newTestSDDStore(t)
+	ctx := context.Background()
+
+	item := &model.BacklogItem{ID: "BL-001", Title: "item", Status: model.BacklogStatusRaw, Priority: model.PriorityMedium, Project: "proj", Lane: model.LaneStandard}
+	if err := s.CreateBacklogItem(ctx, item); err != nil {
+		t.Fatalf("CreateBacklogItem: %v", err)
+	}
+	spec := &model.Spec{ID: "SPEC-001", Title: "spec", Status: model.SpecStatusDraft, Project: "proj", Lane: model.LaneStandard}
+	if err := s.CreateSpec(ctx, spec); err != nil {
+		t.Fatalf("CreateSpec: %v", err)
+	}
+
+	got, err := s.UUIDsForRefs(ctx, []string{"BL-001", "SPEC-001", "BL-999", "SPEC-999"})
+	if err != nil {
+		t.Fatalf("UUIDsForRefs: %v", err)
+	}
+	if got["BL-001"] != item.UUID {
+		t.Errorf("UUIDsForRefs[BL-001] = %q, want %q", got["BL-001"], item.UUID)
+	}
+	if got["SPEC-001"] != spec.UUID {
+		t.Errorf("UUIDsForRefs[SPEC-001] = %q, want %q", got["SPEC-001"], spec.UUID)
+	}
+	if _, ok := got["BL-999"]; ok {
+		t.Error("UUIDsForRefs should not contain a nonexistent backlog ref")
+	}
+	if _, ok := got["SPEC-999"]; ok {
+		t.Error("UUIDsForRefs should not contain a nonexistent spec ref")
+	}
+
+	empty, err := s.UUIDsForRefs(ctx, nil)
+	if err != nil {
+		t.Fatalf("UUIDsForRefs(nil): %v", err)
+	}
+	if len(empty) != 0 {
+		t.Errorf("UUIDsForRefs(nil) = %v, want empty map", empty)
+	}
+}
+
+// TestRefsForUUIDs covers the anchor -> current-correlative lookup that
+// feeds local_id at read time: one query per table, empty input producing
+// an empty map with no query, and an unknown anchor simply absent.
+func TestRefsForUUIDs(t *testing.T) {
+	s := newTestSDDStore(t)
+	ctx := context.Background()
+
+	item := &model.BacklogItem{ID: "BL-001", Title: "item", Status: model.BacklogStatusRaw, Priority: model.PriorityMedium, Project: "proj", Lane: model.LaneStandard}
+	if err := s.CreateBacklogItem(ctx, item); err != nil {
+		t.Fatalf("CreateBacklogItem: %v", err)
+	}
+	spec := &model.Spec{ID: "SPEC-001", Title: "spec", Status: model.SpecStatusDraft, Project: "proj", Lane: model.LaneStandard}
+	if err := s.CreateSpec(ctx, spec); err != nil {
+		t.Fatalf("CreateSpec: %v", err)
+	}
+
+	got, err := s.RefsForUUIDs(ctx, []string{item.UUID, spec.UUID, "unknown-anchor"})
+	if err != nil {
+		t.Fatalf("RefsForUUIDs: %v", err)
+	}
+	if got[item.UUID] != "BL-001" {
+		t.Errorf("RefsForUUIDs[%s] = %q, want BL-001", item.UUID, got[item.UUID])
+	}
+	if got[spec.UUID] != "SPEC-001" {
+		t.Errorf("RefsForUUIDs[%s] = %q, want SPEC-001", spec.UUID, got[spec.UUID])
+	}
+	if _, ok := got["unknown-anchor"]; ok {
+		t.Error("RefsForUUIDs should not contain an unknown anchor")
+	}
+
+	empty, err := s.RefsForUUIDs(ctx, nil)
+	if err != nil {
+		t.Fatalf("RefsForUUIDs(nil): %v", err)
+	}
+	if len(empty) != 0 {
+		t.Errorf("RefsForUUIDs(nil) = %v, want empty map", empty)
+	}
+}
+
+// TestSDDReferenceBackfillMarker covers the one-row completion marker the
+// migration seeds with completed_at NULL: incomplete until marked, and the
+// marked totals round-trip.
+func TestSDDReferenceBackfillMarker(t *testing.T) {
+	s := newTestSDDStore(t)
+	ctx := context.Background()
+
+	complete, err := s.IsSDDReferenceBackfillComplete(ctx)
+	if err != nil {
+		t.Fatalf("IsSDDReferenceBackfillComplete (initial): %v", err)
+	}
+	if complete {
+		t.Fatal("expected the backfill marker to start incomplete")
+	}
+
+	if err := s.MarkSDDReferenceBackfillComplete(ctx, 42, 7); err != nil {
+		t.Fatalf("MarkSDDReferenceBackfillComplete: %v", err)
+	}
+
+	complete, err = s.IsSDDReferenceBackfillComplete(ctx)
+	if err != nil {
+		t.Fatalf("IsSDDReferenceBackfillComplete (after mark): %v", err)
+	}
+	if !complete {
+		t.Fatal("expected the backfill marker to be complete after marking")
+	}
+
+	var scanned, created int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT memories_scanned, refs_created FROM sdd_reference_backfill WHERE id = 1`,
+	).Scan(&scanned, &created); err != nil {
+		t.Fatalf("query totals: %v", err)
+	}
+	if scanned != 42 || created != 7 {
+		t.Errorf("totals: got scanned=%d created=%d, want 42/7", scanned, created)
+	}
+}

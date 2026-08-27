@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"github.com/wirvii/mneme/internal/model"
 )
 
 // newGetCmd returns the "mneme get" subcommand. It retrieves a single memory
@@ -57,6 +59,9 @@ makes it more likely to appear in future context injections.`,
 			if len(m.Files) > 0 {
 				fmt.Fprintf(os.Stdout, "Files:      %s\n", strings.Join(m.Files, ", "))
 			}
+			if foreign := foreignSDDRefs(m.SDDRefs); len(foreign) > 0 {
+				fmt.Fprintf(os.Stdout, "Referencias a trabajo que no está en esta máquina: %s\n", strings.Join(foreign, ", "))
+			}
 
 			fmt.Fprintln(os.Stdout)
 			fmt.Fprintln(os.Stdout, "--- Content ---")
@@ -69,4 +74,19 @@ makes it more likely to appear in future context injections.`,
 	cmd.Flags().BoolVar(&flagJSON, "json", false, "Output as JSON")
 
 	return cmd
+}
+
+// foreignSDDRefs returns the RefIDs of every reference resolved to
+// SDDRefForeign — an anchor IS registered, but no row in THIS database
+// carries it (SPEC-128 D8/D9): the honest failure this whole mechanism
+// exists to surface. Local and unanchored references produce no output
+// here; the CLI stays silent when there is nothing to warn about.
+func foreignSDDRefs(refs []model.SDDRef) []string {
+	var foreign []string
+	for _, ref := range refs {
+		if ref.Status == model.SDDRefForeign {
+			foreign = append(foreign, ref.RefID)
+		}
+	}
+	return foreign
 }

@@ -226,6 +226,13 @@ func (svc *MemoryService) importSharedNote(ctx context.Context, note *vault.Pars
 		if setErr := targetStore.SetTeamMemoryFields(ctx, fm.ID, fm.Shared, fm.Author); setErr != nil {
 			return "", "", fmt.Errorf("preserve shared/author for %s: %w", fm.ID, setErr)
 		}
+		// SPEC-128 D6: the file is the record of what the WRITING machine
+		// anchored — force it over whatever svc.Update's own bakeSDDRefsForUpdate
+		// may have just computed locally. Same shape and same reasoning as the
+		// SetTeamMemoryFields call above; import is auto-correcting.
+		if setErr := targetStore.SetSDDRefs(ctx, fm.ID, vault.ParseSDDRefLines(fm.SDDRefs)); setErr != nil {
+			return "", "", fmt.Errorf("force sdd refs for %s: %w", fm.ID, setErr)
+		}
 		return fm.ID, "updated", nil
 	}
 
@@ -248,6 +255,13 @@ func (svc *MemoryService) importSharedNote(ctx context.Context, note *vault.Pars
 
 	if setErr := newStore.SetTeamMemoryFields(ctx, created.ID, fm.Shared, fm.Author); setErr != nil {
 		return "", "", fmt.Errorf("preserve shared/author for %s: %w", created.ID, setErr)
+	}
+	// SPEC-128 D6: force whatever the incoming note's frontmatter says, the
+	// same shape as SetTeamMemoryFields above — a brand-new local row never
+	// has anchors of its own to conflict with, but forcing (rather than
+	// deriving) keeps the rule uniform across both branches.
+	if setErr := newStore.SetSDDRefs(ctx, created.ID, vault.ParseSDDRefLines(fm.SDDRefs)); setErr != nil {
+		return "", "", fmt.Errorf("force sdd refs for %s: %w", created.ID, setErr)
 	}
 
 	// Mirror Save's post-persist best-effort steps (embedding, wikilinks,

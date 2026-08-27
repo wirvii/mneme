@@ -241,6 +241,15 @@ type BacklogItem struct {
 	// nested integer with the same name would be confusing.
 	RefinementCount int `json:"refinement_count"`
 
+	// UUID is this item's own identity: a UUIDv7 minted once at creation
+	// (SPEC-128 D1), immutable, never surfaced in human-readable output
+	// (D9) — it exists so a memory that mentions "BL-194" can be resolved
+	// correctly even on a machine whose own BL-194 names different work.
+	// Never empty in practice (self-healing backfill, D7); omitempty only
+	// covers the narrow window between a legacy row's migration and its
+	// backfill.
+	UUID string `json:"uuid,omitempty"`
+
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -645,6 +654,15 @@ type Spec struct {
 
 	// FilesChanged tracks files modified during implementation.
 	FilesChanged []string `json:"files_changed,omitempty"`
+
+	// UUID is this spec's own identity: a UUIDv7 minted once at creation
+	// (SPEC-128 D1), immutable, never surfaced in human-readable output
+	// (D9) — it exists so a memory that mentions "SPEC-125" can be
+	// resolved correctly even on a machine whose own SPEC-125 names
+	// different work. Never empty in practice (self-healing backfill, D7);
+	// omitempty only covers the narrow window between a legacy row's
+	// migration and its backfill.
+	UUID string `json:"uuid,omitempty"`
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`

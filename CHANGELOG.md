@@ -4,6 +4,36 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- **Backlog items and specs get their own permanent identity — a UUIDv7
+  anchor, invisible in everyday use (SPEC-128, stage 1 of BL-194).** Until
+  now, a memory that mentions "SPEC-125" or "BL-001" relied entirely on
+  that correlative number, which is assigned independently by every
+  machine. A memory shared through the team-memory vault could land on a
+  teammate's machine where "SPEC-125" already names different work, and
+  `spec_status`/`mneme spec status` would answer with that unrelated
+  spec — silently and with no warning. Every `backlog_items`/`specs` row
+  now carries its own irrepeatable anchor (migration 019, with a
+  self-repairing fill that runs on every database open, so a row can never
+  end up without one even after an interrupted upgrade). A memory that
+  mentions `BL-194`/`SPEC-125` now records the anchor of what it meant, at
+  the moment it was written, inside the memory itself
+  (`memory_sdd_refs`, mirroring how `files` already works). `mem_get`
+  (and `mneme get`) resolve that anchor against THIS machine's own
+  database and report one of three states: `local` (found here, with its
+  current number), `foreign` (an anchor is recorded, but nothing here
+  carries it — the honest version of yesterday's silent wrong answer), or
+  `unanchored` (nothing was ever recorded). `mneme get` prints one line
+  only when a foreign reference exists: `Referencias a trabajo que no está
+  en esta máquina: SPEC-125`. The anchor itself is never shown in any
+  table or status line — it only appears in `--json` output and in the
+  `sdd_refs`/`uuid` fields of the affected objects. No new MCP tool, CLI
+  command, or HTTP endpoint: 85 tools, 42 commands, 10 endpoints, exactly
+  as before.
+
 ## [v1.41.0] — 2026-08-26 — Backlog archiving over MCP and spec freezing
 
 ### Added

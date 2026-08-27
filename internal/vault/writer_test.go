@@ -64,6 +64,39 @@ func TestWriter_NewFile(t *testing.T) {
 	if !strings.HasPrefix(out, "---\n") {
 		t.Error("file should start with frontmatter")
 	}
+	if strings.Contains(out, "sdd_refs:") {
+		t.Errorf("a memory with no SDDRefs must never write sdd_refs: (AC12)\nGot:\n%s", out)
+	}
+}
+
+// TestWriter_SDDRefs writes a memory with an anchored SDD reference through
+// the real Writer end to end (not just FromMemory/WriteTo in isolation) and
+// confirms the anchor lands in the file exactly as "REF=UUID".
+func TestWriter_SDDRefs(t *testing.T) {
+	root := t.TempDir()
+	w := newTestWriter(t, root)
+
+	ts := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	m := newTestMemory("019ddc45-0000-0000-0000-000000000010", "architecture/sdd-refs", "cites SPEC-125", ts)
+	m.SDDRefs = []model.SDDRef{
+		{RefID: "SPEC-125", TargetUUID: "0198f2c1-4a7b-7c3d-9e10-3f4a5b6c7d8e"},
+	}
+
+	_, relPath, err := w.WriteMemory(m)
+	if err != nil {
+		t.Fatalf("WriteMemory failed: %v", err)
+	}
+
+	absPath := filepath.Join(root, relPath)
+	data, err := os.ReadFile(absPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%s): %v", absPath, err)
+	}
+	out := string(data)
+
+	if !strings.Contains(out, "sdd_refs:\n  - SPEC-125=0198f2c1-4a7b-7c3d-9e10-3f4a5b6c7d8e\n") {
+		t.Errorf("expected the anchored reference in the written file\nGot:\n%s", out)
+	}
 }
 
 func TestWriter_UpdateFile(t *testing.T) {

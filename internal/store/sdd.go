@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/gofrs/uuid/v5"
@@ -117,7 +118,7 @@ const backlogListWhereStatus = backlogListWhere + ` AND status = ?`
 const backlogSelectColumns = `
 	SELECT b.id, b.title, b.description, b.status, b.priority, b.project,
 	       COALESCE(b.spec_id, ''), b.archive_reason, b.position, b.lane, b.scope,
-	       b.created_at, b.updated_at, COALESCE(r.n, 0)`
+	       b.created_at, b.updated_at, COALESCE(r.n, 0), b.uuid`
 
 const backlogSelectFrom = `
 	FROM backlog_items b
@@ -149,7 +150,7 @@ const specListWhereStatus = specListWhere + ` AND status = ?`
 const specListSelect = `
 	SELECT id, title, status, project, COALESCE(backlog_id, ''),
 	       lane, scope, COALESCE(base_sha, ''), assigned_agents, files_changed,
-	       created_at, updated_at
+	       created_at, updated_at, uuid
 	FROM specs`
 
 const specCountSelect = `SELECT COUNT(*) FROM specs`
@@ -178,23 +179,33 @@ func (s *SDDStore) NextBacklogID(ctx context.Context, project string) (string, e
 
 // CreateBacklogItem inserts a new backlog item. The item's ID must be pre-set
 // by the caller (typically via NextBacklogID).
+//
+// A UUIDv7 anchor (SPEC-128 D1/D11) is minted here and written into item.UUID
+// before the INSERT — no backlog item is ever created without one. The
+// anchor is immutable: there is no verb anywhere that updates this column.
 func (s *SDDStore) CreateBacklogItem(ctx context.Context, item *model.BacklogItem) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	item.CreatedAt = time.Now().UTC()
 	item.UpdatedAt = item.CreatedAt
 
+	anchor, err := uuid.NewV7()
+	if err != nil {
+		return fmt.Errorf("store: create backlog item: gen uuid: %w", err)
+	}
+	item.UUID = anchor.String()
+
 	const q = `
 		INSERT INTO backlog_items
-			(id, title, description, status, priority, project, spec_id, archive_reason, position, lane, scope, created_at, updated_at)
+			(id, title, description, status, priority, project, spec_id, archive_reason, position, lane, scope, uuid, created_at, updated_at)
 		VALUES
-			(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+			(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	specID := toNullString(item.SpecID)
-	_, err := s.db.ExecContext(ctx, q,
+	_, err = s.db.ExecContext(ctx, q,
 		item.ID, item.Title, item.Description,
 		string(item.Status), string(item.Priority),
 		item.Project, specID, item.ArchiveReason,
-		item.Position, string(item.Lane), item.Scope, now, now,
+		item.Position, string(item.Lane), item.Scope, item.UUID, now, now,
 	)
 	if err != nil {
 		return fmt.Errorf("store: create backlog item: %w", err)
@@ -500,6 +511,10 @@ func (s *SDDStore) NextSpecID(ctx context.Context, project string) (string, erro
 //
 // The primary key is the composite (project, id) pair (migration 005). The
 // same spec ID may exist in multiple projects without conflict.
+//
+// A UUIDv7 anchor (SPEC-128 D1/D11) is minted here and written into
+// spec.UUID before the INSERT — no spec is ever created without one. The
+// anchor is immutable: there is no verb anywhere that updates this column.
 func (s *SDDStore) CreateSpec(ctx context.Context, spec *model.Spec) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	spec.CreatedAt = time.Now().UTC()
@@ -514,16 +529,22 @@ func (s *SDDStore) CreateSpec(ctx context.Context, spec *model.Spec) error {
 		return fmt.Errorf("store: create spec: marshal files_changed: %w", err)
 	}
 
+	anchor, err := uuid.NewV7()
+	if err != nil {
+		return fmt.Errorf("store: create spec: gen uuid: %w", err)
+	}
+	spec.UUID = anchor.String()
+
 	const q = `
 		INSERT INTO specs
-			(id, title, status, project, backlog_id, lane, scope, base_sha, assigned_agents, files_changed, created_at, updated_at)
+			(id, title, status, project, backlog_id, lane, scope, base_sha, assigned_agents, files_changed, uuid, created_at, updated_at)
 		VALUES
-			(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+			(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	backlogID := toNullString(spec.BacklogID)
 	_, err = s.db.ExecContext(ctx, q,
 		spec.ID, spec.Title, string(spec.Status), spec.Project,
-		backlogID, string(spec.Lane), spec.Scope, spec.BaseSHA, agents, files, now, now,
+		backlogID, string(spec.Lane), spec.Scope, spec.BaseSHA, agents, files, spec.UUID, now, now,
 	)
 	if err != nil {
 		return fmt.Errorf("store: create spec: %w", err)
@@ -536,7 +557,7 @@ func (s *SDDStore) CreateSpec(ctx context.Context, spec *model.Spec) error {
 func (s *SDDStore) GetSpec(ctx context.Context, id string) (*model.Spec, error) {
 	const q = `
 		SELECT id, title, status, project, COALESCE(backlog_id, ''),
-		       lane, scope, COALESCE(base_sha, ''), assigned_agents, files_changed, created_at, updated_at
+		       lane, scope, COALESCE(base_sha, ''), assigned_agents, files_changed, created_at, updated_at, uuid
 		FROM specs WHERE id = ?`
 
 	row := s.db.QueryRowContext(ctx, q, id)
@@ -855,7 +876,7 @@ func (s *SDDStore) SpecCounts(ctx context.Context, project string) (map[model.Sp
 func (s *SDDStore) RecentlyCompletedSpecs(ctx context.Context, project string, n int) ([]*model.Spec, error) {
 	const q = `
 		SELECT id, title, status, project, COALESCE(backlog_id, ''),
-		       lane, scope, COALESCE(base_sha, ''), assigned_agents, files_changed, created_at, updated_at
+		       lane, scope, COALESCE(base_sha, ''), assigned_agents, files_changed, created_at, updated_at, uuid
 		FROM specs WHERE project = ? AND status = 'done'
 		ORDER BY updated_at DESC LIMIT ?`
 
@@ -866,6 +887,142 @@ func (s *SDDStore) RecentlyCompletedSpecs(ctx context.Context, project string, n
 	defer rows.Close()
 
 	return collectSpecs(rows)
+}
+
+// UUIDsForRefs resolves a batch of normalized SDD correlatives (e.g.
+// "SPEC-125", "BL-001") to their anchor in THIS database — the lookup
+// bakeSDDRefs uses when a newly-written mention needs a target_uuid
+// (SPEC-128 D5).
+//
+// refIDs is split by model.SDDRefKind and each bucket is resolved with one
+// query against its own table (an IN clause), never more than two queries
+// regardless of how many refIDs are passed. An empty refIDs returns an
+// empty map without touching the database. A correlative that doesn't exist
+// locally is simply absent from the result — never an error, since "not
+// anchored here" is an expected, common outcome (D5/D8), not a failure.
+func (s *SDDStore) UUIDsForRefs(ctx context.Context, refIDs []string) (map[string]string, error) {
+	out := make(map[string]string, len(refIDs))
+	if len(refIDs) == 0 {
+		return out, nil
+	}
+
+	var backlogIDs, specIDs []string
+	for _, refID := range refIDs {
+		switch model.SDDRefKind(refID) {
+		case "backlog":
+			backlogIDs = append(backlogIDs, refID)
+		case "spec":
+			specIDs = append(specIDs, refID)
+		}
+	}
+
+	if len(backlogIDs) > 0 {
+		q, args := inClauseQuery(`SELECT id, uuid FROM backlog_items WHERE uuid <> '' AND id IN (%s)`, backlogIDs)
+		if err := collectRefUUIDPairs(ctx, s.db, q, args, out); err != nil {
+			return nil, fmt.Errorf("store: uuids for refs: backlog_items: %w", err)
+		}
+	}
+	if len(specIDs) > 0 {
+		q, args := inClauseQuery(`SELECT id, uuid FROM specs WHERE uuid <> '' AND id IN (%s)`, specIDs)
+		if err := collectRefUUIDPairs(ctx, s.db, q, args, out); err != nil {
+			return nil, fmt.Errorf("store: uuids for refs: specs: %w", err)
+		}
+	}
+	return out, nil
+}
+
+// RefsForUUIDs resolves a batch of anchors to their CURRENT correlative in
+// THIS database — the lookup MemoryService.Get uses to populate local_id
+// for a reference whose Status resolves to SDDRefLocal (D8).
+//
+// Unlike UUIDsForRefs, an anchor's table can't be told apart from the
+// string alone, so both backlog_items and specs are queried — always
+// exactly two queries when uuids is non-empty, never more regardless of how
+// many anchors are passed. An empty uuids returns an empty map without
+// touching the database. An anchor that resolves nowhere in this database
+// is simply absent from the result — that absence IS the "foreign" case
+// D8 exists to represent honestly.
+func (s *SDDStore) RefsForUUIDs(ctx context.Context, uuids []string) (map[string]string, error) {
+	out := make(map[string]string, len(uuids))
+	if len(uuids) == 0 {
+		return out, nil
+	}
+
+	q, args := inClauseQuery(`SELECT uuid, id FROM backlog_items WHERE uuid IN (%s)`, uuids)
+	if err := collectRefUUIDPairs(ctx, s.db, q, args, out); err != nil {
+		return nil, fmt.Errorf("store: refs for uuids: backlog_items: %w", err)
+	}
+
+	q, args = inClauseQuery(`SELECT uuid, id FROM specs WHERE uuid IN (%s)`, uuids)
+	if err := collectRefUUIDPairs(ctx, s.db, q, args, out); err != nil {
+		return nil, fmt.Errorf("store: refs for uuids: specs: %w", err)
+	}
+	return out, nil
+}
+
+// inClauseQuery expands a "%s" placeholder in template into the right
+// number of "?" markers for an IN clause and returns the matching args
+// slice, so every caller builds its IN clause the same way.
+func inClauseQuery(template string, values []string) (string, []any) {
+	placeholders := make([]string, len(values))
+	args := make([]any, len(values))
+	for i, v := range values {
+		placeholders[i] = "?"
+		args[i] = v
+	}
+	return fmt.Sprintf(template, strings.Join(placeholders, ", ")), args
+}
+
+// collectRefUUIDPairs runs q (a two-column SELECT of (key, value) pairs)
+// and writes every row into out, sharing the exact scan-and-merge shape
+// UUIDsForRefs and RefsForUUIDs both need.
+func collectRefUUIDPairs(ctx context.Context, database *db.DB, q string, args []any, out map[string]string) error {
+	rows, err := database.QueryContext(ctx, q, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var key, value string
+		if err := rows.Scan(&key, &value); err != nil {
+			return fmt.Errorf("scan: %w", err)
+		}
+		out[key] = value
+	}
+	return rows.Err()
+}
+
+// IsSDDReferenceBackfillComplete reports whether the one-shot SDD reference
+// backfill (SPEC-128 D7 mitad B) has already run against this database —
+// the cheap guard MemoryService.BackfillSDDRefs checks first, mirroring
+// ensureSDDUUIDs' own "microsegundos en el caso normal" posture (D7 mitad
+// A): this runs from initService on every invocation, so the common case
+// (already done) must cost one indexed row read, never a memory scan.
+func (s *SDDStore) IsSDDReferenceBackfillComplete(ctx context.Context) (bool, error) {
+	var completedAt sql.NullString
+	err := s.db.QueryRowContext(ctx,
+		`SELECT completed_at FROM sdd_reference_backfill WHERE id = 1`,
+	).Scan(&completedAt)
+	if err != nil {
+		return false, fmt.Errorf("store: is sdd reference backfill complete: %w", err)
+	}
+	return completedAt.Valid, nil
+}
+
+// MarkSDDReferenceBackfillComplete records that the one-shot SDD reference
+// backfill finished, along with the totals it produced — the single row
+// AC8 checks for.
+func (s *SDDStore) MarkSDDReferenceBackfillComplete(ctx context.Context, scanned, created int) error {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE sdd_reference_backfill SET completed_at = ?, memories_scanned = ?, refs_created = ? WHERE id = 1`,
+		now, scanned, created,
+	)
+	if err != nil {
+		return fmt.Errorf("store: mark sdd reference backfill complete: %w", err)
+	}
+	return nil
 }
 
 // --- PUSHBACK OPERATIONS ---
@@ -988,7 +1145,7 @@ func (s *SDDStore) queryPushbacks(ctx context.Context, q, specID string) ([]*mod
 // scanBacklogItem scans a single row into a BacklogItem.
 // The SELECT must include columns in this order: id, title, description,
 // status, priority, project, spec_id, archive_reason, position, lane, scope,
-// created_at, updated_at, refinement_count (backlogSelectColumns).
+// created_at, updated_at, refinement_count, uuid (backlogSelectColumns).
 func scanBacklogItem(row *sql.Row) (*model.BacklogItem, error) {
 	item := &model.BacklogItem{}
 	var createdStr, updatedStr string
@@ -997,7 +1154,7 @@ func scanBacklogItem(row *sql.Row) (*model.BacklogItem, error) {
 		(*string)(&item.Status), (*string)(&item.Priority),
 		&item.Project, &item.SpecID, &item.ArchiveReason,
 		&item.Position, (*string)(&item.Lane), &item.Scope,
-		&createdStr, &updatedStr, &item.RefinementCount,
+		&createdStr, &updatedStr, &item.RefinementCount, &item.UUID,
 	)
 	if err != nil {
 		return nil, err
@@ -1025,7 +1182,7 @@ func collectBacklogItems(rows *sql.Rows) ([]*model.BacklogItem, error) {
 			(*string)(&item.Status), (*string)(&item.Priority),
 			&item.Project, &item.SpecID, &item.ArchiveReason,
 			&item.Position, (*string)(&item.Lane), &item.Scope,
-			&createdStr, &updatedStr, &item.RefinementCount,
+			&createdStr, &updatedStr, &item.RefinementCount, &item.UUID,
 		); err != nil {
 			return nil, fmt.Errorf("scan backlog item: %w", err)
 		}
@@ -1045,7 +1202,8 @@ func collectBacklogItems(rows *sql.Rows) ([]*model.BacklogItem, error) {
 
 // scanSpec scans a single row into a Spec.
 // The SELECT must include columns in this order: id, title, status, project,
-// backlog_id, lane, scope, base_sha, assigned_agents, files_changed, created_at, updated_at.
+// backlog_id, lane, scope, base_sha, assigned_agents, files_changed,
+// created_at, updated_at, uuid.
 func scanSpec(row *sql.Row) (*model.Spec, error) {
 	spec := &model.Spec{}
 	var createdStr, updatedStr string
@@ -1055,7 +1213,7 @@ func scanSpec(row *sql.Row) (*model.Spec, error) {
 		&spec.Project, &spec.BacklogID,
 		(*string)(&spec.Lane), &spec.Scope, &spec.BaseSHA,
 		&agentsJSON, &filesJSON,
-		&createdStr, &updatedStr,
+		&createdStr, &updatedStr, &spec.UUID,
 	)
 	if err != nil {
 		return nil, err
@@ -1090,7 +1248,7 @@ func collectSpecs(rows *sql.Rows) ([]*model.Spec, error) {
 			&spec.Project, &spec.BacklogID,
 			(*string)(&spec.Lane), &spec.Scope, &spec.BaseSHA,
 			&agentsJSON, &filesJSON,
-			&createdStr, &updatedStr,
+			&createdStr, &updatedStr, &spec.UUID,
 		); err != nil {
 			return nil, fmt.Errorf("scan spec: %w", err)
 		}

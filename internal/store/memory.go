@@ -135,6 +135,10 @@ func (s *MemoryStore) insertMemory(ctx context.Context, m *model.Memory, errPref
 		return nil, err
 	}
 
+	if err := s.insertSDDRefs(ctx, m.ID, m.SDDRefs); err != nil {
+		return nil, err
+	}
+
 	return m, nil
 }
 
@@ -161,6 +165,10 @@ func (s *MemoryStore) Get(ctx context.Context, id string) (*model.Memory, error)
 	}
 
 	if err := s.loadFiles(ctx, m); err != nil {
+		return nil, err
+	}
+
+	if err := s.loadSDDRefs(ctx, m); err != nil {
 		return nil, err
 	}
 
@@ -234,6 +242,18 @@ func (s *MemoryStore) Update(ctx context.Context, id string, req *model.UpdateRe
 		}
 	}
 
+	if req.SDDRefs != nil {
+		// INSERT OR IGNORE, never a recalculation of target_uuid (D5), then
+		// prune whatever ref_ids the caller's fresh computation no longer
+		// carries — the same order insertSDDRefs+pruneSDDRefs always run in.
+		if err := s.insertSDDRefs(ctx, id, *req.SDDRefs); err != nil {
+			return err
+		}
+		if err := s.pruneSDDRefs(ctx, id, *req.SDDRefs); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
@@ -301,6 +321,15 @@ func (s *MemoryStore) Upsert(ctx context.Context, m *model.Memory) (*model.Memor
 		}
 	}
 
+	if len(m.SDDRefs) > 0 {
+		if err := s.insertSDDRefs(ctx, existingID, m.SDDRefs); err != nil {
+			return nil, false, err
+		}
+		if err := s.pruneSDDRefs(ctx, existingID, m.SDDRefs); err != nil {
+			return nil, false, err
+		}
+	}
+
 	updated, err := s.Get(ctx, existingID)
 	if err != nil {
 		return nil, false, fmt.Errorf("store: upsert memory: reload: %w", err)
@@ -361,6 +390,57 @@ func (s *MemoryStore) SetTeamMemoryFields(ctx context.Context, id string, shared
 		return fmt.Errorf("store: set team memory fields: %w", model.ErrNotFound)
 	}
 
+	return nil
+}
+
+// SetSDDRefs replaces every memory_sdd_refs row for id with exactly refs —
+// a forced, complete replacement, the exact shape SetTeamMemoryFields
+// already proves for shared/author. This is the team-memory import path's
+// write (SPEC-128 D6): importSharedNote forces whatever the incoming note's
+// frontmatter says, even when the local database already computed a
+// different anchor for one of the same ref_ids — deliberately the ONE
+// place D5's never-recalculate rule does not apply, because the note IS
+// the record of what the machine that wrote the mention anchored; importing
+// it is not writing a new mention.
+//
+// A ref whose TargetUUID is empty is skipped, exactly like insertSDDRefs:
+// this table only ever holds anchored mentions (D8).
+// Returns model.ErrNotFound when no active memory with that id exists.
+func (s *MemoryStore) SetSDDRefs(ctx context.Context, id string, refs []model.SDDRef) error {
+	var exists int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT 1 FROM memories WHERE id = ? AND deleted_at IS NULL`, id,
+	).Scan(&exists)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("store: set sdd refs: %w", model.ErrNotFound)
+	}
+	if err != nil {
+		return fmt.Errorf("store: set sdd refs: check existence: %w", err)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("store: set sdd refs: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM memory_sdd_refs WHERE memory_id = ?`, id); err != nil {
+		return fmt.Errorf("store: set sdd refs: delete: %w", err)
+	}
+
+	const insertQ = `INSERT INTO memory_sdd_refs (memory_id, ref_id, target_uuid) VALUES (?, ?, ?)`
+	for _, ref := range refs {
+		if ref.TargetUUID == "" {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, insertQ, id, ref.RefID, ref.TargetUUID); err != nil {
+			return fmt.Errorf("store: set sdd refs: insert %q: %w", ref.RefID, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: set sdd refs: commit: %w", err)
+	}
 	return nil
 }
 
@@ -588,6 +668,9 @@ func (s *MemoryStore) List(ctx context.Context, opts ListOptions) ([]*model.Memo
 		if err := s.loadFiles(ctx, m); err != nil {
 			return nil, err
 		}
+		if err := s.loadSDDRefs(ctx, m); err != nil {
+			return nil, err
+		}
 	}
 
 	return memories, nil
@@ -695,6 +778,88 @@ func (s *MemoryStore) loadFiles(ctx context.Context, m *model.Memory) error {
 	return rows.Err()
 }
 
+// insertSDDRefs bulk-inserts SDD reference anchors for a memory, mirroring
+// insertFiles. INSERT OR IGNORE — never an UPDATE of target_uuid — is what
+// enforces D5's invariant at the SQL level: an existing (memory_id, ref_id)
+// row is never recalculated, only a brand-new pair is ever written.
+//
+// A ref whose TargetUUID is empty is skipped: memory_sdd_refs holds only
+// ANCHORED mentions (D8) — an unanchored mention is represented by its
+// absence from this table, never by a row with an empty target_uuid.
+func (s *MemoryStore) insertSDDRefs(ctx context.Context, memoryID string, refs []model.SDDRef) error {
+	if len(refs) == 0 {
+		return nil
+	}
+
+	const q = `INSERT OR IGNORE INTO memory_sdd_refs (memory_id, ref_id, target_uuid) VALUES (?, ?, ?)`
+	for _, ref := range refs {
+		if ref.TargetUUID == "" {
+			continue
+		}
+		if _, err := s.db.ExecContext(ctx, q, memoryID, ref.RefID, ref.TargetUUID); err != nil {
+			return fmt.Errorf("store: insert sdd ref %q: %w", ref.RefID, err)
+		}
+	}
+
+	return nil
+}
+
+// pruneSDDRefs removes memory_sdd_refs rows for memoryID whose ref_id is not
+// among keep — the mentions the memory's CURRENT text no longer carries.
+// Always call this AFTER insertSDDRefs for the same keep slice, never
+// before: pruning first and inserting second would, for one instant, leave
+// a surviving mention with no row at all.
+//
+// keep being empty is a legitimate "this memory mentions nothing anchored
+// any more" — every existing row for memoryID is removed.
+func (s *MemoryStore) pruneSDDRefs(ctx context.Context, memoryID string, keep []model.SDDRef) error {
+	if len(keep) == 0 {
+		if _, err := s.db.ExecContext(ctx, `DELETE FROM memory_sdd_refs WHERE memory_id = ?`, memoryID); err != nil {
+			return fmt.Errorf("store: prune sdd refs: %w", err)
+		}
+		return nil
+	}
+
+	keepIDs := make([]string, len(keep))
+	for i, ref := range keep {
+		keepIDs[i] = ref.RefID
+	}
+
+	q, args := inClauseQuery(`DELETE FROM memory_sdd_refs WHERE memory_id = ? AND ref_id NOT IN (%s)`, keepIDs)
+	args = append([]any{memoryID}, args...)
+	if _, err := s.db.ExecContext(ctx, q, args...); err != nil {
+		return fmt.Errorf("store: prune sdd refs: %w", err)
+	}
+	return nil
+}
+
+// loadSDDRefs queries memory_sdd_refs and populates m.SDDRefs, mirroring
+// loadFiles. Status and LocalID are left at their zero value here — D8
+// reserves completing them to MemoryService.Get, the single point that
+// resolves a reference against the local database; every OTHER read path
+// (search, list, range queries) still loads the raw RefID/TargetUUID pairs
+// so the vault write-through path — which can be triggered by any of
+// them — never materializes a note missing its anchors.
+func (s *MemoryStore) loadSDDRefs(ctx context.Context, m *model.Memory) error {
+	const q = `SELECT ref_id, target_uuid FROM memory_sdd_refs WHERE memory_id = ? ORDER BY ref_id`
+
+	rows, err := s.db.QueryContext(ctx, q, m.ID)
+	if err != nil {
+		return fmt.Errorf("store: load sdd refs for %s: %w", m.ID, err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var ref model.SDDRef
+		if err := rows.Scan(&ref.RefID, &ref.TargetUUID); err != nil {
+			return fmt.Errorf("store: load sdd refs for %s: scan: %w", m.ID, err)
+		}
+		m.SDDRefs = append(m.SDDRefs, ref)
+	}
+
+	return rows.Err()
+}
+
 // MemoryMetadata is a lightweight projection of a memory used when full content
 // loading is not needed. It carries enough information for token estimation and
 // tree rendering during graph traversal without loading large content bodies.
@@ -761,6 +926,9 @@ func (s *MemoryStore) GetByIDPrefix(ctx context.Context, prefix string) (*model.
 	if err := s.loadFiles(ctx, m); err != nil {
 		return nil, err
 	}
+	if err := s.loadSDDRefs(ctx, m); err != nil {
+		return nil, err
+	}
 	return m, nil
 }
 
@@ -787,6 +955,9 @@ func (s *MemoryStore) GetByTopicKey(ctx context.Context, topicKey, project strin
 		return nil, fmt.Errorf("store: get by topic key: %w", err)
 	}
 	if err := s.loadFiles(ctx, m); err != nil {
+		return nil, err
+	}
+	if err := s.loadSDDRefs(ctx, m); err != nil {
 		return nil, err
 	}
 	return m, nil

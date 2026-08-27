@@ -18,9 +18,10 @@ import (
 //   - id, type, scope, title, importance, confidence, decay_rate,
 //     created_at, updated_at, revision_count — always present.
 //   - topic_key, project, created_by, files, applies_to, severity,
-//     superseded_by, shared, author, source — present only when non-empty
-//     (shared is additionally omitted when it is the default/local value 0,
-//     per SPEC-053 D2/D7 so peers without team-memory never see the field).
+//     superseded_by, shared, author, source, sdd_refs — present only when
+//     non-empty (shared is additionally omitted when it is the
+//     default/local value 0, per SPEC-053 D2/D7 so peers without
+//     team-memory never see the field).
 //
 // Excluded: access_count, last_accessed, deleted_at, session_id.
 type Frontmatter struct {
@@ -52,6 +53,18 @@ type Frontmatter struct {
 	// reader/personal-vault export path; it is read by the team-memory
 	// import guard (importSharedNote) to skip orphaned profile notes.
 	Source string `yaml:"source,omitempty"`
+
+	// SDDRefs round-trips a memory's anchored SDD mentions (SPEC-128 D6),
+	// one "REF=UUID" string per entry — e.g. "SPEC-125=<uuid>". Only
+	// mentions that resolved to a real anchor at write time are ever
+	// present here; Status and LocalID (model.SDDRef's read-time-only
+	// fields, D8) are NEVER written — they are local annotation, not a
+	// property of the shared note. Written LAST, after source, and omitted
+	// entirely when empty: a memory with no anchored mentions must produce
+	// a byte-identical file to the one written before this field existed
+	// (AC12) — writing it always, even as an empty list, would rewrite
+	// every note in every team's vault for nothing.
+	SDDRefs []string `yaml:"sdd_refs,omitempty"`
 }
 
 // FromMemory builds a Frontmatter from m, applying the inclusion rules from
@@ -107,8 +120,51 @@ func FromMemory(m *model.Memory) Frontmatter {
 	if m.Source != "" {
 		fm.Source = m.Source
 	}
+	// Only anchored mentions travel — an unanchored one has no target_uuid
+	// and would serialize as "REF=" with nothing after the "=", which is
+	// indistinguishable from a malformed line on read-back. Status and
+	// LocalID are never emitted (D6): they are the reader's own local
+	// annotation, not a fact about the note.
+	for _, ref := range m.SDDRefs {
+		if ref.TargetUUID == "" {
+			continue
+		}
+		fm.SDDRefs = append(fm.SDDRefs, formatSDDRefLine(ref))
+	}
 
 	return fm
+}
+
+// formatSDDRefLine renders one anchored SDD reference as "REF=UUID", the
+// frontmatter's minimal wire format for sdd_refs (SPEC-128 D6/R7).
+func formatSDDRefLine(ref model.SDDRef) string {
+	return ref.RefID + "=" + ref.TargetUUID
+}
+
+// ParseSDDRefLines converts the raw "REF=UUID" strings read back from a
+// note's sdd_refs list into model.SDDRef values, silently discarding any
+// entry that doesn't parse — the file can be, and per D5/D7 sometimes is,
+// hand-edited. A line is discarded when it has no "=", either side is
+// empty, or the UUID half is not syntactically valid (IsValidUUID). This is
+// the exact inverse of formatSDDRefLine, but tolerant where the writer side
+// never needs to be.
+func ParseSDDRefLines(lines []string) []model.SDDRef {
+	if len(lines) == 0 {
+		return nil
+	}
+
+	refs := make([]model.SDDRef, 0, len(lines))
+	for _, line := range lines {
+		refID, targetUUID, ok := strings.Cut(line, "=")
+		if !ok || refID == "" || targetUUID == "" {
+			continue
+		}
+		if !IsValidUUID(targetUUID) {
+			continue
+		}
+		refs = append(refs, model.SDDRef{RefID: refID, TargetUUID: targetUUID})
+	}
+	return refs
 }
 
 // WriteTo serializes fm as YAML frontmatter to w, enclosed in --- delimiters.
@@ -233,6 +289,20 @@ func (fm Frontmatter) WriteTo(w io.Writer) (int64, error) {
 	if fm.Source != "" {
 		if err := write("source: %s\n", fm.Source); err != nil {
 			return total, fmt.Errorf("vault: frontmatter: write source: %w", err)
+		}
+	}
+
+	// sdd_refs goes LAST (D6/R7): the newest field, and the one most likely
+	// to still be evolving, so it never displaces the byte offsets of
+	// anything parseUpdatedAt or an older mneme already relies on.
+	if len(fm.SDDRefs) > 0 {
+		if err := write("sdd_refs:\n"); err != nil {
+			return total, fmt.Errorf("vault: frontmatter: write sdd_refs header: %w", err)
+		}
+		for _, ref := range fm.SDDRefs {
+			if err := write("  - %s\n", ref); err != nil {
+				return total, fmt.Errorf("vault: frontmatter: write sdd_refs entry: %w", err)
+			}
 		}
 	}
 

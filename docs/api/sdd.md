@@ -42,6 +42,17 @@ accept `backlog_refine`; `promoted`/`archived` do not (`-32602`,
 `{item, refinements}` with ALL refinements in full, no limit — a
 **breaking change** to its previous shape (the raw item at the top level).
 
+**Every backlog item and spec now carries a `uuid` (SPEC-128):** an
+identifier of its own, assigned once, that never changes — distinct from
+`id` (`BL-001`/`SPEC-001`), which is a per-machine correlative and can name
+different work on two different machines. `uuid` is what lets a memory that
+mentions `SPEC-125` resolve correctly even on a machine whose own
+`SPEC-125` is unrelated work (see `mem_get`'s `sdd_refs`, and `mneme get`'s
+one-line warning when a reference is `foreign`). It is present in every
+JSON response that returns a backlog item or spec, and it is NEVER shown in
+any readable table, list, or status line — there is no command that prints
+it for a human to read.
+
 State machines:
 
 ```
@@ -74,7 +85,7 @@ required when `lane=trivial`.
 | `project` | string | no | Project slug. Default: auto-detected |
 | `scope` | string | no | Glob pattern for files this item may touch (e.g. `internal/store/**`). Required when `lane=trivial` |
 
-**Returns:** `{"id": "BL-001", "title": "Push notifications", "status": "raw", "priority": "medium", "lane": "standard", "project": "wirvii/mneme", "created_at": "2026-04-30T12:00:00Z"}`
+**Returns:** `{"id": "BL-001", "uuid": "0198f2c1-4a7b-7c3d-9e10-3f4a5b6c7d8e", "title": "Push notifications", "status": "raw", "priority": "medium", "lane": "standard", "project": "wirvii/mneme", "created_at": "2026-04-30T12:00:00Z"}`
 
 **Errors:** `-32602` missing `title`/`lane`, missing `scope` for trivial lane.
 
@@ -101,7 +112,7 @@ refinements; call `backlog_get`.
 ```json
 {
   "items": [
-    {"id": "BL-001", "title": "Push notifications", "excerpt": "...", "truncated": true,
+    {"id": "BL-001", "uuid": "0198f2c1-4a7b-7c3d-9e10-3f4a5b6c7d8e", "title": "Push notifications", "excerpt": "...", "truncated": true,
      "status": "raw", "priority": "medium", "project": "wirvii/mneme", "refinements": 2,
      "created_at": "2026-04-30T12:00:00Z", "updated_at": "2026-04-30T12:00:00Z"}
   ],
@@ -226,7 +237,7 @@ Get the full status of a spec including history and pushbacks.
 
 ```json
 {
-  "spec": {"id": "SPEC-001", "title": "Push notifications", "status": "implementing",
+  "spec": {"id": "SPEC-001", "uuid": "0198f2c1-9e10-7c3d-4a7b-3f4a5b6c7d8e", "title": "Push notifications", "status": "implementing",
     "lane": "standard", "project": "wirvii/mneme", "backlog_id": "BL-001",
     "created_at": "2026-04-30T12:00:00Z", "updated_at": "2026-04-30T14:00:00Z"},
   "history": [{"from_status": "draft", "to_status": "speccing", "by": "orchestrator",
