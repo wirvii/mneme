@@ -83,6 +83,12 @@ CREATE TABLE IF NOT EXISTS schema_version (
 		}
 	}
 
+	// SPEC-128 D7 mitad A: the SDD anchor invariant is self-healing, not a
+	// one-shot migration side effect. See ensureSDDUUIDs' own godoc.
+	if err := ensureSDDUUIDs(db); err != nil {
+		return fmt.Errorf("db: migrate: ensure sdd uuids: %w", err)
+	}
+
 	return nil
 }
 
