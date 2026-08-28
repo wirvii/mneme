@@ -896,6 +896,24 @@ func allTools() []ToolDefinition {
 			},
 		},
 
+		// SDD git-native read tools (SPEC-131 §2b)
+		{
+			Name:        "sdd_status",
+			Description: "Report the SDD git-native mechanism's state for this repository: on/off, pending git changes, broken/conflicted/incomplete/divergent files, whether this machine's own git hooks are installed, and correlatives that exist only in the local database on this branch. Read-only — never writes anything. Same response as `mneme sdd status --json`.",
+			InputSchema: map[string]any{
+				"type":       "object",
+				"properties": map[string]any{},
+			},
+		},
+		{
+			Name:        "sdd_import",
+			Description: "Import this repository's SDD backlog/specs (.mneme/sdd/) into the local database — the same read path the installed git hooks run automatically after every pull/checkout. Decides by anchor, never by correlative (a genuine collision between two machines is detected and reported, never resolved here). Denied to subagents: an implementer editing its own record file and then calling this tool would be self-authorizing a status change.",
+			InputSchema: map[string]any{
+				"type":       "object",
+				"properties": map[string]any{},
+			},
+		},
+
 		// Quality tools (SPEC-115 EPIC-calidad S1)
 		{
 			Name:        "quality_verify",

@@ -213,21 +213,56 @@ func TestRunHookEnforceDelegation_LifecycleBlock_MentionsRegenCommand(t *testing
 	}
 }
 
-// TestLifecycleTools_ExactlyFourMcpPrefixedEntries is the G5 anchor (SPEC-115
-// P11 plan, widened by SPEC-125): the negative rows above
-// ("quality_verify"/"quality_status" allowed) would pass VACUOUSLY if either
-// tool were renamed or stopped existing — an absent tool is not in the map
-// either. Anchoring the map's SIZE (not just membership) makes a silent
-// rename visible: exactly 4 entries (spec_advance, spec_quick, quality_ack,
-// backlog_archive), every one an "mcp__mneme__"-prefixed name.
-func TestLifecycleTools_ExactlyFourMcpPrefixedEntries(t *testing.T) {
-	if len(lifecycleTools) != 4 {
-		t.Fatalf("len(lifecycleTools) = %d, want 4: %v", len(lifecycleTools), lifecycleTools)
+// TestLifecycleTools_ExactlyFiveMcpPrefixedEntries is the G5 anchor
+// (SPEC-115 P11 plan, widened by SPEC-125, widened again by SPEC-131 D58):
+// the negative rows above ("quality_verify"/"quality_status" allowed)
+// would pass VACUOUSLY if either tool were renamed or stopped existing —
+// an absent tool is not in the map either. Anchoring the map's SIZE (not
+// just membership) makes a silent rename visible: exactly 5 entries
+// (spec_advance, spec_quick, quality_ack, backlog_archive, sdd_import),
+// every one an "mcp__mneme__"-prefixed name.
+func TestLifecycleTools_ExactlyFiveMcpPrefixedEntries(t *testing.T) {
+	if len(lifecycleTools) != 5 {
+		t.Fatalf("len(lifecycleTools) = %d, want 5: %v", len(lifecycleTools), lifecycleTools)
 	}
 	for tool := range lifecycleTools {
 		if !strings.HasPrefix(tool, "mcp__mneme__") {
 			t.Errorf("lifecycleTools key %q does not start with mcp__mneme__", tool)
 		}
+	}
+}
+
+// TestLifecycleTools_SDDImport is SPEC-131 AC22: a resolved subagent
+// calling mcp__mneme__sdd_import is blocked (exit 2); the SAME subagent
+// calling mcp__mneme__sdd_status is allowed (exit 0) — sdd_status is
+// read-only and deliberately stays out of lifecycleTools.
+//
+// Mutation exigida: quitar la entrada "mcp__mneme__sdd_import" de
+// lifecycleTools pone en rojo la primera fila (pasaria a exit 0).
+func TestLifecycleTools_SDDImport(t *testing.T) {
+	tests := []struct {
+		name     string
+		payload  string
+		wantExit int
+	}{
+		{
+			name:     "sdd_import denied to a resolved subagent",
+			payload:  `{"agent_id":"x","agent_type":"backend","tool_name":"mcp__mneme__sdd_import"}`,
+			wantExit: 2,
+		},
+		{
+			name:     "sdd_status allowed for a resolved subagent",
+			payload:  `{"agent_id":"x","agent_type":"backend","tool_name":"mcp__mneme__sdd_status"}`,
+			wantExit: 0,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			exitCode, stderr := runHookLifecycleSubprocess(t, tt.payload)
+			if exitCode != tt.wantExit {
+				t.Errorf("exit code = %d, want %d (stderr: %s)", exitCode, tt.wantExit, stderr)
+			}
+		})
 	}
 }
 
