@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -464,5 +465,111 @@ func TestMarshalPreviousIDs_EmptyIsEmptyString(t *testing.T) {
 	}
 	if raw != "" {
 		t.Errorf("marshalPreviousIDs(nil) = %q, want \"\" (matches column default)", raw)
+	}
+}
+
+// --- ERROR-PATH TESTS (QA rejection fix) ---
+//
+// Every method below sat under the 80% floor with its own error return
+// path unexercised. Rather than invent an artificial failure scenario,
+// these reuse the SAME technique already established in this package
+// (TestHardDeleteBySource_BeginTxErrorPropagates, memory_test.go): close
+// the real *sql.DB out from under the store first, then call the method —
+// a genuine driver-level failure (a closed connection pool is a real
+// production condition, not a fabricated one), not a synthetic one.
+
+func TestCreateBacklogItemFromRecord_ClosedDBPropagatesError(t *testing.T) {
+	s := newTestSDDStore(t)
+	if err := s.db.Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+	item := &model.BacklogItem{ID: "BL-900", Title: "x", Status: model.BacklogStatusRaw}
+	if err := s.CreateBacklogItemFromRecord(context.Background(), item); err == nil {
+		t.Fatal("expected an error creating a backlog item from record against a closed database")
+	}
+}
+
+func TestUpdateBacklogItemFromRecord_ClosedDBPropagatesError(t *testing.T) {
+	s := newTestSDDStore(t)
+	if err := s.db.Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+	item := &model.BacklogItem{ID: "BL-900", UUID: "0198f000-0000-7000-8000-000000000900", Title: "x"}
+	if err := s.UpdateBacklogItemFromRecord(context.Background(), item); err == nil {
+		t.Fatal("expected an error updating a backlog item from record against a closed database")
+	}
+}
+
+func TestMergeBacklogRefinements_ClosedDBPropagatesError(t *testing.T) {
+	s := newTestSDDStore(t)
+	if err := s.db.Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+	refs := []*model.BacklogRefinement{{ItemID: "BL-900", Seq: 1, Body: "x", At: fixedPast}}
+	if err := s.MergeBacklogRefinements(context.Background(), "BL-900", refs); err == nil {
+		t.Fatal("expected an error merging backlog refinements against a closed database")
+	}
+}
+
+// TestMergeBacklogRefinements_InsertFailsOnUnknownItemID exercises the
+// insert-error branch specifically (distinct from the closed-DB test
+// above, which only ever reaches BeginTx and never the per-row loop): a
+// genuine, real foreign-key violation (backlog_refinements.item_id
+// REFERENCES backlog_items(id), migration 017, enforced — foreign_keys=ON
+// per internal/db.OpenMemory) when itemID names no row that exists, not a
+// fabricated failure.
+func TestMergeBacklogRefinements_InsertFailsOnUnknownItemID(t *testing.T) {
+	s := newTestSDDStore(t)
+	refs := []*model.BacklogRefinement{{ItemID: "BL-999", Seq: 1, Body: "x", At: fixedPast}}
+	err := s.MergeBacklogRefinements(context.Background(), "BL-999", refs)
+	if err == nil {
+		t.Fatal("expected a foreign-key violation merging refinements for a non-existent backlog item")
+	}
+	if !strings.Contains(err.Error(), "insert seq") {
+		t.Errorf("error = %v, want it to name the insert-seq failure", err)
+	}
+}
+
+func TestCreateSpecFromRecord_ClosedDBPropagatesError(t *testing.T) {
+	s := newTestSDDStore(t)
+	if err := s.db.Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+	spec := &model.Spec{ID: "SPEC-900", Title: "x", Status: model.SpecStatusDraft}
+	if err := s.CreateSpecFromRecord(context.Background(), spec); err == nil {
+		t.Fatal("expected an error creating a spec from record against a closed database")
+	}
+}
+
+func TestUpdateSpecFromRecord_ClosedDBPropagatesError(t *testing.T) {
+	s := newTestSDDStore(t)
+	if err := s.db.Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+	spec := &model.Spec{ID: "SPEC-900", UUID: "0198f000-0000-7000-8000-000000000901", Title: "x"}
+	if err := s.UpdateSpecFromRecord(context.Background(), spec); err == nil {
+		t.Fatal("expected an error updating a spec from record against a closed database")
+	}
+}
+
+func TestMergeSpecHistory_ClosedDBPropagatesError(t *testing.T) {
+	s := newTestSDDStore(t)
+	if err := s.db.Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+	hist := []*model.SpecHistory{{ID: "0198f000-0000-7000-8000-000000000902", SpecID: "SPEC-900", ToStatus: model.SpecStatusDraft, At: fixedPast}}
+	if err := s.MergeSpecHistory(context.Background(), "SPEC-900", hist); err == nil {
+		t.Fatal("expected an error merging spec history against a closed database")
+	}
+}
+
+func TestMergeSpecPushbacks_ClosedDBPropagatesError(t *testing.T) {
+	s := newTestSDDStore(t)
+	if err := s.db.Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+	pb := []*model.SpecPushback{{ID: "0198f000-0000-7000-8000-000000000903", SpecID: "SPEC-900", FromAgent: "x", CreatedAt: fixedPast}}
+	if err := s.MergeSpecPushbacks(context.Background(), "SPEC-900", pb); err == nil {
+		t.Fatal("expected an error merging spec pushbacks against a closed database")
 	}
 }

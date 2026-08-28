@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,7 +11,83 @@ import (
 	"github.com/wirvii/mneme/internal/gitident"
 	"github.com/wirvii/mneme/internal/model"
 	"github.com/wirvii/mneme/internal/sddfile"
+	"github.com/wirvii/mneme/internal/service"
 )
+
+// TestRenderSDDImportResult_EveryBranch is a targeted addition (QA
+// rejection fix): the end-to-end CLI tests above only ever exercise
+// renderSDDImportResult through a real `sdd import` run, which never
+// happens to hit every one of its six independent branches (Created,
+// Updated, Completed, Skipped, OnlyInBaseTotal>0, and the terminal
+// "nothing changed" fallback) in a single scenario — the function sat at
+// 64.7%, genuinely new to this spec, and undisclosed in changes.md's own
+// coverage table. Table-driven, one subtest per branch, against the
+// function directly rather than through the full CLI/service/store stack.
+func TestRenderSDDImportResult_EveryBranch(t *testing.T) {
+	tests := []struct {
+		name   string
+		result *service.SDDImportResult
+		want   []string
+	}{
+		{
+			name:   "no-op reason short-circuits everything else",
+			result: &service.SDDImportResult{NoOpReason: "mecanismo apagado"},
+			want:   []string{"Nothing to import: mecanismo apagado."},
+		},
+		{
+			name:   "created entries are listed",
+			result: &service.SDDImportResult{Created: []string{"BL-001 (backlog/BL-001.md)"}},
+			want:   []string{"Created: BL-001 (backlog/BL-001.md)"},
+		},
+		{
+			name:   "updated entries are listed",
+			result: &service.SDDImportResult{Updated: []string{"SPEC-001: draft -> speccing"}},
+			want:   []string{"Updated: SPEC-001: draft -> speccing"},
+		},
+		{
+			name: "completed entries name the id, path, and filled fields",
+			result: &service.SDDImportResult{Completed: []service.SDDImportCompleted{
+				{ID: "BL-002", Path: "backlog/BL-002.md", Fields: []string{"priority", "lane"}},
+			}},
+			want: []string{"Completed: BL-002 (backlog/BL-002.md) — filled: priority, lane"},
+		},
+		{
+			name: "skipped entries name the id, path, and reason",
+			result: &service.SDDImportResult{Skipped: []service.SDDImportSkip{
+				{ID: "BL-003", Path: "backlog/BL-003.md", Reason: "roto"},
+			}},
+			want: []string{"Skipped: BL-003 (backlog/BL-003.md) — roto"},
+		},
+		{
+			name: "only-in-base total is reported with the listed correlatives",
+			result: &service.SDDImportResult{
+				OnlyInBase: []string{"BL-050", "SPEC-070"}, OnlyInBaseTotal: 2,
+			},
+			want: []string{
+				"2 correlative(s) exist only in the local database on this branch:",
+				"  - BL-050", "  - SPEC-070",
+			},
+		},
+		{
+			name:   "everything empty falls back to the explicit no-change line",
+			result: &service.SDDImportResult{},
+			want:   []string{"Nothing changed — the database already matches every file on this branch."},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			renderSDDImportResult(&buf, tt.result)
+			got := buf.String()
+			for _, want := range tt.want {
+				if !strings.Contains(got, want) {
+					t.Errorf("output does not contain %q:\n%s", want, got)
+				}
+			}
+		})
+	}
+}
 
 // TestSDDImportCmd_ExitCodes is SPEC-131 AC23.
 func TestSDDImportCmd_ExitCodes(t *testing.T) {
@@ -112,6 +190,132 @@ func TestSDDHooksRunImportCmd_AlwaysExitsZero(t *testing.T) {
 	if runErr := cmd.RunE(cmd, nil); runErr != nil {
 		t.Errorf("run-import RunE returned %v, want nil (must always exit 0, D62)", runErr)
 	}
+}
+
+// TestRunSDDHooksImport_SkipsDuringRebase is runSDDHooksImport's own
+// targeted addition (QA rejection fix): D62's documented "skips silently
+// during rebase/merge/cherry-pick" behavior — reindexInProgress's own
+// sentinel check — was never exercised by any test. A real MERGE_HEAD
+// file (exactly what git itself writes mid-merge) is enough: no
+// fabrication needed. Verified functionally, not just "did not panic" —
+// a record that a real import WOULD pick up is confirmed absent from the
+// database afterward.
+func TestRunSDDHooksImport_SkipsDuringRebase(t *testing.T) {
+	repoDir, fakeHome := sddCLITestRepo(t)
+	seedSDDBacklog(t, repoDir, fakeHome, "seed item")
+	t.Setenv("HOME", fakeHome)
+
+	if _, _, err := runSDDCmd(t, repoDir, "enable", "--apply"); err != nil {
+		t.Fatalf("enable --apply: %v", err)
+	}
+	runGitOK(t, repoDir, "add", ".")
+	runGitOK(t, repoDir, "commit", "-m", "sdd enable")
+
+	// A new, importable backlog record that a real import would create.
+	newItem := &sddfile.BacklogRecord{Item: &model.BacklogItem{
+		ID: "BL-500", Title: "should stay unimported", Status: model.BacklogStatusRaw,
+		Priority: model.PriorityMedium, Project: "wirvii/mneme", Lane: model.LaneStandard,
+	}}
+	newItemData, mErr := sddfile.MarshalBacklog(newItem)
+	if mErr != nil {
+		t.Fatalf("MarshalBacklog fixture: %v", mErr)
+	}
+	if wErr := sddfile.WriteRecord(sddfile.BacklogPath(repoDir, "BL-500"), newItemData); wErr != nil {
+		t.Fatalf("WriteRecord fixture: %v", wErr)
+	}
+
+	// A real merge-in-progress sentinel — exactly what git itself writes.
+	gitDirPath := filepath.Join(repoDir, ".git")
+	if err := os.WriteFile(filepath.Join(gitDirPath, "MERGE_HEAD"), []byte("deadbeef\n"), 0o644); err != nil {
+		t.Fatalf("write MERGE_HEAD fixture: %v", err)
+	}
+
+	resetGlobalCLIFlags(t)
+	gitident.Reset()
+	t.Cleanup(gitident.Reset)
+	orig, wdErr := os.Getwd()
+	if wdErr != nil {
+		t.Fatalf("Getwd: %v", wdErr)
+	}
+	if chErr := os.Chdir(repoDir); chErr != nil {
+		t.Fatalf("Chdir: %v", chErr)
+	}
+	t.Cleanup(func() { _ = os.Chdir(orig) })
+
+	runSDDHooksImport()
+
+	svc, cleanup, err := initSDDService()
+	if err != nil {
+		t.Fatalf("initSDDService: %v", err)
+	}
+	defer cleanup()
+	if _, gErr := svc.BacklogGet(context.Background(), "BL-500"); gErr == nil {
+		t.Error("BL-500 must not exist — the import must have been skipped mid-merge")
+	}
+}
+
+// TestRunSDDHooksImport_NotAGitRepo is runSDDHooksImport's own gitDir()
+// error branch — a targeted addition (QA rejection fix): the same "real,
+// ordinary condition" every other not-a-git-repo test in this package
+// already establishes as legitimate, not fabricated.
+func TestRunSDDHooksImport_NotAGitRepo(t *testing.T) {
+	dir := t.TempDir() // deliberately NOT a git repository
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	resetGlobalCLIFlags(t)
+	gitident.Reset()
+	t.Cleanup(gitident.Reset)
+
+	orig, wdErr := os.Getwd()
+	if wdErr != nil {
+		t.Fatalf("Getwd: %v", wdErr)
+	}
+	if chErr := os.Chdir(dir); chErr != nil {
+		t.Fatalf("Chdir: %v", chErr)
+	}
+	t.Cleanup(func() { _ = os.Chdir(orig) })
+
+	// Must not panic — the whole point of D62 is that a hook failure never
+	// affects the git operation that triggered it.
+	runSDDHooksImport()
+}
+
+// TestRunSDDHooksImport_ForeignProjectMarkerIsLogged covers
+// runSDDHooksImport's own ImportSDDFromRepo-error branch: a real
+// foreign-project marker (D50/W6 — exactly what a repository whose
+// .mneme/sdd/.mneme-sdd was committed by a DIFFERENT mneme project would
+// carry, not a fabricated condition) makes ImportSDDFromRepo itself
+// return an error, which must be logged and swallowed (D62), never
+// panicking or propagating.
+func TestRunSDDHooksImport_ForeignProjectMarkerIsLogged(t *testing.T) {
+	repoDir, fakeHome := sddCLITestRepo(t)
+	seedSDDBacklog(t, repoDir, fakeHome, "seed item")
+	t.Setenv("HOME", fakeHome)
+
+	if _, _, err := runSDDCmd(t, repoDir, "enable", "--apply"); err != nil {
+		t.Fatalf("enable --apply: %v", err)
+	}
+
+	if err := sddfile.WriteMarker(repoDir, sddfile.Marker{
+		SDDVersion: 1, Project: "some/other-project", CreatedAt: "2024-01-01T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("WriteMarker (foreign): %v", err)
+	}
+
+	resetGlobalCLIFlags(t)
+	gitident.Reset()
+	t.Cleanup(gitident.Reset)
+	orig, wdErr := os.Getwd()
+	if wdErr != nil {
+		t.Fatalf("Getwd: %v", wdErr)
+	}
+	if chErr := os.Chdir(repoDir); chErr != nil {
+		t.Fatalf("Chdir: %v", chErr)
+	}
+	t.Cleanup(func() { _ = os.Chdir(orig) })
+
+	// Must not panic — D62's whole point.
+	runSDDHooksImport()
 }
 
 // TestSDDStatus_ReportsCompletedFileAsPending is SPEC-131 AC25: after an

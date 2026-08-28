@@ -178,6 +178,28 @@ func TestSDDHooksRunImport_Hidden(t *testing.T) {
 	}
 }
 
+// TestSDDHooksInstallRemove_NotAGitRepoPropagatesError is a targeted
+// addition (QA rejection fix): `sdd hooks install`/`sdd hooks remove`'s
+// own error-propagation branch — initSDDService() itself succeeds even
+// outside a git repository (project detection failure there is silently
+// ignored, falling back to the global database), so the ONLY way this
+// branch fires in production is exactly what it is here: a real repo
+// whose git hooks directory cannot be resolved.
+func TestSDDHooksInstallRemove_NotAGitRepoPropagatesError(t *testing.T) {
+	dir := t.TempDir() // deliberately NOT a git repository
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	gitident.Reset()
+	t.Cleanup(gitident.Reset)
+
+	if _, stderr, err := runSDDCmd(t, dir, "hooks", "install"); err == nil {
+		t.Fatalf("sdd hooks install must fail outside a git repository (stderr=%s)", stderr)
+	}
+	if _, stderr, err := runSDDCmd(t, dir, "hooks", "remove"); err == nil {
+		t.Fatalf("sdd hooks remove must fail outside a git repository (stderr=%s)", stderr)
+	}
+}
+
 // Mutacion exigida (AC17): hacer que service.SDDHooksMarkerBegin/End sean iguales
 // a teamMemoryHooksMarkerBegin/End pone en rojo
 // TestSDDHooks_CoexistWithTeamMemoryBlock, porque `sdd hooks remove` se

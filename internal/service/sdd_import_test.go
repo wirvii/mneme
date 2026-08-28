@@ -410,6 +410,307 @@ func TestSDDImport_BrokenFileNeverAbortsTheBatch(t *testing.T) {
 	}
 }
 
+// TestSDDImport_SpecSideSkipsAndClassificationGap is a targeted addition
+// (QA rejection fix): ImportSDDFromRepo's own top-level classify/parse
+// loop sat with several real branches never exercised by any existing
+// test — AC10's own fixture only ever covers the BACKLOG-side roto/
+// sin-titulo/proyecto-distinto checks, leaving their spec-side siblings
+// (UnmarshalSpec failing, an empty spec title, a spec whose project
+// differs from svc.project), the "!ok" branch ClassifyRecordPath's own
+// KindIgnored return takes (an entregable like plan.md sitting next to a
+// real record.md — exactly D63/W7's own scenario, not fabricated), and
+// ReadRecord's OS-level failure (a path ClassifyRecordPath still names as
+// a record, but which is actually a DIRECTORY — a real, if unusual,
+// failure a bad merge or manual mistake could produce) all untested.
+func TestSDDImport_SpecSideSkipsAndClassificationGap(t *testing.T) {
+	svc, repoDir := newSDDMaterializeService(t, importTestProject)
+	enableSDD(t, repoDir, importTestProject)
+	ctx := context.Background()
+
+	// 1. Backlog record whose project differs from svc.project.
+	writeBacklogFixture(t, repoDir, &model.BacklogItem{
+		ID: "BL-200", Title: "wrong project", Status: model.BacklogStatusRaw,
+		Priority: model.PriorityMedium, Project: "some/other-project", Lane: model.LaneStandard,
+	}, nil)
+
+	// 2. Spec record with malformed content (roto — UnmarshalSpec fails).
+	writeRawSDDFile(t, sddfile.SpecRecordPath(repoDir, "SPEC-201"),
+		"---\nid: SPEC-201\nstatus: draft\n---\n\n<<<<<<< HEAD\nmine\n=======\ntheirs\n>>>>>>> b\n")
+
+	// 3. Spec record with no title.
+	writeRawSDDFile(t, sddfile.SpecRecordPath(repoDir, "SPEC-202"),
+		"---\nid: SPEC-202\nstatus: draft\n---\n\ndescription\n")
+
+	// 4. Spec record whose project differs from svc.project.
+	writeSpecFixture(t, repoDir, &model.Spec{
+		ID: "SPEC-203", Title: "wrong project spec", Status: model.SpecStatusDraft,
+		Project: "some/other-project", Lane: model.LaneStandard,
+	}, nil, nil)
+
+	// 5. A plan.md sitting next to a healthy spec's own record.md — D63's
+	// own "ignored, not broken" case: ClassifyRecordPath returns ok=false
+	// for it, taking the "!ok { continue }" branch.
+	healthySpec := &model.Spec{
+		ID: "SPEC-204", Title: "healthy spec", Status: model.SpecStatusDraft,
+		Project: importTestProject, Lane: model.LaneStandard,
+	}
+	writeSpecFixture(t, repoDir, healthySpec, nil, nil)
+	writeRawSDDFile(t, filepath.Join(sddfile.SpecDir(repoDir, "SPEC-204"), "plan.md"), "not a record, an entregable\n")
+
+	// NOTE: a "path shaped like a record but is actually a directory"
+	// fixture was tried here and removed — ListRecords' own WalkDir
+	// callback explicitly skips directories (`if d.IsDir() { return nil }`,
+	// internal/sddfile/io.go) before a path is ever handed to
+	// ClassifyRecordPath/ReadRecord, so that scenario can never reach
+	// ImportSDDFromRepo's ReadRecord-error branch at all through the
+	// normal walk — confirmed by running exactly this fixture and
+	// observing zero effect, not assumed. See changes.md's coverage
+	// disclosure for this finding.
+
+	result, err := svc.ImportSDDFromRepo(ctx, repoDir, true)
+	if err != nil {
+		t.Fatalf("ImportSDDFromRepo must never return an error for these skips: %v", err)
+	}
+
+	byID := map[string]string{}
+	for _, s := range result.Skipped {
+		byID[s.ID] = s.Reason
+	}
+	if byID["BL-200"] != "proyecto-distinto" {
+		t.Errorf("BL-200 reason = %q, want proyecto-distinto", byID["BL-200"])
+	}
+	if byID["SPEC-201"] != "roto" {
+		t.Errorf("SPEC-201 reason = %q, want roto", byID["SPEC-201"])
+	}
+	if byID["SPEC-202"] != "sin-titulo" {
+		t.Errorf("SPEC-202 reason = %q, want sin-titulo", byID["SPEC-202"])
+	}
+	if byID["SPEC-203"] != "proyecto-distinto" {
+		t.Errorf("SPEC-203 reason = %q, want proyecto-distinto", byID["SPEC-203"])
+	}
+
+	// SPEC-204 imported cleanly — the plan.md sitting beside it never
+	// touched anything.
+	if _, gErr := svc.store.GetSpec(ctx, "SPEC-204"); gErr != nil {
+		t.Errorf("SPEC-204 was not created: %v", gErr)
+	}
+	for _, id := range []string{"SPEC-204"} {
+		if _, skipped := byID[id]; skipped {
+			t.Errorf("%s must not appear in Skipped", id)
+		}
+	}
+}
+
+// TestSDDImport_AnchorRenumberedOnAnotherMachine is a targeted addition
+// (QA rejection fix): D50's "ancla-renumerada-en-otra-maquina" skip —
+// CASE A's own guard against a file whose UUID is already claimed by a
+// DIFFERENT correlative in the local database (a real, previously
+// undescribed shape: a machine that renumbered its own copy of the same
+// item) — was never exercised by any test, for either record kind.
+func TestSDDImport_AnchorRenumberedOnAnotherMachine(t *testing.T) {
+	svc, repoDir := newSDDMaterializeService(t, importTestProject)
+	enableSDD(t, repoDir, importTestProject)
+	ctx := context.Background()
+
+	localItem := &model.BacklogItem{
+		ID: "BL-300", Title: "local copy", Status: model.BacklogStatusRaw,
+		Priority: model.PriorityMedium, Project: importTestProject, Lane: model.LaneStandard,
+	}
+	if err := svc.store.CreateBacklogItem(ctx, localItem); err != nil {
+		t.Fatalf("CreateBacklogItem: %v", err)
+	}
+	renamed := &model.BacklogItem{
+		ID: "BL-301", UUID: localItem.UUID, Title: "same item, renumbered elsewhere",
+		Status: model.BacklogStatusRaw, Priority: model.PriorityMedium,
+		Project: importTestProject, Lane: model.LaneStandard,
+	}
+	writeBacklogFixture(t, repoDir, renamed, nil)
+
+	localSpec := &model.Spec{
+		ID: "SPEC-300", Title: "local spec copy", Status: model.SpecStatusDraft,
+		Project: importTestProject, Lane: model.LaneStandard,
+	}
+	if err := svc.store.CreateSpec(ctx, localSpec); err != nil {
+		t.Fatalf("CreateSpec: %v", err)
+	}
+	renamedSpec := &model.Spec{
+		ID: "SPEC-301", UUID: localSpec.UUID, Title: "same spec, renumbered elsewhere",
+		Status: model.SpecStatusDraft, Project: importTestProject, Lane: model.LaneStandard,
+	}
+	writeSpecFixture(t, repoDir, renamedSpec, nil, nil)
+
+	result, err := svc.ImportSDDFromRepo(ctx, repoDir, true)
+	if err != nil {
+		t.Fatalf("ImportSDDFromRepo: %v", err)
+	}
+
+	byID := map[string]string{}
+	for _, s := range result.Skipped {
+		byID[s.ID] = s.Reason
+	}
+	if byID["BL-301"] != "ancla-renumerada-en-otra-maquina" {
+		t.Errorf("BL-301 reason = %q, want ancla-renumerada-en-otra-maquina", byID["BL-301"])
+	}
+	if byID["SPEC-301"] != "ancla-renumerada-en-otra-maquina" {
+		t.Errorf("SPEC-301 reason = %q, want ancla-renumerada-en-otra-maquina", byID["SPEC-301"])
+	}
+	// BL-300/SPEC-300, the row that actually owns the anchor, is
+	// untouched — no BL-301/SPEC-301 row was ever created.
+	if _, gErr := svc.store.GetBacklogItem(ctx, "BL-301"); gErr == nil {
+		t.Error("BL-301 must not have been created")
+	}
+	if _, gErr := svc.store.GetSpec(ctx, "SPEC-301"); gErr == nil {
+		t.Error("SPEC-301 must not have been created")
+	}
+}
+
+// TestSDDImport_SpecSkipsCorrelativeClaimedByTwoAnchors is
+// TestSDDImport_SkipsCorrelativeClaimedByTwoAnchors' spec-side sibling
+// (a targeted addition, QA rejection fix): D50's CASE C — a correlative
+// already claimed locally by one anchor, disputed by a file carrying a
+// DIFFERENT one — had a backlog-side test but no spec-side equivalent.
+func TestSDDImport_SpecSkipsCorrelativeClaimedByTwoAnchors(t *testing.T) {
+	svc, repoDir := newSDDMaterializeService(t, importTestProject)
+	enableSDD(t, repoDir, importTestProject)
+	ctx := context.Background()
+
+	local := &model.Spec{
+		ID: "SPEC-050", Title: "lo mio", Status: model.SpecStatusDraft,
+		Project: importTestProject, Lane: model.LaneStandard,
+	}
+	if err := svc.store.CreateSpec(ctx, local); err != nil {
+		t.Fatalf("CreateSpec: %v", err)
+	}
+	anchorB := local.UUID
+
+	fromRepo := &model.Spec{
+		ID: "SPEC-050", UUID: "0198f000-0000-7000-8000-0000000000bb",
+		Title: "lo del companero", Status: model.SpecStatusDraft,
+		Project: importTestProject, Lane: model.LaneStandard,
+	}
+	writeSpecFixture(t, repoDir, fromRepo, nil, nil)
+
+	result, err := svc.ImportSDDFromRepo(ctx, repoDir, true)
+	if err != nil {
+		t.Fatalf("ImportSDDFromRepo: %v", err)
+	}
+
+	got, err := svc.store.GetSpec(ctx, "SPEC-050")
+	if err != nil {
+		t.Fatalf("GetSpec: %v", err)
+	}
+	if got.Title != "lo mio" || got.UUID != anchorB {
+		t.Errorf("local row was overwritten: title=%q uuid=%s, want unchanged", got.Title, got.UUID)
+	}
+
+	byID := map[string]string{}
+	for _, s := range result.Skipped {
+		byID[s.ID] = s.Reason
+	}
+	reason, ok := byID["SPEC-050"]
+	if !ok {
+		t.Fatalf("SPEC-050 does not appear in Skipped: %v", result.Skipped)
+	}
+	if !strings.Contains(reason, "correlativo-reclamado-por-dos-elementos") || !strings.Contains(reason, "BL-202") {
+		t.Errorf("reason = %q, want the collision message naming BL-202", reason)
+	}
+	if strings.Contains(reason, anchorB) || strings.Contains(reason, fromRepo.UUID) {
+		t.Errorf("reason must never contain either anchor (SPEC-128 D9): %q", reason)
+	}
+}
+
+// TestSDDImport_DryRunReportsWithoutWriting is a targeted addition (QA
+// rejection fix): ImportSDDFromRepo(apply=false)'s own preview branches
+// for BOTH record kinds and BOTH CASE A/B — used internally by
+// SDDStatus's Conflicted/FrozenBlocked derivation, but never asserted on
+// directly, and the backlog CASE B (`!apply` inside an update) and BOTH
+// spec-side `!apply` branches were never exercised by anything at all.
+func TestSDDImport_DryRunReportsWithoutWriting(t *testing.T) {
+	svc, repoDir := newSDDMaterializeService(t, importTestProject)
+	enableSDD(t, repoDir, importTestProject)
+	ctx := context.Background()
+
+	// An existing backlog item and spec, both about to be UPDATED by the
+	// dry run (CASE B `!apply`).
+	existingItem := &model.BacklogItem{
+		ID: "BL-400", Title: "before", Status: model.BacklogStatusRaw,
+		Priority: model.PriorityMedium, Project: importTestProject, Lane: model.LaneStandard,
+	}
+	if err := svc.store.CreateBacklogItem(ctx, existingItem); err != nil {
+		t.Fatalf("CreateBacklogItem: %v", err)
+	}
+	updatedItem := &model.BacklogItem{
+		ID: "BL-400", UUID: existingItem.UUID, Title: "after",
+		Status: model.BacklogStatusRefined, Priority: model.PriorityMedium,
+		Project: importTestProject, Lane: model.LaneStandard,
+	}
+	writeBacklogFixture(t, repoDir, updatedItem, nil)
+
+	existingSpec := &model.Spec{
+		ID: "SPEC-400", Title: "before", Status: model.SpecStatusDraft,
+		Project: importTestProject, Lane: model.LaneStandard,
+	}
+	if err := svc.store.CreateSpec(ctx, existingSpec); err != nil {
+		t.Fatalf("CreateSpec: %v", err)
+	}
+	updatedSpec := &model.Spec{
+		ID: "SPEC-400", UUID: existingSpec.UUID, Title: "after",
+		Status: model.SpecStatusSpeccing, Project: importTestProject, Lane: model.LaneStandard,
+	}
+	writeSpecFixture(t, repoDir, updatedSpec, nil, nil)
+
+	// A brand-new backlog item and spec, about to be CREATED (CASE A
+	// `!apply`).
+	newItem := &model.BacklogItem{
+		ID: "BL-401", Title: "brand new", Status: model.BacklogStatusRaw,
+		Priority: model.PriorityMedium, Project: importTestProject, Lane: model.LaneStandard,
+	}
+	writeBacklogFixture(t, repoDir, newItem, nil)
+	newSpec := &model.Spec{
+		ID: "SPEC-401", Title: "brand new spec", Status: model.SpecStatusDraft,
+		Project: importTestProject, Lane: model.LaneStandard,
+	}
+	writeSpecFixture(t, repoDir, newSpec, nil, nil)
+
+	result, err := svc.ImportSDDFromRepo(ctx, repoDir, false)
+	if err != nil {
+		t.Fatalf("ImportSDDFromRepo (dry-run): %v", err)
+	}
+
+	// Nothing was actually written: the local rows still say "before",
+	// and BL-401/SPEC-401 do not exist in the database.
+	gotItem, gErr := svc.store.GetBacklogItem(ctx, "BL-400")
+	if gErr != nil || gotItem.Title != "before" {
+		t.Errorf("BL-400 was mutated by a dry run: title=%q err=%v", gotItem.Title, gErr)
+	}
+	gotSpec, gErr := svc.store.GetSpec(ctx, "SPEC-400")
+	if gErr != nil || gotSpec.Title != "before" {
+		t.Errorf("SPEC-400 was mutated by a dry run: title=%q err=%v", gotSpec.Title, gErr)
+	}
+	if _, gErr := svc.store.GetBacklogItem(ctx, "BL-401"); gErr == nil {
+		t.Error("BL-401 must not exist after a dry run")
+	}
+	if _, gErr := svc.store.GetSpec(ctx, "SPEC-401"); gErr == nil {
+		t.Error("SPEC-401 must not exist after a dry run")
+	}
+
+	// The preview still reports what WOULD happen.
+	joinedCreated := strings.Join(result.Created, "\n")
+	joinedUpdated := strings.Join(result.Updated, "\n")
+	if !strings.Contains(joinedCreated, "BL-401") {
+		t.Errorf("Created = %v, want it to mention BL-401", result.Created)
+	}
+	if !strings.Contains(joinedCreated, "SPEC-401") {
+		t.Errorf("Created = %v, want it to mention SPEC-401", result.Created)
+	}
+	if !strings.Contains(joinedUpdated, "BL-400") {
+		t.Errorf("Updated = %v, want it to mention BL-400", result.Updated)
+	}
+	if !strings.Contains(joinedUpdated, "SPEC-400") {
+		t.Errorf("Updated = %v, want it to mention SPEC-400", result.Updated)
+	}
+}
+
 // TestSDDImport_IsIdempotent is AC11.
 func TestSDDImport_IsIdempotent(t *testing.T) {
 	svc, repoDir := newSDDMaterializeService(t, importTestProject)
@@ -947,5 +1248,173 @@ func TestApplySpecDefaults(t *testing.T) {
 				t.Errorf("Lane = %q, want %q", tt.spec.Lane, tt.wantLane)
 			}
 		})
+	}
+}
+
+// TestApplyBacklogDefaults is applyBacklogDefaults' own targeted addition
+// (QA rejection fix, mirroring TestApplySpecDefaults above): the function
+// sat at 78.6% for the same reason applySpecDefaults did before its own
+// fix — every fixture elsewhere already sets Status/Priority/Lane
+// explicitly, so several gap-fill branches never ran.
+func TestApplyBacklogDefaults(t *testing.T) {
+	existing := &model.BacklogItem{
+		Status: model.BacklogStatusPromoted, Priority: model.PriorityHigh, Lane: model.LaneTrivial,
+	}
+
+	tests := []struct {
+		name         string
+		item         *model.BacklogItem
+		existing     *model.BacklogItem
+		wantProj     string
+		wantStatus   model.BacklogStatus
+		wantPriority model.Priority
+		wantLane     model.Lane
+	}{
+		{
+			name:         "empty project is filled from svc.project",
+			item:         &model.BacklogItem{Status: model.BacklogStatusRaw, Priority: model.PriorityMedium, Lane: model.LaneStandard},
+			existing:     nil,
+			wantProj:     "wirvii/mneme",
+			wantStatus:   model.BacklogStatusRaw,
+			wantPriority: model.PriorityMedium,
+			wantLane:     model.LaneStandard,
+		},
+		{
+			name:         "empty status with no existing row defaults to raw",
+			item:         &model.BacklogItem{Priority: model.PriorityMedium, Lane: model.LaneStandard},
+			existing:     nil,
+			wantProj:     "wirvii/mneme",
+			wantStatus:   model.BacklogStatusRaw,
+			wantPriority: model.PriorityMedium,
+			wantLane:     model.LaneStandard,
+		},
+		{
+			name:         "empty status with an existing row falls back to it",
+			item:         &model.BacklogItem{Priority: model.PriorityMedium, Lane: model.LaneStandard},
+			existing:     existing,
+			wantProj:     "wirvii/mneme",
+			wantStatus:   model.BacklogStatusPromoted,
+			wantPriority: model.PriorityMedium,
+			wantLane:     model.LaneStandard,
+		},
+		{
+			name:         "empty priority with no existing row defaults to medium",
+			item:         &model.BacklogItem{Status: model.BacklogStatusRaw, Lane: model.LaneStandard},
+			existing:     nil,
+			wantProj:     "wirvii/mneme",
+			wantStatus:   model.BacklogStatusRaw,
+			wantPriority: model.PriorityMedium,
+			wantLane:     model.LaneStandard,
+		},
+		{
+			name:         "empty priority with an existing row falls back to it",
+			item:         &model.BacklogItem{Status: model.BacklogStatusRaw, Lane: model.LaneStandard},
+			existing:     existing,
+			wantProj:     "wirvii/mneme",
+			wantStatus:   model.BacklogStatusRaw,
+			wantPriority: model.PriorityHigh,
+			wantLane:     model.LaneStandard,
+		},
+		{
+			name:         "empty lane with no existing row defaults to standard",
+			item:         &model.BacklogItem{Status: model.BacklogStatusRaw, Priority: model.PriorityMedium},
+			existing:     nil,
+			wantProj:     "wirvii/mneme",
+			wantStatus:   model.BacklogStatusRaw,
+			wantPriority: model.PriorityMedium,
+			wantLane:     model.LaneStandard,
+		},
+		{
+			name:         "empty lane with an existing row falls back to it",
+			item:         &model.BacklogItem{Status: model.BacklogStatusRaw, Priority: model.PriorityMedium},
+			existing:     existing,
+			wantProj:     "wirvii/mneme",
+			wantStatus:   model.BacklogStatusRaw,
+			wantPriority: model.PriorityMedium,
+			wantLane:     model.LaneTrivial,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			applyBacklogDefaults("wirvii/mneme", tt.item, tt.existing)
+			if tt.item.Project != tt.wantProj {
+				t.Errorf("Project = %q, want %q", tt.item.Project, tt.wantProj)
+			}
+			if tt.item.Status != tt.wantStatus {
+				t.Errorf("Status = %q, want %q", tt.item.Status, tt.wantStatus)
+			}
+			if tt.item.Priority != tt.wantPriority {
+				t.Errorf("Priority = %q, want %q", tt.item.Priority, tt.wantPriority)
+			}
+			if tt.item.Lane != tt.wantLane {
+				t.Errorf("Lane = %q, want %q", tt.item.Lane, tt.wantLane)
+			}
+		})
+	}
+}
+
+// TestRelSDDPath is relSDDPath's own targeted addition (QA rejection fix):
+// the function sat at 75.0% because nothing ever exercised its error
+// branch — filepath.Rel genuinely fails (on every OS this repo targets)
+// when one argument is absolute and the other is not, which is exactly the
+// shape a caller-error would take, not a fabricated scenario.
+func TestRelSDDPath(t *testing.T) {
+	tests := []struct {
+		name     string
+		repoRoot string
+		path     string
+		want     string
+	}{
+		{
+			name:     "path under repoRoot's SDD dir is made relative",
+			repoRoot: "/repo",
+			path:     "/repo/.mneme/sdd/backlog/BL-001.md",
+			want:     "backlog/BL-001.md",
+		},
+		{
+			name:     "a relative path against an absolute repoRoot cannot be resolved and is returned verbatim",
+			repoRoot: "/repo",
+			path:     "backlog/BL-001.md",
+			want:     "backlog/BL-001.md",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := relSDDPath(tt.repoRoot, tt.path)
+			if got != tt.want {
+				t.Errorf("relSDDPath(%q, %q) = %q, want %q", tt.repoRoot, tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestComputeOnlyInBase_CapsAtMaxAndReportsRealTotal is computeOnlyInBase's
+// own targeted addition (QA rejection fix): the function sat at 77.8%
+// because nothing exercised D62's own cap (maxOnlyInBaseListed=20) — every
+// other test in this file seeds far fewer than 21 uncovered correlatives.
+// Seeds 25 backlog items covered by no file at all (covered=empty map) and
+// asserts the returned slice is capped at 20 while Total still reports 25.
+func TestComputeOnlyInBase_CapsAtMaxAndReportsRealTotal(t *testing.T) {
+	svc := newTestSDDService(t, "wirvii/mneme")
+	ctx := context.Background()
+
+	for i := 0; i < 25; i++ {
+		if _, err := svc.BacklogAdd(ctx, model.BacklogAddRequest{
+			Title: "seed", Lane: model.LaneStandard,
+		}); err != nil {
+			t.Fatalf("BacklogAdd (seed %d): %v", i, err)
+		}
+	}
+
+	missing, total, err := svc.computeOnlyInBase(ctx, map[string]bool{})
+	if err != nil {
+		t.Fatalf("computeOnlyInBase: %v", err)
+	}
+	if total != 25 {
+		t.Errorf("total = %d, want 25 (the real count, uncapped)", total)
+	}
+	if len(missing) != 20 {
+		t.Errorf("len(missing) = %d, want 20 (capped at maxOnlyInBaseListed)", len(missing))
 	}
 }

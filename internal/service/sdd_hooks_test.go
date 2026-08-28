@@ -114,3 +114,50 @@ func TestInstallSDDHooks_EmptyRepoRootFails(t *testing.T) {
 		t.Error("RemoveSDDHooks(\"\") must fail")
 	}
 }
+
+// TestInstallSDDHooks_NotAGitRepoFails is a targeted addition (QA
+// rejection fix): InstallSDDHooks/RemoveSDDHooks's own HooksDir() error
+// branch — a real, ordinary condition (repoRoot is a plain directory, no
+// .git at all — exactly what running "mneme sdd hooks install" from the
+// wrong directory would hit) — was never exercised by anything.
+func TestInstallSDDHooks_NotAGitRepoFails(t *testing.T) {
+	svc, _ := newSDDMaterializeService(t, "wirvii/mneme")
+	plainDir := t.TempDir()
+
+	if err := svc.InstallSDDHooks(plainDir); err == nil {
+		t.Error("InstallSDDHooks against a non-git directory must fail")
+	}
+	if err := svc.RemoveSDDHooks(plainDir); err == nil {
+		t.Error("RemoveSDDHooks against a non-git directory must fail")
+	}
+}
+
+// TestRemoveSDDHooks_TruncatedBlockStillRemoved is removeSDDHookBlock's
+// own targeted addition (QA rejection fix): its endIdx<0 fallback — a
+// begin marker present with NO matching end marker at all, a real
+// condition a partially-written or hand-truncated hook file could be in
+// — was never exercised.
+func TestRemoveSDDHooks_TruncatedBlockStillRemoved(t *testing.T) {
+	svc, repoDir := newSDDMaterializeService(t, "wirvii/mneme")
+	hooksDir, err := (sddGit{RepoDir: repoDir}).HooksDir()
+	if err != nil {
+		t.Fatalf("HooksDir: %v", err)
+	}
+	hookPath := filepath.Join(hooksDir, "post-merge")
+	truncated := "#!/bin/sh\n" + SDDHooksMarkerBegin + "\nsome content with no end marker\n"
+	if wErr := os.WriteFile(hookPath, []byte(truncated), 0o755); wErr != nil {
+		t.Fatalf("write truncated fixture: %v", wErr)
+	}
+
+	if err := svc.RemoveSDDHooks(repoDir); err != nil {
+		t.Fatalf("RemoveSDDHooks: %v", err)
+	}
+
+	data, err := os.ReadFile(hookPath)
+	if err != nil {
+		t.Fatalf("read post-merge: %v", err)
+	}
+	if strings.Contains(string(data), SDDHooksMarkerBegin) {
+		t.Error("begin marker still present after removing a truncated block")
+	}
+}

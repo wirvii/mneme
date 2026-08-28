@@ -76,6 +76,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   remaining third of BL-194's "Etapa 2" — reconciling two machines that
   independently claimed the same correlative for two different items — is
   still open, tracked internally as BL-202. See `docs/sdd-git-native.md`.
+- **QA rejection fix (SPEC-131 §2b): the two MCP tool handlers this spec
+  adds, `sdd_status`/`sdd_import`, sat at 0.0% coverage — undisclosed,
+  caught by an independent QA review re-measuring the same coverage
+  disclosure.** Both are functionally correct (a throwaway smoke test
+  during review confirmed it) — the gap was purely in the disclosure AC29
+  exists to require, missed because the original check never looked at
+  `internal/mcp`. Six new tests exercise both handlers through the real
+  JSON-RPC dispatch end to end (happy path, an unset `repoDir`'s error
+  path, and the service-unavailable guard), closing both to 100%. Also
+  fixed: `mneme sdd enable`'s dry-run preview omitted that `--apply` also
+  installs this machine's own git hooks, while `disable`'s own preview
+  already announced their removal — an asymmetry against D17's own
+  promise that a preview must say everything that is going to happen.
+  Checked in both directions by a new test so the asymmetry cannot
+  silently return. A further, more exhaustive coverage pass closed 15 of
+  the 18 other functions this spec introduced that had sat below the 80%
+  per-function floor (the SPEC-117 lesson AC29 also names) — using real,
+  reproducible failure conditions already established in this codebase
+  (a closed database connection, a genuine foreign-key violation, a
+  non-git directory, a real git `MERGE_HEAD` sentinel) rather than
+  contrived scenarios; the three that remain below the floor
+  (`importBacklogRecord`, `importSpecRecord`, `runSDDHooksImport`) are
+  documented in `changes.md` with the specific reason each one cannot be
+  closed further without inventing a scenario that would not occur in
+  practice.
 
 ## [v1.42.0] — 2026-08-27 — SDD anchors and per-session speech queue
 

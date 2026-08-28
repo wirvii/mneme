@@ -296,7 +296,9 @@ func renderSDDEnableResult(out io.Writer, result *service.SDDEnableResult) {
 	fmt.Fprintln(out)
 
 	if !result.Applied {
-		fmt.Fprintln(out, "Dry-run — nothing was written. Pass --apply to execute.")
+		fmt.Fprintf(out, "Would export everything to %s/.mneme/sdd, write the marker, "+
+			"add sdd.off to .mneme/.gitignore, and install this machine's own SDD git hooks "+
+			"(dry-run — pass --apply to execute).\n", result.RepoRoot)
 		return
 	}
 	fmt.Fprintf(out, "Applied: exported everything to %s/.mneme/sdd, wrote the marker, "+

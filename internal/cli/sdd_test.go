@@ -162,6 +162,41 @@ func TestSDDEnable_DryRunWritesNothing(t *testing.T) {
 	}
 }
 
+// TestSDDEnableDisable_PreviewsAnnounceHookInstallation is the QA-rejection
+// fix for D17's own promise ("the preview must say everything that is
+// going to happen") — `enable`'s dry-run preview used to omit that
+// `--apply` also installs this machine's own git hooks, while `disable`'s
+// dry-run preview already announced their removal. Checked in BOTH
+// directions on the same repository, so a future regression that
+// reintroduces the asymmetry in either command fails this test.
+func TestSDDEnableDisable_PreviewsAnnounceHookInstallation(t *testing.T) {
+	repoDir, fakeHome := sddCLITestRepo(t)
+	seedSDDBacklog(t, repoDir, fakeHome, "hook preview item")
+	t.Setenv("HOME", fakeHome)
+
+	enableOut, _, err := runSDDCmd(t, repoDir, "enable")
+	if err != nil {
+		t.Fatalf("sdd enable (dry-run): %v", err)
+	}
+	if !strings.Contains(enableOut, "install") || !strings.Contains(enableOut, "hook") {
+		t.Errorf("enable's dry-run preview does not announce hook installation:\n%s", enableOut)
+	}
+
+	// Apply enable so disable's own dry-run preview (which requires the
+	// mechanism to already be on) has something real to preview against.
+	if _, _, err := runSDDCmd(t, repoDir, "enable", "--apply"); err != nil {
+		t.Fatalf("sdd enable --apply: %v", err)
+	}
+
+	disableOut, _, err := runSDDCmd(t, repoDir, "disable")
+	if err != nil {
+		t.Fatalf("sdd disable (dry-run): %v", err)
+	}
+	if !strings.Contains(disableOut, "remove") || !strings.Contains(disableOut, "hook") {
+		t.Errorf("disable's dry-run preview does not announce hook removal:\n%s", disableOut)
+	}
+}
+
 // TestSDDEnable_ApplyThenIdempotent is AC13.
 func TestSDDEnable_ApplyThenIdempotent(t *testing.T) {
 	repoDir, fakeHome := sddCLITestRepo(t)

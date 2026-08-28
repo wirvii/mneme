@@ -1745,6 +1745,171 @@ func TestHandleLaneStats_ReturnsResponse(t *testing.T) {
 	}
 }
 
+// --- SDD_STATUS / SDD_IMPORT HANDLER TESTS (SPEC-131 §2b, QA rejection fix) ---
+//
+// handleSDDStatus/handleSDDImport sat at 0.0% coverage — the exact SPEC-117
+// pattern AC29 exists to catch, missed because the coverage disclosure never
+// looked at internal/mcp. Both the happy path (a real repoDir, mechanism
+// disabled — the no-op branch every fresh clone hits) and the error path (an
+// unset repoDir, the same "repoRoot is required" guard AC28b already tests
+// at the service layer) are covered here, through the real JSON-RPC dispatch
+// end to end — not a direct method call — so a wiring regression in
+// handleMessage's own switch would be caught too.
+
+// TestHandleSDDStatus_ReturnsResponse verifies sdd_status returns a
+// well-formed SDDStatusResult for a repository where the mechanism was
+// never enabled — the common case a fresh clone hits.
+func TestHandleSDDStatus_ReturnsResponse(t *testing.T) {
+	repoDir := t.TempDir()
+	srv := newTestServerWithRepoDir(t, repoDir)
+
+	resp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name:      "sdd_status",
+		Arguments: mustMarshal(t, map[string]any{}),
+	})
+	if resp.Error != nil {
+		t.Fatalf("sdd_status: %v", resp.Error.Message)
+	}
+
+	var status struct {
+		RepoRoot string `json:"RepoRoot"`
+		Enabled  bool   `json:"Enabled"`
+	}
+	unmarshalToolText(t, resp, &status)
+	if status.RepoRoot != repoDir {
+		t.Errorf("RepoRoot = %q, want %q", status.RepoRoot, repoDir)
+	}
+	if status.Enabled {
+		t.Error("Enabled = true, want false — the mechanism was never enabled in this fixture")
+	}
+}
+
+// TestHandleSDDStatus_MapsServiceErrorWhenRepoDirUnset verifies that when
+// the SDDService's repoDir was never configured (the same "unwired call
+// site" case RepoDir's own godoc names), sdd_status surfaces
+// SDDStatus's own "repoRoot is required" error as a JSON-RPC error rather
+// than panicking or silently succeeding — exercising handleSDDStatus's
+// err != nil branch, not just its happy path.
+func TestHandleSDDStatus_MapsServiceErrorWhenRepoDirUnset(t *testing.T) {
+	srv := newTestServerWithSDD(t) // repoDir left unset (WithRepoDir never called)
+
+	resp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name:      "sdd_status",
+		Arguments: mustMarshal(t, map[string]any{}),
+	})
+	if resp.Error == nil {
+		t.Fatal("expected a JSON-RPC error for an unset repoDir, got none")
+	}
+	if !strings.Contains(resp.Error.Message, "repoRoot is required") {
+		t.Errorf("error message = %q, want it to mention 'repoRoot is required'", resp.Error.Message)
+	}
+}
+
+// TestHandleSDDImport_NoOpWhenDisabled verifies sdd_import returns a
+// nominal no-op result (D54's NoOpReason field), not an error, for a
+// repository that never enabled the mechanism — the same scenario
+// mneme sdd hooks run-import hits after every ordinary git pull on a
+// repo that opted out.
+func TestHandleSDDImport_NoOpWhenDisabled(t *testing.T) {
+	repoDir := t.TempDir()
+	srv := newTestServerWithRepoDir(t, repoDir)
+
+	resp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name:      "sdd_import",
+		Arguments: mustMarshal(t, map[string]any{}),
+	})
+	if resp.Error != nil {
+		t.Fatalf("sdd_import: %v", resp.Error.Message)
+	}
+
+	var result struct {
+		NoOpReason string   `json:"no_op_reason"`
+		Created    []string `json:"created"`
+	}
+	unmarshalToolText(t, resp, &result)
+	if result.NoOpReason == "" {
+		t.Error("NoOpReason is empty, want a reason naming why the import did nothing")
+	}
+	if len(result.Created) != 0 {
+		t.Errorf("Created = %v, want empty — the mechanism was never enabled", result.Created)
+	}
+}
+
+// TestHandleSDDImport_MapsServiceErrorWhenRepoDirUnset mirrors
+// TestHandleSDDStatus_MapsServiceErrorWhenRepoDirUnset for sdd_import's own
+// err != nil branch.
+func TestHandleSDDImport_MapsServiceErrorWhenRepoDirUnset(t *testing.T) {
+	srv := newTestServerWithSDD(t) // repoDir left unset
+
+	resp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name:      "sdd_import",
+		Arguments: mustMarshal(t, map[string]any{}),
+	})
+	if resp.Error == nil {
+		t.Fatal("expected a JSON-RPC error for an unset repoDir, got none")
+	}
+	if !strings.Contains(resp.Error.Message, "repoRoot is required") {
+		t.Errorf("error message = %q, want it to mention 'repoRoot is required'", resp.Error.Message)
+	}
+}
+
+// newTestServerWithoutSDD mirrors newTestServerWithSDD but passes a nil
+// *service.SDDService — newHandlers requires a real *service.MemoryService
+// (it dereferences svc.Config() unconditionally), so only sdd itself is nil
+// here, exercising the h.sdd == nil guard every SDD-backed tool handler
+// opens with.
+func newTestServerWithoutSDD(t *testing.T) *Server {
+	t.Helper()
+
+	projectDB, err := db.OpenMemory()
+	if err != nil {
+		t.Fatalf("open project db: %v", err)
+	}
+	projectDB.SetMaxOpenConns(1)
+	globalDB, err := db.OpenMemory()
+	if err != nil {
+		t.Fatalf("open global db: %v", err)
+	}
+	globalDB.SetMaxOpenConns(1)
+	t.Cleanup(func() { projectDB.Close(); globalDB.Close() })
+
+	projectStore := store.NewMemoryStore(projectDB)
+	globalStore := store.NewMemoryStore(globalDB)
+	cfg := config.Default()
+	svc := service.NewMemoryService(projectStore, globalStore, cfg, "test-project", embed.NopEmbedder{})
+
+	logger := slog.Default()
+	return NewServer(svc, nil, nil, nil, logger, "all", "test")
+}
+
+// TestHandleSDDStatus_SDDUnavailable and TestHandleSDDImport_SDDUnavailable
+// cover the h.sdd == nil guard both handlers open with — the same guard
+// every other SDD-backed tool handler shares, exercised here for these two
+// specifically since AC29's amended scope now includes internal/mcp.
+func TestHandleSDDStatus_SDDUnavailable(t *testing.T) {
+	srv := newTestServerWithoutSDD(t)
+
+	resp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name:      "sdd_status",
+		Arguments: mustMarshal(t, map[string]any{}),
+	})
+	if resp.Error == nil {
+		t.Fatal("expected a JSON-RPC error when the SDD service is unavailable, got none")
+	}
+}
+
+func TestHandleSDDImport_SDDUnavailable(t *testing.T) {
+	srv := newTestServerWithoutSDD(t)
+
+	resp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name:      "sdd_import",
+		Arguments: mustMarshal(t, map[string]any{}),
+	})
+	if resp.Error == nil {
+		t.Fatal("expected a JSON-RPC error when the SDD service is unavailable, got none")
+	}
+}
+
 // --- SPEC DOC WRITE TESTS (SPEC-087 D3) ---
 
 // newTestServerWithSDDAndWorkflowDir mirrors newTestServerWithSDD but points
