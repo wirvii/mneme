@@ -1,7 +1,7 @@
 ---
 name: mneme-init
 description: "Use once to bootstrap or reconcile a project with mneme for both Claude Code and Codex. Seeds repo knowledge, applies managed instructions, detects a team profile, generates both native agent projections, and offers codegraph and shared-memory setup. Trigger: mneme-init, initialize mneme, onboard this repo, generate subagents, reconcile agent profiles."
-version: 1.8.0
+version: 1.9.0
 pinned: false
 ---
 
@@ -30,8 +30,9 @@ Use this skill when:
 11. **The layer 2/3 boundary (SPEC-090).** `areas_layer3_md` (Phase 3, and any content you later synthesize into it) is project KNOWLEDGE ONLY — stack, architecture, commands, best practices, domain. It must NEVER contain lifecycle instructions (`spec_advance`, `spec_quick`, `spec_reject` — layer 1's `agent-fixed` block already governs the SDD lifecycle and explicitly forbids the subagent from calling `spec_advance` itself), capability declarations (`tools:`/`permissionMode:` — those are ALWAYS Go-authored via `archetype`, see rule 4), or role doctrine. `subagent_compose`/`subagent_write` mechanically reject any of this if it slips into `areas_layer3_md`/the composed grill region — but do not rely on the reject as your only defense: draft Phase 3 content that never contains it in the first place.
 12. **Profile detection precedes the subagent grill (SPEC-095 §5).** Before Step 1, call `profile_status` to read this repo's pin state and branch: `PinInstalled` → run Step 1 in **profile-active mode** (below); `PinMissing` → offer the install **gate** (`profile_add` + `profile_use`) and only proceed if the user says yes — **never clone without explicit OK**, mirroring the SessionStart gate's own contract; `PinDefault`/`PinAbsent` → run Step 1 in **vanilla mode**, IDENTICAL to today's behavior (zero regression for repos with no profile). In **profile-active mode**, the grill authors and persists capa-2/3 (`subagent_profile_save`, including a `profile_json.areas` entry per role — the capa-3 doctrine draft) but does **NOT** call `subagent_write` (that would bake a second, duplicate capa-1 from the archetype on top of the profile's own); instead it materializes by calling `profile_use <name>`, which fuses the profile's capa-1 with this repo's capa-2/3. In **vanilla mode**, nothing changes: `subagent_compose` → `subagent_write` as always.
 13. **Fusing pre-existing agents (SPEC-090, Phase 0.5).** `subagent_fingerprint`'s `foreign_agents` list is the ONLY detection source — never `Read`/`Glob` `.claude/agents/` yourself to look for more. Whether a foreign agent OVERLAPS a proposed role is a judgment call YOU make by reading the file and reasoning about it in conversation — there is no naming heuristic to lean on (a name like `security-auditor` tells you nothing reliable about scope). When you DO fuse one in, you must EXTRACT its project knowledge and draft fresh `areas_layer3_md` prose from it — NEVER concatenate/paste its raw body into `areas_layer3_md`; that is exactly the BL-110 mechanism rule 11's guard exists to catch, and a mechanical reject is a worse outcome for the user than simply never having pasted it. A foreign agent that does not overlap ANY proposed role is offered as a new CUSTOM role (`subagent_compose`/`subagent_write` with `role` set to its own name and `archetype` mapped to the closest of the six built-ins) — it brings ONLY its extracted knowledge, never its own capabilities; `archetype`'s Go-authored `PermissionTable` entry is what governs `tools:`/`permissionMode:`, exactly as for any other role.
-14. **Plain language with the person (operating manual §9).** Every question this grill asks, every option it offers, the areas-completeness question of step 7b and the Step 4 final report are **Channels that reach a person**: no metaphor you invented, no foreign term left untranslated, every acronym expanded on first use, and every option must say what it costs the person in practice — not what it is internally. If they ask you to explain something again, change level (show the real file, the real command) instead of rephrasing it. The project knowledge you draft into `areas_layer3_md` is agent-to-agent and stays precise, but **The exemption never travels with the text**: anything you read back to the person, you rewrite in plain language first.
+14. **Plain language with the person (operating manual §9).** Every question this grill asks, every option it offers, the areas-completeness question of step 7b and the Step 6 final report are **Channels that reach a person**: no metaphor you invented, no foreign term left untranslated, every acronym expanded on first use, and every option must say what it costs the person in practice — not what it is internally. If they ask you to explain something again, change level (show the real file, the real command) instead of rephrasing it. The project knowledge you draft into `areas_layer3_md` is agent-to-agent and stays precise, but **The exemption never travels with the text**: anything you read back to the person, you rewrite in plain language first.
 15. **Dual-runtime projection (SPEC-123).** Every confirmed `subagent_write` and every `profile_use` materializes both `.claude/agents/<role>.md` and `.codex/agents/<role>.toml` from one canonical role contract. Never run a second initialization for Codex, never create separate memory or SDD state, and never hand-author one projection from the other. If either projection fails validation, report that role as failed; do not claim partial success.
+16. **The SDD opt-in (Step 5, SPEC-130 §2a) invokes the EXISTING `mneme sdd enable` command** — never reimplement the file format, the write-through, or the marker yourself, and always relay its preview output (plan, remote, and the four warnings) verbatim, never paraphrased or suppressed, before asking for confirmation to apply.
 
 ## Automated Checks
 
@@ -48,6 +49,7 @@ Use this skill when:
 | No `subagent_write` in profile-active mode | When the repo is `PinInstalled`, Step 1 never calls `subagent_write` — only `subagent_profile_save` + `profile_use` | Replace the `subagent_write` call with `profile_use <name>` to materialize the fusion instead |
 | Plain language in every question | Each question asked and each option offered is free of invented metaphors and untranslated foreign terms, expands every acronym on first use, and states what the option costs the person (rule 14) | Rewrite the question before asking it; if the person asks again, change level — show the real file or the real command instead of rephrasing |
 | Both runtime projections exist | Every confirmed role has a Claude markdown artifact and a Codex TOML artifact in the shared manifest | Re-run the single compose/write or profile activation; never initialize a second mneme project |
+| SDD preview relayed before apply | `mneme sdd enable`'s preview output (plan + the four warnings) was shown to the user, and explicit confirmation was obtained, before `mneme sdd enable --apply` ran | Re-run the preview, relay it verbatim, and wait for confirmation before applying |
 
 ## Verification
 
@@ -59,6 +61,7 @@ Use this skill when:
 - After enabling the delegation hook: confirm both `<repo>/.claude/settings.json` and `<repo>/.codex/hooks.json` contain the two managed PreToolUse registrations.
 - After the codegraph opt-in: `mneme codegraph status` should report a non-zero file/symbol count for the repo.
 - After the shared-memory opt-in: `<repo>/.mneme/shared/.mneme-vault` should exist and `mneme team-memory enable`'s output should report the hooks it installed; re-running the command should report "already enabled" instead of erroring.
+- After the SDD opt-in: `<repo>/.mneme/sdd/.mneme-sdd` should exist, and `mneme sdd status` should report the mechanism enabled with a non-zero backlog/spec count.
 - Before reporting completion, confirm with the user that each opt-in step's outcome (done / skipped / deferred) matches what they asked for.
 
 ## Workflow
@@ -120,9 +123,19 @@ Only if the user opts in. This wires the git-native team-memory vault (SPEC-053)
 16. Relay the command's own output verbatim, including its privacy notice — never paraphrase, summarize away, or suppress it.
 17. If the command fails (e.g. not a git repository), report the failure and skip — do not attempt a manual workaround or fabricate a fallback command.
 
-### Step 4 — Final report
+### Step 5 — Opt-in: SDD backlog and specs as versioned files (SPEC-130 §2a)
 
-18. Summarize what ran, using this format (core always runs; each opt-in step is done / skipped / not requested / deferred):
+Only if the user opts in. This wires the SDD git-native mechanism: the SAME backlog items and specs already in mneme's local database, ALSO written as reviewable Markdown files under `.mneme/sdd/` in this repository — so they can be reviewed in a pull request. Do not reimplement any of this yourself — invoke the existing command (rule 16):
+
+18. Run `mneme sdd enable` (the preview, without `--apply`) and relay its FULL output verbatim — the plan (how many backlog items and specs would be exported), the remote git reports locally, and the four honest warnings (publishing to git is not undone; mneme cannot tell whether the remote is public without a network call it deliberately never makes; mneme has not scanned the content for sensitive data; and these files sync into a pull request today, not yet into another machine's own database). Never paraphrase, summarize away, or suppress any of these.
+19. Explicitly tell the user, in your own words, what this step does NOT do yet: these files will not appear automatically on a teammate's machine after they clone or pull — no importer and no git hooks exist yet for that (arrives with a later part of this same project, referenced internally as BL-201). Today the only thing enabling this buys is: the backlog and specs become reviewable, as plain text, inside a pull request.
+20. Wait for the user's explicit confirmation before applying — the same "read the preview, then confirm" gate Step 3 already uses for shared memory.
+21. On confirmation, run `mneme sdd enable --apply`. It exports every backlog item and spec (including archived items and already-completed specs), writes the enable marker (committed to the repository — this turns the mechanism on for every teammate who later clones it, the same "enabling is a team decision" posture as shared memory), and updates `.mneme/.gitignore`.
+22. If the command fails — not a git repository, or the repository already carries SDD records this database does not recognize (an unreadable file, or one anchored to a different machine's item) — relay the failure message verbatim (it already names the affected files) and skip. Do not attempt a manual workaround, and do not attempt to read or merge those foreign files yourself; that capability does not exist yet in this part of the project.
+
+### Step 6 — Final report
+
+23. Summarize what ran, using this format (core always runs; each opt-in step is done / skipped / not requested / deferred):
 
 ```
 mneme-init complete for {project}
@@ -131,4 +144,5 @@ Core: memories seeded (N), managed blocks applied, drift findings: N
 Subagents: <done (roles: ...) | skipped | not requested>
 Codegraph: <done | skipped | not requested>
 Shared memory: <done (vault + hooks installed) | skipped | not requested>
+SDD (backlog/specs as files): <done (N backlog items, N specs exported) | skipped | not requested>
 ```

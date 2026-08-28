@@ -342,7 +342,7 @@ See [docs/conflicts.md](docs/conflicts.md) and
 
 ## Commands
 
-42 mneme-registered top-level commands (`mneme --help` is the source of truth for flags; full
+43 mneme-registered top-level commands (`mneme --help` is the source of truth for flags; full
 flag reference in [docs/api/cli.md](docs/api/cli.md)). Cobra's
 auto-generated `completion` is listed below for reference but not counted in
 that figure:
@@ -381,6 +381,7 @@ that figure:
 | `mneme app` | Add and wire an app in a scaffolded monorepo (`add`) |
 | `mneme scaffold` | Capture an exemplar repository as a profile scaffold (`capture`) |
 | `mneme speech` | Control opt-in, entirely local spoken responses (`on`, `off`, `stop`, `status`, `voice`, `voices`, `mode`, `test`, `setup`) |
+| `mneme sdd` | Turn the SDD git-native mechanism on/off/status for this repository (`enable`, `disable`, `export`, `status`) |
 | `mneme sync` | Sync memories via git (`export`, `import`, `status`) |
 | `mneme vault` | Manage the filesystem vault mirror (`export`, `import`) |
 | `mneme embed` | Manage memory embeddings for semantic search (`backfill`) |
@@ -504,15 +505,15 @@ errors, examples) under [docs/api/](docs/api/):
 
 **Dependency rule:** imports flow inward only. `model` (zero external deps) is the leaf. Frontends (`cli`, `mcp`, `http`) call `service`, which orchestrates `store`, `scoring`, `graph`, and `rules`. No frontend calls `store` or `db` directly.
 
-**Persistence:** two SQLite databases per host -- `~/.mneme/global.db` (global + org scope) and `~/.mneme/projects/<slug>.db` (project scope, slug from git remote). Schema v19 with embedded migrations.
+**Persistence:** two SQLite databases per host -- `~/.mneme/global.db` (global + org scope) and `~/.mneme/projects/<slug>.db` (project scope, slug from git remote). Schema v20 with embedded migrations.
 
-**Three frontends:** MCP (primary, 85 tools over stdio), HTTP (REST API at `:7437`, 10 endpoints under `/v1/` -- no SDD/codegraph/skills/model/conflicts/subagent/speech parity yet), and CLI (Cobra, 42 mneme-registered commands).
+**Three frontends:** MCP (primary, 85 tools over stdio), HTTP (REST API at `:7437`, 10 endpoints under `/v1/` -- no SDD/codegraph/skills/model/conflicts/subagent/speech parity yet), and CLI (Cobra, 43 mneme-registered commands).
 
 ---
 
 ## Status & Roadmap
 
-**Current (main): schema v19, 85 MCP tools, 42 mneme-registered CLI commands, 10 HTTP endpoints.**
+**Current (main): schema v20, 85 MCP tools, 43 mneme-registered CLI commands, 10 HTTP endpoints.**
 Latest release: **v1.33.0**. Full history in [CHANGELOG.md](CHANGELOG.md).
 
 **Shipped:**
