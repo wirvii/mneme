@@ -38,6 +38,24 @@ if [ -d "$TEST_HOME/.mneme/profiles" ]; then
   leaked+=("$TEST_HOME/.mneme/profiles")
 fi
 
+# SPEC-130 §2a AC25: the SDD git-native mechanism (internal/sddfile,
+# internal/service/sdd_{export,state,enable}.go) writes under
+# <repoRoot>/.mneme/sdd, and D38 requires repoRoot to ALWAYS be a
+# caller-supplied parameter — never resolved from the process's own HOME
+# or working directory. This check stays INSIDE the sandboxed test HOME
+# on purpose, matching the posture the header above already declares for
+# the whole script (it does not inspect the real repository's own
+# .mneme/sdd, which this repo may legitimately carry once the owner opts
+# in — that would be a false positive, the same reasoning that keeps this
+# script off the real ~/.mneme and <repo>/.mneme/shared/): if a test ever
+# resolved $TEST_HOME itself as an SDD repoRoot, this is where the
+# resulting files would land, and their presence here is exactly the
+# leak SPEC-085's own DB/profile-store checks above exist to catch for
+# their own subsystems.
+if [ -d "$TEST_HOME/.mneme/sdd" ]; then
+  leaked+=("$TEST_HOME/.mneme/sdd")
+fi
+
 if [ "${#leaked[@]}" -gt 0 ]; then
   echo "testguard: found production-shaped DB file(s)/directory(ies) inside the sandboxed test HOME:" >&2
   for f in "${leaked[@]}"; do
