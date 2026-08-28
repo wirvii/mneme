@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -252,38 +251,15 @@ func runTeamMemoryHooksImport() {
 // #!/bin/sh shebang. The function is idempotent: if the marker begin line is
 // already present the file is not modified. The hook file is always set to
 // 0755 (git requires hooks to be executable).
+//
+// The algorithm itself lives in hookblock.go's appendMarkedHookBlock
+// (SPEC-131 D56) — generalized so sdd_hooks.go's own consumer can reuse it
+// without duplicating ~40 lines of edge-case handling. This wrapper's own
+// constants (teamMemoryHooksMarkerBegin/End) are untouched: they are the
+// only way `remove` can find what `install` wrote, in every repository
+// that already installed them (W8).
 func appendTeamMemoryMarkedBlock(hookPath string) error {
-	existing, readErr := os.ReadFile(hookPath)
-	var content string
-	if readErr == nil {
-		content = string(existing)
-	} else if !os.IsNotExist(readErr) {
-		return fmt.Errorf("read hook file: %w", readErr)
-	}
-
-	if strings.Contains(content, teamMemoryHooksMarkerBegin) {
-		return nil
-	}
-
-	var sb strings.Builder
-	if content == "" {
-		sb.WriteString("#!/bin/sh\n")
-	} else {
-		sb.WriteString(content)
-		if !strings.HasSuffix(content, "\n") {
-			sb.WriteByte('\n')
-		}
-	}
-	sb.WriteString(teamMemoryHooksManagedBlock)
-	sb.WriteByte('\n')
-
-	if err := os.MkdirAll(filepath.Dir(hookPath), 0o755); err != nil {
-		return fmt.Errorf("create hooks directory: %w", err)
-	}
-	if err := os.WriteFile(hookPath, []byte(sb.String()), 0o755); err != nil {
-		return fmt.Errorf("write hook file: %w", err)
-	}
-	return os.Chmod(hookPath, 0o755)
+	return appendMarkedHookBlock(hookPath, teamMemoryHooksMarkerBegin, teamMemoryHooksMarkerEnd, teamMemoryHooksManagedBlock)
 }
 
 // removeTeamMemoryMarkedBlock removes the mneme-managed block (from
@@ -292,44 +268,11 @@ func appendTeamMemoryMarkedBlock(hookPath string) error {
 // Returns (true, nil) when the block was found and removed, or (false, nil)
 // when no block was present (no-op). The file is not deleted even if it
 // becomes empty after removal.
+//
+// See appendTeamMemoryMarkedBlock's godoc: the algorithm is
+// hookblock.go's removeMarkedHookBlock (SPEC-131 D56).
 func removeTeamMemoryMarkedBlock(hookPath string) (removed bool, err error) {
-	data, readErr := os.ReadFile(hookPath)
-	if os.IsNotExist(readErr) {
-		return false, nil // file absent → nothing to remove
-	}
-	if readErr != nil {
-		return false, fmt.Errorf("read hook file: %w", readErr)
-	}
-
-	content := string(data)
-	beginIdx := strings.Index(content, teamMemoryHooksMarkerBegin)
-	if beginIdx < 0 {
-		return false, nil // no block present
-	}
-
-	endIdx := strings.Index(content, teamMemoryHooksMarkerEnd)
-	if endIdx < 0 {
-		// Malformed: begin marker present but no end marker. Remove from begin to EOF.
-		endIdx = len(content) - len(teamMemoryHooksMarkerEnd)
-	}
-	afterEnd := endIdx + len(teamMemoryHooksMarkerEnd)
-	if afterEnd < len(content) && content[afterEnd] == '\n' {
-		afterEnd++ // consume the trailing newline of the end marker line
-	}
-
-	newContent := content[:beginIdx] + content[afterEnd:]
-
-	// Trim a spurious leading blank line that may appear if the block was at
-	// the very start of the file (just after the shebang newline).
-	newContent = strings.TrimRight(newContent, "\n")
-	if newContent != "" {
-		newContent += "\n"
-	}
-
-	if writeErr := os.WriteFile(hookPath, []byte(newContent), 0o755); writeErr != nil {
-		return false, fmt.Errorf("write hook file: %w", writeErr)
-	}
-	return true, nil
+	return removeMarkedHookBlock(hookPath, teamMemoryHooksMarkerBegin, teamMemoryHooksMarkerEnd)
 }
 
 // logTeamMemoryHookEvent appends a single timestamped line to
