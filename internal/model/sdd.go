@@ -4,7 +4,94 @@
 // No external dependencies — this is the leaf package.
 package model
 
-import "time"
+import (
+	"fmt"
+	"strings"
+	"time"
+)
+
+// PreviousID is one entry of the renumbering trail a backlog item or spec
+// carries when a collision (SPEC-130 D10, resolved in BL-202) forces its
+// correlative to change. It is a CONSTANCY, not an audit log of WHO did it
+// (D44, firm — confirmed by the owner 2026-08-28): the two candidates that
+// would identify a person — gitident.Author() (name+email, exactly what
+// BL-104 existed to remove) and os.Hostname() (in practice the machine
+// owner's own name) — are both rejected by design. Instead each entry
+// answers "why did this number change and when": the correlative that was
+// LOST, which side lost it (Origin: "local" or "repo"), why (Reason:
+// "enable-collision" or "add-add", BL-202's closed vocabulary), and when.
+//
+// This type is defined here, in §2a (SPEC-130), even though nothing writes
+// into it until BL-202: sddfile.Marshal serializes BacklogItem/Spec
+// DIRECTLY, so schema 1 of the on-disk record has to carry this field from
+// day one — adding it later would be schema 2, and SPEC-130 D28's hard gate
+// would make a mneme with schema 1 reject files a mneme with BL-202 writes
+// (D32).
+type PreviousID struct {
+	// ID is the correlative that was superseded, e.g. "BL-050".
+	ID string `json:"id"`
+
+	// Origin names which side's number was renumbered away: "local" (this
+	// machine's own item lost the collision) or "repo" (the item that came
+	// from the repository lost it).
+	Origin string `json:"origin"`
+
+	// Reason is BL-202's closed vocabulary for why the renumbering
+	// happened: "enable-collision" (D10, encountered while enabling the
+	// mechanism) or "add-add" (D18, two machines independently created the
+	// same correlative).
+	Reason string `json:"reason"`
+
+	// At is when the renumbering happened.
+	At time.Time `json:"at"`
+}
+
+// String renders p in the literal wire format D44 fixes:
+// "BL-050 origin=local reason=enable-collision at=2026-08-28T10:00:00Z".
+// This is the exact form sddfile persists inside a record's previous_ids
+// list — a plain space-separated line, not quoted, not YAML-nested.
+func (p PreviousID) String() string {
+	return fmt.Sprintf("%s origin=%s reason=%s at=%s",
+		p.ID, p.Origin, p.Reason, p.At.UTC().Format(time.RFC3339Nano))
+}
+
+// ParsePreviousID parses the String() format back into a PreviousID. It is
+// tolerant only in the sense that any structural deviation (missing field,
+// unknown key, unparseable timestamp) returns ok=false rather than a
+// partially-populated value — a hand-edited or truncated line is discarded,
+// never guessed at.
+func ParsePreviousID(s string) (PreviousID, bool) {
+	fields := strings.Fields(s)
+	if len(fields) != 4 {
+		return PreviousID{}, false
+	}
+
+	p := PreviousID{ID: fields[0]}
+	for _, f := range fields[1:] {
+		key, value, ok := strings.Cut(f, "=")
+		if !ok {
+			return PreviousID{}, false
+		}
+		switch key {
+		case "origin":
+			p.Origin = value
+		case "reason":
+			p.Reason = value
+		case "at":
+			t, err := time.Parse(time.RFC3339Nano, value)
+			if err != nil {
+				return PreviousID{}, false
+			}
+			p.At = t
+		default:
+			return PreviousID{}, false
+		}
+	}
+	if p.ID == "" || p.Origin == "" || p.Reason == "" || p.At.IsZero() {
+		return PreviousID{}, false
+	}
+	return p, true
+}
 
 // LaneAuditRecord is a structured record of a single lane auditor run.
 // One row is inserted per run — both passes and failures — so lane_status
@@ -249,6 +336,15 @@ type BacklogItem struct {
 	// covers the narrow window between a legacy row's migration and its
 	// backfill.
 	UUID string `json:"uuid,omitempty"`
+
+	// PreviousIDs is the renumbering trail (SPEC-130 D32/D44): every prior
+	// correlative this item held before a collision forced it to change.
+	// Backed by migration 020's previous_ids column, added in §2a but
+	// INERT there — every read path populates it, but nothing writes to it
+	// until BL-202's reconciler exists. Always empty today; omitempty so a
+	// record with none stays byte-identical to one written before this
+	// field existed.
+	PreviousIDs []PreviousID `json:"previous_ids,omitempty"`
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -663,6 +759,12 @@ type Spec struct {
 	// omitempty only covers the narrow window between a legacy row's
 	// migration and its backfill.
 	UUID string `json:"uuid,omitempty"`
+
+	// PreviousIDs is the renumbering trail (SPEC-130 D32/D44) — see
+	// BacklogItem.PreviousIDs for the full rationale. Same inert-until-
+	// BL-202 posture: migration 020 adds the column in §2a, but nothing
+	// writes to it yet.
+	PreviousIDs []PreviousID `json:"previous_ids,omitempty"`
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`

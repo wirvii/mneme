@@ -3,6 +3,7 @@ package model
 import (
 	"encoding/json"
 	"testing"
+	"time"
 )
 
 // TestBacklogStatusValid verifies the canonical set of valid backlog statuses.
@@ -372,4 +373,49 @@ func keysOf(m map[string]json.RawMessage) []string {
 		keys = append(keys, k)
 	}
 	return keys
+}
+
+// TestPreviousID_StringRoundTrip verifies D44's literal wire format
+// round-trips through ParsePreviousID exactly — the format sddfile persists
+// unmodified in a record's previous_ids list.
+func TestPreviousID_StringRoundTrip(t *testing.T) {
+	at, err := time.Parse(time.RFC3339Nano, "2026-08-28T10:00:00Z")
+	if err != nil {
+		t.Fatalf("parse fixture time: %v", err)
+	}
+	p := PreviousID{ID: "BL-050", Origin: "local", Reason: "enable-collision", At: at}
+
+	line := p.String()
+	const want = "BL-050 origin=local reason=enable-collision at=2026-08-28T10:00:00Z"
+	if line != want {
+		t.Fatalf("String() = %q, want %q", line, want)
+	}
+
+	got, ok := ParsePreviousID(line)
+	if !ok {
+		t.Fatalf("ParsePreviousID(%q) failed to parse", line)
+	}
+	if got != p {
+		t.Errorf("ParsePreviousID round trip = %+v, want %+v", got, p)
+	}
+}
+
+// TestParsePreviousID_RejectsMalformed verifies ParsePreviousID discards
+// (ok=false), rather than partially populates, anything that does not
+// match the exact four-field shape — the same tolerance-by-rejection
+// posture vault.ParseSDDRefLines uses for hand-edited content.
+func TestParsePreviousID_RejectsMalformed(t *testing.T) {
+	cases := []string{
+		"",
+		"BL-050",
+		"BL-050 origin=local",
+		"BL-050 origin=local reason=enable-collision at=not-a-time",
+		"BL-050 origin=local reason=enable-collision unknown=x",
+		"BL-050 origin=local reason=enable-collision at=2026-08-28T10:00:00Z extra=y",
+	}
+	for _, c := range cases {
+		if _, ok := ParsePreviousID(c); ok {
+			t.Errorf("ParsePreviousID(%q) unexpectedly succeeded", c)
+		}
+	}
 }
