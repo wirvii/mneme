@@ -403,16 +403,20 @@ func TestSDDStatusCmd(t *testing.T) {
 	}
 }
 
-// TestSDD_ExactlyOneAddCommand is AC20, measured over the diff rather than
-// a hard-coded count elsewhere: this test only confirms newSDDCmd's own
-// shape (one parent command, four subcommands) — the diff-based count
-// itself is verified in commit 10 against the real git history.
+// TestSDD_ExactlyOneAddCommand is AC20 (SPEC-130), measured over the diff
+// rather than a hard-coded count elsewhere: this test only confirms
+// newSDDCmd's own shape — the diff-based count itself is verified against
+// the real git history in SPEC-131 AC21 (`mneme sdd hooks`/`import` hang
+// off the ALREADY-registered `sdd` command; internal/cli/root.go gains no
+// new top-level `Cmd(),` line). `hooks` (SPEC-131 D58) is the SDD
+// mechanism's own subcommand GROUP, not a new top-level command — the
+// same distinction team-memory's own `hooks` group already draws.
 func TestSDD_ExactlyOneAddCommand(t *testing.T) {
 	cmd := newSDDCmd()
 	if cmd.Use != "sdd" {
 		t.Fatalf("newSDDCmd().Use = %q, want %q", cmd.Use, "sdd")
 	}
-	want := map[string]bool{"enable": true, "disable": true, "export": true, "status": true}
+	want := map[string]bool{"enable": true, "disable": true, "export": true, "status": true, "hooks": true}
 	got := make(map[string]bool)
 	for _, c := range cmd.Commands() {
 		name := strings.Fields(c.Use)[0]

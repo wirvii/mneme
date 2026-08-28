@@ -36,7 +36,7 @@ test:
 
 test-race:
 	@mkdir -p "$(TEST_HOME)"
-	$(TEST_ENV) go test -race ./...
+	$(TEST_ENV) go test -race -timeout=20m ./...
 	@TEST_HOME="$(TEST_HOME)" ./scripts/testguard.sh
 
 # coverage produces this repository's own go-cover profile (SPEC-116

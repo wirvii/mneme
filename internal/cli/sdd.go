@@ -34,6 +34,7 @@ not yet to synchronize two machines.`,
 		newSDDDisableCmd(),
 		newSDDExportCmd(),
 		newSDDStatusCmd(),
+		newSDDHooksCmd(),
 	)
 	return cmd
 }

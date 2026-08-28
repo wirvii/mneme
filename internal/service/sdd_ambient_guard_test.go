@@ -15,13 +15,16 @@ import (
 )
 
 // sddAmbientGuardFiles are the files AC6/AC28a names:
-// internal/service/sdd_{export,state,enable,import}.go, plus
+// internal/service/sdd_{export,state,enable,import,hooks}.go, plus
 // internal/sddfile's own leaf test already covers that package's perimeter
-// directly (AC5). sdd_import.go joins the list in SPEC-131 (D60): the read
-// path is a new site capable of resolving the working directory or git
+// directly (AC5). sdd_import.go joined the list in commit 4 (D60): the
+// read path is a site capable of resolving the working directory or git
 // identity by accident, and a guardian that did not see it yet would let
-// that happen invisibly. sdd_hooks.go (the git-hooks installer) joins this
-// same list later, in the commit that creates it (D60).
+// that happen invisibly. sdd_hooks.go joins here in the SAME commit that
+// creates it (D60): it is the SDD mechanism's first write outside
+// .mneme/sdd/ (.git/hooks itself), and the hooks directory it resolves
+// (sddGit.HooksDir) must come from repoRoot exactly like every other path
+// in this package — never os.Getwd.
 func sddAmbientGuardFiles(t *testing.T) []string {
 	t.Helper()
 	_, thisFile, _, ok := runtime.Caller(0)
@@ -34,6 +37,7 @@ func sddAmbientGuardFiles(t *testing.T) []string {
 		filepath.Join(dir, "sdd_state.go"),
 		filepath.Join(dir, "sdd_enable.go"),
 		filepath.Join(dir, "sdd_import.go"),
+		filepath.Join(dir, "sdd_hooks.go"),
 	}
 }
 

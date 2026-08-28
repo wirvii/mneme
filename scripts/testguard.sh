@@ -56,6 +56,22 @@ if [ -d "$TEST_HOME/.mneme/sdd" ]; then
   leaked+=("$TEST_HOME/.mneme/sdd")
 fi
 
+# SPEC-131 §2b (D60): the SDD read path installs git hooks
+# (internal/service/sdd_hooks.go's InstallSDDHooks), the mechanism's first
+# write OUTSIDE .mneme/sdd — the worst class of leak the other four checks
+# above cannot see, because a git worktree does NOT isolate .git/hooks (a
+# linked worktree's hooks path resolves to the COMMON repository's own
+# .git/hooks, not the worktree's own). A test that ever treated this
+# sandboxed HOME as a git repository root would have run `git init` here
+# first — its presence is the precondition of the catastrophe, not the
+# catastrophe itself, which is exactly why it is checked BEFORE any hook
+# file would even exist. This check stays INSIDE the sandboxed test HOME,
+# same posture as every check above: it never inspects the real developer
+# repository's own .git.
+if [ -d "$TEST_HOME/.git" ]; then
+  leaked+=("$TEST_HOME/.git")
+fi
+
 if [ "${#leaked[@]}" -gt 0 ]; then
   echo "testguard: found production-shaped DB file(s)/directory(ies) inside the sandboxed test HOME:" >&2
   for f in "${leaked[@]}"; do

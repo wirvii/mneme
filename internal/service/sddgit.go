@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -15,11 +16,12 @@ import (
 // It is also NOT internal/cli's git helpers (repoRoot, runGitCmd): service
 // cannot import cli — that is the dependency rule running backwards.
 //
-// In §2a this holds three small primitives, all read-only. The
-// reconciliation primitives (`ls-files -u`, `show :N:`) arrive with
-// BL-202 — this file starts small on purpose, so a reviewer sees the
-// mechanism grow one primitive at a time instead of guessing at a wide
-// surface up front.
+// §2a landed three small primitives, all read-only. §2b (SPEC-131) adds
+// ONE more — HooksDir — because installing a git hook is the first write
+// this mechanism makes outside .mneme/sdd/. Reconciliation primitives
+// (`ls-files -u`, `show :N:`) still arrive with BL-202 — this file grows
+// one primitive at a time on purpose, so a reviewer sees the mechanism's
+// surface widen deliberately instead of guessing at it up front.
 type sddGit struct {
 	// RepoDir is the repository root git commands run against — ALWAYS a
 	// caller-supplied field (D38), never resolved from os.Getwd().
@@ -60,6 +62,25 @@ func (g sddGit) RemoteURL() string {
 		return ""
 	}
 	return strings.TrimSpace(out)
+}
+
+// HooksDir resolves RepoDir's git hooks directory via
+// "git rev-parse --git-path hooks" (SPEC-131 D60) — the same resolution
+// internal/cli/codegraph_hooks.go's own gitHooksDir uses, so a custom
+// core.hooksPath and a linked git worktree (whose hooks path resolves to
+// the COMMON repository's .git/hooks, not the worktree's own — the exact
+// surprise §5 of the plan calls out) are handled identically wherever
+// mneme installs a hook.
+func (g sddGit) HooksDir() (string, error) {
+	out, err := g.run("rev-parse", "--git-path", "hooks")
+	if err != nil {
+		return "", fmt.Errorf("service: sdd git hooks dir: %w", err)
+	}
+	dir := strings.TrimSpace(out)
+	if !filepath.IsAbs(dir) {
+		dir = filepath.Join(g.RepoDir, dir)
+	}
+	return dir, nil
 }
 
 // run executes a git subcommand with RepoDir as its working directory and
