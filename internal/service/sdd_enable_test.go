@@ -357,3 +357,25 @@ func TestSDDStatus_ReportsBrokenAndForeign(t *testing.T) {
 		t.Errorf("Broken = %v, want exactly 1 entry", status.Broken)
 	}
 }
+
+// TestSDDStatus_IgnoresSpecEntregables is SPEC-131 commit 2's own row: with
+// the old heuristic (filepath.Base(path) == "record.md", W7) a plan.md
+// deposited beside a spec's record.md would be misclassified as a backlog
+// item and reported broken. ClassifyRecordPath (D63) ignores it instead.
+func TestSDDStatus_IgnoresSpecEntregables(t *testing.T) {
+	svc, repoDir := newSDDMaterializeService(t, "wirvii/mneme")
+	ctx := context.Background()
+
+	planPath := filepath.Join(sddfile.SpecDir(repoDir, "SPEC-001"), "plan.md")
+	if err := sddfile.WriteRecord(planPath, []byte("# Plan\n\nnot an SDD record at all")); err != nil {
+		t.Fatalf("write plan.md fixture: %v", err)
+	}
+
+	status, err := svc.SDDStatus(ctx, repoDir)
+	if err != nil {
+		t.Fatalf("SDDStatus: %v", err)
+	}
+	if len(status.Broken) != 0 {
+		t.Errorf("Broken = %v, want empty — plan.md must be ignored, not reported broken (W7/D63)", status.Broken)
+	}
+}

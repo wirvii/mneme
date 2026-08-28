@@ -332,6 +332,14 @@ func (svc *SDDService) exportAllSDD(ctx context.Context, repoRoot string) error 
 // them into "broken" (fails to parse — D22/D28/D37) and "foreign" (parses
 // fine but its anchor is not known to this database — D45). Both slices
 // are file paths, so a caller can name them directly.
+//
+// Classification is delegated to sddfile.ClassifyRecordPath (SPEC-131 D63),
+// replacing the old inline heuristic (filepath.Base(path) == "record.md",
+// W7): a path ClassifyRecordPath does not recognise — an entregable like
+// plan.md/spec.md that BL-196 will deposit inside specs/SPEC-NNN/, or a
+// stray .md with no valid correlative — is IGNORED here, never reported as
+// broken. Ignored is not an error; it is content this mechanism does not
+// read yet.
 func (svc *SDDService) scanSDDRecords(ctx context.Context, repoRoot string) (broken, foreign []string, err error) {
 	paths, err := sddfile.ListRecords(sddfile.RootDir(repoRoot))
 	if err != nil {
@@ -348,6 +356,11 @@ func (svc *SDDService) scanSDDRecords(ctx context.Context, repoRoot string) (bro
 	var ok []okRecord
 
 	for _, path := range paths {
+		kind, _, classified := sddfile.ClassifyRecordPath(repoRoot, path)
+		if !classified {
+			continue
+		}
+
 		data, rErr := sddfile.ReadRecord(path)
 		if rErr != nil {
 			broken = append(broken, path)
@@ -355,20 +368,23 @@ func (svc *SDDService) scanSDDRecords(ctx context.Context, repoRoot string) (bro
 		}
 
 		var uuid string
-		if filepath.Base(path) == "record.md" {
+		switch kind {
+		case sddfile.KindSpec:
 			rec, uErr := sddfile.UnmarshalSpec(data)
 			if uErr != nil {
 				broken = append(broken, path)
 				continue
 			}
 			uuid = rec.Spec.UUID
-		} else {
+		case sddfile.KindBacklog:
 			rec, uErr := sddfile.UnmarshalBacklog(data)
 			if uErr != nil {
 				broken = append(broken, path)
 				continue
 			}
 			uuid = rec.Item.UUID
+		case sddfile.KindIgnored:
+			continue
 		}
 		if uuid != "" {
 			ok = append(ok, okRecord{path: path, uuid: uuid})
