@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -38,6 +39,7 @@ of this project.`,
 		newSDDExportCmd(),
 		newSDDStatusCmd(),
 		newSDDHooksCmd(),
+		newSDDImportCmd(),
 	)
 	return cmd
 }
@@ -224,6 +226,60 @@ database does not know about.`,
 	return cmd
 }
 
+// newSDDImportCmd returns "mneme sdd import" (SPEC-131 D58): the manual
+// counterpart of "mneme sdd hooks run-import" — same underlying method
+// (ImportSDDFromRepo), but this one EXECUTES by default (no --apply flag:
+// D13 already guarantees the importer never deletes anything, so there is
+// nothing a preview protects here that a dry-run flag would not already
+// cover) and exits 1 when anything was skipped, so a script or a person
+// notices without having to parse the report.
+func newSDDImportCmd() *cobra.Command {
+	var flagDryRun bool
+
+	cmd := &cobra.Command{
+		Use:   "import",
+		Short: "Import this repository's SDD backlog/specs into the local database",
+		Long: `Reads .mneme/sdd/ and creates/updates the local database accordingly —
+the same read path the installed git hooks run automatically after every
+pull/checkout (see "mneme sdd hooks"). Executes by default: this only
+populates the LOCAL database, never publishes anything, and D13 guarantees
+it never deletes a row — pass --dry-run to preview without writing.
+
+Decides by ANCHOR, never by correlative (D50): a record whose correlative
+is already claimed by a different anchor is SKIPPED and reported, never
+overwritten — that collision is detected and reported here, not resolved
+(reconciling it is a separate, later part of this project).
+
+Exits 1 when anything was skipped (a broken file, a missing title, or a
+genuine collision) — 0 otherwise.`,
+		Example: `  mneme sdd import
+  mneme sdd import --dry-run`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			svc, cleanup, err := initSDDService()
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+
+			result, err := svc.ImportSDDFromRepo(cmd.Context(), svc.RepoDir(), !flagDryRun)
+			if err != nil {
+				return fmt.Errorf("sdd import: %w", err)
+			}
+
+			renderSDDImportResult(cmd.OutOrStdout(), result)
+
+			if len(result.Skipped) > 0 {
+				return fmt.Errorf("sdd import: %d record(s) skipped, see above", len(result.Skipped))
+			}
+			return nil
+		},
+	}
+
+	cmd.Flags().BoolVar(&flagDryRun, "dry-run", false, "Preview without writing (default: executes)")
+	return cmd
+}
+
 // renderSDDEnableResult prints EnableSDDRepo's result in plain text —
 // shared by the dry-run and --apply paths, since AC14's four warnings are
 // required in BOTH (they are the honest content of the preview itself).
@@ -274,5 +330,73 @@ func renderSDDStatusResult(out io.Writer, result *service.SDDStatusResult) {
 		for _, p := range result.ForeignPaths {
 			fmt.Fprintf(out, "  - %s\n", p)
 		}
+	}
+	if len(result.Conflicted) > 0 {
+		fmt.Fprintf(out, "%d file(s) claim a correlative another anchor already holds — run `mneme sdd import` "+
+			"for the full report; reconciling is BL-202:\n", len(result.Conflicted))
+		for _, p := range result.Conflicted {
+			fmt.Fprintf(out, "  - %s\n", p)
+		}
+	}
+	if len(result.Incomplete) > 0 {
+		fmt.Fprintf(out, "%d file(s) are missing fields mneme fills in on the next import:\n", len(result.Incomplete))
+		for _, p := range result.Incomplete {
+			fmt.Fprintf(out, "  - %s\n", p)
+		}
+	}
+	if len(result.Divergent) > 0 {
+		fmt.Fprintf(out, "%d file(s) differ from the database — `mneme sdd export` repairs this:\n", len(result.Divergent))
+		for _, p := range result.Divergent {
+			fmt.Fprintf(out, "  - %s\n", p)
+		}
+	}
+	if len(result.FrozenBlocked) > 0 {
+		fmt.Fprintf(out, "%d file(s) bring a status change for a FROZEN spec — skipped, never applied "+
+			"(SPEC-125, no unarchive):\n", len(result.FrozenBlocked))
+		for _, p := range result.FrozenBlocked {
+			fmt.Fprintf(out, "  - %s\n", p)
+		}
+	}
+	if result.Enabled {
+		if result.HooksInstalled {
+			fmt.Fprintln(out, "Git hooks: installed (post-merge, post-checkout import automatically).")
+		} else {
+			fmt.Fprintln(out, "Git hooks: NOT installed on this machine — run `mneme sdd hooks install` "+
+				"to receive imports on every pull/checkout.")
+		}
+	}
+	if result.OnlyInBaseCount > 0 {
+		fmt.Fprintf(out, "%d correlative(s) exist in the database with no file on this branch "+
+			"(normal on a working branch, not an error).\n", result.OnlyInBaseCount)
+	}
+}
+
+// renderSDDImportResult prints ImportSDDFromRepo's report (D43/D54) —
+// every field names what happened, never silently.
+func renderSDDImportResult(out io.Writer, result *service.SDDImportResult) {
+	if result.NoOpReason != "" {
+		fmt.Fprintf(out, "Nothing to import: %s.\n", result.NoOpReason)
+		return
+	}
+	for _, c := range result.Created {
+		fmt.Fprintf(out, "Created: %s\n", c)
+	}
+	for _, u := range result.Updated {
+		fmt.Fprintf(out, "Updated: %s\n", u)
+	}
+	for _, c := range result.Completed {
+		fmt.Fprintf(out, "Completed: %s (%s) — filled: %s\n", c.ID, c.Path, strings.Join(c.Fields, ", "))
+	}
+	for _, s := range result.Skipped {
+		fmt.Fprintf(out, "Skipped: %s (%s) — %s\n", s.ID, s.Path, s.Reason)
+	}
+	if result.OnlyInBaseTotal > 0 {
+		fmt.Fprintf(out, "%d correlative(s) exist only in the local database on this branch:\n", result.OnlyInBaseTotal)
+		for _, id := range result.OnlyInBase {
+			fmt.Fprintf(out, "  - %s\n", id)
+		}
+	}
+	if len(result.Created) == 0 && len(result.Updated) == 0 && len(result.Completed) == 0 && len(result.Skipped) == 0 {
+		fmt.Fprintln(out, "Nothing changed — the database already matches every file on this branch.")
 	}
 }

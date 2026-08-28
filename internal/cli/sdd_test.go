@@ -420,7 +420,7 @@ func TestSDD_ExactlyOneAddCommand(t *testing.T) {
 	if cmd.Use != "sdd" {
 		t.Fatalf("newSDDCmd().Use = %q, want %q", cmd.Use, "sdd")
 	}
-	want := map[string]bool{"enable": true, "disable": true, "export": true, "status": true, "hooks": true}
+	want := map[string]bool{"enable": true, "disable": true, "export": true, "status": true, "hooks": true, "import": true}
 	got := make(map[string]bool)
 	for _, c := range cmd.Commands() {
 		name := strings.Fields(c.Use)[0]

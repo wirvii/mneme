@@ -103,7 +103,9 @@ type SDDExportResult struct {
 	Plan     SDDPlan
 }
 
-// SDDStatusResult is SDDStatus's return value.
+// SDDStatusResult is SDDStatus's return value. Every field beyond
+// RepoRoot/Enabled/Plan/PendingGit is DERIVED at the moment of the call —
+// there is no dedicated state file behind any of them (SPEC-131 D54).
 type SDDStatusResult struct {
 	RepoRoot     string
 	Enabled      bool
@@ -111,6 +113,37 @@ type SDDStatusResult struct {
 	PendingGit   string   // raw `git status --porcelain -- .mneme/sdd` output
 	Broken       []string // files that failed to parse (D22/D28/D37)
 	ForeignPaths []string // files whose anchor the local base does not know (D45)
+
+	// Conflicted names files D50's CASE A-renumbered or CASE C would skip
+	// right now — re-derived by running ImportSDDFromRepo in preview mode
+	// (SPEC-131 D54).
+	Conflicted []string
+
+	// Incomplete names files Missing() reports gaps for — the same closed
+	// vocabulary rewriteCompletedRecord fills on the next import (D53).
+	Incomplete []string
+
+	// Divergent names files whose bytes differ from the canonical
+	// serialization of the row currently in the database — what `mneme sdd
+	// export` repairs.
+	Divergent []string
+
+	// HooksInstalled reports whether EVERY target hook (post-merge,
+	// post-checkout) under repoRoot already carries the SDD marker. A
+	// repository that clones with the marker committed but never ran
+	// `mneme sdd hooks install` imports nothing, silently, without this
+	// signal.
+	HooksInstalled bool
+
+	// OnlyInBaseCount is the total number of correlatives that exist in
+	// the local database but have no file on this branch (D13/D62) —
+	// normal on a working branch, not an error.
+	OnlyInBaseCount int
+
+	// FrozenBlocked names spec files D64 would skip right now: a spec
+	// frozen by SPEC-125 (its originating item archived) whose file brings
+	// a different status than the one recorded locally.
+	FrozenBlocked []string
 }
 
 // EnableSDDRepo previews (default) or applies (apply=true) turning the SDD
@@ -309,10 +342,151 @@ func (svc *SDDService) SDDStatus(ctx context.Context, repoRoot string) (*SDDStat
 		}
 	}
 
+	incomplete, err := scanSDDIncomplete(repoRoot)
+	if err != nil {
+		return nil, fmt.Errorf("service: sdd status: incomplete: %w", err)
+	}
+	divergent, err := svc.scanSDDDivergent(ctx, repoRoot)
+	if err != nil {
+		return nil, fmt.Errorf("service: sdd status: divergent: %w", err)
+	}
+
+	// Conflicted/FrozenBlocked/OnlyInBaseCount are all D50/D64's own
+	// decision, re-derived by running the importer itself in preview mode
+	// (apply=false) — never a second, independently-written copy of that
+	// logic that could disagree with what an actual import would do.
+	var conflicted, frozenBlocked []string
+	dryRun, err := svc.ImportSDDFromRepo(ctx, repoRoot, false)
+	if err != nil {
+		return nil, fmt.Errorf("service: sdd status: preview import: %w", err)
+	}
+	for _, s := range dryRun.Skipped {
+		switch {
+		case s.Reason == "ancla-renumerada-en-otra-maquina", strings.HasPrefix(s.Reason, "correlativo-reclamado-por-dos-elementos"):
+			conflicted = append(conflicted, s.Path)
+		case s.Reason == "spec-congelada":
+			frozenBlocked = append(frozenBlocked, s.Path)
+		}
+	}
 	return &SDDStatusResult{
 		RepoRoot: repoRoot, Enabled: state.Enabled, Plan: plan,
 		PendingGit: pending, Broken: broken, ForeignPaths: foreign,
+		Conflicted: conflicted, Incomplete: incomplete, Divergent: divergent,
+		HooksInstalled: svc.SDDHooksInstalled(repoRoot), OnlyInBaseCount: dryRun.OnlyInBaseTotal,
+		FrozenBlocked: frozenBlocked,
 	}, nil
+}
+
+// scanSDDIncomplete walks every record repoRoot carries and names the ones
+// Missing() reports a gap for — the pure classify+parse half of D54's
+// Incomplete field, needing neither the database nor any decision logic
+// (D53's Missing() is a method on the parsed record alone).
+func scanSDDIncomplete(repoRoot string) ([]string, error) {
+	paths, err := sddfile.ListRecords(sddfile.RootDir(repoRoot))
+	if err != nil {
+		return nil, fmt.Errorf("list records: %w", err)
+	}
+
+	var incomplete []string
+	for _, path := range paths {
+		kind, _, ok := sddfile.ClassifyRecordPath(repoRoot, path)
+		if !ok {
+			continue
+		}
+		data, rErr := sddfile.ReadRecord(path)
+		if rErr != nil {
+			continue // already reported as Broken
+		}
+		switch kind {
+		case sddfile.KindBacklog:
+			rec, uErr := sddfile.UnmarshalBacklog(data)
+			if uErr != nil {
+				continue
+			}
+			if len(rec.Missing()) > 0 {
+				incomplete = append(incomplete, path)
+			}
+		case sddfile.KindSpec:
+			rec, uErr := sddfile.UnmarshalSpec(data)
+			if uErr != nil {
+				continue
+			}
+			if len(rec.Missing()) > 0 {
+				incomplete = append(incomplete, path)
+			}
+		case sddfile.KindIgnored:
+			// unreachable: ClassifyRecordPath never returns ok=true here.
+		}
+	}
+	return incomplete, nil
+}
+
+// scanSDDDivergent walks every record repoRoot carries and names the ones
+// whose on-disk bytes differ from the canonical serialization of the
+// database row AT THE SAME CORRELATIVE — the same thing `mneme sdd export`
+// repairs. A record with no matching local row (not yet imported, or
+// foreign) is silently skipped: that case is already named by Broken/
+// ForeignPaths, and comparing against a row that does not exist would not
+// be a divergence, it would be a different problem.
+func (svc *SDDService) scanSDDDivergent(ctx context.Context, repoRoot string) ([]string, error) {
+	paths, err := sddfile.ListRecords(sddfile.RootDir(repoRoot))
+	if err != nil {
+		return nil, fmt.Errorf("list records: %w", err)
+	}
+
+	var divergent []string
+	for _, path := range paths {
+		kind, id, ok := sddfile.ClassifyRecordPath(repoRoot, path)
+		if !ok {
+			continue
+		}
+		onDisk, rErr := sddfile.ReadRecord(path)
+		if rErr != nil {
+			continue
+		}
+
+		switch kind {
+		case sddfile.KindBacklog:
+			item, gErr := svc.store.GetBacklogItem(ctx, id)
+			if gErr != nil {
+				continue
+			}
+			refs, lErr := svc.store.ListBacklogRefinements(ctx, id)
+			if lErr != nil {
+				continue
+			}
+			canonical, mErr := sddfile.MarshalBacklog(&sddfile.BacklogRecord{Item: item, Refinements: refs})
+			if mErr != nil {
+				continue
+			}
+			if string(canonical) != string(onDisk) {
+				divergent = append(divergent, path)
+			}
+		case sddfile.KindSpec:
+			spec, gErr := svc.store.GetSpec(ctx, id)
+			if gErr != nil {
+				continue
+			}
+			history, hErr := svc.store.GetSpecHistory(ctx, id)
+			if hErr != nil {
+				continue
+			}
+			pushbacks, pErr := svc.store.GetAllPushbacks(ctx, id)
+			if pErr != nil {
+				continue
+			}
+			canonical, mErr := sddfile.MarshalSpec(&sddfile.SpecRecord{Spec: spec, History: history, Pushbacks: pushbacks})
+			if mErr != nil {
+				continue
+			}
+			if string(canonical) != string(onDisk) {
+				divergent = append(divergent, path)
+			}
+		case sddfile.KindIgnored:
+			// unreachable: ClassifyRecordPath never returns ok=true here.
+		}
+	}
+	return divergent, nil
 }
 
 // sddPlan counts how many backlog items and specs THIS project has in the
