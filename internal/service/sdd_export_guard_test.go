@@ -49,62 +49,82 @@ var sddStoreMutators = map[string]bool{
 	"CreatePushback":          true,
 	"ResolvePushback":         true,
 	"InsertLaneAudit":         false, // lane_audits does not travel to the repository until BL-197 (etapa 4)
+
+	// SPEC-131 D49/D52: the importer's own seven write methods
+	// (internal/store/sdd_import.go). None goes through a D33 wrapper —
+	// the importer writes rows READ FROM the file; materializing them
+	// would rewrite the very file the importer just read (D46).
+	"CreateBacklogItemFromRecord": false, // el importador escribe filas leidas DEL archivo; materializarlas reescribiria el archivo que acaba de leer — SPEC-131 D46
+	"UpdateBacklogItemFromRecord": false, // el importador escribe filas leidas DEL archivo; materializarlas reescribiria el archivo que acaba de leer — SPEC-131 D46
+	"MergeBacklogRefinements":     false, // el importador escribe filas leidas DEL archivo; materializarlas reescribiria el archivo que acaba de leer — SPEC-131 D46
+	"CreateSpecFromRecord":        false, // el importador escribe filas leidas DEL archivo; materializarlas reescribiria el archivo que acaba de leer — SPEC-131 D46
+	"UpdateSpecFromRecord":        false, // el importador escribe filas leidas DEL archivo; materializarlas reescribiria el archivo que acaba de leer — SPEC-131 D46
+	"MergeSpecHistory":            false, // el importador escribe filas leidas DEL archivo; materializarlas reescribiria el archivo que acaba de leer — SPEC-131 D46
+	"MergeSpecPushbacks":          false, // el importador escribe filas leidas DEL archivo; materializarlas reescribiria el archivo que acaba de leer — SPEC-131 D46
 }
 
-// sddExportGuardFiles are the two files this guard parses — see the
-// package godoc above for why widening it is a one-line change to this
+// sddExportGuardFiles are the THREE files this guard parses (SPEC-131 P1
+// widens this from two to three, alongside sdd_import.go's arrival) — see
+// the package godoc above for why widening it is a one-line change to this
 // slice, not a rewrite.
-func sddExportGuardFiles(t *testing.T) (sddGo, sddExportGo string) {
+func sddExportGuardFiles(t *testing.T) (sddGo, sddExportGo, sddImportGo string) {
 	t.Helper()
 	_, thisFile, _, ok := runtime.Caller(0)
 	if !ok {
 		t.Fatal("sdd export guard: runtime.Caller(0) failed")
 	}
 	dir := filepath.Dir(thisFile)
-	return filepath.Join(dir, "sdd.go"), filepath.Join(dir, "sdd_export.go")
+	return filepath.Join(dir, "sdd.go"), filepath.Join(dir, "sdd_export.go"), filepath.Join(dir, "sdd_import.go")
 }
 
-// sddStorePath resolves internal/store/sdd.go relative to this test file,
-// so the guard works regardless of the working directory `go test` was
-// invoked from.
-func sddStorePath(t *testing.T) string {
+// sddStorePaths resolves internal/store/sdd.go AND internal/store/sdd_import.go
+// relative to this test file (SPEC-131 P1 — the seven import methods live
+// in a file of their own; parsing only sdd.go would make storeWriteMethods
+// blind to all seven, and every "false" entry above would report as a
+// stale, undeclared-call entry for the wrong reason), so the guard works
+// regardless of the working directory `go test` was invoked from.
+func sddStorePaths(t *testing.T) []string {
 	t.Helper()
 	_, thisFile, _, ok := runtime.Caller(0)
 	if !ok {
 		t.Fatal("sdd export guard: runtime.Caller(0) failed")
 	}
-	// internal/service/sdd_export_guard_test.go -> internal/store/sdd.go
-	return filepath.Join(filepath.Dir(thisFile), "..", "store", "sdd.go")
+	// internal/service/sdd_export_guard_test.go -> internal/store/*.go
+	dir := filepath.Join(filepath.Dir(thisFile), "..", "store")
+	return []string{filepath.Join(dir, "sdd.go"), filepath.Join(dir, "sdd_import.go")}
 }
 
-// storeWriteMethods parses internal/store/sdd.go and returns the set of
-// *SDDStore methods whose body contains a call to ExecContext (on s.db or
-// on a tx) — the deterministic, no-hand-written-list way D33 requires for
-// discovering which store methods "write" (SPEC-130 §4 "El inventario").
+// storeWriteMethods parses internal/store/sdd.go AND sdd_import.go and
+// returns the set of *SDDStore methods whose body contains a call to
+// ExecContext (on s.db or on a tx) — the deterministic, no-hand-written-list
+// way D33 requires for discovering which store methods "write" (SPEC-130 §4
+// "El inventario").
 func storeWriteMethods(t *testing.T) map[string]bool {
 	t.Helper()
 	fset := token.NewFileSet()
-	f, err := parser.ParseFile(fset, sddStorePath(t), nil, 0)
-	if err != nil {
-		t.Fatalf("sdd export guard: parse store/sdd.go: %v", err)
-	}
 
 	writes := make(map[string]bool)
-	for _, decl := range f.Decls {
-		fn, ok := decl.(*ast.FuncDecl)
-		if !ok || fn.Recv == nil || len(fn.Recv.List) != 1 {
-			continue
+	for _, path := range sddStorePaths(t) {
+		f, err := parser.ParseFile(fset, path, nil, 0)
+		if err != nil {
+			t.Fatalf("sdd export guard: parse %s: %v", path, err)
 		}
-		star, ok := fn.Recv.List[0].Type.(*ast.StarExpr)
-		if !ok {
-			continue
-		}
-		ident, ok := star.X.(*ast.Ident)
-		if !ok || ident.Name != "SDDStore" {
-			continue
-		}
-		if funcCallsSelector(fn, "ExecContext") {
-			writes[fn.Name.Name] = true
+		for _, decl := range f.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Recv == nil || len(fn.Recv.List) != 1 {
+				continue
+			}
+			star, ok := fn.Recv.List[0].Type.(*ast.StarExpr)
+			if !ok {
+				continue
+			}
+			ident, ok := star.X.(*ast.Ident)
+			if !ok || ident.Name != "SDDStore" {
+				continue
+			}
+			if funcCallsSelector(fn, "ExecContext") {
+				writes[fn.Name.Name] = true
+			}
 		}
 	}
 	return writes
@@ -151,16 +171,18 @@ func storeCallsInFile(t *testing.T, path string) map[string]bool {
 	return calls
 }
 
-// TestSDDStoreMutators_InventoryIsExact is AC9's first comprovación: the
-// set of store.SDDStore WRITE methods that the SDD engine (sdd.go UNION
-// sdd_export.go) invokes via "svc.store.<Method>(" must be IDENTICAL, in
-// both directions, to sddStoreMutators' ten keys.
+// TestSDDStoreMutators_InventoryIsExact is AC9/AC14's first comprovación:
+// the set of store.SDDStore WRITE methods that the SDD engine (sdd.go
+// UNION sdd_export.go UNION sdd_import.go, SPEC-131 P1) invokes via
+// "svc.store.<Method>(" must be IDENTICAL, in both directions, to
+// sddStoreMutators' seventeen keys.
 func TestSDDStoreMutators_InventoryIsExact(t *testing.T) {
 	writeMethods := storeWriteMethods(t)
 
-	sddGo, sddExportGo := sddExportGuardFiles(t)
+	sddGo, sddExportGo, sddImportGo := sddExportGuardFiles(t)
 	calledInSddGo := storeCallsInFile(t, sddGo)
 	calledInExport := storeCallsInFile(t, sddExportGo)
+	calledInImport := storeCallsInFile(t, sddImportGo)
 
 	actual := make(map[string]bool)
 	for name := range calledInSddGo {
@@ -169,6 +191,11 @@ func TestSDDStoreMutators_InventoryIsExact(t *testing.T) {
 		}
 	}
 	for name := range calledInExport {
+		if writeMethods[name] {
+			actual[name] = true
+		}
+	}
+	for name := range calledInImport {
 		if writeMethods[name] {
 			actual[name] = true
 		}
@@ -182,19 +209,22 @@ func TestSDDStoreMutators_InventoryIsExact(t *testing.T) {
 	}
 	for name := range sddStoreMutators {
 		if !actual[name] {
-			t.Errorf("sddStoreMutators declares %s, but no svc.store.%s( call was found in sdd.go or "+
-				"sdd_export.go — remove the stale entry (SPEC-130 D33)", name, name)
+			t.Errorf("sddStoreMutators declares %s, but no svc.store.%s( call was found in sdd.go, "+
+				"sdd_export.go or sdd_import.go — remove the stale entry (SPEC-130 D33)", name, name)
 		}
 	}
 }
 
 // TestSDDStoreMutators_AllGoThroughWrappers is AC9's second comprobación:
 // every entry declared `true` in sddStoreMutators must NOT be called
-// directly from sdd.go — it must live only inside its wrapper in
-// sdd_export.go.
+// directly from sdd.go or sdd_import.go — it must live only inside its
+// wrapper in sdd_export.go. The importer's own seven methods are all
+// declared `false` (D46/D52), so this loop skips them the same way it
+// always skipped InsertLaneAudit.
 func TestSDDStoreMutators_AllGoThroughWrappers(t *testing.T) {
-	sddGo, _ := sddExportGuardFiles(t)
+	sddGo, _, sddImportGo := sddExportGuardFiles(t)
 	calledInSddGo := storeCallsInFile(t, sddGo)
+	calledInImport := storeCallsInFile(t, sddImportGo)
 
 	for name, mustWrap := range sddStoreMutators {
 		if !mustWrap {
@@ -203,6 +233,10 @@ func TestSDDStoreMutators_AllGoThroughWrappers(t *testing.T) {
 		if calledInSddGo[name] {
 			t.Errorf("sdd.go calls store.%s(...) directly — it must go through its wrapper in "+
 				"sdd_export.go instead (SPEC-130 D33)", name)
+		}
+		if calledInImport[name] {
+			t.Errorf("sdd_import.go calls store.%s(...) directly — a materializing write method must "+
+				"go through its wrapper in sdd_export.go instead (SPEC-130 D33)", name)
 		}
 	}
 }
@@ -224,7 +258,7 @@ func wrapperNameFor(storeMethod string) string {
 // *SDDService method declared there, keyed by name.
 func sddExportMethods(t *testing.T) map[string]*ast.FuncDecl {
 	t.Helper()
-	_, sddExportGo := sddExportGuardFiles(t)
+	_, sddExportGo, _ := sddExportGuardFiles(t)
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(fset, sddExportGo, nil, 0)
 	if err != nil {
@@ -294,3 +328,19 @@ func TestSDDWrappers_AllMaterialize(t *testing.T) {
 //     SIGUE llamandose directo desde sdd.go (LaneAudit) y ahora el
 //     inventario exige que no lo haga — es la prueba de que la exencion es
 //     real y no un hueco silencioso.
+//
+// Mutaciones exigidas por SPEC-131 AC14 (P1: las tres listas del
+// inventario, ejecutadas y revertidas byte a byte durante la
+// implementacion; resultado real en changes.md):
+//  6. Llamar a `svc.store.UpdateSpecStatus` directo desde sdd_import.go
+//     pone roja TestSDDStoreMutators_AllGoThroughWrappers, nombrando
+//     "sdd_import.go calls store.UpdateSpecStatus(...) directly" — "no pasa
+//     por su envoltorio".
+//  7. Borrar la entrada "CreateSpecFromRecord" de sddStoreMutators pone
+//     roja TestSDDStoreMutators_InventoryIsExact por "llamada no
+//     declarada" — sdd_import.go sigue llamandola.
+//  8. Poner "MergeSpecHistory": true pone roja
+//     TestSDDStoreMutators_AllGoThroughWrappers, porque sdd_import.go la
+//     llama DIRECTO y el inventario pasaria a exigir que no lo haga — la
+//     prueba de que la exencion es real y no un hueco silencioso (la
+//     leccion C1 de SPEC-130, aplicada aqui a las siete entradas nuevas).

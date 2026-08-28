@@ -80,6 +80,15 @@ type TeamMemoryImportResult struct {
 //
 // Recoverable errors (skip file, continue): invalid frontmatter, a missing
 // or invalid id, or a service validation failure.
+//
+// This importer DOES compare updated_at (below) to decide whether an
+// incoming file wins — the opposite of SDDService.ImportSDDFromRepo
+// (SPEC-131 D59), which abandons that comparison entirely. The two
+// mechanisms are not inconsistent: a memory's local row can carry edits
+// that never passed through a file at all, so its timestamp is the only
+// available arbiter here; every SDD write, by contrast, passes through a
+// file first, so a genuinely conflicting local edit would already have
+// produced a merge conflict in git before ImportSDDFromRepo ever runs.
 func (svc *MemoryService) ImportFromShared(ctx context.Context, repoRoot string) (*TeamMemoryImportResult, error) {
 	vaultRoot := filepath.Join(repoRoot, ".mneme", sharedVaultRelDir)
 
