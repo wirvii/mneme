@@ -7,15 +7,6 @@
 // definition of "which mutations travel to the repository" this package
 // has.
 //
-// In THIS commit the two materializers are stubs that return immediately:
-// this is a pure refactor of the 18 call sites named in spec.md V6, with no
-// behavioural change yet (nothing writes to disk). The real
-// materialization lands in the next commit, isolated on purpose — see
-// plan.md §6 "El que más romperá algo ajeno: commit 4" for why keeping this
-// commit inert makes it revertible on its own if something about moving 19
-// call sites turns out wrong, without dragging the format or the CLI down
-// with it.
-//
 // InsertLaneAudit (sdd.go) is the SDD store's 19th write call and
 // deliberately has NO wrapper here: lane_audits does not travel to the
 // repository until BL-197 (etapa 4) — see sdd_export_guard_test.go's
@@ -25,8 +16,10 @@ package service
 
 import (
 	"context"
+	"log/slog"
 
 	"github.com/wirvii/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/sddfile"
 )
 
 // --- backlog wrappers ---
@@ -133,17 +126,92 @@ func (svc *SDDService) resolvePushback(ctx context.Context, pushbackID, resoluti
 	return nil
 }
 
-// --- materializers (stubs in this commit — see package godoc above) ---
+// --- materializers ---
 
-// materializeBacklogItem will, from the next commit onward, reread itemID's
-// complete aggregate (item + refinements) from the store and write its
-// on-disk record (internal/sddfile). In THIS commit it is an inert stub: no
-// behaviour, no disk access, so this commit's 19-site refactor can be
-// reviewed and reverted on its own (plan.md §6).
-func (svc *SDDService) materializeBacklogItem(_ context.Context, _ string) {
+// materializeBacklogItem rereads itemID's COMPLETE aggregate (item +
+// refinements, D14) from the store and writes its on-disk record
+// (internal/sddfile.BacklogPath), when the SDD mechanism is active for
+// svc.repoDir (D29). Best-effort (D33/§9.2): any failure — mechanism off,
+// reload error, marshal error (D27(b)'s round-trip refusal), write error —
+// is logged via slog and NEVER propagated to the caller. The same
+// criterion materializeTeamMemory already established for this package: a
+// caller's BacklogAdd/BacklogRefine/... must never fail because a file on
+// disk could not be written.
+//
+// svc.repoDir is read here rather than threaded as a parameter through
+// every one of the nine wrappers (D38 is still honoured: repoDir is a
+// parameter — it is just SDDService's OWN constructor parameter,
+// svc.WithRepoDir, set once by the frontend at startup, the same
+// precedent ensureCertified and LaneAudit already use for the identical
+// field). An empty svc.repoDir means the mechanism is off — never a
+// fallback to os.Getwd().
+func (svc *SDDService) materializeBacklogItem(ctx context.Context, itemID string) {
+	repoRoot := svc.repoDir
+	if repoRoot == "" {
+		return
+	}
+	if !ResolveSDDState(repoRoot).Enabled {
+		return
+	}
+
+	item, err := svc.store.GetBacklogItem(ctx, itemID)
+	if err != nil {
+		slog.ErrorContext(ctx, "sdd_materialize_error", "kind", "backlog", "id", itemID, "step", "reload", "error", err)
+		return
+	}
+	refinements, err := svc.store.ListBacklogRefinements(ctx, itemID)
+	if err != nil {
+		slog.ErrorContext(ctx, "sdd_materialize_error", "kind", "backlog", "id", itemID, "step", "refinements", "error", err)
+		return
+	}
+
+	data, err := sddfile.MarshalBacklog(&sddfile.BacklogRecord{Item: item, Refinements: refinements})
+	if err != nil {
+		slog.ErrorContext(ctx, "sdd_materialize_error", "kind", "backlog", "id", itemID, "step", "marshal", "error", err)
+		return
+	}
+
+	if err := sddfile.WriteRecord(sddfile.BacklogPath(repoRoot, itemID), data); err != nil {
+		slog.ErrorContext(ctx, "sdd_materialize_error", "kind", "backlog", "id", itemID, "step", "write", "error", err)
+	}
 }
 
-// materializeSpec is materializeBacklogItem's sibling for specs (spec +
-// history + pushbacks). Same inert-stub posture in this commit.
-func (svc *SDDService) materializeSpec(_ context.Context, _ string) {
+// materializeSpec is materializeBacklogItem's sibling for specs: rereads
+// specID's complete aggregate (spec + history + pushbacks, D14) and writes
+// sddfile.SpecRecordPath. Same active-mechanism check, same best-effort
+// posture.
+func (svc *SDDService) materializeSpec(ctx context.Context, specID string) {
+	repoRoot := svc.repoDir
+	if repoRoot == "" {
+		return
+	}
+	if !ResolveSDDState(repoRoot).Enabled {
+		return
+	}
+
+	spec, err := svc.store.GetSpec(ctx, specID)
+	if err != nil {
+		slog.ErrorContext(ctx, "sdd_materialize_error", "kind", "spec", "id", specID, "step", "reload", "error", err)
+		return
+	}
+	history, err := svc.store.GetSpecHistory(ctx, specID)
+	if err != nil {
+		slog.ErrorContext(ctx, "sdd_materialize_error", "kind", "spec", "id", specID, "step", "history", "error", err)
+		return
+	}
+	pushbacks, err := svc.store.GetAllPushbacks(ctx, specID)
+	if err != nil {
+		slog.ErrorContext(ctx, "sdd_materialize_error", "kind", "spec", "id", specID, "step", "pushbacks", "error", err)
+		return
+	}
+
+	data, err := sddfile.MarshalSpec(&sddfile.SpecRecord{Spec: spec, History: history, Pushbacks: pushbacks})
+	if err != nil {
+		slog.ErrorContext(ctx, "sdd_materialize_error", "kind", "spec", "id", specID, "step", "marshal", "error", err)
+		return
+	}
+
+	if err := sddfile.WriteRecord(sddfile.SpecRecordPath(repoRoot, specID), data); err != nil {
+		slog.ErrorContext(ctx, "sdd_materialize_error", "kind", "spec", "id", specID, "step", "write", "error", err)
+	}
 }
