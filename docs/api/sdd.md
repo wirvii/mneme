@@ -7,6 +7,16 @@
 [docs/quality.md](../quality.md) (the quality constitution, certificates,
 and the `spec_advance` block, SPEC-115). Index: [docs/API.md](../API.md).
 
+**SPEC-130 §2a adds no MCP tool here.** The SDD git-native mechanism (the
+same backlog items and specs, ALSO written as reviewable Markdown files
+under `.mneme/sdd/` in the repository — see
+[docs/sdd-git-native.md](../sdd-git-native.md)) is CLI-only in this part:
+`mneme sdd enable|disable|export|status`. The tool count above stays exactly
+26 (and the project-wide MCP surface stays 85) — `sdd_status`/`sdd_import`
+arrive with BL-201, and `sdd_enable`/`sdd_disable` are never planned to
+become tools at all (a `--apply` an agent could call unattended would defeat
+the human-confirmation gate that publishing a backlog to git requires).
+
 **Archiving a backlog item can freeze its spec (SPEC-125):** `backlog_archive`
 requires a reason and is refused when the item is already archived, or when
 its linked spec already reached `done`. When the linked spec is still alive,

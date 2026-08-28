@@ -130,6 +130,11 @@ func topicKeyToRelPath(key string) string {
 // memory can conflict, and git resolves that the normal way. Unlike
 // noTopicPath, the full UUID is used (not truncated) since collisions here
 // would mean two distinct memories sharing an ID, which cannot happen.
+//
+// internal/sddfile.BacklogPath/SpecRecordPath (SPEC-130 D25) name their
+// files by the human-readable correlative instead — the OPPOSITE rule, on
+// purpose: there, two machines colliding on the same BL-050 is exactly what
+// must become visible in git, not what must be avoided.
 func UUIDPath(id string) string {
 	return filepath.Join("notes", id+".md")
 }

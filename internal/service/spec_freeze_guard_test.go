@@ -301,12 +301,22 @@ func TestSpecList_NoPerSpecBacklogQuery(t *testing.T) {
 }
 
 // mutatorFunctionNames returns the sorted names of every *SDDService method
-// in sdd.go whose body calls UpdateSpecStatus — the ACTUAL set the file
+// in sdd.go whose body calls updateSpecStatus — the ACTUAL set the file
 // contains, independent of specStatusMutators.
+//
+// SPEC-130 §2a D33 note: this looks for the lower-case svc.updateSpecStatus
+// wrapper, not store.SDDStore's UpdateSpecStatus directly. Since that
+// spec's commit 4, every status-mutating verb in sdd.go calls the wrapper
+// (which itself calls the store and then materializes the spec's on-disk
+// record) instead of the store directly — sdd_export_guard_test.go's own
+// TestSDDStoreMutators_AllGoThroughWrappers is what verifies the direct
+// store call is gone from THIS file. funcCallsSelector still matches by
+// selector name alone regardless of receiver, so the substitution here is
+// exactly that: same detection technique, new target name.
 func mutatorFunctionNames(methods map[string]*ast.FuncDecl) []string {
 	var names []string
 	for name, fn := range methods {
-		if funcCallsSelector(fn, "UpdateSpecStatus") {
+		if funcCallsSelector(fn, "updateSpecStatus") {
 			names = append(names, name)
 		}
 	}

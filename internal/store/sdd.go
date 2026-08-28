@@ -118,7 +118,7 @@ const backlogListWhereStatus = backlogListWhere + ` AND status = ?`
 const backlogSelectColumns = `
 	SELECT b.id, b.title, b.description, b.status, b.priority, b.project,
 	       COALESCE(b.spec_id, ''), b.archive_reason, b.position, b.lane, b.scope,
-	       b.created_at, b.updated_at, COALESCE(r.n, 0), b.uuid`
+	       b.created_at, b.updated_at, COALESCE(r.n, 0), b.uuid, b.previous_ids`
 
 const backlogSelectFrom = `
 	FROM backlog_items b
@@ -150,7 +150,7 @@ const specListWhereStatus = specListWhere + ` AND status = ?`
 const specListSelect = `
 	SELECT id, title, status, project, COALESCE(backlog_id, ''),
 	       lane, scope, COALESCE(base_sha, ''), assigned_agents, files_changed,
-	       created_at, updated_at, uuid
+	       created_at, updated_at, uuid, previous_ids
 	FROM specs`
 
 const specCountSelect = `SELECT COUNT(*) FROM specs`
@@ -557,7 +557,7 @@ func (s *SDDStore) CreateSpec(ctx context.Context, spec *model.Spec) error {
 func (s *SDDStore) GetSpec(ctx context.Context, id string) (*model.Spec, error) {
 	const q = `
 		SELECT id, title, status, project, COALESCE(backlog_id, ''),
-		       lane, scope, COALESCE(base_sha, ''), assigned_agents, files_changed, created_at, updated_at, uuid
+		       lane, scope, COALESCE(base_sha, ''), assigned_agents, files_changed, created_at, updated_at, uuid, previous_ids
 		FROM specs WHERE id = ?`
 
 	row := s.db.QueryRowContext(ctx, q, id)
@@ -802,11 +802,21 @@ func (s *SDDStore) LatestLaneAudit(ctx context.Context, specID string) (*model.L
 	return rec, nil
 }
 
-// GetSpecHistory returns all history entries for a spec, ordered by timestamp ascending.
+// GetSpecHistory returns all history entries for a spec, ordered by
+// timestamp ascending, with `, id ASC` as a deterministic tie-break
+// (SPEC-130 D36/C2): `at` is text formatted with time.RFC3339Nano, which is
+// NOT lexicographically chronological (Format trims trailing zeros from the
+// fractional second — the same defect SPEC-110 D21 found), so two rows with
+// an identical `at` string need a second key or their relative order is a
+// coin flip. sddfile's write-through (SPEC-130 §9.2) needs the file to be
+// byte-stable for the same DB state, or every re-export would produce a
+// spurious diff. `id` (a UUIDv7, monotonic by insertion) is exactly that
+// second key — this mirrors backlogListOrder's own rowid tie-break above,
+// substituting `id` because spec_history has no rowid exposed here.
 func (s *SDDStore) GetSpecHistory(ctx context.Context, specID string) ([]*model.SpecHistory, error) {
 	const q = `
 		SELECT id, spec_id, from_status, to_status, by, reason, at
-		FROM spec_history WHERE spec_id = ? ORDER BY at ASC`
+		FROM spec_history WHERE spec_id = ? ORDER BY at ASC, id ASC`
 
 	rows, err := s.db.QueryContext(ctx, q, specID)
 	if err != nil {
@@ -874,9 +884,15 @@ func (s *SDDStore) SpecCounts(ctx context.Context, project string) (map[model.Sp
 // RecentlyCompletedSpecs returns specs with status "done" ordered by
 // updated_at descending, limited to n results.
 func (s *SDDStore) RecentlyCompletedSpecs(ctx context.Context, project string, n int) ([]*model.Spec, error) {
+	// previous_ids is selected here too, even though it is not one of the
+	// "three read projections" the spec names (backlogSelectColumns,
+	// specListSelect, GetSpec's inline query): this query feeds the SAME
+	// shared scanner, collectSpecs, so its column list must match whatever
+	// that scanner expects or every row here would fail to scan (SPEC-130
+	// implementation correction — noted in changes.md).
 	const q = `
 		SELECT id, title, status, project, COALESCE(backlog_id, ''),
-		       lane, scope, COALESCE(base_sha, ''), assigned_agents, files_changed, created_at, updated_at, uuid
+		       lane, scope, COALESCE(base_sha, ''), assigned_agents, files_changed, created_at, updated_at, uuid, previous_ids
 		FROM specs WHERE project = ? AND status = 'done'
 		ORDER BY updated_at DESC LIMIT ?`
 
@@ -1066,12 +1082,20 @@ func (s *SDDStore) GetUnresolvedPushbacks(ctx context.Context, specID string) ([
 	return s.queryPushbacks(ctx, q, specID)
 }
 
-// GetAllPushbacks returns all pushbacks for a spec (resolved and unresolved),
-// ordered by created_at ascending.
+// GetAllPushbacks returns all pushbacks for a spec (resolved and
+// unresolved), ordered by created_at ascending, with `, id ASC` as a
+// deterministic tie-break — same reasoning as GetSpecHistory above
+// (SPEC-130 D36/C2): this is the query sddfile's write-through reads for
+// the archived record, and it needs a byte-stable order.
+//
+// GetUnresolvedPushbacks, below, deliberately does NOT gain this tie-break:
+// SpecResolve uses it to pick the OLDEST unresolved pushback, and adding a
+// second sort key would change WHICH pushback wins a created_at tie — a
+// visible behaviour change outside this spec's scope (SPEC-130 C2).
 func (s *SDDStore) GetAllPushbacks(ctx context.Context, specID string) ([]*model.SpecPushback, error) {
 	const q = `
 		SELECT id, spec_id, from_agent, questions, resolved, resolution, created_at, resolved_at
-		FROM spec_pushbacks WHERE spec_id = ? ORDER BY created_at ASC`
+		FROM spec_pushbacks WHERE spec_id = ? ORDER BY created_at ASC, id ASC`
 	return s.queryPushbacks(ctx, q, specID)
 }
 
@@ -1145,16 +1169,17 @@ func (s *SDDStore) queryPushbacks(ctx context.Context, q, specID string) ([]*mod
 // scanBacklogItem scans a single row into a BacklogItem.
 // The SELECT must include columns in this order: id, title, description,
 // status, priority, project, spec_id, archive_reason, position, lane, scope,
-// created_at, updated_at, refinement_count, uuid (backlogSelectColumns).
+// created_at, updated_at, refinement_count, uuid, previous_ids
+// (backlogSelectColumns).
 func scanBacklogItem(row *sql.Row) (*model.BacklogItem, error) {
 	item := &model.BacklogItem{}
-	var createdStr, updatedStr string
+	var createdStr, updatedStr, previousIDsRaw string
 	err := row.Scan(
 		&item.ID, &item.Title, &item.Description,
 		(*string)(&item.Status), (*string)(&item.Priority),
 		&item.Project, &item.SpecID, &item.ArchiveReason,
 		&item.Position, (*string)(&item.Lane), &item.Scope,
-		&createdStr, &updatedStr, &item.RefinementCount, &item.UUID,
+		&createdStr, &updatedStr, &item.RefinementCount, &item.UUID, &previousIDsRaw,
 	)
 	if err != nil {
 		return nil, err
@@ -1168,6 +1193,7 @@ func scanBacklogItem(row *sql.Row) (*model.BacklogItem, error) {
 	if parseErr != nil {
 		return nil, fmt.Errorf("parse updated_at: %w", parseErr)
 	}
+	item.PreviousIDs = unmarshalPreviousIDs(previousIDsRaw)
 	return item, nil
 }
 
@@ -1176,13 +1202,13 @@ func collectBacklogItems(rows *sql.Rows) ([]*model.BacklogItem, error) {
 	var items []*model.BacklogItem
 	for rows.Next() {
 		item := &model.BacklogItem{}
-		var createdStr, updatedStr string
+		var createdStr, updatedStr, previousIDsRaw string
 		if err := rows.Scan(
 			&item.ID, &item.Title, &item.Description,
 			(*string)(&item.Status), (*string)(&item.Priority),
 			&item.Project, &item.SpecID, &item.ArchiveReason,
 			&item.Position, (*string)(&item.Lane), &item.Scope,
-			&createdStr, &updatedStr, &item.RefinementCount, &item.UUID,
+			&createdStr, &updatedStr, &item.RefinementCount, &item.UUID, &previousIDsRaw,
 		); err != nil {
 			return nil, fmt.Errorf("scan backlog item: %w", err)
 		}
@@ -1195,6 +1221,7 @@ func collectBacklogItems(rows *sql.Rows) ([]*model.BacklogItem, error) {
 		if err != nil {
 			return nil, fmt.Errorf("parse updated_at: %w", err)
 		}
+		item.PreviousIDs = unmarshalPreviousIDs(previousIDsRaw)
 		items = append(items, item)
 	}
 	return items, rows.Err()
@@ -1203,17 +1230,17 @@ func collectBacklogItems(rows *sql.Rows) ([]*model.BacklogItem, error) {
 // scanSpec scans a single row into a Spec.
 // The SELECT must include columns in this order: id, title, status, project,
 // backlog_id, lane, scope, base_sha, assigned_agents, files_changed,
-// created_at, updated_at, uuid.
+// created_at, updated_at, uuid, previous_ids.
 func scanSpec(row *sql.Row) (*model.Spec, error) {
 	spec := &model.Spec{}
-	var createdStr, updatedStr string
+	var createdStr, updatedStr, previousIDsRaw string
 	var agentsJSON, filesJSON string
 	err := row.Scan(
 		&spec.ID, &spec.Title, (*string)(&spec.Status),
 		&spec.Project, &spec.BacklogID,
 		(*string)(&spec.Lane), &spec.Scope, &spec.BaseSHA,
 		&agentsJSON, &filesJSON,
-		&createdStr, &updatedStr, &spec.UUID,
+		&createdStr, &updatedStr, &spec.UUID, &previousIDsRaw,
 	)
 	if err != nil {
 		return nil, err
@@ -1233,6 +1260,7 @@ func scanSpec(row *sql.Row) (*model.Spec, error) {
 	if parseErr != nil {
 		return nil, fmt.Errorf("parse updated_at: %w", parseErr)
 	}
+	spec.PreviousIDs = unmarshalPreviousIDs(previousIDsRaw)
 	return spec, nil
 }
 
@@ -1241,14 +1269,14 @@ func collectSpecs(rows *sql.Rows) ([]*model.Spec, error) {
 	var specs []*model.Spec
 	for rows.Next() {
 		spec := &model.Spec{}
-		var createdStr, updatedStr string
+		var createdStr, updatedStr, previousIDsRaw string
 		var agentsJSON, filesJSON string
 		if err := rows.Scan(
 			&spec.ID, &spec.Title, (*string)(&spec.Status),
 			&spec.Project, &spec.BacklogID,
 			(*string)(&spec.Lane), &spec.Scope, &spec.BaseSHA,
 			&agentsJSON, &filesJSON,
-			&createdStr, &updatedStr, &spec.UUID,
+			&createdStr, &updatedStr, &spec.UUID, &previousIDsRaw,
 		); err != nil {
 			return nil, fmt.Errorf("scan spec: %w", err)
 		}
@@ -1267,9 +1295,44 @@ func collectSpecs(rows *sql.Rows) ([]*model.Spec, error) {
 		if err != nil {
 			return nil, fmt.Errorf("parse updated_at: %w", err)
 		}
+		spec.PreviousIDs = unmarshalPreviousIDs(previousIDsRaw)
 		specs = append(specs, spec)
 	}
 	return specs, rows.Err()
+}
+
+// unmarshalPreviousIDs parses the previous_ids column (SPEC-130 D32) into
+// PreviousID values. The column defaults to an empty string (migration
+// 020), not "[]" like assigned_agents/files_changed — an empty string
+// reads as an empty list without attempting to JSON-decode it. Any entry
+// that fails to parse (model.ParsePreviousID) is silently skipped, mirroring
+// vault.ParseSDDRefLines' tolerance for a hand-edited or malformed line:
+// this column is inert in §2a (nothing writes to it yet), so a parse
+// failure here can only come from manual tampering, never from mneme's own
+// writer.
+func unmarshalPreviousIDs(raw string) []model.PreviousID {
+	if raw == "" {
+		return nil
+	}
+	var lines []string
+	if err := json.Unmarshal([]byte(raw), &lines); err != nil {
+		return nil
+	}
+	if len(lines) == 0 {
+		return nil
+	}
+	out := make([]model.PreviousID, 0, len(lines))
+	for _, line := range lines {
+		p, ok := model.ParsePreviousID(line)
+		if !ok {
+			continue
+		}
+		out = append(out, p)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // marshalStringSlice serialises a string slice to JSON. Returns "[]" for nil

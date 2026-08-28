@@ -138,7 +138,7 @@ func (svc *SDDService) BacklogAdd(ctx context.Context, req model.BacklogAddReque
 		Scope:       req.Scope,
 	}
 
-	if err := svc.store.CreateBacklogItem(ctx, item); err != nil {
+	if err := svc.createBacklogItem(ctx, item); err != nil {
 		return nil, fmt.Errorf("service: backlog add: %w", err)
 	}
 	return item, nil
@@ -240,7 +240,7 @@ func (svc *SDDService) BacklogRefine(ctx context.Context, req model.BacklogRefin
 			req.ID, item.Status, model.ErrBacklogNotRefinable)
 	}
 
-	if _, err := svc.store.AppendBacklogRefinement(
+	if _, err := svc.appendBacklogRefinement(
 		ctx, req.ID, item.Status, model.BacklogStatusRefined, req.Refinement, req.By,
 	); err != nil {
 		return nil, fmt.Errorf("service: backlog refine: append: %w", err)
@@ -280,7 +280,7 @@ func (svc *SDDService) BacklogPromote(ctx context.Context, id string) (*model.Sp
 
 	item.Status = model.BacklogStatusPromoted
 	item.SpecID = spec.ID
-	if err := svc.store.UpdateBacklogItem(ctx, item); err != nil {
+	if err := svc.updateBacklogItem(ctx, item); err != nil {
 		return nil, fmt.Errorf("service: backlog promote: update backlog item: %w", err)
 	}
 
@@ -339,7 +339,7 @@ func (svc *SDDService) BacklogArchive(ctx context.Context, req model.BacklogArch
 
 	item.Status = model.BacklogStatusArchived
 	item.ArchiveReason = req.Reason
-	if err := svc.store.UpdateBacklogItem(ctx, item); err != nil {
+	if err := svc.updateBacklogItem(ctx, item); err != nil {
 		return model.BacklogArchiveResult{}, fmt.Errorf("service: backlog archive: update: %w", err)
 	}
 
@@ -471,7 +471,7 @@ func (svc *SDDService) SpecNew(ctx context.Context, req model.SpecNewRequest) (*
 		Scope:     req.Scope,
 	}
 
-	if err := svc.store.CreateSpec(ctx, spec); err != nil {
+	if err := svc.createSpec(ctx, spec); err != nil {
 		return nil, fmt.Errorf("service: spec new: create: %w", err)
 	}
 
@@ -524,7 +524,7 @@ func (svc *SDDService) SpecAdvance(ctx context.Context, req model.SpecAdvanceReq
 		return nil, fmt.Errorf("service: spec advance: %w", err)
 	}
 
-	if err := svc.store.UpdateSpecStatus(ctx, spec.ID, spec.Status, nextStatus, req.By, req.Reason); err != nil {
+	if err := svc.updateSpecStatus(ctx, spec.ID, spec.Status, nextStatus, req.By, req.Reason); err != nil {
 		return nil, fmt.Errorf("service: spec advance: update status: %w", err)
 	}
 
@@ -591,7 +591,7 @@ func (svc *SDDService) captureBaseSHA(ctx context.Context, spec *model.Spec) {
 		return
 	}
 
-	if err := svc.store.UpdateSpecBaseSHA(ctx, spec.ID, sha); err != nil {
+	if err := svc.updateSpecBaseSHA(ctx, spec.ID, sha); err != nil {
 		log.Printf("service: capture base sha: store update for %s: %v", spec.ID, err)
 	}
 }
@@ -862,12 +862,12 @@ func (svc *SDDService) SpecPushback(ctx context.Context, req model.SpecPushbackR
 		FromAgent: req.FromAgent,
 		Questions: req.Questions,
 	}
-	if err := svc.store.CreatePushback(ctx, pb); err != nil {
+	if err := svc.createPushback(ctx, pb); err != nil {
 		return nil, fmt.Errorf("service: spec pushback: create pushback: %w", err)
 	}
 
 	reason := fmt.Sprintf("pushback from %s: %d question(s)", req.FromAgent, len(req.Questions))
-	if err := svc.store.UpdateSpecStatus(ctx, spec.ID, spec.Status, model.SpecStatusNeedsGrill, req.FromAgent, reason); err != nil {
+	if err := svc.updateSpecStatus(ctx, spec.ID, spec.Status, model.SpecStatusNeedsGrill, req.FromAgent, reason); err != nil {
 		return nil, fmt.Errorf("service: spec pushback: update status: %w", err)
 	}
 
@@ -908,7 +908,7 @@ func (svc *SDDService) SpecReject(ctx context.Context, req model.SpecRejectReque
 	}
 
 	reason := "rejected: " + req.Reason
-	if err := svc.store.UpdateSpecStatus(ctx, spec.ID,
+	if err := svc.updateSpecStatus(ctx, spec.ID,
 		spec.Status, model.SpecStatusImplementing,
 		req.By, reason); err != nil {
 		return nil, fmt.Errorf("service: spec reject: update status: %w", err)
@@ -1163,7 +1163,7 @@ func (svc *SDDService) SpecResolve(ctx context.Context, req model.SpecResolveReq
 
 	// Resolve the oldest unresolved pushback (first in ascending created_at order).
 	oldest := pushbacks[0]
-	if err := svc.store.ResolvePushback(ctx, oldest.ID, req.Resolution); err != nil {
+	if err := svc.resolvePushback(ctx, oldest.ID, req.Resolution, spec.ID); err != nil {
 		return nil, fmt.Errorf("service: spec resolve: resolve pushback: %w", err)
 	}
 
@@ -1174,7 +1174,7 @@ func (svc *SDDService) SpecResolve(ctx context.Context, req model.SpecResolveReq
 	}
 
 	reason := fmt.Sprintf("pushback resolved: %s", req.Resolution)
-	if err := svc.store.UpdateSpecStatus(ctx, spec.ID, spec.Status, resolveTarget, "system", reason); err != nil {
+	if err := svc.updateSpecStatus(ctx, spec.ID, spec.Status, resolveTarget, "system", reason); err != nil {
 		return nil, fmt.Errorf("service: spec resolve: update status: %w", err)
 	}
 
@@ -1380,7 +1380,7 @@ func (svc *SDDService) SpecQuick(ctx context.Context, req model.SpecQuickRequest
 	}
 
 	// Transition 1: draft → rationale.
-	if err := svc.store.UpdateSpecStatus(ctx, spec.ID,
+	if err := svc.updateSpecStatus(ctx, spec.ID,
 		model.SpecStatusDraft, model.SpecStatusRationale,
 		req.By, req.Rationale); err != nil {
 		return nil, fmt.Errorf("service: spec quick: draft->rationale: %w", err)
@@ -1394,7 +1394,7 @@ func (svc *SDDService) SpecQuick(ctx context.Context, req model.SpecQuickRequest
 	svc.createSpecDirectory(reloaded)
 
 	// Transition 2: rationale → implementing.
-	if err := svc.store.UpdateSpecStatus(ctx, spec.ID,
+	if err := svc.updateSpecStatus(ctx, spec.ID,
 		model.SpecStatusRationale, model.SpecStatusImplementing,
 		req.By, "rationale accepted, starting implementation"); err != nil {
 		return nil, fmt.Errorf("service: spec quick: rationale->implementing: %w", err)
@@ -1505,7 +1505,7 @@ func (svc *SDDService) LaneAudit(ctx context.Context, req model.LaneAuditRequest
 
 	if result.Passed {
 		// Advance to done.
-		if err := svc.store.UpdateSpecStatus(ctx, spec.ID,
+		if err := svc.updateSpecStatus(ctx, spec.ID,
 			model.SpecStatusAudit, model.SpecStatusDone,
 			"system", "lane audit passed"); err != nil {
 			return nil, fmt.Errorf("service: lane audit: advance to done: %w", err)
@@ -1745,7 +1745,7 @@ func (svc *SDDService) LaneReclassify(ctx context.Context, req model.LaneReclass
 	}
 
 	// Update lane and scope.
-	if err := svc.store.UpdateSpecLaneScope(ctx, spec.ID, model.LaneStandard, req.Scope); err != nil {
+	if err := svc.updateSpecLaneScope(ctx, spec.ID, model.LaneStandard, req.Scope); err != nil {
 		return nil, fmt.Errorf("service: lane reclassify: update lane: %w", err)
 	}
 
@@ -1753,7 +1753,7 @@ func (svc *SDDService) LaneReclassify(ctx context.Context, req model.LaneReclass
 	// The current status may be draft, rationale, or needs_grill.
 	// We update to speccing regardless of the current state because the
 	// caller has explicitly requested the reclassification.
-	if err := svc.store.UpdateSpecStatus(ctx, spec.ID,
+	if err := svc.updateSpecStatus(ctx, spec.ID,
 		spec.Status, model.SpecStatusSpeccing,
 		req.By, "reclassified from trivial to standard"); err != nil {
 		return nil, fmt.Errorf("service: lane reclassify: move to speccing: %w", err)
@@ -1787,7 +1787,7 @@ func (svc *SDDService) LaneOverride(ctx context.Context, req model.LaneOverrideR
 			req.ID, spec.Status, model.ErrInvalidTransition)
 	}
 
-	if err := svc.store.UpdateSpecStatus(ctx, spec.ID,
+	if err := svc.updateSpecStatus(ctx, spec.ID,
 		model.SpecStatusAudit, model.SpecStatusDone,
 		req.By, fmt.Sprintf("lane override: %s", req.Reason)); err != nil {
 		return nil, fmt.Errorf("service: lane override: advance to done: %w", err)

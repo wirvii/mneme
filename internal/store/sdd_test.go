@@ -2037,3 +2037,220 @@ func TestSDDReferenceBackfillMarker(t *testing.T) {
 		t.Errorf("totals: got scanned=%d created=%d, want 42/7", scanned, created)
 	}
 }
+
+// TestUnmarshalPreviousIDs covers unmarshalPreviousIDs's branches directly:
+// the empty-string default (D32), invalid JSON, an empty JSON array, a
+// well-formed entry, and a mix of a well-formed entry with a malformed one
+// (silently skipped, mirroring vault.ParseSDDRefLines' own tolerance).
+func TestUnmarshalPreviousIDs(t *testing.T) {
+	if got := unmarshalPreviousIDs(""); got != nil {
+		t.Errorf("unmarshalPreviousIDs(\"\") = %v, want nil", got)
+	}
+	if got := unmarshalPreviousIDs("not json"); got != nil {
+		t.Errorf("unmarshalPreviousIDs(invalid JSON) = %v, want nil", got)
+	}
+	if got := unmarshalPreviousIDs("[]"); got != nil {
+		t.Errorf("unmarshalPreviousIDs(\"[]\") = %v, want nil", got)
+	}
+
+	valid := `["BL-050 origin=local reason=enable-collision at=2026-08-28T10:00:00Z"]`
+	got := unmarshalPreviousIDs(valid)
+	if len(got) != 1 || got[0].ID != "BL-050" {
+		t.Errorf("unmarshalPreviousIDs(valid) = %v, want one entry for BL-050", got)
+	}
+
+	mixed := `["not a valid entry", "BL-050 origin=local reason=enable-collision at=2026-08-28T10:00:00Z"]`
+	got = unmarshalPreviousIDs(mixed)
+	if len(got) != 1 || got[0].ID != "BL-050" {
+		t.Errorf("unmarshalPreviousIDs(mixed) = %v, want the malformed entry skipped and BL-050 kept", got)
+	}
+
+	allInvalid := `["not valid", "also not valid"]`
+	if got := unmarshalPreviousIDs(allInvalid); got != nil {
+		t.Errorf("unmarshalPreviousIDs(all invalid) = %v, want nil", got)
+	}
+}
+
+// --- SPEC-130 §2a: previous_ids column (D32) ---
+
+// TestPreviousIDs_InertAfterExistingVerbs verifies migration 020's
+// previous_ids column reads back as an empty list after every existing
+// write verb — CreateBacklogItem, UpdateBacklogItem, CreateSpec,
+// UpdateSpecStatus. Nothing in this spec writes to the column (D32); this
+// test is what makes that claim checkable instead of assumed.
+func TestPreviousIDs_InertAfterExistingVerbs(t *testing.T) {
+	s := newTestSDDStore(t)
+	ctx := context.Background()
+
+	item := &model.BacklogItem{
+		ID: "BL-900", Title: "inert previous_ids", Status: model.BacklogStatusRaw,
+		Priority: model.PriorityMedium, Project: "proj", Lane: model.LaneStandard,
+	}
+	if err := s.CreateBacklogItem(ctx, item); err != nil {
+		t.Fatalf("CreateBacklogItem: %v", err)
+	}
+	got, err := s.GetBacklogItem(ctx, "BL-900")
+	if err != nil {
+		t.Fatalf("GetBacklogItem after create: %v", err)
+	}
+	if len(got.PreviousIDs) != 0 {
+		t.Errorf("PreviousIDs after CreateBacklogItem = %v, want empty", got.PreviousIDs)
+	}
+
+	item.Status = model.BacklogStatusRefined
+	if err := s.UpdateBacklogItem(ctx, item); err != nil {
+		t.Fatalf("UpdateBacklogItem: %v", err)
+	}
+	got, err = s.GetBacklogItem(ctx, "BL-900")
+	if err != nil {
+		t.Fatalf("GetBacklogItem after update: %v", err)
+	}
+	if len(got.PreviousIDs) != 0 {
+		t.Errorf("PreviousIDs after UpdateBacklogItem = %v, want empty", got.PreviousIDs)
+	}
+
+	spec := &model.Spec{
+		ID: "SPEC-900", Title: "inert previous_ids", Status: model.SpecStatusDraft,
+		Project: "proj", Lane: model.LaneStandard,
+	}
+	if err := s.CreateSpec(ctx, spec); err != nil {
+		t.Fatalf("CreateSpec: %v", err)
+	}
+	gotSpec, err := s.GetSpec(ctx, "SPEC-900")
+	if err != nil {
+		t.Fatalf("GetSpec after create: %v", err)
+	}
+	if len(gotSpec.PreviousIDs) != 0 {
+		t.Errorf("Spec.PreviousIDs after CreateSpec = %v, want empty", gotSpec.PreviousIDs)
+	}
+
+	if err := s.UpdateSpecStatus(ctx, "SPEC-900", model.SpecStatusDraft, model.SpecStatusSpeccing, "test", ""); err != nil {
+		t.Fatalf("UpdateSpecStatus: %v", err)
+	}
+	gotSpec, err = s.GetSpec(ctx, "SPEC-900")
+	if err != nil {
+		t.Fatalf("GetSpec after status update: %v", err)
+	}
+	if len(gotSpec.PreviousIDs) != 0 {
+		t.Errorf("Spec.PreviousIDs after UpdateSpecStatus = %v, want empty", gotSpec.PreviousIDs)
+	}
+
+	specs, _, err := s.ListSpecs(ctx, "proj", "", 0)
+	if err != nil {
+		t.Fatalf("ListSpecs: %v", err)
+	}
+	for _, sp := range specs {
+		if len(sp.PreviousIDs) != 0 {
+			t.Errorf("ListSpecs: spec %s has non-empty PreviousIDs %v", sp.ID, sp.PreviousIDs)
+		}
+	}
+
+	items, _, err := s.ListBacklogItems(ctx, "proj", "", 0)
+	if err != nil {
+		t.Fatalf("ListBacklogItems: %v", err)
+	}
+	for _, it := range items {
+		if len(it.PreviousIDs) != 0 {
+			t.Errorf("ListBacklogItems: item %s has non-empty PreviousIDs %v", it.ID, it.PreviousIDs)
+		}
+	}
+}
+
+// --- SPEC-130 D36/C2: deterministic child order with `at`-tie-break ---
+
+// TestGetSpecHistory_DeterministicTieBreakOnIdenticalAt forces two history
+// rows to share the exact same `at` string (impossible to reproduce
+// reliably through UpdateSpecStatus's own clock, so this writes the second
+// row directly) and asserts GetSpecHistory still returns them in a fixed,
+// repeatable order — the `, id ASC` tie-break added in this spec (D36).
+// Before this change two rows with an identical `at` had no guaranteed
+// relative order at all.
+func TestGetSpecHistory_DeterministicTieBreakOnIdenticalAt(t *testing.T) {
+	s := newTestSDDStore(t)
+	ctx := context.Background()
+
+	if err := s.CreateSpec(ctx, &model.Spec{
+		ID: "SPEC-901", Title: "tie-break", Status: model.SpecStatusDraft, Project: "proj", Lane: model.LaneStandard,
+	}); err != nil {
+		t.Fatalf("create spec: %v", err)
+	}
+
+	const sharedAt = "2026-08-28T10:00:00Z"
+	// Two IDs chosen so their lexicographic order is deterministic and
+	// distinct from insertion order below — the tie-break must be on `id`,
+	// not on statement execution order.
+	const idA = "01a04600-0000-7000-8000-000000000001"
+	const idB = "01a04600-0000-7000-8000-000000000002"
+
+	if _, err := s.db.ExecContext(ctx,
+		`INSERT INTO spec_history (id, spec_id, from_status, to_status, by, reason, at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		idB, "SPEC-901", "draft", "speccing", "test", "", sharedAt,
+	); err != nil {
+		t.Fatalf("insert history idB: %v", err)
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`INSERT INTO spec_history (id, spec_id, from_status, to_status, by, reason, at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		idA, "SPEC-901", "speccing", "specced", "test", "", sharedAt,
+	); err != nil {
+		t.Fatalf("insert history idA: %v", err)
+	}
+
+	first, err := s.GetSpecHistory(ctx, "SPEC-901")
+	if err != nil {
+		t.Fatalf("GetSpecHistory (first): %v", err)
+	}
+	second, err := s.GetSpecHistory(ctx, "SPEC-901")
+	if err != nil {
+		t.Fatalf("GetSpecHistory (second): %v", err)
+	}
+	if len(first) != 2 || len(second) != 2 {
+		t.Fatalf("expected 2 history rows, got first=%d second=%d", len(first), len(second))
+	}
+	if first[0].ID != second[0].ID || first[1].ID != second[1].ID {
+		t.Fatalf("non-deterministic order across two reads: first=%v second=%v",
+			[]string{first[0].ID, first[1].ID}, []string{second[0].ID, second[1].ID})
+	}
+	// id ASC: idA < idB lexicographically.
+	if first[0].ID != idA || first[1].ID != idB {
+		t.Errorf("order = [%s, %s], want [%s, %s] (id ASC tie-break)", first[0].ID, first[1].ID, idA, idB)
+	}
+}
+
+// TestGetAllPushbacks_DeterministicTieBreakOnIdenticalCreatedAt mirrors
+// TestGetSpecHistory_DeterministicTieBreakOnIdenticalAt for
+// GetAllPushbacks — the second query D36/C2 names.
+func TestGetAllPushbacks_DeterministicTieBreakOnIdenticalCreatedAt(t *testing.T) {
+	s := newTestSDDStore(t)
+	ctx := context.Background()
+
+	if err := s.CreateSpec(ctx, &model.Spec{
+		ID: "SPEC-902", Title: "tie-break pushbacks", Status: model.SpecStatusDraft, Project: "proj", Lane: model.LaneStandard,
+	}); err != nil {
+		t.Fatalf("create spec: %v", err)
+	}
+
+	const sharedAt = "2026-08-28T10:00:00Z"
+	const idA = "01a04600-0000-7000-8000-000000000011"
+	const idB = "01a04600-0000-7000-8000-000000000012"
+
+	for _, id := range []string{idB, idA} {
+		if _, err := s.db.ExecContext(ctx,
+			`INSERT INTO spec_pushbacks (id, spec_id, from_agent, questions, resolved, resolution, created_at, resolved_at)
+			 VALUES (?, ?, ?, ?, 0, '', ?, NULL)`,
+			id, "SPEC-902", "architect", `["q?"]`, sharedAt,
+		); err != nil {
+			t.Fatalf("insert pushback %s: %v", id, err)
+		}
+	}
+
+	got, err := s.GetAllPushbacks(ctx, "SPEC-902")
+	if err != nil {
+		t.Fatalf("GetAllPushbacks: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 pushbacks, got %d", len(got))
+	}
+	if got[0].ID != idA || got[1].ID != idB {
+		t.Errorf("order = [%s, %s], want [%s, %s] (id ASC tie-break)", got[0].ID, got[1].ID, idA, idB)
+	}
+}
