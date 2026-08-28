@@ -2038,6 +2038,39 @@ func TestSDDReferenceBackfillMarker(t *testing.T) {
 	}
 }
 
+// TestUnmarshalPreviousIDs covers unmarshalPreviousIDs's branches directly:
+// the empty-string default (D32), invalid JSON, an empty JSON array, a
+// well-formed entry, and a mix of a well-formed entry with a malformed one
+// (silently skipped, mirroring vault.ParseSDDRefLines' own tolerance).
+func TestUnmarshalPreviousIDs(t *testing.T) {
+	if got := unmarshalPreviousIDs(""); got != nil {
+		t.Errorf("unmarshalPreviousIDs(\"\") = %v, want nil", got)
+	}
+	if got := unmarshalPreviousIDs("not json"); got != nil {
+		t.Errorf("unmarshalPreviousIDs(invalid JSON) = %v, want nil", got)
+	}
+	if got := unmarshalPreviousIDs("[]"); got != nil {
+		t.Errorf("unmarshalPreviousIDs(\"[]\") = %v, want nil", got)
+	}
+
+	valid := `["BL-050 origin=local reason=enable-collision at=2026-08-28T10:00:00Z"]`
+	got := unmarshalPreviousIDs(valid)
+	if len(got) != 1 || got[0].ID != "BL-050" {
+		t.Errorf("unmarshalPreviousIDs(valid) = %v, want one entry for BL-050", got)
+	}
+
+	mixed := `["not a valid entry", "BL-050 origin=local reason=enable-collision at=2026-08-28T10:00:00Z"]`
+	got = unmarshalPreviousIDs(mixed)
+	if len(got) != 1 || got[0].ID != "BL-050" {
+		t.Errorf("unmarshalPreviousIDs(mixed) = %v, want the malformed entry skipped and BL-050 kept", got)
+	}
+
+	allInvalid := `["not valid", "also not valid"]`
+	if got := unmarshalPreviousIDs(allInvalid); got != nil {
+		t.Errorf("unmarshalPreviousIDs(all invalid) = %v, want nil", got)
+	}
+}
+
 // --- SPEC-130 §2a: previous_ids column (D32) ---
 
 // TestPreviousIDs_InertAfterExistingVerbs verifies migration 020's

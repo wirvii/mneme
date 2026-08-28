@@ -250,6 +250,93 @@ func TestSDDConvergence_RefusesForeignAnchor(t *testing.T) {
 	}
 }
 
+// TestSDDExport_Succeeds exercises ExportSDDRepo's full success path: an
+// already-enabled repo re-materializes everything and its marker's
+// LastExportAt advances.
+func TestSDDExport_Succeeds(t *testing.T) {
+	svc, repoDir := newSDDMaterializeService(t, "wirvii/mneme")
+	ctx := context.Background()
+
+	if _, err := svc.BacklogAdd(ctx, model.BacklogAddRequest{Title: "x", Lane: model.LaneStandard, Project: "wirvii/mneme"}); err != nil {
+		t.Fatalf("BacklogAdd: %v", err)
+	}
+	if _, err := svc.EnableSDDRepo(ctx, repoDir, true); err != nil {
+		t.Fatalf("EnableSDDRepo: %v", err)
+	}
+	before, err := sddfile.ReadMarker(repoDir)
+	if err != nil || before == nil {
+		t.Fatalf("ReadMarker (before): %v", err)
+	}
+
+	result, err := svc.ExportSDDRepo(ctx, repoDir)
+	if err != nil {
+		t.Fatalf("ExportSDDRepo: %v", err)
+	}
+	if result.Plan.BacklogCount != 1 {
+		t.Errorf("ExportSDDRepo Plan.BacklogCount = %d, want 1", result.Plan.BacklogCount)
+	}
+
+	after, err := sddfile.ReadMarker(repoDir)
+	if err != nil || after == nil {
+		t.Fatalf("ReadMarker (after): %v", err)
+	}
+	if after.BacklogCount != 1 {
+		t.Errorf("marker.BacklogCount after export = %d, want 1", after.BacklogCount)
+	}
+}
+
+// TestSDDOperations_EmptyRepoRootFails covers the "repoRoot is required"
+// guard shared by all four operator-surface verbs.
+func TestSDDOperations_EmptyRepoRootFails(t *testing.T) {
+	svc, _ := newSDDMaterializeService(t, "wirvii/mneme")
+	ctx := context.Background()
+
+	if _, err := svc.EnableSDDRepo(ctx, "", false); err == nil {
+		t.Error("EnableSDDRepo(\"\") must fail")
+	}
+	if _, err := svc.DisableSDDRepo(ctx, "", false); err == nil {
+		t.Error("DisableSDDRepo(\"\") must fail")
+	}
+	if _, err := svc.ExportSDDRepo(ctx, ""); err == nil {
+		t.Error("ExportSDDRepo(\"\") must fail")
+	}
+	if _, err := svc.SDDStatus(ctx, ""); err == nil {
+		t.Error("SDDStatus(\"\") must fail")
+	}
+}
+
+// TestSDDEnable_NotGitRepoFails is the "si no es un repositorio git" branch
+// of §9.1 step 1.
+func TestSDDEnable_NotGitRepoFails(t *testing.T) {
+	svc, _ := newSDDMaterializeService(t, "wirvii/mneme")
+	notGit := t.TempDir()
+	if _, err := svc.EnableSDDRepo(context.Background(), notGit, false); err == nil {
+		t.Fatal("EnableSDDRepo on a non-git directory must fail")
+	}
+}
+
+// TestSddGit_IsWorkTreeAndRemoteURL_NoRemote covers sddGit's own branches
+// directly: a plain (non-git) directory is not a work tree, and a git repo
+// with no configured remote reports "" rather than erroring.
+func TestSddGit_IsWorkTreeAndRemoteURL_NoRemote(t *testing.T) {
+	notGit := sddGit{RepoDir: t.TempDir()}
+	if notGit.IsWorkTree() {
+		t.Error("a plain directory must not report IsWorkTree=true")
+	}
+	if got := notGit.RemoteURL(); got != "" {
+		t.Errorf("RemoteURL on a non-git dir = %q, want \"\"", got)
+	}
+
+	_, repoDir := newSDDMaterializeService(t, "wirvii/mneme") // real git repo, no remote configured
+	g := sddGit{RepoDir: repoDir}
+	if !g.IsWorkTree() {
+		t.Error("a real git repo must report IsWorkTree=true")
+	}
+	if got := g.RemoteURL(); got != "" {
+		t.Errorf("RemoteURL with no configured remote = %q, want \"\"", got)
+	}
+}
+
 func TestSDDStatus_ReportsBrokenAndForeign(t *testing.T) {
 	svc, repoDir := newSDDMaterializeService(t, "wirvii/mneme")
 	ctx := context.Background()

@@ -342,6 +342,67 @@ func seedAfterDisableRefine(t *testing.T, repoDir, fakeHome, itemID string) (*mo
 	})
 }
 
+// TestSDDExportCmd exercises "mneme sdd export" end to end: it requires the
+// mechanism to already be enabled, and re-materializes everything.
+func TestSDDExportCmd(t *testing.T) {
+	repoDir, fakeHome := sddCLITestRepo(t)
+	seedSDDBacklog(t, repoDir, fakeHome, "export item")
+	t.Setenv("HOME", fakeHome)
+
+	// export before enable must fail.
+	if _, _, err := runSDDCmd(t, repoDir, "export"); err == nil {
+		t.Fatal("sdd export before enable must fail")
+	}
+
+	if _, _, err := runSDDCmd(t, repoDir, "enable", "--apply"); err != nil {
+		t.Fatalf("sdd enable --apply: %v", err)
+	}
+
+	stdout, _, err := runSDDCmd(t, repoDir, "export")
+	if err != nil {
+		t.Fatalf("sdd export: %v", err)
+	}
+	if !strings.Contains(stdout, "Exported 1 backlog item(s)") {
+		t.Errorf("sdd export output does not report the count: %q", stdout)
+	}
+}
+
+// TestSDDStatusCmd exercises "mneme sdd status" in both plain-text and
+// --json modes, before and after enabling.
+func TestSDDStatusCmd(t *testing.T) {
+	repoDir, fakeHome := sddCLITestRepo(t)
+	seedSDDBacklog(t, repoDir, fakeHome, "status item")
+	t.Setenv("HOME", fakeHome)
+
+	stdout, _, err := runSDDCmd(t, repoDir, "status")
+	if err != nil {
+		t.Fatalf("sdd status (before enable): %v", err)
+	}
+	if !strings.Contains(stdout, "disabled") {
+		t.Errorf("sdd status before enable should report disabled: %q", stdout)
+	}
+
+	if _, _, err := runSDDCmd(t, repoDir, "enable", "--apply"); err != nil {
+		t.Fatalf("sdd enable --apply: %v", err)
+	}
+
+	stdout, _, err = runSDDCmd(t, repoDir, "status")
+	if err != nil {
+		t.Fatalf("sdd status (after enable): %v", err)
+	}
+	if !strings.Contains(stdout, "enabled") {
+		t.Errorf("sdd status after enable should report enabled: %q", stdout)
+	}
+
+	jsonOut, _, err := runSDDCmd(t, repoDir, "status", "--json")
+	if err != nil {
+		t.Fatalf("sdd status --json: %v", err)
+	}
+	if !strings.Contains(jsonOut, `"enabled": true`) && !strings.Contains(jsonOut, `"Enabled": true`) {
+		t.Errorf("sdd status --json does not report enabled: %q", jsonOut)
+	}
+}
+
 // TestSDD_ExactlyOneAddCommand is AC20, measured over the diff rather than
 // a hard-coded count elsewhere: this test only confirms newSDDCmd's own
 // shape (one parent command, four subcommands) — the diff-based count

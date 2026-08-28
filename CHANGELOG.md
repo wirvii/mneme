@@ -4,6 +4,32 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- **Backlog items and specs can now travel as versioned files inside the
+  repository itself — the archive and the write path (SPEC-130 §2a, the
+  first of three parts BL-194's "Etapa 2" was cut into).** Opt-in per
+  repository, off by default: nothing changes for a project until it runs
+  `mneme sdd enable`. Once enabled, every backlog item and spec is ALSO
+  written as a reviewable Markdown file under `.mneme/sdd/` — so the same
+  content that lives in the local database can be reviewed the way any
+  other change is, inside a pull request. Four new CLI subcommands (`mneme
+  sdd enable|disable|export|status`, 42 → 43 top-level commands, zero new
+  MCP tools — 85 stays 85): `enable`/`disable` default to a dry-run
+  preview and only write with `--apply`; before writing anything, both
+  `enable` and `export` refuse outright if the repository already carries
+  a file this database cannot make sense of (unreadable, or anchored to a
+  different machine's item) — publishing would otherwise mean silently
+  overwriting a teammate's own work. This part deliberately stops short of
+  reading those files back into the database, installing any git hook, or
+  letting a teammate's `git clone` pick anything up automatically — that
+  is the next two parts of the same project (tracked internally). A
+  repository that never enables this is provably unaffected: a full
+  backlog+spec cycle leaves `git status --porcelain` untouched. See
+  `docs/sdd-git-native.md`.
+
 ## [v1.42.0] — 2026-08-27 — SDD anchors and per-session speech queue
 
 ### Added

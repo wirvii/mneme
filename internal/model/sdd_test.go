@@ -412,6 +412,8 @@ func TestParsePreviousID_RejectsMalformed(t *testing.T) {
 		"BL-050 origin=local reason=enable-collision at=not-a-time",
 		"BL-050 origin=local reason=enable-collision unknown=x",
 		"BL-050 origin=local reason=enable-collision at=2026-08-28T10:00:00Z extra=y",
+		"BL-050 originlocal reason=enable-collision at=2026-08-28T10:00:00Z", // no "=" in a field
+		"BL-050 origin= reason=enable-collision at=2026-08-28T10:00:00Z",     // empty origin value
 	}
 	for _, c := range cases {
 		if _, ok := ParsePreviousID(c); ok {
