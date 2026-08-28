@@ -29,6 +29,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   repository that never enables this is provably unaffected: a full
   backlog+spec cycle leaves `git status --porcelain` untouched. See
   `docs/sdd-git-native.md`.
+- **The SDD file format's schema check now has a structural guardian
+  against ever collapsing back into an equality check (SPEC-130 §2a).**
+  `MinFileSchema == CurrentFileSchema == 1` today, which means an
+  accidental regression from a genuine range comparison to a simple
+  equality check would behave identically for every schema value this
+  version of mneme can construct — no behavioural test could catch it
+  until a second schema actually existed, which is exactly when the
+  damage would be worst (the same failure mode a prior equality check in
+  `.mneme/quality.toml`'s own schema comparison already caused once). A
+  new test parses `internal/sddfile/schema.go`'s own source and fails if
+  either range comparison is missing or an `==`/`!=` comparison against
+  either schema constant appears — zero production code changed.
 
 ## [v1.42.0] — 2026-08-27 — SDD anchors and per-session speech queue
 
