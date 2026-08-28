@@ -1302,10 +1302,10 @@ func collectSpecs(rows *sql.Rows) ([]*model.Spec, error) {
 }
 
 // unmarshalPreviousIDs parses the previous_ids column (SPEC-130 D32) into
-// PreviousID values. The column defaults to '' (migration 020), not '[]'
-// like assigned_agents/files_changed — an empty string reads as an empty
-// list without attempting to JSON-decode it. Any entry that fails to parse
-// (model.ParsePreviousID) is silently skipped, mirroring
+// PreviousID values. The column defaults to an empty string (migration
+// 020), not "[]" like assigned_agents/files_changed — an empty string
+// reads as an empty list without attempting to JSON-decode it. Any entry
+// that fails to parse (model.ParsePreviousID) is silently skipped, mirroring
 // vault.ParseSDDRefLines' tolerance for a hand-edited or malformed line:
 // this column is inert in §2a (nothing writes to it yet), so a parse
 // failure here can only come from manual tampering, never from mneme's own
