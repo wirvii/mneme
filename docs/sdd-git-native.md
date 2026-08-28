@@ -117,6 +117,74 @@ into something wrong. Requires the mechanism to already be enabled (this
 repairs an enabled repository; it is not a second way to turn one on), and
 applies the same convergence guard `enable` does.
 
+## Reading: the importer and its hooks
+
+```bash
+mneme sdd import               # reads .mneme/sdd/, EXECUTES by default
+mneme sdd import --dry-run     # preview without writing
+mneme sdd hooks install        # install this machine's own git hooks
+mneme sdd hooks remove         # remove only the SDD block (team-memory's own survives)
+```
+
+`mneme sdd import` walks the ENTIRE `.mneme/sdd/` directory every time —
+not just what git reports as changed — and creates or updates the local
+database accordingly. It executes by default (D13 already guarantees
+nothing under `.mneme/sdd/` is ever deleted by this mechanism, so there is
+nothing a preview protects here that `--dry-run` does not already cover),
+and exits **1** when anything was skipped (a broken file, a record with no
+title, or a genuine collision) — **0** otherwise. The exact same read path
+runs automatically, in the background, after every `git pull`/merge/
+checkout once `mneme sdd hooks install` has run — `mneme sdd hooks
+run-import` (hidden, invoked by the hook itself) is identical except it
+**always exits 0**, skips silently during a rebase/merge/cherry-pick in
+progress, and logs its own outcome to `~/.mneme/sdd-hooks.log` (a record of
+what happened, never a source of truth — `mneme sdd status` never reads it,
+and deleting it changes no answer).
+
+**Decides by ANCHOR, never by correlative.** Every record carries its own
+permanent identity (a UUIDv7 anchor, the same one `mem_get`'s `sdd_refs`
+already resolves against) — importing by anchor is what makes a `BL-050.md`
+a teammate wrote update the SAME row your own `BL-050` already is, instead
+of silently overwriting it with theirs (or vice versa) just because the
+correlative matches. Three outcomes:
+
+- **The anchor is new here** → the record is created, minting an anchor if
+  the file does not bring one (a hand-authored file needs only a `title`
+  and a description — everything else mneme fills in and, if anything was
+  missing, rewrites the file to show it — this is the ONLY thing this
+  mechanism ever writes back to a file on its own).
+- **The anchor matches what this correlative already holds** → the record
+  is updated. Children (refinements, spec history, pushbacks) are MERGED by
+  their own key, never replaced wholesale — a refinement written locally
+  and not yet committed survives an import that does not mention it.
+- **The correlative is already claimed by a DIFFERENT anchor** → the record
+  is **skipped and reported**, never overwritten. This is the collision
+  BL-202 will one day reconcile; today it is made visible, never resolved.
+  Two people creating the same correlative at the same time is normal on a
+  git-native mechanism — this is where mneme is honest about the limit
+  instead of guessing.
+
+**The importer never compares timestamps.** Every SDD write already passed
+through a file before reaching here, so a genuinely conflicting local edit
+would already have produced a merge conflict in git before an import ever
+runs — the file the importer just read is always the current word. (Compare
+with team-memory's own shared-vault importer, which DOES compare
+`updated_at`: a memory's local row can carry edits that never passed
+through a file at all, so there timestamp is the only available arbiter.)
+
+**A frozen spec never moves, even if the file says otherwise.** A spec
+whose originating backlog item was archived (SPEC-125) cannot change status
+again by design — there is no unarchive. If an incoming file brings a
+DIFFERENT status for such a spec, that one field is skipped and reported;
+every other field on that spec still updates normally.
+
+**Numbering**, once the mechanism is on, becomes the LARGER of the
+database's own next id and one past whatever correlative a file under
+`.mneme/sdd/` already reserves — a teammate's committed-but-not-yet-imported
+`BL-205.md` reserves `BL-205` for everyone the moment it exists, not only
+once someone runs `mneme sdd import`. A repository that never enabled this
+mechanism keeps computing the next id exactly as it always did.
+
 ## Disabling — locally, never for the team
 
 ```bash
