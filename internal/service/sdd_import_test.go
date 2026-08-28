@@ -692,6 +692,135 @@ func TestSDDImport_FrozenSpecKeepsItsStatus(t *testing.T) {
 	}
 }
 
+// writeNonCanonicalBacklogFixture writes a COMPLETE backlog record that
+// omits the `schema:` line (D28: absence is legal and means schema 1) —
+// AC12's discriminator fixture. Marshals normally (so every other field is
+// exactly what mneme itself would produce) then strips the one line by
+// hand, since Marshal's own round-trip check would otherwise refuse to
+// return bytes missing a field it always writes.
+func writeNonCanonicalBacklogFixture(t *testing.T, repoDir string, item *model.BacklogItem) {
+	t.Helper()
+	data, err := sddfile.MarshalBacklog(&sddfile.BacklogRecord{Item: item})
+	if err != nil {
+		t.Fatalf("MarshalBacklog(%s): %v", item.ID, err)
+	}
+	stripped := strings.Replace(string(data), "schema: 1\n", "", 1)
+	if stripped == string(data) {
+		t.Fatalf("fixture setup: expected a schema: 1 line to strip in:\n%s", data)
+	}
+	if err := sddfile.WriteRecord(sddfile.BacklogPath(repoDir, item.ID), []byte(stripped)); err != nil {
+		t.Fatalf("WriteRecord(%s): %v", item.ID, err)
+	}
+}
+
+// TestSDDImport_OnlyRewritesIncompleteFiles is AC12 — EL criterio de esta
+// spec (D46/D52). Three fixtures: BL-001 complete and canonical (written
+// by mneme itself), BL-002 complete but NOT canonical (missing the
+// `schema:` line — legal per D28, the DISCRIMINATOR: if the reader touches
+// it, it gains `schema: 1` and the byte comparison sees it), BL-003
+// incomplete (only title + a description body).
+func TestSDDImport_OnlyRewritesIncompleteFiles(t *testing.T) {
+	svc, repoDir := newSDDMaterializeService(t, importTestProject)
+	enableSDD(t, repoDir, importTestProject)
+	ctx := context.Background()
+
+	fixedTS := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	canonical := &model.BacklogItem{
+		ID: "BL-001", UUID: "0198f000-0000-7000-8000-0000000000d1",
+		Title: "canonical", Status: model.BacklogStatusRaw, Priority: model.PriorityMedium,
+		Project: importTestProject, Lane: model.LaneStandard,
+		CreatedAt: fixedTS, UpdatedAt: fixedTS,
+	}
+	writeBacklogFixture(t, repoDir, canonical, nil)
+
+	nonCanonical := &model.BacklogItem{
+		ID: "BL-002", UUID: "0198f000-0000-7000-8000-0000000000d2",
+		Title: "non canonical", Status: model.BacklogStatusRaw, Priority: model.PriorityMedium,
+		Project: importTestProject, Lane: model.LaneStandard,
+		CreatedAt: fixedTS, UpdatedAt: fixedTS,
+	}
+	writeNonCanonicalBacklogFixture(t, repoDir, nonCanonical)
+
+	writeRawSDDFile(t, sddfile.BacklogPath(repoDir, "BL-003"),
+		"---\ntitle: \"incomplete item\"\n---\n\njust a description, nothing else\n")
+
+	before1, err := sddfile.ReadRecord(sddfile.BacklogPath(repoDir, "BL-001"))
+	if err != nil {
+		t.Fatalf("read BL-001 before import: %v", err)
+	}
+	before2, err := sddfile.ReadRecord(sddfile.BacklogPath(repoDir, "BL-002"))
+	if err != nil {
+		t.Fatalf("read BL-002 before import: %v", err)
+	}
+
+	result, err := svc.ImportSDDFromRepo(ctx, repoDir, true)
+	if err != nil {
+		t.Fatalf("ImportSDDFromRepo: %v", err)
+	}
+
+	after1, err := sddfile.ReadRecord(sddfile.BacklogPath(repoDir, "BL-001"))
+	if err != nil {
+		t.Fatalf("read BL-001 after import: %v", err)
+	}
+	if string(before1) != string(after1) {
+		t.Errorf("BL-001.md (complete, canonical) was rewritten, want byte-identical")
+	}
+
+	after2, err := sddfile.ReadRecord(sddfile.BacklogPath(repoDir, "BL-002"))
+	if err != nil {
+		t.Fatalf("read BL-002 after import: %v", err)
+	}
+	if string(before2) != string(after2) {
+		t.Errorf("BL-002.md (complete, non-canonical) was rewritten, want byte-identical")
+	}
+	if strings.Contains(string(after2), "schema:") {
+		t.Errorf("BL-002.md gained a schema: line — the reader touched a complete-but-non-canonical file")
+	}
+
+	got3, err := svc.store.GetBacklogItem(ctx, "BL-003")
+	if err != nil {
+		t.Fatalf("GetBacklogItem(BL-003): %v", err)
+	}
+	if got3.UUID == "" {
+		t.Error("BL-003 has no anchor after import, want one minted")
+	}
+	if got3.Project != importTestProject || got3.Status != model.BacklogStatusRaw ||
+		got3.Priority != model.PriorityMedium || got3.Lane != model.LaneStandard {
+		t.Errorf("BL-003 defaults not applied: %+v", got3)
+	}
+
+	var completed *SDDImportCompleted
+	for i := range result.Completed {
+		if result.Completed[i].ID == "BL-003" {
+			completed = &result.Completed[i]
+		}
+	}
+	if completed == nil {
+		t.Fatalf("Completed = %v, want an entry for BL-003", result.Completed)
+	}
+	wantFields := []string{"uuid", "project", "status", "priority", "lane", "created_at", "updated_at"}
+	for _, want := range wantFields {
+		found := false
+		for _, got := range completed.Fields {
+			if got == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("Completed[BL-003].Fields = %v, missing %q", completed.Fields, want)
+		}
+	}
+
+	// All three elements exist in the base regardless of which file was
+	// rewritten.
+	for _, id := range []string{"BL-001", "BL-002", "BL-003"} {
+		if _, gErr := svc.store.GetBacklogItem(ctx, id); gErr != nil {
+			t.Errorf("%s does not exist in the base: %v", id, gErr)
+		}
+	}
+}
+
 // Mutaciones exigidas (documentadas aqui; ejecutadas y revertidas durante
 // la implementacion, resultado real en changes.md):
 //   - AC5: estampar now() en updated_at dentro de importBacklogRecord/
@@ -715,3 +844,7 @@ func TestSDDImport_FrozenSpecKeepsItsStatus(t *testing.T) {
 //     freezeIndex dentro del bucle en vez de usar la instantanea) -> rojo
 //     SOLO en la fila 3 de TestSDDImport_FrozenSpecKeepsItsStatus. Quitar
 //     la comprobacion entera -> rojo en la fila 1.
+//   - AC12 (la mutacion clave): quitar la condicion "missing != nil" antes
+//     de llamar a reportIfCompleted (hacerla incondicional) ->
+//     TestSDDImport_OnlyRewritesIncompleteFiles en rojo, nombrando BL-002
+//     (gana una linea schema: que antes no tenia).

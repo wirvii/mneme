@@ -279,6 +279,7 @@ func (svc *SDDService) importBacklogRecord(
 	anchorIndex map[string]string, apply bool, result *SDDImportResult,
 ) error {
 	item := rec.Item
+	missing := rec.Missing() // computed BEFORE any defaulting (D53) — see reportIfCompleted
 
 	row, err := svc.store.GetBacklogItem(ctx, item.ID)
 	switch {
@@ -296,6 +297,7 @@ func (svc *SDDService) importBacklogRecord(
 			result.Created = append(result.Created, fmt.Sprintf("%s (%s)", item.ID, relSDDPath(repoRoot, path)))
 			return nil
 		}
+		applyBacklogDefaults(svc.project, item, nil)
 		if cErr := svc.store.CreateBacklogItemFromRecord(ctx, item); cErr != nil {
 			slog.ErrorContext(ctx, "sdd_import_error", "kind", "backlog", "id", item.ID, "step", "create", "error", cErr)
 			result.Skipped = append(result.Skipped, SDDImportSkip{Path: path, ID: item.ID, Reason: "roto"})
@@ -305,6 +307,7 @@ func (svc *SDDService) importBacklogRecord(
 			slog.ErrorContext(ctx, "sdd_import_error", "kind", "backlog", "id", item.ID, "step", "merge-refinements", "error", mErr)
 		}
 		result.Created = append(result.Created, fmt.Sprintf("%s (%s)", item.ID, relSDDPath(repoRoot, path)))
+		svc.reportIfCompleted(ctx, repoRoot, sddfile.KindBacklog, item.ID, path, missing, result)
 		return nil
 
 	case err != nil:
@@ -315,6 +318,7 @@ func (svc *SDDService) importBacklogRecord(
 	default:
 		if row.UUID != "" && row.UUID == item.UUID {
 			// CASE B.
+			applyBacklogDefaults(svc.project, item, row)
 			nominal := nominalStatusChange(item.ID, string(row.Status), string(item.Status))
 			if !apply {
 				result.Updated = append(result.Updated, nominal)
@@ -329,6 +333,7 @@ func (svc *SDDService) importBacklogRecord(
 				slog.ErrorContext(ctx, "sdd_import_error", "kind", "backlog", "id", item.ID, "step", "merge-refinements", "error", mErr)
 			}
 			result.Updated = append(result.Updated, nominal)
+			svc.reportIfCompleted(ctx, repoRoot, sddfile.KindBacklog, item.ID, path, missing, result)
 			return nil
 		}
 
@@ -359,6 +364,7 @@ func (svc *SDDService) importSpecRecord(
 	apply bool, result *SDDImportResult,
 ) error {
 	spec := rec.Spec
+	missing := rec.Missing() // computed BEFORE any defaulting (D53) — see reportIfCompleted
 
 	row, err := svc.store.GetSpec(ctx, spec.ID)
 	switch {
@@ -376,6 +382,7 @@ func (svc *SDDService) importSpecRecord(
 			result.Created = append(result.Created, fmt.Sprintf("%s (%s)", spec.ID, relSDDPath(repoRoot, path)))
 			return nil
 		}
+		applySpecDefaults(svc.project, spec, nil)
 		if cErr := svc.store.CreateSpecFromRecord(ctx, spec); cErr != nil {
 			slog.ErrorContext(ctx, "sdd_import_error", "kind", "spec", "id", spec.ID, "step", "create", "error", cErr)
 			result.Skipped = append(result.Skipped, SDDImportSkip{Path: path, ID: spec.ID, Reason: "roto"})
@@ -388,6 +395,7 @@ func (svc *SDDService) importSpecRecord(
 			slog.ErrorContext(ctx, "sdd_import_error", "kind", "spec", "id", spec.ID, "step", "merge-pushbacks", "error", pErr)
 		}
 		result.Created = append(result.Created, fmt.Sprintf("%s (%s)", spec.ID, relSDDPath(repoRoot, path)))
+		svc.reportIfCompleted(ctx, repoRoot, sddfile.KindSpec, spec.ID, path, missing, result)
 		return nil
 
 	case err != nil:
@@ -398,6 +406,7 @@ func (svc *SDDService) importSpecRecord(
 	default:
 		if row.UUID != "" && row.UUID == spec.UUID {
 			// CASE B.
+			applySpecDefaults(svc.project, spec, row)
 			if specImportFrozen(row, freezeIndex) && spec.Status != row.Status {
 				result.Skipped = append(result.Skipped, SDDImportSkip{Path: path, ID: spec.ID, Reason: "spec-congelada"})
 				return nil
@@ -420,6 +429,7 @@ func (svc *SDDService) importSpecRecord(
 				slog.ErrorContext(ctx, "sdd_import_error", "kind", "spec", "id", spec.ID, "step", "merge-pushbacks", "error", pErr)
 			}
 			result.Updated = append(result.Updated, nominal)
+			svc.reportIfCompleted(ctx, repoRoot, sddfile.KindSpec, spec.ID, path, missing, result)
 			return nil
 		}
 
@@ -506,4 +516,107 @@ func (svc *SDDService) computeOnlyInBase(ctx context.Context, covered map[string
 		missing = missing[:maxOnlyInBaseListed]
 	}
 	return missing, total, nil
+}
+
+// applyBacklogDefaults fills the zero-value fields D53 declares fillable
+// (project, status, priority, lane — uuid/created_at/updated_at are filled
+// by CreateBacklogItemFromRecord itself; position's zero value already IS
+// its default) directly on item, BEFORE it is written. When existing is
+// non-nil (CASE B, an update) a gap falls back to the row ALREADY in the
+// database, never to a fresh default — a hand-edited file that dropped a
+// field must not blank out data that update would otherwise overwrite
+// verbatim. When existing is nil (CASE A, a brand-new row) a gap falls
+// back to D53's fixed defaults: raw / medium / standard, and svc.project.
+func applyBacklogDefaults(project string, item, existing *model.BacklogItem) {
+	if item.Project == "" {
+		item.Project = project
+	}
+	if item.Status == "" {
+		if existing != nil {
+			item.Status = existing.Status
+		} else {
+			item.Status = model.BacklogStatusRaw
+		}
+	}
+	if item.Priority == "" {
+		if existing != nil {
+			item.Priority = existing.Priority
+		} else {
+			item.Priority = model.PriorityMedium
+		}
+	}
+	if item.Lane == "" {
+		if existing != nil {
+			item.Lane = existing.Lane
+		} else {
+			item.Lane = model.LaneStandard
+		}
+	}
+}
+
+// applySpecDefaults is applyBacklogDefaults' sibling for specs: project,
+// status, lane — a spec has no priority.
+func applySpecDefaults(project string, spec, existing *model.Spec) {
+	if spec.Project == "" {
+		spec.Project = project
+	}
+	if spec.Status == "" {
+		if existing != nil {
+			spec.Status = existing.Status
+		} else {
+			spec.Status = model.SpecStatusDraft
+		}
+	}
+	if spec.Lane == "" {
+		if existing != nil {
+			spec.Lane = existing.Lane
+		} else {
+			spec.Lane = model.LaneStandard
+		}
+	}
+}
+
+// reportIfCompleted is the D46/D52 seam: when missing (computed BEFORE
+// defaulting, from the record AS PARSED) is non-empty, it rewrites id's
+// on-disk record via rewriteCompletedRecord — the ONLY site that ever
+// calls a materializer from this file — and appends the outcome to
+// result.Completed. A record that arrived complete (missing is empty) is
+// left byte-for-byte alone: this is the entire distinguishing behaviour
+// AC12's fixture exists to prove.
+func (svc *SDDService) reportIfCompleted(
+	ctx context.Context, repoRoot string, kind sddfile.RecordKind, id, path string, missing []string, result *SDDImportResult,
+) {
+	if len(missing) == 0 {
+		return
+	}
+	svc.rewriteCompletedRecord(ctx, repoRoot, kind, id)
+	result.Completed = append(result.Completed, SDDImportCompleted{Path: path, ID: id, Fields: missing})
+}
+
+// rewriteCompletedRecord rewrites id's on-disk record through the SAME
+// materializer sdd_export.go's nine wrappers already use
+// (materializeBacklogItem/materializeSpec) — deliberately the ONLY call
+// this file ever makes to either (D52). Doing so through the existing
+// materializer, rather than a bespoke write here, is what keeps the
+// completed file byte-identical to whatever mneme itself would produce for
+// the same row: one serializer, one writer, everywhere.
+//
+// svc.repoDir is swapped to repoRoot for the duration of this call and
+// restored after — the same pattern exportAllSDD already uses, because
+// materializeBacklogItem/materializeSpec read svc.repoDir rather than
+// taking it as a parameter (a constructor-level exception to D38 that
+// predates this spec; see sdd_export.go's own godoc for why).
+func (svc *SDDService) rewriteCompletedRecord(ctx context.Context, repoRoot string, kind sddfile.RecordKind, id string) {
+	prevRepoDir := svc.repoDir
+	svc.repoDir = repoRoot
+	defer func() { svc.repoDir = prevRepoDir }()
+
+	switch kind {
+	case sddfile.KindBacklog:
+		svc.materializeBacklogItem(ctx, id)
+	case sddfile.KindSpec:
+		svc.materializeSpec(ctx, id)
+	case sddfile.KindIgnored:
+		// unreachable: only KindBacklog/KindSpec ever reach this function.
+	}
 }
