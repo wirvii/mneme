@@ -181,6 +181,7 @@ in a local SQLite database and exposes them via MCP for agent integration.`,
 		newScaffoldCmd(),
 		newSpeechCmd(),
 		newQualityCmd(),
+		newSDDCmd(),
 	)
 
 	return root
