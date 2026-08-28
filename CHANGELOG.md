@@ -41,6 +41,41 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   new test parses `internal/sddfile/schema.go`'s own source and fails if
   either range comparison is missing or an `==`/`!=` comparison against
   either schema constant appears — zero production code changed.
+- **Reading the SDD archive back into the local database, and doing it
+  automatically after every pull — the second of three parts BL-194's
+  "Etapa 2" was cut into (SPEC-131 §2b).** SPEC-130 §2a taught mneme to
+  write a repository's backlog items and specs as reviewable Markdown
+  under `.mneme/sdd/`; this part teaches it to read that same archive
+  back. `mneme sdd import [--dry-run]` walks the whole tree and decides
+  each record's fate by its own permanent identity (a UUIDv7 anchor),
+  never by its human-readable correlative — a new anchor is created, an
+  anchor already known under the same correlative is updated (its
+  refinements, spec history, and pushbacks merged in, never deleted), and
+  a correlative already claimed by a DIFFERENT anchor is skipped and
+  reported by title, an anchor is never printed anywhere. A spec whose
+  originating backlog item was archived (SPEC-125) never has its status
+  moved by an import even when the incoming file disagrees — evaluated
+  against a snapshot of that freeze taken before the batch's own writes,
+  so an archived item and its now-frozen spec arriving in the very same
+  batch cannot produce a false positive. `mneme sdd hooks install`
+  installs this machine's own `post-merge`/`post-checkout` git hooks so a
+  `git pull` imports automatically in the background (always exits 0,
+  skips silently mid-rebase, logs to `~/.mneme/sdd-hooks.log`) — the two
+  new hooks coexist with team-memory's own without disturbing either.
+  Once enabled, the next backlog/spec id is the larger of the database's
+  own next id and one past whatever correlative a committed file already
+  reserves, so a teammate's not-yet-imported file reserves its number for
+  everyone, not only for whoever imports first. `mneme sdd status` now
+  reports everything derived at the moment of the call — broken,
+  conflicted, incomplete, and divergent files, whether this machine's own
+  hooks are installed, and correlatives that exist only in the local
+  database on this branch — with no new state file behind any of it. Two
+  new MCP tools, `sdd_status`/`sdd_import` (85 → 87); `sdd_import` is
+  denied to subagents, the same "the author does not authorize their own
+  change" family `spec_advance`/`backlog_archive` already belong to. The
+  remaining third of BL-194's "Etapa 2" — reconciling two machines that
+  independently claimed the same correlative for two different items — is
+  still open, tracked internally as BL-202. See `docs/sdd-git-native.md`.
 
 ## [v1.42.0] — 2026-08-27 — SDD anchors and per-session speech queue
 

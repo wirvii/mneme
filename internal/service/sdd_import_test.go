@@ -848,3 +848,104 @@ func TestSDDImport_OnlyRewritesIncompleteFiles(t *testing.T) {
 //     de llamar a reportIfCompleted (hacerla incondicional) ->
 //     TestSDDImport_OnlyRewritesIncompleteFiles en rojo, nombrando BL-002
 //     (gana una linea schema: que antes no tenia).
+
+// TestApplySpecDefaults is a targeted addition (SPEC-131 commit 13, AC29):
+// the first coverage pass left applySpecDefaults at 30% — every fixture in
+// this file already sets Status/Lane explicitly, so the gap-filling
+// branches (an empty field falling back to `existing`, or to D53's fixed
+// defaults when there is no existing row) never ran. Table-driven, one
+// subtest per branch, directly against the unexported function rather
+// than through a full import (which would leave the SAME gaps: the point
+// is exercising applySpecDefaults itself, not re-proving the import path).
+func TestApplySpecDefaults(t *testing.T) {
+	existing := &model.Spec{Status: model.SpecStatusImplementing, Lane: model.LaneTrivial}
+
+	tests := []struct {
+		name       string
+		spec       *model.Spec
+		existing   *model.Spec
+		wantProj   string
+		wantStatus model.SpecStatus
+		wantLane   model.Lane
+	}{
+		{
+			name:       "empty project is filled from svc.project",
+			spec:       &model.Spec{Status: model.SpecStatusDraft, Lane: model.LaneStandard},
+			existing:   nil,
+			wantProj:   "wirvii/mneme",
+			wantStatus: model.SpecStatusDraft,
+			wantLane:   model.LaneStandard,
+		},
+		{
+			name:       "non-empty project is left alone",
+			spec:       &model.Spec{Project: "other/project", Status: model.SpecStatusDraft, Lane: model.LaneStandard},
+			existing:   nil,
+			wantProj:   "other/project",
+			wantStatus: model.SpecStatusDraft,
+			wantLane:   model.LaneStandard,
+		},
+		{
+			name:       "empty status with no existing row defaults to draft",
+			spec:       &model.Spec{Lane: model.LaneStandard},
+			existing:   nil,
+			wantProj:   "wirvii/mneme",
+			wantStatus: model.SpecStatusDraft,
+			wantLane:   model.LaneStandard,
+		},
+		{
+			name:       "empty status with an existing row falls back to it, never to draft",
+			spec:       &model.Spec{Lane: model.LaneStandard},
+			existing:   existing,
+			wantProj:   "wirvii/mneme",
+			wantStatus: model.SpecStatusImplementing,
+			wantLane:   model.LaneStandard,
+		},
+		{
+			name:       "non-empty status is left alone even with an existing row",
+			spec:       &model.Spec{Status: model.SpecStatusQA, Lane: model.LaneStandard},
+			existing:   existing,
+			wantProj:   "wirvii/mneme",
+			wantStatus: model.SpecStatusQA,
+			wantLane:   model.LaneStandard,
+		},
+		{
+			name:       "empty lane with no existing row defaults to standard",
+			spec:       &model.Spec{Status: model.SpecStatusDraft},
+			existing:   nil,
+			wantProj:   "wirvii/mneme",
+			wantStatus: model.SpecStatusDraft,
+			wantLane:   model.LaneStandard,
+		},
+		{
+			name:       "empty lane with an existing row falls back to it, never to standard",
+			spec:       &model.Spec{Status: model.SpecStatusDraft},
+			existing:   existing,
+			wantProj:   "wirvii/mneme",
+			wantStatus: model.SpecStatusDraft,
+			wantLane:   model.LaneTrivial,
+		},
+		{
+			name:       "non-empty lane is left alone even with an existing row",
+			spec:       &model.Spec{Status: model.SpecStatusDraft, Lane: model.LaneStandard},
+			existing:   existing,
+			wantProj:   "wirvii/mneme",
+			wantStatus: model.SpecStatusDraft,
+			wantLane:   model.LaneStandard,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			applySpecDefaults("wirvii/mneme", tt.spec, tt.existing)
+			if tt.spec.Project != tt.wantProj {
+				t.Errorf("Project = %q, want %q", tt.spec.Project, tt.wantProj)
+			}
+			if tt.spec.Status != tt.wantStatus {
+				t.Errorf("Status = %q, want %q", tt.spec.Status, tt.wantStatus)
+			}
+			if tt.spec.Lane != tt.wantLane {
+				t.Errorf("Lane = %q, want %q", tt.spec.Lane, tt.wantLane)
+			}
+		})
+	}
+}

@@ -94,4 +94,87 @@ func TestSDDFile_Missing(t *testing.T) {
 			t.Errorf("Missing() = %v, want [lane]", got)
 		}
 	})
+
+	// The remaining subtests are a targeted addition (SPEC-131 commit 13,
+	// AC29): the first coverage pass left both Missing() methods at
+	// 63-65%, because only ONE gap-branch per method (uuid, lane) had a
+	// dedicated case above — the other five/four branches of each method's
+	// seven/six-way closed vocabulary, plus the nil-guard, never ran.
+
+	t.Run("backlog: nil receiver reports no gaps", func(t *testing.T) {
+		var rec *BacklogRecord
+		if got := rec.Missing(); got != nil {
+			t.Errorf("Missing() = %v, want nil", got)
+		}
+	})
+
+	t.Run("backlog: nil Item reports no gaps", func(t *testing.T) {
+		rec := &BacklogRecord{Item: nil}
+		if got := rec.Missing(); got != nil {
+			t.Errorf("Missing() = %v, want nil", got)
+		}
+	})
+
+	t.Run("backlog: every remaining gap is reported individually", func(t *testing.T) {
+		tests := []struct {
+			name string
+			zero func(*model.BacklogItem)
+			want string
+		}{
+			{"project", func(i *model.BacklogItem) { i.Project = "" }, "project"},
+			{"status", func(i *model.BacklogItem) { i.Status = "" }, "status"},
+			{"priority", func(i *model.BacklogItem) { i.Priority = "" }, "priority"},
+			{"created_at", func(i *model.BacklogItem) { i.CreatedAt = time.Time{} }, "created_at"},
+			{"updated_at", func(i *model.BacklogItem) { i.UpdatedAt = time.Time{} }, "updated_at"},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				item := fullBacklogItem()
+				tt.zero(item)
+				rec := &BacklogRecord{Item: item}
+				got := rec.Missing()
+				if len(got) != 1 || got[0] != tt.want {
+					t.Errorf("Missing() = %v, want [%s]", got, tt.want)
+				}
+			})
+		}
+	})
+
+	t.Run("spec: nil receiver reports no gaps", func(t *testing.T) {
+		var rec *SpecRecord
+		if got := rec.Missing(); got != nil {
+			t.Errorf("Missing() = %v, want nil", got)
+		}
+	})
+
+	t.Run("spec: nil Spec reports no gaps", func(t *testing.T) {
+		rec := &SpecRecord{Spec: nil}
+		if got := rec.Missing(); got != nil {
+			t.Errorf("Missing() = %v, want nil", got)
+		}
+	})
+
+	t.Run("spec: every remaining gap is reported individually", func(t *testing.T) {
+		tests := []struct {
+			name string
+			zero func(*model.Spec)
+			want string
+		}{
+			{"project", func(s *model.Spec) { s.Project = "" }, "project"},
+			{"status", func(s *model.Spec) { s.Status = "" }, "status"},
+			{"created_at", func(s *model.Spec) { s.CreatedAt = time.Time{} }, "created_at"},
+			{"updated_at", func(s *model.Spec) { s.UpdatedAt = time.Time{} }, "updated_at"},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				spec := fullSpec()
+				tt.zero(spec)
+				rec := &SpecRecord{Spec: spec}
+				got := rec.Missing()
+				if len(got) != 1 || got[0] != tt.want {
+					t.Errorf("Missing() = %v, want [%s]", got, tt.want)
+				}
+			})
+		}
+	})
 }
