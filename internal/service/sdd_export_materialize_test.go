@@ -180,40 +180,46 @@ func TestSDDGitNative_Disabled_WritesNothing(t *testing.T) {
 	}
 }
 
-// TestSDDNextID_UnaffectedByGitNative is AC11: NextBacklogID/NextSpecID
-// return exactly the same thing whether the mechanism is on or off — D21
-// (numbering from files) arrives with BL-201, and this criterion is what
-// stops it being pulled in by accident here.
+// TestSDDNextID_UnaffectedByGitNative is REWRITTEN by SPEC-131 (D55/W11),
+// on purpose and declared here so the change is visible in the diff rather
+// than looking like someone softened a test that was in the way: it used
+// to assert that numbering was IDENTICAL whether the SDD mechanism was on
+// or off. SPEC-131 D21 makes that no longer true BY DESIGN — with the
+// mechanism on, numbering becomes MAX(the database's own next id, one past
+// the highest correlative a file on disk already reserves). This test now
+// asserts ONLY the surviving half: with the mechanism OFF, numbering is
+// EXACTLY store.NextBacklogID/NextSpecID's own answer — today's behaviour,
+// byte for byte. The ON case (D55's new property) is
+// TestSDDNextID_MaxOfBaseAndFiles's job (SPEC-131 AC15).
 func TestSDDNextID_UnaffectedByGitNative(t *testing.T) {
 	ctx := context.Background()
 
-	offSvc, _ := newSDDMaterializeService(t, "wirvii/mneme")
-	offID, err := offSvc.BacklogAdd(ctx, model.BacklogAddRequest{Title: "off", Lane: model.LaneStandard, Project: "wirvii/mneme"})
+	svc, _ := newSDDMaterializeService(t, "wirvii/mneme")
+	// The mechanism is OFF for this service: newSDDMaterializeService never
+	// writes a marker.
+
+	want, err := svc.store.NextBacklogID(ctx, "wirvii/mneme")
 	if err != nil {
-		t.Fatalf("BacklogAdd (off): %v", err)
+		t.Fatalf("store.NextBacklogID: %v", err)
+	}
+	item, err := svc.BacklogAdd(ctx, model.BacklogAddRequest{Title: "off", Lane: model.LaneStandard, Project: "wirvii/mneme"})
+	if err != nil {
+		t.Fatalf("BacklogAdd: %v", err)
+	}
+	if item.ID != want {
+		t.Errorf("BacklogAdd ID = %s, want %s (mechanism off: today's numbering, unchanged)", item.ID, want)
 	}
 
-	onSvc, repoDir := newSDDMaterializeService(t, "wirvii/mneme")
-	enableSDD(t, repoDir, "wirvii/mneme")
-	onID, err := onSvc.BacklogAdd(ctx, model.BacklogAddRequest{Title: "on", Lane: model.LaneStandard, Project: "wirvii/mneme"})
+	wantSpec, err := svc.store.NextSpecID(ctx, "wirvii/mneme")
 	if err != nil {
-		t.Fatalf("BacklogAdd (on): %v", err)
+		t.Fatalf("store.NextSpecID: %v", err)
 	}
-
-	if offID.ID != onID.ID {
-		t.Errorf("first BacklogAdd ID differs by enablement: off=%s on=%s, want identical", offID.ID, onID.ID)
-	}
-
-	offSpec, err := offSvc.SpecNew(ctx, model.SpecNewRequest{Title: "off spec", Lane: model.LaneStandard, Project: "wirvii/mneme"})
+	spec, err := svc.SpecNew(ctx, model.SpecNewRequest{Title: "off spec", Lane: model.LaneStandard, Project: "wirvii/mneme"})
 	if err != nil {
-		t.Fatalf("SpecNew (off): %v", err)
+		t.Fatalf("SpecNew: %v", err)
 	}
-	onSpec, err := onSvc.SpecNew(ctx, model.SpecNewRequest{Title: "on spec", Lane: model.LaneStandard, Project: "wirvii/mneme"})
-	if err != nil {
-		t.Fatalf("SpecNew (on): %v", err)
-	}
-	if offSpec.ID != onSpec.ID {
-		t.Errorf("first SpecNew ID differs by enablement: off=%s on=%s, want identical", offSpec.ID, onSpec.ID)
+	if spec.ID != wantSpec {
+		t.Errorf("SpecNew ID = %s, want %s (mechanism off: today's numbering, unchanged)", spec.ID, wantSpec)
 	}
 }
 
