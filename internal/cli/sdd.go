@@ -10,24 +10,27 @@ import (
 	"github.com/wirvii/mneme/internal/service"
 )
 
-// newSDDCmd returns the "mneme sdd" parent command (SPEC-130 §2a): the
-// backlog and specs travel as versioned files under the repository's own
-// .mneme/sdd/, git-native, opt-in per repository.
+// newSDDCmd returns the "mneme sdd" parent command (SPEC-130 §2a + SPEC-131
+// §2b): the backlog and specs travel as versioned files under the
+// repository's own .mneme/sdd/, git-native, opt-in per repository.
 func newSDDCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "sdd",
-		Short: "Backlog and specs travel as versioned files in this repository (SPEC-130 §2a)",
-		Long: `Commands for the SDD git-native mechanism (SPEC-130 §2a): the same backlog
-items and specs stored in the local database, ALSO written as reviewable
-Markdown files under .mneme/sdd/ — so they can be reviewed in a pull request.
+		Short: "Backlog and specs travel as versioned files in this repository (SPEC-130/SPEC-131)",
+		Long: `Commands for the SDD git-native mechanism: the same backlog items and specs
+stored in the local database, ALSO written as reviewable Markdown files under
+.mneme/sdd/ — so they can be reviewed in a pull request.
 
 Opt-in per repository. A repository that never runs "mneme sdd enable" is
 completely unaffected: no file is written, nothing changes.
 
-This part does NOT read files back into the database, does NOT install git
-hooks, and does NOT let a teammate's clone pick these files up automatically
-— that is BL-201. Today these files exist to be reviewed in a pull request,
-not yet to synchronize two machines.`,
+Files entered your OWN database automatically once "mneme sdd enable" ran
+here, or the moment "mneme sdd hooks install" runs on a clone that already
+has the marker committed: every "git pull"/checkout imports whatever the
+repository already carries, in the background. Two people creating the same
+correlative at the same time produce a collision this import detects and
+reports, but does not yet resolve — reconciling is a separate, later part
+of this project.`,
 	}
 	cmd.AddCommand(
 		newSDDEnableCmd(),
@@ -58,11 +61,15 @@ marker (.mneme/sdd/.mneme-sdd, committed — this turns the mechanism on for
 every teammate who clones the repository), and adds "sdd.off" to
 .mneme/.gitignore.
 
+Also installs THIS machine's own git hooks (post-merge, post-checkout) so
+future pulls import automatically — see "mneme sdd hooks".
+
 Refuses, before writing anything, when:
   - the current directory is not a git repository;
   - the repository already carries SDD records this database cannot make
     sense of — an unreadable file, or one whose anchor is unknown here.
-    Reading such files in is BL-201; reconciling them is BL-202.`,
+    Run "mneme sdd import" first; reconciling a genuine collision is a
+    separate, later part of this project.`,
 		Example: `  mneme sdd enable
   mneme sdd enable --apply`,
 		Args: cobra.NoArgs,
@@ -100,8 +107,12 @@ clone keeps the mechanism on.
 
 Without --apply: prints what would happen. Writes nothing.
 
-With --apply: writes the local, gitignored .mneme/sdd.off file. From then
-on, this machine's own write-through wrappers become inert.
+With --apply, in this exact order: (1) imports once more, so anything a
+teammate already published and this machine has not yet read is not lost;
+(2) writes the local, gitignored .mneme/sdd.off file — from then on, this
+machine's own write-through wrappers become inert; (3) removes this
+machine's own git hooks for the SDD mechanism (installed by "mneme sdd
+enable"/"mneme sdd hooks install").
 
 NEVER deletes anything under .mneme/sdd/. Removing those files from the
 repository, if that is what you want, is a separate, explicit step of your
@@ -123,11 +134,13 @@ own ("git rm -r .mneme/sdd") — mneme never does it for you.`,
 
 			out := cmd.OutOrStdout()
 			if !result.Applied {
-				fmt.Fprintf(out, "Would write %s/.mneme/sdd.off (dry-run — pass --apply to execute).\n", result.RepoRoot)
+				fmt.Fprintf(out, "Would (1) import once more, (2) write %s/.mneme/sdd.off, and (3) remove this "+
+					"machine's own SDD git hooks (dry-run — pass --apply to execute).\n", result.RepoRoot)
 				fmt.Fprintln(out, "This does not delete anything under .mneme/sdd/.")
 				return nil
 			}
-			fmt.Fprintf(out, "SDD mechanism disabled locally at %s.\n", result.RepoRoot)
+			fmt.Fprintf(out, "SDD mechanism disabled locally at %s: imported once more, wrote sdd.off, "+
+				"and removed this machine's own SDD git hooks.\n", result.RepoRoot)
 			fmt.Fprintln(out, "Nothing under .mneme/sdd/ was deleted. Other teammates are unaffected.")
 			return nil
 		},
@@ -231,9 +244,9 @@ func renderSDDEnableResult(out io.Writer, result *service.SDDEnableResult) {
 		return
 	}
 	fmt.Fprintf(out, "Applied: exported everything to %s/.mneme/sdd, wrote the marker, "+
-		"and added sdd.off to .mneme/.gitignore.\n", result.RepoRoot)
+		"added sdd.off to .mneme/.gitignore, and installed this machine's own git hooks.\n", result.RepoRoot)
 	fmt.Fprintln(out, "These files are likely pending commit — review with `git status` before committing.")
-	fmt.Fprintln(out, "No git hooks were installed and no importer runs yet — that is BL-201.")
+	fmt.Fprintln(out, "A teammate who clones needs only `mneme sdd hooks install` to start receiving imports too.")
 }
 
 // renderSDDStatusResult prints SDDStatus's result in plain text.
@@ -256,7 +269,8 @@ func renderSDDStatusResult(out io.Writer, result *service.SDDStatusResult) {
 		}
 	}
 	if len(result.ForeignPaths) > 0 {
-		fmt.Fprintf(out, "%d file(s) carry an anchor this database does not know (reading them is BL-201, reconciling BL-202):\n", len(result.ForeignPaths))
+		fmt.Fprintf(out, "%d file(s) carry an anchor this database does not know "+
+			"(run `mneme sdd import` to read them in; reconciling a genuine collision is BL-202):\n", len(result.ForeignPaths))
 		for _, p := range result.ForeignPaths {
 			fmt.Fprintf(out, "  - %s\n", p)
 		}

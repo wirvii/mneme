@@ -52,10 +52,14 @@ const (
 	// might just be a miss.
 	SDDWarnNoContentScan = "mneme no ha escaneado el contenido de estos archivos buscando datos delicados; revisarlo es responsabilidad del operador"
 
-	// SDDWarnNoCrossMachineSyncYet: §2a's own limitation (2.4) — no
-	// importer, no git hooks. The files exist to be reviewed in a pull
-	// request; they do not yet let a teammate's clone pick them up.
-	SDDWarnNoCrossMachineSyncYet = "hoy estos archivos sirven para revisarse en un pull request; que entren en la base de otra maquina (leerlos) llega con BL-201"
+	// SDDWarnNoCrossMachineSyncYet: §2a's own limitation is REPLACED, not
+	// deleted, once §2b (SPEC-131) lands the read path (W12): reading now
+	// exists, but only on a machine that installed the git hooks, and a
+	// correlative collision between two machines is detected, never
+	// resolved (that is BL-202). The phrase "revisarse en un pull request"
+	// is deliberately preserved verbatim — it stays true and a substring
+	// check in this repository's own tests still relies on it.
+	SDDWarnNoCrossMachineSyncYet = "hoy estos archivos sirven para revisarse en un pull request; ademas, entran en la base de otra maquina tras cada git pull o cambio de rama si esa maquina tiene los enganches instalados (mneme sdd hooks install); dos personas que crean el mismo correlativo a la vez producen un choque que mneme detecta y reporta, pero todavia no resuelve"
 )
 
 // sddWarnings is the fixed, ordered list every dry-run preview and every
@@ -113,10 +117,12 @@ type SDDStatusResult struct {
 // mechanism on for repoRoot (D3/D8/D17). Without apply it writes NOTHING —
 // not even a probe file — and returns the plan plus the four warnings
 // (AC12/AC14). With apply it exports every backlog item and spec (D8,
-// including archived/done ones), writes the marker, and adds sdd.off to
-// .mneme/.gitignore (D29/D41). Refuses, before writing anything, when the
-// repository is not a git repo or is not convergent with the local
-// database (D45).
+// including archived/done ones), writes the marker, adds sdd.off to
+// .mneme/.gitignore (D29/D41), and installs THIS machine's own git hooks
+// (SPEC-131 D57) — without the last step the mechanism would turn on and
+// stay mute for the very machine that enabled it. Refuses, before writing
+// anything, when the repository is not a git repo or is not convergent
+// with the local database (D45).
 func (svc *SDDService) EnableSDDRepo(ctx context.Context, repoRoot string, apply bool) (*SDDEnableResult, error) {
 	if repoRoot == "" {
 		return nil, fmt.Errorf("service: sdd enable: repoRoot is required")
@@ -176,6 +182,10 @@ func (svc *SDDService) EnableSDDRepo(ctx context.Context, repoRoot string, apply
 		return nil, fmt.Errorf("service: sdd enable: gitignore: %w", err)
 	}
 
+	if err := svc.InstallSDDHooks(repoRoot); err != nil {
+		return nil, fmt.Errorf("service: sdd enable: install hooks: %w", err)
+	}
+
 	result.Applied = true
 	return result, nil
 }
@@ -184,13 +194,29 @@ func (svc *SDDService) EnableSDDRepo(ctx context.Context, repoRoot string, apply
 // mechanism off LOCALLY for repoRoot (D3/D19/D29). It never deletes
 // anything under .mneme/sdd/ — only writes .mneme/sdd.off (gitignored) so
 // this machine's own wrappers become inert.
-func (svc *SDDService) DisableSDDRepo(_ context.Context, repoRoot string, apply bool) (*SDDDisableResult, error) {
+//
+// With apply, THREE things happen in this exact order (SPEC-131 D19/D57):
+//  1. Import once more (ImportSDDFromRepo), so anything a teammate already
+//     published — and this machine has not yet read — is not lost.
+//  2. Write .mneme/sdd.off.
+//  3. Remove this machine's own git hooks.
+//
+// Reversing steps 1 and 2 would make the import a silent no-op: it would
+// find the mechanism already disabled and do nothing, quietly dropping
+// D19's whole point. A partial failure after step 1 still leaves whatever
+// the import already wrote to the database — nothing here is undone by a
+// later step's own failure.
+func (svc *SDDService) DisableSDDRepo(ctx context.Context, repoRoot string, apply bool) (*SDDDisableResult, error) {
 	if repoRoot == "" {
 		return nil, fmt.Errorf("service: sdd disable: repoRoot is required")
 	}
 	result := &SDDDisableResult{RepoRoot: repoRoot}
 	if !apply {
 		return result, nil
+	}
+
+	if _, err := svc.ImportSDDFromRepo(ctx, repoRoot, true); err != nil {
+		return nil, fmt.Errorf("service: sdd disable: final import: %w", err)
 	}
 
 	offPath := sddOffPath(repoRoot)
@@ -202,6 +228,10 @@ func (svc *SDDService) DisableSDDRepo(_ context.Context, repoRoot string, apply 
 	}
 	if err := ensureMnemeGitignore(repoRoot, "sdd.off"); err != nil {
 		return nil, fmt.Errorf("service: sdd disable: gitignore: %w", err)
+	}
+
+	if err := svc.RemoveSDDHooks(repoRoot); err != nil {
+		return nil, fmt.Errorf("service: sdd disable: remove hooks: %w", err)
 	}
 
 	result.Applied = true
@@ -428,7 +458,7 @@ func (svc *SDDService) checkSDDConvergence(ctx context.Context, repoRoot string)
 	if len(foreign) > 0 {
 		return fmt.Errorf(
 			"service: sdd convergence: %d registro(s) tienen un ancla que la base local no conoce (%s) — "+
-				"leerlos llega con BL-201, reconciliarlos con BL-202: %w",
+				"ejecuta `mneme sdd import` primero; reconciliarlos con BL-202: %w",
 			len(foreign), strings.Join(foreign, ", "), ErrSDDNotConverged)
 	}
 	return nil

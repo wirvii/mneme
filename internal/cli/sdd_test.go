@@ -195,11 +195,15 @@ func gitPorcelain(t *testing.T, dir string) string {
 	return string(out)
 }
 
-// TestSDDEnable_RefusesForeignRecords is AC17: a BL-050.md whose anchor the
-// local database does not know makes `sdd enable --apply` (and `sdd
-// export`) refuse WITHOUT writing anything, naming the file and BL-201/
-// BL-202. The required mutation — removing the guard — is executed for
-// real below and reverted byte for byte.
+// TestSDDEnable_RefusesForeignRecords is AC17 (SPEC-130), UPDATED by
+// SPEC-131 D61: the refusal's text changed from "leerlos llega con BL-201"
+// (reading did not exist) to "ejecuta mneme sdd import primero" (it does
+// now) — the mention of BL-202 (the still-pending collision reconciler)
+// survives unchanged. A BL-050.md whose anchor the local database does not
+// know makes `sdd enable --apply` (and `sdd export`) refuse WITHOUT
+// writing anything, naming the file, the import remedy, and BL-202. The
+// required mutation — removing the guard — is executed for real below and
+// reverted byte for byte.
 func TestSDDEnable_RefusesForeignRecords(t *testing.T) {
 	repoDir, fakeHome := sddCLITestRepo(t)
 	t.Setenv("HOME", fakeHome)
@@ -223,8 +227,8 @@ func TestSDDEnable_RefusesForeignRecords(t *testing.T) {
 		t.Fatalf("sdd enable --apply must refuse with a foreign anchor present; stdout=%q stderr=%q", stdout, stderr)
 	}
 	combined := stdout + stderr + err.Error()
-	if !strings.Contains(combined, "BL-201") || !strings.Contains(combined, "BL-202") {
-		t.Errorf("refusal message does not name BL-201/BL-202: %s", combined)
+	if !strings.Contains(combined, "mneme sdd import") || !strings.Contains(combined, "BL-202") {
+		t.Errorf("refusal message does not name the import remedy / BL-202: %s", combined)
 	}
 
 	after, err := sddfile.ReadRecord(path)

@@ -1,19 +1,18 @@
-# SDD git-native — the archive and the write (SPEC-130 §2a)
+# SDD git-native — the archive, the write, and the read (SPEC-130 §2a + SPEC-131 §2b)
 
-> SPEC-130 is titled "Etapa 2" because `mneme spec` has no verb to rename a
-> spec, but its actual scope is **only the first of three parts** the etapa
-> was cut into (BL-194, approved by the owner 2026-08-28):
+> This mechanism was cut into three parts (BL-194, approved by the owner
+> 2026-08-28):
 >
 > | Part | Where it lives | What it delivers |
 > |---|---|---|
-> | **§2a — the file and the write** | **this document** | The format, write-through, enable/disable |
-> | §2b — the read | BL-201 | The importer, git hooks, numbering from files |
+> | §2a — the file and the write | SPEC-130 | The format, write-through, enable/disable |
+> | **§2b — the read** | **this document, SPEC-131** | The importer, git hooks, numbering from files |
 > | §2c — the collision | BL-202 | Reconciling two items with the same correlative |
 >
-> **This document does not describe §2b or §2c.** Nothing in this repository
-> today imports a file back into the database, installs a git hook for the
-> SDD mechanism, or reconciles a numbering collision. If that is what you
-> came looking for, it does not exist yet — see BL-201/BL-202.
+> **This document does not describe §2c.** Two machines that independently
+> create the SAME correlative produce a collision the import below
+> **detects and reports, but does not resolve** — reconciling is BL-202,
+> still pending.
 
 ## Overview
 
@@ -31,22 +30,28 @@ completely unaffected — verifiably so**: with the marker absent, an entire
 cycle of `mneme backlog add` → `refine` → `promote` → `spec advance` →
 `pushback` → `resolve` leaves `git status --porcelain` exactly as it was.
 
-## What this part does NOT do yet
+## What this mechanism does — and its one remaining limit
 
 This is not a caveat buried at the bottom — it is the single most important
 thing to understand before enabling this mechanism:
 
-- **Nothing reads these files back into the database.** If a teammate edits
-  `.mneme/sdd/backlog/BL-050.md` in a pull request and merges it, that edit
-  has no effect on anyone's database until BL-201 exists.
-- **No git hook is installed for this mechanism.** Nothing runs
-  automatically after `git pull`/`git merge`/`git checkout` — contrast with
-  team-memory's `post-merge`/`post-checkout` hooks, which DO exist today for
-  shared memories, but not for this.
-- **A teammate's `git clone` does not give them your backlog and specs in
-  their own local database.** They will SEE the files (once you push and
-  they pull) — that is the whole point of §2a — but their own `mneme
-  backlog list` will not include your items until BL-201 lands.
+- **Files DO read back into the database — on a machine that has the
+  hooks installed.** If a teammate edits `.mneme/sdd/backlog/BL-050.md` in
+  a pull request and merges it, that edit reaches YOUR database the next
+  time you `git pull`/`git merge`/`git checkout`, in the background,
+  without you doing anything else.
+- **A git hook IS installed for this mechanism** — `mneme sdd enable
+  --apply` installs it on the machine that turns the mechanism on;
+  everyone else runs `mneme sdd hooks install` once, the same one-time
+  step team-memory's own hooks already require.
+- **A teammate's `git clone` gives them the mechanism already turned ON**
+  (the marker is committed) — they only need `mneme sdd hooks install` to
+  start receiving imports. Until they run it, `mneme sdd status` tells
+  them so.
+- **What is still unresolved: two people creating the SAME correlative at
+  the same time.** The import **detects and reports** that collision — it
+  never silently picks a winner — but does not yet **reconcile** it; that
+  is BL-202.
 
 `mneme sdd enable`'s own preview output says this explicitly, every time,
 and so does the `mneme-init` onboarding skill's step for this mechanism —
@@ -70,8 +75,11 @@ many backlog items and specs would be exported) and four warnings:
    git already knows about locally.
 3. mneme has not scanned the content of these files for anything sensitive
    — that review is yours to do.
-4. Today these files exist to be reviewed in a pull request, not yet to
-   sync into a teammate's own database (see the section above).
+4. These files sync into a pull request today, AND into a teammate's own
+   database on every `git pull`/checkout **once that machine has the hooks
+   installed** (`mneme sdd hooks install`); two people creating the same
+   correlative at the same time produce a collision this import detects and
+   reports, but does not yet resolve (see the section above).
 
 With `--apply`, the command:
 
@@ -83,6 +91,9 @@ With `--apply`, the command:
    posture as team-memory).
 3. Adds `sdd.off` to `.mneme/.gitignore` (the entry `mneme sdd disable`
    later uses — see below).
+4. Installs THIS machine's own git hooks (`post-merge`, `post-checkout`) —
+   see "Reading: the importer and its hooks" below. A teammate who clones
+   afterward only needs `mneme sdd hooks install` once.
 
 Re-running `enable --apply` is idempotent: given the same database state, it
 produces byte-identical files, so a second run leaves `git status
@@ -91,7 +102,8 @@ produces byte-identical files, so a second run leaves `git status
 **Refuses, before writing a single byte**, when the repository already
 carries SDD records this database cannot make sense of — an unreadable
 file, or one anchored to a different machine's item (see "Convergence"
-below). The refusal names the offending files and points at BL-201/BL-202.
+below). The refusal names the offending files and says to run `mneme sdd
+import` first; a genuine correlative collision is still BL-202.
 
 ## Exporting (repair)
 
@@ -114,9 +126,13 @@ mneme sdd disable --apply    # actually write it
 
 This is deliberately **local only** (D3/D19): it never touches the
 committed marker, so every other teammate's clone keeps the mechanism on.
-`--apply` writes `.mneme/sdd.off` — a file `.mneme/.gitignore` already
+
+`--apply` does three things, in this exact order: (1) imports once more, so
+anything a teammate already published and this machine has not yet read is
+not lost; (2) writes `.mneme/sdd.off` — a file `.mneme/.gitignore` already
 excludes, so it never gets committed by accident — after which this
-machine's own writes to the SDD mechanism become inert.
+machine's own writes to the SDD mechanism become inert; (3) removes this
+machine's own git hooks for the mechanism.
 
 **`mneme sdd disable` never deletes anything under `.mneme/sdd/`.** If you
 want those files out of the repository, that is a separate, explicit
@@ -189,15 +205,17 @@ Two properties make this format safe to hand-edit and safe to regenerate:
 
 A repository that has never run `mneme sdd enable` is unaffected in every
 way that matters: no file is written, the next backlog/spec correlative is
-computed exactly the same way it always was, and the store's own read
-paths behave identically. Enabling this mechanism adds a second, reviewable
-representation of data that already exists — it does not change what that
-data means or how it is numbered.
+computed exactly the same way it always was, and the store's own read paths
+behave identically. **Once enabled**, the next correlative becomes the
+larger of the database's own answer and one past whatever a file already
+reserves (a teammate's not-yet-imported `BL-205.md` counts) — see "Reading:
+the importer and its hooks" below.
 
 ## See also
 
-- BL-201 — the read: importing files, git hooks, numbering from files.
-- BL-202 — the collision: reconciling two items with the same correlative.
+- BL-202 — the collision: reconciling two items with the same correlative
+  (still pending; the import below detects it and reports it, never
+  resolves it).
 - `docs/team-memory.md` — the sibling git-native mechanism this one borrows
   its opt-in/marker/preview-then-apply shape from, for a different kind of
   content (memories, not backlog/specs) and a different naming rule (see

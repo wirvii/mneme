@@ -1,7 +1,7 @@
 ---
 name: mneme-init
 description: "Use once to bootstrap or reconcile a project with mneme for both Claude Code and Codex. Seeds repo knowledge, applies managed instructions, detects a team profile, generates both native agent projections, and offers codegraph and shared-memory setup. Trigger: mneme-init, initialize mneme, onboard this repo, generate subagents, reconcile agent profiles."
-version: 1.9.0
+version: 1.10.0
 pinned: false
 ---
 
@@ -127,11 +127,11 @@ Only if the user opts in. This wires the git-native team-memory vault (SPEC-053)
 
 Only if the user opts in. This wires the SDD git-native mechanism: the SAME backlog items and specs already in mneme's local database, ALSO written as reviewable Markdown files under `.mneme/sdd/` in this repository — so they can be reviewed in a pull request. Do not reimplement any of this yourself — invoke the existing command (rule 16):
 
-18. Run `mneme sdd enable` (the preview, without `--apply`) and relay its FULL output verbatim — the plan (how many backlog items and specs would be exported), the remote git reports locally, and the four honest warnings (publishing to git is not undone; mneme cannot tell whether the remote is public without a network call it deliberately never makes; mneme has not scanned the content for sensitive data; and these files sync into a pull request today, not yet into another machine's own database). Never paraphrase, summarize away, or suppress any of these.
-19. Explicitly tell the user, in your own words, what this step does NOT do yet: these files will not appear automatically on a teammate's machine after they clone or pull — no importer and no git hooks exist yet for that (arrives with a later part of this same project, referenced internally as BL-201). Today the only thing enabling this buys is: the backlog and specs become reviewable, as plain text, inside a pull request.
+18. Run `mneme sdd enable` (the preview, without `--apply`) and relay its FULL output verbatim — the plan (how many backlog items and specs would be exported), the remote git reports locally, and the four honest warnings (publishing to git is not undone; mneme cannot tell whether the remote is public without a network call it deliberately never makes; mneme has not scanned the content for sensitive data; and these files sync into a pull request today, AND into a teammate's own database on every pull/checkout once that teammate's machine has the git hooks installed). Never paraphrase, summarize away, or suppress any of these.
+19. Explicitly tell the user, in your own words, what this step buys and its one remaining limit: enabling installs THIS machine's own git hooks, so future pulls import automatically; a teammate who later clones this repository only needs to run `mneme sdd hooks install` once to start receiving the same imports. What still does not happen automatically: if two people create the SAME correlative (e.g. two "BL-050") at the same time, mneme detects and reports that collision but does not yet resolve it — that reconciliation is a separate, later part of this project.
 20. Wait for the user's explicit confirmation before applying — the same "read the preview, then confirm" gate Step 3 already uses for shared memory.
-21. On confirmation, run `mneme sdd enable --apply`. It exports every backlog item and spec (including archived items and already-completed specs), writes the enable marker (committed to the repository — this turns the mechanism on for every teammate who later clones it, the same "enabling is a team decision" posture as shared memory), and updates `.mneme/.gitignore`.
-22. If the command fails — not a git repository, or the repository already carries SDD records this database does not recognize (an unreadable file, or one anchored to a different machine's item) — relay the failure message verbatim (it already names the affected files) and skip. Do not attempt a manual workaround, and do not attempt to read or merge those foreign files yourself; that capability does not exist yet in this part of the project.
+21. On confirmation, run `mneme sdd enable --apply`. It exports every backlog item and spec (including archived items and already-completed specs), writes the enable marker (committed to the repository — this turns the mechanism on for every teammate who later clones it, the same "enabling is a team decision" posture as shared memory), updates `.mneme/.gitignore`, and installs this machine's own git hooks.
+22. If the command fails — not a git repository, or the repository already carries SDD records this database does not recognize (an unreadable file, or one anchored to a different machine's item) — relay the failure message verbatim (it already names the affected files and says to run `mneme sdd import` first) and skip. Do not attempt a manual workaround, and do not attempt to read or merge those foreign files yourself.
 
 ### Step 6 — Final report
 
