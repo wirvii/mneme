@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -104,6 +105,21 @@ func TestPermissionTable_MatchesAgentAssets(t *testing.T) {
 		if _, ok := PermissionTable[role]; !ok {
 			t.Errorf("%s exists in %s but has no PermissionTable entry for role %q", entry.Name(), dir, role)
 		}
+	}
+}
+
+// TestFrontendTools_DivergeOnlyByVisual pins SPEC-132 AC4/D1: frontendTools
+// must never differ from implementerBaseTools by anything other than the
+// browser block (Dp1) — that difference is the ONLY thing the split is
+// allowed to grow.
+//
+// Strict form (as of this commit, before the browser block exists):
+// frontendTools is element-for-element identical to implementerBaseTools.
+// A later commit in this same spec widens this to subtract the browser
+// block from frontendTools before comparing, once that block exists.
+func TestFrontendTools_DivergeOnlyByVisual(t *testing.T) {
+	if !slices.Equal(frontendTools, implementerBaseTools) {
+		t.Errorf("frontendTools diverges from implementerBaseTools:\n frontendTools:        %v\n implementerBaseTools: %v", frontendTools, implementerBaseTools)
 	}
 }
 

@@ -64,11 +64,42 @@ var qaTesterTools = []string{
 	"WebSearch", "WebFetch", "mcp__mneme__*",
 }
 
-// implementerTools is the allowlist shared by roles that implement code:
-// full edit toolset plus Bash. SPEC-087 D2 adds WebSearch/WebFetch (same
-// canonical placement as readOnlyTools/qaTesterTools) immediately before
-// mcp__mneme__*.
-var implementerTools = []string{
+// implementerBaseTools is the allowlist shared by the implementer roles that
+// do NOT get a browser: backend and bug-hunter. Full edit toolset plus Bash.
+// SPEC-087 D2 adds WebSearch/WebFetch (same canonical placement as
+// readOnlyTools/qaTesterTools) immediately before mcp__mneme__*.
+//
+// Renamed from implementerTools (SPEC-132 D1/Dp1): before this spec every
+// implementer shared one allowlist, so "implementerTools" meant "every
+// implementer's tools". Since frontend gets a browser and backend/bug-hunter
+// do not, that name would silently start meaning "every implementer except
+// frontend" without saying so — the exact kind of quiet drift D1 exists to
+// prevent. The rename forces a compile error at every use site, which is
+// the cheap way to make sure each one gets reviewed.
+var implementerBaseTools = []string{
+	"Read", "Grep", "Glob", "NotebookRead", "NotebookEdit", "BashOutput",
+	"Edit", "Write", "MultiEdit", "Bash", "WebSearch", "WebFetch", "mcp__mneme__*",
+}
+
+// frontendTools is frontend's own allowlist, split out of the former
+// implementerTools so backend/bug-hunter and frontend can diverge (SPEC-132
+// D1). As of this commit it is still element-for-element identical to
+// implementerBaseTools — the browser-server patterns land in a later commit
+// of the same spec — but the split already happens here so that capability
+// change touches only this variable's content, not its existence.
+//
+// Deliberately a LITERAL list, not a runtime composition such as
+// append(implementerBaseTools, ...) (SPEC-132 Dp1 alternative 2, rejected):
+// append on a slice with spare capacity can write into the backing array a
+// sibling slice still references, and the whole point of this table is that
+// it can be read literally, byte for byte, against the real frontmatter — a
+// composed value can't offer that same guarantee at a glance.
+//
+// TestFrontendTools_DivergeOnlyByVisual (SPEC-132 AC4) pins that
+// frontendTools never differs from implementerBaseTools by anything other
+// than the browser block, so a capability added to one and not the other
+// goes red instead of drifting silently.
+var frontendTools = []string{
 	"Read", "Grep", "Glob", "NotebookRead", "NotebookEdit", "BashOutput",
 	"Edit", "Write", "MultiEdit", "Bash", "WebSearch", "WebFetch", "mcp__mneme__*",
 }
@@ -113,15 +144,15 @@ var PermissionTable = map[Role]Permission{
 		PermissionMode: "",
 	},
 	RoleBackend: {
-		Tools:          implementerTools,
+		Tools:          implementerBaseTools,
 		PermissionMode: bypassPermissions,
 	},
 	RoleFrontend: {
-		Tools:          implementerTools,
+		Tools:          frontendTools,
 		PermissionMode: bypassPermissions,
 	},
 	RoleBugHunter: {
-		Tools:          implementerTools,
+		Tools:          implementerBaseTools,
 		PermissionMode: bypassPermissions,
 	},
 }

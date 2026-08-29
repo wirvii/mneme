@@ -120,9 +120,16 @@ func archetypeFromClaudeCapabilities(tools, permissionMode string) (Role, error)
 	if len(matches) == 0 {
 		return "", fmt.Errorf("subagents: contract from claude: capability envelope has no safe canonical archetype")
 	}
-	// Several implementer roles intentionally share the same envelope. Their
-	// Codex security projection is identical, so use the stable generic
-	// backend archetype rather than depending on map iteration order.
+	// backend and bug-hunter intentionally share the same envelope
+	// (implementerBaseTools). Their Codex security projection is identical,
+	// so use the stable generic backend archetype rather than depending on
+	// map iteration order. Before SPEC-132 split frontendTools out on its
+	// own, frontend was a third role sharing this same envelope and could
+	// land here too; a profile composed before that split still carries
+	// frontend's OLD (pre-browser) envelope and keeps resolving to backend
+	// exactly as it always did — this function reads PermissionTable as it
+	// stands today, so it never sees frontend's new, now-distinct envelope
+	// unless a legacy profile happens to still match it byte for byte.
 	for _, role := range matches {
 		if role == RoleBackend {
 			return role, nil
