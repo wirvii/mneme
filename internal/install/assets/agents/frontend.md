@@ -5,7 +5,7 @@ model: sonnet
 color: cyan
 permissionMode: bypassPermissions
 # bypassPermissions: implementer en autonomous runs (sin prompts de permiso); la barrera de rol es el allowlist tools: de abajo
-tools: Read, Grep, Glob, NotebookRead, NotebookEdit, BashOutput, Edit, Write, MultiEdit, Bash, WebSearch, WebFetch, mcp__mneme__*
+tools: Read, Grep, Glob, NotebookRead, NotebookEdit, BashOutput, Edit, Write, MultiEdit, Bash, WebSearch, WebFetch, mcp__chrome-live__*, mcp__plugin_chrome-devtools-mcp_chrome-devtools__*, mcp__plugin_playwright_playwright__*, mcp__mneme__*
 ---
 
 # Frontend Agent

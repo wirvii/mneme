@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -108,18 +109,101 @@ func TestPermissionTable_MatchesAgentAssets(t *testing.T) {
 	}
 }
 
+// withoutVisualTools returns tools with every visualTools entry removed,
+// preserving the relative order of what remains.
+func withoutVisualTools(tools []string) []string {
+	visual := make(map[string]bool, len(visualTools))
+	for _, v := range visualTools {
+		visual[v] = true
+	}
+	out := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		if !visual[tool] {
+			out = append(out, tool)
+		}
+	}
+	return out
+}
+
 // TestFrontendTools_DivergeOnlyByVisual pins SPEC-132 AC4/D1: frontendTools
 // must never differ from implementerBaseTools by anything other than the
 // browser block (Dp1) — that difference is the ONLY thing the split is
-// allowed to grow.
-//
-// Strict form (as of this commit, before the browser block exists):
-// frontendTools is element-for-element identical to implementerBaseTools.
-// A later commit in this same spec widens this to subtract the browser
-// block from frontendTools before comparing, once that block exists.
+// allowed to grow. Removing visualTools from frontendTools must reproduce
+// implementerBaseTools element for element, in order.
 func TestFrontendTools_DivergeOnlyByVisual(t *testing.T) {
-	if !slices.Equal(frontendTools, implementerBaseTools) {
-		t.Errorf("frontendTools diverges from implementerBaseTools:\n frontendTools:        %v\n implementerBaseTools: %v", frontendTools, implementerBaseTools)
+	got := withoutVisualTools(frontendTools)
+	if !slices.Equal(got, implementerBaseTools) {
+		t.Errorf("frontendTools minus visualTools diverges from implementerBaseTools:\n got:                  %v\n implementerBaseTools: %v", got, implementerBaseTools)
+	}
+}
+
+// TestPermissionTable_VisualToolsByRole pins SPEC-132 AC2/D1: exactly
+// qa-tester and frontend carry visualTools; the other four roles carry
+// none of it. Population derived from PermissionTable's own keys — adding a
+// fifth role is covered automatically. The negative assertion for the other
+// four is explicit (an empty set), not merely the absence of a positive
+// check.
+func TestPermissionTable_VisualToolsByRole(t *testing.T) {
+	wantVisual := map[Role]bool{
+		RoleQATester: true,
+		RoleFrontend: true,
+	}
+
+	for role, perm := range PermissionTable {
+		t.Run(string(role), func(t *testing.T) {
+			var present []string
+			for _, tool := range visualTools {
+				if slices.Contains(perm.Tools, tool) {
+					present = append(present, tool)
+				}
+			}
+			if wantVisual[role] {
+				if len(present) != len(visualTools) {
+					t.Errorf("role %q must carry all of visualTools, got %v (want %v)", role, present, visualTools)
+				}
+			} else if len(present) != 0 {
+				t.Errorf("role %q must carry NONE of visualTools, got %v", role, present)
+			}
+		})
+	}
+}
+
+// TestVisualTools_CanonicalPlacement pins SPEC-132 AC3/Dp2: for every role
+// that carries visualTools, (a) mcp__mneme__* is the LAST element of its
+// tools list, (b) the three positions immediately before it are equal,
+// element for element and IN ORDER, to visualTools — a sequence
+// comparison, not a set comparison, since a set would not distinguish a
+// swap within that segment — and (c) visualTools itself is sorted ASCII
+// ascending.
+//
+// The full tools list is deliberately NOT, and must never become, globally
+// sorted (Dp2): mcp__mneme__* sorts alphabetically before mcp__plugin...,
+// so sorting the whole list would move mcp__mneme__* out of last place and
+// break the older SPEC-087 D2 placement rule.
+func TestVisualTools_CanonicalPlacement(t *testing.T) {
+	if !sort.StringsAreSorted(visualTools) {
+		t.Errorf("visualTools is not ASCII-ascending sorted: %v", visualTools)
+	}
+
+	for role, perm := range PermissionTable {
+		if !slices.Contains(perm.Tools, visualTools[0]) {
+			continue // role does not carry visualTools at all — covered by TestPermissionTable_VisualToolsByRole.
+		}
+		t.Run(string(role), func(t *testing.T) {
+			tools := perm.Tools
+			last := len(tools) - 1
+			if tools[last] != "mcp__mneme__*" {
+				t.Fatalf("role %q: mcp__mneme__* is not the last element: %v", role, tools)
+			}
+			blockStart := last - len(visualTools)
+			if blockStart < 0 {
+				t.Fatalf("role %q: tools list too short to hold visualTools before mcp__mneme__*: %v", role, tools)
+			}
+			block := tools[blockStart:last]
+			if !slices.Equal(block, visualTools) {
+				t.Errorf("role %q: segment immediately before mcp__mneme__* is not visualTools in order:\n got:  %v\n want: %v", role, block, visualTools)
+			}
+		})
 	}
 }
 

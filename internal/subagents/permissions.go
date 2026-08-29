@@ -53,15 +53,48 @@ var readOnlyTools = []string{
 	"WebSearch", "WebFetch", "mcp__mneme__*",
 }
 
+// visualTools are the three browser-server MCP tool patterns mneme
+// recognises today (SPEC-132 D2) — no server name in this space is stable
+// (R4), so all three forms an agent might find installed are granted at
+// once rather than picking one or adding per-project configuration:
+//
+//   - mcp__chrome-live__*                                 (chrome-live)
+//   - mcp__plugin_chrome-devtools-mcp_chrome-devtools__*   (chrome-devtools MCP, as a plugin)
+//   - mcp__plugin_playwright_playwright__*                 (Playwright MCP, as a plugin)
+//
+// UNIQUE declaration of the set (SPEC-132 Dp1): every guardian that cares
+// which role has a browser reads this variable, so adding a fourth pattern
+// forces touching the role lists too or the guardians go red. Ordered ASCII
+// ascending (SPEC-132 Dp2) — this is the order WITHIN the block; the block
+// itself always sits immediately before mcp__mneme__*, which stays the
+// final entry in any list that carries it (SPEC-087 D2 precedent). The full
+// list is deliberately NOT globally sorted: "mcp__mneme__*" is
+// alphabetically before "mcp__plugin...", so sorting everything would move
+// it out of last place and break that older rule.
+var visualTools = []string{
+	"mcp__chrome-live__*",
+	"mcp__plugin_chrome-devtools-mcp_chrome-devtools__*",
+	"mcp__plugin_playwright_playwright__*",
+}
+
 // qaTesterTools is qa-tester's own allowlist (SPEC-087 D2): readOnlyTools
 // plus Bash — mirroring diagnosticianTools' shape (Bash after BashOutput) —
 // so qa-tester can run its own gates (go test, lint, build) instead of
 // depending on the orchestrator to run them and paste back the output. No
 // Edit/Write/MultiEdit/NotebookEdit: qa-tester's entregables go through the
 // spec_doc_write MCP tool (SPEC-087 D3), never a file-edit tool.
+//
+// SPEC-132 D1/D3: gains visualTools (immediately before mcp__mneme__*, per
+// Dp2) so qa-tester can open a screen and actually look at it instead of
+// declaring visual certification "pending the orchestrator" — the defect
+// this spec exists to close. qa-tester stops being read-only over DATA
+// (a browser can submit forms, delete records) while staying read-only over
+// CODE: no edit tool is added here.
 var qaTesterTools = []string{
 	"Read", "Grep", "Glob", "NotebookRead", "BashOutput", "Bash",
-	"WebSearch", "WebFetch", "mcp__mneme__*",
+	"WebSearch", "WebFetch",
+	"mcp__chrome-live__*", "mcp__plugin_chrome-devtools-mcp_chrome-devtools__*", "mcp__plugin_playwright_playwright__*",
+	"mcp__mneme__*",
 }
 
 // implementerBaseTools is the allowlist shared by the implementer roles that
@@ -83,10 +116,10 @@ var implementerBaseTools = []string{
 
 // frontendTools is frontend's own allowlist, split out of the former
 // implementerTools so backend/bug-hunter and frontend can diverge (SPEC-132
-// D1). As of this commit it is still element-for-element identical to
-// implementerBaseTools — the browser-server patterns land in a later commit
-// of the same spec — but the split already happens here so that capability
-// change touches only this variable's content, not its existence.
+// D1): the full edit toolset of implementerBaseTools, plus visualTools
+// (immediately before mcp__mneme__*, per Dp2) so frontend can open the
+// screen it just built instead of trusting that "compiles" means "renders
+// correctly" — the same defect class this spec closes for qa-tester.
 //
 // Deliberately a LITERAL list, not a runtime composition such as
 // append(implementerBaseTools, ...) (SPEC-132 Dp1 alternative 2, rejected):
@@ -101,7 +134,9 @@ var implementerBaseTools = []string{
 // goes red instead of drifting silently.
 var frontendTools = []string{
 	"Read", "Grep", "Glob", "NotebookRead", "NotebookEdit", "BashOutput",
-	"Edit", "Write", "MultiEdit", "Bash", "WebSearch", "WebFetch", "mcp__mneme__*",
+	"Edit", "Write", "MultiEdit", "Bash", "WebSearch", "WebFetch",
+	"mcp__chrome-live__*", "mcp__plugin_chrome-devtools-mcp_chrome-devtools__*", "mcp__plugin_playwright_playwright__*",
+	"mcp__mneme__*",
 }
 
 // diagnosticianTools is readOnlyTools's pre-SPEC-087 shape plus Bash (for

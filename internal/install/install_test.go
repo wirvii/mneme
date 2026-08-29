@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/wirvii/mneme/internal/subagents"
 )
 
 // TestClaudeCode_MCPConfig verifies that the MCP config function returns the
@@ -1306,7 +1308,7 @@ func TestDelegationHookContent_LogsBlockedAttempts(t *testing.T) {
 // byte-for-byte pin against subagents.PermissionTable.
 func TestAgentAssets_ReadOnlyAllowlists(t *testing.T) {
 	wantArchitectTools := "tools: Read, Grep, Glob, NotebookRead, BashOutput, WebSearch, WebFetch, mcp__mneme__*"
-	wantQATesterTools := "tools: Read, Grep, Glob, NotebookRead, BashOutput, Bash, WebSearch, WebFetch, mcp__mneme__*"
+	wantQATesterTools := "tools: Read, Grep, Glob, NotebookRead, BashOutput, Bash, WebSearch, WebFetch, mcp__chrome-live__*, mcp__plugin_chrome-devtools-mcp_chrome-devtools__*, mcp__plugin_playwright_playwright__*, mcp__mneme__*"
 	editTools := []string{"Edit", "Write", "MultiEdit"}
 
 	destDir := t.TempDir()
@@ -1342,6 +1344,14 @@ func TestAgentAssets_ReadOnlyAllowlists(t *testing.T) {
 			}
 			// The tools: line must never include an edit tool, regardless of
 			// permissionMode — that is the actual capability barrier.
+			//
+			// SPEC-132 trap: this MUST stay case-sensitive (strings.Contains,
+			// never a case-insensitive comparison). qa-tester's tools: line
+			// carries "mcp__plugin_playwright_playwright__*", which contains
+			// "write" in lower case but never "Write". Making this check
+			// case-insensitive would turn the browser pattern into a false
+			// positive here for a reason that has nothing to do with what
+			// this test actually verifies.
 			for _, line := range strings.Split(text, "\n") {
 				if strings.HasPrefix(strings.TrimSpace(line), "tools:") {
 					for _, editTool := range editTools {
@@ -1359,11 +1369,35 @@ func TestAgentAssets_ReadOnlyAllowlists(t *testing.T) {
 	}
 }
 
-// TestAgentAssets_ImplementerAllowlists verifies that backend, frontend, and
-// bug-hunter have the full edit toolset and mcp__mneme__* in their tools: line.
+// TestAgentAssets_ImplementerAllowlists verifies that every implementer role
+// has the full edit toolset and mcp__mneme__* in its tools: line, and
+// (SPEC-132 D1) that the three browser-server patterns land on frontend and
+// on NO other implementer.
+//
+// SPEC-132 Dp7: the POPULATION is derived from subagents.PermissionTable +
+// subagents.IsImplementer rather than a hand-written three-file list — today
+// that is still backend/frontend/bug-hunter, but a role added or removed
+// from the implementer set is picked up automatically. The EXPECTATIONS
+// stay literal on purpose (frontend's full tools: line, wantFrontendTools):
+// TestPermissionTable_MatchesAgentAssets compares PermissionTable against
+// the asset, so it cannot catch the two drifting together — losing the
+// browser block from BOTH at once. Only a hand-copied, independent literal
+// catches that (the same reasoning wantQATesterTools already relies on).
 func TestAgentAssets_ImplementerAllowlists(t *testing.T) {
-	implementerAgents := []string{"backend.md", "frontend.md", "bug-hunter.md"}
 	requiredTools := []string{"Edit", "Write", "MultiEdit", "Bash", "mcp__mneme__*"}
+	visualPatterns := []string{
+		"mcp__chrome-live__*",
+		"mcp__plugin_chrome-devtools-mcp_chrome-devtools__*",
+		"mcp__plugin_playwright_playwright__*",
+	}
+	wantFrontendTools := "tools: Read, Grep, Glob, NotebookRead, NotebookEdit, BashOutput, Edit, Write, MultiEdit, Bash, WebSearch, WebFetch, mcp__chrome-live__*, mcp__plugin_chrome-devtools-mcp_chrome-devtools__*, mcp__plugin_playwright_playwright__*, mcp__mneme__*"
+
+	var implementerAgents []string
+	for role := range subagents.PermissionTable {
+		if subagents.IsImplementer(role) {
+			implementerAgents = append(implementerAgents, string(role)+".md")
+		}
+	}
 
 	destDir := t.TempDir()
 	files, err := filesFromEmbed(builtinAgents, "assets/agents", destDir)
@@ -1396,6 +1430,21 @@ func TestAgentAssets_ImplementerAllowlists(t *testing.T) {
 				if !strings.Contains(toolsLine, tool) {
 					t.Errorf("%s: tools: line missing %q, got %q", name, tool, toolsLine)
 				}
+			}
+
+			isFrontend := name == "frontend.md"
+			for _, pattern := range visualPatterns {
+				has := strings.Contains(toolsLine, pattern)
+				switch {
+				case isFrontend && !has:
+					t.Errorf("%s: tools: line missing browser pattern %q, got %q", name, pattern, toolsLine)
+				case !isFrontend && has:
+					t.Errorf("%s: tools: line must not contain browser pattern %q, got %q", name, pattern, toolsLine)
+				}
+			}
+
+			if isFrontend && !strings.Contains(text, wantFrontendTools) {
+				t.Errorf("frontend.md: missing expected tools line %q", wantFrontendTools)
 			}
 		}
 		if !found {

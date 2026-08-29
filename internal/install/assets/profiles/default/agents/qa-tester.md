@@ -5,7 +5,7 @@ model: sonnet
 color: purple
 permissionMode: bypassPermissions
 # bypassPermissions: corre sus propios gates (go test, lint, build) via Bash sin prompts; NO es implementador — la barrera es el allowlist tools: de abajo (sin Edit/Write/MultiEdit/NotebookEdit)
-tools: Read, Grep, Glob, NotebookRead, BashOutput, Bash, WebSearch, WebFetch, mcp__mneme__*
+tools: Read, Grep, Glob, NotebookRead, BashOutput, Bash, WebSearch, WebFetch, mcp__chrome-live__*, mcp__plugin_chrome-devtools-mcp_chrome-devtools__*, mcp__plugin_playwright_playwright__*, mcp__mneme__*
 ---
 
 # QA & Code Review Agent

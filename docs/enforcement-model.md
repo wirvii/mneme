@@ -58,10 +58,10 @@ therefore follows, and never replaces, the role filter.
 | Role | `tools:` allowlist |
 |---|---|
 | `architect` | `Read, Grep, Glob, NotebookRead, BashOutput, WebSearch, WebFetch, mcp__mneme__*` |
-| `qa-tester` | `Read, Grep, Glob, NotebookRead, BashOutput, Bash, WebSearch, WebFetch, mcp__mneme__*` — Bash + `permissionMode: bypassPermissions` since SPEC-087 D2/D2b, so its own gates (`go test`, lint, build) run unattended; still no Edit/Write/MultiEdit/NotebookEdit — the capability barrier stays the allowlist, not the permission mode (see `IsImplementer`, SPEC-087 D1) |
+| `qa-tester` | `Read, Grep, Glob, NotebookRead, BashOutput, Bash, WebSearch, WebFetch, mcp__chrome-live__*, mcp__plugin_chrome-devtools-mcp_chrome-devtools__*, mcp__plugin_playwright_playwright__*, mcp__mneme__*` — Bash + `permissionMode: bypassPermissions` since SPEC-087 D2/D2b, so its own gates (`go test`, lint, build) run unattended; still no Edit/Write/MultiEdit/NotebookEdit — the capability barrier stays the allowlist, not the permission mode (see `IsImplementer`, SPEC-087 D1). The three `mcp__*` browser patterns are SPEC-132 D1/D2/D3: qa-tester can now open a real screen and look at it, and is no longer read-only over DATA (though it stays read-only over CODE) |
 | `diagnostician` | `Read, Grep, Glob, NotebookRead, BashOutput, Bash, mcp__mneme__*` — Bash for log reading; NO Edit/Write/MultiEdit. SPEC-087 D2/decision-3 deliberately does NOT add WebSearch/WebFetch here |
 | `backend` | `Read, Grep, Glob, NotebookRead, NotebookEdit, BashOutput, Edit, Write, MultiEdit, Bash, WebSearch, WebFetch, mcp__mneme__*` |
-| `frontend` | `Read, Grep, Glob, NotebookRead, NotebookEdit, BashOutput, Edit, Write, MultiEdit, Bash, WebSearch, WebFetch, mcp__mneme__*` |
+| `frontend` | `Read, Grep, Glob, NotebookRead, NotebookEdit, BashOutput, Edit, Write, MultiEdit, Bash, WebSearch, WebFetch, mcp__chrome-live__*, mcp__plugin_chrome-devtools-mcp_chrome-devtools__*, mcp__plugin_playwright_playwright__*, mcp__mneme__*` — the three `mcp__*` browser patterns are SPEC-132 D1/D2: frontend can open the screen it just built. backend and bug-hunter deliberately do NOT get them |
 | `bug-hunter` | `Read, Grep, Glob, NotebookRead, NotebookEdit, BashOutput, Edit, Write, MultiEdit, Bash, WebSearch, WebFetch, mcp__mneme__*` |
 
 `IsImplementer(role)` (`internal/subagents/permissions.go`) reports edit
