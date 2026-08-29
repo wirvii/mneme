@@ -170,6 +170,18 @@ func TestSDDEnable_DryRunWritesNothing(t *testing.T) {
 // directions on the same repository, so a future regression that
 // reintroduces the asymmetry in either command fails this test.
 func TestSDDEnableDisable_PreviewsAnnounceHookInstallation(t *testing.T) {
+	// AC14's own SDDWarnNoCrossMachineSyncYet warning (present in EVERY
+	// enable preview, dry-run or applied) already contains the literal
+	// text "mneme sdd hooks install" — a loose substring check for
+	// "install" and "hook" would pass on THAT warning alone, whether or
+	// not the actual hook-installation announcement this test exists to
+	// guard even exists (a substring collision QA's review caught: it
+	// deleted the real announcement and this test stayed green). The
+	// fixed assertion below matches the EXACT phrase each preview uses,
+	// which does not appear anywhere else in either command's output.
+	const enablePhrase = "install this machine's own SDD git hooks"
+	const disablePhrase = "remove this machine's own SDD git hooks"
+
 	repoDir, fakeHome := sddCLITestRepo(t)
 	seedSDDBacklog(t, repoDir, fakeHome, "hook preview item")
 	t.Setenv("HOME", fakeHome)
@@ -178,8 +190,8 @@ func TestSDDEnableDisable_PreviewsAnnounceHookInstallation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sdd enable (dry-run): %v", err)
 	}
-	if !strings.Contains(enableOut, "install") || !strings.Contains(enableOut, "hook") {
-		t.Errorf("enable's dry-run preview does not announce hook installation:\n%s", enableOut)
+	if !strings.Contains(enableOut, enablePhrase) {
+		t.Errorf("enable's dry-run preview does not contain %q:\n%s", enablePhrase, enableOut)
 	}
 
 	// Apply enable so disable's own dry-run preview (which requires the
@@ -192,10 +204,18 @@ func TestSDDEnableDisable_PreviewsAnnounceHookInstallation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sdd disable (dry-run): %v", err)
 	}
-	if !strings.Contains(disableOut, "remove") || !strings.Contains(disableOut, "hook") {
-		t.Errorf("disable's dry-run preview does not announce hook removal:\n%s", disableOut)
+	if !strings.Contains(disableOut, disablePhrase) {
+		t.Errorf("disable's dry-run preview does not contain %q:\n%s", disablePhrase, disableOut)
 	}
 }
+
+// Mutaciones exigidas, en las dos direcciones (QA rejection, round 3 —
+// ejecutadas y revertidas durante la implementacion; resultado real en
+// changes.md): quitar SOLO el anuncio de enable -> rojo por enablePhrase
+// (y el aviso preexistente SDDWarnNoCrossMachineSyncYet, que comparte las
+// palabras sueltas "install"/"hook" pero NUNCA la frase exacta, se queda
+// en la salida sin afectar el resultado); quitar SOLO el anuncio de
+// disable -> rojo por disablePhrase.
 
 // TestSDDEnable_ApplyThenIdempotent is AC13.
 func TestSDDEnable_ApplyThenIdempotent(t *testing.T) {

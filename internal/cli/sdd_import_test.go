@@ -318,6 +318,45 @@ func TestRunSDDHooksImport_ForeignProjectMarkerIsLogged(t *testing.T) {
 	runSDDHooksImport()
 }
 
+// TestRunSDDHooksImport_MalformedConfigIsLogged closes runSDDHooksImport's
+// own initSDDService()-error branch (QA rejection, round 3 — the
+// technique the review found, verified with an 8-point coverage jump): a
+// malformed ~/.mneme/config.toml — a real condition a hand-edited or
+// half-written config file could leave behind, not a fabricated one —
+// makes config.Load fail, which makes initSDDService fail, landing
+// exactly on the branch every other test in this file happened to never
+// reach (initSDDService almost never fails through any other path).
+func TestRunSDDHooksImport_MalformedConfigIsLogged(t *testing.T) {
+	repoDir, fakeHome := sddCLITestRepo(t)
+	t.Setenv("HOME", fakeHome)
+
+	cfgDir := filepath.Join(fakeHome, ".mneme")
+	if mkErr := os.MkdirAll(cfgDir, 0o755); mkErr != nil {
+		t.Fatalf("mkdir %s: %v", cfgDir, mkErr)
+	}
+	// Genuinely invalid TOML — an unterminated table header.
+	if wErr := os.WriteFile(filepath.Join(cfgDir, "config.toml"), []byte("[storage\nbroken = true\n"), 0o644); wErr != nil {
+		t.Fatalf("write malformed config.toml: %v", wErr)
+	}
+
+	resetGlobalCLIFlags(t)
+	gitident.Reset()
+	t.Cleanup(gitident.Reset)
+	orig, wdErr := os.Getwd()
+	if wdErr != nil {
+		t.Fatalf("Getwd: %v", wdErr)
+	}
+	if chErr := os.Chdir(repoDir); chErr != nil {
+		t.Fatalf("Chdir: %v", chErr)
+	}
+	t.Cleanup(func() { _ = os.Chdir(orig) })
+
+	// Must not panic — D62's whole point, exercised here through
+	// initSDDService's own failure rather than gitDir's or
+	// ImportSDDFromRepo's.
+	runSDDHooksImport()
+}
+
 // TestSDDStatus_ReportsCompletedFileAsPending is SPEC-131 AC25: after an
 // import completes an incomplete file (D46), `mneme sdd status` names it
 // under PendingGit — and keeps naming it on a SECOND call, since this is

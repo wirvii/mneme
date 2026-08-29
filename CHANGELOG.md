@@ -101,6 +101,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   documented in `changes.md` with the specific reason each one cannot be
   closed further without inventing a scenario that would not occur in
   practice.
+- **QA rejection fix, round 3 (SPEC-131 §2b): a real batch-abort defect, a
+  vacuous test caught by its own substring collision, and two of the
+  three previously-accepted below-80% functions closed after all.**
+  `ImportSDDFromRepo`'s own "only in base" summary step
+  (`computeOnlyInBase`) used to ABORT THE ENTIRE IMPORT — discarding
+  every already-recorded `Created`/`Updated`/`Skipped` entry — when a
+  SINGLE pre-existing database row it merely lists (never even part of
+  the files being imported) carried a timestamp the store could not
+  parse. This directly contradicted D22 ("a broken record is skipped,
+  the rest of the batch enters, the import never aborts") — silently, for
+  every record in the batch, not just the malformed row's own. Fixed by
+  logging and swallowing that one step's own failure instead of
+  propagating it; a new test reproduces the exact scenario (a malformed
+  timestamp inserted directly via SQL, since no mneme write path can ever
+  produce one) and is confirmed red without the fix, green with it. Also
+  fixed: the enable/disable preview-symmetry test added in the previous
+  round was itself half-vacuous — a pre-existing, unrelated warning in
+  `enable`'s own output happens to contain the same loose words ("install",
+  "hook") the test searched for by substring, so deleting the real
+  announcement left the test green. Replaced with an exact-phrase match
+  confirmed red in both directions (deleting either command's own
+  announcement). Two of the three functions accepted as below-80% in the
+  previous round turn out to close after all, using the SAME
+  real-condition discipline: a pre-existing row sharing an INCOMING
+  file's own correlative, corrupted the same way, reaches
+  `importBacklogRecord`'s "read this existing row" failure branch
+  (68.3%→80.5%, closing it) and its `importSpecRecord` sibling
+  (56.2%→79.2%, a large improvement short of the floor); a malformed
+  `~/.mneme/config.toml` reaches `runSDDHooksImport`'s own
+  `initSDDService` failure branch (76.0%→84.0%, closing it). The third
+  function's own remaining gap (`os.Getwd`/`os.UserHomeDir` failures,
+  essentially unreachable on a live process) is accepted as before.
 
 ## [v1.42.0] — 2026-08-27 — SDD anchors and per-session speech queue
 

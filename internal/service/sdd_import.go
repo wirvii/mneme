@@ -259,12 +259,21 @@ func (svc *SDDService) ImportSDDFromRepo(ctx context.Context, repoRoot string, a
 		}
 	}
 
+	// A failure here (e.g. a pre-existing row this import batch never
+	// touched, with a timestamp the store cannot parse) must NEVER discard
+	// the batch's own Created/Updated/Skipped work already recorded in
+	// result — that would be exactly the abort-the-whole-thing D22
+	// forbids, just relocated to this auxiliary reporting step instead of
+	// a single file's own parse error. Logged and swallowed instead: the
+	// import itself already succeeded; only the "only in base" summary is
+	// degraded for this run.
 	onlyInBase, total, err := svc.computeOnlyInBase(ctx, covered)
 	if err != nil {
-		return nil, fmt.Errorf("service: sdd import: only in base: %w", err)
+		slog.ErrorContext(ctx, "sdd_import_error", "step", "only-in-base", "error", err)
+	} else {
+		result.OnlyInBase = onlyInBase
+		result.OnlyInBaseTotal = total
 	}
-	result.OnlyInBase = onlyInBase
-	result.OnlyInBaseTotal = total
 
 	return result, nil
 }
