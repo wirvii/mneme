@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -21,6 +22,7 @@ import (
 	"github.com/wirvii/mneme/internal/install"
 	"github.com/wirvii/mneme/internal/model"
 	"github.com/wirvii/mneme/internal/quality"
+	"github.com/wirvii/mneme/internal/sddfile"
 	"github.com/wirvii/mneme/internal/store"
 )
 
@@ -87,6 +89,73 @@ func (svc *SDDService) WithMemoryService(memorySvc *MemoryService) {
 	svc.memorySvc = memorySvc
 }
 
+// --- NUMBERING (SPEC-131 D21/D55) ---
+
+// nextBacklogID returns the next backlog correlative: exactly
+// store.NextBacklogID's own answer when the SDD git-native mechanism is OFF
+// for svc.repoDir (D55 fila (a) — today's behaviour, byte for byte
+// unchanged), or the MAX of that answer and one past the highest
+// correlative reserved by a file under .mneme/sdd/backlog/ when the
+// mechanism is ON (fila (b)/(c)) — because the store cannot see a file a
+// teammate committed and this machine has not yet imported (BL-201's own
+// premise: reading is what makes that file's number visible at all).
+//
+// A failure reading the disk (sddfile.MaxBacklogID) NEVER breaks
+// BacklogAdd — it is logged and the database's own answer wins, the same
+// "the mechanism going off by accident must never be worse than the
+// mechanism never having existed" posture ResolveSDDState's callers share
+// throughout this package.
+func (svc *SDDService) nextBacklogID(ctx context.Context, project string) (string, error) {
+	baseID, err := svc.store.NextBacklogID(ctx, project)
+	if err != nil {
+		return "", err
+	}
+	if svc.repoDir == "" || !ResolveSDDState(svc.repoDir).Enabled {
+		return baseID, nil
+	}
+
+	maxFile, fErr := sddfile.MaxBacklogID(svc.repoDir)
+	if fErr != nil {
+		slog.ErrorContext(ctx, "sdd_numbering_error", "kind", "backlog", "step", "max-file-id", "error", fErr)
+		return baseID, nil
+	}
+
+	var baseNum int
+	if _, sErr := fmt.Sscanf(baseID, "BL-%d", &baseNum); sErr != nil {
+		return baseID, nil
+	}
+	if maxFile >= baseNum {
+		return fmt.Sprintf("BL-%03d", maxFile+1), nil
+	}
+	return baseID, nil
+}
+
+// nextSpecID is nextBacklogID's sibling for specs.
+func (svc *SDDService) nextSpecID(ctx context.Context, project string) (string, error) {
+	baseID, err := svc.store.NextSpecID(ctx, project)
+	if err != nil {
+		return "", err
+	}
+	if svc.repoDir == "" || !ResolveSDDState(svc.repoDir).Enabled {
+		return baseID, nil
+	}
+
+	maxFile, fErr := sddfile.MaxSpecID(svc.repoDir)
+	if fErr != nil {
+		slog.ErrorContext(ctx, "sdd_numbering_error", "kind", "spec", "step", "max-file-id", "error", fErr)
+		return baseID, nil
+	}
+
+	var baseNum int
+	if _, sErr := fmt.Sscanf(baseID, "SPEC-%d", &baseNum); sErr != nil {
+		return baseID, nil
+	}
+	if maxFile >= baseNum {
+		return fmt.Sprintf("SPEC-%03d", maxFile+1), nil
+	}
+	return baseID, nil
+}
+
 // --- BACKLOG METHODS ---
 
 // BacklogAdd creates a new backlog item with status raw.
@@ -121,7 +190,7 @@ func (svc *SDDService) BacklogAdd(ctx context.Context, req model.BacklogAddReque
 		return nil, model.ErrScopeRequired
 	}
 
-	id, err := svc.store.NextBacklogID(ctx, req.Project)
+	id, err := svc.nextBacklogID(ctx, req.Project)
 	if err != nil {
 		return nil, fmt.Errorf("service: backlog add: next id: %w", err)
 	}
@@ -456,7 +525,7 @@ func (svc *SDDService) SpecNew(ctx context.Context, req model.SpecNewRequest) (*
 		return nil, model.ErrScopeRequired
 	}
 
-	id, err := svc.store.NextSpecID(ctx, req.Project)
+	id, err := svc.nextSpecID(ctx, req.Project)
 	if err != nil {
 		return nil, fmt.Errorf("service: spec new: next id: %w", err)
 	}

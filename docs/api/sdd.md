@@ -1,21 +1,24 @@
-# API Reference — SDD Tools (`backlog_*`, `spec_*`, `lane_*`, `quality_*`, `init`)
+# API Reference — SDD Tools (`backlog_*`, `spec_*`, `lane_*`, `quality_*`, `sdd_*`, `init`)
 
-26 MCP tools over JSON-RPC 2.0 stdio (`mneme mcp`): `backlog_*` (6), `spec_*`
-(9), `lane_*` (5), `quality_*` (5), `init` (1). Concept guide:
+28 MCP tools over JSON-RPC 2.0 stdio (`mneme mcp`): `backlog_*` (6), `spec_*`
+(9), `lane_*` (5), `quality_*` (5), `sdd_*` (2), `init` (1). Concept guide:
 [docs/lanes.md](../lanes.md) (trivial/standard lanes, auditor thresholds),
 [docs/init.md](../init.md) (managed blocks, drift, legacy migration),
 [docs/quality.md](../quality.md) (the quality constitution, certificates,
-and the `spec_advance` block, SPEC-115). Index: [docs/API.md](../API.md).
+and the `spec_advance` block, SPEC-115),
+[docs/sdd-git-native.md](../sdd-git-native.md) (the SDD git-native
+mechanism's file format, write path, and read path, SPEC-130/SPEC-131).
+Index: [docs/API.md](../API.md).
 
-**SPEC-130 §2a adds no MCP tool here.** The SDD git-native mechanism (the
-same backlog items and specs, ALSO written as reviewable Markdown files
-under `.mneme/sdd/` in the repository — see
-[docs/sdd-git-native.md](../sdd-git-native.md)) is CLI-only in this part:
-`mneme sdd enable|disable|export|status`. The tool count above stays exactly
-26 (and the project-wide MCP surface stays 85) — `sdd_status`/`sdd_import`
-arrive with BL-201, and `sdd_enable`/`sdd_disable` are never planned to
-become tools at all (a `--apply` an agent could call unattended would defeat
-the human-confirmation gate that publishing a backlog to git requires).
+**`sdd_enable`/`sdd_disable`/`sdd_export` are still never planned to become
+tools at all** — a `--apply` an agent could call unattended would defeat
+the human-confirmation gate that publishing a backlog to git requires.
+`sdd_status`/`sdd_import` (SPEC-131 §2b, the project-wide MCP surface's
+86th/87th tools, taking it from 85 to 87) ARE tools: `sdd_status` is
+read-only, and `sdd_import` — the automated equivalent of `mneme sdd
+import` — is deliberately safe to call from an agent because it only ever
+brings COMMITTED, already-reviewed files into the local database; see
+their entries below.
 
 **Archiving a backlog item can freeze its spec (SPEC-125):** `backlog_archive`
 requires a reason and is refused when the item is already archived, or when
@@ -505,6 +508,102 @@ audit-fail count and rate, override count, reclassify count.
 ```json
 {"trivial_count": 12, "audit_fail_count": 2, "audit_fail_rate": 0.166, "override_count": 1, "reclassify_count": 1}
 ```
+
+---
+
+## SDD Tools (SPEC-131 §2b)
+
+The reading half of the SDD git-native mechanism: bringing a repository's
+committed `.mneme/sdd/` Markdown files into the local database. See
+[docs/sdd-git-native.md](../sdd-git-native.md) for the file format and the
+write path (SPEC-130 §2a) these two tools read back from. Both take no
+arguments — they always operate on the current repository (`h.sdd.
+RepoDir()`), the same root every other `mneme sdd` command resolves from.
+`sdd_import`'s response uses the same snake_case convention as every other
+tool on this page; `sdd_status`'s does not — its Go struct carries no
+`json` tags at all, so its fields serialize under their Go names
+(`RepoRoot`, `Enabled`, …), a deliberate exception worth knowing before
+parsing it.
+
+### sdd_status
+
+Report the mechanism's state for this repository: on/off, pending git
+changes, broken/conflicted/incomplete/divergent files, whether THIS
+machine's own git hooks are installed, and correlatives that exist only in
+the local database on this branch. Read-only — never writes anything. Same
+response `mneme sdd status --json` prints.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| _(none)_  |      |          |              |
+
+**Returns** (abbreviated — every field beyond `RepoRoot`/`Enabled`/`Plan`/
+`PendingGit` is derived at the moment of the call, never read from a
+dedicated state file):
+
+```json
+{
+  "RepoRoot": "/path/to/repo",
+  "Enabled": true,
+  "Plan": { "...": "..." },
+  "PendingGit": "",
+  "Broken": [],
+  "ForeignPaths": [],
+  "Conflicted": [],
+  "Incomplete": [],
+  "Divergent": [],
+  "HooksInstalled": true,
+  "OnlyInBaseCount": 0,
+  "FrozenBlocked": []
+}
+```
+
+**Errors:** `-32000` when the SDD engine is unavailable.
+
+### sdd_import
+
+Import this repository's SDD backlog/specs (`.mneme/sdd/`) into the local
+database — the same read path the installed git hooks run automatically
+after every pull/checkout. Decides by anchor, never by correlative: a
+record already known here by its own UUIDv7 anchor is created or updated;
+a correlative already claimed by a DIFFERENT anchor is skipped and
+reported by title, never by anchor (no field on this response ever
+carries one, matching SPEC-128 D9). Executes unconditionally — there is no
+dry-run parameter over MCP (the CLI's own `--dry-run` flag has no
+equivalent here, since nothing this mechanism writes is ever destructive:
+D13 already guarantees no file under `.mneme/sdd/` is ever deleted).
+**Denied to subagents** (`lifecycleTools` in `internal/cli/hook.go`): an
+implementer editing its own record file and then calling this tool would
+be authorizing its own status change, the same family `spec_advance`/
+`spec_quick`/`quality_ack`/`backlog_archive` already belong to.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|--------------|
+| _(none)_  |      |          |              |
+
+**Returns:**
+
+```json
+{
+  "created": ["BL-050 (backlog/BL-050.md)"],
+  "updated": ["SPEC-130: implementing -> qa"],
+  "completed": [{"path": "backlog/BL-003.md", "id": "BL-003", "fields": ["priority"]}],
+  "skipped": [{"path": "specs/SPEC-131/record.md", "id": "SPEC-131", "reason": "correlativo-reclamado-por-dos-elementos"}],
+  "only_in_base": ["BL-012"],
+  "only_in_base_total": 1,
+  "no_op_reason": ""
+}
+```
+
+`no_op_reason` is the ONLY field populated (`"mecanismo apagado"` when the
+marker exists but `.mneme/sdd.off` is present, `"no hay directorio
+.mneme/sdd"` when the mechanism was never enabled) when the import had
+nothing to do — every other field is left empty rather than reporting a
+false zero-work success.
+
+**Errors:** `-32000` when the SDD engine is unavailable, or on a foreign
+project marker (a `.mneme/sdd/.mneme-sdd` committed by a different mneme
+project).
 
 ---
 

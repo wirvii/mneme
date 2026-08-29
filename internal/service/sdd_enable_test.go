@@ -42,9 +42,14 @@ func TestSDDEnable_PreviewWritesNothing(t *testing.T) {
 	}
 }
 
-// TestSDDEnable_WarningsContainTheRequiredPhrases is AC14, exercised at the
-// service layer directly (the CLI-level test in commit 7 re-asserts the
-// same substrings against the printed output).
+// TestSDDEnable_WarningsContainTheRequiredPhrases is AC14 (SPEC-130),
+// extended by AC19 (SPEC-131 W12): the fourth warning's text was REPLACED
+// (not the other three), so this test keeps its original three assertions
+// unchanged and ADDS the two new phrases the replacement text must carry —
+// "revisarse en un pull request" stays true and stays asserted; "mneme sdd
+// hooks install" and the unresolved-collision phrase are what changed.
+// Exercised at the service layer directly (the CLI-level test in commit 7
+// re-asserts the same substrings against the printed output).
 func TestSDDEnable_WarningsContainTheRequiredPhrases(t *testing.T) {
 	svc, repoDir := newSDDMaterializeService(t, "wirvii/mneme")
 	result, err := svc.EnableSDDRepo(context.Background(), repoDir, false)
@@ -57,6 +62,8 @@ func TestSDDEnable_WarningsContainTheRequiredPhrases(t *testing.T) {
 		"no puede determinar si el remoto es publico",
 		"no ha escaneado el contenido",
 		"revisarse en un pull request",
+		"mneme sdd hooks install",
+		"todavia no resuelve",
 	}
 	for _, want := range mustContain {
 		if !strings.Contains(joined, want) {
@@ -355,5 +362,27 @@ func TestSDDStatus_ReportsBrokenAndForeign(t *testing.T) {
 	}
 	if len(status.Broken) != 1 {
 		t.Errorf("Broken = %v, want exactly 1 entry", status.Broken)
+	}
+}
+
+// TestSDDStatus_IgnoresSpecEntregables is SPEC-131 commit 2's own row: with
+// the old heuristic (filepath.Base(path) == "record.md", W7) a plan.md
+// deposited beside a spec's record.md would be misclassified as a backlog
+// item and reported broken. ClassifyRecordPath (D63) ignores it instead.
+func TestSDDStatus_IgnoresSpecEntregables(t *testing.T) {
+	svc, repoDir := newSDDMaterializeService(t, "wirvii/mneme")
+	ctx := context.Background()
+
+	planPath := filepath.Join(sddfile.SpecDir(repoDir, "SPEC-001"), "plan.md")
+	if err := sddfile.WriteRecord(planPath, []byte("# Plan\n\nnot an SDD record at all")); err != nil {
+		t.Fatalf("write plan.md fixture: %v", err)
+	}
+
+	status, err := svc.SDDStatus(ctx, repoDir)
+	if err != nil {
+		t.Fatalf("SDDStatus: %v", err)
+	}
+	if len(status.Broken) != 0 {
+		t.Errorf("Broken = %v, want empty — plan.md must be ignored, not reported broken (W7/D63)", status.Broken)
 	}
 }

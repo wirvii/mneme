@@ -162,6 +162,61 @@ func TestSDDEnable_DryRunWritesNothing(t *testing.T) {
 	}
 }
 
+// TestSDDEnableDisable_PreviewsAnnounceHookInstallation is the QA-rejection
+// fix for D17's own promise ("the preview must say everything that is
+// going to happen") — `enable`'s dry-run preview used to omit that
+// `--apply` also installs this machine's own git hooks, while `disable`'s
+// dry-run preview already announced their removal. Checked in BOTH
+// directions on the same repository, so a future regression that
+// reintroduces the asymmetry in either command fails this test.
+func TestSDDEnableDisable_PreviewsAnnounceHookInstallation(t *testing.T) {
+	// AC14's own SDDWarnNoCrossMachineSyncYet warning (present in EVERY
+	// enable preview, dry-run or applied) already contains the literal
+	// text "mneme sdd hooks install" — a loose substring check for
+	// "install" and "hook" would pass on THAT warning alone, whether or
+	// not the actual hook-installation announcement this test exists to
+	// guard even exists (a substring collision QA's review caught: it
+	// deleted the real announcement and this test stayed green). The
+	// fixed assertion below matches the EXACT phrase each preview uses,
+	// which does not appear anywhere else in either command's output.
+	const enablePhrase = "install this machine's own SDD git hooks"
+	const disablePhrase = "remove this machine's own SDD git hooks"
+
+	repoDir, fakeHome := sddCLITestRepo(t)
+	seedSDDBacklog(t, repoDir, fakeHome, "hook preview item")
+	t.Setenv("HOME", fakeHome)
+
+	enableOut, _, err := runSDDCmd(t, repoDir, "enable")
+	if err != nil {
+		t.Fatalf("sdd enable (dry-run): %v", err)
+	}
+	if !strings.Contains(enableOut, enablePhrase) {
+		t.Errorf("enable's dry-run preview does not contain %q:\n%s", enablePhrase, enableOut)
+	}
+
+	// Apply enable so disable's own dry-run preview (which requires the
+	// mechanism to already be on) has something real to preview against.
+	if _, _, err := runSDDCmd(t, repoDir, "enable", "--apply"); err != nil {
+		t.Fatalf("sdd enable --apply: %v", err)
+	}
+
+	disableOut, _, err := runSDDCmd(t, repoDir, "disable")
+	if err != nil {
+		t.Fatalf("sdd disable (dry-run): %v", err)
+	}
+	if !strings.Contains(disableOut, disablePhrase) {
+		t.Errorf("disable's dry-run preview does not contain %q:\n%s", disablePhrase, disableOut)
+	}
+}
+
+// Mutaciones exigidas, en las dos direcciones (QA rejection, round 3 —
+// ejecutadas y revertidas durante la implementacion; resultado real en
+// changes.md): quitar SOLO el anuncio de enable -> rojo por enablePhrase
+// (y el aviso preexistente SDDWarnNoCrossMachineSyncYet, que comparte las
+// palabras sueltas "install"/"hook" pero NUNCA la frase exacta, se queda
+// en la salida sin afectar el resultado); quitar SOLO el anuncio de
+// disable -> rojo por disablePhrase.
+
 // TestSDDEnable_ApplyThenIdempotent is AC13.
 func TestSDDEnable_ApplyThenIdempotent(t *testing.T) {
 	repoDir, fakeHome := sddCLITestRepo(t)
@@ -195,11 +250,15 @@ func gitPorcelain(t *testing.T, dir string) string {
 	return string(out)
 }
 
-// TestSDDEnable_RefusesForeignRecords is AC17: a BL-050.md whose anchor the
-// local database does not know makes `sdd enable --apply` (and `sdd
-// export`) refuse WITHOUT writing anything, naming the file and BL-201/
-// BL-202. The required mutation — removing the guard — is executed for
-// real below and reverted byte for byte.
+// TestSDDEnable_RefusesForeignRecords is AC17 (SPEC-130), UPDATED by
+// SPEC-131 D61: the refusal's text changed from "leerlos llega con BL-201"
+// (reading did not exist) to "ejecuta mneme sdd import primero" (it does
+// now) — the mention of BL-202 (the still-pending collision reconciler)
+// survives unchanged. A BL-050.md whose anchor the local database does not
+// know makes `sdd enable --apply` (and `sdd export`) refuse WITHOUT
+// writing anything, naming the file, the import remedy, and BL-202. The
+// required mutation — removing the guard — is executed for real below and
+// reverted byte for byte.
 func TestSDDEnable_RefusesForeignRecords(t *testing.T) {
 	repoDir, fakeHome := sddCLITestRepo(t)
 	t.Setenv("HOME", fakeHome)
@@ -223,8 +282,8 @@ func TestSDDEnable_RefusesForeignRecords(t *testing.T) {
 		t.Fatalf("sdd enable --apply must refuse with a foreign anchor present; stdout=%q stderr=%q", stdout, stderr)
 	}
 	combined := stdout + stderr + err.Error()
-	if !strings.Contains(combined, "BL-201") || !strings.Contains(combined, "BL-202") {
-		t.Errorf("refusal message does not name BL-201/BL-202: %s", combined)
+	if !strings.Contains(combined, "mneme sdd import") || !strings.Contains(combined, "BL-202") {
+		t.Errorf("refusal message does not name the import remedy / BL-202: %s", combined)
 	}
 
 	after, err := sddfile.ReadRecord(path)
@@ -403,16 +462,20 @@ func TestSDDStatusCmd(t *testing.T) {
 	}
 }
 
-// TestSDD_ExactlyOneAddCommand is AC20, measured over the diff rather than
-// a hard-coded count elsewhere: this test only confirms newSDDCmd's own
-// shape (one parent command, four subcommands) — the diff-based count
-// itself is verified in commit 10 against the real git history.
+// TestSDD_ExactlyOneAddCommand is AC20 (SPEC-130), measured over the diff
+// rather than a hard-coded count elsewhere: this test only confirms
+// newSDDCmd's own shape — the diff-based count itself is verified against
+// the real git history in SPEC-131 AC21 (`mneme sdd hooks`/`import` hang
+// off the ALREADY-registered `sdd` command; internal/cli/root.go gains no
+// new top-level `Cmd(),` line). `hooks` (SPEC-131 D58) is the SDD
+// mechanism's own subcommand GROUP, not a new top-level command — the
+// same distinction team-memory's own `hooks` group already draws.
 func TestSDD_ExactlyOneAddCommand(t *testing.T) {
 	cmd := newSDDCmd()
 	if cmd.Use != "sdd" {
 		t.Fatalf("newSDDCmd().Use = %q, want %q", cmd.Use, "sdd")
 	}
-	want := map[string]bool{"enable": true, "disable": true, "export": true, "status": true}
+	want := map[string]bool{"enable": true, "disable": true, "export": true, "status": true, "hooks": true, "import": true}
 	got := make(map[string]bool)
 	for _, c := range cmd.Commands() {
 		name := strings.Fields(c.Use)[0]

@@ -72,6 +72,155 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   new test parses `internal/sddfile/schema.go`'s own source and fails if
   either range comparison is missing or an `==`/`!=` comparison against
   either schema constant appears — zero production code changed.
+- **Reading the SDD archive back into the local database, and doing it
+  automatically after every pull — the second of three parts BL-194's
+  "Etapa 2" was cut into (SPEC-131 §2b).** SPEC-130 §2a taught mneme to
+  write a repository's backlog items and specs as reviewable Markdown
+  under `.mneme/sdd/`; this part teaches it to read that same archive
+  back. `mneme sdd import [--dry-run]` walks the whole tree and decides
+  each record's fate by its own permanent identity (a UUIDv7 anchor),
+  never by its human-readable correlative — a new anchor is created, an
+  anchor already known under the same correlative is updated (its
+  refinements, spec history, and pushbacks merged in, never deleted), and
+  a correlative already claimed by a DIFFERENT anchor is skipped and
+  reported by title, an anchor is never printed anywhere. A spec whose
+  originating backlog item was archived (SPEC-125) never has its status
+  moved by an import even when the incoming file disagrees — evaluated
+  against a snapshot of that freeze taken before the batch's own writes,
+  so an archived item and its now-frozen spec arriving in the very same
+  batch cannot produce a false positive. `mneme sdd hooks install`
+  installs this machine's own `post-merge`/`post-checkout` git hooks so a
+  `git pull` imports automatically in the background (always exits 0,
+  skips silently mid-rebase, logs to `~/.mneme/sdd-hooks.log`) — the two
+  new hooks coexist with team-memory's own without disturbing either.
+  Once enabled, the next backlog/spec id is the larger of the database's
+  own next id and one past whatever correlative a committed file already
+  reserves, so a teammate's not-yet-imported file reserves its number for
+  everyone, not only for whoever imports first. `mneme sdd status` now
+  reports everything derived at the moment of the call — broken,
+  conflicted, incomplete, and divergent files, whether this machine's own
+  hooks are installed, and correlatives that exist only in the local
+  database on this branch — with no new state file behind any of it. Two
+  new MCP tools, `sdd_status`/`sdd_import` (85 → 87); `sdd_import` is
+  denied to subagents, the same "the author does not authorize their own
+  change" family `spec_advance`/`backlog_archive` already belong to. The
+  remaining third of BL-194's "Etapa 2" — reconciling two machines that
+  independently claimed the same correlative for two different items — is
+  still open, tracked internally as BL-202. See `docs/sdd-git-native.md`.
+- **QA rejection fix (SPEC-131 §2b): the two MCP tool handlers this spec
+  adds, `sdd_status`/`sdd_import`, sat at 0.0% coverage — undisclosed,
+  caught by an independent QA review re-measuring the same coverage
+  disclosure.** Both are functionally correct (a throwaway smoke test
+  during review confirmed it) — the gap was purely in the disclosure AC29
+  exists to require, missed because the original check never looked at
+  `internal/mcp`. Six new tests exercise both handlers through the real
+  JSON-RPC dispatch end to end (happy path, an unset `repoDir`'s error
+  path, and the service-unavailable guard), closing both to 100%. Also
+  fixed: `mneme sdd enable`'s dry-run preview omitted that `--apply` also
+  installs this machine's own git hooks, while `disable`'s own preview
+  already announced their removal — an asymmetry against D17's own
+  promise that a preview must say everything that is going to happen.
+  Checked in both directions by a new test so the asymmetry cannot
+  silently return. A further, more exhaustive coverage pass closed 15 of
+  the 18 other functions this spec introduced that had sat below the 80%
+  per-function floor (the SPEC-117 lesson AC29 also names) — using real,
+  reproducible failure conditions already established in this codebase
+  (a closed database connection, a genuine foreign-key violation, a
+  non-git directory, a real git `MERGE_HEAD` sentinel) rather than
+  contrived scenarios; the three that remain below the floor
+  (`importBacklogRecord`, `importSpecRecord`, `runSDDHooksImport`) are
+  documented in `changes.md` with the specific reason each one cannot be
+  closed further without inventing a scenario that would not occur in
+  practice.
+- **QA rejection fix, round 3 (SPEC-131 §2b): a real batch-abort defect, a
+  vacuous test caught by its own substring collision, and two of the
+  three previously-accepted below-80% functions closed after all.**
+  `ImportSDDFromRepo`'s own "only in base" summary step
+  (`computeOnlyInBase`) used to ABORT THE ENTIRE IMPORT — discarding
+  every already-recorded `Created`/`Updated`/`Skipped` entry — when a
+  SINGLE pre-existing database row it merely lists (never even part of
+  the files being imported) carried a timestamp the store could not
+  parse. This directly contradicted D22 ("a broken record is skipped,
+  the rest of the batch enters, the import never aborts") — silently, for
+  every record in the batch, not just the malformed row's own. Fixed by
+  logging and swallowing that one step's own failure instead of
+  propagating it; a new test reproduces the exact scenario (a malformed
+  timestamp inserted directly via SQL, since no mneme write path can ever
+  produce one) and is confirmed red without the fix, green with it. Also
+  fixed: the enable/disable preview-symmetry test added in the previous
+  round was itself half-vacuous — a pre-existing, unrelated warning in
+  `enable`'s own output happens to contain the same loose words ("install",
+  "hook") the test searched for by substring, so deleting the real
+  announcement left the test green. Replaced with an exact-phrase match
+  confirmed red in both directions (deleting either command's own
+  announcement). Two of the three functions accepted as below-80% in the
+  previous round turn out to close after all, using the SAME
+  real-condition discipline: a pre-existing row sharing an INCOMING
+  file's own correlative, corrupted the same way, reaches
+  `importBacklogRecord`'s "read this existing row" failure branch
+  (68.3%→80.5%, closing it) and its `importSpecRecord` sibling
+  (56.2%→79.2%, a large improvement short of the floor); a malformed
+  `~/.mneme/config.toml` reaches `runSDDHooksImport`'s own
+  `initSDDService` failure branch (76.0%→84.0%, closing it). The third
+  function's own remaining gap (`os.Getwd`/`os.UserHomeDir` failures,
+  essentially unreachable on a live process) is accepted as before.
+- **QA rejection fix, round 4 (SPEC-131 §2b): the last coverage exception
+  closes for real, a raw database error becomes a readable diagnosis, and
+  a silent zero gets a voice.** `importSpecRecord`'s own remaining gap
+  (79.2%, accepted as irreducible last round) closes to 86.3% via the
+  SAME real condition that was hiding behind it: two spec files in one
+  import batch that happen to carry the IDENTICAL anchor — undetectable
+  by D50's own anchor index, which is a snapshot taken once before ANY
+  write in the batch (deliberately, so an archived-item-plus-moved-spec
+  pair in the same batch is never torn apart, D64) — used to crash the
+  second file against a raw, unclassified `UNIQUE constraint failed`
+  database error instead of a legible skip reason. This is the real shape
+  D16's own accepted risk (two machines completing the same hand-authored
+  file and minting different anchors, or a file copied by hand) takes on
+  its other side. Now recognized specifically and reported as its own
+  reason, `ancla-duplicada-en-la-misma-tanda`, for both backlog items and
+  specs — a driver upgrade that changes the underlying error text degrades
+  gracefully to the previous generic reason, never to a wrong diagnosis.
+  Separately: the previous round's own fix for `computeOnlyInBase`
+  (log-and-swallow instead of aborting the batch, D22) left a genuine, if
+  non-blocking, gap — a swallowed failure and "genuinely nothing is only
+  in the local database" both looked like the same silent zero. A new
+  `OnlyInBaseError` field, on both `mneme sdd import`'s and `mneme sdd
+  status`'s own reports, tells the two apart. Evaluated, and NOT
+  attempted: `mneme sdd status`'s own project-count step (`sddPlan`,
+  shared with `mneme sdd enable`/`export`'s own dry-run previews) turns
+  out to hit the identical unresolved failure FIRST, before `OnlyInBase`'s
+  own degradation would even matter — fixing it would touch write-path
+  code this round does not own, and where silently showing "0 items"
+  instead of erroring could mislead a person about what `--apply` is
+  about to do. Documented, not silently left unaddressed.
+- **QA rejection fix, round 5 (SPEC-131 §2b): the preview lied about the
+  exact collision this whole round exists to diagnose, in code that same
+  round had just written.** `mneme sdd import --dry-run` and `mneme sdd
+  status` both run the importer with `apply=false` — and the previous
+  round's own same-batch anchor-collision detection only ever ran at the
+  moment of the REAL write, so a preview reported BOTH colliding files as
+  "would be created" when only one ever could be. This is exactly the
+  "a preview must never say something different from what will happen"
+  risk this same round had already reasoned about carefully for a
+  DIFFERENT calculation (and correctly chosen not to touch) — it had
+  simply slipped into this round's own new code instead. Fixed by
+  replacing the previous round's reactive, write-time-only detection
+  (matching the database driver's own error text after a write already
+  failed) with a proactive one: two small maps, built once from the
+  batch's own incoming files — compared against EACH OTHER, never against
+  the database — decide the identical outcome BEFORE any write, so
+  `apply=false` and `apply=true` now compute the same decision. A new
+  test constructs the exact scenario and confirms the preview's own
+  "would create" answer names the SAME file the real run actually
+  creates. The old reactive detection is retired entirely rather than
+  kept alongside the new one — every scenario the previous round could
+  construct now reaches the proactive check first, so the reactive path
+  could never be exercised again by anything short of genuine
+  cross-process concurrency. Its own now-dead call site inside `mneme sdd
+  status`'s reporting (unreachable for the identical reason — status
+  always previews) is closed the same way: reachable now, and a new test
+  proves it.
 
 ## [v1.42.0] — 2026-08-27 — SDD anchors and per-session speech queue
 

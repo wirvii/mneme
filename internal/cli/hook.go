@@ -1990,6 +1990,11 @@ var lifecycleTools = map[string]bool{
 	"mcp__mneme__spec_quick":      true,
 	"mcp__mneme__quality_ack":     true,
 	"mcp__mneme__backlog_archive": true,
+	// SPEC-131 D58: R1 means a record an implementer just edited can move
+	// its own spec's status — the same "the author does not authorize
+	// their own change" family as the four entries above. sdd_status is
+	// read-only and stays OUT of this map.
+	"mcp__mneme__sdd_import": true,
 }
 
 // roleScopedTools maps an MCP tool name to the ONE subagent role allowed

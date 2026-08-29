@@ -171,6 +171,12 @@ func (h *handlers) handleToolCall(ctx context.Context, params ToolCallParams) (*
 	case "lane_stats":
 		return h.handleLaneStats(ctx, params.Arguments)
 
+	// --- SDD GIT-NATIVE READ TOOLS (SPEC-131 §2b) ---
+	case "sdd_status":
+		return h.handleSDDStatus(ctx, params.Arguments)
+	case "sdd_import":
+		return h.handleSDDImport(ctx, params.Arguments)
+
 	// --- QUALITY TOOLS (SPEC-115 EPIC-calidad S1) ---
 	case "quality_verify":
 		return h.handleQualityVerify(ctx, params.Arguments)
@@ -1422,6 +1428,40 @@ func (h *handlers) handleLaneStats(ctx context.Context, raw json.RawMessage) (*T
 	resp, err := h.sdd.LaneStats(ctx, args.Project)
 	if err != nil {
 		return nil, h.mapServiceError("lane_stats", err)
+	}
+	return resultFromAny(resp)
+}
+
+// --- SDD GIT-NATIVE READ HANDLERS (SPEC-131 §2b) ---
+
+// handleSDDStatus processes an sdd_status tool call. Read-only, takes no
+// arguments — operates on h.sdd.RepoDir(), the same repository root every
+// other `mneme sdd` operation resolves from (never os.Getwd() inside the
+// service layer, D38/D60).
+func (h *handlers) handleSDDStatus(ctx context.Context, _ json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	if h.sdd == nil {
+		return nil, h.sddUnavailable("sdd_status")
+	}
+	resp, err := h.sdd.SDDStatus(ctx, h.sdd.RepoDir())
+	if err != nil {
+		return nil, h.mapServiceError("sdd_status", err)
+	}
+	return resultFromAny(resp)
+}
+
+// handleSDDImport processes an sdd_import tool call. Takes no arguments —
+// executes (apply=true) against h.sdd.RepoDir(). Denied to every subagent
+// via lifecycleTools (internal/cli/hook.go): R1 means a file the caller
+// itself just edited can move a spec's status, so this is the same
+// "the author does not authorize their own change" family
+// spec_advance/spec_quick/quality_ack/backlog_archive already belong to.
+func (h *handlers) handleSDDImport(ctx context.Context, _ json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	if h.sdd == nil {
+		return nil, h.sddUnavailable("sdd_import")
+	}
+	resp, err := h.sdd.ImportSDDFromRepo(ctx, h.sdd.RepoDir(), true)
+	if err != nil {
+		return nil, h.mapServiceError("sdd_import", err)
 	}
 	return resultFromAny(resp)
 }
