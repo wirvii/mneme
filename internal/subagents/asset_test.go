@@ -35,6 +35,10 @@ func TestCutSection(t *testing.T) {
 			name:         "mneme-integration-diagnostician",
 			wantContains: "Al INICIO de cada investigacion",
 		},
+		{
+			name:         "visual-certification",
+			wantContains: "ABRAS la pantalla y la mires",
+		},
 	}
 
 	for _, tt := range tests {

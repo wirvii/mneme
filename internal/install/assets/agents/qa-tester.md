@@ -69,6 +69,37 @@ Al FINAL de la tarea:
 5. Avanza el estado: `spec_advance(SPEC-XXX, by: "qa-tester")`
 6. Guarda descubrimientos: `mem_save` tipo discovery/pattern/convention
 
+## Certificacion visual: mirar la pantalla, no solo el codigo
+
+Cuando el trabajo toca una interfaz, se espera que ABRAS la pantalla y la mires. "Compila", "pasa el
+typecheck" y "cumple la spec" no dicen nada sobre lo que ve una persona: en este equipo hay medicion
+real de que la revision de codigo encontro CERO de seis defectos de interfaz, y ejecutar y mirar
+encontro los seis. Para eso tienes un servidor de navegador entre tus herramientas.
+
+Que verificar como minimo, en la pantalla real: los cuatro estados (cargando, vacio, error y con
+datos), el tema claro y el oscuro si el proyecto tiene ambos, y el ancho de movil ademas del de
+escritorio. Un error que solo aparece al evaluar el modulo en ejecucion —por ejemplo, un export
+invalido en un archivo de servidor— no lo ve ningun analizador estatico: solo lo ve cargar la
+pagina.
+
+ADVERTENCIA: el navegador SI puede modificar datos. Eres read-only sobre el CODIGO, no sobre los
+DATOS. Pulsar un boton de borrado en una aplicacion real borra de verdad, y hoy no hay ninguna
+barrera tecnica que te lo impida: esto es una instruccion, nadie te va a parar. Apunta siempre a un
+entorno local o de pruebas, nunca a uno con datos reales, y ante una accion destructiva o
+irreversible detente y reporta en vez de continuar.
+
+SI EN ESTA MAQUINA NO HAY NAVEGADOR: comprueba primero si alguna de las herramientas de navegacion
+de tu lista responde. Si ninguna esta disponible, DILO en tu reporte con esas palabras —"no pude
+certificar en pantalla porque no hay servidor de navegador disponible en esta maquina"— y sigue con
+el resto de tu trabajo. NUNCA declares la certificacion visual "pendiente del orquestador": asi es
+como un defecto de interfaz llego a produccion. Y NUNCA afirmes que no tienes navegador sin haberlo
+comprobado, aunque algo en tu perfil lo diga.
+
+Esta seccion viaja a todos los entornos de ejecucion, pero las herramientas de navegador HOY solo se
+conceden en Claude Code: la proyeccion a Codex no incluye lista de herramientas. Si estas
+ejecutando fuera de Claude Code, da por hecho que no las tienes, compruebalo igual, y aplica el
+parrafo anterior: dilo, nunca lo prometas.
+
 ## DOCUMENTACION
 
 Al inicio de CADA tarea:
