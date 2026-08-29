@@ -51,42 +51,59 @@ func readAgentFrontmatterLine(t *testing.T, agentFile, key string) (string, bool
 // criteria). If this test ever fails after editing an agent asset, either
 // the asset drifted from the Go-authored allowlist (bug) or PermissionTable
 // needs a deliberate, reviewed update.
+//
+// SPEC-132 Dp7: the population is DERIVED in both directions instead of
+// hand-enumerated, so a role added to one side without the other is caught
+// here rather than silently going unchecked. Role's string value doubles as
+// the asset's base filename (e.g. RoleQATester == "qa-tester" ==
+// "qa-tester.md"), which is what makes the derivation possible without a
+// side table.
 func TestPermissionTable_MatchesAgentAssets(t *testing.T) {
-	tests := []struct {
-		role      Role
-		agentFile string
-	}{
-		{RoleArchitect, "architect.md"},
-		{RoleBackend, "backend.md"},
-		{RoleFrontend, "frontend.md"},
-		{RoleQATester, "qa-tester.md"},
-		{RoleBugHunter, "bug-hunter.md"},
-		{RoleDiagnostician, "diagnostician.md"},
-	}
+	dir := assetsAgentsDir(t)
 
-	for _, tt := range tests {
-		t.Run(string(tt.role), func(t *testing.T) {
-			perm, ok := PermissionTable[tt.role]
-			if !ok {
-				t.Fatalf("PermissionTable has no entry for role %q", tt.role)
+	// Direction 1 (table -> asset): every PermissionTable key must have a
+	// matching asset file, and its tools:/permissionMode: must match byte
+	// for byte.
+	for role, perm := range PermissionTable {
+		t.Run(string(role), func(t *testing.T) {
+			agentFile := string(role) + ".md"
+			if _, err := os.Stat(filepath.Join(dir, agentFile)); err != nil {
+				t.Fatalf("PermissionTable has role %q but %s does not exist: %v", role, agentFile, err)
 			}
 
-			wantTools, found := readAgentFrontmatterLine(t, tt.agentFile, "tools")
+			wantTools, found := readAgentFrontmatterLine(t, agentFile, "tools")
 			if !found {
-				t.Fatalf("%s: no tools: line found", tt.agentFile)
+				t.Fatalf("%s: no tools: line found", agentFile)
 			}
 			if got := perm.ToolsString(); got != wantTools {
-				t.Errorf("tools mismatch for %s:\n got:  %q\n want: %q", tt.role, got, wantTools)
+				t.Errorf("tools mismatch for %s:\n got:  %q\n want: %q", role, got, wantTools)
 			}
 
-			wantMode, found := readAgentFrontmatterLine(t, tt.agentFile, "permissionMode")
+			wantMode, found := readAgentFrontmatterLine(t, agentFile, "permissionMode")
 			if !found {
 				wantMode = ""
 			}
 			if perm.PermissionMode != wantMode {
-				t.Errorf("permissionMode mismatch for %s: got %q want %q", tt.role, perm.PermissionMode, wantMode)
+				t.Errorf("permissionMode mismatch for %s: got %q want %q", role, perm.PermissionMode, wantMode)
 			}
 		})
+	}
+
+	// Direction 2 (asset -> table): every *.md file in the assets directory
+	// must have a PermissionTable entry. Catches a new agent file added
+	// without its Go-authored counterpart.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read %s: %v", dir, err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
+			continue
+		}
+		role := Role(strings.TrimSuffix(entry.Name(), ".md"))
+		if _, ok := PermissionTable[role]; !ok {
+			t.Errorf("%s exists in %s but has no PermissionTable entry for role %q", entry.Name(), dir, role)
+		}
 	}
 }
 
