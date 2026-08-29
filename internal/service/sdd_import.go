@@ -16,7 +16,6 @@ import (
 	"log/slog"
 	"path/filepath"
 	"sort"
-	"strings"
 
 	"github.com/wirvii/mneme/internal/model"
 	"github.com/wirvii/mneme/internal/sddfile"
@@ -33,31 +32,6 @@ const maxOnlyInBaseListed = 20
 // this database. Overwriting one project's backlog/specs with another's
 // would not be a broken file — it would be the wrong repository entirely.
 var ErrSDDForeignProjectMarker = errors.New("sdd: repository marker belongs to a different project")
-
-// isDuplicateAnchorInBatch recognizes ONE specific, real failure shape out
-// of CreateBacklogItemFromRecord/CreateSpecFromRecord's own generic error:
-// a genuine UNIQUE-constraint violation on the anchor column itself
-// (idx_backlog_items_uuid/idx_specs_uuid, migration 019). This is the
-// SAME accepted risk D16 already names (two machines completing the same
-// hand-authored file and minting DIFFERENT anchors, or a file copied by
-// hand) landing on its OTHER side: two files in the SAME import batch
-// that happen to carry the IDENTICAL anchor — undetectable by anchorIndex
-// (D50's own pre-batch snapshot, taken once before ANY write in this
-// batch, exactly so an archived-item+moved-spec pair in the same batch is
-// never torn apart — see D64) because neither file's anchor is known to
-// the database until the FIRST one's own write commits, mid-batch.
-// Recognized by matching the sqlite driver's own well-known error text
-// for the exact column this spec's two anchor indexes protect — a driver
-// upgrade that changes the message text degrades gracefully to the
-// generic "roto" reason, never to a wrong diagnosis.
-func isDuplicateAnchorInBatch(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := err.Error()
-	return strings.Contains(msg, "UNIQUE constraint failed: backlog_items.uuid") ||
-		strings.Contains(msg, "UNIQUE constraint failed: specs.uuid")
-}
 
 // SDDImportSkip names one record ImportSDDFromRepo declined to import, and
 // why (SPEC-131 D50/D54). Reason is drawn from a closed vocabulary (roto,
@@ -283,16 +257,51 @@ func (svc *SDDService) ImportSDDFromRepo(ctx context.Context, repoRoot string, a
 		return nil, fmt.Errorf("service: sdd import: backlog status index: %w", err)
 	}
 
+	// batchBacklogAnchor/batchSpecAnchor are a THIRD snapshot, but built
+	// from the batch's OWN incoming files rather than the database —
+	// anchorIndex answers "does the database already know this anchor
+	// under a different id"; these answer "does ANOTHER file in THIS
+	// SAME batch already claim this anchor". Neither can substitute for
+	// the other: anchorIndex is blind to two files that share an anchor
+	// while BOTH are new to the database (their anchor never touches the
+	// database until the first one's own write commits, mid-batch), and
+	// this map is blind to a collision against a row that already exists.
+	// Built once, keyed to the FIRST correlative (in this batch's own
+	// processing order) that claims each anchor — the same "first writer
+	// wins" order the database's own UNIQUE index would enforce anyway,
+	// computed WITHOUT writing, so the preview (apply=false) can report
+	// the identical decision the real run (apply=true) would make. This
+	// is what makes the collision visible in `mneme sdd import --dry-run`
+	// and `mneme sdd status`, not just in the real write's own error.
+	batchBacklogAnchor := make(map[string]string, len(backlogFiles))
+	for _, bp := range backlogFiles {
+		if bp.rec.Item.UUID == "" {
+			continue
+		}
+		if _, known := batchBacklogAnchor[bp.rec.Item.UUID]; !known {
+			batchBacklogAnchor[bp.rec.Item.UUID] = bp.rec.Item.ID
+		}
+	}
+	batchSpecAnchor := make(map[string]string, len(specFiles))
+	for _, sp := range specFiles {
+		if sp.rec.Spec.UUID == "" {
+			continue
+		}
+		if _, known := batchSpecAnchor[sp.rec.Spec.UUID]; !known {
+			batchSpecAnchor[sp.rec.Spec.UUID] = sp.rec.Spec.ID
+		}
+	}
+
 	// Backlog first, then specs: a spec names its originating item
 	// (backlog_id); the reverse order would leave that link pointing at
 	// nothing for the duration of this batch.
 	for _, bp := range backlogFiles {
-		if iErr := svc.importBacklogRecord(ctx, repoRoot, bp.path, bp.rec, anchorIndex, apply, result); iErr != nil {
+		if iErr := svc.importBacklogRecord(ctx, repoRoot, bp.path, bp.rec, anchorIndex, batchBacklogAnchor, apply, result); iErr != nil {
 			return nil, fmt.Errorf("service: sdd import: %s: %w", bp.path, iErr)
 		}
 	}
 	for _, sp := range specFiles {
-		if iErr := svc.importSpecRecord(ctx, repoRoot, sp.path, sp.rec, anchorIndex, freezeIndex, apply, result); iErr != nil {
+		if iErr := svc.importSpecRecord(ctx, repoRoot, sp.path, sp.rec, anchorIndex, batchSpecAnchor, freezeIndex, apply, result); iErr != nil {
 			return nil, fmt.Errorf("service: sdd import: %s: %w", sp.path, iErr)
 		}
 	}
@@ -327,7 +336,7 @@ func (svc *SDDService) ImportSDDFromRepo(ctx context.Context, repoRoot string, a
 // skip, which is an expected per-record outcome.
 func (svc *SDDService) importBacklogRecord(
 	ctx context.Context, repoRoot, path string, rec *sddfile.BacklogRecord,
-	anchorIndex map[string]string, apply bool, result *SDDImportResult,
+	anchorIndex, batchAnchor map[string]string, apply bool, result *SDDImportResult,
 ) error {
 	item := rec.Item
 	missing := rec.Missing() // computed BEFORE any defaulting (D53) — see reportIfCompleted
@@ -343,6 +352,18 @@ func (svc *SDDService) importBacklogRecord(
 				})
 				return nil
 			}
+			// D50's own decision, evaluated against THIS batch's own
+			// files rather than the database (see batchBacklogAnchor's
+			// own godoc in ImportSDDFromRepo) — computed BEFORE any
+			// write, so this is what makes the collision visible in a
+			// dry-run preview too, not only in the real write's own
+			// UNIQUE-constraint error.
+			if claimant, known := batchAnchor[item.UUID]; known && claimant != item.ID {
+				result.Skipped = append(result.Skipped, SDDImportSkip{
+					Path: path, ID: item.ID, Reason: "ancla-duplicada-en-la-misma-tanda",
+				})
+				return nil
+			}
 		}
 		if !apply {
 			result.Created = append(result.Created, fmt.Sprintf("%s (%s)", item.ID, relSDDPath(repoRoot, path)))
@@ -351,11 +372,7 @@ func (svc *SDDService) importBacklogRecord(
 		applyBacklogDefaults(svc.project, item, nil)
 		if cErr := svc.store.CreateBacklogItemFromRecord(ctx, item); cErr != nil {
 			slog.ErrorContext(ctx, "sdd_import_error", "kind", "backlog", "id", item.ID, "step", "create", "error", cErr)
-			reason := "roto"
-			if isDuplicateAnchorInBatch(cErr) {
-				reason = "ancla-duplicada-en-la-misma-tanda"
-			}
-			result.Skipped = append(result.Skipped, SDDImportSkip{Path: path, ID: item.ID, Reason: reason})
+			result.Skipped = append(result.Skipped, SDDImportSkip{Path: path, ID: item.ID, Reason: "roto"})
 			return nil
 		}
 		if mErr := svc.store.MergeBacklogRefinements(ctx, item.ID, rec.Refinements); mErr != nil {
@@ -415,7 +432,7 @@ func (svc *SDDService) importBacklogRecord(
 // this.
 func (svc *SDDService) importSpecRecord(
 	ctx context.Context, repoRoot, path string, rec *sddfile.SpecRecord,
-	anchorIndex map[string]string, freezeIndex map[string]model.BacklogIndexEntry,
+	anchorIndex, batchAnchor map[string]string, freezeIndex map[string]model.BacklogIndexEntry,
 	apply bool, result *SDDImportResult,
 ) error {
 	spec := rec.Spec
@@ -432,6 +449,18 @@ func (svc *SDDService) importSpecRecord(
 				})
 				return nil
 			}
+			// D50's own decision, evaluated against THIS batch's own
+			// files rather than the database (see batchSpecAnchor's own
+			// godoc in ImportSDDFromRepo) — computed BEFORE any write,
+			// so this is what makes the collision visible in a dry-run
+			// preview too, not only in the real write's own
+			// UNIQUE-constraint error.
+			if claimant, known := batchAnchor[spec.UUID]; known && claimant != spec.ID {
+				result.Skipped = append(result.Skipped, SDDImportSkip{
+					Path: path, ID: spec.ID, Reason: "ancla-duplicada-en-la-misma-tanda",
+				})
+				return nil
+			}
 		}
 		if !apply {
 			result.Created = append(result.Created, fmt.Sprintf("%s (%s)", spec.ID, relSDDPath(repoRoot, path)))
@@ -440,11 +469,7 @@ func (svc *SDDService) importSpecRecord(
 		applySpecDefaults(svc.project, spec, nil)
 		if cErr := svc.store.CreateSpecFromRecord(ctx, spec); cErr != nil {
 			slog.ErrorContext(ctx, "sdd_import_error", "kind", "spec", "id", spec.ID, "step", "create", "error", cErr)
-			reason := "roto"
-			if isDuplicateAnchorInBatch(cErr) {
-				reason = "ancla-duplicada-en-la-misma-tanda"
-			}
-			result.Skipped = append(result.Skipped, SDDImportSkip{Path: path, ID: spec.ID, Reason: reason})
+			result.Skipped = append(result.Skipped, SDDImportSkip{Path: path, ID: spec.ID, Reason: "roto"})
 			return nil
 		}
 		if hErr := svc.store.MergeSpecHistory(ctx, spec.ID, rec.History); hErr != nil {

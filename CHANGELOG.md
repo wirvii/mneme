@@ -163,6 +163,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   code this round does not own, and where silently showing "0 items"
   instead of erroring could mislead a person about what `--apply` is
   about to do. Documented, not silently left unaddressed.
+- **QA rejection fix, round 5 (SPEC-131 §2b): the preview lied about the
+  exact collision this whole round exists to diagnose, in code that same
+  round had just written.** `mneme sdd import --dry-run` and `mneme sdd
+  status` both run the importer with `apply=false` — and the previous
+  round's own same-batch anchor-collision detection only ever ran at the
+  moment of the REAL write, so a preview reported BOTH colliding files as
+  "would be created" when only one ever could be. This is exactly the
+  "a preview must never say something different from what will happen"
+  risk this same round had already reasoned about carefully for a
+  DIFFERENT calculation (and correctly chosen not to touch) — it had
+  simply slipped into this round's own new code instead. Fixed by
+  replacing the previous round's reactive, write-time-only detection
+  (matching the database driver's own error text after a write already
+  failed) with a proactive one: two small maps, built once from the
+  batch's own incoming files — compared against EACH OTHER, never against
+  the database — decide the identical outcome BEFORE any write, so
+  `apply=false` and `apply=true` now compute the same decision. A new
+  test constructs the exact scenario and confirms the preview's own
+  "would create" answer names the SAME file the real run actually
+  creates. The old reactive detection is retired entirely rather than
+  kept alongside the new one — every scenario the previous round could
+  construct now reaches the proactive check first, so the reactive path
+  could never be exercised again by anything short of genuine
+  cross-process concurrency. Its own now-dead call site inside `mneme sdd
+  status`'s reporting (unreachable for the identical reason — status
+  always previews) is closed the same way: reachable now, and a new test
+  proves it.
 
 ## [v1.42.0] — 2026-08-27 — SDD anchors and per-session speech queue
 

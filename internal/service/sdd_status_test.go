@@ -245,3 +245,41 @@ func TestSDDStatus_SDDPlanFailsBeforeOnlyInBaseCanDegrade(t *testing.T) {
 		t.Errorf("error = %v, want the plan-step prefix specifically (sddPlan, before computeOnlyInBase is ever reached)", err)
 	}
 }
+
+// TestSDDStatus_ReportsSameBatchAnchorCollisionAsConflicted closes what
+// round-6 QA correctly named as dead code: SDDStatus's own `Conflicted`
+// case for "ancla-duplicada-en-la-misma-tanda" (sdd_enable.go) could never
+// fire while the underlying detection only ran at write time (apply=true)
+// — SDDStatus always previews (apply=false). Now that the detection is
+// proactive (batchBacklogAnchor/batchSpecAnchor, computed without writing —
+// see sdd_import_duplicate_anchor_test.go's own package doc), SDDStatus's
+// own dry-run preview reaches it too, and this test proves it does.
+func TestSDDStatus_ReportsSameBatchAnchorCollisionAsConflicted(t *testing.T) {
+	svc, repoDir := newSDDMaterializeService(t, importTestProject)
+	enableSDD(t, repoDir, importTestProject)
+	ctx := context.Background()
+
+	sharedUUID := "0198f000-0000-7000-8000-000000000920"
+	writeSpecFixture(t, repoDir, &model.Spec{
+		ID: "SPEC-920", UUID: sharedUUID, Title: "first claimant", Status: model.SpecStatusDraft,
+		Project: importTestProject, Lane: model.LaneStandard,
+	}, nil, nil)
+	writeSpecFixture(t, repoDir, &model.Spec{
+		ID: "SPEC-921", UUID: sharedUUID, Title: "second claimant", Status: model.SpecStatusDraft,
+		Project: importTestProject, Lane: model.LaneStandard,
+	}, nil, nil)
+
+	status, err := svc.SDDStatus(ctx, repoDir)
+	if err != nil {
+		t.Fatalf("SDDStatus: %v", err)
+	}
+	found := false
+	for _, p := range status.Conflicted {
+		if strings.Contains(p, "SPEC-920") || strings.Contains(p, "SPEC-921") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("Conflicted = %v, want it to name the SPEC-920/SPEC-921 collision — reachable now that detection is proactive", status.Conflicted)
+	}
+}
