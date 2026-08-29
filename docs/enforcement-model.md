@@ -72,6 +72,23 @@ edit capability, so the old `PermissionMode == bypassPermissions` proxy
 would have misclassified `qa-tester` as an implementer the moment D2b
 landed. `Bash` never counts toward "implementer" either way.
 
+**Browser capability (SPEC-132).** Only `qa-tester` and `frontend` carry the
+three browser-server MCP patterns above (D1) — `backend`, `bug-hunter`,
+`architect`, and `diagnostician` do not, and never gained web navigation to
+begin with (`architect`'s own `WebSearch`/`WebFetch` is SPEC-087 D2, a
+different, older grant). Granting it made `qa-tester` stop being read-only
+over **data**, even though it stays read-only over **code**: no edit tool
+was added to its allowlist, but a browser can submit a form or press a
+delete button in whatever application it points at, and nothing in mneme
+today stops it from pointing at a real one (D3 — the only protection is the
+warning written into both roles' profile text, see
+`internal/subagents/assets/agent-fixed.md`'s `visual-certification`
+section; a technical barrier over navigation targets is tracked separately,
+BL-208). This capability is **Claude Code only** (D5): Codex's own
+projection (`RenderCodex`) never emits a tools list at all, so there is
+nothing to widen there, and the profile text says so explicitly rather than
+letting an agent promise a screen it cannot open on that runtime.
+
 ### Layer 2a — Go rules engine (role-aware, SPEC-043)
 
 `mneme hook pre-tool-use` (Go binary) evaluates **DB rules** against every

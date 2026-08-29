@@ -108,7 +108,13 @@ mneme enforces role boundaries at two layers:
    `permissionMode` (SPEC-087 D1). Implementer agents (`backend`,
    `frontend`, `bug-hunter`) have the full edit+execution toolset. The
    `diagnostician` agent has `Bash` for log reading but lacks
-   Edit/Write/MultiEdit — it reads infra, never mutates code.
+   Edit/Write/MultiEdit — it reads infra, never mutates code. Since
+   SPEC-132, `qa-tester` and `frontend` (and only those two) also carry a
+   browser-server MCP allowlist so they can open a real screen instead of
+   trusting that "compiles" means "renders correctly" — `qa-tester` stops
+   being read-only over *data* (though it stays read-only over *code*),
+   and this capability exists only in Claude Code today, not in the second
+   execution runtime (Codex).
 
 2. **Hook (defense in depth)**: `mneme hook enforce-delegation` (a Go
    `PreToolUse` subcommand, SPEC-069) detects the orchestrator by the absence

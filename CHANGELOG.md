@@ -8,6 +8,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`qa-tester` and `frontend` can now open a real browser to certify what
+  they built, instead of stopping at "compiles" (SPEC-132).** A measured
+  regression — a code review that found zero of six real interface defects,
+  where actually opening the page and looking found all six — motivated
+  giving both roles a browser-server MCP allowlist (all three server name
+  forms mneme recognises today: `mcp__chrome-live__*`,
+  `mcp__plugin_chrome-devtools-mcp_chrome-devtools__*`,
+  `mcp__plugin_playwright_playwright__*`) plus profile text instructing
+  them to actually use it, to say so plainly when no browser is available
+  on that machine, and to never again declare visual certification
+  "pending the orchestrator" — the exact wording that let the original
+  defect reach production. No other role gains this: `backend` and
+  `bug-hunter` split off their own allowlist (`implementerBaseTools`) from
+  frontend's precisely so this addition would not silently reach them too.
+  **Three things an operator needs to act on:**
+  - **Run `mneme subagents regen --all` after upgrading.** The bump this
+    capability requires (agent-fixed block v2 → v3) means every
+    already-materialized project's `qa-tester`/`frontend` profile is
+    reported `stale_agent_fixed` by `mneme subagents doctor` until
+    regenerated — a loud, doctor-visible signal, not a silent gap.
+  - **There is a window between upgrading and regenerating** where a
+    profile still stamped v2 has neither the new tools nor the new text —
+    expected, and closed by running `regen`.
+  - **This capability does not exist in the second execution runtime
+    (Codex) today.** `RenderCodex` never emits a tools list at all, so
+    there is nothing to widen there; the profile text says this explicitly
+    so an agent running outside Claude Code does not promise a screen it
+    cannot open. qa-tester also stops being read-only over **data** (it
+    stays read-only over **code**) — there is no technical barrier over
+    where the browser points yet, only the warning written into the
+    profile text; see `docs/enforcement-model.md`.
 - **Backlog items and specs can now travel as versioned files inside the
   repository itself — the archive and the write path (SPEC-130 §2a, the
   first of three parts BL-194's "Etapa 2" was cut into).** Opt-in per
