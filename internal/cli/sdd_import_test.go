@@ -73,6 +73,13 @@ func TestRenderSDDImportResult_EveryBranch(t *testing.T) {
 			result: &service.SDDImportResult{},
 			want:   []string{"Nothing changed — the database already matches every file on this branch."},
 		},
+		{
+			name:   "only-in-base error is reported, not silently left at zero (round 4)",
+			result: &service.SDDImportResult{OnlyInBaseError: "no se pudo calcular: list backlog items: parse created_at: ..."},
+			want: []string{
+				"Could not determine which correlatives exist only in the local database: no se pudo calcular",
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -399,5 +406,28 @@ func TestSDDStatus_ReportsCompletedFileAsPending(t *testing.T) {
 	}
 	if !strings.Contains(stdout2, "BL-900") {
 		t.Errorf("status (2nd call) does not mention the completed file BL-900.md:\n%s", stdout2)
+	}
+}
+
+// TestRenderSDDStatusResult_ReportsOnlyInBaseError is renderSDDStatusResult's
+// own direct unit test for the new OnlyInBaseError field (round 4) — no
+// existing test called this function directly before. Confirms the
+// message appears when the field is set, and — the discriminating other
+// half — stays absent when it is not, on the same base result.
+func TestRenderSDDStatusResult_ReportsOnlyInBaseError(t *testing.T) {
+	base := &service.SDDStatusResult{RepoRoot: "/repo", Enabled: true}
+
+	var withoutErr bytes.Buffer
+	renderSDDStatusResult(&withoutErr, base)
+	if strings.Contains(withoutErr.String(), "Could not determine") {
+		t.Errorf("output mentions the only-in-base error with none set:\n%s", withoutErr.String())
+	}
+
+	withError := *base
+	withError.OnlyInBaseError = "no se pudo calcular: list specs: parse updated_at: ..."
+	var out bytes.Buffer
+	renderSDDStatusResult(&out, &withError)
+	if !strings.Contains(out.String(), "Could not determine which correlatives exist only in the local database: no se pudo calcular") {
+		t.Errorf("output does not report OnlyInBaseError:\n%s", out.String())
 	}
 }

@@ -133,6 +133,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `initSDDService` failure branch (76.0%→84.0%, closing it). The third
   function's own remaining gap (`os.Getwd`/`os.UserHomeDir` failures,
   essentially unreachable on a live process) is accepted as before.
+- **QA rejection fix, round 4 (SPEC-131 §2b): the last coverage exception
+  closes for real, a raw database error becomes a readable diagnosis, and
+  a silent zero gets a voice.** `importSpecRecord`'s own remaining gap
+  (79.2%, accepted as irreducible last round) closes to 86.3% via the
+  SAME real condition that was hiding behind it: two spec files in one
+  import batch that happen to carry the IDENTICAL anchor — undetectable
+  by D50's own anchor index, which is a snapshot taken once before ANY
+  write in the batch (deliberately, so an archived-item-plus-moved-spec
+  pair in the same batch is never torn apart, D64) — used to crash the
+  second file against a raw, unclassified `UNIQUE constraint failed`
+  database error instead of a legible skip reason. This is the real shape
+  D16's own accepted risk (two machines completing the same hand-authored
+  file and minting different anchors, or a file copied by hand) takes on
+  its other side. Now recognized specifically and reported as its own
+  reason, `ancla-duplicada-en-la-misma-tanda`, for both backlog items and
+  specs — a driver upgrade that changes the underlying error text degrades
+  gracefully to the previous generic reason, never to a wrong diagnosis.
+  Separately: the previous round's own fix for `computeOnlyInBase`
+  (log-and-swallow instead of aborting the batch, D22) left a genuine, if
+  non-blocking, gap — a swallowed failure and "genuinely nothing is only
+  in the local database" both looked like the same silent zero. A new
+  `OnlyInBaseError` field, on both `mneme sdd import`'s and `mneme sdd
+  status`'s own reports, tells the two apart. Evaluated, and NOT
+  attempted: `mneme sdd status`'s own project-count step (`sddPlan`,
+  shared with `mneme sdd enable`/`export`'s own dry-run previews) turns
+  out to hit the identical unresolved failure FIRST, before `OnlyInBase`'s
+  own degradation would even matter — fixing it would touch write-path
+  code this round does not own, and where silently showing "0 items"
+  instead of erroring could mislead a person about what `--apply` is
+  about to do. Documented, not silently left unaddressed.
 
 ## [v1.42.0] — 2026-08-27 — SDD anchors and per-session speech queue
 

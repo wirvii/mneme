@@ -371,6 +371,9 @@ func renderSDDStatusResult(out io.Writer, result *service.SDDStatusResult) {
 		fmt.Fprintf(out, "%d correlative(s) exist in the database with no file on this branch "+
 			"(normal on a working branch, not an error).\n", result.OnlyInBaseCount)
 	}
+	if result.OnlyInBaseError != "" {
+		fmt.Fprintf(out, "Could not determine which correlatives exist only in the local database: %s\n", result.OnlyInBaseError)
+	}
 }
 
 // renderSDDImportResult prints ImportSDDFromRepo's report (D43/D54) —
@@ -397,6 +400,9 @@ func renderSDDImportResult(out io.Writer, result *service.SDDImportResult) {
 		for _, id := range result.OnlyInBase {
 			fmt.Fprintf(out, "  - %s\n", id)
 		}
+	}
+	if result.OnlyInBaseError != "" {
+		fmt.Fprintf(out, "Could not determine which correlatives exist only in the local database: %s\n", result.OnlyInBaseError)
 	}
 	if len(result.Created) == 0 && len(result.Updated) == 0 && len(result.Completed) == 0 && len(result.Skipped) == 0 {
 		fmt.Fprintln(out, "Nothing changed — the database already matches every file on this branch.")

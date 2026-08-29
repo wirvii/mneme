@@ -140,6 +140,13 @@ type SDDStatusResult struct {
 	// normal on a working branch, not an error.
 	OnlyInBaseCount int
 
+	// OnlyInBaseError mirrors SDDImportResult's own field of the same
+	// name (SPEC-131 round 4): set when the preview import's own "only in
+	// base" calculation failed, so OnlyInBaseCount==0 never has to be
+	// read as "genuinely nothing" when it might mean "could not compute" —
+	// the same distinction NoOpReason already makes for the whole import.
+	OnlyInBaseError string
+
 	// FrozenBlocked names spec files D64 would skip right now: a spec
 	// frozen by SPEC-125 (its originating item archived) whose file brings
 	// a different status than the one recorded locally.
@@ -362,7 +369,9 @@ func (svc *SDDService) SDDStatus(ctx context.Context, repoRoot string) (*SDDStat
 	}
 	for _, s := range dryRun.Skipped {
 		switch {
-		case s.Reason == "ancla-renumerada-en-otra-maquina", strings.HasPrefix(s.Reason, "correlativo-reclamado-por-dos-elementos"):
+		case s.Reason == "ancla-renumerada-en-otra-maquina",
+			s.Reason == "ancla-duplicada-en-la-misma-tanda",
+			strings.HasPrefix(s.Reason, "correlativo-reclamado-por-dos-elementos"):
 			conflicted = append(conflicted, s.Path)
 		case s.Reason == "spec-congelada":
 			frozenBlocked = append(frozenBlocked, s.Path)
@@ -373,7 +382,7 @@ func (svc *SDDService) SDDStatus(ctx context.Context, repoRoot string) (*SDDStat
 		PendingGit: pending, Broken: broken, ForeignPaths: foreign,
 		Conflicted: conflicted, Incomplete: incomplete, Divergent: divergent,
 		HooksInstalled: svc.SDDHooksInstalled(repoRoot), OnlyInBaseCount: dryRun.OnlyInBaseTotal,
-		FrozenBlocked: frozenBlocked,
+		OnlyInBaseError: dryRun.OnlyInBaseError, FrozenBlocked: frozenBlocked,
 	}, nil
 }
 

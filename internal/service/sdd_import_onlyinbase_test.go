@@ -73,6 +73,55 @@ func TestSDDImport_MalformedUnrelatedRowNeverAbortsTheBatch(t *testing.T) {
 	if _, gErr := svc.store.GetBacklogItem(ctx, "BL-998"); gErr != nil {
 		t.Errorf("BL-998 was not created despite the batch succeeding: %v", gErr)
 	}
+
+	// SPEC-131 round 4: a degraded-but-not-aborted "only in base" summary
+	// must SAY SO, not report an indistinguishable zero. OnlyInBaseTotal
+	// staying at 0 here would otherwise read as "genuinely nothing is
+	// only in the base" — false, the calculation simply never ran.
+	if result.OnlyInBaseError == "" {
+		t.Error("OnlyInBaseError is empty, want a reason naming why the only-in-base calculation failed")
+	}
+	if result.OnlyInBaseTotal != 0 || len(result.OnlyInBase) != 0 {
+		t.Errorf("OnlyInBaseTotal=%d OnlyInBase=%v, want both empty when the calculation itself failed",
+			result.OnlyInBaseTotal, result.OnlyInBase)
+	}
+}
+
+// TestSDDImport_OnlyInBaseErrorEmptyOnHealthyImport is the DISCRIMINATING
+// other half of the assertion above: OnlyInBaseError must stay empty when
+// the only-in-base calculation actually succeeds — proving the field is
+// wired to the real failure, not merely always set or always empty.
+func TestSDDImport_OnlyInBaseErrorEmptyOnHealthyImport(t *testing.T) {
+	svc, repoDir := newSDDMaterializeService(t, importTestProject)
+	enableSDD(t, repoDir, importTestProject)
+	ctx := context.Background()
+
+	// A pre-existing item NOT covered by any file in this batch — this is
+	// what makes OnlyInBaseTotal genuinely > 0 here, not just present.
+	existing := &model.BacklogItem{
+		ID: "BL-997", Title: "only in the base", Status: model.BacklogStatusRaw,
+		Priority: model.PriorityMedium, Project: importTestProject, Lane: model.LaneStandard,
+	}
+	if err := svc.store.CreateBacklogItem(ctx, existing); err != nil {
+		t.Fatalf("CreateBacklogItem: %v", err)
+	}
+
+	healthy := &model.BacklogItem{
+		ID: "BL-996", Title: "healthy", Status: model.BacklogStatusRaw,
+		Priority: model.PriorityMedium, Project: importTestProject, Lane: model.LaneStandard,
+	}
+	writeBacklogFixture(t, repoDir, healthy, nil)
+
+	result, err := svc.ImportSDDFromRepo(ctx, repoDir, true)
+	if err != nil {
+		t.Fatalf("ImportSDDFromRepo: %v", err)
+	}
+	if result.OnlyInBaseError != "" {
+		t.Errorf("OnlyInBaseError = %q, want empty on a healthy import", result.OnlyInBaseError)
+	}
+	if result.OnlyInBaseTotal != 1 {
+		t.Errorf("OnlyInBaseTotal = %d, want 1 (BL-997)", result.OnlyInBaseTotal)
+	}
 }
 
 // TestSDDImport_MalformedExistingRowIsSkippedAsRoto closes

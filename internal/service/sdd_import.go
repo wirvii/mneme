@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/wirvii/mneme/internal/model"
 	"github.com/wirvii/mneme/internal/sddfile"
@@ -33,13 +34,39 @@ const maxOnlyInBaseListed = 20
 // would not be a broken file — it would be the wrong repository entirely.
 var ErrSDDForeignProjectMarker = errors.New("sdd: repository marker belongs to a different project")
 
+// isDuplicateAnchorInBatch recognizes ONE specific, real failure shape out
+// of CreateBacklogItemFromRecord/CreateSpecFromRecord's own generic error:
+// a genuine UNIQUE-constraint violation on the anchor column itself
+// (idx_backlog_items_uuid/idx_specs_uuid, migration 019). This is the
+// SAME accepted risk D16 already names (two machines completing the same
+// hand-authored file and minting DIFFERENT anchors, or a file copied by
+// hand) landing on its OTHER side: two files in the SAME import batch
+// that happen to carry the IDENTICAL anchor — undetectable by anchorIndex
+// (D50's own pre-batch snapshot, taken once before ANY write in this
+// batch, exactly so an archived-item+moved-spec pair in the same batch is
+// never torn apart — see D64) because neither file's anchor is known to
+// the database until the FIRST one's own write commits, mid-batch.
+// Recognized by matching the sqlite driver's own well-known error text
+// for the exact column this spec's two anchor indexes protect — a driver
+// upgrade that changes the message text degrades gracefully to the
+// generic "roto" reason, never to a wrong diagnosis.
+func isDuplicateAnchorInBatch(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "UNIQUE constraint failed: backlog_items.uuid") ||
+		strings.Contains(msg, "UNIQUE constraint failed: specs.uuid")
+}
+
 // SDDImportSkip names one record ImportSDDFromRepo declined to import, and
 // why (SPEC-131 D50/D54). Reason is drawn from a closed vocabulary (roto,
 // sin-titulo, correlativo-reclamado-por-dos-elementos,
-// ancla-renumerada-en-otra-maquina, proyecto-distinto, spec-congelada) —
-// except the correlativo-reclamado case, whose Reason carries a fuller,
-// human-legible message naming both titles (never either anchor — SPEC-128
-// D9 stays in force here with no exception).
+// ancla-renumerada-en-otra-maquina, ancla-duplicada-en-la-misma-tanda,
+// proyecto-distinto, spec-congelada) — except the correlativo-reclamado
+// case, whose Reason carries a fuller, human-legible message naming both
+// titles (never either anchor — SPEC-128 D9 stays in force here with no
+// exception).
 type SDDImportSkip struct {
 	Path   string `json:"path"`
 	ID     string `json:"id,omitempty"`
@@ -87,6 +114,17 @@ type SDDImportResult struct {
 	// maxOnlyInBaseListed cap — the same acotado convention SPEC-109
 	// established for backlog_list/spec_list.
 	OnlyInBaseTotal int `json:"only_in_base_total,omitempty"`
+
+	// OnlyInBaseError is set — and OnlyInBase/OnlyInBaseTotal are left at
+	// their zero values — when computeOnlyInBase's own listing failed
+	// (e.g. a pre-existing row this batch never touched carries a
+	// timestamp the store cannot parse). D22 forbids that failure from
+	// aborting the batch (the rest of this result is real and complete),
+	// but a silent zero is indistinguishable from "genuinely nothing is
+	// only in the base" — this field is the difference, following the
+	// same nominal-reporting discipline NoOpReason already established
+	// (D54: nothing is ever silent).
+	OnlyInBaseError string `json:"only_in_base_error,omitempty"`
 
 	// NoOpReason is set, and every other field left empty, when the import
 	// did nothing: "mecanismo apagado" (the marker exists but sdd.off is
@@ -264,12 +302,16 @@ func (svc *SDDService) ImportSDDFromRepo(ctx context.Context, repoRoot string, a
 	// the batch's own Created/Updated/Skipped work already recorded in
 	// result — that would be exactly the abort-the-whole-thing D22
 	// forbids, just relocated to this auxiliary reporting step instead of
-	// a single file's own parse error. Logged and swallowed instead: the
-	// import itself already succeeded; only the "only in base" summary is
-	// degraded for this run.
+	// a single file's own parse error. Logged AND surfaced instead (never
+	// silently): the import itself already succeeded; only the "only in
+	// base" summary is degraded for this run, and OnlyInBaseError is what
+	// tells "genuinely nothing is only in the base" apart from "the
+	// calculation itself failed" — a zero that meant two different things
+	// until this field existed.
 	onlyInBase, total, err := svc.computeOnlyInBase(ctx, covered)
 	if err != nil {
 		slog.ErrorContext(ctx, "sdd_import_error", "step", "only-in-base", "error", err)
+		result.OnlyInBaseError = fmt.Sprintf("no se pudo calcular: %v", err)
 	} else {
 		result.OnlyInBase = onlyInBase
 		result.OnlyInBaseTotal = total
@@ -309,7 +351,11 @@ func (svc *SDDService) importBacklogRecord(
 		applyBacklogDefaults(svc.project, item, nil)
 		if cErr := svc.store.CreateBacklogItemFromRecord(ctx, item); cErr != nil {
 			slog.ErrorContext(ctx, "sdd_import_error", "kind", "backlog", "id", item.ID, "step", "create", "error", cErr)
-			result.Skipped = append(result.Skipped, SDDImportSkip{Path: path, ID: item.ID, Reason: "roto"})
+			reason := "roto"
+			if isDuplicateAnchorInBatch(cErr) {
+				reason = "ancla-duplicada-en-la-misma-tanda"
+			}
+			result.Skipped = append(result.Skipped, SDDImportSkip{Path: path, ID: item.ID, Reason: reason})
 			return nil
 		}
 		if mErr := svc.store.MergeBacklogRefinements(ctx, item.ID, rec.Refinements); mErr != nil {
@@ -394,7 +440,11 @@ func (svc *SDDService) importSpecRecord(
 		applySpecDefaults(svc.project, spec, nil)
 		if cErr := svc.store.CreateSpecFromRecord(ctx, spec); cErr != nil {
 			slog.ErrorContext(ctx, "sdd_import_error", "kind", "spec", "id", spec.ID, "step", "create", "error", cErr)
-			result.Skipped = append(result.Skipped, SDDImportSkip{Path: path, ID: spec.ID, Reason: "roto"})
+			reason := "roto"
+			if isDuplicateAnchorInBatch(cErr) {
+				reason = "ancla-duplicada-en-la-misma-tanda"
+			}
+			result.Skipped = append(result.Skipped, SDDImportSkip{Path: path, ID: spec.ID, Reason: reason})
 			return nil
 		}
 		if hErr := svc.store.MergeSpecHistory(ctx, spec.ID, rec.History); hErr != nil {
