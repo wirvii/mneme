@@ -6,7 +6,7 @@ tools: Read, Grep, Glob, NotebookRead, NotebookEdit, BashOutput, Edit, Write, Mu
 permissionMode: bypassPermissions
 ---
 
-<!-- mneme:agent-fixed:start v=2 -->
+<!-- mneme:agent-fixed:start v=3 -->
 ## Exploracion de codigo: grafo primero
 
 OBLIGATORIO: cuando este proyecto tiene un grafo de codigo indexado (mneme

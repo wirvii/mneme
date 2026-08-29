@@ -26,15 +26,23 @@ const agentFixedMarker = "agent-fixed"
 // collides with the hook that denies spec_advance to subagents (D5); doctor
 // flags any entry whose Version is still 1 so it can be regenerated
 // (`mneme subagents regen`).
-const AgentFixedVersion = 2
+//
+// v3 (SPEC-132 Dp6): qa-tester and frontend's agent-fixed block gains the
+// visual-certification section (D4/D5) alongside their new browser tools.
+// `regen` rewrites layer 1 regardless of this bump, but WITHOUT it nobody
+// would know a materialized project needs `regen` run at all — `doctor`
+// only flags Version < AgentFixedVersion.
+const AgentFixedVersion = 3
 
-// roleSections maps a Role to the (codegraph-policy, mneme-integration)
-// section names cut from LayerOneAsset for that role's agent-fixed block.
-var roleSections = map[Role][2]string{
+// roleSections maps a Role to the ordered section names cut from
+// LayerOneAsset for that role's agent-fixed block. A slice, not a fixed-size
+// array (SPEC-132 Dp4): qa-tester and frontend now carry a third section
+// (visual-certification) that the other four roles do not.
+var roleSections = map[Role][]string{
 	RoleArchitect:     {"codegraph-policy-readonly", "mneme-integration-generic"},
-	RoleQATester:      {"codegraph-policy-readonly", "mneme-integration-generic"},
+	RoleQATester:      {"codegraph-policy-readonly", "mneme-integration-generic", "visual-certification"},
 	RoleBackend:       {"codegraph-policy-implementer", "mneme-integration-generic"},
-	RoleFrontend:      {"codegraph-policy-implementer", "mneme-integration-generic"},
+	RoleFrontend:      {"codegraph-policy-implementer", "mneme-integration-generic", "visual-certification"},
 	RoleBugHunter:     {"codegraph-policy-implementer", "mneme-integration-generic"},
 	RoleDiagnostician: {"codegraph-policy-diagnostician", "mneme-integration-diagnostician"},
 }
@@ -146,12 +154,14 @@ func Compose(existing string, in ComposeInput) (string, error) {
 	return text, nil
 }
 
-// renderAgentFixed cuts the role's two agent-fixed sections from
-// LayerOneAsset and substitutes the "{{ROLE}}" placeholder with the role's
-// literal name (used by the spec_pushback from_agent example and the
-// spec_doc_write mention in mneme-integration-generic, SPEC-087 D4).
-func renderAgentFixed(role Role, sections [2]string) (string, error) {
-	content, err := CutSections(LayerOneAsset(), sections[0], sections[1])
+// renderAgentFixed cuts the role's agent-fixed sections from LayerOneAsset
+// and substitutes the "{{ROLE}}" placeholder with the role's literal name
+// (used by the spec_pushback from_agent example and the spec_doc_write
+// mention in mneme-integration-generic, SPEC-087 D4). sections is variadic
+// in length (SPEC-132 Dp4): most roles carry two, qa-tester and frontend
+// carry a third (visual-certification).
+func renderAgentFixed(role Role, sections []string) (string, error) {
+	content, err := CutSections(LayerOneAsset(), sections...)
 	if err != nil {
 		return "", err
 	}

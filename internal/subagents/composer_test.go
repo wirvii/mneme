@@ -247,6 +247,94 @@ func TestCompose_AC4_BodyNeverInstructsSpecAdvance(t *testing.T) {
 	}
 }
 
+// minVisualSectionBytes is the minimum length CutSection("visual-certification")
+// must return for the guardians below to trust that the section actually
+// carries content — a guard against an absorbed CutSection error producing
+// "" and strings.Contains(body, "") trivially matching everything (SPEC-132
+// AC5/AC7).
+const minVisualSectionBytes = 200
+
+// TestCompose_VisualSectionByRole pins SPEC-132 AC5: the visual-certification
+// section lands in the composed agent-fixed block if and only if the role is
+// qa-tester or frontend. Population derived from roleSections' own keys, not
+// a hand-written role list.
+//
+// Two mandatory closures against a blind guardian: the test fails if
+// CutSection returns an error (never silently treated as ""), and fails if
+// the cut section is shorter than minVisualSectionBytes — without that,
+// strings.Contains(body, "") is trivially true and the guardian would
+// approve an emptied section.
+func TestCompose_VisualSectionByRole(t *testing.T) {
+	wantSection := map[Role]bool{
+		RoleQATester: true,
+		RoleFrontend: true,
+	}
+
+	visualText, err := CutSection(LayerOneAsset(), "visual-certification")
+	if err != nil {
+		t.Fatalf("CutSection(visual-certification): %v", err)
+	}
+	if len(visualText) < minVisualSectionBytes {
+		t.Fatalf("visual-certification section is only %d bytes, want >= %d — guardian would be blind", len(visualText), minVisualSectionBytes)
+	}
+
+	for role := range roleSections {
+		t.Run(string(role), func(t *testing.T) {
+			got, err := Compose("", ComposeInput{Role: role, Description: "x", Model: "sonnet"})
+			if err != nil {
+				t.Fatalf("Compose(%q): %v", role, err)
+			}
+			content, _, present := managedblock.ReadText(got, agentFixedMarker)
+			if !present {
+				t.Fatal("expected agent-fixed managed block to be present")
+			}
+			has := strings.Contains(content, visualText)
+			if wantSection[role] && !has {
+				t.Errorf("role %q must carry the visual-certification section, but it is absent", role)
+			}
+			if !wantSection[role] && has {
+				t.Errorf("role %q must NOT carry the visual-certification section, but it is present", role)
+			}
+		})
+	}
+}
+
+// TestVisualSection_CarriesAllObligations pins SPEC-132 AC6: the
+// visual-certification section states all three D4 obligations plus D5's,
+// checked as complete, distinctive phrases against the CUT section alone
+// (never the whole asset file, which is where a substring collision could
+// hide). Each anchor is required to appear EXACTLY once — not "at least
+// once" — so a future edit that introduces a second text satisfying the
+// same anchor by accident is caught too (the fifth known dead-criterion
+// shape).
+func TestVisualSection_CarriesAllObligations(t *testing.T) {
+	section, err := CutSection(LayerOneAsset(), "visual-certification")
+	if err != nil {
+		t.Fatalf("CutSection(visual-certification): %v", err)
+	}
+	if len(section) < minVisualSectionBytes {
+		t.Fatalf("visual-certification section is only %d bytes, want >= %d", len(section), minVisualSectionBytes)
+	}
+
+	anchors := []struct {
+		obligation string
+		anchor     string
+	}{
+		{"D4(a) verificar en pantalla", "ABRAS la pantalla y la mires"},
+		{"D4(b) advertencia sobre datos", "el navegador SI puede modificar datos"},
+		{"D4(c) decirlo si no hay navegador", "pendiente del orquestador"},
+		{"D5 el otro entorno no la concede", "la proyeccion a Codex no incluye lista de herramientas"},
+	}
+
+	for _, a := range anchors {
+		t.Run(a.obligation, func(t *testing.T) {
+			if got := strings.Count(section, a.anchor); got != 1 {
+				t.Errorf("expected anchor %q exactly once in the visual-certification section, got %d", a.anchor, got)
+			}
+		})
+	}
+}
+
 func TestHasBodyContent(t *testing.T) {
 	tests := []struct {
 		name string

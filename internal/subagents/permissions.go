@@ -53,24 +53,90 @@ var readOnlyTools = []string{
 	"WebSearch", "WebFetch", "mcp__mneme__*",
 }
 
+// visualTools are the three browser-server MCP tool patterns mneme
+// recognises today (SPEC-132 D2) — no server name in this space is stable
+// (R4), so all three forms an agent might find installed are granted at
+// once rather than picking one or adding per-project configuration:
+//
+//   - mcp__chrome-live__*                                 (chrome-live)
+//   - mcp__plugin_chrome-devtools-mcp_chrome-devtools__*   (chrome-devtools MCP, as a plugin)
+//   - mcp__plugin_playwright_playwright__*                 (Playwright MCP, as a plugin)
+//
+// UNIQUE declaration of the set (SPEC-132 Dp1): every guardian that cares
+// which role has a browser reads this variable, so adding a fourth pattern
+// forces touching the role lists too or the guardians go red. Ordered ASCII
+// ascending (SPEC-132 Dp2) — this is the order WITHIN the block; the block
+// itself always sits immediately before mcp__mneme__*, which stays the
+// final entry in any list that carries it (SPEC-087 D2 precedent). The full
+// list is deliberately NOT globally sorted: "mcp__mneme__*" is
+// alphabetically before "mcp__plugin...", so sorting everything would move
+// it out of last place and break that older rule.
+var visualTools = []string{
+	"mcp__chrome-live__*",
+	"mcp__plugin_chrome-devtools-mcp_chrome-devtools__*",
+	"mcp__plugin_playwright_playwright__*",
+}
+
 // qaTesterTools is qa-tester's own allowlist (SPEC-087 D2): readOnlyTools
 // plus Bash — mirroring diagnosticianTools' shape (Bash after BashOutput) —
 // so qa-tester can run its own gates (go test, lint, build) instead of
 // depending on the orchestrator to run them and paste back the output. No
 // Edit/Write/MultiEdit/NotebookEdit: qa-tester's entregables go through the
 // spec_doc_write MCP tool (SPEC-087 D3), never a file-edit tool.
+//
+// SPEC-132 D1/D3: gains visualTools (immediately before mcp__mneme__*, per
+// Dp2) so qa-tester can open a screen and actually look at it instead of
+// declaring visual certification "pending the orchestrator" — the defect
+// this spec exists to close. qa-tester stops being read-only over DATA
+// (a browser can submit forms, delete records) while staying read-only over
+// CODE: no edit tool is added here.
 var qaTesterTools = []string{
 	"Read", "Grep", "Glob", "NotebookRead", "BashOutput", "Bash",
-	"WebSearch", "WebFetch", "mcp__mneme__*",
+	"WebSearch", "WebFetch",
+	"mcp__chrome-live__*", "mcp__plugin_chrome-devtools-mcp_chrome-devtools__*", "mcp__plugin_playwright_playwright__*",
+	"mcp__mneme__*",
 }
 
-// implementerTools is the allowlist shared by roles that implement code:
-// full edit toolset plus Bash. SPEC-087 D2 adds WebSearch/WebFetch (same
-// canonical placement as readOnlyTools/qaTesterTools) immediately before
-// mcp__mneme__*.
-var implementerTools = []string{
+// implementerBaseTools is the allowlist shared by the implementer roles that
+// do NOT get a browser: backend and bug-hunter. Full edit toolset plus Bash.
+// SPEC-087 D2 adds WebSearch/WebFetch (same canonical placement as
+// readOnlyTools/qaTesterTools) immediately before mcp__mneme__*.
+//
+// Renamed from implementerTools (SPEC-132 D1/Dp1): before this spec every
+// implementer shared one allowlist, so "implementerTools" meant "every
+// implementer's tools". Since frontend gets a browser and backend/bug-hunter
+// do not, that name would silently start meaning "every implementer except
+// frontend" without saying so — the exact kind of quiet drift D1 exists to
+// prevent. The rename forces a compile error at every use site, which is
+// the cheap way to make sure each one gets reviewed.
+var implementerBaseTools = []string{
 	"Read", "Grep", "Glob", "NotebookRead", "NotebookEdit", "BashOutput",
 	"Edit", "Write", "MultiEdit", "Bash", "WebSearch", "WebFetch", "mcp__mneme__*",
+}
+
+// frontendTools is frontend's own allowlist, split out of the former
+// implementerTools so backend/bug-hunter and frontend can diverge (SPEC-132
+// D1): the full edit toolset of implementerBaseTools, plus visualTools
+// (immediately before mcp__mneme__*, per Dp2) so frontend can open the
+// screen it just built instead of trusting that "compiles" means "renders
+// correctly" — the same defect class this spec closes for qa-tester.
+//
+// Deliberately a LITERAL list, not a runtime composition such as
+// append(implementerBaseTools, ...) (SPEC-132 Dp1 alternative 2, rejected):
+// append on a slice with spare capacity can write into the backing array a
+// sibling slice still references, and the whole point of this table is that
+// it can be read literally, byte for byte, against the real frontmatter — a
+// composed value can't offer that same guarantee at a glance.
+//
+// TestFrontendTools_DivergeOnlyByVisual (SPEC-132 AC4) pins that
+// frontendTools never differs from implementerBaseTools by anything other
+// than the browser block, so a capability added to one and not the other
+// goes red instead of drifting silently.
+var frontendTools = []string{
+	"Read", "Grep", "Glob", "NotebookRead", "NotebookEdit", "BashOutput",
+	"Edit", "Write", "MultiEdit", "Bash", "WebSearch", "WebFetch",
+	"mcp__chrome-live__*", "mcp__plugin_chrome-devtools-mcp_chrome-devtools__*", "mcp__plugin_playwright_playwright__*",
+	"mcp__mneme__*",
 }
 
 // diagnosticianTools is readOnlyTools's pre-SPEC-087 shape plus Bash (for
@@ -113,15 +179,15 @@ var PermissionTable = map[Role]Permission{
 		PermissionMode: "",
 	},
 	RoleBackend: {
-		Tools:          implementerTools,
+		Tools:          implementerBaseTools,
 		PermissionMode: bypassPermissions,
 	},
 	RoleFrontend: {
-		Tools:          implementerTools,
+		Tools:          frontendTools,
 		PermissionMode: bypassPermissions,
 	},
 	RoleBugHunter: {
-		Tools:          implementerTools,
+		Tools:          implementerBaseTools,
 		PermissionMode: bypassPermissions,
 	},
 }

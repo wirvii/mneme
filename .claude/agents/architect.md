@@ -5,7 +5,7 @@ model: opus
 tools: Read, Grep, Glob, NotebookRead, BashOutput, WebSearch, WebFetch, mcp__mneme__*
 ---
 
-<!-- mneme:agent-fixed:start v=2 -->
+<!-- mneme:agent-fixed:start v=3 -->
 ## Exploracion de codigo: grafo primero
 
 OBLIGATORIO: cuando este proyecto tiene un grafo de codigo indexado (mneme
