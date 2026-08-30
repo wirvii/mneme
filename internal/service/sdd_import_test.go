@@ -824,7 +824,7 @@ func TestSDDImport_RefusesForeignProjectMarker(t *testing.T) {
 	if _, gErr := svc.store.GetBacklogItem(ctx, "BL-090"); gErr == nil {
 		t.Error("BL-090 must not have been created")
 	}
-	items, total, err := svc.store.ListBacklogItems(ctx, importTestProject, "", 0)
+	items, total, _, err := svc.store.ListBacklogItems(ctx, importTestProject, "", 0)
 	if err != nil {
 		t.Fatalf("ListBacklogItems: %v", err)
 	}
@@ -1407,7 +1407,7 @@ func TestComputeOnlyInBase_CapsAtMaxAndReportsRealTotal(t *testing.T) {
 		}
 	}
 
-	missing, total, err := svc.computeOnlyInBase(ctx, map[string]bool{})
+	missing, total, _, err := svc.computeOnlyInBase(ctx, map[string]bool{})
 	if err != nil {
 		t.Fatalf("computeOnlyInBase: %v", err)
 	}

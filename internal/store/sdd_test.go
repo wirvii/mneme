@@ -131,7 +131,7 @@ func TestListBacklogItems(t *testing.T) {
 	}
 
 	// Filter by status=raw: expect BL-001 and BL-003.
-	rawItems, rawTotal, err := s.ListBacklogItems(ctx, project, model.BacklogStatusRaw, 0)
+	rawItems, rawTotal, _, err := s.ListBacklogItems(ctx, project, model.BacklogStatusRaw, 0)
 	if err != nil {
 		t.Fatalf("ListBacklogItems(raw): %v", err)
 	}
@@ -147,7 +147,7 @@ func TestListBacklogItems(t *testing.T) {
 	// ('critical' < 'high' < 'low' < 'medium', which would put the low item
 	// before the medium one). SPEC-109 D20/AC27: this is the fix, verified
 	// by asserting exact order instead of only membership.
-	all, allTotal, err := s.ListBacklogItems(ctx, project, "", 0)
+	all, allTotal, _, err := s.ListBacklogItems(ctx, project, "", 0)
 	if err != nil {
 		t.Fatalf("ListBacklogItems(all): %v", err)
 	}
@@ -265,7 +265,7 @@ func TestListBacklogItems_PriorityRankOrder(t *testing.T) {
 		}
 	}
 
-	got, _, err := s.ListBacklogItems(ctx, project, "", 0)
+	got, _, _, err := s.ListBacklogItems(ctx, project, "", 0)
 	if err != nil {
 		t.Fatalf("ListBacklogItems: %v", err)
 	}
@@ -296,11 +296,11 @@ func TestListBacklogItems_DeterministicTieBreak(t *testing.T) {
 		}
 	}
 
-	first, _, err := s.ListBacklogItems(ctx, project, "", 0)
+	first, _, _, err := s.ListBacklogItems(ctx, project, "", 0)
 	if err != nil {
 		t.Fatalf("ListBacklogItems (first): %v", err)
 	}
-	second, _, err := s.ListBacklogItems(ctx, project, "", 0)
+	second, _, _, err := s.ListBacklogItems(ctx, project, "", 0)
 	if err != nil {
 		t.Fatalf("ListBacklogItems (second): %v", err)
 	}
@@ -361,11 +361,11 @@ func TestListBacklogItems_OrderSurvivesInsertBursts(t *testing.T) {
 			wantOrder = append(wantOrder, id)
 		}
 
-		first, _, err := s.ListBacklogItems(ctx, project, "", 0)
+		first, _, _, err := s.ListBacklogItems(ctx, project, "", 0)
 		if err != nil {
 			t.Fatalf("iteration %d: ListBacklogItems (first): %v", iter, err)
 		}
-		second, _, err := s.ListBacklogItems(ctx, project, "", 0)
+		second, _, _, err := s.ListBacklogItems(ctx, project, "", 0)
 		if err != nil {
 			t.Fatalf("iteration %d: ListBacklogItems (second): %v", iter, err)
 		}
@@ -430,6 +430,16 @@ func TestSpecListPredicate_SharedByCountAndPage(t *testing.T) {
 
 // TestListSpecs_TotalBehavioralGuard mirrors
 // TestListBacklogItems_TotalBehavioralGuard (AC8) for specs.
+// TestListSpecs_TotalBehavioralGuard is SPEC-133 AC1, extending SPEC-109's
+// original guard (which only ever exercised K=0): every status also gets
+// one row inserted directly via SQL with an unparseable created_at
+// (K=1 per status, K=3 for the unfiltered case). The identity under test
+// changes from the unconditional Total == len(items) to
+// Total == len(items) + len(unreadable) (SPEC-133 D6) — and, since K=0
+// would make that identity hold vacuously, the test also pins
+// len(unreadable) == K and the EXACT set of corrupted ids returned, so an
+// implementation that aborts instead of tolerating (or tolerates without
+// naming) still fails here.
 func TestListSpecs_TotalBehavioralGuard(t *testing.T) {
 	s := newTestSDDStore(t)
 	ctx := context.Background()
@@ -439,6 +449,7 @@ func TestListSpecs_TotalBehavioralGuard(t *testing.T) {
 		model.SpecStatusDraft, model.SpecStatusImplementing, model.SpecStatusDone,
 	}
 	n := 0
+	corruptIDByStatus := make(map[model.SpecStatus]string, len(statuses))
 	for _, status := range statuses {
 		for i := 0; i < 3; i++ {
 			n++
@@ -450,6 +461,9 @@ func TestListSpecs_TotalBehavioralGuard(t *testing.T) {
 				t.Fatalf("create %s: %v", spec.ID, err)
 			}
 		}
+		corruptID := fmt.Sprintf("SPEC-BAD-%s", status)
+		insertRawUnreadableSpec(t, s, corruptID, project, string(status), "created_at", "not-a-timestamp")
+		corruptIDByStatus[status] = corruptID
 	}
 
 	cases := append([]model.SpecStatus{""}, statuses...)
@@ -458,17 +472,42 @@ func TestListSpecs_TotalBehavioralGuard(t *testing.T) {
 		if name == "" {
 			name = "(no filter)"
 		}
+		var wantCorrupt []string
+		if status == "" {
+			for _, s := range statuses {
+				wantCorrupt = append(wantCorrupt, corruptIDByStatus[s])
+			}
+		} else {
+			wantCorrupt = []string{corruptIDByStatus[status]}
+		}
+
 		t.Run(name, func(t *testing.T) {
-			unwindowed, _, err := s.ListSpecs(ctx, project, status, 0)
+			unwindowed, _, unreadable, err := s.ListSpecs(ctx, project, status, 0)
 			if err != nil {
 				t.Fatalf("ListSpecs(limit=0): %v", err)
 			}
-			_, total, err := s.ListSpecs(ctx, project, status, 1)
+			_, total, _, err := s.ListSpecs(ctx, project, status, 1)
 			if err != nil {
 				t.Fatalf("ListSpecs(limit=1): %v", err)
 			}
-			if total != len(unwindowed) {
-				t.Errorf("total=%d, want %d (len of unwindowed list)", total, len(unwindowed))
+			if total != len(unwindowed)+len(unreadable) {
+				t.Errorf("total=%d, want %d (len(items)=%d + len(unreadable)=%d)",
+					total, len(unwindowed)+len(unreadable), len(unwindowed), len(unreadable))
+			}
+			if len(unreadable) != len(wantCorrupt) {
+				t.Fatalf("len(unreadable)=%d, want %d", len(unreadable), len(wantCorrupt))
+			}
+			gotIDs := make(map[string]bool, len(unreadable))
+			for _, row := range unreadable {
+				gotIDs[row.ID] = true
+			}
+			for _, id := range wantCorrupt {
+				if !gotIDs[id] {
+					t.Errorf("unreadable is missing %s", id)
+				}
+			}
+			if len(gotIDs) != len(wantCorrupt) {
+				t.Errorf("unreadable has extra ids beyond %v: %v", wantCorrupt, gotIDs)
 			}
 		})
 	}
@@ -491,7 +530,7 @@ func TestListSpecs_LimitPagesAndReportsTrueTotal(t *testing.T) {
 		}
 	}
 
-	specs, total, err := s.ListSpecs(ctx, project, "", 10)
+	specs, total, _, err := s.ListSpecs(ctx, project, "", 10)
 	if err != nil {
 		t.Fatalf("ListSpecs: %v", err)
 	}
@@ -529,11 +568,11 @@ func TestListSpecs_OrderSurvivesInsertBursts(t *testing.T) {
 			wantOrder = append(wantOrder, id)
 		}
 
-		first, _, err := s.ListSpecs(ctx, project, "", 0)
+		first, _, _, err := s.ListSpecs(ctx, project, "", 0)
 		if err != nil {
 			t.Fatalf("iteration %d: ListSpecs (first): %v", iter, err)
 		}
-		second, _, err := s.ListSpecs(ctx, project, "", 0)
+		second, _, _, err := s.ListSpecs(ctx, project, "", 0)
 		if err != nil {
 			t.Fatalf("iteration %d: ListSpecs (second): %v", iter, err)
 		}
@@ -561,6 +600,9 @@ func TestListSpecs_OrderSurvivesInsertBursts(t *testing.T) {
 // (status filter × no filter), the total returned by a limit=1 call must
 // equal len(items) from a limit=0 call. This is the test that fails if the
 // COUNT and page queries ever diverge in their WHERE clause.
+// TestListBacklogItems_TotalBehavioralGuard is SPEC-133 AC1 — see
+// TestListSpecs_TotalBehavioralGuard's godoc for the full rationale, mirrored
+// here for backlog items.
 func TestListBacklogItems_TotalBehavioralGuard(t *testing.T) {
 	s := newTestSDDStore(t)
 	ctx := context.Background()
@@ -571,6 +613,7 @@ func TestListBacklogItems_TotalBehavioralGuard(t *testing.T) {
 		model.BacklogStatusPromoted, model.BacklogStatusArchived,
 	}
 	n := 0
+	corruptIDByStatus := make(map[model.BacklogStatus]string, len(statuses))
 	for _, status := range statuses {
 		for i := 0; i < 3; i++ {
 			n++
@@ -583,6 +626,9 @@ func TestListBacklogItems_TotalBehavioralGuard(t *testing.T) {
 				t.Fatalf("create %s: %v", item.ID, err)
 			}
 		}
+		corruptID := fmt.Sprintf("BL-BAD-%s", status)
+		insertRawUnreadableBacklogItem(t, s, corruptID, project, string(status), "created_at", "not-a-timestamp")
+		corruptIDByStatus[status] = corruptID
 	}
 
 	cases := append([]model.BacklogStatus{""}, statuses...)
@@ -591,17 +637,42 @@ func TestListBacklogItems_TotalBehavioralGuard(t *testing.T) {
 		if name == "" {
 			name = "(no filter)"
 		}
+		var wantCorrupt []string
+		if status == "" {
+			for _, s := range statuses {
+				wantCorrupt = append(wantCorrupt, corruptIDByStatus[s])
+			}
+		} else {
+			wantCorrupt = []string{corruptIDByStatus[status]}
+		}
+
 		t.Run(name, func(t *testing.T) {
-			unwindowed, _, err := s.ListBacklogItems(ctx, project, status, 0)
+			unwindowed, _, unreadable, err := s.ListBacklogItems(ctx, project, status, 0)
 			if err != nil {
 				t.Fatalf("ListBacklogItems(limit=0): %v", err)
 			}
-			_, total, err := s.ListBacklogItems(ctx, project, status, 1)
+			_, total, _, err := s.ListBacklogItems(ctx, project, status, 1)
 			if err != nil {
 				t.Fatalf("ListBacklogItems(limit=1): %v", err)
 			}
-			if total != len(unwindowed) {
-				t.Errorf("total=%d, want %d (len of unwindowed list)", total, len(unwindowed))
+			if total != len(unwindowed)+len(unreadable) {
+				t.Errorf("total=%d, want %d (len(items)=%d + len(unreadable)=%d)",
+					total, len(unwindowed)+len(unreadable), len(unwindowed), len(unreadable))
+			}
+			if len(unreadable) != len(wantCorrupt) {
+				t.Fatalf("len(unreadable)=%d, want %d", len(unreadable), len(wantCorrupt))
+			}
+			gotIDs := make(map[string]bool, len(unreadable))
+			for _, row := range unreadable {
+				gotIDs[row.ID] = true
+			}
+			for _, id := range wantCorrupt {
+				if !gotIDs[id] {
+					t.Errorf("unreadable is missing %s", id)
+				}
+			}
+			if len(gotIDs) != len(wantCorrupt) {
+				t.Errorf("unreadable has extra ids beyond %v: %v", wantCorrupt, gotIDs)
 			}
 		})
 	}
@@ -625,7 +696,7 @@ func TestListBacklogItems_LimitZeroIsUnwindowed(t *testing.T) {
 		}
 	}
 
-	items, total, err := s.ListBacklogItems(ctx, project, "", 0)
+	items, total, _, err := s.ListBacklogItems(ctx, project, "", 0)
 	if err != nil {
 		t.Fatalf("ListBacklogItems: %v", err)
 	}
@@ -657,7 +728,7 @@ func TestListBacklogItems_LimitPagesAndReportsTrueTotal(t *testing.T) {
 		}
 	}
 
-	items, total, err := s.ListBacklogItems(ctx, project, "", 10)
+	items, total, _, err := s.ListBacklogItems(ctx, project, "", 10)
 	if err != nil {
 		t.Fatalf("ListBacklogItems: %v", err)
 	}
@@ -1072,7 +1143,7 @@ func TestRecentlyCompletedSpecs(t *testing.T) {
 	}
 
 	// Limit to 2.
-	recent, err := s.RecentlyCompletedSpecs(ctx, project, 2)
+	recent, _, err := s.RecentlyCompletedSpecs(ctx, project, 2)
 	if err != nil {
 		t.Fatalf("RecentlyCompletedSpecs: %v", err)
 	}
@@ -1218,7 +1289,7 @@ func TestUpdateSpecBaseSHA(t *testing.T) {
 	}
 
 	// ListSpecs must also return the SHA.
-	list, _, err := s.ListSpecs(ctx, "proj", "", 0)
+	list, _, _, err := s.ListSpecs(ctx, "proj", "", 0)
 	if err != nil {
 		t.Fatalf("ListSpecs: %v", err)
 	}
@@ -1316,6 +1387,66 @@ func TestInsertLaneAuditAndLatestLaneAudit(t *testing.T) {
 
 // --- SPEC-110: backlog_refinements counter (Paso 3) ---
 
+// insertRawUnreadableBacklogItem inserts a backlog_items row directly via
+// SQL whose given column holds badValue — bypassing every mneme write path,
+// which always produces content collectBacklogItems can read. This is the
+// literal technique service/sdd_import_onlyinbase_test.go's fixture uses,
+// reused here to exercise the tolerance SPEC-133 adds (AC1/AC3/AC4/AC5).
+// column must be "created_at" or "updated_at" — the two backlog columns D4
+// tolerates.
+func insertRawUnreadableBacklogItem(t *testing.T, s *SDDStore, id, project, status, column, badValue string) {
+	t.Helper()
+	createdAt, updatedAt := "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z"
+	switch column {
+	case "created_at":
+		createdAt = badValue
+	case "updated_at":
+		updatedAt = badValue
+	default:
+		t.Fatalf("insertRawUnreadableBacklogItem: unsupported column %q", column)
+	}
+	_, err := s.db.ExecContext(context.Background(),
+		`INSERT INTO backlog_items (id, title, description, status, priority, project, position, lane, scope, uuid, previous_ids, created_at, updated_at)
+		 VALUES (?, ?, '', ?, ?, ?, 0, ?, '', '', '', ?, ?)`,
+		id, "unreadable fixture row", status, string(model.PriorityMedium), project, string(model.LaneStandard),
+		createdAt, updatedAt,
+	)
+	if err != nil {
+		t.Fatalf("insert raw unreadable backlog item %s: %v", id, err)
+	}
+}
+
+// insertRawUnreadableSpec is insertRawUnreadableBacklogItem's sibling for
+// specs. column must be one of "created_at", "updated_at",
+// "assigned_agents", or "files_changed" — the four spec columns D4
+// tolerates. badValue is placed verbatim into that column; the other three
+// tolerated columns keep a value collectSpecs can always read.
+func insertRawUnreadableSpec(t *testing.T, s *SDDStore, id, project, status, column, badValue string) {
+	t.Helper()
+	createdAt, updatedAt := "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z"
+	agentsJSON, filesJSON := "[]", "[]"
+	switch column {
+	case "created_at":
+		createdAt = badValue
+	case "updated_at":
+		updatedAt = badValue
+	case "assigned_agents":
+		agentsJSON = badValue
+	case "files_changed":
+		filesJSON = badValue
+	default:
+		t.Fatalf("insertRawUnreadableSpec: unsupported column %q", column)
+	}
+	_, err := s.db.ExecContext(context.Background(),
+		`INSERT INTO specs (id, title, status, project, backlog_id, assigned_agents, files_changed, created_at, updated_at, lane, scope, base_sha, uuid, previous_ids)
+		 VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, '', '', '', '')`,
+		id, "unreadable fixture spec", status, project, agentsJSON, filesJSON, createdAt, updatedAt, string(model.LaneStandard),
+	)
+	if err != nil {
+		t.Fatalf("insert raw unreadable spec %s: %v", id, err)
+	}
+}
+
 // insertRawRefinement inserts a row directly into backlog_refinements via SQL,
 // bypassing AppendBacklogRefinement (introduced in Paso 4). Used here only to
 // set up fixtures for the counter/projection tests below.
@@ -1394,7 +1525,7 @@ func TestListBacklogItems_RefinementCount(t *testing.T) {
 		insertRawRefinement(t, s, "BL-003", seq, fmt.Sprintf("r%d", seq))
 	}
 
-	got, _, err := s.ListBacklogItems(ctx, project, "", 0)
+	got, _, _, err := s.ListBacklogItems(ctx, project, "", 0)
 	if err != nil {
 		t.Fatalf("ListBacklogItems: %v", err)
 	}
@@ -1442,7 +1573,7 @@ func TestListBacklogItems_JoinDoesNotMultiplyRows(t *testing.T) {
 		insertRawRefinement(t, s, "BL-004", seq, fmt.Sprintf("r%d", seq))
 	}
 
-	unwindowed, _, err := s.ListBacklogItems(ctx, project, "", 0)
+	unwindowed, _, _, err := s.ListBacklogItems(ctx, project, "", 0)
 	if err != nil {
 		t.Fatalf("ListBacklogItems(limit=0): %v", err)
 	}
@@ -1466,11 +1597,11 @@ func TestListBacklogItems_JoinDoesNotMultiplyRows(t *testing.T) {
 			name = "(no filter)"
 		}
 		t.Run(name, func(t *testing.T) {
-			list, _, err := s.ListBacklogItems(ctx, project, status, 0)
+			list, _, _, err := s.ListBacklogItems(ctx, project, status, 0)
 			if err != nil {
 				t.Fatalf("ListBacklogItems(limit=0): %v", err)
 			}
-			_, total, err := s.ListBacklogItems(ctx, project, status, 1)
+			_, total, _, err := s.ListBacklogItems(ctx, project, status, 1)
 			if err != nil {
 				t.Fatalf("ListBacklogItems(limit=1): %v", err)
 			}
@@ -1505,7 +1636,7 @@ func TestBacklogRefinementCount_GetAndListAgree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetBacklogItem: %v", err)
 	}
-	list, _, err := s.ListBacklogItems(ctx, project, "", 0)
+	list, _, _, err := s.ListBacklogItems(ctx, project, "", 0)
 	if err != nil {
 		t.Fatalf("ListBacklogItems: %v", err)
 	}
@@ -1882,7 +2013,7 @@ func TestSDDProjectionsAgreeOnUUID(t *testing.T) {
 	}
 
 	// ListBacklogItems
-	listedItems, _, err := s.ListBacklogItems(ctx, "proj", "", 0)
+	listedItems, _, _, err := s.ListBacklogItems(ctx, "proj", "", 0)
 	if err != nil {
 		t.Fatalf("ListBacklogItems: %v", err)
 	}
@@ -1900,7 +2031,7 @@ func TestSDDProjectionsAgreeOnUUID(t *testing.T) {
 	}
 
 	// ListSpecs
-	listedSpecs, _, err := s.ListSpecs(ctx, "proj", "", 0)
+	listedSpecs, _, _, err := s.ListSpecs(ctx, "proj", "", 0)
 	if err != nil {
 		t.Fatalf("ListSpecs: %v", err)
 	}
@@ -1909,7 +2040,7 @@ func TestSDDProjectionsAgreeOnUUID(t *testing.T) {
 	}
 
 	// RecentlyCompletedSpecs
-	recent, err := s.RecentlyCompletedSpecs(ctx, "proj", 10)
+	recent, _, err := s.RecentlyCompletedSpecs(ctx, "proj", 10)
 	if err != nil {
 		t.Fatalf("RecentlyCompletedSpecs: %v", err)
 	}
@@ -2135,7 +2266,7 @@ func TestPreviousIDs_InertAfterExistingVerbs(t *testing.T) {
 		t.Errorf("Spec.PreviousIDs after UpdateSpecStatus = %v, want empty", gotSpec.PreviousIDs)
 	}
 
-	specs, _, err := s.ListSpecs(ctx, "proj", "", 0)
+	specs, _, _, err := s.ListSpecs(ctx, "proj", "", 0)
 	if err != nil {
 		t.Fatalf("ListSpecs: %v", err)
 	}
@@ -2145,7 +2276,7 @@ func TestPreviousIDs_InertAfterExistingVerbs(t *testing.T) {
 		}
 	}
 
-	items, _, err := s.ListBacklogItems(ctx, "proj", "", 0)
+	items, _, _, err := s.ListBacklogItems(ctx, "proj", "", 0)
 	if err != nil {
 		t.Fatalf("ListBacklogItems: %v", err)
 	}

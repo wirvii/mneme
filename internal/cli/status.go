@@ -154,7 +154,12 @@ func renderFullStatus(ctx context.Context, svc *service.MemoryService, sddSvc *s
 		frozenInProgress[s.ID] = freeze
 	}
 
-	recentDone, _ := sddSvc.RecentlyCompletedSpecs(ctx, slug, 5)
+	recentDone, recentUnreadable, _ := sddSvc.RecentlyCompletedSpecs(ctx, slug, 5)
+	// TODO(SPEC-133 paso 3): recentUnreadable is not yet surfaced anywhere in
+	// this panel — cli/status.go's own announcement (D9) is step 3's job,
+	// not this commit's. Captured under its own name (never `_`) so this
+	// call stays visible to AC12's guardian in the meantime.
+	_ = recentUnreadable
 
 	// SPEC-086 D7/AC15: best-effort delegation-hook promotion nag. Reuses
 	// svc's already-open connection (service.NewSubagentService(svc)) rather

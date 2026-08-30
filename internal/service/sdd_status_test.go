@@ -184,30 +184,20 @@ func TestSDDStatus_DerivesEverything(t *testing.T) {
 	}
 }
 
-// TestSDDStatus_SDDPlanFailsBeforeOnlyInBaseCanDegrade documents a real,
-// deliberately UNFIXED boundary found while adding SDDStatusResult's own
-// OnlyInBaseError field (SPEC-131 round 4): sddPlan() — SDDStatus's very
-// first step, computing Plan.BacklogCount/SpecCount — calls the EXACT
-// SAME svc.store.ListBacklogItems/ListSpecs computeOnlyInBase calls
-// later, with identical arguments. A malformed row that would degrade
-// computeOnlyInBase (§ ImportSDDFromRepo's own OnlyInBaseError, which
-// DOES work — see sdd_import_onlyinbase_test.go) therefore ALWAYS breaks
-// sddPlan FIRST, and SDDStatus returns a hard error before ever reaching
-// the point where OnlyInBaseError could differ from empty. This is
-// EVALUATED, NOT FIXED: SDDPlan also feeds EnableSDDRepo/ExportSDDRepo's
-// own dry-run previews (SPEC-130), where silently showing "0 item(s)
-// would be exported" instead of erroring could mislead a person about
-// what --apply is about to do — a materially different risk than
-// OnlyInBase's purely informational role. Whether SDDStatus's OWN read
-// path should share that fail-loud posture, or degrade like
-// computeOnlyInBase now does, is a design decision this round does not
-// make unilaterally — reported instead of silently left undocumented.
-// SDDStatusResult.OnlyInBaseError's own field and propagation line ARE
-// still added (correct, harmless, forward-compatible), just not
-// exercisable through today's real SDDStatus call order — this test
-// pins that fact down so a future change to the call order does not
-// silently reopen or silently "fix" it without the same evaluation.
-func TestSDDStatus_SDDPlanFailsBeforeOnlyInBaseCanDegrade(t *testing.T) {
+// TestSDDStatus_TolerantSDDPlanDeclaresUnreadableRow is SPEC-133 AC11 —
+// the inverse of the test it replaces
+// (TestSDDStatus_SDDPlanFailsBeforeOnlyInBaseCanDegrade, SPEC-131 round 4).
+// That test documented a real, deliberately UNFIXED boundary: sddPlan() —
+// SDDStatus's very first step, computing Plan.BacklogCount/SpecCount —
+// used to call the EXACT SAME svc.store.ListBacklogItems/ListSpecs
+// computeOnlyInBase called later, with identical arguments, so a malformed
+// row ALWAYS broke sddPlan first and SDDStatus returned a hard error
+// before OnlyInBaseError could ever differ from empty. SPEC-133 closes
+// that boundary from the store upward: ListBacklogItems/ListSpecs no
+// longer abort on an unparseable row, so sddPlan succeeds and names the
+// row instead (SDDPlan.Unreadable, D6/D11 — BacklogCount stays the true
+// SQL total, 2, counting BL-995 too).
+func TestSDDStatus_TolerantSDDPlanDeclaresUnreadableRow(t *testing.T) {
 	database, err := db.OpenMemory()
 	if err != nil {
 		t.Fatalf("open memory db: %v", err)
@@ -223,6 +213,16 @@ func TestSDDStatus_SDDPlanFailsBeforeOnlyInBaseCanDegrade(t *testing.T) {
 	enableSDD(t, repoDir, importTestProject)
 	ctx := context.Background()
 
+	// One healthy item plus the malformed BL-995 — BacklogCount must read
+	// 2 (the real SQL total, D6), never silently drop to 1.
+	if _, err := database.ExecContext(ctx,
+		`INSERT INTO backlog_items (id, title, description, status, priority, project, position, lane, scope, uuid, previous_ids, created_at, updated_at)
+		 VALUES (?, ?, '', ?, ?, ?, 0, ?, '', ?, '', datetime('now'), datetime('now'))`,
+		"BL-900", "healthy sibling row", string(model.BacklogStatusRaw), string(model.PriorityMedium),
+		importTestProject, string(model.LaneStandard), "0198f000-0000-7000-8000-0000000009900",
+	); err != nil {
+		t.Fatalf("insert healthy fixture row: %v", err)
+	}
 	if _, err := database.ExecContext(ctx,
 		`INSERT INTO backlog_items (id, title, description, status, priority, project, position, lane, scope, uuid, previous_ids, created_at, updated_at)
 		 VALUES (?, ?, '', ?, ?, ?, 0, ?, '', ?, '', ?, ?)`,
@@ -232,17 +232,15 @@ func TestSDDStatus_SDDPlanFailsBeforeOnlyInBaseCanDegrade(t *testing.T) {
 		t.Fatalf("insert malformed fixture row: %v", err)
 	}
 
-	_, err = svc.SDDStatus(ctx, repoDir)
-	if err == nil {
-		t.Fatal("SDDStatus unexpectedly succeeded — sddPlan's own resilience to a malformed row changed; " +
-			"re-evaluate whether OnlyInBaseError should now be exercised through this path")
+	result, err := svc.SDDStatus(ctx, repoDir)
+	if err != nil {
+		t.Fatalf("SDDStatus must succeed — SPEC-133 tolerates BL-995's malformed row instead of aborting sddPlan: %v", err)
 	}
-	// The full, exact prefix this specific wrap produces (sdd_enable.go's
-	// own "service: sdd status: plan: %w") — not a bare "plan" substring,
-	// which the examen-de-criterios checklist's own Forma 5 warns could
-	// coincidentally match a DIFFERENT SDDStatus failure step's message.
-	if !strings.HasPrefix(err.Error(), "service: sdd status: plan: ") {
-		t.Errorf("error = %v, want the plan-step prefix specifically (sddPlan, before computeOnlyInBase is ever reached)", err)
+	if result.Plan.BacklogCount != 2 {
+		t.Errorf("Plan.BacklogCount = %d, want 2 (the true SQL total, healthy + unreadable, SPEC-133 D6/D11)", result.Plan.BacklogCount)
+	}
+	if len(result.Plan.Unreadable) != 1 || result.Plan.Unreadable[0].ID != "BL-995" {
+		t.Errorf("Plan.Unreadable = %+v, want exactly one row naming BL-995", result.Plan.Unreadable)
 	}
 }
 
