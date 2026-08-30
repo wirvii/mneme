@@ -100,6 +100,14 @@ type SDDImportResult struct {
 	// (D54: nothing is ever silent).
 	OnlyInBaseError string `json:"only_in_base_error,omitempty"`
 
+	// Unreadable names every backlog/spec row computeOnlyInBase's own
+	// listing could identify but not fully read (SPEC-133 D1/D10). Its
+	// id is still counted in OnlyInBase/OnlyInBaseTotal like any other row
+	// (D10) — this field is purely additive information about WHY a given
+	// id could not be read in full, never a discrepancy against those
+	// counts.
+	Unreadable []model.UnreadableRow `json:"unreadable,omitempty"`
+
 	// NoOpReason is set, and every other field left empty, when the import
 	// did nothing: "mecanismo apagado" (the marker exists but sdd.off is
 	// present) or "no hay directorio .mneme/sdd" (no marker at all).
@@ -317,13 +325,14 @@ func (svc *SDDService) ImportSDDFromRepo(ctx context.Context, repoRoot string, a
 	// tells "genuinely nothing is only in the base" apart from "the
 	// calculation itself failed" — a zero that meant two different things
 	// until this field existed.
-	onlyInBase, total, err := svc.computeOnlyInBase(ctx, covered)
+	onlyInBase, total, unreadable, err := svc.computeOnlyInBase(ctx, covered)
 	if err != nil {
 		slog.ErrorContext(ctx, "sdd_import_error", "step", "only-in-base", "error", err)
 		result.OnlyInBaseError = fmt.Sprintf("no se pudo calcular: %v", err)
 	} else {
 		result.OnlyInBase = onlyInBase
 		result.OnlyInBaseTotal = total
+		result.Unreadable = unreadable
 	}
 
 	return result, nil
@@ -572,15 +581,27 @@ func relSDDPath(repoRoot, path string) string {
 // file exist for this correlative on this branch", not "did it import
 // cleanly". Sorted for determinism, then capped to maxOnlyInBaseListed —
 // total always reports the real count.
-func (svc *SDDService) computeOnlyInBase(ctx context.Context, covered map[string]bool) ([]string, int, error) {
-	items, _, err := svc.store.ListBacklogItems(ctx, svc.project, "", 0)
+//
+// The fourth return value, unreadable (SPEC-133 D1/D10), names every row
+// this call could identify but not fully read. Its id is added to the
+// "only in base" evaluation exactly like any healthy row's id would be
+// (D10): an unreadable row is still a real row this database holds, and
+// treating it as invisible here would silently reintroduce the exact
+// "OnlyInBaseTotal reads 0 for the wrong reason" defect SPEC-131 fixed —
+// only from the opposite direction.
+func (svc *SDDService) computeOnlyInBase(ctx context.Context, covered map[string]bool) ([]string, int, []model.UnreadableRow, error) {
+	items, _, itemsUnreadable, err := svc.store.ListBacklogItems(ctx, svc.project, "", 0)
 	if err != nil {
-		return nil, 0, fmt.Errorf("list backlog items: %w", err)
+		return nil, 0, nil, fmt.Errorf("list backlog items: %w", err)
 	}
-	specs, _, err := svc.store.ListSpecs(ctx, svc.project, "", 0)
+	specs, _, specsUnreadable, err := svc.store.ListSpecs(ctx, svc.project, "", 0)
 	if err != nil {
-		return nil, 0, fmt.Errorf("list specs: %w", err)
+		return nil, 0, nil, fmt.Errorf("list specs: %w", err)
 	}
+
+	var unreadable []model.UnreadableRow
+	unreadable = append(unreadable, itemsUnreadable...)
+	unreadable = append(unreadable, specsUnreadable...)
 
 	var missing []string
 	for _, item := range items {
@@ -593,13 +614,18 @@ func (svc *SDDService) computeOnlyInBase(ctx context.Context, covered map[string
 			missing = append(missing, spec.ID)
 		}
 	}
+	for _, row := range unreadable {
+		if !covered[row.ID] {
+			missing = append(missing, row.ID)
+		}
+	}
 	sort.Strings(missing)
 
 	total := len(missing)
 	if total > maxOnlyInBaseListed {
 		missing = missing[:maxOnlyInBaseListed]
 	}
-	return missing, total, nil
+	return missing, total, unreadable, nil
 }
 
 // applyBacklogDefaults fills the zero-value fields D53 declares fillable

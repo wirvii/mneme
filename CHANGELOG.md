@@ -8,6 +8,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **A backlog item or spec with one unparseable row no longer takes down
+  the whole listing (SPEC-133).** `backlog list`, `spec list`,
+  `lane stats`, `sdd status`, `sdd enable`, and `sdd export` used to abort
+  entirely — and `mneme status` used to fail silently, hiding its
+  `BACKLOG`/`SPECS IN PROGRESS`/`RECENTLY COMPLETED` sections as if the
+  project had no work at all — the moment a single row's timestamp or JSON
+  column could not be parsed (a hand-edited database, an old migration).
+  The store now skips and NAMES that one row (`kind`, `id`, `column`,
+  `reason`) instead of discarding the whole page; the true SQL total never
+  degrades, so "the count is exact but the list is short by one, and here
+  is which one" is always distinguishable from "there is genuinely
+  nothing". `backlog list`/`spec list` announce it on stderr without
+  changing their stdout shape; `status`/`lane stats`/`sdd status`/
+  `sdd enable`/`sdd export` announce it in their normal output and (for
+  `status`) a new `unreadable` JSON key, present only when something was
+  skipped. The three MCP tools (`backlog_list`, `spec_list`, `lane_stats`)
+  gain the same additive `unreadable`/`unreadable_total` pair, capped at
+  20 rows. A reader asking for ONE specific row (`backlog_get`,
+  `spec_status`, `GetBacklogItem`, `GetSpec`) still fails noisily on a
+  corrupted one — this tolerance only applies to listings of the whole
+  project, never to a request that already named the row.
 - **`qa-tester` and `frontend` can now open a real browser to certify what
   they built, instead of stopping at "compiles" (SPEC-132).** A measured
   regression — a code review that found zero of six real interface defects,

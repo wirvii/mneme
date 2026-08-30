@@ -50,9 +50,36 @@ type backlogListItem struct {
 // backlogListView is the MCP wire shape for backlog_list: a page of
 // projected items plus the true match count. Unexported — this projection
 // is a contract of the MCP frontend (SPEC-109 D9), not domain shape.
+//
+// Unreadable/UnreadableTotal (SPEC-133 D14) follow the SAME acotado
+// convention Total/Items already establish: the store's full relation is
+// truncated to model.MaxUnreadableListed HERE, in the MCP frontend, never
+// in the store — the same split SPEC-109 drew for the backlog excerpt
+// ("The excerpt is MCP frontend policy (D9), not applied here",
+// service/sdd.go). Both fields are absent (omitempty) when nothing was
+// skipped.
 type backlogListView struct {
-	Items []backlogListItem `json:"items"`
-	Total int               `json:"total"`
+	Items           []backlogListItem     `json:"items"`
+	Total           int                   `json:"total"`
+	Unreadable      []model.UnreadableRow `json:"unreadable,omitempty"`
+	UnreadableTotal int                   `json:"unreadable_total,omitempty"`
+}
+
+// truncateUnreadable caps rows to model.MaxUnreadableListed (SPEC-133 D14)
+// and returns the real total alongside. The store/service layer never
+// truncates this relation — its own accounting identity
+// (model.BacklogListResponse.Unreadable) has to stay exact — so this cap is
+// MCP frontend policy applied once here, shared by every view that carries
+// the relation.
+func truncateUnreadable(rows []model.UnreadableRow) ([]model.UnreadableRow, int) {
+	total := len(rows)
+	if total == 0 {
+		return nil, 0
+	}
+	if total <= model.MaxUnreadableListed {
+		return rows, total
+	}
+	return rows[:model.MaxUnreadableListed], total
 }
 
 // newBacklogListView projects resp into the MCP wire shape using excerptRunes
@@ -82,7 +109,8 @@ func newBacklogListView(resp model.BacklogListResponse, excerptRunes int) backlo
 			UpdatedAt:     item.UpdatedAt,
 		})
 	}
-	return backlogListView{Items: items, Total: resp.Total}
+	unreadable, unreadableTotal := truncateUnreadable(resp.Unreadable)
+	return backlogListView{Items: items, Total: resp.Total, Unreadable: unreadable, UnreadableTotal: unreadableTotal}
 }
 
 // specListView is the MCP wire shape for spec_list: the raw specs plus the
@@ -97,4 +125,50 @@ type specListView struct {
 	Specs  []*model.Spec               `json:"specs"`
 	Total  int                         `json:"total"`
 	Frozen map[string]model.SpecFreeze `json:"frozen,omitempty"`
+
+	// Unreadable/UnreadableTotal (SPEC-133 D14) — see backlogListView's own
+	// godoc for the truncate-in-the-frontend rationale, identical here.
+	Unreadable      []model.UnreadableRow `json:"unreadable,omitempty"`
+	UnreadableTotal int                   `json:"unreadable_total,omitempty"`
+}
+
+// newSpecListView projects resp into the MCP wire shape, truncating its
+// Unreadable relation the same way newBacklogListView does (SPEC-133 D14).
+func newSpecListView(resp model.SpecListResponse) specListView {
+	unreadable, unreadableTotal := truncateUnreadable(resp.Unreadable)
+	return specListView{
+		Specs: resp.Specs, Total: resp.Total, Frozen: resp.Frozen,
+		Unreadable: unreadable, UnreadableTotal: unreadableTotal,
+	}
+}
+
+// laneStatsView is the MCP wire shape for lane_stats: identical to
+// model.LaneStatsResponse except Unreadable is truncated to
+// model.MaxUnreadableListed and UnreadableTotal carries the real count
+// (SPEC-133 D14) — lane_stats had no dedicated view type before this spec
+// (the handler returned *model.LaneStatsResponse directly), so this is the
+// first one.
+type laneStatsView struct {
+	TrivialCount    int                   `json:"trivial_count"`
+	AuditFailCount  int                   `json:"audit_fail_count"`
+	AuditFailRate   float64               `json:"audit_fail_rate"`
+	OverrideCount   int                   `json:"override_count"`
+	ReclassifyCount int                   `json:"reclassify_count"`
+	Unreadable      []model.UnreadableRow `json:"unreadable,omitempty"`
+	UnreadableTotal int                   `json:"unreadable_total,omitempty"`
+}
+
+// newLaneStatsView projects resp into the MCP wire shape, truncating its
+// Unreadable relation the same way newBacklogListView/newSpecListView do.
+func newLaneStatsView(resp *model.LaneStatsResponse) laneStatsView {
+	unreadable, unreadableTotal := truncateUnreadable(resp.Unreadable)
+	return laneStatsView{
+		TrivialCount:    resp.TrivialCount,
+		AuditFailCount:  resp.AuditFailCount,
+		AuditFailRate:   resp.AuditFailRate,
+		OverrideCount:   resp.OverrideCount,
+		ReclassifyCount: resp.ReclassifyCount,
+		Unreadable:      unreadable,
+		UnreadableTotal: unreadableTotal,
+	}
 }

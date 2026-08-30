@@ -115,12 +115,21 @@ func renderFullStatus(ctx context.Context, svc *service.MemoryService, sddSvc *s
 
 	// Fetch backlog items (exclude archived). Limit stays zero (no window,
 	// SPEC-109 D9) — the dashboard wants the same full-fidelity list as
-	// before. Discarding the error is safe because BacklogListResponse is
-	// returned BY VALUE (D10): its zero value has a nil Items slice, and
-	// ranging over nil is zero iterations, not a nil-deref.
-	blResp, _ := sddSvc.BacklogList(ctx, model.BacklogListRequest{
+	// before. BacklogListResponse is returned BY VALUE (D10): its zero
+	// value has a nil Items slice, and ranging over nil is zero
+	// iterations, not a nil-deref — so a hard error (D3, extremely rare:
+	// only a rows.Scan/rows.Err failure, never a single bad row since
+	// SPEC-133) still degrades the panel instead of failing the command,
+	// but it is announced instead of silently discarded (SPEC-133 D9/§3.3
+	// — the defect this spec's own §3.3 finding describes was exactly
+	// this line reasoning about memory safety instead of about the
+	// RESULT's honesty).
+	blResp, blErr := sddSvc.BacklogList(ctx, model.BacklogListRequest{
 		Project: slug,
 	})
+	if blErr != nil && !asJSON {
+		fmt.Fprintf(os.Stdout, "warning: could not fully load the backlog: %v\n", blErr)
+	}
 	var activeBacklog []*model.BacklogItem
 	for _, item := range blResp.Items {
 		if item.Status != model.BacklogStatusArchived {
@@ -128,8 +137,12 @@ func renderFullStatus(ctx context.Context, svc *service.MemoryService, sddSvc *s
 		}
 	}
 
-	// Fetch all specs and split into in-progress vs done.
-	spResp, _ := sddSvc.SpecList(ctx, model.SpecListRequest{Project: slug})
+	// Fetch all specs and split into in-progress vs done. Same posture as
+	// the backlog fetch above (SPEC-133 D9).
+	spResp, spErr := sddSvc.SpecList(ctx, model.SpecListRequest{Project: slug})
+	if spErr != nil && !asJSON {
+		fmt.Fprintf(os.Stdout, "warning: could not fully load specs: %v\n", spErr)
+	}
 	var inProgressSpecs []*model.Spec
 	for _, s := range spResp.Specs {
 		if !s.Status.IsFinal() && s.Status != model.SpecStatusDraft {
@@ -154,7 +167,20 @@ func renderFullStatus(ctx context.Context, svc *service.MemoryService, sddSvc *s
 		frozenInProgress[s.ID] = freeze
 	}
 
-	recentDone, _ := sddSvc.RecentlyCompletedSpecs(ctx, slug, 5)
+	recentDone, recentUnreadable, rcErr := sddSvc.RecentlyCompletedSpecs(ctx, slug, 5)
+	if rcErr != nil && !asJSON {
+		fmt.Fprintf(os.Stdout, "warning: could not fully load recently completed specs: %v\n", rcErr)
+	}
+
+	// SPEC-133 D9: this is the finding of the spec's own §3.3 — a single
+	// illegible row used to make this whole panel silently drop entire
+	// sections instead of showing a partial one. The three relations above
+	// are merged into one so the panel names every row it could not read,
+	// regardless of which of the three calls found it.
+	var unreadable []model.UnreadableRow
+	unreadable = append(unreadable, blResp.Unreadable...)
+	unreadable = append(unreadable, spResp.Unreadable...)
+	unreadable = append(unreadable, recentUnreadable...)
 
 	// SPEC-086 D7/AC15: best-effort delegation-hook promotion nag. Reuses
 	// svc's already-open connection (service.NewSubagentService(svc)) rather
@@ -181,6 +207,13 @@ func renderFullStatus(ctx context.Context, svc *service.MemoryService, sddSvc *s
 			// bare arrays exactly as TestStatus_JSONBacklogAndSpecsAreBareArrays
 			// already pins, and this is the only new key.
 			FrozenSpecs map[string]model.SpecFreeze `json:"frozen_specs,omitempty"`
+
+			// Unreadable names every row the three fetches above could
+			// identify but not fully read (SPEC-133 D9). Absent (nil
+			// slice, omitempty) when nothing was skipped — a healthy
+			// project's JSON stays byte-identical to before this field
+			// existed (AC7).
+			Unreadable []model.UnreadableRow `json:"unreadable,omitempty"`
 		}
 		var dbPath string
 		if slug != "" {
@@ -199,6 +232,7 @@ func renderFullStatus(ctx context.Context, svc *service.MemoryService, sddSvc *s
 			InProgress:    inProgressSpecs,
 			RecentDone:    recentDone,
 			FrozenSpecs:   frozenInProgress,
+			Unreadable:    unreadable,
 		})
 	}
 
@@ -218,6 +252,16 @@ func renderFullStatus(ctx context.Context, svc *service.MemoryService, sddSvc *s
 	if nagLine != "" {
 		fmt.Fprintln(os.Stdout, section("DELEGATION", 50))
 		fmt.Fprintf(os.Stdout, "  %s\n", nagLine)
+		fmt.Fprintln(os.Stdout)
+	}
+
+	// UNREADABLE section (SPEC-133 D9) — printed right after the
+	// delegation nag and before BACKLOG/SPECS IN PROGRESS, so a row this
+	// panel could not fully read is impossible to miss, exactly like the
+	// delegation nag above it.
+	if len(unreadable) > 0 {
+		fmt.Fprintln(os.Stdout, section("UNREADABLE", 50))
+		renderUnreadableRows(os.Stdout, unreadable)
 		fmt.Fprintln(os.Stdout)
 	}
 

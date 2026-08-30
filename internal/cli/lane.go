@@ -247,6 +247,13 @@ Reported metrics:
 				resp.AuditFailCount, resp.AuditFailRate*100)
 			fmt.Fprintf(os.Stdout, "Overrides:       %d\n", resp.OverrideCount)
 			fmt.Fprintf(os.Stdout, "Reclassified:    %d\n", resp.ReclassifyCount)
+			// SPEC-133 D13: lane stats' output is already an informe with
+			// sections, so the aviso goes in the normal (stdout) output,
+			// not stderr.
+			if len(resp.Unreadable) > 0 {
+				fmt.Fprintln(os.Stdout)
+				renderUnreadableRows(os.Stdout, resp.Unreadable)
+			}
 			return nil
 		},
 	}

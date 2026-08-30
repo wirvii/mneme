@@ -1258,7 +1258,7 @@ func (h *handlers) handleSpecList(ctx context.Context, raw json.RawMessage) (*To
 		return nil, h.mapServiceError("spec_list", err)
 	}
 
-	return resultFromAny(specListView{Specs: resp.Specs, Total: resp.Total, Frozen: resp.Frozen})
+	return resultFromAny(newSpecListView(resp))
 }
 
 // handleSpecQuick processes a spec_quick tool call.
@@ -1429,7 +1429,7 @@ func (h *handlers) handleLaneStats(ctx context.Context, raw json.RawMessage) (*T
 	if err != nil {
 		return nil, h.mapServiceError("lane_stats", err)
 	}
-	return resultFromAny(resp)
+	return resultFromAny(newLaneStatsView(resp))
 }
 
 // --- SDD GIT-NATIVE READ HANDLERS (SPEC-131 §2b) ---

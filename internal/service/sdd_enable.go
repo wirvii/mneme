@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wirvii/mneme/internal/model"
 	"github.com/wirvii/mneme/internal/sddfile"
 )
 
@@ -77,6 +78,13 @@ func sddWarnings() []string {
 type SDDPlan struct {
 	BacklogCount int
 	SpecCount    int
+
+	// Unreadable names every backlog/spec row this plan's own counting could
+	// identify but not fully read (SPEC-133 D1/D6/D11). BacklogCount/
+	// SpecCount are NOT reduced by it — they remain the true SQL totals,
+	// counting these rows too — so a row appearing here is purely additive
+	// information, never a discrepancy to reconcile against the counts.
+	Unreadable []model.UnreadableRow
 }
 
 // SDDEnableResult is EnableSDDRepo's return value. Applied mirrors
@@ -214,9 +222,13 @@ func (svc *SDDService) EnableSDDRepo(ctx context.Context, repoRoot string, apply
 		return nil, fmt.Errorf("service: sdd enable: write marker: %w", err)
 	}
 
-	if err := svc.exportAllSDD(ctx, repoRoot); err != nil {
+	exportUnreadable, err := svc.exportAllSDD(ctx, repoRoot)
+	if err != nil {
 		return nil, fmt.Errorf("service: sdd enable: export: %w", err)
 	}
+	// Replaces the pre-apply preview (SPEC-133 D12): the export just ran the
+	// authoritative read, over the exact rows it materialized (or did not).
+	result.Plan.Unreadable = exportUnreadable
 
 	if err := ensureMnemeGitignore(repoRoot, "sdd.off"); err != nil {
 		return nil, fmt.Errorf("service: sdd enable: gitignore: %w", err)
@@ -299,7 +311,8 @@ func (svc *SDDService) ExportSDDRepo(ctx context.Context, repoRoot string) (*SDD
 		return nil, err
 	}
 
-	if err := svc.exportAllSDD(ctx, repoRoot); err != nil {
+	exportUnreadable, err := svc.exportAllSDD(ctx, repoRoot)
+	if err != nil {
 		return nil, fmt.Errorf("service: sdd export: %w", err)
 	}
 
@@ -307,6 +320,10 @@ func (svc *SDDService) ExportSDDRepo(ctx context.Context, repoRoot string) (*SDD
 	if err != nil {
 		return nil, fmt.Errorf("service: sdd export: plan: %w", err)
 	}
+	// The authoritative read of what the export actually could not
+	// materialize (SPEC-133 D12) — the same rows sddPlan's own read of the
+	// unchanged database already names, made explicit rather than implicit.
+	plan.Unreadable = exportUnreadable
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	marker.LastExportAt = now
@@ -500,16 +517,26 @@ func (svc *SDDService) scanSDDDivergent(ctx context.Context, repoRoot string) ([
 
 // sddPlan counts how many backlog items and specs THIS project has in the
 // database — the "cuantos items y specs se exportarian" plan (D17).
+//
+// BacklogCount/SpecCount are, and remain, the true SQL COUNT(*) totals
+// (SPEC-133 D6/D11) — a row this call cannot fully read still counts. The
+// two Unreadable relations are merged into one, since SDDStatusResult's
+// caller (SDDStatus) presents backlog and spec rows together (D8).
 func (svc *SDDService) sddPlan(ctx context.Context) (SDDPlan, error) {
-	_, backlogTotal, err := svc.store.ListBacklogItems(ctx, svc.project, "", 0)
+	_, backlogTotal, backlogUnreadable, err := svc.store.ListBacklogItems(ctx, svc.project, "", 0)
 	if err != nil {
 		return SDDPlan{}, fmt.Errorf("count backlog items: %w", err)
 	}
-	_, specTotal, err := svc.store.ListSpecs(ctx, svc.project, "", 0)
+	_, specTotal, specUnreadable, err := svc.store.ListSpecs(ctx, svc.project, "", 0)
 	if err != nil {
 		return SDDPlan{}, fmt.Errorf("count specs: %w", err)
 	}
-	return SDDPlan{BacklogCount: backlogTotal, SpecCount: specTotal}, nil
+
+	var unreadable []model.UnreadableRow
+	unreadable = append(unreadable, backlogUnreadable...)
+	unreadable = append(unreadable, specUnreadable...)
+
+	return SDDPlan{BacklogCount: backlogTotal, SpecCount: specTotal, Unreadable: unreadable}, nil
 }
 
 // exportAllSDD re-materializes every backlog item and every spec of
@@ -518,27 +545,40 @@ func (svc *SDDService) sddPlan(ctx context.Context) (SDDPlan, error) {
 // materializeSpec every wrapper uses, so this is not a second writer: it
 // is the first writer, called once per record instead of once per
 // mutation.
-func (svc *SDDService) exportAllSDD(ctx context.Context, repoRoot string) error {
+//
+// The returned relation (SPEC-133 D12) names every row this call could
+// identify but not fully read — and therefore never handed to
+// materializeBacklogItem/materializeSpec at all. This is not a new failure
+// mode: materializeBacklogItem/materializeSpec (sdd_export.go) were already
+// tolerant per-item, registering and returning without propagating
+// anything on their own error. The one point that used to tear down the
+// whole export was the LISTING itself, which is exactly what this spec
+// fixes.
+func (svc *SDDService) exportAllSDD(ctx context.Context, repoRoot string) ([]model.UnreadableRow, error) {
 	prevRepoDir := svc.repoDir
 	svc.repoDir = repoRoot
 	defer func() { svc.repoDir = prevRepoDir }()
 
-	items, _, err := svc.store.ListBacklogItems(ctx, svc.project, "", 0)
+	items, _, itemsUnreadable, err := svc.store.ListBacklogItems(ctx, svc.project, "", 0)
 	if err != nil {
-		return fmt.Errorf("list backlog items: %w", err)
+		return nil, fmt.Errorf("list backlog items: %w", err)
 	}
 	for _, item := range items {
 		svc.materializeBacklogItem(ctx, item.ID)
 	}
 
-	specs, _, err := svc.store.ListSpecs(ctx, svc.project, "", 0)
+	specs, _, specsUnreadable, err := svc.store.ListSpecs(ctx, svc.project, "", 0)
 	if err != nil {
-		return fmt.Errorf("list specs: %w", err)
+		return nil, fmt.Errorf("list specs: %w", err)
 	}
 	for _, spec := range specs {
 		svc.materializeSpec(ctx, spec.ID)
 	}
-	return nil
+
+	var unreadable []model.UnreadableRow
+	unreadable = append(unreadable, itemsUnreadable...)
+	unreadable = append(unreadable, specsUnreadable...)
+	return unreadable, nil
 }
 
 // scanSDDRecords walks every record repoRoot already carries and splits

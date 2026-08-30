@@ -239,11 +239,11 @@ func (svc *SDDService) BacklogList(ctx context.Context, req model.BacklogListReq
 		limit = model.ListMaxLimit
 	}
 
-	items, total, err := svc.store.ListBacklogItems(ctx, req.Project, req.Status, limit)
+	items, total, unreadable, err := svc.store.ListBacklogItems(ctx, req.Project, req.Status, limit)
 	if err != nil {
 		return model.BacklogListResponse{}, fmt.Errorf("service: backlog list: %w", err)
 	}
-	return model.BacklogListResponse{Items: items, Total: total}, nil
+	return model.BacklogListResponse{Items: items, Total: total, Unreadable: unreadable}, nil
 }
 
 // BacklogGet returns a single backlog item by ID, plus ALL of its
@@ -1303,15 +1303,19 @@ func (svc *SDDService) SpecStatus(ctx context.Context, id string) (*model.SpecSt
 // RecentlyCompletedSpecs returns the n most recently completed specs for the
 // project, ordered by updated_at descending. It calls the underlying store
 // directly so the result reflects the true completion order.
-func (svc *SDDService) RecentlyCompletedSpecs(ctx context.Context, project string, n int) ([]*model.Spec, error) {
+//
+// The second return value, unreadable (SPEC-133 D1/D2), names every spec row
+// this call could identify but not fully read — propagated verbatim from
+// the store.
+func (svc *SDDService) RecentlyCompletedSpecs(ctx context.Context, project string, n int) ([]*model.Spec, []model.UnreadableRow, error) {
 	if project == "" {
 		project = svc.project
 	}
-	specs, err := svc.store.RecentlyCompletedSpecs(ctx, project, n)
+	specs, unreadable, err := svc.store.RecentlyCompletedSpecs(ctx, project, n)
 	if err != nil {
-		return nil, fmt.Errorf("service: recently completed specs: %w", err)
+		return nil, nil, fmt.Errorf("service: recently completed specs: %w", err)
 	}
-	return specs, nil
+	return specs, unreadable, nil
 }
 
 // SpecList returns the specs matching the filter, plus the REAL number of
@@ -1332,7 +1336,7 @@ func (svc *SDDService) SpecList(ctx context.Context, req model.SpecListRequest) 
 		limit = model.ListMaxLimit
 	}
 
-	specs, total, err := svc.store.ListSpecs(ctx, req.Project, req.Status, limit)
+	specs, total, unreadable, err := svc.store.ListSpecs(ctx, req.Project, req.Status, limit)
 	if err != nil {
 		return model.SpecListResponse{}, fmt.Errorf("service: spec list: %w", err)
 	}
@@ -1371,7 +1375,7 @@ func (svc *SDDService) SpecList(ctx context.Context, req model.SpecListRequest) 
 		}
 	}
 
-	return model.SpecListResponse{Specs: specs, Total: total, Frozen: frozen}, nil
+	return model.SpecListResponse{Specs: specs, Total: total, Frozen: frozen, Unreadable: unreadable}, nil
 }
 
 // SpecHistory returns the full state transition history for a spec.
@@ -1937,12 +1941,12 @@ func (svc *SDDService) LaneStats(ctx context.Context, project string) (*model.La
 
 	// LaneStats aggregates over every spec in the project — it is not one of
 	// SPEC-109's windowed listing tools, so it always passes limit=0 (no window).
-	specs, _, err := svc.store.ListSpecs(ctx, project, "", 0)
+	specs, _, unreadable, err := svc.store.ListSpecs(ctx, project, "", 0)
 	if err != nil {
 		return nil, fmt.Errorf("service: lane stats: list specs: %w", err)
 	}
 
-	resp := &model.LaneStatsResponse{}
+	resp := &model.LaneStatsResponse{Unreadable: unreadable}
 
 	for _, spec := range specs {
 		if spec.Lane != model.LaneTrivial {

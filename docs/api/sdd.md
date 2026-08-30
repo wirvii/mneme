@@ -133,6 +133,15 @@ refinements; call `backlog_get`.
 }
 ```
 
+**`unreadable`/`unreadable_total` (SPEC-133) name a row whose identity was
+readable but whose content was not** — a pre-existing row with a timestamp
+or JSON column no mneme write path can produce (a hand-edited database, an
+old migration). `total` above still counts every such row: what is
+incomplete is the LIST, never the count. Both fields are **absent — not
+empty — on a healthy project**, and `unreadable` is truncated to 20 rows
+(`unreadable_total` always reports the real, uncapped count):
+`{"unreadable": [{"kind": "backlog", "id": "BL-901", "column": "created_at", "reason": "..."}], "unreadable_total": 1}`.
+
 ### backlog_get
 
 Get one backlog item by ID with its FULL description, plus **all** of its
@@ -378,6 +387,11 @@ for every spec in `specs` that can no longer change status — same shape as
 object — when none of the returned specs is frozen.** A spec ID missing from
 this object can still change status normally.
 
+**`unreadable`/`unreadable_total` (SPEC-133)** work exactly as documented
+under `backlog_list` above, naming a `specs` row instead: absent on a
+healthy project, truncated to 20 rows, `unreadable_total` always the real
+count. `total` is unaffected — it still counts every matching row.
+
 ### spec_quick
 
 Advance a trivial-lane spec from `draft` directly to `implementing` in one
@@ -508,6 +522,11 @@ audit-fail count and rate, override count, reclassify count.
 ```json
 {"trivial_count": 12, "audit_fail_count": 2, "audit_fail_rate": 0.166, "override_count": 1, "reclassify_count": 1}
 ```
+
+**`unreadable`/`unreadable_total` (SPEC-133)** work exactly as documented
+under `backlog_list` above, naming a `specs` row the underlying listing
+could not fully read: absent on a healthy project, truncated to 20 rows,
+`unreadable_total` always the real count.
 
 ---
 

@@ -179,6 +179,9 @@ make sense of.`,
 
 			fmt.Fprintf(cmd.OutOrStdout(), "Exported %d backlog item(s) and %d spec(s) to %s/.mneme/sdd.\n",
 				result.Plan.BacklogCount, result.Plan.SpecCount, result.RepoRoot)
+			// SPEC-133 AC13: a row this export could not read never got a
+			// file — named here so the gap is never silent.
+			renderUnreadableRows(cmd.OutOrStdout(), result.Plan.Unreadable)
 			fmt.Fprintln(cmd.OutOrStdout(), "These files are likely pending commit — review with `git status` before committing.")
 			return nil
 		},
@@ -286,6 +289,10 @@ genuine collision) — 0 otherwise.`,
 func renderSDDEnableResult(out io.Writer, result *service.SDDEnableResult) {
 	fmt.Fprintf(out, "Plan: %d backlog item(s), %d spec(s) would be exported to %s/.mneme/sdd.\n",
 		result.Plan.BacklogCount, result.Plan.SpecCount, result.RepoRoot)
+	// SPEC-133 AC10/AC13: a row this plan could not read never gets
+	// exported (Applied) or counted among what "would be exported" reads
+	// as complete (dry-run) — named here either way.
+	renderUnreadableRows(out, result.Plan.Unreadable)
 	if result.Remote != "" {
 		fmt.Fprintf(out, "Remote (as git reports it locally): %s\n", result.Remote)
 	}
@@ -315,6 +322,10 @@ func renderSDDStatusResult(out io.Writer, result *service.SDDStatusResult) {
 	}
 	fmt.Fprintf(out, "SDD mechanism: %s (%s)\n", state, result.RepoRoot)
 	fmt.Fprintf(out, "Database has %d backlog item(s), %d spec(s).\n", result.Plan.BacklogCount, result.Plan.SpecCount)
+	// SPEC-133 AC10: the counts above stay exact (D6/D11) even when a row
+	// among them could not be fully read — named here instead of silently
+	// folded into that same count.
+	renderUnreadableRows(out, result.Plan.Unreadable)
 
 	if result.PendingGit != "" {
 		fmt.Fprintln(out, "Pending commit under .mneme/sdd:")
@@ -395,6 +406,10 @@ func renderSDDImportResult(out io.Writer, result *service.SDDImportResult) {
 	for _, s := range result.Skipped {
 		fmt.Fprintf(out, "Skipped: %s (%s) — %s\n", s.ID, s.Path, s.Reason)
 	}
+	// SPEC-133 D10: an unreadable row's id still counts toward
+	// OnlyInBase/OnlyInBaseTotal above — named here as an additional fact
+	// about WHY, never a discrepancy against those counts.
+	renderUnreadableRows(out, result.Unreadable)
 	if result.OnlyInBaseTotal > 0 {
 		fmt.Fprintf(out, "%d correlative(s) exist only in the local database on this branch:\n", result.OnlyInBaseTotal)
 		for _, id := range result.OnlyInBase {

@@ -244,8 +244,18 @@ func (s *SDDStore) GetBacklogItem(ctx context.Context, id string) (*model.Backlo
 // The second return value is total: the number of matches BEFORE limit was
 // applied, computed by a COUNT query that shares the exact same where/args
 // as the page query (D6) — they cannot diverge, so total can never lie about
-// what a limit=0 call would have returned.
-func (s *SDDStore) ListBacklogItems(ctx context.Context, project string, status model.BacklogStatus, limit int) ([]*model.BacklogItem, int, error) {
+// what a limit=0 call would have returned. It counts EVERY row, including
+// any this call cannot fully read — SPEC-133 D6: a row's timestamp failing
+// to parse degrades the LIST, never the COUNT.
+//
+// The third return value, unreadable (SPEC-133 D1/D2), names every row in
+// the page whose id was read but whose content could not be — see
+// collectBacklogItems. The accounting identity a caller can rely on is
+// total == len(items) + len(unreadable) when limit <= 0, and
+// len(items) + len(unreadable) <= limit when limit > 0 (SPEC-133 §4).
+func (s *SDDStore) ListBacklogItems(ctx context.Context, project string, status model.BacklogStatus, limit int) (
+	[]*model.BacklogItem, int, []model.UnreadableRow, error,
+) {
 	where := backlogListWhere
 	args := []any{project}
 	if status != "" {
@@ -255,7 +265,7 @@ func (s *SDDStore) ListBacklogItems(ctx context.Context, project string, status 
 
 	var total int
 	if err := s.db.QueryRowContext(ctx, backlogCountSelect+where, args...).Scan(&total); err != nil {
-		return nil, 0, fmt.Errorf("store: count backlog items: %w", err)
+		return nil, 0, nil, fmt.Errorf("store: count backlog items: %w", err)
 	}
 
 	q := backlogListSelect + where + backlogListOrder
@@ -266,15 +276,15 @@ func (s *SDDStore) ListBacklogItems(ctx context.Context, project string, status 
 
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
-		return nil, 0, fmt.Errorf("store: list backlog items: %w", err)
+		return nil, 0, nil, fmt.Errorf("store: list backlog items: %w", err)
 	}
 	defer rows.Close()
 
-	items, err := collectBacklogItems(rows)
+	items, unreadable, err := collectBacklogItems(rows)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, nil, err
 	}
-	return items, total, nil
+	return items, total, unreadable, nil
 }
 
 // BacklogStatusIndex returns the status and archive reason of EVERY backlog
@@ -579,8 +589,16 @@ func (s *SDDStore) GetSpec(ctx context.Context, id string) (*model.Spec, error) 
 // limit <= 0 means no window (every matching row is returned); limit > 0
 // caps the page via SQL LIMIT. The second return value, total, is the number
 // of matches BEFORE limit was applied, computed by a COUNT query sharing the
-// exact same where/args as the page query (D6) so it cannot diverge.
-func (s *SDDStore) ListSpecs(ctx context.Context, project string, status model.SpecStatus, limit int) ([]*model.Spec, int, error) {
+// exact same where/args as the page query (D6) so it cannot diverge, and it
+// counts every row regardless of whether this call can fully read it
+// (SPEC-133 D6).
+//
+// The third return value, unreadable (SPEC-133 D1/D2), names every row in
+// the page whose id was read but whose content could not be — see
+// collectSpecs. Same accounting identity as ListBacklogItems.
+func (s *SDDStore) ListSpecs(ctx context.Context, project string, status model.SpecStatus, limit int) (
+	[]*model.Spec, int, []model.UnreadableRow, error,
+) {
 	where := specListWhere
 	args := []any{project}
 	if status != "" {
@@ -590,7 +608,7 @@ func (s *SDDStore) ListSpecs(ctx context.Context, project string, status model.S
 
 	var total int
 	if err := s.db.QueryRowContext(ctx, specCountSelect+where, args...).Scan(&total); err != nil {
-		return nil, 0, fmt.Errorf("store: count specs: %w", err)
+		return nil, 0, nil, fmt.Errorf("store: count specs: %w", err)
 	}
 
 	q := specListSelect + where + specListOrder
@@ -601,15 +619,15 @@ func (s *SDDStore) ListSpecs(ctx context.Context, project string, status model.S
 
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
-		return nil, 0, fmt.Errorf("store: list specs: %w", err)
+		return nil, 0, nil, fmt.Errorf("store: list specs: %w", err)
 	}
 	defer rows.Close()
 
-	specs, err := collectSpecs(rows)
+	specs, unreadable, err := collectSpecs(rows)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, nil, err
 	}
-	return specs, total, nil
+	return specs, total, unreadable, nil
 }
 
 // UpdateSpecStatus changes the status of a spec and records the transition
@@ -883,7 +901,13 @@ func (s *SDDStore) SpecCounts(ctx context.Context, project string) (map[model.Sp
 
 // RecentlyCompletedSpecs returns specs with status "done" ordered by
 // updated_at descending, limited to n results.
-func (s *SDDStore) RecentlyCompletedSpecs(ctx context.Context, project string, n int) ([]*model.Spec, error) {
+//
+// The second return value, unreadable (SPEC-133 D1/D2), names every row this
+// call could identify but not fully read — see collectSpecs. There is no
+// total here (D7 does not apply: n is not a page over a larger count the
+// caller needs to know), so there is no accounting identity to state beyond
+// "every id in unreadable was excluded from the specs slice".
+func (s *SDDStore) RecentlyCompletedSpecs(ctx context.Context, project string, n int) ([]*model.Spec, []model.UnreadableRow, error) {
 	// previous_ids is selected here too, even though it is not one of the
 	// "three read projections" the spec names (backlogSelectColumns,
 	// specListSelect, GetSpec's inline query): this query feeds the SAME
@@ -898,7 +922,7 @@ func (s *SDDStore) RecentlyCompletedSpecs(ctx context.Context, project string, n
 
 	rows, err := s.db.QueryContext(ctx, q, project, n)
 	if err != nil {
-		return nil, fmt.Errorf("store: recently completed specs: %w", err)
+		return nil, nil, fmt.Errorf("store: recently completed specs: %w", err)
 	}
 	defer rows.Close()
 
@@ -1197,9 +1221,21 @@ func scanBacklogItem(row *sql.Row) (*model.BacklogItem, error) {
 	return item, nil
 }
 
-// collectBacklogItems reads all rows into a BacklogItem slice.
-func collectBacklogItems(rows *sql.Rows) ([]*model.BacklogItem, error) {
+// collectBacklogItems reads all rows into a BacklogItem slice, tolerating a
+// per-row failure instead of aborting the whole read (SPEC-133 D1/D3/D4).
+//
+// The frontier is D3: a failure that happens AFTER rows.Scan already read
+// the row's id column is attributable to that ONE row, so it is named
+// (model.UnreadableRow) and skipped via continue. rows.Scan itself and
+// rows.Err() remain hard errors (D3) — a Scan failure is a projection/
+// scanner mismatch that would affect EVERY row, not a corrupt datum in one
+// of them, and swallowing it would turn a programming error into "the
+// database looks empty", which is the exact defect this spec fixes, only
+// worse. unmarshalPreviousIDs is left untouched (D16): it is already
+// silently tolerant and out of this spec's scope.
+func collectBacklogItems(rows *sql.Rows) ([]*model.BacklogItem, []model.UnreadableRow, error) {
 	var items []*model.BacklogItem
+	var unreadable []model.UnreadableRow
 	for rows.Next() {
 		item := &model.BacklogItem{}
 		var createdStr, updatedStr, previousIDsRaw string
@@ -1210,21 +1246,31 @@ func collectBacklogItems(rows *sql.Rows) ([]*model.BacklogItem, error) {
 			&item.Position, (*string)(&item.Lane), &item.Scope,
 			&createdStr, &updatedStr, &item.RefinementCount, &item.UUID, &previousIDsRaw,
 		); err != nil {
-			return nil, fmt.Errorf("scan backlog item: %w", err)
+			return nil, nil, fmt.Errorf("scan backlog item: %w", err)
 		}
+
 		var err error
 		item.CreatedAt, err = parseTime(createdStr)
 		if err != nil {
-			return nil, fmt.Errorf("parse created_at: %w", err)
+			unreadable = append(unreadable, model.UnreadableRow{
+				Kind: model.UnreadableKindBacklog, ID: item.ID, Column: "created_at", Reason: err.Error(),
+			})
+			continue
 		}
 		item.UpdatedAt, err = parseTime(updatedStr)
 		if err != nil {
-			return nil, fmt.Errorf("parse updated_at: %w", err)
+			unreadable = append(unreadable, model.UnreadableRow{
+				Kind: model.UnreadableKindBacklog, ID: item.ID, Column: "updated_at", Reason: err.Error(),
+			})
+			continue
 		}
 		item.PreviousIDs = unmarshalPreviousIDs(previousIDsRaw)
 		items = append(items, item)
 	}
-	return items, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+	return items, unreadable, nil
 }
 
 // scanSpec scans a single row into a Spec.
@@ -1264,9 +1310,16 @@ func scanSpec(row *sql.Row) (*model.Spec, error) {
 	return spec, nil
 }
 
-// collectSpecs reads all rows into a Spec slice.
-func collectSpecs(rows *sql.Rows) ([]*model.Spec, error) {
+// collectSpecs reads all rows into a Spec slice, tolerating a per-row
+// failure instead of aborting the whole read (SPEC-133 D1/D3/D4). Same
+// frontier as collectBacklogItems: rows.Scan and rows.Err() stay hard
+// errors (D3); a bad created_at, updated_at, assigned_agents, or
+// files_changed is named and skipped instead (D4 — all four are tolerated,
+// not just the timestamps, because each is equally attributable to one row
+// once id has already been scanned).
+func collectSpecs(rows *sql.Rows) ([]*model.Spec, []model.UnreadableRow, error) {
 	var specs []*model.Spec
+	var unreadable []model.UnreadableRow
 	for rows.Next() {
 		spec := &model.Spec{}
 		var createdStr, updatedStr, previousIDsRaw string
@@ -1278,27 +1331,44 @@ func collectSpecs(rows *sql.Rows) ([]*model.Spec, error) {
 			&agentsJSON, &filesJSON,
 			&createdStr, &updatedStr, &spec.UUID, &previousIDsRaw,
 		); err != nil {
-			return nil, fmt.Errorf("scan spec: %w", err)
+			return nil, nil, fmt.Errorf("scan spec: %w", err)
 		}
+
 		if err := json.Unmarshal([]byte(agentsJSON), &spec.AssignedAgents); err != nil {
-			return nil, fmt.Errorf("unmarshal assigned_agents: %w", err)
+			unreadable = append(unreadable, model.UnreadableRow{
+				Kind: model.UnreadableKindSpec, ID: spec.ID, Column: "assigned_agents", Reason: err.Error(),
+			})
+			continue
 		}
 		if err := json.Unmarshal([]byte(filesJSON), &spec.FilesChanged); err != nil {
-			return nil, fmt.Errorf("unmarshal files_changed: %w", err)
+			unreadable = append(unreadable, model.UnreadableRow{
+				Kind: model.UnreadableKindSpec, ID: spec.ID, Column: "files_changed", Reason: err.Error(),
+			})
+			continue
 		}
+
 		var err error
 		spec.CreatedAt, err = parseTime(createdStr)
 		if err != nil {
-			return nil, fmt.Errorf("parse created_at: %w", err)
+			unreadable = append(unreadable, model.UnreadableRow{
+				Kind: model.UnreadableKindSpec, ID: spec.ID, Column: "created_at", Reason: err.Error(),
+			})
+			continue
 		}
 		spec.UpdatedAt, err = parseTime(updatedStr)
 		if err != nil {
-			return nil, fmt.Errorf("parse updated_at: %w", err)
+			unreadable = append(unreadable, model.UnreadableRow{
+				Kind: model.UnreadableKindSpec, ID: spec.ID, Column: "updated_at", Reason: err.Error(),
+			})
+			continue
 		}
 		spec.PreviousIDs = unmarshalPreviousIDs(previousIDsRaw)
 		specs = append(specs, spec)
 	}
-	return specs, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+	return specs, unreadable, nil
 }
 
 // unmarshalPreviousIDs parses the previous_ids column (SPEC-130 D32) into

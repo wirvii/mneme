@@ -133,11 +133,22 @@ Filter by --status to narrow results. Without a filter all statuses are shown.`,
 				return err
 			}
 
+			// SPEC-133 D13: the aviso goes on the error channel and never
+			// changes stdout's shape — table or --json alike stay exactly
+			// what they were before this row existed.
+			if len(resp.Unreadable) > 0 {
+				renderUnreadableRows(cmd.ErrOrStderr(), resp.Unreadable)
+			}
+
 			if flagJSON {
 				return printJSON(os.Stdout, resp.Items)
 			}
 
 			if len(resp.Items) == 0 {
+				if len(resp.Unreadable) > 0 {
+					fmt.Fprintf(os.Stdout, "No backlog items could be read: %d row(s) exist but could not be fully read (see stderr).\n", len(resp.Unreadable))
+					return nil
+				}
 				fmt.Fprintln(os.Stdout, "No backlog items found.")
 				return nil
 			}

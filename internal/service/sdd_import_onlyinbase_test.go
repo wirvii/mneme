@@ -74,16 +74,22 @@ func TestSDDImport_MalformedUnrelatedRowNeverAbortsTheBatch(t *testing.T) {
 		t.Errorf("BL-998 was not created despite the batch succeeding: %v", gErr)
 	}
 
-	// SPEC-131 round 4: a degraded-but-not-aborted "only in base" summary
-	// must SAY SO, not report an indistinguishable zero. OnlyInBaseTotal
-	// staying at 0 here would otherwise read as "genuinely nothing is
-	// only in the base" — false, the calculation simply never ran.
-	if result.OnlyInBaseError == "" {
-		t.Error("OnlyInBaseError is empty, want a reason naming why the only-in-base calculation failed")
+	// SPEC-133 D10 supersedes SPEC-131 round 4 here: computeOnlyInBase no
+	// longer aborts over BL-999's unparseable created_at — it names the row
+	// (result.Unreadable) and still counts its id in the "only in base"
+	// summary, exactly like a healthy row would. OnlyInBaseError, which
+	// used to be the only way to tell "the calculation failed" apart from
+	// "genuinely nothing is only in the base", stays empty because the
+	// calculation now genuinely succeeds.
+	if result.OnlyInBaseError != "" {
+		t.Errorf("OnlyInBaseError = %q, want empty — SPEC-133 tolerates BL-999's malformed row instead of aborting the calculation", result.OnlyInBaseError)
 	}
-	if result.OnlyInBaseTotal != 0 || len(result.OnlyInBase) != 0 {
-		t.Errorf("OnlyInBaseTotal=%d OnlyInBase=%v, want both empty when the calculation itself failed",
+	if result.OnlyInBaseTotal != 1 || len(result.OnlyInBase) != 1 || result.OnlyInBase[0] != "BL-999" {
+		t.Errorf("OnlyInBaseTotal=%d OnlyInBase=%v, want 1 and [\"BL-999\"] — BL-999 is only in the base and still countable despite being unreadable",
 			result.OnlyInBaseTotal, result.OnlyInBase)
+	}
+	if len(result.Unreadable) != 1 || result.Unreadable[0].ID != "BL-999" {
+		t.Errorf("Unreadable = %+v, want exactly one row naming BL-999", result.Unreadable)
 	}
 }
 
