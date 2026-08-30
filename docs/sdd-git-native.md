@@ -219,6 +219,15 @@ the database has, what git reports as pending under `.mneme/sdd`, and —
 without refusing anything, unlike `enable`/`export` — which files (if any)
 are broken or carry an anchor this database does not recognize.
 
+**A row this database could read the identity of but not the content of
+(SPEC-133) is a separate, narrower case from a broken FILE above**: the
+backlog/spec count stays exact (it is a plain SQL `COUNT(*)`), but that one
+row is missing from whatever this command lists, and `enable`/`export`
+never materialize a file for it. `status`, `enable`, and `export` all name
+it instead of silently shrinking a total or a list — the same tolerance
+`backlog list`/`spec list`/`lane stats` already apply, extended to this
+mechanism's own three commands.
+
 ## Why the filename is the correlative
 
 Every record's file (or, for a spec, its directory) is named by its
