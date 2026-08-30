@@ -31,7 +31,7 @@ not a fixed string -- expect it to match `mneme version`.
 
 ---
 
-## MCP tool families (85 tools)
+## MCP tool families (87 tools)
 
 Rule: every MCP tool appears in exactly **one** of these files.
 

@@ -80,7 +80,7 @@ graph TB
 
     subgraph "Layer 1 — Storage"
         STORE["store/<br/>Repository Pattern"]
-        DB["SQLite + FTS5<br/>(schema v18)"]
+        DB["SQLite + FTS5<br/>(schema v20)"]
     end
 
     CLI --> SVC
@@ -148,7 +148,7 @@ internal/
                            8 relation types, request/response structs). Zero deps.
   project/              -- git remote / project slug detection
   config/               -- TOML config + defaults + env overrides
-  db/                   -- SQLite + FTS5 + embedded migrations (schema v18)
+  db/                   -- SQLite + FTS5 + embedded migrations (schema v20)
   store/                -- repository pattern (CRUD, FTS5, vectors, entities, relations,
                            communities, sessions, unresolved refs)
   scoring/              -- importance, decay (Ebbinghaus), BM25 re-rank, RRF fusion,
@@ -174,7 +174,7 @@ internal/
   frontmatter/          -- surgical YAML frontmatter editor for agent .md files;
                            fixes known keys (name, description, model, tools,
                            permissionMode), preserves every other byte verbatim
-  mcp/                  -- MCP server (JSON-RPC 2.0 over stdio, 84 tools)
+  mcp/                  -- MCP server (JSON-RPC 2.0 over stdio, 87 tools)
   http/                 -- REST API (stdlib net/http, 10 endpoints under /v1/)
   cli/                  -- Cobra commands (42 mneme-registered top-level commands)
   install/              -- agent installer: MCP config, hooks, operating manual,
@@ -1095,4 +1095,4 @@ this interacts with the write-through materialization path itself.
 
 ---
 
-*Originally written 2026-04-30 for EPIC-1 through EPIC-6 (SPEC-001 through SPEC-026); updated through schema v18 / 84 MCP tools / 42 mneme-registered CLI commands, including SDD+lanes, CodeGraph, Skills, Models, Conflicts, per-project subagents, Team Memory, profiles/scaffolds, quality evidence, and local speech. See [CHANGELOG.md](../CHANGELOG.md) for the full release history.*
+*Originally written 2026-04-30 for EPIC-1 through EPIC-6 (SPEC-001 through SPEC-026); updated through schema v20 / 87 MCP tools / 43 mneme-registered CLI commands, including SDD+lanes, CodeGraph, Skills, Models, Conflicts, per-project subagents, Team Memory, profiles/scaffolds, quality evidence, and local speech. See [CHANGELOG.md](../CHANGELOG.md) for the full release history.*
