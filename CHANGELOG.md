@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [v1.43.0] — 2026-08-30 — SDD state travels through git, browser-capable roles
+
+> **Al actualizar, dos pasos que no son automáticos.**
+> 1. `mneme subagents regen --all` en cada proyecto ya configurado: el bloque
+>    fijo sube de v2 a v3, así que hasta regenerar, `mneme subagents doctor`
+>    reporta `stale_agent_fixed` en todos los roles. Es una señal ruidosa a
+>    propósito, no una avería.
+> 2. Si algún perfil afirma a mano que un rol *no* tiene navegador, esa frase
+>    vive en la capa escrita a mano y `regen` la conserva por diseño: hay que
+>    borrarla a mano, o el perfil se contradecirá a sí mismo.
+
 ### Added
 
 - **A backlog item or spec with one unparseable row no longer takes down
