@@ -144,6 +144,61 @@ type LaneStatsResponse struct {
 	// ReclassifyCount is the number of trivial specs reclassified to standard
 	// (detected from history reasons containing "reclassified from trivial to standard").
 	ReclassifyCount int `json:"reclassify_count"`
+
+	// Unreadable names every spec row LaneStats could identify but not fully
+	// read (SPEC-133 D1/D8): LaneStats aggregates over ListSpecs, so it
+	// inherits the same partiality. Nil — and absent from JSON (omitempty)
+	// — when nothing was skipped.
+	Unreadable []UnreadableRow `json:"unreadable,omitempty"`
+}
+
+// UnreadableKind is the closed vocabulary of entities an UnreadableRow can
+// name — the two tables a plural SDD listing reads (SPEC-133 D8).
+const (
+	// UnreadableKindBacklog marks a row from the backlog_items table.
+	UnreadableKindBacklog = "backlog"
+
+	// UnreadableKindSpec marks a row from the specs table.
+	UnreadableKindSpec = "spec"
+)
+
+// MaxUnreadableListed caps how many UnreadableRow entries a frontend
+// surfaces in one response. This is frontend policy, not store policy
+// (SPEC-133 D14): the store always returns the complete relation — its
+// accounting identity (BacklogListResponse.Unreadable) has to hold exactly
+// — and the MCP view is the one that truncates to this bound and reports the
+// real count separately (the same split SPEC-109 established for the
+// backlog excerpt, "The excerpt is MCP frontend policy (D9), not applied
+// here", service/sdd.go:227-228).
+const MaxUnreadableListed = 20
+
+// UnreadableRow names ONE row a plural SDD listing (ListBacklogItems,
+// ListSpecs, RecentlyCompletedSpecs) could read the IDENTITY of but not the
+// full CONTENT of — e.g. a created_at that no known format can parse
+// (SPEC-133 D1/D3/D4). It replaces the old behaviour of aborting the whole
+// listing on the first such row: the row is skipped and named instead.
+type UnreadableRow struct {
+	// Kind is which table the row came from: UnreadableKindBacklog or
+	// UnreadableKindSpec. It is carried explicitly, even though a caller
+	// that invoked only one listing method already knows which table it
+	// queried, because SDDStatusResult/SDDImportResult merge backlog and
+	// spec rows into a single relation (SPEC-133 D8).
+	Kind string `json:"kind"`
+
+	// ID is the row's own correlative (e.g. "BL-210", "SPEC-133") — ALWAYS
+	// present. D3 guarantees that a row is only ever tolerated after its id
+	// column has already been read successfully; that guarantee is what
+	// makes this field reliable, and reliable is what makes the signal
+	// actionable: the operator can go fix that exact row.
+	ID string `json:"id"`
+
+	// Column is the exact column whose value could not be parsed:
+	// "created_at", "updated_at", "assigned_agents", or "files_changed"
+	// (SPEC-133 D4). Never a made-up or generic value.
+	Column string `json:"column"`
+
+	// Reason is the underlying parse error's message.
+	Reason string `json:"reason"`
 }
 
 // --- LANE ---
@@ -388,8 +443,18 @@ type BacklogListResponse struct {
 
 	// Total is the number of matches BEFORE Limit was applied — the same
 	// contract as SearchResponse.Total (model/search.go), which mem_timeline
-	// used to violate (SPEC-109 D3/D18).
+	// used to violate (SPEC-109 D3/D18). Since SPEC-133, Total still counts
+	// every row in the project (healthy AND unreadable, D6): it comes from
+	// the same COUNT(*) query as before, untouched by a row's timestamp.
 	Total int `json:"total"`
+
+	// Unreadable names every row this listing could identify but not fully
+	// read (SPEC-133 D1/D8). Nil — and absent from JSON (omitempty) — when
+	// nothing was skipped, so a healthy project's response is byte-identical
+	// to the one before this field existed. The accounting identity is
+	// Total == len(Items) + len(Unreadable) (D6, replacing SPEC-109's
+	// unconditional Total == len(Items)).
+	Unreadable []UnreadableRow `json:"unreadable,omitempty"`
 }
 
 // BacklogRefineRequest updates a backlog item during refinement.
@@ -983,6 +1048,11 @@ type SpecListResponse struct {
 	// freeze is a derived fact, and burying it inside the entity would
 	// invite caching it as part of the entity (DD1).
 	Frozen map[string]SpecFreeze `json:"frozen,omitempty"`
+
+	// Unreadable names every row this listing could identify but not fully
+	// read (SPEC-133 D1/D8). See BacklogListResponse.Unreadable for the
+	// accounting identity this field upholds.
+	Unreadable []UnreadableRow `json:"unreadable,omitempty"`
 }
 
 // SpecStatusResponse is returned by spec_status with full context:
