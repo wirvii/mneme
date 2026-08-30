@@ -169,11 +169,21 @@ Filter by --status to narrow results. Without a filter all specs are shown.`,
 				return err
 			}
 
+			// SPEC-133 D13: same posture as backlog list — aviso on the
+			// error channel, stdout's shape (table or --json) unchanged.
+			if len(resp.Unreadable) > 0 {
+				renderUnreadableRows(cmd.ErrOrStderr(), resp.Unreadable)
+			}
+
 			if flagJSON {
 				return printJSON(os.Stdout, resp.Specs)
 			}
 
 			if len(resp.Specs) == 0 {
+				if len(resp.Unreadable) > 0 {
+					fmt.Fprintf(os.Stdout, "No specs could be read: %d row(s) exist but could not be fully read (see stderr).\n", len(resp.Unreadable))
+					return nil
+				}
 				fmt.Fprintln(os.Stdout, "No specs found.")
 				return nil
 			}
