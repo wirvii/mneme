@@ -35,11 +35,15 @@ POLL_INTERVAL_SECONDS=20
 
 elapsed=0
 while true; do
+  # A transient API hiccup (rate limit, network blip) is an absence of
+  # information too, not a red CI — fall through to the same "keep
+  # waiting" path as "no run found yet" instead of hard-failing the gate
+  # on a problem that has nothing to do with the commit being checked.
   runs_json=$(gh api "repos/${REPO}/actions/workflows/${WORKFLOW_FILE}/runs?head_sha=${SHA}&per_page=10" \
-    --jq '.workflow_runs')
+    --jq '.workflow_runs' 2>/dev/null || echo '[]')
 
   # Most recent run for this exact commit, if any.
-  latest=$(echo "$runs_json" | jq -c 'sort_by(.run_started_at) | reverse | .[0] // empty')
+  latest=$(echo "$runs_json" | jq -c 'sort_by(.run_started_at) | reverse | .[0] // empty' 2>/dev/null || echo '')
 
   if [ -n "$latest" ]; then
     status=$(echo "$latest" | jq -r '.status')
