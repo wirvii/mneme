@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -22,15 +21,6 @@ import (
 func TestHelperProcess(t *testing.T) {
 	if os.Getenv("GO_WANT_SPEECH_HELPER") != "1" {
 		return
-	}
-	// SPEECH_HELPER_DELAY_MS is only set by tests that need the fake process
-	// to stay "in flight" long enough to observe a queued (not yet started)
-	// emission — see TestSpokenTextNeverReachesDisk. Every other caller of
-	// withHelperCommands leaves it unset, so this is a no-op for them.
-	if delay := os.Getenv("SPEECH_HELPER_DELAY_MS"); delay != "" {
-		if ms, err := strconv.Atoi(delay); err == nil {
-			time.Sleep(time.Duration(ms) * time.Millisecond)
-		}
 	}
 	_, _ = io.Copy(io.Discard, os.Stdin)
 	if out := os.Getenv("SPEECH_HELPER_OUTPUT"); out != "" {
@@ -635,12 +625,36 @@ func TestSpokenTextNeverReachesArgv(t *testing.T) {
 // never to relax the assertion: it means something on the new path started
 // persisting text and that must be removed. TestSpokenTextNeverReachesArgv
 // covers the sibling invariant for process arguments and is untouched.
+//
+// The "first emission is still in flight when the second arrives" state
+// used to be produced by racing a real (fake-helper) engine invocation
+// against a 150ms wall-clock margin — flaky by construction: on a loaded
+// machine the margin can run out before the second Send ever reaches the
+// supervisor. It also happened to depend on runtimeGOOS: speakForOS
+// requires a non-empty Model on Linux and fails before ever invoking the
+// helper process (so the margin, and its own delay, never applied there),
+// while on Darwin's "say" path it does. Neither of those is what this test
+// is about. It overrides synthesize directly instead: the first emission
+// blocks until the test releases it, so "still playing when the second
+// speak arrives" is guaranteed by control flow, not by timing, and holds
+// identically on every OS.
 func TestSpokenTextNeverReachesDisk(t *testing.T) {
 	secret := "el-secreto-que-nunca-debe-tocar-disco"
-	withHelperCommands(t, "", false)
-	// Keep the fake process "speaking" long enough to observe the second
-	// emission sitting in the queue, unstarted, before it is cancelled.
-	t.Setenv("SPEECH_HELPER_DELAY_MS", "150")
+
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	oldSynthesize := synthesize
+	synthesize = func(ctx context.Context, _ Request) error {
+		started <- struct{}{}
+		select {
+		case <-release:
+		case <-ctx.Done():
+		}
+		return ctx.Err()
+	}
+	t.Cleanup(func() { synthesize = oldSynthesize })
+	closeRelease := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(closeRelease)
 
 	dataDir := t.TempDir()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -661,6 +675,8 @@ func TestSpokenTextNeverReachesDisk(t *testing.T) {
 	if err != nil || !first.Started {
 		t.Fatalf("first speak = %+v, %v", first, err)
 	}
+	<-started // the first emission is now blocked on release, deterministically
+
 	second, err := Send(context.Background(), dataDir, Request{Action: "speak", Text: secret + "-queued", SessionID: "B", Origin: "mneme"})
 	if err != nil || second.Started {
 		t.Fatalf("second speak = %+v, %v, want accepted and queued (not started)", second, err)
@@ -668,6 +684,7 @@ func TestSpokenTextNeverReachesDisk(t *testing.T) {
 	if _, err := Send(context.Background(), dataDir, Request{Action: "cancel", SessionID: "B"}); err != nil {
 		t.Fatal(err)
 	}
+	closeRelease() // let the first emission finish before shutdown
 
 	walkErr := filepath.WalkDir(RuntimeDir(dataDir), func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil || entry.IsDir() {
