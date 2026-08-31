@@ -981,6 +981,11 @@ schema_version = 6
 enabled = true
 [execution]
 output_tail_bytes = 4096
+[[gate]]
+name = "build"
+command = ["true"]
+timeout = "5m"
+required = true
 [coverage]
 enabled = false
 format = "go-cover"
