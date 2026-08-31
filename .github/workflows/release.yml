@@ -3,13 +3,71 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  # Manual escape hatch (SPEC-135): the ONLY way to publish a release
+  # without a verified-green CI run for the target commit. Deliberately
+  # NOT advertised anywhere in the gate's own failure output — reaching
+  # for this requires knowing it exists and typing a real reason, not
+  # clicking a suggestion the failed check handed you. `force_reason` is
+  # required and is preserved forever in this run's own log, which is
+  # this repository's record of who forced a release and why.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to release (e.g. v1.44.0). Must already exist."
+        required: true
+      force_reason:
+        description: "Why this release is being forced without a verified-green CI gate. Required."
+        required: true
 
 permissions:
   contents: write
 
 jobs:
+  gate:
+    name: Verify CI is green for this commit
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve tag and commit
+        id: resolve
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+          else
+            TAG="${{ github.ref_name }}"
+          fi
+          if ! git rev-parse "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "::error::tag ${TAG} does not exist"
+            exit 1
+          fi
+          SHA=$(git rev-list -n 1 "refs/tags/${TAG}")
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Forced release — CI gate deliberately bypassed
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          REASON="${{ github.event.inputs.force_reason }}"
+          if [ -z "${REASON// }" ]; then
+            echo "::error::force_reason is required to force a release."
+            exit 1
+          fi
+          echo "::warning::RELEASE FORCED for ${{ steps.resolve.outputs.tag }} by ${{ github.actor }}. The CI-green gate was NOT evaluated. Reason: ${REASON}"
+
+      - name: Require CI green for this commit
+        if: github.event_name != 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: scripts/require-ci-green.sh "${{ steps.resolve.outputs.sha }}"
+
   build:
     name: Build (${{ matrix.target }})
+    needs: gate
     runs-on: ${{ matrix.runner }}
     strategy:
       matrix:
@@ -26,6 +84,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ needs.gate.outputs.tag }}
 
       - uses: actions/setup-go@v5
         with:
@@ -33,7 +92,9 @@ jobs:
 
       - name: Set version from tag
         id: version
-        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+        run: echo "VERSION=${TAG#v}" >> "$GITHUB_OUTPUT"
+        env:
+          TAG: ${{ needs.gate.outputs.tag }}
 
       - name: Build binary
         run: |
@@ -67,11 +128,12 @@ jobs:
   release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
-    needs: build
+    needs: [gate, build]
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ needs.gate.outputs.tag }}
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -80,21 +142,24 @@ jobs:
 
       - name: Generate changelog
         id: changelog
+        env:
+          TAG: ${{ needs.gate.outputs.tag }}
         run: |
           PREV_TAG=$(git tag --sort=-v:refname | head -2 | tail -1)
           if [ -z "$PREV_TAG" ]; then
-            CHANGELOG=$(git log --pretty=format:"- %s (%h)" "${GITHUB_REF_NAME}")
+            CHANGELOG=$(git log --pretty=format:"- %s (%h)" "${TAG}")
           else
-            CHANGELOG=$(git log --pretty=format:"- %s (%h)" "${PREV_TAG}..${GITHUB_REF_NAME}")
+            CHANGELOG=$(git log --pretty=format:"- %s (%h)" "${PREV_TAG}..${TAG}")
           fi
           echo "$CHANGELOG" > changelog.txt
 
       - name: Create release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.gate.outputs.tag }}
         run: |
-          gh release create "${{ github.ref_name }}" \
-            --title "mneme ${{ github.ref_name }}" \
+          gh release create "${TAG}" \
+            --title "mneme ${TAG}" \
             --notes-file changelog.txt \
             mneme-*.tar.gz \
             mneme-*.tar.gz.sha256

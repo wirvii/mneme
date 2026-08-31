@@ -27,6 +27,11 @@ var (
 	lookPath          = exec.LookPath
 	supervisorStarter = startSupervisorProcess
 	runtimeGOOS       = runtime.GOOS
+	// synthesize is swappable so a test can observe queue behaviour (an
+	// emission sitting queued while another plays) deterministically, by
+	// blocking on a channel instead of racing a real engine invocation
+	// against a wall-clock margin. Production always leaves it as speak.
+	synthesize = speak
 )
 
 // RuntimeDescriptor lets short-lived clients find the private supervisor.
@@ -278,7 +283,7 @@ func Supervise(ctx context.Context, dataDir string) error {
 	}
 	defer os.Remove(descriptorPath(dataDir))
 
-	s := &supervisor{token: desc.Token, done: make(chan struct{}), synth: speak, engine: engineName(runtimeGOOS), dataDir: dataDir, startedAt: time.Now().UTC()}
+	s := &supervisor{token: desc.Token, done: make(chan struct{}), synth: synthesize, engine: engineName(runtimeGOOS), dataDir: dataDir, startedAt: time.Now().UTC()}
 	go func() {
 		select {
 		case <-ctx.Done():

@@ -6,6 +6,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`TestSpokenTextNeverReachesDisk` failed deterministically on
+  `ubuntu-latest` since SPEC-129/v1.42.0, and no one noticed for two
+  releases (SPEC-135).** The suspected cause — a 150ms queue-observation
+  window running out on a loaded CI machine — was reproduced and disproved
+  (100% deterministic in 0.01s, on every run, unrelated to load). The real
+  cause: the test's `Request` never set `Model`, and on Linux
+  `speakForOS` refuses a piper synthesis with no model configured
+  *before* ever invoking the process the test's fake delay lived inside —
+  so the "first" emission failed instantly and the queue was already
+  empty by the time the second arrived, instead of still playing. The
+  fix removes the wall-clock dependency altogether rather than widening
+  it: a new swappable `synthesize` hook (mirroring the existing
+  `commandContext`/`lookPath` test seams) lets the test block the first
+  emission on a channel it controls, so "still playing when the second
+  speak arrives" is guaranteed by control flow on every OS, not by
+  timing on one of them.
+- **A tagged release could ship with `main`'s CI in an unknown or failing
+  state and nothing would refuse it (SPEC-135).** `main` stayed red for
+  two published releases (v1.42.0, v1.43.0) before the failure above was
+  noticed, purely because no one looked. `.github/workflows/release.yml`
+  now runs `scripts/require-ci-green.sh` before building anything: it
+  waits (bounded, 20 minutes) for the `CI` workflow to finish on the
+  exact commit the tag points to, and refuses the release if it finished
+  red — reporting "CI is red" and "CI has not finished yet" as two
+  distinctly worded outcomes, never conflated. The only way around the
+  gate is a manual `workflow_dispatch` run with a required
+  `force_reason`, permanently recorded in that run's own log — not
+  mentioned anywhere in the gate's own failure text, so a real failure
+  never reads as an invitation to skip it.
+
 ## [v1.43.0] — 2026-08-30 — SDD state travels through git, browser-capable roles
 
 > **Al actualizar, dos pasos que no son automáticos.**
