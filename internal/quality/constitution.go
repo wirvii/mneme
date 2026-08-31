@@ -596,6 +596,18 @@ func Parse(data []byte) (*Constitution, error) {
 	if err != nil {
 		return nil, err
 	}
+	// BL-220: enabled=true with zero declared gates parsed cleanly and let
+	// runAllChecks emit a certificate made only of the four checks that
+	// always run (tree/clean-worktree + the three constitution ones),
+	// deriving `pass` in ~68ms without verifying anything the project
+	// actually declared. DeriveVerdict's own "an EMPTY set is fail" guard
+	// (AC7) can never fire for this case, because those four rows are
+	// never empty — the defect is upstream, at parse time. Same molde as
+	// visual.targets' own enabled-implies-non-empty check above (D3/G4a).
+	if *raw.Enabled && len(gates) == 0 {
+		return nil, fmt.Errorf(
+			"quality: gates must not be empty when enabled=true (declare at least one [[gate]], or set enabled=false): %w", ErrInvalid)
+	}
 
 	coverageDeclared, coverageCfg, ratchetDeclared, ratchetCfg, err := parseCoverageAndRatchet(schemaVersion, raw.Coverage, raw.Ratchet)
 	if err != nil {

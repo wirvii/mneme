@@ -273,6 +273,72 @@ func TestParse_Valid(t *testing.T) {
 	}
 }
 
+// TestParse_EnabledRequiresGates covers BL-220: enabled=true with zero
+// declared [[gate]] entries used to parse cleanly, letting a certificate
+// made only of the always-run checks (tree/clean-worktree + the three
+// constitution ones) derive `pass` without verifying anything the project
+// actually declared. Same molde as visual.targets' own
+// enabled-implies-non-empty check (D3/G4a).
+func TestParse_EnabledRequiresGates(t *testing.T) {
+	// zeroGatesDoc has no [[gate]] section at all — the exact shape BL-220
+	// reproduced.
+	const zeroGatesDoc = `
+schema_version = 1
+enabled = false
+
+[execution]
+output_tail_bytes = 4096
+`
+
+	tests := []struct {
+		name    string
+		doc     string
+		wantErr bool
+	}{
+		{
+			name:    "enabled=true, zero gates -> rejected",
+			doc:     strings.Replace(zeroGatesDoc, "enabled = false", "enabled = true", 1),
+			wantErr: true,
+		},
+		{
+			// The status quo for most repos today (mechanism off, no
+			// gates yet declared) must keep parsing without error.
+			name:    "enabled=false, zero gates -> still parses",
+			doc:     zeroGatesDoc,
+			wantErr: false,
+		},
+		{
+			// enabled=true WITH a declared gate -> still parses (validDoc
+			// already declares one gate named "build"; only enabled
+			// changes).
+			name:    "enabled=true, one gate -> still parses",
+			doc:     strings.Replace(validDoc, "enabled = false", "enabled = true", 1),
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Parse([]byte(tt.doc))
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("Parse(%s) succeeded, want an error", tt.name)
+				}
+				if !errors.Is(err, ErrInvalid) {
+					t.Errorf("Parse(%s) error = %v, want wrapping ErrInvalid", tt.name, err)
+				}
+				if !strings.Contains(err.Error(), "gates must not be empty") {
+					t.Errorf("Parse(%s) error = %q, want it to name the empty-gates condition", tt.name, err.Error())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Parse(%s): %v", tt.name, err)
+			}
+		})
+	}
+}
+
 // TestHashBytes_ChangesWithComment covers AC4: HashBytes hashes the raw
 // bytes, not the parsed struct — changing only a comment must change the
 // hash.
