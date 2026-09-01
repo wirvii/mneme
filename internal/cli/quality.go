@@ -249,6 +249,7 @@ func newQualityVerifyCmd() *cobra.Command {
 
 			fmt.Fprintf(os.Stdout, "%s: certificate %s verdict=%s head_sha=%s dirty=%v\n",
 				args[0], cert.ID, cert.Verdict, cert.HeadSHA, cert.Dirty)
+			fmt.Fprintln(os.Stdout, evidenceLineOrMissing(cert.Evidence))
 			if cert.Verdict != model.QualityVerdictPass {
 				return fmt.Errorf("quality verify: verdict is %s, not pass", cert.Verdict)
 			}
@@ -290,8 +291,9 @@ func newQualityStatusCmd() *cobra.Command {
 				cert := resp.LatestCertificate
 				fmt.Fprintf(os.Stdout, "latest certificate: %s verdict=%s head_sha=%s created_at=%s\n",
 					cert.ID, cert.Verdict, cert.HeadSHA, cert.CreatedAt.Format("2006-01-02T15:04:05Z"))
+				fmt.Fprintln(os.Stdout, evidenceLineOrMissing(cert.Evidence))
 				for _, chk := range resp.Checks {
-					fmt.Fprintf(os.Stdout, "  [%d] %s/%s: %s\n", chk.Seq, chk.Kind, chk.Name, chk.Status)
+					fmt.Fprintf(os.Stdout, "  [%d] %s/%s: %s (%s)\n", chk.Seq, chk.Kind, chk.Name, chk.Status, chk.Effect)
 				}
 			}
 			// SPEC-119 D14: the declared mutation config plus the latest
@@ -314,6 +316,17 @@ func newQualityStatusCmd() *cobra.Command {
 		},
 	}
 	return cmd
+}
+
+// evidenceLineOrMissing renders a certificate's D6 evidence sentence
+// (SPEC-137), read verbatim from the value the caller already fetched —
+// never re-derived here — or quality.EvidenceMissingText when evidence is
+// empty (a certificate emitted before this field existed).
+func evidenceLineOrMissing(evidence string) string {
+	if evidence == "" {
+		return quality.EvidenceMissingText
+	}
+	return evidence
 }
 
 // newQualityAckCmd returns "mneme quality ack <cert-id>".

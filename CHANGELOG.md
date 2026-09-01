@@ -6,6 +6,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Certification returns to usable after its first real use showed it
+  cost 6h23m and blocked more than it proved (SPEC-137, etapa 1 de
+  BL-221).** `spec_advance` now requires a green certificate only once,
+  at `qa→done` — the `implementing→qa` leg is gone, since the first
+  certificate almost never survived QA anyway and the verifier runs the
+  gates on its own regardless. Coverage of the diff is a firmable
+  `finding` now, never a hard `fail` (`quality ack`, same as before this
+  spec). Mutation and the budget-against-the-graph mechanism keep
+  computing and recording their real result but can no longer, by
+  themselves, block a spec from closing — every row now persists a closed
+  five-value **effect** (`blocks`/`signable`/`measures`/`absent`/
+  `stopped`, a new `quality_checks.effect` column) that
+  `quality.DeriveVerdict` and `AckCheck`'s own SQL recalculation both
+  read, so the two never disagree on what counts. `constitution/
+  unchanged-in-range` is removed entirely — the constitution is a
+  versioned file, reviewed like any other in a change proposal. Every
+  certificate now persists a "de qué es evidencia" sentence (`quality
+  status`, `quality verify`, and the QA report all show it verbatim,
+  naming every family — including the ones nothing declared for), and
+  each row's mode is now visible next to it in both the QA report and
+  `quality status`. A dirty worktree's message now tells mneme's own
+  paths (`.mneme/shared/`, `.mneme/sdd/`) apart from the project's own —
+  and never suggests discarding the former, since that deletes shared
+  memories. `mneme lane audit`'s own scope/size verdict is unaffected —
+  it never depended on the certificate's verdict to begin with. See
+  `docs/quality.md`'s "Etapa 1" section and `docs/lanes.md`.
+
 ### Fixed
 
 - **`TestSpokenTextNeverReachesDisk` failed deterministically on

@@ -47,7 +47,12 @@ type QualityCertificate struct {
 	HeadSHA string `json:"head_sha"`
 
 	// BaseSHA is the spec's base_sha at verification time (empty when the
-	// spec has none), used for the constitution's unchanged-in-range check.
+	// spec has none) — used by coverage's diff-lines row, the ratchet, the
+	// executable criteria, the budget, and mutation's own diff scoping.
+	// (Until SPEC-137, this godoc named only the constitution's own
+	// unchanged-in-range check, the sole consumer when this field was
+	// introduced; that check no longer exists, and every remaining
+	// consumer of BaseSHA predates this correction.)
 	BaseSHA string `json:"base_sha,omitempty"`
 
 	// ConstitutionHash is the sha256 hex digest of the exact
@@ -73,6 +78,16 @@ type QualityCertificate struct {
 	FinishedAt time.Time `json:"finished_at"`
 	DurationMs int64     `json:"duration_ms"`
 	CreatedAt  time.Time `json:"created_at"`
+
+	// Evidence is SPEC-137 D6's "de que es evidencia este certificado"
+	// sentence, computed once by the leaf's pure Evidence function and
+	// persisted here at emission time — never re-derived when this
+	// certificate is later read. Empty for every certificate emitted
+	// before this field existed; the three rendering channels (verify,
+	// status, the QA report) treat that emptiness as "certificado emitido
+	// antes de esta version: sin linea de evidencia", never fabricating
+	// one after the fact.
+	Evidence string `json:"evidence,omitempty"`
 }
 
 // QualityCheck is one row of evidence within a certificate: the dirty-tree
@@ -97,8 +112,9 @@ type QualityCheck struct {
 	Kind string `json:"kind"`
 
 	// Name identifies the specific check within its Kind (e.g.
-	// "clean-worktree", "tracked", "unchanged-in-range", "hash", or a gate's
-	// own declared name).
+	// "clean-worktree", "tracked", "hash", or a gate's own declared name).
+	// (Until SPEC-137 D5, the constitution family also had a third row,
+	// "unchanged-in-range" — removed entirely, not merely renamed.)
 	Name string `json:"name"`
 
 	// Status is one of "pass", "fail", "skipped", "finding", "acked".
@@ -137,6 +153,14 @@ type QualityCheck struct {
 	Justification string     `json:"justification,omitempty"`
 
 	CreatedAt time.Time `json:"created_at"`
+
+	// Effect is one of quality.Effect's five closed values
+	// (blocks/signable/measures/absent/stopped, SPEC-137 D4), persisted at
+	// emission time from the leaf's own resolution — never recomputed when
+	// this row is later read. Defaults to "blocks" for every row inserted
+	// before this field existed, which is exactly the historical behaviour
+	// of every prior row: it counted toward the verdict, unconditionally.
+	Effect string `json:"effect"`
 }
 
 // QualityVerifyRequest is the input for `mneme quality verify` /

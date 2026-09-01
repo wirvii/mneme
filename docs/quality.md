@@ -124,33 +124,45 @@ Every `mneme quality verify <SPEC-ID>` run assembles, in this order:
    must not get a certificate that claims to cover work the commit does not
    actually contain. Files ignored by `.gitignore` never appear in this
    output, so they never count.
-2. **Three constitution checks** (`kind=constitution`):
+2. **Two constitution checks** (`kind=constitution`):
    - `tracked` — is `.mneme/quality.toml` itself committed? If not: a
      `finding` (D9 of the grill: a constitution that is not versioned is
      not revisable in PR, which is half the point of putting it in the
      repo at all).
-   - `unchanged-in-range` — did the constitution change between the spec's
-     `base_sha` and HEAD? If yes: a `finding` with both hashes in `detail`.
-     This covers modification **and deletion**.
    - `hash` — an informative `pass` check recording the constitution's
      sha256 in the certificate.
+   - (Until SPEC-137: a third row, `unchanged-in-range`, compared the
+     constitution's hash between the spec's `base_sha` and HEAD. It is
+     **gone**, not renamed — the constitution is a versioned file, reviewed
+     in a change proposal like any other; encoding that review as a
+     certificate row forced a ritual signature on every single emission
+     without closing any real hole. The one thing it caught that nothing
+     else does — softening a threshold in the very commit being judged — is
+     an accepted, named gap: `docs/lanes.md` and this document's own §
+     "Etapa 1" section below describe it.)
 3. **Every declared gate**, sequentially, in declared order. The first
    `required` gate that fails **stops the run** — the rest are recorded
    `skipped` (present in the registry, never silently omitted) rather than
    executed for nothing.
 
-The certificate's overall **verdict** is *derived*, never set directly:
+The certificate's overall **verdict** is *derived*, never set directly, and
+— since SPEC-137 (see "Etapa 1" below) — only rows whose persisted
+**effect** is `blocks` or `signable` are counted at all:
 
 ```
-any check status == fail      → verdict = fail
-else any un-acked "finding"   → verdict = findings
-else                          → verdict = pass
+any COUNTED check status == fail      → verdict = fail
+else any un-acked COUNTED "finding"   → verdict = findings
+else                                  → verdict = pass
 ```
 
-`acked` and `skipped` never degrade the verdict. A certificate with **zero**
-checks is `fail` — a certificate that verified nothing is not a green
+`acked` and `skipped` never degrade the verdict even when counted — that is
+the whole point of acking a finding. A certificate with **zero** checks at
+all is `fail` — a certificate that verified nothing is not a green
 certificate, it is an absence of evidence, and treating absence as success
 is exactly the dishonest report this whole mechanism exists to eliminate.
+A certificate whose only declared mechanisms are measure-only ones (see
+"Etapa 1" below) is a real, non-empty set and is **not** forced to fail
+just because nothing in it counts.
 
 ## S2: coverage of the diff, and the ratchet (SPEC-116)
 
@@ -1791,6 +1803,83 @@ one dead, is exactly the ambiguity an agent resolves wrong at 3am. This spec
 does not touch, rename, or remove `[spec.quality_gates]` — deciding whether
 to implement it, delete it, or document it as inert is a separate item
 (BL-170).
+
+## Etapa 1 del rediseño de la certificación (SPEC-137, BL-221)
+
+S1 through S6 built the mechanism; its first real use (novo, 13
+certificates, 6h23m, 94% of that time in verdicts nobody could act on)
+showed it had become too expensive to run more than once. SPEC-137 is the
+first of three etapas that respond to that measurement — this section
+describes what it changed. `docs/lanes.md` covers its effect on the
+trivial lane specifically.
+
+- **One certification, at close, not two.** `spec_advance`'s
+  `implementing→qa` transition no longer requires a certificate for the
+  standard lane — only `qa→done` does. The first certificate almost never
+  survived QA anyway (any commit invalidates it via `CertificateUsable`),
+  and the verifier runs the gates on its own regardless. Whoever
+  implements can still run `mneme quality verify` whenever they want; it
+  is simply no longer demanded before handing off.
+- **Every row now declares its own effect on the verdict** — a closed,
+  five-value vocabulary, persisted in `quality_checks.effect` at emission
+  time (never re-derived when a certificate is later read):
+
+  | effect | meaning | counts toward the verdict? |
+  |---|---|---|
+  | `blocks` | a `fail` here tumbles the certificate; an un-acked `finding` degrades it until closed | yes |
+  | `signable` | can never be `fail`; an adverse result is a `finding` a human ack's or signs | yes |
+  | `measures` | ran and produced a real measurement that never changes the verdict | no |
+  | `absent` | never ran — nothing was declared for it (or no base to compare against) | no |
+  | `stopped` | declared, but an earlier required gate (or an earlier row in its own family) already blocked it | no |
+
+  The reparto is mneme's own decision, not a constitution key: `tree`,
+  `constitution`, `gate`, and `criteria`/`criterion*` are `blocks`;
+  `coverage` is `signable`; `ratchet`, `budget`, `detection`, `mutation`/
+  `mutant`, and `visual`/`visual-target` are `measures`. Mutation and the
+  budget-against-the-graph mechanism (S4/S5) keep computing and recording
+  their real result — `mutation/score` with its real survivor count still
+  gets persisted — but that result can no longer, by itself, block a spec
+  from closing. The equivalent-mutant escotilla (`quality sign` on a
+  `mutant` row, S5's own `max_equivalent` cupo) is kept exactly as it was;
+  it simply has nothing left to unblock at the verdict level.
+- **Coverage of the diff is a firmable finding, never a hard fail.** All
+  three `coverage/*` rows (`profile`, `changed-files-in-profile`,
+  `diff-lines`) can only ever read `pass`/`finding`/`acked`/`skipped` —
+  `RequiresSignature("coverage")` already returned `false`, so `quality
+  ack` (never `quality sign`) is how a below-threshold measurement is
+  closed, with a justification recorded on the row.
+- **Every certificate carries a persisted "de qué es evidencia" sentence**
+  (`quality_certificates.evidence`), built once at emission time and
+  rendered verbatim — never re-derived — in all three places a person
+  reads a certificate: `mneme quality verify`'s own output, `mneme quality
+  status`'s output (its JSON response already carried it for free, since
+  it embeds the full certificate), and the first line of the QA report's
+  body, before any table. It names every family, including the ones that
+  did nothing: `Evidencia: 3/3 puertas del proyecto en verde · 12/12
+  criterios cumplidos · cobertura del diff 84.64% (hallazgo sin firmar) ·
+  cliquet no declarado · presupuesto no declarado · mutacion no declarada
+  · verificacion visual no declarada`. A certificate emitted before this
+  field existed shows "certificado emitido antes de esta version: sin
+  linea de evidencia" in all three places — never a sentence invented
+  after the fact.
+- **Each row's mode is visible next to it, not just in this document.**
+  The QA report's non-criterion table gained a `modo` column, and `mneme
+  quality status`'s per-row line reads `[seq] kind/name: status (modo)` —
+  so a constitution key that changed BEHAVIOUR without the file itself
+  changing (coverage moving from blocking to signable) is still visible in
+  the one place a person actually looks: the result, not the
+  documentation.
+- **The dirty-tree message tells apart what mneme wrote from what the
+  project wrote.** A worktree is still dirty if EITHER group has
+  uncommitted paths — that has not changed, because the certificate has to
+  mean "verified against exactly this content". What changed is the
+  remedy: paths under `.mneme/shared/` (the shared-memory vault) or
+  `.mneme/sdd/` (the SDD git-native archive) are told to commit ONLY —
+  never to discard, since discarding a change under `.mneme/shared/**`
+  deletes shared memories. The project's own dirty paths keep the honest
+  "commit or discard" advice. Both the `tree/clean-worktree` row's summary
+  and `ensureCertified`'s own `ErrWorktreeDirty` message name the two
+  groups separately.
 
 ## What this does NOT do
 

@@ -3,6 +3,8 @@ package quality
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -479,6 +481,13 @@ func TestParse_SchemaVersion2CoverageRatchet(t *testing.T) {
 	}
 	if c.Coverage.Format != "go-cover" {
 		t.Errorf("Coverage.Format = %q, want go-cover", c.Coverage.Format)
+	}
+	// AC20 (SPEC-137 D8): min_diff_line_pct keeps its name, its TOML key,
+	// and its type (float64) — SPEC-137 changed what this number MEANS
+	// (finding, not fail, D2) but never how it is declared or parsed.
+	const wantMinDiffLinePct = 80.0
+	if c.Coverage.MinDiffLinePct != wantMinDiffLinePct {
+		t.Errorf("Coverage.MinDiffLinePct = %v, want %v", c.Coverage.MinDiffLinePct, wantMinDiffLinePct)
 	}
 	if c.Ratchet.MaxBaselineStalenessPct != 1.0 {
 		t.Errorf("Ratchet.MaxBaselineStalenessPct = %v, want 1.0", c.Ratchet.MaxBaselineStalenessPct)
@@ -1862,5 +1871,55 @@ func TestParse_VisualCommand_SharesArgvMessageWithGate(t *testing.T) {
 	}
 	if !strings.Contains(visualErr.Error(), sharedSentence) {
 		t.Fatalf("visual.command error %q does not contain shared sentence %q", visualErr.Error(), sharedSentence)
+	}
+}
+
+// schemaFixtures is the SINGLE list AC19's population guardian counts —
+// one already-proven-valid document per schema version this package
+// supports today (validDoc for schema 1, validDocV2..V6 for schema 2
+// through CurrentSchemaVersion). A future schema bump that forgets to add
+// its own row here fails TestSchemaFixtures_CoverEveryDeclaredSchemaVersion
+// below, rather than silently leaving a schema version untested.
+var schemaFixtures = []string{validDoc, validDocV2, validDocV3, validDocV4, validDocV5, validDocV6}
+
+// TestSchemaFixtures_CoverEveryDeclaredSchemaVersion covers AC19's
+// population guardian (SPEC-137 D8/paso 10): the number of schema fixtures
+// this package exercises must equal CurrentSchemaVersion-MinSchemaVersion+1
+// — derived from the two constants, never a literal — so a future schema
+// bump without its own fixture breaks this test instead of passing
+// silently. Every fixture must also still parse without error (the other
+// half of AC19: "toda constitución de testdata sigue parseando").
+func TestSchemaFixtures_CoverEveryDeclaredSchemaVersion(t *testing.T) {
+	wantCount := CurrentSchemaVersion - MinSchemaVersion + 1
+	if len(schemaFixtures) != wantCount {
+		t.Fatalf("len(schemaFixtures) = %d, want %d (CurrentSchemaVersion=%d - MinSchemaVersion=%d + 1)",
+			len(schemaFixtures), wantCount, CurrentSchemaVersion, MinSchemaVersion)
+	}
+	for i, doc := range schemaFixtures {
+		wantVersion := MinSchemaVersion + i
+		c, err := Parse([]byte(doc))
+		if err != nil {
+			t.Errorf("schemaFixtures[%d] (schema %d): Parse failed: %v", i, wantVersion, err)
+			continue
+		}
+		if c.SchemaVersion != wantVersion {
+			t.Errorf("schemaFixtures[%d]: SchemaVersion = %d, want %d", i, c.SchemaVersion, wantVersion)
+		}
+	}
+}
+
+// TestParse_RealRepoConstitution covers AC19's other half: this
+// repository's OWN .mneme/quality.toml — the real, committed file, not a
+// fixture — still parses. Skipped (never failed) when the file cannot be
+// read at all, since a package test should not hard-fail on a checkout
+// that lacks the repo root two levels up (e.g. `go install` building this
+// module from a module cache with no .mneme directory at all).
+func TestParse_RealRepoConstitution(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", ".mneme", "quality.toml"))
+	if err != nil {
+		t.Skipf("cannot read this repository's own .mneme/quality.toml (not fatal — likely running outside a checkout): %v", err)
+	}
+	if _, err := Parse(raw); err != nil {
+		t.Errorf("Parse(this repository's real .mneme/quality.toml) failed: %v", err)
 	}
 }

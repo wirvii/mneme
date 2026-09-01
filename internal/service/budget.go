@@ -105,14 +105,15 @@ var graphDetectionNames = []string{
 }
 
 // skippedBudgetChecks builds all 12 budget rows as "skipped" with the SAME
-// reason — used whenever the mechanism is off, or an earlier stage's
-// cascade already stopped, before budget.toml is ever read.
-func skippedBudgetChecks(reason string) ([]*model.QualityCheck, []quality.CheckResult) {
+// reason and cause (D13/SPEC-137 D4) — used whenever the mechanism is off,
+// or an earlier stage's cascade already stopped, before budget.toml is ever
+// read.
+func skippedBudgetChecks(reason string, cause quality.Effect) ([]*model.QualityCheck, []quality.CheckResult) {
 	checks := make([]*model.QualityCheck, 0, len(budgetRowSpecs))
 	pure := make([]quality.CheckResult, 0, len(budgetRowSpecs))
 	for _, r := range budgetRowSpecs {
-		checks = append(checks, &model.QualityCheck{Kind: r.Kind, Name: r.Name, Status: "skipped", Summary: reason})
-		pure = append(pure, quality.CheckResult{Status: quality.CheckStatusSkipped})
+		checks = append(checks, &model.QualityCheck{Kind: r.Kind, Name: r.Name, Status: "skipped", Summary: reason, Effect: string(cause)})
+		pure = append(pure, quality.CheckResult{Status: quality.CheckStatusSkipped, Effect: cause})
 	}
 	return checks, pure
 }
@@ -124,18 +125,22 @@ func skippedBudgetChecks(reason string) ([]*model.QualityCheck, []quality.CheckR
 // graphFacts==nil is deliberately NOT one of these causes: AC18 requires
 // row 3 (graph-index) to become a FIRMABLE finding when there is no graph
 // at all, not a silent, undifferentiated "skipped" — see runBudgetChecks.
-func (svc *QualityService) budgetSkipReason(gatesStopped bool, constitution *quality.Constitution) string {
+//
+// SPEC-137 D4: also returns the skip CAUSE — EffectStopped only for the
+// gate cascade; every other cause means nothing was ever configured or
+// declared for budget to run against, so all of them are EffectAbsent.
+func (svc *QualityService) budgetSkipReason(gatesStopped bool, constitution *quality.Constitution) (string, quality.Effect) {
 	switch {
 	case gatesStopped:
-		return "un gate required anterior fallo"
+		return "un gate required anterior fallo", quality.EffectStopped
 	case svc.workflowDir == "":
-		return "workflowDir no configurado"
+		return "workflowDir no configurado", quality.EffectAbsent
 	case !constitution.BudgetDeclared:
-		return fmt.Sprintf("constitucion schema_version=%d no declara [budget] (apagado por omision)", constitution.SchemaVersion)
+		return fmt.Sprintf("constitucion schema_version=%d no declara [budget] (apagado por omision)", constitution.SchemaVersion), quality.EffectAbsent
 	case !constitution.Budget.Enabled:
-		return "budget.enabled = false (apagado por decision)"
+		return "budget.enabled = false (apagado por decision)", quality.EffectAbsent
 	default:
-		return ""
+		return "", ""
 	}
 }
 
@@ -146,7 +151,7 @@ func (svc *QualityService) budgetSkipReason(gatesStopped bool, constitution *qua
 func budgetDeclaredFailure(summary string) ([]*model.QualityCheck, []quality.CheckResult) {
 	checks := []*model.QualityCheck{{Kind: "budget", Name: "declared", Status: "fail", Summary: summary}}
 	pure := []quality.CheckResult{{Status: quality.CheckStatusFail}}
-	skippedChecks, skippedPure := skippedBudgetChecks("budget/declared fallo")
+	skippedChecks, skippedPure := skippedBudgetChecks("budget/declared fallo", quality.EffectStopped)
 	return append(checks, skippedChecks[1:]...), append(pure, skippedPure[1:]...)
 }
 
@@ -161,7 +166,7 @@ func budgetBaseUnknownRows() ([]*model.QualityCheck, []quality.CheckResult) {
 		Summary: "base-unknown: spec sin base_sha, o merge-base con HEAD inalcanzable",
 	}}
 	pure := []quality.CheckResult{{Status: quality.CheckStatusFinding}}
-	skippedChecks, skippedPure := skippedBudgetChecks("budget/symbol-delta: base-unknown")
+	skippedChecks, skippedPure := skippedBudgetChecks("budget/symbol-delta: base-unknown", quality.EffectAbsent)
 	return append(checks, skippedChecks[2:]...), append(pure, skippedPure[2:]...)
 }
 
@@ -172,7 +177,7 @@ func budgetBaseUnknownRows() ([]*model.QualityCheck, []quality.CheckResult) {
 func budgetSymbolDeltaFailure(summary string) ([]*model.QualityCheck, []quality.CheckResult) {
 	checks := []*model.QualityCheck{{Kind: "budget", Name: "symbol-delta", Status: "fail", Summary: summary}}
 	pure := []quality.CheckResult{{Status: quality.CheckStatusFail}}
-	skippedChecks, skippedPure := skippedBudgetChecks("budget/symbol-delta fallo")
+	skippedChecks, skippedPure := skippedBudgetChecks("budget/symbol-delta fallo", quality.EffectStopped)
 	return append(checks, skippedChecks[2:]...), append(pure, skippedPure[2:]...)
 }
 
@@ -378,8 +383,8 @@ func (svc *QualityService) runBudgetChecks(
 ) ([]*model.QualityCheck, []quality.CheckResult, error) {
 	_ = ctx // no command execution in this mechanism (unlike gates/coverage) — kept for signature symmetry with the other run*Checks stages.
 
-	if reason := svc.budgetSkipReason(gatesStopped, constitution); reason != "" {
-		checks, pure := skippedBudgetChecks(reason)
+	if reason, cause := svc.budgetSkipReason(gatesStopped, constitution); reason != "" {
+		checks, pure := skippedBudgetChecks(reason, cause)
 		return checks, pure, nil
 	}
 
@@ -591,11 +596,21 @@ func (svc *QualityService) computeGraphDetectionRows(
 	fresh bool, delta quality.SymbolDelta, baseSymRefs, headSymRefs map[string][]quality.SymbolRef, cfg quality.BudgetConfig,
 ) ([]*model.QualityCheck, []quality.CheckResult, error) {
 	if !fresh {
+		// SPEC-137 D4: EffectStopped — one of the plan's three "sites that
+		// skip WITHOUT a skip-reason function". Budget IS declared and
+		// enabled (this function only runs once budgetSkipReason already
+		// let evaluation proceed); what blocked these six rows is a
+		// prerequisite that failed, the same "declared but blocked by
+		// something upstream" shape a required gate gives every other
+		// tramo — never EffectAbsent, since nothing here is undeclared.
 		checks := make([]*model.QualityCheck, 0, len(graphDetectionNames))
 		pure := make([]quality.CheckResult, 0, len(graphDetectionNames))
 		for _, name := range graphDetectionNames {
-			checks = append(checks, &model.QualityCheck{Kind: "detection", Name: name, Status: "skipped", Summary: "budget/graph-index no esta fresco"})
-			pure = append(pure, quality.CheckResult{Status: quality.CheckStatusSkipped})
+			checks = append(checks, &model.QualityCheck{
+				Kind: "detection", Name: name, Status: "skipped", Summary: "budget/graph-index no esta fresco",
+				Effect: string(quality.EffectStopped),
+			})
+			pure = append(pure, quality.CheckResult{Status: quality.CheckStatusSkipped, Effect: quality.EffectStopped})
 		}
 		return checks, pure, nil
 	}
@@ -704,9 +719,15 @@ func (svc *QualityService) runBudgetChecksTrivial(g *quality.Git, constitution *
 	pure = append(pure, graphIndexPure)
 
 	// Row 4 does not apply to the trivial lane: there is no budget.toml,
-	// hence no [revision] to speak of.
-	checks = append(checks, &model.QualityCheck{Kind: "budget", Name: "revision", Status: "skipped", Summary: fmt.Sprintf("lane %s: no hay budget.toml, no aplica revision", spec.Lane)})
-	pure = append(pure, quality.CheckResult{Status: quality.CheckStatusSkipped})
+	// hence no [revision] to speak of. SPEC-137 D4: EffectAbsent — this is
+	// one of the plan's three "sites that skip WITHOUT a skip-reason
+	// function", and its cause is unambiguous: nothing was ever declared.
+	checks = append(checks, &model.QualityCheck{
+		Kind: "budget", Name: "revision", Status: "skipped",
+		Summary: fmt.Sprintf("lane %s: no hay budget.toml, no aplica revision", spec.Lane),
+		Effect:  string(quality.EffectAbsent),
+	})
+	pure = append(pure, quality.CheckResult{Status: quality.CheckStatusSkipped, Effect: quality.EffectAbsent})
 
 	breaches := quality.EvaluateTrivialBudget(numStats, delta, spec.Scope, quality.DefaultTrivialBudget)
 	sizeBreach := false

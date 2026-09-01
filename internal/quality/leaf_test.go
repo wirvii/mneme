@@ -113,6 +113,10 @@ var pureSourceFiles = []string{
 	"budget.go", "symbols.go", "budgeteval.go", "detections.go",
 	"mutants.go", "gremlins.go", "mutscope.go", "signature.go",
 	"visual.go", "pixel.go", "visualscope.go",
+	// SPEC-137 etapa 1 de BL-221: the effect/evidence/dirty primitives are
+	// pure functions of already-collected data too, same as everything
+	// else in this list.
+	"effect.go", "evidence.go", "dirty.go",
 }
 
 // TestPureFiles_NeverImportOSExec is AC1's negative hermana: proof, not

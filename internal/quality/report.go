@@ -41,6 +41,15 @@ type ReportCheck struct {
 	Status  string
 	Summary string
 
+	// Effect is SPEC-137 D7's own "modo" — the row's persisted
+	// blocks/signable/measures/absent/stopped value, rendered as its own
+	// column in the non-criterion table so a reader sees, IN THE SAME
+	// LINE that gives a number, whether that number still blocks the
+	// verdict or only measures it now (D11's own mitigation: a
+	// constitution key changing behaviour without the file changing must
+	// be visible in the result, not just in documentation).
+	Effect string
+
 	// AckedBy/AckedAt/Justification are non-empty only for a signed
 	// (status=="acked") row — AC28's "quien firmo, cuando y con que
 	// evidencia".
@@ -69,8 +78,19 @@ type ReportInput struct {
 	MnemeVersion   string
 	GeneratedAtUTC string
 
+	// Evidence is the certificate's own persisted D6 sentence (SPEC-137),
+	// read verbatim from the column — RenderReport never re-derives it.
+	// Empty for a certificate emitted before this field existed.
+	Evidence string
+
 	Checks []ReportCheck
 }
+
+// EvidenceMissingText is what all three D6 rendering channels
+// (RenderReport, `quality verify`, `quality status`) show in place of a
+// certificate's own Evidence when that field is empty — a certificate
+// emitted before SPEC-137 existed. Never a fabricated sentence.
+const EvidenceMissingText = "certificado emitido antes de esta version: sin linea de evidencia"
 
 // RenderReport renders in into the exact QA report document mneme writes
 // via SpecDocWrite kind qa-report (D12). Deterministic (AC28): the SAME
@@ -94,6 +114,15 @@ func RenderReport(in ReportInput) string {
 		fmt.Fprintf(&b, "- Hash de criterios: %s\n", in.CriteriaHash)
 	}
 	fmt.Fprintf(&b, "- Generado: %s\n\n", in.GeneratedAtUTC)
+
+	// SPEC-137 D6: the evidence sentence is the first line of the body,
+	// before any table — read verbatim from the certificate's own
+	// persisted column, never re-derived here.
+	evidence := in.Evidence
+	if evidence == "" {
+		evidence = EvidenceMissingText
+	}
+	fmt.Fprintf(&b, "%s\n\n", evidence)
 
 	criterionChecks := make([]ReportCheck, 0, len(in.Checks))
 	otherChecks := make([]ReportCheck, 0, len(in.Checks))
@@ -135,9 +164,9 @@ func RenderReport(in ReportInput) string {
 
 	if len(otherChecks) > 0 {
 		fmt.Fprintf(&b, "## Gates, cobertura y cliquet\n\n")
-		fmt.Fprintf(&b, "| kind | name | estado |\n|---|---|---|\n")
+		fmt.Fprintf(&b, "| kind | name | estado | modo |\n|---|---|---|---|\n")
 		for _, c := range otherChecks {
-			fmt.Fprintf(&b, "| %s | %s | %s |\n", c.Kind, c.Name, c.Status)
+			fmt.Fprintf(&b, "| %s | %s | %s | %s |\n", c.Kind, c.Name, c.Status, c.Effect)
 		}
 		fmt.Fprintf(&b, "\n")
 	}

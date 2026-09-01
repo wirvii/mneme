@@ -15,6 +15,12 @@
 # repositorio no tiene interfaz gráfica (tiene una TUI, internal/tui) y no
 # hay pantalla real que declarar aquí. Encenderla sin objetivos sería
 # inventarse verificación que nadie mide.
+#
+# SPEC-137 (etapa 1 de BL-221) aterrizó sin tocar NINGUNA clave de este
+# fichero, ni el schema_version: solo cambió qué hace mneme con lo que ya
+# declaraban las secciones de arriba (mutación y presupuesto pasan a medir
+# en vez de bloquear; la cobertura del diff pasa a hallazgo firmable). Ver
+# docs/quality.md, seccion "Etapa 1 del rediseño de la certificación".
 
 schema_version = 6
 

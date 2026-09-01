@@ -274,15 +274,16 @@ func TestQualityService_Verify_HappyPath_Pass(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListChecks: %v", err)
 	}
-	// 1 tree + 3 constitution + 2 gates + 3 coverage + 4 ratchet
-	// (schema_version=1, SPEC-116: all 7 skipped — [coverage]/[ratchet]
-	// are not even declared) + 3 criteria (SPEC-117: skipped — this
-	// service was never given WithWorkflowDir) + 12 budget (SPEC-118:
-	// skipped — same reason) + 6 mutation (SPEC-119: skipped — schema
-	// version 1 does not declare [mutation] either) + 7 visual (SPEC-120:
-	// skipped — schema version 1 does not declare [visual] either) = 41.
-	if len(checks) != 41 {
-		t.Fatalf("len(checks) = %d, want 41: %+v", len(checks), checks)
+	// 1 tree + 2 constitution (SPEC-137 D5 removed unchanged-in-range) +
+	// 2 gates + 3 coverage + 4 ratchet (schema_version=1, SPEC-116: all 7
+	// skipped — [coverage]/[ratchet] are not even declared) + 3 criteria
+	// (SPEC-117: skipped — this service was never given WithWorkflowDir) +
+	// 12 budget (SPEC-118: skipped — same reason) + 6 mutation (SPEC-119:
+	// skipped — schema version 1 does not declare [mutation] either) +
+	// 7 visual (SPEC-120: skipped — schema version 1 does not declare
+	// [visual] either) = 40.
+	if len(checks) != 40 {
+		t.Fatalf("len(checks) = %d, want 40: %+v", len(checks), checks)
 	}
 }
 
@@ -366,11 +367,64 @@ func TestQualityService_Verify_DirtyTree_FailsVerdict(t *testing.T) {
 	}
 }
 
-// TestQualityService_Verify_ConstitutionChangedInRange covers AC12 at the
-// finding level: modifying the constitution within the spec's base_sha..HEAD
-// range produces a "finding", not a hard failure by itself — the overall
-// verdict still degrades to "findings" (not "pass") when nothing else fails.
-func TestQualityService_Verify_ConstitutionChangedInRange(t *testing.T) {
+// TestQualityService_Verify_DirtyTree_SummaryNamesBothGroups covers AC18's
+// other half (SPEC-137 D9): tree/clean-worktree's own Summary names the
+// project's dirty paths and mneme's own dirty paths in SEPARATE segments —
+// derived from the fixture's real `git status --porcelain` output.
+func TestQualityService_Verify_DirtyTree_SummaryNamesBothGroups(t *testing.T) {
+	repoDir := newTestGitRepo(t)
+	writeConstitution(t, repoDir)
+	commitAll(t, repoDir, "add constitution")
+
+	if err := os.WriteFile(filepath.Join(repoDir, "untracked.txt"), []byte("oops"), 0o644); err != nil {
+		t.Fatalf("write untracked file: %v", err)
+	}
+	sharedNotesDir := filepath.Join(repoDir, ".mneme", "shared", "notes")
+	if err := os.MkdirAll(sharedNotesDir, 0o755); err != nil {
+		t.Fatalf("mkdir shared notes: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sharedNotesDir, "abc123.md"), []byte("# nota"), 0o644); err != nil {
+		t.Fatalf("write shared note: %v", err)
+	}
+
+	s := newTestQualityStore(t)
+	insertTestSpec(t, s, "SPEC-1", "proj", model.SpecStatusImplementing, "")
+
+	svc := NewQualityService(s, "proj", repoDir, &fakeGateRunner{})
+	cert, err := svc.Verify(context.Background(), model.QualityVerifyRequest{ID: "SPEC-1"})
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+
+	checks, err := s.ListChecks(context.Background(), cert.ID)
+	if err != nil {
+		t.Fatalf("ListChecks: %v", err)
+	}
+	var treeRow *model.QualityCheck
+	for _, c := range checks {
+		if c.Kind == "tree" && c.Name == "clean-worktree" {
+			treeRow = c
+		}
+	}
+	if treeRow == nil {
+		t.Fatal("no tree/clean-worktree row found")
+	}
+	if !strings.Contains(treeRow.Summary, "proyecto") {
+		t.Errorf("tree/clean-worktree Summary does not name the project group:\n%s", treeRow.Summary)
+	}
+	if !strings.Contains(treeRow.Summary, "mneme") {
+		t.Errorf("tree/clean-worktree Summary does not name the mneme group:\n%s", treeRow.Summary)
+	}
+}
+
+// TestQualityService_Verify_ConstitutionChangedInRangeNoLongerChecked covers
+// AC7 (SPEC-137 D5): modifying the constitution within the spec's
+// base_sha..HEAD range used to produce a "finding" via
+// constitution/unchanged-in-range — that row is GONE. The scenario that
+// used to trigger it must now certify clean (verdict pass, nothing else
+// failing), and the emitted "constitution" rows must be EXACTLY the ones
+// constitutionCheckNames declares — not a hand-written count.
+func TestQualityService_Verify_ConstitutionChangedInRangeNoLongerChecked(t *testing.T) {
 	repoDir := newTestGitRepo(t)
 	writeConstitution(t, repoDir)
 	commitAll(t, repoDir, "add constitution")
@@ -380,7 +434,8 @@ func TestQualityService_Verify_ConstitutionChangedInRange(t *testing.T) {
 	baseSHA := headSHAFor(t, repoDir)
 
 	// Modify the constitution AFTER base_sha, then commit again — still a
-	// valid constitution (Parse must succeed), just a different one.
+	// valid constitution (Parse must succeed), just a different one. This
+	// is the EXACT scenario that used to produce a finding.
 	writeConstitution(t, repoDir, `
 [[gate]]
 name = "lint"
@@ -397,28 +452,31 @@ required = false
 	if err != nil {
 		t.Fatalf("Verify: %v", err)
 	}
-	if cert.Verdict != model.QualityVerdictFindings {
-		t.Errorf("Verdict = %q, want findings (constitution changed in range, nothing else fails)", cert.Verdict)
+	if cert.Verdict != model.QualityVerdictPass {
+		t.Errorf("Verdict = %q, want pass — a constitution change in range no longer degrades anything", cert.Verdict)
 	}
 
 	checks, err := s.ListChecks(context.Background(), cert.ID)
 	if err != nil {
 		t.Fatalf("ListChecks: %v", err)
 	}
-	found := false
+
+	var constitutionNames []string
 	for _, c := range checks {
 		if c.Name == "unchanged-in-range" {
-			found = true
-			if c.Status != "finding" {
-				t.Errorf("unchanged-in-range status = %q, want finding", c.Status)
-			}
-			if c.Detail == "" {
-				t.Error("unchanged-in-range detail is empty, want before/after hashes")
-			}
+			t.Fatal("found an unchanged-in-range check — SPEC-137 D5 removed this row entirely")
+		}
+		if c.Kind == "constitution" {
+			constitutionNames = append(constitutionNames, c.Name)
 		}
 	}
-	if !found {
-		t.Fatal("no unchanged-in-range check found")
+	if len(constitutionNames) != len(constitutionCheckNames) {
+		t.Fatalf("constitution rows = %v, want exactly %v (constitutionCheckNames)", constitutionNames, constitutionCheckNames)
+	}
+	for i, name := range constitutionCheckNames {
+		if constitutionNames[i] != name {
+			t.Errorf("constitution row %d = %q, want %q (constitutionCheckNames order)", i, constitutionNames[i], name)
+		}
 	}
 }
 
@@ -484,8 +542,136 @@ func TestQualityService_Status_WithCertificate(t *testing.T) {
 	if resp.LatestCertificate == nil || resp.LatestCertificate.ID != cert.ID {
 		t.Fatalf("LatestCertificate = %+v, want id=%s", resp.LatestCertificate, cert.ID)
 	}
-	if len(resp.Checks) != 41 {
-		t.Errorf("len(Checks) = %d, want 41 (SPEC-116 adds 3 skipped coverage + 4 skipped ratchet rows; SPEC-117 adds 3 skipped criteria rows; SPEC-118 adds 12 skipped budget rows; SPEC-119 adds 6 skipped mutation rows; SPEC-120 adds 7 skipped visual rows)", len(resp.Checks))
+	if len(resp.Checks) != 40 {
+		t.Errorf("len(Checks) = %d, want 40 (SPEC-137 D5 removed constitution/unchanged-in-range; SPEC-116 adds 3 skipped coverage + 4 skipped ratchet rows; SPEC-117 adds 3 skipped criteria rows; SPEC-118 adds 12 skipped budget rows; SPEC-119 adds 6 skipped mutation rows; SPEC-120 adds 7 skipped visual rows)", len(resp.Checks))
+	}
+}
+
+// TestQualityService_Evidence_AppearsLiterallyInAllThreeChannels covers
+// AC13 (SPEC-137 D6): the certificate's own persisted Evidence sentence
+// must appear, byte for byte, in the data every one of the three
+// rendering channels reads from — quality_verify's own return value,
+// quality_status's response, and the QA report's rendered body. Every
+// comparison is against cert.Evidence itself (the value READ from the
+// certificate this Verify call produced), never a literal string written
+// in this test — the CLI layer's own rendering (evidenceLineOrMissing) is
+// a one-line passthrough of exactly this value, so proving the three data
+// sources agree is what proves the three channels agree.
+func TestQualityService_Evidence_AppearsLiterallyInAllThreeChannels(t *testing.T) {
+	repoDir := newTestGitRepo(t)
+	writeConstitution(t, repoDir)
+	commitAll(t, repoDir, "add constitution")
+
+	s := newTestQualityStore(t)
+	insertTestSpec(t, s, "SPEC-001", "proj", model.SpecStatusImplementing, "")
+
+	workflowDir := t.TempDir()
+	docWriter := &fakeDocWriter{workflowDir: workflowDir, project: "proj"}
+	svc := NewQualityService(s, "proj", repoDir, &fakeGateRunner{}, WithWorkflowDir(workflowDir), WithDocWriter(docWriter.write))
+
+	// Channel 1: quality_verify's own return value.
+	cert, err := svc.Verify(context.Background(), model.QualityVerifyRequest{ID: "SPEC-001"})
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if cert.Evidence == "" {
+		t.Fatal("cert.Evidence is empty — this test cannot prove anything without a real sentence")
+	}
+
+	// Channel 2: quality_status's response.
+	statusResp, err := svc.Status(context.Background(), model.QualityStatusRequest{ID: "SPEC-001"})
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if statusResp.LatestCertificate == nil || statusResp.LatestCertificate.Evidence != cert.Evidence {
+		t.Errorf("Status().LatestCertificate.Evidence = %q, want %q (Verify's own persisted value)",
+			statusResp.LatestCertificate.Evidence, cert.Evidence)
+	}
+
+	// Channel 3: the QA report's rendered body.
+	reportResp, err := svc.Report(context.Background(), model.QualityReportRequest{ID: "SPEC-001"})
+	if err != nil {
+		t.Fatalf("Report: %v", err)
+	}
+	reportBytes, readErr := os.ReadFile(reportResp.Path)
+	if readErr != nil {
+		t.Fatalf("read report: %v", readErr)
+	}
+	if !strings.Contains(string(reportBytes), cert.Evidence) {
+		t.Errorf("QA report body does not contain cert.Evidence (%q) literally:\n%s", cert.Evidence, reportBytes)
+	}
+}
+
+// TestQualityService_Evidence_NamesEveryUndeclaredFamily covers AC14 (SPEC-
+// 137 D6) end to end: a project that declares gates and NOTHING else
+// (writeConstitution's own schema_version=1 fixture — no [coverage],
+// [criteria], [ratchet], [budget], [mutation], [visual]) still certifies
+// `pass`, and its Evidence names every one of the four measure-only
+// families as not declared. The expected family list is derived from
+// quality.EvidenceFamilyNames itself, never copied by hand.
+func TestQualityService_Evidence_NamesEveryUndeclaredFamily(t *testing.T) {
+	repoDir := newTestGitRepo(t)
+	writeConstitution(t, repoDir)
+	commitAll(t, repoDir, "add constitution")
+
+	s := newTestQualityStore(t)
+	insertTestSpec(t, s, "SPEC-001", "proj", model.SpecStatusImplementing, "")
+
+	svc := NewQualityService(s, "proj", repoDir, &fakeGateRunner{})
+	cert, err := svc.Verify(context.Background(), model.QualityVerifyRequest{ID: "SPEC-001"})
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if cert.Verdict != model.QualityVerdictPass {
+		t.Fatalf("Verdict = %q, want pass", cert.Verdict)
+	}
+	if !strings.Contains(cert.Evidence, "criterios no declarados") {
+		t.Errorf("Evidence = %q, missing %q", cert.Evidence, "criterios no declarados")
+	}
+	if !strings.Contains(cert.Evidence, "cobertura no declarada") {
+		t.Errorf("Evidence = %q, missing %q", cert.Evidence, "cobertura no declarada")
+	}
+	// Every measure-only family's own name must appear somewhere in the
+	// sentence — each phrasing is "<family> no declarad[oa]", so the bare
+	// family word from EvidenceFamilyNames is always a substring of its
+	// own segment. The list itself is never copied by hand into this test.
+	for _, family := range quality.EvidenceFamilyNames {
+		if !strings.Contains(cert.Evidence, family) {
+			t.Errorf("Evidence = %q, does not mention family %q at all", cert.Evidence, family)
+		}
+	}
+}
+
+// TestQualityService_Evidence_NoGatesDeclared covers AC15: a project with
+// NO gates at all (enabled=false, since post-SPEC-138 enabled=true with
+// zero gates is rejected by Parse) still emits a certificate — Verify
+// never consults Enabled — whose Evidence names the "sin puertas
+// declaradas" tramo literally, never a fabricated "0/0".
+func TestQualityService_Evidence_NoGatesDeclared(t *testing.T) {
+	repoDir := newTestGitRepo(t)
+	dir := filepath.Join(repoDir, ".mneme")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir .mneme: %v", err)
+	}
+	doc := "schema_version = 1\nenabled = false\n[execution]\noutput_tail_bytes = 4096\n"
+	if err := os.WriteFile(filepath.Join(dir, "quality.toml"), []byte(doc), 0o644); err != nil {
+		t.Fatalf("write quality.toml: %v", err)
+	}
+	commitAll(t, repoDir, "add constitution")
+
+	s := newTestQualityStore(t)
+	insertTestSpec(t, s, "SPEC-001", "proj", model.SpecStatusImplementing, "")
+
+	svc := NewQualityService(s, "proj", repoDir, &fakeGateRunner{})
+	cert, err := svc.Verify(context.Background(), model.QualityVerifyRequest{ID: "SPEC-001"})
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if !strings.Contains(cert.Evidence, "sin puertas declaradas") {
+		t.Errorf("Evidence = %q, want it to contain %q", cert.Evidence, "sin puertas declaradas")
+	}
+	if strings.Contains(cert.Evidence, "0/0") {
+		t.Errorf("Evidence = %q, must never render a fabricated 0/0", cert.Evidence)
 	}
 }
 
@@ -532,11 +718,11 @@ func TestQualityService_Verify_Coverage_ProfileChecks(t *testing.T) {
 		trackProfile bool   // pre-commit the profile file, tracked by git
 		wantStatus   string
 	}{
-		{"command exits non-zero", quality.GateResult{Status: quality.GateStatusFail, ExitCode: 1}, "", false, "fail"},
-		{"command exits 0 but writes no file", quality.GateResult{Status: quality.GateStatusPass}, "", false, "fail"},
-		{"file exists but is not parseable in the declared format", quality.GateResult{Status: quality.GateStatusPass}, malformedLCOV, false, "fail"},
-		{"file parses with zero files", quality.GateResult{Status: quality.GateStatusPass}, emptyLCOV, false, "fail"},
-		{"profile_path is tracked by git", quality.GateResult{Status: quality.GateStatusPass}, validLCOV, true, "fail"},
+		{"command exits non-zero", quality.GateResult{Status: quality.GateStatusFail, ExitCode: 1}, "", false, "finding"},
+		{"command exits 0 but writes no file", quality.GateResult{Status: quality.GateStatusPass}, "", false, "finding"},
+		{"file exists but is not parseable in the declared format", quality.GateResult{Status: quality.GateStatusPass}, malformedLCOV, false, "finding"},
+		{"file parses with zero files", quality.GateResult{Status: quality.GateStatusPass}, emptyLCOV, false, "finding"},
+		{"profile_path is tracked by git", quality.GateResult{Status: quality.GateStatusPass}, validLCOV, true, "finding"},
 		{"command exits 0 with a valid, untracked profile", quality.GateResult{Status: quality.GateStatusPass}, validLCOV, false, "pass"},
 	}
 
@@ -638,8 +824,8 @@ func TestQualityService_Verify_Coverage_StaleProfileMutation(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ListChecks: %v", err)
 		}
-		if got := coverageCheckStatus(checks, "profile"); got != "fail" {
-			t.Errorf("coverage/profile status = %q, want fail (D12 must have deleted the stale profile)", got)
+		if got := coverageCheckStatus(checks, "profile"); got != "finding" {
+			t.Errorf("coverage/profile status = %q, want finding (SPEC-137 D2 — D12 must have deleted the stale profile)", got)
 		}
 		if got := coverageCheckStatus(checks, "diff-lines"); got == "pass" {
 			t.Error("coverage/diff-lines = pass, want anything but pass (the stale profile must not produce a false green)")
@@ -733,11 +919,13 @@ func TestQualityService_Verify_Coverage_DiffLinesThreshold(t *testing.T) {
 		wantStatus      string
 	}{
 		{
-			name:            "below threshold: fail",
+			// SPEC-137 D2: below-threshold coverage is a firmable
+			// `finding`, never a hard `fail`.
+			name:            "below threshold: finding",
 			minDiffPct:      80.0,
 			minChangedLines: 1,
 			profileContent:  "SF:foo.go\nDA:1,1\nDA:2,0\nDA:3,0\nend_of_record\n", // 33%
-			wantStatus:      "fail",
+			wantStatus:      "finding",
 		},
 		{
 			name:            "above threshold: pass",
@@ -786,6 +974,200 @@ func TestQualityService_Verify_Coverage_DiffLinesThreshold(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestQualityService_Verify_Coverage_DiffLines_SignRejectsAckAccepts covers
+// AC5 (SPEC-137 D3): a below-threshold coverage/diff-lines row is a
+// `finding` (D2), and quality.RequiresSignature("coverage") staying false
+// is what routes it to `ack` (governance) and away from `sign` (technical
+// attestation) — Sign must reject it with model.ErrNotSignable, and Ack
+// must convert it to `acked` with the certificate's PERSISTED verdict
+// (read back from the store, never Ack's own return value) becoming pass.
+// TestQualityService_Verify_Coverage_NoRowEverFails covers AC4 (SPEC-137
+// D2): with coverage on and below the threshold, NOT ONE row of
+// kind="coverage" reads "fail" — the population is walked entirely from
+// ListChecks and filtered by kind, never a single row named by hand, so
+// this test also catches a FUTURE fourth coverage row that forgot the
+// rule.
+// TestQualityService_DiffLinesMode_VisibleInReportAndStatus covers AC17
+// (SPEC-137 D7): coverage/diff-lines' own mode (its persisted Effect,
+// "signable") is visible in BOTH the QA report and quality_status's own
+// data — the assertion is made on the COMPLETE rendered table row / the
+// complete check entry, never a bare substring match on the word
+// "signable" (which could appear anywhere else in the same output).
+func TestQualityService_DiffLinesMode_VisibleInReportAndStatus(t *testing.T) {
+	repoDir := newTestGitRepo(t)
+	baseSHA := headSHAFor(t, repoDir)
+	writeConstitutionV2Coverage(t, repoDir, true, 80.0, 1, nil, "tmp/coverage.out", "lcov")
+	if err := os.WriteFile(filepath.Join(repoDir, "foo.go"), []byte("package main\n\nfunc Foo() {}\n"), 0o644); err != nil {
+		t.Fatalf("write foo.go: %v", err)
+	}
+	commitAll(t, repoDir, "add constitution and foo.go")
+
+	s := newTestQualityStore(t)
+	insertTestSpec(t, s, "SPEC-001", "proj", model.SpecStatusImplementing, baseSHA)
+
+	workflowDir := t.TempDir()
+	docWriter := &fakeDocWriter{workflowDir: workflowDir, project: "proj"}
+	runner := &fakeGateRunner{writeFiles: map[string]map[string]string{
+		"coverage-profile": {"tmp/coverage.out": "SF:foo.go\nDA:1,1\nDA:2,0\nDA:3,0\nend_of_record\n"}, // 33% < 80%
+	}}
+	svc := NewQualityService(s, "proj", repoDir, runner, WithWorkflowDir(workflowDir), WithDocWriter(docWriter.write))
+
+	if _, err := svc.Verify(context.Background(), model.QualityVerifyRequest{ID: "SPEC-001"}); err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+
+	// Channel 1: the QA report — the COMPLETE table row, not a bare word.
+	reportResp, err := svc.Report(context.Background(), model.QualityReportRequest{ID: "SPEC-001"})
+	if err != nil {
+		t.Fatalf("Report: %v", err)
+	}
+	reportBytes, readErr := os.ReadFile(reportResp.Path)
+	if readErr != nil {
+		t.Fatalf("read report: %v", readErr)
+	}
+	wantRow := "| coverage | diff-lines | finding | signable |"
+	if !strings.Contains(string(reportBytes), wantRow) {
+		t.Errorf("QA report does not contain the complete row %q:\n%s", wantRow, reportBytes)
+	}
+
+	// Channel 2: quality_status's own data — the CLI's rendering of this
+	// is a one-line, branch-free format of exactly these two fields.
+	statusResp, err := svc.Status(context.Background(), model.QualityStatusRequest{ID: "SPEC-001"})
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	var found bool
+	for _, chk := range statusResp.Checks {
+		if chk.Kind == "coverage" && chk.Name == "diff-lines" {
+			found = true
+			if chk.Status != "finding" || chk.Effect != "signable" {
+				t.Errorf("coverage/diff-lines = status=%q effect=%q, want status=finding effect=signable", chk.Status, chk.Effect)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("no coverage/diff-lines check found in Status().Checks")
+	}
+}
+
+func TestQualityService_Verify_Coverage_NoRowEverFails(t *testing.T) {
+	repoDir := newTestGitRepo(t)
+	baseSHA := headSHAFor(t, repoDir)
+	writeConstitutionV2Coverage(t, repoDir, true, 80.0, 1, nil, "tmp/coverage.out", "lcov")
+	if err := os.WriteFile(filepath.Join(repoDir, "foo.go"), []byte("package main\n\nfunc Foo() {}\n"), 0o644); err != nil {
+		t.Fatalf("write foo.go: %v", err)
+	}
+	commitAll(t, repoDir, "add constitution and foo.go")
+
+	s := newTestQualityStore(t)
+	insertTestSpec(t, s, "SPEC-1", "proj", model.SpecStatusImplementing, baseSHA)
+
+	runner := &fakeGateRunner{writeFiles: map[string]map[string]string{
+		"coverage-profile": {"tmp/coverage.out": "SF:foo.go\nDA:1,1\nDA:2,0\nDA:3,0\nend_of_record\n"}, // 33% < 80%
+	}}
+	svc := NewQualityService(s, "proj", repoDir, runner)
+
+	cert, err := svc.Verify(context.Background(), model.QualityVerifyRequest{ID: "SPEC-1"})
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	checks, err := s.ListChecks(context.Background(), cert.ID)
+	if err != nil {
+		t.Fatalf("ListChecks: %v", err)
+	}
+	sawCoverageRow := false
+	for _, c := range checks {
+		if c.Kind != "coverage" {
+			continue
+		}
+		sawCoverageRow = true
+		if c.Status == "fail" {
+			t.Errorf("coverage/%s status = fail, want any status but fail (SPEC-137 D2)", c.Name)
+		}
+	}
+	if !sawCoverageRow {
+		t.Fatal("no coverage row found at all — this test is vacuous without at least one")
+	}
+}
+
+func TestQualityService_Verify_Coverage_DiffLines_SignRejectsAckAccepts(t *testing.T) {
+	if quality.RequiresSignature("coverage") {
+		t.Fatal("quality.RequiresSignature(\"coverage\") = true, want false — D3 depends on this staying false")
+	}
+
+	repoDir := newTestGitRepo(t)
+	baseSHA := headSHAFor(t, repoDir)
+	writeConstitutionV2Coverage(t, repoDir, true, 80.0, 1, nil, "tmp/coverage.out", "lcov")
+	if err := os.WriteFile(filepath.Join(repoDir, "foo.go"), []byte("package main\n\nfunc Foo() {}\n"), 0o644); err != nil {
+		t.Fatalf("write foo.go: %v", err)
+	}
+	commitAll(t, repoDir, "add constitution and foo.go")
+
+	s := newTestQualityStore(t)
+	insertTestSpec(t, s, "SPEC-1", "proj", model.SpecStatusImplementing, baseSHA)
+
+	// 33% coverage on the diff, below the 80% threshold: diff-lines lands
+	// as a `finding`, and it is the certificate's ONLY non-blocks row
+	// besides the already-green tree/constitution/gate rows, so the
+	// certificate's own verdict is "findings" until it is closed.
+	runner := &fakeGateRunner{writeFiles: map[string]map[string]string{
+		"coverage-profile": {"tmp/coverage.out": "SF:foo.go\nDA:1,1\nDA:2,0\nDA:3,0\nend_of_record\n"},
+	}}
+	svc := NewQualityService(s, "proj", repoDir, runner)
+
+	cert, err := svc.Verify(context.Background(), model.QualityVerifyRequest{ID: "SPEC-1"})
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if cert.Verdict != model.QualityVerdictFindings {
+		t.Fatalf("Verdict = %q, want findings (an unsigned coverage finding)", cert.Verdict)
+	}
+
+	checks, err := s.ListChecks(context.Background(), cert.ID)
+	if err != nil {
+		t.Fatalf("ListChecks: %v", err)
+	}
+	row := findCoverageCheck(t, checks, "diff-lines")
+	if row.Status != "finding" {
+		t.Fatalf("coverage/diff-lines status = %q, want finding", row.Status)
+	}
+
+	if err := svc.Sign(context.Background(), model.QualitySignRequest{
+		CertificateID: cert.ID, Seq: row.Seq, By: "qa-tester", Evidence: "x",
+	}); !errors.Is(err, model.ErrNotSignable) {
+		t.Errorf("Sign(coverage/diff-lines) error = %v, want ErrNotSignable", err)
+	}
+
+	if err := svc.Ack(context.Background(), model.QualityAckRequest{
+		CertificateID: cert.ID, Seq: row.Seq, By: "orchestrator", Justification: "deuda de pruebas aceptada para este spec",
+	}); err != nil {
+		t.Fatalf("Ack: %v", err)
+	}
+
+	// The assertion reads the verdict BACK from the store — never Ack's own
+	// return value, which is nil regardless of which verdict it wrote.
+	updated, err := s.GetLatestCertificate(context.Background(), "proj", "SPEC-1")
+	if err != nil {
+		t.Fatalf("GetLatestCertificate: %v", err)
+	}
+	if updated.Verdict != model.QualityVerdictPass {
+		t.Errorf("Verdict after Ack = %q, want pass", updated.Verdict)
+	}
+}
+
+// findCoverageCheck returns the coverage check named name, or fails the
+// test — the mold of findMutationCheck/findVisualCheck, added for coverage.
+func findCoverageCheck(t *testing.T, checks []*model.QualityCheck, name string) *model.QualityCheck {
+	t.Helper()
+	for _, c := range checks {
+		if c.Kind == "coverage" && c.Name == name {
+			return c
+		}
+	}
+	t.Fatalf("no coverage/%s check found in %+v", name, checks)
+	return nil
 }
 
 // TestQualityService_Verify_Coverage_Cascade covers AC25: the gate cascade

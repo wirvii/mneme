@@ -43,15 +43,15 @@ func (s *SDDStore) InsertCertificate(ctx context.Context, cert *model.QualityCer
 	const certQ = `
 		INSERT INTO quality_certificates
 			(id, project, spec_id, head_sha, base_sha, constitution_hash, schema_version,
-			 verdict, dirty, mneme_version, started_at, finished_at, duration_ms, created_at)
+			 verdict, dirty, mneme_version, started_at, finished_at, duration_ms, created_at, evidence)
 		VALUES
-			(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+			(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	_, err = tx.ExecContext(ctx, certQ,
 		cert.ID, cert.Project, cert.SpecID, cert.HeadSHA, cert.BaseSHA, cert.ConstitutionHash,
 		cert.SchemaVersion, string(cert.Verdict), dirty, cert.MnemeVersion,
 		cert.StartedAt.UTC().Format(time.RFC3339Nano), cert.FinishedAt.UTC().Format(time.RFC3339Nano),
-		cert.DurationMs, now,
+		cert.DurationMs, now, cert.Evidence,
 	)
 	if err != nil {
 		return fmt.Errorf("store: insert certificate: %w", err)
@@ -61,19 +61,30 @@ func (s *SDDStore) InsertCertificate(ctx context.Context, cert *model.QualityCer
 		INSERT INTO quality_checks
 			(certificate_id, seq, kind, name, status, exit_code, duration_ms,
 			 output_sha256, output_bytes, output_tail, summary, detail,
-			 acked_by, acked_at, justification, created_at)
+			 acked_by, acked_at, justification, created_at, effect)
 		VALUES
-			(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+			(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	for i, chk := range checks {
 		chk.CertificateID = cert.ID
 		chk.Seq = i + 1
 		chk.CreatedAt, _ = parseTime(now)
 
+		// SPEC-137 D4: a row inserted with no Effect at all defaults to
+		// "blocks" here, in Go, mirroring the migration's own column
+		// DEFAULT — every emitter is expected to have already set this via
+		// Verify's central sweep (evaluated rows) or its own skip-reason
+		// function (skipped rows); this is the SAME safety net the DEFAULT
+		// clause gives a raw INSERT that predates this column.
+		effect := chk.Effect
+		if effect == "" {
+			effect = "blocks"
+		}
+
 		_, err = tx.ExecContext(ctx, checkQ,
 			chk.CertificateID, chk.Seq, chk.Kind, chk.Name, chk.Status, chk.ExitCode, chk.DurationMs,
 			chk.OutputSHA256, chk.OutputBytes, chk.OutputTail, chk.Summary, chk.Detail,
-			chk.AckedBy, "", chk.Justification, now,
+			chk.AckedBy, "", chk.Justification, now, effect,
 		)
 		if err != nil {
 			return fmt.Errorf("store: insert certificate: insert check %d: %w", chk.Seq, err)
@@ -88,7 +99,7 @@ func (s *SDDStore) InsertCertificate(ctx context.Context, cert *model.QualityCer
 func (s *SDDStore) GetLatestCertificate(ctx context.Context, project, specID string) (*model.QualityCertificate, error) {
 	const q = `
 		SELECT id, project, spec_id, head_sha, base_sha, constitution_hash, schema_version,
-		       verdict, dirty, mneme_version, started_at, finished_at, duration_ms, created_at
+		       verdict, dirty, mneme_version, started_at, finished_at, duration_ms, created_at, evidence
 		FROM quality_certificates
 		WHERE project = ? AND spec_id = ?
 		ORDER BY created_at DESC LIMIT 1`
@@ -109,7 +120,7 @@ func (s *SDDStore) GetLatestCertificate(ctx context.Context, project, specID str
 func (s *SDDStore) GetCertificate(ctx context.Context, id string) (*model.QualityCertificate, error) {
 	const q = `
 		SELECT id, project, spec_id, head_sha, base_sha, constitution_hash, schema_version,
-		       verdict, dirty, mneme_version, started_at, finished_at, duration_ms, created_at
+		       verdict, dirty, mneme_version, started_at, finished_at, duration_ms, created_at, evidence
 		FROM quality_certificates
 		WHERE id = ?`
 
@@ -130,7 +141,7 @@ func (s *SDDStore) ListChecks(ctx context.Context, certificateID string) ([]*mod
 	const q = `
 		SELECT id, certificate_id, seq, kind, name, status, exit_code, duration_ms,
 		       output_sha256, output_bytes, output_tail, summary, detail,
-		       acked_by, acked_at, justification, created_at
+		       acked_by, acked_at, justification, created_at, effect
 		FROM quality_checks
 		WHERE certificate_id = ?
 		ORDER BY seq ASC`
@@ -154,9 +165,16 @@ func (s *SDDStore) ListChecks(ctx context.Context, certificateID string) ([]*mod
 
 // AckCheck converts the "finding" at (certificateID, seq) into "acked",
 // recording by/justification/acked_at, then RECALCULATES and persists the
-// certificate's verdict from ALL of its checks in the same transaction
-// (D10) — this is what keeps SpecAdvance's usability check a cheap SELECT
-// instead of ever having to recompute the verdict itself.
+// certificate's verdict from all of its COUNTED checks in the same
+// transaction (D10) — this is what keeps SpecAdvance's usability check a
+// cheap SELECT instead of ever having to recompute the verdict itself.
+//
+// "Counted" means effect IN ('blocks', 'signable') (SPEC-137 D4): this is
+// the SAME rule quality.DeriveVerdict implements in Go over CheckResult's
+// own Effect field, deliberately re-implemented here rather than shared,
+// because this recalculation runs entirely in SQL inside the same
+// transaction as the UPDATE — the two implementations are the mechanism's
+// own dominant risk (R1) and must always change together.
 //
 // Returns model.ErrCertificateNotFound when (certificateID, seq) does not
 // identify an existing "finding" row (either the row does not exist, or it
@@ -186,7 +204,16 @@ func (s *SDDStore) AckCheck(ctx context.Context, certificateID string, seq int, 
 		return model.ErrCertificateNotFound
 	}
 
-	rows, err := tx.QueryContext(ctx, `SELECT status FROM quality_checks WHERE certificate_id = ?`, certificateID)
+	// SPEC-137 D4/§7: this filter and DeriveVerdict's own
+	// Effect.CountsTowardVerdict() check are the SAME rule, implemented
+	// twice — the two move together or not at all (R1, the spec's own
+	// dominant risk). A "measures"/"absent"/"stopped" row must never
+	// resurrect or degrade a verdict just because it happens to carry
+	// status "fail" or "finding".
+	rows, err := tx.QueryContext(ctx,
+		`SELECT status FROM quality_checks WHERE certificate_id = ? AND effect IN ('blocks', 'signable')`,
+		certificateID,
+	)
 	if err != nil {
 		return fmt.Errorf("store: ack check: read statuses: %w", err)
 	}
@@ -236,7 +263,7 @@ func scanQualityCertificate(row *sql.Row) (*model.QualityCertificate, error) {
 	err := row.Scan(
 		&cert.ID, &cert.Project, &cert.SpecID, &cert.HeadSHA, &cert.BaseSHA, &cert.ConstitutionHash,
 		&cert.SchemaVersion, &verdict, &dirty, &cert.MnemeVersion,
-		&startedStr, &finishedStr, &cert.DurationMs, &createdStr,
+		&startedStr, &finishedStr, &cert.DurationMs, &createdStr, &cert.Evidence,
 	)
 	if err != nil {
 		return nil, err
@@ -275,7 +302,7 @@ func scanQualityCheckRow(row qualityCheckScanner) (*model.QualityCheck, error) {
 	err := row.Scan(
 		&chk.ID, &chk.CertificateID, &chk.Seq, &chk.Kind, &chk.Name, &chk.Status,
 		&chk.ExitCode, &chk.DurationMs, &chk.OutputSHA256, &chk.OutputBytes, &chk.OutputTail,
-		&chk.Summary, &chk.Detail, &chk.AckedBy, &ackedAtStr, &chk.Justification, &createdStr,
+		&chk.Summary, &chk.Detail, &chk.AckedBy, &ackedAtStr, &chk.Justification, &createdStr, &chk.Effect,
 	)
 	if err != nil {
 		return nil, err
