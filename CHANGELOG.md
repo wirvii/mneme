@@ -103,6 +103,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   kind: a project that DOES declare gates but no criteria or coverage
   still comes out green — that gap is what SPEC-137's evidence line
   (above) makes visible instead.
+- **The very first release with SPEC-135's CI-green gate active was
+  refused by it (SPEC-139).** Pushing a release tag re-triggered
+  `.github/workflows/ci.yml` on the exact same commit `main` had already
+  pushed, and that second run checks out the repository in detached
+  HEAD, without the `main` branch present — a test in `internal/cli`
+  needs that reference and fails every time it is missing.
+  `require-ci-green.sh` takes the MOST RECENT run for a given commit, so
+  it picked that later, red run instead of the branch's own green one,
+  and refused the release even though the commit itself had already
+  passed CI. Evidence: commit `a55b2c6` had a green run at 19:40 (branch
+  push) and a red one at 19:45 (tag push, `git merge-base HEAD main:
+  exit status 128`). `ci.yml` no longer runs at all on a tag push
+  (`tags-ignore: ["**"]`), removing the doomed second run — CI still
+  runs on every branch push and pull request exactly as before. **This
+  does not fix the underlying test:** it still cannot run in any
+  context missing the `main` branch (a shallow checkout, for instance)
+  — that defect has its own open ticket (BL-227); this change only
+  stops it from running in the one context where a tag push guaranteed
+  it could never pass.
 
 ## [v1.43.0] — 2026-08-30 — SDD state travels through git, browser-capable roles
 
