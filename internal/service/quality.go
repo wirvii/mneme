@@ -492,23 +492,28 @@ func skippedCoverageChecks(reason string, cause quality.Effect) ([]*model.Qualit
 	return checks, pure
 }
 
-// coverageProfileFailure builds the "coverage/profile" row as a `fail`,
-// plus rows 2-3 skipped for the same reason (D13: "no se acumulan dos
-// diagnosticos del mismo hecho") — the single exit path every failure
-// branch of runCoverageChecks funnels through. Row 1's Effect is left for
-// Verify's central sweep (D4) — it is a real EVALUATED row, not a skip.
-// Rows 2-3 are skipped with EffectStopped: coverage WAS declared and
+// coverageProfileFailure builds the "coverage/profile" row as a `finding`
+// (SPEC-137 D2 — a command failure, an absent/illegible/empty profile is
+// now firmable, never a hard `fail`: coverage's whole tramo is EffectSignable
+// via quality.EffectForKind, so this row could never be counted as "fail"
+// by DeriveVerdict anyway; the Status itself changes too, so the report
+// and `quality status` never show a fail-shaped row for a signable
+// mechanism), plus rows 2-3 skipped for the same reason (D13: "no se
+// acumulan dos diagnosticos del mismo hecho") — the single exit path every
+// failure branch of runCoverageChecks funnels through. Row 1's Effect is
+// left for Verify's central sweep (D4) — it is a real EVALUATED row, not a
+// skip. Rows 2-3 are skipped with EffectStopped: coverage WAS declared and
 // running, and it was THIS tramo's own row 1 that blocked them — the same
 // "declared but blocked by something upstream" shape gatesStopped gives
 // every other tramo, just scoped to coverage's own internal cascade.
 func coverageProfileFailure(summary string, res quality.GateResult) ([]*model.QualityCheck, []quality.CheckResult) {
 	checks := []*model.QualityCheck{{
-		Kind: "coverage", Name: "profile", Status: "fail",
+		Kind: "coverage", Name: "profile", Status: "finding",
 		ExitCode: res.ExitCode, DurationMs: res.DurationMs,
 		OutputSHA256: res.OutputSHA256, OutputBytes: res.OutputBytes, OutputTail: res.OutputTail,
 		Summary: summary,
 	}}
-	pure := []quality.CheckResult{{Status: quality.CheckStatusFail}}
+	pure := []quality.CheckResult{{Status: quality.CheckStatusFinding}}
 	skippedChecks, skippedPure := skippedCoverageChecks("coverage/profile fallo", quality.EffectStopped)
 	return append(checks, skippedChecks[1:]...), append(pure, skippedPure[1:]...)
 }
@@ -731,8 +736,13 @@ func (svc *QualityService) runCoverageChecks(
 		row3Summary = fmt.Sprintf("%d lineas elegibles < min_changed_lines (%d)", diffStats.LinesEligible, cov.MinChangedLines)
 		row3Effect = string(quality.EffectAbsent)
 	case diffStats.Pct < cov.MinDiffLinePct:
-		row3Status = "fail"
-		row3Summary = fmt.Sprintf("cobertura del diff %.2f%% < min_diff_line_pct (%.2f%%)", diffStats.Pct, cov.MinDiffLinePct)
+		// SPEC-137 D2: `finding`, never `fail` — the text and arithmetic
+		// are UNCHANGED from before this spec; what is added is the named
+		// remedy, the concrete command an orchestrator runs to sign it.
+		row3Status = "finding"
+		row3Summary = fmt.Sprintf(
+			"cobertura del diff %.2f%% < min_diff_line_pct (%.2f%%) — firma con `mneme quality ack <cert-id> --check <seq> --by orchestrator --justification \"...\"`",
+			diffStats.Pct, cov.MinDiffLinePct)
 	default:
 		row3Status = "pass"
 		row3Summary = fmt.Sprintf("cobertura del diff %.2f%%", diffStats.Pct)

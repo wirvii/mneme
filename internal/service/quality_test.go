@@ -540,11 +540,11 @@ func TestQualityService_Verify_Coverage_ProfileChecks(t *testing.T) {
 		trackProfile bool   // pre-commit the profile file, tracked by git
 		wantStatus   string
 	}{
-		{"command exits non-zero", quality.GateResult{Status: quality.GateStatusFail, ExitCode: 1}, "", false, "fail"},
-		{"command exits 0 but writes no file", quality.GateResult{Status: quality.GateStatusPass}, "", false, "fail"},
-		{"file exists but is not parseable in the declared format", quality.GateResult{Status: quality.GateStatusPass}, malformedLCOV, false, "fail"},
-		{"file parses with zero files", quality.GateResult{Status: quality.GateStatusPass}, emptyLCOV, false, "fail"},
-		{"profile_path is tracked by git", quality.GateResult{Status: quality.GateStatusPass}, validLCOV, true, "fail"},
+		{"command exits non-zero", quality.GateResult{Status: quality.GateStatusFail, ExitCode: 1}, "", false, "finding"},
+		{"command exits 0 but writes no file", quality.GateResult{Status: quality.GateStatusPass}, "", false, "finding"},
+		{"file exists but is not parseable in the declared format", quality.GateResult{Status: quality.GateStatusPass}, malformedLCOV, false, "finding"},
+		{"file parses with zero files", quality.GateResult{Status: quality.GateStatusPass}, emptyLCOV, false, "finding"},
+		{"profile_path is tracked by git", quality.GateResult{Status: quality.GateStatusPass}, validLCOV, true, "finding"},
 		{"command exits 0 with a valid, untracked profile", quality.GateResult{Status: quality.GateStatusPass}, validLCOV, false, "pass"},
 	}
 
@@ -646,8 +646,8 @@ func TestQualityService_Verify_Coverage_StaleProfileMutation(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ListChecks: %v", err)
 		}
-		if got := coverageCheckStatus(checks, "profile"); got != "fail" {
-			t.Errorf("coverage/profile status = %q, want fail (D12 must have deleted the stale profile)", got)
+		if got := coverageCheckStatus(checks, "profile"); got != "finding" {
+			t.Errorf("coverage/profile status = %q, want finding (SPEC-137 D2 — D12 must have deleted the stale profile)", got)
 		}
 		if got := coverageCheckStatus(checks, "diff-lines"); got == "pass" {
 			t.Error("coverage/diff-lines = pass, want anything but pass (the stale profile must not produce a false green)")
@@ -741,11 +741,13 @@ func TestQualityService_Verify_Coverage_DiffLinesThreshold(t *testing.T) {
 		wantStatus      string
 	}{
 		{
-			name:            "below threshold: fail",
+			// SPEC-137 D2: below-threshold coverage is a firmable
+			// `finding`, never a hard `fail`.
+			name:            "below threshold: finding",
 			minDiffPct:      80.0,
 			minChangedLines: 1,
 			profileContent:  "SF:foo.go\nDA:1,1\nDA:2,0\nDA:3,0\nend_of_record\n", // 33%
-			wantStatus:      "fail",
+			wantStatus:      "finding",
 		},
 		{
 			name:            "above threshold: pass",
@@ -794,6 +796,137 @@ func TestQualityService_Verify_Coverage_DiffLinesThreshold(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestQualityService_Verify_Coverage_DiffLines_SignRejectsAckAccepts covers
+// AC5 (SPEC-137 D3): a below-threshold coverage/diff-lines row is a
+// `finding` (D2), and quality.RequiresSignature("coverage") staying false
+// is what routes it to `ack` (governance) and away from `sign` (technical
+// attestation) — Sign must reject it with model.ErrNotSignable, and Ack
+// must convert it to `acked` with the certificate's PERSISTED verdict
+// (read back from the store, never Ack's own return value) becoming pass.
+// TestQualityService_Verify_Coverage_NoRowEverFails covers AC4 (SPEC-137
+// D2): with coverage on and below the threshold, NOT ONE row of
+// kind="coverage" reads "fail" — the population is walked entirely from
+// ListChecks and filtered by kind, never a single row named by hand, so
+// this test also catches a FUTURE fourth coverage row that forgot the
+// rule.
+func TestQualityService_Verify_Coverage_NoRowEverFails(t *testing.T) {
+	repoDir := newTestGitRepo(t)
+	baseSHA := headSHAFor(t, repoDir)
+	writeConstitutionV2Coverage(t, repoDir, true, 80.0, 1, nil, "tmp/coverage.out", "lcov")
+	if err := os.WriteFile(filepath.Join(repoDir, "foo.go"), []byte("package main\n\nfunc Foo() {}\n"), 0o644); err != nil {
+		t.Fatalf("write foo.go: %v", err)
+	}
+	commitAll(t, repoDir, "add constitution and foo.go")
+
+	s := newTestQualityStore(t)
+	insertTestSpec(t, s, "SPEC-1", "proj", model.SpecStatusImplementing, baseSHA)
+
+	runner := &fakeGateRunner{writeFiles: map[string]map[string]string{
+		"coverage-profile": {"tmp/coverage.out": "SF:foo.go\nDA:1,1\nDA:2,0\nDA:3,0\nend_of_record\n"}, // 33% < 80%
+	}}
+	svc := NewQualityService(s, "proj", repoDir, runner)
+
+	cert, err := svc.Verify(context.Background(), model.QualityVerifyRequest{ID: "SPEC-1"})
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	checks, err := s.ListChecks(context.Background(), cert.ID)
+	if err != nil {
+		t.Fatalf("ListChecks: %v", err)
+	}
+	sawCoverageRow := false
+	for _, c := range checks {
+		if c.Kind != "coverage" {
+			continue
+		}
+		sawCoverageRow = true
+		if c.Status == "fail" {
+			t.Errorf("coverage/%s status = fail, want any status but fail (SPEC-137 D2)", c.Name)
+		}
+	}
+	if !sawCoverageRow {
+		t.Fatal("no coverage row found at all — this test is vacuous without at least one")
+	}
+}
+
+func TestQualityService_Verify_Coverage_DiffLines_SignRejectsAckAccepts(t *testing.T) {
+	if quality.RequiresSignature("coverage") {
+		t.Fatal("quality.RequiresSignature(\"coverage\") = true, want false — D3 depends on this staying false")
+	}
+
+	repoDir := newTestGitRepo(t)
+	baseSHA := headSHAFor(t, repoDir)
+	writeConstitutionV2Coverage(t, repoDir, true, 80.0, 1, nil, "tmp/coverage.out", "lcov")
+	if err := os.WriteFile(filepath.Join(repoDir, "foo.go"), []byte("package main\n\nfunc Foo() {}\n"), 0o644); err != nil {
+		t.Fatalf("write foo.go: %v", err)
+	}
+	commitAll(t, repoDir, "add constitution and foo.go")
+
+	s := newTestQualityStore(t)
+	insertTestSpec(t, s, "SPEC-1", "proj", model.SpecStatusImplementing, baseSHA)
+
+	// 33% coverage on the diff, below the 80% threshold: diff-lines lands
+	// as a `finding`, and it is the certificate's ONLY non-blocks row
+	// besides the already-green tree/constitution/gate rows, so the
+	// certificate's own verdict is "findings" until it is closed.
+	runner := &fakeGateRunner{writeFiles: map[string]map[string]string{
+		"coverage-profile": {"tmp/coverage.out": "SF:foo.go\nDA:1,1\nDA:2,0\nDA:3,0\nend_of_record\n"},
+	}}
+	svc := NewQualityService(s, "proj", repoDir, runner)
+
+	cert, err := svc.Verify(context.Background(), model.QualityVerifyRequest{ID: "SPEC-1"})
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if cert.Verdict != model.QualityVerdictFindings {
+		t.Fatalf("Verdict = %q, want findings (an unsigned coverage finding)", cert.Verdict)
+	}
+
+	checks, err := s.ListChecks(context.Background(), cert.ID)
+	if err != nil {
+		t.Fatalf("ListChecks: %v", err)
+	}
+	row := findCoverageCheck(t, checks, "diff-lines")
+	if row.Status != "finding" {
+		t.Fatalf("coverage/diff-lines status = %q, want finding", row.Status)
+	}
+
+	if err := svc.Sign(context.Background(), model.QualitySignRequest{
+		CertificateID: cert.ID, Seq: row.Seq, By: "qa-tester", Evidence: "x",
+	}); !errors.Is(err, model.ErrNotSignable) {
+		t.Errorf("Sign(coverage/diff-lines) error = %v, want ErrNotSignable", err)
+	}
+
+	if err := svc.Ack(context.Background(), model.QualityAckRequest{
+		CertificateID: cert.ID, Seq: row.Seq, By: "orchestrator", Justification: "deuda de pruebas aceptada para este spec",
+	}); err != nil {
+		t.Fatalf("Ack: %v", err)
+	}
+
+	// The assertion reads the verdict BACK from the store — never Ack's own
+	// return value, which is nil regardless of which verdict it wrote.
+	updated, err := s.GetLatestCertificate(context.Background(), "proj", "SPEC-1")
+	if err != nil {
+		t.Fatalf("GetLatestCertificate: %v", err)
+	}
+	if updated.Verdict != model.QualityVerdictPass {
+		t.Errorf("Verdict after Ack = %q, want pass", updated.Verdict)
+	}
+}
+
+// findCoverageCheck returns the coverage check named name, or fails the
+// test — the mold of findMutationCheck/findVisualCheck, added for coverage.
+func findCoverageCheck(t *testing.T, checks []*model.QualityCheck, name string) *model.QualityCheck {
+	t.Helper()
+	for _, c := range checks {
+		if c.Kind == "coverage" && c.Name == name {
+			return c
+		}
+	}
+	t.Fatalf("no coverage/%s check found in %+v", name, checks)
+	return nil
 }
 
 // TestQualityService_Verify_Coverage_Cascade covers AC25: the gate cascade
