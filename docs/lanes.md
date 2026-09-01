@@ -126,6 +126,19 @@ turning it on is a cost decision (a trivial spec now inherits the full
 gate/coverage/criteria/graph suite, R3 of the SPEC-118 design), not a free
 upgrade.
 
+**SPEC-137 softens what that certificate can fail on, without touching the
+audit's own scope/size checks.** The certificate the absorbed route
+requires can now only turn red for tree/constitution/gate/criteria
+reasons — the budget mechanism's own rows (`budget/*`, `detection/*`,
+including the six graph detections) became measure-only in SPEC-137 and no
+longer block the verdict. `mneme lane audit` itself is **not** weakened by
+this: its own verdict comes from `EvaluateTrivialBudget`, a completely
+separate code path from the certificate's `DeriveVerdict`, so a real
+scope/size/forbidden-path breach still fails the audit exactly as before,
+independent of whether the certificate covering the same commit is green.
+What changed is only how EASY it is to obtain that green certificate in
+the first place.
+
 ## Reject (v1.6.0)
 
 When a QA review finds defects, send the spec backward to `implementing` without changing the spec document:

@@ -430,6 +430,91 @@ func TestLaneAudit_Absorbed_RequiresCertificate(t *testing.T) {
 	}
 }
 
+// TestLaneAudit_ScopeBreachFailsIndependentlyOfGreenCertificate covers AC12
+// (SPEC-137 D5): with [budget].enabled = true, LaneAudit's own verdict
+// comes from EvaluateTrivialBudget via runLaneAuditEngine — a DIFFERENT
+// code path than the certificate's DeriveVerdict — so a real out-of-scope
+// change must still fail the audit even when the certificate covering the
+// exact same commit is `pass`. detection/out-of-radius (the row that
+// observes the breach) is kind="detection", whose effect is `measures`
+// since SPEC-137 D4/D5: it can report `fail` on that ONE row and the
+// certificate still comes out green, because that row never counted
+// toward the verdict in the first place — proving the two mechanisms are
+// genuinely independent, not "usually agree by coincidence".
+func TestLaneAudit_ScopeBreachFailsIndependentlyOfGreenCertificate(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found in PATH")
+	}
+
+	svc, workflowDir, repoDir := newTestSDDServiceWithRepoDir(t, "wirvii/mneme")
+	ctx := context.Background()
+
+	gitRunLaneTest(t, repoDir, "init", "-b", "main")
+	gitRunLaneTest(t, repoDir, "config", "user.email", "lane-test@example.com")
+	gitRunLaneTest(t, repoDir, "config", "user.name", "lane-test")
+	writeLaneFile(t, repoDir, "internal/store/existing.go", "package store\n\nfunc Existing() {}\n")
+	writeQuality4BudgetOnConstitution(t, repoDir)
+	gitRunLaneTest(t, repoDir, "add", ".")
+	gitRunLaneTest(t, repoDir, "commit", "-m", "base")
+	base := strings.TrimSpace(gitRunLaneTest(t, repoDir, "rev-parse", "HEAD"))
+
+	// The declared scope is internal/store/** (below) — this file is
+	// OUTSIDE it, a real scope breach EvaluateRadius must catch.
+	writeLaneFile(t, repoDir, "internal/other/new.go", "package other\n\nfunc unexportedHelper() {}\n")
+	gitRunLaneTest(t, repoDir, "add", "-A")
+	gitRunLaneTest(t, repoDir, "commit", "-m", "head, out of scope")
+
+	spec := &model.Spec{
+		ID: "SPEC-004", Title: "Trivial spec", Status: model.SpecStatusAudit,
+		Project: "wirvii/mneme", Lane: model.LaneTrivial, Scope: "internal/store/**", BaseSHA: base,
+	}
+	if err := svc.store.CreateSpec(ctx, spec); err != nil {
+		t.Fatalf("create spec: %v", err)
+	}
+
+	// No graphFacts injected AT ALL (unlike the sibling test above): the
+	// six graph-dependent detections skip as EffectStopped, and
+	// detection/out-of-radius needs no graph — it is pure git/scope
+	// arithmetic (D9's own "the two that need no graph at all").
+	qsvc := NewQualityService(svc.store, "wirvii/mneme", repoDir, &fakeGateRunner{}, WithWorkflowDir(workflowDir))
+	cert, err := qsvc.Verify(ctx, model.QualityVerifyRequest{ID: spec.ID})
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if cert.Verdict != model.QualityVerdictPass {
+		checks, _ := svc.store.ListChecks(ctx, cert.ID)
+		for _, c := range checks {
+			t.Logf("check: kind=%s name=%s status=%s effect=%s summary=%s", c.Kind, c.Name, c.Status, c.Effect, c.Summary)
+		}
+		t.Fatalf("Verify produced verdict=%q, want pass (the scope breach is a measures-effect row, it must not block the certificate)", cert.Verdict)
+	}
+
+	checks, err := svc.store.ListChecks(ctx, cert.ID)
+	if err != nil {
+		t.Fatalf("ListChecks: %v", err)
+	}
+	sawFailingOutOfRadius := false
+	for _, c := range checks {
+		if c.Kind == "detection" && c.Name == "out-of-radius" {
+			if c.Status != "fail" {
+				t.Fatalf("detection/out-of-radius status = %q, want fail (the fixture's own breach)", c.Status)
+			}
+			sawFailingOutOfRadius = true
+		}
+	}
+	if !sawFailingOutOfRadius {
+		t.Fatal("no detection/out-of-radius row found — this test proves nothing without it")
+	}
+
+	result, err := svc.LaneAudit(ctx, model.LaneAuditRequest{ID: spec.ID})
+	if !errors.Is(err, model.ErrAuditFailed) {
+		t.Fatalf("LaneAudit (with a green certificate) error = %v, want ErrAuditFailed", err)
+	}
+	if result.Passed {
+		t.Errorf("Passed = true, want false — LaneAudit's own engine must catch the scope breach regardless of the certificate's verdict: %+v", result)
+	}
+}
+
 // --- SPEC-125: freezing a spec via its archived backlog item ---
 //
 // These three tests exercise the exact defect the owner's pushback (spec.md

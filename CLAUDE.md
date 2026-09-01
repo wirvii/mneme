@@ -755,6 +755,105 @@ technical attestation a `qa-tester` reads code to verify.
 Full reference: `docs/quality.md`, and the SDD-tool contract in
 `docs/api/sdd.md`.
 
+## Certification redesign, etapa 1 (SPEC-137, BL-221)
+
+The mechanism above got its first real use (novo, SPEC-081, 17-18 August
+2026): 13 certificates, 6h23m of clock time, 94% of that in verdicts nobody
+could act on, and the owner had to disable it to keep working. SPEC-137 is
+the first of three etapas responding to that measurement (etapa 2:
+detecting an intermittent gate and a badly-set timeout, BL-221's D7; etapa
+3: an MCP tool that lets the architect trial-run criteria before a single
+gate ever executes, D10) — this etapa returns the mechanism to usable,
+without touching `schema_version` or any constitution key (D8: the accepted
+set only ever widens).
+
+**D1 — one certification, at close, not two.** `ensureCertified`'s
+standard-lane gate drops its `implementing→qa` leg entirely; only
+`qa→done` still requires a usable certificate. The first certificate
+almost never survived QA anyway — any commit during QA invalidates it via
+`CertificateUsable` — and the verifier runs the gates on its own
+regardless. The trivial lane's own `implementing→audit` leg (under
+`[budget].enabled`) is untouched.
+
+**D4 — every row now persists its own effect on the verdict**, a closed
+five-value vocabulary (`internal/quality/effect.go`: `blocks`/`signable`/
+`measures`/`absent`/`stopped`) in a new `quality_checks.effect` column
+(migration 021, `DEFAULT 'blocks'` — the historical behaviour of every row
+emitted before this column existed). `quality.DeriveVerdict` now counts a
+row **iff** its effect is `blocks` or `signable` — mutation and the
+budget-against-the-graph mechanism keep computing and recording their real
+result (a real `mutation/score` survivor count still lands in the
+certificate) but can no longer, by themselves, block a spec from closing;
+`coverage` moves to `signable` (D2 — a below-threshold diff is a firmable
+`finding`, never a hard `fail`, closed via `quality ack` since
+`RequiresSignature("coverage")` already returned `false`, D3). **The SAME
+rule is reimplemented in SQL inside `SDDStore.AckCheck`'s own verdict
+recalculation** (`effect IN ('blocks','signable')`) — this is the spec's
+own dominant risk (a partial landing produces a certificate whose emitted
+and post-signature verdicts silently disagree), guarded by a single
+indivisible commit landing the column, the Go rule, the SQL filter, and
+every emitter's own effect assignment together. Effect for an EVALUATED row
+is assigned in ONE central sweep (`assignCheckEffects` in
+`internal/service/quality.go`, run right before `DeriveVerdict`) resolved
+purely from `Kind` via `quality.EffectForKind` — never edited into the
+~50-plus individual call sites that construct a `model.QualityCheck`, which
+is exactly how an emitter would get silently forgotten (caught instead by a
+kind-population guardian test). A SKIPPED row instead carries its effect
+from its own emitter (`absent` when nothing was declared, `stopped` when an
+earlier required gate — or an earlier row in its own family — already
+blocked it), since only the emitter knows which cause applies;
+`constitution/unchanged-in-range` is deleted outright rather than assigned
+one (D5 — the owner's call against the architect's own recommendation to
+soften it into "did it relax?": the constitution is versioned and reviewed
+like any other file in a change proposal; `checkConstitutionAblation`,
+untouched, still closes the coarser "just turn it off mid-spec" hole).
+`Git.PathChangedInRange` loses its only production caller and is kept
+regardless — a git helper library primitive, not a feature, whose three
+tests still document the merge-base semantics BL-172 corrected by hand.
+
+**D6 — every certificate persists a "de qué es evidencia" sentence**
+(`quality_certificates.evidence`, migration 021, `DEFAULT ''`), built once
+at emission time by the leaf's pure `quality.Evidence` from a snapshot
+`buildEvidenceInput` derives from the certificate's own final rows, and
+rendered verbatim — never re-derived on read — in the three places a
+person reads a certificate: `mneme quality verify`'s own output, `mneme
+quality status`'s output (its MCP JSON response already carried it for
+free, since `QualityStatusResponse.LatestCertificate` embeds the full
+`model.QualityCertificate` — verified, not assumed, no MCP code changed),
+and the QA report's first body line, before any table
+(`quality.RenderReport`). It names every family, including the ones that
+measured or declared nothing — a project with gates and nothing else reads
+"criterios no declarados · cobertura no declarada · cliquet no declarado ·
+presupuesto no declarado · mutacion no declarada · verificacion visual no
+declarada", closing the case BL-222/SPEC-138 left open (a project WITH
+gates and WITHOUT criteria/coverage already certifies green; now it says,
+in the first line anyone reads, exactly what it did not look at). A
+certificate with an empty `evidence` column (pre-SPEC-137) renders
+`quality.EvidenceMissingText` in all three channels, never a fabricated
+sentence. D7's own mitigation for the same softened `min_diff_line_pct`
+threshold rides on the same column: the row's persisted effect is now its
+own visible "mode", shown as a fourth `modo` column in the QA report's
+non-criterion table and appended to `quality status`'s per-row line
+(`[seq] kind/name: status (modo)`).
+
+**D9 — the dirty-tree message tells apart what mneme wrote from what the
+project wrote**, via a new leaf classifier (`quality.ClassifyDirtyPaths`,
+a closed prefix list: `.mneme/shared/`, `.mneme/sdd/`). A worktree is still
+dirty if either group has uncommitted paths — the certificate still has to
+mean "verified against exactly this content" — but `ensureCertified`'s
+`ErrWorktreeDirty` message and `requireUsableCertificateForTrivial`'s own
+(both used to discard the paths entirely, `dirty, _, err := g.IsDirty()`)
+now name the two groups separately, and the remedy differs: mneme's own
+group is told to commit ONLY — never to discard, since discarding a change
+under `.mneme/shared/**` deletes shared memories — while the project's own
+group keeps the honest "commit or discard" advice.
+
+Full reference: `docs/quality.md`'s own "Etapa 1" section, and
+`docs/lanes.md` for the trivial-lane consequence of D4 (the absorbed
+certificate can no longer fail on budget/detection rows, though `lane
+audit`'s own scope/size verdict is unaffected — it comes from a completely
+separate code path).
+
 <!-- mneme:managed:start v=1 -->
 Process and operating instructions are managed globally via mneme.
 See the mneme operating manual in your global ~/.claude/CLAUDE.md.
