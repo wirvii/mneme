@@ -87,3 +87,39 @@ func TestRenderReport_FromCertificate_NotFromFile(t *testing.T) {
 		t.Error("RenderReport output unexpectedly contains texto B — it must only ever reflect its ReportInput argument")
 	}
 }
+
+// TestRenderReport_EvidenceLine_AppearsBeforeTables covers SPEC-137 D6/AC13
+// at the leaf level: a non-empty Evidence sentence is rendered verbatim,
+// and it appears strictly before the "## Criterios" heading — the "primera
+// linea del cuerpo, antes de las tablas" the design requires.
+func TestRenderReport_EvidenceLine_AppearsBeforeTables(t *testing.T) {
+	in := sampleReportInput("texto A")
+	in.Evidence = "Evidencia: 2/2 puertas del proyecto en verde · 1/1 criterios cumplidos · cobertura no declarada · cliquet no declarado · presupuesto no declarado · mutacion no declarada · verificacion visual no declarada"
+
+	out := RenderReport(in)
+	if !strings.Contains(out, in.Evidence) {
+		t.Fatalf("RenderReport output does not contain the evidence sentence literally:\n%s", out)
+	}
+	evidenceIdx := strings.Index(out, in.Evidence)
+	tablesIdx := strings.Index(out, "## Criterios")
+	if evidenceIdx < 0 || tablesIdx < 0 || evidenceIdx > tablesIdx {
+		t.Errorf("evidence line (idx %d) must appear before the tables (idx %d)", evidenceIdx, tablesIdx)
+	}
+}
+
+// TestRenderReport_EmptyEvidence_ShowsMissingText covers AC16: a
+// certificate emitted before this field existed (Evidence == "") is
+// rendered with EvidenceMissingText, NEVER a fabricated sentence derived
+// from the certificate's other fields.
+func TestRenderReport_EmptyEvidence_ShowsMissingText(t *testing.T) {
+	in := sampleReportInput("texto A")
+	in.Evidence = ""
+
+	out := RenderReport(in)
+	if !strings.Contains(out, EvidenceMissingText) {
+		t.Fatalf("RenderReport output does not contain %q for empty Evidence:\n%s", EvidenceMissingText, out)
+	}
+	if strings.Contains(out, "puertas del proyecto en verde") {
+		t.Error("RenderReport fabricated an evidence-shaped sentence for an empty Evidence field")
+	}
+}

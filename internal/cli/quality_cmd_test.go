@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/wirvii/mneme/internal/quality"
 )
 
 // TestQualityStatusCmd_NoConstitution_ExitsZero covers AC24: `mneme quality
@@ -175,5 +177,18 @@ func TestQualityBaselineUpdateCmd_NoCertificate_Errors(t *testing.T) {
 	}
 	if _, statErr := os.Stat(filepath.Join(repoDir, ".mneme", "quality-baseline.toml")); !os.IsNotExist(statErr) {
 		t.Errorf("baseline file exists after a refused update: %v", statErr)
+	}
+}
+
+// TestEvidenceLineOrMissing covers SPEC-137 D6's CLI-layer channel: a
+// non-empty evidence string is passed through verbatim, and an empty one
+// (a certificate emitted before this field existed) renders
+// quality.EvidenceMissingText — never a fabricated sentence.
+func TestEvidenceLineOrMissing(t *testing.T) {
+	if got := evidenceLineOrMissing("Evidencia: 1/1 puertas del proyecto en verde"); got != "Evidencia: 1/1 puertas del proyecto en verde" {
+		t.Errorf("evidenceLineOrMissing(non-empty) = %q, want verbatim passthrough", got)
+	}
+	if got := evidenceLineOrMissing(""); got != quality.EvidenceMissingText {
+		t.Errorf("evidenceLineOrMissing(\"\") = %q, want %q", got, quality.EvidenceMissingText)
 	}
 }

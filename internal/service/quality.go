@@ -214,6 +214,10 @@ func (svc *QualityService) Verify(ctx context.Context, req model.QualityVerifyRe
 	verdict := quality.DeriveVerdict(pureChecks)
 	finished := time.Now().UTC()
 
+	// SPEC-137 D6: built and persisted ONCE, here, from the certificate's
+	// own final rows — never re-derived when a certificate is later read.
+	evidence := quality.Evidence(buildEvidenceInput(checks))
+
 	cert := &model.QualityCertificate{
 		Project:          svc.project,
 		SpecID:           spec.ID,
@@ -227,6 +231,7 @@ func (svc *QualityService) Verify(ctx context.Context, req model.QualityVerifyRe
 		StartedAt:        started,
 		FinishedAt:       finished,
 		DurationMs:       finished.Sub(started).Milliseconds(),
+		Evidence:         evidence,
 	}
 
 	if err := svc.store.InsertCertificate(ctx, cert, checks); err != nil {
@@ -283,6 +288,69 @@ func assignCheckEffects(checks []*model.QualityCheck, pure []quality.CheckResult
 		pure[i].Effect = effect
 	}
 	return nil
+}
+
+// buildEvidenceInput derives quality.EvidenceInput from the certificate's
+// OWN rows (SPEC-137 D6) — deliberately a pure function of []*model.
+// QualityCheck, not of the constitution: "declared" here means "did THIS
+// run's own rows show something evaluated", so a mechanism the gate
+// cascade stopped before it ever ran reads the same as one nobody
+// declared — either way, this certificate did not look at it, which is
+// exactly the fact D6 exists to surface. Called once, at emission time,
+// from Verify — never re-derived when a certificate is later read.
+func buildEvidenceInput(checks []*model.QualityCheck) quality.EvidenceInput {
+	var in quality.EvidenceInput
+	criteriaTotal, criteriaMet := 0, 0
+
+	for _, c := range checks {
+		switch {
+		case c.Kind == "gate":
+			in.Gates.Declared = true
+			in.Gates.Total++
+			if c.Status == "pass" {
+				in.Gates.Green++
+			}
+		case c.Kind == "coverage" && c.Name == "profile":
+			in.Coverage.Declared = c.Status != "skipped"
+		case c.Kind == "coverage" && c.Name == "diff-lines":
+			in.Coverage.Evaluated = c.Status != "skipped"
+			if in.Coverage.Evaluated {
+				var detail diffLinesDetail
+				if err := json.Unmarshal([]byte(c.Detail), &detail); err == nil {
+					in.Coverage.Pct = detail.Pct
+				}
+				switch c.Status {
+				case "finding":
+					in.Coverage.ModeSuffix = "hallazgo sin firmar"
+				case "acked":
+					in.Coverage.ModeSuffix = "hallazgo firmado"
+				}
+			}
+		case c.Kind == "ratchet" && c.Status != "skipped":
+			in.Ratchet.Declared = true
+		case (c.Kind == "budget" || c.Kind == "detection") && c.Status != "skipped":
+			in.Budget.Declared = true
+		case (c.Kind == "mutation" || c.Kind == "mutant") && c.Status != "skipped":
+			in.Mutation.Declared = true
+		case (c.Kind == "visual" || c.Kind == "visual-target") && c.Status != "skipped":
+			in.Visual.Declared = true
+		case strings.HasPrefix(c.Kind, "criterion"):
+			// The three top-level "criteria" rows (declared/manual-quota/
+			// command-quota) do NOT count here — only the per-criterion
+			// rows (criterion/criterion-command/criterion-manual) do, one
+			// per criteria.toml entry, which is exactly Total/Met's unit.
+			criteriaTotal++
+			if c.Status == "pass" || c.Status == "acked" {
+				criteriaMet++
+			}
+		}
+	}
+
+	in.Criteria.Declared = criteriaTotal > 0
+	in.Criteria.Total = criteriaTotal
+	in.Criteria.Met = criteriaMet
+
+	return in
 }
 
 // runAllChecks assembles the tree check, the constitution's own checks, and
@@ -454,6 +522,14 @@ type coverageProfileDetail struct {
 	LinesCovered  int     `json:"lines_covered"`
 	GlobalLinePct float64 `json:"global_line_pct"`
 	ScopeHash     string  `json:"scope_hash"`
+}
+
+// diffLinesDetail is coverage/diff-lines' own Detail JSON (SPEC-137 D6) —
+// the raw percentage as a NUMBER, so buildEvidenceInput can read it back
+// instead of re-parsing Summary's prose, exactly the fragility this
+// mechanism has already paid for once (§8.3).
+type diffLinesDetail struct {
+	Pct float64 `json:"pct"`
 }
 
 // coverageSkipReason names WHY rows 1-3 are being skipped, in D13's own
@@ -725,7 +801,7 @@ func (svc *QualityService) runCoverageChecks(
 	// skip causes here are EffectAbsent — D4's own wording names this EXACT
 	// pair ("no había nada declarado ... o la spec no tiene base contra la
 	// que comparar").
-	var row3Status, row3Summary, row3Effect string
+	var row3Status, row3Summary, row3Effect, row3Detail string
 	switch {
 	case spec.BaseSHA == "":
 		row3Status = "skipped"
@@ -747,7 +823,16 @@ func (svc *QualityService) runCoverageChecks(
 		row3Status = "pass"
 		row3Summary = fmt.Sprintf("cobertura del diff %.2f%%", diffStats.Pct)
 	}
-	checks = append(checks, &model.QualityCheck{Kind: "coverage", Name: "diff-lines", Status: row3Status, Summary: row3Summary, Effect: row3Effect})
+	// SPEC-137 D6: Detail carries the raw percentage as a NUMBER — the
+	// evidence line reads this back instead of re-parsing Summary's prose,
+	// the same "arrives pre-formatted, never re-derived from text" posture
+	// ReportInput already established.
+	if row3Status != "skipped" {
+		if raw, jsonErr := json.Marshal(diffLinesDetail{Pct: diffStats.Pct}); jsonErr == nil {
+			row3Detail = string(raw)
+		}
+	}
+	checks = append(checks, &model.QualityCheck{Kind: "coverage", Name: "diff-lines", Status: row3Status, Summary: row3Summary, Effect: row3Effect, Detail: row3Detail})
 	pure = append(pure, quality.CheckResult{Status: quality.CheckStatus(row3Status), Effect: quality.Effect(row3Effect)})
 
 	return checks, pure, detail, nil
@@ -1872,7 +1957,8 @@ func (svc *QualityService) buildReportInput(spec *model.Spec, cert *model.Qualit
 		SpecID: spec.ID, CertificateID: cert.ID, HeadSHA: cert.HeadSHA, BaseSHA: cert.BaseSHA,
 		Verdict: string(cert.Verdict), ConstitutionHash: cert.ConstitutionHash, CriteriaHash: criteriaHash,
 		MnemeVersion: svc.mnemeVersion, GeneratedAtUTC: cert.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
-		Checks: reportChecks,
+		Evidence: cert.Evidence,
+		Checks:   reportChecks,
 	}
 }
 

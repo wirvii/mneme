@@ -69,8 +69,19 @@ type ReportInput struct {
 	MnemeVersion   string
 	GeneratedAtUTC string
 
+	// Evidence is the certificate's own persisted D6 sentence (SPEC-137),
+	// read verbatim from the column — RenderReport never re-derives it.
+	// Empty for a certificate emitted before this field existed.
+	Evidence string
+
 	Checks []ReportCheck
 }
+
+// EvidenceMissingText is what all three D6 rendering channels
+// (RenderReport, `quality verify`, `quality status`) show in place of a
+// certificate's own Evidence when that field is empty — a certificate
+// emitted before SPEC-137 existed. Never a fabricated sentence.
+const EvidenceMissingText = "certificado emitido antes de esta version: sin linea de evidencia"
 
 // RenderReport renders in into the exact QA report document mneme writes
 // via SpecDocWrite kind qa-report (D12). Deterministic (AC28): the SAME
@@ -94,6 +105,15 @@ func RenderReport(in ReportInput) string {
 		fmt.Fprintf(&b, "- Hash de criterios: %s\n", in.CriteriaHash)
 	}
 	fmt.Fprintf(&b, "- Generado: %s\n\n", in.GeneratedAtUTC)
+
+	// SPEC-137 D6: the evidence sentence is the first line of the body,
+	// before any table — read verbatim from the certificate's own
+	// persisted column, never re-derived here.
+	evidence := in.Evidence
+	if evidence == "" {
+		evidence = EvidenceMissingText
+	}
+	fmt.Fprintf(&b, "%s\n\n", evidence)
 
 	criterionChecks := make([]ReportCheck, 0, len(in.Checks))
 	otherChecks := make([]ReportCheck, 0, len(in.Checks))

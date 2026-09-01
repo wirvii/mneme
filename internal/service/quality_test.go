@@ -497,6 +497,134 @@ func TestQualityService_Status_WithCertificate(t *testing.T) {
 	}
 }
 
+// TestQualityService_Evidence_AppearsLiterallyInAllThreeChannels covers
+// AC13 (SPEC-137 D6): the certificate's own persisted Evidence sentence
+// must appear, byte for byte, in the data every one of the three
+// rendering channels reads from — quality_verify's own return value,
+// quality_status's response, and the QA report's rendered body. Every
+// comparison is against cert.Evidence itself (the value READ from the
+// certificate this Verify call produced), never a literal string written
+// in this test — the CLI layer's own rendering (evidenceLineOrMissing) is
+// a one-line passthrough of exactly this value, so proving the three data
+// sources agree is what proves the three channels agree.
+func TestQualityService_Evidence_AppearsLiterallyInAllThreeChannels(t *testing.T) {
+	repoDir := newTestGitRepo(t)
+	writeConstitution(t, repoDir)
+	commitAll(t, repoDir, "add constitution")
+
+	s := newTestQualityStore(t)
+	insertTestSpec(t, s, "SPEC-001", "proj", model.SpecStatusImplementing, "")
+
+	workflowDir := t.TempDir()
+	docWriter := &fakeDocWriter{workflowDir: workflowDir, project: "proj"}
+	svc := NewQualityService(s, "proj", repoDir, &fakeGateRunner{}, WithWorkflowDir(workflowDir), WithDocWriter(docWriter.write))
+
+	// Channel 1: quality_verify's own return value.
+	cert, err := svc.Verify(context.Background(), model.QualityVerifyRequest{ID: "SPEC-001"})
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if cert.Evidence == "" {
+		t.Fatal("cert.Evidence is empty — this test cannot prove anything without a real sentence")
+	}
+
+	// Channel 2: quality_status's response.
+	statusResp, err := svc.Status(context.Background(), model.QualityStatusRequest{ID: "SPEC-001"})
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if statusResp.LatestCertificate == nil || statusResp.LatestCertificate.Evidence != cert.Evidence {
+		t.Errorf("Status().LatestCertificate.Evidence = %q, want %q (Verify's own persisted value)",
+			statusResp.LatestCertificate.Evidence, cert.Evidence)
+	}
+
+	// Channel 3: the QA report's rendered body.
+	reportResp, err := svc.Report(context.Background(), model.QualityReportRequest{ID: "SPEC-001"})
+	if err != nil {
+		t.Fatalf("Report: %v", err)
+	}
+	reportBytes, readErr := os.ReadFile(reportResp.Path)
+	if readErr != nil {
+		t.Fatalf("read report: %v", readErr)
+	}
+	if !strings.Contains(string(reportBytes), cert.Evidence) {
+		t.Errorf("QA report body does not contain cert.Evidence (%q) literally:\n%s", cert.Evidence, reportBytes)
+	}
+}
+
+// TestQualityService_Evidence_NamesEveryUndeclaredFamily covers AC14 (SPEC-
+// 137 D6) end to end: a project that declares gates and NOTHING else
+// (writeConstitution's own schema_version=1 fixture — no [coverage],
+// [criteria], [ratchet], [budget], [mutation], [visual]) still certifies
+// `pass`, and its Evidence names every one of the four measure-only
+// families as not declared. The expected family list is derived from
+// quality.EvidenceFamilyNames itself, never copied by hand.
+func TestQualityService_Evidence_NamesEveryUndeclaredFamily(t *testing.T) {
+	repoDir := newTestGitRepo(t)
+	writeConstitution(t, repoDir)
+	commitAll(t, repoDir, "add constitution")
+
+	s := newTestQualityStore(t)
+	insertTestSpec(t, s, "SPEC-001", "proj", model.SpecStatusImplementing, "")
+
+	svc := NewQualityService(s, "proj", repoDir, &fakeGateRunner{})
+	cert, err := svc.Verify(context.Background(), model.QualityVerifyRequest{ID: "SPEC-001"})
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if cert.Verdict != model.QualityVerdictPass {
+		t.Fatalf("Verdict = %q, want pass", cert.Verdict)
+	}
+	if !strings.Contains(cert.Evidence, "criterios no declarados") {
+		t.Errorf("Evidence = %q, missing %q", cert.Evidence, "criterios no declarados")
+	}
+	if !strings.Contains(cert.Evidence, "cobertura no declarada") {
+		t.Errorf("Evidence = %q, missing %q", cert.Evidence, "cobertura no declarada")
+	}
+	// Every measure-only family's own name must appear somewhere in the
+	// sentence — each phrasing is "<family> no declarad[oa]", so the bare
+	// family word from EvidenceFamilyNames is always a substring of its
+	// own segment. The list itself is never copied by hand into this test.
+	for _, family := range quality.EvidenceFamilyNames {
+		if !strings.Contains(cert.Evidence, family) {
+			t.Errorf("Evidence = %q, does not mention family %q at all", cert.Evidence, family)
+		}
+	}
+}
+
+// TestQualityService_Evidence_NoGatesDeclared covers AC15: a project with
+// NO gates at all (enabled=false, since post-SPEC-138 enabled=true with
+// zero gates is rejected by Parse) still emits a certificate — Verify
+// never consults Enabled — whose Evidence names the "sin puertas
+// declaradas" tramo literally, never a fabricated "0/0".
+func TestQualityService_Evidence_NoGatesDeclared(t *testing.T) {
+	repoDir := newTestGitRepo(t)
+	dir := filepath.Join(repoDir, ".mneme")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir .mneme: %v", err)
+	}
+	doc := "schema_version = 1\nenabled = false\n[execution]\noutput_tail_bytes = 4096\n"
+	if err := os.WriteFile(filepath.Join(dir, "quality.toml"), []byte(doc), 0o644); err != nil {
+		t.Fatalf("write quality.toml: %v", err)
+	}
+	commitAll(t, repoDir, "add constitution")
+
+	s := newTestQualityStore(t)
+	insertTestSpec(t, s, "SPEC-001", "proj", model.SpecStatusImplementing, "")
+
+	svc := NewQualityService(s, "proj", repoDir, &fakeGateRunner{})
+	cert, err := svc.Verify(context.Background(), model.QualityVerifyRequest{ID: "SPEC-001"})
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if !strings.Contains(cert.Evidence, "sin puertas declaradas") {
+		t.Errorf("Evidence = %q, want it to contain %q", cert.Evidence, "sin puertas declaradas")
+	}
+	if strings.Contains(cert.Evidence, "0/0") {
+		t.Errorf("Evidence = %q, must never render a fabricated 0/0", cert.Evidence)
+	}
+}
+
 // TestQualityService_Ack_RequiresByAndJustification covers Ack's own
 // precondition.
 func TestQualityService_Ack_RequiresByAndJustification(t *testing.T) {
