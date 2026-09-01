@@ -367,6 +367,56 @@ func TestQualityService_Verify_DirtyTree_FailsVerdict(t *testing.T) {
 	}
 }
 
+// TestQualityService_Verify_DirtyTree_SummaryNamesBothGroups covers AC18's
+// other half (SPEC-137 D9): tree/clean-worktree's own Summary names the
+// project's dirty paths and mneme's own dirty paths in SEPARATE segments —
+// derived from the fixture's real `git status --porcelain` output.
+func TestQualityService_Verify_DirtyTree_SummaryNamesBothGroups(t *testing.T) {
+	repoDir := newTestGitRepo(t)
+	writeConstitution(t, repoDir)
+	commitAll(t, repoDir, "add constitution")
+
+	if err := os.WriteFile(filepath.Join(repoDir, "untracked.txt"), []byte("oops"), 0o644); err != nil {
+		t.Fatalf("write untracked file: %v", err)
+	}
+	sharedNotesDir := filepath.Join(repoDir, ".mneme", "shared", "notes")
+	if err := os.MkdirAll(sharedNotesDir, 0o755); err != nil {
+		t.Fatalf("mkdir shared notes: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sharedNotesDir, "abc123.md"), []byte("# nota"), 0o644); err != nil {
+		t.Fatalf("write shared note: %v", err)
+	}
+
+	s := newTestQualityStore(t)
+	insertTestSpec(t, s, "SPEC-1", "proj", model.SpecStatusImplementing, "")
+
+	svc := NewQualityService(s, "proj", repoDir, &fakeGateRunner{})
+	cert, err := svc.Verify(context.Background(), model.QualityVerifyRequest{ID: "SPEC-1"})
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+
+	checks, err := s.ListChecks(context.Background(), cert.ID)
+	if err != nil {
+		t.Fatalf("ListChecks: %v", err)
+	}
+	var treeRow *model.QualityCheck
+	for _, c := range checks {
+		if c.Kind == "tree" && c.Name == "clean-worktree" {
+			treeRow = c
+		}
+	}
+	if treeRow == nil {
+		t.Fatal("no tree/clean-worktree row found")
+	}
+	if !strings.Contains(treeRow.Summary, "proyecto") {
+		t.Errorf("tree/clean-worktree Summary does not name the project group:\n%s", treeRow.Summary)
+	}
+	if !strings.Contains(treeRow.Summary, "mneme") {
+		t.Errorf("tree/clean-worktree Summary does not name the mneme group:\n%s", treeRow.Summary)
+	}
+}
+
 // TestQualityService_Verify_ConstitutionChangedInRangeNoLongerChecked covers
 // AC7 (SPEC-137 D5): modifying the constitution within the spec's
 // base_sha..HEAD range used to produce a "finding" via

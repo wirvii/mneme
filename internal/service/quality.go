@@ -1040,6 +1040,26 @@ func summarizeDirtyPaths(paths []string) string {
 	if len(paths) == 0 {
 		return ""
 	}
+	// SPEC-137 D9: name the two groups separately — mneme's own paths
+	// (.mneme/shared/, .mneme/sdd/) read differently than the project's
+	// own uncommitted work, and a reader should never have to guess which
+	// is which from an undifferentiated dump.
+	groups := quality.ClassifyDirtyPaths(paths)
+	var parts []string
+	if len(groups.Project) > 0 {
+		parts = append(parts, "proyecto:\n"+truncatedPathList(groups.Project))
+	}
+	if len(groups.Mneme) > 0 {
+		parts = append(parts, "mneme (.mneme/shared/ o .mneme/sdd/):\n"+truncatedPathList(groups.Mneme))
+	}
+	return strings.Join(parts, "\n")
+}
+
+// truncatedPathList joins paths, capped at maxDirtyPathsInSummary lines
+// with a trailing count — never an unbounded dump into a single row. The
+// shared truncation logic summarizeDirtyPaths applies to each of D9's two
+// groups independently.
+func truncatedPathList(paths []string) string {
 	shown := paths
 	truncated := len(shown) > maxDirtyPathsInSummary
 	if truncated {

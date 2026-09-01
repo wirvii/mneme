@@ -704,9 +704,12 @@ func (svc *SDDService) captureBaseSHA(ctx context.Context, spec *model.Spec) {
 func (svc *SDDService) ensureCertified(ctx context.Context, spec *model.Spec, nextStatus model.SpecStatus) error {
 	trivialGate := spec.Lane == model.LaneTrivial &&
 		spec.Status == model.SpecStatusImplementing && nextStatus == model.SpecStatusAudit
+	// SPEC-137 D1: the standard lane's implementing->qa leg is GONE — the
+	// first certificate almost never survived QA anyway (any commit during
+	// QA invalidates it via CertificateUsable), and the verifier runs the
+	// gates on its own regardless. Only qa->done still requires one.
 	standardGate := spec.Lane == model.LaneStandard &&
-		((spec.Status == model.SpecStatusImplementing && nextStatus == model.SpecStatusQA) ||
-			(spec.Status == model.SpecStatusQA && nextStatus == model.SpecStatusDone))
+		spec.Status == model.SpecStatusQA && nextStatus == model.SpecStatusDone
 	if !trivialGate && !standardGate {
 		return nil
 	}
@@ -780,7 +783,7 @@ func (svc *SDDService) ensureCertified(ctx context.Context, spec *model.Spec, ne
 	if err != nil {
 		return fmt.Errorf("head sha: %w", err)
 	}
-	dirty, _, err := g.IsDirty()
+	dirty, dirtyPaths, err := g.IsDirty()
 	if err != nil {
 		return fmt.Errorf("is dirty: %w", err)
 	}
@@ -804,8 +807,8 @@ func (svc *SDDService) ensureCertified(ctx context.Context, spec *model.Spec, ne
 		return fmt.Errorf("la constitucion cambio desde el certificado %s — vuelve a verificar con %s: %w",
 			cert.ID, remedy, model.ErrConstitutionChanged)
 	case quality.ReasonWorktreeDirty:
-		return fmt.Errorf("arbol de trabajo sucio — haz commit o descarta los cambios y vuelve a verificar con %s: %w",
-			remedy, model.ErrWorktreeDirty)
+		return fmt.Errorf("%s — vuelve a verificar con %s: %w",
+			dirtyWorktreeRemedy(dirtyPaths), remedy, model.ErrWorktreeDirty)
 	default:
 		return fmt.Errorf("certificado %s no utilizable — vuelve a verificar con %s: %w", cert.ID, remedy, model.ErrCertificateNotGreen)
 	}
@@ -1651,7 +1654,7 @@ func (svc *SDDService) requireUsableCertificateForTrivial(ctx context.Context, s
 	if err != nil {
 		return fmt.Errorf("head sha: %w", err)
 	}
-	dirty, _, err := g.IsDirty()
+	dirty, dirtyPaths, err := g.IsDirty()
 	if err != nil {
 		return fmt.Errorf("is dirty: %w", err)
 	}
@@ -1675,11 +1678,35 @@ func (svc *SDDService) requireUsableCertificateForTrivial(ctx context.Context, s
 		return fmt.Errorf("la constitucion cambio desde el certificado %s — vuelve a verificar con %s: %w",
 			cert.ID, remedy, model.ErrConstitutionChanged)
 	case quality.ReasonWorktreeDirty:
-		return fmt.Errorf("arbol de trabajo sucio — haz commit o descarta los cambios y vuelve a verificar con %s: %w",
-			remedy, model.ErrWorktreeDirty)
+		return fmt.Errorf("%s — vuelve a verificar con %s: %w",
+			dirtyWorktreeRemedy(dirtyPaths), remedy, model.ErrWorktreeDirty)
 	default:
 		return fmt.Errorf("certificado %s no utilizable — vuelve a verificar con %s: %w", cert.ID, remedy, model.ErrCertificateMissing)
 	}
+}
+
+// dirtyWorktreeRemedy names ErrWorktreeDirty's remedy, distinguishing
+// SPEC-137 D9's two path groups: the project's own uncommitted work gets
+// the honest "commit or discard" advice, but mneme's own paths
+// (.mneme/shared/, .mneme/sdd/) get ONLY "commit" — "descartar" (discarding)
+// a change under .mneme/shared/** deletes shared memories, which this
+// remedy must never suggest.
+func dirtyWorktreeRemedy(dirtyPaths []string) string {
+	groups := quality.ClassifyDirtyPaths(dirtyPaths)
+	var parts []string
+	if len(groups.Project) > 0 {
+		parts = append(parts, fmt.Sprintf("del proyecto (%d ruta(s)): haz commit o descarta los cambios", len(groups.Project)))
+	}
+	if len(groups.Mneme) > 0 {
+		parts = append(parts, fmt.Sprintf(
+			"de mneme (%d ruta(s), bajo .mneme/shared/ o .mneme/sdd/): haz commit — nunca las descartes, se perderian memorias o el archivo SDD",
+			len(groups.Mneme)))
+	}
+	if len(parts) == 0 {
+		// Defensive: IsDirty()==true implies at least one path exists.
+		return "arbol de trabajo sucio — haz commit o descarta los cambios"
+	}
+	return "arbol de trabajo sucio: " + strings.Join(parts, "; ")
 }
 
 // runLaneAuditEngine computes the file/symbol delta between baseRef and

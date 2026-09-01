@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/wirvii/mneme/internal/model"
@@ -29,6 +30,26 @@ func advanceToImplementing(t *testing.T, svc *SDDService, ctx context.Context, t
 	}
 	if spec.Status != model.SpecStatusImplementing {
 		t.Fatalf("expected implementing, got %s", spec.Status)
+	}
+	return spec
+}
+
+// advanceToQA extends advanceToImplementing with ONE more SpecAdvance call
+// (implementing->qa) and returns the reloaded spec at qa. SPEC-137 D1
+// removed the standard lane's implementing->qa certificate requirement
+// entirely, so this transition always succeeds regardless of repoDir,
+// constitution, or certificate state — it exists purely to reach qa, the
+// status every remaining "blocks" fixture in this file now needs, since
+// the ONLY standard-lane leg ensureCertified still gates is qa->done.
+func advanceToQA(t *testing.T, svc *SDDService, ctx context.Context, title string) *model.Spec {
+	t.Helper()
+	spec := advanceToImplementing(t, svc, ctx, title)
+	spec, err := svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: "backend"})
+	if err != nil {
+		t.Fatalf("SpecAdvance (implementing->qa, now unconditional, status=%s): %v", spec.Status, err)
+	}
+	if spec.Status != model.SpecStatusQA {
+		t.Fatalf("expected qa, got %s", spec.Status)
 	}
 	return spec
 }
@@ -142,9 +163,64 @@ func TestEnsureCertified_RepoDirSetEnabled_BlocksWithoutCertificate(t *testing.T
 	commitAllQuality(t, repoDir, "add constitution")
 	svc.WithRepoDir(repoDir)
 
-	_, err := svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: "backend"})
+	// SPEC-137 D1: implementing->qa is unconditional now — it must succeed
+	// even though repoDir points at an enabled constitution with no
+	// certificate at all. The certificate requirement moved to qa->done.
+	advanced, err := svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: "backend"})
+	if err != nil {
+		t.Fatalf("SpecAdvance implementing->qa should be unconditional, got: %v", err)
+	}
+
+	_, err = svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: advanced.ID, By: "orchestrator"})
 	if !errors.Is(err, model.ErrCertificateMissing) {
-		t.Errorf("SpecAdvance error = %v, want ErrCertificateMissing", err)
+		t.Errorf("SpecAdvance qa->done error = %v, want ErrCertificateMissing", err)
+	}
+}
+
+// TestEnsureCertified_AC1_ImplementingToQA_NeverRequiresCertificate covers
+// AC1 (SPEC-137 D1) directly and by name: a standard-lane spec with
+// enabled=true and ZERO certificates anywhere advances implementing->qa
+// without error. Its mutation (reintroducing the old implementing->qa leg
+// in standardGate) turns this exact assertion red with ErrCertificateMissing.
+func TestEnsureCertified_AC1_ImplementingToQA_NeverRequiresCertificate(t *testing.T) {
+	svc := newTestSDDService(t, "proj")
+	ctx := context.Background()
+
+	repoDir := newTestGitRepo(t)
+	writeTestConstitution(t, repoDir, true)
+	commitAllQuality(t, repoDir, "add constitution")
+	svc.WithRepoDir(repoDir)
+
+	spec := advanceToImplementing(t, svc, ctx, "AC1 implementing to qa")
+
+	advanced, err := svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: "backend"})
+	if err != nil {
+		t.Fatalf("SpecAdvance implementing->qa = %v, want no error (AC1)", err)
+	}
+	if advanced.Status != model.SpecStatusQA {
+		t.Errorf("status = %s, want qa", advanced.Status)
+	}
+}
+
+// TestEnsureCertified_AC2_QAToDone_StillRequiresCertificate covers AC2
+// directly and by name: the SAME spec, now at qa, does NOT advance to done
+// without a certificate — ErrCertificateMissing. Its mutation (deleting the
+// qa->done leg of standardGate) turns this red by letting the advance
+// through.
+func TestEnsureCertified_AC2_QAToDone_StillRequiresCertificate(t *testing.T) {
+	svc := newTestSDDService(t, "proj")
+	ctx := context.Background()
+
+	repoDir := newTestGitRepo(t)
+	writeTestConstitution(t, repoDir, true)
+	commitAllQuality(t, repoDir, "add constitution")
+	svc.WithRepoDir(repoDir)
+
+	spec := advanceToQA(t, svc, ctx, "AC2 qa to done")
+
+	_, err := svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: "orchestrator"})
+	if !errors.Is(err, model.ErrCertificateMissing) {
+		t.Errorf("SpecAdvance qa->done error = %v, want ErrCertificateMissing (AC2)", err)
 	}
 }
 
@@ -206,11 +282,11 @@ func TestEnsureCertified_StandardLane_BlocksWithIdenticalFixture(t *testing.T) {
 	commitAllQuality(t, repoDir, "add constitution")
 	svc.WithRepoDir(repoDir)
 
-	spec := advanceToImplementing(t, svc, ctx, "AC15 standard lane")
+	spec := advanceToQA(t, svc, ctx, "AC15 standard lane")
 
-	_, err := svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: "backend"})
+	_, err := svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: "orchestrator"})
 	if !errors.Is(err, model.ErrCertificateMissing) {
-		t.Errorf("SpecAdvance error = %v, want ErrCertificateMissing", err)
+		t.Errorf("SpecAdvance qa->done error = %v, want ErrCertificateMissing", err)
 	}
 }
 
@@ -392,10 +468,10 @@ func TestEnsureCertified_ConstitutionUnparseable_Blocks(t *testing.T) {
 	commitAllQuality(t, repoDir, "add broken constitution")
 	svc.WithRepoDir(repoDir)
 
-	spec := advanceToImplementing(t, svc, ctx, "AC13 constitution unparseable")
-	_, err := svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: "backend"})
+	spec := advanceToQA(t, svc, ctx, "AC13 constitution unparseable")
+	_, err := svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: "orchestrator"})
 	if !errors.Is(err, model.ErrInvalidConstitution) {
-		t.Errorf("SpecAdvance error = %v, want ErrInvalidConstitution", err)
+		t.Errorf("SpecAdvance qa->done error = %v, want ErrInvalidConstitution", err)
 	}
 }
 
@@ -428,9 +504,17 @@ func TestEnsureCertified_ConstitutionAblated_Blocks(t *testing.T) {
 		t.Fatalf("UpdateSpecBaseSHA: %v", err)
 	}
 
-	_, err := svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: "backend"})
+	// SPEC-137 D1: implementing->qa no longer reads the constitution at
+	// all, so it succeeds unconditionally even with the mechanism ablated
+	// mid-spec. The ablation check now only fires on qa->done.
+	advanced, err := svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: "backend"})
+	if err != nil {
+		t.Fatalf("SpecAdvance implementing->qa should be unconditional, got: %v", err)
+	}
+
+	_, err = svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: advanced.ID, By: "orchestrator"})
 	if !errors.Is(err, model.ErrConstitutionAblated) {
-		t.Errorf("SpecAdvance error = %v, want ErrConstitutionAblated", err)
+		t.Errorf("SpecAdvance qa->done error = %v, want ErrConstitutionAblated", err)
 	}
 }
 
@@ -439,7 +523,10 @@ func TestEnsureCertified_ConstitutionAblated_Blocks(t *testing.T) {
 
 func newQualifyingSpecWithCertificate(t *testing.T, svc *SDDService, ctx context.Context, repoDir string, mutate func(cert *model.QualityCertificate)) *model.Spec {
 	t.Helper()
-	spec := advanceToImplementing(t, svc, ctx, "AC14 fixture")
+	// SPEC-137 D1: the only standard-lane leg ensureCertified still gates
+	// is qa->done, so every fixture that inserts a certificate for
+	// ensureCertified to evaluate must already be AT qa, not implementing.
+	spec := advanceToQA(t, svc, ctx, "AC14 fixture")
 
 	sha := headSHA(t, repoDir)
 	raw, err := os.ReadFile(filepath.Join(repoDir, ".mneme", "quality.toml"))
@@ -474,9 +561,9 @@ func TestEnsureCertified_CertificateNotGreen_Blocks(t *testing.T) {
 		c.Verdict = model.QualityVerdictFail
 	})
 
-	_, err := svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: "backend"})
+	_, err := svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: "orchestrator"})
 	if !errors.Is(err, model.ErrCertificateNotGreen) {
-		t.Errorf("SpecAdvance error = %v, want ErrCertificateNotGreen", err)
+		t.Errorf("SpecAdvance qa->done error = %v, want ErrCertificateNotGreen", err)
 	}
 }
 
@@ -499,9 +586,9 @@ func TestEnsureCertified_CertificateStale_Blocks(t *testing.T) {
 	}
 	commitAllQuality(t, repoDir, "move HEAD after certification")
 
-	_, err := svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: "backend"})
+	_, err := svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: "orchestrator"})
 	if !errors.Is(err, model.ErrCertificateStale) {
-		t.Errorf("SpecAdvance error = %v, want ErrCertificateStale", err)
+		t.Errorf("SpecAdvance qa->done error = %v, want ErrCertificateStale", err)
 	}
 }
 
@@ -520,9 +607,9 @@ func TestEnsureCertified_ConstitutionChanged_Blocks(t *testing.T) {
 		c.ConstitutionHash = "stale-hash-does-not-match-current-file"
 	})
 
-	_, err := svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: "backend"})
+	_, err := svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: "orchestrator"})
 	if !errors.Is(err, model.ErrConstitutionChanged) {
-		t.Errorf("SpecAdvance error = %v, want ErrConstitutionChanged", err)
+		t.Errorf("SpecAdvance qa->done error = %v, want ErrConstitutionChanged", err)
 	}
 }
 
@@ -543,15 +630,67 @@ func TestEnsureCertified_WorktreeDirty_Blocks(t *testing.T) {
 		t.Fatalf("write untracked.txt: %v", err)
 	}
 
-	_, err := svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: "backend"})
+	_, err := svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: "orchestrator"})
 	if !errors.Is(err, model.ErrWorktreeDirty) {
-		t.Errorf("SpecAdvance error = %v, want ErrWorktreeDirty", err)
+		t.Errorf("SpecAdvance qa->done error = %v, want ErrWorktreeDirty", err)
+	}
+}
+
+// TestEnsureCertified_WorktreeDirty_NamesBothGroupsSeparately covers AC18
+// (SPEC-137 D9): a worktree dirty with BOTH an untracked file under
+// .mneme/shared/notes/ AND a modified project file must name the two
+// groups SEPARATELY, and never offer to discard mneme's own group — the
+// paths come from the fixture's REAL `git status --porcelain` output,
+// never a list written in this test.
+func TestEnsureCertified_WorktreeDirty_NamesBothGroupsSeparately(t *testing.T) {
+	svc := newTestSDDService(t, "proj")
+	ctx := context.Background()
+
+	repoDir := newTestGitRepo(t)
+	writeTestConstitution(t, repoDir, true)
+	commitAllQuality(t, repoDir, "add constitution")
+	svc.WithRepoDir(repoDir)
+
+	spec := newQualifyingSpecWithCertificate(t, svc, ctx, repoDir, nil)
+
+	// A dirty PROJECT file.
+	if err := os.WriteFile(filepath.Join(repoDir, "untracked.txt"), []byte("oops"), 0o644); err != nil {
+		t.Fatalf("write untracked.txt: %v", err)
+	}
+	// A dirty MNEME file, under one of D9's own declared prefixes.
+	sharedNotesDir := filepath.Join(repoDir, ".mneme", "shared", "notes")
+	if err := os.MkdirAll(sharedNotesDir, 0o755); err != nil {
+		t.Fatalf("mkdir shared notes: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sharedNotesDir, "abc123.md"), []byte("# nota"), 0o644); err != nil {
+		t.Fatalf("write shared note: %v", err)
+	}
+
+	_, err := svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: "orchestrator"})
+	if !errors.Is(err, model.ErrWorktreeDirty) {
+		t.Fatalf("SpecAdvance qa->done error = %v, want ErrWorktreeDirty", err)
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "proyecto") {
+		t.Errorf("error message does not name the project group:\n%s", msg)
+	}
+	if !strings.Contains(msg, "mneme") {
+		t.Errorf("error message does not name the mneme group:\n%s", msg)
+	}
+	// The mneme group's own remedy segment must never offer to discard.
+	mnemeIdx := strings.Index(msg, "de mneme")
+	if mnemeIdx < 0 {
+		t.Fatalf("error message has no 'de mneme' segment:\n%s", msg)
+	}
+	if strings.Contains(msg[mnemeIdx:], "descarta") {
+		t.Errorf("error message offers to discard mneme's own paths, which deletes memories:\n%s", msg)
 	}
 }
 
 // TestEnsureCertified_Usable_AllowsAdvance is the positive control: a
 // certificate matching HEAD, matching constitution hash, verdict pass, and a
-// clean tree — SpecAdvance proceeds.
+// clean tree — SpecAdvance proceeds through qa->done, the ONLY standard-lane
+// leg SPEC-137 D1 still gates.
 func TestEnsureCertified_Usable_AllowsAdvance(t *testing.T) {
 	svc := newTestSDDService(t, "proj")
 	ctx := context.Background()
@@ -563,18 +702,21 @@ func TestEnsureCertified_Usable_AllowsAdvance(t *testing.T) {
 
 	spec := newQualifyingSpecWithCertificate(t, svc, ctx, repoDir, nil)
 
-	advanced, err := svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: "backend"})
+	advanced, err := svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: "orchestrator"})
 	if err != nil {
-		t.Fatalf("SpecAdvance with a usable certificate should pass, got: %v", err)
+		t.Fatalf("SpecAdvance qa->done with a usable certificate should pass, got: %v", err)
 	}
-	if advanced.Status != model.SpecStatusQA {
-		t.Errorf("status = %s, want qa", advanced.Status)
+	if advanced.Status != model.SpecStatusDone {
+		t.Errorf("status = %s, want done", advanced.Status)
 	}
 }
 
-// TestEnsureCertified_QAToDone_AlsoGated verifies the qa→done transition is
-// gated exactly like implementing→qa (D12).
-func TestEnsureCertified_QAToDone_AlsoGated(t *testing.T) {
+// TestEnsureCertified_QAToDone_UsesTheSameCertificateImplementingQANeverNeeded
+// covers D1's own consequence directly: implementing->qa is now completely
+// unconditional (advanceToQA proves it, reaching qa with NO certificate at
+// all inserted yet), and the ONE certificate this test inserts — bound to
+// qa's own HEAD/base_sha — is what qa->done alone requires and accepts.
+func TestEnsureCertified_QAToDone_UsesTheSameCertificateImplementingQANeverNeeded(t *testing.T) {
 	svc := newTestSDDService(t, "proj")
 	ctx := context.Background()
 
@@ -584,20 +726,13 @@ func TestEnsureCertified_QAToDone_AlsoGated(t *testing.T) {
 	svc.WithRepoDir(repoDir)
 
 	spec := newQualifyingSpecWithCertificate(t, svc, ctx, repoDir, nil)
-
-	advanced, err := svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: "backend"})
-	if err != nil {
-		t.Fatalf("SpecAdvance implementing->qa: %v", err)
+	if spec.Status != model.SpecStatusQA {
+		t.Fatalf("fixture spec.Status = %s, want qa (implementing->qa must have been unconditional)", spec.Status)
 	}
 
-	// Without re-verifying, qa->done must block for lack of a certificate
-	// bound to THIS (still identical) HEAD/constitution — actually it is
-	// still usable since nothing changed, so this should PASS, proving the
-	// same certificate legitimately covers both transitions when nothing
-	// moved in between.
-	done, err := svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: advanced.ID, By: "orchestrator"})
+	done, err := svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: "orchestrator"})
 	if err != nil {
-		t.Fatalf("SpecAdvance qa->done with the same usable certificate: %v", err)
+		t.Fatalf("SpecAdvance qa->done with a usable certificate: %v", err)
 	}
 	if done.Status != model.SpecStatusDone {
 		t.Errorf("status = %s, want done", done.Status)
@@ -622,7 +757,10 @@ func TestEnsureCertified_RatchetFinding_BlocksThenAckUnblocks(t *testing.T) {
 	commitAllQuality(t, repoDir, "add constitution")
 	svc.WithRepoDir(repoDir)
 
-	spec := advanceToImplementing(t, svc, ctx, "AC28 ratchet finding")
+	// SPEC-137 D1: implementing->qa is unconditional now — the certificate
+	// this test builds is bound to qa's own HEAD/base_sha and is only ever
+	// evaluated on the qa->done transition below.
+	spec := advanceToQA(t, svc, ctx, "AC28 ratchet finding")
 
 	sha := headSHA(t, repoDir)
 	raw, err := os.ReadFile(filepath.Join(repoDir, ".mneme", "quality.toml"))
@@ -642,8 +780,8 @@ func TestEnsureCertified_RatchetFinding_BlocksThenAckUnblocks(t *testing.T) {
 		t.Fatalf("InsertCertificate: %v", err)
 	}
 
-	if _, err := svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: "backend"}); !errors.Is(err, model.ErrCertificateNotGreen) {
-		t.Fatalf("SpecAdvance with a ratchet finding = %v, want ErrCertificateNotGreen", err)
+	if _, err := svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: "orchestrator"}); !errors.Is(err, model.ErrCertificateNotGreen) {
+		t.Fatalf("SpecAdvance qa->done with a ratchet finding = %v, want ErrCertificateNotGreen", err)
 	}
 
 	// The finding row is checks[1] (seq=2, 1-based, per InsertCertificate's
@@ -652,11 +790,11 @@ func TestEnsureCertified_RatchetFinding_BlocksThenAckUnblocks(t *testing.T) {
 		t.Fatalf("AckCheck: %v", err)
 	}
 
-	advanced, err := svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: "backend"})
+	advanced, err := svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: "orchestrator"})
 	if err != nil {
-		t.Fatalf("SpecAdvance after acking the ratchet finding: %v", err)
+		t.Fatalf("SpecAdvance qa->done after acking the ratchet finding: %v", err)
 	}
-	if advanced.Status != model.SpecStatusQA {
-		t.Errorf("status = %s, want qa", advanced.Status)
+	if advanced.Status != model.SpecStatusDone {
+		t.Errorf("status = %s, want done", advanced.Status)
 	}
 }
