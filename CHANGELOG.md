@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [v1.44.0] — 2026-09-01 — A closed reliability gap in certification: no clock-dependent test, no publishing on red, no gate-less green
+
 ### Changed
 
 - **Certification returns to usable after its first real use showed it
@@ -13,9 +15,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   BL-221).** `spec_advance` now requires a green certificate only once,
   at `qa→done` — the `implementing→qa` leg is gone, since the first
   certificate almost never survived QA anyway and the verifier runs the
-  gates on its own regardless. Coverage of the diff is a firmable
-  `finding` now, never a hard `fail` (`quality ack`, same as before this
-  spec). Mutation and the budget-against-the-graph mechanism keep
+  gates on its own regardless. **The same `.mneme/quality.toml` file now
+  behaves differently without a single byte in it changing, and
+  `schema_version` does not move either:** `min_diff_line_pct` used to
+  block `spec_advance` outright and now only produces a `finding` a
+  qa-tester must sign off (`quality ack`) before the spec can close. This
+  is the risk the owner knowingly accepted, in exchange for every
+  certificate now saying, per row, in which mode it ran. Mutation and the
+  budget-against-the-graph mechanism keep
   computing and recording their real result but can no longer, by
   themselves, block a spec from closing — every row now persists a closed
   five-value **effect** (`blocks`/`signable`/`measures`/`absent`/
@@ -65,7 +72,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   gate is a manual `workflow_dispatch` run with a required
   `force_reason`, permanently recorded in that run's own log — not
   mentioned anywhere in the gate's own failure text, so a real failure
-  never reads as an invitation to skip it.
+  never reads as an invitation to skip it. A follow-up fix in the same
+  spec made the gate tolerate a failed GitHub API call (rate limit,
+  network blip) as "no answer yet" rather than treating it as a red CI —
+  it keeps polling within its bounded wait instead of refusing the
+  release over a problem that has nothing to do with the commit itself.
+- **A project with the quality mechanism turned on but with zero gates
+  declared got a passing certificate in 68ms that verified nothing
+  (SPEC-138).** `quality.Parse` used to accept `.mneme/quality.toml` with
+  `enabled = true` and no `[[gate]]` entries at all. In that state,
+  `quality verify` returned `verdict=pass` with a dump of 39 rows — 4
+  marked `pass` and 35 marked as never having run — and the spec sailed
+  through `implementing → qa → done` on that certificate without a
+  single real check having executed. `DeriveVerdict`'s own guard against
+  an empty result set was correct in intent but could never actually
+  fire, because four rows are always added before any gate runs.
+  `quality.Parse` now rejects this configuration outright, with the same
+  wording already used for its sibling check on `visual.targets`. **Read
+  this before upgrading if this mechanism is turned on in your
+  project:** a `.mneme/quality.toml` with `enabled = true` and no
+  declared gate will now refuse to run at all until you declare at least
+  one — this repository's own file is unaffected, since it already
+  declares `build`/`test`/`lint`. This does not close every gap of this
+  kind: a project that DOES declare gates but no criteria or coverage
+  still comes out green — that gap is what SPEC-137's evidence line
+  (above) makes visible instead.
 
 ## [v1.43.0] — 2026-08-30 — SDD state travels through git, browser-capable roles
 
