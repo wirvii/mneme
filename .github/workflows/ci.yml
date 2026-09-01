@@ -6,10 +6,20 @@ on:
   # `main` branch, which internal/cli's SDD e2e test needs (BL-227) — and
   # more importantly, it produces a SECOND, later CI run for the exact
   # same commit that `require-ci-green.sh` (SPEC-135) then picks over the
-  # already-green branch run, refusing every release. `tags-ignore: ["**"]`
-  # excludes every tag push while leaving branch pushes untouched.
+  # already-green branch run, refusing every release.
+  #
+  # `branches: ["**"]` is REQUIRED here, not optional: per GitHub's own
+  # docs, "if you define only tags/tags-ignore or only branches/
+  # branches-ignore, the workflow won't run for events affecting the
+  # undefined Git ref." A first version of this fix declared ONLY
+  # `tags-ignore`, which — per that same rule — silently stopped CI from
+  # running on branch pushes too (verified empirically: the merge commit
+  # that landed that version produced zero CI runs). `branches: ["**"]`
+  # matches every branch explicitly, so push events keep triggering CI
+  # exactly as before; leaving `tags`/`tags-ignore` undefined is what
+  # excludes every tag push.
   push:
-    tags-ignore:
+    branches:
       - "**"
   pull_request:
 
