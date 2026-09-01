@@ -224,3 +224,39 @@ func TestAckCheck_VerdictStaysFailWhenAnotherCheckFails(t *testing.T) {
 		t.Errorf("certificate verdict = %q, want fail (a different check still fails)", gotCert.Verdict)
 	}
 }
+
+// TestAckCheck_MeasuresEffectFailNeverResurrectsOrBlocksVerdict is AC11's
+// own test at the store level (SPEC-137 D4, the risk R1 protects against):
+// a "fail" row whose effect is "measures" (e.g. a mutation/score row) must
+// never be counted by AckCheck's own SQL recalculation — acking the ONE
+// counted finding on the certificate must bring the verdict to "pass" even
+// though a measures-effect row still reads "fail". The assertion reads the
+// verdict BACK from the database (GetCertificate), never AckCheck's own
+// return value — AckCheck returns nil regardless of which verdict it wrote.
+func TestAckCheck_MeasuresEffectFailNeverResurrectsOrBlocksVerdict(t *testing.T) {
+	s := newTestSDDStore(t)
+	ctx := context.Background()
+
+	cert := newTestCertificate("proj", "SPEC-137")
+	cert.Verdict = model.QualityVerdictFindings
+	checks := []*model.QualityCheck{
+		{Kind: "gate", Name: "build", Status: "pass", Effect: "blocks"},
+		{Kind: "constitution", Name: "tracked", Status: "finding", Effect: "blocks"},
+		{Kind: "mutation", Name: "score", Status: "fail", Effect: "measures"},
+	}
+	if err := s.InsertCertificate(ctx, cert, checks); err != nil {
+		t.Fatalf("InsertCertificate: %v", err)
+	}
+
+	if err := s.AckCheck(ctx, cert.ID, 2, "orchestrator", "acceptable"); err != nil {
+		t.Fatalf("AckCheck: %v", err)
+	}
+
+	gotCert, err := s.GetCertificate(ctx, cert.ID)
+	if err != nil {
+		t.Fatalf("GetCertificate: %v", err)
+	}
+	if gotCert.Verdict != model.QualityVerdictPass {
+		t.Errorf("certificate verdict = %q, want pass — a measures-effect fail row must never count", gotCert.Verdict)
+	}
+}

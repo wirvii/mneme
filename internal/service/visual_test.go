@@ -210,9 +210,9 @@ func TestRunVisualChecks_SkipReasons(t *testing.T) {
 // already established).
 func TestVisualSkipReason_FourDistinctTexts(t *testing.T) {
 	const sameSchema = 6
-	notDeclared := visualSkipReason(false, &quality.Constitution{SchemaVersion: sameSchema, VisualDeclared: false})
-	disabled := visualSkipReason(false, &quality.Constitution{SchemaVersion: sameSchema, VisualDeclared: true, Visual: quality.VisualConfig{Enabled: false}})
-	cascade := visualSkipReason(true, &quality.Constitution{SchemaVersion: sameSchema, VisualDeclared: true, Visual: quality.VisualConfig{Enabled: true}})
+	notDeclared, _ := visualSkipReason(false, &quality.Constitution{SchemaVersion: sameSchema, VisualDeclared: false})
+	disabled, _ := visualSkipReason(false, &quality.Constitution{SchemaVersion: sameSchema, VisualDeclared: true, Visual: quality.VisualConfig{Enabled: false}})
+	cascade, _ := visualSkipReason(true, &quality.Constitution{SchemaVersion: sameSchema, VisualDeclared: true, Visual: quality.VisualConfig{Enabled: true}})
 	const compareOff = "comparacion apagada (visual.compare.enabled = false)"
 
 	texts := map[string]string{"not-declared": notDeclared, "disabled": disabled, "cascade": cascade, "compare-off": compareOff}
@@ -234,7 +234,7 @@ func TestVisualSkipReason_FourDistinctTexts(t *testing.T) {
 // gate sitting in `fail` does NOT stop it either (AC26): visualSkipReason
 // takes no anyGateFailed parameter at all, so there is nothing to pass.
 func TestVisualSkipReason_AllGatesGreen_Evaluates(t *testing.T) {
-	reason := visualSkipReason(false, visualTestConstitution())
+	reason, _ := visualSkipReason(false, visualTestConstitution())
 	if reason != "" {
 		t.Errorf("visualSkipReason(clean) = %q, want empty", reason)
 	}
@@ -1038,10 +1038,13 @@ max_diff_pct = 0.1
 }
 
 // TestQualityService_Verify_Visual_RenderFailBlocks is G21's own guardian
-// at the CERTIFICATE level (AC25): a target that fails to render degrades
-// the whole certificate's verdict to `fail` via DeriveVerdict (verdict.go,
-// untouched) — the mechanism's entire reason to exist is that this, and
-// only this, is what SpecAdvance's ensureCertified later checks.
+// at the ROW level (AC25): a target that fails to render is recorded as a
+// `fail` on visual/render — but, per SPEC-137 D5/D8, visual's effect is
+// `measures`, so it no longer degrades the whole certificate's verdict.
+// The mechanism's entire reason to exist did not change (a render failure
+// is still visible, unmissable, in the certificate and QA report); what
+// changed is that measuring it is no longer the SAME thing as it blocking
+// anything.
 func TestQualityService_Verify_Visual_RenderFailBlocks(t *testing.T) {
 	repoDir := newTestGitRepo(t)
 	writeConstitutionV6Visual(t, repoDir, []string{"a"}, false)
@@ -1059,8 +1062,17 @@ func TestQualityService_Verify_Visual_RenderFailBlocks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Verify: %v", err)
 	}
-	if cert.Verdict != model.QualityVerdictFail {
-		t.Fatalf("Verdict = %q, want fail (a target that never renders must block)", cert.Verdict)
+	if cert.Verdict != model.QualityVerdictPass {
+		t.Fatalf("Verdict = %q, want pass — visual's effect is measures, a render failure never degrades the verdict", cert.Verdict)
+	}
+
+	checks, err := s.ListChecks(context.Background(), cert.ID)
+	if err != nil {
+		t.Fatalf("ListChecks: %v", err)
+	}
+	renderRow := findVisualCheck(t, checks, "visual", "render")
+	if renderRow.Status != "fail" {
+		t.Fatalf("visual/render status = %q, want fail (still recorded, just not blocking)", renderRow.Status)
 	}
 }
 
@@ -1089,10 +1101,13 @@ func TestQualityService_Verify_Visual_CleanReportPasses(t *testing.T) {
 }
 
 // TestQualityService_Verify_Visual_ReferenceMissingFinding_AckLiftsBlock
-// covers AC14/AC25's own "finding, not fail, and ack-able" guardian: a
-// missing reference blocks the certificate (`findings`, never `pass`)
-// until a human Acks the row — the SAME store.AckCheck (untouched) every
-// other mechanism's findings already use.
+// covers AC14/AC25's own "finding, not fail, and ack-able" guardian,
+// corrected by SPEC-137 D5/D8: a missing reference is recorded as a
+// `finding` on visual/compare — but visual's effect is `measures`, so it
+// no longer blocks the certificate itself (`pass` from the start, not
+// `findings`). Ack still works exactly as before (the SAME store.AckCheck,
+// untouched) and still converts the row to `acked`; there is simply no
+// verdict-level block left for it to lift.
 func TestQualityService_Verify_Visual_ReferenceMissingFinding_AckLiftsBlock(t *testing.T) {
 	repoDir := newTestGitRepo(t)
 	writeConstitutionV6Visual(t, repoDir, []string{"a"}, true)
@@ -1113,8 +1128,8 @@ func TestQualityService_Verify_Visual_ReferenceMissingFinding_AckLiftsBlock(t *t
 	if err != nil {
 		t.Fatalf("Verify: %v", err)
 	}
-	if cert.Verdict != model.QualityVerdictFindings {
-		t.Fatalf("Verdict = %q, want findings (reference-missing, unsigned)", cert.Verdict)
+	if cert.Verdict != model.QualityVerdictPass {
+		t.Fatalf("Verdict = %q, want pass — visual's effect is measures, a reference-missing finding never blocked it", cert.Verdict)
 	}
 
 	checks, err := s.ListChecks(context.Background(), cert.ID)
@@ -1137,7 +1152,16 @@ func TestQualityService_Verify_Visual_ReferenceMissingFinding_AckLiftsBlock(t *t
 		t.Fatalf("GetLatestCertificate: %v", err)
 	}
 	if updated.Verdict != model.QualityVerdictPass {
-		t.Fatalf("Verdict after Ack = %q, want pass", updated.Verdict)
+		t.Fatalf("Verdict after Ack = %q, want pass (unchanged)", updated.Verdict)
+	}
+
+	updatedChecks, err := s.ListChecks(context.Background(), cert.ID)
+	if err != nil {
+		t.Fatalf("ListChecks after Ack: %v", err)
+	}
+	ackedRow := findVisualCheck(t, updatedChecks, "visual", "compare")
+	if ackedRow.Status != "acked" {
+		t.Fatalf("visual/compare status after Ack = %q, want acked", ackedRow.Status)
 	}
 }
 

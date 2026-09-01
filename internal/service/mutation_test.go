@@ -140,12 +140,12 @@ func TestRunMutationChecks_SkipReasons(t *testing.T) {
 // con N pequeno" trap this EPIC has hit before, in a different guise).
 func TestMutationSkipReason_FourDistinctTexts(t *testing.T) {
 	sameSchema := 5
-	notDeclared := mutationSkipReason(false, false, &quality.Constitution{SchemaVersion: sameSchema, MutationDeclared: false})
-	disabled := mutationSkipReason(false, false, &quality.Constitution{
+	notDeclared, _ := mutationSkipReason(false, false, &quality.Constitution{SchemaVersion: sameSchema, MutationDeclared: false})
+	disabled, _ := mutationSkipReason(false, false, &quality.Constitution{
 		SchemaVersion: sameSchema, MutationDeclared: true, Mutation: quality.MutationConfig{Enabled: false},
 	})
-	cascade := mutationSkipReason(true, false, &quality.Constitution{SchemaVersion: sameSchema, MutationDeclared: true, Mutation: quality.MutationConfig{Enabled: true}})
-	gateRed := mutationSkipReason(false, true, &quality.Constitution{SchemaVersion: sameSchema, MutationDeclared: true, Mutation: quality.MutationConfig{Enabled: true}})
+	cascade, _ := mutationSkipReason(true, false, &quality.Constitution{SchemaVersion: sameSchema, MutationDeclared: true, Mutation: quality.MutationConfig{Enabled: true}})
+	gateRed, _ := mutationSkipReason(false, true, &quality.Constitution{SchemaVersion: sameSchema, MutationDeclared: true, Mutation: quality.MutationConfig{Enabled: true}})
 
 	texts := map[string]string{"not-declared": notDeclared, "disabled": disabled, "cascade": cascade, "gate-red": gateRed}
 	seen := make(map[string]string, len(texts))
@@ -164,7 +164,7 @@ func TestMutationSkipReason_FourDistinctTexts(t *testing.T) {
 // with no cascade and no gate in fail, mutationSkipReason returns "" and
 // the mechanism proceeds to evaluate.
 func TestMutationSkipReason_AllGatesGreen_Evaluates(t *testing.T) {
-	reason := mutationSkipReason(false, false, mutationTestConstitution())
+	reason, _ := mutationSkipReason(false, false, mutationTestConstitution())
 	if reason != "" {
 		t.Errorf("mutationSkipReason(clean) = %q, want empty (mechanism must evaluate)", reason)
 	}
@@ -525,9 +525,19 @@ func TestRunMutationChecks_Viability(t *testing.T) {
 				t.Errorf("unexpected mutant row %+v — not_viable must never produce a survivor row", c)
 			}
 		}
+		// SPEC-137 D5/D8: mutation is EffectMeasures — it can never degrade
+		// the certificate's verdict, whatever the row's own Status is
+		// (D1 pata d's own "catastrophic green" is closed at the ROW
+		// level, checked above; the verdict itself is a DIFFERENT
+		// property this design deliberately leaves alone). assignCheckEffects
+		// is called here to exercise the REAL sweep Verify runs, not a
+		// vacuous zero-value Effect.
+		if err := assignCheckEffects(checks, pure); err != nil {
+			t.Fatalf("assignCheckEffects: %v", err)
+		}
 		verdict := quality.DeriveVerdict(pure)
-		if verdict != quality.VerdictFindings {
-			t.Errorf("DeriveVerdict(pure) = %q, want findings — this is the certificate-level proof the catastrophic green is closed", verdict)
+		if verdict != quality.VerdictPass {
+			t.Errorf("DeriveVerdict(pure) = %q, want pass — mutation's effect is measures, it never degrades the verdict", verdict)
 		}
 	})
 
@@ -589,9 +599,16 @@ func TestRunMutationChecks_TimeoutsAndNotCovered(t *testing.T) {
 			t.Errorf("unexpected mutant row %+v — neither not_covered nor timed_out is a survivor", c)
 		}
 	}
+	// SPEC-137 D5/D8: mutation is EffectMeasures — timed_out's own row
+	// status is still "finding" (checked above), but that never degrades
+	// the certificate's verdict. assignCheckEffects exercises the REAL
+	// sweep Verify runs, not a vacuous zero-value Effect.
+	if err := assignCheckEffects(checks, pure); err != nil {
+		t.Fatalf("assignCheckEffects: %v", err)
+	}
 	verdict := quality.DeriveVerdict(pure)
-	if verdict != quality.VerdictFindings {
-		t.Errorf("DeriveVerdict(pure) = %q, want findings (the timed_out row alone must degrade it)", verdict)
+	if verdict != quality.VerdictPass {
+		t.Errorf("DeriveVerdict(pure) = %q, want pass — mutation's effect is measures, a timed_out row never degrades the verdict", verdict)
 	}
 }
 
@@ -610,9 +627,14 @@ func TestRunMutationChecks_NotCoveredAlone_NeverDegrades(t *testing.T) {
 		"mutation-report": {"tmp/mutants.json": mutantsV1Doc("foo.go:"+line+":a:not_covered", "foo.go:"+line+":b:killed")},
 	}}
 	svc := &QualityService{repoDir: repoDir, runner: runner}
-	_, pure, err := svc.runMutationChecks(context.Background(), g, mutationTestConstitution(), spec, false, false)
+	checks, pure, err := svc.runMutationChecks(context.Background(), g, mutationTestConstitution(), spec, false, false)
 	if err != nil {
 		t.Fatalf("runMutationChecks: %v", err)
+	}
+	// assignCheckEffects exercises the REAL sweep Verify runs, so this
+	// assertion is not vacuously true just because Effect defaults to "".
+	if err := assignCheckEffects(checks, pure); err != nil {
+		t.Fatalf("assignCheckEffects: %v", err)
 	}
 	if verdict := quality.DeriveVerdict(pure); verdict != quality.VerdictPass {
 		t.Errorf("DeriveVerdict(pure) = %q, want pass — not_covered alone must never degrade the verdict", verdict)
@@ -639,12 +661,16 @@ func TestRunMutationChecks_SurvivorRows(t *testing.T) {
 		if err != nil {
 			t.Fatalf("runMutationChecks: %v", err)
 		}
-		// AC19/G19a: a survivor row must DEGRADE the certificate's derived
-		// verdict — this is what "tumba el certificado" means mechanically:
-		// ensureCertified later refuses implementing->qa on anything but
-		// VerdictPass.
-		if verdict := quality.DeriveVerdict(pure); verdict != quality.VerdictFindings {
-			t.Fatalf("DeriveVerdict(pure) = %q, want findings — a survivor must block implementing->qa", verdict)
+		// SPEC-137 D5/D8: a survivor row no longer degrades the
+		// certificate's derived verdict — mutation's effect is measures.
+		// It still travels in the certificate and the QA report (checked
+		// below via the row assertions), which is where its power ends.
+		// assignCheckEffects exercises the REAL sweep Verify runs.
+		if err := assignCheckEffects(checks, pure); err != nil {
+			t.Fatalf("assignCheckEffects: %v", err)
+		}
+		if verdict := quality.DeriveVerdict(pure); verdict != quality.VerdictPass {
+			t.Fatalf("DeriveVerdict(pure) = %q, want pass — mutation's effect is measures, a survivor never degrades the verdict", verdict)
 		}
 		var mutantRows []*model.QualityCheck
 		for _, c := range checks {
@@ -931,11 +957,12 @@ func verifyWithSurvivors(t *testing.T, s *store.SDDStore, specID string, maxEqui
 	repoDir := newTestGitRepo(t)
 	writeConstitutionV5Mutation(t, repoDir, maxEquivalent)
 	commitAll(t, repoDir, "add constitution")
-	// baseSHA is captured AFTER the constitution lands, so the
-	// constitution itself is NOT part of the spec's own range — otherwise
-	// constitution/unchanged-in-range would be a permanent finding on
-	// every certificate this fixture produces, independent of anything
-	// this test is actually about.
+	// baseSHA is captured AFTER the constitution lands. This ordering is
+	// now VESTIGIAL: SPEC-137 D5 removed constitution/unchanged-in-range
+	// entirely, so nothing in this fixture's range would degrade if the
+	// constitution commit fell inside it. Kept anyway because it costs
+	// nothing and it is one line closer to how a real repo's history
+	// actually looks (constitution committed once, spec work follows).
 	baseSHA := headSHAFor(t, repoDir)
 
 	if err := os.WriteFile(filepath.Join(repoDir, "foo.go"), []byte("package main\n\nfunc Foo() {}\n"), 0o644); err != nil {
@@ -975,16 +1002,19 @@ func verifyWithSurvivors(t *testing.T, s *store.SDDStore, specID string, maxEqui
 	return cert, seqs
 }
 
-// TestSign_MutantSurvivor_LiftsBlock covers AC19/G19b: signing a survivor
-// converts it to `acked` and the certificate's stored verdict, recomputed
-// by AckCheck in the SAME transaction (store.go, untouched), becomes
-// `pass` — the certificate-level proof the escotilla actually reopens the
-// door Verify's own finding closed.
-func TestSign_MutantSurvivor_LiftsBlock(t *testing.T) {
+// TestSign_MutantSurvivor_StillWorks_ButLiftsNothing covers AC19/G19b's own
+// surviving half, corrected by SPEC-137 D5's second named consequence: the
+// escotilla (Sign on a `mutant` survivor row, the equivalence cupo) is kept
+// INTACT and UNMODIFIED, but it has no verdict-level door left to reopen —
+// mutation's effect is now `measures`, so a certificate with survivors was
+// ALREADY `pass` before signing anything. What Sign still does, and what
+// this test still proves: the row itself transitions finding -> acked,
+// recording by/evidence, exactly as before.
+func TestSign_MutantSurvivor_StillWorks_ButLiftsNothing(t *testing.T) {
 	s := newTestQualityStore(t)
 	cert, seqs := verifyWithSurvivors(t, s, "SPEC-901", 2, 1)
-	if cert.Verdict != model.QualityVerdictFindings {
-		t.Fatalf("cert.Verdict = %q, want findings before signing", cert.Verdict)
+	if cert.Verdict != model.QualityVerdictPass {
+		t.Fatalf("cert.Verdict = %q, want pass — a mutant survivor's effect is measures, it never degraded this verdict to begin with", cert.Verdict)
 	}
 
 	svc := NewQualityService(s, "proj", t.TempDir(), &fakeGateRunner{})
@@ -994,12 +1024,26 @@ func TestSign_MutantSurvivor_LiftsBlock(t *testing.T) {
 		t.Fatalf("Sign: %v", err)
 	}
 
+	checks, err := s.ListChecks(context.Background(), cert.ID)
+	if err != nil {
+		t.Fatalf("ListChecks: %v", err)
+	}
+	var signedRow *model.QualityCheck
+	for _, c := range checks {
+		if int64(c.Seq) == seqs[0] {
+			signedRow = c
+		}
+	}
+	if signedRow == nil || signedRow.Status != "acked" || signedRow.AckedBy != "qa-tester" {
+		t.Fatalf("signed row = %+v, want status=acked acked_by=qa-tester", signedRow)
+	}
+
 	updated, err := s.GetLatestCertificate(context.Background(), "proj", "SPEC-901")
 	if err != nil {
 		t.Fatalf("GetLatestCertificate: %v", err)
 	}
 	if updated.Verdict != model.QualityVerdictPass {
-		t.Errorf("cert.Verdict after Sign = %q, want pass — the escotilla must actually lift the block", updated.Verdict)
+		t.Errorf("cert.Verdict after Sign = %q, want pass (unchanged)", updated.Verdict)
 	}
 }
 

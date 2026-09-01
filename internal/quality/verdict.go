@@ -45,17 +45,34 @@ const (
 // of storage concerns.
 type CheckResult struct {
 	Status CheckStatus
+
+	// Effect is SPEC-137 D4's closed vocabulary value for this row —
+	// whether it counts toward the verdict at all. The zero value ("")
+	// never counts (Effect("").CountsTowardVerdict() is false), which is
+	// deliberate: a caller that forgets to populate this field gets a row
+	// that is silently EXCLUDED from the verdict, never one that silently
+	// blocks it — the safer failure direction for a field this new.
+	Effect Effect
 }
 
 // DeriveVerdict computes the certificate's Verdict from its checks, in the
-// order D10 fixes: any "fail" wins outright; otherwise any un-acked
-// "finding" degrades to "findings"; otherwise "pass". "acked" and "skipped"
-// never degrade anything — that is the whole point of acking a finding.
+// order D10 fixes, counting ONLY rows whose Effect.CountsTowardVerdict() is
+// true (SPEC-137 D4 — a "measures"/"absent"/"stopped" row can never tumble
+// or degrade a certificate, whatever its Status says): any "fail" among the
+// counted rows wins outright; otherwise any un-acked "finding" among them
+// degrades to "findings"; otherwise "pass". "acked" and "skipped" never
+// degrade anything even when counted — that is the whole point of acking a
+// finding.
 //
 // An EMPTY set of checks is "fail" (AC7): a certificate that verified
 // nothing at all is not a green certificate, it is an absence of evidence,
 // and treating absence as success is exactly the dishonest "green report"
-// this mechanism exists to eliminate.
+// this mechanism exists to eliminate. This rule is checked against the
+// TOTAL slice length, never against how many rows counted — a certificate
+// whose only declared mechanisms are measure-only ones (SPEC-137 D9) is a
+// real, non-empty set of checks and must NOT be forced to "fail" just
+// because none of them count; D13 explicitly rejected requiring a minimum
+// of configuration to leave "pass" reachable.
 func DeriveVerdict(checks []CheckResult) Verdict {
 	if len(checks) == 0 {
 		return VerdictFail
@@ -63,6 +80,9 @@ func DeriveVerdict(checks []CheckResult) Verdict {
 
 	hasFinding := false
 	for _, c := range checks {
+		if !c.Effect.CountsTowardVerdict() {
+			continue
+		}
 		if c.Status == CheckStatusFail {
 			return VerdictFail
 		}

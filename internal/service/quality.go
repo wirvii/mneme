@@ -207,6 +207,10 @@ func (svc *QualityService) Verify(ctx context.Context, req model.QualityVerifyRe
 		return nil, err
 	}
 
+	if err := assignCheckEffects(checks, pureChecks); err != nil {
+		return nil, fmt.Errorf("service: quality: verify: assign effects: %w", err)
+	}
+
 	verdict := quality.DeriveVerdict(pureChecks)
 	finished := time.Now().UTC()
 
@@ -231,10 +235,61 @@ func (svc *QualityService) Verify(ctx context.Context, req model.QualityVerifyRe
 	return cert, nil
 }
 
-// runAllChecks assembles the tree check, the three constitution checks, and
-// every declared gate, in that order (D8/D9/D6), returning both the
-// persistence-shaped rows and their pure quality.CheckResult projection (for
-// DeriveVerdict) in one pass so the two representations can never diverge.
+// constitutionCheckNames is the FIXED, declared order of the constitution's
+// own rows — "tracked" and "hash" (SPEC-137 D5 removed the third,
+// "unchanged-in-range": the constitution is versioned and reviewed like any
+// other file, and BL-217 already tracked the ritual signature that row
+// forced on every emission). A test that wants to assert "exactly the
+// constitution rows this emitter declares, no more, no less" derives its
+// expectation from THIS slice — never from a literal count written by hand
+// (AC7's second, symmetric check).
+var constitutionCheckNames = []string{"tracked", "hash"}
+
+// assignCheckEffects is SPEC-137 D4's CENTRAL SWEEP: the single place that
+// assigns Effect to every EVALUATED row (never a skipped one — those must
+// already carry their own effect, absent or stopped, from the emitter that
+// skipped them, since only the emitter knows which cause applies), run
+// once over the complete list right before DeriveVerdict. This is
+// DELIBERATELY not done at each of the ~50 call sites that construct a
+// model.QualityCheck: a sweep over the final list can never miss a row,
+// where editing every call site individually could silently forget one —
+// exactly the failure mode this design exists to rule out (AC9 catches it
+// if it ever happens anyway, by comparing the emitted kinds against
+// quality.EffectForKind's own table).
+//
+// checks and pure are walked IN LOCKSTEP (same index) because they are
+// built in lockstep everywhere in this file — every append to one is
+// paired with the same-index append to the other, which is exactly what
+// keeps DeriveVerdict's pure computation and the persisted checks from
+// ever disagreeing (the same invariant runAllChecks' own godoc already
+// documents for its two return slices).
+func assignCheckEffects(checks []*model.QualityCheck, pure []quality.CheckResult) error {
+	if len(checks) != len(pure) {
+		return fmt.Errorf("checks (%d) and pure (%d) are out of lockstep", len(checks), len(pure))
+	}
+	for i, c := range checks {
+		if c.Status == "skipped" {
+			if c.Effect == "" {
+				return fmt.Errorf("check %s/%s is skipped but its emitter never set an effect (absent/stopped)", c.Kind, c.Name)
+			}
+			pure[i].Effect = quality.Effect(c.Effect)
+			continue
+		}
+		effect, err := quality.EffectForKind(c.Kind)
+		if err != nil {
+			return fmt.Errorf("check %s/%s: %w", c.Kind, c.Name, err)
+		}
+		c.Effect = string(effect)
+		pure[i].Effect = effect
+	}
+	return nil
+}
+
+// runAllChecks assembles the tree check, the constitution's own checks, and
+// every declared gate, in that order (D8/D9/D6, minus D5's removed
+// unchanged-in-range row), returning both the persistence-shaped rows and
+// their pure quality.CheckResult projection (for DeriveVerdict) in one pass
+// so the two representations can never diverge.
 func (svc *QualityService) runAllChecks(
 	ctx context.Context, g *quality.Git, raw []byte, constitution *quality.Constitution, spec *model.Spec,
 ) (checks []*model.QualityCheck, pure []quality.CheckResult, dirty bool, err error) {
@@ -264,33 +319,6 @@ func (svc *QualityService) runAllChecks(
 	}
 	checks = append(checks, &model.QualityCheck{Kind: "constitution", Name: "tracked", Status: trackedStatus, Summary: trackedSummary})
 	pure = append(pure, quality.CheckResult{Status: quality.CheckStatus(trackedStatus)})
-
-	unchangedStatus, unchangedSummary, unchangedDetail := "skipped", "", ""
-	if spec.BaseSHA != "" {
-		changed, err := g.PathChangedInRange(spec.BaseSHA, constitutionRelPath)
-		if err != nil {
-			return nil, nil, false, fmt.Errorf("service: quality: verify: path changed in range: %w", err)
-		}
-		if changed {
-			unchangedStatus = "finding"
-			unchangedSummary = "constitution_changed_in_range"
-			beforeContent, beforeOK, err := g.FileAtRef(spec.BaseSHA, constitutionRelPath)
-			if err != nil {
-				return nil, nil, false, fmt.Errorf("service: quality: verify: file at ref: %w", err)
-			}
-			beforeHash := ""
-			if beforeOK {
-				beforeHash = quality.HashBytes(beforeContent)
-			}
-			unchangedDetail = fmt.Sprintf(`{"before_hash":%q,"after_hash":%q}`, beforeHash, constHash)
-		} else {
-			unchangedStatus = "pass"
-		}
-	}
-	checks = append(checks, &model.QualityCheck{
-		Kind: "constitution", Name: "unchanged-in-range", Status: unchangedStatus, Summary: unchangedSummary, Detail: unchangedDetail,
-	})
-	pure = append(pure, quality.CheckResult{Status: quality.CheckStatus(unchangedStatus)})
 
 	checks = append(checks, &model.QualityCheck{Kind: "constitution", Name: "hash", Status: "pass", Summary: constHash})
 	pure = append(pure, quality.CheckResult{Status: quality.CheckStatusPass})
@@ -388,8 +416,13 @@ func (svc *QualityService) runGates(ctx context.Context, gates []quality.Gate) (
 
 	for _, gate := range gates {
 		if stopped {
-			checks = append(checks, &model.QualityCheck{Kind: "gate", Name: gate.Name, Status: string(quality.GateStatusSkipped)})
-			pure = append(pure, quality.CheckResult{Status: quality.CheckStatusSkipped})
+			// SPEC-137 D4: a gate only ever reaches this branch because an
+			// earlier REQUIRED gate already failed — the literal definition
+			// of "stopped", never "absent" (the gate WAS declared).
+			checks = append(checks, &model.QualityCheck{
+				Kind: "gate", Name: gate.Name, Status: string(quality.GateStatusSkipped), Effect: string(quality.EffectStopped),
+			})
+			pure = append(pure, quality.CheckResult{Status: quality.CheckStatusSkipped, Effect: quality.EffectStopped})
 			continue
 		}
 
@@ -427,29 +460,34 @@ type coverageProfileDetail struct {
 // vocabulary — "apagado por omisión" (schema 1) and "apagado por decisión"
 // (coverage.enabled=false) must produce DIFFERENT summaries (AC26): the
 // first is silent, structural absence; the second is a reviewable choice.
-func coverageSkipReason(gatesStopped bool, constitution *quality.Constitution) string {
+//
+// SPEC-137 D4: also returns the row's closed-vocabulary skip CAUSE —
+// EffectStopped when an earlier required gate is what blocked this tramo,
+// EffectAbsent when nothing was declared for it (by omission or by
+// decision) — since only this function, the emitter, knows which applies.
+func coverageSkipReason(gatesStopped bool, constitution *quality.Constitution) (string, quality.Effect) {
 	switch {
 	case gatesStopped:
-		return "un gate required anterior fallo"
+		return "un gate required anterior fallo", quality.EffectStopped
 	case !constitution.CoverageDeclared:
-		return fmt.Sprintf("constitucion schema_version=%d no declara [coverage] (apagado por omision)", constitution.SchemaVersion)
+		return fmt.Sprintf("constitucion schema_version=%d no declara [coverage] (apagado por omision)", constitution.SchemaVersion), quality.EffectAbsent
 	case !constitution.Coverage.Enabled:
-		return "coverage.enabled = false (apagado por decision)"
+		return "coverage.enabled = false (apagado por decision)", quality.EffectAbsent
 	default:
-		return ""
+		return "", ""
 	}
 }
 
 // skippedCoverageChecks builds all three coverage rows as "skipped" with
-// the SAME reason (D13) — used whenever the mechanism is off, or the gate
-// cascade already stopped, before any command is ever run.
-func skippedCoverageChecks(reason string) ([]*model.QualityCheck, []quality.CheckResult) {
+// the SAME reason and cause (D13/D4) — used whenever the mechanism is off,
+// or the gate cascade already stopped, before any command is ever run.
+func skippedCoverageChecks(reason string, cause quality.Effect) ([]*model.QualityCheck, []quality.CheckResult) {
 	names := []string{"profile", "changed-files-in-profile", "diff-lines"}
 	checks := make([]*model.QualityCheck, 0, len(names))
 	pure := make([]quality.CheckResult, 0, len(names))
 	for _, name := range names {
-		checks = append(checks, &model.QualityCheck{Kind: "coverage", Name: name, Status: "skipped", Summary: reason})
-		pure = append(pure, quality.CheckResult{Status: quality.CheckStatusSkipped})
+		checks = append(checks, &model.QualityCheck{Kind: "coverage", Name: name, Status: "skipped", Summary: reason, Effect: string(cause)})
+		pure = append(pure, quality.CheckResult{Status: quality.CheckStatusSkipped, Effect: cause})
 	}
 	return checks, pure
 }
@@ -457,7 +495,12 @@ func skippedCoverageChecks(reason string) ([]*model.QualityCheck, []quality.Chec
 // coverageProfileFailure builds the "coverage/profile" row as a `fail`,
 // plus rows 2-3 skipped for the same reason (D13: "no se acumulan dos
 // diagnosticos del mismo hecho") — the single exit path every failure
-// branch of runCoverageChecks funnels through.
+// branch of runCoverageChecks funnels through. Row 1's Effect is left for
+// Verify's central sweep (D4) — it is a real EVALUATED row, not a skip.
+// Rows 2-3 are skipped with EffectStopped: coverage WAS declared and
+// running, and it was THIS tramo's own row 1 that blocked them — the same
+// "declared but blocked by something upstream" shape gatesStopped gives
+// every other tramo, just scoped to coverage's own internal cascade.
 func coverageProfileFailure(summary string, res quality.GateResult) ([]*model.QualityCheck, []quality.CheckResult) {
 	checks := []*model.QualityCheck{{
 		Kind: "coverage", Name: "profile", Status: "fail",
@@ -466,7 +509,7 @@ func coverageProfileFailure(summary string, res quality.GateResult) ([]*model.Qu
 		Summary: summary,
 	}}
 	pure := []quality.CheckResult{{Status: quality.CheckStatusFail}}
-	skippedChecks, skippedPure := skippedCoverageChecks("coverage/profile fallo")
+	skippedChecks, skippedPure := skippedCoverageChecks("coverage/profile fallo", quality.EffectStopped)
 	return append(checks, skippedChecks[1:]...), append(pure, skippedPure[1:]...)
 }
 
@@ -558,8 +601,8 @@ func prepareDeclaredOutput(g *quality.Git, repoDir, relPath, outputName, staleNo
 func (svc *QualityService) runCoverageChecks(
 	ctx context.Context, g *quality.Git, constitution *quality.Constitution, spec *model.Spec, gatesStopped bool,
 ) ([]*model.QualityCheck, []quality.CheckResult, *coverageProfileDetail, error) {
-	if reason := coverageSkipReason(gatesStopped, constitution); reason != "" {
-		checks, pure := skippedCoverageChecks(reason)
+	if reason, cause := coverageSkipReason(gatesStopped, constitution); reason != "" {
+		checks, pure := skippedCoverageChecks(reason, cause)
 		return checks, pure, nil, nil
 	}
 
@@ -673,15 +716,20 @@ func (svc *QualityService) runCoverageChecks(
 	checks = append(checks, &model.QualityCheck{Kind: "coverage", Name: "changed-files-in-profile", Status: row2Status, Summary: row2Summary})
 	pure = append(pure, quality.CheckResult{Status: quality.CheckStatus(row2Status)})
 
-	// Row 3: the delta threshold itself, with D6's floor.
-	var row3Status, row3Summary string
+	// Row 3: the delta threshold itself, with D6's floor. SPEC-137 D4: both
+	// skip causes here are EffectAbsent — D4's own wording names this EXACT
+	// pair ("no había nada declarado ... o la spec no tiene base contra la
+	// que comparar").
+	var row3Status, row3Summary, row3Effect string
 	switch {
 	case spec.BaseSHA == "":
 		row3Status = "skipped"
 		row3Summary = "spec sin base_sha, no hay rango que evaluar"
+		row3Effect = string(quality.EffectAbsent)
 	case diffStats.LinesEligible < cov.MinChangedLines:
 		row3Status = "skipped"
 		row3Summary = fmt.Sprintf("%d lineas elegibles < min_changed_lines (%d)", diffStats.LinesEligible, cov.MinChangedLines)
+		row3Effect = string(quality.EffectAbsent)
 	case diffStats.Pct < cov.MinDiffLinePct:
 		row3Status = "fail"
 		row3Summary = fmt.Sprintf("cobertura del diff %.2f%% < min_diff_line_pct (%.2f%%)", diffStats.Pct, cov.MinDiffLinePct)
@@ -689,8 +737,8 @@ func (svc *QualityService) runCoverageChecks(
 		row3Status = "pass"
 		row3Summary = fmt.Sprintf("cobertura del diff %.2f%%", diffStats.Pct)
 	}
-	checks = append(checks, &model.QualityCheck{Kind: "coverage", Name: "diff-lines", Status: row3Status, Summary: row3Summary})
-	pure = append(pure, quality.CheckResult{Status: quality.CheckStatus(row3Status)})
+	checks = append(checks, &model.QualityCheck{Kind: "coverage", Name: "diff-lines", Status: row3Status, Summary: row3Summary, Effect: row3Effect})
+	pure = append(pure, quality.CheckResult{Status: quality.CheckStatus(row3Status), Effect: quality.Effect(row3Effect)})
 
 	return checks, pure, detail, nil
 }
@@ -701,15 +749,15 @@ func (svc *QualityService) runCoverageChecks(
 var ratchetRowNames = []string{"baseline-integrity", "baseline-comparable", "global-line-pct", "baseline-stale"}
 
 // skippedRatchetChecks builds all four ratchet rows as "skipped" with the
-// SAME reason — used whenever the mechanism (or just the ratchet half of
-// it) is off, or an earlier stage's cascade already stopped, before any
-// baseline is ever read.
-func skippedRatchetChecks(reason string) ([]*model.QualityCheck, []quality.CheckResult) {
+// SAME reason and cause (D13/D4) — used whenever the mechanism (or just the
+// ratchet half of it) is off, or an earlier stage's cascade already
+// stopped, before any baseline is ever read.
+func skippedRatchetChecks(reason string, cause quality.Effect) ([]*model.QualityCheck, []quality.CheckResult) {
 	checks := make([]*model.QualityCheck, 0, len(ratchetRowNames))
 	pure := make([]quality.CheckResult, 0, len(ratchetRowNames))
 	for _, name := range ratchetRowNames {
-		checks = append(checks, &model.QualityCheck{Kind: "ratchet", Name: name, Status: "skipped", Summary: reason})
-		pure = append(pure, quality.CheckResult{Status: quality.CheckStatusSkipped})
+		checks = append(checks, &model.QualityCheck{Kind: "ratchet", Name: name, Status: "skipped", Summary: reason, Effect: string(cause)})
+		pure = append(pure, quality.CheckResult{Status: quality.CheckStatusSkipped, Effect: cause})
 	}
 	return checks, pure
 }
@@ -720,22 +768,29 @@ func skippedRatchetChecks(reason string) ([]*model.QualityCheck, []quality.Check
 // produced a usable measurement" (D13's "no se acumulan dos diagnosticos
 // del mismo hecho" — a coverage/profile failure already explains itself;
 // the ratchet has nothing new to add on top of it).
-func ratchetSkipReason(gatesStopped bool, constitution *quality.Constitution, coverageDetail *coverageProfileDetail) string {
+//
+// SPEC-137 D4: the coverageDetail==nil cause is EffectStopped, not
+// EffectAbsent — by the time this branch is reached, coverage WAS declared
+// and enabled (the two prior cases already ruled that out); the ratchet
+// was blocked by coverage's own upstream failure, the same "declared but
+// blocked by something that ran before it" shape a required gate gives
+// every other tramo.
+func ratchetSkipReason(gatesStopped bool, constitution *quality.Constitution, coverageDetail *coverageProfileDetail) (string, quality.Effect) {
 	switch {
 	case gatesStopped:
-		return "un gate required anterior fallo"
+		return "un gate required anterior fallo", quality.EffectStopped
 	case !constitution.CoverageDeclared:
-		return fmt.Sprintf("constitucion schema_version=%d no declara [coverage] (apagado por omision)", constitution.SchemaVersion)
+		return fmt.Sprintf("constitucion schema_version=%d no declara [coverage] (apagado por omision)", constitution.SchemaVersion), quality.EffectAbsent
 	case !constitution.Coverage.Enabled:
-		return "coverage.enabled = false (apagado por decision)"
+		return "coverage.enabled = false (apagado por decision)", quality.EffectAbsent
 	case !constitution.RatchetDeclared:
-		return fmt.Sprintf("constitucion schema_version=%d no declara [ratchet]", constitution.SchemaVersion)
+		return fmt.Sprintf("constitucion schema_version=%d no declara [ratchet]", constitution.SchemaVersion), quality.EffectAbsent
 	case !constitution.Ratchet.Enabled:
-		return "ratchet.enabled = false — el cliquet apagado no apaga la cobertura del delta"
+		return "ratchet.enabled = false — el cliquet apagado no apaga la cobertura del delta", quality.EffectAbsent
 	case coverageDetail == nil:
-		return "coverage/profile no produjo una medicion utilizable"
+		return "coverage/profile no produjo una medicion utilizable", quality.EffectStopped
 	default:
-		return ""
+		return "", ""
 	}
 }
 
@@ -760,8 +815,8 @@ func ratchetSkipReason(gatesStopped bool, constitution *quality.Constitution, co
 func (svc *QualityService) runRatchetChecks(
 	g *quality.Git, constitution *quality.Constitution, spec *model.Spec, gatesStopped bool, coverageDetail *coverageProfileDetail,
 ) ([]*model.QualityCheck, []quality.CheckResult, error) {
-	if reason := ratchetSkipReason(gatesStopped, constitution, coverageDetail); reason != "" {
-		checks, pure := skippedRatchetChecks(reason)
+	if reason, cause := ratchetSkipReason(gatesStopped, constitution, coverageDetail); reason != "" {
+		checks, pure := skippedRatchetChecks(reason, cause)
 		return checks, pure, nil
 	}
 
@@ -784,11 +839,14 @@ func (svc *QualityService) runRatchetChecks(
 	}
 
 	// Row 4: baseline-integrity — needs a rango (spec.BaseSHA) to read
-	// "before" from; without one it is "skipped", exactly like row 3.
-	var status4, summary4 string
+	// "before" from; without one it is "skipped", exactly like row 3. Its
+	// cause is EffectAbsent (SPEC-137 D4's own wording names this EXACT
+	// case: "la spec no tiene base contra la que comparar").
+	var status4, summary4, effect4 string
 	if spec.BaseSHA == "" {
 		status4 = "skipped"
 		summary4 = "spec sin base_sha, no hay rango que evaluar"
+		effect4 = string(quality.EffectAbsent)
 	} else {
 		mergeBase, mbErr := g.MergeBase(spec.BaseSHA, "HEAD")
 		if mbErr != nil {
@@ -814,12 +872,14 @@ func (svc *QualityService) runRatchetChecks(
 		}
 		summary4 = reason
 	}
-	checks := []*model.QualityCheck{{Kind: "ratchet", Name: "baseline-integrity", Status: status4, Summary: summary4}}
-	pure := []quality.CheckResult{{Status: quality.CheckStatus(status4)}}
+	checks := []*model.QualityCheck{{Kind: "ratchet", Name: "baseline-integrity", Status: status4, Summary: summary4, Effect: effect4}}
+	pure := []quality.CheckResult{{Status: quality.CheckStatus(status4), Effect: quality.Effect(effect4)}}
 
 	if after == nil {
-		// D13: the normal pre-adoption state — nothing registered yet.
-		skippedChecks, skippedPure := skippedRatchetChecks("sin linea base registrada (mneme quality baseline update)")
+		// D13: the normal pre-adoption state — nothing registered yet
+		// (EffectAbsent: this is exactly "no había nada declarado" — no
+		// baseline was ever registered to compare against).
+		skippedChecks, skippedPure := skippedRatchetChecks("sin linea base registrada (mneme quality baseline update)", quality.EffectAbsent)
 		// Row 4 was already evaluated above (never skipped just because
 		// "after" is absent — D11's own "ausente -> ausente: pass" and
 		// "ausente -> presente: pass" rows depend on evaluating it) —
@@ -1392,18 +1452,22 @@ type assertionDetail struct {
 // nada del disco" rule), "apagado por omision" (schema < 3), and "apagado
 // por decision" (criteria.enabled=false) all produce DIFFERENT summaries
 // (AC23), and none is silent.
-func (svc *QualityService) criteriaSkipReason(gatesStopped bool, constitution *quality.Constitution) string {
+//
+// SPEC-137 D4: also returns the skip CAUSE — EffectStopped only for the
+// gate cascade; every other cause here means nothing was ever declared or
+// configured for criteria to run against, so all of them are EffectAbsent.
+func (svc *QualityService) criteriaSkipReason(gatesStopped bool, constitution *quality.Constitution) (string, quality.Effect) {
 	switch {
 	case gatesStopped:
-		return "un gate required anterior fallo"
+		return "un gate required anterior fallo", quality.EffectStopped
 	case svc.workflowDir == "":
-		return "workflowDir no configurado"
+		return "workflowDir no configurado", quality.EffectAbsent
 	case !constitution.CriteriaDeclared:
-		return fmt.Sprintf("constitucion schema_version=%d no declara [criteria] (apagado por omision)", constitution.SchemaVersion)
+		return fmt.Sprintf("constitucion schema_version=%d no declara [criteria] (apagado por omision)", constitution.SchemaVersion), quality.EffectAbsent
 	case !constitution.Criteria.Enabled:
-		return "criteria.enabled = false (apagado por decision)"
+		return "criteria.enabled = false (apagado por decision)", quality.EffectAbsent
 	default:
-		return ""
+		return "", ""
 	}
 }
 
@@ -1413,16 +1477,16 @@ func (svc *QualityService) criteriaSkipReason(gatesStopped bool, constitution *q
 var criteriaRowNames = []string{"declared", "manual-quota", "command-quota"}
 
 // skippedCriteriaChecks builds all three top-level criteria rows as
-// "skipped" with the SAME reason — used whenever the mechanism is off, or
-// an earlier stage's cascade already stopped, before criteria.toml is ever
-// read. No per-criterion rows accompany a skip: without reading the
-// document, N is unknown.
-func skippedCriteriaChecks(reason string) ([]*model.QualityCheck, []quality.CheckResult) {
+// "skipped" with the SAME reason and cause (D13/D4) — used whenever the
+// mechanism is off, or an earlier stage's cascade already stopped, before
+// criteria.toml is ever read. No per-criterion rows accompany a skip:
+// without reading the document, N is unknown.
+func skippedCriteriaChecks(reason string, cause quality.Effect) ([]*model.QualityCheck, []quality.CheckResult) {
 	checks := make([]*model.QualityCheck, 0, len(criteriaRowNames))
 	pure := make([]quality.CheckResult, 0, len(criteriaRowNames))
 	for _, name := range criteriaRowNames {
-		checks = append(checks, &model.QualityCheck{Kind: "criteria", Name: name, Status: "skipped", Summary: reason})
-		pure = append(pure, quality.CheckResult{Status: quality.CheckStatusSkipped})
+		checks = append(checks, &model.QualityCheck{Kind: "criteria", Name: name, Status: "skipped", Summary: reason, Effect: string(cause)})
+		pure = append(pure, quality.CheckResult{Status: quality.CheckStatusSkipped, Effect: cause})
 	}
 	return checks, pure
 }
@@ -1435,7 +1499,7 @@ func skippedCriteriaChecks(reason string) ([]*model.QualityCheck, []quality.Chec
 func criteriaDeclaredFailure(summary string) ([]*model.QualityCheck, []quality.CheckResult) {
 	checks := []*model.QualityCheck{{Kind: "criteria", Name: "declared", Status: "fail", Summary: summary}}
 	pure := []quality.CheckResult{{Status: quality.CheckStatusFail}}
-	skippedChecks, skippedPure := skippedCriteriaChecks("criteria/declared fallo")
+	skippedChecks, skippedPure := skippedCriteriaChecks("criteria/declared fallo", quality.EffectStopped)
 	return append(checks, skippedChecks[1:]...), append(pure, skippedPure[1:]...)
 }
 
@@ -1571,8 +1635,8 @@ func manualCriterionRow(c quality.Criterion) (*model.QualityCheck, quality.Check
 func (svc *QualityService) runCriteriaChecks(
 	ctx context.Context, g *quality.Git, constitution *quality.Constitution, spec *model.Spec, gatesStopped bool,
 ) ([]*model.QualityCheck, []quality.CheckResult, error) {
-	if reason := svc.criteriaSkipReason(gatesStopped, constitution); reason != "" {
-		checks, pure := skippedCriteriaChecks(reason)
+	if reason, cause := svc.criteriaSkipReason(gatesStopped, constitution); reason != "" {
+		checks, pure := skippedCriteriaChecks(reason, cause)
 		return checks, pure, nil
 	}
 
@@ -1592,7 +1656,7 @@ func (svc *QualityService) runCriteriaChecks(
 		// STANDARD spec's absence is unchanged: `fail`, exactly S3's
 		// original behaviour.
 		if spec.Lane == model.LaneTrivial {
-			checks, pure := skippedCriteriaChecks(fmt.Sprintf("lane trivial (%s): no hay architect, no hay criteria.toml", spec.Lane))
+			checks, pure := skippedCriteriaChecks(fmt.Sprintf("lane trivial (%s): no hay architect, no hay criteria.toml", spec.Lane), quality.EffectAbsent)
 			return checks, pure, nil
 		}
 		checks, pure := criteriaDeclaredFailure(fmt.Sprintf("no existe criteria.toml en %s: %s", path, readErr))
@@ -1810,14 +1874,15 @@ func (svc *QualityService) buildReportInput(spec *model.Spec, cert *model.Qualit
 var mutationRowNames = []string{"report", "scope", "viability", "timeouts", "not-covered", "score"}
 
 // skippedMutationChecks builds all six mutation rows as "skipped" with the
-// SAME reason — used whenever the mechanism is off, or an earlier stage's
-// cascade already stopped, before the mutation command is ever run.
-func skippedMutationChecks(reason string) ([]*model.QualityCheck, []quality.CheckResult) {
+// SAME reason and cause (D13/SPEC-137 D4) — used whenever the mechanism is
+// off, or an earlier stage's cascade already stopped, before the mutation
+// command is ever run.
+func skippedMutationChecks(reason string, cause quality.Effect) ([]*model.QualityCheck, []quality.CheckResult) {
 	checks := make([]*model.QualityCheck, 0, len(mutationRowNames))
 	pure := make([]quality.CheckResult, 0, len(mutationRowNames))
 	for _, name := range mutationRowNames {
-		checks = append(checks, &model.QualityCheck{Kind: "mutation", Name: name, Status: "skipped", Summary: reason})
-		pure = append(pure, quality.CheckResult{Status: quality.CheckStatusSkipped})
+		checks = append(checks, &model.QualityCheck{Kind: "mutation", Name: name, Status: "skipped", Summary: reason, Effect: string(cause)})
+		pure = append(pure, quality.CheckResult{Status: quality.CheckStatusSkipped, Effect: cause})
 	}
 	return checks, pure
 }
@@ -1829,18 +1894,22 @@ func skippedMutationChecks(reason string) ([]*model.QualityCheck, []quality.Chec
 // UNMUTATED tree being known green in THIS certificate; gatesStopped alone
 // (the cascade every other stage shares) does not promise that, since a
 // project may declare its own test gate with required=false.
-func mutationSkipReason(gatesStopped, anyGateFailed bool, constitution *quality.Constitution) string {
+//
+// SPEC-137 D4: also returns the skip CAUSE — EffectStopped for both
+// gate-related causes (gatesStopped and anyGateFailed: a gate ran and
+// blocked this tramo either way), EffectAbsent for "nothing declared".
+func mutationSkipReason(gatesStopped, anyGateFailed bool, constitution *quality.Constitution) (string, quality.Effect) {
 	switch {
 	case gatesStopped:
-		return "un gate required anterior fallo"
+		return "un gate required anterior fallo", quality.EffectStopped
 	case !constitution.MutationDeclared:
-		return fmt.Sprintf("constitucion schema_version=%d no declara [mutation] (apagado por omision)", constitution.SchemaVersion)
+		return fmt.Sprintf("constitucion schema_version=%d no declara [mutation] (apagado por omision)", constitution.SchemaVersion), quality.EffectAbsent
 	case !constitution.Mutation.Enabled:
-		return "mutation.enabled = false (apagado por decision)"
+		return "mutation.enabled = false (apagado por decision)", quality.EffectAbsent
 	case anyGateFailed:
-		return "al menos un gate esta en fail (aunque no sea required) — la premisa de la mutacion exige un arbol sin mutar verde en este certificado"
+		return "al menos un gate esta en fail (aunque no sea required) — la premisa de la mutacion exige un arbol sin mutar verde en este certificado", quality.EffectStopped
 	default:
-		return ""
+		return "", ""
 	}
 }
 
@@ -1857,7 +1926,7 @@ func mutationReportFailure(summary string, res quality.GateResult) ([]*model.Qua
 		Summary: summary,
 	}}
 	pure := []quality.CheckResult{{Status: quality.CheckStatusFail}}
-	skippedChecks, skippedPure := skippedMutationChecks("mutation/report fallo")
+	skippedChecks, skippedPure := skippedMutationChecks("mutation/report fallo", quality.EffectStopped)
 	return append(checks, skippedChecks[1:]...), append(pure, skippedPure[1:]...)
 }
 
@@ -1873,7 +1942,7 @@ func mutationReportBudgetExceeded(res quality.GateResult) ([]*model.QualityCheck
 		OutputSHA256: res.OutputSHA256, OutputBytes: res.OutputBytes, OutputTail: res.OutputTail,
 	}}
 	pure := []quality.CheckResult{{Status: quality.CheckStatusFinding}}
-	skippedChecks, skippedPure := skippedMutationChecks("mutation/report budget-exceeded")
+	skippedChecks, skippedPure := skippedMutationChecks("mutation/report budget-exceeded", quality.EffectStopped)
 	return append(checks, skippedChecks[1:]...), append(pure, skippedPure[1:]...)
 }
 
@@ -1925,8 +1994,8 @@ type mutantSurvivorDetail struct {
 func (svc *QualityService) runMutationChecks(
 	ctx context.Context, g *quality.Git, constitution *quality.Constitution, spec *model.Spec, gatesStopped, anyGateFailed bool,
 ) ([]*model.QualityCheck, []quality.CheckResult, error) {
-	if reason := mutationSkipReason(gatesStopped, anyGateFailed, constitution); reason != "" {
-		checks, pure := skippedMutationChecks(reason)
+	if reason, cause := mutationSkipReason(gatesStopped, anyGateFailed, constitution); reason != "" {
+		checks, pure := skippedMutationChecks(reason, cause)
 		return checks, pure, nil
 	}
 
@@ -2005,7 +2074,7 @@ func (svc *QualityService) runMutationChecks(
 			Summary: "base-unknown: spec sin base_sha, o merge-base con HEAD inalcanzable",
 		})
 		pure = append(pure, quality.CheckResult{Status: quality.CheckStatusFinding})
-		skippedChecks, skippedPure := skippedMutationChecks("mutation/scope: base-unknown")
+		skippedChecks, skippedPure := skippedMutationChecks("mutation/scope: base-unknown", quality.EffectAbsent)
 		return append(checks, skippedChecks[2:]...), append(pure, skippedPure[2:]...), nil
 	}
 
@@ -2132,14 +2201,15 @@ func (svc *QualityService) runMutationChecks(
 var visualRowNames = []string{"report", "scope", "render", "console", "a11y", "compare", "reference-drift"}
 
 // skippedVisualChecks builds all seven visual rows as "skipped" with the
-// SAME reason — used whenever the mechanism is off, or an earlier stage's
-// cascade already stopped, before any command is ever run.
-func skippedVisualChecks(reason string) ([]*model.QualityCheck, []quality.CheckResult) {
+// SAME reason and cause (D13/SPEC-137 D4) — used whenever the mechanism is
+// off, or an earlier stage's cascade already stopped, before any command is
+// ever run.
+func skippedVisualChecks(reason string, cause quality.Effect) ([]*model.QualityCheck, []quality.CheckResult) {
 	checks := make([]*model.QualityCheck, 0, len(visualRowNames))
 	pure := make([]quality.CheckResult, 0, len(visualRowNames))
 	for _, name := range visualRowNames {
-		checks = append(checks, &model.QualityCheck{Kind: "visual", Name: name, Status: "skipped", Summary: reason})
-		pure = append(pure, quality.CheckResult{Status: quality.CheckStatusSkipped})
+		checks = append(checks, &model.QualityCheck{Kind: "visual", Name: name, Status: "skipped", Summary: reason, Effect: string(cause)})
+		pure = append(pure, quality.CheckResult{Status: quality.CheckStatusSkipped, Effect: cause})
 	}
 	return checks, pure
 }
@@ -2153,16 +2223,19 @@ func skippedVisualChecks(reason string) ([]*model.QualityCheck, []quality.CheckR
 // checks — the evidence a screen crashed is an OBSERVATION, never an
 // inference over an unmutated tree that would need mutation's own stricter
 // premise (D1 pata a is mutation-specific, not shared).
-func visualSkipReason(gatesStopped bool, constitution *quality.Constitution) string {
+//
+// SPEC-137 D4: also returns the skip CAUSE — EffectStopped for the gate
+// cascade, EffectAbsent for "nothing declared".
+func visualSkipReason(gatesStopped bool, constitution *quality.Constitution) (string, quality.Effect) {
 	switch {
 	case gatesStopped:
-		return "un gate required anterior fallo"
+		return "un gate required anterior fallo", quality.EffectStopped
 	case !constitution.VisualDeclared:
-		return fmt.Sprintf("constitucion schema_version=%d no declara [visual] (apagado por omision)", constitution.SchemaVersion)
+		return fmt.Sprintf("constitucion schema_version=%d no declara [visual] (apagado por omision)", constitution.SchemaVersion), quality.EffectAbsent
 	case !constitution.Visual.Enabled:
-		return "visual.enabled = false (apagado por decision)"
+		return "visual.enabled = false (apagado por decision)", quality.EffectAbsent
 	default:
-		return ""
+		return "", ""
 	}
 }
 
@@ -2179,7 +2252,7 @@ func visualReportFailure(summary string, res quality.GateResult) ([]*model.Quali
 		Summary: summary,
 	}}
 	pure := []quality.CheckResult{{Status: quality.CheckStatusFail}}
-	skippedChecks, skippedPure := skippedVisualChecks("visual/report fallo")
+	skippedChecks, skippedPure := skippedVisualChecks("visual/report fallo", quality.EffectStopped)
 	return append(checks, skippedChecks[1:]...), append(pure, skippedPure[1:]...)
 }
 
@@ -2195,7 +2268,7 @@ func visualReportBudgetExceeded(res quality.GateResult) ([]*model.QualityCheck, 
 		OutputSHA256: res.OutputSHA256, OutputBytes: res.OutputBytes, OutputTail: res.OutputTail,
 	}}
 	pure := []quality.CheckResult{{Status: quality.CheckStatusFinding}}
-	skippedChecks, skippedPure := skippedVisualChecks("visual/report budget-exceeded")
+	skippedChecks, skippedPure := skippedVisualChecks("visual/report budget-exceeded", quality.EffectStopped)
 	return append(checks, skippedChecks[1:]...), append(pure, skippedPure[1:]...)
 }
 
@@ -2344,8 +2417,8 @@ func (svc *QualityService) runVisualCompare(cfg quality.VisualCompareConfig, pre
 func (svc *QualityService) runVisualChecks(
 	ctx context.Context, g *quality.Git, constitution *quality.Constitution, spec *model.Spec, gatesStopped bool,
 ) ([]*model.QualityCheck, []quality.CheckResult, error) {
-	if reason := visualSkipReason(gatesStopped, constitution); reason != "" {
-		checks, pure := skippedVisualChecks(reason)
+	if reason, cause := visualSkipReason(gatesStopped, constitution); reason != "" {
+		checks, pure := skippedVisualChecks(reason, cause)
 		return checks, pure, nil
 	}
 
@@ -2496,8 +2569,12 @@ func (svc *QualityService) runVisualChecks(
 	// (AC22/G24).
 	var compareRow, driftRow *model.QualityCheck
 	if !cfg.Compare.Enabled {
-		compareRow = &model.QualityCheck{Kind: "visual", Name: "compare", Status: "skipped", Summary: "comparacion apagada (visual.compare.enabled = false)"}
-		driftRow = &model.QualityCheck{Kind: "visual", Name: "reference-drift", Status: "skipped", Summary: "comparacion apagada (visual.compare.enabled = false)"}
+		// SPEC-137 D4: EffectAbsent — one of the plan's three "sites that
+		// skip WITHOUT a skip-reason function". visual.compare.enabled is a
+		// declared, reviewable OFF decision, the same shape
+		// coverage.enabled=false already gets.
+		compareRow = &model.QualityCheck{Kind: "visual", Name: "compare", Status: "skipped", Summary: "comparacion apagada (visual.compare.enabled = false)", Effect: string(quality.EffectAbsent)}
+		driftRow = &model.QualityCheck{Kind: "visual", Name: "reference-drift", Status: "skipped", Summary: "comparacion apagada (visual.compare.enabled = false)", Effect: string(quality.EffectAbsent)}
 	} else {
 		missingSet := make(map[string]bool, len(missing))
 		for _, id := range missing {
@@ -2587,8 +2664,8 @@ func (svc *QualityService) runVisualChecks(
 		{Status: quality.CheckStatus(renderStatus)},
 		{Status: quality.CheckStatus(consoleStatus)},
 		{Status: quality.CheckStatus(a11yStatus)},
-		{Status: quality.CheckStatus(compareRow.Status)},
-		{Status: quality.CheckStatus(driftRow.Status)},
+		{Status: quality.CheckStatus(compareRow.Status), Effect: quality.Effect(compareRow.Effect)},
+		{Status: quality.CheckStatus(driftRow.Status), Effect: quality.Effect(driftRow.Effect)},
 	}
 
 	for _, id := range emitIDs {

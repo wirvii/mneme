@@ -58,8 +58,22 @@ func (g *Git) IsDirty() (dirty bool, paths []string, err error) {
 }
 
 // PathChangedInRange reports whether path was added, modified, or removed
-// between baseSHA and HEAD (D9 check 2 — covers both a modification and a
-// deletion of the constitution within a spec's commit range).
+// between baseSHA and HEAD (originally D9 check 2 of SPEC-115 — covered
+// both a modification and a deletion of the constitution within a spec's
+// commit range).
+//
+// SPEC-137 etapa 1 de BL-221 (D5) removed this method's only production
+// caller, the constitution/unchanged-in-range check: the owner decided
+// against the architect's own recommendation to soften it into "did it
+// relax?" and instead removed it outright, on the grounds that the
+// constitution is a versioned file reviewed like any other in a change
+// proposal. This method is DELIBERATELY KEPT regardless — it is a git
+// helper library primitive, not a feature, and its three tests in
+// git_test.go document the merge-base semantics BL-172 corrected by hand;
+// deleting the method would delete that executable documentation along
+// with it. golangci-lint's `unused` linter does not flag it because it is
+// an exported symbol of an internal/* package, which is checked here (D5's
+// own acceptance criterion) rather than assumed.
 //
 // SPEC-118 BL-172/AC30: the range is anchored on MergeBase(baseSHA, HEAD),
 // never a raw two-dot baseSHA..HEAD range — the same correction D8 of S2

@@ -274,15 +274,16 @@ func TestQualityService_Verify_HappyPath_Pass(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListChecks: %v", err)
 	}
-	// 1 tree + 3 constitution + 2 gates + 3 coverage + 4 ratchet
-	// (schema_version=1, SPEC-116: all 7 skipped — [coverage]/[ratchet]
-	// are not even declared) + 3 criteria (SPEC-117: skipped — this
-	// service was never given WithWorkflowDir) + 12 budget (SPEC-118:
-	// skipped — same reason) + 6 mutation (SPEC-119: skipped — schema
-	// version 1 does not declare [mutation] either) + 7 visual (SPEC-120:
-	// skipped — schema version 1 does not declare [visual] either) = 41.
-	if len(checks) != 41 {
-		t.Fatalf("len(checks) = %d, want 41: %+v", len(checks), checks)
+	// 1 tree + 2 constitution (SPEC-137 D5 removed unchanged-in-range) +
+	// 2 gates + 3 coverage + 4 ratchet (schema_version=1, SPEC-116: all 7
+	// skipped — [coverage]/[ratchet] are not even declared) + 3 criteria
+	// (SPEC-117: skipped — this service was never given WithWorkflowDir) +
+	// 12 budget (SPEC-118: skipped — same reason) + 6 mutation (SPEC-119:
+	// skipped — schema version 1 does not declare [mutation] either) +
+	// 7 visual (SPEC-120: skipped — schema version 1 does not declare
+	// [visual] either) = 40.
+	if len(checks) != 40 {
+		t.Fatalf("len(checks) = %d, want 40: %+v", len(checks), checks)
 	}
 }
 
@@ -366,11 +367,14 @@ func TestQualityService_Verify_DirtyTree_FailsVerdict(t *testing.T) {
 	}
 }
 
-// TestQualityService_Verify_ConstitutionChangedInRange covers AC12 at the
-// finding level: modifying the constitution within the spec's base_sha..HEAD
-// range produces a "finding", not a hard failure by itself — the overall
-// verdict still degrades to "findings" (not "pass") when nothing else fails.
-func TestQualityService_Verify_ConstitutionChangedInRange(t *testing.T) {
+// TestQualityService_Verify_ConstitutionChangedInRangeNoLongerChecked covers
+// AC7 (SPEC-137 D5): modifying the constitution within the spec's
+// base_sha..HEAD range used to produce a "finding" via
+// constitution/unchanged-in-range — that row is GONE. The scenario that
+// used to trigger it must now certify clean (verdict pass, nothing else
+// failing), and the emitted "constitution" rows must be EXACTLY the ones
+// constitutionCheckNames declares — not a hand-written count.
+func TestQualityService_Verify_ConstitutionChangedInRangeNoLongerChecked(t *testing.T) {
 	repoDir := newTestGitRepo(t)
 	writeConstitution(t, repoDir)
 	commitAll(t, repoDir, "add constitution")
@@ -380,7 +384,8 @@ func TestQualityService_Verify_ConstitutionChangedInRange(t *testing.T) {
 	baseSHA := headSHAFor(t, repoDir)
 
 	// Modify the constitution AFTER base_sha, then commit again — still a
-	// valid constitution (Parse must succeed), just a different one.
+	// valid constitution (Parse must succeed), just a different one. This
+	// is the EXACT scenario that used to produce a finding.
 	writeConstitution(t, repoDir, `
 [[gate]]
 name = "lint"
@@ -397,28 +402,31 @@ required = false
 	if err != nil {
 		t.Fatalf("Verify: %v", err)
 	}
-	if cert.Verdict != model.QualityVerdictFindings {
-		t.Errorf("Verdict = %q, want findings (constitution changed in range, nothing else fails)", cert.Verdict)
+	if cert.Verdict != model.QualityVerdictPass {
+		t.Errorf("Verdict = %q, want pass — a constitution change in range no longer degrades anything", cert.Verdict)
 	}
 
 	checks, err := s.ListChecks(context.Background(), cert.ID)
 	if err != nil {
 		t.Fatalf("ListChecks: %v", err)
 	}
-	found := false
+
+	var constitutionNames []string
 	for _, c := range checks {
 		if c.Name == "unchanged-in-range" {
-			found = true
-			if c.Status != "finding" {
-				t.Errorf("unchanged-in-range status = %q, want finding", c.Status)
-			}
-			if c.Detail == "" {
-				t.Error("unchanged-in-range detail is empty, want before/after hashes")
-			}
+			t.Fatal("found an unchanged-in-range check — SPEC-137 D5 removed this row entirely")
+		}
+		if c.Kind == "constitution" {
+			constitutionNames = append(constitutionNames, c.Name)
 		}
 	}
-	if !found {
-		t.Fatal("no unchanged-in-range check found")
+	if len(constitutionNames) != len(constitutionCheckNames) {
+		t.Fatalf("constitution rows = %v, want exactly %v (constitutionCheckNames)", constitutionNames, constitutionCheckNames)
+	}
+	for i, name := range constitutionCheckNames {
+		if constitutionNames[i] != name {
+			t.Errorf("constitution row %d = %q, want %q (constitutionCheckNames order)", i, constitutionNames[i], name)
+		}
 	}
 }
 
@@ -484,8 +492,8 @@ func TestQualityService_Status_WithCertificate(t *testing.T) {
 	if resp.LatestCertificate == nil || resp.LatestCertificate.ID != cert.ID {
 		t.Fatalf("LatestCertificate = %+v, want id=%s", resp.LatestCertificate, cert.ID)
 	}
-	if len(resp.Checks) != 41 {
-		t.Errorf("len(Checks) = %d, want 41 (SPEC-116 adds 3 skipped coverage + 4 skipped ratchet rows; SPEC-117 adds 3 skipped criteria rows; SPEC-118 adds 12 skipped budget rows; SPEC-119 adds 6 skipped mutation rows; SPEC-120 adds 7 skipped visual rows)", len(resp.Checks))
+	if len(resp.Checks) != 40 {
+		t.Errorf("len(Checks) = %d, want 40 (SPEC-137 D5 removed constitution/unchanged-in-range; SPEC-116 adds 3 skipped coverage + 4 skipped ratchet rows; SPEC-117 adds 3 skipped criteria rows; SPEC-118 adds 12 skipped budget rows; SPEC-119 adds 6 skipped mutation rows; SPEC-120 adds 7 skipped visual rows)", len(resp.Checks))
 	}
 }
 
