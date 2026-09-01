@@ -293,7 +293,7 @@ func newQualityStatusCmd() *cobra.Command {
 					cert.ID, cert.Verdict, cert.HeadSHA, cert.CreatedAt.Format("2006-01-02T15:04:05Z"))
 				fmt.Fprintln(os.Stdout, evidenceLineOrMissing(cert.Evidence))
 				for _, chk := range resp.Checks {
-					fmt.Fprintf(os.Stdout, "  [%d] %s/%s: %s\n", chk.Seq, chk.Kind, chk.Name, chk.Status)
+					fmt.Fprintf(os.Stdout, "  [%d] %s/%s: %s (%s)\n", chk.Seq, chk.Kind, chk.Name, chk.Status, chk.Effect)
 				}
 			}
 			// SPEC-119 D14: the declared mutation config plus the latest

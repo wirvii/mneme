@@ -41,6 +41,15 @@ type ReportCheck struct {
 	Status  string
 	Summary string
 
+	// Effect is SPEC-137 D7's own "modo" — the row's persisted
+	// blocks/signable/measures/absent/stopped value, rendered as its own
+	// column in the non-criterion table so a reader sees, IN THE SAME
+	// LINE that gives a number, whether that number still blocks the
+	// verdict or only measures it now (D11's own mitigation: a
+	// constitution key changing behaviour without the file changing must
+	// be visible in the result, not just in documentation).
+	Effect string
+
 	// AckedBy/AckedAt/Justification are non-empty only for a signed
 	// (status=="acked") row — AC28's "quien firmo, cuando y con que
 	// evidencia".
@@ -155,9 +164,9 @@ func RenderReport(in ReportInput) string {
 
 	if len(otherChecks) > 0 {
 		fmt.Fprintf(&b, "## Gates, cobertura y cliquet\n\n")
-		fmt.Fprintf(&b, "| kind | name | estado |\n|---|---|---|\n")
+		fmt.Fprintf(&b, "| kind | name | estado | modo |\n|---|---|---|---|\n")
 		for _, c := range otherChecks {
-			fmt.Fprintf(&b, "| %s | %s | %s |\n", c.Kind, c.Name, c.Status)
+			fmt.Fprintf(&b, "| %s | %s | %s | %s |\n", c.Kind, c.Name, c.Status, c.Effect)
 		}
 		fmt.Fprintf(&b, "\n")
 	}

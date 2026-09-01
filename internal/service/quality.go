@@ -1929,6 +1929,7 @@ func (svc *QualityService) buildReportInput(spec *model.Spec, cert *model.Qualit
 		rc := quality.ReportCheck{
 			Seq: c.Seq, Kind: c.Kind, Name: c.Name, Status: c.Status, Summary: c.Summary,
 			AckedBy: c.AckedBy, Justification: c.Justification,
+			Effect: c.Effect,
 		}
 		if c.AckedAt != nil {
 			rc.AckedAt = c.AckedAt.UTC().Format("2006-01-02T15:04:05Z")

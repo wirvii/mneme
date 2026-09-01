@@ -939,6 +939,69 @@ func TestQualityService_Verify_Coverage_DiffLinesThreshold(t *testing.T) {
 // ListChecks and filtered by kind, never a single row named by hand, so
 // this test also catches a FUTURE fourth coverage row that forgot the
 // rule.
+// TestQualityService_DiffLinesMode_VisibleInReportAndStatus covers AC17
+// (SPEC-137 D7): coverage/diff-lines' own mode (its persisted Effect,
+// "signable") is visible in BOTH the QA report and quality_status's own
+// data — the assertion is made on the COMPLETE rendered table row / the
+// complete check entry, never a bare substring match on the word
+// "signable" (which could appear anywhere else in the same output).
+func TestQualityService_DiffLinesMode_VisibleInReportAndStatus(t *testing.T) {
+	repoDir := newTestGitRepo(t)
+	baseSHA := headSHAFor(t, repoDir)
+	writeConstitutionV2Coverage(t, repoDir, true, 80.0, 1, nil, "tmp/coverage.out", "lcov")
+	if err := os.WriteFile(filepath.Join(repoDir, "foo.go"), []byte("package main\n\nfunc Foo() {}\n"), 0o644); err != nil {
+		t.Fatalf("write foo.go: %v", err)
+	}
+	commitAll(t, repoDir, "add constitution and foo.go")
+
+	s := newTestQualityStore(t)
+	insertTestSpec(t, s, "SPEC-001", "proj", model.SpecStatusImplementing, baseSHA)
+
+	workflowDir := t.TempDir()
+	docWriter := &fakeDocWriter{workflowDir: workflowDir, project: "proj"}
+	runner := &fakeGateRunner{writeFiles: map[string]map[string]string{
+		"coverage-profile": {"tmp/coverage.out": "SF:foo.go\nDA:1,1\nDA:2,0\nDA:3,0\nend_of_record\n"}, // 33% < 80%
+	}}
+	svc := NewQualityService(s, "proj", repoDir, runner, WithWorkflowDir(workflowDir), WithDocWriter(docWriter.write))
+
+	if _, err := svc.Verify(context.Background(), model.QualityVerifyRequest{ID: "SPEC-001"}); err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+
+	// Channel 1: the QA report — the COMPLETE table row, not a bare word.
+	reportResp, err := svc.Report(context.Background(), model.QualityReportRequest{ID: "SPEC-001"})
+	if err != nil {
+		t.Fatalf("Report: %v", err)
+	}
+	reportBytes, readErr := os.ReadFile(reportResp.Path)
+	if readErr != nil {
+		t.Fatalf("read report: %v", readErr)
+	}
+	wantRow := "| coverage | diff-lines | finding | signable |"
+	if !strings.Contains(string(reportBytes), wantRow) {
+		t.Errorf("QA report does not contain the complete row %q:\n%s", wantRow, reportBytes)
+	}
+
+	// Channel 2: quality_status's own data — the CLI's rendering of this
+	// is a one-line, branch-free format of exactly these two fields.
+	statusResp, err := svc.Status(context.Background(), model.QualityStatusRequest{ID: "SPEC-001"})
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	var found bool
+	for _, chk := range statusResp.Checks {
+		if chk.Kind == "coverage" && chk.Name == "diff-lines" {
+			found = true
+			if chk.Status != "finding" || chk.Effect != "signable" {
+				t.Errorf("coverage/diff-lines = status=%q effect=%q, want status=finding effect=signable", chk.Status, chk.Effect)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("no coverage/diff-lines check found in Status().Checks")
+	}
+}
+
 func TestQualityService_Verify_Coverage_NoRowEverFails(t *testing.T) {
 	repoDir := newTestGitRepo(t)
 	baseSHA := headSHAFor(t, repoDir)
