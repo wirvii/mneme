@@ -18,11 +18,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   gates on its own regardless. **The same `.mneme/quality.toml` file now
   behaves differently without a single byte in it changing, and
   `schema_version` does not move either:** `min_diff_line_pct` used to
-  block `spec_advance` outright and now only produces a `finding` a
-  qa-tester must sign off (`quality ack`) before the spec can close. This
-  is the risk the owner knowingly accepted, in exchange for every
-  certificate now saying, per row, in which mode it ran. Mutation and the
-  budget-against-the-graph mechanism keep
+  block `spec_advance` outright and now only produces a `finding`. Closing
+  it needs an explicit **`quality ack`** — an absolution, never a
+  technical attestation — and only the orchestrator can give one, after
+  checking with the product owner, because accepting test debt is a
+  business call, not something a verifier can judge on its own. This is
+  deliberately not `quality sign`, the qa-tester's own verb for technical
+  attestations: `quality_ack` is denied to every subagent (qa-tester
+  included), and a `coverage` row is not a kind `quality_sign` accepts
+  anyway. This is the risk the owner knowingly accepted, in exchange for
+  every certificate now saying, per row, in which mode it ran. Mutation
+  and the budget-against-the-graph mechanism keep
   computing and recording their real result but can no longer, by
   themselves, block a spec from closing — every row now persists a closed
   five-value **effect** (`blocks`/`signable`/`measures`/`absent`/
