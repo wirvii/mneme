@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -97,6 +98,13 @@ type SDDEnableResult struct {
 	Plan     SDDPlan
 	Warnings []string
 	Remote   string // whatever `git remote get-url origin` reports locally, "" if none
+
+	// GitattrsFindings carries whatever EnsureGitattributes reported for
+	// this --apply run (SPEC-140 D11): populated only when Applied is
+	// true — the preview path never writes anything, .gitattributes
+	// included (AC10). Empty when the repository already resolved eol=lf
+	// everywhere.
+	GitattrsFindings []DriftFinding
 }
 
 // SDDDisableResult is DisableSDDRepo's return value.
@@ -232,6 +240,19 @@ func (svc *SDDService) EnableSDDRepo(ctx context.Context, repoRoot string, apply
 
 	if err := ensureMnemeGitignore(repoRoot, "sdd.off"); err != nil {
 		return nil, fmt.Errorf("service: sdd enable: gitignore: %w", err)
+	}
+
+	// SPEC-140 D11: `sdd enable --apply` is one of the two verbs (besides
+	// `mneme init`) that writes repository files without ever passing
+	// through init, so it ensures .gitattributes itself — ONLY on the
+	// apply branch (AC10: the preview above must never write anything,
+	// not even a probe file). Never fatal: a git failure here must not
+	// undo the export that already happened above.
+	gitattrsFindings, gitattrsErr := EnsureGitattributes(repoRoot, false)
+	if gitattrsErr != nil {
+		slog.WarnContext(ctx, "sdd_enable_gitattributes_error", "error", gitattrsErr)
+	} else {
+		result.GitattrsFindings = gitattrsFindings
 	}
 
 	if err := svc.InstallSDDHooks(repoRoot); err != nil {

@@ -121,12 +121,23 @@ The command is idempotent: re-running on an already-configured project is safe.`
 				fmt.Fprintln(cmd.OutOrStdout(), "[ok] Quality constitution present (.mneme/quality.toml, enabled=false)")
 			}
 
+			// Step 3c: the .gitattributes block (SPEC-140 D9-D11), right
+			// after the quality constitution step it is modeled on:
+			// checkMode never writes, an explicit conflicting rule is left
+			// untouched and reported, and a write always names the path
+			// and the three lines added.
+			gitattrsFindings, gitattrsErr := service.EnsureGitattributes(cwd, flagCheck)
+			if gitattrsErr != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "Warning: gitattributes: %v\n", gitattrsErr)
+			}
+
 			// Step 4: drift report (always, even in --check mode).
 			findings, driftErr := initSvc.RunDrift(cwd)
 			if driftErr != nil {
 				fmt.Fprintf(cmd.ErrOrStderr(), "Warning: drift detection: %v\n", driftErr)
 			}
 			findings = append(findings, qualityFindings...)
+			findings = append(findings, gitattrsFindings...)
 			if len(findings) > 0 {
 				fmt.Fprintln(cmd.OutOrStdout(), "\n[drift] Advisory findings:")
 				for _, f := range findings {

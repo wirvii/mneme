@@ -310,6 +310,11 @@ func renderSDDEnableResult(out io.Writer, result *service.SDDEnableResult) {
 	}
 	fmt.Fprintf(out, "Applied: exported everything to %s/.mneme/sdd, wrote the marker, "+
 		"added sdd.off to .mneme/.gitignore, and installed this machine's own git hooks.\n", result.RepoRoot)
+	// SPEC-140 D11: never silent about a .gitattributes write or the
+	// conflicting rule that stopped one.
+	for _, f := range result.GitattrsFindings {
+		fmt.Fprintf(out, "[gitattributes] %s\n", f)
+	}
 	fmt.Fprintln(out, "These files are likely pending commit — review with `git status` before committing.")
 	fmt.Fprintln(out, "A teammate who clones needs only `mneme sdd hooks install` to start receiving imports too.")
 }

@@ -2556,12 +2556,20 @@ func (h *handlers) handleInit(ctx context.Context, raw json.RawMessage) (*ToolCa
 		result.QualityConstitutionInit = true
 	}
 
+	// .gitattributes (SPEC-140 D9-D11), same checkMode contract as the
+	// quality constitution step above.
+	gitattrsFindings, gitattrsErr := service.EnsureGitattributes(repoRoot, args.Check)
+	if gitattrsErr != nil {
+		h.logger.Warn("mcp: init: gitattributes", "error", gitattrsErr)
+	}
+
 	// Drift detection.
 	findings, driftErr := initSvc.RunDrift(repoRoot)
 	if driftErr != nil {
 		h.logger.Warn("mcp: init: drift", "error", driftErr)
 	}
 	findings = append(findings, qualityFindings...)
+	findings = append(findings, gitattrsFindings...)
 	for _, f := range findings {
 		result.DriftFindings = append(result.DriftFindings, f.String())
 	}

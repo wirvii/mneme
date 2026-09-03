@@ -1,0 +1,5 @@
+# >>> mneme (SPEC-140): finales de línea de los ficheros que mneme escribe y vuelve a leer >>>
+.mneme/**        text eol=lf
+.claude/agents/** text eol=lf
+.codex/agents/**  text eol=lf
+# <<< mneme (SPEC-140) <<<

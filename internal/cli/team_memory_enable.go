@@ -82,6 +82,9 @@ remote.`,
 			}
 			fmt.Fprintf(out, "Baked %d pre-existing memories to shared, %d exported to the vault.\n", result.Baked, result.Exported)
 			fmt.Fprintf(out, "Installed import hooks: %s\n", strings.Join(teamMemoryHooksTargetHooks, ", "))
+			for _, f := range result.GitattrsFindings {
+				fmt.Fprintf(out, "[gitattributes] %s\n", f)
+			}
 			fmt.Fprintln(out)
 			printTeamMemoryPrivacyNotice(out, root)
 
