@@ -50,5 +50,13 @@ for anchor in "Plain language" "Channels that reach a person" "The exemption nev
   fi
 done
 
+# SPEC-140 D14/T5.2: Step 0.6 (diagnose before offering) must stay
+# documented — without this anchor the step could be deleted from prose
+# with nothing to notice.
+if ! grep -q 'Step 0.6' "$SKILL_FILE"; then
+  echo "mneme-init: missing reference to Step 0.6 (diagnose before offering anything)" >&2
+  exit 1
+fi
+
 echo "mneme-init: validation passed"
 exit 0

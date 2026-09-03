@@ -3,8 +3,10 @@ package vault
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/wirvii/mneme/internal/model"
 )
@@ -499,6 +501,70 @@ Valid body.
 	}
 	if len(notes) > 0 && notes[0].FM.Title != "Valid note" {
 		t.Errorf("note title: got %q", notes[0].FM.Title)
+	}
+}
+
+// TestParseFile_CRLFParsesIdenticallyToLF is SPEC-140 AC2: a vault note
+// checked out with core.autocrlf=true's "\r\n" line endings must parse to
+// the same FM and Body as the plain-"\n" original. The fixture is derived
+// from Writer.WriteMemory — never a hand-typed string — and deliberately
+// carries a "files:" list field and a quoted title, the two frontmatter
+// shapes most likely to break if CRLF normalization shifted anything.
+func TestParseFile_CRLFParsesIdenticallyToLF(t *testing.T) {
+	root := t.TempDir()
+	w := newTestWriter(t, root)
+
+	ts := time.Date(2026, 9, 3, 0, 0, 0, 0, time.UTC)
+	m := &model.Memory{
+		ID:        "019ddc45-0000-0000-0000-000000000002",
+		Type:      model.TypeDiscovery,
+		Scope:     model.ScopeProject,
+		Title:     `Título: "citado", con dos puntos`,
+		TopicKey:  "workflow/crlf-fixture",
+		Content:   "body content",
+		Files:     []string{"internal/vault/reader.go", "internal/sddfile/io.go"},
+		CreatedAt: ts.Add(-time.Hour),
+		UpdatedAt: ts,
+		Project:   "test/project",
+	}
+
+	written, relPath, err := w.WriteMemory(m)
+	if err != nil {
+		t.Fatalf("WriteMemory: %v", err)
+	}
+	if !written {
+		t.Fatal("WriteMemory reported written=false")
+	}
+
+	lfPath := filepath.Join(root, relPath)
+	lfBytes, err := os.ReadFile(lfPath)
+	if err != nil {
+		t.Fatalf("read lf fixture: %v", err)
+	}
+	if !strings.Contains(string(lfBytes), "files:") {
+		t.Fatalf("fixture lost its own files: list — the case is not exercising it: %s", lfBytes)
+	}
+
+	crlfPath := filepath.Join(t.TempDir(), "crlf.md")
+	crlfBytes := []byte(strings.ReplaceAll(string(lfBytes), "\n", "\r\n"))
+	if err := os.WriteFile(crlfPath, crlfBytes, 0o644); err != nil {
+		t.Fatalf("write crlf fixture: %v", err)
+	}
+
+	lfNote, err := ParseFile(lfPath)
+	if err != nil {
+		t.Fatalf("ParseFile(lf): %v", err)
+	}
+	crlfNote, err := ParseFile(crlfPath)
+	if err != nil {
+		t.Fatalf("ParseFile(crlf): %v", err)
+	}
+
+	if !reflect.DeepEqual(lfNote.FM, crlfNote.FM) {
+		t.Fatalf("FM must parse identically.\nLF:   %+v\nCRLF: %+v", lfNote.FM, crlfNote.FM)
+	}
+	if lfNote.Body != crlfNote.Body {
+		t.Fatalf("Body must parse identically.\nLF:   %q\nCRLF: %q", lfNote.Body, crlfNote.Body)
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -50,6 +51,8 @@ between team members through .mneme/shared/ in the repository itself.`,
 	}
 	cmd.AddCommand(newTeamMemoryEnableCmd())
 	cmd.AddCommand(newTeamMemoryHooksCmd())
+	cmd.AddCommand(newTeamMemoryImportCmd())
+	cmd.AddCommand(newTeamMemoryStatusCmd())
 	return cmd
 }
 
@@ -244,6 +247,32 @@ func runTeamMemoryHooksImport() {
 			"run `mneme conflicts scan`",
 		))
 	}
+}
+
+// TeamMemoryHooksInstalled reports whether every hook in
+// teamMemoryHooksTargetHooks already carries the mneme-managed team-memory
+// import block for the repository rooted at repoRoot (SPEC-140 D8) — calcada
+// de SDDHooksInstalled (internal/service/sdd_hooks.go:106), placed here
+// rather than in internal/service because the hooks install/remove logic
+// itself already lives in this file's constants
+// (teamMemoryHooksMarkerBegin/End): EnableTeamMemory's own godoc declares
+// the service deliberately does no hook I/O so it stays testable without
+// touching the filesystem's git-hooks directory.
+func TeamMemoryHooksInstalled(repoRoot string) bool {
+	if repoRoot == "" {
+		return false
+	}
+	hooksDir, err := gitHooksDir(repoRoot)
+	if err != nil {
+		return false
+	}
+	for _, name := range teamMemoryHooksTargetHooks {
+		data, readErr := os.ReadFile(filepath.Join(hooksDir, name))
+		if readErr != nil || !strings.Contains(string(data), teamMemoryHooksMarkerBegin) {
+			return false
+		}
+	}
+	return true
 }
 
 // appendTeamMemoryMarkedBlock appends the mneme-managed block to the hook

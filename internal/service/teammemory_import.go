@@ -157,6 +157,69 @@ func (svc *MemoryService) ImportFromShared(ctx context.Context, repoRoot string)
 	return result, nil
 }
 
+// ImportFromSharedPreview reports what ImportFromShared would do WITHOUT
+// persisting anything — SPEC-140 D8's `mneme team-memory import --dry-run`,
+// the counterpart of `mneme sdd import --dry-run`. It mirrors
+// ImportFromShared's per-note decision (create vs. update vs. skip, by id
+// existence and updated_at) but never calls Save/Update/CreateWithID/
+// SetTeamMemoryFields: every branch below only reads.
+//
+// A note this preview cannot even classify (invalid id, a lookup failure)
+// is counted in Errors, same as ImportFromShared — the real run's error
+// count for a repository nobody has touched since the last import should
+// already be visible in the preview.
+func (svc *MemoryService) ImportFromSharedPreview(ctx context.Context, repoRoot string) (*TeamMemoryImportResult, error) {
+	vaultRoot := filepath.Join(repoRoot, ".mneme", sharedVaultRelDir)
+	result := &TeamMemoryImportResult{VaultRoot: vaultRoot}
+
+	if _, err := os.Stat(vaultRoot); os.IsNotExist(err) {
+		return nil, fmt.Errorf("service: import from shared (preview): vault directory %q does not exist", vaultRoot)
+	}
+	if err := svc.checkImportMarker(vaultRoot, "project"); err != nil {
+		return nil, fmt.Errorf("service: import from shared (preview): %w", err)
+	}
+
+	r := vault.NewReader(vaultRoot)
+	notes, parseErrs := r.ReadAll()
+	result.Errors += len(parseErrs)
+	for _, e := range parseErrs {
+		slog.WarnContext(ctx, "team_memory_import_preview_parse_error", "error", e)
+	}
+
+	for _, note := range notes {
+		result.Total++
+		fm := note.FM
+
+		if fm.TopicKey == SubagentManifestTopicKey || model.IsProfileSource(fm.Source) {
+			result.Skipped++
+			continue
+		}
+		if !vault.IsValidUUID(fm.ID) {
+			result.Errors++
+			continue
+		}
+
+		existing, _, err := svc.getFromEitherStore(ctx, fm.ID)
+		if err != nil {
+			result.Errors++
+			continue
+		}
+		if existing == nil {
+			result.Created++
+			continue
+		}
+
+		fileTS, tsOK := vault.ParseUpdatedAtFromFM(fm)
+		if !tsOK || !fileTS.After(existing.UpdatedAt) {
+			result.Skipped++
+			continue
+		}
+		result.Updated++
+	}
+
+	return result, nil
+}
+
 // importSharedNote resolves the conflict for a single parsed vault note and
 // applies it, always finishing by forcing the memory's shared/author
 // columns to match the frontmatter exactly, overriding whatever the

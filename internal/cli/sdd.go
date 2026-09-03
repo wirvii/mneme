@@ -286,7 +286,18 @@ genuine collision) — 0 otherwise.`,
 // renderSDDEnableResult prints EnableSDDRepo's result in plain text —
 // shared by the dry-run and --apply paths, since AC14's four warnings are
 // required in BOTH (they are the honest content of the preview itself).
+//
+// SPEC-140 D6/T3.2: when the mechanism is already enabled for the team and
+// this call did not pass --apply, a THIRD, distinct branch runs instead of
+// either of the above — see renderSDDAlreadyEnabledResult. It never prints
+// the plan/count header or the four publication warnings: nothing is being
+// published here, so there is nothing to warn about (AC11/AC12's control).
 func renderSDDEnableResult(out io.Writer, result *service.SDDEnableResult) {
+	if result.AlreadyEnabled {
+		renderSDDAlreadyEnabledResult(out, result)
+		return
+	}
+
 	fmt.Fprintf(out, "Plan: %d backlog item(s), %d spec(s) would be exported to %s/.mneme/sdd.\n",
 		result.Plan.BacklogCount, result.Plan.SpecCount, result.RepoRoot)
 	// SPEC-133 AC10/AC13: a row this plan could not read never gets
@@ -310,8 +321,42 @@ func renderSDDEnableResult(out io.Writer, result *service.SDDEnableResult) {
 	}
 	fmt.Fprintf(out, "Applied: exported everything to %s/.mneme/sdd, wrote the marker, "+
 		"added sdd.off to .mneme/.gitignore, and installed this machine's own git hooks.\n", result.RepoRoot)
+	// SPEC-140 D11: never silent about a .gitattributes write or the
+	// conflicting rule that stopped one.
+	for _, f := range result.GitattrsFindings {
+		fmt.Fprintf(out, "[gitattributes] %s\n", f)
+	}
 	fmt.Fprintln(out, "These files are likely pending commit — review with `git status` before committing.")
 	fmt.Fprintln(out, "A teammate who clones needs only `mneme sdd hooks install` to start receiving imports too.")
+}
+
+// renderSDDAlreadyEnabledResult prints EnableSDDRepo's "ya encendido" early
+// branch (SPEC-140 D6): the mechanism is already on for the team, and this
+// call reports what THIS machine still needs instead of a publication plan.
+// In D6's own order: (1) that it is enabled, and since when; (2) what is
+// missing here, one literal command per point; (3) or, if nothing is
+// missing, saying exactly that — with no counts.
+func renderSDDAlreadyEnabledResult(out io.Writer, result *service.SDDEnableResult) {
+	fmt.Fprintf(out, "SDD is already enabled for this team (since %s).\n", result.EnabledSince)
+
+	var missing []string
+	if !result.HooksInstalled {
+		missing = append(missing, "this machine's git hooks are not installed — run `mneme sdd hooks install`")
+	}
+	if len(result.UnknownToThisBase) > 0 {
+		missing = append(missing, fmt.Sprintf(
+			"%d record(s) committed to this repository are unknown to this machine's local database — run `mneme sdd import`",
+			len(result.UnknownToThisBase)))
+	}
+
+	if len(missing) == 0 {
+		fmt.Fprintln(out, "Nothing is missing on this machine.")
+		return
+	}
+	fmt.Fprintln(out, "This machine is missing:")
+	for _, m := range missing {
+		fmt.Fprintf(out, "  - %s\n", m)
+	}
 }
 
 // renderSDDStatusResult prints SDDStatus's result in plain text.

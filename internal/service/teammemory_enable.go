@@ -36,6 +36,15 @@ type TeamMemoryEnableResult struct {
 	// Exported is the number of memories (freshly baked this run, or already
 	// shared from a prior run) written to notes/<uuid>.md.
 	Exported int
+
+	// GitattrsFindings carries whatever EnsureGitattributes reported for
+	// this run (SPEC-140 D11): a write names the path and the three lines
+	// added, an explicit conflicting rule names the pattern and value
+	// found, or the slice is empty when the repository already had
+	// eol=lf resolved everywhere. team-memory enable writes .gitattributes
+	// itself (alongside `mneme init` and `sdd enable --apply`) because it
+	// can run without ever passing through init.
+	GitattrsFindings []DriftFinding
 }
 
 // EnableTeamMemory activates the git-native team-memory vault (SPEC-053 D3)
@@ -138,6 +147,17 @@ func (svc *MemoryService) EnableTeamMemory(ctx context.Context, repoRoot string)
 	// teamMemory.enabled == false, since NewMemoryService only resolves it
 	// once at construction time.
 	svc.teamMemory = TeamMemoryState{Enabled: true, VaultRoot: vaultRoot}
+
+	// SPEC-140 D11: team-memory enable is one of the two verbs (besides
+	// `mneme init`) that can write repository files without ever passing
+	// through init, so it ensures .gitattributes itself. Never fatal: a
+	// git failure here must not undo the vault activation above.
+	gitattrsFindings, gitattrsErr := EnsureGitattributes(repoRoot, false)
+	if gitattrsErr != nil {
+		slog.WarnContext(ctx, "team_memory_enable_gitattributes_error", "error", gitattrsErr)
+	} else {
+		result.GitattrsFindings = gitattrsFindings
+	}
 
 	return result, nil
 }
