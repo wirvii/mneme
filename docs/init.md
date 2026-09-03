@@ -45,18 +45,30 @@ Rules:
    blocking `spec_advance` in a repo that never asked for it). If the file
    already exists it is **never touched**, no matter what it contains; if its
    `schema_version` is older than the one this mneme understands, an
-   advisory drift finding is added to step 5 below (never written). See
+   advisory drift finding is added to step 6 below (never written). See
    [docs/quality.md](quality.md).
-5. **Drift report**: scan `<repo>/CLAUDE.md` outside the managed block, plus
-   the quality constitution's schema_version, and print advisory findings
-   (no file is modified by this step).
-6. **Legacy plan**: show the legacy migration plan in dry-run mode.
+5. **`.gitattributes` block** (SPEC-140): ensure `<repo>/.gitattributes`
+   carries a marked `eol=lf` block for `.mneme/**`, `.claude/agents/**` and
+   `.codex/agents/**` — the paths mneme itself writes and later re-reads
+   with a line-ending-sensitive parser, so a clone made on a machine with
+   `core.autocrlf=true` does not silently corrupt them. Asks `git
+   check-attr`, never the file's own content: an existing rule that already
+   resolves to `lf` is left alone; one that explicitly resolves to
+   something else is left untouched and reported as a finding (step 6
+   below) instead of overridden. `mneme sdd enable --apply` and `mneme
+   team-memory enable` write this same block too, since both can run
+   without ever passing through `init`.
+6. **Drift report**: scan `<repo>/CLAUDE.md` outside the managed block, plus
+   the quality constitution's schema_version, plus any `.gitattributes`
+   finding from step 5, and print advisory findings (no file is modified by
+   this step).
+7. **Legacy plan**: show the legacy migration plan in dry-run mode.
 
 ### `--check` mode
 
 Report-only: runs drift detection and shows the legacy plan without writing
-anything — including the quality constitution, which is materialized only
-outside `--check`.
+anything — including the quality constitution and the `.gitattributes`
+block, both of which are materialized only outside `--check`.
 
 ### `--apply` mode
 

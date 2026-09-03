@@ -6,6 +6,58 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **A repository checked out with `core.autocrlf=true` had its SDD records,
+  vault notes, and mneme-generated agent profiles all silently corrupted
+  (SPEC-140).** `internal/sddfile`'s and `internal/vault`'s frontmatter
+  parsers rejected every file outright (`missing opening --- delimiter`),
+  and `internal/managedblock`'s block finder read a mneme-composed agent
+  profile as foreign — worse, on the WRITE side it appended a duplicate
+  managed block instead of replacing the existing one, corrupting a
+  person's own `CLAUDE.md`. CRLF is now normalized to LF at the byte-
+  reading boundary in `sddfile.ReadRecord`/`vault.ParseFile`, and
+  `managedblock`'s block finder tolerates a trailing `\r`.
+- **`mneme sdd enable` used to abort with `ErrSDDNotConverged` before
+  printing a single line, on the exact repository that most needed
+  completing: a clone of an already-activated one.** Records this
+  machine's database does not know yet are the ordinary state of a fresh
+  clone, not a convergence failure — a committed `.mneme/sdd/.mneme-sdd`
+  marker now short-circuits the convergence check (when `--apply` is not
+  passed) and reports what THIS machine is missing instead: hooks not
+  installed, or records not yet imported, each with its exact fix command.
+  `--apply`'s own behaviour, including the convergence refusal, is
+  unchanged in every case.
+
+### Added
+
+- **`.gitattributes` is now written for the paths mneme writes and later
+  re-reads (SPEC-140).** A new leaf package, `internal/gitattrs`, renders
+  an `eol=lf` block for `.mneme/**`, `.claude/agents/**` and
+  `.codex/agents/**`, and asks `git check-attr` (never the file's own
+  content) before writing — an existing rule that already resolves to
+  `lf` is left alone, one that explicitly says otherwise is reported and
+  never overridden. Wired into `mneme init`, `mneme sdd enable --apply`,
+  and `mneme team-memory enable`. This repository now carries its own
+  `.gitattributes`.
+- **`mneme team-memory import [--dry-run]` and `mneme team-memory status
+  [--json]` (SPEC-140).** `ImportFromShared` used to have exactly one
+  caller — the hidden git-hook subcommand — leaving no visible way to pull
+  in a teammate's already-shared knowledge without waiting for the next
+  `git pull`. `import` runs the same import on demand (`--dry-run` to
+  preview); `status` reports the vault's presence and whether this
+  machine's own import hooks are installed. `mneme team-memory enable`
+  now also names when this machine is still missing memories already in
+  the vault. Neither the top-level command count (43) nor the MCP tool
+  count (87) changes — both are new subcommands under the existing
+  `team-memory` command.
+- The `mneme-init` skill gained a new **Step 0.6 — diagnose before
+  offering anything**: when an SDD or shared-memory marker is already
+  committed, the skill installs this machine's hooks and imports BEFORE
+  ever calling `subagent_fingerprint` — asking about agents first always
+  answers "no agents", since the subagent manifest is a memory, not a
+  file, until an import has populated it.
+
 ## [v1.44.0] — 2026-09-01 — A closed reliability gap in certification: no clock-dependent test, no publishing on red, no gate-less green
 
 ### Changed

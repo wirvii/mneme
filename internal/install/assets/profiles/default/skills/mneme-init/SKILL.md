@@ -1,7 +1,7 @@
 ---
 name: mneme-init
 description: "Use once to bootstrap or reconcile a project with mneme for both Claude Code and Codex. Seeds repo knowledge, applies managed instructions, detects a team profile, generates both native agent projections, and offers codegraph and shared-memory setup. Trigger: mneme-init, initialize mneme, onboard this repo, generate subagents, reconcile agent profiles."
-version: 1.10.0
+version: 1.11.0
 pinned: false
 ---
 
@@ -33,6 +33,7 @@ Use this skill when:
 14. **Plain language with the person (operating manual §9).** Every question this grill asks, every option it offers, the areas-completeness question of step 7b and the Step 6 final report are **Channels that reach a person**: no metaphor you invented, no foreign term left untranslated, every acronym expanded on first use, and every option must say what it costs the person in practice — not what it is internally. If they ask you to explain something again, change level (show the real file, the real command) instead of rephrasing it. The project knowledge you draft into `areas_layer3_md` is agent-to-agent and stays precise, but **The exemption never travels with the text**: anything you read back to the person, you rewrite in plain language first.
 15. **Dual-runtime projection (SPEC-123).** Every confirmed `subagent_write` and every `profile_use` materializes both `.claude/agents/<role>.md` and `.codex/agents/<role>.toml` from one canonical role contract. Never run a second initialization for Codex, never create separate memory or SDD state, and never hand-author one projection from the other. If either projection fails validation, report that role as failed; do not claim partial success.
 16. **The SDD opt-in (Step 5, SPEC-130 §2a) invokes the EXISTING `mneme sdd enable` command** — never reimplement the file format, the write-through, or the marker yourself, and always relay its preview output (plan, remote, and the four warnings) verbatim, never paraphrased or suppressed, before asking for confirmation to apply.
+17. **A committed marker means someone already decided to publish (SPEC-140 D3/D14, Step 0.6).** When `.mneme/sdd/.mneme-sdd` or `.mneme/shared/.mneme-vault` is already committed, activation is never re-offered for that mechanism: complete only what this machine is missing (hooks, then import — Step 0.6) and report what was done, instead of running Step 3/5's "do you want to enable this?" question again.
 
 ## Automated Checks
 
@@ -50,6 +51,8 @@ Use this skill when:
 | Plain language in every question | Each question asked and each option offered is free of invented metaphors and untranslated foreign terms, expands every acronym on first use, and states what the option costs the person (rule 14) | Rewrite the question before asking it; if the person asks again, change level — show the real file or the real command instead of rephrasing |
 | Both runtime projections exist | Every confirmed role has a Claude markdown artifact and a Codex TOML artifact in the shared manifest | Re-run the single compose/write or profile activation; never initialize a second mneme project |
 | SDD preview relayed before apply | `mneme sdd enable`'s preview output (plan + the four warnings) was shown to the user, and explicit confirmation was obtained, before `mneme sdd enable --apply` ran | Re-run the preview, relay it verbatim, and wait for confirmation before applying |
+| Diagnose-before-offer ordering (Step 0.6, rule 17) | Whenever a mechanism's marker was already present, its hooks-install then its import ran BEFORE `subagent_fingerprint` was called | Re-run Step 0.6 in the documented order (0.6.1 → 0.6.2/0.6.3 → 0.6.4); never call `subagent_fingerprint` first |
+| Never re-offers an already-committed mechanism | When a marker (SDD or shared-vault) was already present, Step 0.6 completed what was missing instead of re-running Step 3's or Step 5's activation question | Check the marker first (Step 0.6.1's status calls); only ask the activation question when that mechanism's own marker is absent |
 
 ## Verification
 
@@ -74,6 +77,16 @@ Use this skill when:
 4. Classify each CLAUDE.md section as a **behavior instruction** (keep in CLAUDE.md) or **project knowledge** (migrate to mneme). Do not delete anything from CLAUDE.md — the user cleans it up later if they want.
 5. Report to the user what was seeded and the drift findings from step 2.
 6. Ask, ONE AT A TIME, whether to proceed with each of the three opt-in steps below.
+
+### Step 0.6 — Diagnose before offering anything (always runs, no opt-in; SPEC-140 D3/D14)
+
+Runs right after Step 0, BEFORE Step 0.5 and before offering any opt-in step. A repository whose SDD or shared-memory marker is already committed was already activated by someone on the team — the question this step answers is never "should we turn this on?" (that question is Step 3's/Step 5's, and only fires when a marker is absent), it is "what does THIS machine still need?" Numbered as its own sequence because skipping straight to Phase 0's `subagent_fingerprint` before this step gets the diagnosis wrong in 100% of clones — the subagent manifest is a MEMORY, not a file, so a database with nothing imported yet always reads as "no agents", even in a repository that already has several committed.
+
+0.6.1. Run `mneme sdd status` and `mneme team-memory status` (both read-only) and relay their output to the user.
+0.6.2. If `mneme sdd status` reports the mechanism enabled: run, WITHOUT asking, `mneme sdd hooks install` (only if its output says this machine's hooks are missing) and then `mneme sdd import`. NEVER run `mneme sdd enable --apply` here — that is Step 5's own gate, reserved for a repository whose marker is still absent.
+0.6.3. If `mneme team-memory status` reports the vault present: run, WITHOUT asking, `mneme team-memory hooks install` (only if missing) and then `mneme team-memory import`.
+0.6.4. ONLY AFTER 0.6.2 and 0.6.3 have run, call `subagent_fingerprint` (Phase 0, below). Calling it any earlier answers "no agents" in every clone, because the manifest a fused/adopted agent lives in is imported by 0.6.2/0.6.3, not read from disk.
+0.6.5. For each mechanism whose marker is ABSENT, this step does nothing: continue exactly with Step 3 (shared memory) or Step 5 (SDD) as written below, with their warnings verbatim and their explicit confirmation gate untouched.
 
 ### Step 0.5 — Profile detection (always runs, no opt-in; SPEC-095 §5)
 

@@ -179,6 +179,41 @@ Author and shared-level attribution round-trip through the file's
 frontmatter and are **never** overwritten by the importing peer's own git
 identity — the note keeps the identity of whoever originally shared it.
 
+### Importing by hand, and checking this machine's own state (SPEC-140)
+
+Before SPEC-140, `ImportFromShared` had exactly one caller: the hidden
+`hooks run-import` subcommand the installed git hooks invoke. A machine that
+cloned a repository with team memory already active — but had not yet run a
+`git pull`/checkout after installing the hooks — had no visible way to pull
+in what teammates had already shared. Two commands close that gap:
+
+```bash
+mneme team-memory import              # reads .mneme/shared/, EXECUTES by default
+mneme team-memory import --dry-run    # preview without writing
+mneme team-memory status              # is the vault present? are this machine's hooks installed?
+mneme team-memory status --json
+```
+
+`mneme team-memory import` runs the same `ImportFromShared` the git hooks
+use — same merge-by-`updated_at` strategy, same one-file-per-UUID id
+preservation described above — but on demand, without waiting for the next
+`git pull`. `--dry-run` reports what would be created/updated/skipped
+without writing anything.
+
+`mneme team-memory status` never writes anything: it reports whether
+`.mneme/shared/` is present and whether THIS machine's own import hooks are
+installed, naming `mneme team-memory hooks install` when they are not — the
+missing half of team-memory's own diagnostic surface (SDD already has
+`mneme sdd status`).
+
+`mneme team-memory enable` itself only ever EXPORTS this machine's own
+memories to the vault — it never imports a teammate's. When `enable` runs
+against an already-active vault, it now also reports whether this machine
+is still missing memories already present there, pointing at `mneme
+team-memory import` — without removing or shortening anything it already
+printed, including the privacy notice below, which keeps printing every
+time regardless.
+
 ### SDD reference anchors (SPEC-128)
 
 A note's frontmatter may carry `sdd_refs:` — one `REF=UUID` line per
@@ -320,6 +355,8 @@ exact wording it uses.
 mneme team-memory enable                  # activate: marker + bake/export + hooks
 mneme team-memory hooks install           # install only the import hooks
 mneme team-memory hooks remove            # remove only the mneme-managed hook block
+mneme team-memory import [--dry-run]      # import from the vault on demand (SPEC-140)
+mneme team-memory status [--json]         # vault presence + this machine's hook state (SPEC-140)
 mneme promote <id>                        # mark one memory as team-curated (shared=2)
 ```
 

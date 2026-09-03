@@ -105,6 +105,30 @@ file, or one anchored to a different machine's item (see "Convergence"
 below). The refusal names the offending files and says to run `mneme sdd
 import` first; a genuine correlative collision is still BL-202.
 
+### Already enabled, new machine (SPEC-140)
+
+The refusal above is reserved for a repository whose `.mneme/sdd/.mneme-sdd`
+marker does not exist yet — a genuine first activation. A repository that
+was already activated by someone on the team, cloned onto a machine that has
+never run `mneme sdd import`, is a DIFFERENT, ordinary situation: `mneme sdd
+enable` (without `--apply`) detects the committed marker and, instead of the
+plan/warnings above, reports what THIS machine is missing:
+
+```
+$ mneme sdd enable
+SDD is already enabled for this team (since 2026-09-01T00:00:00Z).
+This machine is missing:
+  - this machine's git hooks are not installed — run `mneme sdd hooks install`
+  - 3 record(s) committed to this repository are unknown to this machine's local database — run `mneme sdd import`
+```
+
+Records this machine's local database does not recognize are the ordinary
+state of a fresh clone, never a rejection here — running the two named
+commands is all that is needed. `mneme sdd enable --apply` is completely
+unaffected by this: with `--apply`, the command behaves exactly as documented
+above in every case, marker present or not — this is strictly a change to
+what the plain preview reports.
+
 ## Exporting (repair)
 
 ```bash
