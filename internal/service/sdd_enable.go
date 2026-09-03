@@ -64,9 +64,12 @@ const (
 	SDDWarnNoCrossMachineSyncYet = "hoy estos archivos sirven para revisarse en un pull request; ademas, entran en la base de otra maquina tras cada git pull o cambio de rama si esa maquina tiene los enganches instalados (mneme sdd hooks install); dos personas que crean el mismo correlativo a la vez producen un choque que mneme detecta y reporta, pero todavia no resuelve"
 )
 
-// sddWarnings is the fixed, ordered list every dry-run preview and every
-// applied enable prints — always all four, never a subset.
-func sddWarnings() []string {
+// SDDWarnings is the fixed, ordered list every dry-run preview and every
+// applied enable prints — always all four, never a subset. Exported
+// (SPEC-140 AC11/AC12) so a caller outside this package can derive its
+// assertions by iterating the real list instead of copying the four
+// literal strings by hand.
+func SDDWarnings() []string {
 	return []string{
 		SDDWarnHistoryIrreversible,
 		SDDWarnRemotePrivacy,
@@ -105,6 +108,33 @@ type SDDEnableResult struct {
 	// included (AC10). Empty when the repository already resolved eol=lf
 	// everywhere.
 	GitattrsFindings []DriftFinding
+
+	// AlreadyEnabled is true when this call took the "ya encendido" early
+	// branch (SPEC-140 D5): a committed marker was found and apply was
+	// false. It is never true together with Applied — the early branch
+	// always returns before --apply's own logic ever runs (D5's "con
+	// --apply: no se cambia absolutamente nada"). When true, Plan and
+	// Warnings are left at their zero values: this branch is not a plan
+	// to publish anything, so there is nothing to warn about (AC12).
+	AlreadyEnabled bool
+
+	// EnabledSince is the marker's own CreatedAt (D6 point 1) — the
+	// team-wide activation date, not this machine's. Set only when
+	// AlreadyEnabled is true.
+	EnabledSince string
+
+	// HooksInstalled reports whether THIS machine's own SDD git hooks are
+	// already installed (D6 point 2, via SDDHooksInstalled). Set only
+	// when AlreadyEnabled is true.
+	HooksInstalled bool
+
+	// UnknownToThisBase lists SDD record paths whose anchor this
+	// machine's local database does not know (D6 point 2) — the normal
+	// state of a fresh clone that has never run `mneme sdd import`, never
+	// a rejection here (that refusal is D45's, reserved for --apply and
+	// for repositories with no marker at all — AC13's control). Set only
+	// when AlreadyEnabled is true.
+	UnknownToThisBase []string
 }
 
 // SDDDisableResult is DisableSDDRepo's return value.
@@ -188,6 +218,25 @@ func (svc *SDDService) EnableSDDRepo(ctx context.Context, repoRoot string, apply
 		return nil, fmt.Errorf("service: sdd enable: %s: %w", repoRoot, ErrSDDNotGitRepo)
 	}
 
+	// SPEC-140 D5/D45: a committed marker means the team already decided
+	// to publish — the situation this branch reports is "repository
+	// already activated, new machine", never "publishing for the first
+	// time". Read the marker BEFORE checkSDDConvergence: records this
+	// base does not know are the ordinary state of a fresh clone, not a
+	// convergence failure, and taking the early return here is what fixes
+	// the reproduction where `enable` used to abort before printing
+	// anything at all. Gated on !apply so `--apply` in any case — marker
+	// present or not — keeps running today's reexport-and-refuse-on-
+	// non-convergence path completely unchanged (D5's "con --apply: no se
+	// cambia absolutamente nada").
+	marker, err := sddfile.ReadMarker(repoRoot)
+	if err != nil {
+		return nil, fmt.Errorf("service: sdd enable: read marker: %w", err)
+	}
+	if marker != nil && !apply {
+		return svc.alreadyEnabledSDDResult(ctx, repoRoot, marker)
+	}
+
 	if err := svc.checkSDDConvergence(ctx, repoRoot); err != nil {
 		return nil, err
 	}
@@ -200,7 +249,7 @@ func (svc *SDDService) EnableSDDRepo(ctx context.Context, repoRoot string, apply
 	result := &SDDEnableResult{
 		RepoRoot: repoRoot,
 		Plan:     plan,
-		Warnings: sddWarnings(),
+		Warnings: SDDWarnings(),
 		Remote:   g.RemoteURL(),
 	}
 
@@ -261,6 +310,29 @@ func (svc *SDDService) EnableSDDRepo(ctx context.Context, repoRoot string, apply
 
 	result.Applied = true
 	return result, nil
+}
+
+// alreadyEnabledSDDResult builds EnableSDDRepo's "ya encendido" early-branch
+// result (SPEC-140 D5/D6/T3.1): no convergence check runs (D45's refusal
+// exists to protect a genuine first publication, not this case), no
+// warnings are populated (nothing is being published here), and no
+// plan/count header is computed — instead, exactly what THIS machine still
+// needs: whether its own git hooks are installed, and which committed
+// records its local database does not know yet (the ordinary state of a
+// fresh clone). scanSDDRecords is used here to INFORM, never to refuse —
+// unlike checkSDDConvergence's use of the same scan.
+func (svc *SDDService) alreadyEnabledSDDResult(ctx context.Context, repoRoot string, marker *sddfile.Marker) (*SDDEnableResult, error) {
+	_, foreign, err := svc.scanSDDRecords(ctx, repoRoot)
+	if err != nil {
+		return nil, fmt.Errorf("service: sdd enable: scan records: %w", err)
+	}
+	return &SDDEnableResult{
+		RepoRoot:          repoRoot,
+		AlreadyEnabled:    true,
+		EnabledSince:      marker.CreatedAt,
+		HooksInstalled:    svc.SDDHooksInstalled(repoRoot),
+		UnknownToThisBase: foreign,
+	}, nil
 }
 
 // DisableSDDRepo previews (default) or applies (apply=true) turning the
