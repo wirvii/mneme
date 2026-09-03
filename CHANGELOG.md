@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [v1.45.0] — 2026-09-03 — Idempotent startup: CRLF tolerated on read, a written .gitattributes, a real diagnosis instead of a false zero, and visible team-memory import/status commands
+
 ### Fixed
 
 - **A repository checked out with `core.autocrlf=true` had its SDD records,
@@ -20,26 +22,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `managedblock`'s block finder tolerates a trailing `\r`.
 - **`mneme sdd enable` used to abort with `ErrSDDNotConverged` before
   printing a single line, on the exact repository that most needed
-  completing: a clone of an already-activated one.** Records this
-  machine's database does not know yet are the ordinary state of a fresh
-  clone, not a convergence failure — a committed `.mneme/sdd/.mneme-sdd`
-  marker now short-circuits the convergence check (when `--apply` is not
-  passed) and reports what THIS machine is missing instead: hooks not
-  installed, or records not yet imported, each with its exact fix command.
-  `--apply`'s own behaviour, including the convergence refusal, is
-  unchanged in every case.
+  completing: a clone of an already-activated one.** If you run `mneme
+  sdd enable` (without `--apply`) in a repository where
+  `.mneme/sdd/.mneme-sdd` is already committed, you now get a report of
+  what THIS machine is missing — its own git hooks not installed, or
+  committed records this machine hasn't imported yet — each with the
+  exact command that fixes it, instead of either that hard error or a
+  misleading "0 would be exported". **`mneme sdd enable --apply` itself
+  is untouched in every case, including its convergence refusal — this
+  only changes what the plain preview reports once the mechanism was
+  already turned on for the team; the first-activation path is exactly
+  as it was.**
 
 ### Added
 
 - **`.gitattributes` is now written for the paths mneme writes and later
-  re-reads (SPEC-140).** A new leaf package, `internal/gitattrs`, renders
-  an `eol=lf` block for `.mneme/**`, `.claude/agents/**` and
-  `.codex/agents/**`, and asks `git check-attr` (never the file's own
-  content) before writing — an existing rule that already resolves to
-  `lf` is left alone, one that explicitly says otherwise is reported and
-  never overridden. Wired into `mneme init`, `mneme sdd enable --apply`,
-  and `mneme team-memory enable`. This repository now carries its own
-  `.gitattributes`.
+  re-reads (SPEC-140).** The next time you run `mneme init`, `mneme sdd
+  enable --apply`, or `mneme team-memory enable` in your own repository,
+  if none of your existing `.gitattributes` rules already force
+  `eol=lf` for `.mneme/**`, `.claude/agents/**`, or `.codex/agents/**`,
+  mneme adds a marked block that does — asked for via `git check-attr`,
+  never by reading the file itself, so this only fires when a rule is
+  genuinely missing. **It never touches or overrides a rule you already
+  have**: one that already resolves to `lf` is left exactly as it is,
+  and one that explicitly says something else is reported, never
+  overridden. This repository now carries its own `.gitattributes`.
 - **`mneme team-memory import [--dry-run]` and `mneme team-memory status
   [--json]` (SPEC-140).** `ImportFromShared` used to have exactly one
   caller — the hidden git-hook subcommand — leaving no visible way to pull
