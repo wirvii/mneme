@@ -34,6 +34,16 @@ func EndMarker(marker string) string {
 	return fmt.Sprintf("<!-- mneme:%s:end -->", marker)
 }
 
+// StartMarkerPrefix returns the version-independent prefix every start
+// marker for marker begins with, e.g. StartMarkerPrefix("managed") returns
+// "<!-- mneme:managed:start". It exists so a caller counting occurrences of
+// the start marker (SPEC-140 AC4 — proving UpsertText never duplicates a
+// block) never has to duplicate the literal marker syntax in its own code:
+// findBlock already searches for exactly this prefix.
+func StartMarkerPrefix(marker string) string {
+	return "<!-- mneme:" + marker + ":start"
+}
+
 // UpsertText returns the result of upserting content into a single versioned
 // block (identified by marker) within text. Rules:
 //
@@ -49,6 +59,19 @@ func EndMarker(marker string) string {
 //
 // The operation is idempotent: calling UpsertText twice with identical
 // arguments produces byte-identical output.
+//
+// findBlock now tolerates a "\r\n"-terminated start marker line (SPEC-140
+// D12), so replacing a block inside a file that was checked out with
+// core.autocrlf=true is found and replaced rather than appended as a
+// duplicate. The declared trade-off: the block this function writes always
+// uses "\n", so a CRLF file ends up with mixed line endings after a
+// replace — the new block in LF, the rest of the file still in CRLF. Left
+// deliberately: git normalizes on the next `commit` under
+// `core.autocrlf`, so it produces no diff noise, and it is incomparably
+// better than the alternative it replaces (a duplicated block). Do not
+// "fix" this by rewriting the whole file to one line ending — that is out
+// of scope here and belongs to whatever wrote the file's line endings in
+// the first place.
 func UpsertText(text, marker string, version int, content string) string {
 	end := EndMarker(marker)
 	block := StartMarker(marker, version) + "\n" + content + "\n" + end
@@ -101,7 +124,11 @@ func ReadText(text, marker string) (content string, version int, present bool) {
 	if startLineEnd == -1 {
 		return "", 0, false
 	}
-	startLine := text[startIdx : startIdx+startLineEnd]
+	// SPEC-140 D12: trim a trailing "\r" before Sscanf, same reasoning as
+	// findBlock's own suffix check — a CRLF file otherwise leaves "\r"
+	// glued to the closing "-->", which Sscanf's literal format string does
+	// not match, so the version silently reads back as 0.
+	startLine := strings.TrimSuffix(text[startIdx:startIdx+startLineEnd], "\r")
 
 	var v int
 	scanFormat := fmt.Sprintf("<!-- mneme:%s:start v=%%d -->", marker)
@@ -122,7 +149,7 @@ func ReadText(text, marker string) (content string, version int, present bool) {
 // Returns (-1, -1) when the block is not found. Matches any version of the
 // start marker.
 func findBlock(text, marker string) (startIdx, endIdx int) {
-	prefix := "<!-- mneme:" + marker + ":start"
+	prefix := StartMarkerPrefix(marker)
 	startIdx = strings.Index(text, prefix)
 	if startIdx == -1 {
 		return -1, -1
@@ -133,6 +160,12 @@ func findBlock(text, marker string) (startIdx, endIdx int) {
 		return -1, -1
 	}
 	startLine := text[startIdx : startIdx+lineEnd]
+	// SPEC-140 D12: a file checked out with core.autocrlf=true has "\r\n"
+	// line endings, so startLine ends in " -->\r" here — trim it before the
+	// suffix check, or every managed block in a CRLF file reads as absent
+	// (findBlock returns (-1,-1)), which is what made UpsertText append a
+	// duplicate block instead of replacing the existing one.
+	startLine = strings.TrimSuffix(startLine, "\r")
 	if !strings.HasSuffix(startLine, " -->") {
 		return -1, -1
 	}

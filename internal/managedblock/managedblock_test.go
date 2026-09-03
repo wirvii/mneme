@@ -127,6 +127,28 @@ func TestUpsertText_ReplacesOldBlock(t *testing.T) {
 
 // TestReadText roundtrips content written by UpsertText, table-driven over
 // present/absent scenarios.
+// TestUpsertText_CRLFDoesNotDuplicateBlock is SPEC-140 AC4: replacing a
+// managed block inside a file that was checked out with
+// core.autocrlf=true's "\r\n" line endings must REPLACE the existing
+// block, not append a second one next to it — that duplication is what
+// corrupted a real CLAUDE.md before findBlock learned to tolerate "\r".
+// Both assertions are required: counting exactly one start marker alone
+// would also pass a broken implementation that writes nothing at all, so
+// the new content's presence is checked too.
+func TestUpsertText_CRLFDoesNotDuplicateBlock(t *testing.T) {
+	original := UpsertText("", "managed", 1, "a")
+	crlf := strings.ReplaceAll(original, "\n", "\r\n")
+
+	got := UpsertText(crlf, "managed", 2, "b")
+
+	if count := strings.Count(got, StartMarkerPrefix("managed")); count != 1 {
+		t.Fatalf("expected exactly 1 start marker after replace, got %d in:\n%q", count, got)
+	}
+	if !strings.Contains(got, "b") {
+		t.Fatalf("new content %q not found in result — a no-op implementation would still pass the count check alone:\n%q", "b", got)
+	}
+}
+
 func TestReadText(t *testing.T) {
 	tests := []struct {
 		name        string

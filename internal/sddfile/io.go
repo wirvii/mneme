@@ -1,6 +1,7 @@
 package sddfile
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -50,12 +51,35 @@ func WriteRecord(path string, data []byte) error {
 
 // ReadRecord reads the raw bytes at path. A thin wrapper over os.ReadFile
 // so callers of this package never import os directly for the common case.
+//
+// CRLF line endings are normalized to LF right here, at the byte-reading
+// boundary — never inside parseFrontmatterBlock's line-by-line scan. A
+// machine that cloned this repository with `core.autocrlf=true` sees every
+// "\n" this package wrote turned into "\r\n" on checkout (SPEC-140 D12):
+// trimming the "\r" per line while keeping parseFrontmatterBlock's
+// `offset += len(lines[i]) + 1` arithmetic would shift the body's start by
+// one byte per header line. Normalizing the whole buffer before anything
+// else touches it sidesteps that arithmetic entirely — every downstream
+// consumer (UnmarshalBacklog, UnmarshalSpec, the divergence comparison in
+// scanSDDDivergent) sees plain LF, as if the file had never left this
+// package's own writer.
 func ReadRecord(path string) ([]byte, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("sddfile: read record: %w", err)
 	}
-	return data, nil
+	return normalizeCRLF(data), nil
+}
+
+// normalizeCRLF rewrites every "\r\n" sequence in data to "\n". Only the
+// exact two-byte sequence is touched (R2): a lone "\r" without a following
+// "\n" is left alone, so a file that is genuinely corrupt in some other way
+// keeps failing for that reason instead of being silently patched here.
+func normalizeCRLF(data []byte) []byte {
+	if !bytes.Contains(data, []byte("\r\n")) {
+		return data
+	}
+	return bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n"))
 }
 
 // CleanStaleTmp removes any leftover ".*.tmp" file under root — debris

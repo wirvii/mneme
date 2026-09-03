@@ -3,6 +3,7 @@
 package vault
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -90,6 +91,12 @@ func ParseFile(path string) (*ParsedNote, error) {
 	if err != nil {
 		return nil, fmt.Errorf("vault: parse file: read %q: %w", path, err)
 	}
+	// CRLF normalization at the byte-reading boundary, same rationale and
+	// same exact-sequence-only rule as sddfile.ReadRecord (SPEC-140 D12):
+	// a machine that cloned with core.autocrlf=true would otherwise see
+	// every note's opening "---" line read back as "---\r", which fails
+	// the delimiter check below before frontmatter parsing even starts.
+	data = normalizeCRLF(data)
 
 	fm, fmEnd, err := parseFrontmatter(data)
 	if err != nil {
@@ -103,6 +110,18 @@ func ParseFile(path string) (*ParsedNote, error) {
 		FM:   fm,
 		Body: body,
 	}, nil
+}
+
+// normalizeCRLF rewrites every "\r\n" sequence in data to "\n" (SPEC-140
+// D12). Only the exact two-byte sequence is touched: a lone "\r" without a
+// following "\n" is left alone, so a file that is genuinely corrupt in some
+// other way keeps failing for that reason instead of being silently
+// patched here.
+func normalizeCRLF(data []byte) []byte {
+	if !bytes.Contains(data, []byte("\r\n")) {
+		return data
+	}
+	return bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n"))
 }
 
 // parseFrontmatter parses the YAML-like frontmatter block from raw bytes.
