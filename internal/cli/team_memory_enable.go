@@ -85,6 +85,19 @@ remote.`,
 			for _, f := range result.GitattrsFindings {
 				fmt.Fprintf(out, "[gitattributes] %s\n", f)
 			}
+			// SPEC-140 D8/T4.3: `enable` only ever EXPORTS this machine's own
+			// memories to the vault — it never imports a teammate's. On an
+			// already-enabled repository that gap is exactly the one D8
+			// closes, so name it here rather than leaving the operator to
+			// discover it: nothing above is removed (D14 keeps the privacy
+			// notice unconditional either way).
+			if result.AlreadyEnabled {
+				if preview, previewErr := svc.ImportFromSharedPreview(cmd.Context(), root); previewErr == nil {
+					if pending := preview.Created + preview.Updated; pending > 0 {
+						fmt.Fprintf(out, "This machine is still missing %d memory row(s) already in the vault — run `mneme team-memory import`.\n", pending)
+					}
+				}
+			}
 			fmt.Fprintln(out)
 			printTeamMemoryPrivacyNotice(out, root)
 
