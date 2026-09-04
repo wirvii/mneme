@@ -275,7 +275,7 @@ mneme is a **cross-runtime package manager** for skills. It embeds skills under
 `internal/install/assets/skills/` and mirrors them to `~/.claude/skills/` and
 `$HOME/.agents/skills/`. mneme does not implement either runtime's loader.
 
-**Bundled skills (SPEC-037):** `example-skill` (structural fixture — NOT architectural guidance), `mneme-init` (project-level orchestrator skill, SPEC-058), and `mneme-profile-author` (profile-authoring grill, SPEC-095 §5 — sibling of `mneme-init`: authors a profile REPO's content, rather than onboarding a single project to one).
+**Bundled skills (SPEC-037), 8 total:** `example-skill` (structural fixture — NOT architectural guidance), `mneme-init` (project-level orchestrator skill, SPEC-058), `mneme-profile-author` (profile-authoring grill, SPEC-095 §5 — sibling of `mneme-init`: authors a profile REPO's content, rather than onboarding a single project to one), `new-project` (SPEC-098 §7a) and `new-app` (SPEC-099 §7b) — the deterministic halves of growing a project or a monorepo app from a profile's scaffold catalog — and, since SPEC-141, `grill-me` (the one-question-at-a-time refinement interview §4 of the operating manual obligates for standard-lane items), `hunt-bug`, and `bug-to-issue` (bug investigation and diagnosis-to-spec, rewritten for this repo's SDD flow — the pre-mneme `.claude/bugs`/`.claude/templates` instructions they used to carry are gone). All three of the SPEC-141 skills also ship a thin slash-command wrapper for Claude Code (`mneme-init` already did); Codex receives the skill only, since it has no slash-command mechanism.
 
 **Key commands:**
 ```bash
