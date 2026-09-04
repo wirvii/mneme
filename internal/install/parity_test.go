@@ -19,3 +19,26 @@ func TestParityMatrix_NoRuntimeGap(t *testing.T) {
 		}
 	}
 }
+
+// TestParityMatrix_CoversAllBundledSkills is SPEC-141 AC7: every bundled
+// skill (BundledSkillNames — a derived population, never a hand-typed list)
+// must have its own ParityMatrix entry. A skill added without one leaves the
+// question of its story on each runtime unanswered, which is exactly what
+// this test refuses to compile past.
+func TestParityMatrix_CoversAllBundledSkills(t *testing.T) {
+	names, err := BundledSkillNames()
+	if err != nil {
+		t.Fatalf("BundledSkillNames: %v", err)
+	}
+
+	covered := map[string]bool{}
+	for _, c := range ParityMatrix() {
+		covered[c.Name] = true
+	}
+
+	for _, n := range names {
+		if !covered[n] {
+			t.Errorf("bundled skill %q has no ParityMatrix entry", n)
+		}
+	}
+}

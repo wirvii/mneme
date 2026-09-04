@@ -28,6 +28,10 @@ func ParityMatrix() []ParityCapability {
 		{"mneme-profile-author", "skill", "skill"},
 		{"new-project", "skill", "skill"},
 		{"new-app", "skill", "skill"},
+		{"grill-me", "slash wrapper or skill", "skill"},
+		{"hunt-bug", "slash wrapper or skill", "skill"},
+		{"bug-to-issue", "slash wrapper or skill", "skill"},
+		{"example-skill", "skill", "skill"},
 		{"host configuration", "~/.claude", "$CODEX_HOME"},
 	}
 }
