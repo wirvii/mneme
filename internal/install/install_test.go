@@ -235,10 +235,13 @@ func TestInjectManual_Nil(t *testing.T) {
 }
 
 // TestClaudeCode_Commands_MnemeInitWrapper verifies that Claude Code ships
-// exactly one slash command, /mneme-init, restored as a thin wrapper that
-// only invokes the mneme-init SKILL (SPEC-058 / EPIC agnostic-agents SS-5;
-// wrapper restored by SPEC-067). The wrapper must reference the skill and
-// must NOT reintroduce the obsolete 5-phase markdown workflow.
+// /mneme-init as a thin wrapper that only invokes the mneme-init SKILL
+// (SPEC-058 / EPIC agnostic-agents SS-5; wrapper restored by SPEC-067). The
+// wrapper must reference the skill and must NOT reintroduce the obsolete
+// 5-phase markdown workflow. Since SPEC-141 D7, Commands() installs every
+// assets/commands/ file (mneme-init, grill-me, hunt-bug, bug-to-issue) — see
+// TestCommandAssets_AllInstalledByClaudeCode (G2) for that population-level
+// invariant; this test stays focused on mneme-init's own content.
 func TestClaudeCode_Commands_MnemeInitWrapper(t *testing.T) {
 	agent := ClaudeCode("")
 
@@ -251,13 +254,15 @@ func TestClaudeCode_Commands_MnemeInitWrapper(t *testing.T) {
 		t.Fatalf("agent.Commands() returned error: %v", err)
 	}
 
-	if len(files) != 1 {
-		t.Fatalf("expected exactly 1 CommandFile, got %d", len(files))
+	var f *CommandFile
+	for i := range files {
+		if strings.HasSuffix(filepath.ToSlash(files[i].Path), "/.claude/commands/mneme-init.md") {
+			f = &files[i]
+			break
+		}
 	}
-
-	f := files[0]
-	if !strings.HasSuffix(filepath.ToSlash(f.Path), "/.claude/commands/mneme-init.md") {
-		t.Errorf("unexpected command path: %q", f.Path)
+	if f == nil {
+		t.Fatalf("expected a mneme-init.md CommandFile among %d, found none", len(files))
 	}
 
 	content := string(f.Content)

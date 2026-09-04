@@ -61,11 +61,12 @@ The coordinator traverses the full cycle: backlog → spec → implement → qa 
 
 **Refinamiento: grill-me, no brainstorming.** For a **standard**-lane item,
 refine it with `grill-me` (one question at a time, recommending an answer at
-each step) before `backlog_refine`. **Do NOT use `superpowers:brainstorming`
-to refine it** — it clashes with the SDD flow (writes its own design doc and
-plan, stepping on the spec you are about to write) and doesn't ship with
-mneme. For **trivial** items the grill is optional — grill it or
-reclassify to standard if it turns out ambiguous.
+each step) before `backlog_refine`. `grill-me` is a bundled skill `mneme
+install` delivers; `mneme skills list` shows it once installed.
+**Do NOT use `superpowers:brainstorming` to refine it** — it clashes with the
+SDD flow (writes its own design doc and plan, stepping on the spec you are
+about to write) and doesn't ship with mneme. For **trivial** items the grill
+is optional — grill it or reclassify to standard if it turns out ambiguous.
 
 ## §4 Skills
 

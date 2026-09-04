@@ -14,6 +14,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -239,28 +240,26 @@ func ClaudeCode(binaryPath string) *Agent {
 			return path, []byte(operatingManual()), nil
 		},
 
-		// Commands installs a single thin wrapper slash command,
-		// /mneme-init, that only invokes the mneme-init SKILL (SPEC-058 /
-		// EPIC agnostic-agents SS-5, restored by SPEC-067). The skill itself
-		// ships via the Skills field below (assets/skills/mneme-init), which
-		// the generic "Skills" install step already deploys; the wrapper
-		// exists solely to preserve the slash-command entry point in Claude
-		// Code. It reads exactly one embedded file — NOT filesFromEmbed over
-		// the whole assets/commands dir — so the vestigial grill-me/hunt-bug/
-		// bug-to-issue command assets remain uninstalled.
+		// Commands installs every file under assets/commands/ as a slash
+		// command (SPEC-141 D7): each one is a thin wrapper over a bundled
+		// skill of the same name — mneme-init (SPEC-058 / EPIC
+		// agnostic-agents SS-5, restored by SPEC-067), grill-me, hunt-bug,
+		// and bug-to-issue (SPEC-141). The skill itself ships via the Skills
+		// field below, which the generic "Skills" install step already
+		// deploys to ~/.claude/skills; the wrapper only exists to preserve
+		// each one's slash-command entry point in Claude Code. The
+		// population is DERIVED from the embedded directory — never a
+		// hand-picked file list — so a wrapper added to assets/commands/
+		// without a matching skill fails G1 (TestCommandAssets_AreThinWrappersOverBundledSkills)
+		// instead of shipping unnoticed, and one whose asset is installed
+		// but not returned here (or vice versa) fails G2
+		// (TestCommandAssets_AllInstalledByClaudeCode).
 		Commands: func() ([]CommandFile, error) {
 			home, err := os.UserHomeDir()
 			if err != nil {
 				return nil, fmt.Errorf("install: claude-code: commands: home dir: %w", err)
 			}
-			content, err := builtinCommands.ReadFile("assets/commands/mneme-init.md")
-			if err != nil {
-				return nil, fmt.Errorf("install: claude-code: commands: read wrapper: %w", err)
-			}
-			return []CommandFile{{
-				Path:    filepath.Join(home, ".claude", "commands", "mneme-init.md"),
-				Content: content,
-			}}, nil
+			return filesFromEmbed(builtinCommands, "assets/commands", filepath.Join(home, ".claude", "commands"))
 		},
 
 		// Agents is nil (SPEC-073, D1): mneme install claude-code no longer
@@ -479,10 +478,28 @@ func (a *Agent) installSteps(opts InstallOptions) []installStep {
 	// Step 4: Slash commands. Optional — agents without slash commands (e.g.
 	// Codex, which deprecated prompts in favour of skills) leave Commands nil.
 	if a.Commands != nil {
+		force := opts.Force
 		steps = append(steps, installStep{
 			Name: "Slash commands",
 			Run: func() (string, error) {
-				return "", WriteCommands(a)
+				result, err := WriteCommands(a, force)
+				if err != nil {
+					return "", err
+				}
+				var parts []string
+				if len(result.Installed) > 0 {
+					parts = append(parts, fmt.Sprintf("installed: %s", strings.Join(result.Installed, ", ")))
+				}
+				if len(result.Updated) > 0 {
+					parts = append(parts, fmt.Sprintf("updated: %s", strings.Join(result.Updated, ", ")))
+				}
+				if len(result.Adopted) > 0 {
+					parts = append(parts, fmt.Sprintf("adopted: %s", strings.Join(result.Adopted, ", ")))
+				}
+				if len(result.KeptYours) > 0 {
+					parts = append(parts, fmt.Sprintf("%s: %s", CommandKeptYoursLabel, strings.Join(result.KeptYours, ", ")))
+				}
+				return strings.Join(parts, "; "), nil
 			},
 		})
 	}
@@ -1102,23 +1119,106 @@ func InjectManual(agent *Agent) error {
 	return nil
 }
 
+// CommandsResult summarises the outcome of a WriteCommands call (SPEC-141
+// §4-bis D18).
+type CommandsResult struct {
+	// Installed lists command file basenames that did not exist yet and
+	// were written for the first time.
+	Installed []string
+
+	// Updated lists command file basenames that already carried
+	// commandBlockMarker and were refreshed with the current asset content.
+	Updated []string
+
+	// Adopted lists command file basenames that existed with content mneme
+	// recognised as its own (a known pre-marker digest, or — when force
+	// displaced a foreign file — the file force just replaced) and were
+	// rewritten to carry commandBlockMarker for the first time.
+	Adopted []string
+
+	// KeptYours lists command file basenames that exist, were not
+	// recognised as mneme's own, and were left byte-for-byte untouched
+	// because force was false.
+	KeptYours []string
+
+	// BackupPaths maps a command file basename to the ".bak" path its
+	// original, foreign content was copied to before force overwrote it.
+	// Empty unless force displaced at least one foreign file.
+	BackupPaths map[string]string
+}
+
 // WriteCommands writes each CommandFile returned by agent.Commands to the
-// filesystem. Parent directories are created as needed. Existing files are
-// overwritten so the slash command is always up to date after install.
-func WriteCommands(agent *Agent) error {
+// filesystem, honouring per-file ownership (SPEC-141 §4-bis D15-D18):
+//
+//   - A destination that does not exist yet is written (Installed).
+//   - A destination mneme already owns — it carries commandBlockMarker, or
+//     its content matches a known pre-marker digest in
+//     legacyCommandDigests — is refreshed with the current asset content
+//     (Updated when it already carried the marker, Adopted when this is the
+//     first write that adds the marker).
+//   - Any other existing destination is a person's own file: it is left
+//     completely untouched and reported in KeptYours, UNLESS force is true,
+//     in which case it is backed up to "<name>.bak" (the original content,
+//     byte for byte) before being replaced, and reported in Adopted with an
+//     entry in BackupPaths.
+//
+// Parent directories are created as needed.
+func WriteCommands(agent *Agent, force bool) (*CommandsResult, error) {
 	commands, err := agent.Commands()
 	if err != nil {
-		return fmt.Errorf("install: write commands: %w", err)
+		return nil, fmt.Errorf("install: write commands: %w", err)
 	}
+
+	result := &CommandsResult{}
 	for _, cmd := range commands {
+		base := filepath.Base(cmd.Path)
+		name := strings.TrimSuffix(base, filepath.Ext(base))
+
 		if err := os.MkdirAll(filepath.Dir(cmd.Path), 0o755); err != nil {
-			return fmt.Errorf("install: write commands: mkdir %s: %w", cmd.Path, err)
+			return nil, fmt.Errorf("install: write commands: mkdir %s: %w", cmd.Path, err)
 		}
-		if err := os.WriteFile(cmd.Path, cmd.Content, 0o644); err != nil {
-			return fmt.Errorf("install: write commands: write %s: %w", cmd.Path, err)
+
+		ownership, existing, viaMarker, err := classifyCommandFile(cmd.Path, name)
+		if err != nil {
+			return nil, fmt.Errorf("install: write commands: %w", err)
+		}
+
+		switch ownership {
+		case commandForeign:
+			if !force {
+				result.KeptYours = append(result.KeptYours, base)
+				slog.Warn("install: command file is not mneme's own, keeping it untouched", "path", cmd.Path)
+				continue
+			}
+			backupPath := cmd.Path + ".bak"
+			if err := os.WriteFile(backupPath, existing, 0o644); err != nil {
+				return nil, fmt.Errorf("install: write commands: back up %s: %w", cmd.Path, err)
+			}
+			if result.BackupPaths == nil {
+				result.BackupPaths = map[string]string{}
+			}
+			result.BackupPaths[base] = backupPath
+			if err := os.WriteFile(cmd.Path, cmd.Content, 0o644); err != nil {
+				return nil, fmt.Errorf("install: write commands: write %s: %w", cmd.Path, err)
+			}
+			result.Adopted = append(result.Adopted, base)
+		case commandOurs:
+			if err := os.WriteFile(cmd.Path, cmd.Content, 0o644); err != nil {
+				return nil, fmt.Errorf("install: write commands: write %s: %w", cmd.Path, err)
+			}
+			if viaMarker {
+				result.Updated = append(result.Updated, base)
+			} else {
+				result.Adopted = append(result.Adopted, base)
+			}
+		case commandAbsent:
+			if err := os.WriteFile(cmd.Path, cmd.Content, 0o644); err != nil {
+				return nil, fmt.Errorf("install: write commands: write %s: %w", cmd.Path, err)
+			}
+			result.Installed = append(result.Installed, base)
 		}
 	}
-	return nil
+	return result, nil
 }
 
 // WriteAgents installs agent profile files (e.g. ~/.claude/agents/).

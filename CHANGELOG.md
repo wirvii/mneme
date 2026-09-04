@@ -6,6 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`grill-me`, `hunt-bug`, and `bug-to-issue` are now bundled skills**
+  (SPEC-141), delivered by `mneme install` to both Claude Code
+  (`~/.claude/skills/`) and Codex (`$HOME/.agents/skills/`) — the operating
+  manual obligated `grill-me` for every standard-lane refinement, but no
+  install ever actually shipped it. Each also gets a thin slash-command
+  wrapper for Claude Code, exactly like `mneme-init`'s own wrapper.
+  `hunt-bug` and `bug-to-issue` are rewritten for this repository's current
+  SDD flow — their old `.claude/bugs`/`.claude/templates` instructions,
+  from before mneme, are gone.
+
+### Changed
+
+- **`mneme install` no longer overwrites a slash-command file it did not
+  create.** Previously, `~/.claude/commands/*.md` was replaced
+  unconditionally on every install — if you had your own file at one of
+  the four names above (`mneme-init`, `grill-me`, `hunt-bug`,
+  `bug-to-issue`), it was silently destroyed the moment mneme claimed that
+  name. Install now recognizes its own files (a managed-block marker, or a
+  known past version of mneme's own content) and updates only those,
+  reporting anything else as "kept yours (not replaced)" — in the install
+  output, in the log, and with a clear explanation of how to replace it.
+  Pass `--force` to replace a file that is not mneme's own anyway; the
+  original is copied to `<name>.md.bak` first, so nothing is lost.
+
 ## [v1.45.0] — 2026-09-03 — Idempotent startup: CRLF tolerated on read, a written .gitattributes, a real diagnosis instead of a false zero, and visible team-memory import/status commands
 
 ### Fixed

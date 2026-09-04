@@ -91,7 +91,9 @@ QA-zero-observations gates), not a hook — a file-write hook cannot enforce it.
 
 In lane **standard**, refine a backlog item with `grill-me` — a one-question-
 at-a-time interrogation that recommends an answer at every branch — and pour
-the result into `backlog_refine` before `backlog_promote`.
+the result into `backlog_refine` before `backlog_promote`. `grill-me` is a
+bundled skill `mneme install` delivers; `mneme skills list` shows it once
+installed.
 
 **Do NOT use `superpowers:brainstorming` to refine a backlog item.**
 brainstorming clashes with the mneme SDD flow: its own pipeline writes a
