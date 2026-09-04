@@ -45,12 +45,6 @@ const commandBlockMarker = "command"
 // See changes.md for the full transcript. Its declared limit: a historical
 // variant this walk did not find stays classified as foreign — the visible,
 // safe-side symptom is a "kept yours" notice, never a silent overwrite.
-//
-// This table only carries "mneme-init" for now (C1, SPEC-141): it is the
-// only command asset ClaudeCode's Commands closure installs at this point
-// in the change. grill-me/hunt-bug/bug-to-issue join once C3 makes them
-// installable too — adding their entries any earlier would be dead data
-// no code path could ever exercise.
 var legacyCommandDigests = map[string][]string{
 	"mneme-init": {
 		// The obsolete 5-phase project-init markdown (pre-SPEC-067 restore),
@@ -62,6 +56,27 @@ var legacyCommandDigests = map[string][]string{
 		// HEAD immediately before this change, captured verbatim in
 		// testdata/legacy-commands/mneme-init.md (AC12).
 		"915b28d189777df00bbee5680e2c727f9991a0a3a559f7067acf569f5fa33fc2",
+	},
+	"grill-me": {
+		// The only version this asset ever had before this spec rewrote it
+		// as a thin wrapper, commit bf27e42f0b70d1c5450deac04b1f083c458e02a9
+		// — captured verbatim in testdata/legacy-commands/grill-me.md
+		// (AC12). It was never installed by ClaudeCode's Commands closure,
+		// but an OLDER mneme version copied the whole assets/commands
+		// directory (before the "one embedded file" restriction this spec
+		// lifts), so a real machine can carry this exact content today.
+		"74147eb6010a65957efef2b9e0f0b3ff935c1def7fc117697151b1d0f3610556",
+	},
+	"hunt-bug": {
+		// Same story as grill-me: single version, commit
+		// bf27e42f0b70d1c5450deac04b1f083c458e02a9, captured in
+		// testdata/legacy-commands/hunt-bug.md (AC12).
+		"9ed84e86dd40f048eb161fa866c1e26eaf76da7389685baa3bc88930cf6f1636",
+	},
+	"bug-to-issue": {
+		// Same story again, captured in
+		// testdata/legacy-commands/bug-to-issue.md (AC12).
+		"c7afa733cf41749091c2bbbb3b33376659a3d0a009d97c893b04ffdb87ebc221",
 	},
 }
 

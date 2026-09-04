@@ -240,28 +240,26 @@ func ClaudeCode(binaryPath string) *Agent {
 			return path, []byte(operatingManual()), nil
 		},
 
-		// Commands installs a single thin wrapper slash command,
-		// /mneme-init, that only invokes the mneme-init SKILL (SPEC-058 /
-		// EPIC agnostic-agents SS-5, restored by SPEC-067). The skill itself
-		// ships via the Skills field below (assets/skills/mneme-init), which
-		// the generic "Skills" install step already deploys; the wrapper
-		// exists solely to preserve the slash-command entry point in Claude
-		// Code. It reads exactly one embedded file — NOT filesFromEmbed over
-		// the whole assets/commands dir — so the vestigial grill-me/hunt-bug/
-		// bug-to-issue command assets remain uninstalled.
+		// Commands installs every file under assets/commands/ as a slash
+		// command (SPEC-141 D7): each one is a thin wrapper over a bundled
+		// skill of the same name — mneme-init (SPEC-058 / EPIC
+		// agnostic-agents SS-5, restored by SPEC-067), grill-me, hunt-bug,
+		// and bug-to-issue (SPEC-141). The skill itself ships via the Skills
+		// field below, which the generic "Skills" install step already
+		// deploys to ~/.claude/skills; the wrapper only exists to preserve
+		// each one's slash-command entry point in Claude Code. The
+		// population is DERIVED from the embedded directory — never a
+		// hand-picked file list — so a wrapper added to assets/commands/
+		// without a matching skill fails G1 (TestCommandAssets_AreThinWrappersOverBundledSkills)
+		// instead of shipping unnoticed, and one whose asset is installed
+		// but not returned here (or vice versa) fails G2
+		// (TestCommandAssets_AllInstalledByClaudeCode).
 		Commands: func() ([]CommandFile, error) {
 			home, err := os.UserHomeDir()
 			if err != nil {
 				return nil, fmt.Errorf("install: claude-code: commands: home dir: %w", err)
 			}
-			content, err := builtinCommands.ReadFile("assets/commands/mneme-init.md")
-			if err != nil {
-				return nil, fmt.Errorf("install: claude-code: commands: read wrapper: %w", err)
-			}
-			return []CommandFile{{
-				Path:    filepath.Join(home, ".claude", "commands", "mneme-init.md"),
-				Content: content,
-			}}, nil
+			return filesFromEmbed(builtinCommands, "assets/commands", filepath.Join(home, ".claude", "commands"))
 		},
 
 		// Agents is nil (SPEC-073, D1): mneme install claude-code no longer

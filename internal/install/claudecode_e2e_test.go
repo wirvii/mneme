@@ -171,16 +171,69 @@ func TestClaudeCodeInstall_IdempotencyWithPreexistingStopHook(t *testing.T) {
 
 // claudeCodeGoldenArtifactPaths returns the absolute paths of every artefact
 // a vanilla `mneme install claude-code` is expected to produce under tmpHome.
+// The command and skill paths are DERIVED from ClaudeCode's own Commands
+// closure and BundledSkillNames (SPEC-141 AC1) rather than a hand-typed
+// list — a command or skill added later is picked up automatically instead
+// of silently going unchecked.
 func claudeCodeGoldenArtifactPaths(tmpHome string) []string {
-	return []string{
+	paths := []string{
 		filepath.Join(tmpHome, ".claude.json"),
 		filepath.Join(tmpHome, ".claude", "CLAUDE.md"),
 		filepath.Join(tmpHome, ".claude", "settings.json"),
-		filepath.Join(tmpHome, ".claude", "commands", "mneme-init.md"),
-		filepath.Join(tmpHome, ".claude", "skills", "example-skill", "SKILL.md"),
-		filepath.Join(tmpHome, ".claude", "skills", "mneme-init", "SKILL.md"),
-		filepath.Join(tmpHome, ".claude", "skills", "mneme-profile-author", "SKILL.md"),
 		filepath.Join(tmpHome, ".mneme", "templates", "spec-template.md"),
+	}
+
+	if cmds, err := ClaudeCode("/usr/local/bin/mneme").Commands(); err == nil {
+		for _, c := range cmds {
+			paths = append(paths, filepath.Join(tmpHome, ".claude", "commands", filepath.Base(c.Path)))
+		}
+	}
+
+	if names, err := BundledSkillNames(); err == nil {
+		for _, n := range names {
+			paths = append(paths, filepath.Join(tmpHome, ".claude", "skills", n, "SKILL.md"))
+		}
+	}
+
+	return paths
+}
+
+// TestClaudeCodeInstall_DeliversEveryBundledAsset is SPEC-141 AC1: after a
+// real Install(ClaudeCode(bin), bin) against a temporary HOME, every
+// BundledSkillNames() entry has a ~/.claude/skills/<name>/SKILL.md, and
+// every assets/commands/<x>.md file has a ~/.claude/commands/<x>.md.
+// Neither population is hand-typed — both are read from the same sources
+// the installer itself uses, so a command or skill added later is
+// automatically covered.
+func TestClaudeCodeInstall_DeliversEveryBundledAsset(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	const binPath = "/usr/local/bin/mneme"
+	if err := Install(ClaudeCode(binPath), binPath); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+
+	names, err := BundledSkillNames()
+	if err != nil {
+		t.Fatalf("BundledSkillNames: %v", err)
+	}
+	for _, name := range names {
+		path := filepath.Join(tmpHome, ".claude", "skills", name, "SKILL.md")
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("bundled skill %q: expected %s to exist: %v", name, path, err)
+		}
+	}
+
+	entries, err := builtinCommands.ReadDir("assets/commands")
+	if err != nil {
+		t.Fatalf("read assets/commands: %v", err)
+	}
+	for _, e := range entries {
+		path := filepath.Join(tmpHome, ".claude", "commands", e.Name())
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("command asset %q: expected %s to exist: %v", e.Name(), path, err)
+		}
 	}
 }
 

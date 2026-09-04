@@ -2,9 +2,14 @@
 name: grill-me
 description: Interview the user relentlessly about a plan or design until reaching shared understanding, resolving each branch of the decision tree. Use when user wants to stress-test a plan, get grilled on their design, or mentions "grill me".
 ---
+<!-- mneme:command:start v=1 -->
+Invoke the **grill-me** skill now.
 
-Interview me relentlessly about every aspect of this plan until we reach a shared understanding. Walk down each branch of the design tree, resolving dependencies between decisions one-by-one. For each question, provide your recommended answer.
+Do not reimplement its steps here: the skill (`~/.claude/skills/grill-me/`) is
+the single source of truth for the interview practice — one question at a
+time, always with a recommended answer, poured into `backlog_refine` before
+`backlog_promote`.
 
-Ask the questions one at a time.
-
-If a question can be answered by exploring the codebase, explore the codebase instead.
+If the skill is not available, tell the user to run `mneme install claude-code`
+to install it, then retry.
+<!-- mneme:command:end -->

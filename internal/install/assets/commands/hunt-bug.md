@@ -1,12 +1,13 @@
-Iniciar el flujo de investigación de un bug.
+---
+name: hunt-bug
+description: Start a bug investigation using mneme's SDD flow — confirm minimums, search memory, create a ticket with a confirmed lane, and record a diagnosis. Use when the user reports a bug or asks to investigate a failure.
+---
+<!-- mneme:command:start v=1 -->
+Invoke the **hunt-bug** skill now, with $ARGUMENTS as the bug report (it may be empty).
 
-1. Leé el bug report en: $ARGUMENTS
-2. Verificá que el reporte tenga información mínima:
-   - Descripción del problema
-   - Al menos un dato concreto (ID, fecha, empresa)
-   - Comportamiento esperado vs actual
-3. Si falta info, decíme qué falta ANTES de lanzar al Bug Hunter
-4. Si el reporte está completo:
-   a. Creá la carpeta .claude/bugs/{bug-id}/ si no existe
-   b. Lanzá al subagente @bug-hunter con el reporte
-   c. Cuando termine, mostrá el diagnóstico y esperá mi aprobación
+Do not reimplement its steps here: the skill (`~/.claude/skills/hunt-bug/`) is
+the single source of truth for the investigation workflow.
+
+If the skill is not available, tell the user to run `mneme install claude-code`
+to install it, then retry.
+<!-- mneme:command:end -->

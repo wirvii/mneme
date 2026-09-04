@@ -79,6 +79,32 @@ func TestCodexInstall_Idempotency(t *testing.T) {
 	}
 }
 
+// TestCodexInstall_DeliversAllBundledSkills is SPEC-141 AC2: after a real
+// Install(Codex(bin), bin), every BundledSkillNames() entry has a
+// $HOME/.agents/skills/<name>/SKILL.md — a derived population, never a
+// single hand-picked skill (TestCodexInstall_Idempotency only ever checked
+// example-skill).
+func TestCodexInstall_DeliversAllBundledSkills(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	const binPath = "/usr/local/bin/mneme"
+	if err := Install(Codex(binPath), binPath); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+
+	names, err := BundledSkillNames()
+	if err != nil {
+		t.Fatalf("BundledSkillNames: %v", err)
+	}
+	for _, name := range names {
+		path := filepath.Join(tmpHome, ".agents", "skills", name, "SKILL.md")
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("bundled skill %q: expected %s to exist: %v", name, path, err)
+		}
+	}
+}
+
 func TestCodexInstall_HonorsCodexHome(t *testing.T) {
 	tmpHome := t.TempDir()
 	codexHome := filepath.Join(t.TempDir(), "configured-codex-home")
