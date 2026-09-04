@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [v1.46.0] — 2026-09-04 — The tools the manual demands are actually installed, and one broken toolchain no longer takes down the whole code graph
+
 ### Added
 
 - **`grill-me`, `hunt-bug`, and `bug-to-issue` are now bundled skills**
