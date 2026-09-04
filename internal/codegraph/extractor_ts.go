@@ -18,9 +18,16 @@ import (
 var extractJS []byte
 
 // ErrExtractorIncompatible indicates the extractor's toolchain is present but
-// unusable, so NO file of that language can be extracted. Callers must abort
-// rather than counting per-file failures. Distinct from an absent toolchain,
-// which degrades gracefully (TS/JS extraction is optional). See SPEC-088 D4.
+// unusable, so NO file of that language can be extracted. It is the SIGNAL,
+// not the policy (SPEC-142 D8): the indexer (Index/indexList/indexScoped, via
+// indexEligibleFile) registers the language as DEGRADED and continues
+// indexing every other language, rather than aborting the whole run as
+// SPEC-088 D4 originally required — a caller that instead needs an exact,
+// uncomputed-is-a-failure delta (SPEC-118's budget mechanism, R7) still
+// treats this sentinel as fatal on its own terms; degrading the index and
+// failing that computation are two different, both correct, responses to
+// the same sentinel (SPEC-142 D9). Distinct from an absent toolchain, which
+// degrades gracefully on its own (TS/JS extraction is optional).
 var ErrExtractorIncompatible = errors.New("codegraph: extractor toolchain incompatible")
 
 // tsIncompatibleExitCode is the exit code js/extract.js uses (SPEC-088 D3)

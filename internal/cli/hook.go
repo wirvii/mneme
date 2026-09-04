@@ -1815,7 +1815,19 @@ func maybeEmitCodegraphNudge(input hookPreToolInput, cwd string, w, errW io.Writ
 		}
 	}
 
-	renderCodegraphNudge(w, stale, hoursStale)
+	// SPEC-142 D14: the degraded-language notice is computed ONLY here, on
+	// the path where the nudge is actually about to fire — never on the hot
+	// telemetry path above (step 8), which every qualifying tool call takes
+	// regardless of whether a nudge will ever be emitted. ProbeDegraded is a
+	// read-only sibling of ProbeGraph: it never creates dbPath if it does
+	// not already exist, matching this whole function's fail-open posture.
+	degradedLangs, probeErr := codegraph.ProbeDegraded(dbPath)
+	noticeLine, showNotice := codegraph.Notice(degradedLangs, probeErr)
+	if !showNotice {
+		noticeLine = ""
+	}
+
+	renderCodegraphNudge(w, stale, hoursStale, noticeLine)
 	markNudgeState(stateFilePath, key)
 }
 
@@ -1900,9 +1912,21 @@ func markNudgeState(path, key string) {
 // When stale is true, a recommendation to run "mneme codegraph index" is
 // appended before the closing delimiter, with the approximate hours since the
 // last index in the message.
-func renderCodegraphNudge(w io.Writer, stale bool, hoursStale int) {
+//
+// noticeLine is SPEC-142 D14's one extra line: when non-empty (the graph
+// carries a degraded-language mark), it is inserted right after the header,
+// before the MANDATORY instruction — an agent pushed toward this graph
+// should be told in the same breath that a language is missing from it.
+// When noticeLine is EMPTY (the overwhelmingly common case: a healthy
+// project), this function writes EXACTLY what it always has, byte for byte —
+// nothing about this spec may add noise to the 90% of projects it does not
+// concern (AC9).
+func renderCodegraphNudge(w io.Writer, stale bool, hoursStale int, noticeLine string) {
 	fmt.Fprintf(w, "<!-- mneme:codegraph-nudge:start -->\n")
 	fmt.Fprintf(w, "## mneme — consult the code graph FIRST\n\n")
+	if noticeLine != "" {
+		fmt.Fprintf(w, "%s\n", noticeLine)
+	}
 	fmt.Fprintf(w, "MANDATORY: this project has an indexed code graph. BEFORE reading or grepping\n")
 	fmt.Fprintf(w, "source to understand its structure, you MUST consult the code graph tools first\n")
 	fmt.Fprintf(w, "(far fewer tokens): `codegraph_search` (locate a symbol), `codegraph_context` /\n")

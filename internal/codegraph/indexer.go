@@ -108,12 +108,18 @@ func NewIndexer(store *Store) *Indexer {
 // were created.
 //
 // Index does not abort on an ordinary per-file error — it records the
-// failure in FilesErrored and continues with the remaining files. The one
-// exception (SPEC-088 D4) is ErrExtractorIncompatible: when a language's
-// extractor toolchain is present but unusable, NO file of that language can
-// be extracted, so treating it as a per-file failure would silently produce
-// an empty-but-"successful" index. That case aborts the walk and Index
-// returns the error instead.
+// failure in FilesErrored and continues with the remaining files.
+// ErrExtractorIncompatible (a language's extractor toolchain being present but
+// unusable) is likewise never fatal to the run (SPEC-142 D3, superseding
+// SPEC-088 D4's abort): the first file of a language that fails this way
+// marks that language DEGRADED for the rest of THIS run — every further file
+// of that language is skipped (D4: skipped BEFORE a new extractor instance is
+// ever requested, never after one fails again) and counted in
+// result.FilesDegraded, never FilesErrored, since the two are different
+// natures (systemic toolchain absence vs. an ordinary per-file failure). Index
+// still returns (result, nil) in this case; the degraded languages are both
+// reported on the result (result.DegradedLanguages) and persisted to the
+// store so every later query can declare the graph incomplete (see Notice).
 func (ix *Indexer) Index(opts IndexOptions) (*IndexResult, error) {
 	// Scoped mode (SPEC-101): a non-nil Changes list means the caller already
 	// computed the delta (e.g. from a git diff), so skip the tree walk entirely.
@@ -137,6 +143,10 @@ func (ix *Indexer) Index(opts IndexOptions) (*IndexResult, error) {
 	// Collect the relative paths of files found on disk so we can later
 	// identify DB records for files that no longer exist.
 	onDisk := make(map[string]struct{})
+
+	// degraded tracks, for THIS run only, which languages have already hit
+	// ErrExtractorIncompatible (SPEC-142 D3/D4). Keyed by language.
+	degraded := make(map[string]*DegradedLanguage)
 
 	walkErr := filepath.WalkDir(opts.RootDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -178,18 +188,12 @@ func (ix *Indexer) Index(opts IndexOptions) (*IndexResult, error) {
 		}
 
 		result.FilesScanned++
+		// A degraded file still counts as present on disk (SPEC-142 D5): its
+		// PREVIOUSLY indexed nodes, if any, must survive pruneDeleted below —
+		// this spec never destroys knowledge it could not re-verify.
 		onDisk[relPath] = struct{}{}
 
-		if err := ix.indexFile(path, relPath, lang, opts, result); err != nil {
-			if errors.Is(err, ErrExtractorIncompatible) {
-				// Systemic: the toolchain for this language can't process ANY
-				// file, not just this one. Abort the walk rather than
-				// continuing to silently count failures (SPEC-088 D4).
-				return err
-			}
-			// Non-fatal: record the error and move on.
-			result.FilesErrored++
-		}
+		ix.indexEligibleFile(path, relPath, lang, opts, result, degraded)
 
 		return nil
 	})
@@ -202,6 +206,10 @@ func (ix *Indexer) Index(opts IndexOptions) (*IndexResult, error) {
 		if err := ix.pruneDeleted(onDisk); err != nil {
 			return nil, err
 		}
+	}
+
+	if err := ix.persistDegraded(degraded, opts, result); err != nil {
+		return nil, err
 	}
 
 	result.DurationMs = time.Since(start).Milliseconds()
@@ -232,6 +240,10 @@ func (ix *Indexer) indexList(opts IndexOptions) (*IndexResult, error) {
 	result := &IndexResult{}
 	onDisk := make(map[string]struct{})
 
+	// degraded tracks, for THIS run only, which languages have already hit
+	// ErrExtractorIncompatible (SPEC-142 D3/D4). Keyed by language.
+	degraded := make(map[string]*DegradedLanguage)
+
 	for _, rel := range opts.Include {
 		rel = filepath.Clean(rel)
 
@@ -244,22 +256,20 @@ func (ix *Indexer) indexList(opts IndexOptions) (*IndexResult, error) {
 		}
 
 		result.FilesScanned++
+		// A degraded file still counts as present on disk (SPEC-142 D5).
 		onDisk[rel] = struct{}{}
 
-		if err := ix.indexFile(filepath.Join(opts.RootDir, rel), rel, lang, opts, result); err != nil {
-			if errors.Is(err, ErrExtractorIncompatible) {
-				// Systemic (SPEC-088 D4): abort rather than silently produce an
-				// empty-but-"successful" index for this language.
-				return nil, err
-			}
-			result.FilesErrored++
-		}
+		ix.indexEligibleFile(filepath.Join(opts.RootDir, rel), rel, lang, opts, result, degraded)
 	}
 
 	if !opts.DryRun {
 		if err := ix.pruneDeleted(onDisk); err != nil {
 			return nil, err
 		}
+	}
+
+	if err := ix.persistDegraded(degraded, opts, result); err != nil {
+		return nil, err
 	}
 
 	result.DurationMs = time.Since(start).Milliseconds()
@@ -329,6 +339,10 @@ func (ix *Indexer) indexScoped(opts IndexOptions) (*IndexResult, error) {
 	start := time.Now()
 	result := &IndexResult{}
 
+	// degraded tracks, for THIS run only, which languages have already hit
+	// ErrExtractorIncompatible (SPEC-142 D3/D4). Keyed by language.
+	degraded := make(map[string]*DegradedLanguage)
+
 	for _, ch := range opts.Changes {
 		switch ch.Status {
 		case ChangeDeleted:
@@ -343,16 +357,19 @@ func (ix *Indexer) indexScoped(opts IndexOptions) (*IndexResult, error) {
 			if err := ix.purgeFile(ch.OldPath, opts, result); err != nil {
 				return nil, err
 			}
-			if err := ix.indexScopedFile(ch.Path, opts, result); err != nil {
-				return nil, err
-			}
+			ix.indexScopedFile(ch.Path, opts, result, degraded)
 
 		default:
 			// ChangeAdded / ChangeModified.
-			if err := ix.indexScopedFile(ch.Path, opts, result); err != nil {
-				return nil, err
-			}
+			ix.indexScopedFile(ch.Path, opts, result, degraded)
 		}
+	}
+
+	// SPEC-142 D6: a scoped run only ever ADDS or UPDATES the degraded-language
+	// mark — it never clears it, because it only ever saw its own delta, not
+	// every eligible file of the languages already marked.
+	if err := ix.persistDegraded(degraded, opts, result); err != nil {
+		return nil, err
 	}
 
 	result.DurationMs = time.Since(start).Milliseconds()
@@ -362,26 +379,23 @@ func (ix *Indexer) indexScoped(opts IndexOptions) (*IndexResult, error) {
 // indexScopedFile extracts a single changed file if it is eligible, reusing the
 // full-scan indexFile so the two paths stay behaviourally identical (incremental
 // content-hash skip included). Ineligible paths (unsupported extension, ignored
-// directory) are silently ignored — they are simply not part of the graph. The
-// systemic ErrExtractorIncompatible aborts scoped mode just as it aborts the
-// walk; any other per-file error is recorded and processing continues.
-func (ix *Indexer) indexScopedFile(relPath string, opts IndexOptions, result *IndexResult) error {
+// directory) are silently ignored — they are simply not part of the graph.
+// ErrExtractorIncompatible is handled by the shared indexEligibleFile exactly
+// as it is in full-scan mode (SPEC-142 D3): it marks the language degraded for
+// the rest of this run instead of aborting scoped mode — aborting here is
+// MORE damaging than in a full scan, since scoped mode is precisely what a
+// git hook runs after every commit (SPEC-142 O2).
+func (ix *Indexer) indexScopedFile(relPath string, opts IndexOptions, result *IndexResult, degraded map[string]*DegradedLanguage) {
 	lang, ok := IsEligibleSource(relPath)
 	if !ok {
-		return nil
+		return
 	}
 	if opts.Language != "" {
 		lang = opts.Language
 	}
 
 	result.FilesScanned++
-	if err := ix.indexFile(filepath.Join(opts.RootDir, relPath), relPath, lang, opts, result); err != nil {
-		if errors.Is(err, ErrExtractorIncompatible) {
-			return err
-		}
-		result.FilesErrored++
-	}
-	return nil
+	ix.indexEligibleFile(filepath.Join(opts.RootDir, relPath), relPath, lang, opts, result, degraded)
 }
 
 // purgeFile removes a file's symbols from the graph (deleted or renamed-away
@@ -404,8 +418,154 @@ func (ix *Indexer) purgeFile(relPath string, opts IndexOptions, result *IndexRes
 	return nil
 }
 
+// indexEligibleFile is the SINGLE place all three entry points (Index,
+// indexList, indexScoped via indexScopedFile) call to process one already-
+// eligible file, so the SPEC-142 D3/D4 degradation logic exists exactly once.
+//
+// D4 — the batch trap: if lang is ALREADY tracked in degraded (some earlier
+// file in this same run already hit ErrExtractorIncompatible for it), this
+// file is skipped WITHOUT ever calling indexFile — and therefore without ever
+// requesting a new extractor instance via GetExtractor. This is not an
+// optimisation: GetExtractor's registry returns a brand-new Extractor
+// instance on every call (see extractor.go's factory pattern), so a fatal
+// condition inside one instance buys nothing for the next file's instance.
+// Skipping BEFORE the call is the only thing that keeps a repository with
+// thousands of files of a degraded language from spawning thousands of
+// subprocesses that each fail on their own.
+//
+// Only when lang is not yet tracked does this call indexFile at all. If that
+// call returns ErrExtractorIncompatible, the language is recorded into
+// degraded (first-seen now) and the file is counted in result.FilesDegraded —
+// never result.FilesErrored, a different nature entirely (SPEC-142 D3). Any
+// other error is an ordinary per-file failure, unchanged from before this
+// spec: counted in result.FilesErrored, and processing continues regardless.
+func (ix *Indexer) indexEligibleFile(absPath, relPath, lang string, opts IndexOptions, result *IndexResult, degraded map[string]*DegradedLanguage) {
+	if dl, tracked := degraded[lang]; tracked {
+		dl.FilesSkippedLastRun++
+		result.FilesDegraded++
+		return
+	}
+
+	err := ix.indexFile(absPath, relPath, lang, opts, result)
+	if err == nil {
+		return
+	}
+	if !errors.Is(err, ErrExtractorIncompatible) {
+		result.FilesErrored++
+		return
+	}
+
+	now := time.Now().Unix()
+	degraded[lang] = &DegradedLanguage{
+		Language:            lang,
+		Cause:               CauseToolchainIncompatible,
+		Reason:              clampReason(err.Error()),
+		FilesSkippedLastRun: 1,
+		FirstSeenUnix:       now,
+		LastSeenUnix:        now,
+	}
+	result.FilesDegraded++
+}
+
+// persistDegraded reconciles this run's locally observed degraded languages
+// (degraded, built up by indexEligibleFile — possibly empty) with whatever is
+// already persisted in the store, and always populates
+// result.DegradedLanguages so a caller sees what this run found even when
+// nothing is written (SPEC-142 D19).
+//
+// opts.DryRun short-circuits before any store access: dry-run never persists
+// and never clears (D19).
+//
+// Otherwise, SPEC-142 D6 governs whether this run may CLEAR a language no
+// longer found degraded: only a genuine full scan — opts.Changes == nil (not
+// scoped mode) AND opts.Language == "" (nothing forced every file to one
+// language) — REPLACES the stored record with exactly this run's findings,
+// preserving FirstSeenUnix for any language that remains degraded. A scoped
+// run (or one with opts.Language forced) only ever ADDS or UPDATES entries
+// for languages it actually observed this run; every other previously-
+// recorded language survives untouched, because a scoped run only ever saw
+// its own delta and cannot know whether an untouched language actually
+// healed.
+func (ix *Indexer) persistDegraded(degraded map[string]*DegradedLanguage, opts IndexOptions, result *IndexResult) error {
+	for _, dl := range degraded {
+		result.DegradedLanguages = append(result.DegradedLanguages, *dl)
+	}
+	sortDegradedLanguages(result.DegradedLanguages)
+
+	if opts.DryRun {
+		return nil
+	}
+
+	isFullScan := opts.Changes == nil && opts.Language == ""
+
+	if !isFullScan && len(degraded) == 0 {
+		// A scoped run that observed nothing degraded has nothing to add or
+		// update, and D6 forbids it from clearing anything — skip the store
+		// entirely rather than touching it for a pure no-op. This is also
+		// what keeps the common case (a healthy repository's git-hook-driven
+		// scoped re-index) from paying a read on every single commit.
+		return nil
+	}
+
+	existing, err := ix.store.GetDegradedLanguages()
+	if err != nil {
+		return fmt.Errorf("codegraph: indexer: read degraded languages: %w", err)
+	}
+	existingByLang := make(map[string]DegradedLanguage, len(existing))
+	for _, e := range existing {
+		existingByLang[e.Language] = e
+	}
+
+	var final []DegradedLanguage
+	if isFullScan {
+		// A full scan re-examined every eligible file, so it can assert the
+		// complete truth: replace the stored record with exactly what this
+		// run found, carrying forward FirstSeenUnix for languages still
+		// degraded (their history is not reset just because the record was
+		// rewritten).
+		for _, dl := range degraded {
+			rec := *dl
+			if prev, ok := existingByLang[dl.Language]; ok {
+				rec.FirstSeenUnix = prev.FirstSeenUnix
+			}
+			final = append(final, rec)
+		}
+	} else {
+		// Scoped (or language-forced): start from everything already
+		// recorded, then merge in only what this run actually observed.
+		// Nothing is ever removed here.
+		final = existing
+		for i := range final {
+			if dl, ok := degraded[final[i].Language]; ok {
+				final[i].Cause = dl.Cause
+				final[i].Reason = dl.Reason
+				final[i].FilesSkippedLastRun = dl.FilesSkippedLastRun
+				final[i].LastSeenUnix = dl.LastSeenUnix
+				delete(degraded, final[i].Language)
+			}
+		}
+		for _, dl := range degraded {
+			final = append(final, *dl)
+		}
+	}
+
+	if err := ix.store.SetDegradedLanguages(final); err != nil {
+		// SPEC-142 D17: failing to WRITE the mark is a real error of the run —
+		// a graph that cannot record its own incompleteness must not report
+		// itself as a successful pass.
+		return fmt.Errorf("codegraph: indexer: write degraded languages: %w", err)
+	}
+	return nil
+}
+
 // indexFile handles the incremental check, extraction, and store write for a
 // single source file. It updates result in-place.
+//
+// indexFile itself is UNCHANGED by SPEC-142 (D8): it still returns
+// ErrExtractorIncompatible exactly as SPEC-088 defined it — that sentinel is
+// the signal, not the policy. What changed is entirely in the three callers
+// above (via indexEligibleFile): they now register the degradation and
+// continue instead of aborting the whole run.
 func (ix *Indexer) indexFile(absPath, relPath, lang string, opts IndexOptions, result *IndexResult) error {
 	info, err := os.Stat(absPath)
 	if err != nil {

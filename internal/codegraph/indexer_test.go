@@ -667,18 +667,27 @@ func registerFakeExtractor(t *testing.T, fake *fakeExtractor) {
 	RegisterExtractor("typescript", func() Extractor { return fake })
 }
 
-// TestIndexer_AbortsOnIncompatibleExtractor verifies the systemic half of the
-// D4 asymmetry: when the extractor returns ErrExtractorIncompatible, Index
-// must abort the walk (return the error, errors.Is-checkable) instead of
-// counting the failure and continuing — and it must abort BEFORE the second
-// .ts file is ever handed to the extractor.
+// TestIndexer_DegradesOnIncompatibleExtractor is SPEC-142 AC2/AC4 — it
+// replaces TestIndexer_AbortsOnIncompatibleExtractor, which asserted the
+// OPPOSITE of this spec's behaviour (SPEC-088 D4's abort). When the
+// extractor returns ErrExtractorIncompatible, Index must now:
+//  1. return (result, nil) — never propagate the error;
+//  2. call the extractor EXACTLY ONCE (fake.callCount() == 1) — the second
+//     .ts file must be skipped BEFORE a new extractor instance is ever
+//     requested, not after it fails again (SPEC-142 D4's batch trap: the
+//     registry hands back a brand-new instance per call, so a sticky
+//     per-instance fatal buys nothing across files);
+//  3. count BOTH .ts files in result.FilesDegraded, never FilesErrored;
+//  4. still index the unrelated .go file (stats.FileCount == 1);
+//  5. record "typescript" in the persisted degraded-languages mark.
 //
-// Mutation proof (SPEC-088 AC9, executed manually — see the implementation
-// report): removing the `errors.Is(err, ErrExtractorIncompatible)` branch in
-// indexer.go's WalkDir callback (falling through to the ordinary
-// `result.FilesErrored++` path) turns this red: Index then returns nil and
-// both .ts files get called, since nothing aborts the walk anymore.
-func TestIndexer_AbortsOnIncompatibleExtractor(t *testing.T) {
+// Mutation proof (SPEC-142 plan step 3.2): removing the D4 skip-before-
+// GetExtractor guard (letting every file of an already-degraded language
+// reach indexFile again) turns fake.callCount() red — it becomes 2 — while
+// every OTHER assertion in this test (err == nil, FilesDegraded == 2,
+// FileCount == 1, the mark being present) stays green either way. That is
+// exactly why callCount is this test's load-bearing assertion.
+func TestIndexer_DegradesOnIncompatibleExtractor(t *testing.T) {
 	fake := &fakeExtractor{returnErr: ErrExtractorIncompatible}
 	registerFakeExtractor(t, fake)
 
@@ -687,16 +696,41 @@ func TestIndexer_AbortsOnIncompatibleExtractor(t *testing.T) {
 	writeGoFile(t, dir, "b.ts", "export const b = 2;\n")
 	writeGoFile(t, dir, "c.go", "package main\n\nfunc C() {}\n")
 
-	ix, _ := newTestIndexer(t)
-	_, err := ix.Index(IndexOptions{RootDir: dir})
-	if err == nil {
-		t.Fatal("Index() error = nil, want ErrExtractorIncompatible")
-	}
-	if !errors.Is(err, ErrExtractorIncompatible) {
-		t.Errorf("Index() error = %v, want errors.Is ErrExtractorIncompatible", err)
+	ix, s := newTestIndexer(t)
+	result, err := ix.Index(IndexOptions{RootDir: dir})
+	if err != nil {
+		t.Fatalf("Index() error = %v, want nil (SPEC-142 D3: degradation must not abort the run)", err)
 	}
 	if calls := fake.callCount(); calls != 1 {
-		t.Errorf("extractor called %d times, want exactly 1 (walk must abort after the first systemic failure, never reaching the second .ts file)", calls)
+		t.Errorf("extractor called %d times, want exactly 1 (SPEC-142 D4: the second .ts file must be skipped BEFORE requesting a new extractor instance)", calls)
+	}
+	if result.FilesDegraded != 2 {
+		t.Errorf("result.FilesDegraded = %d, want 2 (both .ts files)", result.FilesDegraded)
+	}
+	if result.FilesErrored != 0 {
+		t.Errorf("result.FilesErrored = %d, want 0 (a degraded file is not an ordinary per-file error)", result.FilesErrored)
+	}
+
+	stats, err := s.GetStats()
+	if err != nil {
+		t.Fatalf("GetStats: %v", err)
+	}
+	if stats.FileCount != 1 {
+		t.Errorf("stats.FileCount = %d, want 1 (only c.go)", stats.FileCount)
+	}
+
+	langs, err := s.GetDegradedLanguages()
+	if err != nil {
+		t.Fatalf("GetDegradedLanguages: %v", err)
+	}
+	found := false
+	for _, l := range langs {
+		if l.Language == "typescript" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("GetDegradedLanguages = %+v, want an entry for typescript", langs)
 	}
 }
 
@@ -734,5 +768,114 @@ func TestIndexer_ContinuesOnPerFileExtractorError(t *testing.T) {
 	}
 	if stats.FileCount != 1 {
 		t.Errorf("FileCount = %d, want 1 (only c.go, the unaffected .go file, gets indexed)", stats.FileCount)
+	}
+}
+
+// TestIndexer_ScopedRunNeverClearsMark and TestIndexer_FullScanReplacesMark
+// are SPEC-142 AC5: they share the same base (a full scan with a broken
+// typescript extractor writes the mark) and diverge on whether a SUBSEQUENT
+// run, with a now-healthy toolchain, may clear it.
+//
+// Mutation proof (SPEC-142 plan step 3.3): letting the scoped branch clear
+// the mark turns TestIndexer_ScopedRunNeverClearsMark red at its second
+// GetDegradedLanguages assertion — the state read back from the store, not a
+// value some caller could absorb.
+func TestIndexer_ScopedRunNeverClearsMark(t *testing.T) {
+	dir := t.TempDir()
+	writeGoFile(t, dir, "t.ts", "export const t = 1;\n")
+	writeGoFile(t, dir, "c.go", "package main\n\nfunc C() {}\n")
+
+	broken := &fakeExtractor{returnErr: ErrExtractorIncompatible}
+	registerFakeExtractor(t, broken)
+
+	ix, s := newTestIndexer(t)
+	if _, err := ix.Index(IndexOptions{RootDir: dir}); err != nil {
+		t.Fatalf("full scan (broken): %v", err)
+	}
+
+	before, err := s.GetDegradedLanguages()
+	if err != nil {
+		t.Fatalf("GetDegradedLanguages (before): %v", err)
+	}
+	if len(before) != 1 || before[0].Language != "typescript" {
+		t.Fatalf("GetDegradedLanguages (before) = %+v, want one typescript entry", before)
+	}
+	firstSeen := before[0].FirstSeenUnix
+
+	// The toolchain is healthy now, but this next pass is SCOPED — it only
+	// touches an unrelated .go file, never re-exercising typescript.
+	healthy := &fakeExtractor{}
+	registerFakeExtractor(t, healthy)
+
+	if _, err := ix.Index(IndexOptions{RootDir: dir, Changes: []ChangedFile{
+		{Path: "c.go", Status: ChangeModified},
+	}}); err != nil {
+		t.Fatalf("scoped run (healthy, unrelated file): %v", err)
+	}
+
+	after, err := s.GetDegradedLanguages()
+	if err != nil {
+		t.Fatalf("GetDegradedLanguages (after): %v", err)
+	}
+	if len(after) != 1 || after[0].Language != "typescript" {
+		t.Fatalf("GetDegradedLanguages (after scoped run) = %+v, want the mark to SURVIVE (SPEC-142 D6: a scoped run never clears)", after)
+	}
+	if after[0].FirstSeenUnix != firstSeen {
+		t.Errorf("FirstSeenUnix changed across a scoped run: %d -> %d, want unchanged", firstSeen, after[0].FirstSeenUnix)
+	}
+}
+
+func TestIndexer_FullScanReplacesMark(t *testing.T) {
+	dir := t.TempDir()
+	writeGoFile(t, dir, "t.ts", "export const t = 1;\n")
+	writeGoFile(t, dir, "c.go", "package main\n\nfunc C() {}\n")
+
+	broken := &fakeExtractor{returnErr: ErrExtractorIncompatible}
+	registerFakeExtractor(t, broken)
+
+	ix, s := newTestIndexer(t)
+	if _, err := ix.Index(IndexOptions{RootDir: dir}); err != nil {
+		t.Fatalf("full scan (broken): %v", err)
+	}
+	if before, gErr := s.GetDegradedLanguages(); gErr != nil || len(before) != 1 {
+		t.Fatalf("GetDegradedLanguages (before) = %+v, err=%v, want one entry", before, gErr)
+	}
+
+	// A genuine full scan (no Changes, no forced Language) with a healthy
+	// toolchain must REPLACE the mark with what it finds — nothing.
+	healthy := &fakeExtractor{}
+	registerFakeExtractor(t, healthy)
+
+	if _, err := ix.Index(IndexOptions{RootDir: dir, Force: true}); err != nil {
+		t.Fatalf("full scan (healthy): %v", err)
+	}
+	after, err := s.GetDegradedLanguages()
+	if err != nil {
+		t.Fatalf("GetDegradedLanguages (after): %v", err)
+	}
+	if len(after) != 0 {
+		t.Errorf("GetDegradedLanguages (after healthy full scan) = %+v, want empty (SPEC-142 D6: a full scan REPLACES the mark with its own findings)", after)
+	}
+	if line, show := Notice(after, nil); show {
+		t.Errorf("Notice(after) = (%q, true), want show=false once the mark is cleared", line)
+	}
+
+	// Step 4 (AC5): re-degrade, then run a full scan that FORCES
+	// opts.Language="go" for every file — the typescript toolchain is never
+	// exercised, so nobody may claim it healed. The mark must survive.
+	registerFakeExtractor(t, broken)
+	if _, err := ix.Index(IndexOptions{RootDir: dir, Force: true}); err != nil {
+		t.Fatalf("full scan (re-broken): %v", err)
+	}
+	registerFakeExtractor(t, healthy)
+	if _, err := ix.Index(IndexOptions{RootDir: dir, Force: true, Language: "go"}); err != nil {
+		t.Fatalf("full scan (forced language=go): %v", err)
+	}
+	afterForced, err := s.GetDegradedLanguages()
+	if err != nil {
+		t.Fatalf("GetDegradedLanguages (after forced language): %v", err)
+	}
+	if len(afterForced) != 1 || afterForced[0].Language != "typescript" {
+		t.Errorf("GetDegradedLanguages (after Language=\"go\" full scan) = %+v, want the typescript mark to SURVIVE (nobody exercised its toolchain)", afterForced)
 	}
 }

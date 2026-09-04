@@ -421,6 +421,56 @@ func (s *Store) SetMetadata(key, value string) error {
 	return nil
 }
 
+// GetDegradedLanguages reads and deserializes the MetaKeyDegradedLanguages
+// record (SPEC-142 D1). Returns (nil, nil) when the key is absent — no
+// language is currently degraded, the common case. SPEC-142 D16: when the
+// stored value IS present but fails to deserialize, no error is returned —
+// instead a single synthetic record with Cause=CauseUnreadableMark is
+// returned, so an unreadable mark always declares incompleteness rather than
+// silently reading as "nothing degraded". A genuine database-level failure
+// (not a parse failure) is still returned as an error.
+func (s *Store) GetDegradedLanguages() ([]DegradedLanguage, error) {
+	value, err := s.GetMetadata(MetaKeyDegradedLanguages)
+	if err != nil {
+		return nil, fmt.Errorf("codegraph: store: get degraded languages: %w", err)
+	}
+	return ParseStoredDegradedLanguages(value), nil
+}
+
+// SetDegradedLanguages canonically serializes langs — sorted by Language,
+// each Reason clamped — and writes it under MetaKeyDegradedLanguages, unless
+// the canonical bytes already match what is stored (SPEC-142 D18): comparing
+// before writing avoids touching updated_at (and any write-time bookkeeping)
+// on every healthy indexing run, which is the common case once a repository
+// converges. An empty or nil langs writes the canonical empty array "[]",
+// explicitly clearing any prior mark.
+func (s *Store) SetDegradedLanguages(langs []DegradedLanguage) error {
+	sorted := make([]DegradedLanguage, len(langs))
+	copy(sorted, langs)
+	for i := range sorted {
+		sorted[i].Reason = clampReason(sorted[i].Reason)
+	}
+	sortDegradedLanguages(sorted)
+
+	canon, err := json.Marshal(sorted)
+	if err != nil {
+		return fmt.Errorf("codegraph: store: marshal degraded languages: %w", err)
+	}
+
+	existing, err := s.GetMetadata(MetaKeyDegradedLanguages)
+	if err != nil {
+		return fmt.Errorf("codegraph: store: get degraded languages for compare: %w", err)
+	}
+	if existing == string(canon) {
+		return nil
+	}
+
+	if err := s.SetMetadata(MetaKeyDegradedLanguages, string(canon)); err != nil {
+		return fmt.Errorf("codegraph: store: set degraded languages: %w", err)
+	}
+	return nil
+}
+
 // ---------------------------------------------------------------------------
 // Stats
 // ---------------------------------------------------------------------------

@@ -2,6 +2,7 @@ package codegraph
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -756,5 +757,165 @@ func TestStore_BatchUpsertEdges(t *testing.T) {
 	}
 	if len(got) != count {
 		t.Errorf("GetEdgesFrom: got %d; want %d", len(got), count)
+	}
+}
+
+// TestStore_DegradedLanguages_RoundTrip verifies a set/get round trip through
+// SetDegradedLanguages/GetDegradedLanguages preserves content.
+func TestStore_DegradedLanguages_RoundTrip(t *testing.T) {
+	cdb, err := OpenDB(":memory:")
+	if err != nil {
+		t.Fatalf("OpenDB: %v", err)
+	}
+	defer cdb.Close()
+	s := NewStore(cdb)
+
+	langs, err := s.GetDegradedLanguages()
+	if err != nil {
+		t.Fatalf("GetDegradedLanguages (absent): %v", err)
+	}
+	if langs != nil {
+		t.Errorf("GetDegradedLanguages (absent) = %+v, want nil", langs)
+	}
+
+	want := []DegradedLanguage{
+		{Language: "typescript", Cause: CauseToolchainIncompatible, Reason: "boom", FilesSkippedLastRun: 3, FirstSeenUnix: 100, LastSeenUnix: 200},
+	}
+	if err := s.SetDegradedLanguages(want); err != nil {
+		t.Fatalf("SetDegradedLanguages: %v", err)
+	}
+
+	got, err := s.GetDegradedLanguages()
+	if err != nil {
+		t.Fatalf("GetDegradedLanguages: %v", err)
+	}
+	if len(got) != 1 || got[0].Language != "typescript" || got[0].Reason != "boom" {
+		t.Errorf("GetDegradedLanguages = %+v, want %+v", got, want)
+	}
+}
+
+// TestStore_DegradedLanguages_ReasonClamped verifies Reason is clamped to
+// maxReasonRunes on write (SPEC-142 D2) — a subprocess's stderr diagnostic
+// must never blow up the stored record.
+func TestStore_DegradedLanguages_ReasonClamped(t *testing.T) {
+	cdb, err := OpenDB(":memory:")
+	if err != nil {
+		t.Fatalf("OpenDB: %v", err)
+	}
+	defer cdb.Close()
+	s := NewStore(cdb)
+
+	longReason := strings.Repeat("x", maxReasonRunes+250)
+	if err := s.SetDegradedLanguages([]DegradedLanguage{
+		{Language: "typescript", Cause: CauseToolchainIncompatible, Reason: longReason},
+	}); err != nil {
+		t.Fatalf("SetDegradedLanguages: %v", err)
+	}
+
+	got, err := s.GetDegradedLanguages()
+	if err != nil {
+		t.Fatalf("GetDegradedLanguages: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("GetDegradedLanguages = %+v, want 1 entry", got)
+	}
+	if runeLen := len([]rune(got[0].Reason)); runeLen != maxReasonRunes {
+		t.Errorf("Reason length = %d runes, want %d", runeLen, maxReasonRunes)
+	}
+}
+
+// TestStore_DegradedLanguages_UnreadableMark verifies SPEC-142 D16: a stored
+// value that is not valid JSON is read back as a single synthetic record with
+// Cause=CauseUnreadableMark rather than an error.
+func TestStore_DegradedLanguages_UnreadableMark(t *testing.T) {
+	cdb, err := OpenDB(":memory:")
+	if err != nil {
+		t.Fatalf("OpenDB: %v", err)
+	}
+	defer cdb.Close()
+	s := NewStore(cdb)
+
+	if err := s.SetMetadata(MetaKeyDegradedLanguages, "{not valid json"); err != nil {
+		t.Fatalf("SetMetadata: %v", err)
+	}
+
+	got, err := s.GetDegradedLanguages()
+	if err != nil {
+		t.Fatalf("GetDegradedLanguages: %v", err)
+	}
+	if len(got) != 1 || got[0].Cause != CauseUnreadableMark {
+		t.Errorf("GetDegradedLanguages = %+v, want 1 entry with Cause=unreadable-mark", got)
+	}
+
+	line, show := Notice(got, nil)
+	if !show {
+		t.Error("Notice(unreadable-mark record) show = false, want true")
+	}
+	if !strings.Contains(line, string(CauseUnreadableMark)) {
+		t.Errorf("Notice line = %q, want it to name cause %q", line, CauseUnreadableMark)
+	}
+}
+
+// TestStore_DegradedLanguages_ClearedByEmptySlice verifies that writing an
+// empty slice clears a prior mark (the shape SPEC-142 D6's full-scan
+// replacement relies on).
+func TestStore_DegradedLanguages_ClearedByEmptySlice(t *testing.T) {
+	cdb, err := OpenDB(":memory:")
+	if err != nil {
+		t.Fatalf("OpenDB: %v", err)
+	}
+	defer cdb.Close()
+	s := NewStore(cdb)
+
+	if err := s.SetDegradedLanguages([]DegradedLanguage{{Language: "typescript", Cause: CauseToolchainIncompatible}}); err != nil {
+		t.Fatalf("SetDegradedLanguages (mark): %v", err)
+	}
+	if err := s.SetDegradedLanguages(nil); err != nil {
+		t.Fatalf("SetDegradedLanguages (clear): %v", err)
+	}
+
+	got, err := s.GetDegradedLanguages()
+	if err != nil {
+		t.Fatalf("GetDegradedLanguages: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("GetDegradedLanguages after clear = %+v, want empty", got)
+	}
+}
+
+// TestStore_DegradedLanguages_NoWriteWhenUnchanged verifies SPEC-142 D18: an
+// identical write does not touch project_metadata.updated_at.
+func TestStore_DegradedLanguages_NoWriteWhenUnchanged(t *testing.T) {
+	cdb, err := OpenDB(":memory:")
+	if err != nil {
+		t.Fatalf("OpenDB: %v", err)
+	}
+	defer cdb.Close()
+	s := NewStore(cdb)
+
+	langs := []DegradedLanguage{{Language: "typescript", Cause: CauseToolchainIncompatible, FirstSeenUnix: 1}}
+	if err := s.SetDegradedLanguages(langs); err != nil {
+		t.Fatalf("SetDegradedLanguages (1st): %v", err)
+	}
+
+	// Plant a sentinel updated_at so a real write is unambiguously detectable
+	// even if it happens within the same wall-clock second as the sentinel
+	// reset — comparing to time.Now() again would let a false "no write
+	// happened" pass silently on a fast test run.
+	const sentinel int64 = 12345
+	if _, err := cdb.DB.Exec(`UPDATE project_metadata SET updated_at = ? WHERE key = ?`, sentinel, MetaKeyDegradedLanguages); err != nil {
+		t.Fatalf("plant sentinel: %v", err)
+	}
+
+	if err := s.SetDegradedLanguages(langs); err != nil {
+		t.Fatalf("SetDegradedLanguages (2nd, identical): %v", err)
+	}
+
+	var gotUpdatedAt int64
+	if err := cdb.DB.QueryRow(`SELECT updated_at FROM project_metadata WHERE key = ?`, MetaKeyDegradedLanguages).Scan(&gotUpdatedAt); err != nil {
+		t.Fatalf("query updated_at: %v", err)
+	}
+	if gotUpdatedAt != sentinel {
+		t.Errorf("updated_at = %d, want sentinel %d unchanged (an identical write must not re-touch the row)", gotUpdatedAt, sentinel)
 	}
 }

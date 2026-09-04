@@ -93,6 +93,8 @@ func (h *handlers) handleToolCall(ctx context.Context, params ToolCallParams) (*
 	// dependence on PreToolUse firing for MCP tools. Fail-open, best-effort.
 	if strings.HasPrefix(params.Name, "codegraph_") {
 		h.logCodegraphUse(params.Name)
+		res, rpcErr := h.dispatchCodegraph(ctx, params)
+		return h.withGraphNotice(res, rpcErr)
 	}
 
 	switch params.Name {
@@ -251,28 +253,6 @@ func (h *handlers) handleToolCall(ctx context.Context, params ToolCallParams) (*
 	case "scaffold_capture":
 		return h.handleScaffoldCapture(ctx, params.Arguments)
 
-	// --- CODEGRAPH TOOLS ---
-	case "codegraph_search":
-		return h.handleCodegraphSearch(ctx, params.Arguments)
-	case "codegraph_context":
-		return h.handleCodegraphContext(ctx, params.Arguments)
-	case "codegraph_callers":
-		return h.handleCodegraphCallers(ctx, params.Arguments)
-	case "codegraph_callees":
-		return h.handleCodegraphCallees(ctx, params.Arguments)
-	case "codegraph_impact":
-		return h.handleCodegraphImpact(ctx, params.Arguments)
-	case "codegraph_node":
-		return h.handleCodegraphNode(ctx, params.Arguments)
-	case "codegraph_explore":
-		return h.handleCodegraphExplore(ctx, params.Arguments)
-	case "codegraph_trace":
-		return h.handleCodegraphTrace(ctx, params.Arguments)
-	case "codegraph_status":
-		return h.handleCodegraphStatus(ctx, params.Arguments)
-	case "codegraph_files":
-		return h.handleCodegraphFiles(ctx, params.Arguments)
-
 	case "init":
 		return h.handleInit(ctx, params.Arguments)
 
@@ -323,6 +303,83 @@ func (h *handlers) logCodegraphUse(name string) {
 	}
 	//nolint:errcheck // telemetry is best-effort; failures must not affect the call
 	_ = querylog.Append(path, ev, querylog.DefaultMaxBytes)
+}
+
+// dispatchCodegraph routes a codegraph_* tool call to its handler. It is
+// factored out of the main handleToolCall switch (SPEC-142 D11) — same
+// handler bodies, unchanged — so handleToolCall's single "codegraph_" prefix
+// branch can wrap EVERY one of these ten tools' results with the same
+// graph-incompleteness notice (withGraphNotice) in one place, instead of
+// repeating that decoration in ten call sites.
+func (h *handlers) dispatchCodegraph(ctx context.Context, params ToolCallParams) (*ToolCallResult, *JSONRPCError) {
+	switch params.Name {
+	case "codegraph_search":
+		return h.handleCodegraphSearch(ctx, params.Arguments)
+	case "codegraph_context":
+		return h.handleCodegraphContext(ctx, params.Arguments)
+	case "codegraph_callers":
+		return h.handleCodegraphCallers(ctx, params.Arguments)
+	case "codegraph_callees":
+		return h.handleCodegraphCallees(ctx, params.Arguments)
+	case "codegraph_impact":
+		return h.handleCodegraphImpact(ctx, params.Arguments)
+	case "codegraph_node":
+		return h.handleCodegraphNode(ctx, params.Arguments)
+	case "codegraph_explore":
+		return h.handleCodegraphExplore(ctx, params.Arguments)
+	case "codegraph_trace":
+		return h.handleCodegraphTrace(ctx, params.Arguments)
+	case "codegraph_status":
+		return h.handleCodegraphStatus(ctx, params.Arguments)
+	case "codegraph_files":
+		return h.handleCodegraphFiles(ctx, params.Arguments)
+	default:
+		return nil, &JSONRPCError{
+			Code:    CodeMethodNotFound,
+			Message: fmt.Sprintf("unknown tool: %s", params.Name),
+		}
+	}
+}
+
+// withGraphNotice prepends the SPEC-142 D10 one-line graph-incompleteness
+// banner to a codegraph_* dispatch result. It is the single point where this
+// decoration happens for the whole family (D11):
+//   - on SUCCESS, including an EMPTY result ("No results found.", AC7) — the
+//     scenario O1 exists for: a query that returns nothing must not read as
+//     "this symbol doesn't exist" when it could simply belong to a language
+//     this graph never indexed;
+//   - on ERROR, prepended to the JSONRPCError's own Message — a bare
+//     `symbol "X" not found` is exactly the sentence that makes an agent
+//     conclude the symbol does not exist, so the notice belongs there too;
+//   - AFTER any callee-specific truncation, since it wraps the ALREADY
+//     produced result rather than living inside any one handler — codegraph_
+//     explore's own budget cutoff (AC8) runs first, and the notice is
+//     deliberately never counted against that budget.
+//
+// If the graph's own degraded-language state cannot be determined (a genuine
+// store-level read failure, as opposed to no project context being available
+// at all — the latter already produces its own explicit error and gets no
+// extra decoration here), Notice's readErr parameter makes this fail CLOSED:
+// show the notice anyway rather than silently assume a healthy graph.
+func (h *handlers) withGraphNotice(res *ToolCallResult, rpcErr *JSONRPCError) (*ToolCallResult, *JSONRPCError) {
+	cgSvc, svcErr := h.getCodeGraphService()
+	if svcErr != nil {
+		return res, rpcErr
+	}
+
+	langs, readErr := cgSvc.DegradedLanguages()
+	line, show := codegraph.Notice(langs, readErr)
+	if !show {
+		return res, rpcErr
+	}
+
+	if rpcErr != nil {
+		rpcErr.Message = line + "\n\n" + rpcErr.Message
+	}
+	if res != nil && len(res.Content) > 0 {
+		res.Content[0].Text = line + "\n\n" + res.Content[0].Text
+	}
+	return res, rpcErr
 }
 
 // handleMemSave processes a mem_save tool call.
@@ -450,11 +507,20 @@ func (h *handlers) buildCodeGraphHintFromService(cgSvc *service.CodeGraphService
 		return codeGraphNotIndexedHint
 	}
 
-	return fmt.Sprintf(`Code Graph (indexed): %d symbols across %d files. `+
+	hint := fmt.Sprintf(`Code Graph (indexed): %d symbols across %d files. `+
 		`Use codegraph_search, codegraph_context, codegraph_callers, codegraph_callees, `+
 		`codegraph_impact, codegraph_node, codegraph_explore, codegraph_trace instead of reading files. `+
 		`Re-index with codegraph_index if code changed significantly.`,
 		stats.NodeCount, stats.FileCount)
+
+	// SPEC-142 D13: this is the first thing an agent reads every session — an
+	// unqualified "indexed" on a graph missing a whole language is exactly the
+	// half-true claim this spec exists to stop making.
+	langs, readErr := cgSvc.DegradedLanguages()
+	if line, show := codegraph.Notice(langs, readErr); show {
+		return line + "\n" + hint
+	}
+	return hint
 }
 
 const codeGraphGenericHint = `Code graph tools available: codegraph_search, codegraph_context, ` +

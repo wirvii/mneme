@@ -3,6 +3,7 @@ package service
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/wirvii/mneme/internal/codegraph"
@@ -260,5 +261,69 @@ func TestLastIndexedSHA_RoundTrip(t *testing.T) {
 	}
 	if got != "cafebabe" {
 		t.Errorf("LastIndexedSHA = %q, want cafebabe", got)
+	}
+}
+
+// TestCodeGraphService_DegradedLanguages_RoundTrip verifies the SPEC-142
+// pass-through: DegradedLanguages reads back exactly what the underlying
+// store persists, with no logic of its own in this layer.
+func TestCodeGraphService_DegradedLanguages_RoundTrip(t *testing.T) {
+	cdb, err := codegraph.OpenDB(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cdb.Close() })
+	svc := NewCodeGraphServiceFromDB(cdb)
+
+	langs, err := svc.DegradedLanguages()
+	if err != nil {
+		t.Fatalf("DegradedLanguages (fresh): %v", err)
+	}
+	if len(langs) != 0 {
+		t.Errorf("fresh DegradedLanguages = %+v, want empty", langs)
+	}
+
+	if err := codegraph.NewStore(cdb).SetDegradedLanguages([]codegraph.DegradedLanguage{
+		{Language: "typescript", Cause: codegraph.CauseToolchainIncompatible},
+	}); err != nil {
+		t.Fatalf("SetDegradedLanguages: %v", err)
+	}
+
+	langs, err = svc.DegradedLanguages()
+	if err != nil {
+		t.Fatalf("DegradedLanguages (after set): %v", err)
+	}
+	if len(langs) != 1 || langs[0].Language != "typescript" {
+		t.Errorf("DegradedLanguages = %+v, want one typescript entry", langs)
+	}
+}
+
+// TestCodeGraphService_GraphNotice combines DegradedLanguages with
+// codegraph.Notice — verified here so a caller with a live service never
+// needs to repeat that two-step dance itself.
+func TestCodeGraphService_GraphNotice(t *testing.T) {
+	cdb, err := codegraph.OpenDB(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cdb.Close() })
+	svc := NewCodeGraphServiceFromDB(cdb)
+
+	if _, show := svc.GraphNotice(); show {
+		t.Error("GraphNotice on a healthy graph: show = true, want false")
+	}
+
+	if err := codegraph.NewStore(cdb).SetDegradedLanguages([]codegraph.DegradedLanguage{
+		{Language: "typescript", Cause: codegraph.CauseToolchainIncompatible},
+	}); err != nil {
+		t.Fatalf("SetDegradedLanguages: %v", err)
+	}
+
+	line, show := svc.GraphNotice()
+	if !show {
+		t.Fatal("GraphNotice on a marked graph: show = false, want true")
+	}
+	if !strings.HasPrefix(line, codegraph.NoticeToken) {
+		t.Errorf("GraphNotice line = %q, want prefix %q", line, codegraph.NoticeToken)
 	}
 }

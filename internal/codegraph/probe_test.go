@@ -122,3 +122,65 @@ func TestProbeGraph_StalenessTimestamp(t *testing.T) {
 		t.Errorf("lastUpdatedUnixMs = %d, want %d (newest)", lastUpdated, newest)
 	}
 }
+
+// TestProbeDegraded_AbsentFile verifies fail-open semantics matching
+// ProbeGraph: an absent database file means nothing to declare, no error.
+func TestProbeDegraded_AbsentFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nonexistent-codegraph.db")
+	langs, err := ProbeDegraded(path)
+	if err != nil {
+		t.Fatalf("expected nil error for absent file, got: %v", err)
+	}
+	if langs != nil {
+		t.Errorf("langs = %+v, want nil for absent file", langs)
+	}
+}
+
+// TestProbeDegraded_NoMark verifies a healthy database with no degraded
+// languages recorded returns nil, nil.
+func TestProbeDegraded_NoMark(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "healthy-codegraph.db")
+
+	cdb, err := OpenDB(dbPath)
+	if err != nil {
+		t.Fatalf("OpenDB: %v", err)
+	}
+	cdb.Close()
+
+	langs, err := ProbeDegraded(dbPath)
+	if err != nil {
+		t.Fatalf("ProbeDegraded: %v", err)
+	}
+	if langs != nil {
+		t.Errorf("langs = %+v, want nil for a graph with no mark", langs)
+	}
+}
+
+// TestProbeDegraded_WithMark verifies ProbeDegraded reads back a degraded
+// mark set via Store.SetDegradedLanguages, without needing a write-capable
+// connection of its own.
+func TestProbeDegraded_WithMark(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "marked-codegraph.db")
+
+	cdb, err := OpenDB(dbPath)
+	if err != nil {
+		t.Fatalf("OpenDB: %v", err)
+	}
+	st := NewStore(cdb)
+	if err := st.SetDegradedLanguages([]DegradedLanguage{
+		{Language: "typescript", Cause: CauseToolchainIncompatible},
+	}); err != nil {
+		t.Fatalf("SetDegradedLanguages: %v", err)
+	}
+	cdb.Close()
+
+	langs, err := ProbeDegraded(dbPath)
+	if err != nil {
+		t.Fatalf("ProbeDegraded: %v", err)
+	}
+	if len(langs) != 1 || langs[0].Language != "typescript" {
+		t.Errorf("langs = %+v, want one entry for typescript", langs)
+	}
+}

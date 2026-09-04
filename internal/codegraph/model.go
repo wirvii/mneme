@@ -526,6 +526,20 @@ type IndexResult struct {
 	// and no nodes or edges were written.
 	FilesErrored int `json:"files_errored"`
 
+	// FilesDegraded is the number of files skipped because their language's
+	// extractor toolchain is degraded (ErrExtractorIncompatible), SPEC-142 D3.
+	// Distinct from FilesErrored: a degraded file is a SYSTEMIC, per-language
+	// condition declared via DegradedLanguages, not an ordinary per-file
+	// extraction failure — conflating the two would count the same fact twice
+	// under two different natures.
+	FilesDegraded int `json:"files_degraded"`
+
+	// DegradedLanguages lists the languages this run recorded (or left
+	// recorded) as degraded, SPEC-142 D2. Present even in DryRun mode (D19),
+	// where nothing is persisted but the caller can still see what would
+	// happen.
+	DegradedLanguages []DegradedLanguage `json:"degraded_languages,omitempty"`
+
 	// FilesDeleted is the number of files whose symbols were purged from the graph
 	// during a scoped index run (deleted or renamed-away paths). It is always zero
 	// for a full-scan run, where deletions are handled implicitly by pruneDeleted.

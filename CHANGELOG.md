@@ -32,6 +32,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Pass `--force` to replace a file that is not mneme's own anyway; the
   original is copied to `<name>.md.bak` first, so nothing is lost.
 
+### Fixed
+
+- **A single file whose language's toolchain was broken used to take down
+  the WHOLE code graph — 19 of 21 projects measured on the owner's own
+  host, and with them 10,230 unrelated Go files (SPEC-142).** A TypeScript/
+  JavaScript toolchain present but incompatible (e.g. `typescript@7`, whose
+  Compiler API surface is nearly empty) made `mneme codegraph index` abort
+  the entire run, leaving a project with no graph at all for ANY language.
+  The indexer now degrades **per language** instead: every other language
+  still indexes normally, and the fact that one language could not be
+  indexed is recorded and **declared** everywhere a query surface could
+  otherwise read as complete — every `codegraph_*` MCP tool (success,
+  error, and empty-result alike), the `mem_context` hint, the pre-tool-use
+  nudge, and `mneme codegraph status`/`index`'s own detail output. A
+  scoped, git-hook-driven re-index only ever adds to this record; only a
+  genuine full scan can clear it, and `mneme codegraph hooks`'s own
+  auto-reindex now forces one automatically while the mark is present, so a
+  fixed toolchain heals the graph on its own at the very next commit — no
+  manual command needed. `mneme codegraph index` and its git hooks now
+  exit 0 in this case, matching their existing "never break a git
+  operation" posture. See "Declared degradation" in `docs/codegraph.md`.
+
 ## [v1.45.0] — 2026-09-03 — Idempotent startup: CRLF tolerated on read, a written .gitattributes, a real diagnosis instead of a false zero, and visible team-memory import/status commands
 
 ### Fixed

@@ -334,7 +334,29 @@ func reindexOnce(svc *service.CodeGraphService, root string) error {
 		return fmt.Errorf("run-reindex: empty HEAD")
 	}
 
+	// SPEC-142 D7: while the graph carries a degraded-language mark, every
+	// pass here is a full scan, no matter what the git state says. A full
+	// scan is the ONLY thing that can ever clear the mark (D6 — it is the
+	// only pass that re-examines every eligible file of a language and can
+	// truthfully assert none of it is degraded anymore), and a machine
+	// governed entirely by hooks needs this to recover on its own the moment
+	// a broken toolchain gets fixed — nobody runs a manual `codegraph index`
+	// on such a machine. This check is evaluated FIRST, ahead of the
+	// existing anchor-missing/diff-failed branches below (which already
+	// degrade to a full scan for their own reasons) and ahead of the
+	// nothing-changed short-circuit, since a marked graph must heal on the
+	// very next pass even if HEAD itself did not move.
+	degraded, degradedErr := svc.DegradedLanguages()
+	if degradedErr != nil {
+		return fmt.Errorf("run-reindex: read degraded languages: %w", degradedErr)
+	}
+
 	switch {
+	case len(degraded) > 0:
+		if _, err := svc.Index(fullScanOptions(root, false)); err != nil {
+			return err
+		}
+
 	case last == "" || !gitCommitExists(root, last):
 		// First run, or the anchor was garbage-collected: index the whole tree.
 		if _, err := svc.Index(fullScanOptions(root, false)); err != nil {
