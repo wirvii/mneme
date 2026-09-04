@@ -881,6 +881,27 @@ func TestExtractJS_IncompatibleTypeScriptAPI_ExitsNonZero(t *testing.T) {
 	if stdout.Len() != 0 {
 		t.Errorf("expected no stdout (guard must exit before the JSONL protocol starts), got %q", stdout.String())
 	}
+
+	// SPEC-142 D20/AC14: escape hatch (3) no longer promises a degraded mode
+	// that does not exist. BOTH assertions matter — the negative as much as
+	// the positive: adding the new sentence while leaving the old one in
+	// place would pass a criterion that only checks presence, while leaving
+	// the contradiction standing (a user would still read that they must
+	// uninstall typescript to get something that now just happens on its
+	// own).
+	if strings.Contains(stderr.String(), "uninstall the global typescript package") {
+		t.Error("stderr still promises the old, nonexistent degraded mode (\"uninstall the global typescript package\")")
+	}
+	if !strings.Contains(stderr.String(), "marks this graph as incomplete") {
+		t.Errorf("stderr is missing the new SPEC-142 D20 text (\"marks this graph as incomplete\"): %s", stderr.String())
+	}
+	// Escape hatches (1) and (2) are untouched by SPEC-142 — still named.
+	if !strings.Contains(stderr.String(), "(1) downgrade") {
+		t.Errorf("stderr is missing escape hatch (1): %s", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "(2) set NODE_PATH") {
+		t.Errorf("stderr is missing escape hatch (2): %s", stderr.String())
+	}
 }
 
 // TestTSExtractor_IncompatibleTypeScript_ReturnsSentinel is G3 (SPEC-088 D4,

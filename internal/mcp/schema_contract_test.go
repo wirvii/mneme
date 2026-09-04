@@ -214,11 +214,20 @@ func importPathForAlias(f *ast.File, alias string) string {
 	return ""
 }
 
-// parseToolDispatch parses internal/mcp/handlers.go, locates handleToolCall,
-// and extracts every `case "<tool>": return h.<Handler>(ctx, params.Arguments)`
-// arm of its switch (D4/D5 step 2). It t.Fatal's — never skips — on any
-// shape it doesn't recognise (D6.1): a `default` clause is the only
-// exception (it dispatches nothing, by design).
+// parseToolDispatch parses internal/mcp/handlers.go and extracts every
+// `case "<tool>": return h.<Handler>(ctx, params.Arguments)` arm from BOTH
+// handleToolCall's own switch AND dispatchCodegraph's switch (D4/D5 step 2).
+//
+// SPEC-142 D11 moved the ten codegraph_* arms out of handleToolCall's switch
+// into a second function, dispatchCodegraph, so handleToolCall's single
+// `strings.HasPrefix(params.Name, "codegraph_")` branch could wrap every one
+// of them with the same graph-incompleteness notice in one place instead of
+// ten. This guard's own doc (D6.1) anticipates exactly this: "a guardian
+// that skips what it doesn't understand protects nothing" — so rather than
+// silently missing the ten arms that moved, this function now walks BOTH
+// dispatch seams and merges their arms into one contract, unchanged in
+// every other respect (still t.Fatal, never skip, on any shape it doesn't
+// recognise).
 func parseToolDispatch(t *testing.T, moduleRoot string) []toolDispatch {
 	t.Helper()
 
@@ -229,16 +238,29 @@ func parseToolDispatch(t *testing.T, moduleRoot string) []toolDispatch {
 		t.Fatalf("schema contract guard: parse %s: %v", path, err)
 	}
 
+	dispatch := parseSwitchDispatch(t, f, path, "handleToolCall")
+	dispatch = append(dispatch, parseSwitchDispatch(t, f, path, "dispatchCodegraph")...)
+	return dispatch
+}
+
+// parseSwitchDispatch locates the *handlers method named funcName in f and
+// extracts every `case "<tool>": return h.<Handler>(ctx, params.Arguments)`
+// arm of its (single, top-level) switch statement. It t.Fatal's — never
+// skips — on any shape it doesn't recognise (D6.1): a `default` clause is
+// the only exception (it dispatches nothing, by design).
+func parseSwitchDispatch(t *testing.T, f *ast.File, path, funcName string) []toolDispatch {
+	t.Helper()
+
 	var target *ast.FuncDecl
 	for _, decl := range f.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
-		if ok && fn.Name.Name == "handleToolCall" {
+		if ok && fn.Name.Name == funcName {
 			target = fn
 			break
 		}
 	}
 	if target == nil {
-		t.Fatalf("schema contract guard: no handleToolCall method found in %s — the tool dispatch seam moved; update parseToolDispatch to find it (D4)", path)
+		t.Fatalf("schema contract guard: no %s method found in %s — the tool dispatch seam moved; update parseToolDispatch to find it (D4)", funcName, path)
 	}
 
 	var sw *ast.SwitchStmt
@@ -253,14 +275,14 @@ func parseToolDispatch(t *testing.T, moduleRoot string) []toolDispatch {
 		return true
 	})
 	if sw == nil {
-		t.Fatal("schema contract guard: handleToolCall has no switch statement — the dispatch seam changed shape (e.g. to a map[string]handlerFunc); D6.1 requires updating parseToolDispatch instead of silently producing an empty mapping")
+		t.Fatalf("schema contract guard: %s has no switch statement — the dispatch seam changed shape (e.g. to a map[string]handlerFunc); D6.1 requires updating parseToolDispatch instead of silently producing an empty mapping", funcName)
 	}
 
 	var dispatch []toolDispatch
 	for _, stmt := range sw.Body.List {
 		cc, ok := stmt.(*ast.CaseClause)
 		if !ok {
-			t.Fatalf("schema contract guard: unexpected statement %T in handleToolCall's switch body — expected only case clauses", stmt)
+			t.Fatalf("schema contract guard: unexpected statement %T in %s's switch body — expected only case clauses", stmt, funcName)
 		}
 		if cc.List == nil {
 			// The `default:` clause — dispatches nothing (unknown-tool

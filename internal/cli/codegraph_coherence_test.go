@@ -17,7 +17,7 @@ import (
 func TestCodegraphVocabularyCoherence(t *testing.T) {
 	// Nudge (English): mandatory tone + tool reference.
 	var nudge bytes.Buffer
-	renderCodegraphNudge(&nudge, false, 0)
+	renderCodegraphNudge(&nudge, false, 0, "")
 	assertContainsAll(t, "nudge", nudge.String(), "MANDATORY", "FIRST", "codegraph_search")
 
 	// Orchestrator operating manual (English).

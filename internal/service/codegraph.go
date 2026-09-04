@@ -177,6 +177,26 @@ func (s *CodeGraphService) Status() (*codegraph.GraphStats, error) {
 	return s.store.GetStats()
 }
 
+// DegradedLanguages returns the languages this graph could not fully index
+// (SPEC-142 D1) — a thin pass-through to the store, added so MCP/CLI
+// presentation code never needs to reach past the service into store/db
+// directly. No logic beyond the store call: see internal/codegraph for the
+// actual contract and its D16 fail-open-to-synthetic-record behaviour.
+func (s *CodeGraphService) DegradedLanguages() ([]codegraph.DegradedLanguage, error) {
+	return s.store.GetDegradedLanguages()
+}
+
+// GraphNotice combines DegradedLanguages with codegraph.Notice so a caller
+// that already has a live CodeGraphService (MCP handlers, the CLI's
+// PersistentPreRunE) does not need to repeat that two-step dance itself. It
+// is NOT used on the pre-tool-use hook's hot path — that path uses
+// codegraph.ProbeDegraded instead, precisely so probing for a notice never
+// opens (or creates) a database of its own.
+func (s *CodeGraphService) GraphNotice() (string, bool) {
+	langs, err := s.DegradedLanguages()
+	return codegraph.Notice(langs, err)
+}
+
 // Files returns all tracked file records, optionally filtered by language and/or
 // a filepath glob pattern (filepath.Match semantics). Both filters are applied in
 // that order; an empty string disables the corresponding filter.

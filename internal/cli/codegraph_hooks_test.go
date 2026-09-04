@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/spf13/cobra"
+
+	"github.com/wirvii/mneme/internal/codegraph"
 )
 
 // initGitRepo initialises a bare-minimum git repository in dir and returns the
@@ -551,5 +553,86 @@ func TestReindexOnce_FullScanFallback_RespectsGitignore(t *testing.T) {
 		if strings.HasPrefix(f.Path, "tmp/") {
 			t.Errorf("reindexOnce fallback indexed a path under gitignored tmp/: %s", f.Path)
 		}
+	}
+}
+
+// TestReindexOnce_MarkedGraphForcesFullScan is SPEC-142 AC12: while the graph
+// carries a degraded-language mark, reindexOnce must run a FULL scan even
+// when the git anchor is valid and the delta touches only ONE unrelated
+// file — that is the only way a hook-governed machine ever heals on its own.
+// Measured by calling reindexOnce DIRECTLY (never the cobra `run-reindex`
+// command, which swallows every error and always exits 0 by design — SPEC-142
+// plan step 0.c/1 form 3).
+//
+// Mutation proof: removing the D7 branch turns this red — the second pass
+// would then take the scoped (default) branch, which never touches a
+// language absent from its own delta (D6), so the mark would survive.
+func TestReindexOnce_MarkedGraphForcesFullScan(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+
+	writeFile(t, dir, "a.go", "package pkg\n\nfunc A() {}\n")
+	writeFile(t, dir, "b.go", "package pkg\n\nfunc B() {}\n")
+	runGit(t, dir, "add", "a.go", "b.go")
+	runGit(t, dir, "commit", "-m", "initial")
+
+	dataDir := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
+
+	origDataDir := flagDataDir
+	origProject := flagProject
+	flagDataDir = dataDir
+	flagProject = "spec142-marked-fullscan"
+	t.Cleanup(func() {
+		flagDataDir = origDataDir
+		flagProject = origProject
+	})
+
+	svc, err := initCodeGraphServiceForCWD(dir)
+	if err != nil {
+		t.Fatalf("initCodeGraphServiceForCWD: %v", err)
+	}
+
+	// First pass: no anchor -> full scan -> last_sha set, both files indexed.
+	if err := reindexOnce(svc, dir); err != nil {
+		t.Fatalf("reindexOnce (pass1): %v", err)
+	}
+	svc.Close()
+
+	// Mark the graph degraded directly on the SAME underlying DB file.
+	dbPath := codegraph.DBPath(filepath.Join(dataDir, "projects"), "spec142-marked-fullscan")
+	cdb, err := codegraph.OpenDB(dbPath)
+	if err != nil {
+		t.Fatalf("OpenDB: %v", err)
+	}
+	st := codegraph.NewStore(cdb)
+	if err := st.SetDegradedLanguages([]codegraph.DegradedLanguage{
+		{Language: "typescript", Cause: codegraph.CauseToolchainIncompatible, Reason: "test fixture"},
+	}); err != nil {
+		t.Fatalf("SetDegradedLanguages: %v", err)
+	}
+	cdb.Close()
+
+	// A new commit touching ONLY a.go — an ordinary scoped-mode trigger.
+	writeFile(t, dir, "a.go", "package pkg\n\nfunc A() { _ = 1 }\n")
+	runGit(t, dir, "add", "a.go")
+	runGit(t, dir, "commit", "-m", "touch a only")
+
+	svc2, err := initCodeGraphServiceForCWD(dir)
+	if err != nil {
+		t.Fatalf("initCodeGraphServiceForCWD (2): %v", err)
+	}
+	defer svc2.Close()
+
+	if err := reindexOnce(svc2, dir); err != nil {
+		t.Fatalf("reindexOnce (pass2): %v", err)
+	}
+
+	langs, err := svc2.DegradedLanguages()
+	if err != nil {
+		t.Fatalf("DegradedLanguages: %v", err)
+	}
+	if len(langs) != 0 {
+		t.Errorf("DegradedLanguages after pass2 = %+v, want empty — a marked graph must heal via the very next full scan (SPEC-142 D7), even though only a.go changed", langs)
 	}
 }

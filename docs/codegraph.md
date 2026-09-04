@@ -81,19 +81,14 @@ extractor checks for the actual symbols it uses (capability, not a version
 number), so a hypothetical future major that keeps the classic API would
 still work here without a code change.
 
-**What happens with an incompatible typescript:**
+**What happens with an incompatible typescript (updated by SPEC-142 — see
+"Declared degradation" below):**
 
 | Toolchain state | Result |
 |---|---|
 | `node` not on `PATH` | TS/JS extraction is skipped for that run; Go files still index normally. |
 | `typescript` not installed/resolvable | Same as above — degrades gracefully. |
-| `typescript` installed but API-incompatible (e.g. 7.x) | `mneme codegraph index` **aborts with a non-zero exit code** naming the found version and three escape hatches. No partial/empty-but-"successful" index is produced. |
-
-This is a deliberate asymmetry, not an inconsistency: if you never installed
-the toolchain, TS/JS extraction was always optional and degrading is the
-right behaviour. If you *have* typescript installed, you expect it to work —
-finding out it silently extracted nothing (the pre-v1.27.1 behaviour) is
-worse than a hard failure that tells you why.
+| `typescript` installed but API-incompatible (e.g. 7.x) | Every OTHER language still indexes normally. TypeScript/JavaScript are recorded as a **degraded language** (see below) and `mneme codegraph index` still exits **0** — it no longer aborts. |
 
 **Escape hatches**, in order of preference:
 
@@ -103,18 +98,94 @@ worse than a hard failure that tells you why.
    compatible `typescript` install — an explicitly-set `NODE_PATH` now takes
    precedence over the global npm root (`NODE_PATH=/path/to/ts6/node_modules
    mneme codegraph index`).
-3. **Uninstall** the global `typescript` package to fall back to Go-only
-   indexing (the "toolchain absent" row above).
+3. **Do nothing.** mneme indexes every other language and marks the graph as
+   incomplete for typescript/javascript — every code-graph query says so
+   until a compatible typescript is resolvable again (see below). There is
+   no need to uninstall anything.
 
 **Mechanism, for contributors:** `js/extract.js` checks the required API
 symbols right after `require('typescript')` and exits **20** (not one of
 Node's own reserved 1–12 exit codes) when they're missing, writing a
 structured stderr message with the found version. `TSExtractor.Extract` in
 `extractor_ts.go` classifies that specific exit code as
-`ErrExtractorIncompatible` (wrapping the subprocess's stderr) and
-`Indexer.Index` aborts the walk on that sentinel — but keeps the existing
-per-file `FilesErrored` counting for every other kind of extraction error, so
-one broken `.ts` file still doesn't take down the whole index.
+`ErrExtractorIncompatible` (wrapping the subprocess's stderr). This sentinel
+is the SIGNAL, not the policy (SPEC-142 D8): `Indexer.Index`/`indexList`/
+`indexScoped` register the language as degraded and CONTINUE (no longer
+abort, superseding SPEC-088 D4) — but keep the existing per-file
+`FilesErrored` counting for every other kind of extraction error, so one
+broken `.ts` file still doesn't take down the whole index. `budget.go`'s own
+delta computation (SPEC-118) still treats the sentinel as fatal for its own
+purpose — see "Declared degradation" below for why the same sentinel gets
+two different, both correct, responses.
+
+### Declared degradation — SPEC-142
+
+**The problem this closes:** before SPEC-142, ONE file whose language's
+toolchain was broken (the typescript@7 case above is the concrete, measured
+example — 19 of 21 projects on the owner's own host, 6,402 TS/JS files, and
+with them 10,230 UNRELATED Go files) made the indexer abort the ENTIRE run.
+That was deliberate (it avoided a silently empty-but-"successful" index),
+but it meant a project with a single broken TS/JS toolchain got NO code
+graph at all, for ANY language.
+
+**What changed:** an extractor whose toolchain is present but unusable no
+longer aborts the index. Every OTHER language still indexes normally, and
+the fact that one language could not be indexed is **declared**, not
+swallowed — the guiding rule is that **a partial graph must never be
+readable as a complete one**. Degrading silently would have reintroduced
+exactly the false confidence the original abort behaviour was designed to
+avoid — a query returning zero results looks identical whether the symbol
+truly doesn't exist or its language was simply never indexed, and that
+silence is the most expensive way to be wrong.
+
+**Where the mark lives.** A `degraded_languages` key in `project_metadata`
+— the same per-project settings table that already holds the last-indexed
+git SHA — records, per language: the cause (today always
+`toolchain-incompatible`, or `unreadable-mark` if the stored record itself
+somehow can't be parsed), a bounded diagnostic reason, when it was first and
+last observed, and how many files were skipped in the *most recent*
+indexing pass (never a repository-wide total — a partial pass only ever
+sees its own delta). It lives in the very same database as the nodes it
+describes, so it resets the instant that database does (rebuild,
+corruption, `--force` from empty).
+
+**Who clears it.** Only a genuine FULL SCAN can clear the mark — one that
+re-examines every eligible file of every language and can truthfully assert
+none of it is degraded anymore. A scoped, incremental pass (the kind every
+git-hook-driven re-index runs) only ever ADDS or UPDATES the mark; it never
+clears it, because it only ever saw its own small delta. This is also how
+recovery happens automatically: `reindexOnce` (the function behind
+`mneme codegraph hooks install`'s auto-reindex, see below) always forces a
+full scan while any language is marked degraded — the first commit after a
+broken toolchain gets fixed heals the graph on its own, with no manual
+command needed.
+
+**Where you see it.**
+- Every one of the ten `codegraph_*` MCP tools prepends a one-line banner —
+  `[mneme:graph-incomplete] <languages> NOT indexed (<cause>) — a symbol
+  missing from this answer may still exist. Details: mneme codegraph
+  status` — to a successful result, an EMPTY result, and an error message
+  alike. A bare `symbol "X" not found` is exactly the sentence that makes an
+  agent conclude a symbol doesn't exist; on a degraded graph, that
+  conclusion may simply be wrong.
+- `mem_context`'s `codegraph_hint` carries the same banner instead of an
+  unqualified "Code Graph (indexed): N symbols".
+- The pre-tool-use "consult the code graph FIRST" nudge carries the banner
+  too — pushing an agent toward a graph without telling it a language is
+  missing would be the same mistake.
+- `mneme codegraph status` and `mneme codegraph index` print a per-language
+  detail block: cause, reason, first/last seen, and files skipped **in the
+  last run only**, labelled as such.
+- `mneme codegraph search ...` (and every other CLI subcommand) prints the
+  one-line banner to **stderr** before running — never stdout, so
+  `mneme codegraph adoption --json`'s machine-readable output stays clean.
+
+**What the mark does NOT mean.** It does not mean "the graph is wrong" or
+"something failed". It means "this graph is missing this one language, and
+until it is fixed, absence of a result for that language proves nothing".
+Every other language in the same graph is exactly as trustworthy as
+always. A project with no TypeScript/JavaScript at all never sees any of
+this — the mark simply never gets set.
 
 ## Symbol resolution strategy (v1.15.0+)
 

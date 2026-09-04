@@ -22,11 +22,39 @@ import (
 // newCodegraphCmd returns the "mneme codegraph" parent command. It groups
 // subcommands that index source code into a semantic graph and query
 // relationships between symbols.
+//
+// PersistentPreRunE (SPEC-142 D12) prints the graph-incompleteness notice
+// (Notice, D10) to stderr — never stdout, since `codegraph adoption --json`
+// writes JSON there and a notice line would break that output — BEFORE any
+// subcommand runs. It resolves the SAME database path initCodeGraphService
+// resolves (resolveCodegraphDBPath), so the notice can never be about a
+// different project than the one actually answering (AC11), and it reads
+// via codegraph.ProbeDegraded, a read-only probe that never creates the
+// database (mirroring ProbeGraph's own posture). Failing to resolve the path
+// or probe it is swallowed silently here — best-effort, and the command
+// itself will surface its own clear error via initCodeGraphService for the
+// same underlying cause.
+//
+// No subcommand below may define its own PersistentPreRunE/PersistentPreRun:
+// cobra runs only the CLOSEST one in the command tree, so a subcommand-level
+// definition would silently disable this notice for that one subcommand
+// (TestCodegraphCmd_NoSubcommandShadowsPersistentPreRun, AC10, guards this).
 func newCodegraphCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "codegraph",
 		Short: "Semantic code graph — index and query code structure",
 		Long:  "Index source code into a semantic graph and query relationships between symbols.",
+		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			dbPath, err := resolveCodegraphDBPath()
+			if err != nil {
+				return nil
+			}
+			langs, probeErr := codegraph.ProbeDegraded(dbPath)
+			if line, show := codegraph.Notice(langs, probeErr); show {
+				fmt.Fprintln(cmd.ErrOrStderr(), line)
+			}
+			return nil
+		},
 	}
 	cmd.AddCommand(
 		newCodegraphIndexCmd(),
@@ -44,18 +72,19 @@ func newCodegraphCmd() *cobra.Command {
 	return cmd
 }
 
-// initCodeGraphService creates a CodeGraphService from the CLI flags and the
-// config file. It applies the same project-detection and data-dir-override logic
-// as initService. The caller must call svc.Close() when done.
-func initCodeGraphService() (*service.CodeGraphService, error) {
+// resolveCodegraphProject resolves the projects directory and project slug
+// used to locate this repo's codegraph DB, honouring --data-dir/--project
+// flag overrides. Shared by initCodeGraphService and resolveCodegraphDBPath
+// so both always agree on which project they mean.
+func resolveCodegraphProject() (projectsDir, slug string, err error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return nil, fmt.Errorf("cannot determine home directory: %w", err)
+		return "", "", fmt.Errorf("cannot determine home directory: %w", err)
 	}
 	cfgPath := filepath.Join(home, ".mneme", "config.toml")
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
-		return nil, fmt.Errorf("load config: %w", err)
+		return "", "", fmt.Errorf("load config: %w", err)
 	}
 
 	// Apply flag overrides so CLI flags always win over the config file.
@@ -64,18 +93,41 @@ func initCodeGraphService() (*service.CodeGraphService, error) {
 	}
 
 	// Detect project: flag takes priority, then git-remote auto-detection.
-	slug := flagProject
+	slug = flagProject
 	if slug == "" {
 		cwd, cwdErr := os.Getwd()
 		if cwdErr != nil {
-			return nil, fmt.Errorf("cannot determine working directory: %w", cwdErr)
+			return "", "", fmt.Errorf("cannot determine working directory: %w", cwdErr)
 		}
 		det := project.NewDetector(cwd)
 		detected, _ := det.DetectProject()
 		slug = detected
 	}
 
-	projectsDir := filepath.Join(cfg.Storage.DataDir, "projects")
+	return filepath.Join(cfg.Storage.DataDir, "projects"), slug, nil
+}
+
+// resolveCodegraphDBPath resolves the exact codegraph DB file path this
+// project's CLI commands read from and write to (SPEC-142 D12). It is the
+// SAME resolution initCodeGraphService performs internally — factored out so
+// the PersistentPreRunE notice above can never drift into inspecting a
+// different database than the one the command itself answers from.
+func resolveCodegraphDBPath() (string, error) {
+	projectsDir, slug, err := resolveCodegraphProject()
+	if err != nil {
+		return "", err
+	}
+	return codegraph.DBPath(projectsDir, slug), nil
+}
+
+// initCodeGraphService creates a CodeGraphService from the CLI flags and the
+// config file. It applies the same project-detection and data-dir-override logic
+// as initService. The caller must call svc.Close() when done.
+func initCodeGraphService() (*service.CodeGraphService, error) {
+	projectsDir, slug, err := resolveCodegraphProject()
+	if err != nil {
+		return nil, err
+	}
 	return service.NewCodeGraphService(projectsDir, slug)
 }
 
@@ -137,8 +189,13 @@ If [path] is omitted the current directory is used.`,
 			fmt.Fprintf(out, "  Files indexed:  %d\n", result.FilesIndexed)
 			fmt.Fprintf(out, "  Files skipped:  %d\n", result.FilesSkipped)
 			fmt.Fprintf(out, "  Files errored:  %d\n", result.FilesErrored)
+			fmt.Fprintf(out, "  Files degraded: %d\n", result.FilesDegraded)
 			fmt.Fprintf(out, "  Nodes created:  %d\n", result.NodesCreated)
 			fmt.Fprintf(out, "  Edges created:  %d\n", result.EdgesCreated)
+			// SPEC-142 D14/O2: a degraded language never turns this command
+			// into an error — it still exits 0 (nil) below, declaring what
+			// happened instead of failing over it.
+			printDegradedLanguages(out, result.DegradedLanguages)
 			return nil
 		},
 	}
@@ -193,10 +250,39 @@ func newCodegraphStatusCmd() *cobra.Command {
 					fmt.Fprintf(out, "  %-20s %d\n", lang, count)
 				}
 			}
+
+			langs, langsErr := svc.DegradedLanguages()
+			if langsErr != nil {
+				return fmt.Errorf("codegraph status: %w", langsErr)
+			}
+			printDegradedLanguages(out, langs)
 			return nil
 		},
 	}
 	return cmd
+}
+
+// printDegradedLanguages writes the per-language detail block SPEC-142 D14
+// requires: cause, a bounded diagnostic reason, first/last seen, and files
+// skipped IN THE LAST INDEXING PASS — explicitly labelled as such, because
+// this count is NEVER a repository-wide total (a scoped pass only ever sees
+// its own delta, D2). Writes nothing when langs is empty — the common case,
+// a healthy project, must see no new output at all.
+func printDegradedLanguages(out io.Writer, langs []codegraph.DegradedLanguage) {
+	if len(langs) == 0 {
+		return
+	}
+	fmt.Fprintln(out, "\nDegraded languages (this graph is INCOMPLETE for them):")
+	for _, l := range langs {
+		fmt.Fprintf(out, "  %s\n", l.Language)
+		fmt.Fprintf(out, "    cause:                    %s\n", l.Cause)
+		if l.Reason != "" {
+			fmt.Fprintf(out, "    reason:                   %s\n", l.Reason)
+		}
+		fmt.Fprintf(out, "    first seen:               %s\n", time.Unix(l.FirstSeenUnix, 0).UTC().Format(time.RFC3339))
+		fmt.Fprintf(out, "    last seen:                %s\n", time.Unix(l.LastSeenUnix, 0).UTC().Format(time.RFC3339))
+		fmt.Fprintf(out, "    files skipped (last run): %d\n", l.FilesSkippedLastRun)
+	}
 }
 
 // newCodegraphSearchCmd returns the "mneme codegraph search <query>" subcommand.

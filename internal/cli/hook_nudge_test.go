@@ -276,6 +276,77 @@ func TestNudge_StaleGraph_AddsRefreshLine(t *testing.T) {
 	}
 }
 
+// TestNudge_HealthyGraph_ByteExactBlock is SPEC-142 AC9's second half: a
+// healthy graph (no degraded languages) must produce EXACTLY the nudge block
+// this hook already produced before this spec — byte for byte. 90% of
+// projects are healthy and must not notice anything new; a diff here would
+// mean noise reached the vast majority of unaffected projects.
+func TestNudge_HealthyGraph_ByteExactBlock(t *testing.T) {
+	freshMs := time.Now().UnixMilli()
+	dataDir, _ := setupNudgeDB(t, freshMs)
+	t.Setenv("MNEME_DATA_DIR", dataDir)
+
+	cwd := mnemeRepoRoot(t)
+	inp := buildNudgeInput("Read", "internal/x.go", "s-byteexact", "")
+
+	var stdout bytes.Buffer
+	maybeEmitCodegraphNudge(inp, cwd, &stdout, io.Discard)
+
+	want := "<!-- mneme:codegraph-nudge:start -->\n" +
+		"## mneme — consult the code graph FIRST\n\n" +
+		"MANDATORY: this project has an indexed code graph. BEFORE reading or grepping\n" +
+		"source to understand its structure, you MUST consult the code graph tools first\n" +
+		"(far fewer tokens): `codegraph_search` (locate a symbol), `codegraph_context` /\n" +
+		"`codegraph_callers` / `codegraph_callees` (relationships), `codegraph_impact`\n" +
+		"(blast radius). This applies to subagents too.\n" +
+		"Use Read/Grep/Bash only for the exact text the graph can't provide, or if the\n" +
+		"graph is stale or the repo is not indexed.\n" +
+		"<!-- mneme:codegraph-nudge:end -->\n"
+
+	if got := stdout.String(); got != want {
+		t.Errorf("healthy nudge block changed:\n got:  %q\nwant: %q", got, want)
+	}
+}
+
+// TestNudge_DegradedGraph_AddsNoticeLine is SPEC-142 AC9's first half: a
+// project whose graph carries a degraded-language mark must see the D10
+// notice line inside the nudge block, positioned before the MANDATORY
+// paragraph — an agent pushed toward this graph should be told, in the same
+// breath, that a language is missing from it.
+func TestNudge_DegradedGraph_AddsNoticeLine(t *testing.T) {
+	freshMs := time.Now().UnixMilli()
+	dataDir, dbPath := setupNudgeDB(t, freshMs)
+	t.Setenv("MNEME_DATA_DIR", dataDir)
+
+	cdb, err := codegraph.OpenDB(dbPath)
+	if err != nil {
+		t.Fatalf("OpenDB: %v", err)
+	}
+	st := codegraph.NewStore(cdb)
+	if err := st.SetDegradedLanguages([]codegraph.DegradedLanguage{
+		{Language: "typescript", Cause: codegraph.CauseToolchainIncompatible, Reason: "test fixture"},
+	}); err != nil {
+		t.Fatalf("SetDegradedLanguages: %v", err)
+	}
+	cdb.Close()
+
+	cwd := mnemeRepoRoot(t)
+	inp := buildNudgeInput("Read", "internal/x.go", "s-degraded", "")
+
+	var stdout bytes.Buffer
+	maybeEmitCodegraphNudge(inp, cwd, &stdout, io.Discard)
+
+	out := stdout.String()
+	noticeIdx := strings.Index(out, codegraph.NoticeToken)
+	if noticeIdx == -1 {
+		t.Fatalf("degraded graph nudge missing the SPEC-142 notice line; stdout: %s", out)
+	}
+	mandatoryIdx := strings.Index(out, "MANDATORY:")
+	if mandatoryIdx == -1 || noticeIdx > mandatoryIdx {
+		t.Errorf("notice line is not positioned before the MANDATORY paragraph: %s", out)
+	}
+}
+
 // TestNudge_AntiLoop_MnemeInternalPath verifies that a Read targeting a file
 // under ~/.mneme (DataDir) does NOT trigger the nudge (anti-loop guard).
 func TestNudge_AntiLoop_MnemeInternalPath(t *testing.T) {

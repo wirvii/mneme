@@ -52,7 +52,9 @@ if (missingAPI.length > 0) {
       '(typescript 5.x/6.x). Escape hatches: (1) downgrade the resolved typescript to a ' +
       '5.x/6.x release, (2) set NODE_PATH to a directory containing a compatible typescript ' +
       'install (an explicit NODE_PATH now takes precedence over the global npm root), or ' +
-      '(3) uninstall the global typescript package to fall back to Go-only indexing.',
+      '(3) do nothing: mneme indexes every other language and marks this graph as ' +
+      'incomplete for typescript/javascript — every code-graph query will say so until a ' +
+      'compatible typescript is resolvable again.',
   }) + '\n');
   process.exit(20);
 }
