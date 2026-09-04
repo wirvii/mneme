@@ -1,6 +1,7 @@
 package install_test
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -292,5 +293,52 @@ func TestBundledSkillNames(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("example-skill not found in BundledSkillNames; got %v", names)
+	}
+}
+
+// TestBundledSkills_ValidationPasses is SPEC-141 AC5's second half (the
+// first half, format-only, is TestBundledSkills_AllLintClean above): every
+// bundled skill's validation/run.sh actually runs and exits 0. The
+// population is BundledSkillNames() — derived, never hand-typed — so the
+// three new skills (grill-me, hunt-bug, bug-to-issue) are covered without
+// naming them. ErrNoShell (no "sh" on PATH — expected on a bare Windows
+// host without Git-for-Windows) is tolerated, not treated as a failure.
+func TestBundledSkills_ValidationPasses(t *testing.T) {
+	names, err := install.BundledSkillNames()
+	if err != nil {
+		t.Fatalf("BundledSkillNames: %v", err)
+	}
+	entries, err := install.BundledSkillEntries()
+	if err != nil {
+		t.Fatalf("BundledSkillEntries: %v", err)
+	}
+
+	dir := t.TempDir()
+	for _, e := range entries {
+		dest := filepath.Join(dir, e.RelPath)
+		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		perm := os.FileMode(0o644)
+		if e.IsExecutable {
+			perm = 0o755
+		}
+		if err := os.WriteFile(dest, e.Content, perm); err != nil {
+			t.Fatalf("write %s: %v", dest, err)
+		}
+	}
+
+	for _, name := range names {
+		result, err := skill.Validate(t.Context(), filepath.Join(dir, name))
+		if errors.Is(err, skill.ErrNoShell) {
+			t.Logf("%s: no sh on PATH, skipping (expected on bare Windows)", name)
+			continue
+		}
+		if err != nil {
+			t.Fatalf("%s: Validate: %v", name, err)
+		}
+		if !result.Passed {
+			t.Errorf("%s: validation failed (exit %d): %s", name, result.ExitCode, result.Output)
+		}
 	}
 }
