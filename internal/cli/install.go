@@ -184,6 +184,15 @@ produces the same result without clobbering existing configuration.`,
 					fmt.Fprintln(os.Stdout, "")
 					fmt.Fprintln(os.Stdout, "Your old config.toml [delegation] section is still active for the legacy hook.")
 					fmt.Fprintln(os.Stdout, "Once you've created rules and verified they work, you can set delegation.enabled=false in config.toml.")
+				case "Slash commands":
+					// SPEC-141 §4-bis D18: a foreign command file was left
+					// untouched — say so, and how to replace it, using the
+					// same exported constants the detail string and this
+					// notice both derive from (never a repeated literal).
+					if strings.Contains(detail, install.CommandKeptYoursLabel) {
+						fmt.Fprintln(os.Stdout, "")
+						fmt.Fprintln(os.Stdout, "  [info] "+install.CommandOwnershipNotice)
+					}
 				}
 			}
 

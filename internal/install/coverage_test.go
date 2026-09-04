@@ -320,7 +320,7 @@ func TestWriteCommands_FakeAgent(t *testing.T) {
 	base := t.TempDir()
 	agent := fakeAgent(t, base, "")
 
-	if err := WriteCommands(agent); err != nil {
+	if _, err := WriteCommands(agent, false); err != nil {
 		t.Fatalf("WriteCommands error: %v", err)
 	}
 
@@ -335,25 +335,29 @@ func TestWriteCommands_FakeAgent(t *testing.T) {
 }
 
 // TestWriteCommands_Overwrite verifies that WriteCommands overwrites an
-// existing command file with updated content.
+// existing command file with updated content when that file is already
+// recognised as mneme's own (SPEC-141 §4-bis) — a file with no managed
+// block is a person's own and must survive instead (see
+// TestWriteCommands_KeepsForeignFile in commands_ownership_test.go).
 func TestWriteCommands_Overwrite(t *testing.T) {
 	base := t.TempDir()
 	cmdPath := filepath.Join(base, ".claude", "commands", "mneme-init.md")
 	if err := os.MkdirAll(filepath.Dir(cmdPath), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	if err := os.WriteFile(cmdPath, []byte("old content"), 0o644); err != nil {
+	oldOwn := "<!-- mneme:command:start v=1 -->\nold content\n<!-- mneme:command:end -->\n"
+	if err := os.WriteFile(cmdPath, []byte(oldOwn), 0o644); err != nil {
 		t.Fatalf("write old: %v", err)
 	}
 
 	agent := fakeAgent(t, base, "")
-	if err := WriteCommands(agent); err != nil {
+	if _, err := WriteCommands(agent, false); err != nil {
 		t.Fatalf("WriteCommands error: %v", err)
 	}
 
 	data, _ := os.ReadFile(cmdPath)
 	if strings.Contains(string(data), "old content") {
-		t.Error("WriteCommands must overwrite existing command files")
+		t.Error("WriteCommands must overwrite existing mneme-owned command files")
 	}
 	if !strings.Contains(string(data), "mem_save") {
 		t.Error("command file missing expected content after overwrite")
@@ -1001,7 +1005,7 @@ func TestWriteCommands_CommandsError(t *testing.T) {
 			return nil, os.ErrPermission
 		},
 	}
-	err := WriteCommands(agent)
+	_, err := WriteCommands(agent, false)
 	if err == nil {
 		t.Fatal("expected error from Commands(), got nil")
 	}
