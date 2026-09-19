@@ -307,6 +307,8 @@ func (svc *MemoryService) Timeline(ctx context.Context, req model.TimelineReques
 	limit := req.Limit
 	if limit <= 0 {
 		limit = 20
+	} else if limit > 100 {
+		limit = 100
 	}
 
 	memories, err := svc.projectStore.ListMemoriesInRange(ctx, from, to, project, limit)

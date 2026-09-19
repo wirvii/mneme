@@ -446,6 +446,57 @@ func TestTimeline_TotalReflectsRealCountNotLimit(t *testing.T) {
 	}
 }
 
+// TestTimeline_LimitCapsAtMaximum100 verifies that Timeline caps an explicit
+// limit above 100 while still reporting the complete number of matches, and
+// uses 20 when the caller omits a positive limit.
+func TestTimeline_LimitCapsAtMaximum100(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+
+	var anchorID string
+	for i := 0; i < 101; i++ {
+		saved, err := svc.Save(ctx, model.SaveRequest{
+			Title:   fmt.Sprintf("timeline cap memory %d", i),
+			Content: "timeline cap test content",
+			Type:    model.TypeDiscovery,
+		})
+		if err != nil {
+			t.Fatalf("Save %d: %v", i, err)
+		}
+		if i == 0 {
+			anchorID = saved.ID
+		}
+	}
+
+	tests := []struct {
+		name        string
+		limit       int
+		wantResults int
+	}{
+		{name: "caps explicit limit above maximum", limit: 101, wantResults: 100},
+		{name: "defaults zero limit to twenty", limit: 0, wantResults: 20},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp, err := svc.Timeline(ctx, model.TimelineRequest{
+				Around: anchorID,
+				Window: "1d",
+				Limit:  tt.limit,
+			})
+			if err != nil {
+				t.Fatalf("Timeline: %v", err)
+			}
+			if len(resp.Results) != tt.wantResults {
+				t.Errorf("len(Results) = %d, want %d", len(resp.Results), tt.wantResults)
+			}
+			if resp.Total != 101 {
+				t.Errorf("Total = %d, want 101 (the complete match count)", resp.Total)
+			}
+		})
+	}
+}
+
 // TestTimeline_MissingAround verifies that Timeline returns an error when
 // the required "around" field is empty.
 func TestTimeline_MissingAround(t *testing.T) {
