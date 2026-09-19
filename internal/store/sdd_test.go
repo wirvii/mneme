@@ -1099,8 +1099,8 @@ func TestGetSpecHistory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetSpecHistory: %v", err)
 	}
-	if len(history) != 3 {
-		t.Fatalf("expected 3 history entries, got %d", len(history))
+	if len(history) != 4 {
+		t.Fatalf("expected initial row plus 3 transitions, got %d", len(history))
 	}
 
 	// Verify ascending order.
@@ -1111,9 +1111,15 @@ func TestGetSpecHistory(t *testing.T) {
 	}
 
 	// Verify correct transition recording.
-	if history[0].FromStatus != model.SpecStatusDraft || history[0].ToStatus != model.SpecStatusSpeccing {
-		t.Errorf("first history entry: got %s->%s, want draft->speccing",
+	if history[0].FromStatus != "" || history[0].ToStatus != model.SpecStatusDraft {
+		t.Errorf("first history entry: got %s->%s, want empty->draft",
 			history[0].FromStatus, history[0].ToStatus)
+	}
+	for i, tr := range transitions {
+		h := history[i+1]
+		if h.FromStatus != tr.from || h.ToStatus != tr.to {
+			t.Errorf("history transition %d: got %s->%s, want %s->%s", i, h.FromStatus, h.ToStatus, tr.from, tr.to)
+		}
 	}
 }
 
@@ -2523,16 +2529,25 @@ func TestGetSpecHistory_DeterministicTieBreakOnIdenticalAt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetSpecHistory (second): %v", err)
 	}
-	if len(first) != 2 || len(second) != 2 {
-		t.Fatalf("expected 2 history rows, got first=%d second=%d", len(first), len(second))
+	if len(first) != 3 || len(second) != 3 {
+		t.Fatalf("expected initial row plus 2 tied rows, got first=%d second=%d", len(first), len(second))
 	}
-	if first[0].ID != second[0].ID || first[1].ID != second[1].ID {
+	if first[0].ID != second[0].ID || first[1].ID != second[1].ID || first[2].ID != second[2].ID {
 		t.Fatalf("non-deterministic order across two reads: first=%v second=%v",
-			[]string{first[0].ID, first[1].ID}, []string{second[0].ID, second[1].ID})
+			[]string{first[0].ID, first[1].ID, first[2].ID}, []string{second[0].ID, second[1].ID, second[2].ID})
 	}
 	// id ASC: idA < idB lexicographically.
-	if first[0].ID != idA || first[1].ID != idB {
-		t.Errorf("order = [%s, %s], want [%s, %s] (id ASC tie-break)", first[0].ID, first[1].ID, idA, idB)
+	positions := map[string]int{}
+	for i, h := range first {
+		positions[h.ID] = i
+	}
+	posA, foundA := positions[idA]
+	posB, foundB := positions[idB]
+	if !foundA || !foundB {
+		t.Fatalf("tied rows missing: idA present=%t idB present=%t", foundA, foundB)
+	}
+	if posA >= posB {
+		t.Errorf("positions: idA=%d idB=%d, want idA before idB (id ASC tie-break)", posA, posB)
 	}
 }
 

@@ -232,6 +232,13 @@ func TestUpdateSpecFromRecord_NoOptimisticLockNoHistoryWrite(t *testing.T) {
 	if err := s.CreateSpec(ctx, spec); err != nil {
 		t.Fatalf("CreateSpec: %v", err)
 	}
+	initialHistory, err := s.GetSpecHistory(ctx, "SPEC-051")
+	if err != nil {
+		t.Fatalf("GetSpecHistory before update: %v", err)
+	}
+	if len(initialHistory) != 1 {
+		t.Fatalf("initial history = %d rows, want 1", len(initialHistory))
+	}
 
 	// Jump directly from draft to implementing — a transition
 	// UpdateSpecStatus's optimistic lock would never allow without the
@@ -259,8 +266,11 @@ func TestUpdateSpecFromRecord_NoOptimisticLockNoHistoryWrite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetSpecHistory: %v", err)
 	}
-	if len(history) != 0 {
-		t.Errorf("GetSpecHistory = %d rows, want 0 — UpdateSpecFromRecord must never synthesize history", len(history))
+	if len(history) != 1 {
+		t.Fatalf("GetSpecHistory = %d rows, want the sole initial row", len(history))
+	}
+	if *history[0] != *initialHistory[0] {
+		t.Errorf("initial history changed: got %+v, want %+v", history[0], initialHistory[0])
 	}
 }
 
@@ -298,10 +308,20 @@ func TestMergeSpecHistory_InsertsMissingNeverUpdatesExisting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetSpecHistory: %v", err)
 	}
-	if len(existing) != 1 {
-		t.Fatalf("setup: expected 1 history row, got %d", len(existing))
+	if len(existing) != 2 {
+		t.Fatalf("setup: expected initial and draft->speccing history rows, got %d", len(existing))
 	}
-	originalID := existing[0].ID
+	var original *model.SpecHistory
+	for _, h := range existing {
+		if h.FromStatus == model.SpecStatusDraft && h.ToStatus == model.SpecStatusSpeccing {
+			original = h
+			break
+		}
+	}
+	if original == nil {
+		t.Fatal("setup: draft->speccing history row not found")
+	}
+	originalID := original.ID
 
 	// The file brings the SAME row (mutated reason, must be ignored — history
 	// is immutable) plus a genuinely new one.
@@ -320,12 +340,12 @@ func TestMergeSpecHistory_InsertsMissingNeverUpdatesExisting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetSpecHistory: %v", err)
 	}
-	if len(got) != 2 {
-		t.Fatalf("len(history) = %d, want 2", len(got))
+	if len(got) != 3 {
+		t.Fatalf("len(history) = %d, want 3", len(got))
 	}
 	for _, h := range got {
-		if h.ID == originalID && h.By != "arch" {
-			t.Errorf("existing history row was mutated: By=%s, want unchanged 'arch'", h.By)
+		if h.ID == originalID && *h != *original {
+			t.Errorf("existing history row was mutated: got %+v, want %+v", h, original)
 		}
 	}
 }
@@ -349,6 +369,10 @@ func TestMergeSpecHistory_RerunIsIdempotent(t *testing.T) {
 	if err := s.MergeSpecHistory(ctx, "SPEC-061", incoming); err != nil {
 		t.Fatalf("MergeSpecHistory (1st): %v", err)
 	}
+	first, err := s.GetSpecHistory(ctx, "SPEC-061")
+	if err != nil {
+		t.Fatalf("GetSpecHistory after first merge: %v", err)
+	}
 	if err := s.MergeSpecHistory(ctx, "SPEC-061", incoming); err != nil {
 		t.Fatalf("MergeSpecHistory (2nd): %v", err)
 	}
@@ -357,8 +381,17 @@ func TestMergeSpecHistory_RerunIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetSpecHistory: %v", err)
 	}
-	if len(got) != 1 {
-		t.Fatalf("len(history) = %d, want 1 — rerunning must not duplicate", len(got))
+	if len(got) != len(first) {
+		t.Fatalf("len(history) = %d after rerun, want unchanged %d", len(got), len(first))
+	}
+	count := 0
+	for _, h := range got {
+		if h.ID == incoming[0].ID {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("incoming history row occurs %d times, want exactly 1", count)
 	}
 }
 
