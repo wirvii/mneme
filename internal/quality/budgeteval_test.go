@@ -236,3 +236,62 @@ func TestEvaluateTrivialBudget(t *testing.T) {
 		})
 	}
 }
+
+func TestEvaluateTrivialBudget_MultipleScopePatterns(t *testing.T) {
+	tests := []struct {
+		name      string
+		files     []FileStat
+		scope     string
+		wantCount int
+		wantText  string
+	}{
+		{
+			name:  "two declared files match separate patterns",
+			files: []FileStat{{Path: "internal/store/x.go"}, {Path: "docs/x.md"}},
+			scope: "internal/store/*.go,docs/*.md",
+		},
+		{
+			name:      "third undeclared file is out of scope",
+			files:     []FileStat{{Path: "internal/store/x.go"}, {Path: "docs/x.md"}, {Path: "internal/service/x.go"}},
+			scope:     "internal/store/*.go,docs/*.md",
+			wantCount: 1,
+			wantText:  "out of scope: internal/service/x.go",
+		},
+		{
+			name:  "surrounding spaces are trimmed",
+			files: []FileStat{{Path: "internal/store/x.go"}, {Path: "docs/x.md"}},
+			scope: "  internal/store/*.go , docs/*.md  ",
+		},
+		{
+			name:  "single pattern preserves behavior",
+			files: []FileStat{{Path: "internal/store/x.go"}},
+			scope: "internal/store/*.go",
+		},
+		{
+			name:      "empty segment is rejected",
+			files:     []FileStat{{Path: "internal/store/x.go"}},
+			scope:     "internal/store/*.go, ,docs/*.md",
+			wantCount: 1,
+			wantText:  "invalid scope: empty pattern",
+		},
+		{
+			name:      "invalid glob is rejected",
+			files:     []FileStat{{Path: "internal/store/x.go"}},
+			scope:     "internal/[.go",
+			wantCount: 1,
+			wantText:  `invalid scope pattern: "internal/[.go"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			breaches := EvaluateTrivialBudget(tt.files, SymbolDelta{}, tt.scope, DefaultTrivialBudget)
+			if len(breaches) != tt.wantCount {
+				t.Fatalf("EvaluateTrivialBudget() = %v, want %d breach(es)", breaches, tt.wantCount)
+			}
+			if tt.wantText != "" && string(breaches[0]) != tt.wantText {
+				t.Fatalf("breach = %q, want %q", breaches[0], tt.wantText)
+			}
+		})
+	}
+}

@@ -11,6 +11,9 @@ package quality
 import (
 	"fmt"
 	"sort"
+	"strings"
+
+	"github.com/bmatcuk/doublestar/v4"
 )
 
 // DirCount is one directory's quota bookkeeping in a BudgetOutcome: how many
@@ -196,6 +199,10 @@ var DefaultTrivialBudget = TrivialBudget{
 // would break every historical audit's readability.
 func EvaluateTrivialBudget(files []FileStat, symDelta SymbolDelta, scope string, b TrivialBudget) []Breach {
 	var breaches []Breach
+	scopePatterns, scopeErr := splitScopePatterns(scope)
+	if scopeErr != nil {
+		breaches = append(breaches, Breach(scopeErr.Error()))
+	}
 
 	if len(files) > b.MaxFiles {
 		breaches = append(breaches, Breach(fmt.Sprintf("file count %d exceeds trivial limit of %d", len(files), b.MaxFiles)))
@@ -213,7 +220,7 @@ func EvaluateTrivialBudget(files []FileStat, symDelta SymbolDelta, scope string,
 		if MatchGlobs(f.Path, b.ForbiddenGlobs) {
 			breaches = append(breaches, Breach(fmt.Sprintf("forbidden path modified: %s", f.Path)))
 		}
-		if scope != "" && !MatchGlobs(f.Path, []string{scope}) {
+		if scopeErr == nil && len(scopePatterns) > 0 && !MatchGlobs(f.Path, scopePatterns) {
 			breaches = append(breaches, Breach(fmt.Sprintf("out of scope: %s", f.Path)))
 		}
 	}
@@ -230,4 +237,23 @@ func EvaluateTrivialBudget(files []FileStat, symDelta SymbolDelta, scope string,
 	}
 
 	return breaches
+}
+
+func splitScopePatterns(scope string) ([]string, error) {
+	if strings.TrimSpace(scope) == "" {
+		return nil, nil
+	}
+	parts := strings.Split(scope, ",")
+	patterns := make([]string, 0, len(parts))
+	for _, part := range parts {
+		pattern := strings.TrimSpace(part)
+		if pattern == "" {
+			return nil, fmt.Errorf("invalid scope: empty pattern")
+		}
+		if !doublestar.ValidatePattern(pattern) {
+			return nil, fmt.Errorf("invalid scope pattern: %q", pattern)
+		}
+		patterns = append(patterns, pattern)
+	}
+	return patterns, nil
 }
