@@ -136,6 +136,91 @@ func (s *SDDStore) CountOpenBlockingFindings(ctx context.Context, workID string)
 	return n, nil
 }
 
+// CompleteWorkResult returns the exact persisted evidence consumed by completion.
+type CompleteWorkResult struct {
+	Certificate *model.DeliveryCertificate
+	Checks      []model.DeliveryCheck
+}
+
+// CompleteWork atomically validates the latest evidence and closes one work item.
+func (s *SDDStore) CompleteWork(ctx context.Context, workID, headSHA, by string) (CompleteWorkResult, error) {
+	if strings.TrimSpace(by) == "" {
+		return CompleteWorkResult{}, fmt.Errorf("%w: by: required", model.ErrInvalidContract)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return CompleteWorkResult{}, fmt.Errorf("store: complete work: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	work, err := scanWorkDirect(tx.QueryRowContext(ctx, `SELECT `+workColumns+` FROM execution_contracts WHERE id=?`, workID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return CompleteWorkResult{}, model.ErrWorkNotFound
+	}
+	if err != nil {
+		return CompleteWorkResult{}, fmt.Errorf("store: complete work: load work: %w", err)
+	}
+	cert, err := scanDeliveryCertificate(tx.QueryRowContext(ctx, `SELECT id,project,work_id,contract_revision,contract_hash,head_sha,base_sha,verdict,dirty,evidence,mneme_version,started_at,finished_at,duration_ms,created_at FROM delivery_certificates WHERE project=? AND work_id=? ORDER BY rowid DESC LIMIT 1`, work.Project, workID))
+	if errors.Is(err, sql.ErrNoRows) {
+		cert = nil
+	} else if err != nil {
+		return CompleteWorkResult{}, fmt.Errorf("store: complete work: load certificate: %w", err)
+	}
+	var checks []model.DeliveryCheck
+	if cert != nil {
+		checks, err = listDeliveryChecksTx(ctx, tx, cert.ID)
+		if err != nil {
+			return CompleteWorkResult{}, fmt.Errorf("store: complete work: load checks: %w", err)
+		}
+	}
+	blocking, err := countOpenBlockingFindingsTx(ctx, tx, workID)
+	if err != nil {
+		return CompleteWorkResult{}, fmt.Errorf("store: complete work: count findings: %w", err)
+	}
+	if ok, reason := model.CanComplete(model.CompletionInput{
+		Status: work.Status, ContractRevision: work.ContractRevision, ContractHash: work.ContractHash,
+		HeadSHA: headSHA, BaseSHA: work.BaseSHA, Certificate: cert, OpenBlockingFindings: blocking,
+	}); !ok {
+		return CompleteWorkResult{}, fmt.Errorf("%w: %s", model.ErrInvalidWorkTransition, reason)
+	}
+	now := time.Now().UTC()
+	result, err := tx.ExecContext(ctx, `UPDATE execution_contracts SET status=?,completed_at=?,updated_at=? WHERE id=? AND status=?`, model.WorkStatusDone, formatTime(now), formatTime(now), workID, work.Status)
+	if err != nil {
+		return CompleteWorkResult{}, fmt.Errorf("store: complete work: update: %w", err)
+	}
+	if !oneRow(result) {
+		return CompleteWorkResult{}, model.ErrInvalidWorkTransition
+	}
+	if err := insertWorkHistory(ctx, tx, workID, work.Status, model.WorkStatusDone, work.ContractRevision, by, "", now); err != nil {
+		return CompleteWorkResult{}, fmt.Errorf("store: complete work: history: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return CompleteWorkResult{}, fmt.Errorf("store: complete work: commit: %w", err)
+	}
+	return CompleteWorkResult{Certificate: cert, Checks: checks}, nil
+}
+
+func listDeliveryChecksTx(ctx context.Context, tx *sql.Tx, certificateID string) ([]model.DeliveryCheck, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT id,certificate_id,seq,kind,name,status,effect,detail,duration_ms,output_sha256,output_tail,created_at FROM delivery_checks WHERE certificate_id=? ORDER BY seq,rowid`, certificateID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var checks []model.DeliveryCheck
+	for rows.Next() {
+		var check model.DeliveryCheck
+		var status, effect, created string
+		if err := rows.Scan(&check.ID, &check.CertificateID, &check.Seq, &check.Kind, &check.Name, &status, &effect, &check.Detail, &check.DurationMs, &check.OutputSHA256, &check.OutputTail, &created); err != nil {
+			return nil, err
+		}
+		check.Status = model.DeliveryCheckStatus(status)
+		check.Effect = model.DeliveryCheckEffect(effect)
+		check.CreatedAt, _ = parseTime(created)
+		checks = append(checks, check)
+	}
+	return checks, rows.Err()
+}
+
 // InsertDeliveryCertificate atomically writes a certificate and its ordered checks.
 func (s *SDDStore) InsertDeliveryCertificate(ctx context.Context, cert *model.DeliveryCertificate, checks []*model.DeliveryCheck) error {
 	return s.InsertDeliveryEvaluation(ctx, cert, checks, nil)

@@ -126,6 +126,125 @@ func deliveryEvaluationFixture(t *testing.T, s *SDDStore, workID string) (*model
 	return cert, checks
 }
 
+func closableWork(t *testing.T, status model.WorkStatus) (*SDDStore, *model.DeliveryCertificate, []*model.DeliveryCheck) {
+	t.Helper()
+	s := newTestSDDStore(t)
+	workInReview(t, s, "WORK-001", status)
+	cert, checks := deliveryEvaluationFixture(t, s, "WORK-001")
+	if err := s.InsertDeliveryCertificate(context.Background(), cert, checks); err != nil {
+		t.Fatal(err)
+	}
+	return s, cert, checks
+}
+
+func TestCompleteWork_ClosesBothVerifyingStates(t *testing.T) {
+	for _, status := range []model.WorkStatus{model.WorkStatusVerifying, model.WorkStatusTargetedVerifying} {
+		t.Run(string(status), func(t *testing.T) {
+			s, cert, checks := closableWork(t, status)
+			result, err := s.CompleteWork(context.Background(), "WORK-001", "head", "orchestrator")
+			if err != nil {
+				t.Fatal(err)
+			}
+			work, err := s.GetWork(context.Background(), "WORK-001")
+			if err != nil || work.Status != model.WorkStatusDone || work.CompletedAt == nil {
+				t.Fatalf("work=%#v err=%v", work, err)
+			}
+			if result.Certificate.ID != cert.ID || len(result.Checks) != len(checks) || result.Checks[0].ID != checks[0].ID {
+				t.Fatalf("result=%#v", result)
+			}
+		})
+	}
+}
+
+func TestCompleteWork_LatestCertificateWins(t *testing.T) {
+	s, _, _ := closableWork(t, model.WorkStatusVerifying)
+	cert, checks := deliveryEvaluationFixture(t, s, "WORK-001")
+	cert.Verdict = model.DeliveryVerdictFail
+	checks[0].Status = model.DeliveryCheckFail
+	if err := s.InsertDeliveryCertificate(context.Background(), cert, checks); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CompleteWork(context.Background(), "WORK-001", "head", "orchestrator"); !errors.Is(err, model.ErrInvalidWorkTransition) {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestCompleteWork_RejectsCertificateIdentityAndDirty(t *testing.T) {
+	tests := []struct{ name, column, value string }{
+		{"dirty", "dirty", "1"},
+		{"base", "base_sha", "other"},
+		{"hash", "contract_hash", "other"},
+		{"revision", "contract_revision", "2"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s, cert, _ := closableWork(t, model.WorkStatusVerifying)
+			if _, err := s.db.Exec(`UPDATE delivery_certificates SET `+tc.column+`=? WHERE id=?`, tc.value, cert.ID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.CompleteWork(context.Background(), "WORK-001", "head", "orchestrator"); !errors.Is(err, model.ErrInvalidWorkTransition) {
+				t.Fatalf("error=%v", err)
+			}
+		})
+	}
+}
+
+func TestCompleteWork_BlockingCategoriesOnly(t *testing.T) {
+	tests := []struct {
+		name    string
+		cats    []model.FindingCategory
+		wantErr bool
+	}{
+		{"blocking", []model.FindingCategory{model.FindingRegression}, true},
+		{"non-blocking", []model.FindingCategory{model.FindingDiscovery, model.FindingImprovement}, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _, _ := closableWork(t, model.WorkStatusVerifying)
+			for _, cat := range tc.cats {
+				f := &model.WorkFinding{WorkID: "WORK-001", Category: cat, Severity: model.PriorityMedium, Description: string(cat), Evidence: "evidence", Origin: model.FindingOriginReview, ReviewPhase: model.ReviewPhaseInitial}
+				if err := s.AddFinding(context.Background(), f); err != nil {
+					t.Fatal(err)
+				}
+			}
+			_, err := s.CompleteWork(context.Background(), "WORK-001", "head", "orchestrator")
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("error=%v wantErr=%v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestCompleteWork_RollsBackWhenHistoryFails(t *testing.T) {
+	s, _, _ := closableWork(t, model.WorkStatusVerifying)
+	before, _ := s.GetWork(context.Background(), "WORK-001")
+	if _, err := s.db.Exec(`CREATE TRIGGER fail_done_history BEFORE INSERT ON execution_history WHEN NEW.to_status='done' BEGIN SELECT RAISE(FAIL,'forced completion history failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CompleteWork(context.Background(), "WORK-001", "head", "orchestrator"); err == nil {
+		t.Fatal("expected history failure")
+	}
+	after, _ := s.GetWork(context.Background(), "WORK-001")
+	if after.Status != before.Status || after.CompletedAt != nil || !after.UpdatedAt.Equal(before.UpdatedAt) {
+		t.Fatalf("before=%#v after=%#v", before, after)
+	}
+}
+
+func TestCompleteWork_IsNotRepeatable(t *testing.T) {
+	s, _, _ := closableWork(t, model.WorkStatusVerifying)
+	if _, err := s.CompleteWork(context.Background(), "WORK-001", "head", "orchestrator"); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := s.GetWorkAggregate(context.Background(), "WORK-001")
+	if _, err := s.CompleteWork(context.Background(), "WORK-001", "head", "orchestrator"); !errors.Is(err, model.ErrInvalidWorkTransition) {
+		t.Fatalf("error=%v", err)
+	}
+	after, _ := s.GetWorkAggregate(context.Background(), "WORK-001")
+	if !after.Contract.CompletedAt.Equal(*before.Contract.CompletedAt) || len(after.History) != len(before.History) {
+		t.Fatalf("before=%#v after=%#v", before.Contract, after.Contract)
+	}
+}
+
 func TestInsertInitialReview_AtomicallyPersistsEverythingAndTransitions(t *testing.T) {
 	s := newTestSDDStore(t)
 	workInReview(t, s, "WORK-001", model.WorkStatusImplementing)
