@@ -253,6 +253,22 @@ func writeWorkSummary(w io.Writer, label string, work model.WorkGetResponse) err
 }
 
 func writeWorkCapability(w io.Writer, result model.WorkCapabilityResult) error {
+	if result.Operation == "verify" && result.Available && result.Performed && result.Certificate != nil {
+		counts := map[model.DeliveryCheckStatus]int{}
+		for _, check := range result.Checks {
+			counts[check.Status]++
+		}
+		hash := result.Work.Contract.ContractHash
+		if len(hash) > 12 {
+			hash = hash[:12]
+		}
+		_, err := fmt.Fprintf(w, "VERIFICADO %s verdict:%s head:%s revision:%d hash:%s pass:%d fail:%d not-reviewed:%d stopped:%d\n",
+			result.Work.Contract.ID, result.Certificate.Verdict, result.Certificate.HeadSHA,
+			result.Work.Contract.ContractRevision, hash,
+			counts[model.DeliveryCheckPass], counts[model.DeliveryCheckFail],
+			counts[model.DeliveryCheckNotReviewed], counts[model.DeliveryCheckSkipped])
+		return err
+	}
 	_, err := fmt.Fprintf(w, "NO DISPONIBLE %s: %s (%s)\n", result.Operation, result.Reason, result.ReasonCode)
 	return err
 }

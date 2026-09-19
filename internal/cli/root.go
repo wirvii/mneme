@@ -19,6 +19,7 @@ import (
 	"github.com/wirvii/mneme/internal/db"
 	"github.com/wirvii/mneme/internal/embed"
 	"github.com/wirvii/mneme/internal/project"
+	"github.com/wirvii/mneme/internal/quality"
 	"github.com/wirvii/mneme/internal/service"
 	"github.com/wirvii/mneme/internal/store"
 )
@@ -379,6 +380,8 @@ func initSDDService() (*service.SDDService, func(), error) {
 		root = cwd
 	}
 	sddSvc.WithRepoDir(root)
-
+	sddSvc.WithDeliveryVerifier(func(maxTailBytes int) quality.Runner {
+		return &quality.ExecRunner{MaxTailBytes: maxTailBytes}
+	}, Version)
 	return sddSvc, cleanup, nil
 }

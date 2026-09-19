@@ -11,6 +11,7 @@ import (
 	"github.com/wirvii/mneme/internal/config"
 	"github.com/wirvii/mneme/internal/db"
 	"github.com/wirvii/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/quality"
 	"github.com/wirvii/mneme/internal/service"
 	"github.com/wirvii/mneme/internal/store"
 )
@@ -28,6 +29,7 @@ func newWorkTestHandlers(t *testing.T) (*handlers, *service.SDDService, *store.S
 	sddStore := store.NewSDDStore(database)
 	sdd := service.NewSDDService(sddStore, cfg, "p", nil)
 	sdd.WithRepoDir(initQualityTestGitRepo(t))
+	sdd.WithDeliveryVerifier(func(int) quality.Runner { return fakeQualityRunner{} }, "test-version")
 	return &handlers{sdd: sdd, logger: slog.Default()}, sdd, sddStore
 }
 
@@ -105,13 +107,13 @@ func TestHandleWorkGetOmitsContractUUID(t *testing.T) {
 	}
 }
 
-func TestHandleWorkDeferredCapabilitiesRemainUnavailable(t *testing.T) {
+func TestHandleWorkReviewAndCompleteRemainUnavailable(t *testing.T) {
 	h, sdd, _ := newWorkTestHandlers(t)
 	created, err := sdd.WorkBegin(context.Background(), model.WorkBeginRequest{Goal: "g", Scope: []string{"internal/**"}, Verification: []model.VerificationKind{model.VerificationBuild}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"work_review", "work_verify", "work_complete"} {
+	for _, name := range []string{"work_review", "work_complete"} {
 		result, rpcErr := h.handleToolCall(context.Background(), ToolCallParams{Name: name, Arguments: mustMarshal(t, model.WorkActionRequest{ID: created.Contract.ID})})
 		if rpcErr != nil {
 			t.Fatalf("%s: %v", name, rpcErr)
@@ -127,6 +129,46 @@ func TestHandleWorkDeferredCapabilitiesRemainUnavailable(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestHandleWorkVerifyReturnsSharedCertificateAndChecks(t *testing.T) {
+	h, sdd, sddStore := newWorkTestHandlers(t)
+	created, err := sdd.WorkBegin(context.Background(), model.WorkBeginRequest{Goal: "g", Scope: []string{"internal/**"}, Verification: []model.VerificationKind{model.VerificationBuild}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sdd.WorkLock(context.Background(), model.WorkLockRequest{ID: created.Contract.ID, By: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := sddStore.TransitionWork(context.Background(), created.Contract.ID, model.WorkStatusImplementing, model.WorkStatusVerifying, "test", ""); err != nil {
+		t.Fatal(err)
+	}
+	result, rpcErr := h.handleToolCall(context.Background(), ToolCallParams{Name: "work_verify", Arguments: mustMarshal(t, model.WorkActionRequest{ID: created.Contract.ID})})
+	if rpcErr != nil {
+		t.Fatal(rpcErr)
+	}
+	var response model.WorkCapabilityResult
+	raw := toolResultJSON(t, result, &response)
+	if !response.Available || !response.Performed || response.Certificate == nil || len(response.Checks) == 0 || response.Checks[0].CertificateID != response.Certificate.ID {
+		t.Fatalf("response=%#v raw=%s", response, raw)
+	}
+	if !strings.Contains(raw, `"certificate"`) || !strings.Contains(raw, `"checks"`) {
+		t.Fatalf("missing shared fields: %s", raw)
+	}
+}
+
+func TestWorkVerifyToolDescriptionIsCurrent(t *testing.T) {
+	for _, tool := range allTools() {
+		if tool.Name != "work_verify" {
+			continue
+		}
+		lower := strings.ToLower(tool.Description)
+		if strings.Contains(lower, "unavailable") || !strings.Contains(lower, "certificate") || !strings.Contains(lower, "criteria") {
+			t.Fatalf("description=%q", tool.Description)
+		}
+		return
+	}
+	t.Fatal("work_verify tool missing")
 }
 
 func TestMapServiceErrorWorkSentinels(t *testing.T) {

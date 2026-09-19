@@ -1963,7 +1963,7 @@ func workToolDefinitions() []ToolDefinition {
 		{Name: "work_lock", Description: "Lock a draft against the repository HEAD and begin implementation atomically.", InputSchema: map[string]any{"type": "object", "required": []string{"id"}, "properties": map[string]any{"id": map[string]any{"type": "string"}, "by": map[string]any{"type": "string"}}}},
 		{Name: "work_amend", Description: "Replace every normative field of an existing work contract with an auditable reason.", InputSchema: map[string]any{"type": "object", "required": []string{"id", "goal", "scope", "verification", "development_method", "by", "reason"}, "properties": amend}},
 		{Name: "work_review", Description: "Reports unavailable in phase 2 and performs no review or state change.", InputSchema: idSchema()},
-		{Name: "work_verify", Description: "Reports unavailable in phase 2 and performs no verification, criterion execution, or state change.", InputSchema: idSchema()},
+		{Name: "work_verify", Description: "Evaluates stored criteria and required checks, persists a factual delivery certificate, and does not change work state.", InputSchema: idSchema()},
 		{Name: "work_complete", Description: "Reports unavailable in phase 2 and performs no completion or state change.", InputSchema: idSchema()},
 	}
 }

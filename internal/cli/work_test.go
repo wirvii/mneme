@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -94,6 +95,51 @@ func TestWriteWorkCapabilityStartsUnavailable(t *testing.T) {
 	}
 	if !strings.HasPrefix(out.String(), "NO DISPONIBLE") {
 		t.Fatalf("output = %q", out.String())
+	}
+}
+
+func TestWriteWorkVerifyCapabilitySummarizesCertificate(t *testing.T) {
+	var out bytes.Buffer
+	result := model.WorkCapabilityResult{
+		Operation: "verify", Available: true, Performed: true,
+		Work:        model.WorkGetResponse{Contract: model.WorkContractView{ID: "WORK-007", ContractRevision: 3, ContractHash: "fedcba9876543210"}},
+		Certificate: &model.DeliveryCertificate{Verdict: model.DeliveryVerdictFail, HeadSHA: "0123456789abcdef"},
+		Checks: []model.DeliveryCheck{
+			{Status: model.DeliveryCheckPass},
+			{Status: model.DeliveryCheckFail},
+			{Status: model.DeliveryCheckNotReviewed},
+			{Status: model.DeliveryCheckSkipped},
+		},
+	}
+	if err := writeWorkCapability(&out, result); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"VERIFICADO WORK-007", "verdict:fail", "head:0123456789abcdef", "revision:3", "hash:fedcba987654", "pass:1", "fail:1", "not-reviewed:1", "stopped:1"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("summary %q does not contain %q", out.String(), want)
+		}
+	}
+	if strings.Contains(out.String(), "NO DISPONIBLE") {
+		t.Fatalf("verify output remained unavailable: %q", out.String())
+	}
+}
+
+func TestWorkVerifyJSONIncludesSharedCertificateAndChecks(t *testing.T) {
+	result := model.WorkCapabilityResult{
+		Operation: "verify", Available: true, Performed: true,
+		Certificate: &model.DeliveryCertificate{ID: "certificate-1", Verdict: model.DeliveryVerdictPass},
+		Checks:      []model.DeliveryCheck{{CertificateID: "certificate-1", Kind: "gate", Name: "build", Status: model.DeliveryCheckPass, Effect: model.DeliveryEffectBlocks}},
+	}
+	var out bytes.Buffer
+	if err := printJSON(&out, result); err != nil {
+		t.Fatal(err)
+	}
+	var decoded model.WorkCapabilityResult
+	if err := json.Unmarshal(out.Bytes(), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Certificate == nil || decoded.Certificate.ID != "certificate-1" || len(decoded.Checks) != 1 || decoded.Checks[0].Name != "build" {
+		t.Fatalf("decoded=%#v", decoded)
 	}
 }
 
