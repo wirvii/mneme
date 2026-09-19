@@ -1012,6 +1012,11 @@ func (s *SDDStore) RefsForUUIDs(ctx context.Context, uuids []string) (map[string
 	if err := collectRefUUIDPairs(ctx, s.db, q, args, out); err != nil {
 		return nil, fmt.Errorf("store: refs for uuids: specs: %w", err)
 	}
+
+	q, args = inClauseQuery(`SELECT uuid, id FROM execution_contracts WHERE uuid IN (%s)`, uuids)
+	if err := collectRefUUIDPairs(ctx, s.db, q, args, out); err != nil {
+		return nil, fmt.Errorf("store: refs for uuids: execution_contracts: %w", err)
+	}
 	return out, nil
 }
 
