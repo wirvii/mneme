@@ -1,5 +1,63 @@
 package sddfile
 
+import "fmt"
+
+// Missing reports only metadata an importer may safely mint without making
+// a product or verification decision. Contract content and audit judgments
+// are deliberately excluded even when empty.
+func (r *WorkRecord) Missing() []string {
+	if r == nil || r.Aggregate == nil || r.Aggregate.Contract == nil {
+		return nil
+	}
+	agg := r.Aggregate
+	var missing []string
+	if agg.Contract.UUID == "" {
+		missing = append(missing, "uuid")
+	}
+	if agg.Contract.Project == "" {
+		missing = append(missing, "project")
+	}
+	if agg.Contract.CreatedAt.IsZero() {
+		missing = append(missing, "created_at")
+	}
+	if agg.Contract.UpdatedAt.IsZero() {
+		missing = append(missing, "updated_at")
+	}
+	for i := range agg.Criteria {
+		if agg.Criteria[i].ID == "" {
+			missing = append(missing, fmt.Sprintf("criterion[%d].id", agg.Criteria[i].Seq))
+		}
+		if agg.Criteria[i].CreatedAt.IsZero() {
+			missing = append(missing, fmt.Sprintf("criterion[%d].created_at", agg.Criteria[i].Seq))
+		}
+	}
+	for i := range agg.Constraints {
+		if agg.Constraints[i].ID == "" {
+			missing = append(missing, fmt.Sprintf("constraint[%d].id", agg.Constraints[i].Seq))
+		}
+		if agg.Constraints[i].CreatedAt.IsZero() {
+			missing = append(missing, fmt.Sprintf("constraint[%d].created_at", agg.Constraints[i].Seq))
+		}
+	}
+	for i := range agg.Findings {
+		if agg.Findings[i].ID == "" {
+			missing = append(missing, fmt.Sprintf("finding[%d].id", agg.Findings[i].Seq))
+		}
+		if agg.Findings[i].CreatedAt.IsZero() {
+			missing = append(missing, fmt.Sprintf("finding[%d].created_at", agg.Findings[i].Seq))
+		}
+	}
+	for i := range agg.History {
+		if agg.History[i].ID == "" {
+			missing = append(missing, fmt.Sprintf("history[%d].id", i+1))
+		}
+		if agg.History[i].At.IsZero() {
+			missing = append(missing, fmt.Sprintf("history[%d].at", i+1))
+		}
+	}
+	return missing
+}
+
 // Missing reports which fields mneme itself fills in when a backlog record
 // arrives incomplete (SPEC-131 D53): a hand-authored BL-NNN.md needs only a
 // title and a description (D16) — everything else on this CLOSED list is

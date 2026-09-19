@@ -17,6 +17,17 @@ const (
 	markerKindPushback   = "pushback"
 	markerKindQuestion   = "question"
 	markerKindResolution = "resolution"
+
+	markerKindRedTestEvidence      = "red-test-evidence"
+	markerKindCriterion            = "criterion"
+	markerKindCriterionDeclaration = "criterion-declaration"
+	markerKindCriterionEvidence    = "criterion-evidence"
+	markerKindConstraint           = "constraint"
+	markerKindFinding              = "finding"
+	markerKindFindingLocation      = "finding-location"
+	markerKindFindingEvidence      = "finding-evidence"
+	markerKindFindingResolution    = "finding-resolution"
+	markerKindWorkHistory          = "work-history"
 )
 
 // markerPrefix is the literal opening every structural marker line shares.
@@ -24,7 +35,7 @@ const markerPrefix = "<!-- mneme:"
 
 // markerHeaderRe recognises a well-formed marker line and splits it into
 // its kind and the raw " key=value ..." attribute tail.
-var markerHeaderRe = regexp.MustCompile(`^<!-- mneme:(\w+)((?:\s+\S+=(?:"(?:[^"\\]|\\.)*"|\S+))*)\s*-->$`)
+var markerHeaderRe = regexp.MustCompile(`^<!-- mneme:([\w-]+)((?:\s+\S+=(?:"(?:[^"\\]|\\.)*"|\S+))*)\s*-->$`)
 
 // markerAttrRe extracts one key=value pair at a time from a marker's
 // attribute tail. Values are either a Go-quoted string (parsed with

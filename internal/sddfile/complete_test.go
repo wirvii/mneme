@@ -36,6 +36,45 @@ func fullSpec() *model.Spec {
 
 // TestSDDFile_Missing is AC3.
 func TestSDDFile_Missing(t *testing.T) {
+	t.Run("work: only safe metadata is fillable", func(t *testing.T) {
+		rec := completeWorkRecord()
+		rec.Aggregate.Contract.UUID = ""
+		rec.Aggregate.Contract.Project = ""
+		rec.Aggregate.Contract.Goal = ""
+		rec.Aggregate.Contract.Scope = nil
+		rec.Aggregate.Contract.Verification = nil
+		rec.Aggregate.Contract.SourceType = ""
+		rec.Aggregate.Contract.SourceID = ""
+		rec.Aggregate.Contract.Status = ""
+		rec.Aggregate.Contract.CreatedBy = ""
+		rec.Aggregate.Contract.ContractHash = ""
+		rec.Aggregate.Criteria[0].ID = ""
+		rec.Aggregate.Constraints[0].ID = ""
+		rec.Aggregate.Findings[0].ID = ""
+		rec.Aggregate.History[0].ID = ""
+
+		got := rec.Missing()
+		want := []string{"uuid", "project", "criterion[1].id", "constraint[1].id", "finding[1].id", "history[1].id"}
+		if len(got) != len(want) {
+			t.Fatalf("Missing() = %v, want %v", got, want)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("Missing() = %v, want %v", got, want)
+			}
+		}
+	})
+
+	t.Run("work: nil receiver and aggregate report no fillable gaps", func(t *testing.T) {
+		var nilRecord *WorkRecord
+		if got := nilRecord.Missing(); got != nil {
+			t.Fatalf("nil Missing() = %v, want nil", got)
+		}
+		if got := (&WorkRecord{}).Missing(); got != nil {
+			t.Fatalf("empty Missing() = %v, want nil", got)
+		}
+	})
+
 	t.Run("backlog: full record has no gaps", func(t *testing.T) {
 		rec := &BacklogRecord{Item: fullBacklogItem()}
 		if got := rec.Missing(); got != nil {
