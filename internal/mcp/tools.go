@@ -7,7 +7,7 @@ import "github.com/wirvii/mneme/internal/model"
 // defined inline as map[string]any following the JSON Schema draft-07 subset
 // understood by MCP clients.
 func allTools() []ToolDefinition {
-	return []ToolDefinition{
+	tools := []ToolDefinition{
 		{
 			Name:        "speech_emit",
 			Description: "Resolve the current spoken-response turn. Emit only a concise semantic result, decision, useful explanation, question, or blocker; use skip when speech adds no value. Speech is local and opt-in.",
@@ -1918,6 +1918,53 @@ func allTools() []ToolDefinition {
 				},
 			},
 		},
+	}
+	return append(tools, workToolDefinitions()...)
+}
+
+func workToolDefinitions() []ToolDefinition {
+	criterion := map[string]any{"type": "object", "required": []string{"key", "declaration"}, "properties": map[string]any{
+		"key": map[string]any{"type": "string"}, "declaration": map[string]any{"type": "string"},
+	}}
+	constraint := map[string]any{"type": "object", "required": []string{"key", "text"}, "properties": map[string]any{
+		"key": map[string]any{"type": "string"}, "text": map[string]any{"type": "string"}, "source": map[string]any{"type": "string"},
+	}}
+	contractProperties := func() map[string]any {
+		return map[string]any{
+			"project":               map[string]any{"type": "string"},
+			"workflow":              map[string]any{"type": "string", "enum": []string{"organic", "sdd"}},
+			"spec_id":               map[string]any{"type": "string"},
+			"goal":                  map[string]any{"type": "string"},
+			"scope":                 map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+			"verification":          map[string]any{"type": "array", "items": map[string]any{"type": "string", "enum": []string{"acceptance", "affected-tests", "build", "lint"}}},
+			"development_method":    map[string]any{"type": "string", "enum": []string{"standard", "tdd"}},
+			"max_correction_rounds": map[string]any{"type": "integer", "minimum": 0},
+			"criteria":              map[string]any{"type": "array", "items": criterion},
+			"constraints":           map[string]any{"type": "array", "items": constraint},
+			"created_by":            map[string]any{"type": "string"},
+		}
+	}
+	begin := contractProperties()
+	amend := contractProperties()
+	delete(amend, "project")
+	delete(amend, "workflow")
+	delete(amend, "spec_id")
+	delete(amend, "max_correction_rounds")
+	delete(amend, "created_by")
+	amend["id"] = map[string]any{"type": "string"}
+	amend["by"] = map[string]any{"type": "string"}
+	amend["reason"] = map[string]any{"type": "string"}
+	idSchema := func() map[string]any {
+		return map[string]any{"type": "object", "required": []string{"id"}, "properties": map[string]any{"id": map[string]any{"type": "string"}}}
+	}
+	return []ToolDefinition{
+		{Name: "work_begin", Description: "Create a delivery-v2 work contract after validating its scope and criteria.", InputSchema: map[string]any{"type": "object", "required": []string{"goal", "scope", "verification"}, "properties": begin}},
+		{Name: "work_get", Description: "Read the complete public work aggregate without exposing its internal UUID anchor.", InputSchema: idSchema()},
+		{Name: "work_lock", Description: "Lock a draft against the repository HEAD and begin implementation atomically.", InputSchema: map[string]any{"type": "object", "required": []string{"id"}, "properties": map[string]any{"id": map[string]any{"type": "string"}, "by": map[string]any{"type": "string"}}}},
+		{Name: "work_amend", Description: "Replace every normative field of an existing work contract with an auditable reason.", InputSchema: map[string]any{"type": "object", "required": []string{"id", "goal", "scope", "verification", "development_method", "by", "reason"}, "properties": amend}},
+		{Name: "work_review", Description: "Reports unavailable in phase 2 and performs no review or state change.", InputSchema: idSchema()},
+		{Name: "work_verify", Description: "Reports unavailable in phase 2 and performs no verification, criterion execution, or state change.", InputSchema: idSchema()},
+		{Name: "work_complete", Description: "Reports unavailable in phase 2 and performs no completion or state change.", InputSchema: idSchema()},
 	}
 }
 

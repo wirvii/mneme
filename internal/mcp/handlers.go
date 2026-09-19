@@ -179,6 +179,22 @@ func (h *handlers) handleToolCall(ctx context.Context, params ToolCallParams) (*
 	case "sdd_import":
 		return h.handleSDDImport(ctx, params.Arguments)
 
+	// --- DELIVERY WORK TOOLS (SPEC-144) ---
+	case "work_begin":
+		return h.handleWorkBegin(ctx, params.Arguments)
+	case "work_get":
+		return h.handleWorkGet(ctx, params.Arguments)
+	case "work_lock":
+		return h.handleWorkLock(ctx, params.Arguments)
+	case "work_amend":
+		return h.handleWorkAmend(ctx, params.Arguments)
+	case "work_review":
+		return h.handleWorkReview(ctx, params.Arguments)
+	case "work_verify":
+		return h.handleWorkVerify(ctx, params.Arguments)
+	case "work_complete":
+		return h.handleWorkComplete(ctx, params.Arguments)
+
 	// --- QUALITY TOOLS (SPEC-115 EPIC-calidad S1) ---
 	case "quality_verify":
 		return h.handleQualityVerify(ctx, params.Arguments)
@@ -793,7 +809,8 @@ func (h *handlers) mapServiceError(method string, err error) *JSONRPCError {
 		errors.Is(err, model.ErrProfileNotFound) ||
 		errors.Is(err, model.ErrScaffoldNotFound) ||
 		errors.Is(err, model.ErrCertificateNotFound) ||
-		errors.Is(err, model.ErrBudgetNotFound) {
+		errors.Is(err, model.ErrBudgetNotFound) ||
+		errors.Is(err, model.ErrWorkNotFound) {
 		return &JSONRPCError{
 			Code:    CodeMemoryNotFound,
 			Message: fmt.Sprintf("mcp: handle %s: %s", method, err),
@@ -858,6 +875,9 @@ func (h *handlers) mapServiceError(method string, err error) *JSONRPCError {
 		errors.Is(err, model.ErrInvalidCriteria) ||
 		errors.Is(err, model.ErrCriteriaNotFound) ||
 		errors.Is(err, model.ErrNotACriterion) ||
+		errors.Is(err, model.ErrInvalidContract) ||
+		errors.Is(err, model.ErrInvalidWorkTransition) ||
+		errors.Is(err, model.ErrWorkflowEngineDisabled) ||
 		errors.Is(err, model.ErrCriterionRequiresSign) ||
 		errors.Is(err, model.ErrNotSignable) ||
 		errors.Is(err, model.ErrRequiresSign) ||
