@@ -94,6 +94,14 @@ type WorkArchitectureVerdictInput struct {
 	Location      string              `json:"location,omitempty"`
 }
 
+// WorkFindingResolutionInput resolves one initial blocking finding during targeted review.
+type WorkFindingResolutionInput struct {
+	FindingSeq int           `json:"finding_seq"`
+	Status     FindingStatus `json:"status"`
+	Evidence   string        `json:"evidence"`
+	Reason     string        `json:"reason,omitempty"`
+}
+
 // WorkReviewRequest binds one explicit initial review report to an exact commit.
 type WorkReviewRequest struct {
 	ID                   string                         `json:"id"`
@@ -101,6 +109,19 @@ type WorkReviewRequest struct {
 	HeadSHA              string                         `json:"head_sha"`
 	Findings             []WorkReviewFindingInput       `json:"findings,omitempty"`
 	ArchitectureVerdicts []WorkArchitectureVerdictInput `json:"architecture_verdicts,omitempty"`
+	Resolutions          []WorkFindingResolutionInput   `json:"resolutions,omitempty"`
+}
+
+// CorrectionMandate projects the exact blocking evidence that opened one correction round.
+type CorrectionMandate struct {
+	WorkID             string          `json:"work_id"`
+	ContractRevision   int             `json:"contract_revision"`
+	ContractHash       string          `json:"contract_hash"`
+	CertificateID      string          `json:"certificate_id"`
+	CertificateHeadSHA string          `json:"certificate_head_sha"`
+	CorrectionRound    int             `json:"correction_round"`
+	BlockingFindings   []WorkFinding   `json:"blocking_findings"`
+	BlockingChecks     []DeliveryCheck `json:"blocking_checks"`
 }
 
 // WorkContractView is the public contract projection; it deliberately omits the internal UUID anchor.
@@ -159,12 +180,15 @@ type WorkGetResponse struct {
 
 // WorkCapabilityResult reports an intentionally unavailable phase without fabricating a verdict.
 type WorkCapabilityResult struct {
-	Work        WorkGetResponse      `json:"work"`
-	Operation   string               `json:"operation"`
-	Available   bool                 `json:"available"`
-	Performed   bool                 `json:"performed"`
-	ReasonCode  string               `json:"reason_code"`
-	Reason      string               `json:"reason"`
-	Certificate *DeliveryCertificate `json:"certificate,omitempty"`
-	Checks      []DeliveryCheck      `json:"checks,omitempty"`
+	Work              WorkGetResponse      `json:"work"`
+	Operation         string               `json:"operation"`
+	Available         bool                 `json:"available"`
+	Performed         bool                 `json:"performed"`
+	ReasonCode        string               `json:"reason_code"`
+	Reason            string               `json:"reason"`
+	Certificate       *DeliveryCertificate `json:"certificate,omitempty"`
+	Checks            []DeliveryCheck      `json:"checks,omitempty"`
+	ReviewPhase       ReviewPhase          `json:"review_phase,omitempty"`
+	NextStatus        WorkStatus           `json:"next_status,omitempty"`
+	CorrectionMandate *CorrectionMandate   `json:"correction_mandate,omitempty"`
 }

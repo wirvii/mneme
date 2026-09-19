@@ -29,6 +29,59 @@ func validWorkReviewRequest() model.WorkReviewRequest {
 	}
 }
 
+func TestWorkReviewRequest_ResolutionJSONContract(t *testing.T) {
+	empty, err := json.Marshal(model.WorkReviewRequest{ID: "WORK-001", By: "qa", HeadSHA: "head"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(empty), "resolutions") || strings.Contains(string(empty), "phase") {
+		t.Fatalf("empty request JSON = %s", empty)
+	}
+	resultEmpty, err := json.Marshal(model.WorkCapabilityResult{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"review_phase", "next_status", "correction_mandate"} {
+		if strings.Contains(string(resultEmpty), field) {
+			t.Fatalf("empty result contains %q: %s", field, resultEmpty)
+		}
+	}
+
+	want := model.WorkReviewRequest{
+		ID: "WORK-001", By: "qa", HeadSHA: "new-head",
+		Resolutions: []model.WorkFindingResolutionInput{{FindingSeq: 7, Status: model.FindingInvalid, Evidence: "test output", Reason: "false positive"}},
+	}
+	raw, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"finding_seq", "status", "evidence", "reason"} {
+		if !strings.Contains(string(raw), `"`+field+`"`) {
+			t.Fatalf("request JSON lacks %q: %s", field, raw)
+		}
+	}
+	var got model.WorkReviewRequest
+	if err := json.Unmarshal(raw, &got); err != nil || len(got.Resolutions) != 1 || got.Resolutions[0] != want.Resolutions[0] {
+		t.Fatalf("request round trip = %#v, %v", got, err)
+	}
+
+	mandate := &model.CorrectionMandate{
+		WorkID: "WORK-001", ContractRevision: 2, ContractHash: "hash", CertificateID: "cert",
+		CertificateHeadSHA: "old-head", CorrectionRound: 1,
+		BlockingFindings: []model.WorkFinding{{Seq: 7}},
+		BlockingChecks:   []model.DeliveryCheck{{Kind: "gate", Name: "test", Status: model.DeliveryCheckFail}},
+	}
+	result := model.WorkCapabilityResult{ReviewPhase: model.ReviewPhaseTargeted, NextStatus: model.WorkStatusEscalated, CorrectionMandate: mandate}
+	raw, err = json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var roundTrip model.WorkCapabilityResult
+	if err := json.Unmarshal(raw, &roundTrip); err != nil || roundTrip.ReviewPhase != model.ReviewPhaseTargeted || roundTrip.NextStatus != model.WorkStatusEscalated || roundTrip.CorrectionMandate == nil || roundTrip.CorrectionMandate.CertificateID != "cert" || len(roundTrip.CorrectionMandate.BlockingFindings) != 1 || len(roundTrip.CorrectionMandate.BlockingChecks) != 1 {
+		t.Fatalf("result round trip = %#v, %v", roundTrip, err)
+	}
+}
+
 func TestWorkReview_ValidatesIdentityAndClosedInput(t *testing.T) {
 	tests := []struct {
 		name   string
