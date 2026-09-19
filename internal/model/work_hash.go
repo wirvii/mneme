@@ -58,6 +58,7 @@ func ContractHashInput(c WorkContract, criteria []WorkCriterion, constraints []W
 	b.WriteByte(0x1e)
 	appendField(&b, "goal", c.Goal)
 	appendList(&b, "scope", c.Scope)
+	criteria = append([]WorkCriterion(nil), criteria...)
 	sort.Slice(criteria, func(i, j int) bool { return criteria[i].Key < criteria[j].Key })
 	b.WriteString("criteria")
 	b.WriteByte(0x1f)
@@ -67,6 +68,7 @@ func ContractHashInput(c WorkContract, criteria []WorkCriterion, constraints []W
 		appendField(&b, "k", v.Key)
 		appendField(&b, "v", v.Declaration)
 	}
+	constraints = append([]WorkConstraint(nil), constraints...)
 	sort.Slice(constraints, func(i, j int) bool { return constraints[i].Key < constraints[j].Key })
 	b.WriteString("constraints")
 	b.WriteByte(0x1f)

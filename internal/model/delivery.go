@@ -5,17 +5,22 @@ import (
 	"time"
 )
 
+// DeliveryVerdict records whether delivery evidence proves the contract passed.
 type DeliveryVerdict string
 
+// DeliveryVerdict values are the closed outcomes a delivery certificate may report.
 const (
 	DeliveryVerdictPass DeliveryVerdict = "pass"
 	DeliveryVerdictFail DeliveryVerdict = "fail"
 )
 
+// Valid reports whether the verdict belongs to the closed delivery vocabulary.
 func (v DeliveryVerdict) Valid() bool { return v == DeliveryVerdictPass || v == DeliveryVerdictFail }
 
+// DeliveryCheckStatus records the outcome of an individual delivery check.
 type DeliveryCheckStatus string
 
+// DeliveryCheckStatus values describe how an individual check was evaluated.
 const (
 	DeliveryCheckPass        DeliveryCheckStatus = "pass"
 	DeliveryCheckFail        DeliveryCheckStatus = "fail"
@@ -23,12 +28,15 @@ const (
 	DeliveryCheckNotReviewed DeliveryCheckStatus = "not_reviewed"
 )
 
+// Valid reports whether the check status belongs to the closed delivery vocabulary.
 func (s DeliveryCheckStatus) Valid() bool {
 	return s == DeliveryCheckPass || s == DeliveryCheckFail || s == DeliveryCheckSkipped || s == DeliveryCheckNotReviewed
 }
 
+// DeliveryCheckEffect records how a check contributes to a delivery verdict.
 type DeliveryCheckEffect string
 
+// DeliveryCheckEffect values classify whether a check blocks, measures, is absent, or was stopped.
 const (
 	DeliveryEffectBlocks   DeliveryCheckEffect = "blocks"
 	DeliveryEffectMeasures DeliveryCheckEffect = "measures"
@@ -36,17 +44,21 @@ const (
 	DeliveryEffectStopped  DeliveryCheckEffect = "stopped"
 )
 
+// Valid reports whether the check effect belongs to the closed delivery vocabulary.
 func (e DeliveryCheckEffect) Valid() bool {
 	return e == DeliveryEffectBlocks || e == DeliveryEffectMeasures || e == DeliveryEffectAbsent || e == DeliveryEffectStopped
 }
 
+// ExecutionModel selects the engine that owns a spec's execution lifecycle.
 type ExecutionModel string
 
+// ExecutionModel values preserve legacy specs while selecting delivery-v2 for new work.
 const (
 	ExecutionModelLegacy     ExecutionModel = "legacy"
 	ExecutionModelDeliveryV2 ExecutionModel = "delivery_v2"
 )
 
+// Valid reports whether the execution model belongs to the closed model vocabulary.
 func (m ExecutionModel) Valid() bool {
 	return m == ExecutionModelLegacy || m == ExecutionModelDeliveryV2
 }

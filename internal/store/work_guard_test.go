@@ -38,11 +38,17 @@ func TestWorkContractHasNoAlternativeWriters(t *testing.T) {
 	}
 
 	amend := functionSQL["AmendWork"]
-	set := regexp.MustCompile(`SET goal=\?,scope_json=\?,verification_json=\?,development_method=\?`)
-	if !set.MatchString(amend) {
+	normativeUpdate := regexp.MustCompile(`SET (goal=\?,scope_json=\?,verification_json=\?,development_method=\?)`)
+	match := normativeUpdate.FindStringSubmatch(amend)
+	if len(match) != 2 {
 		t.Fatal("AmendWork no longer declares the normative contract update")
 	}
-	protected := []string{"goal=", "scope_json=", "verification_json=", "development_method=", "declaration=", "criterion_key=", "constraint_key=", "text="}
+	assignment := regexp.MustCompile(`([a-z_]+)=\?`)
+	protected := make([]string, 0, 8)
+	for _, field := range assignment.FindAllStringSubmatch(match[1], -1) {
+		protected = append(protected, field[1]+"=")
+	}
+	protected = append(protected, "declaration=", "criterion_key=", "constraint_key=", "text=")
 	for function, body := range functionSQL {
 		if function == "AmendWork" || function == "CreateWork" || function == "replaceWorkChildren" {
 			continue

@@ -103,11 +103,14 @@ func (s *SDDStore) ListFindings(ctx context.Context, workID string) ([]model.Wor
 		f.Origin = model.FindingOrigin(origin)
 		f.ReviewPhase = model.ReviewPhase(phase)
 		f.Status = model.FindingStatus(status)
-		f.CreatedAt, _ = parseTime(created)
+		f.CreatedAt, err = parseTime(created)
+		if err != nil {
+			return nil, fmt.Errorf("finding created_at: %w", err)
+		}
 		if resolved != "" {
 			v, e := parseTime(resolved)
 			if e != nil {
-				return nil, e
+				return nil, fmt.Errorf("finding resolved_at: %w", e)
 			}
 			f.ResolvedAt = &v
 		}

@@ -176,23 +176,23 @@ func scanWorkDirect(row workScanner) (*model.WorkContract, error) {
 func (s *SDDStore) GetWorkAggregate(ctx context.Context, id string) (*model.WorkAggregate, error) {
 	w, err := s.GetWork(ctx, id)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("store: get work aggregate: contract: %w", err)
 	}
 	criteria, err := s.listCriteria(ctx, id)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("store: get work aggregate: %w", err)
 	}
 	constraints, err := s.listConstraints(ctx, id)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("store: get work aggregate: %w", err)
 	}
 	findings, err := s.ListFindings(ctx, id)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("store: get work aggregate: findings: %w", err)
 	}
 	history, err := s.GetWorkHistory(ctx, id)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("store: get work aggregate: history: %w", err)
 	}
 	return &model.WorkAggregate{Contract: w, Criteria: criteria, Constraints: constraints, Findings: findings, History: history}, nil
 }
@@ -210,11 +210,14 @@ func (s *SDDStore) listCriteria(ctx context.Context, id string) ([]model.WorkCri
 		if err := rows.Scan(&c.ID, &c.WorkID, &c.Seq, &c.Key, &c.Declaration, (*string)(&c.Status), &c.Evidence, &c.CheckedBy, &checked, &created); err != nil {
 			return nil, err
 		}
-		c.CreatedAt, _ = parseTime(created)
+		c.CreatedAt, err = parseTime(created)
+		if err != nil {
+			return nil, fmt.Errorf("criterion created_at: %w", err)
+		}
 		if checked != "" {
 			v, e := parseTime(checked)
 			if e != nil {
-				return nil, e
+				return nil, fmt.Errorf("criterion checked_at: %w", e)
 			}
 			c.CheckedAt = &v
 		}
@@ -235,7 +238,10 @@ func (s *SDDStore) listConstraints(ctx context.Context, id string) ([]model.Work
 		if err := rows.Scan(&c.ID, &c.WorkID, &c.Seq, &c.Key, &c.Text, &c.Source, &created); err != nil {
 			return nil, err
 		}
-		c.CreatedAt, _ = parseTime(created)
+		c.CreatedAt, err = parseTime(created)
+		if err != nil {
+			return nil, fmt.Errorf("constraint created_at: %w", err)
+		}
 		out = append(out, c)
 	}
 	return out, rows.Err()
@@ -278,6 +284,9 @@ func (s *SDDStore) ListWorks(ctx context.Context, project string, status model.W
 
 // LockWork freezes a draft against persisted children and records the first revision.
 func (s *SDDStore) LockWork(ctx context.Context, id, baseSHA string) error {
+	if strings.TrimSpace(baseSHA) == "" {
+		return fmt.Errorf("%w: base_sha: required", model.ErrInvalidContract)
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -531,7 +540,10 @@ func (s *SDDStore) GetWorkHistory(ctx context.Context, id string) ([]model.WorkH
 		}
 		h.FromStatus = model.WorkStatus(from)
 		h.ToStatus = model.WorkStatus(to)
-		h.At, _ = parseTime(at)
+		h.At, err = parseTime(at)
+		if err != nil {
+			return nil, fmt.Errorf("history at: %w", err)
+		}
 		out = append(out, h)
 	}
 	return out, rows.Err()

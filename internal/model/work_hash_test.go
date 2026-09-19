@@ -2,6 +2,7 @@ package model
 
 import (
 	"bytes"
+	"reflect"
 	"testing"
 )
 
@@ -90,5 +91,22 @@ func TestContractHashInput_IsInjectiveForLineJoinCollision(t *testing.T) {
 	b.Scope = nil
 	if bytes.Equal(ContractHashInput(a, nil, nil), ContractHashInput(b, nil, nil)) {
 		t.Fatal("distinct contracts share canonical bytes")
+	}
+}
+
+func TestContractHashInput_DoesNotMutateCallerChildren(t *testing.T) {
+	c := validWorkContract()
+	criteria := []WorkCriterion{{Key: "B", Declaration: "beta", Status: CriterionPass, Evidence: "evidence", Seq: 2}, {Key: "A", Declaration: "alpha", Status: CriterionFail, Evidence: "failure", Seq: 1}}
+	constraints := []WorkConstraint{{Key: "C2", Text: "second", Source: "source-2", Seq: 2}, {Key: "C1", Text: "first", Source: "source-1", Seq: 1}}
+	wantCriteria := append([]WorkCriterion(nil), criteria...)
+	wantConstraints := append([]WorkConstraint(nil), constraints...)
+
+	_ = ContractHashInput(c, criteria, constraints)
+
+	if !reflect.DeepEqual(criteria, wantCriteria) {
+		t.Fatalf("criteria changed:\n got %#v\nwant %#v", criteria, wantCriteria)
+	}
+	if !reflect.DeepEqual(constraints, wantConstraints) {
+		t.Fatalf("constraints changed:\n got %#v\nwant %#v", constraints, wantConstraints)
 	}
 }

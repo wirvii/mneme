@@ -12,6 +12,7 @@ var workKeyPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,31}$`)
 // WorkSourceType records whether a work contract was created directly or from a spec.
 type WorkSourceType string
 
+// WorkSourceType values distinguish direct work from work originating in a spec.
 const (
 	// WorkSourceOrganic identifies work with no originating spec.
 	WorkSourceOrganic WorkSourceType = "organic"
@@ -25,6 +26,7 @@ func (s WorkSourceType) Valid() bool { return s == WorkSourceOrganic || s == Wor
 // DevelopmentMethod names the method whose evidence a contract may record.
 type DevelopmentMethod string
 
+// DevelopmentMethod values determine whether a contract may record red-test evidence.
 const (
 	// DevelopmentMethodStandard does not require red-test evidence.
 	DevelopmentMethodStandard DevelopmentMethod = "standard"
@@ -40,6 +42,7 @@ func (m DevelopmentMethod) Valid() bool {
 // VerificationKind is a required verification whose presence contributes to the contract hash.
 type VerificationKind string
 
+// VerificationKind values enumerate the required verification families a contract can declare.
 const (
 	// VerificationAcceptance requires the declared acceptance criteria to be evaluated.
 	VerificationAcceptance VerificationKind = "acceptance"
@@ -59,6 +62,7 @@ func (v VerificationKind) Valid() bool {
 // CriterionStatus records the most recent observation of a stored criterion.
 type CriterionStatus string
 
+// CriterionStatus values describe the latest persisted observation for a criterion.
 const (
 	CriterionPending CriterionStatus = "pending"
 	CriterionPass    CriterionStatus = "pass"

@@ -3,6 +3,7 @@ package model
 // WorkStatus is the delivery-v2 lifecycle state of a work contract.
 type WorkStatus string
 
+// WorkStatus values form the closed delivery-v2 lifecycle.
 const (
 	WorkStatusDraft             WorkStatus = "draft"
 	WorkStatusLocked            WorkStatus = "locked"

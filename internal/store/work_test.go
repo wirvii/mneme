@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -136,6 +138,57 @@ func TestLockWork_HashesPersistedAggregate(t *testing.T) {
 	after, _ := s.GetWorkAggregate(context.Background(), "WORK-001")
 	if len(after.History) != history || after.Contract.BaseSHA != "base" {
 		t.Fatal("second lock mutated work")
+	}
+}
+
+func TestLockWork_RejectsBlankBaseSHAWithoutWriting(t *testing.T) {
+	for _, baseSHA := range []string{"", " \t\n "} {
+		t.Run("base="+fmt.Sprintf("%q", baseSHA), func(t *testing.T) {
+			s := newTestSDDStore(t)
+			createTestWork(t, s, "WORK-001")
+			before, err := s.GetWorkAggregate(context.Background(), "WORK-001")
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			err = s.LockWork(context.Background(), "WORK-001", baseSHA)
+			if !errors.Is(err, model.ErrInvalidContract) {
+				t.Fatalf("LockWork() error = %v, want ErrInvalidContract", err)
+			}
+			after, err := s.GetWorkAggregate(context.Background(), "WORK-001")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if after.Contract.Status != before.Contract.Status || after.Contract.BaseSHA != before.Contract.BaseSHA || after.Contract.ContractRevision != before.Contract.ContractRevision || after.Contract.ContractHash != before.Contract.ContractHash || len(after.History) != len(before.History) {
+				t.Fatalf("blank base SHA wrote contract or history: before=%#v after=%#v", before, after)
+			}
+		})
+	}
+}
+
+func TestGetWorkAggregate_RejectsCorruptChildCreatedAt(t *testing.T) {
+	tests := []struct {
+		name, table string
+	}{
+		{name: "criterion", table: "execution_criteria"},
+		{name: "constraint", table: "execution_constraints"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := newTestSDDStore(t)
+			createTestWork(t, s, "WORK-001")
+			if _, err := s.db.Exec(`UPDATE ` + tt.table + ` SET created_at='not-a-time' WHERE work_id='WORK-001'`); err != nil {
+				t.Fatal(err)
+			}
+
+			_, err := s.GetWorkAggregate(context.Background(), "WORK-001")
+			if err == nil {
+				t.Fatal("GetWorkAggregate() accepted corrupt child created_at")
+			}
+			if !strings.Contains(err.Error(), "store: get work aggregate: "+tt.name+" created_at") {
+				t.Fatalf("GetWorkAggregate() error = %v, want %q context", err, "store: get work aggregate: "+tt.name+" created_at")
+			}
+		})
 	}
 }
 
