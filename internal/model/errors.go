@@ -204,6 +204,9 @@ var ErrEvidenceNotApplicable = errors.New("red-test evidence is not applicable")
 // ErrInvalidContract wraps the precise field reason for malformed work contracts.
 var ErrInvalidContract = errors.New("invalid work contract")
 
+// ErrWorkflowEngineDisabled prevents delivery-v2 mutations while legacy remains selected.
+var ErrWorkflowEngineDisabled = errors.New("workflow: delivery_v2 engine is disabled")
+
 // --- Skill sentinel errors (SPEC-037) ---
 
 // ErrSkillNotFound is returned when a requested skill directory does not exist
