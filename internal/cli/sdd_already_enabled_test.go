@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/wirvii/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/project"
 	"github.com/wirvii/mneme/internal/sddfile"
 	"github.com/wirvii/mneme/internal/service"
 )
@@ -13,16 +14,24 @@ import (
 // commitSDDMarker writes a valid, committed .mneme-sdd marker at repoDir —
 // the exact fact (D1) SPEC-140 uses to distinguish "repository already
 // activated, new machine" from a virgin repository — and commits it.
-func commitSDDMarker(t *testing.T, repoDir string) {
+func commitSDDMarker(t *testing.T, repoDir string) string {
 	t.Helper()
+	projectName, err := project.NewDetector(repoDir).DetectProject()
+	if err != nil {
+		t.Fatalf("DetectProject: %v", err)
+	}
+	if projectName == "" {
+		t.Fatal("DetectProject returned an empty project name")
+	}
 	if err := sddfile.WriteMarker(repoDir, sddfile.Marker{
-		SDDVersion: 1, Project: "wirvii/mneme",
+		SDDVersion: 1, Project: projectName,
 		CreatedAt: "2026-09-01T00:00:00Z", LastExportAt: "2026-09-01T00:00:00Z",
 	}); err != nil {
 		t.Fatalf("WriteMarker: %v", err)
 	}
 	runGitOK(t, repoDir, "add", ".")
 	runGitOK(t, repoDir, "commit", "-m", "marker")
+	return projectName
 }
 
 // TestSDDEnablePreview_VirginRepoKeepsEveryWarning is SPEC-140 AC11: a
@@ -57,10 +66,11 @@ func TestSDDEnablePreview_VirginRepoKeepsEveryWarning(t *testing.T) {
 func TestSDDEnablePreview_AlreadyEnabledCloneDoesNotRefuse(t *testing.T) {
 	repoDir, fakeHome := sddCLITestRepo(t)
 	t.Setenv("HOME", fakeHome)
+	projectName := commitSDDMarker(t, repoDir)
 
 	foreign := &sddfile.BacklogRecord{Item: &model.BacklogItem{
 		ID: "BL-050", Title: "de otra maquina", Status: model.BacklogStatusRaw,
-		Priority: model.PriorityMedium, Project: "wirvii/mneme", Lane: model.LaneStandard,
+		Priority: model.PriorityMedium, Project: projectName, Lane: model.LaneStandard,
 		UUID: "01a044bc-7c25-7448-87e9-febc5c5982ee",
 	}}
 	data, err := sddfile.MarshalBacklog(foreign)
@@ -73,8 +83,6 @@ func TestSDDEnablePreview_AlreadyEnabledCloneDoesNotRefuse(t *testing.T) {
 	}
 	runGitOK(t, repoDir, "add", ".")
 	runGitOK(t, repoDir, "commit", "-m", "foreign record")
-
-	commitSDDMarker(t, repoDir)
 
 	stdout, stderr, err := runSDDCmd(t, repoDir, "enable")
 	if err != nil {
