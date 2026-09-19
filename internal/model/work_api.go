@@ -59,6 +59,50 @@ type WorkActionRequest struct {
 	ID string `json:"id"`
 }
 
+// ReviewEvidenceKind identifies the stable reference shape supplied by a reviewer.
+type ReviewEvidenceKind string
+
+// ReviewEvidenceKind values are the closed evidence vocabulary for architecture verdicts.
+const (
+	ReviewEvidenceFile           ReviewEvidenceKind = "file"
+	ReviewEvidenceSymbol         ReviewEvidenceKind = "symbol"
+	ReviewEvidenceCodegraphQuery ReviewEvidenceKind = "codegraph_query"
+)
+
+// Valid reports whether the evidence kind belongs to the closed review vocabulary.
+func (k ReviewEvidenceKind) Valid() bool {
+	return k == ReviewEvidenceFile || k == ReviewEvidenceSymbol || k == ReviewEvidenceCodegraphQuery
+}
+
+// WorkReviewFindingInput carries one general finding without service-owned persistence fields.
+type WorkReviewFindingInput struct {
+	Category    FindingCategory `json:"category"`
+	Severity    Priority        `json:"severity"`
+	Description string          `json:"description"`
+	Location    string          `json:"location,omitempty"`
+	Evidence    string          `json:"evidence"`
+}
+
+// WorkArchitectureVerdictInput carries one reviewer verdict for an approved constraint.
+type WorkArchitectureVerdictInput struct {
+	ConstraintKey string              `json:"constraint_key"`
+	Status        DeliveryCheckStatus `json:"status"`
+	EvidenceKind  ReviewEvidenceKind  `json:"evidence_kind"`
+	Evidence      string              `json:"evidence"`
+	Severity      Priority            `json:"severity,omitempty"`
+	Description   string              `json:"description,omitempty"`
+	Location      string              `json:"location,omitempty"`
+}
+
+// WorkReviewRequest binds one explicit initial review report to an exact commit.
+type WorkReviewRequest struct {
+	ID                   string                         `json:"id"`
+	By                   string                         `json:"by"`
+	HeadSHA              string                         `json:"head_sha"`
+	Findings             []WorkReviewFindingInput       `json:"findings,omitempty"`
+	ArchitectureVerdicts []WorkArchitectureVerdictInput `json:"architecture_verdicts,omitempty"`
+}
+
 // WorkContractView is the public contract projection; it deliberately omits the internal UUID anchor.
 type WorkContractView struct {
 	ID                  string             `json:"id"`
