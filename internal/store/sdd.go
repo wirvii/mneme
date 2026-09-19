@@ -521,8 +521,9 @@ func (s *SDDStore) NextSpecID(ctx context.Context, project string) (string, erro
 	return fmt.Sprintf("SPEC-%03d", n+1), nil
 }
 
-// CreateSpec inserts a new spec. The spec's ID must be pre-set by the caller
-// (typically via NextSpecID). Status must be set before calling.
+// CreateSpec atomically inserts a new spec and its initial empty-to-draft
+// history row. The spec's ID must be pre-set by the caller (typically via
+// NextSpecID). Status must be set before calling.
 //
 // The primary key is the composite (project, id) pair (migration 005). The
 // same spec ID may exist in multiple projects without conflict.
@@ -531,9 +532,9 @@ func (s *SDDStore) NextSpecID(ctx context.Context, project string) (string, erro
 // spec.UUID before the INSERT — no spec is ever created without one. The
 // anchor is immutable: there is no verb anywhere that updates this column.
 func (s *SDDStore) CreateSpec(ctx context.Context, spec *model.Spec) error {
-	now := time.Now().UTC().Format(time.RFC3339Nano)
 	spec.CreatedAt = time.Now().UTC()
 	spec.UpdatedAt = spec.CreatedAt
+	now := spec.CreatedAt.Format(time.RFC3339Nano)
 
 	agents, err := marshalStringSlice(spec.AssignedAgents)
 	if err != nil {
@@ -549,6 +550,16 @@ func (s *SDDStore) CreateSpec(ctx context.Context, spec *model.Spec) error {
 		return fmt.Errorf("store: create spec: gen uuid: %w", err)
 	}
 	spec.UUID = anchor.String()
+	historyID, err := uuid.NewV7()
+	if err != nil {
+		return fmt.Errorf("store: create spec: gen initial history id: %w", err)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("store: create spec: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
 
 	const q = `
 		INSERT INTO specs
@@ -557,12 +568,21 @@ func (s *SDDStore) CreateSpec(ctx context.Context, spec *model.Spec) error {
 			(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	backlogID := toNullString(spec.BacklogID)
-	_, err = s.db.ExecContext(ctx, q,
+	_, err = tx.ExecContext(ctx, q,
 		spec.ID, spec.Title, string(spec.Status), spec.Project,
 		backlogID, string(spec.Lane), spec.Scope, spec.BaseSHA, agents, files, spec.UUID, now, now,
 	)
 	if err != nil {
-		return fmt.Errorf("store: create spec: %w", err)
+		return fmt.Errorf("store: create spec: insert spec: %w", err)
+	}
+	_, err = tx.ExecContext(ctx,
+		`INSERT INTO spec_history (id, spec_id, from_status, to_status, by, reason, at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		historyID.String(), spec.ID, "", string(model.SpecStatusDraft), "system", "spec created", now)
+	if err != nil {
+		return fmt.Errorf("store: create spec: insert initial history: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: create spec: commit: %w", err)
 	}
 	return nil
 }

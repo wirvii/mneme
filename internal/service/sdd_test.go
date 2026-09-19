@@ -14,6 +14,7 @@ import (
 	"github.com/wirvii/mneme/internal/db"
 	"github.com/wirvii/mneme/internal/embed"
 	"github.com/wirvii/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/sddfile"
 	"github.com/wirvii/mneme/internal/store"
 )
 
@@ -1265,6 +1266,36 @@ func TestSpecNew(t *testing.T) {
 	}
 	if spec.Project != "project" {
 		t.Errorf("Project: got %q, want project", spec.Project)
+	}
+}
+
+func TestSpecMaterializationIncludesInitialHistory(t *testing.T) {
+	svc, repoDir := newSDDMaterializeService(t, "project")
+	enableSDD(t, repoDir, "project")
+	ctx := context.Background()
+
+	spec, err := svc.SpecNew(ctx, model.SpecNewRequest{Title: "Git-native aggregate", Lane: model.LaneStandard})
+	if err != nil {
+		t.Fatalf("SpecNew: %v", err)
+	}
+	status, err := svc.SpecStatus(ctx, spec.ID)
+	if err != nil {
+		t.Fatalf("SpecStatus: %v", err)
+	}
+	data, err := sddfile.ReadRecord(sddfile.SpecRecordPath(repoDir, spec.ID))
+	if err != nil {
+		t.Fatalf("ReadRecord: %v", err)
+	}
+	record, err := sddfile.UnmarshalSpec(data)
+	if err != nil {
+		t.Fatalf("UnmarshalSpec: %v", err)
+	}
+	if len(status.History) != 1 || len(record.History) != 1 {
+		t.Fatalf("database history=%d materialized history=%d, want one initial row in both", len(status.History), len(record.History))
+	}
+	history := record.History[0]
+	if history.FromStatus != "" || history.ToStatus != model.SpecStatusDraft || history.By != "system" || history.Reason != "spec created" {
+		t.Fatalf("materialized initial history = %+v", history)
 	}
 }
 

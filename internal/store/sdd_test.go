@@ -948,6 +948,64 @@ func TestCreateSpec(t *testing.T) {
 	}
 }
 
+func TestCreateSpec_PersistsInitialHistory(t *testing.T) {
+	t.Run("commits spec and initial history together without backfill", func(t *testing.T) {
+		s := newTestSDDStore(t)
+		ctx := context.Background()
+		now := time.Now().UTC().Format(time.RFC3339Nano)
+		_, err := s.db.ExecContext(ctx, `
+			INSERT INTO specs
+				(id, title, status, project, backlog_id, lane, scope, base_sha, assigned_agents, files_changed, uuid, created_at, updated_at)
+			VALUES (?, ?, ?, ?, NULL, ?, '', '', '[]', '[]', ?, ?, ?)`,
+			"SPEC-OLD", "Legacy spec", string(model.SpecStatusDraft), "project", string(model.LaneStandard),
+			"01938f1b-abcd-7abc-8def-000000000201", now, now)
+		if err != nil {
+			t.Fatalf("insert legacy spec: %v", err)
+		}
+
+		spec := &model.Spec{ID: "SPEC-001", Title: "Atomic spec", Status: model.SpecStatusDraft, Project: "project", Lane: model.LaneStandard}
+		if err := s.CreateSpec(ctx, spec); err != nil {
+			t.Fatalf("CreateSpec: %v", err)
+		}
+		history, err := s.GetSpecHistory(ctx, spec.ID)
+		if err != nil {
+			t.Fatalf("GetSpecHistory: %v", err)
+		}
+		if len(history) != 1 {
+			t.Fatalf("history count = %d, want 1", len(history))
+		}
+		if history[0].FromStatus != "" || history[0].ToStatus != model.SpecStatusDraft || history[0].By != "system" || history[0].Reason != "spec created" {
+			t.Fatalf("initial history = %+v, want empty -> draft by system", history[0])
+		}
+		legacyHistory, err := s.GetSpecHistory(ctx, "SPEC-OLD")
+		if err != nil || len(legacyHistory) != 0 {
+			t.Fatalf("legacy history = %+v, err=%v; existing specs must not be backfilled", legacyHistory, err)
+		}
+	})
+
+	t.Run("history failure rolls back spec", func(t *testing.T) {
+		s := newTestSDDStore(t)
+		ctx := context.Background()
+		if _, err := s.db.ExecContext(ctx, `
+			CREATE TRIGGER fail_initial_spec_history
+			BEFORE INSERT ON spec_history
+			BEGIN SELECT RAISE(ABORT, 'forced initial history failure'); END`); err != nil {
+			t.Fatalf("create trigger: %v", err)
+		}
+		spec := &model.Spec{ID: "SPEC-001", Title: "Must roll back", Status: model.SpecStatusDraft, Project: "project", Lane: model.LaneStandard}
+		if err := s.CreateSpec(ctx, spec); err == nil {
+			t.Fatal("CreateSpec succeeded despite forced history failure")
+		}
+		if _, err := s.GetSpec(ctx, spec.ID); !errors.Is(err, model.ErrSpecNotFound) {
+			t.Fatalf("spec survived failed transaction: %v", err)
+		}
+		history, err := s.GetSpecHistory(ctx, spec.ID)
+		if err != nil || len(history) != 0 {
+			t.Fatalf("history after rollback = %+v, err=%v", history, err)
+		}
+	})
+}
+
 func TestNextSpecID(t *testing.T) {
 	s := newTestSDDStore(t)
 	ctx := context.Background()

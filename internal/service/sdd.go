@@ -16,7 +16,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-	"time"
 
 	"github.com/wirvii/mneme/internal/config"
 	"github.com/wirvii/mneme/internal/install"
@@ -581,22 +580,6 @@ func (svc *SDDService) SpecNew(ctx context.Context, req model.SpecNewRequest) (*
 
 	if err := svc.createSpec(ctx, spec); err != nil {
 		return nil, fmt.Errorf("service: spec new: create: %w", err)
-	}
-
-	// Record the initial "created" history entry via a synthetic transition.
-	// We write directly to the history rather than going through UpdateSpecStatus
-	// because there is no valid "from" state when a spec is first created.
-	histEntry := &model.SpecHistory{
-		SpecID:     spec.ID,
-		FromStatus: "",
-		ToStatus:   model.SpecStatusDraft,
-		By:         "system",
-		Reason:     "spec created",
-		At:         time.Now().UTC(),
-	}
-	if err := svc.insertHistory(ctx, histEntry); err != nil {
-		// Non-fatal: spec was created successfully; history is best-effort.
-		_ = err
 	}
 
 	return spec, nil
@@ -2104,28 +2087,4 @@ func (svc *SDDService) saveOverrideMemory(ctx context.Context, spec *model.Spec,
 	if err != nil {
 		log.Printf("service: lane override: save override memory for %s: %v", spec.ID, err)
 	}
-}
-
-// insertHistory writes a single history entry directly. This is used for the
-// synthetic "created" entry when a spec is first saved, before any UpdateSpecStatus
-// transaction would be valid.
-func (svc *SDDService) insertHistory(ctx context.Context, h *model.SpecHistory) error {
-	// Use UpdateSpecStatus logic but we need a raw insert since 'from' is "".
-	// We delegate this through the store's UpdateSpecStatus which does an optimistic
-	// check — so for the initial entry we skip UpdateSpecStatus and go through
-	// a specialised path that just inserts the history row.
-	//
-	// Since the store doesn't expose a direct InsertHistory method (by design —
-	// history is always recorded alongside status changes), we accept that the
-	// initial "created" entry is best-effort and will be skipped when the DB
-	// doesn't support it. The spec_history table doesn't enforce a valid from_status,
-	// so we could insert directly, but that would break the store abstraction.
-	//
-	// Decision: the initial entry is stored as a "" -> draft transition in
-	// spec_history. Since the history schema accepts any TEXT for from_status,
-	// we write it via the DB directly from the store package.
-	// For now, skip the initial entry — it is documented as best-effort.
-	_ = h
-	_ = ctx
-	return nil
 }
