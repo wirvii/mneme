@@ -10,6 +10,25 @@ import (
 // content — proven by including a file whose content is illegible but whose
 // name is a valid correlative, and asserting it still counts.
 func TestSDDFile_MaxIDs(t *testing.T) {
+	t.Run("work: maximum valid flat filename reserves its number", func(t *testing.T) {
+		root := t.TempDir()
+		dir := filepath.Join(RootDir(root), "work")
+		if err := os.MkdirAll(filepath.Join(dir, "WORK-999.md"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, filepath.Join(dir, "WORK-010.md"), "broken content is irrelevant")
+		writeFile(t, filepath.Join(dir, "WORK-205.md"), "<<<<<<< unresolved")
+		writeFile(t, filepath.Join(dir, "WORK-x.md"), "ignored")
+
+		got, err := MaxWorkID(root)
+		if err != nil {
+			t.Fatalf("MaxWorkID: %v", err)
+		}
+		if got != 205 {
+			t.Errorf("MaxWorkID = %d, want 205", got)
+		}
+	})
+
 	t.Run("backlog: absent directory is zero", func(t *testing.T) {
 		root := t.TempDir()
 		got, err := MaxBacklogID(root)

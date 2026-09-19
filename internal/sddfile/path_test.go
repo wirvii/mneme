@@ -21,6 +21,14 @@ func TestBacklogPath(t *testing.T) {
 	}
 }
 
+func TestSDDFile_Paths(t *testing.T) {
+	got := WorkPath("/repo", "WORK-1000")
+	want := filepath.Join("/repo", ".mneme", "sdd", "work", "WORK-1000.md")
+	if got != want {
+		t.Errorf("WorkPath = %q, want %q", got, want)
+	}
+}
+
 func TestSpecDir(t *testing.T) {
 	got := SpecDir("/repo", "SPEC-130")
 	want := filepath.Join("/repo", ".mneme", "sdd", "specs", "SPEC-130")

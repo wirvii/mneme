@@ -38,6 +38,12 @@ func BacklogPath(repoRoot, id string) string {
 	return filepath.Join(RootDir(repoRoot), "backlog", id+".md")
 }
 
+// WorkPath returns the flat path to a delivery work record. The readable
+// correlative remains the filename so git exposes numbering collisions.
+func WorkPath(repoRoot, id string) string {
+	return filepath.Join(RootDir(repoRoot), "work", id+".md")
+}
+
 // SpecDir returns the directory holding a single spec's record and, from
 // BL-196 (etapa 3) onward, its entregables (spec.md, plan.md, ...):
 // <repoRoot>/.mneme/sdd/specs/<id>/ (D20). The directory is fixed from day

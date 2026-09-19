@@ -20,6 +20,10 @@ const (
 	// model.SpecDocKind's closed vocabulary (BL-196's entregables).
 	KindSpec RecordKind = "spec"
 
+	// KindWork identifies a delivery work record:
+	// .mneme/sdd/work/<ID>.md.
+	KindWork RecordKind = "work"
+
 	// KindIgnored identifies anything ClassifyRecordPath does not recognise:
 	// the marker file, a stray .md that is not record.md inside a spec
 	// directory, an entregable (plan.md, spec.md), or a path outside
@@ -76,7 +80,22 @@ func ClassifyRecordPath(repoRoot, path string) (kind RecordKind, id string, ok b
 		return KindIgnored, "", false
 	}
 
+	if len(parts) == 2 && parts[0] == "work" {
+		if wid, valid := workIDFromFilename(parts[1]); valid {
+			return KindWork, wid, true
+		}
+		return KindIgnored, "", false
+	}
+
 	return KindIgnored, "", false
+}
+
+func workIDFromFilename(name string) (string, bool) {
+	id, ok := strings.CutSuffix(name, ".md")
+	if !ok || !isValidCorrelative(id, "WORK-") {
+		return "", false
+	}
+	return id, true
 }
 
 // backlogIDFromFilename strips the ".md" suffix and validates the result as

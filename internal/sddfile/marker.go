@@ -22,6 +22,7 @@ type Marker struct {
 	LastExportAt string `json:"last_export_at"`
 	BacklogCount int    `json:"backlog_count"`
 	SpecCount    int    `json:"spec_count"`
+	WorkCount    int    `json:"work_count,omitempty"`
 }
 
 // MarkerPath returns the path to the enable marker file:

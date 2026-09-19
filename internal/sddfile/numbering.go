@@ -45,6 +45,34 @@ func MaxBacklogID(repoRoot string) (int, error) {
 	return max, nil
 }
 
+// MaxWorkID returns the highest delivery work number reserved by a valid
+// flat filename under .mneme/sdd/work. File contents are never read.
+func MaxWorkID(repoRoot string) (int, error) {
+	dir := filepath.Join(RootDir(repoRoot), "work")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+
+	max := 0
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		id, ok := workIDFromFilename(entry.Name())
+		if !ok {
+			continue
+		}
+		if n, numberOK := correlativeNumber(id, "WORK-"); numberOK && n > max {
+			max = n
+		}
+	}
+	return max, nil
+}
+
 // MaxSpecID is MaxBacklogID's sibling for specs: the highest number found
 // among DIRECTORY names under <repoRoot>/.mneme/sdd/specs/, regardless of
 // whether that directory holds a record.md yet. A directory reserves the
