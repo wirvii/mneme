@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -484,6 +485,98 @@ func TestInsertInitialReview_RejectsInvalidInputsBeforeEffects(t *testing.T) {
 				t.Fatalf("invalid review wrote effects: work=%#v err=%v", work, err)
 			}
 		})
+	}
+}
+
+func resumedInitialReviewFixture(t *testing.T) (*SDDStore, InitialReviewWrite) {
+	t.Helper()
+	s := newTestSDDStore(t)
+	workInReview(t, s, "WORK-001", model.WorkStatusImplementing)
+	if _, err := s.db.Exec(`UPDATE execution_contracts SET max_correction_rounds=0 WHERE id='WORK-001'`); err != nil {
+		t.Fatal(err)
+	}
+	first, firstChecks := deliveryEvaluationFixture(t, s, "WORK-001")
+	first.Verdict = model.DeliveryVerdictFail
+	firstChecks[0].Status = model.DeliveryCheckFail
+	_, err := s.InsertInitialReview(context.Background(), InitialReviewWrite{
+		Certificate: first, Checks: firstChecks, By: "qa-tester",
+		Findings: []*model.WorkFinding{
+			{Category: model.FindingRegression, Severity: model.PriorityHigh, Description: "regression", Evidence: "red"},
+			{Category: model.FindingImprovement, Severity: model.PriorityLow, Description: "improvement", Evidence: "note"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ResumeWork(context.Background(), "WORK-001", "orchestrator", "another attempt"); err != nil {
+		t.Fatal(err)
+	}
+	next, nextChecks := deliveryEvaluationFixture(t, s, "WORK-001")
+	return s, InitialReviewWrite{
+		Certificate: next, Checks: nextChecks, By: "qa-tester",
+		Resolutions: []model.WorkFindingResolutionInput{{FindingSeq: 1, Status: model.FindingFixed, Evidence: "green"}},
+	}
+}
+
+func TestInsertInitialReview_ResumedResolutionSet(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*SDDStore, *InitialReviewWrite)
+		ok     bool
+	}{
+		{"exact", func(*SDDStore, *InitialReviewWrite) {}, true},
+		{"omitted", func(_ *SDDStore, in *InitialReviewWrite) { in.Resolutions = nil }, false},
+		{"duplicate", func(_ *SDDStore, in *InitialReviewWrite) { in.Resolutions = append(in.Resolutions, in.Resolutions[0]) }, false},
+		{"unknown", func(_ *SDDStore, in *InitialReviewWrite) { in.Resolutions[0].FindingSeq = 99 }, false},
+		{"non-blocking", func(_ *SDDStore, in *InitialReviewWrite) { in.Resolutions[0].FindingSeq = 2 }, false},
+		{"already-resolved", func(s *SDDStore, in *InitialReviewWrite) {
+			if _, err := s.db.Exec(`UPDATE execution_findings SET status='fixed' WHERE work_id='WORK-001' AND seq=1`); err != nil {
+				t.Fatal(err)
+			}
+		}, false},
+		{"invalid-state", func(s *SDDStore, in *InitialReviewWrite) {
+			if _, err := s.db.Exec(`UPDATE execution_contracts SET status='verifying' WHERE id='WORK-001'`); err != nil {
+				t.Fatal(err)
+			}
+		}, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s, in := resumedInitialReviewFixture(t)
+			tc.mutate(s, &in)
+			_, err := s.InsertInitialReview(context.Background(), in)
+			if (err == nil) != tc.ok {
+				t.Fatalf("error=%v ok=%v", err, tc.ok)
+			}
+		})
+	}
+}
+
+func TestInsertInitialReview_ResumedFindingSequence(t *testing.T) {
+	s, in := resumedInitialReviewFixture(t)
+	in.Findings = []*model.WorkFinding{{Category: model.FindingDiscovery, Severity: model.PriorityLow, Description: "new", Evidence: "evidence"}}
+	if _, err := s.InsertInitialReview(context.Background(), in); err != nil {
+		t.Fatal(err)
+	}
+	findings, err := s.ListFindings(context.Background(), "WORK-001")
+	if err != nil || len(findings) != 3 || findings[2].Seq != 3 {
+		t.Fatalf("findings=%#v err=%v", findings, err)
+	}
+}
+
+func TestInsertInitialReview_ResumedRollback(t *testing.T) {
+	s, in := resumedInitialReviewFixture(t)
+	in.Findings = []*model.WorkFinding{{Category: model.FindingDiscovery, Severity: model.PriorityLow, Description: "new", Evidence: "evidence"}}
+	before, _ := s.GetWorkAggregate(context.Background(), "WORK-001")
+	if _, err := s.db.Exec(`CREATE TRIGGER fail_resumed_certificate BEFORE INSERT ON delivery_certificates BEGIN SELECT RAISE(FAIL,'forced certificate failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.InsertInitialReview(context.Background(), in); err == nil {
+		t.Fatal("expected certificate failure")
+	}
+	after, _ := s.GetWorkAggregate(context.Background(), "WORK-001")
+	if !reflect.DeepEqual(before, after) {
+		t.Fatalf("before=%#v after=%#v", before, after)
 	}
 }
 

@@ -262,6 +262,7 @@ type InitialReviewWrite struct {
 	Checks       []*model.DeliveryCheck
 	Observations []model.CriterionObservation
 	Findings     []*model.WorkFinding
+	Resolutions  []model.WorkFindingResolutionInput
 	By           string
 }
 
@@ -314,7 +315,58 @@ func (s *SDDStore) InsertInitialReview(ctx context.Context, in InitialReviewWrit
 	if cert.Project != project || cert.ContractRevision != revision || cert.ContractHash != contractHash || cert.BaseSHA != baseSHA || strings.TrimSpace(cert.HeadSHA) == "" {
 		return InitialReviewResult{}, model.ErrInvalidContract
 	}
+	type initialFindingSnapshot struct {
+		id       string
+		category model.FindingCategory
+		status   model.FindingStatus
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT id,seq,category,status FROM execution_findings WHERE work_id=? ORDER BY seq`, cert.WorkID)
+	if err != nil {
+		return InitialReviewResult{}, err
+	}
+	all := map[int]initialFindingSnapshot{}
+	eligible := map[int]initialFindingSnapshot{}
+	maxSeq := 0
+	for rows.Next() {
+		var seq int
+		var snapshot initialFindingSnapshot
+		if err := rows.Scan(&snapshot.id, &seq, &snapshot.category, &snapshot.status); err != nil {
+			_ = rows.Close()
+			return InitialReviewResult{}, err
+		}
+		all[seq] = snapshot
+		if seq > maxSeq {
+			maxSeq = seq
+		}
+		if snapshot.status == model.FindingOpen && snapshot.category.Blocks() {
+			eligible[seq] = snapshot
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return InitialReviewResult{}, err
+	}
+	if len(in.Resolutions) != len(eligible) {
+		return InitialReviewResult{}, model.ErrInvalidContract
+	}
+	seen := make(map[int]bool, len(in.Resolutions))
+	for _, resolution := range in.Resolutions {
+		_, ok := eligible[resolution.FindingSeq]
+		if !ok || seen[resolution.FindingSeq] || (resolution.Status != model.FindingFixed && resolution.Status != model.FindingInvalid) || strings.TrimSpace(resolution.Evidence) == "" || (resolution.Status == model.FindingInvalid && strings.TrimSpace(resolution.Reason) == "") {
+			return InitialReviewResult{}, model.ErrInvalidContract
+		}
+		seen[resolution.FindingSeq] = true
+	}
 	now := time.Now().UTC()
+	for _, resolution := range in.Resolutions {
+		snapshot := all[resolution.FindingSeq]
+		result, err := tx.ExecContext(ctx, `UPDATE execution_findings SET status=?,resolution_reason=?,resolved_by=?,resolved_at=? WHERE id=? AND status='open'`, resolution.Status, resolution.Reason, in.By, formatTime(now), snapshot.id)
+		if err != nil {
+			return InitialReviewResult{}, fmt.Errorf("store: insert initial review: resolve finding %d: %w", resolution.FindingSeq, err)
+		}
+		if !oneRow(result) {
+			return InitialReviewResult{}, model.ErrInvalidContract
+		}
+	}
 	for i, finding := range in.Findings {
 		id, idErr := uuid.NewV7()
 		if idErr != nil {
@@ -322,7 +374,7 @@ func (s *SDDStore) InsertInitialReview(ctx context.Context, in InitialReviewWrit
 		}
 		finding.ID = id.String()
 		finding.WorkID = cert.WorkID
-		finding.Seq = i + 1
+		finding.Seq = maxSeq + i + 1
 		finding.Origin = model.FindingOriginReview
 		finding.ReviewPhase = model.ReviewPhaseInitial
 		finding.Status = model.FindingOpen

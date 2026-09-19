@@ -27,12 +27,12 @@ func (svc *SDDService) WorkReview(ctx context.Context, req model.WorkReviewReque
 	phase := model.ReviewPhaseInitial
 	switch aggregate.Contract.Status {
 	case model.WorkStatusImplementing:
-		if len(req.Resolutions) != 0 {
-			return model.WorkCapabilityResult{}, fmt.Errorf("%w: resolutions are only valid while correcting", model.ErrInvalidContract)
+		if err := validateOpenBlockingResolutionSet(aggregate.Findings, req.Resolutions, false); err != nil {
+			return model.WorkCapabilityResult{}, err
 		}
 	case model.WorkStatusCorrecting:
 		phase = model.ReviewPhaseTargeted
-		if err := validateTargetedResolutionSet(aggregate.Findings, req.Resolutions); err != nil {
+		if err := validateOpenBlockingResolutionSet(aggregate.Findings, req.Resolutions, true); err != nil {
 			return model.WorkCapabilityResult{}, err
 		}
 	default:
@@ -88,10 +88,7 @@ func (svc *SDDService) WorkReview(ctx context.Context, req model.WorkReviewReque
 	if err != nil {
 		return model.WorkCapabilityResult{}, err
 	}
-	blocking := existingBlocking
-	if phase == model.ReviewPhaseTargeted {
-		blocking -= len(req.Resolutions)
-	}
+	blocking := existingBlocking - len(req.Resolutions)
 	for _, finding := range findings {
 		if finding.Category.Blocks() {
 			blocking++
@@ -105,6 +102,8 @@ func (svc *SDDService) WorkReview(ctx context.Context, req model.WorkReviewReque
 	reviewDetail := "initial review supplied for the exact repository HEAD"
 	if phase == model.ReviewPhaseTargeted {
 		reviewName = "targeted"
+	}
+	if len(req.Resolutions) != 0 {
 		resolutions := append([]model.WorkFindingResolutionInput(nil), req.Resolutions...)
 		sort.Slice(resolutions, func(i, j int) bool { return resolutions[i].FindingSeq < resolutions[j].FindingSeq })
 		raw, marshalErr := json.Marshal(struct {
@@ -133,7 +132,7 @@ func (svc *SDDService) WorkReview(ctx context.Context, req model.WorkReviewReque
 	if phase == model.ReviewPhaseInitial {
 		decision, err = svc.store.InsertInitialReview(ctx, store.InitialReviewWrite{
 			Certificate: evaluation.certificate, Checks: evaluation.checks,
-			Observations: evaluation.observations, Findings: findings, By: req.By,
+			Observations: evaluation.observations, Findings: findings, Resolutions: req.Resolutions, By: req.By,
 		})
 	} else {
 		decision, err = svc.store.InsertTargetedReview(ctx, store.TargetedReviewWrite{
@@ -160,15 +159,16 @@ func (svc *SDDService) WorkReview(ctx context.Context, req model.WorkReviewReque
 	return result, nil
 }
 
-func validateTargetedResolutionSet(findings []model.WorkFinding, resolutions []model.WorkFindingResolutionInput) error {
+func validateOpenBlockingResolutionSet(findings []model.WorkFinding, resolutions []model.WorkFindingResolutionInput, initialPhaseOnly bool) error {
 	eligible := make(map[int]bool)
 	for _, finding := range findings {
-		if finding.ReviewPhase == model.ReviewPhaseInitial && finding.Status == model.FindingOpen && finding.Category.Blocks() {
+		phaseEligible := !initialPhaseOnly || finding.ReviewPhase == model.ReviewPhaseInitial
+		if phaseEligible && finding.Status == model.FindingOpen && finding.Category.Blocks() {
 			eligible[finding.Seq] = true
 		}
 	}
 	if len(resolutions) != len(eligible) {
-		return fmt.Errorf("%w: resolutions must cover every initial blocking finding exactly once", model.ErrInvalidContract)
+		return fmt.Errorf("%w: resolutions must cover every open blocking finding exactly once", model.ErrInvalidContract)
 	}
 	seen := make(map[int]bool, len(resolutions))
 	for i, resolution := range resolutions {

@@ -322,6 +322,88 @@ func targetedReviewService(t *testing.T) (*SDDService, *deliveryRunnerStub, mode
 	return svc, runner, req, initial
 }
 
+func resumedReviewService(t *testing.T) (*SDDService, *deliveryRunnerStub, model.WorkReviewRequest) {
+	t.Helper()
+	svc, runner, targeted, _ := targetedReviewService(t)
+	targeted.Findings = []model.WorkReviewFindingInput{{Category: model.FindingRegression, Severity: model.PriorityHigh, Description: "still broken", Evidence: "red again"}}
+	result, err := svc.WorkReview(context.Background(), targeted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.NextStatus != model.WorkStatusEscalated {
+		t.Fatalf("targeted result=%#v", result)
+	}
+	if _, err := svc.WorkResume(context.Background(), model.WorkResumeRequest{ID: "WORK-001", By: "orchestrator", Reason: "another attempt"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(svc.repoDir, "tracked.txt"), []byte("resumed correction\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runVerifyGit(t, svc.repoDir, "add", "tracked.txt")
+	runVerifyGit(t, svc.repoDir, "commit", "-q", "-m", "resumed correction")
+	head, err := (&quality.Git{RepoDir: svc.repoDir}).HeadSHA()
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner.calls = 0
+	req := reviewRequest(head)
+	req.Resolutions = []model.WorkFindingResolutionInput{{FindingSeq: 2, Status: model.FindingFixed, Evidence: "green after resume"}}
+	return svc, runner, req
+}
+
+func TestWorkReview_ResumedResolutionSet(t *testing.T) {
+	svc, runner, req := resumedReviewService(t)
+	result, err := svc.WorkReview(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ReviewPhase != model.ReviewPhaseInitial || result.NextStatus != model.WorkStatusVerifying || result.Work.Contract.Status != model.WorkStatusVerifying {
+		t.Fatalf("result=%#v", result)
+	}
+	if runner.calls == 0 {
+		t.Fatal("resumed review did not evaluate delivery")
+	}
+	if len(result.Work.Findings) != 2 || result.Work.Findings[1].Status != model.FindingFixed {
+		t.Fatalf("findings=%#v", result.Work.Findings)
+	}
+}
+
+func TestWorkReview_OrdinaryRejectsResolutions(t *testing.T) {
+	svc, runner, head := reviewService(t, model.WorkStatusImplementing)
+	req := reviewRequest(head)
+	req.Resolutions = []model.WorkFindingResolutionInput{{FindingSeq: 1, Status: model.FindingFixed, Evidence: "not applicable"}}
+	if _, err := svc.WorkReview(context.Background(), req); !errors.Is(err, model.ErrInvalidContract) {
+		t.Fatalf("error=%v", err)
+	}
+	if runner.calls != 0 {
+		t.Fatalf("runner calls=%d", runner.calls)
+	}
+}
+
+func TestWorkReview_ResumedCycleBounded(t *testing.T) {
+	t.Run("red gets one correction", func(t *testing.T) {
+		svc, _, req := resumedReviewService(t)
+		req.Findings = []model.WorkReviewFindingInput{{Category: model.FindingRegression, Severity: model.PriorityHigh, Description: "new regression", Evidence: "new red"}}
+		result, err := svc.WorkReview(context.Background(), req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.NextStatus != model.WorkStatusCorrecting || result.Work.Contract.CorrectionRounds != 1 {
+			t.Fatalf("result=%#v", result)
+		}
+	})
+	t.Run("green remains verifying", func(t *testing.T) {
+		svc, _, req := resumedReviewService(t)
+		result, err := svc.WorkReview(context.Background(), req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.NextStatus != model.WorkStatusVerifying || result.Work.Contract.Status == model.WorkStatusDone {
+			t.Fatalf("result=%#v", result)
+		}
+	})
+}
+
 func TestWorkReview_InfersPhaseFromPersistedState(t *testing.T) {
 	initialSvc, runner, head := reviewService(t, model.WorkStatusImplementing)
 	badInitial := reviewRequest(head)
