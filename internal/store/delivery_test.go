@@ -246,6 +246,46 @@ func TestCompleteWork_IsNotRepeatable(t *testing.T) {
 	}
 }
 
+func TestCompleteWork_ReportsInvalidInputsAndCorruptRows(t *testing.T) {
+	t.Run("blank actor", func(t *testing.T) {
+		s, _, _ := closableWork(t, model.WorkStatusVerifying)
+		if _, err := s.CompleteWork(context.Background(), "WORK-001", "head", " "); !errors.Is(err, model.ErrInvalidContract) {
+			t.Fatalf("error=%v", err)
+		}
+	})
+	t.Run("missing work", func(t *testing.T) {
+		s := newTestSDDStore(t)
+		if _, err := s.CompleteWork(context.Background(), "WORK-404", "head", "orchestrator"); !errors.Is(err, model.ErrWorkNotFound) {
+			t.Fatalf("error=%v", err)
+		}
+	})
+	t.Run("missing certificate", func(t *testing.T) {
+		s := newTestSDDStore(t)
+		workInReview(t, s, "WORK-001", model.WorkStatusVerifying)
+		if _, err := s.CompleteWork(context.Background(), "WORK-001", "head", "orchestrator"); !errors.Is(err, model.ErrInvalidWorkTransition) {
+			t.Fatalf("error=%v", err)
+		}
+	})
+	t.Run("corrupt work", func(t *testing.T) {
+		s, _, _ := closableWork(t, model.WorkStatusVerifying)
+		if _, err := s.db.Exec(`UPDATE execution_contracts SET scope_json='{' WHERE id='WORK-001'`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.CompleteWork(context.Background(), "WORK-001", "head", "orchestrator"); err == nil || !strings.Contains(err.Error(), "load work") {
+			t.Fatalf("error=%v", err)
+		}
+	})
+	t.Run("corrupt certificate", func(t *testing.T) {
+		s, cert, _ := closableWork(t, model.WorkStatusVerifying)
+		if _, err := s.db.Exec(`UPDATE delivery_certificates SET contract_revision='bad' WHERE id=?`, cert.ID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.CompleteWork(context.Background(), "WORK-001", "head", "orchestrator"); err == nil || !strings.Contains(err.Error(), "load certificate") {
+			t.Fatalf("error=%v", err)
+		}
+	})
+}
+
 func TestInsertInitialReview_AtomicallyPersistsEverythingAndTransitions(t *testing.T) {
 	s := newTestSDDStore(t)
 	workInReview(t, s, "WORK-001", model.WorkStatusImplementing)

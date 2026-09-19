@@ -288,10 +288,6 @@ func requiresAcceptance(kinds []model.VerificationKind) bool {
 	return false
 }
 
-func deferredWork(operation, reason string, work model.WorkGetResponse) model.WorkCapabilityResult {
-	return model.WorkCapabilityResult{Work: work, Operation: operation, ReasonCode: "phase_not_available", Reason: reason}
-}
-
 func parseWorkCriteria(inputs []model.WorkCriterionInput) ([]model.WorkCriterion, error) {
 	if len(inputs) == 0 {
 		return nil, nil

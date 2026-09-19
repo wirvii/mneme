@@ -369,7 +369,8 @@ func TestWorkReview_ResumedResolutionSet(t *testing.T) {
 }
 
 func TestWorkReview_OrdinaryRejectsResolutions(t *testing.T) {
-	svc, runner, head := reviewService(t, model.WorkStatusImplementing)
+	svc, runner, _ := reviewService(t, model.WorkStatusImplementing)
+	head := commitReviewConstitution(t, svc)
 	req := reviewRequest(head)
 	req.Resolutions = []model.WorkFindingResolutionInput{{FindingSeq: 1, Status: model.FindingFixed, Evidence: "not applicable"}}
 	if _, err := svc.WorkReview(context.Background(), req); !errors.Is(err, model.ErrInvalidContract) {

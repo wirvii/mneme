@@ -288,8 +288,14 @@ func TestResumeWork_ResetsRoundsAndPreservesAggregate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	certAfter, _ := s.GetLatestDeliveryCertificate(context.Background(), "p", "WORK-001")
-	checksAfter, _ := s.ListDeliveryChecks(context.Background(), certAfter.ID)
+	certAfter, certErr := s.GetLatestDeliveryCertificate(context.Background(), "p", "WORK-001")
+	if certErr != nil {
+		t.Fatalf("resume removed certificate: %v", certErr)
+	}
+	checksAfter, checksErr := s.ListDeliveryChecks(context.Background(), certAfter.ID)
+	if checksErr != nil {
+		t.Fatalf("resume removed checks: %v", checksErr)
+	}
 	if after.Contract.Status != model.WorkStatusImplementing || after.Contract.CorrectionRounds != 0 || after.Contract.MaxCorrectionRounds != before.Contract.MaxCorrectionRounds || after.Contract.BaseSHA != before.Contract.BaseSHA || after.Contract.ContractHash != before.Contract.ContractHash || after.Contract.ContractRevision != before.Contract.ContractRevision || after.Contract.Goal != before.Contract.Goal {
 		t.Fatalf("before=%#v after=%#v", before.Contract, after.Contract)
 	}
@@ -326,6 +332,25 @@ func TestResumeWork_RequiresEscalatedActorAndReason(t *testing.T) {
 	}
 }
 
+func TestResumeWork_ReportsMissingWorkAndUpdateFailure(t *testing.T) {
+	t.Run("missing work", func(t *testing.T) {
+		s := newTestSDDStore(t)
+		if err := s.ResumeWork(context.Background(), "WORK-404", "orchestrator", "again"); !errors.Is(err, model.ErrWorkNotFound) {
+			t.Fatalf("error=%v", err)
+		}
+	})
+	t.Run("update failure", func(t *testing.T) {
+		s := newTestSDDStore(t)
+		escalatedWork(t, s)
+		if _, err := s.db.Exec(`CREATE TRIGGER fail_resume_update BEFORE UPDATE ON execution_contracts WHEN OLD.status='escalated' BEGIN SELECT RAISE(FAIL,'forced resume update failure'); END`); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.ResumeWork(context.Background(), "WORK-001", "orchestrator", "again"); err == nil || !strings.Contains(err.Error(), "resume work: update") {
+			t.Fatalf("error=%v", err)
+		}
+	})
+}
+
 func TestResumeWork_RollsBackWhenHistoryFails(t *testing.T) {
 	s := newTestSDDStore(t)
 	escalatedWork(t, s)
@@ -346,7 +371,7 @@ func TestAmendWork_CannotResumeEscalated(t *testing.T) {
 	s := newTestSDDStore(t)
 	escalatedWork(t, s)
 	before, _ := s.GetWorkAggregate(context.Background(), "WORK-001")
-	req := model.AmendWorkRequest{WorkID: "WORK-001", Goal: "changed", Scope: []string{"internal/**"}, Verification: []model.VerificationKind{model.VerificationBuild}, DevelopmentMethod: model.DevelopmentMethodStandard, Criteria: testCriteria(), Constraints: testConstraints(), By: "orchestrator", Reason: "change"}
+	req := model.AmendWorkRequest{WorkID: "WORK-001", Goal: "changed", Scope: []string{"internal/**"}, Verification: []model.VerificationKind{model.VerificationAcceptance, model.VerificationBuild}, DevelopmentMethod: model.DevelopmentMethodTDD, Criteria: testCriteria(), Constraints: testConstraints(), By: "orchestrator", Reason: "change"}
 	if err := s.AmendWork(context.Background(), req); !errors.Is(err, model.ErrInvalidWorkTransition) {
 		t.Fatalf("error=%v", err)
 	}

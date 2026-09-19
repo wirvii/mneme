@@ -524,7 +524,7 @@ func TestWorkOperationsDoNotMaterializeSDDFiles(t *testing.T) {
 	}
 }
 
-func TestWorkOperationsWithoutVerificationDoNotInvokeGit(t *testing.T) {
+func TestOnlyWorkLockAndCompleteInvokeGit(t *testing.T) {
 	if os.PathSeparator == '\\' {
 		t.Skip("shell fake is Unix-only")
 	}
@@ -545,14 +545,21 @@ func TestWorkOperationsWithoutVerificationDoNotInvokeGit(t *testing.T) {
 	_, _ = svc.WorkGet(ctx, model.WorkGetRequest{ID: work.Contract.ID})
 	_, _ = svc.WorkAmend(ctx, validWorkAmendRequest(work.Contract.ID))
 	_, _ = svc.WorkReview(ctx, model.WorkReviewRequest{ID: work.Contract.ID})
-	_, _ = svc.WorkComplete(ctx, model.WorkCompleteRequest{ID: work.Contract.ID, By: "coordinator"})
 	if _, err := os.Stat(logPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("non-lock operation invoked git: %v", err)
+	}
+	_, _ = svc.WorkComplete(ctx, model.WorkCompleteRequest{ID: work.Contract.ID, By: "coordinator"})
+	logged, err := os.ReadFile(logPath)
+	if err != nil || string(logged) != "rev-parse HEAD\nstatus --porcelain --untracked-files=normal\n" {
+		t.Fatalf("complete git calls = %q, err=%v", logged, err)
+	}
+	if err := os.Remove(logPath); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := svc.WorkLock(ctx, model.WorkLockRequest{ID: work.Contract.ID}); err != nil {
 		t.Fatal(err)
 	}
-	logged, err := os.ReadFile(logPath)
+	logged, err = os.ReadFile(logPath)
 	if err != nil || string(logged) != "rev-parse HEAD\n" {
 		t.Fatalf("git calls = %q, err=%v", logged, err)
 	}
