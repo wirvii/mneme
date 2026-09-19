@@ -303,7 +303,26 @@ type WorkflowConfig struct {
 	// Defaults to ~/.mneme/workflows. Supports ~ expansion.
 	// Per-project subdirectories are created automatically.
 	Dir string `toml:"dir"`
+	// Engine selects the legacy lifecycle or the delivery-v2 work surface.
+	Engine string `toml:"engine"`
+	// Default selects the source used when work_begin omits one.
+	Default string `toml:"default"`
+	// DevelopmentMethod is copied into new work contracts when omitted.
+	DevelopmentMethod string `toml:"development_method"`
+	// MaxCorrectionRounds is copied into new work contracts when omitted.
+	MaxCorrectionRounds int `toml:"max_correction_rounds"`
+	// DeepQuality records whether later phases should always run deeper checks.
+	DeepQuality string `toml:"deep_quality"`
 }
+
+const (
+	WorkflowEngineLegacy     = "legacy"
+	WorkflowEngineDeliveryV2 = "delivery_v2"
+	WorkflowDefaultOrganic   = "organic"
+	WorkflowDefaultSDD       = "sdd"
+	WorkflowDeepManual       = "manual"
+	WorkflowDeepAlways       = "always"
+)
 
 // DelegationConfig controls the delegation enforcement hook that prevents
 // the orchestrator agent from editing source code directly.
@@ -580,7 +599,12 @@ func Default() *Config {
 			Dimensions: 512,
 		},
 		Workflow: WorkflowConfig{
-			Dir: filepath.Join(home, ".mneme", "workflows"),
+			Dir:                 filepath.Join(home, ".mneme", "workflows"),
+			Engine:              WorkflowEngineLegacy,
+			Default:             WorkflowDefaultOrganic,
+			DevelopmentMethod:   "standard",
+			MaxCorrectionRounds: 1,
+			DeepQuality:         WorkflowDeepManual,
 		},
 		Delegation: DelegationConfig{
 			Enabled:             true,
@@ -1180,6 +1204,16 @@ func buildWorkflowOrigins(cfg, dflt *Config) []ConfigFieldInfo {
 	var fields []ConfigFieldInfo
 	o, ev := fieldOrigin(cfg.Workflow.Dir, dflt.Workflow.Dir, true, "MNEME_WORKFLOW_DIR")
 	fields = append(fields, makeField("dir", cfg.Workflow.Dir, o, ev))
+	o, ev = fieldOrigin(cfg.Workflow.Engine, dflt.Workflow.Engine, true)
+	fields = append(fields, makeField("engine", cfg.Workflow.Engine, o, ev))
+	o, ev = fieldOrigin(cfg.Workflow.Default, dflt.Workflow.Default, true)
+	fields = append(fields, makeField("default", cfg.Workflow.Default, o, ev))
+	o, ev = fieldOrigin(cfg.Workflow.DevelopmentMethod, dflt.Workflow.DevelopmentMethod, true)
+	fields = append(fields, makeField("development_method", cfg.Workflow.DevelopmentMethod, o, ev))
+	o, ev = fieldOrigin(cfg.Workflow.MaxCorrectionRounds, dflt.Workflow.MaxCorrectionRounds, true)
+	fields = append(fields, makeField("max_correction_rounds", cfg.Workflow.MaxCorrectionRounds, o, ev))
+	o, ev = fieldOrigin(cfg.Workflow.DeepQuality, dflt.Workflow.DeepQuality, true)
+	fields = append(fields, makeField("deep_quality", cfg.Workflow.DeepQuality, o, ev))
 	return fields
 }
 
@@ -1373,6 +1407,21 @@ func (c *Config) Validate() error {
 	}
 	if c.Storage.GlobalBudget <= 0 {
 		return errors.New("storage.global_budget must be greater than 0")
+	}
+	if c.Workflow.Engine != WorkflowEngineLegacy && c.Workflow.Engine != WorkflowEngineDeliveryV2 {
+		return fmt.Errorf("workflow.engine %q is not valid; accepted values: legacy, delivery_v2", c.Workflow.Engine)
+	}
+	if c.Workflow.Default != WorkflowDefaultOrganic && c.Workflow.Default != WorkflowDefaultSDD {
+		return fmt.Errorf("workflow.default %q is not valid; accepted values: organic, sdd", c.Workflow.Default)
+	}
+	if c.Workflow.DevelopmentMethod != "standard" && c.Workflow.DevelopmentMethod != "tdd" {
+		return fmt.Errorf("workflow.development_method %q is not valid; accepted values: standard, tdd", c.Workflow.DevelopmentMethod)
+	}
+	if c.Workflow.MaxCorrectionRounds < 0 {
+		return errors.New("workflow.max_correction_rounds must be >= 0")
+	}
+	if c.Workflow.DeepQuality != WorkflowDeepManual && c.Workflow.DeepQuality != WorkflowDeepAlways {
+		return fmt.Errorf("workflow.deep_quality %q is not valid; accepted values: manual, always", c.Workflow.DeepQuality)
 	}
 	if c.Speech.Mode != "brief" && c.Speech.Mode != "full" {
 		return fmt.Errorf("speech.mode %q is not valid; accepted values: brief, full", c.Speech.Mode)

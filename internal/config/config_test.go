@@ -452,6 +452,107 @@ func TestWorkflowDefaults(t *testing.T) {
 	}
 }
 
+func TestWorkflowV2DefaultsPreserveLegacy(t *testing.T) {
+	cfg := Default()
+	if cfg.Workflow.Engine != WorkflowEngineLegacy {
+		t.Fatalf("workflow engine = %q, want %q", cfg.Workflow.Engine, WorkflowEngineLegacy)
+	}
+	if cfg.Workflow.Default != WorkflowDefaultOrganic {
+		t.Fatalf("workflow default = %q, want %q", cfg.Workflow.Default, WorkflowDefaultOrganic)
+	}
+	if cfg.Workflow.DevelopmentMethod != "standard" {
+		t.Fatalf("workflow development method = %q, want standard", cfg.Workflow.DevelopmentMethod)
+	}
+	if cfg.Workflow.MaxCorrectionRounds != 1 {
+		t.Fatalf("workflow max correction rounds = %d, want 1", cfg.Workflow.MaxCorrectionRounds)
+	}
+	if cfg.Workflow.DeepQuality != WorkflowDeepManual {
+		t.Fatalf("workflow deep quality = %q, want %q", cfg.Workflow.DeepQuality, WorkflowDeepManual)
+	}
+}
+
+func TestWorkflowV2OldConfigGetsDefaults(t *testing.T) {
+	path := writeTempTOML(t, "[workflow]\ndir = \"/tmp/legacy-workflows\"\n")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Workflow.Engine != WorkflowEngineLegacy || cfg.Workflow.Default != WorkflowDefaultOrganic ||
+		cfg.Workflow.DevelopmentMethod != "standard" || cfg.Workflow.MaxCorrectionRounds != 1 ||
+		cfg.Workflow.DeepQuality != WorkflowDeepManual {
+		t.Fatalf("old workflow config lost delivery defaults: %+v", cfg.Workflow)
+	}
+}
+
+func TestWorkflowV2ValidationTable(t *testing.T) {
+	tests := []struct {
+		name string
+		key  string
+		edit func(*Config)
+	}{
+		{"engine", "workflow.engine", func(c *Config) { c.Workflow.Engine = "future" }},
+		{"default", "workflow.default", func(c *Config) { c.Workflow.Default = "future" }},
+		{"development method", "workflow.development_method", func(c *Config) { c.Workflow.DevelopmentMethod = "future" }},
+		{"negative rounds", "workflow.max_correction_rounds", func(c *Config) { c.Workflow.MaxCorrectionRounds = -1 }},
+		{"deep quality", "workflow.deep_quality", func(c *Config) { c.Workflow.DeepQuality = "future" }},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Default()
+			tc.edit(cfg)
+			err := cfg.Validate()
+			if err == nil || !strings.Contains(err.Error(), tc.key) {
+				t.Fatalf("Validate() error = %v, want error naming %s", err, tc.key)
+			}
+		})
+	}
+	cfg := Default()
+	cfg.Workflow.MaxCorrectionRounds = 0
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("zero correction rounds must be valid: %v", err)
+	}
+}
+
+func TestWorkflowOriginsIncludeDeliveryFields(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		origin  FieldOrigin
+	}{
+		{name: "defaults", origin: OriginDefault},
+		{name: "file", content: `[workflow]
+dir = "/tmp/work"
+engine = "delivery_v2"
+default = "sdd"
+development_method = "tdd"
+max_correction_rounds = 0
+deep_quality = "always"
+`, origin: OriginFile},
+	}
+	wantKeys := []string{"dir", "engine", "default", "development_method", "max_correction_rounds", "deep_quality"}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			path := "/nonexistent/workflow-config.toml"
+			if tc.content != "" {
+				path = writeTempTOML(t, tc.content)
+			}
+			_, origins, err := LoadWithOrigins(path)
+			if err != nil {
+				t.Fatalf("LoadWithOrigins: %v", err)
+			}
+			fields := origins.Sections["workflow"]
+			if len(fields) != len(wantKeys) {
+				t.Fatalf("workflow fields = %d, want %d: %+v", len(fields), len(wantKeys), fields)
+			}
+			for i, key := range wantKeys {
+				if fields[i].Key != key || fields[i].Origin != tc.origin {
+					t.Errorf("field %d = %s/%s, want %s/%s", i, fields[i].Key, fields[i].Origin, key, tc.origin)
+				}
+			}
+		})
+	}
+}
+
 // TestWorkflowEnvOverride verifies that MNEME_WORKFLOW_DIR overrides the default.
 func TestWorkflowEnvOverride(t *testing.T) {
 	wantDir := t.TempDir()
