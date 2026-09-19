@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -167,6 +168,249 @@ func TestCodegraphCmd_IndexDryRun(t *testing.T) {
 	if !strings.Contains(output, "Index complete") {
 		t.Errorf("expected 'Index complete' in output, got: %s", output)
 	}
+}
+
+// TestCodegraphIndex_StampsHeadOnlyForCompleteSuccess protects freshness: a
+// revision must describe a complete, successful scan of the repository root,
+// never a dry run, partial path, or degraded result.
+func TestCodegraphIndex_StampsHeadOnlyForCompleteSuccess(t *testing.T) {
+	t.Run("same directory identity ignores path spelling", func(t *testing.T) {
+		repo := newCodegraphIndexGitRepo(t)
+		spelledDifferently := repo + string(filepath.Separator) + "."
+		if repo == spelledDifferently {
+			t.Fatal("test paths unexpectedly have identical spelling")
+		}
+		if !shouldStampCodegraphIndex(false, spelledDifferently, repo, "abc123", &codegraph.IndexResult{}) {
+			t.Fatal("same directory with different path spelling was not eligible to stamp HEAD")
+		}
+	})
+
+	t.Run("complete repository root stamps HEAD", func(t *testing.T) {
+		repo := newCodegraphIndexGitRepo(t)
+		dataDir := t.TempDir()
+
+		root := NewRootCmd()
+		root.SetOut(new(bytes.Buffer))
+		root.SetErr(new(bytes.Buffer))
+		root.SetArgs([]string{"--data-dir", dataDir, "--project", "codegraph-index-stamp", "codegraph", "index", repo})
+		if err := root.Execute(); err != nil {
+			t.Fatalf("codegraph index: %v", err)
+		}
+
+		head := gitHead(t, repo)
+		if got, ok := codegraphLastIndexedSHA(t, dataDir, "codegraph-index-stamp"); !ok || got != head {
+			t.Errorf("last indexed SHA = %q, want HEAD %q", got, head)
+		}
+	})
+
+	for _, tc := range []struct {
+		name       string
+		args       func(t *testing.T, repo string) []string
+		prepare    func(t *testing.T, repo string)
+		wantErr    bool
+		wantOutput string
+	}{
+		{
+			name: "dry run",
+			args: func(_ *testing.T, repo string) []string {
+				return []string{"--dry-run", repo}
+			},
+		},
+		{
+			name: "subdirectory",
+			prepare: func(t *testing.T, repo string) {
+				t.Helper()
+				if err := os.Mkdir(filepath.Join(repo, "partial"), 0o755); err != nil {
+					t.Fatalf("create partial directory: %v", err)
+				}
+				if err := os.WriteFile(filepath.Join(repo, "partial", "partial.go"), []byte("package partial\n"), 0o644); err != nil {
+					t.Fatalf("write partial Go source: %v", err)
+				}
+			},
+			args: func(_ *testing.T, repo string) []string {
+				return []string{filepath.Join(repo, "partial")}
+			},
+		},
+		{
+			name: "path outside Git",
+			args: func(t *testing.T, _ string) []string {
+				t.Helper()
+				outside := t.TempDir()
+				if err := os.WriteFile(filepath.Join(outside, "outside.go"), []byte("package outside\n"), 0o644); err != nil {
+					t.Fatalf("write outside Go source: %v", err)
+				}
+				return []string{outside}
+			},
+		},
+		{
+			name: "errored file",
+			prepare: func(t *testing.T, repo string) {
+				t.Helper()
+				if err := os.WriteFile(filepath.Join(repo, "broken.go"), []byte("package broken\nfunc ("), 0o644); err != nil {
+					t.Fatalf("write broken Go source: %v", err)
+				}
+			},
+			args: func(_ *testing.T, repo string) []string {
+				return []string{repo}
+			},
+			wantOutput: "Files errored:  1",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := newCodegraphIndexGitRepo(t)
+			if tc.prepare != nil {
+				tc.prepare(t, repo)
+			}
+			dataDir := t.TempDir()
+			out := new(bytes.Buffer)
+			root := NewRootCmd()
+			root.SetOut(out)
+			root.SetErr(new(bytes.Buffer))
+			root.SetArgs(append([]string{"--data-dir", dataDir, "--project", "codegraph-index-no-stamp", "codegraph", "index"}, tc.args(t, repo)...))
+			err := root.Execute()
+			if tc.wantErr && err == nil {
+				t.Fatal("codegraph index succeeded, want error")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("codegraph index: %v", err)
+			}
+			if tc.wantOutput != "" && !strings.Contains(out.String(), tc.wantOutput) {
+				t.Errorf("index output = %q, want %q", out.String(), tc.wantOutput)
+			}
+			if got, ok := codegraphLastIndexedSHA(t, dataDir, "codegraph-index-no-stamp"); ok {
+				t.Errorf("last indexed SHA = %q, want no stamp", got)
+			}
+		})
+	}
+
+	realRoot := t.TempDir()
+	partialRoot := filepath.Join(realRoot, "partial")
+	if err := os.Mkdir(partialRoot, 0o755); err != nil {
+		t.Fatalf("create partial root: %v", err)
+	}
+	if !shouldStampCodegraphIndex(false, realRoot, realRoot, "abc123", &codegraph.IndexResult{}) {
+		t.Fatal("complete index of an existing repository root was not eligible to stamp HEAD")
+	}
+
+	degradedLanguages := []codegraph.DegradedLanguage{{Language: "typescript"}}
+	cases := []struct {
+		name      string
+		dryRun    bool
+		repoRoot  string
+		requested string
+		head      string
+		result    *codegraph.IndexResult
+	}{
+		{
+			name:      "dry run",
+			dryRun:    true,
+			repoRoot:  realRoot,
+			requested: realRoot,
+			head:      "abc123",
+			result:    &codegraph.IndexResult{},
+		},
+		{
+			name:      "subdirectory",
+			repoRoot:  realRoot,
+			requested: partialRoot,
+			head:      "abc123",
+			result:    &codegraph.IndexResult{},
+		},
+		{
+			name:      "empty HEAD",
+			repoRoot:  realRoot,
+			requested: realRoot,
+			result:    &codegraph.IndexResult{},
+		},
+		{
+			name:      "index error",
+			repoRoot:  realRoot,
+			requested: realRoot,
+			head:      "abc123",
+		},
+		{
+			name:      "errored files",
+			repoRoot:  realRoot,
+			requested: realRoot,
+			head:      "abc123",
+			result:    &codegraph.IndexResult{FilesErrored: 1},
+		},
+		{
+			name:      "degraded files",
+			repoRoot:  realRoot,
+			requested: realRoot,
+			head:      "abc123",
+			result:    &codegraph.IndexResult{FilesDegraded: 1},
+		},
+		{
+			name:      "degraded languages",
+			repoRoot:  realRoot,
+			requested: realRoot,
+			head:      "abc123",
+			result:    &codegraph.IndexResult{DegradedLanguages: degradedLanguages},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if shouldStampCodegraphIndex(tc.dryRun, tc.requested, tc.repoRoot, tc.head, tc.result) {
+				t.Fatal("incomplete index was eligible to stamp HEAD")
+			}
+		})
+	}
+}
+
+func newCodegraphIndexGitRepo(t *testing.T) string {
+	t.Helper()
+	repo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, "hello.go"), []byte("package hello\n\nfunc Hello() {}\n"), 0o644); err != nil {
+		t.Fatalf("write Go source: %v", err)
+	}
+	for _, args := range [][]string{
+		{"init"},
+		{"config", "user.email", "test@example.com"},
+		{"config", "user.name", "Test User"},
+		{"add", "hello.go"},
+		{"commit", "-m", "initial"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repo
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, output)
+		}
+	}
+	return repo
+}
+
+func gitHead(t *testing.T, repo string) string {
+	t.Helper()
+	cmd := exec.Command("git", "rev-parse", "HEAD")
+	cmd.Dir = repo
+	output, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git rev-parse HEAD: %v", err)
+	}
+	return strings.TrimSpace(string(output))
+}
+
+func codegraphLastIndexedSHA(t *testing.T, dataDir, slug string) (string, bool) {
+	t.Helper()
+	db, err := codegraph.OpenDB(codegraph.DBPath(filepath.Join(dataDir, "projects"), slug))
+	if err != nil {
+		t.Fatalf("open codegraph DB: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	var sha string
+	var count int
+	if err := db.DB.QueryRow(`SELECT COUNT(*) FROM project_metadata WHERE key = 'last_indexed_sha'`).Scan(&count); err != nil {
+		t.Fatalf("get last indexed SHA: %v", err)
+	}
+	if count == 0 {
+		return "", false
+	}
+	if err := db.DB.QueryRow(`SELECT value FROM project_metadata WHERE key = 'last_indexed_sha'`).Scan(&sha); err != nil {
+		t.Fatalf("get last indexed SHA: %v", err)
+	}
+	return sha, true
 }
 
 // TestCodegraphCmd_NoSubcommandShadowsPersistentPreRun is SPEC-142 AC10:

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -162,6 +163,7 @@ If [path] is omitted the current directory is used.`,
 			if err != nil {
 				return fmt.Errorf("codegraph index: resolve path: %w", err)
 			}
+			repoRoot, head := codegraphIndexGitState(absRoot)
 
 			svc, err := initCodeGraphService()
 			if err != nil {
@@ -180,6 +182,11 @@ If [path] is omitted the current directory is used.`,
 			result, err := svc.Index(opts)
 			if err != nil {
 				return fmt.Errorf("codegraph index: %w", err)
+			}
+			if shouldStampCodegraphIndex(flagDryRun, absRoot, repoRoot, head, result) {
+				if err := svc.SetLastIndexedSHA(head); err != nil {
+					return fmt.Errorf("codegraph index: stamp indexed revision: %w", err)
+				}
 			}
 			elapsed := time.Since(start).Round(time.Millisecond)
 
@@ -204,6 +211,60 @@ If [path] is omitted the current directory is used.`,
 	cmd.Flags().BoolVarP(&flagDryRun, "dry-run", "n", false, "Report without writing to the database")
 	cmd.Flags().StringVarP(&flagLanguage, "language", "l", "", "Force language detection (e.g. go, typescript)")
 	return cmd
+}
+
+// codegraphIndexGitState returns the repository root and current revision for
+// path. A path outside a Git repository deliberately returns empty values so
+// indexing preserves its existing directory-walk behavior without recording a
+// repository revision.
+func codegraphIndexGitState(path string) (repoRoot, head string) {
+	git := func(args ...string) (string, error) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = path
+		out, err := cmd.Output()
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(string(out)), nil
+	}
+
+	root, err := git("rev-parse", "--show-toplevel")
+	if err != nil {
+		return "", ""
+	}
+	head, err = git("rev-parse", "HEAD")
+	if err != nil {
+		return root, ""
+	}
+	return root, head
+}
+
+// shouldStampCodegraphIndex reports whether result proves that HEAD was
+// indexed completely. Partial paths and recoverable extractor failures are
+// deliberately not freshness evidence.
+func shouldStampCodegraphIndex(dryRun bool, requestedRoot, repoRoot, head string, result *codegraph.IndexResult) bool {
+	return !dryRun &&
+		sameCodegraphIndexRoot(requestedRoot, repoRoot) &&
+		head != "" &&
+		result != nil &&
+		result.FilesErrored == 0 &&
+		result.FilesDegraded == 0 &&
+		len(result.DegradedLanguages) == 0
+}
+
+// sameCodegraphIndexRoot compares directory identity rather than path text.
+// Git and Go may render the same directory with different separators or
+// symlink spellings, particularly on Windows.
+func sameCodegraphIndexRoot(requestedRoot, repoRoot string) bool {
+	requestedInfo, err := os.Stat(requestedRoot)
+	if err != nil {
+		return false
+	}
+	repoInfo, err := os.Stat(repoRoot)
+	if err != nil {
+		return false
+	}
+	return os.SameFile(requestedInfo, repoInfo)
 }
 
 // newCodegraphStatusCmd returns the "mneme codegraph status" subcommand.
