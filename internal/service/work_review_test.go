@@ -347,8 +347,16 @@ func TestWorkReview_InfersPhaseFromPersistedState(t *testing.T) {
 }
 
 func TestWorkReview_TargetedRequiresNewCleanExactHead(t *testing.T) {
-	svc, runner, req, initial := targetedReviewService(t)
-	req.HeadSHA = initial.Certificate.HeadSHA
+	svc, runner, _ := reviewService(t, model.WorkStatusImplementing)
+	head := commitReviewConstitution(t, svc)
+	initial := reviewRequest(head)
+	initial.Findings = []model.WorkReviewFindingInput{{Category: model.FindingRegression, Severity: model.PriorityHigh, Description: "regression", Evidence: "red"}}
+	if _, err := svc.WorkReview(context.Background(), initial); err != nil {
+		t.Fatal(err)
+	}
+	runner.calls = 0
+	req := reviewRequest(head)
+	req.Resolutions = []model.WorkFindingResolutionInput{{FindingSeq: 1, Status: model.FindingFixed, Evidence: "claimed green"}}
 	if _, err := svc.WorkReview(context.Background(), req); !errors.Is(err, model.ErrInvalidContract) {
 		t.Fatalf("same head error = %v", err)
 	}
