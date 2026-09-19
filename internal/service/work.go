@@ -166,16 +166,41 @@ func (svc *SDDService) WorkAmend(ctx context.Context, req model.WorkAmendRequest
 	return svc.WorkGet(ctx, model.WorkGetRequest{ID: req.ID})
 }
 
-// WorkComplete reports the phase-two completion capability without changing work state.
-func (svc *SDDService) WorkComplete(ctx context.Context, req model.WorkActionRequest) (model.WorkCapabilityResult, error) {
+// WorkComplete closes work using the latest persisted delivery evidence.
+func (svc *SDDService) WorkComplete(ctx context.Context, req model.WorkCompleteRequest) (model.WorkCapabilityResult, error) {
 	if err := svc.requireDeliveryV2(); err != nil {
 		return model.WorkCapabilityResult{}, err
 	}
-	work, err := svc.WorkGet(ctx, model.WorkGetRequest(req))
+	if strings.TrimSpace(req.ID) == "" || strings.TrimSpace(req.By) == "" {
+		return model.WorkCapabilityResult{}, fmt.Errorf("%w: id and by are required", model.ErrInvalidContract)
+	}
+	if strings.TrimSpace(svc.repoDir) == "" {
+		return model.WorkCapabilityResult{}, fmt.Errorf("%w: repo_dir: required", model.ErrInvalidContract)
+	}
+	git := &quality.Git{RepoDir: svc.repoDir}
+	head, err := git.HeadSHA()
 	if err != nil {
 		return model.WorkCapabilityResult{}, err
 	}
-	return deferredWork("complete", "phase 2 cannot close work because later phases must produce and check real evidence", work), nil
+	dirty, _, err := git.IsDirty()
+	if err != nil {
+		return model.WorkCapabilityResult{}, err
+	}
+	if dirty {
+		return model.WorkCapabilityResult{}, fmt.Errorf("%w: worktree must be clean for completion", model.ErrInvalidContract)
+	}
+	closed, err := svc.store.CompleteWork(ctx, req.ID, head, req.By)
+	if err != nil {
+		return model.WorkCapabilityResult{}, err
+	}
+	work, err := svc.WorkGet(ctx, model.WorkGetRequest{ID: req.ID})
+	if err != nil {
+		return model.WorkCapabilityResult{}, err
+	}
+	return model.WorkCapabilityResult{
+		Work: work, Operation: "complete", Available: true, Performed: true,
+		Certificate: closed.Certificate, Checks: closed.Checks, NextStatus: model.WorkStatusDone,
+	}, nil
 }
 
 func publicWork(aggregate *model.WorkAggregate) model.WorkGetResponse {
