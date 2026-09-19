@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -222,6 +223,7 @@ type criteriaVerifyFixture struct {
 	runner   *deliveryRunnerStub
 	database *db.DB
 	repo     string
+	tail     *[]int
 }
 
 func writeVerifyFiles(t *testing.T, repo string, files map[string]string) {
@@ -279,9 +281,13 @@ func newCriteriaVerifyFixture(t *testing.T, criteria []model.WorkCriterionInput,
 		t.Fatal(err)
 	}
 	runner := &deliveryRunnerStub{}
+	tail := []int{}
 	svc.WithRepoDir(repo)
-	svc.WithDeliveryVerifier(func(int) quality.Runner { return runner }, "test-version")
-	return criteriaVerifyFixture{svc: svc, runner: runner, database: database, repo: repo}
+	svc.WithDeliveryVerifier(func(maxTailBytes int) quality.Runner {
+		tail = append(tail, maxTailBytes)
+		return runner
+	}, "test-version")
+	return criteriaVerifyFixture{svc: svc, runner: runner, database: database, repo: repo, tail: &tail}
 }
 
 func deliveryCheckByName(t *testing.T, checks []model.DeliveryCheck, kind, name string) model.DeliveryCheck {
@@ -483,5 +489,157 @@ evidence_required = "review note"`}
 				t.Fatalf("signed observation changed: %#v", result.Work.Criteria[0])
 			}
 		})
+	}
+}
+
+func deliveryConstitution(gates ...string) string {
+	var b strings.Builder
+	b.WriteString("schema_version = 1\nenabled = false\n\n[execution]\noutput_tail_bytes = 7\n")
+	for _, name := range gates {
+		fmt.Fprintf(&b, "\n[[gate]]\nname = %q\ncommand = [%q]\ntimeout = \"1m\"\nrequired = false\n", name, "run-"+name)
+	}
+	return b.String()
+}
+
+func newGateVerifyFixture(t *testing.T, verification []model.VerificationKind, constitution string) criteriaVerifyFixture {
+	t.Helper()
+	repo := t.TempDir()
+	runVerifyGit(t, repo, "init", "-q")
+	runVerifyGit(t, repo, "config", "user.name", "Test")
+	runVerifyGit(t, repo, "config", "user.email", "test@example.com")
+	writeVerifyFiles(t, repo, map[string]string{"tracked.txt": "base\n"})
+	if constitution != "" {
+		writeVerifyFiles(t, repo, map[string]string{constitutionRelPath: constitution})
+	}
+	runVerifyGit(t, repo, "add", ".")
+	runVerifyGit(t, repo, "commit", "-q", "-m", "base")
+	head, err := (&quality.Git{RepoDir: repo}).HeadSHA()
+	if err != nil {
+		t.Fatal(err)
+	}
+	database, err := db.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	database.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = database.Close() })
+	cfg := config.Default()
+	cfg.Workflow.Engine = config.WorkflowEngineDeliveryV2
+	svc := NewSDDService(store.NewSDDStore(database), cfg, "p", nil)
+	work, err := svc.WorkBegin(context.Background(), model.WorkBeginRequest{
+		Goal: "gates", Scope: []string{"**"}, Verification: verification,
+		DevelopmentMethod: model.DevelopmentMethodStandard,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.store.LockWorkAndStart(context.Background(), work.Contract.ID, head, "coordinator"); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.store.TransitionWork(context.Background(), work.Contract.ID, model.WorkStatusImplementing, model.WorkStatusVerifying, "coordinator", ""); err != nil {
+		t.Fatal(err)
+	}
+	runner := &deliveryRunnerStub{}
+	tail := []int{}
+	svc.WithRepoDir(repo)
+	svc.WithDeliveryVerifier(func(maxTailBytes int) quality.Runner {
+		tail = append(tail, maxTailBytes)
+		return runner
+	}, "test-version")
+	return criteriaVerifyFixture{svc: svc, runner: runner, database: database, repo: repo, tail: &tail}
+}
+
+func TestWorkVerify_RequiredChecksUseClosedMappingAndContractAuthority(t *testing.T) {
+	fixture := newGateVerifyFixture(t,
+		[]model.VerificationKind{model.VerificationLint, model.VerificationBuild, model.VerificationAffectedTests},
+		deliveryConstitution("lint", "unused", "test", "build"),
+	)
+	fixture.runner.results = []quality.GateResult{
+		{Status: quality.GateStatusPass, ExitCode: 0, OutputSHA256: "test-sha", OutputTail: "1234567", DurationMs: 1},
+		{Status: quality.GateStatusPass, ExitCode: 0, OutputSHA256: "build-sha", OutputTail: "build", DurationMs: 2},
+		{Status: quality.GateStatusPass, ExitCode: 0, OutputSHA256: "lint-sha", OutputTail: "lint", DurationMs: 3},
+	}
+	result, err := fixture.svc.WorkVerify(context.Background(), model.WorkActionRequest{ID: "WORK-001"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fixture.runner.calls != 3 || len(fixture.runner.gates) != 3 || fixture.runner.gates[0].Name != "test" || fixture.runner.gates[1].Name != "build" || fixture.runner.gates[2].Name != "lint" {
+		t.Fatalf("gates=%#v", fixture.runner.gates)
+	}
+	if len(*fixture.tail) != 1 || (*fixture.tail)[0] != 7 {
+		t.Fatalf("tail limits=%v", *fixture.tail)
+	}
+	if result.Certificate.Verdict != model.DeliveryVerdictPass {
+		t.Fatalf("certificate=%#v checks=%#v", result.Certificate, result.Checks)
+	}
+	testCheck := deliveryCheckByName(t, result.Checks, "gate", string(model.VerificationAffectedTests))
+	if testCheck.OutputSHA256 != "test-sha" || testCheck.OutputTail != "1234567" || testCheck.DurationMs != 1 {
+		t.Fatalf("test check=%#v", testCheck)
+	}
+}
+
+func TestWorkVerify_CascadeStopsCommandsAfterFirstBlockingResult(t *testing.T) {
+	fixture := newGateVerifyFixture(t,
+		[]model.VerificationKind{model.VerificationAffectedTests, model.VerificationBuild, model.VerificationLint},
+		deliveryConstitution("test", "build", "lint"),
+	)
+	fixture.runner.results = []quality.GateResult{{Status: quality.GateStatusFail, ExitCode: 2, OutputSHA256: "failed", OutputTail: "red"}}
+	result, err := fixture.svc.WorkVerify(context.Background(), model.WorkActionRequest{ID: "WORK-001"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fixture.runner.calls != 1 {
+		t.Fatalf("runner calls=%d", fixture.runner.calls)
+	}
+	if deliveryCheckByName(t, result.Checks, "gate", string(model.VerificationAffectedTests)).Status != model.DeliveryCheckFail {
+		t.Fatalf("checks=%#v", result.Checks)
+	}
+	for _, kind := range []model.VerificationKind{model.VerificationBuild, model.VerificationLint} {
+		check := deliveryCheckByName(t, result.Checks, "gate", string(kind))
+		if check.Status != model.DeliveryCheckSkipped || check.Effect != model.DeliveryEffectStopped {
+			t.Fatalf("stopped %s=%#v", kind, check)
+		}
+	}
+}
+
+func TestWorkVerify_RequiredChecksRejectMissingInvalidOrIncompleteConfiguration(t *testing.T) {
+	tests := []struct {
+		name         string
+		constitution string
+	}{
+		{name: "missing"},
+		{name: "invalid", constitution: "not toml = ["},
+		{name: "gate absent", constitution: deliveryConstitution("lint")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fixture := newGateVerifyFixture(t, []model.VerificationKind{model.VerificationBuild}, tt.constitution)
+			result, err := fixture.svc.WorkVerify(context.Background(), model.WorkActionRequest{ID: "WORK-001"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if fixture.runner.calls != 0 || result.Certificate.Verdict != model.DeliveryVerdictFail {
+				t.Fatalf("calls=%d certificate=%#v checks=%#v", fixture.runner.calls, result.Certificate, result.Checks)
+			}
+			check := deliveryCheckByName(t, result.Checks, "configuration", string(model.VerificationBuild))
+			if check.Status != model.DeliveryCheckFail || check.Effect != model.DeliveryEffectBlocks {
+				t.Fatalf("configuration check=%#v", check)
+			}
+		})
+	}
+}
+
+func TestWorkVerify_DirtyTreePersistsFailureWithoutCommands(t *testing.T) {
+	fixture := newGateVerifyFixture(t, []model.VerificationKind{model.VerificationBuild}, deliveryConstitution("build"))
+	if err := os.WriteFile(filepath.Join(fixture.repo, "untracked.txt"), []byte("dirty\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := fixture.svc.WorkVerify(context.Background(), model.WorkActionRequest{ID: "WORK-001"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := deliveryCheckByName(t, result.Checks, "environment", "clean-worktree")
+	if !result.Certificate.Dirty || result.Certificate.Verdict != model.DeliveryVerdictFail || check.Status != model.DeliveryCheckFail || fixture.runner.calls != 0 || len(*fixture.tail) != 0 {
+		t.Fatalf("certificate=%#v check=%#v calls=%d tails=%v", result.Certificate, check, fixture.runner.calls, *fixture.tail)
 	}
 }

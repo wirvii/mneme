@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -42,9 +44,32 @@ func (svc *SDDService) WorkVerify(ctx context.Context, req model.WorkActionReque
 	if err != nil {
 		return model.WorkCapabilityResult{}, err
 	}
-	checks, observations, err := svc.evaluateDeliveryCriteria(ctx, aggregate, g, head)
+	dirty, dirtyPaths, err := g.IsDirty()
 	if err != nil {
 		return model.WorkCapabilityResult{}, err
+	}
+	var checks []*model.DeliveryCheck
+	var observations []model.CriterionObservation
+	if dirty {
+		checks = []*model.DeliveryCheck{{
+			Kind: "environment", Name: "clean-worktree", Status: model.DeliveryCheckFail, Effect: model.DeliveryEffectBlocks,
+			Detail: fmt.Sprintf("worktree has %d uncommitted path(s): %s", len(dirtyPaths), strings.Join(dirtyPaths, ", ")),
+		}}
+	} else {
+		constitution, constitutionErr := svc.deliveryConstitution(aggregate.Contract.Verification)
+		tailBytes := 0
+		if constitution != nil {
+			tailBytes = constitution.Execution.OutputTailBytes
+		}
+		runner := svc.deliveryRunnerFactory(tailBytes)
+		if runner == nil {
+			return model.WorkCapabilityResult{}, fmt.Errorf("%w: delivery runner: required", model.ErrInvalidContract)
+		}
+		checks, observations, err = svc.evaluateDeliveryCriteria(ctx, aggregate, g, head, runner)
+		if err != nil {
+			return model.WorkCapabilityResult{}, err
+		}
+		checks = append(checks, runRequestedDeliveryGates(ctx, runner, svc.repoDir, aggregate.Contract.Verification, constitution, constitutionErr, deliveryChecksBlocked(checks))...)
 	}
 	finished := time.Now().UTC()
 	if len(checks) == 0 {
@@ -59,7 +84,7 @@ func (svc *SDDService) WorkVerify(ctx context.Context, req model.WorkActionReque
 	cert := &model.DeliveryCertificate{
 		Project: contract.Project, WorkID: contract.ID,
 		ContractRevision: contract.ContractRevision, ContractHash: contract.ContractHash,
-		HeadSHA: head, BaseSHA: contract.BaseSHA, Verdict: model.DeriveDeliveryVerdict(checkValues),
+		HeadSHA: head, BaseSHA: contract.BaseSHA, Verdict: model.DeriveDeliveryVerdict(checkValues), Dirty: dirty,
 		Evidence: deliveryEvidence(checkValues), MnemeVersion: svc.mnemeVersion,
 		StartedAt: started, FinishedAt: finished, DurationMs: finished.Sub(started).Milliseconds(),
 	}
@@ -76,7 +101,7 @@ func (svc *SDDService) WorkVerify(ctx context.Context, req model.WorkActionReque
 	}, nil
 }
 
-func (svc *SDDService) evaluateDeliveryCriteria(ctx context.Context, aggregate *model.WorkAggregate, g *quality.Git, head string) ([]*model.DeliveryCheck, []model.CriterionObservation, error) {
+func (svc *SDDService) evaluateDeliveryCriteria(ctx context.Context, aggregate *model.WorkAggregate, g *quality.Git, head string, runner quality.Runner) ([]*model.DeliveryCheck, []model.CriterionObservation, error) {
 	if !requiresAcceptance(aggregate.Contract.Verification) {
 		if len(aggregate.Criteria) == 0 {
 			return nil, nil, nil
@@ -107,10 +132,6 @@ func (svc *SDDService) evaluateDeliveryCriteria(ctx context.Context, aggregate *
 	for _, criterion := range aggregate.Criteria {
 		stored[criterion.Key] = criterion
 	}
-	runner := svc.deliveryRunnerFactory(0)
-	if runner == nil {
-		return nil, nil, fmt.Errorf("%w: delivery runner: required", model.ErrInvalidContract)
-	}
 	observedAt := time.Now().UTC()
 	observations := make([]model.CriterionObservation, 0, len(doc.Criteria))
 	for _, criterion := range doc.Criteria {
@@ -122,6 +143,92 @@ func (svc *SDDService) evaluateDeliveryCriteria(ctx context.Context, aggregate *
 		}
 	}
 	return checks, observations, nil
+}
+
+func (svc *SDDService) deliveryConstitution(verification []model.VerificationKind) (*quality.Constitution, error) {
+	if !hasExternalDeliveryChecks(verification) {
+		return nil, nil
+	}
+	raw, err := os.ReadFile(filepath.Join(svc.repoDir, constitutionRelPath))
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", constitutionRelPath, err)
+	}
+	constitution, err := quality.Parse(raw)
+	if err != nil {
+		return nil, fmt.Errorf("parse %s: %w", constitutionRelPath, err)
+	}
+	return constitution, nil
+}
+
+func hasExternalDeliveryChecks(verification []model.VerificationKind) bool {
+	for _, kind := range verification {
+		if kind == model.VerificationAffectedTests || kind == model.VerificationBuild || kind == model.VerificationLint {
+			return true
+		}
+	}
+	return false
+}
+
+func deliveryChecksBlocked(checks []*model.DeliveryCheck) bool {
+	for _, check := range checks {
+		if check.Effect == model.DeliveryEffectBlocks && check.Status != model.DeliveryCheckPass {
+			return true
+		}
+	}
+	return false
+}
+
+func runRequestedDeliveryGates(ctx context.Context, runner quality.Runner, repoDir string, verification []model.VerificationKind, constitution *quality.Constitution, constitutionErr error, blocked bool) []*model.DeliveryCheck {
+	requested := make(map[model.VerificationKind]bool, len(verification))
+	for _, kind := range verification {
+		requested[kind] = true
+	}
+	gates := map[string]quality.Gate{}
+	if constitution != nil {
+		for _, gate := range constitution.Gates {
+			gates[gate.Name] = gate
+		}
+	}
+	mapping := []struct {
+		kind model.VerificationKind
+		gate string
+	}{
+		{model.VerificationAffectedTests, "test"},
+		{model.VerificationBuild, "build"},
+		{model.VerificationLint, "lint"},
+	}
+	var checks []*model.DeliveryCheck
+	for _, item := range mapping {
+		if !requested[item.kind] {
+			continue
+		}
+		gate, found := gates[item.gate]
+		if constitutionErr != nil || !found {
+			detail := fmt.Sprintf("required gate %q is absent", item.gate)
+			if constitutionErr != nil {
+				detail = constitutionErr.Error()
+			}
+			checks = append(checks, &model.DeliveryCheck{Kind: "configuration", Name: string(item.kind), Status: model.DeliveryCheckFail, Effect: model.DeliveryEffectBlocks, Detail: detail})
+			blocked = true
+			continue
+		}
+		if blocked {
+			checks = append(checks, &model.DeliveryCheck{Kind: "gate", Name: string(item.kind), Status: model.DeliveryCheckSkipped, Effect: model.DeliveryEffectStopped, Detail: "stopped after an earlier blocking result"})
+			continue
+		}
+		result := runner.Run(ctx, gate, repoDir)
+		status := model.DeliveryCheckPass
+		if result.Status != quality.GateStatusPass {
+			status = model.DeliveryCheckFail
+			blocked = true
+		}
+		checks = append(checks, &model.DeliveryCheck{
+			Kind: "gate", Name: string(item.kind), Status: status, Effect: model.DeliveryEffectBlocks,
+			Detail:     fmt.Sprintf("constitution gate %q exit_code=%d", gate.Name, result.ExitCode),
+			DurationMs: result.DurationMs, OutputSHA256: result.OutputSHA256, OutputTail: result.OutputTail,
+		})
+	}
+	return checks
 }
 
 func parseStoredDeliveryCriteria(criteria []model.WorkCriterion) (*quality.CriteriaDoc, error) {
