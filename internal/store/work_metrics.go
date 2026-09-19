@@ -92,6 +92,9 @@ func scanMetricContract(row workScanner) (*model.WorkContract, string, error) {
 	w.SourceType = model.WorkSourceType(source)
 	w.Status = model.WorkStatus(status)
 	w.DevelopmentMethod = model.DevelopmentMethod(method)
+	if !w.Status.Valid() {
+		return w, "status", fmt.Errorf("invalid work status %q", status)
+	}
 	if err := metricJSON(scopeRaw, &w.Scope); err != nil {
 		return w, "scope_json", err
 	}
@@ -171,6 +174,12 @@ func (s *SDDStore) listMetricHistory(ctx context.Context, workID string) ([]mode
 		entry.ContractRevision = revision
 		entry.FromStatus = model.WorkStatus(from)
 		entry.ToStatus = model.WorkStatus(to)
+		if !entry.FromStatus.Valid() {
+			return nil, "from_status", fmt.Errorf("invalid work status %q", from)
+		}
+		if !entry.ToStatus.Valid() {
+			return nil, "to_status", fmt.Errorf("invalid work status %q", to)
+		}
 		entry.At, err = parseTime(at)
 		if err != nil {
 			return nil, "at", err

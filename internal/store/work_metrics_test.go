@@ -91,6 +91,7 @@ func TestListWorkMetricFacts_CorruptionIsolatesOneWork(t *testing.T) {
 	}{
 		{name: "contract scope json", wantColumn: "scope_json", corrupt: metricCorruptContract("scope_json", "{")},
 		{name: "contract verification json", wantColumn: "verification_json", corrupt: metricCorruptContract("verification_json", "{")},
+		{name: "work status", wantColumn: "status", corrupt: metricCorruptContract("status", "corrupt-status")},
 		{name: "contract time", wantColumn: "locked_at", corrupt: func(t *testing.T, s *SDDStore) {
 			_, err := s.db.Exec(`UPDATE execution_contracts SET locked_at='bad-time' WHERE id='WORK-002'`)
 			if err != nil {
@@ -129,6 +130,8 @@ func TestListWorkMetricFacts_CorruptionIsolatesOneWork(t *testing.T) {
 				t.Fatal(err)
 			}
 		}},
+		{name: "history from status", wantColumn: "from_status", corrupt: metricCorruptHistory("from_status", "corrupt-from")},
+		{name: "history to status", wantColumn: "to_status", corrupt: metricCorruptHistory("to_status", "corrupt-to")},
 		{name: "certificate time", wantColumn: "started_at", corrupt: func(t *testing.T, s *SDDStore) {
 			metricInsertCertificate(t, s, "c-bad", "p", "WORK-002", model.DeliveryVerdictPass, 10)
 			_, err := s.db.Exec(`UPDATE delivery_certificates SET started_at='bad-time' WHERE id='c-bad'`)
@@ -182,6 +185,16 @@ func metricCorruptCertificate(column, value string) func(*testing.T, *SDDStore) 
 		t.Helper()
 		metricInsertCertificate(t, s, "c-bad", "p", "WORK-002", model.DeliveryVerdictPass, 10)
 		if _, err := s.db.Exec(`UPDATE delivery_certificates SET `+column+`=? WHERE id='c-bad'`, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func metricCorruptHistory(column, value string) func(*testing.T, *SDDStore) {
+	return func(t *testing.T, s *SDDStore) {
+		t.Helper()
+		metricInsertHistory(t, s, "h-bad", "WORK-002", model.WorkStatusLocked, model.WorkStatusImplementing, 1, metricStoreTime(10, 1))
+		if _, err := s.db.Exec(`UPDATE execution_history SET `+column+`=? WHERE id='h-bad'`, value); err != nil {
 			t.Fatal(err)
 		}
 	}
