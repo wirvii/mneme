@@ -96,6 +96,25 @@ func TestRenderSDDImportResult_EveryBranch(t *testing.T) {
 	}
 }
 
+func TestSDDImport_WorkCollisionNamesGoalsWithoutUUID(t *testing.T) {
+	const anchor = "0198f000-0000-7000-8000-000000000999"
+	result := &service.SDDImportResult{Skipped: []service.SDDImportSkip{{
+		ID: "WORK-007", Path: "work/WORK-007.md",
+		Reason: `correlativo-reclamado-por-dos-elementos: local="objetivo local" archivo="objetivo del fichero" (ver BL-202)`,
+	}}}
+	var out bytes.Buffer
+	renderSDDImportResult(&out, result)
+	got := out.String()
+	for _, want := range []string{"WORK-007", "objetivo local", "objetivo del fichero"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output = %q, want %q", got, want)
+		}
+	}
+	if strings.Contains(got, anchor) {
+		t.Errorf("output exposed UUID: %q", got)
+	}
+}
+
 // TestSDDImportCmd_ExitCodes is SPEC-131 AC23.
 func TestSDDImportCmd_ExitCodes(t *testing.T) {
 	t.Run("nothing skipped -> exit 0", func(t *testing.T) {

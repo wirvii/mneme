@@ -14,7 +14,31 @@ import (
 	"github.com/wirvii/mneme/internal/gitident"
 	"github.com/wirvii/mneme/internal/model"
 	"github.com/wirvii/mneme/internal/sddfile"
+	"github.com/wirvii/mneme/internal/service"
 )
+
+func TestSDDEnableExportStatus_WorkCounts(t *testing.T) {
+	plan := service.SDDPlan{BacklogCount: 2, SpecCount: 1, WorkCount: 3}
+	want := "2 backlog item(s), 1 spec(s), 3 work record(s)"
+
+	var enable bytes.Buffer
+	renderSDDEnableResult(&enable, &service.SDDEnableResult{RepoRoot: "/repo", Plan: plan})
+	if !strings.Contains(enable.String(), want) {
+		t.Errorf("enable output = %q, want %q", enable.String(), want)
+	}
+
+	var exported bytes.Buffer
+	renderSDDExportResult(&exported, &service.SDDExportResult{RepoRoot: "/repo", Plan: plan})
+	if !strings.Contains(exported.String(), want) {
+		t.Errorf("export output = %q, want %q", exported.String(), want)
+	}
+
+	var status bytes.Buffer
+	renderSDDStatusResult(&status, &service.SDDStatusResult{RepoRoot: "/repo", Plan: plan})
+	if !strings.Contains(status.String(), "2 backlog item(s), 1 spec(s)") || !strings.Contains(status.String(), "3 work record(s)") {
+		t.Errorf("status output = %q, want all three counts", status.String())
+	}
+}
 
 // runSDDCmd builds a minimal Cobra tree so newSDDCmd() can be invoked in
 // isolation, chdirs into cwd for the duration of the call (restored via

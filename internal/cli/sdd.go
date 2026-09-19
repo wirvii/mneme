@@ -177,12 +177,7 @@ make sense of.`,
 				return fmt.Errorf("sdd export: %w", err)
 			}
 
-			fmt.Fprintf(cmd.OutOrStdout(), "Exported %d backlog item(s) and %d spec(s) to %s/.mneme/sdd.\n",
-				result.Plan.BacklogCount, result.Plan.SpecCount, result.RepoRoot)
-			// SPEC-133 AC13: a row this export could not read never got a
-			// file — named here so the gap is never silent.
-			renderUnreadableRows(cmd.OutOrStdout(), result.Plan.Unreadable)
-			fmt.Fprintln(cmd.OutOrStdout(), "These files are likely pending commit — review with `git status` before committing.")
+			renderSDDExportResult(cmd.OutOrStdout(), result)
 			return nil
 		},
 	}
@@ -298,8 +293,8 @@ func renderSDDEnableResult(out io.Writer, result *service.SDDEnableResult) {
 		return
 	}
 
-	fmt.Fprintf(out, "Plan: %d backlog item(s), %d spec(s) would be exported to %s/.mneme/sdd.\n",
-		result.Plan.BacklogCount, result.Plan.SpecCount, result.RepoRoot)
+	fmt.Fprintf(out, "Plan: %d backlog item(s), %d spec(s), %d work record(s) would be exported to %s/.mneme/sdd.\n",
+		result.Plan.BacklogCount, result.Plan.SpecCount, result.Plan.WorkCount, result.RepoRoot)
 	// SPEC-133 AC10/AC13: a row this plan could not read never gets
 	// exported (Applied) or counted among what "would be exported" reads
 	// as complete (dry-run) — named here either way.
@@ -328,6 +323,13 @@ func renderSDDEnableResult(out io.Writer, result *service.SDDEnableResult) {
 	}
 	fmt.Fprintln(out, "These files are likely pending commit — review with `git status` before committing.")
 	fmt.Fprintln(out, "A teammate who clones needs only `mneme sdd hooks install` to start receiving imports too.")
+}
+
+func renderSDDExportResult(out io.Writer, result *service.SDDExportResult) {
+	fmt.Fprintf(out, "Exported %d backlog item(s), %d spec(s), %d work record(s) to %s/.mneme/sdd.\n",
+		result.Plan.BacklogCount, result.Plan.SpecCount, result.Plan.WorkCount, result.RepoRoot)
+	renderUnreadableRows(out, result.Plan.Unreadable)
+	fmt.Fprintln(out, "These files are likely pending commit — review with `git status` before committing.")
 }
 
 // renderSDDAlreadyEnabledResult prints EnableSDDRepo's "ya encendido" early
@@ -366,7 +368,8 @@ func renderSDDStatusResult(out io.Writer, result *service.SDDStatusResult) {
 		state = "enabled"
 	}
 	fmt.Fprintf(out, "SDD mechanism: %s (%s)\n", state, result.RepoRoot)
-	fmt.Fprintf(out, "Database has %d backlog item(s), %d spec(s).\n", result.Plan.BacklogCount, result.Plan.SpecCount)
+	fmt.Fprintf(out, "Database has %d backlog item(s), %d spec(s). It also has %d work record(s).\n",
+		result.Plan.BacklogCount, result.Plan.SpecCount, result.Plan.WorkCount)
 	// SPEC-133 AC10: the counts above stay exact (D6/D11) even when a row
 	// among them could not be fully read — named here instead of silently
 	// folded into that same count.
