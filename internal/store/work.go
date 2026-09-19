@@ -43,6 +43,13 @@ func (s *SDDStore) CreateWork(ctx context.Context, w *model.WorkContract, criter
 		if n == 0 {
 			return model.ErrSpecNotFound
 		}
+		result, err := tx.ExecContext(ctx, `UPDATE specs SET execution_model=? WHERE id=? AND project=?`, model.ExecutionModelDeliveryV2, w.SourceID, w.Project)
+		if err != nil {
+			return fmt.Errorf("store: create work: mark source spec: %w", err)
+		}
+		if !oneRow(result) {
+			return fmt.Errorf("store: create work: mark source spec: %w", model.ErrSpecNotFound)
+		}
 	}
 	anchor, err := uuid.NewV7()
 	if err != nil {
@@ -292,12 +299,19 @@ func (s *SDDStore) LockWork(ctx context.Context, id, baseSHA string) error {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	w, criteria, constraints, err := loadWorkForMutation(ctx, tx, id)
-	if err != nil {
+	if _, err := lockWorkTx(ctx, tx, id, baseSHA, ""); err != nil {
 		return err
 	}
+	return tx.Commit()
+}
+
+func lockWorkTx(ctx context.Context, tx *sql.Tx, id, baseSHA, by string) (time.Time, error) {
+	w, criteria, constraints, err := loadWorkForMutation(ctx, tx, id)
+	if err != nil {
+		return time.Time{}, err
+	}
 	if w.Status != model.WorkStatusDraft {
-		return model.ErrInvalidWorkTransition
+		return time.Time{}, model.ErrInvalidWorkTransition
 	}
 	now := time.Now().UTC()
 	w.Status = model.WorkStatusLocked
@@ -307,12 +321,39 @@ func (s *SDDStore) LockWork(ctx context.Context, id, baseSHA string) error {
 	w.ContractHash = model.ContractHash(*w, criteria, constraints)
 	res, err := tx.ExecContext(ctx, `UPDATE execution_contracts SET status=?,base_sha=?,contract_revision=?,contract_hash=?,locked_at=?,updated_at=? WHERE id=? AND status=?`, w.Status, w.BaseSHA, w.ContractRevision, w.ContractHash, formatTime(now), formatTime(now), id, model.WorkStatusDraft)
 	if err != nil {
-		return err
+		return time.Time{}, err
 	}
 	if !oneRow(res) {
+		return time.Time{}, model.ErrInvalidWorkTransition
+	}
+	if err := insertWorkHistory(ctx, tx, id, model.WorkStatusDraft, model.WorkStatusLocked, 1, by, "", now); err != nil {
+		return time.Time{}, err
+	}
+	return now, nil
+}
+
+// LockWorkAndStart locks a draft and starts implementation atomically.
+func (s *SDDStore) LockWorkAndStart(ctx context.Context, id, baseSHA, by string) error {
+	if strings.TrimSpace(baseSHA) == "" {
+		return fmt.Errorf("%w: base_sha: required", model.ErrInvalidContract)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	now, err := lockWorkTx(ctx, tx, id, baseSHA, by)
+	if err != nil {
+		return err
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE execution_contracts SET status=?,updated_at=? WHERE id=? AND status=?`, model.WorkStatusImplementing, formatTime(now), id, model.WorkStatusLocked)
+	if err != nil {
+		return err
+	}
+	if !oneRow(result) {
 		return model.ErrInvalidWorkTransition
 	}
-	if err := insertWorkHistory(ctx, tx, id, model.WorkStatusDraft, model.WorkStatusLocked, 1, "", "", now); err != nil {
+	if err := insertWorkHistory(ctx, tx, id, model.WorkStatusLocked, model.WorkStatusImplementing, 1, by, "", now); err != nil {
 		return err
 	}
 	return tx.Commit()

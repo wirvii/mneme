@@ -396,6 +396,112 @@ func TestCreateWork_FromExistingSpec(t *testing.T) {
 	}
 }
 
+func TestCreateWork_FromSpecMarksExecutionModelAtomically(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		rollback bool
+	}{
+		{name: "commit"},
+		{name: "rollback", rollback: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newTestSDDStore(t)
+			ctx := context.Background()
+			spec := &model.Spec{ID: "SPEC-001", Title: "source", Status: model.SpecStatusDraft, Project: "p", Lane: model.LaneStandard}
+			if err := s.CreateSpec(ctx, spec); err != nil {
+				t.Fatal(err)
+			}
+			if tc.rollback {
+				if _, err := s.db.Exec(`CREATE TRIGGER abort_second_work_criterion BEFORE INSERT ON execution_criteria WHEN NEW.seq=2 BEGIN SELECT RAISE(ABORT,'second'); END`); err != nil {
+					t.Fatal(err)
+				}
+			}
+			w := testWork("WORK-001")
+			w.SourceType = model.WorkSourceSpec
+			w.SourceID = spec.ID
+			err := s.CreateWork(ctx, w, testCriteria(), nil)
+			if tc.rollback {
+				if err == nil {
+					t.Fatal("CreateWork succeeded despite abort trigger")
+				}
+				var contracts int
+				if err := s.db.QueryRow(`SELECT COUNT(*) FROM execution_contracts`).Scan(&contracts); err != nil || contracts != 0 {
+					t.Fatalf("contracts=%d err=%v", contracts, err)
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			got, err := s.GetSpec(ctx, spec.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := model.ExecutionModelDeliveryV2
+			if tc.rollback {
+				want = model.ExecutionModelLegacy
+			}
+			if got.ExecutionModel != want {
+				t.Fatalf("execution model = %q, want %q", got.ExecutionModel, want)
+			}
+		})
+	}
+}
+
+func TestLockWorkAndStart_CapturesBothTransitions(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		rollback bool
+	}{
+		{name: "commit"},
+		{name: "rollback", rollback: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newTestSDDStore(t)
+			ctx := context.Background()
+			createTestWork(t, s, "WORK-001")
+			if tc.rollback {
+				if _, err := s.db.Exec(`CREATE TRIGGER abort_start_history BEFORE INSERT ON execution_history WHEN NEW.to_status='implementing' BEGIN SELECT RAISE(ABORT,'start'); END`); err != nil {
+					t.Fatal(err)
+				}
+			}
+			err := s.LockWorkAndStart(ctx, "WORK-001", "base", "backend")
+			if tc.rollback {
+				if err == nil {
+					t.Fatal("LockWorkAndStart succeeded despite abort trigger")
+				}
+				agg, getErr := s.GetWorkAggregate(ctx, "WORK-001")
+				if getErr != nil {
+					t.Fatal(getErr)
+				}
+				if agg.Contract.Status != model.WorkStatusDraft || agg.Contract.BaseSHA != "" || agg.Contract.ContractHash != "" || agg.Contract.ContractRevision != 0 || agg.Contract.LockedAt != nil || len(agg.History) != 0 {
+					t.Fatalf("failed start was not rolled back: %#v history=%#v", agg.Contract, agg.History)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			agg, err := s.GetWorkAggregate(ctx, "WORK-001")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if agg.Contract.Status != model.WorkStatusImplementing || agg.Contract.BaseSHA != "base" || agg.Contract.ContractRevision != 1 || agg.Contract.LockedAt == nil {
+				t.Fatalf("work not started: %#v", agg.Contract)
+			}
+			if agg.Contract.ContractHash != model.ContractHash(*agg.Contract, agg.Criteria, agg.Constraints) {
+				t.Fatal("contract hash does not match persisted aggregate")
+			}
+			if len(agg.History) != 2 || agg.History[0].FromStatus != model.WorkStatusDraft || agg.History[0].ToStatus != model.WorkStatusLocked || agg.History[1].FromStatus != model.WorkStatusLocked || agg.History[1].ToStatus != model.WorkStatusImplementing {
+				t.Fatalf("history = %#v", agg.History)
+			}
+			for _, entry := range agg.History {
+				if entry.By != "backend" || entry.ContractRevision != 1 {
+					t.Fatalf("history actor/revision = %#v", entry)
+				}
+			}
+		})
+	}
+}
+
 func TestGetWork_RejectsCorruptPersistedFields(t *testing.T) {
 	s := newTestSDDStore(t)
 	createTestWork(t, s, "WORK-001")
