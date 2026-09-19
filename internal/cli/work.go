@@ -28,7 +28,37 @@ func newWorkCmd() *cobra.Command {
 		newWorkVerifyCmd(),
 		newWorkCompleteCmd(),
 		newWorkResumeCmd(),
+		newWorkMetricsCmd(),
 	)
+	return cmd
+}
+
+func newWorkMetricsCmd() *cobra.Command {
+	var limit int
+	var jsonOutput bool
+	cmd := &cobra.Command{
+		Use:  "metrics [WORK-ID...]",
+		Args: cobra.ArbitraryArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			var ids []string
+			if len(args) > 0 {
+				ids = append([]string(nil), args...)
+			}
+			result, err := callWorkForCommand(cmd, func(svc workService) (any, error) {
+				return svc.WorkMetrics(cmd.Context(), model.WorkMetricsRequest{IDs: ids, Limit: limit})
+			})
+			if err != nil {
+				return err
+			}
+			metrics := result.(model.WorkMetricsResponse)
+			if jsonOutput {
+				return printJSON(cmd.OutOrStdout(), metrics)
+			}
+			return writeWorkMetrics(cmd.OutOrStdout(), metrics)
+		},
+	}
+	cmd.Flags().IntVar(&limit, "limit", 0, "Maximum detail rows for a project report")
+	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Output result as JSON")
 	return cmd
 }
 
@@ -274,7 +304,10 @@ type workService interface {
 	WorkVerify(context.Context, model.WorkActionRequest) (model.WorkCapabilityResult, error)
 	WorkComplete(context.Context, model.WorkCompleteRequest) (model.WorkCapabilityResult, error)
 	WorkResume(context.Context, model.WorkResumeRequest) (model.WorkGetResponse, error)
+	WorkMetrics(context.Context, model.WorkMetricsRequest) (model.WorkMetricsResponse, error)
 }
+
+var callWorkForCommand = callWork
 
 func callWork(cmd *cobra.Command, call func(workService) (any, error)) (any, error) {
 	svc, cleanup, err := initSDDService()
@@ -341,6 +374,40 @@ func writeWorkSummary(w io.Writer, label string, work model.WorkGetResponse) err
 		label, work.Contract.ID, source, work.Contract.Status, work.Contract.ContractRevision, base, hash,
 		len(work.Criteria), len(work.Constraints), len(work.Findings))
 	return err
+}
+
+func writeWorkMetrics(w io.Writer, result model.WorkMetricsResponse) error {
+	median, p95 := "-", "-"
+	if result.Summary.CycleDuration.MedianMs != nil {
+		median = fmt.Sprintf("%dms", *result.Summary.CycleDuration.MedianMs)
+	}
+	if result.Summary.CycleDuration.P95Ms != nil {
+		p95 = fmt.Sprintf("%dms", *result.Summary.CycleDuration.P95Ms)
+	}
+	if _, err := fmt.Fprintf(w, "METRICAS %s total:%d legibles:%d ilegibles:%d draft:%d active:%d done:%d abandoned:%d duracion-terminal:%d/%dms mediana:%s p95:%s correcciones:%d escaladas:%d reanudaciones:%d evidencia-local:%d completa/%d parcial/%d no-iniciada\n",
+		result.Project, result.Total, result.Included, result.UnreadableCount,
+		result.Summary.Draft, result.Summary.Active, result.Summary.Done, result.Summary.Abandoned,
+		result.Summary.CycleDuration.Count, result.Summary.CycleDuration.TotalMs, median, p95,
+		result.Summary.AutomaticCorrections, result.Summary.Escalations, result.Summary.Resumptions,
+		result.Summary.LocalEvidenceComplete, result.Summary.LocalEvidencePartial, result.Summary.LocalEvidenceNotStarted); err != nil {
+		return err
+	}
+	for _, detail := range result.Details {
+		duration := "no terminada"
+		if detail.CycleDurationMs != nil {
+			duration = fmt.Sprintf("%dms", *detail.CycleDurationMs)
+		}
+		evidence := string(detail.VerificationEvidence)
+		if detail.VerificationEvidence == model.WorkMetricEvidencePartial {
+			evidence = "certificados locales incompletos"
+		}
+		if _, err := fmt.Fprintf(w, "%s status:%s duracion:%s certificados-locales:%d tiempo-local:%dms evidencia:%s correcciones:%d escaladas:%d reanudaciones:%d\n",
+			detail.ID, detail.Status, duration, detail.DeliveryCertificates, detail.LocalVerificationDurationMs,
+			evidence, detail.AutomaticCorrections, detail.Escalations, detail.Resumptions); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func writeWorkCapability(w io.Writer, result model.WorkCapabilityResult) error {

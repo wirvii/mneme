@@ -2,20 +2,23 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
 	"github.com/wirvii/mneme/internal/model"
 )
 
-func TestWorkCommandsRegisterEightOperations(t *testing.T) {
+func TestWorkCommandsRegisterNineOperations(t *testing.T) {
 	cmd := newWorkCmd()
 	want := map[string]bool{
 		"begin": false, "get": false, "lock": false, "amend": false,
-		"review": false, "verify": false, "complete": false, "resume": false,
+		"review": false, "verify": false, "complete": false, "resume": false, "metrics": false,
 	}
 	for _, child := range cmd.Commands() {
 		if _, ok := want[child.Name()]; ok {
@@ -29,6 +32,112 @@ func TestWorkCommandsRegisterEightOperations(t *testing.T) {
 	}
 	if len(cmd.Commands()) != len(want) {
 		t.Fatalf("work has %d subcommands, want %d", len(cmd.Commands()), len(want))
+	}
+}
+
+type metricsWorkServiceStub struct {
+	workService
+	requests []model.WorkMetricsRequest
+	result   model.WorkMetricsResponse
+}
+
+func (s *metricsWorkServiceStub) WorkMetrics(_ context.Context, req model.WorkMetricsRequest) (model.WorkMetricsResponse, error) {
+	s.requests = append(s.requests, req)
+	return s.result, nil
+}
+
+func TestWorkMetrics_RequestShapeAndJSON(t *testing.T) {
+	original := callWorkForCommand
+	t.Cleanup(func() { callWorkForCommand = original })
+	tests := []struct {
+		name string
+		args []string
+		want model.WorkMetricsRequest
+		json bool
+	}{
+		{name: "defaults", args: []string{"metrics"}, want: model.WorkMetricsRequest{}},
+		{name: "ordered ids", args: []string{"metrics", "WORK-003", "WORK-001"}, want: model.WorkMetricsRequest{IDs: []string{"WORK-003", "WORK-001"}}},
+		{name: "limit", args: []string{"metrics", "--limit", "10"}, want: model.WorkMetricsRequest{Limit: 10}},
+		{name: "json", args: []string{"metrics", "--json"}, want: model.WorkMetricsRequest{}, json: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stub := &metricsWorkServiceStub{result: model.WorkMetricsResponse{Project: "p", Total: 2}}
+			callWorkForCommand = func(cmd *cobra.Command, call func(workService) (any, error)) (any, error) {
+				return call(stub)
+			}
+			cmd := newWorkCmd()
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+			cmd.SetArgs(tt.args)
+			if err := cmd.Execute(); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(stub.requests, []model.WorkMetricsRequest{tt.want}) {
+				t.Fatalf("requests = %#v, want %#v", stub.requests, tt.want)
+			}
+			if tt.json {
+				var decoded model.WorkMetricsResponse
+				if err := json.Unmarshal(out.Bytes(), &decoded); err != nil || decoded.Total != 2 {
+					t.Fatalf("JSON output = %q, decoded=%#v err=%v", out.String(), decoded, err)
+				}
+			}
+		})
+	}
+}
+
+func TestWorkMetrics_HumanOutputIsBoundedAndHonest(t *testing.T) {
+	duration := int64(300000)
+	result := model.WorkMetricsResponse{
+		Project: "p", Total: 3, Included: 2, UnreadableCount: 1,
+		Summary: model.WorkMetricsSummary{
+			Works: 2, Done: 2, DoneWithoutCorrectionOrEscalation: 1, DoneAfterCorrection: 1,
+			AutomaticCorrections: 1, CorrectionCompleted: 1, Escalations: 1,
+			LocalEvidenceComplete: 1, LocalEvidencePartial: 1,
+			CycleDuration: model.WorkDurationSummary{Count: 2, TotalMs: 600000, MedianMs: &duration, P95Ms: &duration},
+		},
+		Details: []model.WorkMetric{
+			{ID: "WORK-001", Status: model.WorkStatusDone, CycleDurationMs: &duration, DurationFinal: true, VerificationEvidence: model.WorkMetricEvidenceComplete, DeliveryCertificates: 1, LocalVerificationDurationMs: 50, DoneWithoutCorrectionOrEscalation: true},
+			{ID: "WORK-002", Status: model.WorkStatusDone, CycleDurationMs: &duration, DurationFinal: true, VerificationEvidence: model.WorkMetricEvidencePartial, DeliveryCertificates: 1, LocalVerificationDurationMs: 40, AutomaticCorrections: 1, Escalations: 1, DoneAfterCorrection: true},
+		},
+	}
+	var out bytes.Buffer
+	if err := writeWorkMetrics(&out, result); err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	for _, want := range []string{
+		"total:3", "legibles:2", "ilegibles:1", "done:2", "duracion-terminal:2/600000ms", "mediana:300000ms", "p95:300000ms",
+		"correcciones:1", "escaladas:1", "reanudaciones:0", "evidencia-local:1 completa/1 parcial/0 no-iniciada",
+		"WORK-001", "WORK-002", "certificados locales incompletos",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("output %q lacks %q", text, want)
+		}
+	}
+	if strings.Contains(text, "0 verificaciones") {
+		t.Fatalf("output invents zero verifications: %q", text)
+	}
+}
+
+func TestWorkMetrics_JSONParity(t *testing.T) {
+	duration := int64(42)
+	want := model.WorkMetricsResponse{
+		Project: "p", Total: 2, Included: 1, UnreadableCount: 1,
+		Unreadable: []model.UnreadableRow{{Kind: "work", ID: "WORK-002", Column: "duration_ms", Reason: "invalid"}},
+		Summary:    model.WorkMetricsSummary{Works: 1, Done: 1, CycleDuration: model.WorkDurationSummary{Count: 1, TotalMs: 42, MedianMs: &duration, P95Ms: &duration}},
+		Details:    []model.WorkMetric{{ID: "WORK-001", Status: model.WorkStatusDone, CycleDurationMs: &duration, DurationFinal: true, VerificationEvidence: model.WorkMetricEvidenceComplete}},
+	}
+	var out bytes.Buffer
+	if err := printJSON(&out, want); err != nil {
+		t.Fatal(err)
+	}
+	var got model.WorkMetricsResponse
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("JSON response = %#v, want %#v", got, want)
 	}
 }
 
