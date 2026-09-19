@@ -89,6 +89,16 @@ type DeliveryCheck struct {
 	CreatedAt                time.Time
 }
 
+// CriterionObservation carries one automatic criterion result that must commit
+// atomically with the delivery certificate which produced it.
+type CriterionObservation struct {
+	CriterionID string
+	Status      CriterionStatus
+	Evidence    string
+	CheckedBy   string
+	CheckedAt   time.Time
+}
+
 // CompletionInput contains every independent fact required to close work.
 type CompletionInput struct {
 	Status                WorkStatus

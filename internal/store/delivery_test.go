@@ -76,8 +76,8 @@ func TestInsertDeliveryCertificate_AtomicChecks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	now := time.Now().UTC()
-	cert := &model.DeliveryCertificate{Project: "p", WorkID: "WORK-001", ContractRevision: 1, ContractHash: "h", HeadSHA: "head", Verdict: model.DeliveryVerdictFail, StartedAt: now, FinishedAt: now}
+	cert, _ := deliveryEvaluationFixture(t, s, "WORK-001")
+	cert.Verdict = model.DeliveryVerdictFail
 	err = s.InsertDeliveryCertificate(context.Background(), cert, []*model.DeliveryCheck{{Kind: "gate", Name: "build", Status: model.DeliveryCheckPass, Effect: model.DeliveryEffectBlocks}, {Kind: "gate", Name: "lint", Status: model.DeliveryCheckPass, Effect: model.DeliveryEffectBlocks}})
 	if err == nil {
 		t.Fatal("expected trigger error")
@@ -88,16 +88,155 @@ func TestInsertDeliveryCertificate_AtomicChecks(t *testing.T) {
 	}
 }
 
+func deliveryEvaluationFixture(t *testing.T, s *SDDStore, workID string) (*model.DeliveryCertificate, []*model.DeliveryCheck) {
+	t.Helper()
+	work, err := s.GetWork(context.Background(), workID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	cert := &model.DeliveryCertificate{
+		Project: work.Project, WorkID: work.ID,
+		ContractRevision: work.ContractRevision, ContractHash: work.ContractHash,
+		HeadSHA: "head", BaseSHA: work.BaseSHA, Verdict: model.DeliveryVerdictPass,
+		StartedAt: now, FinishedAt: now,
+	}
+	checks := []*model.DeliveryCheck{
+		{Kind: "criterion", Name: "AC1", Status: model.DeliveryCheckPass, Effect: model.DeliveryEffectBlocks},
+		{Kind: "criterion", Name: "AC2", Status: model.DeliveryCheckPass, Effect: model.DeliveryEffectBlocks},
+	}
+	return cert, checks
+}
+
+func TestInsertDeliveryEvaluation_AtomicallyWritesChecksAndObservations(t *testing.T) {
+	s := newTestSDDStore(t)
+	workInReview(t, s, "WORK-001", model.WorkStatusVerifying)
+	work, err := s.GetWorkAggregate(context.Background(), "WORK-001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, checks := deliveryEvaluationFixture(t, s, "WORK-001")
+	now := time.Now().UTC()
+	observations := []model.CriterionObservation{
+		{CriterionID: work.Criteria[0].ID, Status: model.CriterionPass, Evidence: "passed", CheckedBy: "verifier", CheckedAt: now},
+		{CriterionID: work.Criteria[1].ID, Status: model.CriterionVacuous, Evidence: "already true", CheckedBy: "verifier", CheckedAt: now},
+	}
+
+	if err := s.InsertDeliveryEvaluation(context.Background(), cert, checks, observations); err != nil {
+		t.Fatal(err)
+	}
+	if checks[0].Seq != 1 || checks[1].Seq != 2 || checks[0].CertificateID != cert.ID || checks[1].CertificateID != cert.ID {
+		t.Fatalf("checks=%#v", checks)
+	}
+	got, err := s.GetWorkAggregate(context.Background(), "WORK-001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Criteria[0].Status != model.CriterionPass || got.Criteria[0].Evidence != "passed" || got.Criteria[0].CheckedBy != "verifier" || got.Criteria[0].CheckedAt == nil {
+		t.Fatalf("criterion 1=%#v", got.Criteria[0])
+	}
+	if got.Criteria[1].Status != model.CriterionVacuous || got.Criteria[1].Evidence != "already true" || got.Criteria[1].CheckedAt == nil {
+		t.Fatalf("criterion 2=%#v", got.Criteria[1])
+	}
+}
+
+func TestInsertDeliveryEvaluation_PreservesSignedObservation(t *testing.T) {
+	s := newTestSDDStore(t)
+	workInReview(t, s, "WORK-001", model.WorkStatusVerifying)
+	work, err := s.GetWorkAggregate(context.Background(), "WORK-001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	signedAt := time.Now().UTC().Add(-time.Minute)
+	if err := s.UpdateCriterionResult(context.Background(), work.Criteria[0].ID, model.CriterionSigned, "human evidence", "owner", signedAt); err != nil {
+		t.Fatal(err)
+	}
+	cert, checks := deliveryEvaluationFixture(t, s, "WORK-001")
+	observation := model.CriterionObservation{CriterionID: work.Criteria[0].ID, Status: model.CriterionFail, Evidence: "current failure", CheckedBy: "verifier", CheckedAt: time.Now().UTC()}
+	if err := s.InsertDeliveryEvaluation(context.Background(), cert, checks, []model.CriterionObservation{observation}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetWorkAggregate(context.Background(), "WORK-001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Criteria[0].Status != model.CriterionSigned || got.Criteria[0].Evidence != "human evidence" || got.Criteria[0].CheckedBy != "owner" || got.Criteria[0].CheckedAt == nil || !got.Criteria[0].CheckedAt.Equal(signedAt) {
+		t.Fatalf("signed criterion overwritten: %#v", got.Criteria[0])
+	}
+}
+
+func TestInsertDeliveryEvaluation_ValidatesWorkSnapshot(t *testing.T) {
+	tests := []struct {
+		name   string
+		status model.WorkStatus
+		mutate func(*model.DeliveryCertificate)
+	}{
+		{name: "locked state", status: model.WorkStatusLocked},
+		{name: "revision", status: model.WorkStatusVerifying, mutate: func(c *model.DeliveryCertificate) { c.ContractRevision++ }},
+		{name: "hash", status: model.WorkStatusVerifying, mutate: func(c *model.DeliveryCertificate) { c.ContractHash = "stale" }},
+		{name: "base", status: model.WorkStatusVerifying, mutate: func(c *model.DeliveryCertificate) { c.BaseSHA = "stale" }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := newTestSDDStore(t)
+			workInReview(t, s, "WORK-001", tt.status)
+			cert, checks := deliveryEvaluationFixture(t, s, "WORK-001")
+			if tt.mutate != nil {
+				tt.mutate(cert)
+			}
+			if err := s.InsertDeliveryEvaluation(context.Background(), cert, checks, nil); !errors.Is(err, model.ErrInvalidWorkTransition) && !errors.Is(err, model.ErrInvalidContract) {
+				t.Fatalf("error=%v", err)
+			}
+			var count int
+			if err := s.db.QueryRow(`SELECT COUNT(*) FROM delivery_certificates WHERE work_id='WORK-001'`).Scan(&count); err != nil || count != 0 {
+				t.Fatalf("certificates=%d err=%v", count, err)
+			}
+		})
+	}
+}
+
+func TestInsertDeliveryEvaluation_RollsBackCertificateChecksAndObservations(t *testing.T) {
+	s := newTestSDDStore(t)
+	workInReview(t, s, "WORK-001", model.WorkStatusVerifying)
+	work, err := s.GetWorkAggregate(context.Background(), "WORK-001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`CREATE TRIGGER abort_evaluation_second_check BEFORE INSERT ON delivery_checks WHEN NEW.seq=2 BEGIN SELECT RAISE(ABORT,'second'); END`); err != nil {
+		t.Fatal(err)
+	}
+	cert, checks := deliveryEvaluationFixture(t, s, "WORK-001")
+	observations := []model.CriterionObservation{{CriterionID: work.Criteria[0].ID, Status: model.CriterionFail, Evidence: "must roll back", CheckedBy: "verifier", CheckedAt: time.Now().UTC()}}
+	if err := s.InsertDeliveryEvaluation(context.Background(), cert, checks, observations); err == nil {
+		t.Fatal("expected trigger error")
+	}
+	var certificates, rows int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM delivery_certificates WHERE work_id='WORK-001'`).Scan(&certificates); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM delivery_checks`).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetWorkAggregate(context.Background(), "WORK-001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if certificates != 0 || rows != 0 || got.Criteria[0].Status != model.CriterionPending || got.Criteria[0].Evidence != "" || got.Criteria[0].CheckedAt != nil {
+		t.Fatalf("certificates=%d checks=%d criterion=%#v", certificates, rows, got.Criteria[0])
+	}
+}
+
 func TestDeliveryCertificateRoundTrip(t *testing.T) {
 	s := newTestSDDStore(t)
 	workInReview(t, s, "WORK-001", model.WorkStatusVerifying)
-	now := time.Now().UTC()
-	cert := &model.DeliveryCertificate{Project: "p", WorkID: "WORK-001", ContractRevision: 1, ContractHash: "h", HeadSHA: "head", BaseSHA: "base", Verdict: model.DeliveryVerdictPass, Evidence: "e", StartedAt: now, FinishedAt: now, DurationMs: 12}
+	cert, _ := deliveryEvaluationFixture(t, s, "WORK-001")
+	cert.Evidence = "e"
+	cert.DurationMs = 12
 	checks := []*model.DeliveryCheck{{Kind: "gate", Name: "build", Status: model.DeliveryCheckPass, Effect: model.DeliveryEffectBlocks}}
 	if err := s.InsertDeliveryCertificate(context.Background(), cert, checks); err != nil {
 		t.Fatal(err)
 	}
-	got, err := s.GetLatestDeliveryCertificate(context.Background(), "p", "WORK-001")
+	got, err := s.GetLatestDeliveryCertificate(context.Background(), cert.Project, "WORK-001")
 	if err != nil || got.ID != cert.ID || got.Verdict != model.DeliveryVerdictPass {
 		t.Fatalf("got=%#v err=%v", got, err)
 	}

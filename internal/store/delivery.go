@@ -138,8 +138,24 @@ func (s *SDDStore) CountOpenBlockingFindings(ctx context.Context, workID string)
 
 // InsertDeliveryCertificate atomically writes a certificate and its ordered checks.
 func (s *SDDStore) InsertDeliveryCertificate(ctx context.Context, cert *model.DeliveryCertificate, checks []*model.DeliveryCheck) error {
+	return s.InsertDeliveryEvaluation(ctx, cert, checks, nil)
+}
+
+// InsertDeliveryEvaluation atomically writes one factual delivery result and
+// the automatic criterion observations produced by that same evaluation.
+func (s *SDDStore) InsertDeliveryEvaluation(ctx context.Context, cert *model.DeliveryCertificate, checks []*model.DeliveryCheck, observations []model.CriterionObservation) error {
 	if !cert.Verdict.Valid() {
 		return model.ErrInvalidContract
+	}
+	for _, check := range checks {
+		if !check.Status.Valid() || !check.Effect.Valid() {
+			return model.ErrInvalidContract
+		}
+	}
+	for _, observation := range observations {
+		if observation.CriterionID == "" || (observation.Status != model.CriterionPass && observation.Status != model.CriterionFail && observation.Status != model.CriterionVacuous) || observation.CheckedAt.IsZero() {
+			return model.ErrInvalidContract
+		}
 	}
 	id, err := uuid.NewV7()
 	if err != nil {
@@ -152,6 +168,19 @@ func (s *SDDStore) InsertDeliveryCertificate(ctx context.Context, cert *model.De
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+	var status, project, contractHash, baseSHA string
+	var revision int
+	if err := tx.QueryRowContext(ctx, `SELECT status,project,contract_revision,contract_hash,base_sha FROM execution_contracts WHERE id=?`, cert.WorkID).Scan(&status, &project, &revision, &contractHash, &baseSHA); errors.Is(err, sql.ErrNoRows) {
+		return model.ErrWorkNotFound
+	} else if err != nil {
+		return fmt.Errorf("store: insert delivery evaluation: load work: %w", err)
+	}
+	if model.WorkStatus(status) != model.WorkStatusVerifying && model.WorkStatus(status) != model.WorkStatusTargetedVerifying {
+		return model.ErrInvalidWorkTransition
+	}
+	if cert.Project != project || cert.ContractRevision != revision || cert.ContractHash != contractHash || cert.BaseSHA != baseSHA {
+		return model.ErrInvalidContract
+	}
 	dirty := 0
 	if cert.Dirty {
 		dirty = 1
@@ -161,9 +190,6 @@ func (s *SDDStore) InsertDeliveryCertificate(ctx context.Context, cert *model.De
 		return fmt.Errorf("store: insert delivery certificate: %w", err)
 	}
 	for i, check := range checks {
-		if !check.Status.Valid() || !check.Effect.Valid() {
-			return model.ErrInvalidContract
-		}
 		check.CertificateID = cert.ID
 		check.Seq = i + 1
 		check.CreatedAt = cert.CreatedAt
@@ -172,6 +198,24 @@ func (s *SDDStore) InsertDeliveryCertificate(ctx context.Context, cert *model.De
 			return fmt.Errorf("store: insert delivery certificate: check %d: %w", i+1, err)
 		}
 		check.ID, _ = res.LastInsertId()
+	}
+	for i, observation := range observations {
+		var current string
+		if err := tx.QueryRowContext(ctx, `SELECT status FROM execution_criteria WHERE id=? AND work_id=?`, observation.CriterionID, cert.WorkID).Scan(&current); errors.Is(err, sql.ErrNoRows) {
+			return model.ErrInvalidContract
+		} else if err != nil {
+			return fmt.Errorf("store: insert delivery evaluation: observation %d: %w", i+1, err)
+		}
+		if model.CriterionStatus(current) == model.CriterionSigned {
+			continue
+		}
+		result, err := tx.ExecContext(ctx, `UPDATE execution_criteria SET status=?,evidence=?,checked_by=?,checked_at=? WHERE id=? AND work_id=?`, observation.Status, observation.Evidence, observation.CheckedBy, formatTime(observation.CheckedAt), observation.CriterionID, cert.WorkID)
+		if err != nil {
+			return fmt.Errorf("store: insert delivery evaluation: observation %d: %w", i+1, err)
+		}
+		if !oneRow(result) {
+			return model.ErrInvalidContract
+		}
 	}
 	return tx.Commit()
 }
