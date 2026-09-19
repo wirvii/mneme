@@ -143,6 +143,24 @@ func reviewRequest(head string) model.WorkReviewRequest {
 	return model.WorkReviewRequest{ID: "WORK-001", By: "qa-tester", HeadSHA: head}
 }
 
+func commitReviewConstitution(t *testing.T, svc *SDDService) string {
+	t.Helper()
+	path := filepath.Join(svc.repoDir, constitutionRelPath)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(deliveryConstitution("build")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runVerifyGit(t, svc.repoDir, "add", ".")
+	runVerifyGit(t, svc.repoDir, "commit", "-q", "-m", "quality")
+	head, err := (&quality.Git{RepoDir: svc.repoDir}).HeadSHA()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return head
+}
+
 func TestWorkReview_RequiresImplementingAndExactCleanHead(t *testing.T) {
 	for _, status := range []model.WorkStatus{model.WorkStatusDraft, model.WorkStatusLocked, model.WorkStatusVerifying} {
 		t.Run(string(status), func(t *testing.T) {
@@ -193,7 +211,8 @@ func TestWorkReview_LegacyHasNoEffects(t *testing.T) {
 }
 
 func TestWorkReview_PersistsOneCompleteReviewWithoutLaterTransition(t *testing.T) {
-	svc, _, head := reviewService(t, model.WorkStatusImplementing)
+	svc, _, _ := reviewService(t, model.WorkStatusImplementing)
+	head := commitReviewConstitution(t, svc)
 	result, err := svc.WorkReview(context.Background(), reviewRequest(head))
 	if err != nil {
 		t.Fatal(err)
@@ -215,6 +234,60 @@ func TestWorkReview_PersistsOneCompleteReviewWithoutLaterTransition(t *testing.T
 	}
 	if _, err := svc.WorkReview(context.Background(), reviewRequest(head)); !errors.Is(err, model.ErrInvalidWorkTransition) {
 		t.Fatalf("second review error = %v", err)
+	}
+}
+
+func TestWorkReview_InitialDecisionAndMandate(t *testing.T) {
+	t.Run("green", func(t *testing.T) {
+		svc, _, _ := reviewService(t, model.WorkStatusImplementing)
+		head := commitReviewConstitution(t, svc)
+		result, err := svc.WorkReview(context.Background(), reviewRequest(head))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.ReviewPhase != model.ReviewPhaseInitial || result.NextStatus != model.WorkStatusVerifying || result.CorrectionMandate != nil || result.Work.Contract.CorrectionRounds != 0 {
+			t.Fatalf("result = %#v", result)
+		}
+	})
+	t.Run("correction", func(t *testing.T) {
+		svc, _, head := reviewService(t, model.WorkStatusImplementing)
+		req := reviewRequest(head)
+		req.Findings = []model.WorkReviewFindingInput{{Category: model.FindingRegression, Severity: model.PriorityHigh, Description: "regression", Evidence: "test output"}}
+		result, err := svc.WorkReview(context.Background(), req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.ReviewPhase != model.ReviewPhaseInitial || result.NextStatus != model.WorkStatusCorrecting || result.CorrectionMandate == nil || result.Work.Contract.CorrectionRounds != 1 {
+			t.Fatalf("result = %#v", result)
+		}
+	})
+}
+
+func TestWorkReview_CorrectionMandateIsExact(t *testing.T) {
+	svc, head := reviewServiceWithConstraints(t, nil)
+	req := reviewRequest(head)
+	req.Findings = []model.WorkReviewFindingInput{
+		{Category: model.FindingRegression, Severity: model.PriorityHigh, Description: "must fix", Evidence: "red test"},
+		{Category: model.FindingImprovement, Severity: model.PriorityCritical, Description: "optional", Evidence: "review note"},
+	}
+	result, err := svc.WorkReview(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mandate := result.CorrectionMandate
+	if mandate == nil || mandate.WorkID != "WORK-001" || mandate.ContractRevision != result.Work.Contract.ContractRevision || mandate.ContractHash != result.Work.Contract.ContractHash || mandate.CertificateID != result.Certificate.ID || mandate.CertificateHeadSHA != head || mandate.CorrectionRound != 1 {
+		t.Fatalf("mandate identity = %#v", mandate)
+	}
+	if len(mandate.BlockingFindings) != 1 || mandate.BlockingFindings[0].Description != "must fix" {
+		t.Fatalf("blocking findings = %#v", mandate.BlockingFindings)
+	}
+	for _, check := range mandate.BlockingChecks {
+		if check.Effect != model.DeliveryEffectBlocks || check.Status == model.DeliveryCheckPass || check.Status == model.DeliveryCheckSkipped {
+			t.Fatalf("non-mandatory check included: %#v", check)
+		}
+	}
+	if len(mandate.BlockingChecks) == 0 {
+		t.Fatal("mandate has no blocking checks")
 	}
 }
 

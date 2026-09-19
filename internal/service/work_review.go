@@ -12,7 +12,7 @@ import (
 	"github.com/wirvii/mneme/internal/store"
 )
 
-// WorkReview records the single initial review against the exact clean repository HEAD.
+// WorkReview records a review against the exact clean repository HEAD.
 func (svc *SDDService) WorkReview(ctx context.Context, req model.WorkReviewRequest) (model.WorkCapabilityResult, error) {
 	if err := svc.requireDeliveryV2(); err != nil {
 		return model.WorkCapabilityResult{}, err
@@ -91,7 +91,7 @@ func (svc *SDDService) WorkReview(ctx context.Context, req model.WorkReviewReque
 	if err != nil {
 		return model.WorkCapabilityResult{}, err
 	}
-	_, err = svc.store.InsertInitialReview(ctx, store.InitialReviewWrite{
+	decision, err := svc.store.InsertInitialReview(ctx, store.InitialReviewWrite{
 		Certificate: evaluation.certificate, Checks: evaluation.checks,
 		Observations: evaluation.observations, Findings: findings, By: req.By,
 	})
@@ -102,10 +102,34 @@ func (svc *SDDService) WorkReview(ctx context.Context, req model.WorkReviewReque
 	if err != nil {
 		return model.WorkCapabilityResult{}, err
 	}
-	return model.WorkCapabilityResult{
+	result := model.WorkCapabilityResult{
 		Work: work, Operation: "review", Available: true, Performed: true,
 		Certificate: evaluation.certificate, Checks: deliveryCheckValues(evaluation.checks),
-	}, nil
+		ReviewPhase: model.ReviewPhaseInitial, NextStatus: decision.Status,
+	}
+	if decision.Status == model.WorkStatusCorrecting {
+		result.CorrectionMandate = correctionMandate(work, evaluation.certificate, result.Checks)
+	}
+	return result, nil
+}
+
+func correctionMandate(work model.WorkGetResponse, cert *model.DeliveryCertificate, checks []model.DeliveryCheck) *model.CorrectionMandate {
+	mandate := &model.CorrectionMandate{
+		WorkID: work.Contract.ID, ContractRevision: work.Contract.ContractRevision,
+		ContractHash: work.Contract.ContractHash, CertificateID: cert.ID,
+		CertificateHeadSHA: cert.HeadSHA, CorrectionRound: work.Contract.CorrectionRounds,
+	}
+	for _, finding := range work.Findings {
+		if finding.ReviewPhase == model.ReviewPhaseInitial && finding.Status == model.FindingOpen && finding.Category.Blocks() {
+			mandate.BlockingFindings = append(mandate.BlockingFindings, finding)
+		}
+	}
+	for _, check := range checks {
+		if check.Effect == model.DeliveryEffectBlocks && check.Status != model.DeliveryCheckPass && check.Status != model.DeliveryCheckSkipped {
+			mandate.BlockingChecks = append(mandate.BlockingChecks, check)
+		}
+	}
+	return mandate
 }
 
 type reviewEvidenceDetail struct {
