@@ -2007,6 +2007,14 @@ func workToolDefinitions() []ToolDefinition {
 		{Name: "work_verify", Description: "Evaluates stored criteria and required checks, persists a factual delivery certificate, and does not change work state.", InputSchema: idSchema()},
 		{Name: "work_complete", Description: "Close verified work using the latest persisted delivery certificate without rerunning checks.", InputSchema: map[string]any{"type": "object", "additionalProperties": false, "required": []string{"id", "by"}, "properties": map[string]any{"id": map[string]any{"type": "string"}, "by": map[string]any{"type": "string"}}}},
 		{Name: "work_resume", Description: "Resume escalated work after an explicit coordinator decision and reset its correction budget.", InputSchema: map[string]any{"type": "object", "additionalProperties": false, "required": []string{"id", "by", "reason"}, "properties": map[string]any{"id": map[string]any{"type": "string"}, "by": map[string]any{"type": "string"}, "reason": map[string]any{"type": "string"}}}},
+		{Name: "work_metrics", Description: "Read derived delivery metrics for a project or exact ordered work cohort without changing persisted state.", InputSchema: map[string]any{
+			"type": "object", "additionalProperties": false,
+			"properties": map[string]any{
+				"project": map[string]any{"type": "string"},
+				"ids":     map[string]any{"type": "array", "maxItems": 50, "uniqueItems": true, "items": map[string]any{"type": "string", "pattern": `^WORK-[0-9]+$`}},
+				"limit":   map[string]any{"type": "integer", "minimum": 1, "maximum": 50},
+			},
+		}},
 	}
 }
 

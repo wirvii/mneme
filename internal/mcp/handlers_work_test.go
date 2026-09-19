@@ -63,13 +63,13 @@ func toolResultJSON(t *testing.T, result *ToolCallResult, dst any) string {
 func TestWorkToolsRegisteredAndDispatched(t *testing.T) {
 	want := map[string]bool{
 		"work_begin": true, "work_get": true, "work_lock": true, "work_amend": true,
-		"work_review": true, "work_verify": true, "work_complete": true, "work_resume": true,
+		"work_review": true, "work_verify": true, "work_complete": true, "work_resume": true, "work_metrics": true,
 	}
 	if got := workToolNames(); !mapsEqual(got, want) {
 		t.Fatalf("work tools = %v, want %v", got, want)
 	}
-	if len(allTools()) != 95 {
-		t.Fatalf("tool count = %d, want 95", len(allTools()))
+	if len(allTools()) != 96 {
+		t.Fatalf("tool count = %d, want 96", len(allTools()))
 	}
 	h, _, _ := newWorkTestHandlers(t)
 	for name := range want {
@@ -78,6 +78,77 @@ func TestWorkToolsRegisteredAndDispatched(t *testing.T) {
 			t.Errorf("%s fell through to MethodNotFound", name)
 		}
 	}
+}
+
+func TestWorkMetricsSchemaIsClosed(t *testing.T) {
+	tool := findTool(allTools(), "work_metrics")
+	if tool == nil {
+		t.Fatal("work_metrics tool missing")
+	}
+	schema := tool.InputSchema.(map[string]any)
+	if schema["additionalProperties"] != false {
+		t.Fatalf("additionalProperties = %v, want false", schema["additionalProperties"])
+	}
+	if required, ok := schema["required"]; ok && required != nil {
+		t.Fatalf("required = %v, want absent", required)
+	}
+	properties := schema["properties"].(map[string]any)
+	if len(properties) != 3 {
+		t.Fatalf("properties = %v", properties)
+	}
+	ids := properties["ids"].(map[string]any)
+	if ids["type"] != "array" || ids["maxItems"] != 50 || ids["uniqueItems"] != true {
+		t.Fatalf("ids schema = %v", ids)
+	}
+	items := ids["items"].(map[string]any)
+	if items["type"] != "string" || items["pattern"] != `^WORK-[0-9]+$` {
+		t.Fatalf("ids items = %v", items)
+	}
+	limit := properties["limit"].(map[string]any)
+	if limit["type"] != "integer" || limit["minimum"] != 1 || limit["maximum"] != 50 {
+		t.Fatalf("limit schema = %v", limit)
+	}
+	if properties["project"].(map[string]any)["type"] != "string" {
+		t.Fatalf("project schema = %v", properties["project"])
+	}
+}
+
+func TestWorkMetricsAuthorityRemainsReadOnly(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("..", "cli", "hook.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	for _, mapName := range []string{"lifecycleTools", "roleScopedTools"} {
+		if authorityMapContains(text, mapName, "mcp__mneme__work_metrics") {
+			t.Fatalf("work_metrics unexpectedly appears in %s", mapName)
+		}
+	}
+	for _, tool := range []string{"work_begin", "work_lock", "work_amend", "work_complete", "work_resume"} {
+		if !authorityMapContains(text, "lifecycleTools", "mcp__mneme__"+tool) {
+			t.Errorf("lifecycleTools lost %s", tool)
+		}
+	}
+	if !authorityMapContains(text, "roleScopedTools", "mcp__mneme__work_review") {
+		t.Error("roleScopedTools lost work_review")
+	}
+	mutated := `var lifecycleTools = map[string]bool{"mcp__mneme__work_metrics": true}`
+	if !authorityMapContains(mutated, "lifecycleTools", "mcp__mneme__work_metrics") {
+		t.Fatal("authority detector does not catch a forbidden test-local entry")
+	}
+}
+
+func authorityMapContains(source, mapName, tool string) bool {
+	start := strings.Index(source, "var "+mapName+" = map[")
+	if start < 0 {
+		return false
+	}
+	body := source[start:]
+	end := strings.Index(body, "\n}")
+	if end < 0 {
+		end = len(body)
+	}
+	return strings.Contains(body[:end], `"`+tool+`"`)
 }
 
 func mapsEqual(left, right map[string]bool) bool {
@@ -176,6 +247,55 @@ func TestHandleWorkLifecycleRejectsMalformedJSON(t *testing.T) {
 		if rpcErr == nil || rpcErr.Code != CodeInvalidParams {
 			t.Fatalf("%s error=%#v", name, rpcErr)
 		}
+	}
+}
+
+func TestHandleWorkMetrics_MalformedAndServiceParity(t *testing.T) {
+	h, sdd, sddStore := newWorkTestHandlers(t)
+	if _, rpcErr := h.handleWorkMetrics(context.Background(), json.RawMessage(`{"ids":`)); rpcErr == nil || rpcErr.Code != CodeInvalidParams {
+		t.Fatalf("malformed error = %#v, want CodeInvalidParams", rpcErr)
+	}
+	created, err := sdd.WorkBegin(context.Background(), model.WorkBeginRequest{Goal: "g", Scope: []string{"internal/**"}, Verification: []model.VerificationKind{model.VerificationBuild}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sdd.WorkLock(context.Background(), model.WorkLockRequest{ID: created.Contract.ID, By: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, edge := range [][2]model.WorkStatus{{model.WorkStatusImplementing, model.WorkStatusVerifying}, {model.WorkStatusVerifying, model.WorkStatusCorrecting}, {model.WorkStatusCorrecting, model.WorkStatusTargetedVerifying}} {
+		if err := sddStore.TransitionWork(context.Background(), created.Contract.ID, edge[0], edge[1], "test", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	work, err := sddStore.GetWork(context.Background(), created.Contract.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	cert := &model.DeliveryCertificate{Project: work.Project, WorkID: work.ID, ContractRevision: work.ContractRevision, ContractHash: work.ContractHash, HeadSHA: "head", BaseSHA: work.BaseSHA, Verdict: model.DeliveryVerdictPass, StartedAt: now, FinishedAt: now.Add(50 * time.Millisecond), DurationMs: 50}
+	checks := []*model.DeliveryCheck{{Kind: "gate", Name: "build", Status: model.DeliveryCheckPass, Effect: model.DeliveryEffectBlocks}}
+	if err := sddStore.InsertDeliveryCertificate(context.Background(), cert, checks); err != nil {
+		t.Fatal(err)
+	}
+	req := model.WorkMetricsRequest{IDs: []string{created.Contract.ID}}
+	want, err := sdd.WorkMetrics(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, rpcErr := h.handleWorkMetrics(context.Background(), mustMarshal(t, req))
+	if rpcErr != nil {
+		t.Fatal(rpcErr)
+	}
+	var got model.WorkMetricsResponse
+	raw := toolResultJSON(t, result, &got)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("MCP response = %#v, want %#v", got, want)
+	}
+	if got.Details[0].VerificationEvidence != model.WorkMetricEvidencePartial {
+		t.Fatalf("evidence = %q, want partial", got.Details[0].VerificationEvidence)
+	}
+	if strings.Contains(raw, work.UUID) || strings.Contains(raw, cert.ID) {
+		t.Fatalf("response leaks internal identity: %s", raw)
 	}
 }
 
@@ -300,7 +420,7 @@ func TestWorkReviewToolSchema_TargetedParity(t *testing.T) {
 		if _, ok := props["reason"]; !ok {
 			t.Fatal("resolution reason missing")
 		}
-		if len(workToolNames()) != 8 {
+		if len(workToolNames()) != 9 {
 			t.Fatalf("work tool count = %d", len(workToolNames()))
 		}
 		return

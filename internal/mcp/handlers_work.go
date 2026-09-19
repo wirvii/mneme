@@ -131,3 +131,18 @@ func (h *handlers) handleWorkResume(ctx context.Context, raw json.RawMessage) (*
 	}
 	return resultFromAny(result)
 }
+
+func (h *handlers) handleWorkMetrics(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	if h.sdd == nil {
+		return nil, h.sddUnavailable("work_metrics")
+	}
+	var req model.WorkMetricsRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return invalidWorkArguments("work_metrics", err)
+	}
+	result, err := h.sdd.WorkMetrics(ctx, req)
+	if err != nil {
+		return nil, h.mapServiceError("work_metrics", err)
+	}
+	return resultFromAny(result)
+}

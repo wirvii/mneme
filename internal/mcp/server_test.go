@@ -194,7 +194,7 @@ func TestInitialize(t *testing.T) {
 	}
 }
 
-func TestToolsList(t *testing.T) {
+func TestServerToolsList(t *testing.T) {
 	srv := newTestServer(t)
 
 	// Initialize first.
@@ -251,9 +251,9 @@ func TestToolsList(t *testing.T) {
 		// Subagent tools (SPEC-057 / EPIC agnostic-agents SS-4)
 		"subagent_fingerprint", "subagent_profile_get", "subagent_profile_save",
 		"subagent_compose", "subagent_write", "subagent_manifest_list",
-		// Delivery work tools (SPEC-144)
+		// Delivery work tools (SPEC-144 through SPEC-150)
 		"work_begin", "work_get", "work_lock", "work_amend",
-		"work_review", "work_verify", "work_complete", "work_resume",
+		"work_review", "work_verify", "work_complete", "work_resume", "work_metrics",
 	}
 	if len(result.Tools) != len(wantNames) {
 		t.Fatalf("got %d tools, want %d", len(result.Tools), len(wantNames))

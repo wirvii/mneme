@@ -6,11 +6,11 @@ import (
 	"testing"
 )
 
-// TestAllTools_Count95 verifies the tool count after work_resume joins delivery-v2.
-func TestAllTools_Count95(t *testing.T) {
+// TestAllTools_Count96 verifies the tool count after work_metrics joins delivery-v2.
+func TestAllTools_Count96(t *testing.T) {
 	tools := allTools()
-	if len(tools) != 95 {
-		t.Errorf("allTools() returned %d tools, want 95", len(tools))
+	if len(tools) != 96 {
+		t.Errorf("allTools() returned %d tools, want 96", len(tools))
 	}
 }
 
