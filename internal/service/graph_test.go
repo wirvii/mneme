@@ -474,6 +474,7 @@ func TestTimeline_LimitCapsAtMaximum100(t *testing.T) {
 		wantResults int
 	}{
 		{name: "caps explicit limit above maximum", limit: 101, wantResults: 100},
+		{name: "preserves explicit limit at maximum", limit: 100, wantResults: 100},
 		{name: "defaults zero limit to twenty", limit: 0, wantResults: 20},
 	}
 
