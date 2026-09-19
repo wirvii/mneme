@@ -170,7 +170,10 @@ func UnmarshalWork(data []byte) (*WorkRecord, error) {
 	}
 	schema := CurrentFileSchema
 	if raw, ok := fields.scalars["schema"]; ok {
-		schema = parseIntField(raw)
+		schema, err = parseWorkInt(raw, "schema")
+		if err != nil {
+			return nil, err
+		}
 	}
 	if err := checkSchema(schema); err != nil {
 		return nil, fmt.Errorf("sddfile: unmarshal work: %w", err)
@@ -178,15 +181,27 @@ func UnmarshalWork(data []byte) (*WorkRecord, error) {
 	if fields.scalars["kind"] != "work" {
 		return nil, fmt.Errorf("sddfile: unmarshal work: kind %q is not work", fields.scalars["kind"])
 	}
+	contractRevision, err := parseWorkInt(fields.scalars["contract_revision"], "contract_revision")
+	if err != nil {
+		return nil, err
+	}
+	correctionRounds, err := parseWorkInt(fields.scalars["correction_rounds"], "correction_rounds")
+	if err != nil {
+		return nil, err
+	}
+	maxCorrectionRounds, err := parseWorkInt(fields.scalars["max_correction_rounds"], "max_correction_rounds")
+	if err != nil {
+		return nil, err
+	}
 	c := &model.WorkContract{
 		ID: fields.scalars["id"], UUID: fields.scalars["uuid"], Project: fields.scalars["project"],
 		SourceType: model.WorkSourceType(fields.scalars["source_type"]), SourceID: fields.scalars["source_id"],
 		Status: model.WorkStatus(fields.scalars["status"]), Goal: unwrapBlock(string(data[bodyOffset:])),
 		Scope:             append([]string(nil), fields.lists["scope"]...),
 		DevelopmentMethod: model.DevelopmentMethod(fields.scalars["development_method"]),
-		BaseSHA:           fields.scalars["base_sha"], ContractRevision: parseIntField(fields.scalars["contract_revision"]),
-		ContractHash: fields.scalars["contract_hash"], CorrectionRounds: parseIntField(fields.scalars["correction_rounds"]),
-		MaxCorrectionRounds: parseIntField(fields.scalars["max_correction_rounds"]), CreatedBy: fields.scalars["created_by"],
+		BaseSHA:           fields.scalars["base_sha"], ContractRevision: contractRevision,
+		ContractHash: fields.scalars["contract_hash"], CorrectionRounds: correctionRounds,
+		MaxCorrectionRounds: maxCorrectionRounds, CreatedBy: fields.scalars["created_by"],
 	}
 	for _, raw := range fields.lists["verification"] {
 		c.Verification = append(c.Verification, model.VerificationKind(raw))
@@ -210,7 +225,11 @@ func UnmarshalWork(data []byte) (*WorkRecord, error) {
 	i := 0
 	if i < len(sections) && sections[i].kind == markerKindRedTestEvidence {
 		sec := sections[i]
-		evidence := &model.RedTestEvidence{ExitCode: parseIntField(sec.attrs["exit_code"]), OutputTail: unwrapBlock(sec.raw), CommitSHA: sec.attrs["commit_sha"]}
+		exitCode, parseErr := parseWorkInt(sec.attrs["exit_code"], "exit_code")
+		if parseErr != nil {
+			return nil, parseErr
+		}
+		evidence := &model.RedTestEvidence{ExitCode: exitCode, OutputTail: unwrapBlock(sec.raw), CommitSHA: sec.attrs["commit_sha"]}
 		if raw := sec.attrs["command"]; raw != "" {
 			if err := json.Unmarshal([]byte(raw), &evidence.Command); err != nil {
 				return nil, fmt.Errorf("sddfile: unmarshal work %s: red-test command: %w", c.ID, err)
@@ -227,7 +246,11 @@ func UnmarshalWork(data []byte) (*WorkRecord, error) {
 			return nil, fmt.Errorf("sddfile: unmarshal work %s: criterion sections out of order", c.ID)
 		}
 		sec := sections[i]
-		criterion := model.WorkCriterion{ID: sec.attrs["id"], WorkID: c.ID, Seq: parseIntField(sec.attrs["seq"]), Key: sec.attrs["key"], Status: model.CriterionStatus(sec.attrs["status"]), CheckedBy: sec.attrs["checked_by"], Declaration: unwrapBlock(sections[i+1].raw), Evidence: unwrapBlock(sections[i+2].raw)}
+		seq, parseErr := parseWorkInt(sec.attrs["seq"], "seq")
+		if parseErr != nil {
+			return nil, parseErr
+		}
+		criterion := model.WorkCriterion{ID: sec.attrs["id"], WorkID: c.ID, Seq: seq, Key: sec.attrs["key"], Status: model.CriterionStatus(sec.attrs["status"]), CheckedBy: sec.attrs["checked_by"], Declaration: unwrapBlock(sections[i+1].raw), Evidence: unwrapBlock(sections[i+2].raw)}
 		if criterion.CreatedAt, err = requiredAttrTime(sec, "created_at"); err != nil {
 			return nil, err
 		}
@@ -243,7 +266,11 @@ func UnmarshalWork(data []byte) (*WorkRecord, error) {
 	}
 	for i < len(sections) && sections[i].kind == markerKindConstraint {
 		sec := sections[i]
-		constraint := model.WorkConstraint{ID: sec.attrs["id"], WorkID: c.ID, Seq: parseIntField(sec.attrs["seq"]), Key: sec.attrs["key"], Text: unwrapBlock(sec.raw), Source: sec.attrs["source"]}
+		seq, parseErr := parseWorkInt(sec.attrs["seq"], "seq")
+		if parseErr != nil {
+			return nil, parseErr
+		}
+		constraint := model.WorkConstraint{ID: sec.attrs["id"], WorkID: c.ID, Seq: seq, Key: sec.attrs["key"], Text: unwrapBlock(sec.raw), Source: sec.attrs["source"]}
 		if constraint.CreatedAt, err = requiredAttrTime(sec, "created_at"); err != nil {
 			return nil, err
 		}
@@ -255,7 +282,11 @@ func UnmarshalWork(data []byte) (*WorkRecord, error) {
 			return nil, fmt.Errorf("sddfile: unmarshal work %s: finding sections out of order", c.ID)
 		}
 		sec := sections[i]
-		finding := model.WorkFinding{ID: sec.attrs["id"], WorkID: c.ID, Seq: parseIntField(sec.attrs["seq"]), Category: model.FindingCategory(sec.attrs["category"]), Severity: model.Priority(sec.attrs["severity"]), Description: unwrapBlock(sec.raw), Location: unwrapBlock(sections[i+1].raw), Evidence: unwrapBlock(sections[i+2].raw), Origin: model.FindingOrigin(sec.attrs["origin"]), ReviewPhase: model.ReviewPhase(sec.attrs["phase"]), Status: model.FindingStatus(sec.attrs["status"]), BacklogID: sec.attrs["backlog_id"], ResolutionReason: unwrapBlock(sections[i+3].raw), ResolvedBy: sec.attrs["resolved_by"]}
+		seq, parseErr := parseWorkInt(sec.attrs["seq"], "seq")
+		if parseErr != nil {
+			return nil, parseErr
+		}
+		finding := model.WorkFinding{ID: sec.attrs["id"], WorkID: c.ID, Seq: seq, Category: model.FindingCategory(sec.attrs["category"]), Severity: model.Priority(sec.attrs["severity"]), Description: unwrapBlock(sec.raw), Location: unwrapBlock(sections[i+1].raw), Evidence: unwrapBlock(sections[i+2].raw), Origin: model.FindingOrigin(sec.attrs["origin"]), ReviewPhase: model.ReviewPhase(sec.attrs["phase"]), Status: model.FindingStatus(sec.attrs["status"]), BacklogID: sec.attrs["backlog_id"], ResolutionReason: unwrapBlock(sections[i+3].raw), ResolvedBy: sec.attrs["resolved_by"]}
 		if finding.CreatedAt, err = requiredAttrTime(sec, "created_at"); err != nil {
 			return nil, err
 		}
@@ -271,7 +302,11 @@ func UnmarshalWork(data []byte) (*WorkRecord, error) {
 	}
 	for i < len(sections) && sections[i].kind == markerKindWorkHistory {
 		sec := sections[i]
-		history := model.WorkHistoryEntry{ID: sec.attrs["id"], WorkID: c.ID, FromStatus: model.WorkStatus(sec.attrs["from"]), ToStatus: model.WorkStatus(sec.attrs["to"]), ContractRevision: parseIntField(sec.attrs["contract_revision"]), By: sec.attrs["by"], Reason: unwrapBlock(sec.raw)}
+		contractRevision, parseErr := parseWorkInt(sec.attrs["contract_revision"], "contract_revision")
+		if parseErr != nil {
+			return nil, parseErr
+		}
+		history := model.WorkHistoryEntry{ID: sec.attrs["id"], WorkID: c.ID, FromStatus: model.WorkStatus(sec.attrs["from"]), ToStatus: model.WorkStatus(sec.attrs["to"]), ContractRevision: contractRevision, By: sec.attrs["by"], Reason: unwrapBlock(sec.raw)}
 		if history.At, err = requiredAttrTime(sec, "at"); err != nil {
 			return nil, err
 		}
@@ -282,6 +317,14 @@ func UnmarshalWork(data []byte) (*WorkRecord, error) {
 		return nil, fmt.Errorf("sddfile: unmarshal work %s: unexpected section kind %q at position %d", c.ID, sections[i].kind, i)
 	}
 	return &WorkRecord{Aggregate: agg}, nil
+}
+
+func parseWorkInt(raw, field string) (int, error) {
+	value, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil {
+		return 0, fmt.Errorf("sddfile: unmarshal work: invalid %s: %w", field, err)
+	}
+	return value, nil
 }
 
 func parseRequiredTime(fields map[string]string, key string, target *time.Time) error {

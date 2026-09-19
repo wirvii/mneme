@@ -144,3 +144,37 @@ func TestWorkRecord_RejectsUnknownMarkerKindAndMalformedStructure(t *testing.T) 
 		})
 	}
 }
+
+func TestWorkRecord_RejectsMalformedStructuralIntegers(t *testing.T) {
+	data, err := MarshalWork(completeWorkRecord())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name        string
+		old         string
+		replacement string
+		wantField   string
+	}{
+		{name: "schema", old: "schema: 1", replacement: "schema: abc", wantField: "schema"},
+		{name: "contract revision", old: "contract_revision: 2", replacement: "contract_revision: abc", wantField: "contract_revision"},
+		{name: "correction rounds", old: "correction_rounds: 1", replacement: "correction_rounds: abc", wantField: "correction_rounds"},
+		{name: "maximum correction rounds", old: "max_correction_rounds: 2", replacement: "max_correction_rounds: abc", wantField: "max_correction_rounds"},
+		{name: "red test exit code", old: "exit_code=1", replacement: "exit_code=abc", wantField: "exit_code"},
+		{name: "criterion sequence", old: `id="criterion-a" seq=1`, replacement: `id="criterion-a" seq=abc`, wantField: "seq"},
+		{name: "constraint sequence", old: `id="constraint-a" seq=1`, replacement: `id="constraint-a" seq=abc`, wantField: "seq"},
+		{name: "finding sequence", old: `id="finding-a" seq=1`, replacement: `id="finding-a" seq=abc`, wantField: "seq"},
+		{name: "history contract revision", old: `id="history-a" from="draft" to="locked" contract_revision=1`, replacement: `id="history-a" from="draft" to="locked" contract_revision=abc`, wantField: "contract_revision"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mutated := strings.Replace(string(data), tc.old, tc.replacement, 1)
+			if mutated == string(data) {
+				t.Fatalf("fixture does not contain %q", tc.old)
+			}
+			if _, err := UnmarshalWork([]byte(mutated)); err == nil || !strings.Contains(err.Error(), tc.wantField) {
+				t.Fatalf("error = %v, want malformed %s rejection", err, tc.wantField)
+			}
+		})
+	}
+}
