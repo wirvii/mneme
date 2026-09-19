@@ -144,25 +144,9 @@ func (s *SDDStore) InsertDeliveryCertificate(ctx context.Context, cert *model.De
 // InsertDeliveryEvaluation atomically writes one factual delivery result and
 // the automatic criterion observations produced by that same evaluation.
 func (s *SDDStore) InsertDeliveryEvaluation(ctx context.Context, cert *model.DeliveryCertificate, checks []*model.DeliveryCheck, observations []model.CriterionObservation) error {
-	if !cert.Verdict.Valid() {
-		return model.ErrInvalidContract
-	}
-	for _, check := range checks {
-		if !check.Status.Valid() || !check.Effect.Valid() {
-			return model.ErrInvalidContract
-		}
-	}
-	for _, observation := range observations {
-		if observation.CriterionID == "" || (observation.Status != model.CriterionPass && observation.Status != model.CriterionFail && observation.Status != model.CriterionVacuous) || observation.CheckedAt.IsZero() {
-			return model.ErrInvalidContract
-		}
-	}
-	id, err := uuid.NewV7()
-	if err != nil {
+	if err := validateDeliveryEvaluation(cert, checks, observations); err != nil {
 		return err
 	}
-	cert.ID = id.String()
-	cert.CreatedAt = time.Now().UTC()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -181,6 +165,110 @@ func (s *SDDStore) InsertDeliveryEvaluation(ctx context.Context, cert *model.Del
 	if cert.Project != project || cert.ContractRevision != revision || cert.ContractHash != contractHash || cert.BaseSHA != baseSHA {
 		return model.ErrInvalidContract
 	}
+	if err := insertDeliveryEvaluationTx(ctx, tx, cert, checks, observations); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// InitialReviewWrite contains every row committed by the single initial-review transaction.
+type InitialReviewWrite struct {
+	Certificate  *model.DeliveryCertificate
+	Checks       []*model.DeliveryCheck
+	Observations []model.CriterionObservation
+	Findings     []*model.WorkFinding
+	By           string
+}
+
+// InsertInitialReview atomically records initial findings, factual evidence, and implementing-to-verifying.
+func (s *SDDStore) InsertInitialReview(ctx context.Context, in InitialReviewWrite) error {
+	if err := validateDeliveryEvaluation(in.Certificate, in.Checks, in.Observations); err != nil {
+		return err
+	}
+	if strings.TrimSpace(in.By) == "" {
+		return model.ErrInvalidContract
+	}
+	for _, finding := range in.Findings {
+		if finding == nil || !finding.Category.Valid() || !finding.Severity.Valid() || strings.TrimSpace(finding.Description) == "" || strings.TrimSpace(finding.Evidence) == "" {
+			return model.ErrInvalidContract
+		}
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	cert := in.Certificate
+	var status, project, contractHash, baseSHA string
+	var revision int
+	if err := tx.QueryRowContext(ctx, `SELECT status,project,contract_revision,contract_hash,base_sha FROM execution_contracts WHERE id=?`, cert.WorkID).Scan(&status, &project, &revision, &contractHash, &baseSHA); errors.Is(err, sql.ErrNoRows) {
+		return model.ErrWorkNotFound
+	} else if err != nil {
+		return fmt.Errorf("store: insert initial review: load work: %w", err)
+	}
+	if model.WorkStatus(status) != model.WorkStatusImplementing {
+		return model.ErrInvalidWorkTransition
+	}
+	if cert.Project != project || cert.ContractRevision != revision || cert.ContractHash != contractHash || cert.BaseSHA != baseSHA || strings.TrimSpace(cert.HeadSHA) == "" {
+		return model.ErrInvalidContract
+	}
+	now := time.Now().UTC()
+	for i, finding := range in.Findings {
+		id, idErr := uuid.NewV7()
+		if idErr != nil {
+			return idErr
+		}
+		finding.ID = id.String()
+		finding.WorkID = cert.WorkID
+		finding.Seq = i + 1
+		finding.Origin = model.FindingOriginReview
+		finding.ReviewPhase = model.ReviewPhaseInitial
+		finding.Status = model.FindingOpen
+		finding.CreatedAt = now
+		if _, err := tx.ExecContext(ctx, `INSERT INTO execution_findings(id,work_id,seq,category,severity,description,location,evidence,origin,review_phase,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, finding.ID, finding.WorkID, finding.Seq, finding.Category, finding.Severity, finding.Description, finding.Location, finding.Evidence, finding.Origin, finding.ReviewPhase, finding.Status, formatTime(finding.CreatedAt)); err != nil {
+			return fmt.Errorf("store: insert initial review: finding %d: %w", i+1, err)
+		}
+	}
+	if err := insertDeliveryEvaluationTx(ctx, tx, cert, in.Checks, in.Observations); err != nil {
+		return err
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE execution_contracts SET status=?,updated_at=? WHERE id=? AND status=?`, model.WorkStatusVerifying, formatTime(now), cert.WorkID, model.WorkStatusImplementing)
+	if err != nil {
+		return fmt.Errorf("store: insert initial review: transition: %w", err)
+	}
+	if !oneRow(result) {
+		return model.ErrInvalidWorkTransition
+	}
+	if err := insertWorkHistory(ctx, tx, cert.WorkID, model.WorkStatusImplementing, model.WorkStatusVerifying, revision, in.By, "", now); err != nil {
+		return fmt.Errorf("store: insert initial review: history: %w", err)
+	}
+	return tx.Commit()
+}
+
+func validateDeliveryEvaluation(cert *model.DeliveryCertificate, checks []*model.DeliveryCheck, observations []model.CriterionObservation) error {
+	if cert == nil || !cert.Verdict.Valid() {
+		return model.ErrInvalidContract
+	}
+	for _, check := range checks {
+		if check == nil || !check.Status.Valid() || !check.Effect.Valid() {
+			return model.ErrInvalidContract
+		}
+	}
+	for _, observation := range observations {
+		if observation.CriterionID == "" || (observation.Status != model.CriterionPass && observation.Status != model.CriterionFail && observation.Status != model.CriterionVacuous) || observation.CheckedAt.IsZero() {
+			return model.ErrInvalidContract
+		}
+	}
+	return nil
+}
+
+func insertDeliveryEvaluationTx(ctx context.Context, tx *sql.Tx, cert *model.DeliveryCertificate, checks []*model.DeliveryCheck, observations []model.CriterionObservation) error {
+	id, err := uuid.NewV7()
+	if err != nil {
+		return err
+	}
+	cert.ID = id.String()
+	cert.CreatedAt = time.Now().UTC()
 	dirty := 0
 	if cert.Dirty {
 		dirty = 1
@@ -217,7 +305,7 @@ func (s *SDDStore) InsertDeliveryEvaluation(ctx context.Context, cert *model.Del
 			return model.ErrInvalidContract
 		}
 	}
-	return tx.Commit()
+	return nil
 }
 
 // GetLatestDeliveryCertificate returns the last inserted certificate for one work item.

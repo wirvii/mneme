@@ -108,6 +108,144 @@ func deliveryEvaluationFixture(t *testing.T, s *SDDStore, workID string) (*model
 	return cert, checks
 }
 
+func TestInsertInitialReview_AtomicallyPersistsEverythingAndTransitions(t *testing.T) {
+	s := newTestSDDStore(t)
+	workInReview(t, s, "WORK-001", model.WorkStatusImplementing)
+	before, err := s.GetWorkAggregate(context.Background(), "WORK-001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, checks := deliveryEvaluationFixture(t, s, "WORK-001")
+	now := time.Now().UTC()
+	observations := []model.CriterionObservation{{
+		CriterionID: before.Criteria[0].ID, Status: model.CriterionPass,
+		Evidence: "passed", CheckedBy: "reviewer", CheckedAt: now,
+	}}
+	findings := []*model.WorkFinding{
+		{WorkID: "WORK-001", Category: model.FindingContractViolation, Severity: model.PriorityLow, Description: "contract mismatch", Evidence: "review evidence"},
+		{WorkID: "WORK-001", Category: model.FindingImprovement, Severity: model.PriorityCritical, Description: "optional cleanup", Evidence: "review evidence"},
+	}
+
+	if err := s.InsertInitialReview(context.Background(), InitialReviewWrite{
+		Certificate: cert, Checks: checks, Observations: observations, Findings: findings, By: "qa-tester",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	after, err := s.GetWorkAggregate(context.Background(), "WORK-001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Contract.Status != model.WorkStatusVerifying || after.Contract.CorrectionRounds != before.Contract.CorrectionRounds || len(after.History) != len(before.History)+1 {
+		t.Fatalf("contract/history = %#v / %#v", after.Contract, after.History)
+	}
+	last := after.History[len(after.History)-1]
+	if last.FromStatus != model.WorkStatusImplementing || last.ToStatus != model.WorkStatusVerifying || last.By != "qa-tester" {
+		t.Fatalf("history = %#v", last)
+	}
+	if len(after.Findings) != 2 {
+		t.Fatalf("findings = %#v", after.Findings)
+	}
+	for i, finding := range after.Findings {
+		if finding.ID == "" || finding.Seq != i+1 || finding.Origin != model.FindingOriginReview || finding.ReviewPhase != model.ReviewPhaseInitial || finding.Status != model.FindingOpen {
+			t.Fatalf("finding %d = %#v", i, finding)
+		}
+	}
+	if cert.ID == "" || checks[0].CertificateID != cert.ID || checks[0].Seq != 1 || checks[1].Seq != 2 {
+		t.Fatalf("certificate/checks = %#v / %#v", cert, checks)
+	}
+	storedChecks, err := s.ListDeliveryChecks(context.Background(), cert.ID)
+	if err != nil || len(storedChecks) != 2 || storedChecks[0].Name != "AC1" || storedChecks[1].Name != "AC2" {
+		t.Fatalf("stored checks = %#v, %v", storedChecks, err)
+	}
+	if after.Criteria[0].Status != model.CriterionPass || after.Criteria[0].Evidence != "passed" || after.Criteria[0].CheckedBy != "reviewer" {
+		t.Fatalf("criterion = %#v", after.Criteria[0])
+	}
+}
+
+func TestInsertInitialReview_RollsBackEveryEffect(t *testing.T) {
+	s := newTestSDDStore(t)
+	workInReview(t, s, "WORK-001", model.WorkStatusImplementing)
+	work, err := s.GetWorkAggregate(context.Background(), "WORK-001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`CREATE TRIGGER abort_initial_review_second_finding BEFORE INSERT ON execution_findings WHEN NEW.seq=2 BEGIN SELECT RAISE(ABORT,'second'); END`); err != nil {
+		t.Fatal(err)
+	}
+	cert, checks := deliveryEvaluationFixture(t, s, "WORK-001")
+	in := InitialReviewWrite{
+		Certificate: cert,
+		Checks:      checks,
+		Observations: []model.CriterionObservation{{
+			CriterionID: work.Criteria[0].ID, Status: model.CriterionFail,
+			Evidence: "must roll back", CheckedBy: "reviewer", CheckedAt: time.Now().UTC(),
+		}},
+		Findings: []*model.WorkFinding{
+			{Category: model.FindingRegression, Severity: model.PriorityHigh, Description: "one", Evidence: "e1"},
+			{Category: model.FindingImprovement, Severity: model.PriorityLow, Description: "two", Evidence: "e2"},
+		},
+		By: "qa-tester",
+	}
+	if err := s.InsertInitialReview(context.Background(), in); err == nil {
+		t.Fatal("expected trigger error")
+	}
+	after, err := s.GetWorkAggregate(context.Background(), "WORK-001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var certificates, checksCount int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM delivery_certificates WHERE work_id='WORK-001'`).Scan(&certificates); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM delivery_checks`).Scan(&checksCount); err != nil {
+		t.Fatal(err)
+	}
+	if len(after.Findings) != 0 || certificates != 0 || checksCount != 0 || after.Criteria[0].Status != model.CriterionPending || after.Contract.Status != model.WorkStatusImplementing || len(after.History) != len(work.History) {
+		t.Fatalf("partial review: work=%#v findings=%#v certificates=%d checks=%d", after.Contract, after.Findings, certificates, checksCount)
+	}
+}
+
+func TestInsertInitialReview_RejectsStaleSnapshotAndSecondReview(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*model.DeliveryCertificate)
+	}{
+		{"project", func(c *model.DeliveryCertificate) { c.Project = "other" }},
+		{"revision", func(c *model.DeliveryCertificate) { c.ContractRevision++ }},
+		{"hash", func(c *model.DeliveryCertificate) { c.ContractHash = "stale" }},
+		{"base", func(c *model.DeliveryCertificate) { c.BaseSHA = "stale" }},
+		{"head", func(c *model.DeliveryCertificate) { c.HeadSHA = "" }},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newTestSDDStore(t)
+			workInReview(t, s, "WORK-001", model.WorkStatusImplementing)
+			cert, checks := deliveryEvaluationFixture(t, s, "WORK-001")
+			tc.mutate(cert)
+			err := s.InsertInitialReview(context.Background(), InitialReviewWrite{Certificate: cert, Checks: checks, By: "qa-tester"})
+			if !errors.Is(err, model.ErrInvalidContract) {
+				t.Fatalf("error = %v, want ErrInvalidContract", err)
+			}
+			after, getErr := s.GetWorkAggregate(context.Background(), "WORK-001")
+			if getErr != nil || after.Contract.Status != model.WorkStatusImplementing || len(after.Findings) != 0 {
+				t.Fatalf("stale review wrote effects: %#v, %v", after, getErr)
+			}
+		})
+	}
+
+	s := newTestSDDStore(t)
+	workInReview(t, s, "WORK-001", model.WorkStatusImplementing)
+	cert, checks := deliveryEvaluationFixture(t, s, "WORK-001")
+	if err := s.InsertInitialReview(context.Background(), InitialReviewWrite{Certificate: cert, Checks: checks, By: "qa-tester"}); err != nil {
+		t.Fatal(err)
+	}
+	second, secondChecks := deliveryEvaluationFixture(t, s, "WORK-001")
+	if err := s.InsertInitialReview(context.Background(), InitialReviewWrite{Certificate: second, Checks: secondChecks, By: "qa-tester"}); !errors.Is(err, model.ErrInvalidWorkTransition) {
+		t.Fatalf("second review error = %v", err)
+	}
+}
+
 func TestInsertDeliveryEvaluation_AtomicallyWritesChecksAndObservations(t *testing.T) {
 	s := newTestSDDStore(t)
 	workInReview(t, s, "WORK-001", model.WorkStatusVerifying)
