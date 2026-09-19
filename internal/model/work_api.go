@@ -59,6 +59,19 @@ type WorkActionRequest struct {
 	ID string `json:"id"`
 }
 
+// WorkCompleteRequest records the coordinator responsible for closing work.
+type WorkCompleteRequest struct {
+	ID string `json:"id"`
+	By string `json:"by"`
+}
+
+// WorkResumeRequest records the human decision to resume escalated work.
+type WorkResumeRequest struct {
+	ID     string `json:"id"`
+	By     string `json:"by"`
+	Reason string `json:"reason"`
+}
+
 // ReviewEvidenceKind identifies the stable reference shape supplied by a reviewer.
 type ReviewEvidenceKind string
 

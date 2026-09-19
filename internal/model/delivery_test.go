@@ -1,9 +1,40 @@
 package model
 
-import "testing"
+import (
+	"encoding/json"
+	"reflect"
+	"testing"
+)
 
 func validCompletionInput() CompletionInput {
-	return CompletionInput{Status: WorkStatusVerifying, ContractRevision: 1, ContractHash: "contract", HeadSHA: "head", Certificate: &DeliveryCertificate{Verdict: DeliveryVerdictPass, ContractRevision: 1, ContractHash: "contract", HeadSHA: "head"}}
+	return CompletionInput{Status: WorkStatusVerifying, ContractRevision: 1, ContractHash: "contract", HeadSHA: "head", BaseSHA: "base", Certificate: &DeliveryCertificate{Verdict: DeliveryVerdictPass, ContractRevision: 1, ContractHash: "contract", HeadSHA: "head", BaseSHA: "base"}}
+}
+
+func TestWorkLifecycleRequests_JSONContract(t *testing.T) {
+	tests := []struct {
+		name string
+		in   any
+		want string
+		out  any
+	}{
+		{"complete", WorkCompleteRequest{ID: "WORK-001", By: "orchestrator"}, `{"id":"WORK-001","by":"orchestrator"}`, &WorkCompleteRequest{}},
+		{"resume", WorkResumeRequest{ID: "WORK-001", By: "orchestrator", Reason: "owner approved another attempt"}, `{"id":"WORK-001","by":"orchestrator","reason":"owner approved another attempt"}`, &WorkResumeRequest{}},
+	}
+	for _, tt := range tests {
+		raw, err := json.Marshal(tt.in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(raw) != tt.want {
+			t.Fatalf("%s json = %s, want %s", tt.name, raw, tt.want)
+		}
+		if err := json.Unmarshal(raw, tt.out); err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(reflect.ValueOf(tt.out).Elem().Interface(), tt.in) {
+			t.Fatalf("%s round trip = %#v, want %#v", tt.name, tt.out, tt.in)
+		}
+	}
 }
 
 func TestCanComplete_EachFactorHasDistinctReason(t *testing.T) {
@@ -16,7 +47,8 @@ func TestCanComplete_EachFactorHasDistinctReason(t *testing.T) {
 		mutate func(*CompletionInput)
 	}{
 		{"status", func(i *CompletionInput) { i.Status = WorkStatusImplementing }}, {"certificate", func(i *CompletionInput) { i.Certificate = nil }},
-		{"verdict", func(i *CompletionInput) { i.Certificate.Verdict = DeliveryVerdictFail }}, {"head", func(i *CompletionInput) { i.Certificate.HeadSHA = "other" }},
+		{"verdict", func(i *CompletionInput) { i.Certificate.Verdict = DeliveryVerdictFail }}, {"dirty", func(i *CompletionInput) { i.Certificate.Dirty = true }},
+		{"head", func(i *CompletionInput) { i.Certificate.HeadSHA = "other" }}, {"base", func(i *CompletionInput) { i.BaseSHA = "other" }},
 		{"hash", func(i *CompletionInput) { i.Certificate.ContractHash = "other" }}, {"revision", func(i *CompletionInput) { i.Certificate.ContractRevision = 2 }},
 		{"findings", func(i *CompletionInput) { i.OpenBlockingFindings = 1 }},
 	}

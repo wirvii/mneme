@@ -104,6 +104,7 @@ type CompletionInput struct {
 	Status                WorkStatus
 	ContractRevision      int
 	ContractHash, HeadSHA string
+	BaseSHA               string
 	Certificate           *DeliveryCertificate
 	OpenBlockingFindings  int
 }
@@ -155,8 +156,14 @@ func CanComplete(in CompletionInput) (bool, string) {
 	if in.Certificate.Verdict != DeliveryVerdictPass {
 		return false, "delivery certificate did not pass"
 	}
+	if in.Certificate.Dirty {
+		return false, "delivery certificate is dirty"
+	}
 	if in.Certificate.HeadSHA != in.HeadSHA {
 		return false, "certificate commit does not match current commit"
+	}
+	if in.Certificate.BaseSHA != in.BaseSHA {
+		return false, "certificate base does not match"
 	}
 	if in.Certificate.ContractHash != in.ContractHash {
 		return false, "certificate contract hash does not match"
