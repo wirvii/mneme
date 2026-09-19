@@ -67,7 +67,7 @@ func (s *SDDStore) ResolveFinding(ctx context.Context, id string, status model.F
 	if model.FindingStatus(current) != model.FindingOpen {
 		return model.ErrInvalidContract
 	}
-	if status == model.FindingAccepted && model.FindingCategory(category).Blocks() {
+	if model.FindingCategory(category).Blocks() && status != model.FindingFixed && status != model.FindingInvalid {
 		return model.ErrCannotAcceptBlockingFinding
 	}
 	if (status == model.FindingAccepted || status == model.FindingInvalid) && strings.TrimSpace(reason) == "" {
@@ -186,6 +186,17 @@ type InitialReviewResult struct {
 	CorrectionRounds int
 }
 
+// TargetedReviewWrite contains every row committed by one targeted-review transaction.
+type TargetedReviewWrite struct {
+	Certificate           *model.DeliveryCertificate
+	Checks                []*model.DeliveryCheck
+	Observations          []model.CriterionObservation
+	Resolutions           []model.WorkFindingResolutionInput
+	Findings              []*model.WorkFinding
+	ExpectedCertificateID string
+	By                    string
+}
+
 // InsertInitialReview atomically records initial findings, factual evidence, and implementing-to-verifying.
 func (s *SDDStore) InsertInitialReview(ctx context.Context, in InitialReviewWrite) (InitialReviewResult, error) {
 	if err := validateDeliveryEvaluation(in.Certificate, in.Checks, in.Observations); err != nil {
@@ -275,6 +286,167 @@ func (s *SDDStore) InsertInitialReview(ctx context.Context, in InitialReviewWrit
 		return InitialReviewResult{}, err
 	}
 	return InitialReviewResult{Status: finalStatus, CorrectionRounds: correctionRounds}, nil
+}
+
+// InsertTargetedReview atomically resolves the initial mandate, records the new review, and ends the automatic cycle.
+func (s *SDDStore) InsertTargetedReview(ctx context.Context, in TargetedReviewWrite) (InitialReviewResult, error) {
+	if err := validateDeliveryEvaluation(in.Certificate, in.Checks, in.Observations); err != nil {
+		return InitialReviewResult{}, err
+	}
+	if strings.TrimSpace(in.By) == "" || strings.TrimSpace(in.ExpectedCertificateID) == "" {
+		return InitialReviewResult{}, model.ErrInvalidContract
+	}
+	for _, finding := range in.Findings {
+		if finding == nil || !finding.Category.Valid() || !finding.Severity.Valid() || strings.TrimSpace(finding.Description) == "" || strings.TrimSpace(finding.Evidence) == "" {
+			return InitialReviewResult{}, model.ErrInvalidContract
+		}
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return InitialReviewResult{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	cert := in.Certificate
+	var status, project, contractHash, baseSHA string
+	var revision, correctionRounds int
+	if err := tx.QueryRowContext(ctx, `SELECT status,project,contract_revision,contract_hash,base_sha,correction_rounds FROM execution_contracts WHERE id=?`, cert.WorkID).Scan(&status, &project, &revision, &contractHash, &baseSHA, &correctionRounds); errors.Is(err, sql.ErrNoRows) {
+		return InitialReviewResult{}, model.ErrWorkNotFound
+	} else if err != nil {
+		return InitialReviewResult{}, fmt.Errorf("store: insert targeted review: load work: %w", err)
+	}
+	if model.WorkStatus(status) != model.WorkStatusCorrecting {
+		return InitialReviewResult{}, model.ErrInvalidWorkTransition
+	}
+	if cert.Project != project || cert.ContractRevision != revision || cert.ContractHash != contractHash || cert.BaseSHA != baseSHA || strings.TrimSpace(cert.HeadSHA) == "" {
+		return InitialReviewResult{}, model.ErrInvalidContract
+	}
+	var previousID, previousHead, previousBase, previousHash string
+	var previousRevision int
+	if err := tx.QueryRowContext(ctx, `SELECT id,head_sha,base_sha,contract_revision,contract_hash FROM delivery_certificates WHERE work_id=? ORDER BY rowid DESC LIMIT 1`, cert.WorkID).Scan(&previousID, &previousHead, &previousBase, &previousRevision, &previousHash); err != nil {
+		return InitialReviewResult{}, fmt.Errorf("store: insert targeted review: load mandate certificate: %w", err)
+	}
+	if previousID != in.ExpectedCertificateID || cert.HeadSHA == previousHead || previousBase != baseSHA || previousRevision != revision || previousHash != contractHash {
+		return InitialReviewResult{}, model.ErrInvalidContract
+	}
+
+	type findingSnapshot struct {
+		id       string
+		category model.FindingCategory
+		status   model.FindingStatus
+		phase    model.ReviewPhase
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT id,seq,category,status,review_phase FROM execution_findings WHERE work_id=? ORDER BY seq`, cert.WorkID)
+	if err != nil {
+		return InitialReviewResult{}, err
+	}
+	all := map[int]findingSnapshot{}
+	eligible := map[int]findingSnapshot{}
+	maxSeq := 0
+	for rows.Next() {
+		var snapshot findingSnapshot
+		var seq int
+		if err := rows.Scan(&snapshot.id, &seq, &snapshot.category, &snapshot.status, &snapshot.phase); err != nil {
+			_ = rows.Close()
+			return InitialReviewResult{}, err
+		}
+		all[seq] = snapshot
+		if seq > maxSeq {
+			maxSeq = seq
+		}
+		if snapshot.status == model.FindingOpen && snapshot.phase == model.ReviewPhaseInitial && snapshot.category.Blocks() {
+			eligible[seq] = snapshot
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return InitialReviewResult{}, err
+	}
+	if len(in.Resolutions) != len(eligible) {
+		return InitialReviewResult{}, model.ErrInvalidContract
+	}
+	seen := make(map[int]bool, len(in.Resolutions))
+	for _, resolution := range in.Resolutions {
+		snapshot, ok := eligible[resolution.FindingSeq]
+		if !ok || seen[resolution.FindingSeq] || (resolution.Status != model.FindingFixed && resolution.Status != model.FindingInvalid) || strings.TrimSpace(resolution.Evidence) == "" || (resolution.Status == model.FindingInvalid && strings.TrimSpace(resolution.Reason) == "") {
+			return InitialReviewResult{}, model.ErrInvalidContract
+		}
+		seen[resolution.FindingSeq] = true
+		_ = snapshot
+	}
+	now := time.Now().UTC()
+	for _, resolution := range in.Resolutions {
+		snapshot := all[resolution.FindingSeq]
+		result, err := tx.ExecContext(ctx, `UPDATE execution_findings SET status=?,resolution_reason=?,resolved_by=?,resolved_at=? WHERE id=? AND status='open'`, resolution.Status, resolution.Reason, in.By, formatTime(now), snapshot.id)
+		if err != nil {
+			return InitialReviewResult{}, fmt.Errorf("store: insert targeted review: resolve finding %d: %w", resolution.FindingSeq, err)
+		}
+		if !oneRow(result) {
+			return InitialReviewResult{}, model.ErrInvalidContract
+		}
+	}
+	for i, finding := range in.Findings {
+		id, idErr := uuid.NewV7()
+		if idErr != nil {
+			return InitialReviewResult{}, idErr
+		}
+		finding.ID = id.String()
+		finding.WorkID = cert.WorkID
+		finding.Seq = maxSeq + i + 1
+		finding.Origin = model.FindingOriginReview
+		finding.ReviewPhase = model.ReviewPhaseTargeted
+		finding.Status = model.FindingOpen
+		finding.CreatedAt = now
+		if _, err := tx.ExecContext(ctx, `INSERT INTO execution_findings(id,work_id,seq,category,severity,description,location,evidence,origin,review_phase,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, finding.ID, finding.WorkID, finding.Seq, finding.Category, finding.Severity, finding.Description, finding.Location, finding.Evidence, finding.Origin, finding.ReviewPhase, finding.Status, formatTime(now)); err != nil {
+			return InitialReviewResult{}, fmt.Errorf("store: insert targeted review: finding %d: %w", finding.Seq, err)
+		}
+	}
+	if err := insertDeliveryEvaluationTx(ctx, tx, cert, in.Checks, in.Observations); err != nil {
+		return InitialReviewResult{}, err
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE execution_contracts SET status=?,updated_at=? WHERE id=? AND status=?`, model.WorkStatusTargetedVerifying, formatTime(now), cert.WorkID, model.WorkStatusCorrecting)
+	if err != nil || !oneRow(result) {
+		if err != nil {
+			return InitialReviewResult{}, fmt.Errorf("store: insert targeted review: transition: %w", err)
+		}
+		return InitialReviewResult{}, model.ErrInvalidWorkTransition
+	}
+	if err := insertWorkHistory(ctx, tx, cert.WorkID, model.WorkStatusCorrecting, model.WorkStatusTargetedVerifying, revision, in.By, "", now); err != nil {
+		return InitialReviewResult{}, fmt.Errorf("store: insert targeted review: history: %w", err)
+	}
+	blocking, err := countOpenBlockingFindingsTx(ctx, tx, cert.WorkID)
+	if err != nil {
+		return InitialReviewResult{}, err
+	}
+	finalStatus := model.WorkStatusTargetedVerifying
+	if cert.Verdict != model.DeliveryVerdictPass || blocking > 0 {
+		finalStatus = model.WorkStatusEscalated
+		result, err = tx.ExecContext(ctx, `UPDATE execution_contracts SET status=?,updated_at=? WHERE id=? AND status=?`, finalStatus, formatTime(now), cert.WorkID, model.WorkStatusTargetedVerifying)
+		if err != nil || !oneRow(result) {
+			if err != nil {
+				return InitialReviewResult{}, fmt.Errorf("store: insert targeted review: escalation: %w", err)
+			}
+			return InitialReviewResult{}, model.ErrInvalidWorkTransition
+		}
+		if err := insertWorkHistory(ctx, tx, cert.WorkID, model.WorkStatusTargetedVerifying, model.WorkStatusEscalated, revision, in.By, "", now); err != nil {
+			return InitialReviewResult{}, fmt.Errorf("store: insert targeted review: escalation history: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return InitialReviewResult{}, err
+	}
+	return InitialReviewResult{Status: finalStatus, CorrectionRounds: correctionRounds}, nil
+}
+
+func countOpenBlockingFindingsTx(ctx context.Context, tx *sql.Tx, workID string) (int, error) {
+	categories := model.BlockingFindingCategories()
+	args := []any{workID}
+	marks := make([]string, len(categories))
+	for i, category := range categories {
+		marks[i] = "?"
+		args = append(args, category)
+	}
+	var count int
+	err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM execution_findings WHERE work_id=? AND status='open' AND category IN (`+strings.Join(marks, ",")+`)`, args...).Scan(&count)
+	return count, err
 }
 
 func validateDeliveryEvaluation(cert *model.DeliveryCertificate, checks []*model.DeliveryCheck, observations []model.CriterionObservation) error {

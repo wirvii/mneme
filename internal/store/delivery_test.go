@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -51,6 +52,23 @@ func TestResolveFinding_BlockingCannotBeAccepted(t *testing.T) {
 	list, err := s.ListFindings(context.Background(), "WORK-001")
 	if err != nil || len(list) != 1 || list[0].Status != model.FindingOpen {
 		t.Fatalf("list=%v err=%v", list, err)
+	}
+}
+
+func TestResolveFinding_BlockingStatusIsClosed(t *testing.T) {
+	for _, status := range []model.FindingStatus{model.FindingAccepted, model.FindingBacklogged} {
+		t.Run(string(status), func(t *testing.T) {
+			s := newTestSDDStore(t)
+			workInReview(t, s, "WORK-001", model.WorkStatusVerifying)
+			f := &model.WorkFinding{WorkID: "WORK-001", Category: model.FindingRegression, Severity: model.PriorityHigh, Description: "broke", Origin: model.FindingOriginReview, ReviewPhase: model.ReviewPhaseInitial}
+			if err := s.AddFinding(context.Background(), f); err != nil {
+				t.Fatal(err)
+			}
+			err := s.ResolveFinding(context.Background(), f.ID, status, "human", "reason", "BL-999")
+			if !errors.Is(err, model.ErrCannotAcceptBlockingFinding) {
+				t.Fatalf("status %s error = %v", status, err)
+			}
+		})
 	}
 }
 
@@ -347,6 +365,142 @@ func TestInsertInitialReview_RejectsInvalidInputsBeforeEffects(t *testing.T) {
 				t.Fatalf("invalid review wrote effects: work=%#v err=%v", work, err)
 			}
 		})
+	}
+}
+
+func targetedReviewFixture(t *testing.T) (*SDDStore, *model.DeliveryCertificate, TargetedReviewWrite) {
+	t.Helper()
+	s := newTestSDDStore(t)
+	workInReview(t, s, "WORK-001", model.WorkStatusImplementing)
+	initial, checks := deliveryEvaluationFixture(t, s, "WORK-001")
+	_, err := s.InsertInitialReview(context.Background(), InitialReviewWrite{
+		Certificate: initial, Checks: checks,
+		Findings: []*model.WorkFinding{
+			{Category: model.FindingRegression, Severity: model.PriorityHigh, Description: "regression", Evidence: "red test"},
+			{Category: model.FindingImprovement, Severity: model.PriorityLow, Description: "optional", Evidence: "review note"},
+		},
+		By: "qa-tester",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	targeted, targetedChecks := deliveryEvaluationFixture(t, s, "WORK-001")
+	targeted.HeadSHA = "new-head"
+	targetedChecks = append(targetedChecks, &model.DeliveryCheck{Kind: "review", Name: "targeted", Status: model.DeliveryCheckPass, Effect: model.DeliveryEffectMeasures, Detail: `[{"finding_seq":1,"status":"fixed","evidence":"green test"}]`})
+	return s, initial, TargetedReviewWrite{
+		Certificate: targeted, Checks: targetedChecks, ExpectedCertificateID: initial.ID,
+		Resolutions: []model.WorkFindingResolutionInput{{FindingSeq: 1, Status: model.FindingFixed, Evidence: "green test"}},
+		By:          "qa-tester",
+	}
+}
+
+func TestInsertTargetedReview_RequiresExactResolutionSet(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*TargetedReviewWrite)
+		valid  bool
+	}{
+		{name: "exact", valid: true},
+		{name: "missing", mutate: func(in *TargetedReviewWrite) { in.Resolutions = nil }},
+		{name: "duplicate", mutate: func(in *TargetedReviewWrite) { in.Resolutions = append(in.Resolutions, in.Resolutions[0]) }},
+		{name: "unknown", mutate: func(in *TargetedReviewWrite) { in.Resolutions[0].FindingSeq = 99 }},
+		{name: "fixed without evidence", mutate: func(in *TargetedReviewWrite) { in.Resolutions[0].Evidence = "" }},
+		{name: "invalid without reason", mutate: func(in *TargetedReviewWrite) { in.Resolutions[0].Status = model.FindingInvalid }},
+		{name: "backlogged", mutate: func(in *TargetedReviewWrite) { in.Resolutions[0].Status = model.FindingBacklogged }},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _, in := targetedReviewFixture(t)
+			if tc.mutate != nil {
+				tc.mutate(&in)
+			}
+			before, _ := s.GetWorkAggregate(context.Background(), "WORK-001")
+			result, err := s.InsertTargetedReview(context.Background(), in)
+			if tc.valid {
+				if err != nil || result.Status != model.WorkStatusTargetedVerifying {
+					t.Fatalf("result=%#v error=%v", result, err)
+				}
+				return
+			}
+			if !errors.Is(err, model.ErrInvalidContract) {
+				t.Fatalf("error=%v", err)
+			}
+			after, _ := s.GetWorkAggregate(context.Background(), "WORK-001")
+			if after.Contract.Status != before.Contract.Status || len(after.History) != len(before.History) || after.Findings[0].Status != model.FindingOpen {
+				t.Fatalf("invalid write changed aggregate: %#v", after)
+			}
+		})
+	}
+}
+
+func TestInsertTargetedReview_PreservesFindingFacts(t *testing.T) {
+	s, _, in := targetedReviewFixture(t)
+	before, _ := s.GetWorkAggregate(context.Background(), "WORK-001")
+	in.Resolutions[0].Status = model.FindingInvalid
+	in.Resolutions[0].Reason = "not reproducible"
+	in.Checks[len(in.Checks)-1].Detail = `[{"finding_seq":1,"status":"invalid","evidence":"current run","reason":"not reproducible"}]`
+	if _, err := s.InsertTargetedReview(context.Background(), in); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := s.GetWorkAggregate(context.Background(), "WORK-001")
+	want, got := before.Findings[0], after.Findings[0]
+	if got.Category != want.Category || got.Severity != want.Severity || got.Description != want.Description || got.Location != want.Location || got.Evidence != want.Evidence || got.Origin != want.Origin || got.ReviewPhase != want.ReviewPhase || got.Status != model.FindingInvalid || got.ResolutionReason != "not reproducible" || got.ResolvedBy != "qa-tester" || got.ResolvedAt == nil {
+		t.Fatalf("before=%#v after=%#v", want, got)
+	}
+	checks, err := s.ListDeliveryChecks(context.Background(), in.Certificate.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail := checks[len(checks)-1].Detail; !strings.Contains(detail, `"evidence":"current run"`) || !strings.Contains(detail, `"finding_seq":1`) {
+		t.Fatalf("targeted resolution detail = %s", detail)
+	}
+}
+
+func TestInsertTargetedReview_DecidesFinalStatus(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*TargetedReviewWrite)
+		want   model.WorkStatus
+		edges  int
+	}{
+		{name: "green", want: model.WorkStatusTargetedVerifying, edges: 1},
+		{name: "new blocker", want: model.WorkStatusEscalated, edges: 2, mutate: func(in *TargetedReviewWrite) {
+			in.Findings = []*model.WorkFinding{{Category: model.FindingRegression, Severity: model.PriorityHigh, Description: "new regression", Evidence: "new red test"}}
+		}},
+		{name: "factual red", want: model.WorkStatusEscalated, edges: 2, mutate: func(in *TargetedReviewWrite) { in.Certificate.Verdict = model.DeliveryVerdictFail }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _, in := targetedReviewFixture(t)
+			before, _ := s.GetWorkAggregate(context.Background(), "WORK-001")
+			if tc.mutate != nil {
+				tc.mutate(&in)
+			}
+			result, err := s.InsertTargetedReview(context.Background(), in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			after, _ := s.GetWorkAggregate(context.Background(), "WORK-001")
+			if result.Status != tc.want || after.Contract.Status != tc.want || after.Contract.CorrectionRounds != before.Contract.CorrectionRounds || len(after.History)-len(before.History) != tc.edges {
+				t.Fatalf("result=%#v contract=%#v history delta=%d", result, after.Contract, len(after.History)-len(before.History))
+			}
+		})
+	}
+}
+
+func TestInsertTargetedReview_RollsBackEveryEffect(t *testing.T) {
+	s, _, in := targetedReviewFixture(t)
+	before, _ := s.GetWorkAggregate(context.Background(), "WORK-001")
+	in.Certificate.Verdict = model.DeliveryVerdictFail
+	if _, err := s.db.Exec(`CREATE TRIGGER abort_targeted_escalation_history BEFORE INSERT ON execution_history WHEN NEW.from_status='targeted_verifying' BEGIN SELECT RAISE(ABORT,'escalation history'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.InsertTargetedReview(context.Background(), in); err == nil {
+		t.Fatal("expected escalation history failure")
+	}
+	after, _ := s.GetWorkAggregate(context.Background(), "WORK-001")
+	latest, _ := s.GetLatestDeliveryCertificate(context.Background(), "p", "WORK-001")
+	if after.Contract.Status != before.Contract.Status || after.Contract.CorrectionRounds != before.Contract.CorrectionRounds || len(after.History) != len(before.History) || after.Findings[0].Status != model.FindingOpen || latest.ID != in.ExpectedCertificateID {
+		t.Fatalf("partial targeted review: before=%#v after=%#v latest=%#v", before, after, latest)
 	}
 }
 
