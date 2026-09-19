@@ -65,7 +65,7 @@ func (svc *SDDService) WorkBegin(ctx context.Context, req model.WorkBeginRequest
 		return model.WorkGetResponse{}, fmt.Errorf("%w: acceptance verification requires criteria", model.ErrInvalidContract)
 	}
 	constraints := toWorkConstraints(req.Constraints)
-	id, err := svc.store.NextWorkID(ctx, project)
+	id, err := svc.nextWorkID(ctx, project)
 	if err != nil {
 		return model.WorkGetResponse{}, err
 	}

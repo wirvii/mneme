@@ -6,7 +6,9 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/wirvii/mneme/internal/model"
@@ -26,6 +28,53 @@ func seedBacklogIDs(t *testing.T, ctx context.Context, svc *SDDService, ids ...s
 			t.Fatalf("seed CreateBacklogItem(%s): %v", id, err)
 		}
 	}
+}
+
+func seedWorkIDs(t *testing.T, svc *SDDService, count int) {
+	t.Helper()
+	for i := 1; i <= count; i++ {
+		seedServiceWork(t, svc, fmt.Sprintf("WORK-%03d", i))
+	}
+}
+
+func TestSDDNextWorkID_UsesDatabaseAndReservedFilenames(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("mechanism off", func(t *testing.T) {
+		svc, repoDir := newSDDMaterializeService(t, importTestProject)
+		seedWorkIDs(t, svc, 10)
+		writeRawSDDFile(t, sddfile.WorkPath(repoDir, "WORK-205"), "broken")
+		got, err := svc.nextWorkID(ctx, importTestProject)
+		if err != nil || got != "WORK-011" {
+			t.Fatalf("nextWorkID = %q, %v; want WORK-011", got, err)
+		}
+	})
+
+	for _, content := range []string{"valid enough to reserve by name", "unreadable"} {
+		t.Run("mechanism on "+content, func(t *testing.T) {
+			svc, repoDir := newSDDMaterializeService(t, importTestProject)
+			enableSDD(t, repoDir, importTestProject)
+			seedWorkIDs(t, svc, 10)
+			writeRawSDDFile(t, sddfile.WorkPath(repoDir, "WORK-205"), content)
+			got, err := svc.nextWorkID(ctx, importTestProject)
+			if err != nil || got != "WORK-206" {
+				t.Fatalf("nextWorkID = %q, %v; want WORK-206", got, err)
+			}
+		})
+	}
+
+	t.Run("directory read failure falls back to database", func(t *testing.T) {
+		svc, repoDir := newSDDMaterializeService(t, importTestProject)
+		enableSDD(t, repoDir, importTestProject)
+		seedWorkIDs(t, svc, 10)
+		if err := os.WriteFile(filepath.Join(sddfile.RootDir(repoDir), "work"), []byte("not a directory"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		got, err := svc.nextWorkID(ctx, importTestProject)
+		if err != nil || got != "WORK-011" {
+			t.Fatalf("nextWorkID = %q, %v; want database fallback WORK-011", got, err)
+		}
+	})
 }
 
 // seedSpecIDs is seedBacklogIDs' sibling for specs.

@@ -169,6 +169,32 @@ func (svc *SDDService) nextSpecID(ctx context.Context, project string) (string, 
 	return baseID, nil
 }
 
+// nextWorkID is nextBacklogID's sibling for delivery work records.
+func (svc *SDDService) nextWorkID(ctx context.Context, project string) (string, error) {
+	baseID, err := svc.store.NextWorkID(ctx, project)
+	if err != nil {
+		return "", err
+	}
+	if svc.repoDir == "" || !ResolveSDDState(svc.repoDir).Enabled {
+		return baseID, nil
+	}
+
+	maxFile, fileErr := sddfile.MaxWorkID(svc.repoDir)
+	if fileErr != nil {
+		slog.ErrorContext(ctx, "sdd_numbering_error", "kind", "work", "step", "max-file-id", "error", fileErr)
+		return baseID, nil
+	}
+
+	var baseNumber int
+	if _, scanErr := fmt.Sscanf(baseID, "WORK-%d", &baseNumber); scanErr != nil {
+		return baseID, nil
+	}
+	if maxFile >= baseNumber {
+		return fmt.Sprintf("WORK-%03d", maxFile+1), nil
+	}
+	return baseID, nil
+}
+
 // --- BACKLOG METHODS ---
 
 // BacklogAdd creates a new backlog item with status raw.

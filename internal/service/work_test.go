@@ -14,6 +14,7 @@ import (
 
 	"github.com/wirvii/mneme/internal/config"
 	"github.com/wirvii/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/sddfile"
 )
 
 func seedServiceWork(t *testing.T, svc *SDDService, id string) {
@@ -245,6 +246,32 @@ func TestWorkBeginDefaultsAndOverrides(t *testing.T) {
 		if _, err := svc.WorkBegin(ctx, request); !errors.Is(err, model.ErrInvalidContract) {
 			t.Errorf("invalid relationship error = %v", err)
 		}
+	}
+}
+
+func TestWorkBegin_ReservesGitNativeWorkID(t *testing.T) {
+	svc, repoDir := newSDDMaterializeService(t, importTestProject)
+	svc.config.Workflow.Engine = config.WorkflowEngineDeliveryV2
+	enableSDD(t, repoDir, importTestProject)
+	writeRawSDDFile(t, sddfile.WorkPath(repoDir, "WORK-205"), "unreadable but reserved")
+
+	created, err := svc.WorkBegin(context.Background(), model.WorkBeginRequest{
+		Workflow: config.WorkflowDefaultOrganic, Goal: "reserved",
+		Scope: []string{"internal/**"}, Verification: []model.VerificationKind{model.VerificationBuild},
+	})
+	if err != nil {
+		t.Fatalf("WorkBegin: %v", err)
+	}
+	if created.Contract.ID != "WORK-206" {
+		t.Fatalf("created ID = %s, want WORK-206", created.Contract.ID)
+	}
+	data, err := sddfile.ReadRecord(sddfile.WorkPath(repoDir, "WORK-206"))
+	if err != nil {
+		t.Fatalf("reserved work was not materialized: %v", err)
+	}
+	record, err := sddfile.UnmarshalWork(data)
+	if err != nil || record.Aggregate.Contract.ID != "WORK-206" {
+		t.Fatalf("materialized record = %+v, %v", record, err)
 	}
 }
 
