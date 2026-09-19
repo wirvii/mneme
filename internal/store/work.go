@@ -463,6 +463,46 @@ func (s *SDDStore) TransitionWork(ctx context.Context, id string, from, to model
 	return tx.Commit()
 }
 
+// ResumeWork atomically records the coordinator's decision and resets only the correction budget.
+func (s *SDDStore) ResumeWork(ctx context.Context, id, by, reason string) error {
+	if strings.TrimSpace(by) == "" {
+		return fmt.Errorf("%w: by: required", model.ErrInvalidContract)
+	}
+	if strings.TrimSpace(reason) == "" {
+		return model.ErrReasonRequired
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("store: resume work: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	var status string
+	var revision int
+	if err := tx.QueryRowContext(ctx, `SELECT status,contract_revision FROM execution_contracts WHERE id=?`, id).Scan(&status, &revision); errors.Is(err, sql.ErrNoRows) {
+		return model.ErrWorkNotFound
+	} else if err != nil {
+		return fmt.Errorf("store: resume work: load: %w", err)
+	}
+	if model.WorkStatus(status) != model.WorkStatusEscalated {
+		return model.ErrInvalidWorkTransition
+	}
+	now := time.Now().UTC()
+	result, err := tx.ExecContext(ctx, `UPDATE execution_contracts SET status=?,correction_rounds=0,updated_at=? WHERE id=? AND status=?`, model.WorkStatusImplementing, formatTime(now), id, model.WorkStatusEscalated)
+	if err != nil {
+		return fmt.Errorf("store: resume work: update: %w", err)
+	}
+	if !oneRow(result) {
+		return model.ErrInvalidWorkTransition
+	}
+	if err := insertWorkHistory(ctx, tx, id, model.WorkStatusEscalated, model.WorkStatusImplementing, revision, by, reason, now); err != nil {
+		return fmt.Errorf("store: resume work: history: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: resume work: commit: %w", err)
+	}
+	return nil
+}
+
 // AmendWork replaces normative content, increments revision, and returns work to implementing.
 func (s *SDDStore) AmendWork(ctx context.Context, req model.AmendWorkRequest) error {
 	if strings.TrimSpace(req.Reason) == "" {
@@ -477,7 +517,7 @@ func (s *SDDStore) AmendWork(ctx context.Context, req model.AmendWorkRequest) er
 	if err != nil {
 		return err
 	}
-	if w.Status.Terminal() || w.Status == model.WorkStatusDraft {
+	if w.Status.Terminal() || w.Status == model.WorkStatusDraft || w.Status == model.WorkStatusEscalated {
 		return model.ErrInvalidWorkTransition
 	}
 	from := w.Status

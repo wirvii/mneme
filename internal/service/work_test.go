@@ -481,6 +481,29 @@ func TestWorkComplete_ReturnsPersistedEvidence(t *testing.T) {
 	}
 }
 
+func TestWorkResume_RequiresDeliveryV2(t *testing.T) {
+	svc := newTestSDDService(t, "p")
+	svc.WithRepoDir(filepath.Join(t.TempDir(), "missing"))
+	if _, err := svc.WorkResume(context.Background(), model.WorkResumeRequest{ID: "WORK-404", By: "orchestrator", Reason: "again"}); !errors.Is(err, model.ErrWorkflowEngineDisabled) {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestWorkResume_ReturnsImplementingAggregate(t *testing.T) {
+	svc, _ := deliveryVerifyService(t, model.WorkStatusEscalated)
+	result, err := svc.WorkResume(context.Background(), model.WorkResumeRequest{ID: "WORK-001", By: "orchestrator", Reason: "owner approved another attempt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Contract.Status != model.WorkStatusImplementing || result.Contract.CorrectionRounds != 0 {
+		t.Fatalf("result=%#v", result.Contract)
+	}
+	last := result.History[len(result.History)-1]
+	if last.FromStatus != model.WorkStatusEscalated || last.ToStatus != model.WorkStatusImplementing || last.By != "orchestrator" || last.Reason != "owner approved another attempt" {
+		t.Fatalf("history=%#v", last)
+	}
+}
+
 func TestWorkOperationsDoNotMaterializeSDDFiles(t *testing.T) {
 	svc := deliveryWorkService(t)
 	repo := t.TempDir()

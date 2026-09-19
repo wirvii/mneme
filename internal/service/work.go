@@ -203,6 +203,23 @@ func (svc *SDDService) WorkComplete(ctx context.Context, req model.WorkCompleteR
 	}, nil
 }
 
+// WorkResume returns escalated work to implementation after an explicit human decision.
+func (svc *SDDService) WorkResume(ctx context.Context, req model.WorkResumeRequest) (model.WorkGetResponse, error) {
+	if err := svc.requireDeliveryV2(); err != nil {
+		return model.WorkGetResponse{}, err
+	}
+	if strings.TrimSpace(req.ID) == "" || strings.TrimSpace(req.By) == "" {
+		return model.WorkGetResponse{}, fmt.Errorf("%w: id and by are required", model.ErrInvalidContract)
+	}
+	if strings.TrimSpace(req.Reason) == "" {
+		return model.WorkGetResponse{}, model.ErrReasonRequired
+	}
+	if err := svc.store.ResumeWork(ctx, req.ID, req.By, req.Reason); err != nil {
+		return model.WorkGetResponse{}, err
+	}
+	return svc.WorkGet(ctx, model.WorkGetRequest{ID: req.ID})
+}
+
 func publicWork(aggregate *model.WorkAggregate) model.WorkGetResponse {
 	contract := aggregate.Contract
 	var evidence *model.RedTestEvidence

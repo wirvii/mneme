@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -247,6 +248,111 @@ func TestTransitionWork_PerWorkCorrectionBudget(t *testing.T) {
 	got, _ := s.GetWork(context.Background(), "WORK-001")
 	if got.CorrectionRounds != 0 {
 		t.Fatal("restart did not reset correction rounds")
+	}
+}
+
+func escalatedWork(t *testing.T, s *SDDStore) {
+	t.Helper()
+	workInReview(t, s, "WORK-001", model.WorkStatusVerifying)
+	if _, err := s.db.Exec(`UPDATE execution_contracts SET correction_rounds=1 WHERE id='WORK-001'`); err != nil {
+		t.Fatal(err)
+	}
+	cert, checks := deliveryEvaluationFixture(t, s, "WORK-001")
+	cert.Verdict = model.DeliveryVerdictFail
+	checks[0].Status = model.DeliveryCheckFail
+	if err := s.InsertDeliveryCertificate(context.Background(), cert, checks); err != nil {
+		t.Fatal(err)
+	}
+	finding := &model.WorkFinding{WorkID: "WORK-001", Category: model.FindingRegression, Severity: model.PriorityHigh, Description: "regression", Evidence: "red", Origin: model.FindingOriginReview, ReviewPhase: model.ReviewPhaseInitial}
+	if err := s.AddFinding(context.Background(), finding); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.TransitionWork(context.Background(), "WORK-001", model.WorkStatusVerifying, model.WorkStatusEscalated, "qa-tester", ""); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestResumeWork_ResetsRoundsAndPreservesAggregate(t *testing.T) {
+	s := newTestSDDStore(t)
+	escalatedWork(t, s)
+	before, err := s.GetWorkAggregate(context.Background(), "WORK-001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	certBefore, _ := s.GetLatestDeliveryCertificate(context.Background(), "p", "WORK-001")
+	checksBefore, _ := s.ListDeliveryChecks(context.Background(), certBefore.ID)
+	if err := s.ResumeWork(context.Background(), "WORK-001", "orchestrator", "owner approved another attempt"); err != nil {
+		t.Fatal(err)
+	}
+	after, err := s.GetWorkAggregate(context.Background(), "WORK-001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	certAfter, _ := s.GetLatestDeliveryCertificate(context.Background(), "p", "WORK-001")
+	checksAfter, _ := s.ListDeliveryChecks(context.Background(), certAfter.ID)
+	if after.Contract.Status != model.WorkStatusImplementing || after.Contract.CorrectionRounds != 0 || after.Contract.MaxCorrectionRounds != before.Contract.MaxCorrectionRounds || after.Contract.BaseSHA != before.Contract.BaseSHA || after.Contract.ContractHash != before.Contract.ContractHash || after.Contract.ContractRevision != before.Contract.ContractRevision || after.Contract.Goal != before.Contract.Goal {
+		t.Fatalf("before=%#v after=%#v", before.Contract, after.Contract)
+	}
+	if !reflect.DeepEqual(before.Criteria, after.Criteria) || !reflect.DeepEqual(before.Constraints, after.Constraints) || !reflect.DeepEqual(before.Findings, after.Findings) || !reflect.DeepEqual(certBefore, certAfter) || !reflect.DeepEqual(checksBefore, checksAfter) {
+		t.Fatal("resume changed persisted evidence")
+	}
+	last := after.History[len(after.History)-1]
+	if last.FromStatus != model.WorkStatusEscalated || last.ToStatus != model.WorkStatusImplementing || last.By != "orchestrator" || last.Reason != "owner approved another attempt" {
+		t.Fatalf("history=%#v", last)
+	}
+}
+
+func TestResumeWork_RequiresEscalatedActorAndReason(t *testing.T) {
+	tests := []struct {
+		name, by, reason string
+		state            model.WorkStatus
+	}{
+		{"actor", "", "reason", model.WorkStatusEscalated},
+		{"reason", "orchestrator", "", model.WorkStatusEscalated},
+		{"state", "orchestrator", "reason", model.WorkStatusVerifying},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newTestSDDStore(t)
+			if tc.state == model.WorkStatusEscalated {
+				escalatedWork(t, s)
+			} else {
+				workInReview(t, s, "WORK-001", tc.state)
+			}
+			if err := s.ResumeWork(context.Background(), "WORK-001", tc.by, tc.reason); err == nil {
+				t.Fatal("resume succeeded")
+			}
+		})
+	}
+}
+
+func TestResumeWork_RollsBackWhenHistoryFails(t *testing.T) {
+	s := newTestSDDStore(t)
+	escalatedWork(t, s)
+	before, _ := s.GetWork(context.Background(), "WORK-001")
+	if _, err := s.db.Exec(`CREATE TRIGGER fail_resume_history BEFORE INSERT ON execution_history WHEN NEW.from_status='escalated' BEGIN SELECT RAISE(FAIL,'forced resume history failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ResumeWork(context.Background(), "WORK-001", "orchestrator", "again"); err == nil {
+		t.Fatal("expected history failure")
+	}
+	after, _ := s.GetWork(context.Background(), "WORK-001")
+	if after.Status != before.Status || after.CorrectionRounds != before.CorrectionRounds || !after.UpdatedAt.Equal(before.UpdatedAt) {
+		t.Fatalf("before=%#v after=%#v", before, after)
+	}
+}
+
+func TestAmendWork_CannotResumeEscalated(t *testing.T) {
+	s := newTestSDDStore(t)
+	escalatedWork(t, s)
+	before, _ := s.GetWorkAggregate(context.Background(), "WORK-001")
+	req := model.AmendWorkRequest{WorkID: "WORK-001", Goal: "changed", Scope: []string{"internal/**"}, Verification: []model.VerificationKind{model.VerificationBuild}, DevelopmentMethod: model.DevelopmentMethodStandard, Criteria: testCriteria(), Constraints: testConstraints(), By: "orchestrator", Reason: "change"}
+	if err := s.AmendWork(context.Background(), req); !errors.Is(err, model.ErrInvalidWorkTransition) {
+		t.Fatalf("error=%v", err)
+	}
+	after, _ := s.GetWorkAggregate(context.Background(), "WORK-001")
+	if !reflect.DeepEqual(before, after) {
+		t.Fatal("amend changed escalated work")
 	}
 }
 
