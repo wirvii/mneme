@@ -398,7 +398,7 @@ evidence_required = "note"`}},
 
 func intPtr(value int) *int { return &value }
 
-func TestDeferredWorkCapabilitiesAreReadOnly(t *testing.T) {
+func TestWorkReviewAndCompleteRemainDeferredAndReadOnly(t *testing.T) {
 	svc := deliveryWorkService(t)
 	ctx := context.Background()
 	seedServiceWork(t, svc, "WORK-001")
@@ -412,9 +412,6 @@ func TestDeferredWorkCapabilitiesAreReadOnly(t *testing.T) {
 	}{
 		{"review", func() (model.WorkCapabilityResult, error) {
 			return svc.WorkReview(ctx, model.WorkActionRequest{ID: "WORK-001"})
-		}},
-		{"verify", func() (model.WorkCapabilityResult, error) {
-			return svc.WorkVerify(ctx, model.WorkActionRequest{ID: "WORK-001"})
 		}},
 		{"complete", func() (model.WorkCapabilityResult, error) {
 			return svc.WorkComplete(ctx, model.WorkActionRequest{ID: "WORK-001"})
@@ -435,7 +432,7 @@ func TestDeferredWorkCapabilitiesAreReadOnly(t *testing.T) {
 func TestDeferredWorkCapabilitiesHaveNoSuccessVocabulary(t *testing.T) {
 	svc := deliveryWorkService(t)
 	seedServiceWork(t, svc, "WORK-001")
-	result, err := svc.WorkVerify(context.Background(), model.WorkActionRequest{ID: "WORK-001"})
+	result, err := svc.WorkReview(context.Background(), model.WorkActionRequest{ID: "WORK-001"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -448,7 +445,7 @@ func TestDeferredWorkCapabilitiesHaveNoSuccessVocabulary(t *testing.T) {
 	}
 }
 
-func TestWorkOperationsNeverExecuteCriterionCommands(t *testing.T) {
+func TestDeferredWorkOperationsNeverExecuteCriterionCommands(t *testing.T) {
 	svc := deliveryWorkService(t)
 	ctx := context.Background()
 	marker := filepath.Join(t.TempDir(), "executed")
@@ -469,7 +466,10 @@ timeout = "1m"`}
 	if _, err := svc.WorkAmend(ctx, amend); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.WorkVerify(ctx, model.WorkActionRequest{ID: work.Contract.ID}); err != nil {
+	if _, err := svc.WorkReview(ctx, model.WorkActionRequest{ID: work.Contract.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.WorkComplete(ctx, model.WorkActionRequest{ID: work.Contract.ID}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
@@ -497,7 +497,7 @@ func TestWorkOperationsDoNotMaterializeSDDFiles(t *testing.T) {
 	}
 }
 
-func TestWorkLockIsOnlyGitInvokingOperation(t *testing.T) {
+func TestWorkOperationsWithoutVerificationDoNotInvokeGit(t *testing.T) {
 	if os.PathSeparator == '\\' {
 		t.Skip("shell fake is Unix-only")
 	}
@@ -518,7 +518,6 @@ func TestWorkLockIsOnlyGitInvokingOperation(t *testing.T) {
 	_, _ = svc.WorkGet(ctx, model.WorkGetRequest{ID: work.Contract.ID})
 	_, _ = svc.WorkAmend(ctx, validWorkAmendRequest(work.Contract.ID))
 	_, _ = svc.WorkReview(ctx, model.WorkActionRequest{ID: work.Contract.ID})
-	_, _ = svc.WorkVerify(ctx, model.WorkActionRequest{ID: work.Contract.ID})
 	_, _ = svc.WorkComplete(ctx, model.WorkActionRequest{ID: work.Contract.ID})
 	if _, err := os.Stat(logPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("non-lock operation invoked git: %v", err)

@@ -115,10 +115,12 @@ type WorkGetResponse struct {
 
 // WorkCapabilityResult reports an intentionally unavailable phase without fabricating a verdict.
 type WorkCapabilityResult struct {
-	Work       WorkGetResponse `json:"work"`
-	Operation  string          `json:"operation"`
-	Available  bool            `json:"available"`
-	Performed  bool            `json:"performed"`
-	ReasonCode string          `json:"reason_code"`
-	Reason     string          `json:"reason"`
+	Work        WorkGetResponse      `json:"work"`
+	Operation   string               `json:"operation"`
+	Available   bool                 `json:"available"`
+	Performed   bool                 `json:"performed"`
+	ReasonCode  string               `json:"reason_code"`
+	Reason      string               `json:"reason"`
+	Certificate *DeliveryCertificate `json:"certificate,omitempty"`
+	Checks      []DeliveryCheck      `json:"checks,omitempty"`
 }

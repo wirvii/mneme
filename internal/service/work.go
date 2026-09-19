@@ -178,18 +178,6 @@ func (svc *SDDService) WorkReview(ctx context.Context, req model.WorkActionReque
 	return deferredWork("review", "phase 2 does not run broad review, create findings, or change work state", work), nil
 }
 
-// WorkVerify reports the phase-two verification capability without executing criteria or gates.
-func (svc *SDDService) WorkVerify(ctx context.Context, req model.WorkActionRequest) (model.WorkCapabilityResult, error) {
-	if err := svc.requireDeliveryV2(); err != nil {
-		return model.WorkCapabilityResult{}, err
-	}
-	work, err := svc.WorkGet(ctx, model.WorkGetRequest(req))
-	if err != nil {
-		return model.WorkCapabilityResult{}, err
-	}
-	return deferredWork("verify", "phase 2 does not execute criteria or gates, update observations, or emit evidence", work), nil
-}
-
 // WorkComplete reports the phase-two completion capability without changing work state.
 func (svc *SDDService) WorkComplete(ctx context.Context, req model.WorkActionRequest) (model.WorkCapabilityResult, error) {
 	if err := svc.requireDeliveryV2(); err != nil {

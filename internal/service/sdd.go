@@ -31,15 +31,21 @@ import (
 // lane-aware routing that enables trivial items to skip the full spec/plan cycle.
 // It owns the business rules that sit above the raw store operations.
 type SDDService struct {
-	store     *store.SDDStore
-	config    *config.Config
-	project   string
-	memorySvc *MemoryService // optional; nil disables completion memory saving
+	store                 *store.SDDStore
+	config                *config.Config
+	project               string
+	memorySvc             *MemoryService // optional; nil disables completion memory saving
+	deliveryRunnerFactory DeliveryRunnerFactory
+	mnemeVersion          string
 
 	// repoDir is the working directory used by the lane auditor to run git
 	// commands. When empty the auditor uses the current working directory.
 	repoDir string
 }
+
+// DeliveryRunnerFactory creates the command runner used by one delivery
+// verification with the output-tail limit declared by the repository.
+type DeliveryRunnerFactory func(maxTailBytes int) quality.Runner
 
 // NewSDDService constructs an SDDService.
 // sddStore is the underlying data store, cfg provides quality gate settings,
@@ -60,6 +66,13 @@ func NewSDDService(sddStore *store.SDDStore, cfg *config.Config, project string,
 // directory is known (e.g. from the MCP server's project root).
 func (svc *SDDService) WithRepoDir(dir string) {
 	svc.repoDir = dir
+}
+
+// WithDeliveryVerifier installs the explicit production dependencies needed
+// to execute project commands and identify the emitting mneme version.
+func (svc *SDDService) WithDeliveryVerifier(factory DeliveryRunnerFactory, mnemeVersion string) {
+	svc.deliveryRunnerFactory = factory
+	svc.mnemeVersion = mnemeVersion
 }
 
 // RepoDir returns the raw repoDir field, with NO fallback to os.Getwd()
