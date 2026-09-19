@@ -171,7 +171,7 @@ func (svc *SDDService) WorkReview(ctx context.Context, req model.WorkActionReque
 	if err := svc.requireDeliveryV2(); err != nil {
 		return model.WorkCapabilityResult{}, err
 	}
-	work, err := svc.WorkGet(ctx, model.WorkGetRequest{ID: req.ID})
+	work, err := svc.WorkGet(ctx, model.WorkGetRequest(req))
 	if err != nil {
 		return model.WorkCapabilityResult{}, err
 	}
@@ -183,7 +183,7 @@ func (svc *SDDService) WorkVerify(ctx context.Context, req model.WorkActionReque
 	if err := svc.requireDeliveryV2(); err != nil {
 		return model.WorkCapabilityResult{}, err
 	}
-	work, err := svc.WorkGet(ctx, model.WorkGetRequest{ID: req.ID})
+	work, err := svc.WorkGet(ctx, model.WorkGetRequest(req))
 	if err != nil {
 		return model.WorkCapabilityResult{}, err
 	}
@@ -195,7 +195,7 @@ func (svc *SDDService) WorkComplete(ctx context.Context, req model.WorkActionReq
 	if err := svc.requireDeliveryV2(); err != nil {
 		return model.WorkCapabilityResult{}, err
 	}
-	work, err := svc.WorkGet(ctx, model.WorkGetRequest{ID: req.ID})
+	work, err := svc.WorkGet(ctx, model.WorkGetRequest(req))
 	if err != nil {
 		return model.WorkCapabilityResult{}, err
 	}

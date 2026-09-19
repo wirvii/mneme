@@ -219,7 +219,7 @@ func readWorkInput(cmd *cobra.Command, source string) ([]byte, error) {
 		closeFile = file.Close
 	}
 	if closeFile != nil {
-		defer closeFile()
+		defer func() { _ = closeFile() }()
 	}
 	data, err := io.ReadAll(io.LimitReader(reader, workInputLimit+1))
 	if err != nil {
