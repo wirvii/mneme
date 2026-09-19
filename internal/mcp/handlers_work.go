@@ -73,42 +73,46 @@ func (h *handlers) handleWorkAmend(ctx context.Context, raw json.RawMessage) (*T
 }
 
 func (h *handlers) handleWorkReview(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
-	return h.handleWorkAction(ctx, "work_review", raw, h.sddWorkReview)
-}
-
-func (h *handlers) handleWorkVerify(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
-	return h.handleWorkAction(ctx, "work_verify", raw, h.sddWorkVerify)
-}
-
-func (h *handlers) handleWorkComplete(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
-	return h.handleWorkAction(ctx, "work_complete", raw, h.sddWorkComplete)
-}
-
-type workAction func(context.Context, model.WorkActionRequest) (model.WorkCapabilityResult, error)
-
-func (h *handlers) handleWorkAction(ctx context.Context, method string, raw json.RawMessage, action workAction) (*ToolCallResult, *JSONRPCError) {
 	if h.sdd == nil {
-		return nil, h.sddUnavailable(method)
+		return nil, h.sddUnavailable("work_review")
 	}
 	var req model.WorkActionRequest
 	if err := json.Unmarshal(raw, &req); err != nil {
-		return invalidWorkArguments(method, err)
+		return invalidWorkArguments("work_review", err)
 	}
-	result, err := action(ctx, req)
+	result, err := h.sdd.WorkReview(ctx, req)
 	if err != nil {
-		return nil, h.mapServiceError(method, err)
+		return nil, h.mapServiceError("work_review", err)
 	}
 	return resultFromAny(result)
 }
 
-func (h *handlers) sddWorkReview(ctx context.Context, req model.WorkActionRequest) (model.WorkCapabilityResult, error) {
-	return h.sdd.WorkReview(ctx, req)
+func (h *handlers) handleWorkVerify(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	if h.sdd == nil {
+		return nil, h.sddUnavailable("work_verify")
+	}
+	var req model.WorkActionRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return invalidWorkArguments("work_verify", err)
+	}
+	result, err := h.sdd.WorkVerify(ctx, req)
+	if err != nil {
+		return nil, h.mapServiceError("work_verify", err)
+	}
+	return resultFromAny(result)
 }
 
-func (h *handlers) sddWorkVerify(ctx context.Context, req model.WorkActionRequest) (model.WorkCapabilityResult, error) {
-	return h.sdd.WorkVerify(ctx, req)
-}
-
-func (h *handlers) sddWorkComplete(ctx context.Context, req model.WorkActionRequest) (model.WorkCapabilityResult, error) {
-	return h.sdd.WorkComplete(ctx, req)
+func (h *handlers) handleWorkComplete(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	if h.sdd == nil {
+		return nil, h.sddUnavailable("work_complete")
+	}
+	var req model.WorkActionRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return invalidWorkArguments("work_complete", err)
+	}
+	result, err := h.sdd.WorkComplete(ctx, req)
+	if err != nil {
+		return nil, h.mapServiceError("work_complete", err)
+	}
+	return resultFromAny(result)
 }
