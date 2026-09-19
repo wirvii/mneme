@@ -309,6 +309,84 @@ func TestSDDWrappers_AllMaterialize(t *testing.T) {
 	}
 }
 
+func parsedServiceMethod(t *testing.T, filename, method string) *ast.FuncDecl {
+	t.Helper()
+	_, thisFile, _, _ := runtime.Caller(0)
+	f, err := parser.ParseFile(token.NewFileSet(), filepath.Join(filepath.Dir(thisFile), filename), nil, 0)
+	if err != nil {
+		t.Fatalf("parse %s: %v", filename, err)
+	}
+	for _, decl := range f.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if ok && fn.Name.Name == method {
+			return fn
+		}
+	}
+	t.Fatalf("%s has no method %s", filename, method)
+	return nil
+}
+
+func selectorCallCount(fn *ast.FuncDecl, name string) int {
+	count := 0
+	ast.Inspect(fn.Body, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if ok && sel.Sel.Name == name {
+			count++
+		}
+		return true
+	})
+	return count
+}
+
+// TestSDDWorkWrappers_AllMaterialize guards the eight committed work
+// mutation families. Each public service path has one post-commit
+// materialization point; WorkReview deliberately converges its two branches.
+func TestSDDWorkWrappers_AllMaterialize(t *testing.T) {
+	tests := []struct {
+		file, method string
+		storeCalls   []string
+	}{
+		{"work.go", "WorkBegin", []string{"CreateWork"}},
+		{"work.go", "WorkLock", []string{"LockWorkAndStart"}},
+		{"work.go", "WorkAmend", []string{"AmendWork"}},
+		{"work.go", "WorkComplete", []string{"CompleteWork"}},
+		{"work.go", "WorkResume", []string{"ResumeWork"}},
+		{"work_review.go", "WorkReview", []string{"InsertInitialReview", "InsertTargetedReview"}},
+		{"work_verify.go", "WorkVerify", []string{"InsertDeliveryEvaluation"}},
+	}
+	for _, tt := range tests {
+		fn := parsedServiceMethod(t, tt.file, tt.method)
+		for _, storeCall := range tt.storeCalls {
+			if selectorCallCount(fn, storeCall) != 1 {
+				t.Errorf("%s must call store.%s exactly once", tt.method, storeCall)
+			}
+		}
+		if got := selectorCallCount(fn, "materializeWork"); got != 1 {
+			t.Errorf("%s has %d materializeWork calls, want exactly 1", tt.method, got)
+		}
+	}
+}
+
+func TestSDDWorkGuardIgnoresComments(t *testing.T) {
+	source := `package service
+func (svc *SDDService) fake() {
+	// svc.materializeWork(ctx, "WORK-001")
+	_ = "svc.materializeWork(ctx, workID)"
+}`
+	f, err := parser.ParseFile(token.NewFileSet(), "fake.go", source, parser.ParseComments)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fn := f.Decls[0].(*ast.FuncDecl)
+	if got := selectorCallCount(fn, "materializeWork"); got != 0 {
+		t.Fatalf("comment/string counted as materialization: %d", got)
+	}
+}
+
 // Mutaciones exigidas (AC9, ejecutadas y revertidas byte a byte durante la
 // implementacion; documentadas en changes.md con el resultado real de cada
 // una):

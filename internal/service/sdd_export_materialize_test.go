@@ -180,6 +180,74 @@ func TestSDDGitNative_Disabled_WritesNothing(t *testing.T) {
 	}
 }
 
+func TestSDDMaterializeWork(t *testing.T) {
+	t.Run("active marker writes complete aggregate", func(t *testing.T) {
+		svc, repoDir := newSDDMaterializeService(t, "wirvii/mneme")
+		enableSDD(t, repoDir, svc.project)
+		seedServiceWork(t, svc, "WORK-001")
+
+		svc.materializeWork(context.Background(), "WORK-001")
+		data, err := sddfile.ReadRecord(sddfile.WorkPath(repoDir, "WORK-001"))
+		if err != nil {
+			t.Fatalf("ReadRecord: %v", err)
+		}
+		rec, err := sddfile.UnmarshalWork(data)
+		if err != nil {
+			t.Fatalf("UnmarshalWork: %v", err)
+		}
+		if rec.Aggregate.Contract.ID != "WORK-001" || rec.Aggregate.Contract.Goal != "goal" {
+			t.Fatalf("record = %#v", rec.Aggregate.Contract)
+		}
+	})
+
+	t.Run("no marker writes nothing", func(t *testing.T) {
+		svc, repoDir := newSDDMaterializeService(t, "wirvii/mneme")
+		seedServiceWork(t, svc, "WORK-001")
+		svc.materializeWork(context.Background(), "WORK-001")
+		if _, err := os.Stat(sddfile.WorkPath(repoDir, "WORK-001")); !os.IsNotExist(err) {
+			t.Fatalf("work file exists without marker: %v", err)
+		}
+	})
+
+	t.Run("empty repo dir writes nothing", func(t *testing.T) {
+		svc := newTestSDDService(t, "wirvii/mneme")
+		seedServiceWork(t, svc, "WORK-001")
+		svc.materializeWork(context.Background(), "WORK-001")
+	})
+}
+
+func TestSDDMaterializeWork_WriteFailureIsBestEffort(t *testing.T) {
+	svc, repoDir := newSDDMaterializeService(t, "wirvii/mneme")
+	svc.config.Workflow.Engine = config.WorkflowEngineDeliveryV2
+	enableSDD(t, repoDir, svc.project)
+	if err := os.WriteFile(filepath.Join(sddfile.RootDir(repoDir), "work"), []byte("blocks directory creation"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := svc.WorkBegin(context.Background(), model.WorkBeginRequest{
+		Goal: "database remains authoritative", Scope: []string{"internal/**"},
+		Verification: []model.VerificationKind{model.VerificationBuild},
+	})
+	if err != nil {
+		t.Fatalf("WorkBegin propagated materialization failure: %v", err)
+	}
+	if _, err := svc.store.GetWork(context.Background(), result.Contract.ID); err != nil {
+		t.Fatalf("committed work missing after write failure: %v", err)
+	}
+}
+
+func readMaterializedWork(t *testing.T, repoDir, id string) *sddfile.WorkRecord {
+	t.Helper()
+	data, err := sddfile.ReadRecord(sddfile.WorkPath(repoDir, id))
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := sddfile.UnmarshalWork(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return record
+}
+
 // TestSDDNextID_UnaffectedByGitNative is REWRITTEN by SPEC-131 (D55/W11),
 // on purpose and declared here so the change is visible in the diff rather
 // than looking like someone softened a test that was in the way: it used

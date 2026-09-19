@@ -46,6 +46,7 @@ func (svc *SDDService) WorkVerify(ctx context.Context, req model.WorkActionReque
 	if err := svc.store.InsertDeliveryEvaluation(ctx, evaluation.certificate, evaluation.checks, evaluation.observations); err != nil {
 		return model.WorkCapabilityResult{}, err
 	}
+	svc.materializeWork(ctx, req.ID)
 	work, err := svc.WorkGet(ctx, model.WorkGetRequest(req))
 	if err != nil {
 		return model.WorkCapabilityResult{}, err

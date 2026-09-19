@@ -239,6 +239,26 @@ func TestWorkReview_PersistsOneCompleteReviewWithoutLaterTransition(t *testing.T
 	}
 }
 
+func TestWorkReview_MaterializesInitialReview(t *testing.T) {
+	svc, _, _ := reviewService(t, model.WorkStatusImplementing)
+	enableSDD(t, svc.repoDir, svc.project)
+	svc.materializeWork(context.Background(), "WORK-001")
+	runVerifyGit(t, svc.repoDir, "add", ".mneme")
+	runVerifyGit(t, svc.repoDir, "commit", "-q", "-m", "enable sdd")
+	head, err := (&quality.Git{RepoDir: svc.repoDir}).HeadSHA()
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := svc.WorkReview(context.Background(), reviewRequest(head))
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := readMaterializedWork(t, svc.repoDir, "WORK-001")
+	if record.Aggregate.Contract.Status != result.Work.Contract.Status || len(record.Aggregate.History) == 0 {
+		t.Fatalf("materialized review record=%#v", record.Aggregate)
+	}
+}
+
 func TestWorkReview_InitialDecisionAndMandate(t *testing.T) {
 	t.Run("green", func(t *testing.T) {
 		svc, _, _ := reviewService(t, model.WorkStatusImplementing)
@@ -456,6 +476,27 @@ func TestWorkReview_TargetedGreenStopsBeforeCompletion(t *testing.T) {
 	}
 	if result.NextStatus != model.WorkStatusTargetedVerifying || result.Work.Contract.Status != model.WorkStatusTargetedVerifying || result.Work.Contract.CompletedAt != nil || result.Work.Contract.CorrectionRounds != 1 {
 		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestWorkReview_MaterializesTargetedReview(t *testing.T) {
+	svc, _, req, _ := targetedReviewService(t)
+	enableSDD(t, svc.repoDir, svc.project)
+	svc.materializeWork(context.Background(), "WORK-001")
+	runVerifyGit(t, svc.repoDir, "add", ".mneme")
+	runVerifyGit(t, svc.repoDir, "commit", "-q", "-m", "enable sdd for targeted review")
+	currentHead, err := (&quality.Git{RepoDir: svc.repoDir}).HeadSHA()
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.HeadSHA = currentHead
+	result, err := svc.WorkReview(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := readMaterializedWork(t, svc.repoDir, "WORK-001")
+	if record.Aggregate.Contract.Status != result.Work.Contract.Status || record.Aggregate.Contract.Status != model.WorkStatusTargetedVerifying {
+		t.Fatalf("materialized targeted record=%#v", record.Aggregate.Contract)
 	}
 }
 

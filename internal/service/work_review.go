@@ -144,6 +144,7 @@ func (svc *SDDService) WorkReview(ctx context.Context, req model.WorkReviewReque
 	if err != nil {
 		return model.WorkCapabilityResult{}, err
 	}
+	svc.materializeWork(ctx, req.ID)
 	work, err := svc.WorkGet(ctx, model.WorkGetRequest{ID: req.ID})
 	if err != nil {
 		return model.WorkCapabilityResult{}, err

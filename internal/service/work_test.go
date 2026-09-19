@@ -248,6 +248,48 @@ func TestWorkBeginDefaultsAndOverrides(t *testing.T) {
 	}
 }
 
+func TestWorkBeginLockAmendAndResume_Materialize(t *testing.T) {
+	svc := deliveryWorkService(t)
+	repo, _ := initWorkGitRepo(t)
+	svc.WithRepoDir(repo)
+	enableSDD(t, repo, svc.project)
+	ctx := context.Background()
+	draft, err := svc.WorkBegin(ctx, model.WorkBeginRequest{Goal: "before", Scope: []string{"internal/**"}, Verification: []model.VerificationKind{model.VerificationBuild}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := readMaterializedWork(t, repo, draft.Contract.ID).Aggregate.Contract.Status; got != model.WorkStatusDraft {
+		t.Fatalf("begin file status=%s", got)
+	}
+	locked, err := svc.WorkLock(ctx, model.WorkLockRequest{ID: draft.Contract.ID, By: "coordinator"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := readMaterializedWork(t, repo, draft.Contract.ID).Aggregate.Contract.Status; got != model.WorkStatusImplementing {
+		t.Fatalf("lock file status=%s", got)
+	}
+	_, err = svc.WorkAmend(ctx, model.WorkAmendRequest{ID: draft.Contract.ID, Goal: "after", Scope: []string{"cmd/**"}, Verification: []model.VerificationKind{model.VerificationBuild}, DevelopmentMethod: model.DevelopmentMethodStandard, By: "coordinator", Reason: "approved"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := readMaterializedWork(t, repo, draft.Contract.ID).Aggregate.Contract; got.Goal != "after" || got.ContractRevision != locked.Contract.ContractRevision+1 {
+		t.Fatalf("amend file=%#v", got)
+	}
+	if err := svc.store.TransitionWork(ctx, draft.Contract.ID, model.WorkStatusImplementing, model.WorkStatusVerifying, "qa", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.store.TransitionWork(ctx, draft.Contract.ID, model.WorkStatusVerifying, model.WorkStatusEscalated, "qa", ""); err != nil {
+		t.Fatal(err)
+	}
+	_, err = svc.WorkResume(ctx, model.WorkResumeRequest{ID: draft.Contract.ID, By: "owner", Reason: "retry"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := readMaterializedWork(t, repo, draft.Contract.ID).Aggregate.Contract.Status; got != model.WorkStatusImplementing {
+		t.Fatalf("resume file status=%s", got)
+	}
+}
+
 func TestWorkGetPublicProjectionOmitsContractUUID(t *testing.T) {
 	svc := deliveryWorkService(t)
 	ctx := context.Background()
@@ -478,6 +520,30 @@ func TestWorkComplete_ReturnsPersistedEvidence(t *testing.T) {
 	}
 	if result.Certificate == nil || verified.Certificate == nil || result.Certificate.ID != verified.Certificate.ID || !reflect.DeepEqual(result.Checks, verified.Checks) {
 		t.Fatalf("complete evidence=%#v/%#v verified=%#v/%#v", result.Certificate, result.Checks, verified.Certificate, verified.Checks)
+	}
+}
+
+func TestWorkComplete_MaterializesDoneState(t *testing.T) {
+	svc, _, _ := closableService(t)
+	enableSDD(t, svc.repoDir, svc.project)
+	runVerifyGit(t, svc.repoDir, "add", ".mneme")
+	runVerifyGit(t, svc.repoDir, "commit", "-q", "-m", "enable sdd for completion")
+	work, err := svc.store.GetWork(context.Background(), "WORK-001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	cert := &model.DeliveryCertificate{Project: work.Project, WorkID: work.ID, ContractRevision: work.ContractRevision, ContractHash: work.ContractHash, HeadSHA: strings.TrimSpace(runVerifyGit(t, svc.repoDir, "rev-parse", "HEAD")), BaseSHA: work.BaseSHA, Verdict: model.DeliveryVerdictPass, StartedAt: now, FinishedAt: now}
+	if err := svc.store.InsertDeliveryCertificate(context.Background(), cert, []*model.DeliveryCheck{{Kind: "gate", Name: "build", Status: model.DeliveryCheckPass, Effect: model.DeliveryEffectBlocks}}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := svc.WorkComplete(context.Background(), model.WorkCompleteRequest{ID: "WORK-001", By: "coordinator"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := readMaterializedWork(t, svc.repoDir, "WORK-001")
+	if record.Aggregate.Contract.Status != model.WorkStatusDone || record.Aggregate.Contract.CompletedAt == nil || record.Aggregate.Contract.Status != result.Work.Contract.Status {
+		t.Fatalf("materialized completion=%#v", record.Aggregate.Contract)
 	}
 }
 

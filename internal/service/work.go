@@ -78,6 +78,7 @@ func (svc *SDDService) WorkBegin(ctx context.Context, req model.WorkBeginRequest
 	if err := svc.store.CreateWork(ctx, contract, criteria, constraints); err != nil {
 		return model.WorkGetResponse{}, err
 	}
+	svc.materializeWork(ctx, id)
 	return svc.WorkGet(ctx, model.WorkGetRequest{ID: id})
 }
 
@@ -114,6 +115,7 @@ func (svc *SDDService) WorkLock(ctx context.Context, req model.WorkLockRequest) 
 	if err := svc.store.LockWorkAndStart(ctx, req.ID, head, req.By); err != nil {
 		return model.WorkGetResponse{}, err
 	}
+	svc.materializeWork(ctx, req.ID)
 	return svc.WorkGet(ctx, model.WorkGetRequest{ID: req.ID})
 }
 
@@ -163,6 +165,7 @@ func (svc *SDDService) WorkAmend(ctx context.Context, req model.WorkAmendRequest
 	}); err != nil {
 		return model.WorkGetResponse{}, err
 	}
+	svc.materializeWork(ctx, req.ID)
 	return svc.WorkGet(ctx, model.WorkGetRequest{ID: req.ID})
 }
 
@@ -193,6 +196,7 @@ func (svc *SDDService) WorkComplete(ctx context.Context, req model.WorkCompleteR
 	if err != nil {
 		return model.WorkCapabilityResult{}, err
 	}
+	svc.materializeWork(ctx, req.ID)
 	work, err := svc.WorkGet(ctx, model.WorkGetRequest{ID: req.ID})
 	if err != nil {
 		return model.WorkCapabilityResult{}, err
@@ -217,6 +221,7 @@ func (svc *SDDService) WorkResume(ctx context.Context, req model.WorkResumeReque
 	if err := svc.store.ResumeWork(ctx, req.ID, req.By, req.Reason); err != nil {
 		return model.WorkGetResponse{}, err
 	}
+	svc.materializeWork(ctx, req.ID)
 	return svc.WorkGet(ctx, model.WorkGetRequest{ID: req.ID})
 }
 

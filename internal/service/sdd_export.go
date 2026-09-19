@@ -215,3 +215,26 @@ func (svc *SDDService) materializeSpec(ctx context.Context, specID string) {
 		slog.ErrorContext(ctx, "sdd_materialize_error", "kind", "spec", "id", specID, "step", "write", "error", err)
 	}
 }
+
+// materializeWork rereads the complete delivery-v2 aggregate and writes it
+// only when the repository's existing SDD marker is active. Every failure is
+// logged after the database mutation has committed and is never propagated.
+func (svc *SDDService) materializeWork(ctx context.Context, workID string) {
+	repoRoot := svc.repoDir
+	if repoRoot == "" || !ResolveSDDState(repoRoot).Enabled {
+		return
+	}
+	aggregate, err := svc.store.GetWorkAggregate(ctx, workID)
+	if err != nil {
+		slog.ErrorContext(ctx, "sdd_materialize_error", "kind", "work", "id", workID, "step", "reload", "error", err)
+		return
+	}
+	data, err := sddfile.MarshalWork(&sddfile.WorkRecord{Aggregate: aggregate})
+	if err != nil {
+		slog.ErrorContext(ctx, "sdd_materialize_error", "kind", "work", "id", workID, "step", "marshal", "error", err)
+		return
+	}
+	if err := sddfile.WriteRecord(sddfile.WorkPath(repoRoot, workID), data); err != nil {
+		slog.ErrorContext(ctx, "sdd_materialize_error", "kind", "work", "id", workID, "step", "write", "error", err)
+	}
+}

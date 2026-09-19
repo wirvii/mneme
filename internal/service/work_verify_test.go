@@ -179,6 +179,22 @@ func TestWorkVerify_OnlyVerifyingStatesPersistWithoutTransition(t *testing.T) {
 	}
 }
 
+func TestWorkVerify_MaterializesCommittedObservations(t *testing.T) {
+	svc, _ := deliveryVerifyService(t, model.WorkStatusVerifying)
+	enableSDD(t, svc.repoDir, svc.project)
+	svc.materializeWork(context.Background(), "WORK-001")
+	runVerifyGit(t, svc.repoDir, "add", ".mneme")
+	runVerifyGit(t, svc.repoDir, "commit", "-q", "-m", "enable sdd for verify")
+	result, err := svc.WorkVerify(context.Background(), model.WorkActionRequest{ID: "WORK-001"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := readMaterializedWork(t, svc.repoDir, "WORK-001")
+	if record.Aggregate.Contract.Status != result.Work.Contract.Status {
+		t.Fatalf("materialized verify status=%s result=%s", record.Aggregate.Contract.Status, result.Work.Contract.Status)
+	}
+}
+
 func TestWorkVerify_PreservesOnlyCurrentMarkedReview(t *testing.T) {
 	t.Run("matching review preserves architecture and recalculates blockers", func(t *testing.T) {
 		svc, _ := reviewServiceWithConstraints(t, []model.WorkConstraint{{Key: "layers", Text: "inward"}})
