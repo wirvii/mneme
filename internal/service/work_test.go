@@ -615,7 +615,15 @@ func TestWorkOperationsRejectMissingInputsAndUnknownWork(t *testing.T) {
 func TestWorkGetReturnsDefensiveCopyOfRedTestEvidence(t *testing.T) {
 	svc := deliveryWorkService(t)
 	ctx := context.Background()
-	seedServiceWork(t, svc, "WORK-001")
+	contract := &model.WorkContract{
+		ID: "WORK-001", Project: svc.project, SourceType: model.WorkSourceOrganic,
+		Status: model.WorkStatusDraft, Goal: "evidence", Scope: []string{"internal/**"},
+		Verification:      []model.VerificationKind{model.VerificationBuild},
+		DevelopmentMethod: model.DevelopmentMethodTDD, MaxCorrectionRounds: 1,
+	}
+	if err := svc.store.CreateWork(ctx, contract, nil, nil); err != nil {
+		t.Fatal(err)
+	}
 	if err := svc.store.LockWorkAndStart(ctx, "WORK-001", "base", "coordinator"); err != nil {
 		t.Fatal(err)
 	}
