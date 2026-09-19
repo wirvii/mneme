@@ -135,7 +135,7 @@ func TestWorkServiceLegacyBlocksMutationsButAllowsGet(t *testing.T) {
 		{"begin", func() error { _, err := svc.WorkBegin(ctx, model.WorkBeginRequest{}); return err }},
 		{"lock", func() error { _, err := svc.WorkLock(ctx, model.WorkLockRequest{ID: "WORK-001"}); return err }},
 		{"amend", func() error { _, err := svc.WorkAmend(ctx, validWorkAmendRequest("WORK-001")); return err }},
-		{"review", func() error { _, err := svc.WorkReview(ctx, model.WorkActionRequest{ID: "WORK-001"}); return err }},
+		{"review", func() error { _, err := svc.WorkReview(ctx, model.WorkReviewRequest{ID: "WORK-001"}); return err }},
 		{"verify", func() error { _, err := svc.WorkVerify(ctx, model.WorkActionRequest{ID: "WORK-001"}); return err }},
 		{"complete", func() error { _, err := svc.WorkComplete(ctx, model.WorkActionRequest{ID: "WORK-001"}); return err }},
 	}
@@ -398,7 +398,7 @@ evidence_required = "note"`}},
 
 func intPtr(value int) *int { return &value }
 
-func TestWorkReviewAndCompleteRemainDeferredAndReadOnly(t *testing.T) {
+func TestWorkCompleteRemainsDeferredAndReadOnly(t *testing.T) {
 	svc := deliveryWorkService(t)
 	ctx := context.Background()
 	seedServiceWork(t, svc, "WORK-001")
@@ -406,33 +406,20 @@ func TestWorkReviewAndCompleteRemainDeferredAndReadOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	before, _ := svc.store.GetWorkAggregate(ctx, "WORK-001")
-	checks := []struct {
-		operation string
-		call      func() (model.WorkCapabilityResult, error)
-	}{
-		{"review", func() (model.WorkCapabilityResult, error) {
-			return svc.WorkReview(ctx, model.WorkActionRequest{ID: "WORK-001"})
-		}},
-		{"complete", func() (model.WorkCapabilityResult, error) {
-			return svc.WorkComplete(ctx, model.WorkActionRequest{ID: "WORK-001"})
-		}},
-	}
-	for _, check := range checks {
-		result, err := check.call()
-		if err != nil || result.Operation != check.operation || result.Available || result.Performed || result.ReasonCode != "phase_not_available" || result.Reason == "" || result.Work.Contract.ID != "WORK-001" {
-			t.Fatalf("%s result = %#v, %v", check.operation, result, err)
-		}
+	result, err := svc.WorkComplete(ctx, model.WorkActionRequest{ID: "WORK-001"})
+	if err != nil || result.Operation != "complete" || result.Available || result.Performed || result.ReasonCode != "phase_not_available" || result.Reason == "" || result.Work.Contract.ID != "WORK-001" {
+		t.Fatalf("complete result = %#v, %v", result, err)
 	}
 	after, _ := svc.store.GetWorkAggregate(ctx, "WORK-001")
 	if !reflect.DeepEqual(before, after) {
-		t.Fatalf("deferred operations changed work: before=%#v after=%#v", before, after)
+		t.Fatalf("deferred operation changed work: before=%#v after=%#v", before, after)
 	}
 }
 
 func TestDeferredWorkCapabilitiesHaveNoSuccessVocabulary(t *testing.T) {
 	svc := deliveryWorkService(t)
 	seedServiceWork(t, svc, "WORK-001")
-	result, err := svc.WorkReview(context.Background(), model.WorkActionRequest{ID: "WORK-001"})
+	result, err := svc.WorkComplete(context.Background(), model.WorkActionRequest{ID: "WORK-001"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -445,7 +432,7 @@ func TestDeferredWorkCapabilitiesHaveNoSuccessVocabulary(t *testing.T) {
 	}
 }
 
-func TestDeferredWorkOperationsNeverExecuteCriterionCommands(t *testing.T) {
+func TestWorkCompleteNeverExecutesCriterionCommands(t *testing.T) {
 	svc := deliveryWorkService(t)
 	ctx := context.Background()
 	marker := filepath.Join(t.TempDir(), "executed")
@@ -464,9 +451,6 @@ timeout = "1m"`}
 	}
 	amend := model.WorkAmendRequest{ID: work.Contract.ID, Goal: "command changed", Scope: []string{"internal/**"}, Verification: []model.VerificationKind{model.VerificationAcceptance}, DevelopmentMethod: model.DevelopmentMethodStandard, Criteria: []model.WorkCriterionInput{criterion}, By: "coordinator", Reason: "change"}
 	if _, err := svc.WorkAmend(ctx, amend); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := svc.WorkReview(ctx, model.WorkActionRequest{ID: work.Contract.ID}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := svc.WorkComplete(ctx, model.WorkActionRequest{ID: work.Contract.ID}); err != nil {
@@ -517,7 +501,7 @@ func TestWorkOperationsWithoutVerificationDoNotInvokeGit(t *testing.T) {
 	}
 	_, _ = svc.WorkGet(ctx, model.WorkGetRequest{ID: work.Contract.ID})
 	_, _ = svc.WorkAmend(ctx, validWorkAmendRequest(work.Contract.ID))
-	_, _ = svc.WorkReview(ctx, model.WorkActionRequest{ID: work.Contract.ID})
+	_, _ = svc.WorkReview(ctx, model.WorkReviewRequest{ID: work.Contract.ID})
 	_, _ = svc.WorkComplete(ctx, model.WorkActionRequest{ID: work.Contract.ID})
 	if _, err := os.Stat(logPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("non-lock operation invoked git: %v", err)
@@ -601,7 +585,10 @@ func TestWorkOperationsRejectMissingInputsAndUnknownWork(t *testing.T) {
 	}
 
 	for operation, call := range map[string]func() error{
-		"review":   func() error { _, err := svc.WorkReview(ctx, model.WorkActionRequest{ID: "WORK-404"}); return err },
+		"review": func() error {
+			_, err := svc.WorkReview(ctx, model.WorkReviewRequest{ID: "WORK-404", By: "qa-tester", HeadSHA: "head"})
+			return err
+		},
 		"verify":   func() error { _, err := svc.WorkVerify(ctx, model.WorkActionRequest{ID: "WORK-404"}); return err },
 		"complete": func() error { _, err := svc.WorkComplete(ctx, model.WorkActionRequest{ID: "WORK-404"}); return err },
 	} {

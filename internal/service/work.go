@@ -166,18 +166,6 @@ func (svc *SDDService) WorkAmend(ctx context.Context, req model.WorkAmendRequest
 	return svc.WorkGet(ctx, model.WorkGetRequest{ID: req.ID})
 }
 
-// WorkReview reports the phase-two review capability without performing review.
-func (svc *SDDService) WorkReview(ctx context.Context, req model.WorkActionRequest) (model.WorkCapabilityResult, error) {
-	if err := svc.requireDeliveryV2(); err != nil {
-		return model.WorkCapabilityResult{}, err
-	}
-	work, err := svc.WorkGet(ctx, model.WorkGetRequest(req))
-	if err != nil {
-		return model.WorkCapabilityResult{}, err
-	}
-	return deferredWork("review", "phase 2 does not run broad review, create findings, or change work state", work), nil
-}
-
 // WorkComplete reports the phase-two completion capability without changing work state.
 func (svc *SDDService) WorkComplete(ctx context.Context, req model.WorkActionRequest) (model.WorkCapabilityResult, error) {
 	if err := svc.requireDeliveryV2(); err != nil {

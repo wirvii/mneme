@@ -1,10 +1,14 @@
 package service
 
 import (
+	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/wirvii/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/quality"
 )
 
 func validWorkReviewRequest() model.WorkReviewRequest {
@@ -67,5 +71,94 @@ func TestWorkReview_ValidatesIdentityAndClosedInput(t *testing.T) {
 	})
 	if err := validateWorkReviewRequest(valid); err != nil {
 		t.Fatalf("valid request rejected: %v", err)
+	}
+}
+
+func reviewService(t *testing.T, status model.WorkStatus) (*SDDService, *deliveryRunnerStub, string) {
+	t.Helper()
+	svc, runner := deliveryVerifyService(t, status)
+	head, err := (&quality.Git{RepoDir: svc.repoDir}).HeadSHA()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return svc, runner, head
+}
+
+func reviewRequest(head string) model.WorkReviewRequest {
+	return model.WorkReviewRequest{ID: "WORK-001", By: "qa-tester", HeadSHA: head}
+}
+
+func TestWorkReview_RequiresImplementingAndExactCleanHead(t *testing.T) {
+	for _, status := range []model.WorkStatus{model.WorkStatusDraft, model.WorkStatusLocked, model.WorkStatusVerifying} {
+		t.Run(string(status), func(t *testing.T) {
+			svc, runner, head := reviewService(t, status)
+			if _, err := svc.WorkReview(context.Background(), reviewRequest(head)); !errors.Is(err, model.ErrInvalidWorkTransition) {
+				t.Fatalf("error = %v", err)
+			}
+			if runner.calls != 0 {
+				t.Fatalf("runner calls = %d", runner.calls)
+			}
+		})
+	}
+
+	t.Run("stale head", func(t *testing.T) {
+		svc, runner, _ := reviewService(t, model.WorkStatusImplementing)
+		if _, err := svc.WorkReview(context.Background(), reviewRequest("stale")); !errors.Is(err, model.ErrInvalidContract) {
+			t.Fatalf("error = %v", err)
+		}
+		if runner.calls != 0 {
+			t.Fatalf("runner calls = %d", runner.calls)
+		}
+	})
+
+	t.Run("dirty untracked path", func(t *testing.T) {
+		svc, runner, head := reviewService(t, model.WorkStatusImplementing)
+		if err := os.WriteFile(filepath.Join(svc.repoDir, "untracked.txt"), []byte("dirty\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := svc.WorkReview(context.Background(), reviewRequest(head)); !errors.Is(err, model.ErrInvalidContract) {
+			t.Fatalf("error = %v", err)
+		}
+		if runner.calls != 0 {
+			t.Fatalf("runner calls = %d", runner.calls)
+		}
+	})
+}
+
+func TestWorkReview_LegacyHasNoEffects(t *testing.T) {
+	svc := newTestSDDService(t, "p")
+	seedServiceWork(t, svc, "WORK-001")
+	if _, err := svc.WorkReview(context.Background(), reviewRequest("head")); !errors.Is(err, model.ErrWorkflowEngineDisabled) {
+		t.Fatalf("error = %v", err)
+	}
+	aggregate, err := svc.store.GetWorkAggregate(context.Background(), "WORK-001")
+	if err != nil || aggregate.Contract.Status != model.WorkStatusDraft || len(aggregate.Findings) != 0 || len(aggregate.History) != 0 {
+		t.Fatalf("legacy effects = %#v, %v", aggregate, err)
+	}
+}
+
+func TestWorkReview_PersistsOneCompleteReviewWithoutLaterTransition(t *testing.T) {
+	svc, _, head := reviewService(t, model.WorkStatusImplementing)
+	result, err := svc.WorkReview(context.Background(), reviewRequest(head))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Available || !result.Performed || result.Operation != "review" || result.Certificate == nil || len(result.Checks) == 0 {
+		t.Fatalf("result = %#v", result)
+	}
+	if result.Work.Contract.Status != model.WorkStatusVerifying || result.Work.Contract.CorrectionRounds != 0 {
+		t.Fatalf("contract = %#v", result.Work.Contract)
+	}
+	initial := 0
+	for _, check := range result.Checks {
+		if check.Kind == "review" && check.Name == "initial" && check.Status == model.DeliveryCheckPass && check.Effect == model.DeliveryEffectMeasures {
+			initial++
+		}
+	}
+	if initial != 1 {
+		t.Fatalf("review/initial count = %d, checks=%#v", initial, result.Checks)
+	}
+	if _, err := svc.WorkReview(context.Background(), reviewRequest(head)); !errors.Is(err, model.ErrInvalidWorkTransition) {
+		t.Fatalf("second review error = %v", err)
 	}
 }
