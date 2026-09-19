@@ -616,11 +616,68 @@ func rawParamUseCount(body *ast.BlockStmt, name string) int {
 	return count
 }
 
-// resolveHandlerFields finds every json.Unmarshal(<2nd param>, &X) call in
-// fn's body (D5 step 3 — a union, since a couple of handlers decode in two
-// phases) and resolves each X's JSON-visible fields, deduplicating by JSON
+// isRawDecoderConstructor reports whether expr is the repository's strict
+// streaming-decoder shape: json.NewDecoder(bytes.NewReader(raw)). Keeping
+// every link explicit prevents an unrelated decoder from being mistaken for
+// the tool request payload.
+func isRawDecoderConstructor(expr ast.Expr, rawParam string) bool {
+	newDecoder, ok := expr.(*ast.CallExpr)
+	if !ok || len(newDecoder.Args) != 1 {
+		return false
+	}
+	decoderSelector, ok := newDecoder.Fun.(*ast.SelectorExpr)
+	if !ok || decoderSelector.Sel.Name != "NewDecoder" {
+		return false
+	}
+	jsonIdent, ok := decoderSelector.X.(*ast.Ident)
+	if !ok || jsonIdent.Name != "json" {
+		return false
+	}
+
+	newReader, ok := newDecoder.Args[0].(*ast.CallExpr)
+	if !ok || len(newReader.Args) != 1 {
+		return false
+	}
+	readerSelector, ok := newReader.Fun.(*ast.SelectorExpr)
+	if !ok || readerSelector.Sel.Name != "NewReader" {
+		return false
+	}
+	bytesIdent, ok := readerSelector.X.(*ast.Ident)
+	if !ok || bytesIdent.Name != "bytes" {
+		return false
+	}
+	payload, ok := newReader.Args[0].(*ast.Ident)
+	return ok && payload.Name == rawParam
+}
+
+// addDecodedFields resolves one &local decode target and adds all of its
+// JSON-visible fields to seen. Both json.Unmarshal and Decoder.Decode use
+// this path so they fail closed under the same unsupported target shapes.
+func addDecodedFields(t *testing.T, mi methodInfo, pkg *pkgTypes, cache map[string]*pkgTypes, moduleRoot string, target ast.Expr, seen map[string]requestField) {
+	t.Helper()
+	unary, ok := target.(*ast.UnaryExpr)
+	if !ok || unary.Op != token.AND {
+		t.Fatalf("schema contract guard: %s: decode target is not an &-expression (%#v); update resolveHandlerFields for this shape", mi.Decl.Name.Name, target)
+	}
+	destIdent, ok := unary.X.(*ast.Ident)
+	if !ok {
+		t.Fatalf("schema contract guard: %s: decode target is not a plain identifier (%#v); update resolveHandlerFields for this shape", mi.Decl.Name.Name, unary.X)
+	}
+
+	typeExpr := findLocalVarType(mi.Decl, destIdent.Name)
+	if typeExpr == nil {
+		t.Fatalf("schema contract guard: %s: cannot find the declaration of %q to resolve its type", mi.Decl.Name.Name, destIdent.Name)
+	}
+	for _, rf := range fieldsFromTypeExpr(t, typeExpr, mi.File, pkg, cache, moduleRoot) {
+		seen[rf.JSONName] = rf
+	}
+}
+
+// resolveHandlerFields finds every json.Unmarshal(<2nd param>, &X) call and
+// every Decode(&X) call on a local decoder initialized from that same raw
+// parameter. It resolves each X's JSON-visible fields, deduplicating by JSON
 // name (a later call's field wins, matching the fact that a second-phase
-// unmarshal typically refines the same payload).
+// decode typically refines the same payload).
 //
 // A handful of handlers (handleSkillsList, handleProfileList,
 // handleCodegraphStatus, ...) take no input at all: some spell that with a
@@ -637,7 +694,26 @@ func resolveHandlerFields(t *testing.T, mi methodInfo, pkg *pkgTypes, cache map[
 
 	rawParam := secondParamName(t, mi.Decl)
 	seen := map[string]requestField{}
+	decoders := map[string]bool{}
 	found := false
+
+	// Record only decoders whose complete construction visibly originates in
+	// the handler's raw request parameter.
+	ast.Inspect(mi.Decl.Body, func(n ast.Node) bool {
+		assign, ok := n.(*ast.AssignStmt)
+		if !ok {
+			return true
+		}
+		for i, rhs := range assign.Rhs {
+			if i >= len(assign.Lhs) || !isRawDecoderConstructor(rhs, rawParam) {
+				continue
+			}
+			if id, ok := assign.Lhs[i].(*ast.Ident); ok {
+				decoders[id.Name] = true
+			}
+		}
+		return true
+	})
 
 	ast.Inspect(mi.Decl.Body, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
@@ -648,35 +724,30 @@ func resolveHandlerFields(t *testing.T, mi methodInfo, pkg *pkgTypes, cache map[
 		if !ok {
 			return true
 		}
-		pkgIdent, ok := sel.X.(*ast.Ident)
-		if !ok || pkgIdent.Name != "json" || sel.Sel.Name != "Unmarshal" {
+		receiver, ok := sel.X.(*ast.Ident)
+		if !ok {
 			return true
 		}
-		if len(call.Args) != 2 {
-			t.Fatalf("schema contract guard: %s: json.Unmarshal call with %d args, want 2", mi.Decl.Name.Name, len(call.Args))
-		}
-		argIdent, ok := call.Args[0].(*ast.Ident)
-		if !ok || argIdent.Name != rawParam {
-			return true // Not unmarshalling the tool's raw request payload.
-		}
-		found = true
 
-		unary, ok := call.Args[1].(*ast.UnaryExpr)
-		if !ok || unary.Op != token.AND {
-			t.Fatalf("schema contract guard: %s: json.Unmarshal(%s, X) — X is not an &-expression (%#v); update resolveHandlerFields for this shape", mi.Decl.Name.Name, rawParam, call.Args[1])
-		}
-		destIdent, ok := unary.X.(*ast.Ident)
-		if !ok {
-			t.Fatalf("schema contract guard: %s: json.Unmarshal target is not a plain identifier (%#v); update resolveHandlerFields for this shape", mi.Decl.Name.Name, unary.X)
+		if receiver.Name == "json" && sel.Sel.Name == "Unmarshal" {
+			if len(call.Args) != 2 {
+				t.Fatalf("schema contract guard: %s: json.Unmarshal call with %d args, want 2", mi.Decl.Name.Name, len(call.Args))
+			}
+			argIdent, ok := call.Args[0].(*ast.Ident)
+			if !ok || argIdent.Name != rawParam {
+				return true // Not unmarshalling the tool's raw request payload.
+			}
+			found = true
+			addDecodedFields(t, mi, pkg, cache, moduleRoot, call.Args[1], seen)
+			return true
 		}
 
-		typeExpr := findLocalVarType(mi.Decl, destIdent.Name)
-		if typeExpr == nil {
-			t.Fatalf("schema contract guard: %s: cannot find the declaration of %q to resolve its type", mi.Decl.Name.Name, destIdent.Name)
-		}
-
-		for _, rf := range fieldsFromTypeExpr(t, typeExpr, mi.File, pkg, cache, moduleRoot) {
-			seen[rf.JSONName] = rf
+		if decoders[receiver.Name] && sel.Sel.Name == "Decode" {
+			if len(call.Args) != 1 {
+				t.Fatalf("schema contract guard: %s: %s.Decode call with %d args, want 1", mi.Decl.Name.Name, receiver.Name, len(call.Args))
+			}
+			found = true
+			addDecodedFields(t, mi, pkg, cache, moduleRoot, call.Args[0], seen)
 		}
 		return true
 	})
@@ -693,6 +764,32 @@ func resolveHandlerFields(t *testing.T, mi methodInfo, pkg *pkgTypes, cache map[
 		out = append(out, rf)
 	}
 	return out
+}
+
+func TestResolveHandlerFields_CodegraphAffectedDecoder(t *testing.T) {
+	moduleRoot := schemaContractModuleRoot(t)
+	methods := loadHandlerMethods(t, moduleRoot)
+	mi, ok := methods["handleCodegraphAffected"]
+	if !ok {
+		t.Fatal("handleCodegraphAffected not found")
+	}
+	pkg := loadPkgTypes(t, filepath.Join(moduleRoot, "internal", "mcp"))
+	cache := map[string]*pkgTypes{modulePrefix + "internal/mcp": pkg}
+	fields := resolveHandlerFields(t, mi, pkg, cache, moduleRoot)
+
+	want := map[string]bool{"paths": true, "base": true, "head": true, "depth": true, "limit": true}
+	if len(fields) != len(want) {
+		t.Fatalf("resolved %d fields, want exactly %d: %+v", len(fields), len(want), fields)
+	}
+	for _, field := range fields {
+		if !want[field.JSONName] {
+			t.Errorf("unexpected resolved field %q", field.JSONName)
+		}
+		delete(want, field.JSONName)
+	}
+	for name := range want {
+		t.Errorf("missing resolved field %q", name)
+	}
 }
 
 // schemaPropertiesByTool reads InputSchema["properties"] for every tool in
@@ -712,6 +809,22 @@ func schemaPropertiesByTool(t *testing.T, tools []ToolDefinition) map[string]map
 		out[tool.Name] = props
 	}
 	return out
+}
+
+// schemaProperty follows encoding/json's request-field matching rule: prefer
+// an exact key, then accept a case-insensitive key. This matters for legacy
+// untagged fields such as ID, which encoding/json accepts from the published
+// lowercase "id" property.
+func schemaProperty(props map[string]any, field string) (any, bool) {
+	if prop, ok := props[field]; ok {
+		return prop, true
+	}
+	for name, prop := range props {
+		if strings.EqualFold(name, field) {
+			return prop, true
+		}
+	}
+	return nil, false
 }
 
 // schemaContractFixture bundles everything derived once per test: the
@@ -800,7 +913,7 @@ func TestEveryRequestFieldIsDeclaredInInputSchema(t *testing.T) {
 		}
 		waivers := undeclaredFieldWaivers[d.Tool]
 		for _, f := range fx.fields[d.Tool] {
-			if _, declared := props[f.JSONName]; declared {
+			if _, declared := schemaProperty(props, f.JSONName); declared {
 				continue
 			}
 			reason, waived := waivers[f.JSONName]
@@ -829,7 +942,7 @@ func TestEveryRequestFieldIsDeclaredInInputSchema(t *testing.T) {
 				t.Errorf("undeclaredFieldWaivers[%q][%q]: field does not exist on the resolved request struct — stale waiver (D7.3), remove it", tool, field)
 				continue
 			}
-			if _, declared := props[field]; declared {
+			if _, declared := schemaProperty(props, field); declared {
 				t.Errorf("undeclaredFieldWaivers[%q][%q]: field is now declared in the schema — stale waiver (D7.3), remove it", tool, field)
 			}
 		}
@@ -853,7 +966,7 @@ func TestBoolRequestFieldsArePublishedAsBoolean(t *testing.T) {
 			if !f.IsBool {
 				continue
 			}
-			prop, declared := props[f.JSONName]
+			prop, declared := schemaProperty(props, f.JSONName)
 			if !declared {
 				continue // Undeclared is D7's concern, asserted elsewhere.
 			}
