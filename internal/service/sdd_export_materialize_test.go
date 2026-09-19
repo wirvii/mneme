@@ -214,6 +214,15 @@ func TestSDDMaterializeWork(t *testing.T) {
 		seedServiceWork(t, svc, "WORK-001")
 		svc.materializeWork(context.Background(), "WORK-001")
 	})
+
+	t.Run("missing work is logged and writes nothing", func(t *testing.T) {
+		svc, repoDir := newSDDMaterializeService(t, "wirvii/mneme")
+		enableSDD(t, repoDir, svc.project)
+		svc.materializeWork(context.Background(), "WORK-404")
+		if _, err := os.Stat(sddfile.WorkPath(repoDir, "WORK-404")); !os.IsNotExist(err) {
+			t.Fatalf("missing work produced a file: %v", err)
+		}
+	})
 }
 
 func TestSDDMaterializeWork_WriteFailureIsBestEffort(t *testing.T) {

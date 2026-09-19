@@ -94,6 +94,10 @@ func TestSDDImport_WorkAnchorDecisionCases(t *testing.T) {
 		if !strings.Contains(reason, `local="local goal"`) || !strings.Contains(reason, `archivo="file goal"`) || strings.Contains(reason, local.Contract.UUID) || strings.Contains(reason, foreignUUID) {
 			t.Fatalf("collision reason exposes wrong data: %q", reason)
 		}
+		got, err := svc.store.GetWorkAggregate(ctx, "WORK-921")
+		if err != nil || got.Contract.Goal != "local goal" || got.Contract.UUID != local.Contract.UUID {
+			t.Fatalf("collision changed local work: aggregate=%+v err=%v", got, err)
+		}
 	})
 
 	t.Run("known anchor under another id", func(t *testing.T) {

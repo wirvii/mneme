@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wirvii/mneme/internal/config"
 	"github.com/wirvii/mneme/internal/model"
 	"github.com/wirvii/mneme/internal/sddfile"
 )
@@ -148,6 +149,35 @@ func TestSDDImport_WorkApplyCreatesAggregateWithoutCertificate(t *testing.T) {
 	}
 }
 
+func TestSDDImport_WorkVerifyingStillRequiresLocalCertificate(t *testing.T) {
+	svc, repoDir := newSDDMaterializeService(t, importTestProject)
+	svc.config.Workflow.Engine = config.WorkflowEngineDeliveryV2
+	enableSDD(t, repoDir, importTestProject)
+	ctx := context.Background()
+	head := strings.TrimSpace(gitRunSDDTest(t, repoDir, "rev-parse", "HEAD"))
+	aggregate := organicImportWork("WORK-906", "0198f000-0000-7000-8000-000000000916", "imported verifying")
+	locked := aggregate.Contract.CreatedAt
+	aggregate.Contract.Status = model.WorkStatusVerifying
+	aggregate.Contract.BaseSHA = head
+	aggregate.Contract.ContractRevision = 1
+	aggregate.Contract.LockedAt = &locked
+	aggregate.Contract.ContractHash = model.ContractHash(*aggregate.Contract, nil, nil)
+	writeWorkFixture(t, repoDir, aggregate)
+	if _, err := svc.ImportSDDFromRepo(ctx, repoDir, true); err != nil {
+		t.Fatalf("ImportSDDFromRepo: %v", err)
+	}
+	gitRunSDDTest(t, repoDir, "add", ".")
+	gitRunSDDTest(t, repoDir, "commit", "-m", "import fixture")
+
+	if _, err := svc.WorkComplete(ctx, model.WorkCompleteRequest{ID: "WORK-906", By: "coordinator"}); !errors.Is(err, model.ErrInvalidWorkTransition) {
+		t.Fatalf("WorkComplete error = %v, want ErrInvalidWorkTransition without a local certificate", err)
+	}
+	got, err := svc.store.GetWorkAggregate(ctx, "WORK-906")
+	if err != nil || got.Contract.Status != model.WorkStatusVerifying {
+		t.Fatalf("work status = %+v, %v; want verifying", got, err)
+	}
+}
+
 func TestSDDImport_WorkCompletesSafeMetadataButRejectsNormativeGaps(t *testing.T) {
 	t.Run("safe metadata", func(t *testing.T) {
 		svc, repoDir := newSDDMaterializeService(t, importTestProject)
@@ -232,6 +262,10 @@ func TestSDDImport_WorkRejectsIncoherentContractsWithoutPartialRows(t *testing.T
 				svc, repoDir := newSDDMaterializeService(t, importTestProject)
 				enableSDD(t, repoDir, importTestProject)
 				aggregate := importWorkAggregate("WORK-904", "0198f000-0000-7000-8000-000000000914", "SPEC-absent", "invalid")
+				if tc.name != "missing source spec" {
+					aggregate.Contract.SourceType = model.WorkSourceOrganic
+					aggregate.Contract.SourceID = ""
+				}
 				tc.mutate(aggregate)
 				writeWorkFixture(t, repoDir, aggregate)
 				result, err := svc.ImportSDDFromRepo(context.Background(), repoDir, apply)

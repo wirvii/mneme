@@ -127,4 +127,20 @@ func TestWorkRecord_RejectsUnknownMarkerKindAndMalformedStructure(t *testing.T) 
 	if _, err := UnmarshalWork([]byte(badTime)); err == nil || !strings.Contains(err.Error(), "invalid created_at") {
 		t.Fatalf("invalid time error = %v", err)
 	}
+	for _, tc := range []struct {
+		name, old, replacement, want string
+	}{
+		{"checked time", `checked_at="2026-09-19T12:04:00.123456789Z"`, `checked_at="yesterday"`, "invalid checked_at"},
+		{"resolved time", `resolved_at="2026-09-19T12:05:00.123456789Z"`, `resolved_at="yesterday"`, "invalid resolved_at"},
+		{"history time", `by="backend" at="2026-09-19T12:00:00.123456789Z"`, `by="backend" at="yesterday"`, "invalid at"},
+		{"criterion order", "<!-- mneme:criterion-declaration -->", "<!-- mneme:criterion-evidence -->", "criterion sections out of order"},
+		{"finding order", "<!-- mneme:finding-location -->", "<!-- mneme:finding-evidence -->", "finding sections out of order"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mutated := strings.Replace(string(data), tc.old, tc.replacement, 1)
+			if _, err := UnmarshalWork([]byte(mutated)); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want %q", err, tc.want)
+			}
+		})
+	}
 }

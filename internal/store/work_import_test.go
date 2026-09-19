@@ -46,6 +46,7 @@ func TestCreateWorkFromRecord_PreservesAggregateAndExcludesCertificates(t *testi
 	s := newTestSDDStore(t)
 	createImportSourceSpec(t, s)
 	want := importedWorkAggregate()
+	wantUUID := want.Contract.UUID
 	if err := s.CreateWorkFromRecord(context.Background(), want); err != nil {
 		t.Fatalf("CreateWorkFromRecord: %v", err)
 	}
@@ -53,7 +54,7 @@ func TestCreateWorkFromRecord_PreservesAggregateAndExcludesCertificates(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Contract.UUID != want.Contract.UUID || got.Contract.Goal != want.Contract.Goal || got.Contract.CorrectionRounds != 1 || !got.Contract.CreatedAt.Equal(want.Contract.CreatedAt) || len(got.Criteria) != 1 || got.Criteria[0].ID != "criterion-1" || len(got.Constraints) != 1 || len(got.Findings) != 1 || got.Findings[0].Status != model.FindingFixed || len(got.History) != 1 || got.History[0].ID != "history-1" {
+	if got.Contract.UUID != wantUUID || got.Contract.Goal != want.Contract.Goal || got.Contract.CorrectionRounds != 1 || !got.Contract.CreatedAt.Equal(want.Contract.CreatedAt) || len(got.Criteria) != 1 || got.Criteria[0].ID != "criterion-1" || len(got.Constraints) != 1 || len(got.Findings) != 1 || got.Findings[0].Status != model.FindingFixed || len(got.History) != 1 || got.History[0].ID != "history-1" {
 		t.Fatalf("aggregate not preserved: %#v", got)
 	}
 	spec, err := s.GetSpec(context.Background(), "SPEC-001")
@@ -116,6 +117,52 @@ func TestCreateWorkFromRecord_CompletesOnlySafeMetadata(t *testing.T) {
 	}
 }
 
+func TestValidateWorkFromRecord_RejectsEveryChildFamily(t *testing.T) {
+	tests := []struct {
+		name   string
+		build  func() *model.WorkAggregate
+		mutate func(*model.WorkAggregate)
+	}{
+		{"nil aggregate", func() *model.WorkAggregate { return nil }, func(*model.WorkAggregate) {}},
+		{"nil contract", func() *model.WorkAggregate { return &model.WorkAggregate{} }, func(*model.WorkAggregate) {}},
+		{"missing project", importedWorkAggregate, func(a *model.WorkAggregate) { a.Contract.Project = "" }},
+		{"red evidence timestamp", importedWorkAggregate, func(a *model.WorkAggregate) { a.Contract.DevEvidence.TakenAt = time.Time{} }},
+		{"criterion work id", importedWorkAggregate, func(a *model.WorkAggregate) { a.Criteria[0].WorkID = "WORK-other" }},
+		{"constraint sequence", importedWorkAggregate, func(a *model.WorkAggregate) { a.Constraints[0].Seq = 0 }},
+		{"finding vocabulary", importedWorkAggregate, func(a *model.WorkAggregate) { a.Findings[0].Category = model.FindingCategory("unknown") }},
+		{"history transition", importedWorkAggregate, func(a *model.WorkAggregate) { a.History[0].ToStatus = model.WorkStatusDone }},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			aggregate := tc.build()
+			tc.mutate(aggregate)
+			if err := newTestSDDStore(t).ValidateWorkFromRecord(aggregate); !errors.Is(err, model.ErrInvalidContract) {
+				t.Fatalf("error = %v, want ErrInvalidContract", err)
+			}
+		})
+	}
+}
+
+func TestCompleteImportedWorkMetadata_CoversAllChildFamilies(t *testing.T) {
+	aggregate := importedWorkAggregate()
+	aggregate.Contract.UUID = ""
+	aggregate.Contract.CreatedAt, aggregate.Contract.UpdatedAt = time.Time{}, time.Time{}
+	aggregate.Criteria[0].ID, aggregate.Criteria[0].CreatedAt = "", time.Time{}
+	aggregate.Constraints[0].ID, aggregate.Constraints[0].CreatedAt = "", time.Time{}
+	aggregate.Findings[0].ID, aggregate.Findings[0].CreatedAt = "", time.Time{}
+	aggregate.History[0].ID, aggregate.History[0].At = "", time.Time{}
+	if err := completeImportedWorkMetadata(aggregate); err != nil {
+		t.Fatal(err)
+	}
+	if aggregate.Contract.UUID == "" || aggregate.Contract.CreatedAt.IsZero() || aggregate.Contract.UpdatedAt.IsZero() ||
+		aggregate.Criteria[0].ID == "" || aggregate.Criteria[0].CreatedAt.IsZero() ||
+		aggregate.Constraints[0].ID == "" || aggregate.Constraints[0].CreatedAt.IsZero() ||
+		aggregate.Findings[0].ID == "" || aggregate.Findings[0].CreatedAt.IsZero() ||
+		aggregate.History[0].ID == "" || aggregate.History[0].At.IsZero() {
+		t.Fatalf("metadata not completed: %+v", aggregate)
+	}
+}
+
 func TestUpdateWorkFromRecord_ReplacesDefinitionsAndMergesAudit(t *testing.T) {
 	s := newTestSDDStore(t)
 	createImportSourceSpec(t, s)
@@ -159,6 +206,134 @@ func TestUpdateWorkFromRecord_ReplacesDefinitionsAndMergesAudit(t *testing.T) {
 	}
 	if got.Contract.ContractHash != model.ContractHash(*got.Contract, got.Criteria, got.Constraints) {
 		t.Fatal("contract hash does not match replaced definitions")
+	}
+}
+
+func TestCreateWorkFromRecord_RollsBackStorageFailures(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(*testing.T, *SDDStore)
+	}{
+		{name: "source marker", setup: func(t *testing.T, s *SDDStore) {
+			if _, err := s.db.Exec(`DROP TABLE specs`); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "contract", setup: func(t *testing.T, s *SDDStore) {
+			if _, err := s.db.Exec(`CREATE TRIGGER fail_contract BEFORE INSERT ON execution_contracts BEGIN SELECT RAISE(FAIL, 'contract'); END`); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "definitions", setup: func(t *testing.T, s *SDDStore) {
+			if _, err := s.db.Exec(`CREATE TRIGGER fail_definition BEFORE INSERT ON execution_criteria BEGIN SELECT RAISE(FAIL, 'definition'); END`); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "audit", setup: func(t *testing.T, s *SDDStore) {
+			if _, err := s.db.Exec(`CREATE TRIGGER fail_audit BEFORE INSERT ON execution_findings BEGIN SELECT RAISE(FAIL, 'audit'); END`); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newTestSDDStore(t)
+			createImportSourceSpec(t, s)
+			tc.setup(t, s)
+			if err := s.CreateWorkFromRecord(context.Background(), importedWorkAggregate()); err == nil {
+				t.Fatal("CreateWorkFromRecord succeeded, want storage error")
+			}
+			var count int
+			if err := s.db.QueryRow(`SELECT COUNT(*) FROM execution_contracts`).Scan(&count); err == nil && count != 0 {
+				t.Fatalf("contracts=%d, want rollback", count)
+			}
+		})
+	}
+}
+
+func TestWorkFromRecord_ReportsClosedDatabase(t *testing.T) {
+	s := newTestSDDStore(t)
+	if err := s.db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateWorkFromRecord(context.Background(), importedWorkAggregate()); err == nil {
+		t.Fatal("CreateWorkFromRecord succeeded on closed database")
+	}
+	if err := s.UpdateWorkFromRecord(context.Background(), importedWorkAggregate()); err == nil {
+		t.Fatal("UpdateWorkFromRecord succeeded on closed database")
+	}
+}
+
+func TestUpdateWorkFromRecord_RollsBackStorageFailures(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(*testing.T, *SDDStore)
+	}{
+		{name: "source marker", setup: func(t *testing.T, s *SDDStore) {
+			if _, err := s.db.Exec(`DROP TABLE specs`); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "missing contract", setup: func(t *testing.T, s *SDDStore) {
+			if _, err := s.db.Exec(`DELETE FROM execution_contracts`); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "delete criteria", setup: func(t *testing.T, s *SDDStore) {
+			if _, err := s.db.Exec(`CREATE TRIGGER fail_delete_criteria BEFORE DELETE ON execution_criteria BEGIN SELECT RAISE(FAIL, 'criteria'); END`); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "delete constraints", setup: func(t *testing.T, s *SDDStore) {
+			if _, err := s.db.Exec(`CREATE TRIGGER fail_delete_constraints BEFORE DELETE ON execution_constraints BEGIN SELECT RAISE(FAIL, 'constraints'); END`); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "definitions", setup: func(t *testing.T, s *SDDStore) {
+			if _, err := s.db.Exec(`CREATE TRIGGER fail_update_definition BEFORE INSERT ON execution_criteria BEGIN SELECT RAISE(FAIL, 'definition'); END`); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "audit", setup: func(t *testing.T, s *SDDStore) {
+			if _, err := s.db.Exec(`CREATE TRIGGER fail_update_audit BEFORE INSERT ON execution_findings BEGIN SELECT RAISE(FAIL, 'audit'); END`); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newTestSDDStore(t)
+			createImportSourceSpec(t, s)
+			original := importedWorkAggregate()
+			if err := s.CreateWorkFromRecord(context.Background(), original); err != nil {
+				t.Fatal(err)
+			}
+			tc.setup(t, s)
+			incoming := importedWorkAggregate()
+			incoming.Contract.Goal = "must roll back"
+			incoming.Contract.ContractHash = model.ContractHash(*incoming.Contract, incoming.Criteria, incoming.Constraints)
+			if err := s.UpdateWorkFromRecord(context.Background(), incoming); err == nil {
+				t.Fatal("UpdateWorkFromRecord succeeded, want storage error")
+			}
+			got, err := s.GetWorkAggregate(context.Background(), original.Contract.ID)
+			if err == nil && got.Contract.Goal != original.Contract.Goal {
+				t.Fatalf("goal=%q, want rollback to %q", got.Contract.Goal, original.Contract.Goal)
+			}
+		})
+	}
+}
+
+func TestImportedContractValues_CoversOptionalFields(t *testing.T) {
+	aggregate := importedWorkAggregate()
+	aggregate.Contract.DevEvidence = nil
+	completed := aggregate.Contract.UpdatedAt.Add(time.Hour)
+	aggregate.Contract.CompletedAt = &completed
+	values, err := importedContractValues(aggregate.Contract)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(values) != 25 || values[15] != "" || values[24] == "" {
+		t.Fatalf("unexpected values: %#v", values)
 	}
 }
 
