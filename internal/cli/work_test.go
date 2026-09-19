@@ -35,6 +35,77 @@ func TestWorkCommandsRegisterNineOperations(t *testing.T) {
 	}
 }
 
+func TestWorkHelpExplainsDeliverySequence(t *testing.T) {
+	cmd := newWorkCmd()
+	for _, anchor := range []string{"delivery_v2", "begin", "lock", "review", "verify", "complete", "metrics", "--input", "mneme config show workflow"} {
+		if !strings.Contains(cmd.Long, anchor) {
+			t.Errorf("work Long help does not contain %q", anchor)
+		}
+	}
+	for _, child := range cmd.Commands() {
+		if child.Short == "" {
+			t.Errorf("work %s has empty Short help", child.Name())
+		}
+		if child.Example == "" {
+			t.Errorf("work %s has no example", child.Name())
+		}
+	}
+}
+
+func TestTopLevelCommandCountsAndWorkDocumentation(t *testing.T) {
+	root := NewRootCmd()
+	if got := len(root.Commands()); got != 44 {
+		t.Fatalf("mneme registers %d top-level commands, want 44", got)
+	}
+	root.InitDefaultHelpCmd()
+	root.InitDefaultCompletionCmd()
+	if got := len(root.Commands()); got != 46 {
+		t.Fatalf("cobra exposes %d top-level entries, want 46", got)
+	}
+
+	doc, err := os.ReadFile(filepath.Join("..", "..", "docs", "api", "cli.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(doc)
+	sectionStart := strings.Index(text, "## Delivery-v2 WORK")
+	if sectionStart < 0 {
+		t.Fatal("docs/api/cli.md lacks the Delivery-v2 WORK section")
+	}
+	section := text[sectionStart:]
+	if next := strings.Index(section[len("## Delivery-v2 WORK"):], "\n## "); next >= 0 {
+		section = section[:len("## Delivery-v2 WORK")+next]
+	}
+	for _, child := range newWorkCmd().Commands() {
+		if !strings.Contains(section, "`mneme work "+child.Name()) {
+			t.Errorf("docs/api/cli.md does not document work %s", child.Name())
+		}
+	}
+	if got := strings.Count(section, "### `mneme work "); got != 9 {
+		t.Errorf("docs/api/cli.md documents %d WORK subcommands, want 9", got)
+	}
+	for _, anchor := range []string{"10 MiB", "--input", "--json", "44", "46"} {
+		if !strings.Contains(text, anchor) {
+			t.Errorf("docs/api/cli.md does not contain %q", anchor)
+		}
+	}
+	publicCounts := map[string][]string{
+		"README.md":            {"44 mneme-registered top-level commands", "46 visible"},
+		"docs/ARCHITECTURE.md": {"44 mneme-registered top-level commands", "46 visible"},
+	}
+	for path, anchors := range publicCounts {
+		data, err := os.ReadFile(filepath.Join("..", "..", path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, anchor := range anchors {
+			if !strings.Contains(string(data), anchor) {
+				t.Errorf("%s lacks current CLI count phrase %q", path, anchor)
+			}
+		}
+	}
+}
+
 type metricsWorkServiceStub struct {
 	workService
 	requests []model.WorkMetricsRequest

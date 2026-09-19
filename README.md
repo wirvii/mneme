@@ -7,7 +7,7 @@ Persistent memory for AI coding agents -- with a spec-driven workflow engine, se
 [![License](https://img.shields.io/badge/License-Apache%202.0-0d8f80.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.25+-00ADD8.svg)](https://go.dev)
 [![Release](https://img.shields.io/github/v/release/wirvii/mneme?label=release)](https://github.com/wirvii/mneme/releases)
-[![MCP Tools](https://img.shields.io/badge/MCP%20tools-65-0d8f80.svg)](#mcp-tools)
+[![MCP Tools](https://img.shields.io/badge/MCP%20tools-96-0d8f80.svg)](#mcp-tools)
 
 ---
 
@@ -24,6 +24,7 @@ Persistent memory for AI coding agents -- with a spec-driven workflow engine, se
 - [Team Memory](#team-memory)
 - [Enforcement](#enforcement)
 - [Models & Conflicts](#models--conflicts)
+- [Delivery-v2 beta](#delivery-v2-beta)
 - [Commands](#commands)
 - [MCP Tools](#mcp-tools)
 - [Comparison](#comparison)
@@ -37,7 +38,7 @@ Persistent memory for AI coding agents -- with a spec-driven workflow engine, se
 
 ## What is mneme?
 
-mneme gives AI coding agents a brain that survives between sessions. It stores structured knowledge -- decisions, patterns, rules, conventions, architecture -- in a local SQLite database with full-text search, a weighted knowledge graph, and automatic consolidation. Any MCP-compatible agent (Claude Code, Cursor, Windsurf, OpenCode, Gemini CLI) can save and retrieve persistent memory through 87 tools over JSON-RPC stdio.
+mneme gives AI coding agents a brain that survives between sessions. It stores structured knowledge -- decisions, patterns, rules, conventions, architecture -- in a local SQLite database with full-text search, a weighted knowledge graph, and automatic consolidation. Any MCP-compatible agent (Claude Code, Cursor, Windsurf, OpenCode, Gemini CLI) can save and retrieve persistent memory through 96 tools over JSON-RPC stdio.
 
 ## Why mneme?
 
@@ -340,12 +341,42 @@ See [docs/conflicts.md](docs/conflicts.md) and
 
 ---
 
+## Delivery-v2 beta
+
+Delivery-v2 executes one approved contract through one WORK. `legacy` remains
+the safe default. Installing mneme refreshes the Claude Code and Codex manuals,
+but never activates the engine or edits your workflow configuration.
+
+Activation is explicit and host-wide because `~/.mneme/config.toml` is
+personal, not per repository:
+
+```toml
+[workflow]
+engine = "delivery_v2"
+default = "sdd"
+development_method = "standard"
+max_correction_rounds = 1
+deep_quality = "manual"
+```
+
+Run `mneme config show workflow` and restart agent sessions after editing. To
+revert, change only `engine = "legacy"`; WORK history and the `work_get` and
+`work_metrics` reads remain. `deep_quality = "always"` is accepted but does
+not automatically run `mneme quality verify` in this beta, so deep auditing is
+still explicit. See [the delivery workflow guide](docs/delivery-workflow.md).
+
+The git-native SDD marker and the engine are independent. MCP and CLI expose
+delivery-v2; the 10 HTTP endpoints do not. Metrics are local observations, and
+the real-use campaign remains a separate phase.
+
+---
+
 ## Commands
 
-43 mneme-registered top-level commands (`mneme --help` is the source of truth for flags; full
-flag reference in [docs/api/cli.md](docs/api/cli.md)). Cobra's
-auto-generated `completion` is listed below for reference but not counted in
-that figure:
+44 mneme-registered top-level commands (`mneme --help` is the source of truth
+for flags; full flag reference in [docs/api/cli.md](docs/api/cli.md)). Cobra's
+auto-generated `help` and `completion` produce 46 visible entries but are not
+counted in that figure:
 
 | Command | Description |
 |---------|-------------|
@@ -382,6 +413,7 @@ that figure:
 | `mneme scaffold` | Capture an exemplar repository as a profile scaffold (`capture`) |
 | `mneme speech` | Control opt-in, entirely local spoken responses (`on`, `off`, `stop`, `status`, `voice`, `voices`, `mode`, `test`, `setup`) |
 | `mneme sdd` | Turn the SDD git-native mechanism on/off/status for this repository (`enable`, `disable`, `export`, `status`) |
+| `mneme work` | Operate delivery-v2 contracts (`begin`, `get`, `lock`, `amend`, `review`, `verify`, `complete`, `resume`, `metrics`) |
 | `mneme sync` | Sync memories via git (`export`, `import`, `status`) |
 | `mneme vault` | Manage the filesystem vault mirror (`export`, `import`) |
 | `mneme embed` | Manage memory embeddings for semantic search (`backfill`) |
@@ -397,7 +429,7 @@ that figure:
 
 ## MCP Tools
 
-The MCP server (`mneme mcp`) exposes **87 tools** over JSON-RPC 2.0 stdio,
+The MCP server (`mneme mcp`) exposes **96 tools** over JSON-RPC 2.0 stdio,
 grouped by family. Each family has a full contract reference (params, returns,
 errors, examples) under [docs/api/](docs/api/):
 
@@ -420,8 +452,9 @@ errors, examples) under [docs/api/](docs/api/):
 | `project_*` | 1 | Create a repository from a profile scaffold | [docs/profiles.md](docs/profiles.md) |
 | `app_*` | 1 | Add and auto-wire a composable monorepo app | [docs/profiles.md](docs/profiles.md) |
 | `scaffold_*` | 1 | Capture a repository as a draft scaffold | [docs/profiles.md](docs/profiles.md) |
+| `work_*` | 9 | Delivery contracts, reviews, verification, completion, resumption, and local metrics | [docs/api/sdd.md](docs/api/sdd.md) |
 
-15 + 6 + 9 + 5 + 5 + 2 + 10 + 7 + 3 + 5 + 2 + 1 + 6 + 8 + 1 + 1 + 1 = **87**.
+15 + 6 + 9 + 5 + 5 + 2 + 10 + 7 + 3 + 5 + 2 + 1 + 6 + 8 + 1 + 1 + 1 + 9 = **96**.
 
 ---
 
@@ -506,15 +539,15 @@ errors, examples) under [docs/api/](docs/api/):
 
 **Dependency rule:** imports flow inward only. `model` (zero external deps) is the leaf. Frontends (`cli`, `mcp`, `http`) call `service`, which orchestrates `store`, `scoring`, `graph`, and `rules`. No frontend calls `store` or `db` directly.
 
-**Persistence:** two SQLite databases per host -- `~/.mneme/global.db` (global + org scope) and `~/.mneme/projects/<slug>.db` (project scope, slug from git remote). Schema v20 with embedded migrations.
+**Persistence:** two SQLite databases per host -- `~/.mneme/global.db` (global + org scope) and `~/.mneme/projects/<slug>.db` (project scope, slug from git remote). Schema v22 with embedded migrations.
 
-**Three frontends:** MCP (primary, 87 tools over stdio), HTTP (REST API at `:7437`, 10 endpoints under `/v1/` -- no SDD/codegraph/skills/model/conflicts/subagent/speech parity yet), and CLI (Cobra, 43 mneme-registered commands).
+**Three frontends:** MCP (primary, 96 tools over stdio), HTTP (REST API at `:7437`, 10 endpoints under `/v1/` -- no SDD or delivery-v2 WORK endpoints), and CLI (Cobra, 44 mneme-registered commands, 46 visible with Cobra additions).
 
 ---
 
 ## Status & Roadmap
 
-**Current (main): schema v20, 87 MCP tools, 43 mneme-registered CLI commands, 10 HTTP endpoints.**
+**Current (delivery-v2 beta): schema v22, 96 MCP tools including 9 `work_*`, 44 mneme-registered CLI commands, 46 visible Cobra entries, and 10 HTTP endpoints without SDD or delivery-v2.**
 Latest release: **v1.33.0**. Full history in [CHANGELOG.md](CHANGELOG.md).
 
 **Shipped:**
@@ -535,7 +568,7 @@ Latest release: **v1.33.0**. Full history in [CHANGELOG.md](CHANGELOG.md).
 **Roadmap (honest gaps):**
 
 - **CodeGraph C4-C7** -- remaining backlog items (further language coverage, deeper cross-package resolution beyond the current best-effort pass).
-- **HTTP parity** -- the REST API has no SDD/codegraph/skills/model/conflicts/subagent routes; MCP and CLI are ahead. Tracked as a deliberate gap, not an oversight (see [docs/api/http.md](docs/api/http.md) "HTTP parity gaps").
+- **HTTP parity** -- the REST API has no SDD, delivery-v2 WORK, codegraph, skills, model, conflicts, or subagent routes; MCP and CLI are ahead. Tracked as a deliberate gap, not an oversight (see [docs/api/http.md](docs/api/http.md) "HTTP parity gaps").
 - **TypeScript/JS type-inference ceiling** -- the CodeGraph JS/TS extractor resolves calls and imports but does not do full type inference; some dynamically-typed or heavily-generic call sites are not tracked. `codegraph_impact`/`codegraph_callees` are documented as best-effort, not exhaustive.
 
 ---

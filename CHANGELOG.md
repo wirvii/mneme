@@ -6,6 +6,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Delivery-v2 now has one operational reference, complete CLI and MCP
+  contracts, and equivalent installed instructions for Claude Code and Codex
+  (SPEC-151).** The new guide documents explicit host-wide beta activation,
+  reversal to the legacy engine without deleting WORK history, the bounded
+  review cycle, role authority, local metric semantics, and the separation
+  between the delivery engine and git-native SDD transport.
+- **Documentation guardians now derive the public 96-tool MCP surface, its
+  nine `work_*` tools, and the CLI's 44 registered commands / 46 visible Cobra
+  entries from executable registrations.** Manual parity and idempotent manual
+  installation are also checked.
+
+### Changed
+
+- **`mneme work` help now explains the delivery sequence and every one of its
+  nine subcommands has a description and example.** This is a help-only change
+  over behavior delivered in earlier delivery-v2 phases. Legacy remains the
+  default; installation and upgrade do not activate the beta.
+
+### Known limits
+
+- `workflow.deep_quality = "always"` is accepted but does not yet invoke
+  `mneme quality verify` automatically. HTTP remains at 10 endpoints and
+  exposes neither SDD nor delivery-v2. The phase 10 campaign has not run, so
+  this release note makes no comparative result claim.
+
 ## [v1.46.0] — 2026-09-04 — The tools the manual demands are actually installed, and one broken toolchain no longer takes down the whole code graph
 
 ### Added

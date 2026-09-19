@@ -16,12 +16,12 @@
 
 ## Overview
 
-mneme's backlog items and specs live in a local SQLite database. This
+mneme's backlog items, specs, and delivery-v2 WORK records live in a local SQLite database. This
 mechanism ADDS a second representation of the same data: plain Markdown
 files, committed to the repository, under `.mneme/sdd/`. It exists for one
-reason — a backlog item or a spec becomes something you can **review in a
+reason — a backlog item, spec, or WORK becomes something you can **review in a
 pull request**, the same way you review a code change, instead of only being
-visible through `mneme backlog get`/`spec status`.
+visible through `mneme backlog get`/`spec status`/`work_get`.
 
 It is **opt-in per repository** (D3), the same posture team-memory uses: the
 presence of `<repo>/.mneme/sdd/.mneme-sdd` (a small, committed JSON marker)
@@ -29,6 +29,24 @@ is the only flag. **A repository that never runs `mneme sdd enable` is
 completely unaffected — verifiably so**: with the marker absent, an entire
 cycle of `mneme backlog add` → `refine` → `promote` → `spec advance` →
 `pushback` → `resolve` leaves `git status --porcelain` exactly as it was.
+
+### WORK: portable contract, local evidence
+
+Delivery-v2 uses `.mneme/sdd/work/WORK-###.md` under the same marker. The
+portable aggregate contains the contract, criteria, constraints, findings and
+history. Its UUIDv7 anchor is internal identity and is never printed in human
+output. Import decides by that anchor, creates or updates the local row, and
+merges children without silently resolving a real correlative collision.
+
+Delivery certificates and their checks do **not** travel. They are bound to
+one machine's repository content and verification run. Therefore an imported
+WORK may report local evidence as `complete`, `partial`, or `not_started`, and
+`work_metrics` never turns missing local evidence into a measured zero.
+
+Transport and execution are independent: setting `workflow.engine =
+"delivery_v2"` does not create `.mneme/sdd/.mneme-sdd`, and
+`mneme sdd enable` does not activate delivery-v2. See
+[`delivery-workflow.md`](delivery-workflow.md) for the beta activation recipe.
 
 ## What this mechanism does — and its one remaining limit
 
@@ -83,8 +101,8 @@ many backlog items and specs would be exported) and four warnings:
 
 With `--apply`, the command:
 
-1. Exports EVERY backlog item and spec (including archived items and
-   already-completed specs, D8) as Markdown records.
+1. Exports EVERY backlog item, spec, and WORK (including archived items,
+   already-completed specs, and portable WORK history) as Markdown records.
 2. Writes the marker `.mneme/sdd/.mneme-sdd` — **committed**, so anyone who
    clones the repository afterward has the mechanism turned on for them too,
    without doing anything themselves (the same "enabling is a team decision"
@@ -135,7 +153,7 @@ what the plain preview reports.
 mneme sdd export
 ```
 
-Re-materializes every backlog item and spec from the current database state
+Re-materializes every backlog item, spec, and portable WORK aggregate from the current database state
 — the idempotent repair path for a file that was deleted or hand-edited
 into something wrong. Requires the mechanism to already be enabled (this
 repairs an enabled repository; it is not a second way to turn one on), and

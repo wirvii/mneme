@@ -1,11 +1,157 @@
 package install
 
 import (
+	"bytes"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
 )
+
+func requireDeliveryAnchors(t *testing.T, surface string, text string, anchors []string) {
+	t.Helper()
+	lower := strings.ToLower(text)
+	for _, anchor := range anchors {
+		if !strings.Contains(lower, strings.ToLower(anchor)) {
+			t.Errorf("%s does not explain %q", surface, anchor)
+		}
+	}
+}
+
+func readDeliveryDocument(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("..", "..", path))
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(data)
+}
+
+func TestDeliveryWorkflowReferenceIsCompleteAndHonest(t *testing.T) {
+	text := readDeliveryDocument(t, "docs/delivery-workflow.md")
+	requireDeliveryAnchors(t, "docs/delivery-workflow.md", text, []string{
+		"workflow", "organic", "sdd", "lane", "trivial", "standard", "método", "tdd",
+		"profundidad", "contrato", "revisión", "huella", "contract_violation", "regression",
+		"architecture_violation", "discovery", "improvement", "work_begin", "work_get", "work_lock",
+		"work_amend", "work_review", "work_verify", "work_complete", "work_resume", "work_metrics",
+		"| `work_metrics` |",
+		"mneme config show workflow", "engine = \"legacy\"", "configuración personal", "todo el host",
+		"Comprueba la resolución efectiva", "partial", "not_started", "fase 10",
+	})
+	for _, forbidden := range []string{
+		"borrar la base", "borrar .mneme/sdd/work", "ahorro de", "dinero ahorrado", "tokens ahorrados",
+		"deep_quality = \"always\" ejecuta automáticamente", "deep_quality = \"always\" automatically runs",
+		"instalar mneme activa delivery_v2",
+	} {
+		if strings.Contains(strings.ToLower(text), forbidden) {
+			t.Errorf("docs/delivery-workflow.md contains forbidden claim %q", forbidden)
+		}
+	}
+}
+
+func TestDeliveryOperatingManualsShareOperationalRules(t *testing.T) {
+	common := []string{
+		"mneme config show workflow", "legacy", "delivery_v2", "organic", "sdd", "standard", "tdd", "manual", "always",
+		"work_begin", "work_get", "work_lock", "work_amend", "work_review", "work_verify", "work_complete", "work_resume", "work_metrics",
+		"coordinator", "qa-tester", "fail closed", "broad review", "one correction", "targeted review", "parallel execution cycles",
+		"engine = \"legacy\"", "deep_quality", "quality verify", "docs/delivery-workflow.md", "spec_advance",
+	}
+	manuals := map[string]string{
+		"claude-code": operatingManual(),
+		"codex":       operatingManualCodex(),
+	}
+	for name, text := range manuals {
+		t.Run(name, func(t *testing.T) {
+			requireDeliveryAnchors(t, name+" operating manual", text, common)
+			lower := strings.ToLower(text)
+			for _, forbidden := range []string{
+				"work_verify completa", "work_verify completes", "targeted review -> correction", "targeted review → correction",
+				"revisión dirigida → corrección", "deep_quality = \"always\" automatically runs", "ahorro de", "dinero ahorrado", "tokens ahorrados",
+			} {
+				if strings.Contains(lower, forbidden) {
+					t.Errorf("%s operating manual contains forbidden claim %q", name, forbidden)
+				}
+			}
+		})
+	}
+	if len(operatingManualCodex()) >= 32*1024 {
+		t.Fatalf("codex operating manual is %d bytes, must remain below 32 KiB", len(operatingManualCodex()))
+	}
+}
+
+func TestDeliveryTransportAndHTTPBoundariesAreExplicit(t *testing.T) {
+	transport := readDeliveryDocument(t, "docs/sdd-git-native.md")
+	requireDeliveryAnchors(t, "docs/sdd-git-native.md", transport, []string{
+		".mneme/sdd/work/WORK-###.md", "UUIDv7", "do **not** travel", "complete", "partial", "not_started",
+		"does not create", ".mneme/sdd/.mneme-sdd", "does not activate delivery-v2",
+	})
+	for _, forbidden := range []string{"certificates travel", "engine creates the marker"} {
+		if strings.Contains(strings.ToLower(transport), forbidden) {
+			t.Errorf("docs/sdd-git-native.md contains false transport claim %q", forbidden)
+		}
+	}
+
+	public := map[string][]string{
+		"README.md":            {"10 HTTP endpoints do not", "delivery-v2"},
+		"docs/API.md":          {"HTTP does not expose SDD or delivery-v2", "10 REST endpoints"},
+		"docs/ARCHITECTURE.md": {"HTTP gap", "no SDD or delivery-v2 WORK endpoints", "10 route registrations"},
+	}
+	for path, anchors := range public {
+		requireDeliveryAnchors(t, path, readDeliveryDocument(t, path), anchors)
+	}
+}
+
+func TestDeliveryManualInstallationIsIdempotentAndPreservesWorkflowConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	configPath := filepath.Join(home, ".mneme", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	wantConfig := []byte("[workflow]\nengine = \"legacy\"\nowner_key = \"keep-me\"\n")
+	if err := os.WriteFile(configPath, wantConfig, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	agents := map[string]*Agent{
+		"claude-code": ClaudeCode("/usr/local/bin/mneme"),
+		"codex":       Codex("/usr/local/bin/mneme"),
+	}
+	for name, agent := range agents {
+		t.Run(name, func(t *testing.T) {
+			if err := InjectManual(agent); err != nil {
+				t.Fatalf("first InjectManual: %v", err)
+			}
+			path, _, err := agent.Manual()
+			if err != nil {
+				t.Fatal(err)
+			}
+			first, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			requireDeliveryAnchors(t, path, string(first), []string{"delivery_v2", "work_begin", "work_review", "work_complete"})
+			if err := InjectManual(agent); err != nil {
+				t.Fatalf("second InjectManual: %v", err)
+			}
+			second, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(first, second) {
+				t.Fatalf("second manual installation changed %s", path)
+			}
+		})
+	}
+	gotConfig, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(gotConfig, wantConfig) {
+		t.Fatalf("manual installation changed workflow config:\ngot: %s\nwant: %s", gotConfig, wantConfig)
+	}
+}
 
 // manualMentions reports whether text mentions name at a word boundary — not
 // as a substring of a longer token (SPEC-141 §5.1: "grill-me" must not match

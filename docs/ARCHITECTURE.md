@@ -80,7 +80,7 @@ graph TB
 
     subgraph "Layer 1 — Storage"
         STORE["store/<br/>Repository Pattern"]
-        DB["SQLite + FTS5<br/>(schema v20)"]
+        DB["SQLite + FTS5<br/>(schema v22)"]
     end
 
     CLI --> SVC
@@ -148,7 +148,7 @@ internal/
                            8 relation types, request/response structs). Zero deps.
   project/              -- git remote / project slug detection
   config/               -- TOML config + defaults + env overrides
-  db/                   -- SQLite + FTS5 + embedded migrations (schema v20)
+  db/                   -- SQLite + FTS5 + embedded migrations (schema v22)
   store/                -- repository pattern (CRUD, FTS5, vectors, entities, relations,
                            communities, sessions, unresolved refs)
   scoring/              -- importance, decay (Ebbinghaus), BM25 re-rank, RRF fusion,
@@ -174,9 +174,9 @@ internal/
   frontmatter/          -- surgical YAML frontmatter editor for agent .md files;
                            fixes known keys (name, description, model, tools,
                            permissionMode), preserves every other byte verbatim
-  mcp/                  -- MCP server (JSON-RPC 2.0 over stdio, 87 tools)
+  mcp/                  -- MCP server (JSON-RPC 2.0 over stdio, 96 tools)
   http/                 -- REST API (stdlib net/http, 10 endpoints under /v1/)
-  cli/                  -- Cobra commands (42 mneme-registered top-level commands)
+  cli/                  -- Cobra commands (44 registered; 46 visible with Cobra help/completion)
   install/              -- agent installer: MCP config, hooks, operating manual,
                            slash commands, skills embed. Since SPEC-073 it does
                            NOT install global agent profiles (removes legacy ones);
@@ -205,7 +205,7 @@ The persistence foundation. SQLite with WAL mode, foreign keys, 5s busy timeout.
 
 **Scopes never leak between projects.** The service layer routes reads/writes via `storeFor(scope)`.
 
-#### Schema v14 (migrations 001-014)
+#### Schema v22 (migrations 001-022)
 
 ```mermaid
 erDiagram
@@ -307,6 +307,14 @@ erDiagram
 | 012 | `add_spec_base_sha_and_audits` | SPEC-036 | `base_sha` column on `specs`; `lane_audits` table for structured post-implementation audit records |
 | 013 | `memory_relations` | SPEC-039 | `memory_relations` table for `conflicts_with`/`unrelated` memory-to-memory edges (`supersedes` reuses `memories.superseded_by`) |
 | 014 | `team_memory` | SPEC-061 | `shared` (0/1/2) and `author` columns on `memories`, layered on `scope=project` rather than a new scope. Inert by default -- see [docs/team-memory.md](team-memory.md) |
+| 015 | `memory_source_provenance` | SPEC-071 | Source provenance for imported and shared memories. |
+| 016 | `session_id_index` | SPEC-108 | Session identifier storage and lookup index. |
+| 017 | `backlog_refinements` | SPEC-110 | Iterative backlog refinements as child rows. |
+| 018 | `quality_certificates` | SPEC-115 | Quality certificates and checks bound to a commit. |
+| 019 | `sdd_anchors` | SPEC-128 | Stable UUIDv7 anchors for backlog items and specs. |
+| 020 | `sdd_previous_ids` | SPEC-136 | Previous correlatives used during SDD reconciliation. |
+| 021 | `quality_effect_and_evidence` | SPEC-137 | Persisted verdict effect and evidence sentence. |
+| 022 | `delivery_workflow_v2` | SPEC-143 | WORK contracts, criteria, constraints, history, findings, delivery certificates, and checks. Metrics remain derived rather than stored. |
 
 #### Memory types (11)
 
@@ -677,13 +685,13 @@ mneme sync import backup.manifest.tar.gz   # auto-detects format
 
 ### MCP (primary) -- `mneme mcp`
 
-JSON-RPC 2.0 over stdio. ProtocolVersion `2024-11-05`. 64 tools with JSON schemas, grouped by family:
+JSON-RPC 2.0 over stdio. ProtocolVersion `2024-11-05`. 96 tools with JSON schemas, grouped by family:
 
 | Group | Count |
 |-------|-------|
 | **Memory** (`mem_*`, incl. `mem_promote`) | 15 |
-| **Backlog** (`backlog_*`) | 4 |
-| **Spec** (`spec_*`, incl. `spec_quick`/`spec_reject`) | 8 |
+| **Backlog** (`backlog_*`) | 6 |
+| **Spec** (`spec_*`, incl. `spec_quick`/`spec_reject`) | 9 |
 | **Lane** (`lane_*`) | 5 |
 | **CodeGraph** (`codegraph_*`) | 10 |
 | **Skills** (`skills_*`) | 7 |
@@ -691,6 +699,12 @@ JSON-RPC 2.0 over stdio. ProtocolVersion `2024-11-05`. 64 tools with JSON schema
 | **Conflicts** (`conflicts_*`) | 5 |
 | **init** | 1 |
 | **Subagent** (`subagent_*`) | 6 |
+| **Profile** (`profile_*`) | 8 |
+| **Quality** (`quality_*`) | 5 |
+| **Speech** (`speech_*`) | 2 |
+| **Project / app / scaffold** | 3 |
+| **SDD transport** (`sdd_*`) | 2 |
+| **Delivery WORK** (`work_*`) | 9 |
 
 Full per-tool contracts (params, returns, errors, examples) live in [docs/api/](api/), one file per family.
 
@@ -717,7 +731,7 @@ serves the `/explore` suffix, so it handles four distinct request shapes:
 
 Full contract for every route: [docs/api/http.md](api/http.md).
 
-**HTTP gap:** no SDD/lane/codegraph/skills/model/conflicts/subagent endpoints
+**HTTP gap:** no SDD or delivery-v2 WORK endpoints, and no lane/codegraph/skills/model/conflicts/subagent endpoints
 at all, and no `mem_checkpoint`, `mem_timeline`, `mem_suggest_topic_key`, or
 `mem_promote`. (`mem_gaps` and `mem_explore` **are** exposed -- via
 `/v1/gaps` and the `/explore` suffix above, respectively; they are not part
@@ -725,8 +739,8 @@ of the gap.) No auth, no rate limiting.
 
 ### CLI -- Cobra
 
-42 mneme-registered top-level commands (`completion` and `help` are
-Cobra-generated and are not counted in this figure): `save`, `search`, `get`,
+44 mneme-registered top-level commands (`completion` and `help` are
+Cobra-generated, producing 46 visible entries, and are not counted in this figure): `save`, `search`, `get`,
 `update`, `forget`, `promote`,
 `status`, `stats`, `consolidate`, `serve`, `mcp`, `init`, `install`,
 `upgrade`, `version`, `sync export|import|status`, `rule add|list|test`,
@@ -741,7 +755,8 @@ list|install|pin|unpin|remove|lint|validate`, `model list|set|reset`,
 fingerprint|profile|compose|write|manifest-list`, `delegation-hook
 enable|disable|status`, `team-memory enable|hooks`, `profile
 new|add|update|list|status|use|default|deactivate`, `project new`, `app add`,
-`scaffold capture`, `quality verify|status|ack|sign|report|baseline`,
+`scaffold capture`, `quality verify|status|ack|sign|report|baseline`, `work
+begin|get|lock|amend|review|verify|complete|resume|metrics`,
 `speech on|off|stop|status|voices|voice|mode|test|setup`. Full flag reference:
 [docs/api/cli.md](api/cli.md).
 
@@ -1095,4 +1110,4 @@ this interacts with the write-through materialization path itself.
 
 ---
 
-*Originally written 2026-04-30 for EPIC-1 through EPIC-6 (SPEC-001 through SPEC-026); updated through schema v20 / 87 MCP tools / 43 mneme-registered CLI commands, including SDD+lanes, CodeGraph, Skills, Models, Conflicts, per-project subagents, Team Memory, profiles/scaffolds, quality evidence, and local speech. See [CHANGELOG.md](../CHANGELOG.md) for the full release history.*
+*Originally written 2026-04-30 for EPIC-1 through EPIC-6 (SPEC-001 through SPEC-026); updated through schema v22 / 96 MCP tools / 44 mneme-registered CLI commands (46 visible with Cobra), including SDD+lanes, delivery-v2 WORK, CodeGraph, Skills, Models, Conflicts, per-project subagents, Team Memory, profiles/scaffolds, quality evidence, and local speech. HTTP remains at 10 routes without SDD or delivery-v2. See [CHANGELOG.md](../CHANGELOG.md) for the full release history.*

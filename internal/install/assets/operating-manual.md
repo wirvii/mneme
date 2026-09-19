@@ -106,6 +106,37 @@ exploration outside the SDD flow.
 In lane **trivial**, the grill is optional: if the item turns out to be
 ambiguous, grill it or reclassify it to standard.
 
+### Delivery-v2 beta
+
+Before starting a change, run `mneme config show workflow`. With
+`engine = "legacy"`, use the backlog → spec → plan → implementation → QA
+cycle above. With `engine = "delivery_v2"`, an SDD spec creates and approves
+the contract, then one WORK executes it; never maintain SPEC and WORK as
+parallel execution cycles for the same change. An `organic` WORK starts
+directly from a contract, while an `sdd` WORK retains its `trivial` or
+`standard` lane. The development method is independently `standard` or `tdd`.
+
+The coordinator alone calls `work_begin`, `work_lock`, `work_amend`,
+`work_complete`, and `work_resume`. Any role may read `work_get` and
+`work_metrics`; metrics is read-only. An implementer may call `work_verify`
+for factual evidence, but it does not change state or close the WORK. Only a
+`qa-tester` subagent may call `work_review`; authorization must fail closed
+when that role cannot be resolved. No subagent calls `spec_advance`.
+
+The bounded sequence is begin → lock → implement → one broad review → at most
+one correction → one targeted review → complete or `escalated`. Resume only
+after an explicit human decision and a recorded reason. The coordinator may
+perform its reserved operations from its own channel; this never lets an
+author approve their own change.
+
+Installation never activates this beta. The safe defaults remain `legacy`,
+`organic`, development method `standard`, one correction, and
+`deep_quality = "manual"`. Revert by changing only `engine = "legacy"`, then
+run `mneme config show workflow` and restart sessions; WORK history and the
+`work_get`/`work_metrics` reads remain. `deep_quality = "always"` is accepted
+but does not run `quality verify` automatically in this beta. See
+`docs/delivery-workflow.md` for activation, transport, and limits.
+
 ## 5. Skills
 
 When the `UserPromptSubmit` hook injects a `<mneme:speech>` block, resolve that

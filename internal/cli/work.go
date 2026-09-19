@@ -18,6 +18,16 @@ func newWorkCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "work",
 		Short: "Manage delivery work contracts",
+		Long: `Manage delivery-v2 WORK contracts.
+
+Mutating operations require workflow.engine = "delivery_v2". Diagnose the
+effective setting with "mneme config show workflow". The usual sequence is
+begin -> lock -> implement -> review -> verify/complete. Review records the
+independent broad or targeted assessment; verify evaluates factual checks
+without changing state. metrics is read-only.
+
+Pass larger JSON requests with --input <file>|-. See docs/api/cli.md for the
+request fields, authority rules, and full response contract.`,
 	}
 	cmd.AddCommand(
 		newWorkBeginCmd(),
@@ -37,8 +47,10 @@ func newWorkMetricsCmd() *cobra.Command {
 	var limit int
 	var jsonOutput bool
 	cmd := &cobra.Command{
-		Use:  "metrics [WORK-ID...]",
-		Args: cobra.ArbitraryArgs,
+		Use:     "metrics [WORK-ID...]",
+		Short:   "Read local delivery metrics without changing work",
+		Example: "  mneme work metrics WORK-001 WORK-002 --limit 20 --json",
+		Args:    cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var ids []string
 			if len(args) > 0 {
@@ -66,9 +78,10 @@ func newWorkReviewCmd() *cobra.Command {
 	var input string
 	var jsonOutput bool
 	cmd := &cobra.Command{
-		Use:   "review <id>",
-		Short: "Record one commit-bound initial work review",
-		Args:  cobra.ExactArgs(1),
+		Use:     "review <id>",
+		Short:   "Record one commit-bound initial work review",
+		Example: "  mneme work review WORK-001 --input review.json --json",
+		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			req, err := decodeWorkReviewRequest(cmd, input, args[0])
 			if err != nil {
@@ -106,9 +119,10 @@ func newWorkBeginCmd() *cobra.Command {
 	var input string
 	var jsonOutput bool
 	cmd := &cobra.Command{
-		Use:   "begin",
-		Short: "Create a draft work contract",
-		Args:  cobra.NoArgs,
+		Use:     "begin",
+		Short:   "Create a draft work contract",
+		Example: "  mneme work begin --input contract.json --json\n  cat contract.json | mneme work begin --input -",
+		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			var req model.WorkBeginRequest
 			if err := decodeWorkInput(cmd, input, &req); err != nil {
@@ -136,9 +150,10 @@ func newWorkBeginCmd() *cobra.Command {
 func newWorkGetCmd() *cobra.Command {
 	var jsonOutput bool
 	cmd := &cobra.Command{
-		Use:   "get <id>",
-		Short: "Read a complete work aggregate",
-		Args:  cobra.ExactArgs(1),
+		Use:     "get <id>",
+		Short:   "Read a complete work aggregate",
+		Example: "  mneme work get WORK-001 --json",
+		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			result, err := callWork(cmd, func(svc workService) (any, error) {
 				return svc.WorkGet(cmd.Context(), model.WorkGetRequest{ID: args[0]})
@@ -161,9 +176,10 @@ func newWorkLockCmd() *cobra.Command {
 	var by string
 	var jsonOutput bool
 	cmd := &cobra.Command{
-		Use:   "lock <id>",
-		Short: "Lock a draft work contract",
-		Args:  cobra.ExactArgs(1),
+		Use:     "lock <id>",
+		Short:   "Lock a draft work contract",
+		Example: "  mneme work lock WORK-001 --by orchestrator --json",
+		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			result, err := callWork(cmd, func(svc workService) (any, error) {
 				return svc.WorkLock(cmd.Context(), model.WorkLockRequest{ID: args[0], By: by})
@@ -187,9 +203,10 @@ func newWorkAmendCmd() *cobra.Command {
 	var input string
 	var jsonOutput bool
 	cmd := &cobra.Command{
-		Use:   "amend",
-		Short: "Amend a locked work contract",
-		Args:  cobra.NoArgs,
+		Use:     "amend",
+		Short:   "Amend a locked work contract",
+		Example: "  mneme work amend --input amendment.json --json\n  cat amendment.json | mneme work amend --input -",
+		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			var req model.WorkAmendRequest
 			if err := decodeWorkInput(cmd, input, &req); err != nil {
@@ -217,9 +234,10 @@ func newWorkAmendCmd() *cobra.Command {
 func newWorkVerifyCmd() *cobra.Command {
 	var jsonOutput bool
 	cmd := &cobra.Command{
-		Use:   "verify <id>",
-		Short: "Verify work against its delivery contract",
-		Args:  cobra.ExactArgs(1),
+		Use:     "verify <id>",
+		Short:   "Verify work against its delivery contract",
+		Example: "  mneme work verify WORK-001 --json",
+		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			req := model.WorkActionRequest{ID: args[0]}
 			result, err := callWork(cmd, func(svc workService) (any, error) {
@@ -243,9 +261,10 @@ func newWorkCompleteCmd() *cobra.Command {
 	var by string
 	var jsonOutput bool
 	cmd := &cobra.Command{
-		Use:   "complete <id>",
-		Short: "Close work using its latest persisted evidence",
-		Args:  cobra.ExactArgs(1),
+		Use:     "complete <id>",
+		Short:   "Close work using its latest persisted evidence",
+		Example: "  mneme work complete WORK-001 --by orchestrator --json",
+		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			result, err := callWork(cmd, func(svc workService) (any, error) {
 				return svc.WorkComplete(cmd.Context(), model.WorkCompleteRequest{ID: args[0], By: by})
@@ -270,9 +289,10 @@ func newWorkResumeCmd() *cobra.Command {
 	var by, reason string
 	var jsonOutput bool
 	cmd := &cobra.Command{
-		Use:   "resume <id>",
-		Short: "Resume escalated work after a human decision",
-		Args:  cobra.ExactArgs(1),
+		Use:     "resume <id>",
+		Short:   "Resume escalated work after a human decision",
+		Example: `  mneme work resume WORK-001 --by orchestrator --reason "owner approved another round" --json`,
+		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			result, err := callWork(cmd, func(svc workService) (any, error) {
 				return svc.WorkResume(cmd.Context(), model.WorkResumeRequest{ID: args[0], By: by, Reason: reason})

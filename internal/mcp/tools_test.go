@@ -2,6 +2,8 @@ package mcp
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -11,6 +13,69 @@ func TestAllTools_Count96(t *testing.T) {
 	tools := allTools()
 	if len(tools) != 96 {
 		t.Errorf("allTools() returned %d tools, want 96", len(tools))
+	}
+}
+
+func TestAllTools_DerivedWorkFamilyAndPublicCounts(t *testing.T) {
+	tools := allTools()
+	workCount := 0
+	for _, tool := range tools {
+		if strings.HasPrefix(tool.Name, "work_") {
+			workCount++
+		}
+	}
+	if workCount != 9 {
+		t.Fatalf("allTools() contains %d work_* tools, want 9", workCount)
+	}
+
+	for _, path := range []string{"README.md", "docs/API.md", "docs/ARCHITECTURE.md"} {
+		data, err := os.ReadFile(filepath.Join("..", "..", path))
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		text := string(data)
+		for _, anchor := range []string{"96", "9", "work"} {
+			if !strings.Contains(strings.ToLower(text), anchor) {
+				t.Errorf("%s does not contain current MCP/work count anchor %q", path, anchor)
+			}
+		}
+		for _, stale := range []string{"87 tools", "87 MCP tools", "95 tools", "95 MCP tools"} {
+			if strings.Contains(text, stale) {
+				t.Errorf("%s still describes the current surface as %q", path, stale)
+			}
+		}
+	}
+}
+
+func TestWorkToolsAreDocumentedExactlyOnce(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "docs", "api", "sdd.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	start := strings.Index(text, "## Delivery-v2 WORK tools")
+	if start < 0 {
+		t.Fatal("docs/api/sdd.md lacks the Delivery-v2 WORK tools section")
+	}
+	section := text[start:]
+	if next := strings.Index(section[len("## Delivery-v2 WORK tools"):], "\n## "); next >= 0 {
+		section = section[:len("## Delivery-v2 WORK tools")+next]
+	}
+	for _, tool := range allTools() {
+		if !strings.HasPrefix(tool.Name, "work_") {
+			continue
+		}
+		if got := strings.Count(section, "### `"+tool.Name+"`"); got != 1 {
+			t.Errorf("docs/api/sdd.md has %d headings for %s, want 1", got, tool.Name)
+		}
+	}
+	if got := strings.Count(section, "### `work_"); got != 9 {
+		t.Errorf("docs/api/sdd.md documents %d WORK tools, want 9", got)
+	}
+	for _, anchor := range []string{"qa-tester", "falla cerrada", "sin transición", "evidencia verde", "conserva la historia"} {
+		if !strings.Contains(strings.ToLower(section), strings.ToLower(anchor)) {
+			t.Errorf("WORK MCP documentation does not contain %q", anchor)
+		}
 	}
 }
 

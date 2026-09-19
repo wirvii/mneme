@@ -325,6 +325,23 @@ guard at all. A best-effort `enforcelog` event is recorded on block
 no discovery memory (the same "a contained subagent did not bypass SDD"
 reasoning).
 
+#### Delivery-v2 WORK authority
+
+Delivery-v2 reuses the same two authorization maps. `lifecycleTools` blocks
+every resolved subagent from the coordinator-owned `work_begin`, `work_lock`,
+`work_amend`, `work_complete`, and `work_resume` operations.
+
+`roleScopedTools` maps `work_review` to `qa-tester`. Another resolved role is
+blocked, and an unresolved role **fails closed**. This prevents the author of
+a change from approving their own work. The coordinator may execute its
+reserved operations from its own channel when the workflow requires it; that
+does not grant review authority to the author.
+
+`work_get` and `work_metrics` are reads available to any role. An implementer
+may call `work_verify` for factual evidence; it performs no state transition.
+No subagent calls `spec_advance`, whether execution uses legacy or one WORK.
+The complete sequence is in [`delivery-workflow.md`](delivery-workflow.md).
+
 #### Inherent limits of Layer 2
 
 Layer 2 is designed to stop the **cooperative orchestrator** from accidentally

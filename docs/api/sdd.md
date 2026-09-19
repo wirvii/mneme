@@ -626,6 +626,105 @@ project).
 
 ---
 
+## Delivery-v2 WORK tools
+
+Estas nueve herramientas forman la superficie MCP de contratos de entrega.
+Las mutaciones requieren `workflow.engine = "delivery_v2"`. `work_get` y
+`work_metrics` siguen disponibles como lecturas al volver a legacy. Los
+estados públicos son `draft`, `implementing`, `reviewing`, `correcting`,
+`escalated`, `done` y `abandoned`. Ninguna respuesta imprime el UUIDv7 interno.
+
+`work_begin`, `work_lock`, `work_amend`, `work_complete` y `work_resume`
+pertenecen al coordinador. Como subagente, sólo `qa-tester` puede invocar
+`work_review`; la autorización falla cerrada si no se puede resolver su rol.
+El implementador puede ejecutar `work_verify`. Cualquier rol puede leer
+`work_get` y `work_metrics`.
+
+### `work_begin`
+
+**Petición.** Requiere `goal`, `scope` y `verification`; acepta `project`,
+`workflow` (`organic|sdd`), `spec_id`, `development_method`
+(`standard|tdd`), `max_correction_rounds`, `criteria`, `constraints` y
+`created_by`.
+
+**Respuesta y efecto.** Devuelve el agregado público en estado `draft`. Crea
+el contrato después de validar origen, spec, alcance, criterios y valores. Un
+motor legacy, una spec no apta o campos inválidos producen error sin escritura.
+
+### `work_get`
+
+**Petición.** `{ "id": "WORK-001" }`.
+
+**Respuesta y efecto.** Devuelve contrato, criterios, restricciones, historia,
+hallazgos, certificado y checks locales. Es lectura sin transición y no expone
+el ancla interna. Un identificador inexistente produce `not found`.
+
+### `work_lock`
+
+**Petición.** Requiere `id`; `by` es opcional.
+
+**Respuesta y efecto.** Pasa un borrador a `implementing`, fija HEAD, revisión
+y huella de contrato de forma atómica. Sólo el coordinador puede invocarla. Un
+estado distinto de `draft`, un árbol sucio o un motor legacy se rechazan.
+
+### `work_amend`
+
+**Petición.** Requiere `id`, todos los campos normativos (`goal`, `scope`,
+`verification`, `development_method`), `by` y `reason`; también acepta los
+nuevos criterios y restricciones.
+
+**Respuesta y efecto.** Crea una revisión completa y auditable, vuelve a fijar
+la huella y conserva la historia anterior. Pertenece al coordinador; no admite
+una sustitución parcial ni una razón vacía.
+
+### `work_review`
+
+**Petición.** Requiere `id`, `by` y `head_sha`; acepta resoluciones,
+hallazgos y veredictos de arquitectura. El estado persistido elige revisión
+inicial o dirigida, no el llamador.
+
+**Respuesta y efecto.** Devuelve el agregado, fase de revisión, siguiente
+estado, hallazgos, certificado factual, checks y, cuando corresponde, mandato
+de corrección. Sólo `qa-tester` puede usarla como subagente y el control falla
+cerrado sin identidad de rol. Puede pasar a `correcting`, quedar listo para
+cierre o escalar; no repite indefinidamente la corrección.
+
+### `work_verify`
+
+**Petición.** `{ "id": "WORK-001" }`.
+
+**Respuesta y efecto.** Evalúa criterios y puertas requeridas, y persiste un
+certificado factual con sus checks. Es una evaluación sin transición: no
+cambia estado ni cierra el WORK. Un contrato o HEAD que ya no coincide invalida
+la evidencia anterior.
+
+### `work_complete`
+
+**Petición.** Requiere `id` y `by`; el esquema es cerrado.
+
+**Respuesta y efecto.** El coordinador cierra en `done` sólo cuando existe
+evidencia verde vigente para el HEAD y la revisión exactos. Reutiliza el
+certificado persistido y no vuelve a ejecutar verificaciones. Evidencia roja,
+ausente o vencida impide el cierre.
+
+### `work_resume`
+
+**Petición.** Requiere `id`, `by` y `reason`; el esquema es cerrado.
+
+**Respuesta y efecto.** El coordinador reanuda un WORK `escalated` después de
+una decisión humana explícita. Reinicia el presupuesto de corrección y conserva
+la historia, los hallazgos y los certificados. Otro estado o una razón vacía
+se rechazan.
+
+### `work_metrics`
+
+**Petición.** Acepta `project`, una cohorte ordenada `ids` de hasta 50 WORK y
+`limit` entre 1 y 50.
+
+**Respuesta y efecto.** Devuelve totales, duraciones, correcciones, escaladas,
+reanudaciones y evidencia local `complete|partial|not_started`. Es lectura sin
+transición y nunca convierte evidencia importada ausente en cero real.
+
 ## Quality Tools (SPEC-115 EPIC-calidad S1, extended by SPEC-116 S2 and SPEC-117 S3)
 
 The quality mechanism replaces an agent's self-reported "it works" with a

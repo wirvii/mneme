@@ -2,9 +2,11 @@
 
 # mneme -- API Reference
 
-mneme exposes the same service layer through three frontends: **MCP** (85
-tools over JSON-RPC 2.0 stdio, primary), **HTTP** (10 REST endpoints under
-`/v1/`), and **CLI** (42 mneme-registered top-level commands, Cobra). This page is an index --
+mneme exposes one service layer through three frontends: **MCP** (96 tools
+over JSON-RPC 2.0 stdio, primary), **HTTP** (10 REST endpoints under `/v1/`),
+and **CLI** (44 mneme-registered top-level commands; 46 visible entries after
+Cobra adds `help` and `completion`). HTTP does not expose SDD or delivery-v2,
+so the three transports are not feature-identical. This page is an index --
 the full contract for every tool, endpoint, and command lives in
 [docs/api/](api/).
 
@@ -31,7 +33,7 @@ not a fixed string -- expect it to match `mneme version`.
 
 ---
 
-## MCP tool families (87 tools)
+## MCP tool families (96 tools)
 
 Rule: every MCP tool appears in exactly **one** of these files.
 
@@ -47,10 +49,16 @@ Rule: every MCP tool appears in exactly **one** of these files.
 | `profile_*` + `project_*` + `app_*` + `scaffold_*` | 8+1+1+1=11 | [docs/profiles.md](profiles.md) (no dedicated `docs/api/` split yet) | [docs/profiles.md](profiles.md) |
 | `speech_*` | 2 | [docs/speech.md](speech.md) | [docs/speech.md](speech.md) |
 | `quality_*` | 5 | [docs/api/sdd.md](api/sdd.md) | [docs/quality.md](quality.md) |
+| `sdd_*` | 2 | [docs/api/sdd.md](api/sdd.md) | [docs/sdd-git-native.md](sdd-git-native.md) |
+| `work_*` | 9 | [docs/api/sdd.md](api/sdd.md) | [docs/delivery-workflow.md](delivery-workflow.md) |
 
-15 + 21 + 10 + 7 + 3 + 5 + 6 + 11 + 2 + 5 = **85**. The two host-local
+15 + 21 + 10 + 7 + 3 + 5 + 6 + 11 + 2 + 5 + 2 + 9 = **96**. The two host-local
 `speech_*` tools intentionally have no HTTP counterpart because they control
 the current user's audio device.
+
+The nine `work_*` tools and their CLI counterparts operate on execution
+contracts, revisions, findings, delivery certificates, checks, and derived
+metrics. HTTP's 10 routes expose none of SDD or delivery-v2.
 
 ## Transport references
 

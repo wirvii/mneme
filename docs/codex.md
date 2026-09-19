@@ -27,6 +27,33 @@ mneme install codex --dry-run
 
 The install is **non-destructive and idempotent** — running it multiple times produces
 the same result. All existing keys in `config.toml` and `hooks.json` are preserved.
+It refreshes the delivery-v2 rules in `$CODEX_HOME/AGENTS.md`, but never edits
+`~/.mneme/config.toml` and never activates the beta.
+
+## Delivery-v2 beta
+
+Codex follows the same delivery contract as Claude Code; only its file paths
+and hook trust step differ. Run `mneme config show workflow` before starting.
+`legacy` remains the default. With `delivery_v2`, an SDD spec creates and
+approves the contract, and a single WORK executes it. SPEC and WORK are not
+parallel execution cycles for the same change.
+
+The coordinator reserves `work_begin`, `work_lock`, `work_amend`,
+`work_complete`, and `work_resume`. Any role may read `work_get` and
+`work_metrics`. An implementer may run factual `work_verify`, which causes no
+transition. A `qa-tester` subagent alone may run `work_review`, and unresolved
+role identity fails closed. No subagent calls `spec_advance`.
+
+The sequence is one broad review, at most one correction, then one targeted
+review before completion or escalation. Resume requires an explicit human
+decision. `deep_quality = "always"` does not automatically run `quality
+verify` in this beta; use `manual` for the phase 10 campaign. Activation,
+reversal to `engine = "legacy"`, personal host-wide scope, and preserved WORK
+history are detailed in [delivery-workflow.md](delivery-workflow.md).
+
+After installation, review and trust the Codex hooks with `/hooks`, edit the
+personal workflow configuration explicitly, verify it with `mneme config show
+workflow`, and restart sessions. Installation alone does none of these steps.
 
 ## Supported versions
 

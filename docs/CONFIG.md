@@ -200,11 +200,35 @@ Configuración del ecosistema personal del usuario (archivos CLAUDE.md compartid
 
 ## `[workflow]`
 
-Controla dónde se almacenan los artefactos del ciclo de vida SDD (specs, bugs, backlog).
+Controla el almacenamiento del ciclo SDD y la selección explícita del motor de entrega. La configuración es personal y afecta a todos los repositorios usados por ese binario en el host; no es una preferencia por repositorio.
 
-| Field | Default | Type | Range | Env Override | Description |
-|-------|---------|------|-------|-------------|-------------|
-| `dir` | `~/.mneme/workflows` | string | — | `MNEME_WORKFLOW_DIR` | Directorio raíz para artefactos de workflow. Soporta expansión de `~`. |
+| Campo | Predeterminado | Tipo | Valores válidos | Variable de entorno | Efecto |
+|-------|----------------|------|------------------|---------------------|--------|
+| `dir` | `~/.mneme/workflows` | string | ruta | `MNEME_WORKFLOW_DIR` | Directorio raíz para specs, bugs y backlog. |
+| `engine` | `"legacy"` | string | `legacy`, `delivery_v2` | — | Selecciona el ciclo heredado o la beta basada en WORK. Las mutaciones WORK requieren `delivery_v2`; las lecturas permanecen disponibles al volver a legacy. |
+| `default` | `"organic"` | string | `organic`, `sdd` | — | Origen predeterminado de contratos nuevos. La lane sólo existe cuando el origen es SDD. |
+| `development_method` | `"standard"` | string | `standard`, `tdd` | — | Método predeterminado que se copia al contrato; cada WORK puede elegir TDD cuando corresponde. |
+| `max_correction_rounds` | `1` | entero | `0` o mayor | — | Máximo de correcciones automáticas después de la revisión inicial. La beta se prueba con una sola. |
+| `deep_quality` | `"manual"` | string | `manual`, `always` | — | Declara la intención de auditoría profunda. En esta beta, `always` todavía no ejecuta automáticamente `mneme quality verify`. |
+
+Los valores seguros, incluso sin archivo, son:
+
+```toml
+[workflow]
+engine = "legacy"
+default = "organic"
+development_method = "standard"
+max_correction_rounds = 1
+deep_quality = "manual"
+```
+
+Instalar, actualizar, ejecutar `mneme init` o iniciar una sesión no cambia esos valores. Para activar la beta, edita `~/.mneme/config.toml` y comprueba el resultado con:
+
+```bash
+mneme config show workflow
+```
+
+No existe `mneme config set`. Para revertir, cambia sólo `engine = "legacy"`, vuelve a comprobar la sección y reinicia las sesiones. La guía completa está en [delivery-workflow.md](delivery-workflow.md).
 
 ---
 

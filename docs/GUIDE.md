@@ -774,6 +774,42 @@ spec_status({ "id": "SPEC-042" })
 spec_advance({ "id": "SPEC-042", "by": "architect" })
 ```
 
+### Delivery-v2 beta
+
+Delivery-v2 replaces the execution half of the legacy cycle with one WORK; it
+does not replace SDD design and approval. For an SDD origin, the spec produces
+the approved contract and WORK executes it. Never maintain both as parallel
+execution cycles.
+
+Legacy remains the default. Installing Claude Code or Codex distributes the
+new operating manual but does not activate the engine. Activation is a
+personal, host-wide choice: keep a recoverable copy of
+`~/.mneme/config.toml`, install the manual for each participating agent, trust
+Codex hooks with `/hooks`, then edit:
+
+```toml
+[workflow]
+engine = "delivery_v2"
+default = "sdd"
+development_method = "standard"
+max_correction_rounds = 1
+deep_quality = "manual"
+```
+
+Confirm with `mneme config show workflow` and restart sessions before creating
+real WORK records. The bounded sequence is begin, lock, implementation, one
+broad review, at most one correction, one targeted review, then complete or
+escalate. `work_verify` records factual evidence without changing state;
+`work_metrics` is read-only.
+
+To revert, change only `engine = "legacy"`, confirm again, and restart. WORK
+history and the `work_get`/`work_metrics` reads remain. The git-native marker
+is independent of the engine. `deep_quality = "always"` does not run
+`quality verify` automatically in this beta, so deep auditing remains manual.
+HTTP stays at 10 endpoints and exposes neither SDD nor delivery-v2. See
+[delivery-workflow.md](delivery-workflow.md) for the full authority table,
+transport boundary, and local metric semantics.
+
 ---
 
 ## 12. CLI Cheatsheet
@@ -838,6 +874,8 @@ spec_advance({ "id": "SPEC-042", "by": "architect" })
 | `mneme embed backfill` | Generate embeddings for memories without one |
 | `mneme config show` | Show resolved config with provenance |
 | `mneme config show graph` | Show specific config section |
+| `mneme config show workflow` | Show the effective delivery engine and defaults |
+| `mneme work begin|get|lock|amend|review|verify|complete|resume|metrics` | Operate delivery-v2 contracts; see the dedicated guide |
 | `mneme tui` | Interactive terminal UI |
 | `mneme upgrade` | Check for and install updates |
 | `mneme version` | Print version |

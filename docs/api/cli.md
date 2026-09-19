@@ -1,8 +1,9 @@
 # API Reference — CLI Commands
 
-42 mneme-registered top-level commands (`./mneme --help` and `./mneme <cmd> --help` are the
-source of truth; this reference mirrors them). Global flags apply to every
-subcommand:
+44 mneme-registered top-level commands are the product surface. Cobra adds
+`help` and `completion`, so `mneme --help` exposes 46 top-level entries. The
+command constructors and their help are the source of truth; this reference
+mirrors them. Global flags apply to every subcommand:
 
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
@@ -846,6 +847,114 @@ mneme subagents regen --all --dry-run
 | `--json` | false | JSON output (per-entry `role`, `path`, `old_version`, `new_version`, `changed`, `error`) |
 
 ---
+
+## Delivery-v2 WORK
+
+`mneme work` exposes the same nine operations as the MCP `work_*` family. The
+mutation commands require `workflow.engine = "delivery_v2"`; `get` and
+`metrics` remain readable after reverting to legacy. Run `mneme config show
+workflow` to inspect the effective values. JSON input is limited to 10 MiB.
+Use `--input <file>` or `--input -` for standard input, and `--json` when a
+machine-readable response is required.
+
+The coordinator owns `begin`, `lock`, `amend`, `complete`, and `resume`.
+`qa-tester` owns reviews when invoked as a subagent. Implementers may run
+factual verification, and every role may read the aggregate and metrics.
+
+### `mneme work begin`
+
+Create a draft contract from a `WorkBeginRequest`. The request contains source,
+goal, scope, criteria, constraints, verification requirements, development
+method, and coordinator identity. It creates state; it does not lock the
+contract.
+
+```bash
+mneme work begin --input contract.json --json
+cat contract.json | mneme work begin --input -
+```
+
+### `mneme work get <id>`
+
+Read the complete contract, criteria, constraints, history, findings, latest
+certificate, and checks. It causes no transition.
+
+```bash
+mneme work get WORK-001 --json
+```
+
+### `mneme work lock <id>`
+
+The coordinator locks a draft against the current commit and computed contract
+hash. `--by` records the actor. A non-draft contract or unavailable
+delivery-v2 engine is rejected.
+
+```bash
+mneme work lock WORK-001 --by orchestrator --json
+```
+
+### `mneme work amend`
+
+The coordinator submits a `WorkAmendRequest` through `--input`. A valid
+amendment creates a new contract revision, preserves history, and returns the
+updated aggregate.
+
+```bash
+mneme work amend --input amendment.json --json
+```
+
+### `mneme work review <id>`
+
+Record a commit-bound broad or targeted review from a `WorkReviewRequest`.
+Subagent authority belongs only to `qa-tester` and fails closed when the role
+cannot be resolved. Review may move the WORK to correction, completion-ready,
+or escalation according to the bounded review cycle.
+
+```bash
+mneme work review WORK-001 --input review.json --json
+```
+
+### `mneme work verify <id>`
+
+Evaluate the factual gates and persist a delivery certificate and checks. This
+operation causes no state transition and does not close the WORK.
+
+```bash
+mneme work verify WORK-001 --json
+```
+
+### `mneme work complete <id>`
+
+The coordinator closes a WORK only when its latest evidence is green and still
+matches the current commit and contract revision. `--by` is required.
+
+```bash
+mneme work complete WORK-001 --by orchestrator --json
+```
+
+### `mneme work resume <id>`
+
+The coordinator resumes an escalated WORK after an explicit human decision.
+Both `--by` and `--reason` are required. Resume resets the correction budget
+and preserves all earlier history, findings, and certificates.
+
+```bash
+mneme work resume WORK-001 --by orchestrator --reason "owner approved another round" --json
+```
+
+### `mneme work metrics [WORK-ID...]`
+
+Read local project metrics. Optional identifiers restrict the report;
+`--limit` bounds detail rows. Metrics is read-only and never acts as a closure
+gate. Missing imported evidence is reported as `partial` or `not_started`, not
+as a measured zero.
+
+```bash
+mneme work metrics WORK-001 WORK-002 --limit 20 --json
+```
+
+For conceptual sequence and activation, see
+[delivery-workflow.md](../delivery-workflow.md). The request and response
+types are also exposed by the corresponding MCP tools in [sdd.md](sdd.md).
 
 ## Team Memory
 
