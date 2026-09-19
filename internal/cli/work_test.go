@@ -11,11 +11,11 @@ import (
 	"github.com/wirvii/mneme/internal/model"
 )
 
-func TestNewWorkCmdRegistersSevenOperations(t *testing.T) {
+func TestWorkCommandsRegisterEightOperations(t *testing.T) {
 	cmd := newWorkCmd()
 	want := map[string]bool{
 		"begin": false, "get": false, "lock": false, "amend": false,
-		"review": false, "verify": false, "complete": false,
+		"review": false, "verify": false, "complete": false, "resume": false,
 	}
 	for _, child := range cmd.Commands() {
 		if _, ok := want[child.Name()]; ok {
@@ -29,6 +29,28 @@ func TestNewWorkCmdRegistersSevenOperations(t *testing.T) {
 	}
 	if len(cmd.Commands()) != len(want) {
 		t.Fatalf("work has %d subcommands, want %d", len(cmd.Commands()), len(want))
+	}
+}
+
+func TestWorkResumeAndCompleteRequireDecisionFlags(t *testing.T) {
+	tests := []struct {
+		args []string
+		want string
+	}{
+		{[]string{"complete", "WORK-001"}, `required flag(s) "by" not set`},
+		{[]string{"resume", "WORK-001"}, `required flag(s) "by", "reason" not set`},
+	}
+	for _, tc := range tests {
+		cmd := newWorkCmd()
+		cmd.SetArgs(tc.args)
+		if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("args=%v error=%v want %q", tc.args, err, tc.want)
+		}
+	}
+	verify := newWorkCmd()
+	child, _, err := verify.Find([]string{"verify"})
+	if err != nil || child.Flags().Lookup("by") != nil || child.Flags().Lookup("reason") != nil {
+		t.Fatalf("verify flags changed: err=%v", err)
 	}
 }
 
@@ -155,6 +177,23 @@ func TestWriteWorkVerifyCapabilitySummarizesCertificate(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "NO DISPONIBLE") {
 		t.Fatalf("verify output remained unavailable: %q", out.String())
+	}
+}
+
+func TestWorkCompleteOutputSummarizesPersistedEvidence(t *testing.T) {
+	var out bytes.Buffer
+	result := model.WorkCapabilityResult{
+		Operation: "complete", Available: true, Performed: true,
+		Work:        model.WorkGetResponse{Contract: model.WorkContractView{ID: "WORK-007", ContractRevision: 3}},
+		Certificate: &model.DeliveryCertificate{Verdict: model.DeliveryVerdictPass, HeadSHA: "0123456789abcdef"},
+		Checks:      []model.DeliveryCheck{{Name: "build"}, {Name: "test"}},
+	}
+	if err := writeWorkCapability(&out, result); err != nil {
+		t.Fatal(err)
+	}
+	want := "CERRADO WORK-007 verdict:pass head:0123456789abcdef revision:3 checks:2\n"
+	if out.String() != want {
+		t.Fatalf("output=%q want=%q", out.String(), want)
 	}
 }
 

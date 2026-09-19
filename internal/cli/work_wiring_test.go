@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/wirvii/mneme/internal/config"
 	"github.com/wirvii/mneme/internal/db"
@@ -89,6 +90,43 @@ text = "tracked file exists"
 	}
 	if result.Certificate == nil || len(result.Checks) == 0 {
 		t.Fatalf("result=%#v", result)
+	}
+	storedWork, err := store.NewSDDStore(database).GetWork(context.Background(), work.Contract.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	passing := &model.DeliveryCertificate{Project: storedWork.Project, WorkID: storedWork.ID, ContractRevision: storedWork.ContractRevision, ContractHash: storedWork.ContractHash, HeadSHA: result.Certificate.HeadSHA, BaseSHA: storedWork.BaseSHA, Verdict: model.DeliveryVerdictPass, StartedAt: now, FinishedAt: now}
+	passingChecks := []*model.DeliveryCheck{{Kind: "gate", Name: "wiring", Status: model.DeliveryCheckPass, Effect: model.DeliveryEffectBlocks}}
+	if err := store.NewSDDStore(database).InsertDeliveryCertificate(context.Background(), passing, passingChecks); err != nil {
+		t.Fatal(err)
+	}
+	completed, err := svc.WorkComplete(context.Background(), model.WorkCompleteRequest{ID: work.Contract.ID, By: "coordinator"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if completed.Work.Contract.Status != model.WorkStatusDone || completed.Certificate == nil || completed.Certificate.ID != passing.ID {
+		t.Fatalf("completed=%#v", completed)
+	}
+
+	resumeWork, err := svc.WorkBegin(context.Background(), model.WorkBeginRequest{Goal: "resume wiring", Scope: []string{"**"}, Verification: []model.VerificationKind{model.VerificationBuild}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.WorkLock(context.Background(), model.WorkLockRequest{ID: resumeWork.Contract.ID, By: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, edge := range [][2]model.WorkStatus{{model.WorkStatusImplementing, model.WorkStatusVerifying}, {model.WorkStatusVerifying, model.WorkStatusEscalated}} {
+		if err := store.NewSDDStore(database).TransitionWork(context.Background(), resumeWork.Contract.ID, edge[0], edge[1], "test", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	resumed, err := svc.WorkResume(context.Background(), model.WorkResumeRequest{ID: resumeWork.Contract.ID, By: "coordinator", Reason: "another attempt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed.Contract.Status != model.WorkStatusImplementing {
+		t.Fatalf("resumed=%#v", resumed)
 	}
 
 	reviewWork, err := svc.WorkBegin(context.Background(), model.WorkBeginRequest{

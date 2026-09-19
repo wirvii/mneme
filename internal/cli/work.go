@@ -25,8 +25,9 @@ func newWorkCmd() *cobra.Command {
 		newWorkLockCmd(),
 		newWorkAmendCmd(),
 		newWorkReviewCmd(),
-		newWorkActionCmd("verify"),
-		newWorkActionCmd("complete"),
+		newWorkVerifyCmd(),
+		newWorkCompleteCmd(),
+		newWorkResumeCmd(),
 	)
 	return cmd
 }
@@ -183,21 +184,16 @@ func newWorkAmendCmd() *cobra.Command {
 	return cmd
 }
 
-func newWorkActionCmd(operation string) *cobra.Command {
+func newWorkVerifyCmd() *cobra.Command {
 	var jsonOutput bool
 	cmd := &cobra.Command{
-		Use:   operation + " <id>",
-		Short: "Report availability of work " + operation,
+		Use:   "verify <id>",
+		Short: "Verify work against its delivery contract",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			req := model.WorkActionRequest{ID: args[0]}
 			result, err := callWork(cmd, func(svc workService) (any, error) {
-				switch operation {
-				case "verify":
-					return svc.WorkVerify(cmd.Context(), req)
-				default:
-					return svc.WorkComplete(cmd.Context(), req)
-				}
+				return svc.WorkVerify(cmd.Context(), req)
 			})
 			if err != nil {
 				return err
@@ -213,6 +209,62 @@ func newWorkActionCmd(operation string) *cobra.Command {
 	return cmd
 }
 
+func newWorkCompleteCmd() *cobra.Command {
+	var by string
+	var jsonOutput bool
+	cmd := &cobra.Command{
+		Use:   "complete <id>",
+		Short: "Close work using its latest persisted evidence",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			result, err := callWork(cmd, func(svc workService) (any, error) {
+				return svc.WorkComplete(cmd.Context(), model.WorkCompleteRequest{ID: args[0], By: by})
+			})
+			if err != nil {
+				return err
+			}
+			capability := result.(model.WorkCapabilityResult)
+			if jsonOutput {
+				return printJSON(cmd.OutOrStdout(), capability)
+			}
+			return writeWorkCapability(cmd.OutOrStdout(), capability)
+		},
+	}
+	cmd.Flags().StringVar(&by, "by", "", "Coordinator identity")
+	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Output result as JSON")
+	_ = cmd.MarkFlagRequired("by")
+	return cmd
+}
+
+func newWorkResumeCmd() *cobra.Command {
+	var by, reason string
+	var jsonOutput bool
+	cmd := &cobra.Command{
+		Use:   "resume <id>",
+		Short: "Resume escalated work after a human decision",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			result, err := callWork(cmd, func(svc workService) (any, error) {
+				return svc.WorkResume(cmd.Context(), model.WorkResumeRequest{ID: args[0], By: by, Reason: reason})
+			})
+			if err != nil {
+				return err
+			}
+			work := result.(model.WorkGetResponse)
+			if jsonOutput {
+				return printJSON(cmd.OutOrStdout(), work)
+			}
+			return writeWorkSummary(cmd.OutOrStdout(), "REANUDADO", work)
+		},
+	}
+	cmd.Flags().StringVar(&by, "by", "", "Coordinator identity")
+	cmd.Flags().StringVar(&reason, "reason", "", "Reason for resuming work")
+	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Output result as JSON")
+	_ = cmd.MarkFlagRequired("by")
+	_ = cmd.MarkFlagRequired("reason")
+	return cmd
+}
+
 type workService interface {
 	WorkBegin(context.Context, model.WorkBeginRequest) (model.WorkGetResponse, error)
 	WorkGet(context.Context, model.WorkGetRequest) (model.WorkGetResponse, error)
@@ -220,7 +272,8 @@ type workService interface {
 	WorkAmend(context.Context, model.WorkAmendRequest) (model.WorkGetResponse, error)
 	WorkReview(context.Context, model.WorkReviewRequest) (model.WorkCapabilityResult, error)
 	WorkVerify(context.Context, model.WorkActionRequest) (model.WorkCapabilityResult, error)
-	WorkComplete(context.Context, model.WorkActionRequest) (model.WorkCapabilityResult, error)
+	WorkComplete(context.Context, model.WorkCompleteRequest) (model.WorkCapabilityResult, error)
+	WorkResume(context.Context, model.WorkResumeRequest) (model.WorkGetResponse, error)
 }
 
 func callWork(cmd *cobra.Command, call func(workService) (any, error)) (any, error) {
@@ -338,6 +391,12 @@ func writeWorkCapability(w io.Writer, result model.WorkCapabilityResult) error {
 			result.Work.Contract.ContractRevision, hash,
 			counts[model.DeliveryCheckPass], counts[model.DeliveryCheckFail],
 			counts[model.DeliveryCheckNotReviewed], counts[model.DeliveryCheckSkipped])
+		return err
+	}
+	if result.Operation == "complete" && result.Available && result.Performed && result.Certificate != nil {
+		_, err := fmt.Fprintf(w, "CERRADO %s verdict:%s head:%s revision:%d checks:%d\n",
+			result.Work.Contract.ID, result.Certificate.Verdict, result.Certificate.HeadSHA,
+			result.Work.Contract.ContractRevision, len(result.Checks))
 		return err
 	}
 	_, err := fmt.Fprintf(w, "NO DISPONIBLE %s: %s (%s)\n", result.Operation, result.Reason, result.ReasonCode)
