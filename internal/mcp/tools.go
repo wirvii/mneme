@@ -1958,13 +1958,24 @@ func workToolDefinitions() []ToolDefinition {
 		return map[string]any{"type": "object", "required": []string{"id"}, "properties": map[string]any{"id": map[string]any{"type": "string"}}}
 	}
 	priorityEnum := []string{"critical", "high", "medium", "low"}
+	resolution := map[string]any{
+		"type": "object", "additionalProperties": false,
+		"required": []string{"finding_seq", "status", "evidence"},
+		"properties": map[string]any{
+			"finding_seq": map[string]any{"type": "integer", "minimum": 1},
+			"status":      map[string]any{"type": "string", "enum": []string{"fixed", "invalid"}},
+			"evidence":    map[string]any{"type": "string"},
+			"reason":      map[string]any{"type": "string"},
+		},
+	}
 	reviewSchema := map[string]any{
 		"type": "object", "additionalProperties": false,
 		"required": []string{"id", "by", "head_sha"},
 		"properties": map[string]any{
-			"id":       map[string]any{"type": "string"},
-			"by":       map[string]any{"type": "string"},
-			"head_sha": map[string]any{"type": "string"},
+			"id":          map[string]any{"type": "string"},
+			"by":          map[string]any{"type": "string"},
+			"head_sha":    map[string]any{"type": "string"},
+			"resolutions": map[string]any{"type": "array", "items": resolution},
 			"findings": map[string]any{"type": "array", "items": map[string]any{
 				"type": "object", "additionalProperties": false,
 				"required": []string{"category", "severity", "description", "evidence"},
@@ -1992,7 +2003,7 @@ func workToolDefinitions() []ToolDefinition {
 		{Name: "work_get", Description: "Read the complete public work aggregate without exposing its internal UUID anchor.", InputSchema: idSchema()},
 		{Name: "work_lock", Description: "Lock a draft against the repository HEAD and begin implementation atomically.", InputSchema: map[string]any{"type": "object", "required": []string{"id"}, "properties": map[string]any{"id": map[string]any{"type": "string"}, "by": map[string]any{"type": "string"}}}},
 		{Name: "work_amend", Description: "Replace every normative field of an existing work contract with an auditable reason.", InputSchema: map[string]any{"type": "object", "required": []string{"id", "goal", "scope", "verification", "development_method", "by", "reason"}, "properties": amend}},
-		{Name: "work_review", Description: "Record one commit-bound initial review, persist findings and architecture verdicts, and emit the complete factual certificate.", InputSchema: reviewSchema},
+		{Name: "work_review", Description: "Record a commit-bound initial or targeted review selected by persisted work state, persist findings and architecture verdicts, and emit the complete factual certificate.", InputSchema: reviewSchema},
 		{Name: "work_verify", Description: "Evaluates stored criteria and required checks, persists a factual delivery certificate, and does not change work state.", InputSchema: idSchema()},
 		{Name: "work_complete", Description: "Reports unavailable in phase 2 and performs no completion or state change.", InputSchema: idSchema()},
 	}

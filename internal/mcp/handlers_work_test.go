@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -165,13 +168,52 @@ func TestHandleWorkReviewReturnsSharedCertificateAndFindings(t *testing.T) {
 	}
 }
 
+func TestHandleWorkReview_TargetedParity(t *testing.T) {
+	h, sdd, _ := newWorkTestHandlers(t)
+	created, err := sdd.WorkBegin(context.Background(), model.WorkBeginRequest{Goal: "g", Scope: []string{"internal/**"}, Verification: []model.VerificationKind{model.VerificationBuild}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sdd.WorkLock(context.Background(), model.WorkLockRequest{ID: created.Contract.ID, By: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	head, _ := (&quality.Git{RepoDir: sdd.RepoDir()}).HeadSHA()
+	initialReq := model.WorkReviewRequest{ID: created.Contract.ID, By: "qa-tester", HeadSHA: head, Findings: []model.WorkReviewFindingInput{{Category: model.FindingRegression, Severity: model.PriorityHigh, Description: "regression", Evidence: "red"}}}
+	if _, rpcErr := h.handleWorkReview(context.Background(), mustMarshal(t, initialReq)); rpcErr != nil {
+		t.Fatal(rpcErr)
+	}
+	path := filepath.Join(sdd.RepoDir(), "corrected.txt")
+	if err := os.WriteFile(path, []byte("corrected\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"add", "corrected.txt"}, {"commit", "-m", "correct"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = sdd.RepoDir()
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=Test", "GIT_AUTHOR_EMAIL=test@test.com", "GIT_COMMITTER_NAME=Test", "GIT_COMMITTER_EMAIL=test@test.com")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	head, _ = (&quality.Git{RepoDir: sdd.RepoDir()}).HeadSHA()
+	targetedReq := model.WorkReviewRequest{ID: created.Contract.ID, By: "qa-tester", HeadSHA: head, Resolutions: []model.WorkFindingResolutionInput{{FindingSeq: 1, Status: model.FindingFixed, Evidence: "green"}}}
+	result, rpcErr := h.handleWorkReview(context.Background(), mustMarshal(t, targetedReq))
+	if rpcErr != nil {
+		t.Fatal(rpcErr)
+	}
+	var response model.WorkCapabilityResult
+	raw := toolResultJSON(t, result, &response)
+	if response.ReviewPhase != model.ReviewPhaseTargeted || response.NextStatus != model.WorkStatusTargetedVerifying || response.Work.Findings[0].Status != model.FindingFixed || !strings.Contains(raw, `"review_phase":"targeted"`) {
+		t.Fatalf("response=%#v raw=%s", response, raw)
+	}
+}
+
 func TestWorkReviewToolSchemaIsClosedAndCurrent(t *testing.T) {
 	for _, tool := range allTools() {
 		if tool.Name != "work_review" {
 			continue
 		}
 		lower := strings.ToLower(tool.Description)
-		if strings.Contains(lower, "unavailable") || !strings.Contains(lower, "certificate") || !strings.Contains(lower, "initial review") {
+		if strings.Contains(lower, "unavailable") || !strings.Contains(lower, "certificate") || !strings.Contains(lower, "initial") || !strings.Contains(lower, "targeted") {
 			t.Fatalf("description=%q", tool.Description)
 		}
 		schema := tool.InputSchema.(map[string]any)
@@ -187,6 +229,36 @@ func TestWorkReviewToolSchemaIsClosedAndCurrent(t *testing.T) {
 		}
 		if got := verdictProps["evidence_kind"].(map[string]any)["enum"]; !reflect.DeepEqual(got, []string{"file", "symbol", "codegraph_query"}) {
 			t.Fatalf("evidence enum=%v", got)
+		}
+		return
+	}
+	t.Fatal("work_review tool missing")
+}
+
+func TestWorkReviewToolSchema_TargetedParity(t *testing.T) {
+	for _, tool := range allTools() {
+		if tool.Name != "work_review" {
+			continue
+		}
+		schema := tool.InputSchema.(map[string]any)
+		properties := schema["properties"].(map[string]any)
+		if _, exists := properties["phase"]; exists {
+			t.Fatal("work_review schema exposes caller-selected phase")
+		}
+		resolution := properties["resolutions"].(map[string]any)
+		item := resolution["items"].(map[string]any)
+		if !slices.Equal(item["required"].([]string), []string{"finding_seq", "status", "evidence"}) {
+			t.Fatalf("resolution required = %v", item["required"])
+		}
+		props := item["properties"].(map[string]any)
+		if got := props["status"].(map[string]any)["enum"]; !reflect.DeepEqual(got, []string{"fixed", "invalid"}) {
+			t.Fatalf("resolution status enum = %v", got)
+		}
+		if _, ok := props["reason"]; !ok {
+			t.Fatal("resolution reason missing")
+		}
+		if len(workToolNames()) != 7 {
+			t.Fatalf("work tool count = %d", len(workToolNames()))
 		}
 		return
 	}
