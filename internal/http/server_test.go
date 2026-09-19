@@ -392,6 +392,73 @@ func TestConsolidate(t *testing.T) {
 	}
 }
 
+func TestHTTP_JSONBodyLimit(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+
+	const maxJSONBodyBytes = 10 * 1024 * 1024
+	client := &http.Client{}
+
+	t.Run("exactly 10 MiB reaches normal validation", func(t *testing.T) {
+		body := append([]byte(`{"title":"`), bytes.Repeat([]byte("x"), maxJSONBodyBytes-len(`{"title":"`)-len(`"}`))...)
+		body = append(body, []byte(`"}`)...)
+
+		resp, err := client.Post(srv.URL+"/v1/memories", "application/json", bytes.NewReader(body))
+		if err != nil {
+			t.Fatalf("POST /v1/memories: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("exactly 10 MiB status = %d, want %d", resp.StatusCode, http.StatusBadRequest)
+		}
+	})
+
+	t.Run("invalid JSON below limit returns bad request", func(t *testing.T) {
+		resp, err := client.Post(srv.URL+"/v1/memories", "application/json", bytes.NewBufferString(`{"title":`))
+		if err != nil {
+			t.Fatalf("POST /v1/memories: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("invalid JSON status = %d, want %d", resp.StatusCode, http.StatusBadRequest)
+		}
+	})
+
+	tooLarge := append([]byte(`"`), bytes.Repeat([]byte("x"), maxJSONBodyBytes-1)...)
+	tooLarge = append(tooLarge, '"')
+	for _, tc := range []struct {
+		name   string
+		method string
+		path   string
+	}{
+		{name: "post memories", method: http.MethodPost, path: "/v1/memories"},
+		{name: "patch memory", method: http.MethodPatch, path: "/v1/memories/memory-id"},
+		{name: "post session end", method: http.MethodPost, path: "/v1/sessions/end"},
+		{name: "post relate", method: http.MethodPost, path: "/v1/entities/relate"},
+		{name: "delete memory", method: http.MethodDelete, path: "/v1/memories/memory-id"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := http.NewRequestWithContext(context.Background(), tc.method, srv.URL+tc.path, bytes.NewReader(tooLarge))
+			if err != nil {
+				t.Fatalf("new request: %v", err)
+			}
+			req.Header.Set("Content-Type", "application/json")
+
+			resp, err := client.Do(req)
+			if err != nil {
+				t.Fatalf("%s %s: %v", tc.method, tc.path, err)
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode != http.StatusRequestEntityTooLarge {
+				t.Errorf("%s %s status = %d, want %d", tc.method, tc.path, resp.StatusCode, http.StatusRequestEntityTooLarge)
+			}
+		})
+	}
+}
+
 // TestHTTP_PostMemories_RuleCreated verifies that POSTing a valid rule body
 // returns HTTP 201 Created with the expected response fields.
 func TestHTTP_PostMemories_RuleCreated(t *testing.T) {

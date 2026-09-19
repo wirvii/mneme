@@ -146,6 +146,8 @@ func (s *Server) withLogging(next http.HandlerFunc) http.HandlerFunc {
 // Helpers
 // --------------------------------------------------------------------------
 
+const maxJSONBodyBytes = 10 * 1024 * 1024
+
 // extractID strips prefix from path and returns the remainder.
 // e.g. extractID("/v1/memories/019530a1-...", "/v1/memories/") → "019530a1-..."
 func extractID(path, prefix string) string {
@@ -198,10 +200,22 @@ func errorStatus(err error) (int, string) {
 	}
 }
 
+// limitJSONBody bounds JSON request bodies before a decoder reads them.
+func limitJSONBody(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
+}
+
 // decode decodes the JSON body of r into dst and returns false on error,
 // writing the appropriate error response to w.
 func decode(w http.ResponseWriter, r *http.Request, dst any) bool {
+	limitJSONBody(w, r)
+
 	if err := json.NewDecoder(r.Body).Decode(dst); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, "request_body_too_large", "request body exceeds 10 MiB")
+			return false
+		}
 		writeError(w, http.StatusBadRequest, "invalid_json", "request body is not valid JSON: "+err.Error())
 		return false
 	}
@@ -364,7 +378,14 @@ func (s *Server) handleForgetMemory(w http.ResponseWriter, r *http.Request, id s
 		Reason string `json:"reason"`
 	}
 	// Body is optional for DELETE; ignore parse errors.
-	_ = json.NewDecoder(r.Body).Decode(&body)
+	limitJSONBody(w, r)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, "request_body_too_large", "request body exceeds 10 MiB")
+			return
+		}
+	}
 
 	if err := s.svc.Forget(r.Context(), id, body.Reason); err != nil {
 		status, code := errorStatus(err)
