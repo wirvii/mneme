@@ -1,0 +1,197 @@
+package store
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/wirvii/mneme/internal/model"
+)
+
+func workInReview(t *testing.T, s *SDDStore, id string, status model.WorkStatus) {
+	t.Helper()
+	createTestWork(t, s, id)
+	if err := s.LockWork(context.Background(), id, "base"); err != nil {
+		t.Fatal(err)
+	}
+	if status == model.WorkStatusLocked {
+		return
+	}
+	if err := s.TransitionWork(context.Background(), id, model.WorkStatusLocked, model.WorkStatusImplementing, "b", ""); err != nil {
+		t.Fatal(err)
+	}
+	if status == model.WorkStatusImplementing {
+		return
+	}
+	if err := s.TransitionWork(context.Background(), id, model.WorkStatusImplementing, model.WorkStatusVerifying, "b", ""); err != nil {
+		t.Fatal(err)
+	}
+	if status == model.WorkStatusVerifying {
+		return
+	}
+	if err := s.TransitionWork(context.Background(), id, model.WorkStatusVerifying, model.WorkStatusCorrecting, "b", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.TransitionWork(context.Background(), id, model.WorkStatusCorrecting, model.WorkStatusTargetedVerifying, "b", ""); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestResolveFinding_BlockingCannotBeAccepted(t *testing.T) {
+	s := newTestSDDStore(t)
+	workInReview(t, s, "WORK-001", model.WorkStatusVerifying)
+	f := &model.WorkFinding{WorkID: "WORK-001", Category: model.FindingRegression, Severity: model.PriorityHigh, Description: "broke", Origin: model.FindingOriginReview, ReviewPhase: model.ReviewPhaseInitial}
+	if err := s.AddFinding(context.Background(), f); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ResolveFinding(context.Background(), f.ID, model.FindingAccepted, "human", "accept", ""); !errors.Is(err, model.ErrCannotAcceptBlockingFinding) {
+		t.Fatalf("got %v", err)
+	}
+	list, err := s.ListFindings(context.Background(), "WORK-001")
+	if err != nil || len(list) != 1 || list[0].Status != model.FindingOpen {
+		t.Fatalf("list=%v err=%v", list, err)
+	}
+}
+
+func TestCountOpenBlockingFindings_DerivesCategories(t *testing.T) {
+	s := newTestSDDStore(t)
+	workInReview(t, s, "WORK-001", model.WorkStatusVerifying)
+	for _, cat := range []model.FindingCategory{model.FindingContractViolation, model.FindingRegression, model.FindingArchitectureViolation, model.FindingDiscovery, model.FindingImprovement} {
+		f := &model.WorkFinding{WorkID: "WORK-001", Category: cat, Severity: model.PriorityMedium, Description: string(cat), Origin: model.FindingOriginReview, ReviewPhase: model.ReviewPhaseInitial}
+		if err := s.AddFinding(context.Background(), f); err != nil {
+			t.Fatal(err)
+		}
+	}
+	n, err := s.CountOpenBlockingFindings(context.Background(), "WORK-001")
+	if err != nil || n != 3 {
+		t.Fatalf("count=%d err=%v", n, err)
+	}
+}
+
+func TestInsertDeliveryCertificate_AtomicChecks(t *testing.T) {
+	s := newTestSDDStore(t)
+	workInReview(t, s, "WORK-001", model.WorkStatusVerifying)
+	_, err := s.db.Exec(`CREATE TRIGGER abort_second_delivery_check BEFORE INSERT ON delivery_checks WHEN NEW.seq=2 BEGIN SELECT RAISE(ABORT,'second'); END`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	cert := &model.DeliveryCertificate{Project: "p", WorkID: "WORK-001", ContractRevision: 1, ContractHash: "h", HeadSHA: "head", Verdict: model.DeliveryVerdictFail, StartedAt: now, FinishedAt: now}
+	err = s.InsertDeliveryCertificate(context.Background(), cert, []*model.DeliveryCheck{{Kind: "gate", Name: "build", Status: model.DeliveryCheckPass, Effect: model.DeliveryEffectBlocks}, {Kind: "gate", Name: "lint", Status: model.DeliveryCheckPass, Effect: model.DeliveryEffectBlocks}})
+	if err == nil {
+		t.Fatal("expected trigger error")
+	}
+	var n int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM delivery_certificates WHERE work_id='WORK-001'`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("certificates=%d err=%v", n, err)
+	}
+}
+
+func TestDeliveryCertificateRoundTrip(t *testing.T) {
+	s := newTestSDDStore(t)
+	workInReview(t, s, "WORK-001", model.WorkStatusVerifying)
+	now := time.Now().UTC()
+	cert := &model.DeliveryCertificate{Project: "p", WorkID: "WORK-001", ContractRevision: 1, ContractHash: "h", HeadSHA: "head", BaseSHA: "base", Verdict: model.DeliveryVerdictPass, Evidence: "e", StartedAt: now, FinishedAt: now, DurationMs: 12}
+	checks := []*model.DeliveryCheck{{Kind: "gate", Name: "build", Status: model.DeliveryCheckPass, Effect: model.DeliveryEffectBlocks}}
+	if err := s.InsertDeliveryCertificate(context.Background(), cert, checks); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetLatestDeliveryCertificate(context.Background(), "p", "WORK-001")
+	if err != nil || got.ID != cert.ID || got.Verdict != model.DeliveryVerdictPass {
+		t.Fatalf("got=%#v err=%v", got, err)
+	}
+	rows, err := s.ListDeliveryChecks(context.Background(), cert.ID)
+	if err != nil || len(rows) != 1 || rows[0].Seq != 1 {
+		t.Fatalf("rows=%v err=%v", rows, err)
+	}
+}
+
+func TestFindingResolutionVariantsAndTargetedPhase(t *testing.T) {
+	s := newTestSDDStore(t)
+	ctx := context.Background()
+	workInReview(t, s, "WORK-001", model.WorkStatusVerifying)
+	discovery := &model.WorkFinding{WorkID: "WORK-001", Category: model.FindingDiscovery, Severity: model.PriorityLow, Description: "note", Origin: model.FindingOriginHuman, ReviewPhase: model.ReviewPhaseInitial}
+	if err := s.AddFinding(ctx, discovery); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ResolveFinding(ctx, discovery.ID, model.FindingAccepted, "owner", "", ""); !errors.Is(err, model.ErrReasonRequired) {
+		t.Fatalf("accepted without reason=%v", err)
+	}
+	if err := s.ResolveFinding(ctx, discovery.ID, model.FindingAccepted, "owner", "not now", ""); err != nil {
+		t.Fatal(err)
+	}
+	backlog := &model.WorkFinding{WorkID: "WORK-001", Category: model.FindingImprovement, Severity: model.PriorityLow, Description: "later", Origin: model.FindingOriginReview, ReviewPhase: model.ReviewPhaseInitial}
+	if err := s.AddFinding(ctx, backlog); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ResolveFinding(ctx, backlog.ID, model.FindingBacklogged, "owner", "", ""); err == nil {
+		t.Fatal("backlogged without id accepted")
+	}
+	if err := s.ResolveFinding(ctx, backlog.ID, model.FindingBacklogged, "owner", "", "BL-999"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.GetLatestDeliveryCertificate(ctx, "p", "WORK-001"); !errors.Is(err, model.ErrNotFound) {
+		t.Fatalf("latest missing=%v", err)
+	}
+
+	workInReview(t, s, "WORK-002", model.WorkStatusTargetedVerifying)
+	targeted := &model.WorkFinding{WorkID: "WORK-002", Category: model.FindingRegression, Severity: model.PriorityHigh, Description: "new regression", Origin: model.FindingOriginReview, ReviewPhase: model.ReviewPhaseTargeted}
+	if err := s.AddFinding(ctx, targeted); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddFinding(ctx, &model.WorkFinding{WorkID: "WORK-002", Category: model.FindingDiscovery, Severity: model.PriorityLow, Description: "wrong phase", Origin: model.FindingOriginReview, ReviewPhase: model.ReviewPhaseInitial}); !errors.Is(err, model.ErrInvalidWorkTransition) {
+		t.Fatalf("wrong phase=%v", err)
+	}
+}
+
+func TestDeliveryStore_ValidationErrors(t *testing.T) {
+	s := newTestSDDStore(t)
+	ctx := context.Background()
+	workInReview(t, s, "WORK-001", model.WorkStatusVerifying)
+	if err := s.AddFinding(ctx, &model.WorkFinding{WorkID: "WORK-001", Category: "unknown", Severity: model.PriorityLow, Description: "x", Origin: model.FindingOriginReview, ReviewPhase: model.ReviewPhaseInitial}); !errors.Is(err, model.ErrInvalidContract) {
+		t.Errorf("invalid finding=%v", err)
+	}
+	if err := s.ResolveFinding(ctx, "missing", model.FindingFixed, "qa", "", ""); !errors.Is(err, model.ErrFindingNotFound) {
+		t.Errorf("missing finding=%v", err)
+	}
+	finding := &model.WorkFinding{WorkID: "WORK-001", Category: model.FindingRegression, Severity: model.PriorityHigh, Description: "x", Origin: model.FindingOriginReview, ReviewPhase: model.ReviewPhaseInitial}
+	if err := s.AddFinding(ctx, finding); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ResolveFinding(ctx, finding.ID, model.FindingFixed, "qa", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ResolveFinding(ctx, finding.ID, model.FindingFixed, "qa", "", ""); err == nil {
+		t.Error("resolved finding resolved twice")
+	}
+	badCert := &model.DeliveryCertificate{Project: "p", WorkID: "WORK-001", Verdict: "unknown"}
+	if err := s.InsertDeliveryCertificate(ctx, badCert, nil); !errors.Is(err, model.ErrInvalidContract) {
+		t.Errorf("invalid certificate=%v", err)
+	}
+	now := time.Now().UTC()
+	cert := &model.DeliveryCertificate{Project: "p", WorkID: "WORK-001", ContractRevision: 1, ContractHash: "h", HeadSHA: "head", Verdict: model.DeliveryVerdictPass, StartedAt: now, FinishedAt: now}
+	if err := s.InsertDeliveryCertificate(ctx, cert, []*model.DeliveryCheck{{Kind: "gate", Name: "x", Status: "unknown", Effect: model.DeliveryEffectBlocks}}); !errors.Is(err, model.ErrInvalidContract) {
+		t.Errorf("invalid check=%v", err)
+	}
+}
+
+func TestFindingStore_AdditionalValidationBranches(t *testing.T) {
+	s := newTestSDDStore(t)
+	ctx := context.Background()
+	missing := &model.WorkFinding{WorkID: "WORK-404", Category: model.FindingDiscovery, Severity: model.PriorityLow, Description: "x", Origin: model.FindingOriginReview, ReviewPhase: model.ReviewPhaseInitial}
+	if err := s.AddFinding(ctx, missing); !errors.Is(err, model.ErrWorkNotFound) {
+		t.Errorf("finding missing work=%v", err)
+	}
+	workInReview(t, s, "WORK-001", model.WorkStatusVerifying)
+	f := &model.WorkFinding{WorkID: "WORK-001", Category: model.FindingDiscovery, Severity: model.PriorityLow, Description: "x", Origin: model.FindingOriginReview, ReviewPhase: model.ReviewPhaseInitial}
+	if err := s.AddFinding(ctx, f); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ResolveFinding(ctx, f.ID, model.FindingOpen, "qa", "", ""); !errors.Is(err, model.ErrInvalidContract) {
+		t.Errorf("open resolution=%v", err)
+	}
+	if err := s.ResolveFinding(ctx, f.ID, model.FindingInvalid, "qa", "", ""); !errors.Is(err, model.ErrReasonRequired) {
+		t.Errorf("invalid without reason=%v", err)
+	}
+}

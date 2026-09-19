@@ -810,6 +810,9 @@ type Spec struct {
 	// multiple specs are in flight on the same branch.
 	BaseSHA string `json:"base_sha,omitempty"`
 
+	// ExecutionModel selects the execution engine while legacy preserves every pre-delivery-v2 spec.
+	ExecutionModel ExecutionModel `json:"-"`
+
 	// AssignedAgents lists which agents are currently assigned.
 	AssignedAgents []string `json:"assigned_agents,omitempty"`
 

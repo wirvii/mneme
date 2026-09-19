@@ -150,7 +150,7 @@ const specListWhereStatus = specListWhere + ` AND status = ?`
 const specListSelect = `
 	SELECT id, title, status, project, COALESCE(backlog_id, ''),
 	       lane, scope, COALESCE(base_sha, ''), assigned_agents, files_changed,
-	       created_at, updated_at, uuid, previous_ids
+	       created_at, updated_at, uuid, previous_ids, execution_model
 	FROM specs`
 
 const specCountSelect = `SELECT COUNT(*) FROM specs`
@@ -567,7 +567,7 @@ func (s *SDDStore) CreateSpec(ctx context.Context, spec *model.Spec) error {
 func (s *SDDStore) GetSpec(ctx context.Context, id string) (*model.Spec, error) {
 	const q = `
 		SELECT id, title, status, project, COALESCE(backlog_id, ''),
-		       lane, scope, COALESCE(base_sha, ''), assigned_agents, files_changed, created_at, updated_at, uuid, previous_ids
+		       lane, scope, COALESCE(base_sha, ''), assigned_agents, files_changed, created_at, updated_at, uuid, previous_ids, execution_model
 		FROM specs WHERE id = ?`
 
 	row := s.db.QueryRowContext(ctx, q, id)
@@ -677,6 +677,21 @@ func (s *SDDStore) UpdateSpecStatus(ctx context.Context, specID string, from, to
 	}
 
 	return tx.Commit()
+}
+
+// UpdateSpecExecutionModel selects the execution engine without changing the spec lifecycle.
+func (s *SDDStore) UpdateSpecExecutionModel(ctx context.Context, specID string, executionModel model.ExecutionModel) error {
+	if !executionModel.Valid() {
+		return fmt.Errorf("store: update spec execution model: %w", model.ErrInvalidContract)
+	}
+	res, err := s.db.ExecContext(ctx, `UPDATE specs SET execution_model = ?, updated_at = ? WHERE id = ?`, executionModel, time.Now().UTC().Format(time.RFC3339Nano), specID)
+	if err != nil {
+		return fmt.Errorf("store: update spec execution model: %w", err)
+	}
+	if !oneRow(res) {
+		return model.ErrSpecNotFound
+	}
+	return nil
 }
 
 // UpdateSpecFields updates the mutable non-status fields of a spec
@@ -916,7 +931,7 @@ func (s *SDDStore) RecentlyCompletedSpecs(ctx context.Context, project string, n
 	// implementation correction — noted in changes.md).
 	const q = `
 		SELECT id, title, status, project, COALESCE(backlog_id, ''),
-		       lane, scope, COALESCE(base_sha, ''), assigned_agents, files_changed, created_at, updated_at, uuid, previous_ids
+		       lane, scope, COALESCE(base_sha, ''), assigned_agents, files_changed, created_at, updated_at, uuid, previous_ids, execution_model
 		FROM specs WHERE project = ? AND status = 'done'
 		ORDER BY updated_at DESC LIMIT ?`
 
@@ -1276,7 +1291,7 @@ func collectBacklogItems(rows *sql.Rows) ([]*model.BacklogItem, []model.Unreadab
 // scanSpec scans a single row into a Spec.
 // The SELECT must include columns in this order: id, title, status, project,
 // backlog_id, lane, scope, base_sha, assigned_agents, files_changed,
-// created_at, updated_at, uuid, previous_ids.
+// created_at, updated_at, uuid, previous_ids, execution_model.
 func scanSpec(row *sql.Row) (*model.Spec, error) {
 	spec := &model.Spec{}
 	var createdStr, updatedStr, previousIDsRaw string
@@ -1286,7 +1301,7 @@ func scanSpec(row *sql.Row) (*model.Spec, error) {
 		&spec.Project, &spec.BacklogID,
 		(*string)(&spec.Lane), &spec.Scope, &spec.BaseSHA,
 		&agentsJSON, &filesJSON,
-		&createdStr, &updatedStr, &spec.UUID, &previousIDsRaw,
+		&createdStr, &updatedStr, &spec.UUID, &previousIDsRaw, (*string)(&spec.ExecutionModel),
 	)
 	if err != nil {
 		return nil, err
@@ -1329,7 +1344,7 @@ func collectSpecs(rows *sql.Rows) ([]*model.Spec, []model.UnreadableRow, error) 
 			&spec.Project, &spec.BacklogID,
 			(*string)(&spec.Lane), &spec.Scope, &spec.BaseSHA,
 			&agentsJSON, &filesJSON,
-			&createdStr, &updatedStr, &spec.UUID, &previousIDsRaw,
+			&createdStr, &updatedStr, &spec.UUID, &previousIDsRaw, (*string)(&spec.ExecutionModel),
 		); err != nil {
 			return nil, nil, fmt.Errorf("scan spec: %w", err)
 		}

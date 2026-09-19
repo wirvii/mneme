@@ -180,6 +180,30 @@ var ErrAuditFailed = errors.New("lane audit failed: threshold violations detecte
 // are auditable decisions that must be documented.
 var ErrReasonRequired = errors.New("reason is required")
 
+// ErrWorkNotFound means a work identifier was read successfully but matched no contract.
+var ErrWorkNotFound = errors.New("work not found")
+
+// ErrInvalidWorkTransition means the delivery lifecycle does not declare the requested edge.
+var ErrInvalidWorkTransition = errors.New("invalid work transition")
+
+// ErrContractNotLocked means an operation requires the immutable contract boundary.
+var ErrContractNotLocked = errors.New("work contract is not locked")
+
+// ErrCorrectionBudgetExhausted prevents an automatic correction cycle beyond the frozen per-work limit.
+var ErrCorrectionBudgetExhausted = errors.New("work correction budget exhausted")
+
+// ErrCannotAcceptBlockingFinding prevents human acceptance from bypassing a blocking category.
+var ErrCannotAcceptBlockingFinding = errors.New("cannot accept blocking finding")
+
+// ErrFindingNotFound means a finding lookup matched no persisted row.
+var ErrFindingNotFound = errors.New("work finding not found")
+
+// ErrEvidenceNotApplicable rejects red-test evidence for a non-TDD contract.
+var ErrEvidenceNotApplicable = errors.New("red-test evidence is not applicable")
+
+// ErrInvalidContract wraps the precise field reason for malformed work contracts.
+var ErrInvalidContract = errors.New("invalid work contract")
+
 // --- Skill sentinel errors (SPEC-037) ---
 
 // ErrSkillNotFound is returned when a requested skill directory does not exist
