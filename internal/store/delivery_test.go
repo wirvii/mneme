@@ -232,12 +232,13 @@ func TestDeliveryCertificateRoundTrip(t *testing.T) {
 	cert, _ := deliveryEvaluationFixture(t, s, "WORK-001")
 	cert.Evidence = "e"
 	cert.DurationMs = 12
+	cert.Dirty = true
 	checks := []*model.DeliveryCheck{{Kind: "gate", Name: "build", Status: model.DeliveryCheckPass, Effect: model.DeliveryEffectBlocks}}
 	if err := s.InsertDeliveryCertificate(context.Background(), cert, checks); err != nil {
 		t.Fatal(err)
 	}
 	got, err := s.GetLatestDeliveryCertificate(context.Background(), cert.Project, "WORK-001")
-	if err != nil || got.ID != cert.ID || got.Verdict != model.DeliveryVerdictPass {
+	if err != nil || got.ID != cert.ID || got.Verdict != model.DeliveryVerdictPass || !got.Dirty {
 		t.Fatalf("got=%#v err=%v", got, err)
 	}
 	rows, err := s.ListDeliveryChecks(context.Background(), cert.ID)
@@ -312,6 +313,15 @@ func TestDeliveryStore_ValidationErrors(t *testing.T) {
 	cert := &model.DeliveryCertificate{Project: "p", WorkID: "WORK-001", ContractRevision: 1, ContractHash: "h", HeadSHA: "head", Verdict: model.DeliveryVerdictPass, StartedAt: now, FinishedAt: now}
 	if err := s.InsertDeliveryCertificate(ctx, cert, []*model.DeliveryCheck{{Kind: "gate", Name: "x", Status: "unknown", Effect: model.DeliveryEffectBlocks}}); !errors.Is(err, model.ErrInvalidContract) {
 		t.Errorf("invalid check=%v", err)
+	}
+	invalidObservation := []model.CriterionObservation{{CriterionID: "", Status: model.CriterionPass, CheckedAt: now}}
+	if err := s.InsertDeliveryEvaluation(ctx, cert, nil, invalidObservation); !errors.Is(err, model.ErrInvalidContract) {
+		t.Errorf("invalid observation=%v", err)
+	}
+	missingCert := *cert
+	missingCert.WorkID = "WORK-404"
+	if err := s.InsertDeliveryEvaluation(ctx, &missingCert, nil, nil); !errors.Is(err, model.ErrWorkNotFound) {
+		t.Errorf("missing work=%v", err)
 	}
 }
 
