@@ -47,6 +47,31 @@ func TestRunHookEnforceDelegation_RoleScopedTools_Table(t *testing.T) {
 			wantExit: 0,
 		},
 		{
+			name:     "qa-tester allowed work_review",
+			payload:  `{"agent_id":"x","agent_type":"qa-tester","tool_name":"mcp__mneme__work_review","tool_input":{"id":"WORK-001"}}`,
+			wantExit: 0,
+		},
+		{
+			name:     "backend denied work_review",
+			payload:  `{"agent_id":"x","agent_type":"backend","tool_name":"mcp__mneme__work_review","tool_input":{"id":"WORK-001"}}`,
+			wantExit: 2,
+		},
+		{
+			name:     "architect denied work_review",
+			payload:  `{"agent_id":"x","agent_type":"architect","tool_name":"mcp__mneme__work_review","tool_input":{"id":"WORK-001"}}`,
+			wantExit: 2,
+		},
+		{
+			name:     "unresolved role denied work_review",
+			payload:  `{"agent_id":"x","tool_name":"mcp__mneme__work_review","tool_input":{"id":"WORK-001"}}`,
+			wantExit: 2,
+		},
+		{
+			name:     "orchestrator allowed work_review",
+			payload:  `{"tool_name":"mcp__mneme__work_review","tool_input":{"id":"WORK-001"}}`,
+			wantExit: 0,
+		},
+		{
 			name:     "backend allowed an unrelated tool (quality_sign scoping does not leak)",
 			payload:  `{"agent_id":"x","agent_type":"backend","tool_name":"mcp__mneme__quality_ack","tool_input":{"cert_id":"c1"}}`,
 			wantExit: 2, // quality_ack is a lifecycleTools entry (SPEC-115 D11) — a DIFFERENT rule, still denied to every subagent regardless of role.
@@ -84,21 +109,23 @@ func TestRunHookEnforceDelegation_RoleScopedBlock_UnresolvedNamesFailClosed(t *t
 	if !strings.Contains(stderr, "falla CERRADA") {
 		t.Errorf("expected the unresolved-role message to name the fail-closed posture, got: %q", stderr)
 	}
-	if !strings.Contains(stderr, "mneme quality sign") {
-		t.Errorf("expected the unresolved-role message to name the CLI escape hatch, got: %q", stderr)
+	if !strings.Contains(stderr, "mcp__mneme__quality_sign") {
+		t.Errorf("expected the unresolved-role message to name the blocked tool, got: %q", stderr)
 	}
 }
 
-// TestRoleScopedTools_ExactlyOneEntry anchors the map's SIZE, the same
+// TestRoleScopedTools_InventoryIsExact anchors the map's SIZE, the same
 // vacuous-pass guard TestLifecycleTools_ExactlyThreeMcpPrefixedEntries
 // already establishes for lifecycleTools: a silent rename or removal of
 // quality_sign from the map is not otherwise visible.
-func TestRoleScopedTools_ExactlyOneEntry(t *testing.T) {
-	if len(roleScopedTools) != 1 {
-		t.Fatalf("len(roleScopedTools) = %d, want 1: %v", len(roleScopedTools), roleScopedTools)
+func TestRoleScopedTools_InventoryIsExact(t *testing.T) {
+	if len(roleScopedTools) != 2 {
+		t.Fatalf("len(roleScopedTools) = %d, want 2: %v", len(roleScopedTools), roleScopedTools)
 	}
-	role, ok := roleScopedTools["mcp__mneme__quality_sign"]
-	if !ok || role != "qa-tester" {
-		t.Errorf("roleScopedTools[mcp__mneme__quality_sign] = (%q, %v), want (qa-tester, true)", role, ok)
+	for _, tool := range []string{"mcp__mneme__quality_sign", "mcp__mneme__work_review"} {
+		role, ok := roleScopedTools[tool]
+		if !ok || role != "qa-tester" {
+			t.Errorf("roleScopedTools[%s] = (%q, %v), want (qa-tester, true)", tool, role, ok)
+		}
 	}
 }

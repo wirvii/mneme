@@ -234,6 +234,9 @@ func TestLifecycleTools_ExactlyNineMcpPrefixedEntries(t *testing.T) {
 }
 
 func TestLifecycleToolsWorkContractAuthority(t *testing.T) {
+	if lifecycleTools["mcp__mneme__work_review"] {
+		t.Fatal("work_review must stay outside lifecycleTools so qa-tester can invoke it")
+	}
 	tests := []struct {
 		tool     string
 		wantExit int
@@ -248,7 +251,11 @@ func TestLifecycleToolsWorkContractAuthority(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.tool, func(t *testing.T) {
-			payload := fmt.Sprintf(`{"agent_id":"x","agent_type":"backend","tool_name":"mcp__mneme__%s"}`, tt.tool)
+			role := "backend"
+			if tt.tool == "work_review" {
+				role = "qa-tester"
+			}
+			payload := fmt.Sprintf(`{"agent_id":"x","agent_type":"%s","tool_name":"mcp__mneme__%s"}`, role, tt.tool)
 			exitCode, stderr := runHookLifecycleSubprocess(t, payload)
 			if exitCode != tt.wantExit {
 				t.Fatalf("exit code = %d, want %d (stderr: %s)", exitCode, tt.wantExit, stderr)

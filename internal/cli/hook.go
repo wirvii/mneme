@@ -2040,6 +2040,7 @@ var lifecycleTools = map[string]bool{
 // block for every subagent.
 var roleScopedTools = map[string]string{
 	"mcp__mneme__quality_sign": "qa-tester",
+	"mcp__mneme__work_review":  "qa-tester",
 }
 
 // roleScopedBlockMessage is the message printed when a subagent's
@@ -2047,14 +2048,14 @@ var roleScopedTools = map[string]string{
 // role and the CLI escape hatch (the human's own channel, which never
 // passes through this hook) so a legitimately blocked subagent is not
 // left stuck with no path forward.
-const roleScopedBlockMessage = "⛔ mneme: %s está restringido al rol %q. Este subagente no puede invocarlo. El orquestador (o un humano vía `mneme quality sign`) puede hacerlo en su lugar.\n"
+const roleScopedBlockMessage = "⛔ mneme: %s está restringido al rol %q. Este subagente no puede invocarlo. El orquestador puede hacerlo en su lugar.\n"
 
 // roleScopedUnresolvedMessage is printed when the role-scoped guard fails
 // CLOSED because the caller's role could not be resolved at all
 // (RoleSource=="unresolved", D2) — distinct from roleScopedBlockMessage's
 // "wrong role" case: here mneme does not even know WHO is calling, and a
 // firma cuyo firmante no se puede identificar es peor que no tener firma.
-const roleScopedUnresolvedMessage = "⛔ mneme: %s exige un rol resuelto (agent_type) y este payload no lo trae — la regla falla CERRADA a propósito (D11), rompiendo la postura fail-open de SPEC-086 solo para esta herramienta. Usa el CLI (`mneme quality sign`) como humano.\n"
+const roleScopedUnresolvedMessage = "⛔ mneme: %s exige un rol resuelto (agent_type) y este payload no lo trae — la regla falla CERRADA a propósito para esta herramienta. El orquestador puede ejecutar la operación.\n"
 
 // printRoleScopedBlock writes the SPEC-117 D11 role-scoped denial message
 // to w — the "wrong role" message when the role resolved but does not
@@ -2209,11 +2210,11 @@ func runHookEnforceDelegation(r io.Reader, errW io.Writer) error {
 
 	// SPEC-117 D11: a SECOND, independent guard, evaluated right after
 	// lifecycleTools with the same shape (before the delegationTools
-	// filter — quality_sign is neither a file tool nor Bash, so that
+	// filter — these MCP tools are neither file tools nor Bash, so that
 	// filter would otherwise short-circuit past it entirely). Unlike
 	// EVERY other subagent rule in this file, this one fails CLOSED when
 	// the role cannot be resolved: a signing tool whose caller cannot be
-	// identified is worse than no signing tool at all.
+	// identified cannot supply an independent attestation or review.
 	if identity.IsSubagent {
 		if requiredRole, scoped := roleScopedTools[input.ToolName]; scoped {
 			unresolved := identity.RoleSource == "unresolved"
