@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/wirvii/mneme/internal/config"
 	"github.com/wirvii/mneme/internal/model"
@@ -528,5 +529,117 @@ func TestWorkLockIsOnlyGitInvokingOperation(t *testing.T) {
 	logged, err := os.ReadFile(logPath)
 	if err != nil || string(logged) != "rev-parse HEAD\n" {
 		t.Fatalf("git calls = %q, err=%v", logged, err)
+	}
+}
+
+func TestWorkBeginRejectsInvalidSourcesAndCriteria(t *testing.T) {
+	svc := deliveryWorkService(t)
+	ctx := context.Background()
+	base := model.WorkBeginRequest{
+		Goal: "invalid", Scope: []string{"internal/**"},
+		Verification: []model.VerificationKind{model.VerificationBuild},
+	}
+
+	unknownWorkflow := base
+	unknownWorkflow.Workflow = "unknown"
+	if _, err := svc.WorkBegin(ctx, unknownWorkflow); !errors.Is(err, model.ErrInvalidContract) {
+		t.Fatalf("unknown workflow error = %v, want ErrInvalidContract", err)
+	}
+
+	invalidCriterion := base
+	invalidCriterion.Criteria = []model.WorkCriterionInput{{Key: "broken", Declaration: "[[criterion]"}}
+	if _, err := svc.WorkBegin(ctx, invalidCriterion); !errors.Is(err, model.ErrInvalidCriteria) {
+		t.Fatalf("invalid criterion error = %v, want ErrInvalidCriteria", err)
+	}
+
+	missingSpec := base
+	missingSpec.Workflow = config.WorkflowDefaultSDD
+	missingSpec.SpecID = "SPEC-404"
+	if _, err := svc.WorkBegin(ctx, missingSpec); !errors.Is(err, model.ErrSpecNotFound) {
+		t.Fatalf("missing source spec error = %v, want ErrSpecNotFound", err)
+	}
+}
+
+func TestWorkOperationsRejectMissingInputsAndUnknownWork(t *testing.T) {
+	svc := deliveryWorkService(t)
+	ctx := context.Background()
+	seedServiceWork(t, svc, "WORK-001")
+
+	if _, err := svc.WorkGet(ctx, model.WorkGetRequest{}); !errors.Is(err, model.ErrInvalidContract) {
+		t.Fatalf("empty get error = %v, want ErrInvalidContract", err)
+	}
+	if _, err := svc.WorkGet(ctx, model.WorkGetRequest{ID: "WORK-404"}); !errors.Is(err, model.ErrWorkNotFound) {
+		t.Fatalf("unknown get error = %v, want ErrWorkNotFound", err)
+	}
+	if _, err := svc.WorkLock(ctx, model.WorkLockRequest{}); !errors.Is(err, model.ErrInvalidContract) {
+		t.Fatalf("empty lock error = %v, want ErrInvalidContract", err)
+	}
+	if _, err := svc.WorkLock(ctx, model.WorkLockRequest{ID: "WORK-001"}); !errors.Is(err, model.ErrInvalidContract) {
+		t.Fatalf("lock without repository error = %v, want ErrInvalidContract", err)
+	}
+
+	repo, _ := initWorkGitRepo(t)
+	svc.WithRepoDir(repo)
+	if _, err := svc.WorkLock(ctx, model.WorkLockRequest{ID: "WORK-404"}); !errors.Is(err, model.ErrWorkNotFound) {
+		t.Fatalf("unknown lock error = %v, want ErrWorkNotFound", err)
+	}
+
+	if _, err := svc.WorkAmend(ctx, model.WorkAmendRequest{}); !errors.Is(err, model.ErrInvalidContract) {
+		t.Fatalf("empty amend error = %v, want ErrInvalidContract", err)
+	}
+	invalidCriterion := validWorkAmendRequest("WORK-404")
+	invalidCriterion.Criteria = []model.WorkCriterionInput{{Key: "broken", Declaration: "[[criterion]"}}
+	if _, err := svc.WorkAmend(ctx, invalidCriterion); !errors.Is(err, model.ErrInvalidCriteria) {
+		t.Fatalf("invalid amend criterion error = %v, want ErrInvalidCriteria", err)
+	}
+	missingAcceptance := validWorkAmendRequest("WORK-404")
+	missingAcceptance.Verification = []model.VerificationKind{model.VerificationAcceptance}
+	if _, err := svc.WorkAmend(ctx, missingAcceptance); !errors.Is(err, model.ErrInvalidContract) {
+		t.Fatalf("amend without acceptance criteria error = %v, want ErrInvalidContract", err)
+	}
+	if _, err := svc.WorkAmend(ctx, validWorkAmendRequest("WORK-404")); !errors.Is(err, model.ErrWorkNotFound) {
+		t.Fatalf("unknown amend error = %v, want ErrWorkNotFound", err)
+	}
+
+	for operation, call := range map[string]func() error{
+		"review":   func() error { _, err := svc.WorkReview(ctx, model.WorkActionRequest{ID: "WORK-404"}); return err },
+		"verify":   func() error { _, err := svc.WorkVerify(ctx, model.WorkActionRequest{ID: "WORK-404"}); return err },
+		"complete": func() error { _, err := svc.WorkComplete(ctx, model.WorkActionRequest{ID: "WORK-404"}); return err },
+	} {
+		if err := call(); !errors.Is(err, model.ErrWorkNotFound) {
+			t.Errorf("unknown %s error = %v, want ErrWorkNotFound", operation, err)
+		}
+	}
+}
+
+func TestWorkGetReturnsDefensiveCopyOfRedTestEvidence(t *testing.T) {
+	svc := deliveryWorkService(t)
+	ctx := context.Background()
+	seedServiceWork(t, svc, "WORK-001")
+	if err := svc.store.LockWorkAndStart(ctx, "WORK-001", "base", "coordinator"); err != nil {
+		t.Fatal(err)
+	}
+	evidence := model.RedTestEvidence{
+		Command: []string{"go", "test", "./internal/service"}, ExitCode: 1,
+		OutputTail: "expected red", CommitSHA: "deadbeef", TakenAt: time.Date(2026, 9, 19, 7, 0, 0, 0, time.UTC),
+	}
+	if err := svc.store.SetRedTestEvidence(ctx, "WORK-001", evidence); err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := svc.WorkGet(ctx, model.WorkGetRequest{ID: "WORK-001"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Contract.DevEvidence == nil || !reflect.DeepEqual(first.Contract.DevEvidence.Command, evidence.Command) || first.Contract.DevEvidence.OutputTail != evidence.OutputTail {
+		t.Fatalf("public evidence = %#v", first.Contract.DevEvidence)
+	}
+	first.Contract.DevEvidence.Command[0] = "changed"
+	second, err := svc.WorkGet(ctx, model.WorkGetRequest{ID: "WORK-001"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Contract.DevEvidence.Command[0] != "go" {
+		t.Fatalf("response mutation escaped into persistence: %#v", second.Contract.DevEvidence)
 	}
 }
