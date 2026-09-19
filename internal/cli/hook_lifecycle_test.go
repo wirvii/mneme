@@ -213,7 +213,7 @@ func TestRunHookEnforceDelegation_LifecycleBlock_MentionsRegenCommand(t *testing
 	}
 }
 
-// TestLifecycleTools_ExactlyFiveMcpPrefixedEntries is the G5 anchor
+// TestLifecycleTools_ExactlyNineMcpPrefixedEntries is the G5 anchor
 // (SPEC-115 P11 plan, widened by SPEC-125, widened again by SPEC-131 D58):
 // the negative rows above ("quality_verify"/"quality_status" allowed)
 // would pass VACUOUSLY if either tool were renamed or stopped existing —
@@ -221,14 +221,41 @@ func TestRunHookEnforceDelegation_LifecycleBlock_MentionsRegenCommand(t *testing
 // just membership) makes a silent rename visible: exactly 5 entries
 // (spec_advance, spec_quick, quality_ack, backlog_archive, sdd_import),
 // every one an "mcp__mneme__"-prefixed name.
-func TestLifecycleTools_ExactlyFiveMcpPrefixedEntries(t *testing.T) {
-	if len(lifecycleTools) != 5 {
-		t.Fatalf("len(lifecycleTools) = %d, want 5: %v", len(lifecycleTools), lifecycleTools)
+func TestLifecycleTools_ExactlyNineMcpPrefixedEntries(t *testing.T) {
+	if len(lifecycleTools) != 9 {
+		t.Fatalf("len(lifecycleTools) = %d, want 9: %v", len(lifecycleTools), lifecycleTools)
 	}
 	for tool := range lifecycleTools {
 		if !strings.HasPrefix(tool, "mcp__mneme__") {
 			t.Errorf("lifecycleTools key %q does not start with mcp__mneme__", tool)
 		}
+	}
+}
+
+func TestLifecycleTools_WorkAuthority(t *testing.T) {
+	tests := []struct {
+		tool     string
+		wantExit int
+	}{
+		{tool: "work_begin", wantExit: 2},
+		{tool: "work_lock", wantExit: 2},
+		{tool: "work_amend", wantExit: 2},
+		{tool: "work_complete", wantExit: 2},
+		{tool: "work_get", wantExit: 0},
+		{tool: "work_review", wantExit: 0},
+		{tool: "work_verify", wantExit: 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.tool, func(t *testing.T) {
+			payload := fmt.Sprintf(`{"agent_id":"x","agent_type":"backend","tool_name":"mcp__mneme__%s"}`, tt.tool)
+			exitCode, stderr := runHookLifecycleSubprocess(t, payload)
+			if exitCode != tt.wantExit {
+				t.Fatalf("exit code = %d, want %d (stderr: %s)", exitCode, tt.wantExit, stderr)
+			}
+			if tt.wantExit == 2 && !strings.Contains(stderr, "el coordinador ejecuta") {
+				t.Fatalf("work authority message = %q", stderr)
+			}
+		})
 	}
 }
 
