@@ -2,6 +2,7 @@ package service_test
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"testing"
 
@@ -357,10 +358,10 @@ func TestService_Save_RuleValidation(t *testing.T) {
 	ctx := context.Background()
 
 	tests := []struct {
-		name      string
-		req       model.SaveRequest
-		wantErr   error
-		wantOK    bool
+		name    string
+		req     model.SaveRequest
+		wantErr error
+		wantOK  bool
 	}{
 		{
 			name: "rule with valid applies_to and severity",
@@ -568,6 +569,85 @@ func TestListRules_AllScopes(t *testing.T) {
 	}
 	if len(rules) != 3 {
 		t.Errorf("got %d rules, want 3", len(rules))
+	}
+}
+
+// TestRuleRemove_LogicalDeleteParity proves that project and global rules use
+// the same logical-delete path: the row remains physically present with a
+// deleted_at value, while active reads no longer return it.
+func TestRuleRemove_LogicalDeleteParity(t *testing.T) {
+	projectDB, err := db.OpenMemory()
+	if err != nil {
+		t.Fatalf("open project db: %v", err)
+	}
+	globalDB, err := db.OpenMemory()
+	if err != nil {
+		t.Fatalf("open global db: %v", err)
+	}
+	t.Cleanup(func() { projectDB.Close(); globalDB.Close() })
+
+	svc := service.NewMemoryService(
+		store.NewMemoryStore(projectDB),
+		store.NewMemoryStore(globalDB),
+		config.Default(),
+		"test/project",
+		embed.NopEmbedder{},
+	)
+	ctx := context.Background()
+
+	for _, tc := range []struct {
+		name  string
+		scope model.Scope
+		db    *db.DB
+	}{
+		{name: "project", scope: model.ScopeProject, db: projectDB},
+		{name: "global", scope: model.ScopeGlobal, db: globalDB},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resp, saveErr := svc.Save(ctx, model.SaveRequest{
+				Title:     tc.name + " removal rule",
+				Content:   "rule content",
+				Type:      model.TypeRule,
+				Scope:     tc.scope,
+				AppliesTo: []string{"**"},
+			})
+			if saveErr != nil {
+				t.Fatalf("Save: %v", saveErr)
+			}
+
+			if removeErr := svc.RemoveRule(ctx, resp.ID); removeErr != nil {
+				t.Fatalf("RemoveRule: %v", removeErr)
+			}
+
+			var deletedAt sql.NullString
+			if queryErr := tc.db.QueryRowContext(ctx,
+				"SELECT deleted_at FROM memories WHERE id = ?", resp.ID,
+			).Scan(&deletedAt); queryErr != nil {
+				t.Fatalf("query retained row: %v", queryErr)
+			}
+			if !deletedAt.Valid || deletedAt.String == "" {
+				t.Fatal("deleted_at is empty: rule was not logically deleted")
+			}
+
+			if _, getErr := svc.Get(ctx, resp.ID); !errors.Is(getErr, model.ErrNotFound) {
+				t.Fatalf("Get after RemoveRule error = %v, want ErrNotFound", getErr)
+			}
+		})
+	}
+
+	nonRule, err := svc.Save(ctx, model.SaveRequest{
+		Title:   "ordinary memory",
+		Content: "must remain active",
+		Type:    model.TypeDiscovery,
+	})
+	if err != nil {
+		t.Fatalf("Save non-rule: %v", err)
+	}
+	if err := svc.RemoveRule(ctx, nonRule.ID); !errors.Is(err, model.ErrInvalidType) {
+		t.Fatalf("RemoveRule(non-rule) error = %v, want ErrInvalidType", err)
+	}
+	if _, err := svc.Get(ctx, nonRule.ID); err != nil {
+		t.Fatalf("non-rule must remain active: %v", err)
 	}
 }
 

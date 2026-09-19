@@ -68,8 +68,8 @@ func TestWorkToolsRegisteredAndDispatched(t *testing.T) {
 	if got := workToolNames(); !mapsEqual(got, want) {
 		t.Fatalf("work tools = %v, want %v", got, want)
 	}
-	if len(allTools()) != 97 {
-		t.Fatalf("tool count = %d, want 97", len(allTools()))
+	if len(allTools()) != 98 {
+		t.Fatalf("tool count = %d, want 98", len(allTools()))
 	}
 	h, _, _ := newWorkTestHandlers(t)
 	for name := range want {

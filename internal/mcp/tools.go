@@ -423,6 +423,20 @@ func allTools() []ToolDefinition {
 			},
 		},
 		{
+			Name:        "rule_remove",
+			Description: "Logically delete a rule by ID. The row remains stored with deleted_at set and no longer appears in active rule reads or hook enforcement.",
+			InputSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"id"},
+				"properties": map[string]any{
+					"id": map[string]any{
+						"type":        "string",
+						"description": "UUIDv7 of the rule to remove.",
+					},
+				},
+			},
+		},
+		{
 			Name:        "mem_promote",
 			Description: "Mark a memory as team-curated (shared=2) and persist it in the database. Materializes it to the shared git vault immediately when team-memory is active. Idempotent.",
 			InputSchema: map[string]any{

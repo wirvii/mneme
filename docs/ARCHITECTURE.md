@@ -174,7 +174,7 @@ internal/
   frontmatter/          -- surgical YAML frontmatter editor for agent .md files;
                            fixes known keys (name, description, model, tools,
                            permissionMode), preserves every other byte verbatim
-  mcp/                  -- MCP server (JSON-RPC 2.0 over stdio, 97 tools)
+  mcp/                  -- MCP server (JSON-RPC 2.0 over stdio, 98 tools)
   http/                 -- REST API (stdlib net/http, 10 endpoints under /v1/)
   cli/                  -- Cobra commands (44 registered; 46 visible with Cobra help/completion)
   install/              -- agent installer: MCP config, hooks, operating manual,
@@ -685,11 +685,12 @@ mneme sync import backup.manifest.tar.gz   # auto-detects format
 
 ### MCP (primary) -- `mneme mcp`
 
-JSON-RPC 2.0 over stdio. ProtocolVersion `2024-11-05`. 97 tools with JSON schemas, grouped by family:
+JSON-RPC 2.0 over stdio. ProtocolVersion `2024-11-05`. 98 tools with JSON schemas, grouped by family:
 
 | Group | Count |
 |-------|-------|
 | **Memory** (`mem_*`, incl. `mem_promote`) | 15 |
+| **Rule removal** (`rule_*`) | 1 |
 | **Backlog** (`backlog_*`) | 6 |
 | **Spec** (`spec_*`, incl. `spec_quick`/`spec_reject`) | 9 |
 | **Lane** (`lane_*`) | 5 |
@@ -1110,4 +1111,4 @@ this interacts with the write-through materialization path itself.
 
 ---
 
-*Originally written 2026-04-30 for EPIC-1 through EPIC-6 (SPEC-001 through SPEC-026); updated through schema v22 / 97 MCP tools / 44 mneme-registered CLI commands (46 visible with Cobra), including SDD+lanes, delivery-v2 WORK, CodeGraph, Skills, Models, Conflicts, per-project subagents, Team Memory, profiles/scaffolds, quality evidence, and local speech. HTTP remains at 10 routes without SDD or delivery-v2. See [CHANGELOG.md](../CHANGELOG.md) for the full release history.*
+*Originally written 2026-04-30 for EPIC-1 through EPIC-6 (SPEC-001 through SPEC-026); updated through schema v22 / 98 MCP tools / 44 mneme-registered CLI commands (46 visible with Cobra), including logical rule removal, SDD+lanes, delivery-v2 WORK, CodeGraph, Skills, Models, Conflicts, per-project subagents, Team Memory, profiles/scaffolds, quality evidence, and local speech. HTTP remains at 10 routes without SDD or delivery-v2. See [CHANGELOG.md](../CHANGELOG.md) for the full release history.*

@@ -470,6 +470,27 @@ func (svc *MemoryService) Forget(ctx context.Context, id string, reason string) 
 	return nil
 }
 
+// RemoveRule logically deletes an active rule from whichever store owns it.
+// The row remains in SQLite with deleted_at set so its history is preserved,
+// while every active-rule read path stops returning it.
+func (svc *MemoryService) RemoveRule(ctx context.Context, id string) error {
+	m, targetStore, err := svc.getFromEitherStore(ctx, id)
+	if err != nil {
+		return fmt.Errorf("service: remove rule: %w", err)
+	}
+	if targetStore == nil {
+		return fmt.Errorf("service: remove rule: %w", model.ErrNotFound)
+	}
+	if m.Type != model.TypeRule {
+		return fmt.Errorf("service: remove rule: memory type %q: %w", m.Type, model.ErrInvalidType)
+	}
+
+	if err := targetStore.SoftDelete(ctx, id); err != nil {
+		return fmt.Errorf("service: remove rule: %w", err)
+	}
+	return nil
+}
+
 // profileSourcePrefix formats the provenance stamp a profile activation
 // writes onto every rule it materializes (SPEC-092): "profile:<name>".
 // Kept as a single helper so SaveProfileRule and PurgeProfileRules can never

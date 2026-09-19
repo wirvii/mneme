@@ -230,8 +230,8 @@ func TestMCP_CodegraphFiles(t *testing.T) {
 
 func TestHandleCodegraphAffected_Parity(t *testing.T) {
 	srv := newTestServerWithCodeGraph(t)
-	if got := len(allTools()); got != 97 {
-		t.Fatalf("registered tool count = %d, want 97", got)
+	if got := len(allTools()); got != 98 {
+		t.Fatalf("registered tool count = %d, want 98", got)
 	}
 	request := codegraph.AffectedRequest{Paths: []string{"main.go"}, Depth: 2, Limit: 10}
 	want, err := srv.handlers.cgSvc.Affected(request)

@@ -82,6 +82,76 @@ func newTestServerWithSDDAndMemSvc(t *testing.T) (*Server, *service.MemoryServic
 	return NewServer(svc, sddSvc, nil, nil, logger, "all", "test"), svc
 }
 
+func TestHandleRuleRemove(t *testing.T) {
+	tool := findTool(allTools(), "rule_remove")
+	if tool == nil {
+		t.Fatal("rule_remove tool not found in allTools()")
+	}
+
+	srv := newTestServerWithSDD(t)
+
+	saveResp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name: "mem_save",
+		Arguments: mustMarshal(t, map[string]any{
+			"title":      "Remove through MCP",
+			"content":    "rule content",
+			"type":       "rule",
+			"applies_to": []string{"**"},
+		}),
+	})
+	if saveResp.Error != nil {
+		t.Fatalf("mem_save rule: %s", saveResp.Error.Message)
+	}
+	var saved model.SaveResponse
+	unmarshalToolText(t, saveResp, &saved)
+
+	removeResp := process(t, srv, "tools/call", 2, ToolCallParams{
+		Name:      "rule_remove",
+		Arguments: mustMarshal(t, map[string]any{"id": saved.ID}),
+	})
+	if removeResp.Error != nil {
+		t.Fatalf("rule_remove: %s", removeResp.Error.Message)
+	}
+	var removed struct {
+		ID     string `json:"id"`
+		Status string `json:"status"`
+	}
+	unmarshalToolText(t, removeResp, &removed)
+	if removed.ID != saved.ID || removed.Status != "removed" {
+		t.Fatalf("rule_remove result = %+v, want id=%s status=removed", removed, saved.ID)
+	}
+
+	getResp := process(t, srv, "tools/call", 3, ToolCallParams{
+		Name:      "mem_get",
+		Arguments: mustMarshal(t, map[string]any{"id": saved.ID}),
+	})
+	if getResp.Error == nil || getResp.Error.Code != CodeMemoryNotFound {
+		t.Fatalf("mem_get after rule_remove error = %+v, want CodeMemoryNotFound", getResp.Error)
+	}
+
+	nonRuleResp := process(t, srv, "tools/call", 4, ToolCallParams{
+		Name: "mem_save",
+		Arguments: mustMarshal(t, map[string]any{
+			"title":   "Ordinary memory",
+			"content": "must remain active",
+			"type":    "discovery",
+		}),
+	})
+	if nonRuleResp.Error != nil {
+		t.Fatalf("mem_save non-rule: %s", nonRuleResp.Error.Message)
+	}
+	var nonRule model.SaveResponse
+	unmarshalToolText(t, nonRuleResp, &nonRule)
+
+	rejectResp := process(t, srv, "tools/call", 5, ToolCallParams{
+		Name:      "rule_remove",
+		Arguments: mustMarshal(t, map[string]any{"id": nonRule.ID}),
+	})
+	if rejectResp.Error == nil || rejectResp.Error.Code != CodeInvalidParams {
+		t.Fatalf("rule_remove(non-rule) error = %+v, want CodeInvalidParams", rejectResp.Error)
+	}
+}
+
 // specAdvanceTestEnvelope mirrors the {spec, executor} shape handleSpecAdvance
 // returns (SPEC-068 D5), scoped to the fields these tests assert on.
 type specAdvanceTestEnvelope struct {

@@ -2,7 +2,7 @@
 
 # mneme -- API Reference
 
-mneme exposes one service layer through three frontends: **MCP** (97 tools
+mneme exposes one service layer through three frontends: **MCP** (98 tools
 over JSON-RPC 2.0 stdio, primary), **HTTP** (10 REST endpoints under `/v1/`),
 and **CLI** (44 mneme-registered top-level commands; 46 visible entries after
 Cobra adds `help` and `completion`). HTTP does not expose SDD or delivery-v2,
@@ -33,13 +33,14 @@ not a fixed string -- expect it to match `mneme version`.
 
 ---
 
-## MCP tool families (97 tools)
+## MCP tool families (98 tools)
 
 Rule: every MCP tool appears in exactly **one** of these files.
 
 | Family | Count | Reference | Concept guide |
 |--------|-------|-----------|---------------|
 | `mem_*` (incl. `mem_promote`) | 15 | [docs/api/memory.md](api/memory.md) | [docs/GRAPH.md](GRAPH.md), [docs/RULES.md](RULES.md), [docs/team-memory.md](team-memory.md) |
+| `rule_*` | 1 | [docs/api/sdd.md](api/sdd.md) | [docs/RULES.md](RULES.md) |
 | `backlog_*` + `spec_*` + `lane_*` + `init` | 6+9+5+1=21 | [docs/api/sdd.md](api/sdd.md) | [docs/lanes.md](lanes.md), [docs/init.md](init.md) |
 | `codegraph_*` | 11 | [docs/api/codegraph.md](api/codegraph.md) | [docs/codegraph.md](codegraph.md) |
 | `skills_*` | 7 | [docs/api/skills.md](api/skills.md) | [docs/skills.md](skills.md) |
@@ -52,7 +53,7 @@ Rule: every MCP tool appears in exactly **one** of these files.
 | `sdd_*` | 2 | [docs/api/sdd.md](api/sdd.md) | [docs/sdd-git-native.md](sdd-git-native.md) |
 | `work_*` | 9 | [docs/api/sdd.md](api/sdd.md) | [docs/delivery-workflow.md](delivery-workflow.md) |
 
-15 + 21 + 11 + 7 + 3 + 5 + 6 + 11 + 2 + 5 + 2 + 9 = **97**. The two host-local
+15 + 1 + 21 + 11 + 7 + 3 + 5 + 6 + 11 + 2 + 5 + 2 + 9 = **98**. The two host-local
 `speech_*` tools intentionally have no HTTP counterpart because they control
 the current user's audio device.
 

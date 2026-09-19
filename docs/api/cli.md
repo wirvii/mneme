@@ -190,6 +190,16 @@ mneme rule list --json | jq '.rules[].title'
 | `--limit` | `-n` | 50 | Max rules to return |
 | `--json` | | false | Versioned JSON output |
 
+### mneme rule remove
+
+Logically delete a rule by identifier. The stored row remains for audit with
+`deleted_at` set, while rule lists, context assembly, and hook enforcement stop
+returning it.
+
+```bash
+mneme rule remove 019f5229-...
+```
+
 ### mneme rule test
 
 Evaluate active rules against a simulated tool/path invocation.

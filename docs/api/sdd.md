@@ -1,7 +1,8 @@
-# API Reference — SDD Tools (`backlog_*`, `spec_*`, `lane_*`, `quality_*`, `sdd_*`, `init`)
+# API Reference — SDD and Rule Lifecycle Tools (`rule_*`, `backlog_*`, `spec_*`, `lane_*`, `quality_*`, `sdd_*`, `init`)
 
-28 MCP tools over JSON-RPC 2.0 stdio (`mneme mcp`): `backlog_*` (6), `spec_*`
+29 MCP tools over JSON-RPC 2.0 stdio (`mneme mcp`): `rule_*` (1), `backlog_*` (6), `spec_*`
 (9), `lane_*` (5), `quality_*` (5), `sdd_*` (2), `init` (1). Concept guide:
+[docs/RULES.md](../RULES.md) (rule matching and hook enforcement),
 [docs/lanes.md](../lanes.md) (trivial/standard lanes, auditor thresholds),
 [docs/init.md](../init.md) (managed blocks, drift, legacy migration),
 [docs/quality.md](../quality.md) (the quality constitution, certificates,
@@ -79,6 +80,25 @@ back to `speccing`/`rationale`). `spec_reject` models a failed review (`qa`,
 pushback. `done -> implementing` is the ONLY way out of `done`: `spec_advance`
 still rejects any attempt to advance past `done`. See error codes at the
 bottom.
+
+---
+
+## Rule Lifecycle Tool
+
+### `rule_remove`
+
+Logically delete an active rule by its UUIDv7 identifier. The service resolves
+whether the rule belongs to the project or global database, verifies the memory
+is a rule, and sets `deleted_at`; it never physically deletes the row.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `id` | string | yes | UUIDv7 of the rule to remove |
+
+**Returns:** `{"id":"<uuid>","status":"removed"}`.
+
+**Errors:** `-32602` when `id` is missing or names a non-rule memory; `-32000`
+when no active memory has that identifier; `-32603` for storage failures.
 
 ---
 

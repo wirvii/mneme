@@ -7,7 +7,7 @@ Persistent memory for AI coding agents -- with a spec-driven workflow engine, se
 [![License](https://img.shields.io/badge/License-Apache%202.0-0d8f80.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.25+-00ADD8.svg)](https://go.dev)
 [![Release](https://img.shields.io/github/v/release/wirvii/mneme?label=release)](https://github.com/wirvii/mneme/releases)
-[![MCP Tools](https://img.shields.io/badge/MCP%20tools-97-0d8f80.svg)](#mcp-tools)
+[![MCP Tools](https://img.shields.io/badge/MCP%20tools-98-0d8f80.svg)](#mcp-tools)
 
 ---
 
@@ -38,7 +38,7 @@ Persistent memory for AI coding agents -- with a spec-driven workflow engine, se
 
 ## What is mneme?
 
-mneme gives AI coding agents a brain that survives between sessions. It stores structured knowledge -- decisions, patterns, rules, conventions, architecture -- in a local SQLite database with full-text search, a weighted knowledge graph, and automatic consolidation. Any MCP-compatible agent (Claude Code, Cursor, Windsurf, OpenCode, Gemini CLI) can save and retrieve persistent memory through 97 tools over JSON-RPC stdio.
+mneme gives AI coding agents a brain that survives between sessions. It stores structured knowledge -- decisions, patterns, rules, conventions, architecture -- in a local SQLite database with full-text search, a weighted knowledge graph, and automatic consolidation. Any MCP-compatible agent (Claude Code, Cursor, Windsurf, OpenCode, Gemini CLI) can save and retrieve persistent memory through 98 tools over JSON-RPC stdio.
 
 ## Why mneme?
 
@@ -430,13 +430,14 @@ counted in that figure:
 
 ## MCP Tools
 
-The MCP server (`mneme mcp`) exposes **97 tools** over JSON-RPC 2.0 stdio,
+The MCP server (`mneme mcp`) exposes **98 tools** over JSON-RPC 2.0 stdio,
 grouped by family. Each family has a full contract reference (params, returns,
 errors, examples) under [docs/api/](docs/api/):
 
 | Family | Count | What it covers | Reference |
 |--------|-------|-----------------|-----------|
 | `mem_*` | 15 | Save, search, update, relate, explore, promote, and time-travel through memories | [docs/api/memory.md](docs/api/memory.md) |
+| `rule_*` | 1 | Logically remove rules without deleting their stored history | [docs/api/sdd.md](docs/api/sdd.md) |
 | `backlog_*` | 6 | Raw idea → refined → promoted-to-spec lifecycle, plus archiving | [docs/api/sdd.md](docs/api/sdd.md) |
 | `spec_*` | 9 | Spec lifecycle: draft → speccing → ... → done, plus `quick`/`reject`/`doc_write` shortcuts | [docs/api/sdd.md](docs/api/sdd.md) |
 | `lane_*` | 5 | Trivial-lane audit, reclassify, override, status, stats | [docs/api/sdd.md](docs/api/sdd.md) |
@@ -455,7 +456,7 @@ errors, examples) under [docs/api/](docs/api/):
 | `scaffold_*` | 1 | Capture a repository as a draft scaffold | [docs/profiles.md](docs/profiles.md) |
 | `work_*` | 9 | Delivery contracts, reviews, verification, completion, resumption, and local metrics | [docs/api/sdd.md](docs/api/sdd.md) |
 
-15 + 6 + 9 + 5 + 5 + 2 + 11 + 7 + 3 + 5 + 2 + 1 + 6 + 8 + 1 + 1 + 1 + 9 = **97**.
+15 + 1 + 6 + 9 + 5 + 5 + 2 + 11 + 7 + 3 + 5 + 2 + 1 + 6 + 8 + 1 + 1 + 1 + 9 = **98**.
 
 ---
 
@@ -542,13 +543,13 @@ errors, examples) under [docs/api/](docs/api/):
 
 **Persistence:** two SQLite databases per host -- `~/.mneme/global.db` (global + org scope) and `~/.mneme/projects/<slug>.db` (project scope, slug from git remote). Schema v22 with embedded migrations.
 
-**Three frontends:** MCP (primary, 97 tools over stdio), HTTP (REST API at `:7437`, 10 endpoints under `/v1/` -- no SDD or delivery-v2 WORK endpoints), and CLI (Cobra, 44 mneme-registered commands, 46 visible with Cobra additions).
+**Three frontends:** MCP (primary, 98 tools over stdio), HTTP (REST API at `:7437`, 10 endpoints under `/v1/` -- no SDD or delivery-v2 WORK endpoints), and CLI (Cobra, 44 mneme-registered commands, 46 visible with Cobra additions).
 
 ---
 
 ## Status & Roadmap
 
-**Current (delivery-v2 beta): schema v22, 97 MCP tools including 9 `work_*`, 44 mneme-registered CLI commands, 46 visible Cobra entries, and 10 HTTP endpoints without SDD or delivery-v2.**
+**Current (delivery-v2 beta): schema v22, 98 MCP tools including 1 `rule_*` and 9 `work_*`, 44 mneme-registered CLI commands, 46 visible Cobra entries, and 10 HTTP endpoints without SDD or delivery-v2.**
 Latest release: **v1.33.0**. Full history in [CHANGELOG.md](CHANGELOG.md).
 
 **Shipped:**

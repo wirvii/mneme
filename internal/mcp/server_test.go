@@ -213,7 +213,7 @@ func TestServerToolsList(t *testing.T) {
 		"speech_emit", "speech_control",
 		"mem_save", "mem_search", "mem_get", "mem_context",
 		"mem_update", "mem_session_end", "mem_suggest_topic_key",
-		"mem_relate", "mem_timeline", "mem_stats", "mem_checkpoint", "mem_forget", "mem_promote",
+		"mem_relate", "mem_timeline", "mem_stats", "mem_checkpoint", "mem_forget", "rule_remove", "mem_promote",
 		// SDD tools
 		"backlog_add", "backlog_list", "backlog_get", "backlog_refine", "backlog_promote", "backlog_archive",
 		"spec_new", "spec_status", "spec_advance", "spec_pushback", "spec_resolve",

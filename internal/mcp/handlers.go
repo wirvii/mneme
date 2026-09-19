@@ -125,6 +125,8 @@ func (h *handlers) handleToolCall(ctx context.Context, params ToolCallParams) (*
 		return h.handleMemStats(ctx, params.Arguments)
 	case "mem_forget":
 		return h.handleMemForget(ctx, params.Arguments)
+	case "rule_remove":
+		return h.handleRuleRemove(ctx, params.Arguments)
 	case "mem_promote":
 		return h.handleMemPromote(ctx, params.Arguments)
 	case "mem_checkpoint":
@@ -736,6 +738,34 @@ func (h *handlers) handleMemForget(ctx context.Context, raw json.RawMessage) (*T
 	return resultFromAny(map[string]string{
 		"id":     args.ID,
 		"status": "marked_for_decay",
+	})
+}
+
+// handleRuleRemove processes a rule_remove tool call.
+func (h *handlers) handleRuleRemove(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	var args struct {
+		ID string
+	}
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return nil, &JSONRPCError{
+			Code:    CodeInvalidParams,
+			Message: fmt.Sprintf("mcp: handle rule_remove: invalid arguments: %s", err),
+		}
+	}
+	if args.ID == "" {
+		return nil, &JSONRPCError{
+			Code:    CodeInvalidParams,
+			Message: "mcp: handle rule_remove: id is required",
+		}
+	}
+
+	if err := h.svc.RemoveRule(ctx, args.ID); err != nil {
+		return nil, h.mapServiceError("rule_remove", err)
+	}
+
+	return resultFromAny(map[string]string{
+		"id":     args.ID,
+		"status": "removed",
 	})
 }
 
