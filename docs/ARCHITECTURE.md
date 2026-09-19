@@ -80,7 +80,7 @@ graph TB
 
     subgraph "Layer 1 — Storage"
         STORE["store/<br/>Repository Pattern"]
-        DB["SQLite + FTS5<br/>(schema v22)"]
+        DB["SQLite + FTS5<br/>(schema v23)"]
     end
 
     CLI --> SVC
@@ -148,7 +148,7 @@ internal/
                            8 relation types, request/response structs). Zero deps.
   project/              -- git remote / project slug detection
   config/               -- TOML config + defaults + env overrides
-  db/                   -- SQLite + FTS5 + embedded migrations (schema v22)
+  db/                   -- SQLite + FTS5 + embedded migrations (schema v23)
   store/                -- repository pattern (CRUD, FTS5, vectors, entities, relations,
                            communities, sessions, unresolved refs)
   scoring/              -- importance, decay (Ebbinghaus), BM25 re-rank, RRF fusion,
@@ -1111,4 +1111,4 @@ this interacts with the write-through materialization path itself.
 
 ---
 
-*Originally written 2026-04-30 for EPIC-1 through EPIC-6 (SPEC-001 through SPEC-026); updated through schema v22 / 98 MCP tools / 44 mneme-registered CLI commands (46 visible with Cobra), including logical rule removal, SDD+lanes, delivery-v2 WORK, CodeGraph, Skills, Models, Conflicts, per-project subagents, Team Memory, profiles/scaffolds, quality evidence, and local speech. HTTP remains at 10 routes without SDD or delivery-v2. See [CHANGELOG.md](../CHANGELOG.md) for the full release history.*
+*Originally written 2026-04-30 for EPIC-1 through EPIC-6 (SPEC-001 through SPEC-026); updated through schema v23 / 98 MCP tools / 44 mneme-registered CLI commands (46 visible with Cobra), including logical rule removal, SDD+lanes, delivery-v2 WORK, CodeGraph, Skills, Models, Conflicts, per-project subagents, Team Memory, profiles/scaffolds, quality evidence, and local speech. HTTP remains at 10 routes without SDD or delivery-v2. See [CHANGELOG.md](../CHANGELOG.md) for the full release history.*

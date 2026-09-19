@@ -541,7 +541,7 @@ errors, examples) under [docs/api/](docs/api/):
 
 **Dependency rule:** imports flow inward only. `model` (zero external deps) is the leaf. Frontends (`cli`, `mcp`, `http`) call `service`, which orchestrates `store`, `scoring`, `graph`, and `rules`. No frontend calls `store` or `db` directly.
 
-**Persistence:** two SQLite databases per host -- `~/.mneme/global.db` (global + org scope) and `~/.mneme/projects/<slug>.db` (project scope, slug from git remote). Schema v22 with embedded migrations.
+**Persistence:** two SQLite databases per host -- `~/.mneme/global.db` (global + org scope) and `~/.mneme/projects/<slug>.db` (project scope, slug from git remote). Schema v23 with embedded migrations.
 
 **Three frontends:** MCP (primary, 98 tools over stdio), HTTP (REST API at `:7437`, 10 endpoints under `/v1/` -- no SDD or delivery-v2 WORK endpoints), and CLI (Cobra, 44 mneme-registered commands, 46 visible with Cobra additions).
 
@@ -549,7 +549,7 @@ errors, examples) under [docs/api/](docs/api/):
 
 ## Status & Roadmap
 
-**Current (delivery-v2 beta): schema v22, 98 MCP tools including 1 `rule_*` and 9 `work_*`, 44 mneme-registered CLI commands, 46 visible Cobra entries, and 10 HTTP endpoints without SDD or delivery-v2.**
+**Current (delivery-v2 beta): schema v23, 98 MCP tools including 1 `rule_*` and 9 `work_*`, 44 mneme-registered CLI commands, 46 visible Cobra entries, and 10 HTTP endpoints without SDD or delivery-v2.**
 Latest release: **v1.33.0**. Full history in [CHANGELOG.md](CHANGELOG.md).
 
 **Shipped:**

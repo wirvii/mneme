@@ -93,6 +93,41 @@ func TestEndSession(t *testing.T) {
 	}
 }
 
+func TestEndSession_StoresRFC3339NanoUTC(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	sess := &model.Session{
+		ID:        newSessionID(t),
+		Project:   "timestamp-project",
+		Agent:     "codex",
+		StartedAt: time.Now().UTC().Add(-time.Minute),
+	}
+	if _, err := s.CreateSession(ctx, sess); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	before := time.Now().UTC()
+	if err := s.EndSession(ctx, sess.ID, ""); err != nil {
+		t.Fatalf("EndSession: %v", err)
+	}
+	after := time.Now().UTC()
+
+	var raw string
+	if err := s.db.QueryRowContext(ctx, `SELECT ended_at FROM sessions WHERE id = ?`, sess.ID).Scan(&raw); err != nil {
+		t.Fatalf("read ended_at: %v", err)
+	}
+	endedAt, err := time.Parse(time.RFC3339Nano, raw)
+	if err != nil {
+		t.Fatalf("ended_at %q is not RFC3339Nano: %v", raw, err)
+	}
+	if endedAt.Location() != time.UTC {
+		t.Errorf("ended_at location = %s, want UTC", endedAt.Location())
+	}
+	if endedAt.Before(before) || endedAt.After(after) {
+		t.Errorf("ended_at = %s, want between %s and %s", endedAt, before, after)
+	}
+}
+
 // TestGetLastSession verifies that the most recently started session is returned.
 func TestGetLastSession(t *testing.T) {
 	s := newTestStore(t)

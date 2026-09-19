@@ -46,10 +46,11 @@ func (s *MemoryStore) CreateSession(ctx context.Context, sess *model.Session) (*
 func (s *MemoryStore) EndSession(ctx context.Context, id string, summaryID string) error {
 	const q = `
 		UPDATE sessions
-		SET ended_at = datetime('now'), summary_id = ?
+		SET ended_at = ?, summary_id = ?
 		WHERE id = ?`
 
-	res, err := s.db.ExecContext(ctx, q, toNullString(summaryID), id)
+	endedAt := time.Now().UTC().Format(time.RFC3339Nano)
+	res, err := s.db.ExecContext(ctx, q, endedAt, toNullString(summaryID), id)
 	if err != nil {
 		return fmt.Errorf("store: end session: %w", err)
 	}
