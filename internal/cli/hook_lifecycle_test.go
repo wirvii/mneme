@@ -214,7 +214,7 @@ func TestRunHookEnforceDelegation_LifecycleBlock_MentionsRegenCommand(t *testing
 	}
 }
 
-// TestLifecycleTools_ExactlyNineMcpPrefixedEntries is the G5 anchor
+// TestLifecycleTools_ExactlyTenMcpPrefixedEntries is the G5 anchor
 // (SPEC-115 P11 plan, widened by SPEC-125, widened again by SPEC-131 D58):
 // the negative rows above ("quality_verify"/"quality_status" allowed)
 // would pass VACUOUSLY if either tool were renamed or stopped existing —
@@ -222,9 +222,9 @@ func TestRunHookEnforceDelegation_LifecycleBlock_MentionsRegenCommand(t *testing
 // just membership) makes a silent rename visible: exactly 5 entries
 // (spec_advance, spec_quick, quality_ack, backlog_archive, sdd_import),
 // every one an "mcp__mneme__"-prefixed name.
-func TestLifecycleTools_ExactlyNineMcpPrefixedEntries(t *testing.T) {
-	if len(lifecycleTools) != 9 {
-		t.Fatalf("len(lifecycleTools) = %d, want 9: %v", len(lifecycleTools), lifecycleTools)
+func TestLifecycleTools_ExactlyTenMcpPrefixedEntries(t *testing.T) {
+	if len(lifecycleTools) != 10 {
+		t.Fatalf("len(lifecycleTools) = %d, want 10: %v", len(lifecycleTools), lifecycleTools)
 	}
 	for tool := range lifecycleTools {
 		if !strings.HasPrefix(tool, "mcp__mneme__") {
@@ -245,6 +245,7 @@ func TestLifecycleToolsWorkContractAuthority(t *testing.T) {
 		{tool: "work_lock", wantExit: 2},
 		{tool: "work_amend", wantExit: 2},
 		{tool: "work_complete", wantExit: 2},
+		{tool: "work_resume", wantExit: 2},
 		{tool: "work_get", wantExit: 0},
 		{tool: "work_review", wantExit: 0},
 		{tool: "work_verify", wantExit: 0},
@@ -260,8 +261,36 @@ func TestLifecycleToolsWorkContractAuthority(t *testing.T) {
 			if exitCode != tt.wantExit {
 				t.Fatalf("exit code = %d, want %d (stderr: %s)", exitCode, tt.wantExit, stderr)
 			}
-			if tt.wantExit == 2 && !strings.Contains(stderr, "el coordinador ejecuta") {
+			message := "el coordinador ejecuta"
+			if tt.tool == "work_complete" || tt.tool == "work_resume" {
+				message = "reanudar o cerrar"
+			}
+			if tt.wantExit == 2 && !strings.Contains(stderr, message) {
 				t.Fatalf("work authority message = %q", stderr)
+			}
+		})
+	}
+}
+
+func TestRunHookEnforceDelegation_LifecycleResumeAuthority(t *testing.T) {
+	tests := []struct {
+		name, payload string
+		wantExit      int
+	}{
+		{"coordinator", `{"tool_name":"mcp__mneme__work_resume"}`, 0},
+		{"backend", `{"agent_id":"x","agent_type":"backend","tool_name":"mcp__mneme__work_resume"}`, 2},
+		{"architect", `{"agent_id":"x","agent_type":"architect","tool_name":"mcp__mneme__work_resume"}`, 2},
+		{"qa-tester", `{"agent_id":"x","agent_type":"qa-tester","tool_name":"mcp__mneme__work_resume"}`, 2},
+		{"unresolved", `{"agent_id":"x","tool_name":"mcp__mneme__work_resume"}`, 2},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			exitCode, stderr := runHookLifecycleSubprocess(t, tc.payload)
+			if exitCode != tc.wantExit {
+				t.Fatalf("exit=%d want=%d stderr=%q", exitCode, tc.wantExit, stderr)
+			}
+			if tc.wantExit == 2 && !strings.Contains(stderr, "reanudar o cerrar") {
+				t.Fatalf("message=%q", stderr)
 			}
 		})
 	}

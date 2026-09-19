@@ -2023,6 +2023,7 @@ var lifecycleTools = map[string]bool{
 	"mcp__mneme__work_lock":     true,
 	"mcp__mneme__work_amend":    true,
 	"mcp__mneme__work_complete": true,
+	"mcp__mneme__work_resume":   true,
 }
 
 // roleScopedTools maps an MCP tool name to the ONE subagent role allowed
@@ -2150,8 +2151,10 @@ func printLifecycleBlock(w io.Writer, tool string) {
 		// governing its own spec would be cancelling its own work and
 		// freezing the very record that judges it.
 		fmt.Fprintf(w, "(bloqueado: %s — motivo distinto: descartar trabajo y congelar su registro de forma irreversible es una decisión del owner, canalizada por el orquestador, nunca del subagente que lo está ejecutando.)\n", tool)
-	case "mcp__mneme__work_begin", "mcp__mneme__work_lock", "mcp__mneme__work_amend", "mcp__mneme__work_complete":
+	case "mcp__mneme__work_begin", "mcp__mneme__work_lock", "mcp__mneme__work_amend":
 		fmt.Fprintf(w, "(bloqueado: %s — el coordinador ejecuta esta operación del contrato de trabajo; el subagente sólo informa resultados.)\n", tool)
+	case "mcp__mneme__work_complete", "mcp__mneme__work_resume":
+		fmt.Fprintf(w, "(bloqueado: %s — reanudar o cerrar un trabajo es una decisión exclusiva del coordinador; el subagente sólo informa resultados.)\n", tool)
 	default:
 		fmt.Fprintf(w, "(bloqueado: %s — mismo motivo: el lifecycle SDD lo gobierna el orquestador, no un subagente.)\n", tool)
 	}
