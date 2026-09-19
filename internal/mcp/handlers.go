@@ -194,6 +194,8 @@ func (h *handlers) handleToolCall(ctx context.Context, params ToolCallParams) (*
 		return h.handleWorkVerify(ctx, params.Arguments)
 	case "work_complete":
 		return h.handleWorkComplete(ctx, params.Arguments)
+	case "work_resume":
+		return h.handleWorkResume(ctx, params.Arguments)
 
 	// --- QUALITY TOOLS (SPEC-115 EPIC-calidad S1) ---
 	case "quality_verify":

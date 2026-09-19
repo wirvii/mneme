@@ -2005,7 +2005,8 @@ func workToolDefinitions() []ToolDefinition {
 		{Name: "work_amend", Description: "Replace every normative field of an existing work contract with an auditable reason.", InputSchema: map[string]any{"type": "object", "required": []string{"id", "goal", "scope", "verification", "development_method", "by", "reason"}, "properties": amend}},
 		{Name: "work_review", Description: "Record a commit-bound initial or targeted review selected by persisted work state, persist findings and architecture verdicts, and emit the complete factual certificate.", InputSchema: reviewSchema},
 		{Name: "work_verify", Description: "Evaluates stored criteria and required checks, persists a factual delivery certificate, and does not change work state.", InputSchema: idSchema()},
-		{Name: "work_complete", Description: "Reports unavailable in phase 2 and performs no completion or state change.", InputSchema: idSchema()},
+		{Name: "work_complete", Description: "Close verified work using the latest persisted delivery certificate without rerunning checks.", InputSchema: map[string]any{"type": "object", "additionalProperties": false, "required": []string{"id", "by"}, "properties": map[string]any{"id": map[string]any{"type": "string"}, "by": map[string]any{"type": "string"}}}},
+		{Name: "work_resume", Description: "Resume escalated work after an explicit coordinator decision and reset its correction budget.", InputSchema: map[string]any{"type": "object", "additionalProperties": false, "required": []string{"id", "by", "reason"}, "properties": map[string]any{"id": map[string]any{"type": "string"}, "by": map[string]any{"type": "string"}, "reason": map[string]any{"type": "string"}}}},
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/wirvii/mneme/internal/config"
 	"github.com/wirvii/mneme/internal/db"
@@ -62,13 +63,13 @@ func toolResultJSON(t *testing.T, result *ToolCallResult, dst any) string {
 func TestWorkToolsRegisteredAndDispatched(t *testing.T) {
 	want := map[string]bool{
 		"work_begin": true, "work_get": true, "work_lock": true, "work_amend": true,
-		"work_review": true, "work_verify": true, "work_complete": true,
+		"work_review": true, "work_verify": true, "work_complete": true, "work_resume": true,
 	}
 	if got := workToolNames(); !mapsEqual(got, want) {
 		t.Fatalf("work tools = %v, want %v", got, want)
 	}
-	if len(allTools()) != 94 {
-		t.Fatalf("tool count = %d, want 94", len(allTools()))
+	if len(allTools()) != 95 {
+		t.Fatalf("tool count = %d, want 95", len(allTools()))
 	}
 	h, _, _ := newWorkTestHandlers(t)
 	for name := range want {
@@ -112,26 +113,68 @@ func TestHandleWorkGetOmitsContractUUID(t *testing.T) {
 	}
 }
 
-func TestHandleWorkCompleteRemainsUnavailable(t *testing.T) {
-	h, sdd, _ := newWorkTestHandlers(t)
+func TestHandleWorkCompleteReturnsPersistedEvidence(t *testing.T) {
+	h, sdd, sddStore := newWorkTestHandlers(t)
 	created, err := sdd.WorkBegin(context.Background(), model.WorkBeginRequest{Goal: "g", Scope: []string{"internal/**"}, Verification: []model.VerificationKind{model.VerificationBuild}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"work_complete"} {
-		result, rpcErr := h.handleToolCall(context.Background(), ToolCallParams{Name: name, Arguments: mustMarshal(t, model.WorkActionRequest{ID: created.Contract.ID})})
-		if rpcErr != nil {
-			t.Fatalf("%s: %v", name, rpcErr)
+	if _, err := sdd.WorkLock(context.Background(), model.WorkLockRequest{ID: created.Contract.ID, By: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := sddStore.TransitionWork(context.Background(), created.Contract.ID, model.WorkStatusImplementing, model.WorkStatusVerifying, "test", ""); err != nil {
+		t.Fatal(err)
+	}
+	work, _ := sddStore.GetWork(context.Background(), created.Contract.ID)
+	head, _ := (&quality.Git{RepoDir: sdd.RepoDir()}).HeadSHA()
+	now := time.Now().UTC()
+	cert := &model.DeliveryCertificate{Project: work.Project, WorkID: work.ID, ContractRevision: work.ContractRevision, ContractHash: work.ContractHash, HeadSHA: head, BaseSHA: work.BaseSHA, Verdict: model.DeliveryVerdictPass, StartedAt: now, FinishedAt: now}
+	checks := []*model.DeliveryCheck{{Kind: "gate", Name: "build", Status: model.DeliveryCheckPass, Effect: model.DeliveryEffectBlocks}}
+	if err := sddStore.InsertDeliveryCertificate(context.Background(), cert, checks); err != nil {
+		t.Fatal(err)
+	}
+	result, rpcErr := h.handleToolCall(context.Background(), ToolCallParams{Name: "work_complete", Arguments: mustMarshal(t, model.WorkCompleteRequest{ID: created.Contract.ID, By: "orchestrator"})})
+	if rpcErr != nil {
+		t.Fatal(rpcErr)
+	}
+	var response model.WorkCapabilityResult
+	toolResultJSON(t, result, &response)
+	if !response.Available || !response.Performed || response.Work.Contract.Status != model.WorkStatusDone || response.Certificate == nil || response.Certificate.ID != cert.ID || len(response.Checks) != 1 {
+		t.Fatalf("response=%#v", response)
+	}
+}
+
+func TestHandleWorkResumeReturnsAggregate(t *testing.T) {
+	h, sdd, sddStore := newWorkTestHandlers(t)
+	created, err := sdd.WorkBegin(context.Background(), model.WorkBeginRequest{Goal: "g", Scope: []string{"internal/**"}, Verification: []model.VerificationKind{model.VerificationBuild}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sdd.WorkLock(context.Background(), model.WorkLockRequest{ID: created.Contract.ID, By: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, edge := range [][2]model.WorkStatus{{model.WorkStatusImplementing, model.WorkStatusVerifying}, {model.WorkStatusVerifying, model.WorkStatusEscalated}} {
+		if err := sddStore.TransitionWork(context.Background(), created.Contract.ID, edge[0], edge[1], "test", ""); err != nil {
+			t.Fatal(err)
 		}
-		var response model.WorkCapabilityResult
-		raw := strings.ToLower(toolResultJSON(t, result, &response))
-		if response.Available || response.Performed || response.ReasonCode != "phase_not_available" {
-			t.Fatalf("%s fabricated capability: %#v", name, response)
-		}
-		for _, forbidden := range []string{`"verdict"`, `"success"`, `"passed"`, `"certificate"`} {
-			if strings.Contains(raw, forbidden) {
-				t.Fatalf("%s contains %s: %s", name, forbidden, raw)
-			}
+	}
+	result, rpcErr := h.handleToolCall(context.Background(), ToolCallParams{Name: "work_resume", Arguments: mustMarshal(t, model.WorkResumeRequest{ID: created.Contract.ID, By: "orchestrator", Reason: "again"})})
+	if rpcErr != nil {
+		t.Fatal(rpcErr)
+	}
+	var response model.WorkGetResponse
+	toolResultJSON(t, result, &response)
+	if response.Contract.Status != model.WorkStatusImplementing || response.History[len(response.History)-1].Reason != "again" {
+		t.Fatalf("response=%#v", response)
+	}
+}
+
+func TestHandleWorkLifecycleRejectsMalformedJSON(t *testing.T) {
+	h, _, _ := newWorkTestHandlers(t)
+	for _, name := range []string{"work_complete", "work_resume"} {
+		_, rpcErr := h.handleToolCall(context.Background(), ToolCallParams{Name: name, Arguments: json.RawMessage(`{"id":`)})
+		if rpcErr == nil || rpcErr.Code != CodeInvalidParams {
+			t.Fatalf("%s error=%#v", name, rpcErr)
 		}
 	}
 }
@@ -257,7 +300,7 @@ func TestWorkReviewToolSchema_TargetedParity(t *testing.T) {
 		if _, ok := props["reason"]; !ok {
 			t.Fatal("resolution reason missing")
 		}
-		if len(workToolNames()) != 7 {
+		if len(workToolNames()) != 8 {
 			t.Fatalf("work tool count = %d", len(workToolNames()))
 		}
 		return

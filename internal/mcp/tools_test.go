@@ -6,12 +6,40 @@ import (
 	"testing"
 )
 
-// TestAllTools_Count94 verifies the tool count after SPEC-144 adds the seven
-// work_* delivery operations to the previous 87-tool surface.
-func TestAllTools_Count94(t *testing.T) {
+// TestAllTools_Count95 verifies the tool count after work_resume joins delivery-v2.
+func TestAllTools_Count95(t *testing.T) {
 	tools := allTools()
-	if len(tools) != 94 {
-		t.Errorf("allTools() returned %d tools, want 94", len(tools))
+	if len(tools) != 95 {
+		t.Errorf("allTools() returned %d tools, want 95", len(tools))
+	}
+}
+
+func TestWorkLifecycleSchemasAreClosedAndExact(t *testing.T) {
+	tests := []struct {
+		name     string
+		required []string
+	}{
+		{"work_complete", []string{"id", "by"}},
+		{"work_resume", []string{"id", "by", "reason"}},
+	}
+	for _, tc := range tests {
+		tool := findTool(allTools(), tc.name)
+		if tool == nil {
+			t.Fatalf("%s missing", tc.name)
+		}
+		schema := tool.InputSchema.(map[string]any)
+		if schema["additionalProperties"] != false {
+			t.Fatalf("%s schema is open", tc.name)
+		}
+		required := schema["required"].([]string)
+		if len(required) != len(tc.required) {
+			t.Fatalf("%s required=%v", tc.name, required)
+		}
+		for i := range required {
+			if required[i] != tc.required[i] {
+				t.Fatalf("%s required=%v want=%v", tc.name, required, tc.required)
+			}
+		}
 	}
 }
 

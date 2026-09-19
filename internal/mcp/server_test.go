@@ -253,7 +253,7 @@ func TestToolsList(t *testing.T) {
 		"subagent_compose", "subagent_write", "subagent_manifest_list",
 		// Delivery work tools (SPEC-144)
 		"work_begin", "work_get", "work_lock", "work_amend",
-		"work_review", "work_verify", "work_complete",
+		"work_review", "work_verify", "work_complete", "work_resume",
 	}
 	if len(result.Tools) != len(wantNames) {
 		t.Fatalf("got %d tools, want %d", len(result.Tools), len(wantNames))

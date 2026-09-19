@@ -106,13 +106,28 @@ func (h *handlers) handleWorkComplete(ctx context.Context, raw json.RawMessage) 
 	if h.sdd == nil {
 		return nil, h.sddUnavailable("work_complete")
 	}
-	var req model.WorkActionRequest
+	var req model.WorkCompleteRequest
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return invalidWorkArguments("work_complete", err)
 	}
 	result, err := h.sdd.WorkComplete(ctx, req)
 	if err != nil {
 		return nil, h.mapServiceError("work_complete", err)
+	}
+	return resultFromAny(result)
+}
+
+func (h *handlers) handleWorkResume(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	if h.sdd == nil {
+		return nil, h.sddUnavailable("work_resume")
+	}
+	var req model.WorkResumeRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return invalidWorkArguments("work_resume", err)
+	}
+	result, err := h.sdd.WorkResume(ctx, req)
+	if err != nil {
+		return nil, h.mapServiceError("work_resume", err)
 	}
 	return resultFromAny(result)
 }
