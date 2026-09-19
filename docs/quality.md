@@ -543,12 +543,12 @@ evaluating a criterion against the spec's base commit as cheap as
 evaluating it against HEAD: it is the exact same code, with a different
 ref.
 
-| Verb | Keys | Holds when |
-|---|---|---|
-| `file_exists` | `path`, `new` | `path` exists in the ref's tree |
-| `pattern_count` | `contains`, `in`, `word`, `comparator`, `count`, `new` | the number of **lines** containing `contains`, across the files in the ref matching `in`, satisfies `comparator count` |
-| `symbol_defined` | `symbol`, `in`, `new` | `symbol` appears as a **whole word** in at least one file matching `in` |
-| `symbol_referenced` | `symbol`, `defined_in`, `ignore`, `new` | at least one file **not** matching `defined_in` or `ignore` contains `symbol` as a whole word |
+| Verb | Keys | Holds when | What `new = true` promises |
+|---|---|---|---|
+| `file_exists` | `path`, `new` | `path` exists in the ref's tree | `path` did not exist at base and exists at HEAD |
+| `pattern_count` | `contains`, `in`, `word`, `comparator`, `count`, `new` | the number of **lines** containing `contains`, across the files in the ref matching `in`, satisfies `comparator count` | no file matching `in` existed at base; at HEAD the assertion holds |
+| `symbol_defined` | `symbol`, `in`, `new` | `symbol` appears as a **whole word** in at least one file matching `in` | the assertion was false at base and is true at HEAD; the matching file may already have existed |
+| `symbol_referenced` | `symbol`, `defined_in`, `ignore`, `new` | at least one file **not** matching `defined_in` or `ignore` contains `symbol` as a whole word | the assertion was false at base and is true at HEAD; the defining file may already have existed |
 
 Three deliberate limitations, documented so nobody is surprised by them:
 
@@ -609,27 +609,30 @@ it's fine" must never share a status.
 
 ### `new`: the declare-time promise, and what breaks it
 
-Every assertion carries `new` (bool, required): a claim about its
-**anchor** (`file_exists`'s `path`, or the glob(s) in `in`/`defined_in`) —
-never about the searched content. It means "this anchor does not exist in
-the base commit yet".
+Every assertion carries `new` (bool, required). Its meaning depends on the
+verb, as the table above states. For `file_exists` and `pattern_count`, it
+is a claim about the location: the path or matching files did not exist at
+base. For `symbol_defined` and `symbol_referenced`, it is a claim about the
+whole assertion: it was false at base and is true at HEAD. Adding a symbol
+to an existing file is therefore a valid new symbol.
 
 Checked at **both** ends:
 
 1. **At declare time** (`spec_doc_write` kind `criteria`): if `new =
-   false`, the anchor must resolve **today**, against the real working
+   false`, the location must resolve **today**, against the real working
    tree — a `path` that exists, a glob matching at least one file.
    Otherwise the write is refused, naming the anchor — this is the
    SPEC-087 AC12 scar (`docs/api/mcp.md` named a file that never existed)
    caught at the moment it would be written, not after. `new = true`
    requires nothing: it is a promise to create it.
-2. **At `verify` time**: if `new = true`, mneme checks the BASE tree —
-   if the anchor already existed there, the row is `finding`
-   `anchor-not-new` (a more precise diagnosis than a generic `vacuous`:
-   the author declared one thing and the repository says another). And
-   the case that escapes (1) — a `new = true` path that is never actually
-   created — fails loudly at `verify`: `file_exists` simply does not hold
-   at HEAD.
+2. **At `verify` time**: if `new = true`, mneme checks the BASE tree. For
+   `file_exists` and `pattern_count`, an existing location produces
+   `finding` `anchor-not-new`. For either symbol verb, the same finding
+   means the complete symbol assertion already held at base; merely having
+   the target file there is not a violation. This uses the same literal,
+   whole-word search as the HEAD check, so a symbol named only in a comment
+   counts at both refs. In every case the assertion must also hold at HEAD;
+   otherwise it fails before this comparison.
 
 ### The `command` escape hatch: always improbable, on purpose
 

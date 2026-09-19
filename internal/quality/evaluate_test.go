@@ -220,6 +220,75 @@ func TestEvaluateCriterion_AnchorNotNew(t *testing.T) {
 	}
 }
 
+// TestEvaluateCriterion_SymbolNewUsesAssertionTruth proves that new=true on
+// symbol assertions describes the assertion becoming true, not the file
+// containing the symbol coming into existence.
+func TestEvaluateCriterion_SymbolNewUsesAssertionTruth(t *testing.T) {
+	const file = "existing.go"
+	const consumer = "consumer.go"
+	files := []string{file, consumer}
+
+	tests := []struct {
+		name        string
+		assertion   Assertion
+		headMatches map[string]int
+		baseMatches map[string]int
+		want        Outcome
+	}{
+		{
+			name:        "symbol defined becomes true in an existing file",
+			assertion:   Assertion{Verb: VerbSymbolDefined, Symbol: "NewSymbol", In: []string{file}, New: true},
+			headMatches: map[string]int{file: 1},
+			baseMatches: map[string]int{},
+			want:        OutcomePass,
+		},
+		{
+			name:        "symbol defined already true at base",
+			assertion:   Assertion{Verb: VerbSymbolDefined, Symbol: "NewSymbol", In: []string{file}, New: true},
+			headMatches: map[string]int{file: 1},
+			baseMatches: map[string]int{file: 1},
+			want:        OutcomeAnchorNotNew,
+		},
+		{
+			name:        "symbol referenced becomes true with existing files",
+			assertion:   Assertion{Verb: VerbSymbolReferenced, Symbol: "NewSymbol", DefinedIn: []string{file}, New: true},
+			headMatches: map[string]int{consumer: 1},
+			baseMatches: map[string]int{},
+			want:        OutcomePass,
+		},
+		{
+			name:        "symbol referenced already true at base",
+			assertion:   Assertion{Verb: VerbSymbolReferenced, Symbol: "NewSymbol", DefinedIn: []string{file}, New: true},
+			headMatches: map[string]int{consumer: 1},
+			baseMatches: map[string]int{consumer: 1},
+			want:        OutcomeAnchorNotNew,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			key := MatchKey(tt.assertion.Symbol, true)
+			head := TreeFacts{Files: files, Matches: map[string]map[string]int{key: tt.headMatches}}
+			base := TreeFacts{Files: files, Matches: map[string]map[string]int{key: tt.baseMatches}}
+			criterion := Criterion{ID: "AC1", Mode: ModeAssert, Assert: []Assertion{tt.assertion}}
+
+			outcome, _ := EvaluateCriterion(criterion, head, base, true)
+			if outcome != tt.want {
+				t.Errorf("outcome = %s, want %s", outcome, tt.want)
+			}
+		})
+	}
+
+	// file_exists keeps its original anchor semantics: an existing file
+	// still breaks a new=true promise even though symbol assertions do not.
+	fileCriterion := Criterion{ID: "AC2", Mode: ModeAssert, Assert: []Assertion{{Verb: VerbFileExists, Path: file, New: true}}}
+	facts := TreeFacts{Files: files}
+	outcome, _ := EvaluateCriterion(fileCriterion, facts, facts, true)
+	if outcome != OutcomeAnchorNotNew {
+		t.Errorf("file_exists outcome = %s, want anchor-not-new", outcome)
+	}
+}
+
 // TestEvaluateCriterion_BaseUnknown covers AC19: base-unknown is reported
 // even though HEAD holds — never pass, never skipped.
 func TestEvaluateCriterion_BaseUnknown(t *testing.T) {

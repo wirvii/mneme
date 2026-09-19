@@ -725,6 +725,60 @@ text = "main.go es nuevo (mentira)"
 	}
 }
 
+// TestRunCriteriaChecks_SymbolNewInExistingFile reproduces the real Git
+// shape: a tracked test file exists at base, while the named symbol appears
+// only at HEAD. new=true must pass for the symbol without requiring a new
+// file.
+func TestRunCriteriaChecks_SymbolNewInExistingFile(t *testing.T) {
+	repoDir := newTestGitRepo(t)
+	path := filepath.Join(repoDir, "internal", "service", "graph_test.go")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir graph test directory: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("package service\n\nfunc existingGraphTestHelper() {}\n"), 0o644); err != nil {
+		t.Fatalf("write base graph_test.go: %v", err)
+	}
+	commitAll(t, repoDir, "add existing graph test file")
+	baseSHA := headSHAFor(t, repoDir)
+
+	if err := os.WriteFile(path, []byte("package service\n\nfunc existingGraphTestHelper() {}\n\nfunc TestTimeline_LimitCapsAtMaximum100() {}\n"), 0o644); err != nil {
+		t.Fatalf("add symbol to graph_test.go: %v", err)
+	}
+	writeConstitutionV3Criteria(t, repoDir, true, "5m", 60.0, 60.0)
+	commitAll(t, repoDir, "add symbol in existing file")
+
+	s := newTestQualityStore(t)
+	spec := insertTestSpec(t, s, "SPEC-001", "proj", model.SpecStatusImplementing, baseSHA)
+	workflowDir := t.TempDir()
+	doc := `
+schema_version = 1
+[[criterion]]
+id = "AC1"
+mode = "assert"
+text = "el limite de timeline tiene una prueba"
+  [[criterion.assert]]
+  verb = "symbol_defined"
+  symbol = "TestTimeline_LimitCapsAtMaximum100"
+  in = ["internal/service/graph_test.go"]
+  new = true
+`
+	writeCriteriaDocAt(t, workflowDir, "proj", spec.ID, doc)
+
+	svc := NewQualityService(s, "proj", repoDir, &fakeGateRunner{}, WithWorkflowDir(workflowDir))
+	cert, err := svc.Verify(context.Background(), model.QualityVerifyRequest{ID: spec.ID})
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	checks, err := s.ListChecks(context.Background(), cert.ID)
+	if err != nil {
+		t.Fatalf("ListChecks: %v", err)
+	}
+	row := findCheck(checks, "criterion", "AC1")
+	if row == nil || row.Status != "pass" {
+		t.Fatalf("criterion/AC1 = %+v, want pass", row)
+	}
+}
+
 // TestRunCriteriaChecks_CommandFail covers AC20's exit!=0 row.
 func TestRunCriteriaChecks_CommandFail(t *testing.T) {
 	repoDir := newTestGitRepo(t)

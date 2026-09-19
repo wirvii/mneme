@@ -156,14 +156,10 @@ func compareCount(cmp Comparator, got, want int) bool {
 	}
 }
 
-// anchorPreexistedAtBase reports whether a's ANCHOR — file_exists's Path,
-// or a file matching pattern_count/symbol_defined's In or
-// symbol_referenced's DefinedIn — already existed in baseFiles (D7 point
-// 2). This is a question about the anchor's LOCATION only, never about
-// whether the searched content matched there — a new=true promise is about
-// the anchor coming into existence, not about the assertion's overall
-// truth at base (which evaluateAllAssertions checks separately, and which
-// is how OutcomeVacuous gets classified when no promise was broken).
+// anchorPreexistedAtBase reports whether a location-based assertion's anchor
+// already existed in baseFiles. file_exists and pattern_count retain this
+// original new=true meaning; symbol assertions are handled separately
+// because their promise concerns the symbol rather than its containing file.
 func anchorPreexistedAtBase(a Assertion, baseFiles []string) bool {
 	switch a.Verb {
 	case VerbFileExists:
@@ -173,16 +169,9 @@ func anchorPreexistedAtBase(a Assertion, baseFiles []string) bool {
 			}
 		}
 		return false
-	case VerbPatternCount, VerbSymbolDefined:
+	case VerbPatternCount:
 		for _, f := range baseFiles {
 			if MatchGlobs(f, a.In) {
-				return true
-			}
-		}
-		return false
-	case VerbSymbolReferenced:
-		for _, f := range baseFiles {
-			if MatchGlobs(f, a.DefinedIn) {
 				return true
 			}
 		}
@@ -222,6 +211,19 @@ func evaluateAllAssertions(asserts []Assertion, facts TreeFacts) (bool, string) 
 	return true, "todas las aserciones se cumplen"
 }
 
+// newPromiseHeldAtBase reports whether a new=true promise was already true
+// at base. Symbols use the complete assertion (including whole-word matches
+// and path filters); location-based verbs keep their historical anchor rule.
+func newPromiseHeldAtBase(a Assertion, base TreeFacts) bool {
+	switch a.Verb {
+	case VerbSymbolDefined, VerbSymbolReferenced:
+		held, _ := EvaluateAssertion(a, base.Files, matchesFor(base, a))
+		return held
+	default:
+		return anchorPreexistedAtBase(a, base.Files)
+	}
+}
+
 // EvaluateCriterion classifies a MODE-ASSERT criterion's outcome (D5),
 // evaluating its full conjunction of assertions against head, and — only
 // when head already holds — against base, applying D7's anchor-not-new
@@ -245,7 +247,10 @@ func EvaluateCriterion(c Criterion, head, base TreeFacts, baseKnown bool) (Outco
 		if !a.New {
 			continue
 		}
-		if anchorPreexistedAtBase(a, base.Files) {
+		if newPromiseHeldAtBase(a, base) {
+			if a.Verb == VerbSymbolDefined || a.Verb == VerbSymbolReferenced {
+				return OutcomeAnchorNotNew, fmt.Sprintf("assert[%d]: new=true pero la asercion del simbolo ya se cumplia en el commit base", i)
+			}
 			return OutcomeAnchorNotNew, fmt.Sprintf("assert[%d]: new=true pero el anclaje ya existia en el commit base", i)
 		}
 	}
