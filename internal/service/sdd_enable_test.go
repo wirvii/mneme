@@ -6,10 +6,15 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"testing"
 
@@ -272,6 +277,119 @@ func TestSDDExport_RequiresEnabledFirst(t *testing.T) {
 	if err == nil {
 		t.Fatal("ExportSDDRepo on a never-enabled repo must fail")
 	}
+}
+
+func TestSDDEnableExport_RejectsForeignMarker(t *testing.T) {
+	const (
+		localProject   = "wirvii/mneme"
+		foreignProject = "another/team"
+	)
+	attempts := []struct {
+		name string
+		run  func(context.Context, *SDDService, string) error
+	}{
+		{
+			name: "preview",
+			run: func(ctx context.Context, svc *SDDService, repoDir string) error {
+				_, err := svc.EnableSDDRepo(ctx, repoDir, false)
+				return err
+			},
+		},
+		{
+			name: "apply",
+			run: func(ctx context.Context, svc *SDDService, repoDir string) error {
+				_, err := svc.EnableSDDRepo(ctx, repoDir, true)
+				return err
+			},
+		},
+		{
+			name: "export",
+			run: func(ctx context.Context, svc *SDDService, repoDir string) error {
+				_, err := svc.ExportSDDRepo(ctx, repoDir)
+				return err
+			},
+		},
+	}
+
+	for _, attempt := range attempts {
+		t.Run(attempt.name, func(t *testing.T) {
+			svc, repoDir := newSDDMaterializeService(t, localProject)
+			_, err := svc.BacklogAdd(context.Background(), model.BacklogAddRequest{
+				Title: "must remain only in the database", Lane: model.LaneStandard, Project: localProject,
+			})
+			if err != nil {
+				t.Fatalf("BacklogAdd: %v", err)
+			}
+			if err := sddfile.WriteMarker(repoDir, sddfile.Marker{
+				SDDVersion: 1, Project: foreignProject, CreatedAt: "2026-09-19T12:00:00Z",
+			}); err != nil {
+				t.Fatalf("WriteMarker: %v", err)
+			}
+
+			before := sddRepoTreeHash(t, repoDir)
+			err = attempt.run(context.Background(), svc, repoDir)
+			if err == nil {
+				t.Fatal("operation accepted a marker owned by another project")
+			}
+			message := err.Error()
+			if !strings.Contains(message, localProject) || !strings.Contains(message, foreignProject) {
+				t.Errorf("error must name both projects, got %q", message)
+			}
+			if regexp.MustCompile(`(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b`).MatchString(message) {
+				t.Errorf("error exposed a UUID: %s", message)
+			}
+			if after := sddRepoTreeHash(t, repoDir); after != before {
+				t.Error("repository tree changed after rejecting a foreign marker")
+			}
+		})
+	}
+}
+
+func sddRepoTreeHash(t *testing.T, root string) string {
+	t.Helper()
+	var paths []string
+	if err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if path != root {
+			paths = append(paths, path)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("walk repository tree: %v", err)
+	}
+	sort.Strings(paths)
+	hash := sha256.New()
+	for _, path := range paths {
+		info, err := os.Lstat(path)
+		if err != nil {
+			t.Fatalf("inspect %s: %v", path, err)
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			t.Fatalf("relative path for %s: %v", path, err)
+		}
+		hash.Write([]byte(rel))
+		hash.Write([]byte{0})
+		hash.Write([]byte(info.Mode().Type().String()))
+		hash.Write([]byte{0})
+		if info.Mode().IsRegular() {
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read %s: %v", path, err)
+			}
+			hash.Write(data)
+		} else if info.Mode()&os.ModeSymlink != 0 {
+			target, err := os.Readlink(path)
+			if err != nil {
+				t.Fatalf("read link %s: %v", path, err)
+			}
+			hash.Write([]byte(target))
+		}
+		hash.Write([]byte{0})
+	}
+	return hex.EncodeToString(hash.Sum(nil))
 }
 
 // TestSDDConvergence_RefusesForeignAnchor is the service-level half of

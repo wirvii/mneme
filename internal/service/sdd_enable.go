@@ -234,6 +234,9 @@ func (svc *SDDService) EnableSDDRepo(ctx context.Context, repoRoot string, apply
 	if err != nil {
 		return nil, fmt.Errorf("service: sdd enable: read marker: %w", err)
 	}
+	if err := svc.validateSDDMarkerOwnership(marker); err != nil {
+		return nil, fmt.Errorf("service: sdd enable: %w", err)
+	}
 	if marker != nil && !apply {
 		return svc.alreadyEnabledSDDResult(ctx, repoRoot, marker)
 	}
@@ -264,13 +267,9 @@ func (svc *SDDService) EnableSDDRepo(ctx context.Context, repoRoot string, apply
 	// export below actually write anything, rather than reading as
 	// "mechanism still off" for every one of its own calls.
 	now := time.Now().UTC().Format(time.RFC3339)
-	existing, err := sddfile.ReadMarker(repoRoot)
-	if err != nil {
-		return nil, fmt.Errorf("service: sdd enable: read marker: %w", err)
-	}
 	createdAt := now
-	if existing != nil && existing.CreatedAt != "" {
-		createdAt = existing.CreatedAt
+	if marker != nil && marker.CreatedAt != "" {
+		createdAt = marker.CreatedAt
 	}
 	if err := sddfile.WriteMarker(repoRoot, sddfile.Marker{
 		SDDVersion: 1, Project: svc.project,
@@ -397,6 +396,9 @@ func (svc *SDDService) ExportSDDRepo(ctx context.Context, repoRoot string) (*SDD
 	if err != nil {
 		return nil, fmt.Errorf("service: sdd export: read marker: %w", err)
 	}
+	if err := svc.validateSDDMarkerOwnership(marker); err != nil {
+		return nil, fmt.Errorf("service: sdd export: %w", err)
+	}
 	if marker == nil {
 		return nil, fmt.Errorf("service: sdd export: %s: %w", repoRoot, ErrSDDNotEnabled)
 	}
@@ -429,6 +431,13 @@ func (svc *SDDService) ExportSDDRepo(ctx context.Context, repoRoot string) (*SDD
 	}
 
 	return &SDDExportResult{RepoRoot: repoRoot, Plan: plan}, nil
+}
+
+func (svc *SDDService) validateSDDMarkerOwnership(marker *sddfile.Marker) error {
+	if marker == nil || marker.Project == svc.project {
+		return nil
+	}
+	return fmt.Errorf("sdd marker belongs to project %q, but the current project is %q", marker.Project, svc.project)
 }
 
 // SDDStatus reports the mechanism's state for repoRoot: enabled or not,
