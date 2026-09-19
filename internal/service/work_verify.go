@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -36,26 +37,33 @@ func (svc *SDDService) WorkVerify(ctx context.Context, req model.WorkActionReque
 		return model.WorkCapabilityResult{}, model.ErrInvalidWorkTransition
 	}
 	started := time.Now().UTC()
-	head, err := (&quality.Git{RepoDir: svc.repoDir}).HeadSHA()
+	g := &quality.Git{RepoDir: svc.repoDir}
+	head, err := g.HeadSHA()
+	if err != nil {
+		return model.WorkCapabilityResult{}, err
+	}
+	checks, observations, err := svc.evaluateDeliveryCriteria(ctx, aggregate, g, head)
 	if err != nil {
 		return model.WorkCapabilityResult{}, err
 	}
 	finished := time.Now().UTC()
-	check := &model.DeliveryCheck{
-		Kind: "verification", Name: "phase-3-pending",
-		Status: model.DeliveryCheckFail, Effect: model.DeliveryEffectBlocks,
-		Detail: "verification has not evaluated the requested contract yet",
+	if len(checks) == 0 {
+		checks = []*model.DeliveryCheck{{
+			Kind: "verification", Name: "phase-3-pending",
+			Status: model.DeliveryCheckFail, Effect: model.DeliveryEffectBlocks,
+			Detail: "verification has not evaluated the requested contract yet",
+		}}
 	}
-	checks := []*model.DeliveryCheck{check}
+	checkValues := deliveryCheckValues(checks)
 	contract := aggregate.Contract
 	cert := &model.DeliveryCertificate{
 		Project: contract.Project, WorkID: contract.ID,
 		ContractRevision: contract.ContractRevision, ContractHash: contract.ContractHash,
-		HeadSHA: head, BaseSHA: contract.BaseSHA, Verdict: model.DeriveDeliveryVerdict([]model.DeliveryCheck{*check}),
-		Evidence: "1 failed delivery check", MnemeVersion: svc.mnemeVersion,
+		HeadSHA: head, BaseSHA: contract.BaseSHA, Verdict: model.DeriveDeliveryVerdict(checkValues),
+		Evidence: deliveryEvidence(checkValues), MnemeVersion: svc.mnemeVersion,
 		StartedAt: started, FinishedAt: finished, DurationMs: finished.Sub(started).Milliseconds(),
 	}
-	if err := svc.store.InsertDeliveryEvaluation(ctx, cert, checks, nil); err != nil {
+	if err := svc.store.InsertDeliveryEvaluation(ctx, cert, checks, observations); err != nil {
 		return model.WorkCapabilityResult{}, err
 	}
 	work, err := svc.WorkGet(ctx, model.WorkGetRequest{ID: req.ID})
@@ -64,6 +72,169 @@ func (svc *SDDService) WorkVerify(ctx context.Context, req model.WorkActionReque
 	}
 	return model.WorkCapabilityResult{
 		Work: work, Operation: "verify", Available: true, Performed: true,
-		Certificate: cert, Checks: []model.DeliveryCheck{*check},
+		Certificate: cert, Checks: deliveryCheckValues(checks),
 	}, nil
+}
+
+func (svc *SDDService) evaluateDeliveryCriteria(ctx context.Context, aggregate *model.WorkAggregate, g *quality.Git, head string) ([]*model.DeliveryCheck, []model.CriterionObservation, error) {
+	if !requiresAcceptance(aggregate.Contract.Verification) {
+		if len(aggregate.Criteria) == 0 {
+			return nil, nil, nil
+		}
+		return []*model.DeliveryCheck{{Kind: "acceptance", Name: "not-requested", Status: model.DeliveryCheckSkipped, Effect: model.DeliveryEffectAbsent, Detail: "stored criteria were not requested by the contract"}}, nil, nil
+	}
+	doc, err := parseStoredDeliveryCriteria(aggregate.Criteria)
+	if err != nil {
+		return []*model.DeliveryCheck{{Kind: "acceptance", Name: "parse", Status: model.DeliveryCheckFail, Effect: model.DeliveryEffectBlocks, Detail: err.Error()}}, nil, nil
+	}
+	checks := []*model.DeliveryCheck{{Kind: "acceptance", Name: "parse", Status: model.DeliveryCheckPass, Effect: model.DeliveryEffectBlocks, Detail: fmt.Sprintf("%d criteria parsed in stored order", len(doc.Criteria))}}
+	headFacts, err := collectTreeFacts(g, head, doc.Criteria)
+	if err != nil {
+		return nil, nil, err
+	}
+	baseKnown := false
+	var baseFacts quality.TreeFacts
+	if aggregate.Contract.BaseSHA != "" {
+		if mergeBase, mergeErr := g.MergeBase(aggregate.Contract.BaseSHA, head); mergeErr == nil {
+			if baseFacts, err = collectTreeFacts(g, mergeBase, doc.Criteria); err != nil {
+				return nil, nil, err
+			}
+			baseKnown = true
+		}
+	}
+
+	stored := make(map[string]model.WorkCriterion, len(aggregate.Criteria))
+	for _, criterion := range aggregate.Criteria {
+		stored[criterion.Key] = criterion
+	}
+	runner := svc.deliveryRunnerFactory(0)
+	if runner == nil {
+		return nil, nil, fmt.Errorf("%w: delivery runner: required", model.ErrInvalidContract)
+	}
+	observedAt := time.Now().UTC()
+	observations := make([]model.CriterionObservation, 0, len(doc.Criteria))
+	for _, criterion := range doc.Criteria {
+		row := stored[criterion.ID]
+		check, observation := evaluateStoredCriterion(ctx, runner, svc.repoDir, criterion, row, headFacts, baseFacts, baseKnown, observedAt)
+		checks = append(checks, check)
+		if observation != nil {
+			observations = append(observations, *observation)
+		}
+	}
+	return checks, observations, nil
+}
+
+func parseStoredDeliveryCriteria(criteria []model.WorkCriterion) (*quality.CriteriaDoc, error) {
+	var document strings.Builder
+	document.WriteString("schema_version = 1\n")
+	for _, criterion := range criteria {
+		document.WriteString("\n")
+		document.WriteString(criterion.Declaration)
+		document.WriteString("\n")
+	}
+	doc, err := quality.ParseCriteria([]byte(document.String()))
+	if err != nil {
+		return nil, fmt.Errorf("stored acceptance criteria do not parse: %w", err)
+	}
+	if len(doc.Criteria) != len(criteria) {
+		return nil, fmt.Errorf("stored acceptance criterion count %d does not match parsed count %d", len(criteria), len(doc.Criteria))
+	}
+	for i := range criteria {
+		if criteria[i].Key != doc.Criteria[i].ID {
+			return nil, fmt.Errorf("stored acceptance criterion %d key %q does not match parsed id %q", i, criteria[i].Key, doc.Criteria[i].ID)
+		}
+	}
+	return doc, nil
+}
+
+func evaluateStoredCriterion(ctx context.Context, runner quality.Runner, repoDir string, criterion quality.Criterion, stored model.WorkCriterion, headFacts, baseFacts quality.TreeFacts, baseKnown bool, observedAt time.Time) (*model.DeliveryCheck, *model.CriterionObservation) {
+	signed := stored.Status == model.CriterionSigned && stored.Evidence != "" && stored.CheckedBy != "" && stored.CheckedAt != nil
+	check := &model.DeliveryCheck{Kind: "criterion", Name: criterion.ID, Effect: model.DeliveryEffectBlocks}
+	observation := &model.CriterionObservation{CriterionID: stored.ID, CheckedBy: "mneme", CheckedAt: observedAt}
+	detail := criterionDetail{Mode: string(criterion.Mode), Text: criterion.Text}
+
+	switch criterion.Mode {
+	case quality.ModeAssert:
+		outcome, why := quality.EvaluateCriterion(criterion, headFacts, baseFacts, baseKnown)
+		check.Detail = assertDetailFor(criterion, outcome, why)
+		observation.Evidence = why
+		switch outcome {
+		case quality.OutcomePass:
+			check.Status = model.DeliveryCheckPass
+			observation.Status = model.CriterionPass
+		case quality.OutcomeFail:
+			check.Status = model.DeliveryCheckFail
+			observation.Status = model.CriterionFail
+		case quality.OutcomeVacuous:
+			check.Status = model.DeliveryCheckNotReviewed
+			observation.Status = model.CriterionVacuous
+		default:
+			check.Status = model.DeliveryCheckNotReviewed
+			observation.Status = model.CriterionFail
+		}
+
+	case quality.ModeCommand:
+		result := runner.Run(ctx, quality.Gate{Name: "criterion-" + criterion.ID, Command: criterion.Command, Timeout: criterion.Timeout}, repoDir)
+		check.DurationMs = result.DurationMs
+		check.OutputSHA256 = result.OutputSHA256
+		check.OutputTail = result.OutputTail
+		detail.Command = criterion.Command
+		detail.Timeout = criterion.Timeout.String()
+		if result.Status != quality.GateStatusPass {
+			check.Status = model.DeliveryCheckFail
+			detail.Outcome = "fail"
+			detail.Why = fmt.Sprintf("exit_code=%d", result.ExitCode)
+			observation.Status = model.CriterionFail
+			observation.Evidence = result.OutputTail
+		} else if signed {
+			check.Status = model.DeliveryCheckPass
+			detail.Outcome = "pass"
+			detail.Why = "command passed and a signed observation establishes its base review"
+			observation = nil
+		} else {
+			check.Status = model.DeliveryCheckNotReviewed
+			detail.Outcome = "vacuity-unprovable"
+			detail.Why = "command passed at HEAD but has no signed base review"
+			observation.Status = model.CriterionVacuous
+			observation.Evidence = detail.Why
+		}
+		check.Detail = marshalCriterionDetail(detail)
+
+	case quality.ModeManual:
+		detail.EvidenceRequired = criterion.EvidenceRequired
+		if signed {
+			check.Status = model.DeliveryCheckPass
+			detail.Outcome = "pass"
+			detail.Why = "signed observation with evidence"
+			observation = nil
+		} else {
+			check.Status = model.DeliveryCheckNotReviewed
+			detail.Outcome = "manual-unverified"
+			detail.Why = "manual criterion lacks a complete signed observation"
+			observation = nil
+		}
+		check.Detail = marshalCriterionDetail(detail)
+	}
+	return check, observation
+}
+
+func marshalCriterionDetail(detail criterionDetail) string {
+	raw, _ := json.Marshal(detail) //nolint:errcheck // fixed scalar/slice shape cannot fail
+	return string(raw)
+}
+
+func deliveryCheckValues(checks []*model.DeliveryCheck) []model.DeliveryCheck {
+	values := make([]model.DeliveryCheck, len(checks))
+	for i, check := range checks {
+		values[i] = *check
+	}
+	return values
+}
+
+func deliveryEvidence(checks []model.DeliveryCheck) string {
+	counts := map[model.DeliveryCheckStatus]int{}
+	for _, check := range checks {
+		counts[check.Status]++
+	}
+	return fmt.Sprintf("%d pass, %d fail, %d not reviewed, %d skipped", counts[model.DeliveryCheckPass], counts[model.DeliveryCheckFail], counts[model.DeliveryCheckNotReviewed], counts[model.DeliveryCheckSkipped])
 }
