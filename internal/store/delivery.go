@@ -180,43 +180,49 @@ type InitialReviewWrite struct {
 	By           string
 }
 
+// InitialReviewResult reports the status and correction counter committed with an initial review.
+type InitialReviewResult struct {
+	Status           model.WorkStatus
+	CorrectionRounds int
+}
+
 // InsertInitialReview atomically records initial findings, factual evidence, and implementing-to-verifying.
-func (s *SDDStore) InsertInitialReview(ctx context.Context, in InitialReviewWrite) error {
+func (s *SDDStore) InsertInitialReview(ctx context.Context, in InitialReviewWrite) (InitialReviewResult, error) {
 	if err := validateDeliveryEvaluation(in.Certificate, in.Checks, in.Observations); err != nil {
-		return err
+		return InitialReviewResult{}, err
 	}
 	if strings.TrimSpace(in.By) == "" {
-		return model.ErrInvalidContract
+		return InitialReviewResult{}, model.ErrInvalidContract
 	}
 	for _, finding := range in.Findings {
 		if finding == nil || !finding.Category.Valid() || !finding.Severity.Valid() || strings.TrimSpace(finding.Description) == "" || strings.TrimSpace(finding.Evidence) == "" {
-			return model.ErrInvalidContract
+			return InitialReviewResult{}, model.ErrInvalidContract
 		}
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return InitialReviewResult{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
 	cert := in.Certificate
 	var status, project, contractHash, baseSHA string
-	var revision int
-	if err := tx.QueryRowContext(ctx, `SELECT status,project,contract_revision,contract_hash,base_sha FROM execution_contracts WHERE id=?`, cert.WorkID).Scan(&status, &project, &revision, &contractHash, &baseSHA); errors.Is(err, sql.ErrNoRows) {
-		return model.ErrWorkNotFound
+	var revision, correctionRounds, maxCorrectionRounds int
+	if err := tx.QueryRowContext(ctx, `SELECT status,project,contract_revision,contract_hash,base_sha,correction_rounds,max_correction_rounds FROM execution_contracts WHERE id=?`, cert.WorkID).Scan(&status, &project, &revision, &contractHash, &baseSHA, &correctionRounds, &maxCorrectionRounds); errors.Is(err, sql.ErrNoRows) {
+		return InitialReviewResult{}, model.ErrWorkNotFound
 	} else if err != nil {
-		return fmt.Errorf("store: insert initial review: load work: %w", err)
+		return InitialReviewResult{}, fmt.Errorf("store: insert initial review: load work: %w", err)
 	}
 	if model.WorkStatus(status) != model.WorkStatusImplementing {
-		return model.ErrInvalidWorkTransition
+		return InitialReviewResult{}, model.ErrInvalidWorkTransition
 	}
 	if cert.Project != project || cert.ContractRevision != revision || cert.ContractHash != contractHash || cert.BaseSHA != baseSHA || strings.TrimSpace(cert.HeadSHA) == "" {
-		return model.ErrInvalidContract
+		return InitialReviewResult{}, model.ErrInvalidContract
 	}
 	now := time.Now().UTC()
 	for i, finding := range in.Findings {
 		id, idErr := uuid.NewV7()
 		if idErr != nil {
-			return idErr
+			return InitialReviewResult{}, idErr
 		}
 		finding.ID = id.String()
 		finding.WorkID = cert.WorkID
@@ -226,23 +232,49 @@ func (s *SDDStore) InsertInitialReview(ctx context.Context, in InitialReviewWrit
 		finding.Status = model.FindingOpen
 		finding.CreatedAt = now
 		if _, err := tx.ExecContext(ctx, `INSERT INTO execution_findings(id,work_id,seq,category,severity,description,location,evidence,origin,review_phase,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, finding.ID, finding.WorkID, finding.Seq, finding.Category, finding.Severity, finding.Description, finding.Location, finding.Evidence, finding.Origin, finding.ReviewPhase, finding.Status, formatTime(finding.CreatedAt)); err != nil {
-			return fmt.Errorf("store: insert initial review: finding %d: %w", i+1, err)
+			return InitialReviewResult{}, fmt.Errorf("store: insert initial review: finding %d: %w", i+1, err)
 		}
 	}
 	if err := insertDeliveryEvaluationTx(ctx, tx, cert, in.Checks, in.Observations); err != nil {
-		return err
+		return InitialReviewResult{}, err
 	}
 	result, err := tx.ExecContext(ctx, `UPDATE execution_contracts SET status=?,updated_at=? WHERE id=? AND status=?`, model.WorkStatusVerifying, formatTime(now), cert.WorkID, model.WorkStatusImplementing)
 	if err != nil {
-		return fmt.Errorf("store: insert initial review: transition: %w", err)
+		return InitialReviewResult{}, fmt.Errorf("store: insert initial review: transition: %w", err)
 	}
 	if !oneRow(result) {
-		return model.ErrInvalidWorkTransition
+		return InitialReviewResult{}, model.ErrInvalidWorkTransition
 	}
 	if err := insertWorkHistory(ctx, tx, cert.WorkID, model.WorkStatusImplementing, model.WorkStatusVerifying, revision, in.By, "", now); err != nil {
-		return fmt.Errorf("store: insert initial review: history: %w", err)
+		return InitialReviewResult{}, fmt.Errorf("store: insert initial review: history: %w", err)
 	}
-	return tx.Commit()
+	finalStatus := model.WorkStatusVerifying
+	blocking := cert.Verdict != model.DeliveryVerdictPass
+	for _, finding := range in.Findings {
+		blocking = blocking || finding.Category.Blocks()
+	}
+	if blocking {
+		if correctionRounds < maxCorrectionRounds {
+			finalStatus = model.WorkStatusCorrecting
+			correctionRounds++
+		} else {
+			finalStatus = model.WorkStatusEscalated
+		}
+		result, err = tx.ExecContext(ctx, `UPDATE execution_contracts SET status=?,correction_rounds=?,updated_at=? WHERE id=? AND status=?`, finalStatus, correctionRounds, formatTime(now), cert.WorkID, model.WorkStatusVerifying)
+		if err != nil {
+			return InitialReviewResult{}, fmt.Errorf("store: insert initial review: final transition: %w", err)
+		}
+		if !oneRow(result) {
+			return InitialReviewResult{}, model.ErrInvalidWorkTransition
+		}
+		if err := insertWorkHistory(ctx, tx, cert.WorkID, model.WorkStatusVerifying, finalStatus, revision, in.By, "", now); err != nil {
+			return InitialReviewResult{}, fmt.Errorf("store: insert initial review: final history: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return InitialReviewResult{}, err
+	}
+	return InitialReviewResult{Status: finalStatus, CorrectionRounds: correctionRounds}, nil
 }
 
 func validateDeliveryEvaluation(cert *model.DeliveryCertificate, checks []*model.DeliveryCheck, observations []model.CriterionObservation) error {

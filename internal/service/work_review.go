@@ -91,10 +91,11 @@ func (svc *SDDService) WorkReview(ctx context.Context, req model.WorkReviewReque
 	if err != nil {
 		return model.WorkCapabilityResult{}, err
 	}
-	if err := svc.store.InsertInitialReview(ctx, store.InitialReviewWrite{
+	_, err = svc.store.InsertInitialReview(ctx, store.InitialReviewWrite{
 		Certificate: evaluation.certificate, Checks: evaluation.checks,
 		Observations: evaluation.observations, Findings: findings, By: req.By,
-	}); err != nil {
+	})
+	if err != nil {
 		return model.WorkCapabilityResult{}, err
 	}
 	work, err := svc.WorkGet(ctx, model.WorkGetRequest{ID: req.ID})
