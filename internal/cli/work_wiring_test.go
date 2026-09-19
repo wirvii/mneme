@@ -10,6 +10,7 @@ import (
 	"github.com/wirvii/mneme/internal/config"
 	"github.com/wirvii/mneme/internal/db"
 	"github.com/wirvii/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/quality"
 	"github.com/wirvii/mneme/internal/store"
 )
 
@@ -88,5 +89,30 @@ text = "tracked file exists"
 	}
 	if result.Certificate == nil || len(result.Checks) == 0 {
 		t.Fatalf("result=%#v", result)
+	}
+
+	reviewWork, err := svc.WorkBegin(context.Background(), model.WorkBeginRequest{
+		Goal: "review wiring", Scope: []string{"**"}, Verification: []model.VerificationKind{model.VerificationAcceptance},
+		Criteria: []model.WorkCriterionInput{criterion}, Constraints: []model.WorkConstraintInput{{Key: "layers", Text: "dependencies point inward"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.WorkLock(context.Background(), model.WorkLockRequest{ID: reviewWork.Contract.ID, By: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	head, err := (&quality.Git{RepoDir: svc.RepoDir()}).HeadSHA()
+	if err != nil {
+		t.Fatal(err)
+	}
+	review, err := svc.WorkReview(context.Background(), model.WorkReviewRequest{
+		ID: reviewWork.Contract.ID, By: "qa-tester", HeadSHA: head,
+		ArchitectureVerdicts: []model.WorkArchitectureVerdictInput{{ConstraintKey: "layers", Status: model.DeliveryCheckPass, EvidenceKind: model.ReviewEvidenceFile, Evidence: "tracked.txt"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if review.Certificate == nil || review.Certificate.HeadSHA != head || review.Certificate.MnemeVersion == "" || review.Work.Contract.Status != model.WorkStatusVerifying {
+		t.Fatalf("review=%#v", review)
 	}
 }

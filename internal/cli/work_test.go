@@ -45,6 +45,28 @@ func TestWorkBeginAndAmendRequireInput(t *testing.T) {
 	}
 }
 
+func TestWorkReviewCLIRequiresBoundedInput(t *testing.T) {
+	cmd := newWorkCmd()
+	cmd.SetArgs([]string{"review", "WORK-001"})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), `required flag(s) "input" not set`) {
+		t.Fatalf("Execute() error = %v, want missing --input", err)
+	}
+}
+
+func TestWorkReviewCLIRejectsOversizeInput(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "review.json")
+	if err := os.WriteFile(path, make([]byte, workInputLimit+1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := newWorkCmd()
+	cmd.SetArgs([]string{"review", "WORK-001", "--input", path})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "10 MiB") {
+		t.Fatalf("Execute() error = %v, want size limit", err)
+	}
+}
+
 func TestReadWorkInputUsesOnlyExplicitSource(t *testing.T) {
 	cmd := newWorkCmd()
 	cmd.SetIn(strings.NewReader(`{"goal":"stdin"}`))
@@ -121,6 +143,37 @@ func TestWriteWorkVerifyCapabilitySummarizesCertificate(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "NO DISPONIBLE") {
 		t.Fatalf("verify output remained unavailable: %q", out.String())
+	}
+}
+
+func TestWriteWorkReviewCapabilitySummarizesReview(t *testing.T) {
+	var out bytes.Buffer
+	result := model.WorkCapabilityResult{
+		Operation: "review", Available: true, Performed: true,
+		Work: model.WorkGetResponse{
+			Contract: model.WorkContractView{ID: "WORK-007", ContractRevision: 3, ContractHash: "fedcba9876543210"},
+			Findings: []model.WorkFinding{
+				{Category: model.FindingRegression},
+				{Category: model.FindingImprovement},
+			},
+		},
+		Certificate: &model.DeliveryCertificate{Verdict: model.DeliveryVerdictFail, HeadSHA: "0123456789abcdef"},
+		Checks: []model.DeliveryCheck{
+			{Kind: "architecture", Status: model.DeliveryCheckPass},
+			{Kind: "architecture", Status: model.DeliveryCheckFail},
+			{Kind: "architecture", Status: model.DeliveryCheckNotReviewed},
+		},
+	}
+	if err := writeWorkCapability(&out, result); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"REVISADO WORK-007", "verdict:fail", "head:0123456789abcdef", "architecture-pass:1", "architecture-fail:1", "architecture-not-reviewed:1", "blocking-findings:1", "non-blocking-findings:1"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("summary %q does not contain %q", out.String(), want)
+		}
+	}
+	if strings.Contains(out.String(), "NO DISPONIBLE") {
+		t.Fatalf("review output remained unavailable: %q", out.String())
 	}
 }
 

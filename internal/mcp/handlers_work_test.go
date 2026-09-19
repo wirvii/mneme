@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -107,13 +109,13 @@ func TestHandleWorkGetOmitsContractUUID(t *testing.T) {
 	}
 }
 
-func TestHandleWorkReviewAndCompleteRemainUnavailable(t *testing.T) {
+func TestHandleWorkCompleteRemainsUnavailable(t *testing.T) {
 	h, sdd, _ := newWorkTestHandlers(t)
 	created, err := sdd.WorkBegin(context.Background(), model.WorkBeginRequest{Goal: "g", Scope: []string{"internal/**"}, Verification: []model.VerificationKind{model.VerificationBuild}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"work_review", "work_complete"} {
+	for _, name := range []string{"work_complete"} {
 		result, rpcErr := h.handleToolCall(context.Background(), ToolCallParams{Name: name, Arguments: mustMarshal(t, model.WorkActionRequest{ID: created.Contract.ID})})
 		if rpcErr != nil {
 			t.Fatalf("%s: %v", name, rpcErr)
@@ -129,6 +131,66 @@ func TestHandleWorkReviewAndCompleteRemainUnavailable(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestHandleWorkReviewReturnsSharedCertificateAndFindings(t *testing.T) {
+	h, sdd, _ := newWorkTestHandlers(t)
+	created, err := sdd.WorkBegin(context.Background(), model.WorkBeginRequest{
+		Goal: "g", Scope: []string{"internal/**"}, Verification: []model.VerificationKind{model.VerificationBuild},
+		Constraints: []model.WorkConstraintInput{{Key: "layers", Text: "dependencies point inward"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sdd.WorkLock(context.Background(), model.WorkLockRequest{ID: created.Contract.ID, By: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	head, err := (&quality.Git{RepoDir: sdd.RepoDir()}).HeadSHA()
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := model.WorkReviewRequest{
+		ID: created.Contract.ID, By: "qa-tester", HeadSHA: head,
+		Findings:             []model.WorkReviewFindingInput{{Category: model.FindingDiscovery, Severity: model.PriorityLow, Description: "follow-up", Evidence: "evidence"}},
+		ArchitectureVerdicts: []model.WorkArchitectureVerdictInput{{ConstraintKey: "layers", Status: model.DeliveryCheckPass, EvidenceKind: model.ReviewEvidenceFile, Evidence: "internal/service/work_review.go"}},
+	}
+	result, rpcErr := h.handleToolCall(context.Background(), ToolCallParams{Name: "work_review", Arguments: mustMarshal(t, req)})
+	if rpcErr != nil {
+		t.Fatal(rpcErr)
+	}
+	var response model.WorkCapabilityResult
+	raw := toolResultJSON(t, result, &response)
+	if !response.Available || !response.Performed || response.Operation != "review" || response.Certificate == nil || len(response.Checks) == 0 || len(response.Work.Findings) != 1 {
+		t.Fatalf("response=%#v raw=%s", response, raw)
+	}
+}
+
+func TestWorkReviewToolSchemaIsClosedAndCurrent(t *testing.T) {
+	for _, tool := range allTools() {
+		if tool.Name != "work_review" {
+			continue
+		}
+		lower := strings.ToLower(tool.Description)
+		if strings.Contains(lower, "unavailable") || !strings.Contains(lower, "certificate") || !strings.Contains(lower, "initial review") {
+			t.Fatalf("description=%q", tool.Description)
+		}
+		schema := tool.InputSchema.(map[string]any)
+		required, _ := schema["required"].([]string)
+		if !slices.Equal(required, []string{"id", "by", "head_sha"}) {
+			t.Fatalf("required=%v", required)
+		}
+		properties := schema["properties"].(map[string]any)
+		verdictItems := properties["architecture_verdicts"].(map[string]any)["items"].(map[string]any)
+		verdictProps := verdictItems["properties"].(map[string]any)
+		if got := verdictProps["status"].(map[string]any)["enum"]; !reflect.DeepEqual(got, []string{"pass", "fail"}) {
+			t.Fatalf("status enum=%v", got)
+		}
+		if got := verdictProps["evidence_kind"].(map[string]any)["enum"]; !reflect.DeepEqual(got, []string{"file", "symbol", "codegraph_query"}) {
+			t.Fatalf("evidence enum=%v", got)
+		}
+		return
+	}
+	t.Fatal("work_review tool missing")
 }
 
 func TestHandleWorkVerifyReturnsSharedCertificateAndChecks(t *testing.T) {

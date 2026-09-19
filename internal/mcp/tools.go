@@ -1957,12 +1957,42 @@ func workToolDefinitions() []ToolDefinition {
 	idSchema := func() map[string]any {
 		return map[string]any{"type": "object", "required": []string{"id"}, "properties": map[string]any{"id": map[string]any{"type": "string"}}}
 	}
+	priorityEnum := []string{"critical", "high", "medium", "low"}
+	reviewSchema := map[string]any{
+		"type": "object", "additionalProperties": false,
+		"required": []string{"id", "by", "head_sha"},
+		"properties": map[string]any{
+			"id":       map[string]any{"type": "string"},
+			"by":       map[string]any{"type": "string"},
+			"head_sha": map[string]any{"type": "string"},
+			"findings": map[string]any{"type": "array", "items": map[string]any{
+				"type": "object", "additionalProperties": false,
+				"required": []string{"category", "severity", "description", "evidence"},
+				"properties": map[string]any{
+					"category":    map[string]any{"type": "string", "enum": []string{"contract_violation", "regression", "discovery", "improvement"}},
+					"severity":    map[string]any{"type": "string", "enum": priorityEnum},
+					"description": map[string]any{"type": "string"}, "location": map[string]any{"type": "string"}, "evidence": map[string]any{"type": "string"},
+				},
+			}},
+			"architecture_verdicts": map[string]any{"type": "array", "items": map[string]any{
+				"type": "object", "additionalProperties": false,
+				"required": []string{"constraint_key", "status", "evidence_kind", "evidence"},
+				"properties": map[string]any{
+					"constraint_key": map[string]any{"type": "string"},
+					"status":         map[string]any{"type": "string", "enum": []string{"pass", "fail"}},
+					"evidence_kind":  map[string]any{"type": "string", "enum": []string{"file", "symbol", "codegraph_query"}},
+					"evidence":       map[string]any{"type": "string"}, "severity": map[string]any{"type": "string", "enum": priorityEnum},
+					"description": map[string]any{"type": "string"}, "location": map[string]any{"type": "string"},
+				},
+			}},
+		},
+	}
 	return []ToolDefinition{
 		{Name: "work_begin", Description: "Create a delivery-v2 work contract after validating its scope and criteria.", InputSchema: map[string]any{"type": "object", "required": []string{"goal", "scope", "verification"}, "properties": begin}},
 		{Name: "work_get", Description: "Read the complete public work aggregate without exposing its internal UUID anchor.", InputSchema: idSchema()},
 		{Name: "work_lock", Description: "Lock a draft against the repository HEAD and begin implementation atomically.", InputSchema: map[string]any{"type": "object", "required": []string{"id"}, "properties": map[string]any{"id": map[string]any{"type": "string"}, "by": map[string]any{"type": "string"}}}},
 		{Name: "work_amend", Description: "Replace every normative field of an existing work contract with an auditable reason.", InputSchema: map[string]any{"type": "object", "required": []string{"id", "goal", "scope", "verification", "development_method", "by", "reason"}, "properties": amend}},
-		{Name: "work_review", Description: "Reports unavailable in phase 2 and performs no review or state change.", InputSchema: idSchema()},
+		{Name: "work_review", Description: "Record one commit-bound initial review, persist findings and architecture verdicts, and emit the complete factual certificate.", InputSchema: reviewSchema},
 		{Name: "work_verify", Description: "Evaluates stored criteria and required checks, persists a factual delivery certificate, and does not change work state.", InputSchema: idSchema()},
 		{Name: "work_complete", Description: "Reports unavailable in phase 2 and performs no completion or state change.", InputSchema: idSchema()},
 	}

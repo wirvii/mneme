@@ -24,10 +24,52 @@ func newWorkCmd() *cobra.Command {
 		newWorkGetCmd(),
 		newWorkLockCmd(),
 		newWorkAmendCmd(),
-		newWorkActionCmd("review"),
+		newWorkReviewCmd(),
 		newWorkActionCmd("verify"),
 		newWorkActionCmd("complete"),
 	)
+	return cmd
+}
+
+type workReviewInput struct {
+	By                   string                               `json:"by"`
+	HeadSHA              string                               `json:"head_sha"`
+	Findings             []model.WorkReviewFindingInput       `json:"findings,omitempty"`
+	ArchitectureVerdicts []model.WorkArchitectureVerdictInput `json:"architecture_verdicts,omitempty"`
+}
+
+func newWorkReviewCmd() *cobra.Command {
+	var input string
+	var jsonOutput bool
+	cmd := &cobra.Command{
+		Use:   "review <id>",
+		Short: "Record one commit-bound initial work review",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			var body workReviewInput
+			if err := decodeWorkInput(cmd, input, &body); err != nil {
+				return err
+			}
+			req := model.WorkReviewRequest{
+				ID: args[0], By: body.By, HeadSHA: body.HeadSHA,
+				Findings: body.Findings, ArchitectureVerdicts: body.ArchitectureVerdicts,
+			}
+			result, err := callWork(cmd, func(svc workService) (any, error) {
+				return svc.WorkReview(cmd.Context(), req)
+			})
+			if err != nil {
+				return err
+			}
+			capability := result.(model.WorkCapabilityResult)
+			if jsonOutput {
+				return printJSON(cmd.OutOrStdout(), capability)
+			}
+			return writeWorkCapability(cmd.OutOrStdout(), capability)
+		},
+	}
+	cmd.Flags().StringVar(&input, "input", "", "JSON review file, or - for standard input")
+	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Output result as JSON")
+	_ = cmd.MarkFlagRequired("input")
 	return cmd
 }
 
@@ -153,8 +195,6 @@ func newWorkActionCmd(operation string) *cobra.Command {
 			req := model.WorkActionRequest{ID: args[0]}
 			result, err := callWork(cmd, func(svc workService) (any, error) {
 				switch operation {
-				case "review":
-					return svc.WorkReview(cmd.Context(), req)
 				case "verify":
 					return svc.WorkVerify(cmd.Context(), req)
 				default:
@@ -180,7 +220,7 @@ type workService interface {
 	WorkGet(context.Context, model.WorkGetRequest) (model.WorkGetResponse, error)
 	WorkLock(context.Context, model.WorkLockRequest) (model.WorkGetResponse, error)
 	WorkAmend(context.Context, model.WorkAmendRequest) (model.WorkGetResponse, error)
-	WorkReview(context.Context, model.WorkActionRequest) (model.WorkCapabilityResult, error)
+	WorkReview(context.Context, model.WorkReviewRequest) (model.WorkCapabilityResult, error)
 	WorkVerify(context.Context, model.WorkActionRequest) (model.WorkCapabilityResult, error)
 	WorkComplete(context.Context, model.WorkActionRequest) (model.WorkCapabilityResult, error)
 }
@@ -253,6 +293,27 @@ func writeWorkSummary(w io.Writer, label string, work model.WorkGetResponse) err
 }
 
 func writeWorkCapability(w io.Writer, result model.WorkCapabilityResult) error {
+	if result.Operation == "review" && result.Available && result.Performed && result.Certificate != nil {
+		architecture := map[model.DeliveryCheckStatus]int{}
+		for _, check := range result.Checks {
+			if check.Kind == "architecture" {
+				architecture[check.Status]++
+			}
+		}
+		blocking, nonBlocking := 0, 0
+		for _, finding := range result.Work.Findings {
+			if finding.Category.Blocks() {
+				blocking++
+			} else {
+				nonBlocking++
+			}
+		}
+		_, err := fmt.Fprintf(w, "REVISADO %s verdict:%s head:%s architecture-pass:%d architecture-fail:%d architecture-not-reviewed:%d blocking-findings:%d non-blocking-findings:%d\n",
+			result.Work.Contract.ID, result.Certificate.Verdict, result.Certificate.HeadSHA,
+			architecture[model.DeliveryCheckPass], architecture[model.DeliveryCheckFail], architecture[model.DeliveryCheckNotReviewed],
+			blocking, nonBlocking)
+		return err
+	}
 	if result.Operation == "verify" && result.Available && result.Performed && result.Certificate != nil {
 		counts := map[model.DeliveryCheckStatus]int{}
 		for _, check := range result.Checks {

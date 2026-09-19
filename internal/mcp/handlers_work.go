@@ -76,7 +76,7 @@ func (h *handlers) handleWorkReview(ctx context.Context, raw json.RawMessage) (*
 	if h.sdd == nil {
 		return nil, h.sddUnavailable("work_review")
 	}
-	var req model.WorkActionRequest
+	var req model.WorkReviewRequest
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return invalidWorkArguments("work_review", err)
 	}
