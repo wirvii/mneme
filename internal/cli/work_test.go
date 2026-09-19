@@ -96,3 +96,44 @@ func TestWriteWorkCapabilityStartsUnavailable(t *testing.T) {
 		t.Fatalf("output = %q", out.String())
 	}
 }
+
+func TestWriteWorkSummaryIncludesContractAndAggregateFacts(t *testing.T) {
+	work := model.WorkGetResponse{
+		Contract: model.WorkContractView{
+			ID: "WORK-007", SourceType: model.WorkSourceSpec, SourceID: "SPEC-144",
+			Status: model.WorkStatusImplementing, ContractRevision: 3,
+			BaseSHA: "0123456789abcdef", ContractHash: "fedcba9876543210",
+		},
+		Criteria:    make([]model.WorkCriterionView, 2),
+		Constraints: make([]model.WorkConstraintView, 1),
+		Findings:    make([]model.WorkFinding, 4),
+	}
+	var out bytes.Buffer
+	if err := writeWorkSummary(&out, "TRABAJO", work); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"TRABAJO WORK-007", "source:spec:SPEC-144", "status:implementing",
+		"revision:3", "base:0123456789abcdef", "hash:fedcba987654",
+		"criteria:2", "constraints:1", "findings:4",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("summary %q does not contain %q", out.String(), want)
+		}
+	}
+}
+
+func TestWriteWorkSummaryShowsOrganicSourceAndEmptyGitFacts(t *testing.T) {
+	work := model.WorkGetResponse{Contract: model.WorkContractView{
+		ID: "WORK-001", SourceType: model.WorkSourceOrganic, Status: model.WorkStatusDraft,
+	}}
+	var out bytes.Buffer
+	if err := writeWorkSummary(&out, "CREADO", work); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"source:organic", "base:-", "hash:-", "criteria:0", "constraints:0", "findings:0"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("summary %q does not contain %q", out.String(), want)
+		}
+	}
+}
