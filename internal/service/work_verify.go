@@ -38,15 +38,44 @@ func (svc *SDDService) WorkVerify(ctx context.Context, req model.WorkActionReque
 	if strings.TrimSpace(svc.mnemeVersion) == "" {
 		return model.WorkCapabilityResult{}, fmt.Errorf("%w: mneme version: required", model.ErrInvalidContract)
 	}
+	evaluation, err := svc.evaluateDelivery(ctx, aggregate, deliveryEvaluationOptions{})
+	if err != nil {
+		return model.WorkCapabilityResult{}, err
+	}
+	if err := svc.store.InsertDeliveryEvaluation(ctx, evaluation.certificate, evaluation.checks, evaluation.observations); err != nil {
+		return model.WorkCapabilityResult{}, err
+	}
+	work, err := svc.WorkGet(ctx, model.WorkGetRequest(req))
+	if err != nil {
+		return model.WorkCapabilityResult{}, err
+	}
+	return model.WorkCapabilityResult{
+		Work: work, Operation: "verify", Available: true, Performed: true,
+		Certificate: evaluation.certificate, Checks: deliveryCheckValues(evaluation.checks),
+	}, nil
+}
+
+type deliveryEvaluation struct {
+	certificate  *model.DeliveryCertificate
+	checks       []*model.DeliveryCheck
+	observations []model.CriterionObservation
+}
+
+type deliveryEvaluationOptions struct {
+	architectureChecks []*model.DeliveryCheck
+	reviewChecks       []*model.DeliveryCheck
+}
+
+func (svc *SDDService) evaluateDelivery(ctx context.Context, aggregate *model.WorkAggregate, options deliveryEvaluationOptions) (deliveryEvaluation, error) {
 	started := time.Now().UTC()
 	g := &quality.Git{RepoDir: svc.repoDir}
 	head, err := g.HeadSHA()
 	if err != nil {
-		return model.WorkCapabilityResult{}, err
+		return deliveryEvaluation{}, err
 	}
 	dirty, dirtyPaths, err := g.IsDirty()
 	if err != nil {
-		return model.WorkCapabilityResult{}, err
+		return deliveryEvaluation{}, err
 	}
 	var checks []*model.DeliveryCheck
 	var observations []model.CriterionObservation
@@ -63,15 +92,20 @@ func (svc *SDDService) WorkVerify(ctx context.Context, req model.WorkActionReque
 		}
 		runner := svc.deliveryRunnerFactory(tailBytes)
 		if runner == nil {
-			return model.WorkCapabilityResult{}, fmt.Errorf("%w: delivery runner: required", model.ErrInvalidContract)
+			return deliveryEvaluation{}, fmt.Errorf("%w: delivery runner: required", model.ErrInvalidContract)
 		}
 		checks, observations, err = svc.evaluateDeliveryCriteria(ctx, aggregate, g, head, runner)
 		if err != nil {
-			return model.WorkCapabilityResult{}, err
+			return deliveryEvaluation{}, err
 		}
 		checks = append(checks, runRequestedDeliveryGates(ctx, runner, svc.repoDir, aggregate.Contract.Verification, constitution, constitutionErr, deliveryChecksBlocked(checks))...)
 	}
-	checks = append(checks, deliveryArchitectureChecks(aggregate.Constraints, checks)...)
+	if options.architectureChecks == nil {
+		checks = append(checks, deliveryArchitectureChecks(aggregate.Constraints, checks)...)
+	} else {
+		checks = append(checks, options.architectureChecks...)
+	}
+	checks = append(checks, options.reviewChecks...)
 	checks = append(checks, deliveryTDDCheck(aggregate.Contract))
 	finished := time.Now().UTC()
 	if len(checks) == 0 {
@@ -90,17 +124,7 @@ func (svc *SDDService) WorkVerify(ctx context.Context, req model.WorkActionReque
 		Evidence: deliveryEvidence(checkValues), MnemeVersion: svc.mnemeVersion,
 		StartedAt: started, FinishedAt: finished, DurationMs: finished.Sub(started).Milliseconds(),
 	}
-	if err := svc.store.InsertDeliveryEvaluation(ctx, cert, checks, observations); err != nil {
-		return model.WorkCapabilityResult{}, err
-	}
-	work, err := svc.WorkGet(ctx, model.WorkGetRequest(req))
-	if err != nil {
-		return model.WorkCapabilityResult{}, err
-	}
-	return model.WorkCapabilityResult{
-		Work: work, Operation: "verify", Available: true, Performed: true,
-		Certificate: cert, Checks: deliveryCheckValues(checks),
-	}, nil
+	return deliveryEvaluation{certificate: cert, checks: checks, observations: observations}, nil
 }
 
 func deliveryArchitectureChecks(constraints []model.WorkConstraint, checks []*model.DeliveryCheck) []*model.DeliveryCheck {
