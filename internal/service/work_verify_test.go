@@ -437,6 +437,69 @@ text = "existing verbs"
 	}
 }
 
+func TestWorkVerify_CriteriaCascadeStopsBeforeCommand(t *testing.T) {
+	tests := []struct {
+		name            string
+		blocking        model.WorkCriterionInput
+		wantCheck       model.DeliveryCheckStatus
+		wantObservation model.CriterionStatus
+	}{
+		{name: "fail", blocking: model.WorkCriterionInput{Key: "blocking", Declaration: `[[criterion]]
+id = "blocking"
+mode = "assert"
+text = "required file exists"
+  [[criterion.assert]]
+  verb = "file_exists"
+  path = "missing.txt"
+  new = true`}, wantCheck: model.DeliveryCheckFail, wantObservation: model.CriterionFail},
+		{name: "not reviewed", blocking: model.WorkCriterionInput{Key: "blocking", Declaration: `[[criterion]]
+id = "blocking"
+mode = "assert"
+text = "existing file remains"
+  [[criterion.assert]]
+  verb = "file_exists"
+  path = "tracked.txt"
+  new = false`}, wantCheck: model.DeliveryCheckNotReviewed, wantObservation: model.CriterionVacuous},
+	}
+	command := model.WorkCriterionInput{Key: "command", Declaration: `[[criterion]]
+id = "command"
+mode = "command"
+text = "must not run after a blocker"
+command = ["project-check"]
+timeout = "1m"`}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fixture := newCriteriaVerifyFixture(t, []model.WorkCriterionInput{tt.blocking, command}, map[string]string{"tracked.txt": "base\n"}, nil)
+
+			result, err := fixture.svc.WorkVerify(context.Background(), model.WorkActionRequest{ID: "WORK-001"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if fixture.runner.calls != 0 {
+				t.Fatalf("runner calls=%d, want 0", fixture.runner.calls)
+			}
+			if len(result.Checks) < 3 || result.Checks[1].Name != "blocking" || result.Checks[1].Status != tt.wantCheck || result.Checks[2].Name != "command" {
+				t.Fatalf("criterion order or blocker changed: %#v", result.Checks)
+			}
+			stopped := result.Checks[2]
+			if stopped.Status != model.DeliveryCheckSkipped || stopped.Effect != model.DeliveryEffectStopped {
+				t.Fatalf("stopped criterion=%#v", stopped)
+			}
+			if result.Work.Criteria[0].Status != tt.wantObservation || result.Work.Criteria[1].Status != model.CriterionPending {
+				t.Fatalf("criteria=%#v", result.Work.Criteria)
+			}
+			persisted, err := fixture.svc.store.ListDeliveryChecks(context.Background(), result.Certificate.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			persistedStopped := deliveryCheckByName(t, persisted, "criterion", "command")
+			if persistedStopped.Status != model.DeliveryCheckSkipped || persistedStopped.Effect != model.DeliveryEffectStopped {
+				t.Fatalf("persisted stopped criterion=%#v", persistedStopped)
+			}
+		})
+	}
+}
+
 func TestWorkVerify_CommandAndManualRequireCurrentEvidence(t *testing.T) {
 	command := model.WorkCriterionInput{Key: "command", Declaration: `[[criterion]]
 id = "command"

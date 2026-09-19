@@ -168,10 +168,19 @@ func (svc *SDDService) evaluateDeliveryCriteria(ctx context.Context, aggregate *
 	}
 	observedAt := time.Now().UTC()
 	observations := make([]model.CriterionObservation, 0, len(doc.Criteria))
+	criteriaBlocked := false
 	for _, criterion := range doc.Criteria {
+		if criteriaBlocked {
+			checks = append(checks, &model.DeliveryCheck{
+				Kind: "criterion", Name: criterion.ID, Status: model.DeliveryCheckSkipped, Effect: model.DeliveryEffectStopped,
+				Detail: "stopped after an earlier blocking criterion result",
+			})
+			continue
+		}
 		row := stored[criterion.ID]
 		check, observation := evaluateStoredCriterion(ctx, runner, svc.repoDir, criterion, row, headFacts, baseFacts, baseKnown, observedAt)
 		checks = append(checks, check)
+		criteriaBlocked = check.Effect == model.DeliveryEffectBlocks && check.Status != model.DeliveryCheckPass
 		if observation != nil {
 			observations = append(observations, *observation)
 		}
