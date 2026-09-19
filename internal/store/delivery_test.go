@@ -246,6 +246,41 @@ func TestInsertInitialReview_RejectsStaleSnapshotAndSecondReview(t *testing.T) {
 	}
 }
 
+func TestInsertInitialReview_RejectsInvalidInputsBeforeEffects(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*InitialReviewWrite)
+		wantErr error
+	}{
+		{"invalid evaluation", func(in *InitialReviewWrite) { in.Certificate = nil }, model.ErrInvalidContract},
+		{"missing reviewer", func(in *InitialReviewWrite) { in.By = " " }, model.ErrInvalidContract},
+		{"invalid finding", func(in *InitialReviewWrite) { in.Findings = []*model.WorkFinding{nil} }, model.ErrInvalidContract},
+		{"missing work", func(in *InitialReviewWrite) { in.Certificate.WorkID = "WORK-MISSING" }, model.ErrWorkNotFound},
+		{"invalid observation", func(in *InitialReviewWrite) {
+			in.Observations = []model.CriterionObservation{{
+				CriterionID: "missing", Status: model.CriterionPass,
+				CheckedBy: "qa-tester", CheckedAt: time.Now().UTC(),
+			}}
+		}, model.ErrInvalidContract},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newTestSDDStore(t)
+			workInReview(t, s, "WORK-001", model.WorkStatusImplementing)
+			cert, checks := deliveryEvaluationFixture(t, s, "WORK-001")
+			in := InitialReviewWrite{Certificate: cert, Checks: checks, By: "qa-tester"}
+			tc.mutate(&in)
+			if err := s.InsertInitialReview(context.Background(), in); !errors.Is(err, tc.wantErr) {
+				t.Fatalf("error = %v, want %v", err, tc.wantErr)
+			}
+			work, err := s.GetWorkAggregate(context.Background(), "WORK-001")
+			if err != nil || work.Contract.Status != model.WorkStatusImplementing || len(work.Findings) != 0 {
+				t.Fatalf("invalid review wrote effects: work=%#v err=%v", work, err)
+			}
+		})
+	}
+}
+
 func TestInsertDeliveryEvaluation_AtomicallyWritesChecksAndObservations(t *testing.T) {
 	s := newTestSDDStore(t)
 	workInReview(t, s, "WORK-001", model.WorkStatusVerifying)
