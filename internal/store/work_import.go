@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
+	"github.com/gofrs/uuid/v5"
 	"github.com/wirvii/mneme/internal/model"
 )
 
@@ -14,7 +16,7 @@ import (
 // preserving its anchor, identifiers, timestamps, current definitions and
 // audit rows. It never creates delivery certificates or checks.
 func (s *SDDStore) CreateWorkFromRecord(ctx context.Context, agg *model.WorkAggregate) error {
-	if err := validateImportedWork(agg); err != nil {
+	if err := s.ValidateWorkFromRecord(agg); err != nil {
 		return err
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -43,7 +45,7 @@ func (s *SDDStore) CreateWorkFromRecord(ctx context.Context, agg *model.WorkAggr
 // UpdateWorkFromRecord replaces current definitions and merges accumulated
 // audit data for the existing row identified by the same UUID and correlative.
 func (s *SDDStore) UpdateWorkFromRecord(ctx context.Context, agg *model.WorkAggregate) error {
-	if err := validateImportedWork(agg); err != nil {
+	if err := s.ValidateWorkFromRecord(agg); err != nil {
 		return err
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -71,6 +73,76 @@ func (s *SDDStore) UpdateWorkFromRecord(ctx context.Context, agg *model.WorkAggr
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("store: update work from record: commit: %w", err)
+	}
+	return nil
+}
+
+// ValidateWorkFromRecord completes only safe generated metadata and validates
+// an imported aggregate without writing it. Import previews use the same
+// validation path as applied imports so their decisions cannot disagree.
+func (s *SDDStore) ValidateWorkFromRecord(agg *model.WorkAggregate) error {
+	if err := completeImportedWorkMetadata(agg); err != nil {
+		return err
+	}
+	return validateImportedWork(agg)
+}
+
+func completeImportedWorkMetadata(agg *model.WorkAggregate) error {
+	if agg == nil || agg.Contract == nil {
+		return nil
+	}
+	now := time.Now().UTC()
+	mint := func(target *string) error {
+		if *target != "" {
+			return nil
+		}
+		id, err := uuid.NewV7()
+		if err != nil {
+			return fmt.Errorf("store: import work: mint metadata: %w", err)
+		}
+		*target = id.String()
+		return nil
+	}
+	if err := mint(&agg.Contract.UUID); err != nil {
+		return err
+	}
+	if agg.Contract.CreatedAt.IsZero() {
+		agg.Contract.CreatedAt = now
+	}
+	if agg.Contract.UpdatedAt.IsZero() {
+		agg.Contract.UpdatedAt = now
+	}
+	for i := range agg.Criteria {
+		if err := mint(&agg.Criteria[i].ID); err != nil {
+			return err
+		}
+		if agg.Criteria[i].CreatedAt.IsZero() {
+			agg.Criteria[i].CreatedAt = now
+		}
+	}
+	for i := range agg.Constraints {
+		if err := mint(&agg.Constraints[i].ID); err != nil {
+			return err
+		}
+		if agg.Constraints[i].CreatedAt.IsZero() {
+			agg.Constraints[i].CreatedAt = now
+		}
+	}
+	for i := range agg.Findings {
+		if err := mint(&agg.Findings[i].ID); err != nil {
+			return err
+		}
+		if agg.Findings[i].CreatedAt.IsZero() {
+			agg.Findings[i].CreatedAt = now
+		}
+	}
+	for i := range agg.History {
+		if err := mint(&agg.History[i].ID); err != nil {
+			return err
+		}
+		if agg.History[i].At.IsZero() {
+			agg.History[i].At = now
+		}
 	}
 	return nil
 }

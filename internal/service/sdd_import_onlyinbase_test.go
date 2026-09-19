@@ -11,6 +11,7 @@ package service
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/wirvii/mneme/internal/config"
@@ -18,6 +19,37 @@ import (
 	"github.com/wirvii/mneme/internal/model"
 	"github.com/wirvii/mneme/internal/store"
 )
+
+func TestSDDImport_OnlyInBaseIncludesWorkAndUnreadableWork(t *testing.T) {
+	database, err := db.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { database.Close() })
+	database.SetMaxOpenConns(1)
+	svc := NewSDDService(store.NewSDDStore(database), config.Default(), importTestProject, nil)
+	repoDir := newSDDGitRepo(t)
+	svc.WithRepoDir(repoDir)
+	enableSDD(t, repoDir, importTestProject)
+	ctx := context.Background()
+
+	seedServiceWork(t, svc, "WORK-970")
+	seedServiceWork(t, svc, "WORK-971")
+	if _, err := database.ExecContext(ctx, `UPDATE execution_contracts SET scope_json='{' WHERE id='WORK-971'`); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := svc.ImportSDDFromRepo(ctx, repoDir, false)
+	if err != nil {
+		t.Fatalf("ImportSDDFromRepo: %v", err)
+	}
+	if result.OnlyInBaseTotal != 2 || len(result.OnlyInBase) != 2 || !strings.HasPrefix(result.OnlyInBase[0], "WORK-") || !strings.HasPrefix(result.OnlyInBase[1], "WORK-") {
+		t.Errorf("OnlyInBaseTotal=%d OnlyInBase=%v, want both WORK rows", result.OnlyInBaseTotal, result.OnlyInBase)
+	}
+	if len(result.Unreadable) != 1 || result.Unreadable[0].ID != "WORK-971" {
+		t.Errorf("Unreadable=%+v, want WORK-971", result.Unreadable)
+	}
+}
 
 // TestSDDImport_MalformedUnrelatedRowNeverAbortsTheBatch reproduces the
 // exact scenario found during review: a backlog row with a timestamp the

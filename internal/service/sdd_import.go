@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/wirvii/mneme/internal/model"
 	"github.com/wirvii/mneme/internal/sddfile"
@@ -173,8 +174,13 @@ func (svc *SDDService) ImportSDDFromRepo(ctx context.Context, repoRoot string, a
 		path string
 		rec  *sddfile.SpecRecord
 	}
+	type workParsed struct {
+		path string
+		rec  *sddfile.WorkRecord
+	}
 	var backlogFiles []backlogParsed
 	var specFiles []specParsed
+	var workFiles []workParsed
 	covered := make(map[string]bool)
 
 	for _, path := range paths {
@@ -230,6 +236,30 @@ func (svc *SDDService) ImportSDDFromRepo(ctx context.Context, repoRoot string, a
 				continue
 			}
 			specFiles = append(specFiles, specParsed{path: path, rec: rec})
+		case sddfile.KindWork:
+			rec, uErr := sddfile.UnmarshalWork(data)
+			if uErr != nil {
+				result.Skipped = append(result.Skipped, SDDImportSkip{Path: path, ID: id, Reason: "roto"})
+				continue
+			}
+			rec.Aggregate.Contract.ID = id
+			for i := range rec.Aggregate.Criteria {
+				rec.Aggregate.Criteria[i].WorkID = id
+			}
+			for i := range rec.Aggregate.Constraints {
+				rec.Aggregate.Constraints[i].WorkID = id
+			}
+			for i := range rec.Aggregate.Findings {
+				rec.Aggregate.Findings[i].WorkID = id
+			}
+			for i := range rec.Aggregate.History {
+				rec.Aggregate.History[i].WorkID = id
+			}
+			if rec.Aggregate.Contract.Project != "" && rec.Aggregate.Contract.Project != svc.project {
+				result.Skipped = append(result.Skipped, SDDImportSkip{Path: path, ID: id, Reason: "proyecto-distinto"})
+				continue
+			}
+			workFiles = append(workFiles, workParsed{path: path, rec: rec})
 		case sddfile.KindIgnored:
 			// unreachable: ClassifyRecordPath never returns ok=true with
 			// KindIgnored, kept for exhaustiveness against the closed enum.
@@ -254,6 +284,11 @@ func (svc *SDDService) ImportSDDFromRepo(ctx context.Context, repoRoot string, a
 	for _, sp := range specFiles {
 		if sp.rec.Spec.UUID != "" {
 			anchors = append(anchors, sp.rec.Spec.UUID)
+		}
+	}
+	for _, wp := range workFiles {
+		if wp.rec.Aggregate.Contract.UUID != "" {
+			anchors = append(anchors, wp.rec.Aggregate.Contract.UUID)
 		}
 	}
 	anchorIndex, err := svc.store.RefsForUUIDs(ctx, anchors)
@@ -299,6 +334,16 @@ func (svc *SDDService) ImportSDDFromRepo(ctx context.Context, repoRoot string, a
 			batchSpecAnchor[sp.rec.Spec.UUID] = sp.rec.Spec.ID
 		}
 	}
+	batchWorkAnchor := make(map[string]string, len(workFiles))
+	for _, wp := range workFiles {
+		contract := wp.rec.Aggregate.Contract
+		if contract.UUID == "" {
+			continue
+		}
+		if _, known := batchWorkAnchor[contract.UUID]; !known {
+			batchWorkAnchor[contract.UUID] = contract.ID
+		}
+	}
 
 	// Backlog first, then specs: a spec names its originating item
 	// (backlog_id); the reverse order would leave that link pointing at
@@ -311,6 +356,26 @@ func (svc *SDDService) ImportSDDFromRepo(ctx context.Context, repoRoot string, a
 	for _, sp := range specFiles {
 		if iErr := svc.importSpecRecord(ctx, repoRoot, sp.path, sp.rec, anchorIndex, batchSpecAnchor, freezeIndex, apply, result); iErr != nil {
 			return nil, fmt.Errorf("service: sdd import: %s: %w", sp.path, iErr)
+		}
+	}
+	batchSpecIDs := make(map[string]bool, len(specFiles))
+	for _, created := range result.Created {
+		if len(created) > len("SPEC-") && created[:len("SPEC-")] == "SPEC-" {
+			if end := strings.IndexByte(created, ' '); end > 0 {
+				batchSpecIDs[created[:end]] = true
+			}
+		}
+	}
+	for _, updated := range result.Updated {
+		if len(updated) > len("SPEC-") && updated[:len("SPEC-")] == "SPEC-" {
+			if end := strings.IndexByte(updated, ':'); end > 0 {
+				batchSpecIDs[updated[:end]] = true
+			}
+		}
+	}
+	for _, wp := range workFiles {
+		if iErr := svc.importWorkRecord(ctx, repoRoot, wp.path, wp.rec, anchorIndex, batchWorkAnchor, batchSpecIDs, apply, result); iErr != nil {
+			return nil, fmt.Errorf("service: sdd import: %s: %w", wp.path, iErr)
 		}
 	}
 
@@ -538,6 +603,102 @@ func (svc *SDDService) importSpecRecord(
 	}
 }
 
+func (svc *SDDService) importWorkRecord(
+	ctx context.Context, repoRoot, path string, rec *sddfile.WorkRecord,
+	anchorIndex, batchAnchor map[string]string, batchSpecIDs map[string]bool,
+	apply bool, result *SDDImportResult,
+) error {
+	aggregate := rec.Aggregate
+	contract := aggregate.Contract
+	missing := rec.Missing()
+
+	row, err := svc.store.GetWorkAggregate(ctx, contract.ID)
+	switch {
+	case errors.Is(err, model.ErrWorkNotFound):
+		applyWorkDefaults(svc.project, aggregate, nil)
+		if vErr := svc.validateImportedWork(ctx, aggregate, batchSpecIDs); vErr != nil {
+			result.Skipped = append(result.Skipped, SDDImportSkip{Path: path, ID: contract.ID, Reason: "roto"})
+			return nil
+		}
+		if contract.UUID != "" {
+			if owner, known := anchorIndex[contract.UUID]; known && owner != contract.ID {
+				result.Skipped = append(result.Skipped, SDDImportSkip{Path: path, ID: contract.ID, Reason: "ancla-renumerada-en-otra-maquina"})
+				return nil
+			}
+			if claimant, known := batchAnchor[contract.UUID]; known && claimant != contract.ID {
+				result.Skipped = append(result.Skipped, SDDImportSkip{Path: path, ID: contract.ID, Reason: "ancla-duplicada-en-la-misma-tanda"})
+				return nil
+			}
+		}
+		if !apply {
+			result.Created = append(result.Created, fmt.Sprintf("%s (%s)", contract.ID, relSDDPath(repoRoot, path)))
+			return nil
+		}
+		if cErr := svc.store.CreateWorkFromRecord(ctx, aggregate); cErr != nil {
+			slog.ErrorContext(ctx, "sdd_import_error", "kind", "work", "id", contract.ID, "step", "create", "error", cErr)
+			result.Skipped = append(result.Skipped, SDDImportSkip{Path: path, ID: contract.ID, Reason: "roto"})
+			return nil
+		}
+		result.Created = append(result.Created, fmt.Sprintf("%s (%s)", contract.ID, relSDDPath(repoRoot, path)))
+		svc.reportIfCompleted(ctx, repoRoot, sddfile.KindWork, contract.ID, path, missing, result)
+		return nil
+
+	case err != nil:
+		slog.ErrorContext(ctx, "sdd_import_error", "kind", "work", "id", contract.ID, "step", "read-existing", "error", err)
+		result.Skipped = append(result.Skipped, SDDImportSkip{Path: path, ID: contract.ID, Reason: "roto"})
+		return nil
+
+	default:
+		if contract.UUID == "" || (row.Contract.UUID != "" && row.Contract.UUID == contract.UUID) {
+			applyWorkDefaults(svc.project, aggregate, row)
+			if vErr := svc.validateImportedWork(ctx, aggregate, batchSpecIDs); vErr != nil {
+				result.Skipped = append(result.Skipped, SDDImportSkip{Path: path, ID: contract.ID, Reason: "roto"})
+				return nil
+			}
+			nominal := nominalStatusChange(contract.ID, string(row.Contract.Status), string(contract.Status))
+			if !apply {
+				result.Updated = append(result.Updated, nominal)
+				return nil
+			}
+			if uErr := svc.store.UpdateWorkFromRecord(ctx, aggregate); uErr != nil {
+				slog.ErrorContext(ctx, "sdd_import_error", "kind", "work", "id", contract.ID, "step", "update", "error", uErr)
+				result.Skipped = append(result.Skipped, SDDImportSkip{Path: path, ID: contract.ID, Reason: "roto"})
+				return nil
+			}
+			result.Updated = append(result.Updated, nominal)
+			svc.reportIfCompleted(ctx, repoRoot, sddfile.KindWork, contract.ID, path, missing, result)
+			return nil
+		}
+
+		result.Skipped = append(result.Skipped, SDDImportSkip{
+			Path: path, ID: contract.ID,
+			Reason: fmt.Sprintf(
+				"correlativo-reclamado-por-dos-elementos: local=%q archivo=%q (ver BL-202)",
+				row.Contract.Goal, contract.Goal,
+			),
+		})
+		return nil
+	}
+}
+
+func (svc *SDDService) validateImportedWork(ctx context.Context, aggregate *model.WorkAggregate, batchSpecIDs map[string]bool) error {
+	if err := svc.store.ValidateWorkFromRecord(aggregate); err != nil {
+		return err
+	}
+	contract := aggregate.Contract
+	if contract.SourceType != model.WorkSourceSpec || batchSpecIDs[contract.SourceID] {
+		return nil
+	}
+	source, err := svc.store.GetSpec(ctx, contract.SourceID)
+	if err != nil {
+		return err
+	}
+	if source.Project != contract.Project {
+		return model.ErrSpecNotFound
+	}
+	return nil
+}
+
 // specImportFrozen reports whether spec is frozen according to freezeIndex
 // — the SAME predicate loadMutableSpec's own freeze check applies
 // (specFreeze, sdd.go), reused verbatim rather than reimplemented, so the
@@ -598,10 +759,15 @@ func (svc *SDDService) computeOnlyInBase(ctx context.Context, covered map[string
 	if err != nil {
 		return nil, 0, nil, fmt.Errorf("list specs: %w", err)
 	}
+	works, _, worksUnreadable, err := svc.store.ListWorks(ctx, svc.project, "", 0)
+	if err != nil {
+		return nil, 0, nil, fmt.Errorf("list work: %w", err)
+	}
 
 	var unreadable []model.UnreadableRow
 	unreadable = append(unreadable, itemsUnreadable...)
 	unreadable = append(unreadable, specsUnreadable...)
+	unreadable = append(unreadable, worksUnreadable...)
 
 	var missing []string
 	for _, item := range items {
@@ -612,6 +778,11 @@ func (svc *SDDService) computeOnlyInBase(ctx context.Context, covered map[string
 	for _, spec := range specs {
 		if !covered[spec.ID] {
 			missing = append(missing, spec.ID)
+		}
+	}
+	for _, work := range works {
+		if !covered[work.ID] {
+			missing = append(missing, work.ID)
 		}
 	}
 	for _, row := range unreadable {
@@ -686,6 +857,25 @@ func applySpecDefaults(project string, spec, existing *model.Spec) {
 	}
 }
 
+func applyWorkDefaults(project string, aggregate, existing *model.WorkAggregate) {
+	contract := aggregate.Contract
+	if contract.Project == "" {
+		contract.Project = project
+	}
+	if existing == nil || existing.Contract == nil {
+		return
+	}
+	if contract.UUID == "" {
+		contract.UUID = existing.Contract.UUID
+	}
+	if contract.CreatedAt.IsZero() {
+		contract.CreatedAt = existing.Contract.CreatedAt
+	}
+	if contract.UpdatedAt.IsZero() {
+		contract.UpdatedAt = existing.Contract.UpdatedAt
+	}
+}
+
 // reportIfCompleted is the D46/D52 seam: when missing (computed BEFORE
 // defaulting, from the record AS PARSED) is non-empty, it rewrites id's
 // on-disk record via rewriteCompletedRecord — the ONLY site that ever
@@ -726,6 +916,8 @@ func (svc *SDDService) rewriteCompletedRecord(ctx context.Context, repoRoot stri
 		svc.materializeBacklogItem(ctx, id)
 	case sddfile.KindSpec:
 		svc.materializeSpec(ctx, id)
+	case sddfile.KindWork:
+		svc.materializeWork(ctx, id)
 	case sddfile.KindIgnored:
 		// unreachable: only KindBacklog/KindSpec ever reach this function.
 	}

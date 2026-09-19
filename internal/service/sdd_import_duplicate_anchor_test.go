@@ -34,6 +34,7 @@ package service
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/wirvii/mneme/internal/config"
@@ -41,6 +42,103 @@ import (
 	"github.com/wirvii/mneme/internal/model"
 	"github.com/wirvii/mneme/internal/store"
 )
+
+func organicImportWork(id, uuid, goal string) *model.WorkAggregate {
+	aggregate := importWorkAggregate(id, uuid, "", goal)
+	aggregate.Contract.SourceType = model.WorkSourceOrganic
+	return aggregate
+}
+
+func TestSDDImport_WorkAnchorDecisionCases(t *testing.T) {
+	t.Run("same anchor updates same id", func(t *testing.T) {
+		svc, repoDir := newSDDMaterializeService(t, importTestProject)
+		enableSDD(t, repoDir, importTestProject)
+		ctx := context.Background()
+		initial := organicImportWork("WORK-920", "0198f000-0000-7000-8000-000000000920", "before")
+		if err := svc.store.CreateWorkFromRecord(ctx, initial); err != nil {
+			t.Fatal(err)
+		}
+		incoming := organicImportWork("WORK-920", initial.Contract.UUID, "after")
+		writeWorkFixture(t, repoDir, incoming)
+		result, err := svc.ImportSDDFromRepo(ctx, repoDir, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(result.Updated) != 1 || !strings.HasPrefix(result.Updated[0], "WORK-920:") {
+			t.Fatalf("Updated = %v", result.Updated)
+		}
+		got, err := svc.store.GetWorkAggregate(ctx, "WORK-920")
+		if err != nil || got.Contract.Goal != "after" {
+			t.Fatalf("updated work = %+v, %v", got, err)
+		}
+	})
+
+	t.Run("different anchor claiming same id", func(t *testing.T) {
+		svc, repoDir := newSDDMaterializeService(t, importTestProject)
+		enableSDD(t, repoDir, importTestProject)
+		ctx := context.Background()
+		local := organicImportWork("WORK-921", "0198f000-0000-7000-8000-000000000921", "local goal")
+		if err := svc.store.CreateWorkFromRecord(ctx, local); err != nil {
+			t.Fatal(err)
+		}
+		foreignUUID := "0198f000-0000-7000-8000-000000000922"
+		writeWorkFixture(t, repoDir, organicImportWork("WORK-921", foreignUUID, "file goal"))
+		result, err := svc.ImportSDDFromRepo(ctx, repoDir, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(result.Skipped) != 1 {
+			t.Fatalf("Skipped = %+v", result.Skipped)
+		}
+		reason := result.Skipped[0].Reason
+		if !strings.Contains(reason, `local="local goal"`) || !strings.Contains(reason, `archivo="file goal"`) || strings.Contains(reason, local.Contract.UUID) || strings.Contains(reason, foreignUUID) {
+			t.Fatalf("collision reason exposes wrong data: %q", reason)
+		}
+	})
+
+	t.Run("known anchor under another id", func(t *testing.T) {
+		svc, repoDir := newSDDMaterializeService(t, importTestProject)
+		enableSDD(t, repoDir, importTestProject)
+		ctx := context.Background()
+		local := organicImportWork("WORK-922", "0198f000-0000-7000-8000-000000000923", "owner")
+		if err := svc.store.CreateWorkFromRecord(ctx, local); err != nil {
+			t.Fatal(err)
+		}
+		writeWorkFixture(t, repoDir, organicImportWork("WORK-923", local.Contract.UUID, "renumbered"))
+		result, err := svc.ImportSDDFromRepo(ctx, repoDir, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(result.Skipped) != 1 || result.Skipped[0].Reason != "ancla-renumerada-en-otra-maquina" {
+			t.Fatalf("Skipped = %+v", result.Skipped)
+		}
+	})
+}
+
+func TestSDDImport_TwoWorkFilesShareAnchorInSameBatch(t *testing.T) {
+	repoDir := newSDDGitRepo(t)
+	enableSDD(t, repoDir, importTestProject)
+	sharedUUID := "0198f000-0000-7000-8000-000000000924"
+	writeWorkFixture(t, repoDir, organicImportWork("WORK-924", sharedUUID, "first"))
+	writeWorkFixture(t, repoDir, organicImportWork("WORK-925", sharedUUID, "second"))
+
+	previewSvc := newSDDServiceAt(t, importTestProject, repoDir)
+	preview, err := previewSvc.ImportSDDFromRepo(context.Background(), repoDir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	applySvc := newSDDServiceAt(t, importTestProject, repoDir)
+	applied, err := applySvc.ImportSDDFromRepo(context.Background(), repoDir, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(preview.Created) != 1 || len(applied.Created) != 1 || len(preview.Skipped) != 1 || len(applied.Skipped) != 1 {
+		t.Fatalf("preview=%+v applied=%+v", preview, applied)
+	}
+	if preview.Skipped[0].Reason != "ancla-duplicada-en-la-misma-tanda" || applied.Skipped[0].Reason != preview.Skipped[0].Reason {
+		t.Fatalf("preview skipped=%+v applied skipped=%+v", preview.Skipped, applied.Skipped)
+	}
+}
 
 // newSDDServiceAt is newSDDMaterializeService's own sibling for tests that
 // need TWO separate service instances (separate databases, so one call's

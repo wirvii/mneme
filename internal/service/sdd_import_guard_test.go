@@ -74,6 +74,13 @@ var sddD33WrapperNames = map[string]bool{
 	"updateSpecLaneScope":     true,
 	"createPushback":          true,
 	"resolvePushback":         true,
+	"WorkBegin":               true,
+	"WorkLock":                true,
+	"WorkAmend":               true,
+	"WorkReview":              true,
+	"WorkVerify":              true,
+	"WorkComplete":            true,
+	"WorkResume":              true,
 }
 
 // materializationGuardViolations walks f (a parsed sdd_import.go, or a
@@ -85,7 +92,7 @@ var sddD33WrapperNames = map[string]bool{
 // same walk over a small fixture without duplicating the AST logic — the
 // only way to prove the guard is not hysteric without risking the proof
 // itself drifting from what the real guard checks.
-func materializationGuardViolations(f *ast.File) (backlogCalls, specCalls int, outsideCalls, wrapperCalls []string) {
+func materializationGuardViolations(f *ast.File) (backlogCalls, specCalls, workCalls int, outsideCalls, wrapperCalls []string) {
 	for _, decl := range f.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
 		if !ok {
@@ -113,13 +120,18 @@ func materializationGuardViolations(f *ast.File) (backlogCalls, specCalls int, o
 				if !isRewrite {
 					outsideCalls = append(outsideCalls, "materializeSpec in "+fn.Name.Name)
 				}
+			case sel.Sel.Name == "materializeWork":
+				workCalls++
+				if !isRewrite {
+					outsideCalls = append(outsideCalls, "materializeWork in "+fn.Name.Name)
+				}
 			case sddD33WrapperNames[sel.Sel.Name]:
 				wrapperCalls = append(wrapperCalls, sel.Sel.Name)
 			}
 			return true
 		})
 	}
-	return backlogCalls, specCalls, outsideCalls, wrapperCalls
+	return backlogCalls, specCalls, workCalls, outsideCalls, wrapperCalls
 }
 
 // TestSDDImport_HasExactlyOneMaterializationSite is AC13 (D52): sdd_import.go
@@ -133,13 +145,16 @@ func TestSDDImport_HasExactlyOneMaterializationSite(t *testing.T) {
 		t.Fatalf("sdd import guard: parse sdd_import.go: %v", err)
 	}
 
-	backlogCalls, specCalls, outsideCalls, wrapperCalls := materializationGuardViolations(f)
+	backlogCalls, specCalls, workCalls, outsideCalls, wrapperCalls := materializationGuardViolations(f)
 
 	if backlogCalls > 1 {
 		t.Errorf("materializeBacklogItem is called %d times in sdd_import.go, want at most 1 (SPEC-131 D52)", backlogCalls)
 	}
 	if specCalls > 1 {
 		t.Errorf("materializeSpec is called %d times in sdd_import.go, want at most 1 (SPEC-131 D52)", specCalls)
+	}
+	if workCalls != 1 {
+		t.Errorf("materializeWork is called %d times in sdd_import.go, want exactly 1 inside rewriteCompletedRecord", workCalls)
 	}
 	for _, v := range outsideCalls {
 		t.Errorf("%s is called outside rewriteCompletedRecord (SPEC-131 D52)", v)
@@ -161,6 +176,7 @@ func TestSDDImport_MaterializationGuardIgnoresComments(t *testing.T) {
 func (svc *SDDService) rewriteCompletedRecord() {
 	svc.materializeBacklogItem(nil, "")
 	svc.materializeSpec(nil, "")
+	svc.materializeWork(nil, "")
 }
 `
 	fset := token.NewFileSet()
@@ -169,10 +185,10 @@ func (svc *SDDService) rewriteCompletedRecord() {
 		t.Fatalf("parse fixture: %v", err)
 	}
 
-	backlogCalls, specCalls, outsideCalls, wrapperCalls := materializationGuardViolations(f)
-	if backlogCalls != 1 || specCalls != 1 || len(outsideCalls) != 0 || len(wrapperCalls) != 0 {
-		t.Fatalf("a comment-only change must not trip the materialization guard: backlog=%d spec=%d outside=%v wrappers=%v",
-			backlogCalls, specCalls, outsideCalls, wrapperCalls)
+	backlogCalls, specCalls, workCalls, outsideCalls, wrapperCalls := materializationGuardViolations(f)
+	if backlogCalls != 1 || specCalls != 1 || workCalls != 1 || len(outsideCalls) != 0 || len(wrapperCalls) != 0 {
+		t.Fatalf("a comment-only change must not trip the materialization guard: backlog=%d spec=%d work=%d outside=%v wrappers=%v",
+			backlogCalls, specCalls, workCalls, outsideCalls, wrapperCalls)
 	}
 }
 

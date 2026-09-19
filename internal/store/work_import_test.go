@@ -98,6 +98,24 @@ func TestCreateWorkFromRecord_RollsBackInvalidAggregate(t *testing.T) {
 	}
 }
 
+func TestCreateWorkFromRecord_CompletesOnlySafeMetadata(t *testing.T) {
+	s := newTestSDDStore(t)
+	agg := importedWorkAggregate()
+	agg.Contract.SourceType, agg.Contract.SourceID = model.WorkSourceOrganic, ""
+	agg.Contract.Status = model.WorkStatusDraft
+	agg.Contract.UUID, agg.Contract.BaseSHA, agg.Contract.ContractHash = "", "", ""
+	agg.Contract.ContractRevision = 0
+	agg.Contract.CreatedAt, agg.Contract.UpdatedAt, agg.Contract.LockedAt = time.Time{}, time.Time{}, nil
+	agg.Criteria[0].ID, agg.Criteria[0].CreatedAt = "", time.Time{}
+	agg.Findings, agg.History = nil, nil
+	if err := s.CreateWorkFromRecord(context.Background(), agg); err != nil {
+		t.Fatalf("CreateWorkFromRecord: %v", err)
+	}
+	if agg.Contract.UUID == "" || agg.Contract.CreatedAt.IsZero() || agg.Contract.UpdatedAt.IsZero() || agg.Criteria[0].ID == "" || agg.Criteria[0].CreatedAt.IsZero() {
+		t.Fatalf("safe metadata was not completed: %+v criterion=%+v", agg.Contract, agg.Criteria[0])
+	}
+}
+
 func TestUpdateWorkFromRecord_ReplacesDefinitionsAndMergesAudit(t *testing.T) {
 	s := newTestSDDStore(t)
 	createImportSourceSpec(t, s)

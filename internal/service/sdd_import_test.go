@@ -7,6 +7,8 @@ package service
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -43,6 +45,29 @@ func writeSpecFixture(t *testing.T, repoDir string, spec *model.Spec, hist []*mo
 	}
 }
 
+func writeWorkFixture(t *testing.T, repoDir string, aggregate *model.WorkAggregate) {
+	t.Helper()
+	data, err := sddfile.MarshalWork(&sddfile.WorkRecord{Aggregate: aggregate})
+	if err != nil {
+		t.Fatalf("MarshalWork(%s): %v", aggregate.Contract.ID, err)
+	}
+	if err := sddfile.WriteRecord(sddfile.WorkPath(repoDir, aggregate.Contract.ID), data); err != nil {
+		t.Fatalf("WriteRecord(%s): %v", aggregate.Contract.ID, err)
+	}
+}
+
+func importWorkAggregate(id, uuid, sourceID, goal string) *model.WorkAggregate {
+	now := time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC)
+	return &model.WorkAggregate{Contract: &model.WorkContract{
+		ID: id, UUID: uuid, Project: importTestProject,
+		SourceType: model.WorkSourceSpec, SourceID: sourceID,
+		Status: model.WorkStatusDraft, Goal: goal, Scope: []string{"internal/**"},
+		Verification:      []model.VerificationKind{model.VerificationBuild},
+		DevelopmentMethod: model.DevelopmentMethodStandard, MaxCorrectionRounds: 1,
+		CreatedBy: "orchestrator", CreatedAt: now, UpdatedAt: now,
+	}}
+}
+
 // writeRawSDDFile writes content verbatim — for fixtures that must be
 // malformed on purpose (conflict markers, an out-of-range schema, a record
 // with no title) and therefore cannot go through Marshal's own round-trip
@@ -58,6 +83,171 @@ func writeRawSDDFile(t *testing.T, path, content string) {
 }
 
 const importTestProject = "wirvii/mneme"
+
+func TestSDDImport_WorkDryRunProcessesSpecBeforeWorkWithoutWriting(t *testing.T) {
+	svc, repoDir := newSDDMaterializeService(t, importTestProject)
+	enableSDD(t, repoDir, importTestProject)
+	ctx := context.Background()
+
+	writeSpecFixture(t, repoDir, &model.Spec{
+		ID: "SPEC-900", UUID: "0198f000-0000-7000-8000-000000000900",
+		Title: "source", Status: model.SpecStatusDraft, Project: importTestProject,
+		Lane: model.LaneStandard,
+	}, nil, nil)
+	writeWorkFixture(t, repoDir, importWorkAggregate(
+		"WORK-900", "0198f000-0000-7000-8000-000000000901", "SPEC-900", "deliver",
+	))
+
+	result, err := svc.ImportSDDFromRepo(ctx, repoDir, false)
+	if err != nil {
+		t.Fatalf("ImportSDDFromRepo dry-run: %v", err)
+	}
+	if len(result.Created) != 2 || !strings.HasPrefix(result.Created[0], "SPEC-900 ") || !strings.HasPrefix(result.Created[1], "WORK-900 ") {
+		t.Fatalf("Created = %v, want SPEC-900 then WORK-900", result.Created)
+	}
+	if _, err := svc.store.GetSpec(ctx, "SPEC-900"); !errors.Is(err, model.ErrSpecNotFound) {
+		t.Fatalf("dry-run wrote SPEC-900: %v", err)
+	}
+	if _, err := svc.store.GetWorkAggregate(ctx, "WORK-900"); !errors.Is(err, model.ErrWorkNotFound) {
+		t.Fatalf("dry-run wrote WORK-900: %v", err)
+	}
+}
+
+func TestSDDImport_WorkApplyCreatesAggregateWithoutCertificate(t *testing.T) {
+	svc, repoDir := newSDDMaterializeService(t, importTestProject)
+	enableSDD(t, repoDir, importTestProject)
+	ctx := context.Background()
+	writeSpecFixture(t, repoDir, &model.Spec{
+		ID: "SPEC-901", UUID: "0198f000-0000-7000-8000-000000000910",
+		Title: "source", Status: model.SpecStatusDraft, Project: importTestProject,
+		Lane: model.LaneStandard,
+	}, nil, nil)
+	want := importWorkAggregate("WORK-901", "0198f000-0000-7000-8000-000000000911", "SPEC-901", "deliver imported work")
+	writeWorkFixture(t, repoDir, want)
+
+	result, err := svc.ImportSDDFromRepo(ctx, repoDir, true)
+	if err != nil {
+		t.Fatalf("ImportSDDFromRepo: %v", err)
+	}
+	if len(result.Created) != 2 {
+		t.Fatalf("Created = %v, want source spec and work", result.Created)
+	}
+	got, err := svc.store.GetWorkAggregate(ctx, "WORK-901")
+	if err != nil {
+		t.Fatalf("GetWorkAggregate: %v", err)
+	}
+	if got.Contract.UUID != want.Contract.UUID || got.Contract.Goal != want.Contract.Goal || !got.Contract.CreatedAt.Equal(want.Contract.CreatedAt) {
+		t.Errorf("imported contract = %+v, want identity/content/times from file", got.Contract)
+	}
+	source, err := svc.store.GetSpec(ctx, "SPEC-901")
+	if err != nil || source.ExecutionModel != model.ExecutionModelDeliveryV2 {
+		t.Errorf("source spec = %+v, %v; want delivery_v2", source, err)
+	}
+	if _, err := svc.store.GetLatestDeliveryCertificate(ctx, importTestProject, "WORK-901"); !errors.Is(err, model.ErrNotFound) {
+		t.Errorf("import created a delivery certificate: %v", err)
+	}
+}
+
+func TestSDDImport_WorkCompletesSafeMetadataButRejectsNormativeGaps(t *testing.T) {
+	t.Run("safe metadata", func(t *testing.T) {
+		svc, repoDir := newSDDMaterializeService(t, importTestProject)
+		enableSDD(t, repoDir, importTestProject)
+		aggregate := importWorkAggregate("WORK-902", "", "", "complete metadata")
+		aggregate.Contract.SourceType = model.WorkSourceOrganic
+		aggregate.Contract.Project = ""
+		aggregate.Contract.CreatedAt = time.Time{}
+		aggregate.Contract.UpdatedAt = time.Time{}
+		aggregate.Contract.Verification = []model.VerificationKind{model.VerificationAcceptance}
+		aggregate.Criteria = []model.WorkCriterion{{
+			WorkID: "WORK-902", Seq: 1, Key: "manual",
+			Declaration: "manual criterion", Status: model.CriterionPending,
+		}}
+		writeWorkFixture(t, repoDir, aggregate)
+
+		result, err := svc.ImportSDDFromRepo(context.Background(), repoDir, true)
+		if err != nil {
+			t.Fatalf("ImportSDDFromRepo: %v", err)
+		}
+		if len(result.Completed) != 1 || result.Completed[0].ID != "WORK-902" {
+			t.Fatalf("Completed = %+v, want WORK-902", result.Completed)
+		}
+		data, err := sddfile.ReadRecord(sddfile.WorkPath(repoDir, "WORK-902"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		rewritten, err := sddfile.UnmarshalWork(data)
+		if err != nil || len(rewritten.Missing()) != 0 {
+			t.Fatalf("rewritten record missing=%v err=%v", rewritten.Missing(), err)
+		}
+	})
+
+	for _, field := range []string{"goal", "scope", "verification"} {
+		t.Run(field, func(t *testing.T) {
+			svc, repoDir := newSDDMaterializeService(t, importTestProject)
+			enableSDD(t, repoDir, importTestProject)
+			aggregate := importWorkAggregate("WORK-903", "0198f000-0000-7000-8000-000000000913", "", "required")
+			aggregate.Contract.SourceType = model.WorkSourceOrganic
+			switch field {
+			case "goal":
+				aggregate.Contract.Goal = ""
+			case "scope":
+				aggregate.Contract.Scope = nil
+			case "verification":
+				aggregate.Contract.Verification = nil
+			}
+			writeWorkFixture(t, repoDir, aggregate)
+			result, err := svc.ImportSDDFromRepo(context.Background(), repoDir, true)
+			if err != nil {
+				t.Fatalf("ImportSDDFromRepo: %v", err)
+			}
+			if len(result.Skipped) != 1 || result.Skipped[0].Reason != "roto" {
+				t.Fatalf("Skipped = %+v, want one roto", result.Skipped)
+			}
+			if _, err := svc.store.GetWorkAggregate(context.Background(), "WORK-903"); !errors.Is(err, model.ErrWorkNotFound) {
+				t.Fatalf("invalid work partially imported: %v", err)
+			}
+		})
+	}
+}
+
+func TestSDDImport_WorkRejectsIncoherentContractsWithoutPartialRows(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*model.WorkAggregate)
+	}{
+		{"missing source spec", func(a *model.WorkAggregate) {}},
+		{"invalid status", func(a *model.WorkAggregate) { a.Contract.Status = model.WorkStatus("invented") }},
+		{"locked fields missing", func(a *model.WorkAggregate) { a.Contract.Status = model.WorkStatusImplementing }},
+		{"hash mismatch", func(a *model.WorkAggregate) {
+			now := a.Contract.CreatedAt
+			a.Contract.Status = model.WorkStatusImplementing
+			a.Contract.BaseSHA = "base"
+			a.Contract.ContractRevision = 1
+			a.Contract.ContractHash = "wrong"
+			a.Contract.LockedAt = &now
+		}},
+	} {
+		for _, apply := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/apply=%t", tc.name, apply), func(t *testing.T) {
+				svc, repoDir := newSDDMaterializeService(t, importTestProject)
+				enableSDD(t, repoDir, importTestProject)
+				aggregate := importWorkAggregate("WORK-904", "0198f000-0000-7000-8000-000000000914", "SPEC-absent", "invalid")
+				tc.mutate(aggregate)
+				writeWorkFixture(t, repoDir, aggregate)
+				result, err := svc.ImportSDDFromRepo(context.Background(), repoDir, apply)
+				if err != nil {
+					t.Fatalf("ImportSDDFromRepo: %v", err)
+				}
+				if len(result.Skipped) != 1 || result.Skipped[0].Reason != "roto" {
+					t.Fatalf("Skipped = %+v, want one roto", result.Skipped)
+				}
+				if _, err := svc.store.GetWorkAggregate(context.Background(), "WORK-904"); !errors.Is(err, model.ErrWorkNotFound) {
+					t.Fatalf("invalid work partially imported: %v", err)
+				}
+			})
+		}
+	}
+}
 
 // TestSDDImport_PreservesIdentityAndTimestamps is AC5.
 func TestSDDImport_PreservesIdentityAndTimestamps(t *testing.T) {
