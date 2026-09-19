@@ -10,10 +10,143 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wirvii/mneme/internal/config"
+	"github.com/wirvii/mneme/internal/db"
 	"github.com/wirvii/mneme/internal/model"
 	"github.com/wirvii/mneme/internal/service"
 	"github.com/wirvii/mneme/internal/store"
 )
+
+type importDerivedEmbedder struct{ fail bool }
+
+func (e *importDerivedEmbedder) Embed(string) []float32 {
+	if e.fail {
+		return nil
+	}
+	return []float32{1, 0}
+}
+func (*importDerivedEmbedder) Dimensions() int { return 2 }
+func (*importDerivedEmbedder) Model() string   { return "import-test-v1" }
+
+func newImportDerivedService(t *testing.T, emb *importDerivedEmbedder) (*service.MemoryService, *store.MemoryStore, string) {
+	t.Helper()
+	projectDB, err := db.OpenMemory()
+	if err != nil {
+		t.Fatalf("open project db: %v", err)
+	}
+	globalDB, err := db.OpenMemory()
+	if err != nil {
+		t.Fatalf("open global db: %v", err)
+	}
+	t.Cleanup(func() { _ = projectDB.Close(); _ = globalDB.Close() })
+	repoDir := t.TempDir()
+	writeMarker(t, filepath.Join(repoDir, ".mneme", "shared"), "test/project", "project")
+	ps := store.NewMemoryStore(projectDB)
+	cfg := config.Default()
+	cfg.Graph.RebuildMinShared = 1
+	return service.NewMemoryService(ps, store.NewMemoryStore(globalDB), cfg, "test/project", emb), ps, repoDir
+}
+
+func TestImportFromShared_UpdatesTouchedDerivedData(t *testing.T) {
+	ctx := context.Background()
+	emb := &importDerivedEmbedder{}
+	svc, ps, repoDir := newImportDerivedService(t, emb)
+	notesDir := filepath.Join(repoDir, ".mneme", "shared", "notes")
+
+	const updatedID = "01938f1b-abcd-7abc-8def-000000000101"
+	local, err := ps.CreateWithID(ctx, &model.Memory{ID: updatedID, Type: model.TypeDecision, Scope: model.ScopeProject, Project: "test/project", Title: "Old", Content: "docs/old.md", TopicKey: "old/topic"})
+	if err != nil {
+		t.Fatalf("CreateWithID updated: %v", err)
+	}
+	if err := ps.ReplaceMemoryEntities(ctx, updatedID, []store.MemoryEntityLink{{Name: "docs/old.md", Kind: model.KindFile, Project: "test/project", Role: "mention"}}); err != nil {
+		t.Fatalf("old links: %v", err)
+	}
+	unrelated, err := ps.Create(ctx, &model.Memory{Type: model.TypeDiscovery, Scope: model.ScopeProject, Project: "test/project", Title: "Unrelated", Content: "docs/unrelated.md"})
+	if err != nil {
+		t.Fatalf("create unrelated: %v", err)
+	}
+	if err := ps.ReplaceMemoryEntities(ctx, unrelated.ID, []store.MemoryEntityLink{{Name: "docs/unrelated.md", Kind: model.KindFile, Project: "test/project", Role: "mention"}}); err != nil {
+		t.Fatalf("unrelated links: %v", err)
+	}
+
+	const createdID = "01938f1b-abcd-7abc-8def-000000000102"
+	writeSharedNote(t, notesDir, updatedID, "shared/topic", "Updated", "docs/shared.go imported semantic", "1", "Peer", local.UpdatedAt.Add(time.Second))
+	writeSharedNote(t, notesDir, createdID, "shared/topic", "Created", "docs/shared.go imported semantic", "1", "Peer", time.Now().Add(time.Second))
+
+	result, err := svc.ImportFromShared(ctx, repoDir)
+	if err != nil {
+		t.Fatalf("ImportFromShared: %v", err)
+	}
+	if result.Created != 1 || result.Updated != 1 || result.Touched != 2 || result.Embedded != 2 || result.GraphConnected != 2 || result.DerivedFailed != 0 {
+		t.Fatalf("import result = %+v", result)
+	}
+	for _, id := range []string{updatedID, createdID} {
+		stored, getErr := ps.GetEmbedding(ctx, id)
+		if getErr != nil || stored == nil {
+			t.Fatalf("embedding %s: value=%v err=%v", id, stored, getErr)
+		}
+	}
+	updatedEntities, _ := ps.GetMemoryEntities(ctx, updatedID)
+	for _, entity := range updatedEntities {
+		if entity.Name == "docs/old.md" {
+			t.Fatal("stale entity link survived replacement")
+		}
+	}
+	unrelatedEntities, _ := ps.GetMemoryEntities(ctx, unrelated.ID)
+	if len(unrelatedEntities) != 1 || unrelatedEntities[0].Name != "docs/unrelated.md" {
+		t.Fatalf("unrelated links changed: %v", unrelatedEntities)
+	}
+	relations, err := ps.ListRelationsByProject(ctx, "test/project")
+	if err != nil {
+		t.Fatalf("ListRelationsByProject: %v", err)
+	}
+	var relatedPair bool
+	for _, relation := range relations {
+		if relation.Type == model.RelRelatedTo {
+			relatedPair = true
+		}
+	}
+	if !relatedPair {
+		t.Fatal("no related_to pair was created for the two touched memories")
+	}
+	graphOff := false
+	search, err := svc.Search(ctx, model.SearchRequest{Query: "vector-only-query", Project: "test/project", IncludeGraph: &graphOff, Limit: 10})
+	if err != nil {
+		t.Fatalf("semantic Search: %v", err)
+	}
+	var foundImported bool
+	for _, item := range search.Results {
+		if item.ID == createdID || item.ID == updatedID {
+			foundImported = true
+		}
+	}
+	if !foundImported {
+		t.Fatalf("semantic search did not return an imported memory: %+v", search.Results)
+	}
+
+	second, err := svc.ImportFromShared(ctx, repoDir)
+	if err != nil {
+		t.Fatalf("second ImportFromShared: %v", err)
+	}
+	if second.Touched != 0 || second.Embedded != 0 || second.GraphConnected != 0 || second.DerivedSkipped != 0 || second.DerivedFailed != 0 {
+		t.Fatalf("unchanged import performed derived work: %+v", second)
+	}
+
+	failing := &importDerivedEmbedder{fail: true}
+	failSvc, failStore, failRepo := newImportDerivedService(t, failing)
+	const failedID = "01938f1b-abcd-7abc-8def-000000000103"
+	writeSharedNote(t, filepath.Join(failRepo, ".mneme", "shared", "notes"), failedID, "failed/topic", "Still imported", "docs/failed.go", "1", "Peer", time.Now())
+	failed, err := failSvc.ImportFromShared(ctx, failRepo)
+	if err != nil {
+		t.Fatalf("failed-derived import returned primary error: %v", err)
+	}
+	if failed.Created != 1 || failed.DerivedFailed == 0 {
+		t.Fatalf("failed-derived result = %+v", failed)
+	}
+	if m, getErr := failStore.Get(ctx, failedID); getErr != nil || m == nil {
+		t.Fatalf("primary imported memory lost: memory=%v err=%v", m, getErr)
+	}
+}
 
 // writeSharedNote writes a minimal, valid team-memory vault note (UUID-flat
 // layout, matching PathModeUUID) at <notesDir>/<id>.md. shared and author are

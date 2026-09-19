@@ -190,6 +190,7 @@ in what teammates had already shared. Two commands close that gap:
 ```bash
 mneme team-memory import              # reads .mneme/shared/, EXECUTES by default
 mneme team-memory import --dry-run    # preview without writing
+mneme team-memory import --json       # machine-readable result and derived-data counters
 mneme team-memory status              # is the vault present? are this machine's hooks installed?
 mneme team-memory status --json
 ```
@@ -199,6 +200,15 @@ use — same merge-by-`updated_at` strategy, same one-file-per-UUID id
 preservation described above — but on demand, without waiting for the next
 `git pull`. `--dry-run` reports what would be created/updated/skipped
 without writing anything.
+
+After a real import, mneme refreshes embeddings and graph links only for the
+memories that were created or updated in that run. It never runs a full graph
+rebuild. Existing links owned by other memories remain unchanged, while an
+updated memory's old entity links are atomically replaced. A run with no
+changes performs no derived writes. Embedding or graph failures do not hide or
+undo imported memories; the command reports them separately as `touched`,
+`embedded`, `graph_connected`, `derived_skipped`, and `derived_failed`.
+`--dry-run` does not refresh derived data and says so explicitly.
 
 `mneme team-memory status` never writes anything: it reports whether
 `.mneme/shared/` is present and whether THIS machine's own import hooks are

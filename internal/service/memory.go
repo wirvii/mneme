@@ -423,12 +423,12 @@ func (svc *MemoryService) Update(ctx context.Context, id string, req model.Updat
 
 	// Re-embed when title or content changed — the embedding must reflect
 	// the current text so vector search stays accurate.
-	if req.Title != nil || req.Content != nil {
+	if !derivedDataSuppressed(ctx) && (req.Title != nil || req.Content != nil) {
 		svc.embedMemory(ctx, targetStore, updated)
 	}
 	// Process wikilinks when content changed — new links create relations,
 	// removed links are intentionally not deleted (append-only, D9 SPEC-011).
-	if req.Content != nil {
+	if !derivedDataSuppressed(ctx) && req.Content != nil {
 		svc.processWikilinks(ctx, updated, targetStore)
 	}
 
@@ -1307,9 +1307,19 @@ func (svc *MemoryService) backfillStore(ctx context.Context, s *store.MemoryStor
 // Failures are logged and suppressed — embedding is always best-effort.
 // This method is a no-op when the embedder is NopEmbedder.
 func (svc *MemoryService) embedMemory(ctx context.Context, targetStore *store.MemoryStore, m *model.Memory) {
+	_, _, err := svc.embedMemoryResult(ctx, targetStore, m)
+	if err != nil {
+		log.Printf("service: embed memory %s: %v", m.ID, err)
+	}
+}
+
+func (svc *MemoryService) embedMemoryResult(ctx context.Context, targetStore *store.MemoryStore, m *model.Memory) (embedded, skipped bool, err error) {
+	if svc.embedder.Model() == "none" {
+		return false, true, nil
+	}
 	vec := svc.embedder.Embed(m.Title + " " + m.Content)
 	if len(vec) == 0 {
-		return
+		return false, false, fmt.Errorf("embedder %q returned an empty vector", svc.embedder.Model())
 	}
 	emb := &model.Embedding{
 		MemoryID:   m.ID,
@@ -1319,8 +1329,9 @@ func (svc *MemoryService) embedMemory(ctx context.Context, targetStore *store.Me
 		CreatedAt:  time.Now().UTC(),
 	}
 	if err := targetStore.SaveEmbedding(ctx, emb); err != nil {
-		log.Printf("service: embed memory %s: %v", m.ID, err)
+		return false, false, err
 	}
+	return true, false, nil
 }
 
 // processWikilinks parses wikilinks from the memory's content and creates

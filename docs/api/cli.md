@@ -1024,6 +1024,24 @@ mneme team-memory hooks remove
 
 No flags.
 
+### mneme team-memory import
+
+Imports the repository's shared notes into the local database. It executes by
+default and refreshes embeddings and graph links only for memories created or
+updated by that run; it never performs a full graph rebuild. Derived-data
+failures are reported without rolling back the imported memory.
+
+```bash
+mneme team-memory import
+mneme team-memory import --dry-run
+mneme team-memory import --json
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--dry-run` | false | Report create/update/skip decisions without writing or refreshing derived data |
+| `--json` | false | Emit the full result, including `touched`, `embedded`, `graph_connected`, `derived_skipped`, and `derived_failed` |
+
 ---
 
 ## Models

@@ -28,6 +28,92 @@ type extractedEntity struct {
 	Role string // "subject" for H1 (topic_key), "mention" for H2–H4
 }
 
+// ImportedDerivedDataResult reports best-effort derived work performed only
+// for memories created or updated by a team-memory import.
+type ImportedDerivedDataResult struct {
+	Touched        int // distinct imported memories considered
+	Embedded       int // embeddings written successfully
+	GraphConnected int // memories whose entity links were replaced
+	DerivedSkipped int // disabled or inapplicable derived operations
+	DerivedFailed  int // failed derived operations; primary data remains
+}
+
+// RefreshImportedDerivedData refreshes embeddings and graph links only for
+// the supplied imported memory IDs. Failures are counted and logged; imported
+// primary records remain visible and are never rolled back.
+func (svc *MemoryService) RefreshImportedDerivedData(ctx context.Context, touchedIDs []string) ImportedDerivedDataResult {
+	ids := append([]string(nil), touchedIDs...)
+	sort.Strings(ids)
+	ids = compactStrings(ids)
+	result := ImportedDerivedDataResult{Touched: len(ids)}
+	if len(ids) == 0 {
+		return result
+	}
+
+	touched := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		touched[id] = struct{}{}
+		m, err := svc.projectStore.Get(ctx, id)
+		if err != nil || m == nil {
+			result.DerivedFailed++
+			slog.WarnContext(ctx, "team_memory_import_derived_failed", "memory_id", id, "stage", "load", "error", err)
+			continue
+		}
+		embedded, skipped, err := svc.embedMemoryResult(ctx, svc.projectStore, m)
+		switch {
+		case err != nil:
+			result.DerivedFailed++
+			slog.WarnContext(ctx, "team_memory_import_derived_failed", "memory_id", id, "stage", "embedding", "error", err)
+		case skipped:
+			result.DerivedSkipped++
+		case embedded:
+			result.Embedded++
+		}
+
+		extracted := extractEntities(m)
+		links := make([]store.MemoryEntityLink, 0, len(extracted))
+		for _, entity := range extracted {
+			links = append(links, store.MemoryEntityLink{Name: entity.Name, Kind: entity.Kind, Project: m.Project, Role: entity.Role})
+		}
+		if err := svc.projectStore.ReplaceMemoryEntities(ctx, id, links); err != nil {
+			result.DerivedFailed++
+			slog.WarnContext(ctx, "team_memory_import_derived_failed", "memory_id", id, "stage", "graph_links", "error", err)
+			continue
+		}
+		if len(links) == 0 {
+			result.DerivedSkipped++
+		} else {
+			result.GraphConnected++
+		}
+		svc.processWikilinks(ctx, m, svc.projectStore)
+		svc.autoResolveUnresolved(ctx, m, svc.projectStore)
+	}
+
+	pairs, err := svc.projectStore.FindCandidatePairs(ctx, svc.project, svc.config.Graph.RebuildMinShared)
+	if err != nil {
+		result.DerivedFailed++
+		slog.WarnContext(ctx, "team_memory_import_derived_failed", "stage", "graph_pairs", "error", err)
+		return result
+	}
+	filtered := pairs[:0]
+	for _, pair := range pairs {
+		_, left := touched[pair.MemoryID1]
+		_, right := touched[pair.MemoryID2]
+		if left || right {
+			filtered = append(filtered, pair)
+		}
+	}
+	if len(filtered) > 0 {
+		rebuildResult := &model.RebuildResult{}
+		req := model.RebuildRequest{Project: svc.project, MaxRelationsPerMemory: svc.config.Graph.RebuildMaxRelations}
+		if err := svc.processRelationBatch(ctx, svc.projectStore, req, filtered, make(map[string]int), rebuildResult); err != nil {
+			result.DerivedFailed++
+			slog.WarnContext(ctx, "team_memory_import_derived_failed", "stage", "graph_relations", "error", err)
+		}
+	}
+	return result
+}
+
 // Regex patterns for the 4 extraction heuristics.
 var (
 	// reFilePath (H2): matches source-file paths like "internal/store/entity.go"
@@ -54,7 +140,6 @@ var (
 	reCodeSymbol = regexp.MustCompile(
 		`(?:func|type|struct|interface|const|var|package|class|def|fn)\s+([A-Za-z][A-Za-z0-9_]{2,})`,
 	)
-
 )
 
 // extractEntities extracts candidate entities from a memory using 4 heuristics:

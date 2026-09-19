@@ -53,6 +53,97 @@ func TestCreateEntity(t *testing.T) {
 	}
 }
 
+func TestReplaceMemoryEntities_ReplacesOnlyTargetMemory(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	targetID := makeTestMemory(t, s, "target memory")
+	unrelatedID := makeTestMemory(t, s, "unrelated memory")
+
+	oldEntity, err := s.FindOrCreateEntity(ctx, "old/topic", model.KindConcept, "test-project")
+	if err != nil {
+		t.Fatalf("create old entity: %v", err)
+	}
+	unrelatedEntity, err := s.FindOrCreateEntity(ctx, "unrelated/topic", model.KindConcept, "test-project")
+	if err != nil {
+		t.Fatalf("create unrelated entity: %v", err)
+	}
+	if err := s.LinkMemoryEntity(ctx, targetID, oldEntity.ID, "subject"); err != nil {
+		t.Fatalf("link old target entity: %v", err)
+	}
+	if err := s.LinkMemoryEntity(ctx, unrelatedID, unrelatedEntity.ID, "subject"); err != nil {
+		t.Fatalf("link unrelated entity: %v", err)
+	}
+
+	links := []MemoryEntityLink{
+		{Name: "new/topic", Kind: model.KindConcept, Project: "test-project", Role: "subject"},
+		{Name: "internal/store/entity.go", Kind: model.KindFile, Project: "test-project", Role: "mention"},
+	}
+	if err := s.ReplaceMemoryEntities(ctx, targetID, links); err != nil {
+		t.Fatalf("ReplaceMemoryEntities: %v", err)
+	}
+
+	targetEntities, err := s.GetMemoryEntities(ctx, targetID)
+	if err != nil {
+		t.Fatalf("GetMemoryEntities target: %v", err)
+	}
+	if len(targetEntities) != 2 || targetEntities[0].Name != "internal/store/entity.go" || targetEntities[1].Name != "new/topic" {
+		t.Fatalf("target entities = %+v, want only the two replacements", targetEntities)
+	}
+	unrelatedEntities, err := s.GetMemoryEntities(ctx, unrelatedID)
+	if err != nil {
+		t.Fatalf("GetMemoryEntities unrelated: %v", err)
+	}
+	if len(unrelatedEntities) != 1 || unrelatedEntities[0].ID != unrelatedEntity.ID {
+		t.Fatalf("unrelated entities changed: %+v", unrelatedEntities)
+	}
+	if _, err := s.GetEntity(ctx, oldEntity.ID); err != nil {
+		t.Fatalf("old entity row must survive replacement: %v", err)
+	}
+}
+
+func TestReplaceMemoryEntities_RollsBackAtomically(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	memoryID := makeTestMemory(t, s, "atomic target")
+	oldEntity, err := s.FindOrCreateEntity(ctx, "old/atomic", model.KindConcept, "test-project")
+	if err != nil {
+		t.Fatal(err)
+	}
+	failingEntity, err := s.FindOrCreateEntity(ctx, "fail/atomic", model.KindConcept, "test-project")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.LinkMemoryEntity(ctx, memoryID, oldEntity.ID, "subject"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, fmt.Sprintf(`
+		CREATE TRIGGER fail_replace_link
+		BEFORE INSERT ON memory_entities
+		WHEN NEW.entity_id = %q
+		BEGIN SELECT RAISE(ABORT, 'forced replacement failure'); END`, failingEntity.ID)); err != nil {
+		t.Fatalf("create failure trigger: %v", err)
+	}
+
+	err = s.ReplaceMemoryEntities(ctx, memoryID, []MemoryEntityLink{
+		{Name: "new/before-failure", Kind: model.KindConcept, Project: "test-project", Role: "mention"},
+		{Name: failingEntity.Name, Kind: failingEntity.Kind, Project: failingEntity.Project, Role: "mention"},
+	})
+	if err == nil {
+		t.Fatal("ReplaceMemoryEntities succeeded despite forced insert failure")
+	}
+
+	entities, getErr := s.GetMemoryEntities(ctx, memoryID)
+	if getErr != nil {
+		t.Fatalf("GetMemoryEntities: %v", getErr)
+	}
+	if len(entities) != 1 || entities[0].ID != oldEntity.ID {
+		t.Fatalf("replacement was not rolled back: %+v", entities)
+	}
+	if _, getErr := s.GetEntityByName(ctx, "new/before-failure", "test-project"); !errors.Is(getErr, model.ErrEntityNotFound) {
+		t.Fatalf("entity created inside failed transaction survived: %v", getErr)
+	}
+}
+
 // TestGetEntityByName verifies lookup by (name, project) unique pair.
 func TestGetEntityByName(t *testing.T) {
 	s := newTestStore(t)

@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
+	"sort"
 
 	"github.com/wirvii/mneme/internal/model"
 	"github.com/wirvii/mneme/internal/vault"
@@ -15,35 +17,52 @@ import (
 type TeamMemoryImportResult struct {
 	// VaultRoot is the absolute path to the shared vault that was imported
 	// (<repoRoot>/.mneme/shared).
-	VaultRoot string
+	VaultRoot string `json:"vault_root"`
 
 	// Total is the number of .md files found under notes/.
-	Total int
+	Total int `json:"total"`
 
 	// Created is the number of new memories inserted.
-	Created int
+	Created int `json:"created"`
 
 	// Updated is the number of existing memories updated from files.
-	Updated int
+	Updated int `json:"updated"`
 
 	// Skipped is the number of files skipped (local DB version is newer or
 	// equal, per the merge strategy).
-	Skipped int
+	Skipped int `json:"skipped"`
 
 	// Errors is the number of files that failed parsing, validation, or
 	// team-memory field preservation.
-	Errors int
+	Errors int `json:"errors"`
 
 	// Paths lists up to 20 file paths that were imported. Paths are relative
 	// to VaultRoot.
-	Paths []string
+	Paths []string `json:"paths"`
 
 	// ConflictCandidates is the total number of deterministic FTS5 candidate
 	// pairs found across every memory this import created or updated
 	// (SPEC-053 D6). Zero means none were detected. This is a count only —
 	// no LLM judgment ever runs here; judging remains a separate, manual
 	// "mneme conflicts scan" step.
-	ConflictCandidates int
+	ConflictCandidates int `json:"conflict_candidates"`
+
+	Touched        int `json:"touched"`         // distinct memories sent to derived refresh
+	Embedded       int `json:"embedded"`        // embeddings written successfully
+	GraphConnected int `json:"graph_connected"` // memories whose graph links were replaced
+	DerivedSkipped int `json:"derived_skipped"` // disabled or inapplicable derived operations
+	DerivedFailed  int `json:"derived_failed"`  // failed derived operations; imports remain visible
+}
+
+type suppressDerivedDataKey struct{}
+
+func withSuppressDerivedData(ctx context.Context) context.Context {
+	return context.WithValue(ctx, suppressDerivedDataKey{}, true)
+}
+
+func derivedDataSuppressed(ctx context.Context) bool {
+	suppressed, _ := ctx.Value(suppressDerivedDataKey{}).(bool)
+	return suppressed
 }
 
 // ImportFromShared imports memories from the git-native team-memory shared
@@ -113,7 +132,7 @@ func (svc *MemoryService) ImportFromShared(ctx context.Context, repoRoot string)
 	// SPEC-053 D5: suppress write-through materialization for every Save/
 	// Update call this import makes — replaying memories read from the vault
 	// must never write them straight back to it.
-	suppressedCtx := WithSuppressMaterialize(ctx)
+	suppressedCtx := withSuppressDerivedData(WithSuppressMaterialize(ctx))
 
 	var touchedIDs []string
 	for _, note := range notes {
@@ -152,6 +171,14 @@ func (svc *MemoryService) ImportFromShared(ctx context.Context, repoRoot string)
 		)
 	}
 
+	sort.Strings(touchedIDs)
+	touchedIDs = compactStrings(touchedIDs)
+	derived := svc.RefreshImportedDerivedData(ctx, touchedIDs)
+	result.Touched = derived.Touched
+	result.Embedded = derived.Embedded
+	result.GraphConnected = derived.GraphConnected
+	result.DerivedSkipped = derived.DerivedSkipped
+	result.DerivedFailed = derived.DerivedFailed
 	result.ConflictCandidates = svc.countConflictCandidates(ctx, touchedIDs)
 
 	return result, nil
@@ -285,6 +312,9 @@ func (svc *MemoryService) importSharedNote(ctx context.Context, note *vault.Pars
 	}
 
 	if existing != nil {
+		if sharedNoteMatchesMemory(existing, fm, note.Body) {
+			return fm.ID, "skipped", nil
+		}
 		fileTS, tsOK := vault.ParseUpdatedAtFromFM(fm)
 		if !tsOK || !fileTS.After(existing.UpdatedAt) {
 			// DB is newer or same — skip, matching VaultImport's merge semantics.
@@ -336,16 +366,39 @@ func (svc *MemoryService) importSharedNote(ctx context.Context, note *vault.Pars
 		return "", "", fmt.Errorf("force sdd refs for %s: %w", created.ID, setErr)
 	}
 
-	// Mirror Save's post-persist best-effort steps (embedding, wikilinks,
-	// deferred-link resolution). Materialization and the async conflict-hint
-	// goroutine are intentionally skipped here: materialization must never
-	// fire during import (the D5 anti-loop guard), and ImportFromShared runs
-	// its own batched conflict-candidate pass after every note (D6).
-	svc.embedMemory(ctx, newStore, created)
-	svc.processWikilinks(ctx, created, newStore)
-	svc.autoResolveUnresolved(ctx, created, newStore)
-
 	return created.ID, "created", nil
+}
+
+func sharedNoteMatchesMemory(existing *model.Memory, fm vault.Frontmatter, body string) bool {
+	if existing.Title != fm.Title ||
+		existing.Content != body ||
+		existing.Type != model.MemoryType(fm.Type) ||
+		existing.Importance != fm.Importance ||
+		existing.Confidence != fm.Confidence ||
+		existing.Shared != fm.Shared ||
+		existing.Author != fm.Author {
+		return false
+	}
+	if len(fm.Files) > 0 && !slices.Equal(existing.Files, fm.Files) {
+		return false
+	}
+	if len(fm.AppliesTo) > 0 && !slices.Equal(existing.AppliesTo, fm.AppliesTo) {
+		return false
+	}
+	return fm.Severity == "" || existing.Severity == model.Severity(fm.Severity)
+}
+
+func compactStrings(values []string) []string {
+	if len(values) < 2 {
+		return values
+	}
+	out := values[:1]
+	for _, value := range values[1:] {
+		if value != out[len(out)-1] {
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 // countConflictCandidates runs the deterministic FTS5 conflict-candidate

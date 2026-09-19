@@ -51,6 +51,32 @@ func saveMemory(t *testing.T, svc *service.MemoryService, title, content string)
 	return resp.ID
 }
 
+func TestRefreshImportedDerivedData_NopEmbedderReportsSkipped(t *testing.T) {
+	svc, ps := newRebuildService(t)
+	ctx := context.Background()
+	m, err := ps.Create(ctx, &model.Memory{
+		Type: model.TypeDiscovery, Scope: model.ScopeProject, Project: "test/rebuild",
+		Title: "Imported", Content: "See internal/store/entity.go.", TopicKey: "imported/topic",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	result := svc.RefreshImportedDerivedData(ctx, []string{m.ID, m.ID})
+	if result.Touched != 1 || result.Embedded != 0 || result.GraphConnected != 1 || result.DerivedSkipped != 1 || result.DerivedFailed != 0 {
+		t.Fatalf("RefreshImportedDerivedData = %+v, want one touched/connected/skipped memory", result)
+	}
+	entities, err := ps.GetMemoryEntities(ctx, m.ID)
+	if err != nil || len(entities) == 0 {
+		t.Fatalf("GetMemoryEntities: entities=%v err=%v", entities, err)
+	}
+
+	empty := svc.RefreshImportedDerivedData(ctx, nil)
+	if empty != (service.ImportedDerivedDataResult{}) {
+		t.Fatalf("empty refresh wrote work: %+v", empty)
+	}
+}
+
 // ─── entity extraction unit tests ────────────────────────────────────────────
 
 // TestExtractEntities_TopicKey verifies that a memory with a topic_key

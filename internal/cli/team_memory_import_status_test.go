@@ -11,7 +11,28 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/wirvii/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/service"
 )
+
+func TestRefreshImportedDerivedData_CLIOutput(t *testing.T) {
+	result := &service.TeamMemoryImportResult{VaultRoot: "/repo/.mneme/shared", Total: 3, Created: 1, Updated: 1, Skipped: 1, Touched: 2, Embedded: 2, GraphConnected: 2, DerivedSkipped: 1, DerivedFailed: 1}
+	var out bytes.Buffer
+	renderTeamMemoryImportResult(&out, result, false)
+	for _, want := range []string{"2 touched", "2 embedded", "2 graph-connected", "1 skipped", "1 failed"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("output %q missing %q", out.String(), want)
+		}
+	}
+	var jsonOut bytes.Buffer
+	if err := renderTeamMemoryImportJSON(&jsonOut, result); err != nil {
+		t.Fatalf("render JSON: %v", err)
+	}
+	for _, key := range []string{"\"touched\":2", "\"embedded\":2", "\"graph_connected\":2", "\"derived_skipped\":1", "\"derived_failed\":1"} {
+		if !strings.Contains(jsonOut.String(), key) {
+			t.Errorf("JSON %q missing %q", jsonOut.String(), key)
+		}
+	}
+}
 
 // runTeamMemoryCmd builds a minimal Cobra tree exposing the full
 // "team-memory" command group (all subcommands, not just one), chdirs into

@@ -324,6 +324,86 @@ func (s *MemoryStore) GetRelationsTo(ctx context.Context, entityID string) ([]*m
 	return s.queryRelations(ctx, q, entityID)
 }
 
+// MemoryEntityLink describes one entity that ReplaceMemoryEntities must find
+// or create and then attach to a memory.
+type MemoryEntityLink struct {
+	Name    string
+	Kind    model.EntityKind
+	Project string
+	Role    string
+}
+
+// ReplaceMemoryEntities atomically replaces every entity link for memoryID.
+// Entity rows are preserved, including rows no longer linked to this memory;
+// links belonging to other memories and all relation rows are untouched.
+func (s *MemoryStore) ReplaceMemoryEntities(ctx context.Context, memoryID string, links []MemoryEntityLink) error {
+	for _, link := range links {
+		if strings.TrimSpace(link.Name) == "" {
+			return fmt.Errorf("store: replace memory entities: entity name is required")
+		}
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("store: replace memory entities: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM memory_entities WHERE memory_id = ?`, memoryID); err != nil {
+		return fmt.Errorf("store: replace memory entities: delete old links: %w", err)
+	}
+
+	for _, link := range links {
+		entityID, findErr := findOrCreateEntityTx(ctx, tx, link)
+		if findErr != nil {
+			return fmt.Errorf("store: replace memory entities: %w", findErr)
+		}
+		role := link.Role
+		if role == "" {
+			role = "mention"
+		}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT OR REPLACE INTO memory_entities (memory_id, entity_id, role) VALUES (?, ?, ?)`,
+			memoryID, entityID, role,
+		); err != nil {
+			return fmt.Errorf("store: replace memory entities: link %q: %w", link.Name, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: replace memory entities: commit: %w", err)
+	}
+	return nil
+}
+
+func findOrCreateEntityTx(ctx context.Context, tx *sql.Tx, link MemoryEntityLink) (string, error) {
+	var entityID string
+	err := tx.QueryRowContext(ctx,
+		`SELECT id FROM entities WHERE name = ? AND project IS ?`,
+		link.Name, toNullString(link.Project),
+	).Scan(&entityID)
+	if err == nil {
+		return entityID, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("find entity %q: %w", link.Name, err)
+	}
+
+	id, err := uuid.NewV7()
+	if err != nil {
+		return "", fmt.Errorf("create entity %q: generate id: %w", link.Name, err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO entities (id, name, kind, project, metadata, created_at, updated_at)
+		VALUES (?, ?, ?, ?, NULL, ?, ?)`,
+		id.String(), link.Name, string(link.Kind), toNullString(link.Project), now, now,
+	); err != nil {
+		return "", fmt.Errorf("create entity %q: %w", link.Name, err)
+	}
+	return id.String(), nil
+}
+
 // LinkMemoryEntity inserts a row into memory_entities associating a memory with
 // an entity under a given role (e.g. "mention", "subject"). The role defaults
 // to "mention" when empty. The operation is idempotent due to the PRIMARY KEY

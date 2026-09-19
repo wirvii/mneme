@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -19,6 +20,7 @@ import (
 // publishes anything), --dry-run previews without writing.
 func newTeamMemoryImportCmd() *cobra.Command {
 	var flagDryRun bool
+	var flagJSON bool
 
 	cmd := &cobra.Command{
 		Use:   "import",
@@ -32,7 +34,8 @@ only populates the LOCAL database, never publishes anything — pass
 A file whose memory is unchanged locally is skipped; one newer than the
 local row updates it; one not found locally is created.`,
 		Example: `  mneme team-memory import
-  mneme team-memory import --dry-run`,
+  mneme team-memory import --dry-run
+  mneme team-memory import --json`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cwd, err := os.Getwd()
@@ -60,12 +63,16 @@ local row updates it; one not found locally is created.`,
 				return fmt.Errorf("team-memory import: %w", err)
 			}
 
+			if flagJSON {
+				return renderTeamMemoryImportJSON(cmd.OutOrStdout(), result)
+			}
 			renderTeamMemoryImportResult(cmd.OutOrStdout(), result, flagDryRun)
 			return nil
 		},
 	}
 
 	cmd.Flags().BoolVar(&flagDryRun, "dry-run", false, "Preview without writing (default: executes)")
+	cmd.Flags().BoolVar(&flagJSON, "json", false, "Print the result as JSON")
 	return cmd
 }
 
@@ -82,4 +89,13 @@ func renderTeamMemoryImportResult(out io.Writer, result *service.TeamMemoryImpor
 	if result.ConflictCandidates > 0 {
 		fmt.Fprintf(out, "%d potential conflict candidate(s) found — run `mneme conflicts scan` to review.\n", result.ConflictCandidates)
 	}
+	if dryRun {
+		fmt.Fprintln(out, "Derived data was not refreshed in preview mode.")
+	} else {
+		fmt.Fprintf(out, "Derived data: %d touched, %d embedded, %d graph-connected, %d skipped, %d failed.\n", result.Touched, result.Embedded, result.GraphConnected, result.DerivedSkipped, result.DerivedFailed)
+	}
+}
+
+func renderTeamMemoryImportJSON(out io.Writer, result *service.TeamMemoryImportResult) error {
+	return json.NewEncoder(out).Encode(result)
 }
