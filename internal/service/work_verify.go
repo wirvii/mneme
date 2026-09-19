@@ -71,6 +71,8 @@ func (svc *SDDService) WorkVerify(ctx context.Context, req model.WorkActionReque
 		}
 		checks = append(checks, runRequestedDeliveryGates(ctx, runner, svc.repoDir, aggregate.Contract.Verification, constitution, constitutionErr, deliveryChecksBlocked(checks))...)
 	}
+	checks = append(checks, deliveryArchitectureChecks(aggregate.Constraints, checks)...)
+	checks = append(checks, deliveryTDDCheck(aggregate.Contract))
 	finished := time.Now().UTC()
 	if len(checks) == 0 {
 		checks = []*model.DeliveryCheck{{
@@ -99,6 +101,38 @@ func (svc *SDDService) WorkVerify(ctx context.Context, req model.WorkActionReque
 		Work: work, Operation: "verify", Available: true, Performed: true,
 		Certificate: cert, Checks: deliveryCheckValues(checks),
 	}, nil
+}
+
+func deliveryArchitectureChecks(constraints []model.WorkConstraint, checks []*model.DeliveryCheck) []*model.DeliveryCheck {
+	missing := model.MissingConstraintVerdicts(constraints, deliveryCheckValues(checks))
+	rows := make([]*model.DeliveryCheck, 0, len(missing))
+	for _, key := range missing {
+		rows = append(rows, &model.DeliveryCheck{
+			Kind: "architecture", Name: key, Status: model.DeliveryCheckNotReviewed, Effect: model.DeliveryEffectBlocks,
+			Detail: "the approved constraint has no architecture verdict in this certificate",
+		})
+	}
+	return rows
+}
+
+func deliveryTDDCheck(contract *model.WorkContract) *model.DeliveryCheck {
+	check := &model.DeliveryCheck{Kind: "tdd-evidence", Name: "red-test"}
+	if contract.DevelopmentMethod != model.DevelopmentMethodTDD {
+		check.Status = model.DeliveryCheckSkipped
+		check.Effect = model.DeliveryEffectAbsent
+		check.Detail = "development_method=standard; red-test evidence is not applicable"
+		return check
+	}
+	check.Effect = model.DeliveryEffectMeasures
+	if contract.DevEvidence == nil || !contract.DevEvidence.Present() {
+		check.Status = model.DeliveryCheckNotReviewed
+		check.Detail = "development_method=tdd but no red-test evidence is stored"
+		return check
+	}
+	check.Status = model.DeliveryCheckPass
+	check.Detail = fmt.Sprintf("red-test evidence recorded at %s with exit_code=%d", contract.DevEvidence.TakenAt.UTC().Format(time.RFC3339Nano), contract.DevEvidence.ExitCode)
+	check.OutputTail = contract.DevEvidence.OutputTail
+	return check
 }
 
 func (svc *SDDService) evaluateDeliveryCriteria(ctx context.Context, aggregate *model.WorkAggregate, g *quality.Git, head string, runner quality.Runner) ([]*model.DeliveryCheck, []model.CriterionObservation, error) {

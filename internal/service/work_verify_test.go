@@ -643,3 +643,112 @@ func TestWorkVerify_DirtyTreePersistsFailureWithoutCommands(t *testing.T) {
 		t.Fatalf("certificate=%#v check=%#v calls=%d tails=%v", result.Certificate, check, fixture.runner.calls, *fixture.tail)
 	}
 }
+
+func TestWorkVerify_ConstraintsAreExplicitAndSorted(t *testing.T) {
+	fixture := newGateVerifyFixture(t, []model.VerificationKind{model.VerificationBuild}, deliveryConstitution("build"))
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	for _, row := range []struct {
+		id, key string
+		seq     int
+	}{{"constraint-z", "zeta", 1}, {"constraint-a", "alpha", 2}} {
+		if _, err := fixture.database.Exec(`INSERT INTO execution_constraints(id,work_id,seq,constraint_key,text,source,created_at) VALUES(?,?,?,?,?,?,?)`, row.id, "WORK-001", row.seq, row.key, "must hold", "owner", now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	result, err := fixture.svc.WorkVerify(context.Background(), model.WorkActionRequest{ID: "WORK-001"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var architecture []model.DeliveryCheck
+	for _, check := range result.Checks {
+		if check.Kind == "architecture" {
+			architecture = append(architecture, check)
+		}
+	}
+	if len(architecture) != 2 || architecture[0].Name != "alpha" || architecture[1].Name != "zeta" {
+		t.Fatalf("architecture=%#v", architecture)
+	}
+	for _, check := range architecture {
+		if check.Status != model.DeliveryCheckNotReviewed || check.Effect != model.DeliveryEffectBlocks {
+			t.Fatalf("architecture check=%#v", check)
+		}
+	}
+	if result.Certificate.Verdict != model.DeliveryVerdictFail || result.Certificate.Verdict != model.DeriveDeliveryVerdict(result.Checks) {
+		t.Fatalf("certificate=%#v checks=%#v", result.Certificate, result.Checks)
+	}
+
+	without := newGateVerifyFixture(t, []model.VerificationKind{model.VerificationBuild}, deliveryConstitution("build"))
+	clean, err := without.svc.WorkVerify(context.Background(), model.WorkActionRequest{ID: "WORK-001"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, check := range clean.Checks {
+		if check.Kind == "architecture" {
+			t.Fatalf("invented architecture check=%#v", check)
+		}
+	}
+}
+
+func TestWorkVerify_TDDEvidenceIsVisibleButNeverBlocks(t *testing.T) {
+	tests := []struct {
+		name       string
+		method     model.DevelopmentMethod
+		withRed    bool
+		wantStatus model.DeliveryCheckStatus
+		wantEffect model.DeliveryCheckEffect
+	}{
+		{name: "tdd with evidence", method: model.DevelopmentMethodTDD, withRed: true, wantStatus: model.DeliveryCheckPass, wantEffect: model.DeliveryEffectMeasures},
+		{name: "tdd without evidence", method: model.DevelopmentMethodTDD, wantStatus: model.DeliveryCheckNotReviewed, wantEffect: model.DeliveryEffectMeasures},
+		{name: "standard", method: model.DevelopmentMethodStandard, wantStatus: model.DeliveryCheckSkipped, wantEffect: model.DeliveryEffectAbsent},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fixture := newGateVerifyFixture(t, []model.VerificationKind{model.VerificationBuild}, deliveryConstitution("build"))
+			if _, err := fixture.database.Exec(`UPDATE execution_contracts SET development_method=? WHERE id='WORK-001'`, tt.method); err != nil {
+				t.Fatal(err)
+			}
+			if tt.withRed {
+				if _, err := fixture.database.Exec(`UPDATE execution_contracts SET dev_evidence_command='["go","test"]',dev_evidence_exit=1,dev_evidence_tail='red output',dev_evidence_sha='abc',dev_evidence_at=? WHERE id='WORK-001'`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			result, err := fixture.svc.WorkVerify(context.Background(), model.WorkActionRequest{ID: "WORK-001"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			check := deliveryCheckByName(t, result.Checks, "tdd-evidence", "red-test")
+			if check.Status != tt.wantStatus || check.Effect != tt.wantEffect {
+				t.Fatalf("check=%#v", check)
+			}
+			if result.Certificate.Verdict != model.DeliveryVerdictPass {
+				t.Fatalf("TDD evidence changed verdict: certificate=%#v checks=%#v", result.Certificate, result.Checks)
+			}
+		})
+	}
+}
+
+func TestWorkVerify_CertificateAndEvidenceComeFromPersistedChecks(t *testing.T) {
+	fixture := newGateVerifyFixture(t, []model.VerificationKind{model.VerificationAffectedTests, model.VerificationBuild}, deliveryConstitution("test", "build"))
+	fixture.runner.results = []quality.GateResult{
+		{Status: quality.GateStatusPass, ExitCode: 0, OutputSHA256: "one"},
+		{Status: quality.GateStatusFail, ExitCode: 1, OutputSHA256: "two"},
+	}
+	before, err := fixture.svc.store.GetWorkAggregate(context.Background(), "WORK-001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := fixture.svc.WorkVerify(context.Background(), model.WorkActionRequest{ID: "WORK-001"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert := result.Certificate
+	if cert.Project != before.Contract.Project || cert.WorkID != before.Contract.ID || cert.ContractRevision != before.Contract.ContractRevision || cert.ContractHash != before.Contract.ContractHash || cert.BaseSHA != before.Contract.BaseSHA || cert.HeadSHA == "" || cert.MnemeVersion != "test-version" || cert.StartedAt.IsZero() || cert.FinishedAt.Before(cert.StartedAt) || cert.DurationMs < 0 {
+		t.Fatalf("certificate=%#v work=%#v", cert, before.Contract)
+	}
+	if cert.Verdict != model.DeriveDeliveryVerdict(result.Checks) || cert.Verdict != model.DeliveryVerdictFail {
+		t.Fatalf("certificate=%#v checks=%#v", cert, result.Checks)
+	}
+	if cert.Evidence != "1 pass, 1 fail, 0 not reviewed, 1 skipped" {
+		t.Fatalf("evidence=%q checks=%#v", cert.Evidence, result.Checks)
+	}
+}
