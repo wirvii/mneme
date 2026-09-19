@@ -47,6 +47,9 @@ func TestDeriveWorkMetric_Duration(t *testing.T) {
 			if got.DurationFinal != tt.wantFinal {
 				t.Fatalf("DurationFinal = %v, want %v", got.DurationFinal, tt.wantFinal)
 			}
+			if tt.contract.LockedAt != nil && (got.StartedAt == nil || !got.StartedAt.Equal(*tt.contract.LockedAt)) {
+				t.Fatalf("StartedAt = %v, want locked_at %v", got.StartedAt, tt.contract.LockedAt)
+			}
 		})
 	}
 }
@@ -96,6 +99,19 @@ func TestDeriveWorkMetric_LifecycleCounters(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertMetricCounters(t, got, []int{1, 0, 1, 0, 0, 0, 1, 0, 0})
+
+	twoEscalations, err := DeriveWorkMetric(WorkMetricFacts{Contract: WorkContract{ID: "WORK-004", Status: WorkStatusImplementing, LockedAt: &locked}, History: metricHistory(
+		WorkStatusVerifying, WorkStatusEscalated,
+		WorkStatusEscalated, WorkStatusImplementing,
+		WorkStatusVerifying, WorkStatusEscalated,
+		WorkStatusEscalated, WorkStatusImplementing,
+	)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if twoEscalations.Escalations != 2 {
+		t.Fatalf("Escalations = %d, want 2", twoEscalations.Escalations)
+	}
 }
 
 func TestDeriveWorkMetric_AmendmentsIgnoreResume(t *testing.T) {

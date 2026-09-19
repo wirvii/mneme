@@ -283,7 +283,7 @@ func DeriveWorkMetric(facts WorkMetricFacts) (WorkMetric, error) {
 	if !contract.Status.Terminal() {
 		return metric, nil
 	}
-	if contract.LockedAt == nil {
+	if metric.StartedAt == nil {
 		return WorkMetric{}, fmt.Errorf("%w: locked_at required for terminal work", ErrInvalidContract)
 	}
 
@@ -303,7 +303,7 @@ func DeriveWorkMetric(facts WorkMetricFacts) (WorkMetric, error) {
 	if finishedAt == nil {
 		return WorkMetric{}, fmt.Errorf("%w: terminal work has no finish time", ErrInvalidContract)
 	}
-	duration := finishedAt.Sub(*contract.LockedAt).Milliseconds()
+	duration := finishedAt.Sub(*metric.StartedAt).Milliseconds()
 	if duration < 0 {
 		return WorkMetric{}, fmt.Errorf("%w: cycle duration is negative", ErrInvalidContract)
 	}
