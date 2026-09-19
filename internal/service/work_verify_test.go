@@ -179,6 +179,101 @@ func TestWorkVerify_OnlyVerifyingStatesPersistWithoutTransition(t *testing.T) {
 	}
 }
 
+func TestWorkVerify_PreservesOnlyCurrentMarkedReview(t *testing.T) {
+	t.Run("matching review preserves architecture and recalculates blockers", func(t *testing.T) {
+		svc, head := reviewServiceWithConstraints(t, []model.WorkConstraint{{Key: "layers", Text: "inward"}})
+		req := reviewRequest(head)
+		req.Findings = []model.WorkReviewFindingInput{{Category: model.FindingRegression, Severity: model.PriorityLow, Description: "regression", Evidence: "test"}}
+		req.ArchitectureVerdicts = []model.WorkArchitectureVerdictInput{{ConstraintKey: "layers", Status: model.DeliveryCheckPass, EvidenceKind: model.ReviewEvidenceFile, Evidence: "internal/service/work_review.go"}}
+		review, err := svc.WorkReview(context.Background(), req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := svc.store.ResolveFinding(context.Background(), review.Work.Findings[0].ID, model.FindingFixed, "backend", "fixed", ""); err != nil {
+			t.Fatal(err)
+		}
+		verified, err := svc.WorkVerify(context.Background(), model.WorkActionRequest{ID: "WORK-001"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		architecture := reviewChecksByKind(verified.Checks, "architecture")
+		reviewRows := reviewChecksByKind(verified.Checks, "review")
+		if len(architecture) != 1 || architecture[0].Name != "layers" || architecture[0].Status != model.DeliveryCheckPass {
+			t.Fatalf("architecture = %#v", architecture)
+		}
+		if len(reviewRows) != 2 || reviewRows[0].Name != "initial" || reviewRows[1].Name != "open-blocking-findings" || reviewRows[1].Status != model.DeliveryCheckPass || reviewRows[1].Detail != "0 open blocking finding(s)" {
+			t.Fatalf("review rows = %#v", reviewRows)
+		}
+	})
+
+	t.Run("certificate without marker is not reused", func(t *testing.T) {
+		svc, _, _ := reviewService(t, model.WorkStatusVerifying)
+		first, err := svc.WorkVerify(context.Background(), model.WorkActionRequest{ID: "WORK-001"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(reviewChecksByKind(first.Checks, "review")) != 0 {
+			t.Fatalf("unmarked certificate gained review rows: %#v", first.Checks)
+		}
+		second, err := svc.WorkVerify(context.Background(), model.WorkActionRequest{ID: "WORK-001"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(reviewChecksByKind(second.Checks, "review")) != 0 {
+			t.Fatalf("unmarked certificate reused review rows: %#v", second.Checks)
+		}
+	})
+
+	t.Run("changed head rejects old review", func(t *testing.T) {
+		svc, head := reviewServiceWithConstraints(t, []model.WorkConstraint{{Key: "layers", Text: "inward"}})
+		req := reviewRequest(head)
+		req.ArchitectureVerdicts = []model.WorkArchitectureVerdictInput{{ConstraintKey: "layers", Status: model.DeliveryCheckPass, EvidenceKind: model.ReviewEvidenceFile, Evidence: "internal/service/work_review.go"}}
+		if _, err := svc.WorkReview(context.Background(), req); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(svc.repoDir, "next.txt"), []byte("next\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		runVerifyGit(t, svc.repoDir, "add", "next.txt")
+		runVerifyGit(t, svc.repoDir, "commit", "-q", "-m", "next")
+		verified, err := svc.WorkVerify(context.Background(), model.WorkActionRequest{ID: "WORK-001"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		architecture := reviewChecksByKind(verified.Checks, "architecture")
+		if len(architecture) != 1 || architecture[0].Status != model.DeliveryCheckNotReviewed || len(reviewChecksByKind(verified.Checks, "review")) != 0 {
+			t.Fatalf("stale review reused: %#v", verified.Checks)
+		}
+	})
+
+	t.Run("changed revision and hash reject old review", func(t *testing.T) {
+		svc, head := reviewServiceWithConstraints(t, []model.WorkConstraint{{Key: "layers", Text: "inward"}})
+		req := reviewRequest(head)
+		req.ArchitectureVerdicts = []model.WorkArchitectureVerdictInput{{ConstraintKey: "layers", Status: model.DeliveryCheckPass, EvidenceKind: model.ReviewEvidenceFile, Evidence: "internal/service/work_review.go"}}
+		if _, err := svc.WorkReview(context.Background(), req); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := svc.WorkAmend(context.Background(), model.WorkAmendRequest{
+			ID: "WORK-001", Goal: "changed", Scope: []string{"internal/**"},
+			Verification: []model.VerificationKind{model.VerificationBuild}, DevelopmentMethod: model.DevelopmentMethodStandard,
+			Constraints: []model.WorkConstraintInput{{Key: "layers", Text: "changed"}}, By: "coordinator", Reason: "change contract",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := svc.store.TransitionWork(context.Background(), "WORK-001", model.WorkStatusImplementing, model.WorkStatusVerifying, "coordinator", ""); err != nil {
+			t.Fatal(err)
+		}
+		verified, err := svc.WorkVerify(context.Background(), model.WorkActionRequest{ID: "WORK-001"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		architecture := reviewChecksByKind(verified.Checks, "architecture")
+		if len(architecture) != 1 || architecture[0].Status != model.DeliveryCheckNotReviewed || len(reviewChecksByKind(verified.Checks, "review")) != 0 {
+			t.Fatalf("old contract review reused: %#v", verified.Checks)
+		}
+	})
+}
+
 func TestWorkVerify_RequiresExplicitDependenciesBeforePersisting(t *testing.T) {
 	tests := []struct {
 		name   string

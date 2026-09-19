@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -38,7 +39,7 @@ func (svc *SDDService) WorkVerify(ctx context.Context, req model.WorkActionReque
 	if strings.TrimSpace(svc.mnemeVersion) == "" {
 		return model.WorkCapabilityResult{}, fmt.Errorf("%w: mneme version: required", model.ErrInvalidContract)
 	}
-	evaluation, err := svc.evaluateDelivery(ctx, aggregate, deliveryEvaluationOptions{})
+	evaluation, err := svc.evaluateDelivery(ctx, aggregate, deliveryEvaluationOptions{preserveCurrentReview: true})
 	if err != nil {
 		return model.WorkCapabilityResult{}, err
 	}
@@ -62,8 +63,9 @@ type deliveryEvaluation struct {
 }
 
 type deliveryEvaluationOptions struct {
-	architectureChecks []*model.DeliveryCheck
-	reviewChecks       []*model.DeliveryCheck
+	architectureChecks    []*model.DeliveryCheck
+	reviewChecks          []*model.DeliveryCheck
+	preserveCurrentReview bool
 }
 
 func (svc *SDDService) evaluateDelivery(ctx context.Context, aggregate *model.WorkAggregate, options deliveryEvaluationOptions) (deliveryEvaluation, error) {
@@ -100,12 +102,20 @@ func (svc *SDDService) evaluateDelivery(ctx context.Context, aggregate *model.Wo
 		}
 		checks = append(checks, runRequestedDeliveryGates(ctx, runner, svc.repoDir, aggregate.Contract.Verification, constitution, constitutionErr, deliveryChecksBlocked(checks))...)
 	}
-	if options.architectureChecks == nil {
+	architectureChecks := options.architectureChecks
+	reviewChecks := options.reviewChecks
+	if options.preserveCurrentReview && !dirty && architectureChecks == nil && reviewChecks == nil {
+		architectureChecks, reviewChecks, err = svc.currentReviewRows(ctx, aggregate, head)
+		if err != nil {
+			return deliveryEvaluation{}, err
+		}
+	}
+	if architectureChecks == nil {
 		checks = append(checks, deliveryArchitectureChecks(aggregate.Constraints, checks)...)
 	} else {
-		checks = append(checks, options.architectureChecks...)
+		checks = append(checks, architectureChecks...)
 	}
-	checks = append(checks, options.reviewChecks...)
+	checks = append(checks, reviewChecks...)
 	checks = append(checks, deliveryTDDCheck(aggregate.Contract))
 	finished := time.Now().UTC()
 	if len(checks) == 0 {
@@ -125,6 +135,59 @@ func (svc *SDDService) evaluateDelivery(ctx context.Context, aggregate *model.Wo
 		StartedAt: started, FinishedAt: finished, DurationMs: finished.Sub(started).Milliseconds(),
 	}
 	return deliveryEvaluation{certificate: cert, checks: checks, observations: observations}, nil
+}
+
+func (svc *SDDService) currentReviewRows(ctx context.Context, aggregate *model.WorkAggregate, head string) ([]*model.DeliveryCheck, []*model.DeliveryCheck, error) {
+	contract := aggregate.Contract
+	cert, err := svc.store.GetLatestDeliveryCertificate(ctx, contract.Project, contract.ID)
+	if err != nil {
+		if errors.Is(err, model.ErrNotFound) {
+			return nil, nil, nil
+		}
+		return nil, nil, err
+	}
+	if cert.HeadSHA != head || cert.BaseSHA != contract.BaseSHA || cert.ContractRevision != contract.ContractRevision || cert.ContractHash != contract.ContractHash {
+		return nil, nil, nil
+	}
+	stored, err := svc.store.ListDeliveryChecks(ctx, cert.ID)
+	if err != nil {
+		return nil, nil, err
+	}
+	marked := false
+	for _, check := range stored {
+		if check.Kind == "review" && check.Name == "initial" && check.Status == model.DeliveryCheckPass && check.Effect == model.DeliveryEffectMeasures {
+			marked = true
+			break
+		}
+	}
+	if !marked {
+		return nil, nil, nil
+	}
+	architecture := make([]*model.DeliveryCheck, 0)
+	for _, check := range stored {
+		if check.Kind != "architecture" {
+			continue
+		}
+		copy := check
+		copy.ID = 0
+		copy.CertificateID = ""
+		copy.Seq = 0
+		copy.CreatedAt = time.Time{}
+		architecture = append(architecture, &copy)
+	}
+	blocking, err := svc.store.CountOpenBlockingFindings(ctx, contract.ID)
+	if err != nil {
+		return nil, nil, err
+	}
+	status := model.DeliveryCheckPass
+	if blocking > 0 {
+		status = model.DeliveryCheckFail
+	}
+	review := []*model.DeliveryCheck{
+		{Kind: "review", Name: "initial", Status: model.DeliveryCheckPass, Effect: model.DeliveryEffectMeasures, Detail: "initial review supplied for the exact repository HEAD"},
+		{Kind: "review", Name: "open-blocking-findings", Status: status, Effect: model.DeliveryEffectBlocks, Detail: fmt.Sprintf("%d open blocking finding(s)", blocking)},
+	}
+	return architecture, review, nil
 }
 
 func deliveryArchitectureChecks(constraints []model.WorkConstraint, checks []*model.DeliveryCheck) []*model.DeliveryCheck {
