@@ -362,6 +362,11 @@ text = "check"
 evidence_required = "note"`}},
 		Constraints: []model.WorkConstraintInput{{Key: "C1", Text: "inward"}}, By: "coordinator", Reason: "approved change",
 	}
+	omittedMethod := request
+	omittedMethod.DevelopmentMethod = ""
+	if _, err := svc.WorkAmend(ctx, omittedMethod); err == nil {
+		t.Fatal("amendment with omitted development_method succeeded")
+	}
 	amended, err := svc.WorkAmend(ctx, request)
 	if err != nil {
 		t.Fatal(err)
