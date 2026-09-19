@@ -89,6 +89,8 @@ func TestListWorkMetricFacts_CorruptionIsolatesOneWork(t *testing.T) {
 		wantColumn string
 		corrupt    func(*testing.T, *SDDStore)
 	}{
+		{name: "contract scope json", wantColumn: "scope_json", corrupt: metricCorruptContract("scope_json", "{")},
+		{name: "contract verification json", wantColumn: "verification_json", corrupt: metricCorruptContract("verification_json", "{")},
 		{name: "contract time", wantColumn: "locked_at", corrupt: func(t *testing.T, s *SDDStore) {
 			_, err := s.db.Exec(`UPDATE execution_contracts SET locked_at='bad-time' WHERE id='WORK-002'`)
 			if err != nil {
@@ -98,6 +100,18 @@ func TestListWorkMetricFacts_CorruptionIsolatesOneWork(t *testing.T) {
 		{name: "contract integer", wantColumn: "contract_revision", corrupt: func(t *testing.T, s *SDDStore) {
 			_, err := s.db.Exec(`UPDATE execution_contracts SET contract_revision='bad' WHERE id='WORK-002'`)
 			if err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "contract correction integer", wantColumn: "correction_rounds", corrupt: metricCorruptContract("correction_rounds", "bad")},
+		{name: "contract maximum integer", wantColumn: "max_correction_rounds", corrupt: metricCorruptContract("max_correction_rounds", "bad")},
+		{name: "contract evidence exit", wantColumn: "dev_evidence_exit", corrupt: metricCorruptContract("dev_evidence_exit", "bad")},
+		{name: "contract created time", wantColumn: "created_at", corrupt: metricCorruptContract("created_at", "bad-time")},
+		{name: "contract updated time", wantColumn: "updated_at", corrupt: metricCorruptContract("updated_at", "bad-time")},
+		{name: "contract completed time", wantColumn: "completed_at", corrupt: metricCorruptContract("completed_at", "bad-time")},
+		{name: "contract evidence time", wantColumn: "dev_evidence_at", corrupt: metricCorruptContract("dev_evidence_at", "bad-time")},
+		{name: "contract evidence command", wantColumn: "dev_evidence_command", corrupt: func(t *testing.T, s *SDDStore) {
+			if _, err := s.db.Exec(`UPDATE execution_contracts SET dev_evidence_at=?,dev_evidence_command='{' WHERE id='WORK-002'`, formatTime(metricStoreTime(10, 1))); err != nil {
 				t.Fatal(err)
 			}
 		}},
@@ -129,6 +143,10 @@ func TestListWorkMetricFacts_CorruptionIsolatesOneWork(t *testing.T) {
 				t.Fatal(err)
 			}
 		}},
+		{name: "certificate revision", wantColumn: "contract_revision", corrupt: metricCorruptCertificate("contract_revision", "bad")},
+		{name: "certificate dirty", wantColumn: "dirty", corrupt: metricCorruptCertificate("dirty", "bad")},
+		{name: "certificate finished time", wantColumn: "finished_at", corrupt: metricCorruptCertificate("finished_at", "bad-time")},
+		{name: "certificate created time", wantColumn: "created_at", corrupt: metricCorruptCertificate("created_at", "bad-time")},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -147,6 +165,25 @@ func TestListWorkMetricFacts_CorruptionIsolatesOneWork(t *testing.T) {
 				t.Fatalf("unreadable = %#v, want WORK-002 column %s", unreadable, tt.wantColumn)
 			}
 		})
+	}
+}
+
+func metricCorruptContract(column, value string) func(*testing.T, *SDDStore) {
+	return func(t *testing.T, s *SDDStore) {
+		t.Helper()
+		if _, err := s.db.Exec(`UPDATE execution_contracts SET `+column+`=? WHERE id='WORK-002'`, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func metricCorruptCertificate(column, value string) func(*testing.T, *SDDStore) {
+	return func(t *testing.T, s *SDDStore) {
+		t.Helper()
+		metricInsertCertificate(t, s, "c-bad", "p", "WORK-002", model.DeliveryVerdictPass, 10)
+		if _, err := s.db.Exec(`UPDATE delivery_certificates SET `+column+`=? WHERE id='c-bad'`, value); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
