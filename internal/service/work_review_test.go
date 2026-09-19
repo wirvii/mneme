@@ -291,6 +291,163 @@ func TestWorkReview_CorrectionMandateIsExact(t *testing.T) {
 	}
 }
 
+func targetedReviewService(t *testing.T) (*SDDService, *deliveryRunnerStub, model.WorkReviewRequest, model.WorkCapabilityResult) {
+	t.Helper()
+	svc, runner, _ := reviewService(t, model.WorkStatusImplementing)
+	initialHead := commitReviewConstitution(t, svc)
+	initialReq := reviewRequest(initialHead)
+	initialReq.Findings = []model.WorkReviewFindingInput{{Category: model.FindingRegression, Severity: model.PriorityHigh, Description: "regression", Evidence: "red test"}}
+	initial, err := svc.WorkReview(context.Background(), initialReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if initial.NextStatus != model.WorkStatusCorrecting {
+		t.Fatalf("initial result = %#v", initial)
+	}
+	if err := os.WriteFile(filepath.Join(svc.repoDir, "tracked.txt"), []byte("corrected\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runVerifyGit(t, svc.repoDir, "add", "tracked.txt")
+	runVerifyGit(t, svc.repoDir, "commit", "-q", "-m", "correct")
+	head, err := (&quality.Git{RepoDir: svc.repoDir}).HeadSHA()
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner.calls = 0
+	runner.gates = nil
+	req := reviewRequest(head)
+	req.Resolutions = []model.WorkFindingResolutionInput{{FindingSeq: 1, Status: model.FindingFixed, Evidence: "green test"}}
+	return svc, runner, req, initial
+}
+
+func TestWorkReview_InfersPhaseFromPersistedState(t *testing.T) {
+	initialSvc, runner, head := reviewService(t, model.WorkStatusImplementing)
+	badInitial := reviewRequest(head)
+	badInitial.Resolutions = []model.WorkFindingResolutionInput{{FindingSeq: 1, Status: model.FindingFixed, Evidence: "e"}}
+	if _, err := initialSvc.WorkReview(context.Background(), badInitial); !errors.Is(err, model.ErrInvalidContract) || runner.calls != 0 {
+		t.Fatalf("initial resolutions error=%v calls=%d", err, runner.calls)
+	}
+
+	svc, _, req, _ := targetedReviewService(t)
+	result, err := svc.WorkReview(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ReviewPhase != model.ReviewPhaseTargeted || result.NextStatus != model.WorkStatusTargetedVerifying {
+		t.Fatalf("targeted result = %#v", result)
+	}
+	for _, status := range []model.WorkStatus{model.WorkStatusVerifying, model.WorkStatusTargetedVerifying, model.WorkStatusEscalated, model.WorkStatusDone} {
+		other, otherRunner, otherHead := reviewService(t, status)
+		if _, err := other.WorkReview(context.Background(), reviewRequest(otherHead)); !errors.Is(err, model.ErrInvalidWorkTransition) || otherRunner.calls != 0 {
+			t.Fatalf("status %s error=%v calls=%d", status, err, otherRunner.calls)
+		}
+	}
+}
+
+func TestWorkReview_TargetedRequiresNewCleanExactHead(t *testing.T) {
+	svc, runner, req, initial := targetedReviewService(t)
+	req.HeadSHA = initial.Certificate.HeadSHA
+	if _, err := svc.WorkReview(context.Background(), req); !errors.Is(err, model.ErrInvalidContract) {
+		t.Fatalf("same head error = %v", err)
+	}
+	if runner.calls != 0 {
+		t.Fatalf("runner calls = %d", runner.calls)
+	}
+}
+
+func TestWorkReview_TargetedGreenStopsBeforeCompletion(t *testing.T) {
+	svc, _, req, _ := targetedReviewService(t)
+	result, err := svc.WorkReview(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.NextStatus != model.WorkStatusTargetedVerifying || result.Work.Contract.Status != model.WorkStatusTargetedVerifying || result.Work.Contract.CompletedAt != nil || result.Work.Contract.CorrectionRounds != 1 {
+		t.Fatalf("result = %#v", result)
+	}
+	if _, err := svc.WorkReview(context.Background(), req); !errors.Is(err, model.ErrInvalidWorkTransition) {
+		t.Fatalf("second targeted review error = %v", err)
+	}
+}
+
+func TestWorkReview_TargetedProducesCompleteCertificate(t *testing.T) {
+	svc, _, req, _ := targetedReviewService(t)
+	result, err := svc.WorkReview(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, kind := range []string{"gate", "review", "tdd-evidence"} {
+		if len(reviewChecksByKind(result.Checks, kind)) == 0 {
+			t.Fatalf("targeted certificate lacks %s: %#v", kind, result.Checks)
+		}
+	}
+	reviewRows := reviewChecksByKind(result.Checks, "review")
+	if len(reviewRows) != 2 || reviewRows[0].Name != "targeted" || strings.Contains(reviewRows[0].Detail, `"initial"`) || !strings.Contains(reviewRows[0].Detail, `"finding_seq":1`) {
+		t.Fatalf("targeted review rows = %#v", reviewRows)
+	}
+}
+
+func TestWorkReview_TargetedArchitectureIsNeverInherited(t *testing.T) {
+	svc, _ := reviewServiceWithConstraints(t, []model.WorkConstraint{{Key: "layers", Text: "inward"}})
+	initialHead := commitReviewConstitution(t, svc)
+	initialReq := reviewRequest(initialHead)
+	initialReq.Findings = []model.WorkReviewFindingInput{{Category: model.FindingRegression, Severity: model.PriorityHigh, Description: "regression", Evidence: "red"}}
+	initialReq.ArchitectureVerdicts = []model.WorkArchitectureVerdictInput{{ConstraintKey: "layers", Status: model.DeliveryCheckPass, EvidenceKind: model.ReviewEvidenceFile, Evidence: "internal/service/work.go"}}
+	if _, err := svc.WorkReview(context.Background(), initialReq); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(svc.repoDir, "tracked.txt"), []byte("corrected\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runVerifyGit(t, svc.repoDir, "add", "tracked.txt")
+	runVerifyGit(t, svc.repoDir, "commit", "-q", "-m", "correct")
+	head, _ := (&quality.Git{RepoDir: svc.repoDir}).HeadSHA()
+	req := reviewRequest(head)
+	req.Resolutions = []model.WorkFindingResolutionInput{{FindingSeq: 1, Status: model.FindingFixed, Evidence: "green"}}
+	result, err := svc.WorkReview(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	architecture := reviewChecksByKind(result.Checks, "architecture")
+	if len(architecture) != 1 || architecture[0].Name != "layers" || architecture[0].Status != model.DeliveryCheckNotReviewed || result.NextStatus != model.WorkStatusEscalated {
+		t.Fatalf("architecture=%#v result=%#v", architecture, result)
+	}
+}
+
+func TestWorkReview_TargetedNewBlockerEscalates(t *testing.T) {
+	svc, _, req, _ := targetedReviewService(t)
+	req.Findings = []model.WorkReviewFindingInput{{Category: model.FindingRegression, Severity: model.PriorityHigh, Description: "new regression", Evidence: "new red test"}}
+	result, err := svc.WorkReview(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.NextStatus != model.WorkStatusEscalated || len(result.Work.Findings) != 2 || result.Work.Findings[1].ReviewPhase != model.ReviewPhaseTargeted || result.Work.Findings[1].Status != model.FindingOpen {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestWorkReview_TargetedFactualFailureEscalates(t *testing.T) {
+	svc, runner, req, _ := targetedReviewService(t)
+	path := filepath.Join(svc.repoDir, constitutionRelPath)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(strings.ReplaceAll(string(raw), "required = false", "required = true")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runVerifyGit(t, svc.repoDir, "add", constitutionRelPath)
+	runVerifyGit(t, svc.repoDir, "commit", "-q", "-m", "require build")
+	req.HeadSHA, _ = (&quality.Git{RepoDir: svc.repoDir}).HeadSHA()
+	runner.results = []quality.GateResult{{Status: quality.GateStatusFail, OutputTail: "red"}}
+	result, err := svc.WorkReview(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.NextStatus != model.WorkStatusEscalated || result.Certificate.Verdict != model.DeliveryVerdictFail || len(result.Work.Findings) != 1 {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
 func reviewServiceWithConstraints(t *testing.T, constraints []model.WorkConstraint) (*SDDService, string) {
 	t.Helper()
 	svc := deliveryWorkService(t)

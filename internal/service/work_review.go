@@ -24,7 +24,18 @@ func (svc *SDDService) WorkReview(ctx context.Context, req model.WorkReviewReque
 	if err != nil {
 		return model.WorkCapabilityResult{}, err
 	}
-	if aggregate.Contract.Status != model.WorkStatusImplementing {
+	phase := model.ReviewPhaseInitial
+	switch aggregate.Contract.Status {
+	case model.WorkStatusImplementing:
+		if len(req.Resolutions) != 0 {
+			return model.WorkCapabilityResult{}, fmt.Errorf("%w: resolutions are only valid while correcting", model.ErrInvalidContract)
+		}
+	case model.WorkStatusCorrecting:
+		phase = model.ReviewPhaseTargeted
+		if err := validateTargetedResolutionSet(aggregate.Findings, req.Resolutions); err != nil {
+			return model.WorkCapabilityResult{}, err
+		}
+	default:
 		return model.WorkCapabilityResult{}, model.ErrInvalidWorkTransition
 	}
 	if strings.TrimSpace(svc.repoDir) == "" {
@@ -51,6 +62,16 @@ func (svc *SDDService) WorkReview(ctx context.Context, req model.WorkReviewReque
 	if dirty {
 		return model.WorkCapabilityResult{}, fmt.Errorf("%w: worktree must be clean for review", model.ErrInvalidContract)
 	}
+	var mandateCertificate *model.DeliveryCertificate
+	if phase == model.ReviewPhaseTargeted {
+		mandateCertificate, err = svc.store.GetLatestDeliveryCertificate(ctx, aggregate.Contract.Project, req.ID)
+		if err != nil {
+			return model.WorkCapabilityResult{}, err
+		}
+		if head == mandateCertificate.HeadSHA || mandateCertificate.BaseSHA != aggregate.Contract.BaseSHA || mandateCertificate.ContractRevision != aggregate.Contract.ContractRevision || mandateCertificate.ContractHash != aggregate.Contract.ContractHash {
+			return model.WorkCapabilityResult{}, fmt.Errorf("%w: targeted review must use a new HEAD and the certificate that opened the correction", model.ErrInvalidContract)
+		}
+	}
 	findings := make([]*model.WorkFinding, len(req.Findings))
 	for i, input := range req.Findings {
 		findings[i] = &model.WorkFinding{
@@ -68,6 +89,9 @@ func (svc *SDDService) WorkReview(ctx context.Context, req model.WorkReviewReque
 		return model.WorkCapabilityResult{}, err
 	}
 	blocking := existingBlocking
+	if phase == model.ReviewPhaseTargeted {
+		blocking -= len(req.Resolutions)
+	}
 	for _, finding := range findings {
 		if finding.Category.Blocks() {
 			blocking++
@@ -77,10 +101,24 @@ func (svc *SDDService) WorkReview(ctx context.Context, req model.WorkReviewReque
 	if blocking > 0 {
 		blockingStatus = model.DeliveryCheckFail
 	}
+	reviewName := "initial"
+	reviewDetail := "initial review supplied for the exact repository HEAD"
+	if phase == model.ReviewPhaseTargeted {
+		reviewName = "targeted"
+		resolutions := append([]model.WorkFindingResolutionInput(nil), req.Resolutions...)
+		sort.Slice(resolutions, func(i, j int) bool { return resolutions[i].FindingSeq < resolutions[j].FindingSeq })
+		raw, marshalErr := json.Marshal(struct {
+			Resolutions []model.WorkFindingResolutionInput `json:"resolutions"`
+		}{Resolutions: resolutions})
+		if marshalErr != nil {
+			return model.WorkCapabilityResult{}, marshalErr
+		}
+		reviewDetail = string(raw)
+	}
 	reviewChecks := []*model.DeliveryCheck{
 		{
-			Kind: "review", Name: "initial", Status: model.DeliveryCheckPass,
-			Effect: model.DeliveryEffectMeasures, Detail: "initial review supplied for the exact repository HEAD",
+			Kind: "review", Name: reviewName, Status: model.DeliveryCheckPass,
+			Effect: model.DeliveryEffectMeasures, Detail: reviewDetail,
 		},
 		{
 			Kind: "review", Name: "open-blocking-findings", Status: blockingStatus,
@@ -91,10 +129,19 @@ func (svc *SDDService) WorkReview(ctx context.Context, req model.WorkReviewReque
 	if err != nil {
 		return model.WorkCapabilityResult{}, err
 	}
-	decision, err := svc.store.InsertInitialReview(ctx, store.InitialReviewWrite{
-		Certificate: evaluation.certificate, Checks: evaluation.checks,
-		Observations: evaluation.observations, Findings: findings, By: req.By,
-	})
+	var decision store.InitialReviewResult
+	if phase == model.ReviewPhaseInitial {
+		decision, err = svc.store.InsertInitialReview(ctx, store.InitialReviewWrite{
+			Certificate: evaluation.certificate, Checks: evaluation.checks,
+			Observations: evaluation.observations, Findings: findings, By: req.By,
+		})
+	} else {
+		decision, err = svc.store.InsertTargetedReview(ctx, store.TargetedReviewWrite{
+			Certificate: evaluation.certificate, Checks: evaluation.checks,
+			Observations: evaluation.observations, Findings: findings, Resolutions: req.Resolutions,
+			ExpectedCertificateID: mandateCertificate.ID, By: req.By,
+		})
+	}
 	if err != nil {
 		return model.WorkCapabilityResult{}, err
 	}
@@ -105,12 +152,32 @@ func (svc *SDDService) WorkReview(ctx context.Context, req model.WorkReviewReque
 	result := model.WorkCapabilityResult{
 		Work: work, Operation: "review", Available: true, Performed: true,
 		Certificate: evaluation.certificate, Checks: deliveryCheckValues(evaluation.checks),
-		ReviewPhase: model.ReviewPhaseInitial, NextStatus: decision.Status,
+		ReviewPhase: phase, NextStatus: decision.Status,
 	}
-	if decision.Status == model.WorkStatusCorrecting {
+	if phase == model.ReviewPhaseInitial && decision.Status == model.WorkStatusCorrecting {
 		result.CorrectionMandate = correctionMandate(work, evaluation.certificate, result.Checks)
 	}
 	return result, nil
+}
+
+func validateTargetedResolutionSet(findings []model.WorkFinding, resolutions []model.WorkFindingResolutionInput) error {
+	eligible := make(map[int]bool)
+	for _, finding := range findings {
+		if finding.ReviewPhase == model.ReviewPhaseInitial && finding.Status == model.FindingOpen && finding.Category.Blocks() {
+			eligible[finding.Seq] = true
+		}
+	}
+	if len(resolutions) != len(eligible) {
+		return fmt.Errorf("%w: resolutions must cover every initial blocking finding exactly once", model.ErrInvalidContract)
+	}
+	seen := make(map[int]bool, len(resolutions))
+	for i, resolution := range resolutions {
+		if !eligible[resolution.FindingSeq] || seen[resolution.FindingSeq] || (resolution.Status != model.FindingFixed && resolution.Status != model.FindingInvalid) || strings.TrimSpace(resolution.Evidence) == "" || (resolution.Status == model.FindingInvalid && strings.TrimSpace(resolution.Reason) == "") {
+			return fmt.Errorf("%w: resolutions[%d]", model.ErrInvalidContract, i)
+		}
+		seen[resolution.FindingSeq] = true
+	}
+	return nil
 }
 
 func correctionMandate(work model.WorkGetResponse, cert *model.DeliveryCertificate, checks []model.DeliveryCheck) *model.CorrectionMandate {
@@ -210,6 +277,11 @@ func validateWorkReviewRequest(req model.WorkReviewRequest) error {
 		}
 		if verdict.Severity != "" || strings.TrimSpace(verdict.Description) != "" || strings.TrimSpace(verdict.Location) != "" {
 			return fmt.Errorf("%w: architecture_verdicts[%d]: passing verdict forbids failure fields", model.ErrInvalidContract, i)
+		}
+	}
+	for i, resolution := range req.Resolutions {
+		if resolution.FindingSeq <= 0 || (resolution.Status != model.FindingFixed && resolution.Status != model.FindingInvalid) || strings.TrimSpace(resolution.Evidence) == "" || (resolution.Status == model.FindingInvalid && strings.TrimSpace(resolution.Reason) == "") {
+			return fmt.Errorf("%w: resolutions[%d]", model.ErrInvalidContract, i)
 		}
 	}
 	return nil
