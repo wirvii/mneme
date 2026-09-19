@@ -67,6 +67,18 @@ func TestWorkReviewCLIRejectsOversizeInput(t *testing.T) {
 	}
 }
 
+func TestWorkReviewCLI_TargetedInputParity(t *testing.T) {
+	cmd := newWorkCmd()
+	cmd.SetIn(strings.NewReader(`{"by":"qa","head_sha":"new","resolutions":[{"finding_seq":3,"status":"invalid","evidence":"current run","reason":"false positive"}]}`))
+	req, err := decodeWorkReviewRequest(cmd, "-", "WORK-007")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.ID != "WORK-007" || len(req.Resolutions) != 1 || req.Resolutions[0].FindingSeq != 3 || req.Resolutions[0].Status != model.FindingInvalid || req.Resolutions[0].Evidence != "current run" || req.Resolutions[0].Reason != "false positive" {
+		t.Fatalf("request = %#v", req)
+	}
+}
+
 func TestReadWorkInputUsesOnlyExplicitSource(t *testing.T) {
 	cmd := newWorkCmd()
 	cmd.SetIn(strings.NewReader(`{"goal":"stdin"}`))
@@ -174,6 +186,41 @@ func TestWriteWorkReviewCapabilitySummarizesReview(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "NO DISPONIBLE") {
 		t.Fatalf("review output remained unavailable: %q", out.String())
+	}
+}
+
+func TestWorkReviewCLI_PrintsInitialCorrectionDecision(t *testing.T) {
+	var out bytes.Buffer
+	result := model.WorkCapabilityResult{
+		Operation: "review", Available: true, Performed: true, ReviewPhase: model.ReviewPhaseInitial, NextStatus: model.WorkStatusCorrecting,
+		Work:              model.WorkGetResponse{Contract: model.WorkContractView{ID: "WORK-007", CorrectionRounds: 1}, Findings: []model.WorkFinding{{Category: model.FindingRegression}}},
+		Certificate:       &model.DeliveryCertificate{Verdict: model.DeliveryVerdictFail, HeadSHA: "head"},
+		CorrectionMandate: &model.CorrectionMandate{CorrectionRound: 1, BlockingFindings: []model.WorkFinding{{Seq: 1}}, BlockingChecks: []model.DeliveryCheck{{Kind: "gate", Name: "test"}}},
+	}
+	if err := writeWorkCapability(&out, result); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"phase:initial", "next:correcting", "round:1", "mandate-findings:1", "mandate-checks:1"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("output %q lacks %q", out.String(), want)
+		}
+	}
+}
+
+func TestWorkReviewCLI_PrintsTargetedOutcome(t *testing.T) {
+	var out bytes.Buffer
+	result := model.WorkCapabilityResult{
+		Operation: "review", Available: true, Performed: true, ReviewPhase: model.ReviewPhaseTargeted, NextStatus: model.WorkStatusEscalated,
+		Work:        model.WorkGetResponse{Contract: model.WorkContractView{ID: "WORK-007", CorrectionRounds: 1}, Findings: []model.WorkFinding{{Category: model.FindingRegression, Status: model.FindingFixed}, {Category: model.FindingRegression, Status: model.FindingOpen, ReviewPhase: model.ReviewPhaseTargeted}}},
+		Certificate: &model.DeliveryCertificate{Verdict: model.DeliveryVerdictFail, HeadSHA: "head"},
+	}
+	if err := writeWorkCapability(&out, result); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"phase:targeted", "next:escalated", "resolved:1", "new-blockers:1"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("output %q lacks %q", out.String(), want)
+		}
 	}
 }
 

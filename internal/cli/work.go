@@ -31,13 +31,6 @@ func newWorkCmd() *cobra.Command {
 	return cmd
 }
 
-type workReviewInput struct {
-	By                   string                               `json:"by"`
-	HeadSHA              string                               `json:"head_sha"`
-	Findings             []model.WorkReviewFindingInput       `json:"findings,omitempty"`
-	ArchitectureVerdicts []model.WorkArchitectureVerdictInput `json:"architecture_verdicts,omitempty"`
-}
-
 func newWorkReviewCmd() *cobra.Command {
 	var input string
 	var jsonOutput bool
@@ -46,13 +39,9 @@ func newWorkReviewCmd() *cobra.Command {
 		Short: "Record one commit-bound initial work review",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			var body workReviewInput
-			if err := decodeWorkInput(cmd, input, &body); err != nil {
+			req, err := decodeWorkReviewRequest(cmd, input, args[0])
+			if err != nil {
 				return err
-			}
-			req := model.WorkReviewRequest{
-				ID: args[0], By: body.By, HeadSHA: body.HeadSHA,
-				Findings: body.Findings, ArchitectureVerdicts: body.ArchitectureVerdicts,
 			}
 			result, err := callWork(cmd, func(svc workService) (any, error) {
 				return svc.WorkReview(cmd.Context(), req)
@@ -71,6 +60,15 @@ func newWorkReviewCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Output result as JSON")
 	_ = cmd.MarkFlagRequired("input")
 	return cmd
+}
+
+func decodeWorkReviewRequest(cmd *cobra.Command, source, id string) (model.WorkReviewRequest, error) {
+	var req model.WorkReviewRequest
+	if err := decodeWorkInput(cmd, source, &req); err != nil {
+		return model.WorkReviewRequest{}, err
+	}
+	req.ID = id
+	return req, nil
 }
 
 func newWorkBeginCmd() *cobra.Command {
@@ -300,16 +298,28 @@ func writeWorkCapability(w io.Writer, result model.WorkCapabilityResult) error {
 				architecture[check.Status]++
 			}
 		}
-		blocking, nonBlocking := 0, 0
+		blocking, nonBlocking, resolved, newBlockers := 0, 0, 0, 0
 		for _, finding := range result.Work.Findings {
 			if finding.Category.Blocks() {
 				blocking++
+				if finding.Status != model.FindingOpen {
+					resolved++
+				}
+				if finding.Status == model.FindingOpen && finding.ReviewPhase == model.ReviewPhaseTargeted {
+					newBlockers++
+				}
 			} else {
 				nonBlocking++
 			}
 		}
-		_, err := fmt.Fprintf(w, "REVISADO %s verdict:%s head:%s architecture-pass:%d architecture-fail:%d architecture-not-reviewed:%d blocking-findings:%d non-blocking-findings:%d\n",
+		mandateFindings, mandateChecks := 0, 0
+		if result.CorrectionMandate != nil {
+			mandateFindings = len(result.CorrectionMandate.BlockingFindings)
+			mandateChecks = len(result.CorrectionMandate.BlockingChecks)
+		}
+		_, err := fmt.Fprintf(w, "REVISADO %s verdict:%s head:%s phase:%s next:%s round:%d resolved:%d new-blockers:%d mandate-findings:%d mandate-checks:%d architecture-pass:%d architecture-fail:%d architecture-not-reviewed:%d blocking-findings:%d non-blocking-findings:%d\n",
 			result.Work.Contract.ID, result.Certificate.Verdict, result.Certificate.HeadSHA,
+			result.ReviewPhase, result.NextStatus, result.Work.Contract.CorrectionRounds, resolved, newBlockers, mandateFindings, mandateChecks,
 			architecture[model.DeliveryCheckPass], architecture[model.DeliveryCheckFail], architecture[model.DeliveryCheckNotReviewed],
 			blocking, nonBlocking)
 		return err

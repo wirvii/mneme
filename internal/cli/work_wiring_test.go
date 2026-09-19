@@ -112,7 +112,7 @@ text = "tracked file exists"
 	if err != nil {
 		t.Fatal(err)
 	}
-	if review.Certificate == nil || review.Certificate.HeadSHA != head || review.Certificate.MnemeVersion == "" || review.Work.Contract.Status != model.WorkStatusVerifying {
+	if review.Certificate == nil || review.Certificate.HeadSHA != head || review.Certificate.MnemeVersion == "" || review.ReviewPhase != model.ReviewPhaseInitial || review.Work.Contract.Status != review.NextStatus || review.NextStatus != model.WorkStatusCorrecting || review.CorrectionMandate == nil {
 		t.Fatalf("review=%#v", review)
 	}
 }
