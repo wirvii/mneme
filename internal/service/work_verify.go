@@ -22,6 +22,13 @@ func (svc *SDDService) WorkVerify(ctx context.Context, req model.WorkActionReque
 	if strings.TrimSpace(req.ID) == "" {
 		return model.WorkCapabilityResult{}, fmt.Errorf("%w: id: required", model.ErrInvalidContract)
 	}
+	aggregate, err := svc.store.GetWorkAggregate(ctx, req.ID)
+	if err != nil {
+		return model.WorkCapabilityResult{}, err
+	}
+	if aggregate.Contract.Status != model.WorkStatusVerifying && aggregate.Contract.Status != model.WorkStatusTargetedVerifying {
+		return model.WorkCapabilityResult{}, model.ErrInvalidWorkTransition
+	}
 	if strings.TrimSpace(svc.repoDir) == "" {
 		return model.WorkCapabilityResult{}, fmt.Errorf("%w: repo_dir: required", model.ErrInvalidContract)
 	}
@@ -30,13 +37,6 @@ func (svc *SDDService) WorkVerify(ctx context.Context, req model.WorkActionReque
 	}
 	if strings.TrimSpace(svc.mnemeVersion) == "" {
 		return model.WorkCapabilityResult{}, fmt.Errorf("%w: mneme version: required", model.ErrInvalidContract)
-	}
-	aggregate, err := svc.store.GetWorkAggregate(ctx, req.ID)
-	if err != nil {
-		return model.WorkCapabilityResult{}, err
-	}
-	if aggregate.Contract.Status != model.WorkStatusVerifying && aggregate.Contract.Status != model.WorkStatusTargetedVerifying {
-		return model.WorkCapabilityResult{}, model.ErrInvalidWorkTransition
 	}
 	started := time.Now().UTC()
 	g := &quality.Git{RepoDir: svc.repoDir}
