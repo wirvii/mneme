@@ -69,8 +69,14 @@ func TestReadWorkInputUsesOnlyExplicitSource(t *testing.T) {
 	}
 }
 
-func TestReadWorkInputRejectsMoreThanTenMiB(t *testing.T) {
+func TestWorkCLIInputLimitAndExplicitStdin(t *testing.T) {
 	cmd := newWorkCmd()
+	cmd.SetIn(strings.NewReader(`{"goal":"stdin"}`))
+	got, err := readWorkInput(cmd, "-")
+	if err != nil || string(got) != `{"goal":"stdin"}` {
+		t.Fatalf("explicit stdin = %q, %v", got, err)
+	}
+
 	cmd.SetIn(bytes.NewReader(make([]byte, workInputLimit+1)))
 	if _, err := readWorkInput(cmd, "-"); err == nil || !strings.Contains(err.Error(), "10 MiB") {
 		t.Fatalf("readWorkInput() error = %v, want size limit", err)

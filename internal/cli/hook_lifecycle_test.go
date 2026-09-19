@@ -233,7 +233,7 @@ func TestLifecycleTools_ExactlyNineMcpPrefixedEntries(t *testing.T) {
 	}
 }
 
-func TestLifecycleTools_WorkAuthority(t *testing.T) {
+func TestLifecycleToolsWorkContractAuthority(t *testing.T) {
 	tests := []struct {
 		tool     string
 		wantExit int
