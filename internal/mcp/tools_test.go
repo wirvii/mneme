@@ -6,13 +6,12 @@ import (
 	"testing"
 )
 
-// TestAllTools_Count87 verifies the tool count after SPEC-131 §2b adds
-// sdd_status/sdd_import: 85 (established since backlog_archive, SPEC-125)
-// -> 87.
-func TestAllTools_Count87(t *testing.T) {
+// TestAllTools_Count94 verifies the tool count after SPEC-144 adds the seven
+// work_* delivery operations to the previous 87-tool surface.
+func TestAllTools_Count94(t *testing.T) {
 	tools := allTools()
-	if len(tools) != 87 {
-		t.Errorf("allTools() returned %d tools, want 87", len(tools))
+	if len(tools) != 94 {
+		t.Errorf("allTools() returned %d tools, want 94", len(tools))
 	}
 }
 
