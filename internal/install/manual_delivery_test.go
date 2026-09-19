@@ -2,11 +2,14 @@ package install
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/wirvii/mneme/internal/model"
 )
 
 func requireDeliveryAnchors(t *testing.T, surface string, text string, anchors []string) {
@@ -28,8 +31,55 @@ func readDeliveryDocument(t *testing.T, path string) string {
 	return string(data)
 }
 
+func validateDeliveryStatusTable(text string) error {
+	start := strings.Index(text, "## Contrato y estados")
+	if start < 0 {
+		return fmt.Errorf("missing contract and status section")
+	}
+	section := text[start+len("## Contrato y estados"):]
+	if end := strings.Index(section, "\n## "); end >= 0 {
+		section = section[:end]
+	}
+	rowPattern := regexp.MustCompile("(?m)^\\| `([a-z_]+)` \\| ([^|\\n]+) \\|$")
+	documented := make(map[model.WorkStatus]string)
+	for _, match := range rowPattern.FindAllStringSubmatch(section, -1) {
+		status := model.WorkStatus(match[1])
+		if !status.Valid() {
+			return fmt.Errorf("undocumented model status %q", status)
+		}
+		if _, duplicate := documented[status]; duplicate {
+			return fmt.Errorf("duplicate status %q", status)
+		}
+		documented[status] = strings.TrimSpace(match[2])
+	}
+	statuses := model.WorkStatuses()
+	if len(documented) != len(statuses) {
+		return fmt.Errorf("documented %d statuses, model defines %d", len(documented), len(statuses))
+	}
+	for _, status := range statuses {
+		meaning, ok := documented[status]
+		if !ok {
+			return fmt.Errorf("missing status %q", status)
+		}
+		if meaning == "" {
+			return fmt.Errorf("status %q has no explanation", status)
+		}
+	}
+	return nil
+}
+
 func TestDeliveryWorkflowReferenceIsCompleteAndHonest(t *testing.T) {
 	text := readDeliveryDocument(t, "docs/delivery-workflow.md")
+	if err := validateDeliveryStatusTable(text); err != nil {
+		t.Errorf("docs/delivery-workflow.md status table: %v", err)
+	}
+	mutated := strings.Replace(text, "| `locked` |", "| `reviewing` |", 1)
+	if mutated == text {
+		t.Fatal("status mutation did not change the document")
+	}
+	if err := validateDeliveryStatusTable(mutated); err == nil {
+		t.Fatal("status vocabulary check accepted a real state replaced by reviewing")
+	}
 	requireDeliveryAnchors(t, "docs/delivery-workflow.md", text, []string{
 		"workflow", "organic", "sdd", "lane", "trivial", "standard", "método", "tdd",
 		"profundidad", "contrato", "revisión", "huella", "contract_violation", "regression",

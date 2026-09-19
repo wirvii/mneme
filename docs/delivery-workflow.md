@@ -19,7 +19,21 @@ Con origen SDD, la spec define y aprueba el contrato. Después, un único WORK e
 
 El contrato reúne objetivo, alcance, criterios, restricciones y verificaciones. Al bloquearlo, mneme fija el commit base, la revisión y una huella del contenido. Una enmienda crea una revisión nueva; no reescribe la historia anterior.
 
-El recorrido normal es `draft` → `implementing` → `reviewing` → `done`. Una revisión inicial con bloqueantes puede llevar a `correcting`; la revisión dirigida posterior termina en `done` o `escalated`. `work_resume` reanuda desde `escalated` sólo después de una decisión humana explícita.
+Los nueve estados reales son:
+
+| Estado | Significado |
+|---|---|
+| `draft` | El contrato todavía se puede preparar antes de bloquearlo. |
+| `locked` | El contrato ya quedó fijado; `work_lock` registra este paso antes de iniciar la implementación. |
+| `implementing` | El implementador trabaja dentro del contrato fijado. |
+| `verifying` | La revisión inicial terminó sin abrir una corrección y la evidencia puede verificarse o cerrarse. |
+| `correcting` | Hay una ronda de corrección acotada por bloqueantes de la revisión inicial. |
+| `targeted_verifying` | La revisión dirigida de esa corrección terminó y la evidencia corregida puede verificarse o cerrarse. |
+| `escalated` | Sigue existiendo un bloqueo o ya no queda presupuesto automático; hace falta una decisión humana. |
+| `done` | El trabajo terminó con evidencia verde vigente. |
+| `abandoned` | El trabajo terminó sin entrega; la historia se conserva y no admite más transiciones. |
+
+El recorrido directo es `draft` → `locked` → `implementing` → `verifying` → `done`. Una revisión inicial con bloqueantes lleva a `correcting`; después pasa a `targeted_verifying` y termina en `done` o `escalated`. `work_resume` reanuda desde `escalated` sólo después de una decisión humana explícita. `abandoned` es una salida terminal permitida desde cualquier estado no terminal.
 
 Los hallazgos `contract_violation`, `regression` y `architecture_violation` bloquean. `discovery` e `improvement` quedan registrados, pero no amplían por sí solos el contrato ni impiden el cierre.
 
