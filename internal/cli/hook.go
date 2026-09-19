@@ -945,18 +945,15 @@ var mutatingTools = map[string]bool{
 	"NotebookEdit": true,
 }
 
-// rulesQueryProject is the SQL used to fetch all active rules from a
-// project-scoped database (cfg.ProjectDBPath(slug)). It targets the partial
-// index idx_memories_rules (created in migration 006) and caps results at
-// 200 so the hook completes well within the <50ms target even for large rule
-// sets. Unlike rulesQueryGlobal, it applies no scope filter: that file only
-// ever contains rows belonging to this one project (SPEC-105 DD8 layer 2/3
-// — the hook is the "surface with teeth", the only reader that can actually
-// block a tool call).
+// rulesQueryProject fetches active project-scoped rules for exactly the
+// already-detected project. A project database may contain rows imported or
+// restored from another project, so the database file itself is not an
+// isolation boundary. `project IS ?` preserves exact SQLite matching for
+// both named projects and explicitly projectless rows.
 const rulesQueryProject = `
 SELECT id, title, content, applies_to, severity
 FROM memories
-WHERE type = 'rule' AND deleted_at IS NULL
+WHERE type = 'rule' AND deleted_at IS NULL AND scope = 'project' AND project IS ?
 ORDER BY importance DESC
 LIMIT 200`
 
@@ -1080,31 +1077,36 @@ func loadRulesForHook(cwd string, errW io.Writer) ([]model.Memory, error) {
 	det := project.NewDetector(cwd)
 	slug, _ := det.DetectProject() // detection failure is non-fatal
 
-	var allRules []model.Memory
+	return loadRulesForResolvedProject(cfg.ProjectDBPath(slug), cfg.GlobalDBPath(), slug, errW)
+}
 
-	// Load project-scoped rules when a project was detected.
+// loadRulesForResolvedProject performs the database reads after project
+// detection. It uses the supplied slug directly: no subprocess, detection,
+// or second project scan occurs here. Without a slug only global/org rules
+// are loaded, so a detection failure can never broaden access to every
+// project row.
+func loadRulesForResolvedProject(projectPath, globalPath, slug string, errW io.Writer) ([]model.Memory, error) {
+	var allRules []model.Memory
 	if slug != "" {
-		projectPath := cfg.ProjectDBPath(slug)
-		projectRules, rErr := queryRulesFromDB(projectPath, rulesQueryProject)
-		if rErr != nil {
-			fmt.Fprintf(errW, "[mneme] pre-tool-use hook: project DB error: %v\n", rErr)
-			// Non-fatal: continue to load global rules.
+		projectRules, err := queryRulesFromDB(projectPath, rulesQueryProject, slug)
+		if err != nil {
+			fmt.Fprintf(errW, "[mneme] pre-tool-use hook: project DB error: %v\n", err)
 		}
 		allRules = append(allRules, projectRules...)
 	}
-
-	// Load global/org-scoped rules only (invariant R, SPEC-105 DD8).
-	globalRules, gErr := queryRulesFromDB(cfg.GlobalDBPath(), rulesQueryGlobal)
-	if gErr != nil {
-		fmt.Fprintf(errW, "[mneme] pre-tool-use hook: global DB error: %v\n", gErr)
+	globalRules, err := queryRulesFromDB(globalPath, rulesQueryGlobal)
+	if err != nil {
+		fmt.Fprintf(errW, "[mneme] pre-tool-use hook: global DB error: %v\n", err)
 	}
 	allRules = append(allRules, globalRules...)
-
 	return allRules, nil
 }
 
 // queryRulesFromDB opens the database at path in read-only mode, executes
-// query, and returns the resulting rule memories. The database is closed
+// query with args, and returns the resulting rule memories. A project query
+// without an argument binds SQL NULL for compatibility with direct callers
+// that inspect projectless rows; the hook's production path always supplies
+// its already-resolved slug. The database is closed
 // before returning regardless of success or failure. query is caller-supplied
 // (rulesQueryProject or rulesQueryGlobal, SPEC-105 DD8) rather than a single
 // package constant, so the project and global databases can be held to
@@ -1112,7 +1114,7 @@ func loadRulesForHook(cwd string, errW io.Writer) ([]model.Memory, error) {
 //
 // Returns an empty slice (not an error) when the file does not exist — this is
 // the expected state for new projects that have not been initialised yet.
-func queryRulesFromDB(path, query string) ([]model.Memory, error) {
+func queryRulesFromDB(path, query string, args ...any) ([]model.Memory, error) {
 	database, err := db.OpenReadOnly(path)
 	if err != nil {
 		// File not found is not an error — project may not have a DB yet.
@@ -1123,7 +1125,10 @@ func queryRulesFromDB(path, query string) ([]model.Memory, error) {
 	}
 	defer database.Close() //nolint:errcheck // cleanup path; error is not actionable
 
-	rows, err := database.Query(query)
+	if query == rulesQueryProject && len(args) == 0 {
+		args = []any{nil}
+	}
+	rows, err := database.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query rules: %w", err)
 	}

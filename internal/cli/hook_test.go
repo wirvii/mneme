@@ -69,6 +69,71 @@ func sessionStartPayload(sessionID string) string {
 	return `{"session_id":"` + sessionID + `"}`
 }
 
+func TestRulesQuery_ProjectIsolation(t *testing.T) {
+	dir := t.TempDir()
+	projectPath := filepath.Join(dir, "project.db")
+	globalPath := filepath.Join(dir, "global.db")
+
+	projectDB, err := db.Open(projectPath)
+	if err != nil {
+		t.Fatalf("open project DB: %v", err)
+	}
+	for _, rule := range []struct{ id, project string }{
+		{id: "project-a", project: "project/a"},
+		{id: "project-b", project: "project/b"},
+		{id: "deleted-a", project: "project/a"},
+	} {
+		if err := insertScopedRule(projectDB, rule.id, rule.id, "content", model.SeverityWarn, []string{"**"}, "project", rule.project); err != nil {
+			t.Fatalf("insert %s: %v", rule.id, err)
+		}
+	}
+	if _, err := projectDB.Exec(`UPDATE memories SET deleted_at = ? WHERE id = 'deleted-a'`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		t.Fatalf("soft-delete project rule: %v", err)
+	}
+	projectDB.Close()
+
+	globalDB, err := db.Open(globalPath)
+	if err != nil {
+		t.Fatalf("open global DB: %v", err)
+	}
+	if err := insertScopedRule(globalDB, "global", "global", "content", model.SeverityWarn, []string{"**"}, "global", ""); err != nil {
+		t.Fatalf("insert global rule: %v", err)
+	}
+	if err := insertScopedRule(globalDB, "leaked-b", "leaked-b", "content", model.SeverityWarn, []string{"**"}, "project", "project/b"); err != nil {
+		t.Fatalf("insert leaked project rule: %v", err)
+	}
+	globalDB.Close()
+
+	assertIDs := func(t *testing.T, got []model.Memory, want ...string) {
+		t.Helper()
+		gotIDs := make(map[string]bool, len(got))
+		for _, rule := range got {
+			gotIDs[rule.ID] = true
+		}
+		if len(gotIDs) != len(want) {
+			t.Fatalf("rule IDs = %v, want %v", gotIDs, want)
+		}
+		for _, id := range want {
+			if !gotIDs[id] {
+				t.Errorf("rule IDs = %v, missing %s", gotIDs, id)
+			}
+		}
+	}
+
+	var errBuf bytes.Buffer
+	withProject, err := loadRulesForResolvedProject(projectPath, globalPath, "project/a", &errBuf)
+	if err != nil {
+		t.Fatalf("load project rules: %v", err)
+	}
+	assertIDs(t, withProject, "global", "project-a")
+
+	withoutProject, err := loadRulesForResolvedProject(projectPath, globalPath, "", &errBuf)
+	if err != nil {
+		t.Fatalf("load rules without project: %v", err)
+	}
+	assertIDs(t, withoutProject, "global")
+}
+
 // TestSessionStart_EmitsOrphanNotice verifies the happy path (AC17): a
 // previous session left work without a summary, and the current session_id
 // is announced regardless.
