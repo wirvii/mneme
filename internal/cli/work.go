@@ -232,7 +232,23 @@ func readWorkInput(cmd *cobra.Command, source string) ([]byte, error) {
 }
 
 func writeWorkSummary(w io.Writer, label string, work model.WorkGetResponse) error {
-	_, err := fmt.Fprintf(w, "%s %s [%s] revision:%d\n", label, work.Contract.ID, work.Contract.Status, work.Contract.ContractRevision)
+	source := string(work.Contract.SourceType)
+	if work.Contract.SourceID != "" {
+		source += ":" + work.Contract.SourceID
+	}
+	base := work.Contract.BaseSHA
+	if base == "" {
+		base = "-"
+	}
+	hash := work.Contract.ContractHash
+	if hash == "" {
+		hash = "-"
+	} else if len(hash) > 12 {
+		hash = hash[:12]
+	}
+	_, err := fmt.Fprintf(w, "%s %s source:%s status:%s revision:%d base:%s hash:%s criteria:%d constraints:%d findings:%d\n",
+		label, work.Contract.ID, source, work.Contract.Status, work.Contract.ContractRevision, base, hash,
+		len(work.Criteria), len(work.Constraints), len(work.Findings))
 	return err
 }
 
