@@ -82,6 +82,7 @@ func SDDWarnings() []string {
 type SDDPlan struct {
 	BacklogCount int
 	SpecCount    int
+	WorkCount    int
 
 	// Unreadable names every backlog/spec row this plan's own counting could
 	// identify but not fully read (SPEC-133 D1/D6/D11). BacklogCount/
@@ -274,7 +275,7 @@ func (svc *SDDService) EnableSDDRepo(ctx context.Context, repoRoot string, apply
 	if err := sddfile.WriteMarker(repoRoot, sddfile.Marker{
 		SDDVersion: 1, Project: svc.project,
 		CreatedAt: createdAt, LastExportAt: now,
-		BacklogCount: plan.BacklogCount, SpecCount: plan.SpecCount,
+		BacklogCount: plan.BacklogCount, SpecCount: plan.SpecCount, WorkCount: plan.WorkCount,
 	}); err != nil {
 		return nil, fmt.Errorf("service: sdd enable: write marker: %w", err)
 	}
@@ -422,6 +423,7 @@ func (svc *SDDService) ExportSDDRepo(ctx context.Context, repoRoot string) (*SDD
 	marker.LastExportAt = now
 	marker.BacklogCount = plan.BacklogCount
 	marker.SpecCount = plan.SpecCount
+	marker.WorkCount = plan.WorkCount
 	if err := sddfile.WriteMarker(repoRoot, *marker); err != nil {
 		return nil, fmt.Errorf("service: sdd export: write marker: %w", err)
 	}
@@ -533,6 +535,14 @@ func scanSDDIncomplete(repoRoot string) ([]string, error) {
 			if len(rec.Missing()) > 0 {
 				incomplete = append(incomplete, path)
 			}
+		case sddfile.KindWork:
+			rec, uErr := sddfile.UnmarshalWork(data)
+			if uErr != nil {
+				continue
+			}
+			if len(rec.Missing()) > 0 {
+				incomplete = append(incomplete, path)
+			}
 		case sddfile.KindIgnored:
 			// unreachable: ClassifyRecordPath never returns ok=true here.
 		}
@@ -601,6 +611,18 @@ func (svc *SDDService) scanSDDDivergent(ctx context.Context, repoRoot string) ([
 			if string(canonical) != string(onDisk) {
 				divergent = append(divergent, path)
 			}
+		case sddfile.KindWork:
+			aggregate, gErr := svc.store.GetWorkAggregate(ctx, id)
+			if gErr != nil {
+				continue
+			}
+			canonical, mErr := sddfile.MarshalWork(&sddfile.WorkRecord{Aggregate: aggregate})
+			if mErr != nil {
+				continue
+			}
+			if string(canonical) != string(onDisk) {
+				divergent = append(divergent, path)
+			}
 		case sddfile.KindIgnored:
 			// unreachable: ClassifyRecordPath never returns ok=true here.
 		}
@@ -624,12 +646,17 @@ func (svc *SDDService) sddPlan(ctx context.Context) (SDDPlan, error) {
 	if err != nil {
 		return SDDPlan{}, fmt.Errorf("count specs: %w", err)
 	}
+	_, workTotal, workUnreadable, err := svc.store.ListWorks(ctx, svc.project, "", 0)
+	if err != nil {
+		return SDDPlan{}, fmt.Errorf("count work: %w", err)
+	}
 
 	var unreadable []model.UnreadableRow
 	unreadable = append(unreadable, backlogUnreadable...)
 	unreadable = append(unreadable, specUnreadable...)
+	unreadable = append(unreadable, workUnreadable...)
 
-	return SDDPlan{BacklogCount: backlogTotal, SpecCount: specTotal, Unreadable: unreadable}, nil
+	return SDDPlan{BacklogCount: backlogTotal, SpecCount: specTotal, WorkCount: workTotal, Unreadable: unreadable}, nil
 }
 
 // exportAllSDD re-materializes every backlog item and every spec of
@@ -668,9 +695,18 @@ func (svc *SDDService) exportAllSDD(ctx context.Context, repoRoot string) ([]mod
 		svc.materializeSpec(ctx, spec.ID)
 	}
 
+	works, _, worksUnreadable, err := svc.store.ListWorks(ctx, svc.project, "", 0)
+	if err != nil {
+		return nil, fmt.Errorf("list work: %w", err)
+	}
+	for _, work := range works {
+		svc.materializeWork(ctx, work.ID)
+	}
+
 	var unreadable []model.UnreadableRow
 	unreadable = append(unreadable, itemsUnreadable...)
 	unreadable = append(unreadable, specsUnreadable...)
+	unreadable = append(unreadable, worksUnreadable...)
 	return unreadable, nil
 }
 
@@ -729,6 +765,13 @@ func (svc *SDDService) scanSDDRecords(ctx context.Context, repoRoot string) (bro
 				continue
 			}
 			uuid = rec.Item.UUID
+		case sddfile.KindWork:
+			rec, uErr := sddfile.UnmarshalWork(data)
+			if uErr != nil {
+				broken = append(broken, path)
+				continue
+			}
+			uuid = rec.Aggregate.Contract.UUID
 		case sddfile.KindIgnored:
 			continue
 		}

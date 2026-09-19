@@ -6,6 +6,8 @@ package service
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -117,6 +119,65 @@ func TestSDDEnable_ApplyExportsAllAndWritesMarker(t *testing.T) {
 	}
 	if !strings.Contains(string(gitignore), "sdd.off") {
 		t.Errorf(".mneme/.gitignore = %q, want it to contain sdd.off", gitignore)
+	}
+}
+
+func TestSDDPlanEnableExport_WorkCountsEveryStatus(t *testing.T) {
+	svc, repoDir := newSDDMaterializeService(t, "wirvii/mneme")
+	ctx := context.Background()
+
+	for i := 1; i <= 4; i++ {
+		seedServiceWork(t, svc, fmt.Sprintf("WORK-%03d", i))
+	}
+	if err := svc.store.TransitionWork(ctx, "WORK-002", model.WorkStatusDraft, model.WorkStatusAbandoned, "tester", "cancelled"); err != nil {
+		t.Fatalf("abandon WORK-002: %v", err)
+	}
+	for _, id := range []string{"WORK-003", "WORK-004"} {
+		if err := svc.store.LockWorkAndStart(ctx, id, "base-sha", "tester"); err != nil {
+			t.Fatalf("lock %s: %v", id, err)
+		}
+		if err := svc.store.TransitionWork(ctx, id, model.WorkStatusImplementing, model.WorkStatusVerifying, "tester", ""); err != nil {
+			t.Fatalf("verify %s: %v", id, err)
+		}
+	}
+	if err := svc.store.TransitionWork(ctx, "WORK-003", model.WorkStatusVerifying, model.WorkStatusDone, "tester", ""); err != nil {
+		t.Fatalf("complete WORK-003: %v", err)
+	}
+	if err := svc.store.TransitionWork(ctx, "WORK-004", model.WorkStatusVerifying, model.WorkStatusEscalated, "tester", ""); err != nil {
+		t.Fatalf("escalate WORK-004: %v", err)
+	}
+
+	preview, err := svc.EnableSDDRepo(ctx, repoDir, false)
+	if err != nil {
+		t.Fatalf("EnableSDDRepo preview: %v", err)
+	}
+	if preview.Plan.WorkCount != 4 {
+		t.Fatalf("preview WorkCount = %d, want 4", preview.Plan.WorkCount)
+	}
+
+	if _, err := svc.EnableSDDRepo(ctx, repoDir, true); err != nil {
+		t.Fatalf("EnableSDDRepo apply: %v", err)
+	}
+	for i := 1; i <= 4; i++ {
+		path := sddfile.WorkPath(repoDir, fmt.Sprintf("WORK-%03d", i))
+		if _, err := sddfile.ReadRecord(path); err != nil {
+			t.Errorf("work record %s was not written: %v", path, err)
+		}
+	}
+	marker, err := sddfile.ReadMarker(repoDir)
+	if err != nil || marker == nil {
+		t.Fatalf("ReadMarker: marker=%v err=%v", marker, err)
+	}
+	if marker.WorkCount != 4 {
+		t.Errorf("marker.WorkCount = %d, want 4", marker.WorkCount)
+	}
+
+	exported, err := svc.ExportSDDRepo(ctx, repoDir)
+	if err != nil {
+		t.Fatalf("ExportSDDRepo: %v", err)
+	}
+	if exported.Plan.WorkCount != 4 {
+		t.Errorf("export WorkCount = %d, want 4", exported.Plan.WorkCount)
 	}
 }
 
@@ -255,6 +316,146 @@ func TestSDDConvergence_RefusesForeignAnchor(t *testing.T) {
 	if _, err := sddfile.ReadMarker(repoDir); err != nil {
 		t.Fatalf("ReadMarker: %v", err)
 	}
+}
+
+func TestSDDConvergence_WorkRefusesBrokenAndForeignBeforeWriting(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		fixture func(*testing.T, *SDDService, string) string
+	}{
+		{
+			name: "broken",
+			fixture: func(t *testing.T, _ *SDDService, repoDir string) string {
+				path := sddfile.WorkPath(repoDir, "WORK-999")
+				if err := sddfile.WriteRecord(path, []byte("not a work record")); err != nil {
+					t.Fatal(err)
+				}
+				return path
+			},
+		},
+		{
+			name: "foreign",
+			fixture: func(t *testing.T, svc *SDDService, repoDir string) string {
+				seedServiceWork(t, svc, "WORK-998")
+				aggregate, err := svc.store.GetWorkAggregate(context.Background(), "WORK-998")
+				if err != nil {
+					t.Fatal(err)
+				}
+				contract := *aggregate.Contract
+				contract.ID = "WORK-999"
+				contract.UUID = "0198f000-0000-7000-8000-000000000999"
+				foreign := *aggregate
+				foreign.Contract = &contract
+				data, err := sddfile.MarshalWork(&sddfile.WorkRecord{Aggregate: &foreign})
+				if err != nil {
+					t.Fatal(err)
+				}
+				path := sddfile.WorkPath(repoDir, contract.ID)
+				if err := sddfile.WriteRecord(path, data); err != nil {
+					t.Fatal(err)
+				}
+				return path
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, repoDir := newSDDMaterializeService(t, "wirvii/mneme")
+			ctx := context.Background()
+			item, err := svc.BacklogAdd(ctx, model.BacklogAddRequest{Title: "must stay in DB", Lane: model.LaneStandard, Project: svc.project})
+			if err != nil {
+				t.Fatal(err)
+			}
+			spec, err := svc.SpecNew(ctx, model.SpecNewRequest{Title: "must stay in DB", Lane: model.LaneStandard, Project: svc.project})
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := tc.fixture(t, svc, repoDir)
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if _, err := svc.EnableSDDRepo(ctx, repoDir, true); !errors.Is(err, ErrSDDNotConverged) {
+				t.Fatalf("EnableSDDRepo error = %v, want ErrSDDNotConverged", err)
+			}
+			after, err := os.ReadFile(path)
+			if err != nil || string(after) != string(before) {
+				t.Fatalf("fixture changed after refusal: err=%v", err)
+			}
+			if _, err := os.Stat(sddfile.BacklogPath(repoDir, item.ID)); !os.IsNotExist(err) {
+				t.Errorf("backlog record written despite refusal: %v", err)
+			}
+			if _, err := os.Stat(sddfile.SpecRecordPath(repoDir, spec.ID)); !os.IsNotExist(err) {
+				t.Errorf("spec record written despite refusal: %v", err)
+			}
+			if marker, err := sddfile.ReadMarker(repoDir); err != nil || marker != nil {
+				t.Errorf("marker after refusal = %v, %v; want nil", marker, err)
+			}
+		})
+	}
+}
+
+func TestSDDStatus_WorkReportsBrokenForeignIncompleteAndDivergent(t *testing.T) {
+	svc, repoDir := newSDDMaterializeService(t, "wirvii/mneme")
+	ctx := context.Background()
+	seedServiceWork(t, svc, "WORK-001")
+	enableSDD(t, repoDir, svc.project)
+	svc.materializeWork(ctx, "WORK-001")
+
+	aggregate, err := svc.store.GetWorkAggregate(ctx, "WORK-001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := *aggregate
+	changedContract := *aggregate.Contract
+	changedContract.Goal = "changed only in the file"
+	changed.Contract = &changedContract
+	changedData, err := sddfile.MarshalWork(&sddfile.WorkRecord{Aggregate: &changed})
+	if err != nil {
+		t.Fatal(err)
+	}
+	divergentPath := sddfile.WorkPath(repoDir, "WORK-001")
+	if err := sddfile.WriteRecord(divergentPath, changedData); err != nil {
+		t.Fatal(err)
+	}
+
+	foreign := *aggregate
+	foreignContract := *aggregate.Contract
+	foreignContract.ID = "WORK-002"
+	foreignContract.UUID = "0198f000-0000-7000-8000-000000000992"
+	foreignContract.Project = ""
+	foreign.Contract = &foreignContract
+	foreignData, err := sddfile.MarshalWork(&sddfile.WorkRecord{Aggregate: &foreign})
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreignPath := sddfile.WorkPath(repoDir, "WORK-002")
+	if err := sddfile.WriteRecord(foreignPath, foreignData); err != nil {
+		t.Fatal(err)
+	}
+	brokenPath := sddfile.WorkPath(repoDir, "WORK-003")
+	if err := sddfile.WriteRecord(brokenPath, []byte("broken")); err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := svc.SDDStatus(ctx, repoDir)
+	if err != nil {
+		t.Fatalf("SDDStatus: %v", err)
+	}
+	assertPathListed(t, status.Broken, brokenPath, "Broken")
+	assertPathListed(t, status.ForeignPaths, foreignPath, "ForeignPaths")
+	assertPathListed(t, status.Incomplete, foreignPath, "Incomplete")
+	assertPathListed(t, status.Divergent, divergentPath, "Divergent")
+}
+
+func assertPathListed(t *testing.T, paths []string, want, field string) {
+	t.Helper()
+	for _, path := range paths {
+		if path == want {
+			return
+		}
+	}
+	t.Errorf("%s = %v, want %s", field, paths, want)
 }
 
 // TestSDDExport_Succeeds exercises ExportSDDRepo's full success path: an
