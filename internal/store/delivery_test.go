@@ -504,6 +504,80 @@ func TestInsertTargetedReview_RollsBackEveryEffect(t *testing.T) {
 	}
 }
 
+func TestInsertTargetedReview_DeliveryPrimitivesRemainAvailable(t *testing.T) {
+	s := newTestSDDStore(t)
+	ctx := context.Background()
+	workInReview(t, s, "WORK-001", model.WorkStatusVerifying)
+
+	blocking := &model.WorkFinding{WorkID: "WORK-001", Category: model.FindingRegression, Severity: model.PriorityHigh, Description: "regression", Origin: model.FindingOriginReview, ReviewPhase: model.ReviewPhaseInitial}
+	discovery := &model.WorkFinding{WorkID: "WORK-001", Category: model.FindingDiscovery, Severity: model.PriorityLow, Description: "discovery", Origin: model.FindingOriginReview, ReviewPhase: model.ReviewPhaseInitial}
+	for _, finding := range []*model.WorkFinding{blocking, discovery} {
+		if err := s.AddFinding(ctx, finding); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if count, err := s.CountOpenBlockingFindings(ctx, "WORK-001"); err != nil || count != 1 {
+		t.Fatalf("blocking count=%d err=%v", count, err)
+	}
+	if err := s.ResolveFinding(ctx, blocking.ID, model.FindingFixed, "qa", "fixed", ""); err != nil {
+		t.Fatal(err)
+	}
+	findings, err := s.ListFindings(ctx, "WORK-001")
+	if err != nil || len(findings) != 2 || findings[0].Status != model.FindingFixed || findings[0].ResolvedAt == nil {
+		t.Fatalf("findings=%#v err=%v", findings, err)
+	}
+
+	work, err := s.GetWorkAggregate(ctx, "WORK-001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, checks := deliveryEvaluationFixture(t, s, "WORK-001")
+	cert.Dirty = true
+	observation := model.CriterionObservation{CriterionID: work.Criteria[0].ID, Status: model.CriterionPass, Evidence: "verified", CheckedBy: "qa", CheckedAt: time.Now().UTC()}
+	if err := s.InsertDeliveryEvaluation(ctx, cert, checks, []model.CriterionObservation{observation}); err != nil {
+		t.Fatal(err)
+	}
+	latest, err := s.GetLatestDeliveryCertificate(ctx, cert.Project, cert.WorkID)
+	if err != nil || latest.ID != cert.ID || !latest.Dirty {
+		t.Fatalf("latest=%#v err=%v", latest, err)
+	}
+	storedChecks, err := s.ListDeliveryChecks(ctx, cert.ID)
+	if err != nil || len(storedChecks) != len(checks) || storedChecks[1].Seq != 2 {
+		t.Fatalf("checks=%#v err=%v", storedChecks, err)
+	}
+}
+
+func TestInsertTargetedReview_ClosedStoreReturnsErrors(t *testing.T) {
+	s := newTestSDDStore(t)
+	if err := s.db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	finding := &model.WorkFinding{WorkID: "WORK-001", Category: model.FindingDiscovery, Severity: model.PriorityLow, Description: "discovery", Origin: model.FindingOriginReview, ReviewPhase: model.ReviewPhaseInitial}
+	if err := s.AddFinding(ctx, finding); err == nil {
+		t.Error("AddFinding succeeded on closed store")
+	}
+	if err := s.ResolveFinding(ctx, "missing", model.FindingFixed, "qa", "", ""); err == nil {
+		t.Error("ResolveFinding succeeded on closed store")
+	}
+	if _, err := s.ListFindings(ctx, "WORK-001"); err == nil {
+		t.Error("ListFindings succeeded on closed store")
+	}
+	if _, err := s.CountOpenBlockingFindings(ctx, "WORK-001"); err == nil {
+		t.Error("CountOpenBlockingFindings succeeded on closed store")
+	}
+	cert := &model.DeliveryCertificate{Project: "p", WorkID: "WORK-001", Verdict: model.DeliveryVerdictPass}
+	if err := s.InsertDeliveryCertificate(ctx, cert, nil); err == nil {
+		t.Error("InsertDeliveryCertificate succeeded on closed store")
+	}
+	if _, err := s.GetLatestDeliveryCertificate(ctx, "p", "WORK-001"); err == nil {
+		t.Error("GetLatestDeliveryCertificate succeeded on closed store")
+	}
+	if _, err := s.ListDeliveryChecks(ctx, "missing"); err == nil {
+		t.Error("ListDeliveryChecks succeeded on closed store")
+	}
+}
+
 func TestInsertDeliveryEvaluation_AtomicallyWritesChecksAndObservations(t *testing.T) {
 	s := newTestSDDStore(t)
 	workInReview(t, s, "WORK-001", model.WorkStatusVerifying)
@@ -536,7 +610,7 @@ func TestInsertDeliveryEvaluation_AtomicallyWritesChecksAndObservations(t *testi
 	}
 }
 
-func TestInsertDeliveryEvaluation_PreservesSignedObservation(t *testing.T) {
+func TestInsertTargetedReview_PreservesSignedObservation(t *testing.T) {
 	s := newTestSDDStore(t)
 	workInReview(t, s, "WORK-001", model.WorkStatusVerifying)
 	work, err := s.GetWorkAggregate(context.Background(), "WORK-001")
@@ -561,7 +635,7 @@ func TestInsertDeliveryEvaluation_PreservesSignedObservation(t *testing.T) {
 	}
 }
 
-func TestInsertDeliveryEvaluation_ValidatesWorkSnapshot(t *testing.T) {
+func TestInsertTargetedReview_DeliveryEvaluationValidatesWorkSnapshot(t *testing.T) {
 	tests := []struct {
 		name   string
 		status model.WorkStatus
@@ -591,7 +665,7 @@ func TestInsertDeliveryEvaluation_ValidatesWorkSnapshot(t *testing.T) {
 	}
 }
 
-func TestInsertDeliveryEvaluation_RollsBackCertificateChecksAndObservations(t *testing.T) {
+func TestInsertTargetedReview_DeliveryEvaluationRollsBackCertificateChecksAndObservations(t *testing.T) {
 	s := newTestSDDStore(t)
 	workInReview(t, s, "WORK-001", model.WorkStatusVerifying)
 	work, err := s.GetWorkAggregate(context.Background(), "WORK-001")
@@ -622,7 +696,7 @@ func TestInsertDeliveryEvaluation_RollsBackCertificateChecksAndObservations(t *t
 	}
 }
 
-func TestDeliveryCertificateRoundTrip(t *testing.T) {
+func TestInsertTargetedReview_DeliveryCertificateRoundTrip(t *testing.T) {
 	s := newTestSDDStore(t)
 	workInReview(t, s, "WORK-001", model.WorkStatusVerifying)
 	cert, _ := deliveryEvaluationFixture(t, s, "WORK-001")
@@ -643,7 +717,7 @@ func TestDeliveryCertificateRoundTrip(t *testing.T) {
 	}
 }
 
-func TestFindingResolutionVariantsAndTargetedPhase(t *testing.T) {
+func TestInsertTargetedReview_FindingResolutionVariantsAndTargetedPhase(t *testing.T) {
 	s := newTestSDDStore(t)
 	ctx := context.Background()
 	workInReview(t, s, "WORK-001", model.WorkStatusVerifying)
@@ -681,7 +755,7 @@ func TestFindingResolutionVariantsAndTargetedPhase(t *testing.T) {
 	}
 }
 
-func TestDeliveryStore_ValidationErrors(t *testing.T) {
+func TestInsertTargetedReview_DeliveryStoreValidationErrors(t *testing.T) {
 	s := newTestSDDStore(t)
 	ctx := context.Background()
 	workInReview(t, s, "WORK-001", model.WorkStatusVerifying)
@@ -721,7 +795,7 @@ func TestDeliveryStore_ValidationErrors(t *testing.T) {
 	}
 }
 
-func TestFindingStore_AdditionalValidationBranches(t *testing.T) {
+func TestInsertTargetedReview_FindingStoreAdditionalValidationBranches(t *testing.T) {
 	s := newTestSDDStore(t)
 	ctx := context.Background()
 	missing := &model.WorkFinding{WorkID: "WORK-404", Category: model.FindingDiscovery, Severity: model.PriorityLow, Description: "x", Origin: model.FindingOriginReview, ReviewPhase: model.ReviewPhaseInitial}
