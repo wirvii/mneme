@@ -1,6 +1,7 @@
 package model
 
 import (
+	"reflect"
 	"testing"
 	"time"
 )
@@ -193,6 +194,73 @@ func TestDeriveWorkMetric_LocalEvidence(t *testing.T) {
 				t.Fatal("DeriveWorkMetric() error = nil, want invalid certificate error")
 			}
 		})
+	}
+}
+
+func TestSummarizeWorkMetrics_DurationDistribution(t *testing.T) {
+	tests := []struct {
+		name       string
+		durations  []int64
+		wantMedian *int64
+		wantP95    *int64
+	}{
+		{name: "empty"},
+		{name: "one", durations: []int64{10}, wantMedian: metricInt64(10), wantP95: metricInt64(10)},
+		{name: "odd", durations: []int64{30, 10, 20}, wantMedian: metricInt64(20), wantP95: metricInt64(30)},
+		{name: "even", durations: []int64{40, 10, 30, 20}, wantMedian: metricInt64(25), wantP95: metricInt64(40)},
+		{name: "nearest rank boundary", durations: []int64{10, 20, 30, 40, 50, 60, 70, 80, 90, 100}, wantMedian: metricInt64(55), wantP95: metricInt64(100)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			items := make([]WorkMetric, 0, len(tt.durations))
+			for _, duration := range tt.durations {
+				d := duration
+				items = append(items, WorkMetric{Status: WorkStatusDone, CycleDurationMs: &d})
+			}
+			before := append([]int64(nil), tt.durations...)
+			got := SummarizeWorkMetrics(items).CycleDuration
+			if got.Count != len(tt.durations) || !sameOptionalInt64(got.MedianMs, tt.wantMedian) || !sameOptionalInt64(got.P95Ms, tt.wantP95) {
+				t.Fatalf("CycleDuration = %+v, want count=%d median=%v p95=%v", got, len(tt.durations), tt.wantMedian, tt.wantP95)
+			}
+			if !reflect.DeepEqual(tt.durations, before) {
+				t.Fatalf("input durations mutated: got %v, want %v", tt.durations, before)
+			}
+		})
+	}
+}
+
+func TestSummarizeWorkMetrics_CountsWholePopulation(t *testing.T) {
+	d100, d200, d300, d400 := int64(100), int64(200), int64(300), int64(400)
+	items := []WorkMetric{
+		{Status: WorkStatusDraft, VerificationEvidence: WorkMetricEvidenceNotStarted},
+		{Status: WorkStatusImplementing, Amendments: 1, InitialReviews: 1, VerificationEvidence: WorkMetricEvidencePartial, DeliveryCertificates: 1, PassedCertificates: 1, LocalVerificationDurationMs: 10},
+		{Status: WorkStatusEscalated, Escalations: 2, VerificationEvidence: WorkMetricEvidenceComplete, DeliveryCertificates: 2, PassedCertificates: 1, FailedCertificates: 1, LocalVerificationDurationMs: 20},
+		{Status: WorkStatusDone, CycleDurationMs: &d100, DoneWithoutCorrectionOrEscalation: true, VerificationEvidence: WorkMetricEvidenceComplete},
+		{Status: WorkStatusDone, CycleDurationMs: &d200, DoneAfterCorrection: true, AutomaticCorrections: 1, TargetedReviews: 1, CorrectionCompleted: 1, VerificationEvidence: WorkMetricEvidencePartial},
+		{Status: WorkStatusDone, CycleDurationMs: &d300, DoneAfterResume: true, Resumptions: 1, Escalations: 1, VerificationEvidence: WorkMetricEvidenceComplete},
+		{Status: WorkStatusAbandoned, CycleDurationMs: &d400, AutomaticCorrections: 2, CorrectionAbandoned: 1, CorrectionPending: 1, VerificationEvidence: WorkMetricEvidenceNotStarted},
+		{Status: WorkStatusAbandoned, VerificationEvidence: WorkMetricEvidenceNotStarted},
+	}
+	got := SummarizeWorkMetrics(items)
+	wantInts := map[string][2]int{
+		"works": {got.Works, 8}, "draft": {got.Draft, 1}, "active": {got.Active, 2}, "escalated_current": {got.EscalatedCurrent, 1},
+		"done": {got.Done, 3}, "abandoned": {got.Abandoned, 2}, "terminal_with_duration": {got.TerminalWithDuration, 4}, "terminal_without_duration": {got.TerminalWithoutDuration, 1},
+		"direct_done": {got.DoneWithoutCorrectionOrEscalation, 1}, "corrected_done": {got.DoneAfterCorrection, 1}, "resumed_done": {got.DoneAfterResume, 1},
+		"amendments": {got.Amendments, 1}, "initial_reviews": {got.InitialReviews, 1}, "targeted_reviews": {got.TargetedReviews, 1},
+		"automatic_corrections": {got.AutomaticCorrections, 3}, "correction_completed": {got.CorrectionCompleted, 1}, "correction_escalated": {got.CorrectionEscalated, 0}, "correction_abandoned": {got.CorrectionAbandoned, 1}, "correction_pending": {got.CorrectionPending, 1},
+		"escalations": {got.Escalations, 3}, "resumptions": {got.Resumptions, 1}, "evidence_complete": {got.LocalEvidenceComplete, 3}, "evidence_partial": {got.LocalEvidencePartial, 2}, "evidence_not_started": {got.LocalEvidenceNotStarted, 3},
+		"certificates": {got.DeliveryCertificates, 3}, "passed": {got.PassedCertificates, 2}, "failed": {got.FailedCertificates, 1},
+	}
+	for name, pair := range wantInts {
+		if pair[0] != pair[1] {
+			t.Errorf("%s = %d, want %d", name, pair[0], pair[1])
+		}
+	}
+	if got.LocalVerificationDurationMs != 30 {
+		t.Errorf("LocalVerificationDurationMs = %d, want 30", got.LocalVerificationDurationMs)
+	}
+	if got.CycleDuration.Count != 4 || got.CycleDuration.TotalMs != 1000 {
+		t.Errorf("CycleDuration = %+v, want count 4 total 1000", got.CycleDuration)
 	}
 }
 
