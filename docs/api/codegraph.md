@@ -1,12 +1,13 @@
 # API Reference — CodeGraph Tools (`codegraph_*`)
 
-10 MCP tools over JSON-RPC 2.0 stdio (`mneme mcp`). Concept guide:
+11 MCP tools over JSON-RPC 2.0 stdio (`mneme mcp`). Concept guide:
 [docs/codegraph.md](../codegraph.md) (indexing model, coverage caveats, git
 hooks). Index: [docs/API.md](../API.md).
 
-Unlike the other tool families, `codegraph_*` tools return **plain,
-human-readable text** (not JSON) in the single `text` content block — they are
-designed to be read directly by an agent, not machine-parsed. Coverage
+Most `codegraph_*` tools return plain, human-readable text in the single
+`text` content block. `codegraph_affected` is the exception: its text block is
+a stable JSON object so callers can distinguish missing paths, a missing or
+stale graph, truncation, and affected nodes without parsing prose. Coverage
 caveat: `codegraph_impact` and `codegraph_callees` are **best-effort**. The
 graph does not reliably capture method-calls (`x.Foo()`) or cross-package/
 stdlib calls — do not assume "nobody calls X" purely from empty results; a
@@ -109,6 +110,42 @@ for an exhaustive pre-refactor analysis; do not assume completeness.
 
 ---
 
+## codegraph_affected
+
+Report the reverse dependency closure of changed repository paths by following
+the graph's existing incoming `calls`, `imports`, and `contains` edges. The
+operation is read-only: it does not write Git, source files, graph records, or
+index metadata.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `paths` | string[] | no | Explicit repository-relative changed paths. Cannot be combined with `base` or `head` |
+| `base` | string | no | Base Git revision. Defaults to the graph's recorded indexed revision |
+| `head` | string | no | Head Git revision. Defaults to `HEAD` |
+| `depth` | integer | no | Incoming traversal depth. Default: 3 |
+| `limit` | integer | no | Maximum returned nodes. Default: 50; `total` is measured before this limit |
+
+With no `paths`, `base`, or `head`, the tool reads the current worktree changes
+against `HEAD`, including untracked paths. Explicit paths and a Git range are
+mutually exclusive.
+
+**Returns:** JSON with `inputs`, `missing_paths`, `untracked_paths`,
+`affected_nodes`, `total`, `truncated`, `stale`, `missing_graph`, and
+`indexed_sha`, and an optional `graph_notice` when the index is known to omit a
+language. Every affected node includes its first deterministic `relation`
+and shortest `depth`. Deleted paths and paths with no indexed symbols appear in
+`missing_paths`; they never become a silent empty result.
+
+`imports` means only the edges the current extractor actually records. Today
+those commonly connect an importing file to its local import node; this tool
+does not claim to infer module consumers that are absent from the graph.
+
+**Errors:** `-32602` mixed explicit/range inputs, an outside-repository path,
+negative depth/limit, unknown fields, or malformed types. `-32603` Git or graph
+read failure.
+
+---
+
 ## codegraph_node
 
 Get detailed information about a specific code symbol including its source
@@ -187,7 +224,7 @@ Find the call path between two symbols via BFS on outgoing `calls` edges.
 ## CLI parity note
 
 `codegraph_explore` has **no CLI equivalent** — it is an MCP-only batched
-convenience tool. All other 9 tools map 1:1 to `mneme codegraph <subcommand>`
+convenience tool. All other 10 tools map 1:1 to `mneme codegraph <subcommand>`
 (see [docs/api/cli.md](cli.md)), plus `mneme codegraph index` and
 `mneme codegraph hooks install|remove`, which are CLI-only (indexing and git
 hook management are not exposed as MCP tools — an agent triggers indexing via
@@ -203,4 +240,4 @@ hook management are not exposed as MCP tools — an agent triggers indexing via
 ## See also
 
 - [docs/codegraph.md](../codegraph.md) — indexing model, extractor coverage by language, auto-reindex git hooks, `hook_nudge_enabled` config
-- [docs/api/cli.md](cli.md) — `mneme codegraph index/search/node/callers/callees/impact/trace/files/status/hooks`
+- [docs/api/cli.md](cli.md) — `mneme codegraph index/search/node/callers/callees/impact/affected/trace/files/status/hooks`

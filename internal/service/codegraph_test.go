@@ -1,12 +1,15 @@
 package service
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/wirvii/mneme/internal/codegraph"
+	"github.com/wirvii/mneme/internal/quality"
 )
 
 // newTestCodeGraphService opens an in-memory codegraph DB, creates a temp dir
@@ -220,6 +223,206 @@ func TestCodeGraphService_Files_LanguageFilter(t *testing.T) {
 	for _, f := range files {
 		if f.Language != "go" {
 			t.Errorf("expected only go files, got language=%q for %q", f.Language, f.Path)
+		}
+	}
+}
+
+type affectedGitFake struct {
+	headSHA       string
+	mergeBase     string
+	changes       []quality.FileChange
+	dirtyPaths    []string
+	changedFrom   string
+	changedTo     string
+	mergeBaseFrom string
+	mergeBaseTo   string
+}
+
+func (f *affectedGitFake) HeadSHA() (string, error) { return f.headSHA, nil }
+
+func (f *affectedGitFake) MergeBase(from, to string) (string, error) {
+	f.mergeBaseFrom, f.mergeBaseTo = from, to
+	return f.mergeBase, nil
+}
+
+func (f *affectedGitFake) ChangedFilesInRange(from, to string) ([]quality.FileChange, error) {
+	f.changedFrom, f.changedTo = from, to
+	return f.changes, nil
+}
+
+func (f *affectedGitFake) IsDirty() (bool, []string, error) {
+	return len(f.dirtyPaths) > 0, f.dirtyPaths, nil
+}
+
+func newAffectedCodeGraphService(t *testing.T) *CodeGraphService {
+	t.Helper()
+	cdb, err := codegraph.OpenDB(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cdb.Close() })
+	svc := NewCodeGraphServiceFromDB(cdb)
+	nodes := []codegraph.Node{
+		{ID: "changed", Kind: codegraph.NodeKindFunction, Name: "Changed", QualifiedName: "pkg.Changed", FilePath: "changed.go", Language: "go"},
+		{ID: "caller", Kind: codegraph.NodeKindFunction, Name: "Caller", QualifiedName: "pkg.Caller", FilePath: "caller.go", Language: "go"},
+	}
+	for _, node := range nodes {
+		if err := svc.store.UpsertNode(node); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := svc.store.UpsertEdge(codegraph.Edge{Source: "caller", Target: "changed", Kind: codegraph.EdgeKindCalls}); err != nil {
+		t.Fatal(err)
+	}
+	return svc
+}
+
+func TestCodegraphAffected_ExplicitPathsDefaultsAndStale(t *testing.T) {
+	svc := newAffectedCodeGraphService(t)
+	git := &affectedGitFake{headSHA: "head"}
+	svc.affectedGit = git
+	if err := svc.store.SetMetadata(codegraph.MetaKeyLastIndexedSHA, "old"); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := svc.Affected(codegraph.AffectedRequest{Paths: []string{"missing.go", "changed.go"}})
+	if err != nil {
+		t.Fatalf("Affected: %v", err)
+	}
+	if got, want := strings.Join(result.Inputs, ","), "changed.go,missing.go"; got != want {
+		t.Errorf("inputs = %q, want %q", got, want)
+	}
+	if got, want := strings.Join(result.MissingPaths, ","), "missing.go"; got != want {
+		t.Errorf("missing = %q, want %q", got, want)
+	}
+	if result.Total != 1 || result.Truncated {
+		t.Errorf("total/truncated = %d/%v, want 1/false", result.Total, result.Truncated)
+	}
+	if !result.Stale || result.IndexedSHA != "old" {
+		t.Errorf("stale/indexed_sha = %v/%q, want true/old", result.Stale, result.IndexedSHA)
+	}
+}
+
+func TestCodegraphAffected_GitRangeUsesMergeBase(t *testing.T) {
+	svc := newAffectedCodeGraphService(t)
+	// A stale record for a path Git says was deleted must still be disclosed
+	// as missing; otherwise an old graph can turn deletion into false certainty.
+	if err := svc.store.UpsertNode(codegraph.Node{ID: "deleted", Kind: codegraph.NodeKindFunction, Name: "Deleted", QualifiedName: "pkg.Deleted", FilePath: "deleted.go", Language: "go"}); err != nil {
+		t.Fatal(err)
+	}
+	git := &affectedGitFake{
+		headSHA:   "head",
+		mergeBase: "merge-base",
+		changes: []quality.FileChange{
+			{Path: "changed.go", Status: quality.FileStatusModified},
+			{Path: "deleted.go", Status: quality.FileStatusDeleted},
+		},
+	}
+	svc.affectedGit = git
+	if err := svc.store.SetMetadata(codegraph.MetaKeyLastIndexedSHA, "head"); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := svc.Affected(codegraph.AffectedRequest{Base: "base", Head: "head", Depth: 2, Limit: 10})
+	if err != nil {
+		t.Fatalf("Affected: %v", err)
+	}
+	if git.mergeBaseFrom != "base" || git.mergeBaseTo != "head" || git.changedFrom != "merge-base" || git.changedTo != "head" {
+		t.Errorf("git calls = merge-base(%q,%q), changed(%q,%q)", git.mergeBaseFrom, git.mergeBaseTo, git.changedFrom, git.changedTo)
+	}
+	if got, want := strings.Join(result.Inputs, ","), "changed.go,deleted.go"; got != want {
+		t.Errorf("inputs = %q, want %q", got, want)
+	}
+	if got := strings.Join(result.MissingPaths, ","); got != "deleted.go" {
+		t.Errorf("missing = %q, want deleted.go", got)
+	}
+	if result.Stale {
+		t.Error("result unexpectedly stale")
+	}
+}
+
+func TestCodegraphAffected_DefaultWorktreeDiffReportsUntracked(t *testing.T) {
+	svc := newAffectedCodeGraphService(t)
+	git := &affectedGitFake{headSHA: "head", dirtyPaths: []string{" M changed.go", "?? new.go"}}
+	svc.affectedGit = git
+
+	result, err := svc.Affected(codegraph.AffectedRequest{})
+	if err != nil {
+		t.Fatalf("Affected: %v", err)
+	}
+	if got, want := strings.Join(result.Inputs, ","), "changed.go,new.go"; got != want {
+		t.Errorf("inputs = %q, want %q", got, want)
+	}
+	if got := strings.Join(result.UntrackedPaths, ","); got != "new.go" {
+		t.Errorf("untracked = %q, want new.go", got)
+	}
+	if got := strings.Join(result.MissingPaths, ","); got != "new.go" {
+		t.Errorf("missing = %q, want new.go", got)
+	}
+}
+
+func TestCodegraphAffected_RejectsMixedInputs(t *testing.T) {
+	svc := newAffectedCodeGraphService(t)
+	svc.affectedGit = &affectedGitFake{headSHA: "head"}
+	_, err := svc.Affected(codegraph.AffectedRequest{Paths: []string{"changed.go"}, Base: "base"})
+	if !errors.Is(err, ErrInvalidAffectedRequest) {
+		t.Fatalf("error = %v, want ErrInvalidAffectedRequest", err)
+	}
+}
+
+func TestCodegraphAffected_MissingGraphIsExplicit(t *testing.T) {
+	cdb, err := codegraph.OpenDB(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cdb.Close() })
+	svc := NewCodeGraphServiceFromDB(cdb)
+	svc.affectedGit = &affectedGitFake{headSHA: "head"}
+
+	result, err := svc.Affected(codegraph.AffectedRequest{Paths: []string{"changed.go"}})
+	if err != nil {
+		t.Fatalf("Affected: %v", err)
+	}
+	if !result.MissingGraph || strings.Join(result.MissingPaths, ",") != "changed.go" {
+		t.Errorf("missing graph/path = %v/%v, want true/[changed.go]", result.MissingGraph, result.MissingPaths)
+	}
+}
+
+func TestCodegraphAffected_DefaultDepthAndLimit(t *testing.T) {
+	svc := newAffectedCodeGraphService(t)
+	svc.affectedGit = &affectedGitFake{headSHA: "head"}
+	for i := 0; i < 50; i++ {
+		id := fmt.Sprintf("direct-%02d", i)
+		node := codegraph.Node{ID: id, Kind: codegraph.NodeKindFunction, Name: id, QualifiedName: "pkg." + id, FilePath: id + ".go", Language: "go"}
+		if err := svc.store.UpsertNode(node); err != nil {
+			t.Fatal(err)
+		}
+		if err := svc.store.UpsertEdge(codegraph.Edge{Source: id, Target: "changed", Kind: codegraph.EdgeKindCalls}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	previous := "caller"
+	for depth := 2; depth <= 4; depth++ {
+		id := fmt.Sprintf("deep-%d", depth)
+		if err := svc.store.UpsertNode(codegraph.Node{ID: id, Kind: codegraph.NodeKindFunction, Name: id, QualifiedName: "pkg." + id, FilePath: id + ".go", Language: "go"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := svc.store.UpsertEdge(codegraph.Edge{Source: id, Target: previous, Kind: codegraph.EdgeKindCalls}); err != nil {
+			t.Fatal(err)
+		}
+		previous = id
+	}
+
+	result, err := svc.Affected(codegraph.AffectedRequest{Paths: []string{"changed.go"}})
+	if err != nil {
+		t.Fatalf("Affected: %v", err)
+	}
+	if result.Total != 53 || len(result.AffectedNodes) != 50 || !result.Truncated {
+		t.Fatalf("total/returned/truncated = %d/%d/%v, want 53/50/true", result.Total, len(result.AffectedNodes), result.Truncated)
+	}
+	for _, node := range result.AffectedNodes {
+		if node.Depth > 3 {
+			t.Errorf("default depth returned %+v", node)
 		}
 	}
 }

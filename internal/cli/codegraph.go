@@ -64,6 +64,7 @@ func newCodegraphCmd() *cobra.Command {
 		newCodegraphCallersCmd(),
 		newCodegraphCalleesCmd(),
 		newCodegraphImpactCmd(),
+		newCodegraphAffectedCmd(),
 		newCodegraphNodeCmd(),
 		newCodegraphTraceCmd(),
 		newCodegraphFilesCmd(),
@@ -532,6 +533,83 @@ by following incoming calls, imports, extends, and implements edges up to
 	cmd.Flags().IntVarP(&flagDepth, "depth", "d", 3, "Traversal depth (number of hops)")
 	cmd.Flags().IntVarP(&flagLimit, "limit", "n", 50, "Maximum number of results")
 	return cmd
+}
+
+// newCodegraphAffectedCmd returns the read-only
+// "mneme codegraph affected" subcommand.
+func newCodegraphAffectedCmd() *cobra.Command {
+	var (
+		flagPaths []string
+		flagBase  string
+		flagHead  string
+		flagDepth int
+		flagLimit int
+		flagJSON  bool
+	)
+	cmd := &cobra.Command{
+		Use:   "affected",
+		Short: "Report code affected by changed paths",
+		Long: `Resolve changed paths explicitly or from Git, then follow the graph's
+existing incoming calls, imports, and contains edges. This command is read-only.
+Use either one or more --path flags or --base/--head; do not combine them.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			svc, err := initCodeGraphService()
+			if err != nil {
+				return fmt.Errorf("codegraph affected: %w", err)
+			}
+			defer func() { _ = svc.Close() }()
+			result, err := svc.Affected(codegraph.AffectedRequest{
+				Paths: flagPaths, Base: flagBase, Head: flagHead,
+				Depth: flagDepth, Limit: flagLimit,
+			})
+			if err != nil {
+				return fmt.Errorf("codegraph affected: %w", err)
+			}
+			if flagJSON {
+				enc := json.NewEncoder(cmd.OutOrStdout())
+				enc.SetIndent("", "  ")
+				return enc.Encode(result)
+			}
+			printCodegraphAffectedHuman(cmd.OutOrStdout(), result)
+			return nil
+		},
+	}
+	cmd.Flags().StringArrayVar(&flagPaths, "path", nil, "Changed repository-relative path (repeatable)")
+	cmd.Flags().StringVar(&flagBase, "base", "", "Base Git revision (defaults to the indexed revision)")
+	cmd.Flags().StringVar(&flagHead, "head", "", "Head Git revision (defaults to HEAD)")
+	cmd.Flags().IntVarP(&flagDepth, "depth", "d", 3, "Traversal depth (number of hops)")
+	cmd.Flags().IntVarP(&flagLimit, "limit", "n", 50, "Maximum number of affected nodes")
+	cmd.Flags().BoolVar(&flagJSON, "json", false, "Print the complete result as JSON")
+	return cmd
+}
+
+func printCodegraphAffectedHuman(out io.Writer, result codegraph.AffectedResult) {
+	if result.MissingGraph {
+		fmt.Fprintln(out, "Warning: graph is missing; index the repository before trusting this result.")
+	}
+	if result.Stale {
+		fmt.Fprintf(out, "Warning: graph is stale; it was indexed at %s.\n", result.IndexedSHA)
+	}
+	if len(result.MissingPaths) > 0 {
+		fmt.Fprintf(out, "Missing paths: %s\n", strings.Join(result.MissingPaths, ", "))
+	}
+	if len(result.UntrackedPaths) > 0 {
+		fmt.Fprintf(out, "Untracked paths: %s\n", strings.Join(result.UntrackedPaths, ", "))
+	}
+	if len(result.AffectedNodes) == 0 {
+		fmt.Fprintln(out, "No affected nodes found.")
+	} else {
+		fmt.Fprintln(out, "Affected nodes:")
+		for _, node := range result.AffectedNodes {
+			fmt.Fprintf(out, "  depth %d  %-8s  %s:%s\n", node.Depth, node.Relation, node.FilePath, node.QualifiedName)
+		}
+	}
+	if result.Truncated {
+		fmt.Fprintf(out, "Showing %d of %d affected nodes; result is truncated.\n", len(result.AffectedNodes), result.Total)
+	} else {
+		fmt.Fprintf(out, "Total: %d affected nodes.\n", result.Total)
+	}
 }
 
 // newCodegraphNodeCmd returns the "mneme codegraph node <symbol>" subcommand.

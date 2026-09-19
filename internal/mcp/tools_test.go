@@ -8,11 +8,11 @@ import (
 	"testing"
 )
 
-// TestAllTools_Count96 verifies the tool count after work_metrics joins delivery-v2.
-func TestAllTools_Count96(t *testing.T) {
+// TestAllTools_Count97 verifies the tool count after codegraph_affected joins the public surface.
+func TestAllTools_Count97(t *testing.T) {
 	tools := allTools()
-	if len(tools) != 96 {
-		t.Errorf("allTools() returned %d tools, want 96", len(tools))
+	if len(tools) != 97 {
+		t.Errorf("allTools() returned %d tools, want 97", len(tools))
 	}
 }
 
@@ -34,7 +34,7 @@ func TestAllTools_DerivedWorkFamilyAndPublicCounts(t *testing.T) {
 			t.Fatalf("read %s: %v", path, err)
 		}
 		text := string(data)
-		for _, anchor := range []string{"96", "9", "work"} {
+		for _, anchor := range []string{"97", "9", "work"} {
 			if !strings.Contains(strings.ToLower(text), anchor) {
 				t.Errorf("%s does not contain current MCP/work count anchor %q", path, anchor)
 			}

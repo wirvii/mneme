@@ -1,9 +1,11 @@
 package mcp
 
 import (
+	"encoding/json"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -16,14 +18,14 @@ import (
 	"github.com/wirvii/mneme/internal/store"
 )
 
-// TestMCP_AllCodegraphToolsRegistered verifies that all 10 codegraph tools are
+// TestMCP_AllCodegraphToolsRegistered verifies that all 11 codegraph tools are
 // present in the allTools() slice.
 func TestMCP_AllCodegraphToolsRegistered(t *testing.T) {
 	tools := allTools()
 	wantTools := []string{
 		"codegraph_search", "codegraph_context", "codegraph_callers",
 		"codegraph_callees", "codegraph_impact", "codegraph_node",
-		"codegraph_explore", "codegraph_trace", "codegraph_status", "codegraph_files",
+		"codegraph_affected", "codegraph_explore", "codegraph_trace", "codegraph_status", "codegraph_files",
 	}
 	for _, want := range wantTools {
 		found := false
@@ -226,6 +228,80 @@ func TestMCP_CodegraphFiles(t *testing.T) {
 	}
 }
 
+func TestHandleCodegraphAffected_Parity(t *testing.T) {
+	srv := newTestServerWithCodeGraph(t)
+	if got := len(allTools()); got != 97 {
+		t.Fatalf("registered tool count = %d, want 97", got)
+	}
+	request := codegraph.AffectedRequest{Paths: []string{"main.go"}, Depth: 2, Limit: 10}
+	want, err := srv.handlers.cgSvc.Affected(request)
+	if err != nil {
+		t.Fatalf("service Affected: %v", err)
+	}
+
+	resp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name: "codegraph_affected",
+		Arguments: mustMarshal(t, map[string]any{
+			"paths": []string{"main.go"}, "depth": 2, "limit": 10,
+		}),
+	})
+	if resp.Error != nil {
+		t.Fatalf("codegraph_affected: code=%d message=%s", resp.Error.Code, resp.Error.Message)
+	}
+	var got codegraph.AffectedResult
+	unmarshalToolText(t, resp, &got)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("MCP result = %#v, service result = %#v", got, want)
+	}
+
+	var found *ToolDefinition
+	for i := range allTools() {
+		if allTools()[i].Name == "codegraph_affected" {
+			tool := allTools()[i]
+			found = &tool
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("codegraph_affected not registered")
+	}
+	schema, ok := found.InputSchema.(map[string]any)
+	if !ok {
+		t.Fatalf("input schema type = %T, want map[string]any", found.InputSchema)
+	}
+	if permits, ok := schema["additionalProperties"].(bool); !ok || permits {
+		t.Fatal("codegraph_affected schema permits additional properties")
+	}
+}
+
+func TestHandleCodegraphAffected_MalformedInput(t *testing.T) {
+	srv := newTestServerWithCodeGraph(t)
+	resp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name: "codegraph_affected",
+		Arguments: mustMarshal(t, map[string]any{
+			"paths": []string{"main.go"}, "base": "base",
+		}),
+	})
+	if resp.Error == nil || resp.Error.Code != CodeInvalidParams {
+		t.Fatalf("error = %#v, want CodeInvalidParams", resp.Error)
+	}
+}
+
+func TestHandleCodegraphAffected_DegradedNoticePreservesJSON(t *testing.T) {
+	srv := newTestServerWithMarkedCodeGraph(t)
+	resp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name: "codegraph_affected", Arguments: mustMarshal(t, map[string]any{"paths": []string{"main.go"}}),
+	})
+	if resp.Error != nil {
+		t.Fatalf("codegraph_affected: %v", resp.Error)
+	}
+	var result codegraph.AffectedResult
+	unmarshalToolText(t, resp, &result)
+	if !strings.HasPrefix(result.GraphNotice, codegraph.NoticeToken) {
+		t.Errorf("graph_notice = %q, want notice token", result.GraphNotice)
+	}
+}
+
 // TestMCP_MemContext_IncludesCodeGraphHint_Indexed verifies that when a codegraph
 // service has indexed data, the mem_context response includes a codegraph_hint
 // field with symbol/file counts and tool usage instructions.
@@ -382,20 +458,21 @@ func TestMCP_MemContext_IncludesCodeGraphHint_NotIndexed(t *testing.T) {
 // newTestServerWithCodeGraph (SPEC-142 AC6). TestMCP_CodegraphToolsCarryGraphNotice
 // checks set equality between this map's keys and allTools()'s own
 // "codegraph_"-prefixed population, in BOTH directions — so neither an
-// eleventh tool nor a stale entry here can go unnoticed (plan step 1, form 4:
+// twelfth tool nor a stale entry here can go unnoticed (plan step 1, form 4:
 // a criterion must never enumerate its own population by hand and leave it
 // unverified against the real source).
 var codegraphMinimalArgs = map[string]map[string]any{
-	"codegraph_search":  {"query": "Hello"},
-	"codegraph_context": {"symbol": "Hello"},
-	"codegraph_callers": {"symbol": "Hello"},
-	"codegraph_callees": {"symbol": "Hello"},
-	"codegraph_impact":  {"symbol": "Hello"},
-	"codegraph_node":    {"symbol": "Hello"},
-	"codegraph_explore": {"symbols": []any{"Hello"}},
-	"codegraph_trace":   {"from": "Hello", "to": "Hello"},
-	"codegraph_status":  {},
-	"codegraph_files":   {},
+	"codegraph_search":   {"query": "Hello"},
+	"codegraph_context":  {"symbol": "Hello"},
+	"codegraph_callers":  {"symbol": "Hello"},
+	"codegraph_callees":  {"symbol": "Hello"},
+	"codegraph_impact":   {"symbol": "Hello"},
+	"codegraph_affected": {"paths": []any{"main.go"}},
+	"codegraph_node":     {"symbol": "Hello"},
+	"codegraph_explore":  {"symbols": []any{"Hello"}},
+	"codegraph_trace":    {"from": "Hello", "to": "Hello"},
+	"codegraph_status":   {},
+	"codegraph_files":    {},
 }
 
 // codegraphToolNames returns the "codegraph_"-prefixed subset of allTools(),
@@ -476,7 +553,7 @@ func TestMCP_CodegraphToolsCarryGraphNotice(t *testing.T) {
 	names := codegraphToolNames(t)
 
 	// Set-equality in BOTH directions against codegraphMinimalArgs (plan
-	// step 1, form 4): neither an eleventh tool nor a stale map entry can go
+	// step 1, form 4): neither a twelfth tool nor a stale map entry can go
 	// unnoticed.
 	declared := make(map[string]bool, len(codegraphMinimalArgs))
 	for name := range codegraphMinimalArgs {
@@ -512,7 +589,12 @@ func TestMCP_CodegraphToolsCarryGraphNotice(t *testing.T) {
 			}
 			var result ToolCallResult
 			unmarshalResult(t, resp, &result)
-			if len(result.Content) == 0 || !strings.HasPrefix(result.Content[0].Text, codegraph.NoticeToken) {
+			if name == "codegraph_affected" {
+				var affected codegraph.AffectedResult
+				if len(result.Content) == 0 || json.Unmarshal([]byte(result.Content[0].Text), &affected) != nil || !strings.HasPrefix(affected.GraphNotice, codegraph.NoticeToken) {
+					t.Errorf("%s: JSON result does not carry the notice on a marked graph: %+v", name, result.Content)
+				}
+			} else if len(result.Content) == 0 || !strings.HasPrefix(result.Content[0].Text, codegraph.NoticeToken) {
 				t.Errorf("%s: result does not start with the notice on a marked graph: %+v", name, result.Content)
 			}
 		})
@@ -598,4 +680,3 @@ func TestMCP_CodegraphExplore_NoticeSurvivesBudgetTruncation(t *testing.T) {
 		t.Errorf("codegraph_explore text does not start with the notice: %q", text)
 	}
 }
-

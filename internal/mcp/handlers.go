@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -328,9 +329,9 @@ func (h *handlers) logCodegraphUse(name string) {
 // dispatchCodegraph routes a codegraph_* tool call to its handler. It is
 // factored out of the main handleToolCall switch (SPEC-142 D11) — same
 // handler bodies, unchanged — so handleToolCall's single "codegraph_" prefix
-// branch can wrap EVERY one of these ten tools' results with the same
+// branch can wrap EVERY one of these eleven tools' results with the same
 // graph-incompleteness notice (withGraphNotice) in one place, instead of
-// repeating that decoration in ten call sites.
+// repeating that decoration in eleven call sites.
 func (h *handlers) dispatchCodegraph(ctx context.Context, params ToolCallParams) (*ToolCallResult, *JSONRPCError) {
 	switch params.Name {
 	case "codegraph_search":
@@ -343,6 +344,8 @@ func (h *handlers) dispatchCodegraph(ctx context.Context, params ToolCallParams)
 		return h.handleCodegraphCallees(ctx, params.Arguments)
 	case "codegraph_impact":
 		return h.handleCodegraphImpact(ctx, params.Arguments)
+	case "codegraph_affected":
+		return h.handleCodegraphAffected(ctx, params.Arguments)
 	case "codegraph_node":
 		return h.handleCodegraphNode(ctx, params.Arguments)
 	case "codegraph_explore":
@@ -397,7 +400,15 @@ func (h *handlers) withGraphNotice(res *ToolCallResult, rpcErr *JSONRPCError) (*
 		rpcErr.Message = line + "\n\n" + rpcErr.Message
 	}
 	if res != nil && len(res.Content) > 0 {
-		res.Content[0].Text = line + "\n\n" + res.Content[0].Text
+		var object map[string]any
+		if json.Unmarshal([]byte(res.Content[0].Text), &object) == nil && object["affected_nodes"] != nil {
+			object["graph_notice"] = line
+			if decorated, err := json.Marshal(object); err == nil {
+				res.Content[0].Text = string(decorated)
+			}
+		} else {
+			res.Content[0].Text = line + "\n\n" + res.Content[0].Text
+		}
 	}
 	return res, rpcErr
 }
@@ -529,7 +540,7 @@ func (h *handlers) buildCodeGraphHintFromService(cgSvc *service.CodeGraphService
 
 	hint := fmt.Sprintf(`Code Graph (indexed): %d symbols across %d files. `+
 		`Use codegraph_search, codegraph_context, codegraph_callers, codegraph_callees, `+
-		`codegraph_impact, codegraph_node, codegraph_explore, codegraph_trace instead of reading files. `+
+		`codegraph_impact, codegraph_affected, codegraph_node, codegraph_explore, codegraph_trace instead of reading files. `+
 		`Re-index with codegraph_index if code changed significantly.`,
 		stats.NodeCount, stats.FileCount)
 
@@ -544,7 +555,7 @@ func (h *handlers) buildCodeGraphHintFromService(cgSvc *service.CodeGraphService
 }
 
 const codeGraphGenericHint = `Code graph tools available: codegraph_search, codegraph_context, ` +
-	`codegraph_callers, codegraph_callees, codegraph_impact, codegraph_node, codegraph_explore, ` +
+	`codegraph_callers, codegraph_callees, codegraph_impact, codegraph_affected, codegraph_node, codegraph_explore, ` +
 	`codegraph_trace, codegraph_status, codegraph_files. ` +
 	`Call codegraph_index with the project root path to index a codebase. ` +
 	`Prefer codegraph queries over reading entire files when exploring code structure.`
@@ -2199,6 +2210,33 @@ func (h *handlers) handleCodegraphImpact(_ context.Context, raw json.RawMessage)
 	}
 
 	return textResult(formatNodeList(nodes, "Impact of "+symbol)), nil
+}
+
+// handleCodegraphAffected processes a codegraph_affected tool call.
+func (h *handlers) handleCodegraphAffected(_ context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
+	cgSvc, rpcErr := h.getCodeGraphService()
+	if rpcErr != nil {
+		return nil, rpcErr
+	}
+	var request codegraph.AffectedRequest
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		return nil, &JSONRPCError{Code: CodeInvalidParams, Message: fmt.Sprintf("mcp: handle codegraph_affected: invalid arguments: %s", err)}
+	}
+	result, err := cgSvc.Affected(request)
+	if err != nil {
+		code := CodeInternalError
+		if errors.Is(err, service.ErrInvalidAffectedRequest) {
+			code = CodeInvalidParams
+		}
+		return nil, &JSONRPCError{Code: code, Message: fmt.Sprintf("mcp: handle codegraph_affected: %v", err)}
+	}
+	data, err := json.Marshal(result)
+	if err != nil {
+		return nil, &JSONRPCError{Code: CodeInternalError, Message: fmt.Sprintf("mcp: handle codegraph_affected: encode result: %v", err)}
+	}
+	return textResult(string(data)), nil
 }
 
 // handleCodegraphNode processes a codegraph_node tool call.

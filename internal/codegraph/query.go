@@ -1,5 +1,7 @@
 package codegraph
 
+import "sort"
+
 // QueryEngine provides graph traversal operations — callers, callees, impact
 // analysis, and path tracing — on top of the codegraph Store.
 //
@@ -68,6 +70,132 @@ func (q *QueryEngine) Impact(nodeID string, depth, limit int) ([]Node, error) {
 		string(EdgeKindImplements),
 	}
 	return q.bfsIncoming(nodeID, depth, limit, kinds)
+}
+
+// Affected returns nodes that depend on symbols defined by paths. It follows
+// only incoming calls, imports, and contains edges. The current graph models
+// imports as they were indexed; this traversal does not infer module consumers
+// that have no corresponding edge.
+//
+// Results are ordered by shortest depth, file path, qualified name, then node
+// ID. Total is computed before the limit is applied.
+func (q *QueryEngine) Affected(paths []string, depth, limit int) (AffectedResult, error) {
+	if depth <= 0 {
+		depth = 3
+	}
+	if limit <= 0 {
+		limit = defaultLimit
+	}
+
+	inputs := sortedUnique(paths)
+	result := AffectedResult{
+		Inputs:         inputs,
+		MissingPaths:   make([]string, 0),
+		UntrackedPaths: make([]string, 0),
+		AffectedNodes:  make([]AffectedNode, 0),
+	}
+
+	type state struct {
+		nodeID string
+		depth  int
+	}
+	visited := make(map[string]bool)
+	queue := make([]state, 0)
+	for _, path := range inputs {
+		nodes, err := q.store.GetNodesByFilePath(path)
+		if err != nil {
+			return AffectedResult{}, err
+		}
+		if len(nodes) == 0 {
+			result.MissingPaths = append(result.MissingPaths, path)
+			continue
+		}
+		for _, node := range nodes {
+			if visited[node.ID] {
+				continue
+			}
+			visited[node.ID] = true
+			queue = append(queue, state{nodeID: node.ID})
+		}
+	}
+
+	kinds := []EdgeKind{EdgeKindCalls, EdgeKindImports, EdgeKindContains}
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+		if current.depth >= depth {
+			continue
+		}
+		for _, kind := range kinds {
+			edges, err := q.store.GetEdgesTo(current.nodeID, string(kind))
+			if err != nil {
+				return AffectedResult{}, err
+			}
+			for _, edge := range edges {
+				if visited[edge.Source] {
+					continue
+				}
+				visited[edge.Source] = true
+				node, err := q.store.GetNode(edge.Source)
+				if err != nil {
+					return AffectedResult{}, err
+				}
+				if node == nil {
+					continue
+				}
+				nextDepth := current.depth + 1
+				result.AffectedNodes = append(result.AffectedNodes, affectedNode(*node, kind, nextDepth))
+				queue = append(queue, state{nodeID: edge.Source, depth: nextDepth})
+			}
+		}
+	}
+
+	sort.Slice(result.AffectedNodes, func(i, j int) bool {
+		left, right := result.AffectedNodes[i], result.AffectedNodes[j]
+		if left.Depth != right.Depth {
+			return left.Depth < right.Depth
+		}
+		if left.FilePath != right.FilePath {
+			return left.FilePath < right.FilePath
+		}
+		if left.QualifiedName != right.QualifiedName {
+			return left.QualifiedName < right.QualifiedName
+		}
+		return left.ID < right.ID
+	})
+	result.Total = len(result.AffectedNodes)
+	if result.Total > limit {
+		result.AffectedNodes = result.AffectedNodes[:limit]
+		result.Truncated = true
+	}
+	return result, nil
+}
+
+func affectedNode(node Node, relation EdgeKind, depth int) AffectedNode {
+	return AffectedNode{
+		ID:            node.ID,
+		Kind:          node.Kind,
+		Name:          node.Name,
+		QualifiedName: node.QualifiedName,
+		FilePath:      node.FilePath,
+		Language:      node.Language,
+		Relation:      relation,
+		Depth:         depth,
+	}
+}
+
+func sortedUnique(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	sort.Strings(result)
+	return result
 }
 
 // Trace finds the shortest path between two nodes using BFS on outgoing "calls"

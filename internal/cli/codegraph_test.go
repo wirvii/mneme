@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,9 +12,10 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/wirvii/mneme/internal/codegraph"
+	"github.com/wirvii/mneme/internal/service"
 )
 
-// TestCodegraphCmd_Help verifies that all 9 subcommands appear in the
+// TestCodegraphCmd_Help verifies that all query and index subcommands appear in the
 // help output of "mneme codegraph --help".
 func TestCodegraphCmd_Help(t *testing.T) {
 	cmd := newCodegraphCmd()
@@ -26,7 +28,7 @@ func TestCodegraphCmd_Help(t *testing.T) {
 		t.Fatal(err)
 	}
 	output := buf.String()
-	for _, sub := range []string{"index", "status", "search", "callers", "callees", "impact", "node", "trace", "files"} {
+	for _, sub := range []string{"index", "status", "search", "callers", "callees", "impact", "affected", "node", "trace", "files"} {
 		if !strings.Contains(output, sub) {
 			t.Errorf("help output missing subcommand %q", sub)
 		}
@@ -38,7 +40,7 @@ func TestCodegraphCmd_Help(t *testing.T) {
 func TestCodegraphCmd_SubcmdHelp(t *testing.T) {
 	subcommands := []string{
 		"index", "status", "search", "callers", "callees",
-		"impact", "node", "trace", "files",
+		"impact", "affected", "node", "trace", "files",
 	}
 	for _, sub := range subcommands {
 		t.Run(sub, func(t *testing.T) {
@@ -103,6 +105,68 @@ func TestCodegraphCmd_TraversalFlags(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestCodegraphAffected_CLIParity(t *testing.T) {
+	dataDir := t.TempDir()
+	const slug = "test-codegraph-affected-cli"
+	sourceDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(sourceDir, "changed.go"), []byte("package changed\n\nfunc Changed() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	svc, err := service.NewCodeGraphService(filepath.Join(dataDir, "projects"), slug)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Index(codegraph.IndexOptions{RootDir: sourceDir}); err != nil {
+		_ = svc.Close()
+		t.Fatal(err)
+	}
+	if err := svc.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	root := NewRootCmd()
+	stdout := new(bytes.Buffer)
+	root.SetOut(stdout)
+	root.SetErr(new(bytes.Buffer))
+	root.SetArgs([]string{"--data-dir", dataDir, "--project", slug, "codegraph", "affected", "--path", "changed.go", "--json"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("codegraph affected: %v", err)
+	}
+	var result codegraph.AffectedResult
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("decode output: %v\n%s", err, stdout.String())
+	}
+	if got := strings.Join(result.Inputs, ","); got != "changed.go" {
+		t.Errorf("inputs = %q, want changed.go", got)
+	}
+
+	cmd := newCodegraphCmd()
+	affected, _, err := cmd.Find([]string{"affected"})
+	if err != nil {
+		t.Fatalf("find affected: %v", err)
+	}
+	for _, flag := range []string{"path", "base", "head", "depth", "limit", "json"} {
+		if affected.Flags().Lookup(flag) == nil {
+			t.Errorf("affected subcommand missing --%s", flag)
+		}
+	}
+}
+
+func TestCodegraphAffected_HumanOutputNamesIncompleteResults(t *testing.T) {
+	result := codegraph.AffectedResult{
+		Inputs: []string{"changed.go"}, MissingPaths: []string{"gone.go"},
+		UntrackedPaths: []string{"new.go"}, Total: 5, Truncated: true,
+		Stale: true, MissingGraph: true, IndexedSHA: "old",
+	}
+	buf := new(bytes.Buffer)
+	printCodegraphAffectedHuman(buf, result)
+	for _, phrase := range []string{"graph is missing", "graph is stale", "Missing paths", "Untracked paths", "truncated"} {
+		if !strings.Contains(buf.String(), phrase) {
+			t.Errorf("human output missing %q:\n%s", phrase, buf.String())
+		}
 	}
 }
 

@@ -1,6 +1,7 @@
 package codegraph
 
 import (
+	"encoding/json"
 	"sort"
 	"testing"
 	"time"
@@ -137,6 +138,96 @@ func TestQuery_Impact(t *testing.T) {
 	if got := nodeIDs(got); !equalStringSlices(got, want) {
 		t.Errorf("Impact(func_d) = %v, want %v", got, want)
 	}
+}
+
+// TestCodegraphAffected_ReverseTraversal catches regressions that drop one of
+// the three declared incoming edge kinds, revisit a cycle, seed only the first
+// changed file, or apply the result limit before deterministic ordering.
+func TestCodegraphAffected_ReverseTraversal(t *testing.T) {
+	cdb, err := OpenDB(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cdb.Close() })
+	store := NewStore(cdb)
+
+	nodes := []Node{
+		{ID: "file_a", Kind: NodeKindFile, Name: "a.go", QualifiedName: "a.go", FilePath: "a.go", Language: "go"},
+		{ID: "seed_a", Kind: NodeKindFunction, Name: "A", QualifiedName: "pkg.A", FilePath: "a.go", Language: "go"},
+		{ID: "file_b", Kind: NodeKindFile, Name: "b.go", QualifiedName: "b.go", FilePath: "b.go", Language: "go"},
+		{ID: "seed_b", Kind: NodeKindFunction, Name: "B", QualifiedName: "pkg.B", FilePath: "b.go", Language: "go"},
+		{ID: "caller", Kind: NodeKindFunction, Name: "Caller", QualifiedName: "pkg.Caller", FilePath: "consumer.go", Language: "go"},
+		{ID: "deep", Kind: NodeKindFunction, Name: "Deep", QualifiedName: "pkg.Deep", FilePath: "deep.go", Language: "go"},
+		{ID: "importer", Kind: NodeKindFile, Name: "importer.go", QualifiedName: "importer.go", FilePath: "importer.go", Language: "go"},
+	}
+	for _, node := range nodes {
+		if err := store.UpsertNode(node); err != nil {
+			t.Fatal(err)
+		}
+	}
+	edges := []Edge{
+		{Source: "file_a", Target: "seed_a", Kind: EdgeKindContains},
+		{Source: "file_b", Target: "seed_b", Kind: EdgeKindContains},
+		{Source: "caller", Target: "seed_a", Kind: EdgeKindCalls},
+		{Source: "importer", Target: "seed_b", Kind: EdgeKindImports},
+		{Source: "deep", Target: "caller", Kind: EdgeKindCalls},
+		{Source: "seed_a", Target: "deep", Kind: EdgeKindCalls},
+	}
+	for _, edge := range edges {
+		if err := store.UpsertEdge(edge); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	result, err := NewQueryEngine(store).Affected([]string{"b.go", "a.go"}, 3, 3)
+	if err != nil {
+		t.Fatalf("Affected: %v", err)
+	}
+	if got, want := result.Inputs, []string{"a.go", "b.go"}; !equalStringSlices(got, want) {
+		t.Fatalf("inputs = %v, want %v", got, want)
+	}
+	if result.Total != 5 || !result.Truncated {
+		t.Fatalf("total/truncated = %d/%v, want 5/true", result.Total, result.Truncated)
+	}
+	want := []AffectedNode{
+		{ID: "file_a", Kind: NodeKindFile, Name: "a.go", QualifiedName: "a.go", FilePath: "a.go", Language: "go", Relation: EdgeKindContains, Depth: 1},
+		{ID: "file_b", Kind: NodeKindFile, Name: "b.go", QualifiedName: "b.go", FilePath: "b.go", Language: "go", Relation: EdgeKindContains, Depth: 1},
+		{ID: "caller", Kind: NodeKindFunction, Name: "Caller", QualifiedName: "pkg.Caller", FilePath: "consumer.go", Language: "go", Relation: EdgeKindCalls, Depth: 1},
+	}
+	if gotJSON, wantJSON := mustJSON(t, result.AffectedNodes), mustJSON(t, want); gotJSON != wantJSON {
+		t.Errorf("affected nodes = %s, want %s", gotJSON, wantJSON)
+	}
+}
+
+func TestAffectedContracts_JSON(t *testing.T) {
+	request := AffectedRequest{Paths: []string{"b.go", "a.go"}, Base: "base", Head: "head", Depth: 2, Limit: 1}
+	if got, want := mustJSON(t, request), `{"paths":["b.go","a.go"],"base":"base","head":"head","depth":2,"limit":1}`; got != want {
+		t.Errorf("request JSON = %s, want %s", got, want)
+	}
+
+	result := AffectedResult{
+		Inputs:         []string{"a.go", "b.go"},
+		MissingPaths:   []string{"gone.go"},
+		UntrackedPaths: []string{},
+		AffectedNodes: []AffectedNode{{
+			ID: "caller", Kind: NodeKindFunction, Name: "Caller", QualifiedName: "pkg.Caller",
+			FilePath: "caller.go", Language: "go", Relation: EdgeKindCalls, Depth: 1,
+		}},
+		Total: 1, Truncated: false, Stale: true, MissingGraph: false, IndexedSHA: "old",
+	}
+	const want = `{"inputs":["a.go","b.go"],"missing_paths":["gone.go"],"untracked_paths":[],"affected_nodes":[{"id":"caller","kind":"function","name":"Caller","qualified_name":"pkg.Caller","file_path":"caller.go","language":"go","relation":"calls","depth":1}],"total":1,"truncated":false,"stale":true,"missing_graph":false,"indexed_sha":"old"}`
+	if got := mustJSON(t, result); got != want {
+		t.Errorf("result JSON = %s, want %s", got, want)
+	}
+}
+
+func mustJSON(t *testing.T, value any) string {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
 }
 
 // TestQuery_Trace verifies that the path from func_a to func_d is

@@ -309,6 +309,47 @@ type Edge struct {
 	Provenance string `json:"provenance,omitempty"`
 }
 
+// AffectedRequest describes either explicit changed paths or a Git range whose
+// changed paths should seed an affected-code query. The service rejects a
+// request that mixes Paths with Base or Head.
+type AffectedRequest struct {
+	Paths []string `json:"paths,omitempty"`
+	Base  string   `json:"base,omitempty"`
+	Head  string   `json:"head,omitempty"`
+	Depth int      `json:"depth,omitempty"`
+	Limit int      `json:"limit,omitempty"`
+}
+
+// AffectedNode is one node reached by following an incoming dependency edge
+// from a changed-path seed. Relation records the first deterministic edge kind
+// that reached the node at its shortest Depth.
+type AffectedNode struct {
+	ID            string   `json:"id"`
+	Kind          NodeKind `json:"kind"`
+	Name          string   `json:"name"`
+	QualifiedName string   `json:"qualified_name"`
+	FilePath      string   `json:"file_path"`
+	Language      string   `json:"language"`
+	Relation      EdgeKind `json:"relation"`
+	Depth         int      `json:"depth"`
+}
+
+// AffectedResult reports the normalized inputs, paths the current graph could
+// not seed, and the deterministically ordered nodes affected by those inputs.
+// Total is counted before Limit is applied.
+type AffectedResult struct {
+	Inputs         []string       `json:"inputs"`
+	MissingPaths   []string       `json:"missing_paths"`
+	UntrackedPaths []string       `json:"untracked_paths"`
+	AffectedNodes  []AffectedNode `json:"affected_nodes"`
+	Total          int            `json:"total"`
+	Truncated      bool           `json:"truncated"`
+	Stale          bool           `json:"stale"`
+	MissingGraph   bool           `json:"missing_graph"`
+	IndexedSHA     string         `json:"indexed_sha"`
+	GraphNotice    string         `json:"graph_notice,omitempty"`
+}
+
 // FileRecord tracks the indexing state of a single source file. It enables
 // incremental re-indexing: files whose ContentHash has not changed since the
 // last IndexedAt time can be skipped without re-parsing.

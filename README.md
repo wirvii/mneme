@@ -7,7 +7,7 @@ Persistent memory for AI coding agents -- with a spec-driven workflow engine, se
 [![License](https://img.shields.io/badge/License-Apache%202.0-0d8f80.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.25+-00ADD8.svg)](https://go.dev)
 [![Release](https://img.shields.io/github/v/release/wirvii/mneme?label=release)](https://github.com/wirvii/mneme/releases)
-[![MCP Tools](https://img.shields.io/badge/MCP%20tools-96-0d8f80.svg)](#mcp-tools)
+[![MCP Tools](https://img.shields.io/badge/MCP%20tools-97-0d8f80.svg)](#mcp-tools)
 
 ---
 
@@ -38,7 +38,7 @@ Persistent memory for AI coding agents -- with a spec-driven workflow engine, se
 
 ## What is mneme?
 
-mneme gives AI coding agents a brain that survives between sessions. It stores structured knowledge -- decisions, patterns, rules, conventions, architecture -- in a local SQLite database with full-text search, a weighted knowledge graph, and automatic consolidation. Any MCP-compatible agent (Claude Code, Cursor, Windsurf, OpenCode, Gemini CLI) can save and retrieve persistent memory through 96 tools over JSON-RPC stdio.
+mneme gives AI coding agents a brain that survives between sessions. It stores structured knowledge -- decisions, patterns, rules, conventions, architecture -- in a local SQLite database with full-text search, a weighted knowledge graph, and automatic consolidation. Any MCP-compatible agent (Claude Code, Cursor, Windsurf, OpenCode, Gemini CLI) can save and retrieve persistent memory through 97 tools over JSON-RPC stdio.
 
 ## Why mneme?
 
@@ -201,13 +201,14 @@ mneme codegraph index                          # walk cwd, extract symbols (incr
 mneme codegraph search "MemoryService"         # find symbols by name
 mneme codegraph callers SaveMemory --depth 2   # who calls this?
 mneme codegraph impact Memory --limit 50       # blast radius of a change
+mneme codegraph affected --path internal/x.go  # impact from changed paths
 mneme codegraph trace Handler ServiceCall      # shortest call path
 mneme codegraph hooks install                  # auto re-index on commit/checkout
 ```
 
-10 MCP tools (`codegraph_search`, `codegraph_context`, `codegraph_callers`,
+11 MCP tools (`codegraph_search`, `codegraph_context`, `codegraph_callers`,
 `codegraph_callees`, `codegraph_impact`, `codegraph_trace`, `codegraph_explore`,
-`codegraph_files`, `codegraph_node`, `codegraph_status`) let agents explore code
+`codegraph_affected`, `codegraph_files`, `codegraph_node`, `codegraph_status`) let agents explore code
 structure before falling back to `Read`/`Grep`. A `PreToolUse` nudge reminds
 agents to prefer the graph when one is indexed. See
 [docs/codegraph.md](docs/codegraph.md) (concepts, coverage caveats, git hooks)
@@ -429,7 +430,7 @@ counted in that figure:
 
 ## MCP Tools
 
-The MCP server (`mneme mcp`) exposes **96 tools** over JSON-RPC 2.0 stdio,
+The MCP server (`mneme mcp`) exposes **97 tools** over JSON-RPC 2.0 stdio,
 grouped by family. Each family has a full contract reference (params, returns,
 errors, examples) under [docs/api/](docs/api/):
 
@@ -441,7 +442,7 @@ errors, examples) under [docs/api/](docs/api/):
 | `lane_*` | 5 | Trivial-lane audit, reclassify, override, status, stats | [docs/api/sdd.md](docs/api/sdd.md) |
 | `quality_*` | 5 | Run declared gates, emit certificates, sign/ack findings, render QA reports | [docs/api/sdd.md](docs/api/sdd.md) |
 | `sdd_*` | 2 | Read a repository's committed SDD backlog/specs back into the local database | [docs/api/sdd.md](docs/api/sdd.md) |
-| `codegraph_*` | 10 | Symbol search, callers/callees, impact analysis, call tracing | [docs/api/codegraph.md](docs/api/codegraph.md) |
+| `codegraph_*` | 11 | Symbol search, callers/callees, impact from symbols or changed paths, call tracing | [docs/api/codegraph.md](docs/api/codegraph.md) |
 | `skills_*` | 7 | Install/pin/lint/validate mirrored skills for Claude Code and Codex | [docs/api/skills.md](docs/api/skills.md) |
 | `model_*` | 3 | Per-agent model alias assignment | [docs/api/models.md](docs/api/models.md) |
 | `conflicts_*` | 5 | Detect and manage memory conflict relations | [docs/api/conflicts.md](docs/api/conflicts.md) |
@@ -454,7 +455,7 @@ errors, examples) under [docs/api/](docs/api/):
 | `scaffold_*` | 1 | Capture a repository as a draft scaffold | [docs/profiles.md](docs/profiles.md) |
 | `work_*` | 9 | Delivery contracts, reviews, verification, completion, resumption, and local metrics | [docs/api/sdd.md](docs/api/sdd.md) |
 
-15 + 6 + 9 + 5 + 5 + 2 + 10 + 7 + 3 + 5 + 2 + 1 + 6 + 8 + 1 + 1 + 1 + 9 = **96**.
+15 + 6 + 9 + 5 + 5 + 2 + 11 + 7 + 3 + 5 + 2 + 1 + 6 + 8 + 1 + 1 + 1 + 9 = **97**.
 
 ---
 
@@ -541,13 +542,13 @@ errors, examples) under [docs/api/](docs/api/):
 
 **Persistence:** two SQLite databases per host -- `~/.mneme/global.db` (global + org scope) and `~/.mneme/projects/<slug>.db` (project scope, slug from git remote). Schema v22 with embedded migrations.
 
-**Three frontends:** MCP (primary, 96 tools over stdio), HTTP (REST API at `:7437`, 10 endpoints under `/v1/` -- no SDD or delivery-v2 WORK endpoints), and CLI (Cobra, 44 mneme-registered commands, 46 visible with Cobra additions).
+**Three frontends:** MCP (primary, 97 tools over stdio), HTTP (REST API at `:7437`, 10 endpoints under `/v1/` -- no SDD or delivery-v2 WORK endpoints), and CLI (Cobra, 44 mneme-registered commands, 46 visible with Cobra additions).
 
 ---
 
 ## Status & Roadmap
 
-**Current (delivery-v2 beta): schema v22, 96 MCP tools including 9 `work_*`, 44 mneme-registered CLI commands, 46 visible Cobra entries, and 10 HTTP endpoints without SDD or delivery-v2.**
+**Current (delivery-v2 beta): schema v22, 97 MCP tools including 9 `work_*`, 44 mneme-registered CLI commands, 46 visible Cobra entries, and 10 HTTP endpoints without SDD or delivery-v2.**
 Latest release: **v1.33.0**. Full history in [CHANGELOG.md](CHANGELOG.md).
 
 **Shipped:**

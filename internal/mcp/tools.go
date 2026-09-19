@@ -1199,6 +1199,24 @@ func allTools() []ToolDefinition {
 			},
 		},
 		{
+			Name:        "codegraph_affected",
+			Description: "Report code affected by explicit changed paths or a Git range using existing graph edges.",
+			InputSchema: map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties": map[string]any{
+					"paths": map[string]any{
+						"type": "array", "items": map[string]any{"type": "string"},
+						"description": "Repository-relative changed paths. Cannot be combined with base or head.",
+					},
+					"base":  map[string]any{"type": "string", "description": "Base Git revision. Defaults to the indexed revision."},
+					"head":  map[string]any{"type": "string", "description": "Head Git revision. Defaults to HEAD."},
+					"depth": map[string]any{"type": "integer", "minimum": 1, "description": "Incoming traversal depth. Default: 3."},
+					"limit": map[string]any{"type": "integer", "minimum": 1, "description": "Maximum returned nodes. Default: 50."},
+				},
+			},
+		},
+		{
 			Name:        "codegraph_node",
 			Description: "Get detailed information about a specific code symbol including its source code.",
 			InputSchema: map[string]any{

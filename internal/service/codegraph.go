@@ -1,22 +1,36 @@
 package service
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/wirvii/mneme/internal/codegraph"
+	"github.com/wirvii/mneme/internal/quality"
 )
+
+// ErrInvalidAffectedRequest reports an invalid or ambiguous affected query.
+var ErrInvalidAffectedRequest = errors.New("service: codegraph: invalid affected request")
+
+type affectedGit interface {
+	HeadSHA() (string, error)
+	MergeBase(string, string) (string, error)
+	ChangedFilesInRange(string, string) ([]quality.FileChange, error)
+	IsDirty() (bool, []string, error)
+}
 
 // CodeGraphService orchestrates code graph operations. It owns the DB lifecycle
 // and provides high-level, frontend-agnostic methods used by MCP tools and CLI
 // commands. The service delegates to the codegraph package for all persistence
 // and graph-traversal concerns.
 type CodeGraphService struct {
-	cdb   *codegraph.CodeGraphDB
-	store *codegraph.Store
-	query *codegraph.QueryEngine
+	cdb         *codegraph.CodeGraphDB
+	store       *codegraph.Store
+	query       *codegraph.QueryEngine
+	affectedGit affectedGit
 }
 
 // NewCodeGraphService opens the codegraph DB for the given project slug and
@@ -31,7 +45,7 @@ func NewCodeGraphService(projectsDir, slug string) (*CodeGraphService, error) {
 	}
 	store := codegraph.NewStore(cdb)
 	query := codegraph.NewQueryEngine(store)
-	return &CodeGraphService{cdb: cdb, store: store, query: query}, nil
+	return &CodeGraphService{cdb: cdb, store: store, query: query, affectedGit: newAffectedGit()}, nil
 }
 
 // NewCodeGraphServiceFromDB creates a service from an already-open CodeGraphDB.
@@ -40,7 +54,15 @@ func NewCodeGraphService(projectsDir, slug string) (*CodeGraphService, error) {
 func NewCodeGraphServiceFromDB(cdb *codegraph.CodeGraphDB) *CodeGraphService {
 	store := codegraph.NewStore(cdb)
 	query := codegraph.NewQueryEngine(store)
-	return &CodeGraphService{cdb: cdb, store: store, query: query}
+	return &CodeGraphService{cdb: cdb, store: store, query: query, affectedGit: newAffectedGit()}
+}
+
+func newAffectedGit() affectedGit {
+	repoDir, err := os.Getwd()
+	if err != nil {
+		repoDir = "."
+	}
+	return &quality.Git{RepoDir: repoDir}
 }
 
 // Close closes the underlying database connection. Must be called when the
@@ -126,6 +148,137 @@ func (s *CodeGraphService) Impact(symbol string, depth, limit int) ([]codegraph.
 		return nil, err
 	}
 	return s.query.Impact(nodeID, depth, limit)
+}
+
+// Affected resolves explicit changed paths or a Git-derived path set and asks
+// the graph query layer for their reverse dependency closure. It never mutates
+// Git, source files, graph records, or graph metadata.
+func (s *CodeGraphService) Affected(req codegraph.AffectedRequest) (codegraph.AffectedResult, error) {
+	if len(req.Paths) > 0 && (req.Base != "" || req.Head != "") {
+		return codegraph.AffectedResult{}, fmt.Errorf("%w: paths cannot be combined with base or head", ErrInvalidAffectedRequest)
+	}
+	if req.Depth < 0 || req.Limit < 0 {
+		return codegraph.AffectedResult{}, fmt.Errorf("%w: depth and limit cannot be negative", ErrInvalidAffectedRequest)
+	}
+
+	indexedSHA, err := s.store.GetMetadata(codegraph.MetaKeyLastIndexedSHA)
+	if err != nil {
+		return codegraph.AffectedResult{}, fmt.Errorf("service: codegraph: affected indexed SHA: %w", err)
+	}
+	currentHead, headErr := s.affectedGit.HeadSHA()
+	if headErr != nil && len(req.Paths) == 0 {
+		return codegraph.AffectedResult{}, fmt.Errorf("service: codegraph: affected HEAD: %w", headErr)
+	}
+
+	paths := req.Paths
+	untracked := make([]string, 0)
+	forcedMissing := make([]string, 0)
+	comparisonHead := currentHead
+	switch {
+	case len(req.Paths) > 0:
+		// Explicit paths need no Git diff. HEAD is used only when available to
+		// disclose that the graph was indexed at another revision.
+	case req.Base != "" || req.Head != "":
+		head := req.Head
+		if head == "" {
+			head = currentHead
+		}
+		base := req.Base
+		if base == "" {
+			base = indexedSHA
+		}
+		if base == "" || head == "" {
+			return codegraph.AffectedResult{}, fmt.Errorf("%w: a Git range requires a base and head", ErrInvalidAffectedRequest)
+		}
+		mergeBase, err := s.affectedGit.MergeBase(base, head)
+		if err != nil {
+			return codegraph.AffectedResult{}, fmt.Errorf("service: codegraph: affected merge base: %w", err)
+		}
+		changes, err := s.affectedGit.ChangedFilesInRange(mergeBase, head)
+		if err != nil {
+			return codegraph.AffectedResult{}, fmt.Errorf("service: codegraph: affected changed files: %w", err)
+		}
+		paths = make([]string, 0, len(changes))
+		for _, change := range changes {
+			paths = append(paths, change.Path)
+			if change.Status == quality.FileStatusDeleted {
+				forcedMissing = append(forcedMissing, change.Path)
+			}
+		}
+		comparisonHead = head
+	default:
+		_, dirtyPaths, err := s.affectedGit.IsDirty()
+		if err != nil {
+			return codegraph.AffectedResult{}, fmt.Errorf("service: codegraph: affected worktree: %w", err)
+		}
+		paths, untracked = affectedWorktreePaths(dirtyPaths)
+	}
+
+	paths, err = normalizeAffectedPaths(paths)
+	if err != nil {
+		return codegraph.AffectedResult{}, err
+	}
+	result, err := s.query.Affected(paths, req.Depth, req.Limit)
+	if err != nil {
+		return codegraph.AffectedResult{}, fmt.Errorf("service: codegraph: affected query: %w", err)
+	}
+	result.UntrackedPaths, err = normalizeAffectedPaths(untracked)
+	if err != nil {
+		return codegraph.AffectedResult{}, err
+	}
+	result.MissingPaths, err = normalizeAffectedPaths(append(result.MissingPaths, forcedMissing...))
+	if err != nil {
+		return codegraph.AffectedResult{}, err
+	}
+	result.IndexedSHA = indexedSHA
+	result.Stale = indexedSHA != "" && comparisonHead != "" && indexedSHA != comparisonHead
+	stats, err := s.store.GetStats()
+	if err != nil {
+		return codegraph.AffectedResult{}, fmt.Errorf("service: codegraph: affected graph status: %w", err)
+	}
+	result.MissingGraph = stats.NodeCount == 0
+	return result, nil
+}
+
+func normalizeAffectedPaths(paths []string) ([]string, error) {
+	normalized := make([]string, 0, len(paths))
+	seen := make(map[string]struct{}, len(paths))
+	for _, path := range paths {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			continue
+		}
+		clean := filepath.Clean(path)
+		if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+			return nil, fmt.Errorf("%w: path %q must stay inside the repository", ErrInvalidAffectedRequest, path)
+		}
+		clean = filepath.ToSlash(strings.TrimPrefix(clean, "."+string(filepath.Separator)))
+		if _, ok := seen[clean]; ok {
+			continue
+		}
+		seen[clean] = struct{}{}
+		normalized = append(normalized, clean)
+	}
+	sort.Strings(normalized)
+	return normalized, nil
+}
+
+func affectedWorktreePaths(porcelain []string) (paths, untracked []string) {
+	for _, line := range porcelain {
+		if len(line) < 4 {
+			continue
+		}
+		status := line[:2]
+		path := strings.TrimSpace(line[3:])
+		if arrow := strings.LastIndex(path, " -> "); arrow >= 0 {
+			path = path[arrow+4:]
+		}
+		paths = append(paths, path)
+		if status == "??" {
+			untracked = append(untracked, path)
+		}
+	}
+	return paths, untracked
 }
 
 // Trace finds the shortest call path between two symbols via BFS on outgoing

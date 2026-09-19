@@ -587,6 +587,31 @@ mneme codegraph impact Memory --limit 50
 | `--depth` | `-d` | 3 | Traversal depth |
 | `--limit` | `-n` | 50 | Max results |
 
+### mneme codegraph affected
+
+Report nodes affected by changed repository paths. The command follows only
+the graph's existing incoming `calls`, `imports`, and `contains` edges and does
+not modify Git, source files, or the graph.
+
+```bash
+mneme codegraph affected --path internal/store/memory.go --path internal/model/memory.go
+mneme codegraph affected --base main --head HEAD --json
+mneme codegraph affected
+```
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--path` | | | Explicit repository-relative path; repeatable and mutually exclusive with `--base`/`--head` |
+| `--base` | | indexed revision | Base Git revision |
+| `--head` | | `HEAD` | Head Git revision |
+| `--depth` | `-d` | 3 | Incoming traversal depth |
+| `--limit` | `-n` | 50 | Maximum returned nodes; total is measured before limiting |
+| `--json` | | false | Print the stable result object |
+
+With none of `--path`, `--base`, or `--head`, the command uses current
+worktree changes against `HEAD` and reports untracked paths separately. Human
+output names a missing or stale graph, missing paths, and truncation plainly.
+
 ### mneme codegraph trace
 
 Shortest call path between two symbols (BFS on outgoing `calls`).
