@@ -5,6 +5,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"strings"
 	"testing"
@@ -425,6 +428,134 @@ func TestSpecListPredicate_SharedByCountAndPage(t *testing.T) {
 	}
 	if strings.Contains(strings.ToUpper(specListSelect), "WHERE") {
 		t.Error("specListSelect must not embed its own WHERE clause")
+	}
+}
+
+// TestSpecProjectionSingleSource guards both halves of the spec projection
+// contract: the three readers must build their queries from one ordered column
+// list, and that list must remain compatible with the shared scanners.
+func TestSpecProjectionSingleSource(t *testing.T) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "sdd.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse sdd.go: %v", err)
+	}
+
+	projectionDeclarations := 0
+	listProjectionReferences := 0
+	methodProjection := map[string]string{
+		"GetSpec":                "specSelectColumns",
+		"ListSpecs":              "specListSelect",
+		"RecentlyCompletedSpecs": "specSelectColumns",
+	}
+	references := make(map[string]int, len(methodProjection))
+	for _, decl := range file.Decls {
+		switch node := decl.(type) {
+		case *ast.GenDecl:
+			for _, spec := range node.Specs {
+				valueSpec, ok := spec.(*ast.ValueSpec)
+				if !ok {
+					continue
+				}
+				for _, name := range valueSpec.Names {
+					if name.Name == "specSelectColumns" {
+						projectionDeclarations++
+					}
+					if name.Name == "specListSelect" {
+						ast.Inspect(valueSpec, func(n ast.Node) bool {
+							ident, ok := n.(*ast.Ident)
+							if ok && ident.Name == "specSelectColumns" {
+								listProjectionReferences++
+							}
+							return true
+						})
+					}
+				}
+			}
+		case *ast.FuncDecl:
+			projectionName, ok := methodProjection[node.Name.Name]
+			if !ok {
+				continue
+			}
+			ast.Inspect(node.Body, func(n ast.Node) bool {
+				ident, ok := n.(*ast.Ident)
+				if ok && ident.Name == projectionName {
+					references[node.Name.Name]++
+				}
+				return true
+			})
+		}
+	}
+	if projectionDeclarations != 1 {
+		t.Errorf("sdd.go declares specSelectColumns %d times, want 1", projectionDeclarations)
+	}
+	if listProjectionReferences != 1 {
+		t.Errorf("specListSelect references specSelectColumns %d times, want 1", listProjectionReferences)
+	}
+	for method := range methodProjection {
+		if references[method] != 1 {
+			t.Errorf("%s references its shared projection %d times, want 1", method, references[method])
+		}
+	}
+
+	s := newTestSDDStore(t)
+	ctx := context.Background()
+	spec := &model.Spec{
+		ID: "SPEC-001", Title: "projection", Status: model.SpecStatusDone,
+		Project: "projection-test", BacklogID: "BL-001", Lane: model.LaneStandard,
+		Scope: "internal/store/*.go", BaseSHA: strings.Repeat("a", 40),
+		AssignedAgents: []string{"backend"}, FilesChanged: []string{"internal/store/sdd.go"},
+	}
+	if err := s.CreateSpec(ctx, spec); err != nil {
+		t.Fatalf("CreateSpec: %v", err)
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE specs SET previous_ids = ?, execution_model = ? WHERE id = ?`,
+		`["SPEC-OLD origin=local reason=renumbered at=2026-01-01T00:00:00Z"]`,
+		string(model.ExecutionModelDeliveryV2), spec.ID,
+	); err != nil {
+		t.Fatalf("enrich stored spec: %v", err)
+	}
+
+	got, err := s.GetSpec(ctx, spec.ID)
+	if err != nil {
+		t.Fatalf("GetSpec: %v", err)
+	}
+	listed, total, unreadable, err := s.ListSpecs(ctx, spec.Project, model.SpecStatusDone, 0)
+	if err != nil {
+		t.Fatalf("ListSpecs: %v", err)
+	}
+	recent, recentUnreadable, err := s.RecentlyCompletedSpecs(ctx, spec.Project, 10)
+	if err != nil {
+		t.Fatalf("RecentlyCompletedSpecs: %v", err)
+	}
+	if total != 1 || len(listed) != 1 || len(recent) != 1 || len(unreadable) != 0 || len(recentUnreadable) != 0 {
+		t.Fatalf("unexpected reader results: total=%d listed=%d recent=%d unreadable=%d recent_unreadable=%d",
+			total, len(listed), len(recent), len(unreadable), len(recentUnreadable))
+	}
+	for name, candidate := range map[string]*model.Spec{"get": got, "list": listed[0], "done": recent[0]} {
+		if candidate.ID != spec.ID || candidate.BacklogID != spec.BacklogID || candidate.Scope != spec.Scope ||
+			candidate.BaseSHA != spec.BaseSHA || candidate.UUID != spec.UUID ||
+			candidate.ExecutionModel != model.ExecutionModelDeliveryV2 ||
+			strings.Join(candidate.AssignedAgents, ",") != "backend" ||
+			strings.Join(candidate.FilesChanged, ",") != "internal/store/sdd.go" ||
+			len(candidate.PreviousIDs) != 1 || candidate.PreviousIDs[0].ID != "SPEC-OLD" ||
+			candidate.PreviousIDs[0].Origin != "local" {
+			t.Errorf("%s returned an incomplete or reordered projection: %+v", name, candidate)
+		}
+	}
+
+	insertRawUnreadableSpec(t, s, "SPEC-BAD", spec.Project, string(model.SpecStatusDone), "assigned_agents", "{")
+	if _, err := s.GetSpec(ctx, "SPEC-BAD"); err == nil {
+		t.Error("GetSpec must reject an unreadable single row")
+	}
+	_, _, unreadable, err = s.ListSpecs(ctx, spec.Project, model.SpecStatusDone, 0)
+	if err != nil || len(unreadable) != 1 || unreadable[0].ID != "SPEC-BAD" {
+		t.Fatalf("ListSpecs unreadable handling: rows=%+v err=%v", unreadable, err)
+	}
+	_, recentUnreadable, err = s.RecentlyCompletedSpecs(ctx, spec.Project, 10)
+	if err != nil || len(recentUnreadable) != 1 || recentUnreadable[0].ID != "SPEC-BAD" {
+		t.Fatalf("RecentlyCompletedSpecs unreadable handling: rows=%+v err=%v", recentUnreadable, err)
 	}
 }
 

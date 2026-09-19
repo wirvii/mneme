@@ -147,10 +147,15 @@ const backlogStatusIndexSelect = `SELECT id, status, archive_reason FROM backlog
 const specListWhere = ` WHERE project = ?`
 const specListWhereStatus = specListWhere + ` AND status = ?`
 
-const specListSelect = `
+// specSelectColumns is the single ordered projection consumed by scanSpec and
+// collectSpecs. Every full spec reader builds its query from this list so a
+// schema addition cannot silently shift one reader away from the scanners.
+const specSelectColumns = `
 	SELECT id, title, status, project, COALESCE(backlog_id, ''),
 	       lane, scope, COALESCE(base_sha, ''), assigned_agents, files_changed,
-	       created_at, updated_at, uuid, previous_ids, execution_model
+	       created_at, updated_at, uuid, previous_ids, execution_model`
+
+const specListSelect = specSelectColumns + `
 	FROM specs`
 
 const specCountSelect = `SELECT COUNT(*) FROM specs`
@@ -565,9 +570,7 @@ func (s *SDDStore) CreateSpec(ctx context.Context, spec *model.Spec) error {
 // GetSpec retrieves a spec by ID.
 // Returns model.ErrSpecNotFound when no matching spec exists.
 func (s *SDDStore) GetSpec(ctx context.Context, id string) (*model.Spec, error) {
-	const q = `
-		SELECT id, title, status, project, COALESCE(backlog_id, ''),
-		       lane, scope, COALESCE(base_sha, ''), assigned_agents, files_changed, created_at, updated_at, uuid, previous_ids, execution_model
+	const q = specSelectColumns + `
 		FROM specs WHERE id = ?`
 
 	row := s.db.QueryRowContext(ctx, q, id)
@@ -923,15 +926,7 @@ func (s *SDDStore) SpecCounts(ctx context.Context, project string) (map[model.Sp
 // caller needs to know), so there is no accounting identity to state beyond
 // "every id in unreadable was excluded from the specs slice".
 func (s *SDDStore) RecentlyCompletedSpecs(ctx context.Context, project string, n int) ([]*model.Spec, []model.UnreadableRow, error) {
-	// previous_ids is selected here too, even though it is not one of the
-	// "three read projections" the spec names (backlogSelectColumns,
-	// specListSelect, GetSpec's inline query): this query feeds the SAME
-	// shared scanner, collectSpecs, so its column list must match whatever
-	// that scanner expects or every row here would fail to scan (SPEC-130
-	// implementation correction — noted in changes.md).
-	const q = `
-		SELECT id, title, status, project, COALESCE(backlog_id, ''),
-		       lane, scope, COALESCE(base_sha, ''), assigned_agents, files_changed, created_at, updated_at, uuid, previous_ids, execution_model
+	const q = specSelectColumns + `
 		FROM specs WHERE project = ? AND status = 'done'
 		ORDER BY updated_at DESC LIMIT ?`
 
