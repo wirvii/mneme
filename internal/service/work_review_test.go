@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -149,7 +150,8 @@ func commitReviewConstitution(t *testing.T, svc *SDDService) string {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte(deliveryConstitution("build")), 0o600); err != nil {
+	constitution := strings.ReplaceAll(deliveryConstitution("build"), "required = false", "required = true")
+	if err := os.WriteFile(path, []byte(constitution), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	runVerifyGit(t, svc.repoDir, "add", ".")
@@ -364,8 +366,27 @@ func TestWorkReview_TargetedGreenStopsBeforeCompletion(t *testing.T) {
 	if result.NextStatus != model.WorkStatusTargetedVerifying || result.Work.Contract.Status != model.WorkStatusTargetedVerifying || result.Work.Contract.CompletedAt != nil || result.Work.Contract.CorrectionRounds != 1 {
 		t.Fatalf("result = %#v", result)
 	}
-	if _, err := svc.WorkReview(context.Background(), req); !errors.Is(err, model.ErrInvalidWorkTransition) {
-		t.Fatalf("second targeted review error = %v", err)
+}
+
+func TestWorkReview_RejectsSecondCorrection(t *testing.T) {
+	for _, escalate := range []bool{false, true} {
+		t.Run(fmt.Sprintf("escalated=%t", escalate), func(t *testing.T) {
+			svc, _, req, _ := targetedReviewService(t)
+			if escalate {
+				req.Findings = []model.WorkReviewFindingInput{{Category: model.FindingRegression, Severity: model.PriorityHigh, Description: "new regression", Evidence: "red"}}
+			}
+			if _, err := svc.WorkReview(context.Background(), req); err != nil {
+				t.Fatal(err)
+			}
+			before, _ := svc.store.GetWorkAggregate(context.Background(), "WORK-001")
+			if _, err := svc.WorkReview(context.Background(), req); !errors.Is(err, model.ErrInvalidWorkTransition) {
+				t.Fatalf("second targeted review error = %v", err)
+			}
+			after, _ := svc.store.GetWorkAggregate(context.Background(), "WORK-001")
+			if after.Contract.CorrectionRounds != before.Contract.CorrectionRounds || len(after.History) != len(before.History) || len(after.Findings) != len(before.Findings) {
+				t.Fatalf("second review changed aggregate: before=%#v after=%#v", before, after)
+			}
+		})
 	}
 }
 
@@ -427,17 +448,6 @@ func TestWorkReview_TargetedNewBlockerEscalates(t *testing.T) {
 
 func TestWorkReview_TargetedFactualFailureEscalates(t *testing.T) {
 	svc, runner, req, _ := targetedReviewService(t)
-	path := filepath.Join(svc.repoDir, constitutionRelPath)
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, []byte(strings.ReplaceAll(string(raw), "required = false", "required = true")), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	runVerifyGit(t, svc.repoDir, "add", constitutionRelPath)
-	runVerifyGit(t, svc.repoDir, "commit", "-q", "-m", "require build")
-	req.HeadSHA, _ = (&quality.Git{RepoDir: svc.repoDir}).HeadSHA()
 	runner.results = []quality.GateResult{{Status: quality.GateStatusFail, OutputTail: "red"}}
 	result, err := svc.WorkReview(context.Background(), req)
 	if err != nil {

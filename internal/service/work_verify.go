@@ -153,10 +153,16 @@ func (svc *SDDService) currentReviewRows(ctx context.Context, aggregate *model.W
 	if err != nil {
 		return nil, nil, err
 	}
+	markerName := "initial"
+	markerDetail := "initial review supplied for the exact repository HEAD"
+	if contract.Status == model.WorkStatusTargetedVerifying {
+		markerName = "targeted"
+	}
 	marked := false
 	for _, check := range stored {
-		if check.Kind == "review" && check.Name == "initial" && check.Status == model.DeliveryCheckPass && check.Effect == model.DeliveryEffectMeasures {
+		if check.Kind == "review" && check.Name == markerName && check.Status == model.DeliveryCheckPass && check.Effect == model.DeliveryEffectMeasures {
 			marked = true
+			markerDetail = check.Detail
 			break
 		}
 	}
@@ -184,7 +190,7 @@ func (svc *SDDService) currentReviewRows(ctx context.Context, aggregate *model.W
 		status = model.DeliveryCheckFail
 	}
 	review := []*model.DeliveryCheck{
-		{Kind: "review", Name: "initial", Status: model.DeliveryCheckPass, Effect: model.DeliveryEffectMeasures, Detail: "initial review supplied for the exact repository HEAD"},
+		{Kind: "review", Name: markerName, Status: model.DeliveryCheckPass, Effect: model.DeliveryEffectMeasures, Detail: markerDetail},
 		{Kind: "review", Name: "open-blocking-findings", Status: status, Effect: model.DeliveryEffectBlocks, Detail: fmt.Sprintf("%d open blocking finding(s)", blocking)},
 	}
 	return architecture, review, nil

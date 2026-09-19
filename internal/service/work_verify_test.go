@@ -181,15 +181,19 @@ func TestWorkVerify_OnlyVerifyingStatesPersistWithoutTransition(t *testing.T) {
 
 func TestWorkVerify_PreservesOnlyCurrentMarkedReview(t *testing.T) {
 	t.Run("matching review preserves architecture and recalculates blockers", func(t *testing.T) {
-		svc, head := reviewServiceWithConstraints(t, []model.WorkConstraint{{Key: "layers", Text: "inward"}})
+		svc, _ := reviewServiceWithConstraints(t, []model.WorkConstraint{{Key: "layers", Text: "inward"}})
+		head := commitReviewConstitution(t, svc)
 		req := reviewRequest(head)
-		req.Findings = []model.WorkReviewFindingInput{{Category: model.FindingRegression, Severity: model.PriorityLow, Description: "regression", Evidence: "test"}}
 		req.ArchitectureVerdicts = []model.WorkArchitectureVerdictInput{{ConstraintKey: "layers", Status: model.DeliveryCheckPass, EvidenceKind: model.ReviewEvidenceFile, Evidence: "internal/service/work_review.go"}}
-		review, err := svc.WorkReview(context.Background(), req)
+		_, err := svc.WorkReview(context.Background(), req)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := svc.store.ResolveFinding(context.Background(), review.Work.Findings[0].ID, model.FindingFixed, "backend", "fixed", ""); err != nil {
+		finding := &model.WorkFinding{WorkID: "WORK-001", Category: model.FindingRegression, Severity: model.PriorityLow, Description: "regression", Evidence: "test", Origin: model.FindingOriginReview, ReviewPhase: model.ReviewPhaseInitial}
+		if err := svc.store.AddFinding(context.Background(), finding); err != nil {
+			t.Fatal(err)
+		}
+		if err := svc.store.ResolveFinding(context.Background(), finding.ID, model.FindingFixed, "backend", "fixed", ""); err != nil {
 			t.Fatal(err)
 		}
 		verified, err := svc.WorkVerify(context.Background(), model.WorkActionRequest{ID: "WORK-001"})
@@ -225,7 +229,8 @@ func TestWorkVerify_PreservesOnlyCurrentMarkedReview(t *testing.T) {
 	})
 
 	t.Run("changed head rejects old review", func(t *testing.T) {
-		svc, head := reviewServiceWithConstraints(t, []model.WorkConstraint{{Key: "layers", Text: "inward"}})
+		svc, _ := reviewServiceWithConstraints(t, []model.WorkConstraint{{Key: "layers", Text: "inward"}})
+		head := commitReviewConstitution(t, svc)
 		req := reviewRequest(head)
 		req.ArchitectureVerdicts = []model.WorkArchitectureVerdictInput{{ConstraintKey: "layers", Status: model.DeliveryCheckPass, EvidenceKind: model.ReviewEvidenceFile, Evidence: "internal/service/work_review.go"}}
 		if _, err := svc.WorkReview(context.Background(), req); err != nil {
@@ -247,7 +252,8 @@ func TestWorkVerify_PreservesOnlyCurrentMarkedReview(t *testing.T) {
 	})
 
 	t.Run("changed revision and hash reject old review", func(t *testing.T) {
-		svc, head := reviewServiceWithConstraints(t, []model.WorkConstraint{{Key: "layers", Text: "inward"}})
+		svc, _ := reviewServiceWithConstraints(t, []model.WorkConstraint{{Key: "layers", Text: "inward"}})
+		head := commitReviewConstitution(t, svc)
 		req := reviewRequest(head)
 		req.ArchitectureVerdicts = []model.WorkArchitectureVerdictInput{{ConstraintKey: "layers", Status: model.DeliveryCheckPass, EvidenceKind: model.ReviewEvidenceFile, Evidence: "internal/service/work_review.go"}}
 		if _, err := svc.WorkReview(context.Background(), req); err != nil {
@@ -272,6 +278,40 @@ func TestWorkVerify_PreservesOnlyCurrentMarkedReview(t *testing.T) {
 			t.Fatalf("old contract review reused: %#v", verified.Checks)
 		}
 	})
+}
+
+func TestWorkVerify_PreservesOnlyCurrentTargetedReview(t *testing.T) {
+	svc, _, req, _ := targetedReviewService(t)
+	targeted, err := svc.WorkReview(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verified, err := svc.WorkVerify(context.Background(), model.WorkActionRequest{ID: "WORK-001"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := reviewChecksByKind(verified.Checks, "review")
+	if len(rows) != 2 || rows[0].Name != "targeted" || rows[0].Detail != reviewChecksByKind(targeted.Checks, "review")[0].Detail || rows[1].Name != "open-blocking-findings" || rows[1].Status != model.DeliveryCheckPass {
+		t.Fatalf("review rows = %#v", rows)
+	}
+}
+
+func TestWorkVerify_TargetedFailureDoesNotTransition(t *testing.T) {
+	svc, runner, req, _ := targetedReviewService(t)
+	if _, err := svc.WorkReview(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := svc.store.GetWorkAggregate(context.Background(), "WORK-001")
+	runner.calls = 0
+	runner.results = []quality.GateResult{{Status: quality.GateStatusFail, OutputTail: "red"}}
+	result, err := svc.WorkVerify(context.Background(), model.WorkActionRequest{ID: "WORK-001"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, _ := svc.store.GetWorkAggregate(context.Background(), "WORK-001")
+	if result.Certificate.Verdict != model.DeliveryVerdictFail || after.Contract.Status != model.WorkStatusTargetedVerifying || after.Contract.CorrectionRounds != before.Contract.CorrectionRounds || len(after.History) != len(before.History) {
+		t.Fatalf("result=%#v before=%#v after=%#v", result, before.Contract, after.Contract)
+	}
 }
 
 func TestWorkVerify_RequiresExplicitDependenciesBeforePersisting(t *testing.T) {
