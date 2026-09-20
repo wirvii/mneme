@@ -2,11 +2,9 @@ name: CI
 
 on:
   # SPEC-139/BL-226: pushing a tag must NOT relaunch this workflow. A tag
-  # push checks out the repository in detached-HEAD state without the
-  # `main` branch, which internal/cli's SDD e2e test needs (BL-227) — and
-  # more importantly, it produces a SECOND, later CI run for the exact
-  # same commit that `require-ci-green.sh` (SPEC-135) then picks over the
-  # already-green branch run, refusing every release.
+  # push produces a SECOND, later CI run for the exact same commit that
+  # `require-ci-green.sh` (SPEC-135) then picks over the already-green branch
+  # run, refusing every release.
   #
   # `branches: ["**"]` is REQUIRED here, not optional: per GitHub's own
   # docs, "if you define only tags/tags-ignore or only branches/
@@ -45,6 +43,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        # SPEC-154/BL-227: the base-branch comparison needs main's history.
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-go@v5
         with:

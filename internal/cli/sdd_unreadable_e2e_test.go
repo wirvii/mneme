@@ -118,11 +118,126 @@ var (
 	baseBranchBinaryErr  error
 )
 
+func newBaseBranchResolutionFixture(t *testing.T) (repoRoot, remoteBaseSHA, localBaseSHA string) {
+	t.Helper()
+	repoRoot = t.TempDir()
+	initGitRepo(t, repoRoot)
+
+	if err := os.WriteFile(filepath.Join(repoRoot, "base.txt"), []byte("base\n"), 0o600); err != nil {
+		t.Fatalf("write base.txt: %v", err)
+	}
+	runGit(t, repoRoot, "add", "base.txt")
+	runGit(t, repoRoot, "commit", "-m", "base")
+	runGit(t, repoRoot, "branch", "-M", "main")
+	remoteBaseSHA = gitRevision(t, repoRoot, "HEAD")
+
+	if err := os.WriteFile(filepath.Join(repoRoot, "base.txt"), []byte("local main\n"), 0o600); err != nil {
+		t.Fatalf("update base.txt: %v", err)
+	}
+	runGit(t, repoRoot, "add", "base.txt")
+	runGit(t, repoRoot, "commit", "-m", "local main")
+	localBaseSHA = gitRevision(t, repoRoot, "HEAD")
+
+	runGit(t, repoRoot, "checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(repoRoot, "feature.txt"), []byte("feature\n"), 0o600); err != nil {
+		t.Fatalf("write feature.txt: %v", err)
+	}
+	runGit(t, repoRoot, "add", "feature.txt")
+	runGit(t, repoRoot, "commit", "-m", "feature")
+	runGit(t, repoRoot, "update-ref", "refs/remotes/origin/main", remoteBaseSHA)
+
+	return repoRoot, remoteBaseSHA, localBaseSHA
+}
+
+func gitRevision(t *testing.T, repoRoot, revision string) string {
+	t.Helper()
+	cmd := exec.Command("git", "rev-parse", revision)
+	cmd.Dir = repoRoot
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git rev-parse %s: %v", revision, err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func TestResolveBaseBranchMergeBase_LocalRemoteAndMissing(t *testing.T) {
+	t.Run("prefers local main", func(t *testing.T) {
+		repoRoot, _, localBaseSHA := newBaseBranchResolutionFixture(t)
+
+		gotSHA, gotRef, err := resolveBaseBranchMergeBase(repoRoot)
+		if err != nil {
+			t.Fatalf("resolveBaseBranchMergeBase: %v", err)
+		}
+		if gotRef != "refs/heads/main" {
+			t.Errorf("ref = %q, want refs/heads/main", gotRef)
+		}
+		if gotSHA != localBaseSHA {
+			t.Errorf("sha = %q, want local main merge-base %q", gotSHA, localBaseSHA)
+		}
+	})
+
+	t.Run("falls back to origin main", func(t *testing.T) {
+		repoRoot, remoteBaseSHA, _ := newBaseBranchResolutionFixture(t)
+		runGit(t, repoRoot, "branch", "-D", "main")
+
+		gotSHA, gotRef, err := resolveBaseBranchMergeBase(repoRoot)
+		if err != nil {
+			t.Fatalf("resolveBaseBranchMergeBase: %v", err)
+		}
+		if gotRef != "refs/remotes/origin/main" {
+			t.Errorf("ref = %q, want refs/remotes/origin/main", gotRef)
+		}
+		if gotSHA != remoteBaseSHA {
+			t.Errorf("sha = %q, want origin/main merge-base %q", gotSHA, remoteBaseSHA)
+		}
+	})
+
+	t.Run("fails loudly when neither ref exists", func(t *testing.T) {
+		repoRoot, _, _ := newBaseBranchResolutionFixture(t)
+		runGit(t, repoRoot, "branch", "-D", "main")
+		runGit(t, repoRoot, "update-ref", "-d", "refs/remotes/origin/main")
+
+		_, _, err := resolveBaseBranchMergeBase(repoRoot)
+		if err == nil {
+			t.Fatal("resolveBaseBranchMergeBase returned nil error without a main reference")
+		}
+		for _, want := range []string{"refs/heads/main", "refs/remotes/origin/main", "fetch-depth: 0"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("error %q does not contain %q", err, want)
+			}
+		}
+	})
+}
+
+func resolveBaseBranchMergeBase(repoRoot string) (sha, ref string, err error) {
+	candidates := []string{
+		"refs/heads/main",
+		"refs/remotes/origin/main",
+	}
+	failures := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		cmd := exec.Command("git", "merge-base", "HEAD", candidate)
+		cmd.Dir = repoRoot
+		out, runErr := cmd.Output()
+		candidateSHA := strings.TrimSpace(string(out))
+		if runErr == nil && candidateSHA != "" {
+			return candidateSHA, candidate, nil
+		}
+		failures = append(failures, fmt.Sprintf("%s: %v", candidate, runErr))
+	}
+
+	return "", "", fmt.Errorf(
+		"no usable main reference: tried %s; CI must use actions/checkout with fetch-depth: 0; locally make main and its history available before running tests",
+		strings.Join(failures, "; "),
+	)
+}
+
 // buildBaseBranchBinary builds mneme from this branch's merge-base against
-// main into a disposable directory (via "git archive" decoded through
-// archive/tar — no dependency on an external tar binary, no worktree, no
-// mutation of this repository's own checkout), once per test binary run,
-// and returns the resulting executable's path.
+// its local main or origin/main into a disposable directory (via "git
+// archive" decoded through archive/tar — no dependency on an external tar
+// binary, no worktree, no network access, and no mutation of this repository's
+// own checkout), once per test binary run, and returns the resulting
+// executable's path.
 //
 // This exists because AC2's "byte a byte idéntica a la rama base" is only
 // a real check when compared against a REAL base-branch execution — a
@@ -145,14 +260,11 @@ func buildBaseBranchBinary(t *testing.T) string {
 		}
 		repoRoot := strings.TrimSpace(string(repoRootOut))
 
-		mergeBaseCmd := exec.Command("git", "merge-base", "HEAD", "main")
-		mergeBaseCmd.Dir = repoRoot
-		out, err := mergeBaseCmd.Output()
+		sha, _, err := resolveBaseBranchMergeBase(repoRoot)
 		if err != nil {
-			baseBranchBinaryErr = fmt.Errorf("git merge-base HEAD main: %w", err)
+			baseBranchBinaryErr = err
 			return
 		}
-		sha := strings.TrimSpace(string(out))
 
 		scratch, err := os.MkdirTemp("", "mneme-basebranch-src-")
 		if err != nil {
@@ -262,10 +374,10 @@ func runExternalMneme(t *testing.T, binPath, dataDir, project string, argv ...st
 // SPEC-133 AC2's discriminating half: with the two-table fixture's healthy
 // rows only (BL-900, SPEC-900 — no corruption in either table), all seven
 // surfaces produce EXACTLY the same stdout, stderr, and exit code as a
-// binary built from this branch's own merge-base against main. This is
-// what stops a field that is always present from silently satisfying
-// AC6/AC7/AC8's "the healthy shape never changes" — without ever actually
-// comparing against the real base branch.
+// binary built from this branch's own merge-base against local main or
+// origin/main. This is what stops a field that is always present from silently
+// satisfying AC6/AC7/AC8's "the healthy shape never changes" — without ever
+// actually comparing against the real base branch.
 func TestSDDUnreadable_HealthyTwoTableDatabaseByteForByteAgainstBaseBranch(t *testing.T) {
 	baseBinary := buildBaseBranchBinary(t)
 
