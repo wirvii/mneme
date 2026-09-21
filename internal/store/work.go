@@ -517,8 +517,8 @@ func (s *SDDStore) AmendWork(ctx context.Context, req model.AmendWorkRequest) er
 	if err != nil {
 		return err
 	}
-	if w.Status.Terminal() || w.Status == model.WorkStatusDraft || w.Status == model.WorkStatusEscalated {
-		return model.ErrInvalidWorkTransition
+	if ok, reason := model.CanAmendWork(w.Status, w.CorrectionRounds); !ok {
+		return fmt.Errorf("%w: %s", model.ErrInvalidWorkTransition, reason)
 	}
 	from := w.Status
 	w.Goal = req.Goal

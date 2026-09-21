@@ -678,6 +678,8 @@ motor legacy, una spec no apta o campos inválidos producen error sin escritura.
 **Respuesta y efecto.** Devuelve contrato, criterios, restricciones, historia,
 hallazgos, certificado y checks locales. Es lectura sin transición y no expone
 el ancla interna. Un identificador inexistente produce `not found`.
+Las bases locales beta con un historial contradictorio siguen siendo legibles
+incluso con el motor legacy; esta lectura no repara ni valida las métricas.
 
 ### `work_lock`
 
@@ -696,6 +698,10 @@ nuevos criterios y restricciones.
 **Respuesta y efecto.** Crea una revisión completa y auditable, vuelve a fijar
 la huella y conserva la historia anterior. Pertenece al coordinador; no admite
 una sustitución parcial ni una razón vacía.
+Una corrección abierta impide enmendar, incluso si el estado actual parece
+`implementing`. Se debe terminar la revisión dirigida, escalar y reanudar
+mediante decisión humana. El rechazo conserva el agregado y devuelve un error
+de transición inválida.
 
 ### `work_review`
 
@@ -726,6 +732,9 @@ la evidencia anterior.
 evidencia verde vigente para el HEAD y la revisión exactos. Reutiliza el
 certificado persistido y no vuelve a ejecutar verificaciones. Evidencia roja,
 ausente o vencida impide el cierre.
+También se exige coherencia de fase: `verifying` con cero correcciones abiertas,
+o `targeted_verifying` con una corrección abierta. Un desacuerdo rechaza el
+cierre sin modificar estado, fechas ni historia.
 
 ### `work_resume`
 
@@ -744,6 +753,10 @@ se rechazan.
 **Respuesta y efecto.** Devuelve totales, duraciones, correcciones, escaladas,
 reanudaciones y evidencia local `complete|partial|not_started`. Es lectura sin
 transición y nunca convierte evidencia importada ausente en cero real.
+Un WORK terminal con corrección pendiente se cuenta como ilegible y se excluye
+del resumen y detalle; `work_get` sigue mostrando su historia local. Los archivos
+git-native beta con la arista `correcting → implementing` continúan rechazados
+por el importador y requieren una recuperación separada.
 
 ## Quality Tools (SPEC-115 EPIC-calidad S1, extended by SPEC-116 S2 and SPEC-117 S3)
 

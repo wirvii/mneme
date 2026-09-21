@@ -912,6 +912,8 @@ cat contract.json | mneme work begin --input -
 
 Read the complete contract, criteria, constraints, history, findings, latest
 certificate, and checks. It causes no transition.
+Local beta histories remain readable here under both workflow engines, including
+ones that metrics mark unreadable because a terminal WORK has an open correction.
 
 ```bash
 mneme work get WORK-001 --json
@@ -932,6 +934,9 @@ mneme work lock WORK-001 --by orchestrator --json
 The coordinator submits a `WorkAmendRequest` through `--input`. A valid
 amendment creates a new contract revision, preserves history, and returns the
 updated aggregate.
+An open correction prevents amendment. If the contract needs a change during
+correction, finish the targeted review, escalate, and resume by human decision
+before amending.
 
 ```bash
 mneme work amend --input amendment.json --json
@@ -961,6 +966,8 @@ mneme work verify WORK-001 --json
 
 The coordinator closes a WORK only when its latest evidence is green and still
 matches the current commit and contract revision. `--by` is required.
+The review phase must also match the correction count: ordinary verification
+requires zero open corrections; targeted verification requires an open correction.
 
 ```bash
 mneme work complete WORK-001 --by orchestrator --json
@@ -982,6 +989,8 @@ Read local project metrics. Optional identifiers restrict the report;
 `--limit` bounds detail rows. Metrics is read-only and never acts as a closure
 gate. Missing imported evidence is reported as `partial` or `not_started`, not
 as a measured zero.
+Terminal WORK with a pending correction is reported as unreadable and excluded
+from the summary and details; its persisted history remains available via `get`.
 
 ```bash
 mneme work metrics WORK-001 WORK-002 --limit 20 --json

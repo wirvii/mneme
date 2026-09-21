@@ -129,6 +129,33 @@ func TestWorkMetrics_ImportedEvidenceIsPartial(t *testing.T) {
 	}
 }
 
+func TestWorkMetrics_TerminalPendingCorrectionIsUnreadableButGetWorks(t *testing.T) {
+	svc, database := metricTestService(t, "p")
+	seedServiceWork(t, svc, "WORK-001")
+	locked, completed := metricServiceTime(10, 0), metricServiceTime(10, 5)
+	if _, err := database.Exec(`UPDATE execution_contracts SET status='done',contract_revision=2,correction_rounds=1,locked_at=?,completed_at=? WHERE id='WORK-001'`, metricServiceFormat(locked), metricServiceFormat(completed)); err != nil {
+		t.Fatal(err)
+	}
+	metricServiceHistory(t, database, "h1", "implementing", "verifying", metricServiceTime(10, 1))
+	metricServiceHistory(t, database, "h2", "verifying", "correcting", metricServiceTime(10, 2))
+	metricServiceHistory(t, database, "h3", "correcting", "implementing", metricServiceTime(10, 3))
+	metricServiceHistory(t, database, "h4", "verifying", "done", metricServiceTime(10, 5))
+	for _, engine := range []string{config.WorkflowEngineLegacy, config.WorkflowEngineDeliveryV2} {
+		svc.config.Workflow.Engine = engine
+		get, err := svc.WorkGet(context.Background(), model.WorkGetRequest{ID: "WORK-001"})
+		if err != nil || len(get.History) != 4 || get.Contract.Status != model.WorkStatusDone {
+			t.Fatalf("engine=%s get=%+v err=%v", engine, get, err)
+		}
+	}
+	got, err := svc.WorkMetrics(context.Background(), model.WorkMetricsRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Total != 1 || got.Included != 0 || got.UnreadableCount != 1 || len(got.Unreadable) != 1 || got.Unreadable[0].Kind != "work" || got.Unreadable[0].Column != "metrics" || got.Summary.Works != 0 || len(got.Details) != 0 {
+		t.Fatalf("metrics=%+v", got)
+	}
+}
+
 func TestWorkMetrics_LegacyAndDeliveryV2AreReadOnly(t *testing.T) {
 	svc, database := metricTestService(t, "p")
 	seedServiceWork(t, svc, "WORK-001")

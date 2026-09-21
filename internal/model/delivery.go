@@ -102,6 +102,7 @@ type CriterionObservation struct {
 // CompletionInput contains every independent fact required to close work.
 type CompletionInput struct {
 	Status                WorkStatus
+	CorrectionRounds      int
 	ContractRevision      int
 	ContractHash, HeadSHA string
 	BaseSHA               string
@@ -149,6 +150,15 @@ func DeriveDeliveryVerdict(checks []DeliveryCheck) DeliveryVerdict {
 func CanComplete(in CompletionInput) (bool, string) {
 	if in.Status != WorkStatusVerifying && in.Status != WorkStatusTargetedVerifying {
 		return false, "work is not in a verifying state"
+	}
+	if in.CorrectionRounds < 0 {
+		return false, "correction rounds cannot be negative"
+	}
+	if in.Status == WorkStatusVerifying && in.CorrectionRounds > 0 {
+		return false, "initial verification cannot close an open correction"
+	}
+	if in.Status == WorkStatusTargetedVerifying && in.CorrectionRounds == 0 {
+		return false, "targeted verification requires an open correction"
 	}
 	if in.Certificate == nil {
 		return false, "delivery certificate is missing"

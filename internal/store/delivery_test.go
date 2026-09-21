@@ -131,6 +131,11 @@ func closableWork(t *testing.T, status model.WorkStatus) (*SDDStore, *model.Deli
 	t.Helper()
 	s := newTestSDDStore(t)
 	workInReview(t, s, "WORK-001", status)
+	if status == model.WorkStatusTargetedVerifying {
+		if _, err := s.db.Exec(`UPDATE execution_contracts SET correction_rounds=1 WHERE id='WORK-001'`); err != nil {
+			t.Fatal(err)
+		}
+	}
 	cert, checks := deliveryEvaluationFixture(t, s, "WORK-001")
 	if err := s.InsertDeliveryCertificate(context.Background(), cert, checks); err != nil {
 		t.Fatal(err)
@@ -152,6 +157,54 @@ func TestCompleteWork_ClosesBothVerifyingStates(t *testing.T) {
 			}
 			if result.Certificate.ID != cert.ID || len(result.Checks) != len(checks) || result.Checks[0].ID != checks[0].ID {
 				t.Fatalf("result=%#v", result)
+			}
+		})
+	}
+}
+
+func TestCompleteWork_CorrectionPhaseMismatchIsAtomic(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		status model.WorkStatus
+		rounds int
+	}{
+		{"initial with correction", model.WorkStatusVerifying, 1}, {"targeted without correction", model.WorkStatusTargetedVerifying, 0},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			s, cert, _ := closableWork(t, tt.status)
+			ctx := context.Background()
+			if _, err := s.db.Exec(`UPDATE execution_contracts SET correction_rounds=? WHERE id='WORK-001'`, tt.rounds); err != nil {
+				t.Fatal(err)
+			}
+			before, err := s.GetWorkAggregate(ctx, "WORK-001")
+			if err != nil {
+				t.Fatal(err)
+			}
+			beforeCert, err := s.GetLatestDeliveryCertificate(ctx, "p", "WORK-001")
+			if err != nil {
+				t.Fatal(err)
+			}
+			beforeChecks, err := s.ListDeliveryChecks(ctx, cert.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.CompleteWork(ctx, "WORK-001", "head", "orchestrator"); !errors.Is(err, model.ErrInvalidWorkTransition) {
+				t.Fatalf("err=%v", err)
+			}
+			after, err := s.GetWorkAggregate(ctx, "WORK-001")
+			if err != nil {
+				t.Fatal(err)
+			}
+			afterCert, err := s.GetLatestDeliveryCertificate(ctx, "p", "WORK-001")
+			if err != nil {
+				t.Fatal(err)
+			}
+			afterChecks, err := s.ListDeliveryChecks(ctx, cert.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(before, after) || !reflect.DeepEqual(beforeCert, afterCert) || !reflect.DeepEqual(beforeChecks, afterChecks) {
+				t.Fatal("rejected completion changed persisted state")
 			}
 		})
 	}

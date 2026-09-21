@@ -37,6 +37,20 @@ func (s WorkStatus) Valid() bool {
 // Terminal reports whether no further transition is legal.
 func (s WorkStatus) Terminal() bool { return s == WorkStatusDone || s == WorkStatusAbandoned }
 
+// CanAmendWork keeps an open correction attached to its required targeted review.
+func CanAmendWork(status WorkStatus, correctionRounds int) (bool, string) {
+	if correctionRounds < 0 {
+		return false, "correction rounds cannot be negative"
+	}
+	if status == WorkStatusCorrecting || status == WorkStatusTargetedVerifying || correctionRounds > 0 {
+		return false, "an open correction must be resolved or escalated before amending the contract"
+	}
+	if status != WorkStatusLocked && status != WorkStatusImplementing && status != WorkStatusVerifying {
+		return false, "work state does not allow amendment"
+	}
+	return true, ""
+}
+
 // WorkStatuses returns a copy of the complete status population for exhaustive checks.
 func WorkStatuses() []WorkStatus { return append([]WorkStatus(nil), allWorkStatuses...) }
 

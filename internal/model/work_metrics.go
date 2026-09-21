@@ -239,6 +239,9 @@ func DeriveWorkMetric(facts WorkMetricFacts) (WorkMetric, error) {
 	if metric.CorrectionPending < 0 {
 		return WorkMetric{}, fmt.Errorf("%w: correction outcome exceeds automatic corrections", ErrInvalidContract)
 	}
+	if contract.Status.Terminal() && metric.CorrectionPending > 0 {
+		return WorkMetric{}, fmt.Errorf("%w: terminal work has an open correction", ErrInvalidContract)
+	}
 	if contract.ContractRevision > 1 {
 		metric.Amendments = contract.ContractRevision - 1
 	}
@@ -246,7 +249,7 @@ func DeriveWorkMetric(facts WorkMetricFacts) (WorkMetric, error) {
 		switch {
 		case metric.Resumptions > 0:
 			metric.DoneAfterResume = true
-		case metric.AutomaticCorrections > 0:
+		case metric.CorrectionCompleted > 0:
 			metric.DoneAfterCorrection = true
 		case metric.Escalations == 0:
 			metric.DoneWithoutCorrectionOrEscalation = true

@@ -1,10 +1,26 @@
 package model
 
 import (
+	"errors"
 	"reflect"
 	"testing"
 	"time"
 )
+
+func TestDeriveWorkMetric_TerminalPendingUnreadable(t *testing.T) {
+	locked, completed := metricTime(10, 0), metricTime(10, 5)
+	history := metricHistory(WorkStatusImplementing, WorkStatusVerifying, WorkStatusVerifying, WorkStatusCorrecting)
+	for _, status := range []WorkStatus{WorkStatusDone, WorkStatusAbandoned} {
+		contract := WorkContract{ID: "WORK-001", Status: status, LockedAt: &locked, CompletedAt: &completed}
+		if _, err := DeriveWorkMetric(WorkMetricFacts{Contract: contract, History: history}); !errors.Is(err, ErrInvalidContract) {
+			t.Fatalf("%s: %v", status, err)
+		}
+	}
+	active, err := DeriveWorkMetric(WorkMetricFacts{Contract: WorkContract{ID: "WORK-001", Status: WorkStatusCorrecting, LockedAt: &locked}, History: history})
+	if err != nil || active.CorrectionPending != 1 {
+		t.Fatalf("active=%+v, err=%v", active, err)
+	}
+}
 
 func metricTime(hour, minute int) time.Time {
 	return time.Date(2026, time.September, 19, hour, minute, 0, 0, time.UTC)

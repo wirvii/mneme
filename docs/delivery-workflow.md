@@ -44,7 +44,7 @@ Los hallazgos `contract_violation`, `regression` y `architecture_violation` bloq
 | `work_begin` | Coordinador | Crea el borrador. |
 | `work_get` | Cualquier rol | Lee el agregado completo sin transición. |
 | `work_lock` | Coordinador | Fija base, revisión y huella antes de escribir. |
-| `work_amend` | Coordinador | Crea una revisión del contrato y conserva la historia. |
+| `work_amend` | Coordinador | Crea una revisión del contrato y conserva la historia; no puede cancelar una corrección abierta. |
 | `work_review` | `qa-tester` como subagente; coordinador desde su canal | Registra una revisión ligada al commit. La restricción de subagente falla cerrada si el rol no puede resolverse. |
 | `work_verify` | Implementador o coordinador | Evalúa hechos y persiste evidencia; no cambia el estado ni cierra el trabajo. |
 | `work_complete` | Coordinador | Cierra sólo con evidencia verde vigente. |
@@ -62,7 +62,7 @@ Ningún subagente llama `spec_advance`.
 5. Si hay bloqueantes y queda presupuesto, ocurre como máximo una corrección automática.
 6. Un segundo `work_review` realiza una revisión dirigida a esos bloqueantes.
 7. Si persiste un bloqueante, el WORK queda `escalated`; no existe otra arista de revisión dirigida a corrección.
-8. Con evidencia verde vigente, el coordinador ejecuta `work_complete`.
+8. Con evidencia verde vigente, el coordinador ejecuta `work_complete`. Si existe una corrección abierta, sólo puede cerrar después de una revisión dirigida; debe escalar y reanudar explícitamente antes de enmendar el contrato.
 
 `work_verify` puede ejecutarse para obtener evidencia factual, pero no realiza ninguna transición. `work_metrics` sólo observa resultados posteriores.
 

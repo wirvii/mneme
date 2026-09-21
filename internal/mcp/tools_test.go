@@ -108,6 +108,15 @@ func TestWorkLifecycleSchemasAreClosedAndExact(t *testing.T) {
 	}
 }
 
+func TestWorkCorrectionRestrictionsAreDiscoverable(t *testing.T) {
+	for _, tt := range []struct{ name, phrase string }{{"work_amend", "An open correction must be resolved or escalated"}, {"work_complete", "verification phase must match the correction count"}} {
+		tool := findTool(allTools(), tt.name)
+		if tool == nil || !strings.Contains(tool.Description, tt.phrase) {
+			t.Fatalf("%s does not describe correction restriction", tt.name)
+		}
+	}
+}
+
 // TestAllTools_ExactlyOneBacklogGet is AC20's second half: exactly one tool
 // named backlog_get exists.
 func TestAllTools_ExactlyOneBacklogGet(t *testing.T) {

@@ -80,6 +80,41 @@ func TestWorkToolsRegisteredAndDispatched(t *testing.T) {
 	}
 }
 
+func TestWorkAmendOpenCorrectionMapsToInvalidParams(t *testing.T) {
+	h, svc, sddStore := newWorkTestHandlers(t)
+	ctx := context.Background()
+	created, err := svc.WorkBegin(ctx, model.WorkBeginRequest{Goal: "g", Scope: []string{"internal/**"}, Verification: []model.VerificationKind{model.VerificationBuild}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := created.Contract.ID
+	if _, err := svc.WorkLock(ctx, model.WorkLockRequest{ID: id, By: "coordinator"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := sddStore.TransitionWork(ctx, id, model.WorkStatusImplementing, model.WorkStatusVerifying, "qa", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := sddStore.TransitionWork(ctx, id, model.WorkStatusVerifying, model.WorkStatusCorrecting, "qa", ""); err != nil {
+		t.Fatal(err)
+	}
+	before, err := sddStore.GetWorkAggregate(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := model.WorkAmendRequest{ID: id, Goal: "changed", Scope: []string{"internal/**"}, Verification: []model.VerificationKind{model.VerificationBuild}, DevelopmentMethod: model.DevelopmentMethodStandard, By: "coordinator", Reason: "change"}
+	_, rpcErr := h.handleToolCall(ctx, ToolCallParams{Name: "work_amend", Arguments: mustMarshal(t, request)})
+	if rpcErr == nil || rpcErr.Code != CodeInvalidParams || !strings.Contains(rpcErr.Message, "open correction") {
+		t.Fatalf("rpc error=%+v", rpcErr)
+	}
+	after, err := sddStore.GetWorkAggregate(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(before, after) {
+		t.Fatal("rejected MCP amendment changed work")
+	}
+}
+
 func TestWorkMetricsSchemaIsClosed(t *testing.T) {
 	tool := findTool(allTools(), "work_metrics")
 	if tool == nil {

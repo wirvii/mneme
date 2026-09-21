@@ -148,6 +148,9 @@ func (svc *SDDService) WorkAmend(ctx context.Context, req model.WorkAmendRequest
 	if err != nil {
 		return model.WorkGetResponse{}, err
 	}
+	if ok, reason := model.CanAmendWork(current.Status, current.CorrectionRounds); !ok {
+		return model.WorkGetResponse{}, fmt.Errorf("%w: %s", model.ErrInvalidWorkTransition, reason)
+	}
 	prospective := *current
 	prospective.Goal = req.Goal
 	prospective.Scope = append([]string(nil), req.Scope...)

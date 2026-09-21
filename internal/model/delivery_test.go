@@ -10,6 +10,29 @@ func validCompletionInput() CompletionInput {
 	return CompletionInput{Status: WorkStatusVerifying, ContractRevision: 1, ContractHash: "contract", HeadSHA: "head", BaseSHA: "base", Certificate: &DeliveryCertificate{Verdict: DeliveryVerdictPass, ContractRevision: 1, ContractHash: "contract", HeadSHA: "head", BaseSHA: "base"}}
 }
 
+func TestCanComplete_CorrectionPhaseMustMatchRounds(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		status  WorkStatus
+		rounds  int
+		allowed bool
+	}{
+		{"initial clean", WorkStatusVerifying, 0, true}, {"initial pending", WorkStatusVerifying, 1, false},
+		{"targeted pending", WorkStatusTargetedVerifying, 1, true}, {"targeted clean", WorkStatusTargetedVerifying, 0, false},
+		{"negative", WorkStatusVerifying, -1, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			in := validCompletionInput()
+			in.Status = tt.status
+			in.CorrectionRounds = tt.rounds
+			allowed, _ := CanComplete(in)
+			if allowed != tt.allowed {
+				t.Fatalf("allowed=%v, want %v", allowed, tt.allowed)
+			}
+		})
+	}
+}
+
 func TestWorkLifecycleRequests_JSONContract(t *testing.T) {
 	tests := []struct {
 		name string

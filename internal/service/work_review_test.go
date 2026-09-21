@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -340,6 +341,57 @@ func targetedReviewService(t *testing.T) (*SDDService, *deliveryRunnerStub, mode
 	req := reviewRequest(head)
 	req.Resolutions = []model.WorkFindingResolutionInput{{FindingSeq: 1, Status: model.FindingFixed, Evidence: "green test"}}
 	return svc, runner, req, initial
+}
+
+func TestWorkCorrection_AmendRejectedThenTargetedReviewCompletes(t *testing.T) {
+	svc, _, targeted, initial := targetedReviewService(t)
+	ctx := context.Background()
+	before, err := svc.WorkGet(ctx, model.WorkGetRequest{ID: "WORK-001"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.WorkAmend(ctx, validWorkAmendRequest("WORK-001")); !errors.Is(err, model.ErrInvalidWorkTransition) {
+		t.Fatalf("amend err=%v", err)
+	}
+	after, err := svc.WorkGet(ctx, model.WorkGetRequest{ID: "WORK-001"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(before, after) {
+		t.Fatal("rejected amendment changed work")
+	}
+	if initial.ReviewPhase != model.ReviewPhaseInitial {
+		t.Fatalf("initial phase=%s", initial.ReviewPhase)
+	}
+	result, err := svc.WorkReview(ctx, targeted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ReviewPhase != model.ReviewPhaseTargeted || result.NextStatus != model.WorkStatusTargetedVerifying {
+		t.Fatalf("targeted result=%+v", result)
+	}
+	completed, err := svc.WorkComplete(ctx, model.WorkCompleteRequest{ID: "WORK-001", By: "orchestrator"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if completed.Work.Contract.Status != model.WorkStatusDone {
+		t.Fatalf("completion=%+v", completed)
+	}
+	metric, err := svc.WorkMetrics(ctx, model.WorkMetricsRequest{IDs: []string{"WORK-001"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(metric.Details) != 1 || metric.Details[0].InitialReviews != 1 || metric.Details[0].TargetedReviews != 1 || metric.Details[0].CorrectionCompleted != 1 || metric.Details[0].CorrectionPending != 0 || !metric.Details[0].DoneAfterCorrection {
+		t.Fatalf("metric=%+v", metric)
+	}
+}
+
+func TestWorkCorrection_ResumeAllowsAmendment(t *testing.T) {
+	svc, _, _ := resumedReviewService(t)
+	result, err := svc.WorkAmend(context.Background(), validWorkAmendRequest("WORK-001"))
+	if err != nil || result.Contract.Status != model.WorkStatusImplementing || result.Contract.CorrectionRounds != 0 {
+		t.Fatalf("amend=%+v err=%v", result, err)
+	}
 }
 
 func resumedReviewService(t *testing.T) (*SDDService, *deliveryRunnerStub, model.WorkReviewRequest) {

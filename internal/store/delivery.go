@@ -178,7 +178,7 @@ func (s *SDDStore) CompleteWork(ctx context.Context, workID, headSHA, by string)
 		return CompleteWorkResult{}, fmt.Errorf("store: complete work: count findings: %w", err)
 	}
 	if ok, reason := model.CanComplete(model.CompletionInput{
-		Status: work.Status, ContractRevision: work.ContractRevision, ContractHash: work.ContractHash,
+		Status: work.Status, CorrectionRounds: work.CorrectionRounds, ContractRevision: work.ContractRevision, ContractHash: work.ContractHash,
 		HeadSHA: headSHA, BaseSHA: work.BaseSHA, Certificate: cert, OpenBlockingFindings: blocking,
 	}); !ok {
 		return CompleteWorkResult{}, fmt.Errorf("%w: %s", model.ErrInvalidWorkTransition, reason)

@@ -21,6 +21,59 @@ func testCriteria() []model.WorkCriterion {
 func testConstraints() []model.WorkConstraint {
 	return []model.WorkConstraint{{Key: "C1", Text: "dependency points inward", Source: "memory:x"}}
 }
+
+func TestAmendWork_OpenCorrectionIsAtomic(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		status model.WorkStatus
+	}{
+		{"correcting", model.WorkStatusCorrecting}, {"targeted", model.WorkStatusTargetedVerifying}, {"inconsistent implementing", model.WorkStatusImplementing},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			s := newTestSDDStore(t)
+			ctx := context.Background()
+			workInReview(t, s, "WORK-001", model.WorkStatusVerifying)
+			cert, checks := deliveryEvaluationFixture(t, s, "WORK-001")
+			if err := s.InsertDeliveryCertificate(ctx, cert, checks); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.db.Exec(`UPDATE execution_contracts SET status=?,correction_rounds=1 WHERE id='WORK-001'`, tt.status); err != nil {
+				t.Fatal(err)
+			}
+			before, err := s.GetWorkAggregate(ctx, "WORK-001")
+			if err != nil {
+				t.Fatal(err)
+			}
+			beforeCert, err := s.GetLatestDeliveryCertificate(ctx, "p", "WORK-001")
+			if err != nil {
+				t.Fatal(err)
+			}
+			beforeChecks, err := s.ListDeliveryChecks(ctx, beforeCert.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = s.AmendWork(ctx, model.AmendWorkRequest{WorkID: "WORK-001", Goal: "changed", Scope: []string{"cmd/**"}, Verification: []model.VerificationKind{model.VerificationBuild}, DevelopmentMethod: model.DevelopmentMethodStandard, Criteria: testCriteria(), Constraints: testConstraints(), By: "orchestrator", Reason: "change"})
+			if !errors.Is(err, model.ErrInvalidWorkTransition) || !strings.Contains(err.Error(), "open correction") {
+				t.Fatalf("err=%v", err)
+			}
+			after, err := s.GetWorkAggregate(ctx, "WORK-001")
+			if err != nil {
+				t.Fatal(err)
+			}
+			afterCert, err := s.GetLatestDeliveryCertificate(ctx, "p", "WORK-001")
+			if err != nil {
+				t.Fatal(err)
+			}
+			afterChecks, err := s.ListDeliveryChecks(ctx, beforeCert.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(before, after) || !reflect.DeepEqual(beforeCert, afterCert) || !reflect.DeepEqual(beforeChecks, afterChecks) {
+				t.Fatal("rejected amendment changed persisted state")
+			}
+		})
+	}
+}
 func createTestWork(t *testing.T, s *SDDStore, id string) *model.WorkContract {
 	t.Helper()
 	w := testWork(id)
