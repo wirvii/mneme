@@ -259,14 +259,19 @@ Get the full status of a spec including history and pushbacks.
 
 ```json
 {
-  "spec": {"id": "SPEC-001", "uuid": "0198f2c1-9e10-7c3d-4a7b-3f4a5b6c7d8e", "title": "Push notifications", "status": "implementing",
+  "spec": {"id": "SPEC-001", "uuid": "0198f2c1-9e10-7c3d-4a7b-3f4a5b6c7d8e", "title": "Push notifications", "status": "qa",
     "lane": "standard", "project": "wirvii/mneme", "backlog_id": "BL-001",
     "created_at": "2026-04-30T12:00:00Z", "updated_at": "2026-04-30T14:00:00Z"},
   "history": [{"from_status": "draft", "to_status": "speccing", "by": "orchestrator",
-    "reason": "Ready for architect", "at": "2026-04-30T12:30:00Z"}],
+    "reason": "Ready for architect", "at": "2026-04-30T12:30:00Z"},
+    {"from_status": "implementing", "to_status": "qa", "by": "backend",
+     "reason": "ready for review", "at": "2026-04-30T14:00:00Z",
+     "reviewed_sha": "9a3c1234567890abcdef1234567890abcdef1234"}],
   "pushbacks": [{"from_agent": "backend", "questions": ["API contract with auth?"],
     "resolution": "Use service accounts", "resolved": true, "created_at": "2026-04-30T13:00:00Z"}],
-  "frozen": {"state": "archived", "backlog_id": "BL-001", "reason": "Superseded by BL-207"}
+  "frozen": {"state": "archived", "backlog_id": "BL-001", "reason": "Superseded by BL-207"},
+  "review_range": {"available": true, "from": "abc123...", "from_kind": "base",
+    "to": "9a3c1234...", "notice": "primera pasada: revisar desde el commit base abc12345 hasta el extremo entregado 9a3c1234."}
 }
 ```
 
@@ -278,6 +283,12 @@ recorded archive reason, possibly empty) or `"missing"` (the item named by
 was never actually read, so `reason` is absent). Either state means every
 `spec_*`/`lane_*` verb that changes status will fail — `spec_status` itself
 never does, so a frozen spec stays fully readable.
+
+**`review_range` (SPEC-157) is present ONLY while `spec.status` is `qa`** —
+absent (not `null`) in every other status, so a response outside `qa` stays
+byte-identical to one from before this field existed. See "Review frontier
+and review range" below `spec_advance` for its full shape and the four
+states it can be in.
 
 **Errors:** `-32000` not found, `-32602` missing `id`.
 
@@ -301,11 +312,77 @@ block a spec from closing.
 | `by` | string | yes | Who triggers the advance (e.g. `orchestrator`, `architect`, `backend`) |
 | `reason` | string | no | Optional reason for the transition |
 
-**Returns:** Updated spec object.
+**Returns:** `{spec, executor, review_range?}` (SPEC-068, SPEC-157) — NOT a
+bare spec object. `executor` is an advisory `ExecutorResolution` for the
+stage just entered (SPEC-068 D2/D5): delegate to a manifest subagent when
+`executor.delegate` is `true`, or supply the stage yourself as a conscious
+fallback when `executor.degraded` is `true`. `review_range` is present ONLY
+when the stage just entered is `qa` (SPEC-157 D5) — see "Review frontier
+and review range" right below.
 
 **Errors:** `-32602` invalid transition, missing `id`/`by`, `quality: no
 criteria.toml found for this spec` (standard lane, `speccing -> specced`,
 no declared criteria document).
+
+### Review frontier and review range (SPEC-157)
+
+Every QA pass looks at a bounded tramo of commits, not "the spec" over and
+over: `spec_history` gains one additive column, `reviewed_sha`, filled by
+exactly three transitions and meaning ONE of two things — which one is
+decided ONLY by the row's own `(from_status, to_status)` pair, never by the
+value alone:
+
+| Transition | `reviewed_sha` means | Empty when |
+|---|---|---|
+| `implementing -> qa` | the **delivered end**: HEAD at the moment the spec entered review — how far the qa-tester is being asked to look | mneme could not read HEAD (`repoDir` unset, or git failed) |
+| `qa -> done` / `qa -> implementing` | the **reviewed frontier**: COPIED — never recomputed from HEAD — from the delivered end of the entry that started this pass | the entry into `qa` left no delivered end to copy |
+| every other transition | always empty | always |
+
+Copying instead of recomputing is what makes a defect structurally
+impossible: if the implementer commits again while QA is still reading, the
+frontier still advances only to what was actually handed over — never to
+whatever HEAD happens to be when the report is emitted. When that happens,
+the persisted `spec_history` reason gets a note appended (see
+`spec_reject` below for the exact composition order), and the commits that
+landed after the delivered end simply enter the NEXT pass's range.
+
+`review_range` — returned by `spec_advance` only when the stage just
+entered is `qa`, and by `spec_status` only while `spec.status` is `qa` — is
+the tramo computed from that same column:
+
+```json
+{
+  "available": true,
+  "from": "<sha>", "from_kind": "frontier",
+  "to": "<sha>",
+  "empty": false,
+  "frontier_lost": false, "lost_frontier": "",
+  "notice": "revisar desde la frontera anterior <abbr> hasta el extremo entregado <abbr>."
+}
+```
+
+- `to` is always the CURRENT entry's delivered end, read from its row —
+  never `HeadSHA` — so a commit landing after entry never moves it.
+- `from`/`from_kind` is either the previous reviewed frontier
+  (`from_kind: "frontier"`) or, on a first pass or when the stored frontier
+  is no longer an ancestor of `to` (a rebase or squash rewrote it out from
+  under it), `spec.base_sha` (`from_kind: "base"`) — the safe direction:
+  covering MORE code, never less.
+- `empty: true` means `from == to`: nothing changed since the last
+  reviewed frontier. Informational only — it never blocks a pass from
+  being requested, it only means nothing NEW would be found.
+- `frontier_lost: true` names the dead SHA in `lost_frontier` when history
+  was rewritten out from under the stored frontier.
+- `available: false` replaces every field above with `unavailable`, one of
+  three closed causes — never an error, and `spec_advance`/`spec_status`
+  keep returning normally either way: no delivered end was recorded; git
+  failed while checking whether the frontier is still an ancestor of `to`
+  (the frontier is then treated as lost, never as valid); or there is no
+  base_sha to fall back on either.
+- `notice` is the ONE sentence every surface — CLI, this MCP response, the
+  qa-tester's brief, the QA report — shows verbatim. The orchestrator
+  copies it into the encargo; it never computes or rewrites the range
+  itself.
 
 ### spec_pushback
 
@@ -462,6 +539,29 @@ rejected: <reason>
 The `evidencia:` line only appears when `evidence` is non-empty. With zero
 findings the persisted reason is exactly `"rejected: " + reason`, byte for
 byte what it always was.
+
+**SPEC-157's frontier note, when there is one, is appended AFTER all of
+the above — never reordered, never rewritten.** `spec_reject` targeting
+`qa -> implementing` is one of the three transitions that resolve the
+review frontier (see "Review frontier and review range" under
+`spec_advance`); when HEAD moved while QA was reviewing, the persisted
+reason ends with one more block:
+
+```
+rejected: <reason>
+
+[<criterion_id>] <detail>
+      evidencia: <evidence>
+
+frontera: la frontera avanza solo hasta el extremo entregado <abbr>; al emitir
+el informe el HEAD era <abbr>. Lo que llego despues NO se reviso y entra en
+el rango de la siguiente pasada.
+```
+
+Fixed order, always: human reason → findings (SPEC-156) → `frontera:` note
+(SPEC-157). With HEAD unmoved, or with no delivered end to copy, no
+`frontera:` block is appended at all — the reason stays exactly what it
+would be without this note.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|

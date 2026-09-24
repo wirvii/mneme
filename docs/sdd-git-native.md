@@ -290,11 +290,26 @@ spec).
 
 Two properties make this format safe to hand-edit and safe to regenerate:
 
-- **The schema is a hard, range-checked gate.** A record whose `schema` is
-  higher than what this mneme understands is refused outright — never
-  parsed partially and never silently stripped of a section it doesn't
-  recognize, which would otherwise be silent data loss on the next
-  rewrite.
+- **The schema is a hard, range-checked gate — with ONE declared
+  exception.** A record whose `schema` is higher than what this mneme
+  understands is refused outright — never parsed partially and never
+  silently stripped of a section it doesn't recognize, which would
+  otherwise be silent data loss on the next rewrite. **The exception,
+  accepted deliberately (SPEC-157 Q1, 2026-09-24):** a spec's history
+  section may carry a `reviewed_sha` attribute (SPEC-157 — the tramo a QA
+  pass actually covered) WITHOUT the schema number going up. Two reasons
+  this trade-off was chosen over bumping it: bumping `schema` would change
+  the `schema:` line of EVERY record, breaking the byte-identity guarantee
+  a spec with no frontier data depends on; and the range check above is a
+  HARD gate — an older mneme would REFUSE a `schema: 2` file outright, when
+  it can in fact read one perfectly well by ignoring an attribute it does
+  not recognize. The accepted cost: an older mneme reads a file carrying
+  `reviewed_sha` without breaking, but on its OWN next rewrite of that same
+  spec (`materializeSpec`, which does not know the attribute exists) it
+  silently drops it. That loss is always safe in direction — with no
+  recorded frontier, the NEXT QA pass simply covers MORE code, from the
+  spec's base commit forward, never less; it costs time, it never makes
+  anyone believe a tramo was reviewed that in fact was not.
 - **Any content that happens to look like a section marker is escaped, and
   the escape is verified.** A description that literally contains the text
   `<!-- mneme:refinement ... -->` — which genuinely happens in this

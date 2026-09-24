@@ -29,7 +29,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   architect, `bounded-review` for the qa-tester) and both operating
   manuals now state this doctrine. `AgentFixedVersion` moves 3 → 4, so
   `mneme subagents doctor`/`regen` pick it up on already-materialized
-  projects.
+  projects. **The same 3 → 4 increment also covers SPEC-157's own
+  extension of `bounded-review` below** (one bump per published version,
+  not per spec) — a project that ran `regen` against an unpublished `main`
+  build gets both doctrines the next time it regenerates.
+- **QA no longer re-reviews a whole spec on every pass — it gets a bounded
+  review range, and the frontier it reaches is recorded so the NEXT pass
+  starts from there** (SPEC-157). `spec_history` gains one additive
+  column, `reviewed_sha`, meaning either the DELIVERED end (recorded when
+  a spec enters `qa`) or the REVIEWED frontier (copied — never recomputed
+  from HEAD — when a pass leaves `qa`), decided solely by that row's own
+  transition. Copying instead of recomputing on exit is what makes it
+  structurally impossible to claim a tramo was reviewed that in fact
+  wasn't: a commit landing while QA is reading simply falls into the next
+  pass's range. `spec_advance` returns a new, additive `review_range`
+  field the moment a spec enters `qa` (also readable back from
+  `spec_status` for as long as the spec stays there); a history rewrite
+  that invalidates a stored frontier (a rebase, a squash) is detected via
+  the existing `IsAncestor` primitive and falls back to the spec's base
+  commit — the safe direction, covering more code, never less. Nothing in
+  this mechanism can ever block a transition: an unresolvable delivered
+  end or a failing git command produce a value and a note, never an
+  error. `mneme spec advance`/`spec reject`/`spec history` print the
+  range/frontier a person needs to see. **Compatibility note:** the
+  on-disk record format gains this attribute WITHOUT bumping its schema
+  number (a deliberate, declared exception — see
+  `docs/sdd-git-native.md`'s "File format" section) — a pre-SPEC-157
+  mneme reads such a file without breaking, but silently drops the
+  attribute on its own next rewrite of that spec; the only consequence is
+  that the following QA pass covers more code, never a false claim that
+  something was reviewed that wasn't.
 
 ## [v1.46.0] — 2026-09-04 — The tools the manual demands are actually installed, and one broken toolchain no longer takes down the whole code graph
 
