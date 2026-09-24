@@ -73,10 +73,23 @@ func (svc *SDDService) createSpec(ctx context.Context, spec *model.Spec) error {
 // record. This is the busiest of the nine wrappers — nine call sites in
 // sdd.go route through it (SpecAdvance, SpecPushback, SpecReject,
 // SpecResolve, SpecQuick ×2, LaneAudit, LaneReclassify, LaneOverride).
+//
+// SPEC-157 D2 resolves the review frontier HERE, inside the wrapper, for
+// three reasons, in order of weight: (1) it is impossible to forget — with
+// the SHA as an argument at every call site, a future entry/exit-of-qa
+// transition could be added without anyone remembering to wire it up; here
+// the logic lives in exactly one place; (2) the status change and its
+// frontier SHA stay a SINGLE transaction, exactly like today — a separate
+// store method would mean two writes and a window where one could succeed
+// without the other; (3) it does not touch sdd.go, which is where SPEC-156
+// writes (see sdd_contract.go's package doc for the split). The frontier
+// resolution's own git I/O and history read are best-effort in the same
+// sense materializeSpec already is — see frontierForTransition's doc.
 func (svc *SDDService) updateSpecStatus(ctx context.Context, specID string, from, to model.SpecStatus, by, reason string) error {
-	// TODO(SPEC-157 paso 3): resolve via frontierForTransition/
-	// appendFrontierNote instead of the placeholder "" below.
-	if err := svc.store.UpdateSpecStatus(ctx, specID, from, to, by, reason, ""); err != nil {
+	d := svc.frontierForTransition(ctx, specID, from, to)
+	reason = appendFrontierNote(reason, d.Note)
+
+	if err := svc.store.UpdateSpecStatus(ctx, specID, from, to, by, reason, d.SHA); err != nil {
 		return err
 	}
 	svc.materializeSpec(ctx, specID)
