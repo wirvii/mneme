@@ -946,9 +946,10 @@ func (h *handlers) qualityUnavailable(method string) *JSONRPCError {
 
 // backlogAddResponse is the envelope handleBacklogAdd returns (SPEC-103 D7):
 // the created item plus an advisory refinement nudge, mirroring the
-// {spec, executor} envelope handleSpecAdvance returns (specAdvanceResponse,
-// SPEC-068 D5). Advisory is omitempty so a trivial-lane item's response
-// carries no advisory field at all (SPEC-103 D4/AC3).
+// {spec, executor, review_range?} envelope handleSpecAdvance returns
+// (specAdvanceResponse, SPEC-068 D5, SPEC-157 D5). Advisory is omitempty
+// so a trivial-lane item's response carries no advisory field at all
+// (SPEC-103 D4/AC3).
 type backlogAddResponse struct {
 	Item     *model.BacklogItem `json:"item"`
 	Advisory string             `json:"advisory,omitempty"`
@@ -1179,6 +1180,8 @@ func (h *handlers) handleSpecStatus(ctx context.Context, raw json.RawMessage) (*
 	if err != nil {
 		return nil, h.mapServiceError("spec_status", err)
 	}
+	// SPEC-157 D5: additive, present only while resp.Spec.Status is qa.
+	h.sdd.AttachReviewRange(ctx, resp)
 
 	return resultFromAny(resp)
 }
@@ -1188,9 +1191,15 @@ func (h *handlers) handleSpecStatus(ctx context.Context, raw json.RawMessage) (*
 // just entered. The envelope is additive — Spec carries exactly what the bare
 // *model.Spec response used to carry, as its own subfield — so existing
 // callers that only read the spec fields keep working unchanged.
+//
+// ReviewRange is SPEC-157 D5's own additive field: present ONLY when the
+// stage just entered is qa (nil/omitempty otherwise), so a caller reading
+// only {spec, executor} — every caller before this spec existed — sees an
+// identical envelope in every other case.
 type specAdvanceResponse struct {
-	Spec     *model.Spec                `json:"spec"`
-	Executor service.ExecutorResolution `json:"executor"`
+	Spec        *model.Spec                `json:"spec"`
+	Executor    service.ExecutorResolution `json:"executor"`
+	ReviewRange *model.ReviewRange         `json:"review_range,omitempty"`
 }
 
 // handleSpecAdvance processes a spec_advance tool call. After the transition
@@ -1230,7 +1239,13 @@ func (h *handlers) handleSpecAdvance(ctx context.Context, raw json.RawMessage) (
 
 	executor := service.ResolveStageExecutor(spec.Status, spec.Lane, manifest)
 
-	return resultFromAny(specAdvanceResponse{Spec: spec, Executor: executor})
+	// SPEC-157 D5: best-effort, exactly like the manifest lookup just
+	// above — ReviewRangeForEntered itself never errors (nil outside qa,
+	// an Available=false value inside it on any git/store failure), so
+	// there is nothing here to fail on.
+	reviewRange := h.sdd.ReviewRangeForEntered(ctx, spec)
+
+	return resultFromAny(specAdvanceResponse{Spec: spec, Executor: executor, ReviewRange: reviewRange})
 }
 
 // handleSpecPushback processes a spec_pushback tool call.

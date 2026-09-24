@@ -62,6 +62,25 @@ func commitOneMore(t *testing.T, repoDir, filename, message string) string {
 	return headSHA(t, repoDir)
 }
 
+// runGitFrontierTest runs a git command in dir with a fixed local identity
+// (SPEC-085 R-C: never resolve a real identity in a test), mirroring the
+// per-file gitRunSDDTest/gitRunLaneTest convention this package already
+// uses (sdd_export_materialize_test.go, lane_audit_test.go).
+func runGitFrontierTest(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(),
+		"GIT_AUTHOR_NAME=frontier-test", "GIT_AUTHOR_EMAIL=frontier-test@example.com",
+		"GIT_COMMITTER_NAME=frontier-test", "GIT_COMMITTER_EMAIL=frontier-test@example.com",
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+	return string(out)
+}
+
 // mustParseRFC3339 parses s as time.RFC3339Nano, failing the test on error.
 func mustParseRFC3339(t *testing.T, s string) time.Time {
 	t.Helper()

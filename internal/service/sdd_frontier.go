@@ -242,3 +242,163 @@ func latestHistoryRow(history []*model.SpecHistory, pred func(*model.SpecHistory
 	}
 	return latest
 }
+
+// reviewUnavailableNoDeliveredEnd is D5's first closed cause: the entry to
+// qa left no delivered end (repoDir was not configured, or git failed
+// when entering review) — there is nothing to anchor a range on at all.
+const reviewUnavailableNoDeliveredEnd = "no hay extremo entregado registrado para esta revision: " +
+	"mneme no pudo leer el commit actual al entrar en revision"
+
+// reviewUnavailableNoBaseSHA is D5's third closed cause: no usable
+// frontier (first pass, or the stored one was lost) AND no base_sha
+// either — there is nothing left to anchor the range's start on.
+const reviewUnavailableNoBaseSHA = "esta spec no tiene commit base registrado"
+
+// ReviewRange resolves SPEC-157 D5's tramo for spec: from the last
+// reviewed frontier (or spec.BaseSHA on a first pass) up to the DELIVERED
+// end recorded when spec entered qa. Never returns an error — see
+// model.ReviewRange's doc for the closed set of causes Unavailable can
+// name instead, and frontierForTransition's package doc for why nothing
+// in this file blocks.
+func (svc *SDDService) ReviewRange(ctx context.Context, spec *model.Spec) model.ReviewRange {
+	history, err := svc.store.GetSpecHistory(ctx, spec.ID)
+	if err != nil {
+		r := model.ReviewRange{Unavailable: reviewUnavailableNoDeliveredEnd}
+		r.Notice = renderReviewNotice(r)
+		return r
+	}
+
+	// Step 1 (D5): To is the CURRENT entry's delivered end, read from the
+	// row — never recomputed with HeadSHA. This is the same datum D2c
+	// later copies into reviewed_sha on exit, by construction.
+	entry := latestHistoryRow(history, func(h *model.SpecHistory) bool {
+		return h.FromStatus == model.SpecStatusImplementing && h.ToStatus == model.SpecStatusQA
+	})
+	if entry == nil || entry.ReviewedSHA == "" {
+		r := model.ReviewRange{Unavailable: reviewUnavailableNoDeliveredEnd}
+		r.Notice = renderReviewNotice(r)
+		return r
+	}
+	to := entry.ReviewedSHA
+
+	// Step 2: the previous reviewed frontier, if any — the latest row
+	// leaving qa (qa->done or qa->implementing) that actually recorded one.
+	frontierRow := latestHistoryRow(history, func(h *model.SpecHistory) bool {
+		return h.FromStatus == model.SpecStatusQA && h.ReviewedSHA != ""
+	})
+
+	r := model.ReviewRange{Available: true, To: to}
+
+	if frontierRow == nil {
+		// First pass: nothing to compare against, so no IsAncestor check —
+		// From falls straight to base_sha.
+		if spec.BaseSHA == "" {
+			return unavailableReviewRange(reviewUnavailableNoBaseSHA)
+		}
+		r.From, r.FromKind = spec.BaseSHA, "base"
+		r.Empty = r.From == r.To
+		r.Notice = renderReviewNotice(r)
+		return r
+	}
+
+	// Step 3 (D4): is the stored frontier still an ancestor of To?
+	frontier := frontierRow.ReviewedSHA
+	repoDir := svc.repoDir
+	var ancestor bool
+	if repoDir == "" {
+		err = fmt.Errorf("directorio del repositorio sin configurar")
+	} else {
+		g := &quality.Git{RepoDir: repoDir}
+		ancestor, err = g.IsAncestor(frontier, to)
+	}
+
+	switch {
+	case err != nil:
+		// git itself failed to answer the question — the frontier is
+		// treated as lost, NEVER as valid (D4's principle), and the whole
+		// range is unavailable (causa 2) rather than silently falling back
+		// to base, since a failing git command here means mneme cannot
+		// even be sure base_sha is the right answer either.
+		msg := fmt.Sprintf("no se pudo comprobar si la frontera sigue siendo valida: %v", err)
+		if spec.BaseSHA == "" {
+			msg += " " + reviewUnavailableNoBaseSHA + "."
+		}
+		return unavailableReviewRange(msg)
+	case !ancestor:
+		// A genuine rebase/squash: the frontier is not an ancestor of To
+		// any more. Falls back to base_sha — the safe direction, covering
+		// MORE code, never less (D4).
+		r.FrontierLost, r.LostFrontier = true, frontier
+		if spec.BaseSHA == "" {
+			return unavailableReviewRange(reviewUnavailableNoBaseSHA)
+		}
+		r.From, r.FromKind = spec.BaseSHA, "base"
+	default:
+		r.From, r.FromKind = frontier, "frontier"
+	}
+
+	r.Empty = r.From == r.To
+	r.Notice = renderReviewNotice(r)
+	return r
+}
+
+// unavailableReviewRange builds the Available=false shape D5 requires,
+// with Notice rendered from it — the single construction site every
+// "cannot compute a range" exit in ReviewRange funnels through.
+func unavailableReviewRange(cause string) model.ReviewRange {
+	r := model.ReviewRange{Unavailable: cause}
+	r.Notice = renderReviewNotice(r)
+	return r
+}
+
+// renderReviewNotice is the pure function every surface (CLI, MCP, the
+// qa-tester's encargo, the QA report) reads verbatim, so all four always
+// say exactly the same thing about the same ReviewRange (D5 point 5).
+func renderReviewNotice(r model.ReviewRange) string {
+	if !r.Available {
+		return "el rango a revisar no esta disponible: " + r.Unavailable
+	}
+	if r.Empty {
+		return fmt.Sprintf("no hay nada nuevo que revisar: el extremo entregado %s coincide con la ultima frontera revisada.",
+			abbreviateSHA(r.To))
+	}
+	if r.FrontierLost {
+		return fmt.Sprintf(
+			"la frontera anterior %s ya no es antepasada del extremo entregado (la historia se reescribio); "+
+				"se revisa desde el commit base %s hasta %s.",
+			abbreviateSHA(r.LostFrontier), abbreviateSHA(r.From), abbreviateSHA(r.To),
+		)
+	}
+	if r.FromKind == "frontier" {
+		return fmt.Sprintf("revisar desde la frontera anterior %s hasta el extremo entregado %s.",
+			abbreviateSHA(r.From), abbreviateSHA(r.To))
+	}
+	return fmt.Sprintf("primera pasada: revisar desde el commit base %s hasta el extremo entregado %s.",
+		abbreviateSHA(r.From), abbreviateSHA(r.To))
+}
+
+// ReviewRangeForEntered returns spec's ReviewRange, but ONLY while
+// spec.Status is qa — nil (and therefore absent from JSON via omitempty)
+// in every other status (D5). Used by handleSpecAdvance right after the
+// transition it just made, and by AttachReviewRange below.
+func (svc *SDDService) ReviewRangeForEntered(ctx context.Context, spec *model.Spec) *model.ReviewRange {
+	if spec == nil || spec.Status != model.SpecStatusQA {
+		return nil
+	}
+	r := svc.ReviewRange(ctx, spec)
+	return &r
+}
+
+// AttachReviewRange fills resp.ReviewRange when resp.Spec is in qa,
+// leaving it nil otherwise (P4 of plan.md) — additive, so a caller reading
+// only the pre-existing fields of model.SpecStatusResponse never notices
+// this ran. Kept OUT of SDDService.SpecStatus (sdd.go) deliberately: D2's
+// same reasoning as updateSpecStatus — this file is SPEC-157's own home,
+// sdd.go stays untouched. Callers: handleSpecStatus (MCP) and `mneme spec
+// status` (CLI).
+func (svc *SDDService) AttachReviewRange(ctx context.Context, resp *model.SpecStatusResponse) {
+	if resp == nil || resp.Spec == nil {
+		return
+	}
+	resp.ReviewRange = svc.ReviewRangeForEntered(ctx, resp.Spec)
+}
