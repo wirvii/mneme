@@ -49,11 +49,33 @@ draft ──spec_quick──► rationale ──spec_advance──► implementi
 
 ## Standard SDD Flow
 
-Standard flow is unchanged:
-
 ```
 draft → speccing → (needs_grill ↔ speccing) → specced → planning → planned → implementing → qa → done
 ```
+
+**`speccing → specced` requires a declared `criteria.toml` (SPEC-156 D2).**
+A standard-lane spec cannot cross the human approval gate without its
+acceptance-criteria document on file — the owner approves the spec's prose
+and its measurable boundary in the same act. The architect delivers it via
+`spec_doc_write` with `kind: "criteria"`, its only write channel for that
+file. Missing it fails `spec_advance` with `quality: no criteria.toml
+found for this spec`, naming the exact path. This is the ONLY transition
+the requirement applies to — trivial-lane specs are unaffected, and
+`qa → done` gains no check at all: nothing here can ever block a spec from
+closing.
+
+**A `spec_reject` from `qa`, standard lane, with a declared `criteria.toml`,
+must name the criterion each finding violates (SPEC-156 D4/D5).** Findings
+outside that declared contract are not a valid rejection reason — open
+them as a new backlog item with `backlog_add` instead, with the evidence
+still fresh. Three cases are excluded from this requirement, matching the
+same forward-only posture as the criteria gate above: a trivial-lane spec
+rejected from `audit` (it has no architect and no `criteria.toml` by
+design), a rejection from `done` (a post-hoc defect, not a QA pass over a
+contract), and a spec whose `criteria.toml` is missing or unparsable (the
+rule does not apply retroactively). See
+[docs/api/sdd.md](api/sdd.md#spec_reject) for the exact error shapes and
+the persisted reason format.
 
 ## Automated Checks
 

@@ -953,6 +953,28 @@ type LaneOverrideRequest struct {
 	By string `json:"by"`
 }
 
+// RejectFinding is one defect named in a SpecRejectRequest (SPEC-156 D4).
+// Each finding names the declared acceptance criterion it violates — the
+// contract a rejection can refute is the spec's own criteria.toml, never
+// "whatever the reviewer noticed".
+type RejectFinding struct {
+	// CriterionID is the id of the criteria.toml entry this finding claims
+	// is violated. Must match a declared id — ensureRejectFindings rejects
+	// an unknown one with model.ErrUnknownCriterion, naming both the
+	// offending id and the declared set.
+	CriterionID string `json:"criterion_id"`
+
+	// Detail explains what fails about CriterionID. Must be non-empty — a
+	// finding that names a criterion without saying what fails about it is
+	// not a finding (model.ErrFindingsRequired).
+	Detail string `json:"detail"`
+
+	// Evidence is optional supporting detail (e.g. a test name, a log
+	// excerpt). Empty is fine — the CLI's --finding flag never sets it; a
+	// qa-tester attaches it over MCP.
+	Evidence string `json:"evidence,omitempty"`
+}
+
 // SpecRejectRequest sends a spec backward to implementing, recording a
 // rejection reason. This is the canonical way to model a review that
 // uncovers defects requiring further implementation work — whether caught
@@ -973,6 +995,18 @@ type SpecRejectRequest struct {
 
 	// By identifies who triggered the rejection (e.g. "qa-agent", "orchestrator").
 	By string `json:"by"`
+
+	// Findings lists the declared criteria this rejection claims are
+	// violated (SPEC-156 D4). omitempty is here for JSON shape only — it is
+	// NOT optional in the cases ensureRejectFindings governs (standard
+	// lane, from qa, with a criteria.toml present): the service, not this
+	// struct, enforces that a rejection in those cases carries at least one
+	// finding, each naming a declared criterion with a non-empty Detail. In
+	// every other case (trivial, from done, or no criteria.toml on file)
+	// Findings may be empty and the rejection is accepted as-is — the same
+	// posture backlog_archive's Reason already established (SPEC-125 DD1):
+	// the safety net lives in the service, never only in the wire shape.
+	Findings []RejectFinding `json:"findings,omitempty"`
 }
 
 // LaneStatusResponse is returned by LaneStatus with lane classification details

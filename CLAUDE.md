@@ -864,6 +864,75 @@ certificate can no longer fail on budget/detection rows, though `lane
 audit`'s own scope/size verdict is unaffected — it comes from a completely
 separate code path).
 
+## What can provoke a rejection: the criteria are the contract (SPEC-156)
+
+The QA review cycle had no declared boundary in standard lane: any defect
+QA found, whether or not it had anything to do with what the spec
+promised, became another correction of the spec in progress. SPEC-156
+closes that loophole — **without adding a single check to `qa -> done`**,
+the one transition the owner's earlier delivery-v2 attempt got wrong by
+turning a certificate into a closing gate. `spec_advance` and
+`spec_reject` are the only two verbs touched, and only two of their many
+transitions gain anything.
+
+**`ensureCriteriaDeclared`** (`internal/service/sdd_contract.go`) requires
+a standard-lane spec's `criteria.toml` to exist and parse before
+`speccing -> specced` — the human approval gate. Every other transition,
+including `qa -> done`, returns immediately. `model.ErrCriteriaNotFound`
+names the exact path and the remedy (`spec_doc_write` kind `criteria`).
+
+**`ensureRejectFindings`** (same file) applies only inside `SpecReject`,
+and only when the spec is standard lane, in `qa` status, with a
+`criteria.toml` that exists and parses. `model.SpecRejectRequest` gained
+`Findings []RejectFinding` (`CriterionID`, `Detail`, `Evidence`;
+`omitempty` on the wire is a JSON-shape choice only — obligation lives in
+the service, mirroring `backlog_archive`'s `Reason`, SPEC-125 DD1). Zero
+findings, or one with an empty `Detail`, fails with
+`model.ErrFindingsRequired`; a `CriterionID` outside the declared set
+fails with `model.ErrUnknownCriterion`, naming both the offending id and
+the full declared list. Three cases are excluded, enforced going forward
+only, never retroactively: trivial lane rejecting from `audit` (no
+architect, no `criteria.toml` by design), a rejection from `done` (a
+post-hoc defect, not a review over a contract), and a spec whose
+`criteria.toml` is missing or unparsable (a spec that reached `qa` before
+this mechanism existed cannot be blocked by it).
+
+`renderRejectReason` composes the persisted `spec_history` reason: the
+human reason, then one `[<criterion_id>] <detail>` block per finding (an
+`evidencia:` line when `Evidence` is set), byte-for-byte stable and
+identical to today's `"rejected: " + reason` when there are zero findings.
+No new table — the cost, accepted and named, is that findings are not
+queryable by SQL; they are read where it matters, in the QA report.
+
+A finding outside the declared contract is never a legitimate rejection
+reason — `backlog_add` (already permitted to the qa-tester; no permission
+change here) is the only sanctioned outlet, with fresh evidence, at the
+moment the gap is found. `mneme spec reject` gained a repeatable
+`--finding <criterion-id>=<detail>` flag (`StringArrayVar`, never
+`StringVar` — a repeated `StringVar` silently keeps only the last value,
+the exact defect SPEC-132 V8 documented).
+
+**The doctrine lives in subagent layer 1** (`internal/subagents/assets/agent-fixed.md`),
+never in layer 2/3 grill text — `Layer23ForbiddenLifecycleTokens` bans the
+literal token `spec_reject` there, and layer 1 is the only layer `mneme
+subagents regen` rewrites in place on an already-materialized project. Two
+new sections: `criteria-contract` (assigned to `RoleArchitect`) states the
+document is obligatory and delivered only via `spec_doc_write`;
+`bounded-review` (assigned to `RoleQATester`) states that only a declared
+criterion authorizes `spec_reject`, that a QA report always carries two
+sections (`## Dentro del contrato` / `## Fuera del contrato — items
+abiertos`, an empty one saying "ninguno" explicitly), and that there is no
+"out of contract but blocking" category — presenting a finding as severe
+does not pull it inside the contract. `AgentFixedVersion` moves from 3 to
+4 — the only thing that makes `mneme subagents doctor` report
+`stale_agent_fixed` on a project materialized before this landed; without
+the bump the doctrine never reaches an existing project. Both operating
+manuals (`operating-manual.md` and `operating-manual-codex.md`) gain a
+short §4 paragraph: a finding alone never authorizes widening scope, and
+the human closes the spec from the QA report.
+
+Full reference: `docs/lanes.md` and `docs/api/sdd.md#spec_reject`.
+
 <!-- mneme:managed:start v=1 -->
 Process and operating instructions are managed globally via mneme.
 See the mneme operating manual in your global ~/.claude/CLAUDE.md.

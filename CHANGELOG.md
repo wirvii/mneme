@@ -6,6 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`spec_reject` now carries structured findings, and each one has to name
+  the criterion it violates** (SPEC-156). A rejection from `qa` (standard
+  lane) against a spec with a declared `criteria.toml` requires at least
+  one finding naming a declared criterion id, with a non-empty detail —
+  `model.ErrFindingsRequired`/`model.ErrUnknownCriterion` refuse it
+  otherwise, and the persisted `spec_history` reason gains one
+  `[<criterion_id>] <detail>` block per finding. `mneme spec reject`
+  gained a repeatable `--finding <criterion-id>=<detail>` flag. A finding
+  that falls outside the spec's own declared criteria is never a
+  legitimate rejection reason — it is opened as a new backlog item
+  instead, with fresh evidence, and shows up in a dedicated section of the
+  QA report.
+- **`criteria.toml` is now obligatory, in standard lane, before a spec
+  crosses the human approval gate** (SPEC-156 D2): `spec_advance` refuses
+  `speccing -> specced` without one. No other transition gains any check —
+  `qa -> done` in particular is untouched, by design: nothing in this
+  mechanism can ever block a spec from closing.
+- Two new subagent layer-1 sections (`criteria-contract` for the
+  architect, `bounded-review` for the qa-tester) and both operating
+  manuals now state this doctrine. `AgentFixedVersion` moves 3 → 4, so
+  `mneme subagents doctor`/`regen` pick it up on already-materialized
+  projects.
+
 ## [v1.46.0] — 2026-09-04 — The tools the manual demands are actually installed, and one broken toolchain no longer takes down the whole code graph
 
 ### Added

@@ -421,3 +421,57 @@ func TestParsePreviousID_RejectsMalformed(t *testing.T) {
 		}
 	}
 }
+
+// TestSpecRejectRequest_FindingsJSON is SPEC-156 P1's AC1 coverage: Findings
+// is omitempty on the wire (D4) — absent when nil, present with all three
+// RejectFinding fields when supplied. omitempty here is a JSON-shape choice
+// only; ensureRejectFindings (P2/P3) is what actually makes it required in
+// the cases it governs.
+func TestSpecRejectRequest_FindingsJSON(t *testing.T) {
+	t.Run("no findings: the key is absent", func(t *testing.T) {
+		raw, err := json.Marshal(SpecRejectRequest{ID: "SPEC-001", Reason: "r", By: "qa"})
+		if err != nil {
+			t.Fatalf("json.Marshal: %v", err)
+		}
+		var decoded map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &decoded); err != nil {
+			t.Fatalf("json.Unmarshal: %v", err)
+		}
+		if _, ok := decoded["findings"]; ok {
+			t.Errorf("findings key present with zero findings: %s", raw)
+		}
+	})
+
+	t.Run("with findings: the key is present with all three fields", func(t *testing.T) {
+		req := SpecRejectRequest{
+			ID: "SPEC-001", Reason: "r", By: "qa",
+			Findings: []RejectFinding{
+				{CriterionID: "AC3", Detail: "does not hold", Evidence: "go test output"},
+			},
+		}
+		raw, err := json.Marshal(req)
+		if err != nil {
+			t.Fatalf("json.Marshal: %v", err)
+		}
+		var decoded map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &decoded); err != nil {
+			t.Fatalf("json.Unmarshal: %v", err)
+		}
+		findingsRaw, ok := decoded["findings"]
+		if !ok {
+			t.Fatalf("findings key absent with one finding: %s", raw)
+		}
+		var findings []map[string]json.RawMessage
+		if err := json.Unmarshal(findingsRaw, &findings); err != nil {
+			t.Fatalf("json.Unmarshal findings: %v", err)
+		}
+		if len(findings) != 1 {
+			t.Fatalf("len(findings) = %d, want 1", len(findings))
+		}
+		for _, key := range []string{"criterion_id", "detail", "evidence"} {
+			if _, ok := findings[0][key]; !ok {
+				t.Errorf("missing expected key %q in finding: %s", key, findingsRaw)
+			}
+		}
+	})
+}

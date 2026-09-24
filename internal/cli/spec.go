@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -514,8 +515,9 @@ they must be resolved one at a time.`,
 // spec_history. Both --reason and --by are required.
 func newSpecRejectCmd() *cobra.Command {
 	var (
-		flagReason string
-		flagBy     string
+		flagReason   string
+		flagBy       string
+		flagFindings []string
 	)
 
 	cmd := &cobra.Command{
@@ -529,15 +531,34 @@ Trivial lane:  audit → implementing, or done → implementing.
 The rejection reason is required and is persisted in spec_history. Use this
 command to model a review that found defects requiring further implementation
 work — during the normal gate, or after the fact once a spec already reached
-done. For ambiguity or missing spec detail use "spec pushback" instead.`,
-		Example: `  mneme spec reject SPEC-012 --reason "edge case in payment flow" --by qa-agent`,
-		Args:    cobra.ExactArgs(1),
+done. For ambiguity or missing spec detail use "spec pushback" instead.
+
+When the spec is standard lane, in qa status, and has a criteria.toml on
+file, SPEC-156 requires at least one --finding, each naming a criterion id
+declared in that document. Repeat --finding for more than one. Each value
+has the form <criterion-id>=<detail>, split on the FIRST "=" (a detail may
+itself contain "="). This flag does not carry evidence — the CLI is the
+manual path and the detail is enough; a qa-tester subagent attaches
+evidence via the spec_reject MCP tool instead.`,
+		Example: `  mneme spec reject SPEC-012 --reason "edge case in payment flow" --by qa-agent
+  mneme spec reject SPEC-012 --reason "review found issues" --by qa-agent \
+    --finding "AC3=does not hold" --finding "AC7=also broken"`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if flagReason == "" {
 				return fmt.Errorf("--reason is required")
 			}
 			if flagBy == "" {
 				return fmt.Errorf("--by is required")
+			}
+
+			findings := make([]model.RejectFinding, 0, len(flagFindings))
+			for _, raw := range flagFindings {
+				id, detail, ok := strings.Cut(raw, "=")
+				if !ok {
+					return fmt.Errorf("--finding %q must have the form <criterion-id>=<detail>", raw)
+				}
+				findings = append(findings, model.RejectFinding{CriterionID: id, Detail: detail})
 			}
 
 			svc, cleanup, err := initSDDService()
@@ -547,9 +568,10 @@ done. For ambiguity or missing spec detail use "spec pushback" instead.`,
 			defer cleanup()
 
 			spec, err := svc.SpecReject(cmd.Context(), model.SpecRejectRequest{
-				ID:     args[0],
-				Reason: flagReason,
-				By:     flagBy,
+				ID:       args[0],
+				Reason:   flagReason,
+				By:       flagBy,
+				Findings: findings,
 			})
 			if err != nil {
 				return err
@@ -562,6 +584,8 @@ done. For ambiguity or missing spec detail use "spec pushback" instead.`,
 
 	cmd.Flags().StringVar(&flagReason, "reason", "", "Rejection reason (required)")
 	cmd.Flags().StringVar(&flagBy, "by", "", "Who triggers the rejection (required)")
+	cmd.Flags().StringArrayVar(&flagFindings, "finding", nil,
+		"Finding in the form <criterion-id>=<detail>, repeatable")
 
 	return cmd
 }

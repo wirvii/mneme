@@ -285,6 +285,16 @@ never does, so a frozen spec stays fully readable.
 
 Advance a spec to its next lifecycle state (standard-lane state machine above).
 
+**`speccing -> specced` requires a declared `criteria.toml` for a
+standard-lane spec (SPEC-156 D2).** The document is delivered via
+`spec_doc_write` with `kind: "criteria"` — the architect's only write
+channel for it. Missing it fails with `quality: no criteria.toml found for
+this spec`, naming the exact path and the remedy. This is the ONLY
+transition the check applies to: trivial-lane specs, every other standard
+transition (including `qa -> done`), and a project with the workflow
+directory unconfigured all pass through unaffected — nothing here can ever
+block a spec from closing.
+
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `id` | string | yes | Spec ID to advance |
@@ -293,7 +303,9 @@ Advance a spec to its next lifecycle state (standard-lane state machine above).
 
 **Returns:** Updated spec object.
 
-**Errors:** `-32602` invalid transition, missing `id`/`by`.
+**Errors:** `-32602` invalid transition, missing `id`/`by`, `quality: no
+criteria.toml found for this spec` (standard lane, `speccing -> specced`,
+no declared criteria document).
 
 ### spec_pushback
 
@@ -418,15 +430,59 @@ rather than a failed review. `done -> implementing` is the only way a
 `done` spec ever moves again — `spec_advance` remains impossible from
 `done`.
 
+**Findings are the frontier a rejection can refute (SPEC-156 D1/D4).** A
+rejection can carry `findings`, each naming the `criterion_id` of a
+declared `criteria.toml` entry it violates, plus a `detail` of what fails
+about it and optional `evidence`. **When the spec is standard lane, in
+`qa` status, and a `criteria.toml` exists and parses**, at least one
+finding is required — each `criterion_id` must match a declared id
+(`quality: finding names a criterion id that is not declared in
+criteria.toml`, naming both the offending id and the full declared set),
+and every finding's `detail` must be non-empty. Outside those three
+conditions — trivial lane rejecting from `audit`, a rejection from `done`,
+or a spec whose `criteria.toml` is missing or does not parse — the
+rejection is accepted with or without findings, exactly as it was before
+this mechanism existed (the rule is enforced going forward, never
+retroactively). A finding that falls outside the declared criteria is
+never a legitimate rejection reason: open it as a new backlog item with
+`backlog_add` instead — `spec_reject` is reserved for what the spec's own
+contract promised.
+
+The persisted `spec_history` reason composes the human-authored reason
+with one block per finding:
+
+```
+rejected: <reason>
+
+[<criterion_id>] <detail>
+      evidencia: <evidence>
+[<criterion_id>] <detail>
+```
+
+The `evidencia:` line only appears when `evidence` is non-empty. With zero
+findings the persisted reason is exactly `"rejected: " + reason`, byte for
+byte what it always was.
+
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `id` | string | yes | Spec ID to reject |
 | `reason` | string | yes | Why the spec was rejected (persisted in history) |
 | `by` | string | yes | Who triggers the rejection (e.g. `qa-agent`, `orchestrator`) |
+| `findings` | array of `{criterion_id, detail, evidence?}` | conditionally | Required only when standard lane + `qa` status + a declared `criteria.toml` — see above |
 
 **Returns:** Updated spec object with `status: "implementing"`.
 
-**Errors:** `-32602` invalid transition (spec not in `qa`/`audit`/`done`), missing fields. `-32000` not found.
+**Errors:** `-32602` invalid transition (spec not in `qa`/`audit`/`done`),
+missing fields, `quality: spec reject requires at least one finding
+naming a declared criterion...` (no findings, or a finding with an empty
+`detail`), `quality: finding names a criterion id that is not declared in
+criteria.toml` (an unknown `criterion_id`). `-32000` not found.
+
+**`mneme spec reject` accepts a repeatable `--finding <criterion-id>=<detail>`**
+flag (split on the first `=`, so a detail may itself contain `=`).
+Evidence is not settable from the CLI — it is the manual path, and a
+detail is enough; a qa-tester subagent attaches evidence via this MCP tool
+instead.
 
 ---
 

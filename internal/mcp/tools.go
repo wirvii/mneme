@@ -879,6 +879,28 @@ func allTools() []ToolDefinition {
 						"type":        "string",
 						"description": "Who triggers the rejection (e.g. qa-agent, orchestrator).",
 					},
+					"findings": map[string]any{
+						"type":        "array",
+						"description": "Declared-criterion findings this rejection is based on (SPEC-156). Required when the spec is standard lane, in qa status, and has a criteria.toml on file — in every other case it may be omitted; the service, not this schema, decides which case applies.",
+						"items": map[string]any{
+							"type":     "object",
+							"required": []string{"criterion_id", "detail"},
+							"properties": map[string]any{
+								"criterion_id": map[string]any{
+									"type":        "string",
+									"description": "The id of the criteria.toml entry this finding claims is violated.",
+								},
+								"detail": map[string]any{
+									"type":        "string",
+									"description": "What fails about criterion_id. Must be non-empty.",
+								},
+								"evidence": map[string]any{
+									"type":        "string",
+									"description": "Optional supporting detail (e.g. a test name, a log excerpt).",
+								},
+							},
+						},
+					},
 				},
 			},
 		},
