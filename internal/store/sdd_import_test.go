@@ -290,7 +290,7 @@ func TestMergeSpecHistory_InsertsMissingNeverUpdatesExisting(t *testing.T) {
 	if err := s.CreateSpec(ctx, spec); err != nil {
 		t.Fatalf("CreateSpec: %v", err)
 	}
-	if err := s.UpdateSpecStatus(ctx, "SPEC-060", model.SpecStatusDraft, model.SpecStatusSpeccing, "arch", "start"); err != nil {
+	if err := s.UpdateSpecStatus(ctx, "SPEC-060", model.SpecStatusDraft, model.SpecStatusSpeccing, "arch", "start", ""); err != nil {
 		t.Fatalf("UpdateSpecStatus: %v", err)
 	}
 
@@ -326,6 +326,72 @@ func TestMergeSpecHistory_InsertsMissingNeverUpdatesExisting(t *testing.T) {
 	for _, h := range got {
 		if h.ID == originalID && h.By != "arch" {
 			t.Errorf("existing history row was mutated: By=%s, want unchanged 'arch'", h.By)
+		}
+	}
+}
+
+// TestMergeSpecHistory_CarriesReviewedSHA covers SPEC-157 AC9: a NEW
+// incoming row with a reviewed_sha is inserted carrying it; a row that
+// already exists locally is skipped entirely (history is immutable) and
+// keeps whatever SHA this machine itself wrote — the import never
+// backfills a SHA onto a pre-existing row (D3's declared consequence).
+func TestMergeSpecHistory_CarriesReviewedSHA(t *testing.T) {
+	s := newTestSDDStore(t)
+	ctx := context.Background()
+
+	spec := &model.Spec{
+		ID: "SPEC-061", Title: "x", Status: model.SpecStatusImplementing,
+		Project: "wirvii-mneme", Lane: model.LaneStandard,
+	}
+	if err := s.CreateSpec(ctx, spec); err != nil {
+		t.Fatalf("CreateSpec: %v", err)
+	}
+	if err := s.UpdateSpecStatus(ctx, "SPEC-061", model.SpecStatusImplementing, model.SpecStatusQA, "backend", "entrega", "localsha"); err != nil {
+		t.Fatalf("UpdateSpecStatus: %v", err)
+	}
+
+	existing, err := s.GetSpecHistory(ctx, "SPEC-061")
+	if err != nil {
+		t.Fatalf("GetSpecHistory: %v", err)
+	}
+	if len(existing) != 1 {
+		t.Fatalf("setup: expected 1 history row, got %d", len(existing))
+	}
+	originalID := existing[0].ID
+
+	incoming := []*model.SpecHistory{
+		// Same id as the local row, but a DIFFERENT reviewed_sha — must be
+		// ignored, the local row's own SHA must survive.
+		{ID: originalID, SpecID: "SPEC-061", FromStatus: model.SpecStatusImplementing, ToStatus: model.SpecStatusQA,
+			By: "someone-else", Reason: "tampered", At: fixedPast, ReviewedSHA: "remotesha"},
+		// A genuinely new row with its own reviewed_sha.
+		{ID: "0198f000-0000-7000-8000-00000000dddd", SpecID: "SPEC-061",
+			FromStatus: model.SpecStatusQA, ToStatus: model.SpecStatusDone,
+			By: "qa-tester", Reason: "aceptado", At: fixedPast, ReviewedSHA: "remotesha2"},
+	}
+	if err := s.MergeSpecHistory(ctx, "SPEC-061", incoming); err != nil {
+		t.Fatalf("MergeSpecHistory: %v", err)
+	}
+
+	got, err := s.GetSpecHistory(ctx, "SPEC-061")
+	if err != nil {
+		t.Fatalf("GetSpecHistory: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("len(history) = %d, want 2", len(got))
+	}
+	for _, h := range got {
+		switch h.ID {
+		case originalID:
+			if h.ReviewedSHA != "localsha" {
+				t.Errorf("existing row's ReviewedSHA = %q, want unchanged %q (import never backfills)", h.ReviewedSHA, "localsha")
+			}
+		case "0198f000-0000-7000-8000-00000000dddd":
+			if h.ReviewedSHA != "remotesha2" {
+				t.Errorf("new row's ReviewedSHA = %q, want %q", h.ReviewedSHA, "remotesha2")
+			}
+		default:
+			t.Errorf("unexpected history row id %q", h.ID)
 		}
 	}
 }

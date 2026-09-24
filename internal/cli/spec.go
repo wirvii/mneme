@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/wirvii/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/service"
 )
 
 // newSpecCmd returns the "mneme spec" subcommand group.
@@ -257,6 +259,10 @@ triggered it. Pushbacks are summarised at the bottom.`,
 			if err != nil {
 				return err
 			}
+			// SPEC-157 D5/P4: additive, present only while resp.Spec.Status
+			// is qa — the only way to recover the review range after
+			// losing session context, since advancing again is impossible.
+			svc.AttachReviewRange(cmd.Context(), resp)
 
 			if flagJSON {
 				return printJSON(os.Stdout, resp)
@@ -271,6 +277,10 @@ triggered it. Pushbacks are summarised at the bottom.`,
 			// read. Absent entirely for a live spec (resp.Frozen == nil).
 			if resp.Frozen != nil {
 				printSpecFreezeBlock(resp.Frozen)
+			}
+
+			if resp.ReviewRange != nil {
+				fmt.Fprintf(os.Stdout, "Review range: %s\n", resp.ReviewRange.Notice)
 			}
 
 			if len(resp.History) > 0 {
@@ -398,6 +408,19 @@ forward path. Use "spec pushback" to deviate into needs_grill instead.`,
 			// the resulting state for simplicity.
 			fmt.Fprintf(os.Stdout, "%s: advanced to %s (by %s)\n",
 				spec.ID, spec.Status, flagBy)
+
+			// SPEC-157 D6: entering qa prints the review range's Notice —
+			// the exact sentence the orchestrator copies into the
+			// qa-tester's brief; leaving qa prints the frontier note, when
+			// D2c actually declared one, read back from the persisted
+			// reason (never recomputed).
+			if spec.Status == model.SpecStatusQA {
+				if rr := svc.ReviewRangeForEntered(cmd.Context(), spec); rr != nil {
+					fmt.Fprintf(os.Stdout, "  %s\n", rr.Notice)
+				}
+			} else {
+				printFrontierNoteFromLastTransition(cmd.Context(), svc, spec.ID)
+			}
 			return nil
 		},
 	}
@@ -406,6 +429,23 @@ forward path. Use "spec pushback" to deviate into needs_grill instead.`,
 	cmd.Flags().StringVar(&flagReason, "reason", "", "Reason for the transition")
 
 	return cmd
+}
+
+// printFrontierNoteFromLastTransition prints the frontier note SPEC-157
+// appended to specID's most recent spec_history row, when there is one —
+// read back from the PERSISTED reason via service.FrontierNoteOf, never
+// recomputed (P5 of plan.md). Silent (no output, no error) whenever there
+// is nothing to show: no history, a read failure, or a transition that
+// never carries a frontier note at all — the overwhelming majority.
+func printFrontierNoteFromLastTransition(ctx context.Context, svc *service.SDDService, specID string) {
+	history, err := svc.SpecHistory(ctx, specID)
+	if err != nil || len(history) == 0 {
+		return
+	}
+	last := history[len(history)-1]
+	if note := service.FrontierNoteOf(last.Reason); note != "" {
+		fmt.Fprintf(os.Stdout, "  frontera: %s\n", note)
+	}
 }
 
 // newSpecPushbackCmd returns the "mneme spec pushback" subcommand.
@@ -578,6 +618,9 @@ evidence via the spec_reject MCP tool instead.`,
 			}
 
 			fmt.Fprintf(os.Stdout, "%s: rejected back to implementing (by %s)\n", spec.ID, flagBy)
+			// SPEC-157 D6: one line, only when D2c actually declared a
+			// frontier note (e.g. rejecting from qa with HEAD moved).
+			printFrontierNoteFromLastTransition(cmd.Context(), svc, spec.ID)
 			return nil
 		},
 	}
@@ -634,8 +677,17 @@ reason. This is the same timeline shown in "spec status" but without the header.
 				if h.Reason != "" {
 					reasonPart = fmt.Sprintf(": %q", h.Reason)
 				}
-				fmt.Fprintf(os.Stdout, "  %s  [%-13s]%s%s\n",
-					h.At.Format(time.RFC3339), h.ToStatus, byPart, reasonPart)
+				// SPEC-157 D6: which of the two meanings reviewed_sha has
+				// is decided by THIS ROW's own (from, to) pair, never by
+				// the value alone (R3) — the label says which.
+				reviewedPart := ""
+				if h.ReviewedSHA != "" {
+					if label := reviewedSHALabel(h.FromStatus, h.ToStatus); label != "" {
+						reviewedPart = fmt.Sprintf("  %s: %s", label, abbreviateSHACLI(h.ReviewedSHA))
+					}
+				}
+				fmt.Fprintf(os.Stdout, "  %s  [%-13s]%s%s%s\n",
+					h.At.Format(time.RFC3339), h.ToStatus, byPart, reasonPart, reviewedPart)
 			}
 			return nil
 		},
@@ -644,4 +696,32 @@ reason. This is the same timeline shown in "spec status" but without the header.
 	cmd.Flags().BoolVar(&flagJSON, "json", false, "Output as JSON")
 
 	return cmd
+}
+
+// reviewedSHALabel names WHICH of SPEC-157's two meanings a history row's
+// ReviewedSHA carries, decided ONLY by the row's own (from, to) pair
+// (model.SpecHistory.ReviewedSHA's own contract) — "" for every row
+// outside the closed three-transition set, which never sets the column.
+func reviewedSHALabel(from, to model.SpecStatus) string {
+	switch {
+	case from == model.SpecStatusImplementing && to == model.SpecStatusQA:
+		return "extremo entregado"
+	case from == model.SpecStatusQA && (to == model.SpecStatusDone || to == model.SpecStatusImplementing):
+		return "frontera revisada"
+	default:
+		return ""
+	}
+}
+
+// abbreviateSHACLI truncates sha to 8 characters for human-facing CLI
+// output — mirrors internal/service's unexported frontierSHAAbbrevLen
+// constant; duplicated here rather than exported, since sddfile/model's
+// own leaf-package posture keeps SHA formatting a presentation concern of
+// each frontend, not a shared service detail.
+func abbreviateSHACLI(sha string) string {
+	const n = 8
+	if len(sha) <= n {
+		return sha
+	}
+	return sha[:n]
 }

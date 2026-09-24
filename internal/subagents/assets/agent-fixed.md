@@ -155,6 +155,18 @@ Tu informe de QA lleva siempre dos secciones separadas:
 
 Cuando una de las dos secciones no tiene nada que reportar, escribe "ninguno" de forma explicita
 — una seccion ausente se confunde con una seccion olvidada; una que dice "ninguno" no.
+
+El encargo de esta revision trae el rango a mirar (`review_range`, calculado por mneme, nunca por
+ti ni por el orquestador) — limita tu revision a ese rango; no vuelvas a mirar codigo que una
+pasada anterior ya cubrio, y no asumas que revisar de mas es mas seguro: es simplemente otra spec.
+Si el encargo declara la frontera perdida (una historia reescrita — un rebase, un aplastado de
+commits — invalido el punto que mneme tenia guardado), tu informe lo dice explicitamente, con las
+mismas palabras del encargo; no lo pases en silencio ni lo traduzcas a tu propia frase.
+
+Tu informe declara el extremo entregado que recibiste: el commit hasta donde revisaste de verdad,
+copiado literalmente del encargo. Si ese extremo entregado no coincide con el que el encargo te
+dio, para y reportalo al orquestador — no sigas revisando sobre un desacuerdo sin resolver; un
+extremo entregado equivocado significa que estas mirando un codigo distinto del que se te pidio.
 <!-- endsection: bounded-review -->
 
 <!-- section: visual-certification -->

@@ -2411,7 +2411,15 @@ func TestSpecAdvance_QAToDone_DoesNotRequireCriteria(t *testing.T) {
 // persisted in spec_history contains one block per finding naming its
 // criterion, byte-for-byte stable for the same input.
 func TestSpecReject_PersistsFindingsInReason(t *testing.T) {
-	svc := newTestSDDService(t, "project")
+	// SPEC-157: newTestSDDServiceWithGitRepo (not newTestSDDService) is
+	// deliberate here — with repoDir unset, implementing->qa records no
+	// delivered end, so qa->implementing would append its OWN frontier
+	// note ("no se registra frontera: ...") and this test's byte-exact
+	// literal below would break for a reason unrelated to what it tests.
+	// A real repo with HEAD unmoved between entry and exit lands in D2c's
+	// case (a) — no note appended — so the literal stays exactly what
+	// SPEC-156 alone produces.
+	svc := newTestSDDServiceWithGitRepo(t, "project")
 	ctx := context.Background()
 
 	spec, err := svc.SpecNew(ctx, model.SpecNewRequest{Title: "Persist findings", Lane: model.LaneStandard})
@@ -2504,7 +2512,10 @@ func TestSpecReject_ReasonUnchangedWithoutFindings(t *testing.T) {
 // can be rejected with zero findings, and the persisted reason is
 // unchanged from today's format.
 func TestSpecReject_StandardQANoCriteria_AcceptsWithoutFindings(t *testing.T) {
-	svc := newTestSDDService(t, "project")
+	// SPEC-157: see TestSpecReject_PersistsFindingsInReason's comment —
+	// same collision, same resolution (a real repo, HEAD unmoved, D2c
+	// case (a): no frontier note appended).
+	svc := newTestSDDServiceWithGitRepo(t, "project")
 	ctx := context.Background()
 
 	spec, err := svc.SpecNew(ctx, model.SpecNewRequest{Title: "No criteria at qa, rejected", Lane: model.LaneStandard})

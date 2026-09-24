@@ -857,6 +857,28 @@ type SpecHistory struct {
 
 	// At is the timestamp of the transition.
 	At time.Time `json:"at"`
+
+	// ReviewedSHA is a SINGLE column that means TWO different things,
+	// distinguished ONLY by the (FromStatus, ToStatus) pair of THIS ROW
+	// (SPEC-157 D2/D2b/D2c) — reading it without looking at its own
+	// transition is reading it wrong:
+	//
+	//   - implementing → qa: the DELIVERED end. The commit SHA that was
+	//     HEAD when the spec entered review — how far the qa-tester is
+	//     being asked to look.
+	//   - qa → done / qa → implementing: the REVIEWED frontier. COPIED,
+	//     never recomputed, from the delivered end of the entry that
+	//     started this pass — so the frontier can never claim more than
+	//     what was actually handed to review, even if the implementer
+	//     committed again while QA was reading.
+	//   - every other transition (qa → needs_grill, done → implementing,
+	//     the trivial lane's audit pair, and any other pair): always "".
+	//
+	// Empty is also a legitimate value inside the two transitions above —
+	// it means mneme could not resolve a commit SHA (repository dir not
+	// configured, git failed) and says so in Reason instead of inventing
+	// one. This never blocks the transition itself.
+	ReviewedSHA string `json:"reviewed_sha,omitempty"`
 }
 
 // SpecPushback records a set of questions from an agent that block progress.
@@ -1099,6 +1121,74 @@ type SpecStatusResponse struct {
 	// Frozen is nil — and its JSON key absent (omitempty) — when the spec
 	// can still change status. Non-nil names why it cannot (SPEC-126 DD6).
 	Frozen *SpecFreeze `json:"frozen,omitempty"`
+
+	// ReviewRange is present ONLY while Spec.Status is qa (SPEC-157 D5):
+	// the same tramo spec_advance already handed the orchestrator when
+	// this review pass began, recoverable here without advancing again —
+	// the one way to get it back after losing session context. Absent
+	// (nil, omitempty) in every other status, so a response outside qa
+	// stays byte-identical to one from before this field existed.
+	// Populated by SDDService.AttachReviewRange, never by this package's
+	// own SpecStatus — see that method's doc for why.
+	ReviewRange *ReviewRange `json:"review_range,omitempty"`
+}
+
+// ReviewRange is the tramo of commits a QA pass is being asked to look at
+// (SPEC-157 D5): from the last reviewed frontier (or the spec's base_sha
+// on a first pass) up to To, the DELIVERED end recorded when the spec
+// entered qa — read from that row, never recomputed with HeadSHA, so the
+// range handed to a reviewer and the frontier D2c later copies are the
+// SAME datum by construction, not two calculations that could disagree.
+//
+// Never carries an error: Available=false plus Unavailable naming one of
+// three closed causes is what a caller gets instead (D5's own table) —
+// spec_advance and spec_status keep returning normally either way.
+type ReviewRange struct {
+	// Available is false when the range could not be computed at all.
+	Available bool `json:"available"`
+
+	// Unavailable names why, from a closed set of three causes (D5's
+	// table): the entry to qa left no delivered end; git failed while
+	// checking whether the stored frontier is still an ancestor of To; or
+	// this spec has no base_sha and no frontier to fall back to either.
+	// Empty when Available is true.
+	Unavailable string `json:"unavailable,omitempty"`
+
+	// From is the start of the tramo: the previous reviewed frontier, or
+	// Spec.BaseSHA on a first pass (FromKind says which).
+	From string `json:"from,omitempty"`
+
+	// FromKind is "frontier" (From came from a prior qa exit) or "base"
+	// (From is Spec.BaseSHA — either a genuine first pass, or the stored
+	// frontier was found to be lost, D4).
+	FromKind string `json:"from_kind,omitempty"`
+
+	// To is the DELIVERED end — the implementing → qa row's ReviewedSHA
+	// for the CURRENT entry into review. Read from that row, never
+	// HeadSHA: this is what D2c's copy-on-exit later persists too.
+	To string `json:"to,omitempty"`
+
+	// Empty is true when From == To: nothing changed since the last
+	// reviewed frontier. Informational, never blocking (D5) — the
+	// orchestrator may still ask for the pass; it just cannot believe
+	// anything NEW would be found.
+	Empty bool `json:"empty,omitempty"`
+
+	// FrontierLost is true when a previously recorded frontier is no
+	// longer an ancestor of To — a rebase or a squash rewrote history out
+	// from under it (D4). From falls back to Spec.BaseSHA in this case:
+	// the safe direction is to cover MORE code, never less.
+	FrontierLost bool `json:"frontier_lost,omitempty"`
+
+	// LostFrontier is the SHA that stopped being an ancestor, named so a
+	// human can see exactly what disappeared. Empty unless FrontierLost.
+	LostFrontier string `json:"lost_frontier,omitempty"`
+
+	// Notice is the one sentence every surface (CLI, MCP, the qa-tester's
+	// encargo, the QA report) shows verbatim — rendered once by the pure
+	// renderReviewNotice from the fields above, so all four always say
+	// exactly the same thing.
+	Notice string `json:"notice"`
 }
 
 // --- SPEC DOCUMENTS (SPEC-087 D3) ---

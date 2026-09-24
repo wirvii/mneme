@@ -56,6 +56,11 @@ gate. A finding alone does not authorize widening scope: anything outside what t
 spec's criteria promise becomes a new backlog item, called out in the QA report. The
 human decides closure from that report.
 
+Each QA pass is bounded: `spec_advance` returns `review_range` on entering `qa` —
+copy its notice verbatim into the qa-tester's brief, never recompute it. A lost
+frontier or an unavailable range is stated plainly, never hidden. Reject a QA report
+whose declared delivered end does not match what was actually handed over.
+
 **Human approval gate (unbreakable).** You MUST present the complete spec to the human and wait for EXPLICIT
 approval before advancing a spec past `specced` into planning/implementation.
 Answering design questions is NOT approval. The only exception is an explicit,

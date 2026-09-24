@@ -308,6 +308,23 @@ func MarshalSpec(rec *SpecRecord) ([]byte, error) {
 	return data, nil
 }
 
+// renderSpec is the pure serialization half of MarshalSpec.
+//
+// SPEC-157 adds one attribute, reviewed_sha, to the history marker line —
+// deliberately WITHOUT bumping CurrentFileSchema. Two reasons, both
+// decisive (D3): bumping it would change the "schema:" line of EVERY
+// record, breaking the byte-identity guarantee this format leans on; and
+// the schema check is a hard RANGE ([MinFileSchema, CurrentFileSchema]) —
+// an older mneme would REFUSE a schema-2 file outright, when it can in
+// fact read one perfectly well by ignoring an attribute it does not
+// recognise (parseMarkerLine puts any key=value into a map; a missing key
+// reads back as ""). The accepted cost (R-P2, documented in full in
+// docs/sdd-git-native.md): an OLDER mneme reads a file with reviewed_sha
+// without breaking, but on its OWN next rewrite of that same spec it
+// silently drops the attribute again (it never learned to write it). The
+// loss is safe by construction — an absent frontier makes the NEXT review
+// pass cover more code (from base_sha), never less; it costs time, never
+// makes anyone believe something was reviewed that was not.
 func renderSpec(rec *SpecRecord) []byte {
 	spec := rec.Spec
 
@@ -343,9 +360,19 @@ func renderSpec(rec *SpecRecord) []byte {
 	b.WriteString(wrapBlock(""))
 
 	for _, h := range rec.History {
-		b.WriteString(buildMarkerLine(markerKindHistory, nil,
+		kv := []string{
 			"id", h.ID, "from", string(h.FromStatus), "to", string(h.ToStatus),
-			"by", h.By, "at", formatTime(h.At)))
+			"by", h.By, "at", formatTime(h.At),
+		}
+		// reviewed_sha is appended ONLY when non-empty (SPEC-157 D3): a spec
+		// whose history rows carry no frontier data produces a file
+		// byte-identical to one written before this attribute existed —
+		// TestMarshalSpec_HistoryWithoutFrontierIsByteIdentical depends on
+		// exactly this.
+		if h.ReviewedSHA != "" {
+			kv = append(kv, "reviewed_sha", h.ReviewedSHA)
+		}
+		b.WriteString(buildMarkerLine(markerKindHistory, nil, kv...))
 		b.WriteString("\n")
 		b.WriteString(wrapBlock(h.Reason))
 	}
@@ -439,12 +466,13 @@ func UnmarshalSpec(data []byte) (*SpecRecord, error) {
 		switch sec.kind {
 		case markerKindHistory:
 			h := &model.SpecHistory{
-				ID:         sec.attrs["id"],
-				SpecID:     spec.ID,
-				FromStatus: model.SpecStatus(sec.attrs["from"]),
-				ToStatus:   model.SpecStatus(sec.attrs["to"]),
-				By:         sec.attrs["by"],
-				Reason:     unwrapBlock(sec.raw),
+				ID:          sec.attrs["id"],
+				SpecID:      spec.ID,
+				FromStatus:  model.SpecStatus(sec.attrs["from"]),
+				ToStatus:    model.SpecStatus(sec.attrs["to"]),
+				By:          sec.attrs["by"],
+				Reason:      unwrapBlock(sec.raw),
+				ReviewedSHA: sec.attrs["reviewed_sha"],
 			}
 			if t, ok := parseTimeField(sec.attrs["at"]); ok {
 				h.At = t
@@ -496,6 +524,15 @@ func equalSpecRecord(a, b *SpecRecord) bool {
 		ha, hb := a.History[i], b.History[i]
 		if ha.ID != hb.ID || ha.SpecID != hb.SpecID || ha.FromStatus != hb.FromStatus ||
 			ha.ToStatus != hb.ToStatus || ha.By != hb.By || ha.Reason != hb.Reason {
+			return false
+		}
+		// ReviewedSHA MUST be compared here (SPEC-157 AC11/R5): without this
+		// line the round-trip check in MarshalSpec cannot detect a parser
+		// that silently drops the attribute — the write would look
+		// successful while the data was actually lost. Required mutation M1
+		// (changes.md) proves this line is load-bearing: removing it turns
+		// TestEqualSpecRecord_DetectsReviewedSHAMismatch red.
+		if ha.ReviewedSHA != hb.ReviewedSHA {
 			return false
 		}
 		if !ha.At.Equal(hb.At) {

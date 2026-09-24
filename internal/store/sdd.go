@@ -634,7 +634,14 @@ func (s *SDDStore) ListSpecs(ctx context.Context, project string, status model.S
 // in spec_history. Both operations run in a single transaction to ensure
 // consistency. An optimistic check verifies the current status matches `from`
 // before updating — if it does not match, ErrInvalidTransition is returned.
-func (s *SDDStore) UpdateSpecStatus(ctx context.Context, specID string, from, to model.SpecStatus, by, reason string) error {
+//
+// reviewedSHA fills spec_history.reviewed_sha in the SAME transaction as the
+// status change (SPEC-157 D2) — what it means depends on (from, to); see
+// model.SpecHistory.ReviewedSHA. The caller (SDDService.updateSpecStatus)
+// resolves it; this method only persists whatever it is handed, including
+// the empty string for the vast majority of transitions that never touch
+// review at all.
+func (s *SDDStore) UpdateSpecStatus(ctx context.Context, specID string, from, to model.SpecStatus, by, reason, reviewedSHA string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("store: update spec status: begin tx: %w", err)
@@ -670,8 +677,8 @@ func (s *SDDStore) UpdateSpecStatus(ctx context.Context, specID string, from, to
 	}
 
 	_, err = tx.ExecContext(ctx,
-		`INSERT INTO spec_history (id, spec_id, from_status, to_status, by, reason, at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		historyID.String(), specID, string(from), string(to), by, reason, now)
+		`INSERT INTO spec_history (id, spec_id, from_status, to_status, by, reason, at, reviewed_sha) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		historyID.String(), specID, string(from), string(to), by, reason, now, reviewedSHA)
 	if err != nil {
 		return fmt.Errorf("store: update spec status: insert history: %w", err)
 	}
@@ -833,7 +840,7 @@ func (s *SDDStore) LatestLaneAudit(ctx context.Context, specID string) (*model.L
 // substituting `id` because spec_history has no rowid exposed here.
 func (s *SDDStore) GetSpecHistory(ctx context.Context, specID string) ([]*model.SpecHistory, error) {
 	const q = `
-		SELECT id, spec_id, from_status, to_status, by, reason, at
+		SELECT id, spec_id, from_status, to_status, by, reason, at, reviewed_sha
 		FROM spec_history WHERE spec_id = ? ORDER BY at ASC, id ASC`
 
 	rows, err := s.db.QueryContext(ctx, q, specID)
@@ -846,7 +853,7 @@ func (s *SDDStore) GetSpecHistory(ctx context.Context, specID string) ([]*model.
 	for rows.Next() {
 		h := &model.SpecHistory{}
 		var atStr string
-		if err := rows.Scan(&h.ID, &h.SpecID, (*string)(&h.FromStatus), (*string)(&h.ToStatus), &h.By, &h.Reason, &atStr); err != nil {
+		if err := rows.Scan(&h.ID, &h.SpecID, (*string)(&h.FromStatus), (*string)(&h.ToStatus), &h.By, &h.Reason, &atStr, &h.ReviewedSHA); err != nil {
 			return nil, fmt.Errorf("store: get spec history: scan: %w", err)
 		}
 		t, err := parseTime(atStr)

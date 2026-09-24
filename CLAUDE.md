@@ -933,6 +933,95 @@ the human closes the spec from the QA report.
 
 Full reference: `docs/lanes.md` and `docs/api/sdd.md#spec_reject`.
 
+## The review frontier: QA never re-reviews the whole spec (SPEC-157)
+
+SPEC-156 (above) bounds WHAT a rejection can claim; SPEC-157 bounds WHAT
+CODE a QA pass looks at. Before this spec, nothing recorded how far a
+previous review reached, so every pass covered the whole spec again —
+finding, in the worst case, the same already-reviewed code over and over,
+with no way to tell that apart from something genuinely new.
+
+**Migration 022** (`022_spec_history_reviewed_sha.sql`) adds ONE column,
+`spec_history.reviewed_sha TEXT NOT NULL DEFAULT ''`, that means TWO
+different things depending ONLY on its own row's `(from_status,
+to_status)` pair — reading it without checking the transition is reading
+it wrong (documented in `model.SpecHistory.ReviewedSHA`'s own godoc,
+`docs/api/sdd.md`, and `docs/sdd-git-native.md`): on `implementing -> qa`
+it is the **delivered end** (HEAD when the spec entered review — how far
+the qa-tester is being asked to look); on `qa -> done` / `qa ->
+implementing` it is the **reviewed frontier**, COPIED — never recomputed
+from HEAD — from the delivered end of the entry that started that pass.
+Every other transition leaves it empty.
+
+**The frontier is resolved inside `SDDService.updateSpecStatus`
+(`internal/service/sdd_export.go`), never at any of its nine call sites**
+— the same wrapper SPEC-130 §2a already made the sole path to
+`store.UpdateSpecStatus`, now widened with one more parameter. The actual
+logic lives in a new file, `internal/service/sdd_frontier.go`
+(`frontierForTransition`, `appendFrontierNote`, `FrontierNoteOf`,
+`latestHistoryRow`, `ReviewRange`, `renderReviewNotice`,
+`ReviewRangeForEntered`, `AttachReviewRange`) — `sdd.go` itself is
+untouched, so this spec never collides with where SPEC-156 writes.
+Copying instead of recomputing on exit is the one decision that matters
+most: if the implementer commits again while QA is still reading, the
+frontier still advances only to what was actually handed over, never to
+whatever HEAD happens to be when the informe is emitted — the commits
+that landed after entry simply fall into the NEXT pass's range. Nothing
+here ever blocks a transition: an unresolvable delivered end, a failed
+git command, or a frontier no longer reachable (a rebase or squash
+rewrote it away, detected via the already-existing `quality.Git.
+IsAncestor` — zero new git primitives) all resolve to an empty value plus
+a note appended to the persisted `spec_history` reason, never an error.
+When SPEC-156's own findings are also present, the fixed order is: human
+reason → findings → `frontera:` note — SPEC-157 only ever appends, never
+reorders what SPEC-156 already composed.
+
+**`review_range`** is the tramo a QA pass is being asked to cover,
+returned by `spec_advance` the moment a spec enters `qa` (as a third,
+additive field alongside `{spec, executor}` — SPEC-068's own envelope),
+and by `spec_status` for as long as the spec stays in `qa` (recoverable
+after losing session context, since advancing again is impossible). Both
+read the SAME underlying computation (`SDDService.ReviewRange`): `to` is
+always the current entry's delivered end read from its row, never
+`HeadSHA`, so a commit landing after entry never moves it (this is also,
+by construction, the exact value the exit-of-qa transition will later
+copy — the range handed to a reviewer and the frontier D2c grabs on close
+are one datum, never two calculations that could disagree); `from` is
+either the previous reviewed frontier or, on a first pass or a lost one,
+`spec.base_sha`. A single pure function, `renderReviewNotice`, renders the
+one sentence every surface — CLI, MCP, the qa-tester's brief, the QA
+report — shows verbatim, so the orchestrator copies it into the encargo
+instead of computing or rewriting it.
+
+**The file format gains `reviewed_sha` on the history marker line WITHOUT
+bumping `CurrentFileSchema`** (`internal/sddfile`) — a deliberate,
+declared exception to the schema's own hard range-gate, since bumping it
+would change the `schema:` line of every record and would make an older
+mneme refuse a file it can in fact still read by ignoring the one
+attribute it doesn't know. The accepted cost: an older mneme reading such
+a file, on its OWN next rewrite of that spec, silently drops the
+attribute — always in the safe direction (the next pass simply covers
+more, never less). See `docs/sdd-git-native.md`'s "File format" section
+for the full argument (SPEC-157 Q1, owner decision 2026-09-24).
+
+`mneme spec history` names which of the two meanings a row's
+`reviewed_sha` carries (`extremo entregado` / `frontera revisada`) rather
+than printing the bare value; `mneme spec advance`/`spec reject` print the
+`Notice`/frontier note the same way the persisted data already carries
+them. `AgentFixedVersion` stays at 4 — SPEC-156 already bumped it 3 → 4 in
+this same unreleased line, and the agreed rule is one increment per
+PUBLISHED version; `bounded-review` (layer 1, `agent-fixed.md`) gains the
+delivered-end/lost-frontier obligations without a version bump, applied to
+this repo's own already-regenerated profiles via `mneme subagents regen
+--all` after this spec merges. Out of scope, explicitly: the trivial
+lane's `audit` transitions (`lane_audit` is a deterministic auditor, not a
+review pass) and reconciling two machines racing the same correlative
+(BL-202, unrelated).
+
+Full reference: `docs/api/sdd.md` (the `spec_advance`/`spec_status`/
+`spec_reject` sections) and `docs/sdd-git-native.md`'s "File format"
+section.
+
 <!-- mneme:managed:start v=1 -->
 Process and operating instructions are managed globally via mneme.
 See the mneme operating manual in your global ~/.claude/CLAUDE.md.

@@ -639,7 +639,7 @@ func allTools() []ToolDefinition {
 		},
 		{
 			Name:        "spec_advance",
-			Description: "Advance a spec to its next lifecycle state. Returns {spec, executor}: executor is an advisory ExecutorResolution for the stage just entered — delegate to a manifest subagent when executor.delegate is true, or supply the stage yourself as a conscious fallback when executor.degraded is true (SPEC-068).",
+			Description: "Advance a spec to its next lifecycle state. Returns {spec, executor, review_range}: executor is an advisory ExecutorResolution for the stage just entered — delegate to a manifest subagent when executor.delegate is true, or supply the stage yourself as a conscious fallback when executor.degraded is true (SPEC-068). review_range is present only when the stage just entered is qa: the tramo of commits mneme computed for this review pass — copy its notice verbatim into the qa-tester's brief instead of recomputing it (SPEC-157).",
 			InputSchema: map[string]any{
 				"type":     "object",
 				"required": []string{"id", "by"},
