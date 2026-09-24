@@ -51,6 +51,11 @@ State machine: `backlog_add` → refine → `backlog_promote` → `spec_advance`
 `spec_reject` bounces a failed QA back to implementing.
 `spec_pushback` pauses a spec at `needs_grill` until ambiguity is resolved.
 
+In lane standard, `criteria.toml` is required and checked before the human approval
+gate. A finding alone does not authorize widening scope: anything outside what the
+spec's criteria promise becomes a new backlog item, called out in the QA report. The
+human decides closure from that report.
+
 **Human approval gate (unbreakable).** You MUST present the complete spec to the human and wait for EXPLICIT
 approval before advancing a spec past `specced` into planning/implementation.
 Answering design questions is NOT approval. The only exception is an explicit,

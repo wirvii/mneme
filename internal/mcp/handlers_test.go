@@ -127,6 +127,27 @@ func advanceSpecToPlanned(t *testing.T, srv *Server, title string) string {
 	unmarshalToolText(t, newResp, &spec)
 
 	for i, by := range []string{"orchestrator", "architect", "architect", "architect"} {
+		// SPEC-156 D2: speccing->specced now requires a criteria.toml for a
+		// standard-lane spec (the transition right after "orchestrator"
+		// takes the spec to speccing). Write it via the real spec_doc_write
+		// tool — the production channel, not a filesystem shortcut — right
+		// before the guardian would otherwise refuse it. This is the
+		// guardian doing its job (plan.md P3); the fixture is fixed, never
+		// the guardian.
+		if by == "architect" && i == 1 {
+			docResp := process(t, srv, "tools/call", 100+i, ToolCallParams{
+				Name: "spec_doc_write",
+				Arguments: mustMarshal(t, map[string]any{
+					"id":      spec.ID,
+					"kind":    "criteria",
+					"content": fixtureCriteriaTOML,
+				}),
+			})
+			if docResp.Error != nil {
+				t.Fatalf("spec_doc_write (criteria fixture): %v", docResp.Error.Message)
+			}
+		}
+
 		advResp := process(t, srv, "tools/call", i+2, ToolCallParams{
 			Name: "spec_advance",
 			Arguments: mustMarshal(t, map[string]any{
@@ -140,6 +161,19 @@ func advanceSpecToPlanned(t *testing.T, srv *Server, title string) string {
 	}
 	return spec.ID
 }
+
+// fixtureCriteriaTOML is the minimal valid criteria.toml this file writes
+// via spec_doc_write wherever a fixture needs to cross the speccing->specced
+// gate SPEC-156 D2 added. mode="manual" avoids any anchor resolution
+// (ValidateAnchors), which is irrelevant to what these tests exercise.
+const fixtureCriteriaTOML = `schema_version = 1
+
+[[criterion]]
+id = "AC1"
+mode = "manual"
+text = "fixture criterion"
+evidence_required = "fixture"
+`
 
 // TestHandleSpecAdvance_ExecutorDelegatesToBackend covers AC1: with a backend
 // entry in the manifest, advancing to implementing returns an executor
@@ -1646,6 +1680,25 @@ func TestHandleSpecReject_HappyPath(t *testing.T) {
 		} `json:"spec"`
 	}
 	for i, by := range []string{"orch", "arch", "arch", "arch", "backend", "backend"} {
+		// SPEC-156 D2: speccing->specced (right after "orch") now requires a
+		// criteria.toml for a standard-lane spec. Written via the real
+		// spec_doc_write tool, the production channel — the guardian is
+		// doing its job (plan.md P3); the fixture is fixed, never the
+		// guardian.
+		if by == "arch" && i == 1 {
+			docResp := process(t, srv, "tools/call", 100+i, ToolCallParams{
+				Name: "spec_doc_write",
+				Arguments: mustMarshal(t, map[string]any{
+					"id":      spec.ID,
+					"kind":    "criteria",
+					"content": fixtureCriteriaTOML,
+				}),
+			})
+			if docResp.Error != nil {
+				t.Fatalf("spec_doc_write (criteria fixture): %v", docResp.Error.Message)
+			}
+		}
+
 		advResp := process(t, srv, "tools/call", i+2, ToolCallParams{
 			Name: "spec_advance",
 			Arguments: mustMarshal(t, map[string]any{
@@ -1664,13 +1717,19 @@ func TestHandleSpecReject_HappyPath(t *testing.T) {
 		t.Fatalf("expected qa status before reject, got %s", spec.Status)
 	}
 
-	// Reject back to implementing.
+	// Reject back to implementing. This spec's criteria.toml declares "AC1"
+	// (fixtureCriteriaTOML above), so SPEC-156's ensureRejectFindings now
+	// requires the rejection to name it — the fixture reflects real
+	// production usage under the new contract, not a workaround.
 	rejectResp := process(t, srv, "tools/call", 10, ToolCallParams{
 		Name: "spec_reject",
 		Arguments: mustMarshal(t, map[string]any{
 			"id":     spec.ID,
 			"reason": "edge case test fails",
 			"by":     "qa-agent",
+			"findings": []map[string]any{
+				{"criterion_id": "AC1", "detail": "edge case in payment flow"},
+			},
 		}),
 	})
 	if rejectResp.Error != nil {
@@ -1714,6 +1773,86 @@ func TestHandleSpecReject_InvalidStatus(t *testing.T) {
 	// Expect a JSON-RPC error (invalid params).
 	if rejectResp.Error == nil {
 		t.Fatal("expected JSON-RPC error for invalid status reject, got nil")
+	}
+	if rejectResp.Error.Code != CodeInvalidParams {
+		t.Errorf("error code: got %d, want %d (invalid params)", rejectResp.Error.Code, CodeInvalidParams)
+	}
+}
+
+// TestHandleSpecReject_MissingFindings_InvalidParams is SPEC-156 P4: a
+// spec_reject over a standard-lane spec in qa WITH a criteria.toml on file,
+// but carrying no findings, is refused with CodeInvalidParams (not an
+// internal error) — model.ErrFindingsRequired routed through
+// mapServiceError.
+func TestHandleSpecReject_MissingFindings_InvalidParams(t *testing.T) {
+	srv := newTestServerWithSDD(t)
+
+	newResp := process(t, srv, "tools/call", 1, ToolCallParams{
+		Name: "spec_new",
+		Arguments: mustMarshal(t, map[string]any{
+			"title": "Missing findings test",
+			"lane":  "standard",
+		}),
+	})
+	if newResp.Error != nil {
+		t.Fatalf("spec_new: %v", newResp.Error.Message)
+	}
+	var spec struct {
+		ID     string `json:"id"`
+		Status string `json:"status"`
+	}
+	unmarshalToolText(t, newResp, &spec)
+
+	var envelope struct {
+		Spec struct {
+			ID     string `json:"id"`
+			Status string `json:"status"`
+		} `json:"spec"`
+	}
+	for i, by := range []string{"orch", "arch", "arch", "arch", "backend", "backend"} {
+		if by == "arch" && i == 1 {
+			docResp := process(t, srv, "tools/call", 100+i, ToolCallParams{
+				Name: "spec_doc_write",
+				Arguments: mustMarshal(t, map[string]any{
+					"id":      spec.ID,
+					"kind":    "criteria",
+					"content": fixtureCriteriaTOML,
+				}),
+			})
+			if docResp.Error != nil {
+				t.Fatalf("spec_doc_write (criteria fixture): %v", docResp.Error.Message)
+			}
+		}
+		advResp := process(t, srv, "tools/call", i+2, ToolCallParams{
+			Name: "spec_advance",
+			Arguments: mustMarshal(t, map[string]any{
+				"id": spec.ID,
+				"by": by,
+			}),
+		})
+		if advResp.Error != nil {
+			t.Fatalf("spec_advance %d: %v", i, advResp.Error.Message)
+		}
+		unmarshalToolText(t, advResp, &envelope)
+		spec.ID = envelope.Spec.ID
+		spec.Status = envelope.Spec.Status
+	}
+	if spec.Status != "qa" {
+		t.Fatalf("expected qa status before reject, got %s", spec.Status)
+	}
+
+	rejectResp := process(t, srv, "tools/call", 10, ToolCallParams{
+		Name: "spec_reject",
+		Arguments: mustMarshal(t, map[string]any{
+			"id":     spec.ID,
+			"reason": "found something wrong",
+			"by":     "qa-agent",
+			// No findings — the criteria.toml written above makes them
+			// mandatory (SPEC-156 D4/D5).
+		}),
+	})
+	if rejectResp.Error == nil {
+		t.Fatal("expected JSON-RPC error for spec_reject with no findings against a declared criteria.toml, got nil")
 	}
 	if rejectResp.Error.Code != CodeInvalidParams {
 		t.Errorf("error code: got %d, want %d (invalid params)", rejectResp.Error.Code, CodeInvalidParams)

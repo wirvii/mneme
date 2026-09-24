@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/wirvii/mneme/internal/model"
 )
 
 // TestSpecList_JSONIsBareArray is AC15's spec_list half: `mneme spec list
@@ -237,5 +239,73 @@ func TestSpecStatus_LiveSpec_NoFrozenBlock(t *testing.T) {
 	}
 	if strings.Contains(stdout, "Frozen:") {
 		t.Errorf("expected no Frozen: block for a live spec, got %q", stdout)
+	}
+}
+
+// TestSpecReject_FindingFlag_Repeatable is SPEC-156 AC9/P5: two --finding
+// flags must produce TWO findings, not one — the exact defect SPEC-132 V8
+// documented for a StringVar used where StringArrayVar was required (a
+// repeated flag silently keeps only the last value). Exercised against a
+// trivial-lane spec rejected from audit (D5 exclusion 1: the guardian never
+// validates the findings' content there), so this test isolates the CLI
+// flag-collection behaviour from the criteria.toml plumbing P3 already
+// covers at the service layer.
+func TestSpecReject_FindingFlag_Repeatable(t *testing.T) {
+	dataDir := t.TempDir()
+	project := "test-spec-reject-finding-repeatable"
+
+	if _, stderr, err := runBacklogCmd(t, dataDir, project,
+		"spec", "new", "Trivial reject", "--lane", "trivial", "--scope", "internal/**/*.go"); err != nil {
+		t.Fatalf("spec new: %v (stderr=%s)", err, stderr)
+	}
+	if _, stderr, err := runBacklogCmd(t, dataDir, project,
+		"spec", "quick", "SPEC-001", "one-liner", "--by", "orchestrator"); err != nil {
+		t.Fatalf("spec quick: %v (stderr=%s)", err, stderr)
+	}
+	if _, stderr, err := runBacklogCmd(t, dataDir, project,
+		"spec", "advance", "SPEC-001", "--by", "backend"); err != nil { // implementing -> audit
+		t.Fatalf("spec advance (implementing->audit): %v (stderr=%s)", err, stderr)
+	}
+
+	if _, stderr, err := runBacklogCmd(t, dataDir, project,
+		"spec", "reject", "SPEC-001",
+		"--reason", "manual audit found issues", "--by", "orchestrator",
+		"--finding", "AC1=first issue", "--finding", "AC2=second issue"); err != nil {
+		t.Fatalf("spec reject: %v (stderr=%s)", err, stderr)
+	}
+
+	stdout, stderr, err := runBacklogCmd(t, dataDir, project, "spec", "history", "SPEC-001", "--json")
+	if err != nil {
+		t.Fatalf("spec history --json: %v (stderr=%s)", err, stderr)
+	}
+	var history []model.SpecHistory
+	if err := json.Unmarshal([]byte(stdout), &history); err != nil {
+		t.Fatalf("unmarshal spec history: %v\nstdout=%s", err, stdout)
+	}
+	last := history[len(history)-1]
+	if !strings.Contains(last.Reason, "[AC1] first issue") {
+		t.Errorf("persisted reason missing the first --finding: %q", last.Reason)
+	}
+	if !strings.Contains(last.Reason, "[AC2] second issue") {
+		t.Errorf("persisted reason missing the second --finding: %q — a StringVar bug would silently drop it", last.Reason)
+	}
+}
+
+// TestSpecReject_FindingFlag_MalformedValue_Fails covers a --finding value
+// with no "=" separator: the command must fail immediately, naming the
+// offending value, before ever reaching the service layer (no real spec is
+// needed for this assertion to hold).
+func TestSpecReject_FindingFlag_MalformedValue_Fails(t *testing.T) {
+	dataDir := t.TempDir()
+	project := "test-spec-reject-finding-malformed"
+
+	_, stderr, err := runBacklogCmd(t, dataDir, project,
+		"spec", "reject", "SPEC-999",
+		"--reason", "r", "--by", "qa-agent", "--finding", "no-equals-sign")
+	if err == nil {
+		t.Fatal("expected an error for a --finding value with no '=' separator, got nil")
+	}
+	if !strings.Contains(err.Error(), "no-equals-sign") && !strings.Contains(stderr, "no-equals-sign") {
+		t.Errorf("expected the offending value named in the error, got err=%v stderr=%q", err, stderr)
 	}
 }

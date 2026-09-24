@@ -335,6 +335,155 @@ func TestVisualSection_CarriesAllObligations(t *testing.T) {
 	}
 }
 
+// minCriteriaContractSectionBytes/minBoundedReviewSectionBytes are SPEC-156
+// P6's own minimum-length guards, the same closure
+// TestCompose_VisualSectionByRole already established: a CutSection error
+// must never be silently treated as "", and a section trimmed to nothing
+// would make strings.Contains trivially true.
+const (
+	minCriteriaContractSectionBytes = 200
+	minBoundedReviewSectionBytes    = 200
+)
+
+// TestCompose_CriteriaContractSectionByRole is SPEC-156 AC10: the
+// criteria-contract section lands in the composed agent-fixed block if and
+// only if the role is architect. Population derived from roleSections' own
+// keys, not a hand-written role list — the same mould
+// TestCompose_VisualSectionByRole already established.
+func TestCompose_CriteriaContractSectionByRole(t *testing.T) {
+	wantSection := map[Role]bool{
+		RoleArchitect: true,
+	}
+
+	sectionText, err := CutSection(LayerOneAsset(), "criteria-contract")
+	if err != nil {
+		t.Fatalf("CutSection(criteria-contract): %v", err)
+	}
+	if len(sectionText) < minCriteriaContractSectionBytes {
+		t.Fatalf("criteria-contract section is only %d bytes, want >= %d — guardian would be blind", len(sectionText), minCriteriaContractSectionBytes)
+	}
+
+	for role := range roleSections {
+		t.Run(string(role), func(t *testing.T) {
+			got, err := Compose("", ComposeInput{Role: role, Description: "x", Model: "sonnet"})
+			if err != nil {
+				t.Fatalf("Compose(%q): %v", role, err)
+			}
+			content, _, present := managedblock.ReadText(got, agentFixedMarker)
+			if !present {
+				t.Fatal("expected agent-fixed managed block to be present")
+			}
+			has := strings.Contains(content, sectionText)
+			if wantSection[role] && !has {
+				t.Errorf("role %q must carry the criteria-contract section, but it is absent", role)
+			}
+			if !wantSection[role] && has {
+				t.Errorf("role %q must NOT carry the criteria-contract section, but it is present", role)
+			}
+		})
+	}
+}
+
+// TestCompose_BoundedReviewSectionByRole is SPEC-156 AC10's qa-tester half:
+// the bounded-review section lands if and only if the role is qa-tester.
+func TestCompose_BoundedReviewSectionByRole(t *testing.T) {
+	wantSection := map[Role]bool{
+		RoleQATester: true,
+	}
+
+	sectionText, err := CutSection(LayerOneAsset(), "bounded-review")
+	if err != nil {
+		t.Fatalf("CutSection(bounded-review): %v", err)
+	}
+	if len(sectionText) < minBoundedReviewSectionBytes {
+		t.Fatalf("bounded-review section is only %d bytes, want >= %d — guardian would be blind", len(sectionText), minBoundedReviewSectionBytes)
+	}
+
+	for role := range roleSections {
+		t.Run(string(role), func(t *testing.T) {
+			got, err := Compose("", ComposeInput{Role: role, Description: "x", Model: "sonnet"})
+			if err != nil {
+				t.Fatalf("Compose(%q): %v", role, err)
+			}
+			content, _, present := managedblock.ReadText(got, agentFixedMarker)
+			if !present {
+				t.Fatal("expected agent-fixed managed block to be present")
+			}
+			has := strings.Contains(content, sectionText)
+			if wantSection[role] && !has {
+				t.Errorf("role %q must carry the bounded-review section, but it is absent", role)
+			}
+			if !wantSection[role] && has {
+				t.Errorf("role %q must NOT carry the bounded-review section, but it is present", role)
+			}
+		})
+	}
+}
+
+// TestCriteriaContractSection_CarriesAllObligations is SPEC-156 AC10's
+// content check for the architect section: distinctive phrases for each of
+// D8's obligations, each counted EXACTLY once against the CUT section alone
+// (never the whole asset file).
+func TestCriteriaContractSection_CarriesAllObligations(t *testing.T) {
+	section, err := CutSection(LayerOneAsset(), "criteria-contract")
+	if err != nil {
+		t.Fatalf("CutSection(criteria-contract): %v", err)
+	}
+	if len(section) < minCriteriaContractSectionBytes {
+		t.Fatalf("criteria-contract section is only %d bytes, want >= %d", len(section), minCriteriaContractSectionBytes)
+	}
+
+	anchors := []struct {
+		obligation string
+		anchor     string
+	}{
+		{"obligatorio y exigido en speccing->specced", "obligatorio y se\nexige para pasar de `speccing` a `specced`"},
+		{"unico canal de escritura", "tu unico canal de escritura"},
+		{"decir por que no cabia en assert", "por que el\ncriterio no cabia en `assert`"},
+		{"ampliar es acto visible, no arreglo silencioso", "nunca un\narreglo silencioso"},
+	}
+
+	for _, a := range anchors {
+		t.Run(a.obligation, func(t *testing.T) {
+			if got := strings.Count(section, a.anchor); got != 1 {
+				t.Errorf("expected anchor %q exactly once in the criteria-contract section, got %d", a.anchor, got)
+			}
+		})
+	}
+}
+
+// TestBoundedReviewSection_CarriesAllObligations is SPEC-156 AC10's content
+// check for the qa-tester section: distinctive phrases for each of D8's
+// obligations, each counted EXACTLY once against the CUT section alone.
+func TestBoundedReviewSection_CarriesAllObligations(t *testing.T) {
+	section, err := CutSection(LayerOneAsset(), "bounded-review")
+	if err != nil {
+		t.Fatalf("CutSection(bounded-review): %v", err)
+	}
+	if len(section) < minBoundedReviewSectionBytes {
+		t.Fatalf("bounded-review section is only %d bytes, want >= %d", len(section), minBoundedReviewSectionBytes)
+	}
+
+	anchors := []struct {
+		obligation string
+		anchor     string
+	}{
+		{"solo un criterio declarado autoriza el rechazo", "Solo el incumplimiento de un criterio DECLARADO"},
+		{"lo demas se abre con backlog_add en el momento", "EN EL MOMENTO en que lo encuentras"},
+		{"no existe fuera de contrato pero bloqueante", "No existe\nla categoria \"fuera de contrato pero bloqueante\""},
+		{"las dos secciones del informe", "## Dentro del contrato"},
+		{"la seccion vacia dice ninguno", `escribe "ninguno" de forma explicita`},
+	}
+
+	for _, a := range anchors {
+		t.Run(a.obligation, func(t *testing.T) {
+			if got := strings.Count(section, a.anchor); got != 1 {
+				t.Errorf("expected anchor %q exactly once in the bounded-review section, got %d", a.anchor, got)
+			}
+		})
+	}
+}
+
 func TestHasBodyContent(t *testing.T) {
 	tests := []struct {
 		name string

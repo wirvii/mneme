@@ -180,6 +180,21 @@ var ErrAuditFailed = errors.New("lane audit failed: threshold violations detecte
 // are auditable decisions that must be documented.
 var ErrReasonRequired = errors.New("reason is required")
 
+// --- Reject-findings sentinel errors (SPEC-156 D4/D5) ---
+
+// ErrFindingsRequired is returned by spec_reject when ensureRejectFindings
+// applies (standard lane, from qa, with a criteria.toml present) and either
+// no findings were supplied, or one of the supplied findings has an empty
+// Detail. A finding that names a criterion without saying what fails about
+// it is not a finding.
+var ErrFindingsRequired = errors.New("quality: spec reject requires at least one finding naming a declared criterion, each with a non-empty detail")
+
+// ErrUnknownCriterion is returned by spec_reject when a finding's
+// CriterionID does not match any id declared in the spec's criteria.toml.
+// The wrapped message names both the offending id and the full set of
+// declared ids, so the caller can act without opening the file.
+var ErrUnknownCriterion = errors.New("quality: finding names a criterion id that is not declared in criteria.toml")
+
 // --- Skill sentinel errors (SPEC-037) ---
 
 // ErrSkillNotFound is returned when a requested skill directory does not exist

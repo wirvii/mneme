@@ -132,6 +132,12 @@ func runFullSDDCycle(t *testing.T, ctx context.Context, svc *SDDService) (itemID
 		t.Fatalf("SpecResolve: %v", err)
 	}
 
+	// SPEC-156 D2: speccing->specced now requires a criteria.toml for a
+	// standard-lane spec. This is the guardian doing its job (plan.md P3),
+	// not a workaround — fix by giving the fixture its criteria document,
+	// never by weakening the guardian.
+	writeSpecCriteria(t, svc, spec, "AC1")
+
 	if _, err := svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: specID, By: "orchestrator"}); err != nil { // speccing->specced
 		t.Fatalf("SpecAdvance (2): %v", err)
 	}

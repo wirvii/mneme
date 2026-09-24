@@ -589,6 +589,15 @@ func (svc *SDDService) SpecAdvance(ctx context.Context, req model.SpecAdvanceReq
 			spec.Status, nextStatus, model.ErrInvalidTransition)
 	}
 
+	// SPEC-156 D2: a criterion-of-acceptance document is required before a
+	// standard-lane spec crosses the human approval gate. Checked BEFORE
+	// ensureCertified on purpose (plan.md P3): a missing criteria.toml is a
+	// design defect and its message must surface before any certificate
+	// verdict.
+	if err := svc.ensureCriteriaDeclared(spec, nextStatus); err != nil {
+		return nil, fmt.Errorf("service: spec advance: %w", err)
+	}
+
 	if err := svc.ensureCertified(ctx, spec, nextStatus); err != nil {
 		return nil, fmt.Errorf("service: spec advance: %w", err)
 	}
@@ -972,6 +981,14 @@ func (svc *SDDService) SpecReject(ctx context.Context, req model.SpecRejectReque
 		return nil, fmt.Errorf("service: spec reject: get: %w", err)
 	}
 
+	// SPEC-156 D4/D5: when this spec's rejection is bound by a declared
+	// criteria.toml (standard lane, from qa), every finding must name a
+	// declared criterion. Checked before the state-machine transition below
+	// so an invalid set of findings never moves the spec.
+	if err := svc.ensureRejectFindings(spec, req); err != nil {
+		return nil, fmt.Errorf("service: spec reject: %w", err)
+	}
+
 	// The target is always implementing; validate via the state machine so we
 	// don't bypass lane-specific guard rails.
 	if !spec.Status.CanTransitionTo(model.SpecStatusImplementing, spec.Lane) {
@@ -979,7 +996,7 @@ func (svc *SDDService) SpecReject(ctx context.Context, req model.SpecRejectReque
 			spec.Status, spec.Lane, model.ErrInvalidTransition)
 	}
 
-	reason := "rejected: " + req.Reason
+	reason := renderRejectReason(req.Reason, req.Findings)
 	if err := svc.updateSpecStatus(ctx, spec.ID,
 		spec.Status, model.SpecStatusImplementing,
 		req.By, reason); err != nil {

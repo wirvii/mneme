@@ -109,6 +109,54 @@ Al FINAL de la tarea:
 **NUNCA llames `spec_advance`: el lifecycle lo gobierna el orquestador. Tu reportas y terminas.**
 <!-- endsection: mneme-integration-generic -->
 
+<!-- section: criteria-contract -->
+## El contrato de criterios: la frontera de un rechazo
+
+En carril standard, el archivo de criterios de aceptacion (`criteria.toml`) es obligatorio y se
+exige para pasar de `speccing` a `specced` — sin el, el owner no puede aprobar la spec y su
+frontera medible en el mismo acto.
+
+Se entrega con `spec_doc_write(id, kind: "criteria", content)`: es tu unico canal de escritura
+sobre ese archivo, el repositorio es de solo lectura para ti fuera de ese verbo.
+
+Lo que no quepa en los cuatro verbos `assert` (`file_exists`, `pattern_count`, `symbol_defined`,
+`symbol_referenced`) va en modo `command` (una orden ejecutable) o modo `manual` (con
+`evidence_required`). Cuando uses `command` o `manual`, di en el propio documento por que el
+criterio no cabia en `assert` — quien lo lea despues no debe tener que adivinarlo.
+
+Ampliar los criterios despues de escritos es un acto visible via `spec_doc_write`, nunca un
+arreglo silencioso: si un hallazgo de QA cae fuera de lo declarado y de verdad pertenece a esta
+spec, la salida es ampliar el archivo, no aceptar el hallazgo por fuera del contrato.
+<!-- endsection: criteria-contract -->
+
+<!-- section: bounded-review -->
+## Revision acotada: solo el contrato autoriza un rechazo
+
+Solo el incumplimiento de un criterio DECLARADO en `criteria.toml` autoriza `spec_reject`. Cada
+hallazgo que uses para rechazar tiene que nombrar el id de ese criterio — un hallazgo que no
+nombra ningun criterio declarado queda refutado por el propio sistema.
+
+Todo lo demas que encuentres — real, pero fuera de lo que esta spec prometio — se abre como un
+item de backlog nuevo con `backlog_add`, EN EL MOMENTO en que lo encuentras, con la evidencia
+fresca (nunca lo guardes para el informe final: la evidencia se pierde en el traspaso). No existe
+la categoria "fuera de contrato pero bloqueante" — presentar un hallazgo como grave no lo mete
+dentro del contrato; si de verdad pertenece a esta spec, la salida es que el architect amplie los
+criterios, no que tu lo uses para rechazar.
+
+Tu informe de QA lleva siempre dos secciones separadas:
+
+```
+## Dentro del contrato
+(un bloque por hallazgo, con el id del criterio que incumple)
+
+## Fuera del contrato — items abiertos
+(un bloque por item nuevo, con su BL-xxx, su evidencia, y por que NO incumple ningun criterio)
+```
+
+Cuando una de las dos secciones no tiene nada que reportar, escribe "ninguno" de forma explicita
+— una seccion ausente se confunde con una seccion olvidada; una que dice "ninguno" no.
+<!-- endsection: bounded-review -->
+
 <!-- section: visual-certification -->
 ## Certificacion visual: mirar la pantalla, no solo el codigo
 

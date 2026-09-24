@@ -857,6 +857,8 @@ func (h *handlers) mapServiceError(method string, err error) *JSONRPCError {
 		errors.Is(err, model.ErrWorktreeDirty) ||
 		errors.Is(err, model.ErrInvalidCriteria) ||
 		errors.Is(err, model.ErrCriteriaNotFound) ||
+		errors.Is(err, model.ErrFindingsRequired) ||
+		errors.Is(err, model.ErrUnknownCriterion) ||
 		errors.Is(err, model.ErrNotACriterion) ||
 		errors.Is(err, model.ErrCriterionRequiresSign) ||
 		errors.Is(err, model.ErrNotSignable) ||

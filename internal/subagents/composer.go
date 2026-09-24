@@ -32,15 +32,25 @@ const agentFixedMarker = "agent-fixed"
 // `regen` rewrites layer 1 regardless of this bump, but WITHOUT it nobody
 // would know a materialized project needs `regen` run at all — `doctor`
 // only flags Version < AgentFixedVersion.
-const AgentFixedVersion = 3
+//
+// v4 (SPEC-156 D8): architect gains criteria-contract (criteria.toml is
+// obligatory in standard lane, delivered only via spec_doc_write) and
+// qa-tester gains bounded-review (only a declared criterion authorizes
+// spec_reject; everything else is a new backlog item, never a wider
+// rejection). This doctrine cannot live in layer 2/3 (the grill text) —
+// Layer23ForbiddenLifecycleTokens bans "spec_reject" there — so layer 1 is
+// the only channel, and this bump is the only thing that makes `mneme
+// subagents doctor` report an already-materialized project as needing
+// `regen` to pick it up.
+const AgentFixedVersion = 4
 
 // roleSections maps a Role to the ordered section names cut from
 // LayerOneAsset for that role's agent-fixed block. A slice, not a fixed-size
 // array (SPEC-132 Dp4): qa-tester and frontend now carry a third section
 // (visual-certification) that the other four roles do not.
 var roleSections = map[Role][]string{
-	RoleArchitect:     {"codegraph-policy-readonly", "mneme-integration-generic"},
-	RoleQATester:      {"codegraph-policy-readonly", "mneme-integration-generic", "visual-certification"},
+	RoleArchitect:     {"codegraph-policy-readonly", "mneme-integration-generic", "criteria-contract"},
+	RoleQATester:      {"codegraph-policy-readonly", "mneme-integration-generic", "bounded-review", "visual-certification"},
 	RoleBackend:       {"codegraph-policy-implementer", "mneme-integration-generic"},
 	RoleFrontend:      {"codegraph-policy-implementer", "mneme-integration-generic", "visual-certification"},
 	RoleBugHunter:     {"codegraph-policy-implementer", "mneme-integration-generic"},

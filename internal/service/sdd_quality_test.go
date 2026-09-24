@@ -22,6 +22,12 @@ func advanceToImplementing(t *testing.T, svc *SDDService, ctx context.Context, t
 	if err != nil {
 		t.Fatalf("SpecNew: %v", err)
 	}
+	// SPEC-156 D2: speccing->specced now requires a criteria.toml for a
+	// standard-lane spec. Written up front — every caller of this helper
+	// walks through that transition — so the guardian sees a declared
+	// contract instead of blocking the fixture (plan.md P3: fix by giving
+	// the fixture its criteria document, never by weakening the guardian).
+	writeSpecCriteria(t, svc, spec, "AC1")
 	for _, by := range []string{"orch", "arch", "arch", "arch", "backend"} {
 		spec, err = svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: by})
 		if err != nil {

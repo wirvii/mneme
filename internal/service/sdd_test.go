@@ -19,6 +19,21 @@ import (
 
 // newTestSDDService creates a real SDDService backed by an in-memory SQLite
 // database with all migrations applied. No mocks — tests run against real SQL.
+//
+// Workflow.Dir is pointed at a fresh t.TempDir() (SPEC-156 discovery,
+// plan.md P3): config.Default()'s own WorkflowDir() resolves under the
+// SAME sandboxed-but-shared HOME for the whole test binary run
+// (internal/testenv.Isolate sandboxes HOME once via TestMain, not once per
+// test). Before ensureCriteriaDeclared existed, nothing ever read that
+// path, so two different tests reusing the same project name and the same
+// first-spec id ("SPEC-001") never collided. Once speccing->specced starts
+// reading criteria.toml from that path, they do — a leftover file written
+// by an earlier test (in execution order, which `go test -shuffle=on`
+// deliberately randomises) can silently satisfy a LATER test's "no
+// criteria.toml exists yet" assertion. Isolating this helper the same way
+// newTestSDDServiceWithWorkflowDir already does removes the whole
+// collision class; nothing in this file relied on the shared path being
+// visible across independently-created service instances.
 func newTestSDDService(t *testing.T, project string) *SDDService {
 	t.Helper()
 	database, err := db.OpenMemory()
@@ -30,6 +45,7 @@ func newTestSDDService(t *testing.T, project string) *SDDService {
 
 	sddStore := store.NewSDDStore(database)
 	cfg := config.Default()
+	cfg.Workflow.Dir = t.TempDir()
 	// Pass nil memorySvc — completion memory saving is not exercised in unit tests.
 	return NewSDDService(sddStore, cfg, project, nil)
 }
@@ -604,6 +620,12 @@ func promoteAndAdvance(t *testing.T, svc *SDDService, ctx context.Context, steps
 	if err != nil {
 		t.Fatalf("promote: %v", err)
 	}
+	// SPEC-156 D2: speccing->specced (step index 1, "arch") now requires a
+	// criteria.toml for a standard-lane spec. Written up front so every
+	// caller of this helper — regardless of how many steps it asks for —
+	// sees a declared contract at that transition. This is the guardian
+	// doing its job (plan.md P3); the fixture is fixed, never the guardian.
+	writeSpecCriteria(t, svc, spec, "AC1")
 
 	bys := []string{"orch", "arch", "arch", "arch", "backend", "backend", "qa"}
 	if steps > len(bys) {
@@ -1276,6 +1298,7 @@ func TestSpecAdvance_ValidTransitions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SpecNew: %v", err)
 	}
+	writeSpecCriteria(t, svc, spec, "AC1")
 
 	// Happy path: draft -> speccing -> specced -> planning -> planned -> implementing -> qa -> done
 	path := []model.SpecStatus{
@@ -1314,6 +1337,7 @@ func TestSpecAdvance_InvalidTransition(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SpecNew: %v", err)
 	}
+	writeSpecCriteria(t, svc, spec, "AC1")
 
 	// Advance to speccing (valid).
 	if _, err := svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: "test"}); err != nil {
@@ -1378,6 +1402,7 @@ func TestSpecPushback_FromImplementing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SpecNew: %v", err)
 	}
+	writeSpecCriteria(t, svc, spec, "AC1")
 	// Advance through: speccing, specced, planning, planned, implementing.
 	for range []int{0, 1, 2, 3, 4} {
 		if _, err := svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: "test"}); err != nil {
@@ -2268,6 +2293,10 @@ func TestSpecReject_StandardQAToImplementing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SpecNew: %v", err)
 	}
+	// SPEC-156 D2: speccing->specced now requires a criteria.toml for a
+	// standard-lane spec. Written up front so the loop below sees a
+	// declared contract at that transition.
+	writeSpecCriteria(t, svc, spec, "AC1")
 
 	// Advance to qa: draft→speccing→specced→planning→planned→implementing→qa (6 steps).
 	for _, by := range []string{"orch", "arch", "arch", "arch", "backend", "backend"} {
@@ -2280,16 +2309,245 @@ func TestSpecReject_StandardQAToImplementing(t *testing.T) {
 		t.Fatalf("expected qa status, got %s", spec.Status)
 	}
 
+	// The spec now has a criteria.toml declaring "AC1" (SPEC-156 D4): the
+	// rejection must name it.
 	rejected, err := svc.SpecReject(ctx, model.SpecRejectRequest{
 		ID:     spec.ID,
 		Reason: "tests fail on edge case",
 		By:     "qa-agent",
+		Findings: []model.RejectFinding{
+			{CriterionID: "AC1", Detail: "tests fail on edge case"},
+		},
 	})
 	if err != nil {
 		t.Fatalf("SpecReject: %v", err)
 	}
 	if rejected.Status != model.SpecStatusImplementing {
 		t.Errorf("expected implementing, got %s", rejected.Status)
+	}
+}
+
+// TestSpecAdvance_SpeccingToSpecced_RequiresCriteria is SPEC-156 P3's own
+// wiring test: a standard-lane spec advancing speccing->specced fails with
+// ErrCriteriaNotFound when no criteria.toml was declared, and succeeds once
+// one is.
+func TestSpecAdvance_SpeccingToSpecced_RequiresCriteria(t *testing.T) {
+	svc := newTestSDDService(t, "project")
+	ctx := context.Background()
+
+	spec, err := svc.SpecNew(ctx, model.SpecNewRequest{Title: "Requires criteria", Lane: model.LaneStandard})
+	if err != nil {
+		t.Fatalf("SpecNew: %v", err)
+	}
+	if _, err := svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: "orch"}); err != nil { // draft->speccing
+		t.Fatalf("SpecAdvance (draft->speccing): %v", err)
+	}
+
+	if _, err := svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: "arch"}); !errors.Is(err, model.ErrCriteriaNotFound) {
+		t.Fatalf("SpecAdvance (speccing->specced) without criteria.toml: got %v, want errors.Is(_, ErrCriteriaNotFound)", err)
+	}
+
+	writeSpecCriteria(t, svc, spec, "AC1")
+
+	advanced, err := svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: "arch"})
+	if err != nil {
+		t.Fatalf("SpecAdvance (speccing->specced) with criteria.toml: %v", err)
+	}
+	if advanced.Status != model.SpecStatusSpecced {
+		t.Errorf("status = %s, want specced", advanced.Status)
+	}
+}
+
+// TestSpecAdvance_QAToDone_DoesNotRequireCriteria is SPEC-156 AC10/AC12's own
+// witness — the single most important test in this spec: a standard-lane
+// spec that reached qa WITHOUT a criteria.toml (accepted going forward, per
+// D5) closes to done exactly as it did before this file existed. Nothing
+// designed here may become a gate that blocks delivery.
+func TestSpecAdvance_QAToDone_DoesNotRequireCriteria(t *testing.T) {
+	svc := newTestSDDService(t, "project")
+	ctx := context.Background()
+
+	spec, err := svc.SpecNew(ctx, model.SpecNewRequest{Title: "No criteria at qa", Lane: model.LaneStandard})
+	if err != nil {
+		t.Fatalf("SpecNew: %v", err)
+	}
+	// A criteria.toml is written ONLY for the one transition SPEC-156 D2
+	// gates (speccing->specced) — never again. qa->done must never need
+	// one: this is the exact case AC10 requires evidence for.
+	writeSpecCriteria(t, svc, spec, "AC1")
+
+	for _, by := range []string{"orch", "arch", "arch", "arch", "backend", "backend"} {
+		spec, err = svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: by})
+		if err != nil {
+			t.Fatalf("SpecAdvance (to qa, status=%s): %v", spec.Status, err)
+		}
+	}
+	if spec.Status != model.SpecStatusQA {
+		t.Fatalf("expected qa status, got %s", spec.Status)
+	}
+
+	// Remove the criteria.toml written above — qa->done must succeed
+	// regardless, since ensureCertified/ensureCriteriaDeclared can only ever
+	// be reached from speccing->specced or the certificate gate, neither of
+	// which qa->done is.
+	path, err := specDocPath(svc.config.WorkflowDir(), spec.Project, spec.ID, model.SpecDocKindCriteria)
+	if err != nil {
+		t.Fatalf("specDocPath: %v", err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("remove criteria.toml: %v", err)
+	}
+
+	done, err := svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: "qa"})
+	if err != nil {
+		t.Fatalf("SpecAdvance (qa->done) without criteria.toml: got %v, want nil", err)
+	}
+	if done.Status != model.SpecStatusDone {
+		t.Errorf("status = %s, want done", done.Status)
+	}
+}
+
+// TestSpecReject_PersistsFindingsInReason is SPEC-156 AC7: the reason
+// persisted in spec_history contains one block per finding naming its
+// criterion, byte-for-byte stable for the same input.
+func TestSpecReject_PersistsFindingsInReason(t *testing.T) {
+	svc := newTestSDDService(t, "project")
+	ctx := context.Background()
+
+	spec, err := svc.SpecNew(ctx, model.SpecNewRequest{Title: "Persist findings", Lane: model.LaneStandard})
+	if err != nil {
+		t.Fatalf("SpecNew: %v", err)
+	}
+	writeSpecCriteria(t, svc, spec, "AC1", "AC2")
+
+	for _, by := range []string{"orch", "arch", "arch", "arch", "backend", "backend"} {
+		spec, err = svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: by})
+		if err != nil {
+			t.Fatalf("SpecAdvance (to qa, status=%s): %v", spec.Status, err)
+		}
+	}
+
+	if _, err := svc.SpecReject(ctx, model.SpecRejectRequest{
+		ID: spec.ID, Reason: "review found issues", By: "qa-agent",
+		Findings: []model.RejectFinding{
+			{CriterionID: "AC1", Detail: "does not hold", Evidence: "go test output"},
+			{CriterionID: "AC2", Detail: "also broken"},
+		},
+	}); err != nil {
+		t.Fatalf("SpecReject: %v", err)
+	}
+
+	history, err := svc.SpecHistory(ctx, spec.ID)
+	if err != nil {
+		t.Fatalf("SpecHistory: %v", err)
+	}
+	last := history[len(history)-1]
+	wantReason := "rejected: review found issues\n\n[AC1] does not hold\n      evidencia: go test output\n[AC2] also broken"
+	if last.Reason != wantReason {
+		t.Errorf("persisted reason =\n%q\nwant\n%q", last.Reason, wantReason)
+	}
+}
+
+// TestSpecReject_ReasonUnchangedWithoutFindings is P3's protective sibling:
+// a rejection with zero findings persists EXACTLY the same reason format
+// SpecReject produced before this file existed — protects both a human
+// reading spec_history and the sddfile export format.
+func TestSpecReject_ReasonUnchangedWithoutFindings(t *testing.T) {
+	svc := newTestSDDService(t, "project")
+	ctx := context.Background()
+
+	// Trivial lane, rejected from audit: D5's exclusion 1, so no
+	// criteria.toml is ever required or consulted.
+	item, err := svc.BacklogAdd(ctx, model.BacklogAddRequest{
+		Title: "Trivial reject", Lane: model.LaneTrivial, Scope: "internal/**/*.go",
+	})
+	if err != nil {
+		t.Fatalf("BacklogAdd: %v", err)
+	}
+	if _, err := svc.BacklogRefine(ctx, model.BacklogRefineRequest{ID: item.ID, Refinement: "details"}); err != nil {
+		t.Fatalf("BacklogRefine: %v", err)
+	}
+	spec, err := svc.BacklogPromote(ctx, item.ID)
+	if err != nil {
+		t.Fatalf("BacklogPromote: %v", err)
+	}
+	if _, err := svc.SpecQuick(ctx, model.SpecQuickRequest{ID: spec.ID, Rationale: "one-liner", By: "orchestrator"}); err != nil {
+		t.Fatalf("SpecQuick: %v", err)
+	}
+	if _, err := svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: "backend"}); err != nil { // implementing->audit
+		t.Fatalf("SpecAdvance (implementing->audit): %v", err)
+	}
+
+	if _, err := svc.SpecReject(ctx, model.SpecRejectRequest{
+		ID: spec.ID, Reason: "found a bug during manual audit review", By: "orchestrator",
+	}); err != nil {
+		t.Fatalf("SpecReject: %v", err)
+	}
+
+	history, err := svc.SpecHistory(ctx, spec.ID)
+	if err != nil {
+		t.Fatalf("SpecHistory: %v", err)
+	}
+	last := history[len(history)-1]
+	wantReason := "rejected: found a bug during manual audit review"
+	if last.Reason != wantReason {
+		t.Errorf("persisted reason = %q, want %q", last.Reason, wantReason)
+	}
+}
+
+// TestSpecReject_StandardQANoCriteria_AcceptsWithoutFindings is SPEC-156
+// AC11's third exclusion, exercised end to end (not just at the
+// ensureRejectFindings unit level TestEnsureRejectFindings already
+// covers): a standard-lane spec that reached qa WITHOUT ever declaring a
+// criteria.toml (accepted going forward, per D5 — see
+// TestSpecAdvance_QAToDone_DoesNotRequireCriteria for how this is reached)
+// can be rejected with zero findings, and the persisted reason is
+// unchanged from today's format.
+func TestSpecReject_StandardQANoCriteria_AcceptsWithoutFindings(t *testing.T) {
+	svc := newTestSDDService(t, "project")
+	ctx := context.Background()
+
+	spec, err := svc.SpecNew(ctx, model.SpecNewRequest{Title: "No criteria at qa, rejected", Lane: model.LaneStandard})
+	if err != nil {
+		t.Fatalf("SpecNew: %v", err)
+	}
+	// A criteria.toml is written ONLY to cross speccing->specced, then
+	// removed — exactly TestSpecAdvance_QAToDone_DoesNotRequireCriteria's
+	// own fixture pattern, reused here to reach qa without one.
+	writeSpecCriteria(t, svc, spec, "AC1")
+
+	for _, by := range []string{"orch", "arch", "arch", "arch", "backend", "backend"} {
+		spec, err = svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: by})
+		if err != nil {
+			t.Fatalf("SpecAdvance (to qa, status=%s): %v", spec.Status, err)
+		}
+	}
+	if spec.Status != model.SpecStatusQA {
+		t.Fatalf("expected qa status, got %s", spec.Status)
+	}
+
+	path, err := specDocPath(svc.config.WorkflowDir(), spec.Project, spec.ID, model.SpecDocKindCriteria)
+	if err != nil {
+		t.Fatalf("specDocPath: %v", err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("remove criteria.toml: %v", err)
+	}
+
+	if _, err := svc.SpecReject(ctx, model.SpecRejectRequest{
+		ID: spec.ID, Reason: "found a real defect, no criteria on file", By: "qa-agent",
+	}); err != nil {
+		t.Fatalf("SpecReject without criteria.toml, no findings: got %v, want nil", err)
+	}
+
+	history, err := svc.SpecHistory(ctx, spec.ID)
+	if err != nil {
+		t.Fatalf("SpecHistory: %v", err)
+	}
+	last := history[len(history)-1]
+	wantReason := "rejected: found a real defect, no criteria on file"
+	if last.Reason != wantReason {
+		t.Errorf("persisted reason = %q, want %q", last.Reason, wantReason)
 	}
 }
 
@@ -2397,6 +2655,7 @@ func TestSpecReject_StandardDoneToImplementing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SpecNew: %v", err)
 	}
+	writeSpecCriteria(t, svc, spec, "AC1")
 	for _, by := range []string{"orch", "arch", "arch", "arch", "backend", "backend", "qa"} {
 		spec, err = svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: by})
 		if err != nil {
@@ -2492,6 +2751,7 @@ func TestSpecAdvance_FromDone_StillInvalid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SpecNew: %v", err)
 	}
+	writeSpecCriteria(t, svc, spec, "AC1")
 	for _, by := range []string{"orch", "arch", "arch", "arch", "backend", "backend", "qa"} {
 		spec, err = svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: by})
 		if err != nil {
@@ -2519,6 +2779,7 @@ func TestSpecPushback_FromDone_StillInvalid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SpecNew: %v", err)
 	}
+	writeSpecCriteria(t, svc, spec, "AC1")
 	for _, by := range []string{"orch", "arch", "arch", "arch", "backend", "backend", "qa"} {
 		spec, err = svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: by})
 		if err != nil {
@@ -2550,6 +2811,7 @@ func newTestSDDServiceWithMemory(t *testing.T, project string) *SDDService {
 
 	projectStore := store.NewMemoryStore(database)
 	cfg := config.Default()
+	cfg.Workflow.Dir = t.TempDir()
 	memSvc := NewMemoryService(projectStore, projectStore, cfg, project, embed.NopEmbedder{})
 
 	sddStore := store.NewSDDStore(database)
@@ -2568,6 +2830,7 @@ func TestSpecReject_DoneThenReAdvance_SingleCompletionMemory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SpecNew: %v", err)
 	}
+	writeSpecCriteria(t, svc, spec, "AC1")
 	for _, by := range []string{"orch", "arch", "arch", "arch", "backend", "backend", "qa"} {
 		spec, err = svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: by})
 		if err != nil {
@@ -2633,6 +2896,7 @@ func TestCaptureBaseSHA_ImplementingViaSpecAdvance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SpecNew: %v", err)
 	}
+	writeSpecCriteria(t, svc, spec, "AC1")
 
 	// Advance to implementing: draft→speccing→specced→planning→planned→implementing (5 steps).
 	for i := range 5 {
