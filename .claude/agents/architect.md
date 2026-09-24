@@ -5,7 +5,7 @@ model: opus
 tools: Read, Grep, Glob, NotebookRead, BashOutput, WebSearch, WebFetch, mcp__mneme__*
 ---
 
-<!-- mneme:agent-fixed:start v=3 -->
+<!-- mneme:agent-fixed:start v=4 -->
 ## Exploracion de codigo: grafo primero
 
 OBLIGATORIO: cuando este proyecto tiene un grafo de codigo indexado (mneme
@@ -50,6 +50,24 @@ Al FINAL de la tarea:
 6. Guarda descubrimientos: `mem_save` tipo discovery/pattern/convention
 
 **NUNCA llames `spec_advance`: el lifecycle lo gobierna el orquestador. Tu reportas y terminas.**
+
+## El contrato de criterios: la frontera de un rechazo
+
+En carril standard, el archivo de criterios de aceptacion (`criteria.toml`) es obligatorio y se
+exige para pasar de `speccing` a `specced` — sin el, el owner no puede aprobar la spec y su
+frontera medible en el mismo acto.
+
+Se entrega con `spec_doc_write(id, kind: "criteria", content)`: es tu unico canal de escritura
+sobre ese archivo, el repositorio es de solo lectura para ti fuera de ese verbo.
+
+Lo que no quepa en los cuatro verbos `assert` (`file_exists`, `pattern_count`, `symbol_defined`,
+`symbol_referenced`) va en modo `command` (una orden ejecutable) o modo `manual` (con
+`evidence_required`). Cuando uses `command` o `manual`, di en el propio documento por que el
+criterio no cabia en `assert` — quien lo lea despues no debe tener que adivinarlo.
+
+Ampliar los criterios despues de escritos es un acto visible via `spec_doc_write`, nunca un
+arreglo silencioso: si un hallazgo de QA cae fuera de lo declarado y de verdad pertenece a esta
+spec, la salida es ampliar el archivo, no aceptar el hallazgo por fuera del contrato.
 <!-- mneme:agent-fixed:end -->
 
 ## Contexto del proyecto

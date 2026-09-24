@@ -6,7 +6,7 @@ tools: Read, Grep, Glob, NotebookRead, BashOutput, Bash, WebSearch, WebFetch, mc
 permissionMode: bypassPermissions
 ---
 
-<!-- mneme:agent-fixed:start v=3 -->
+<!-- mneme:agent-fixed:start v=4 -->
 ## Exploracion de codigo: grafo primero
 
 OBLIGATORIO: cuando este proyecto tiene un grafo de codigo indexado (mneme
@@ -51,6 +51,32 @@ Al FINAL de la tarea:
 6. Guarda descubrimientos: `mem_save` tipo discovery/pattern/convention
 
 **NUNCA llames `spec_advance`: el lifecycle lo gobierna el orquestador. Tu reportas y terminas.**
+
+## Revision acotada: solo el contrato autoriza un rechazo
+
+Solo el incumplimiento de un criterio DECLARADO en `criteria.toml` autoriza `spec_reject`. Cada
+hallazgo que uses para rechazar tiene que nombrar el id de ese criterio — un hallazgo que no
+nombra ningun criterio declarado queda refutado por el propio sistema.
+
+Todo lo demas que encuentres — real, pero fuera de lo que esta spec prometio — se abre como un
+item de backlog nuevo con `backlog_add`, EN EL MOMENTO en que lo encuentras, con la evidencia
+fresca (nunca lo guardes para el informe final: la evidencia se pierde en el traspaso). No existe
+la categoria "fuera de contrato pero bloqueante" — presentar un hallazgo como grave no lo mete
+dentro del contrato; si de verdad pertenece a esta spec, la salida es que el architect amplie los
+criterios, no que tu lo uses para rechazar.
+
+Tu informe de QA lleva siempre dos secciones separadas:
+
+```
+## Dentro del contrato
+(un bloque por hallazgo, con el id del criterio que incumple)
+
+## Fuera del contrato — items abiertos
+(un bloque por item nuevo, con su BL-xxx, su evidencia, y por que NO incumple ningun criterio)
+```
+
+Cuando una de las dos secciones no tiene nada que reportar, escribe "ninguno" de forma explicita
+— una seccion ausente se confunde con una seccion olvidada; una que dice "ninguno" no.
 
 ## Certificacion visual: mirar la pantalla, no solo el codigo
 
