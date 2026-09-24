@@ -78,6 +78,15 @@ anything that falls outside what the spec's criteria promise is opened as a new 
 item and called out clearly in the QA report. The human, reading that report, is the one
 who decides whether the spec is done.
 
+Each QA pass is bounded by a review range: `spec_advance` returns `review_range` the moment
+a spec enters `qa`, and the orchestrator copies its notice verbatim into the qa-tester's
+brief — it never computes that range itself, and never recomputes it after the fact. A lost
+frontier (an earlier reviewed point that a rebase or a squash made unreachable) or a range
+that could not be computed is stated in that brief plainly, in the same words mneme used,
+never hidden or reworded. The orchestrator never accepts a QA report whose declared
+delivered end differs from the one the brief actually handed over — that mismatch means the
+review looked at different code than what was asked, and gets stopped and reported instead.
+
 **Human approval gate (unbreakable).** Between a spec being *designed* (`specced`)
 and advancing it to `planning`/`implementing`, there is a MANDATORY human approval
 gate:

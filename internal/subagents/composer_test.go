@@ -339,10 +339,12 @@ func TestVisualSection_CarriesAllObligations(t *testing.T) {
 // P6's own minimum-length guards, the same closure
 // TestCompose_VisualSectionByRole already established: a CutSection error
 // must never be silently treated as "", and a section trimmed to nothing
-// would make strings.Contains trivially true.
+// would make strings.Contains trivially true. minBoundedReviewSectionBytes
+// only ever rises — SPEC-157 raised it from 200 to 1800 when it extended
+// the section with the delivered-end/lost-frontier obligations (D6).
 const (
 	minCriteriaContractSectionBytes = 200
-	minBoundedReviewSectionBytes    = 200
+	minBoundedReviewSectionBytes    = 1800
 )
 
 // TestCompose_CriteriaContractSectionByRole is SPEC-156 AC10: the
@@ -473,6 +475,13 @@ func TestBoundedReviewSection_CarriesAllObligations(t *testing.T) {
 		{"no existe fuera de contrato pero bloqueante", "No existe\nla categoria \"fuera de contrato pero bloqueante\""},
 		{"las dos secciones del informe", "## Dentro del contrato"},
 		{"la seccion vacia dice ninguno", `escribe "ninguno" de forma explicita`},
+		// SPEC-157 D6: the encargo carries the review range; a lost
+		// frontier is declared verbatim; the report names the delivered
+		// end it actually received; a mismatch stops the review.
+		{"el encargo trae el rango a mirar", "El encargo de esta revision trae el rango a mirar"},
+		{"frontera perdida declarada verbatim", "Si el encargo declara la frontera perdida"},
+		{"el informe declara el extremo entregado recibido", "Tu informe declara el extremo entregado que recibiste"},
+		{"un extremo entregado distinto para y reporta", "para y reportalo al orquestador"},
 	}
 
 	for _, a := range anchors {
