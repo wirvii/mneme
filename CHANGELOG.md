@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [v1.47.0] — 2026-09-24 — A QA rejection must name the criterion it breaks, and each review pass covers only what was delivered since the last one
+
 ### Added
 
 - **`spec_reject` now carries structured findings, and each one has to name
