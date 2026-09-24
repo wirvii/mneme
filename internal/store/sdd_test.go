@@ -857,7 +857,7 @@ func TestUpdateSpecStatus(t *testing.T) {
 	}
 
 	// Valid transition: draft -> speccing.
-	if err := s.UpdateSpecStatus(ctx, "SPEC-001", model.SpecStatusDraft, model.SpecStatusSpeccing, "orchestrator", "starting"); err != nil {
+	if err := s.UpdateSpecStatus(ctx, "SPEC-001", model.SpecStatusDraft, model.SpecStatusSpeccing, "orchestrator", "starting", ""); err != nil {
 		t.Fatalf("UpdateSpecStatus (draft->speccing): %v", err)
 	}
 
@@ -870,15 +870,61 @@ func TestUpdateSpecStatus(t *testing.T) {
 	}
 
 	// Wrong 'from' status: current is speccing, we claim draft.
-	err = s.UpdateSpecStatus(ctx, "SPEC-001", model.SpecStatusDraft, model.SpecStatusSpecced, "architect", "")
+	err = s.UpdateSpecStatus(ctx, "SPEC-001", model.SpecStatusDraft, model.SpecStatusSpecced, "architect", "", "")
 	if !errors.Is(err, model.ErrInvalidTransition) {
 		t.Errorf("expected ErrInvalidTransition, got %v", err)
 	}
 
 	// Spec not found.
-	err = s.UpdateSpecStatus(ctx, "SPEC-999", model.SpecStatusDraft, model.SpecStatusSpeccing, "x", "")
+	err = s.UpdateSpecStatus(ctx, "SPEC-999", model.SpecStatusDraft, model.SpecStatusSpeccing, "x", "", "")
 	if !errors.Is(err, model.ErrSpecNotFound) {
 		t.Errorf("expected ErrSpecNotFound, got %v", err)
+	}
+}
+
+// TestUpdateSpecStatus_PersistsReviewedSHAInSameTx covers SPEC-157 AC1/AC3:
+// a non-empty reviewedSHA passed to UpdateSpecStatus lands in the SAME
+// spec_history row the status transition writes, readable back via
+// GetSpecHistory — and a failed transition (wrong 'from') never leaves a
+// row, SHA included, behind.
+func TestUpdateSpecStatus_PersistsReviewedSHAInSameTx(t *testing.T) {
+	s := newTestSDDStore(t)
+	ctx := context.Background()
+
+	if err := s.CreateSpec(ctx, &model.Spec{
+		ID: "SPEC-800", Title: "reviewed sha test", Status: model.SpecStatusImplementing,
+		Project: "proj", Lane: model.LaneStandard,
+	}); err != nil {
+		t.Fatalf("create spec: %v", err)
+	}
+
+	const sha = "9a3c1234567890abcdef1234567890abcdef1234"
+	if err := s.UpdateSpecStatus(ctx, "SPEC-800", model.SpecStatusImplementing, model.SpecStatusQA, "backend", "ready", sha); err != nil {
+		t.Fatalf("UpdateSpecStatus with reviewedSHA: %v", err)
+	}
+
+	history, err := s.GetSpecHistory(ctx, "SPEC-800")
+	if err != nil {
+		t.Fatalf("GetSpecHistory: %v", err)
+	}
+	if len(history) != 1 {
+		t.Fatalf("expected 1 history entry, got %d", len(history))
+	}
+	if history[0].ReviewedSHA != sha {
+		t.Errorf("ReviewedSHA = %q, want %q", history[0].ReviewedSHA, sha)
+	}
+
+	// Wrong 'from': the transition is rejected and no row (SHA included) is left.
+	err = s.UpdateSpecStatus(ctx, "SPEC-800", model.SpecStatusDraft, model.SpecStatusSpecced, "architect", "wrong", "deadbeef")
+	if !errors.Is(err, model.ErrInvalidTransition) {
+		t.Fatalf("expected ErrInvalidTransition, got %v", err)
+	}
+	history, err = s.GetSpecHistory(ctx, "SPEC-800")
+	if err != nil {
+		t.Fatalf("GetSpecHistory after rejected transition: %v", err)
+	}
+	if len(history) != 1 {
+		t.Fatalf("expected history to stay at 1 entry after rejected transition, got %d", len(history))
 	}
 }
 
@@ -901,7 +947,7 @@ func TestGetSpecHistory(t *testing.T) {
 	for _, tr := range transitions {
 		// Small sleep to ensure distinct timestamps.
 		time.Sleep(2 * time.Millisecond)
-		if err := s.UpdateSpecStatus(ctx, "SPEC-001", tr.from, tr.to, "test", ""); err != nil {
+		if err := s.UpdateSpecStatus(ctx, "SPEC-001", tr.from, tr.to, "test", "", ""); err != nil {
 			t.Fatalf("transition %s->%s: %v", tr.from, tr.to, err)
 		}
 	}
@@ -2255,7 +2301,7 @@ func TestPreviousIDs_InertAfterExistingVerbs(t *testing.T) {
 		t.Errorf("Spec.PreviousIDs after CreateSpec = %v, want empty", gotSpec.PreviousIDs)
 	}
 
-	if err := s.UpdateSpecStatus(ctx, "SPEC-900", model.SpecStatusDraft, model.SpecStatusSpeccing, "test", ""); err != nil {
+	if err := s.UpdateSpecStatus(ctx, "SPEC-900", model.SpecStatusDraft, model.SpecStatusSpeccing, "test", "", ""); err != nil {
 		t.Fatalf("UpdateSpecStatus: %v", err)
 	}
 	gotSpec, err = s.GetSpec(ctx, "SPEC-900")

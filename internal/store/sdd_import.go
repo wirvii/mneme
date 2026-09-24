@@ -296,8 +296,8 @@ func (s *SDDStore) MergeSpecHistory(ctx context.Context, specID string, rows []*
 			return fmt.Errorf("store: merge spec history: probe %s: %w", h.ID, err)
 		}
 		_, insErr := tx.ExecContext(ctx,
-			`INSERT INTO spec_history (id, spec_id, from_status, to_status, by, reason, at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-			h.ID, specID, string(h.FromStatus), string(h.ToStatus), h.By, h.Reason, formatTime(h.At),
+			`INSERT INTO spec_history (id, spec_id, from_status, to_status, by, reason, at, reviewed_sha) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			h.ID, specID, string(h.FromStatus), string(h.ToStatus), h.By, h.Reason, formatTime(h.At), h.ReviewedSHA,
 		)
 		if insErr != nil {
 			return fmt.Errorf("store: merge spec history: insert %s: %w", h.ID, insErr)

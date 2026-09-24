@@ -857,6 +857,28 @@ type SpecHistory struct {
 
 	// At is the timestamp of the transition.
 	At time.Time `json:"at"`
+
+	// ReviewedSHA is a SINGLE column that means TWO different things,
+	// distinguished ONLY by the (FromStatus, ToStatus) pair of THIS ROW
+	// (SPEC-157 D2/D2b/D2c) — reading it without looking at its own
+	// transition is reading it wrong:
+	//
+	//   - implementing → qa: the DELIVERED end. The commit SHA that was
+	//     HEAD when the spec entered review — how far the qa-tester is
+	//     being asked to look.
+	//   - qa → done / qa → implementing: the REVIEWED frontier. COPIED,
+	//     never recomputed, from the delivered end of the entry that
+	//     started this pass — so the frontier can never claim more than
+	//     what was actually handed to review, even if the implementer
+	//     committed again while QA was reading.
+	//   - every other transition (qa → needs_grill, done → implementing,
+	//     the trivial lane's audit pair, and any other pair): always "".
+	//
+	// Empty is also a legitimate value inside the two transitions above —
+	// it means mneme could not resolve a commit SHA (repository dir not
+	// configured, git failed) and says so in Reason instead of inventing
+	// one. This never blocks the transition itself.
+	ReviewedSHA string `json:"reviewed_sha,omitempty"`
 }
 
 // SpecPushback records a set of questions from an agent that block progress.

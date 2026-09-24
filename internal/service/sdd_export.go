@@ -74,7 +74,9 @@ func (svc *SDDService) createSpec(ctx context.Context, spec *model.Spec) error {
 // sdd.go route through it (SpecAdvance, SpecPushback, SpecReject,
 // SpecResolve, SpecQuick ×2, LaneAudit, LaneReclassify, LaneOverride).
 func (svc *SDDService) updateSpecStatus(ctx context.Context, specID string, from, to model.SpecStatus, by, reason string) error {
-	if err := svc.store.UpdateSpecStatus(ctx, specID, from, to, by, reason); err != nil {
+	// TODO(SPEC-157 paso 3): resolve via frontierForTransition/
+	// appendFrontierNote instead of the placeholder "" below.
+	if err := svc.store.UpdateSpecStatus(ctx, specID, from, to, by, reason, ""); err != nil {
 		return err
 	}
 	svc.materializeSpec(ctx, specID)
