@@ -42,7 +42,15 @@ const agentFixedMarker = "agent-fixed"
 // the only channel, and this bump is the only thing that makes `mneme
 // subagents doctor` report an already-materialized project as needing
 // `regen` to pick it up.
-const AgentFixedVersion = 4
+//
+// v5 (SPEC-158 D6): the certification mechanism's executable evaluator is
+// retired — criteria-contract no longer tells the architect about the four
+// `assert` verbs (mneme never evaluates any of it any more); a criterion is
+// now just an id + a checkable text. This bump is what makes `mneme
+// subagents doctor` flag an already-materialized project's architect (and
+// qa-tester, whose contract no longer names a signing tool) as needing
+// `regen`.
+const AgentFixedVersion = 5
 
 // roleSections maps a Role to the ordered section names cut from
 // LayerOneAsset for that role's agent-fixed block. A slice, not a fixed-size

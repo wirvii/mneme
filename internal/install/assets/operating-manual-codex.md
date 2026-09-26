@@ -32,7 +32,7 @@ As coordinator you:
 
 PreToolUse hooks enforce project ownership. Each generated role also starts a
 role-bound mneme MCP server whose filtered tool list and call-time checks keep
-reserved lifecycle and quality operations unavailable to the wrong role.
+reserved lifecycle operations unavailable to the wrong role.
 Do not treat the role's declared sandbox as an independent boundary: Codex can
 inherit the coordinator's workspace permissions. These guarantees require
 Codex 0.148.0-alpha.19 or newer and trusted hooks (`/hooks`). If a
