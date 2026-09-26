@@ -778,9 +778,7 @@ func (h *handlers) mapServiceError(method string, err error) *JSONRPCError {
 		errors.Is(err, model.ErrPushbackNotFound) ||
 		errors.Is(err, model.ErrSkillNotFound) ||
 		errors.Is(err, model.ErrProfileNotFound) ||
-		errors.Is(err, model.ErrScaffoldNotFound) ||
-		errors.Is(err, model.ErrCertificateNotFound) ||
-		errors.Is(err, model.ErrBudgetNotFound) {
+		errors.Is(err, model.ErrScaffoldNotFound) {
 		return &JSONRPCError{
 			Code:    CodeMemoryNotFound,
 			Message: fmt.Sprintf("mcp: handle %s: %s", method, err),
@@ -835,25 +833,10 @@ func (h *handlers) mapServiceError(method string, err error) *JSONRPCError {
 		errors.Is(err, model.ErrAppAddNotApplicable) ||
 		errors.Is(err, model.ErrProjectSlugRequired) ||
 		errors.Is(err, model.ErrProfileLockUnsupported) ||
-		errors.Is(err, model.ErrInvalidConstitution) ||
-		errors.Is(err, model.ErrConstitutionAblated) ||
-		errors.Is(err, model.ErrConstitutionChanged) ||
-		errors.Is(err, model.ErrCertificateMissing) ||
-		errors.Is(err, model.ErrCertificateStale) ||
-		errors.Is(err, model.ErrCertificateNotGreen) ||
-		errors.Is(err, model.ErrWorktreeDirty) ||
 		errors.Is(err, model.ErrInvalidCriteria) ||
 		errors.Is(err, model.ErrCriteriaNotFound) ||
 		errors.Is(err, model.ErrFindingsRequired) ||
-		errors.Is(err, model.ErrUnknownCriterion) ||
-		errors.Is(err, model.ErrNotACriterion) ||
-		errors.Is(err, model.ErrCriterionRequiresSign) ||
-		errors.Is(err, model.ErrNotSignable) ||
-		errors.Is(err, model.ErrRequiresSign) ||
-		errors.Is(err, model.ErrEquivalentQuotaExceeded) ||
-		errors.Is(err, model.ErrReportNotGenerated) ||
-		errors.Is(err, model.ErrInvalidBudget) ||
-		errors.Is(err, model.ErrUnsupportedBudgetSchema) {
+		errors.Is(err, model.ErrUnknownCriterion) {
 		return &JSONRPCError{
 			Code:    CodeInvalidParams,
 			Message: fmt.Sprintf("mcp: handle %s: %s", method, err),

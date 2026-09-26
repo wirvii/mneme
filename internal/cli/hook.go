@@ -2013,25 +2013,19 @@ var lifecycleTools = map[string]bool{
 }
 
 // roleScopedDocKinds maps a spec_doc_write `kind` argument to the ONE
-// subagent role allowed to write it (SPEC-118 D10) — evaluated ONLY when
-// input.ToolName == "mcp__mneme__spec_doc_write", indexed by KIND rather
-// than by tool name: spec_doc_write itself stays open to every
-// implementer (its "changes" kind is exactly their entregable channel) —
-// only the specific kinds below are restricted.
+// subagent role allowed to write it — evaluated ONLY when input.ToolName ==
+// "mcp__mneme__spec_doc_write", indexed by KIND rather than by tool name:
+// spec_doc_write itself stays open to every implementer (its "changes" kind
+// is exactly their entregable channel) — only the specific kinds below are
+// restricted.
 //
-// "budget" is D10's own case: the architect's ONLY write channel for the
-// budget document (SPEC-158 retires the kind itself in a later commit —
-// this entry goes with it).
-//
-// "criteria" is the ORCHESTRATOR's addition to this map, not part of the
-// architect's original SPEC-118 design: the same gap H4 of the design
-// names but declines to close ("cambiar una decision razonada de S3 no me
-// corresponde") — today an implementer can still write criteria.toml (the
-// S3 kind, "criteria"), rewriting the very exam it is judged by, which is
-// literally what D14 of the grill prohibits. Closing it here costs one
-// map entry, reusing the SAME mechanism this spec already builds.
+// "criteria" is the ORCHESTRATOR's own addition to this map (SPEC-118's
+// design named the gap but declined to close it — "cambiar una decision
+// razonada de S3 no me corresponde"): without this entry an implementer
+// could write criteria.toml, rewriting the very exam it is judged by.
+// SPEC-158 retired this map's OTHER entry, "budget", along with the
+// certification mechanism's budget-against-the-graph tramo it restricted.
 var roleScopedDocKinds = map[string]string{
-	"budget":   "architect",
 	"criteria": "architect",
 }
 

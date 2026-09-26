@@ -715,7 +715,7 @@ func allTools() []ToolDefinition {
 					"kind": map[string]any{
 						"type":        "string",
 						"description": "Which document to write.",
-						"enum":        []string{"spec", "plan", "qa-report", "changes", "criteria", "budget"},
+						"enum":        []string{"spec", "plan", "qa-report", "changes", "criteria"},
 					},
 					"content": map[string]any{
 						"type":        "string",

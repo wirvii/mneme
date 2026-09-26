@@ -187,13 +187,13 @@ var ErrReasonRequired = errors.New("reason is required")
 // no findings were supplied, or one of the supplied findings has an empty
 // Detail. A finding that names a criterion without saying what fails about
 // it is not a finding.
-var ErrFindingsRequired = errors.New("quality: spec reject requires at least one finding naming a declared criterion, each with a non-empty detail")
+var ErrFindingsRequired = errors.New("spec reject requires at least one finding naming a declared criterion, each with a non-empty detail")
 
 // ErrUnknownCriterion is returned by spec_reject when a finding's
 // CriterionID does not match any id declared in the spec's criteria.toml.
 // The wrapped message names both the offending id and the full set of
 // declared ids, so the caller can act without opening the file.
-var ErrUnknownCriterion = errors.New("quality: finding names a criterion id that is not declared in criteria.toml")
+var ErrUnknownCriterion = errors.New("finding names a criterion id that is not declared in criteria.toml")
 
 // --- Skill sentinel errors (SPEC-037) ---
 
@@ -368,141 +368,13 @@ var ErrProjectSlugRequired = errors.New("profile rules require a resolved projec
 // with the remedy (`mneme upgrade`) instead.
 var ErrProfileLockUnsupported = errors.New("profile lock written by a newer mneme")
 
-// --- Quality sentinel errors (SPEC-115 EPIC-calidad S1) ---
-//
-// These translate internal/quality's own leaf sentinels (quality.ErrInvalid,
-// quality.ErrUnsupportedSchema) and the five distinct causes of D12's
-// certificate-usability conjunction into model.* — the same
-// leaf-sentinel-to-model-sentinel translation internal/conflicts and
-// internal/lane already establish for their own packages.
-
-// ErrInvalidConstitution is returned when .mneme/quality.toml fails to
-// parse: a missing required key, an unknown key, or a value that fails
-// validation (D2/D3). The mechanism fails CLOSED on this — spec_advance
-// blocks rather than silently treating an unparseable constitution as
-// "disabled".
-var ErrInvalidConstitution = errors.New("quality: constitution is invalid or unparseable")
-
-// ErrConstitutionAblated is returned when the constitution was enabled=true
-// at a spec's base_sha but is now absent or enabled=false (D3 row 5) — the
-// closes-the-obvious-hole case: disabling or deleting the constitution
-// mid-spec must block, not silently let the spec through unverified.
-var ErrConstitutionAblated = errors.New("quality: constitution was enabled at the spec's base commit but is now off")
-
-// ErrConstitutionChanged is returned when a certificate's recorded
-// constitution_hash no longer matches the constitution's current hash
-// (D9/D12) — the constitution was edited after the certificate was issued.
-var ErrConstitutionChanged = errors.New("quality: constitution changed since the certificate was issued")
-
-// ErrCertificateMissing is returned when the mechanism is enabled but no
-// certificate has ever been recorded for the spec (D12) — the remedy is
-// `mneme quality verify`.
-var ErrCertificateMissing = errors.New("quality: no certificate recorded for this spec")
-
-// ErrCertificateStale is returned when the latest certificate's head_sha no
-// longer matches the current HEAD (D12) — a commit landed after the
-// certificate was issued, so it no longer speaks for the code as it stands.
-var ErrCertificateStale = errors.New("quality: certificate is stale (HEAD moved since it was issued)")
-
-// ErrCertificateNotGreen is returned when the latest certificate's verdict
-// is not "pass" — a failed gate or an un-acked finding (D10/D12).
-var ErrCertificateNotGreen = errors.New("quality: certificate verdict is not pass")
-
-// ErrWorktreeDirty is returned when the worktree currently has uncommitted
-// changes (D8/D12), independent of whether it was clean at certification
-// time.
-var ErrWorktreeDirty = errors.New("quality: worktree has uncommitted changes")
-
-// ErrCertificateNotFound is returned when a certificate ID passed to
-// quality_ack (or a direct certificate lookup) does not exist.
-var ErrCertificateNotFound = errors.New("quality: certificate not found")
-
-// --- Criteria sentinel errors (SPEC-117 EPIC-calidad S3) ---
-//
-// These translate internal/quality's own leaf sentinels
-// (quality.ErrInvalidCriteria, quality.ErrUnsupportedCriteriaSchema) plus
-// three the service itself raises for the sign/report surface — the same
-// leaf-sentinel-to-model-sentinel translation S1's ErrInvalidConstitution
-// already establishes.
+// --- Criteria sentinel errors (SPEC-156) ---
 
 // ErrInvalidCriteria is returned when a spec's criteria.toml fails to
-// parse or fails ValidateAnchors — spec_doc_write with kind "criteria"
-// refuses to write the document at all (D7's declare-time half).
-var ErrInvalidCriteria = errors.New("quality: criteria document is invalid or unparseable")
+// parse — spec_doc_write with kind "criteria" refuses to write the
+// document at all (SPEC-156's declare-time half).
+var ErrInvalidCriteria = errors.New("criteria document is invalid or unparseable")
 
-// ErrCriteriaNotFound is returned when `verify` looks for a spec's
-// criteria.toml and finds none — the criteria/declared row's own `fail`
-// cause (D8), never silently skipped once [criteria] is enabled.
-var ErrCriteriaNotFound = errors.New("quality: no criteria.toml found for this spec")
-
-// ErrNotACriterion is an ALIAS of ErrNotSignable (SPEC-119 D8), kept as its
-// own name so every `errors.Is(err, model.ErrNotACriterion)` written by S3
-// stays green without touching a single S3 test. It used to be Sign's own,
-// independently-declared sentinel restricted to "not a criterion row"; S5
-// generalises Sign's domain to ALSO accept `mutant` rows (a survivor's
-// equivalence attestation), and the two verbs' domains are now decided by
-// one predicate (quality.RequiresSignature) rather than two symmetric
-// conditions written separately — see ErrNotSignable's own godoc for why
-// this is an alias and not a rename.
-var ErrNotACriterion = ErrNotSignable
-
-// ErrCriterionRequiresSign is an ALIAS of ErrRequiresSign (SPEC-119 D8),
-// for the exact same reason ErrNotACriterion is: every
-// `errors.Is(err, model.ErrCriterionRequiresSign)` written by S3 stays
-// green untouched, while Ack's refusal now generalises to ANY row
-// quality.RequiresSignature accepts (a criterion, or a `mutant` survivor),
-// not just a "criterion"-prefixed one.
-var ErrCriterionRequiresSign = ErrRequiresSign
-
-// ErrNotSignable is returned by Sign when the targeted row's Kind is NOT
-// one quality.RequiresSignature accepts (SPEC-119 D8) — Sign is an
-// ATTESTATION, reserved for rows a human must verify by reading code (a
-// criterion, or a mutant survivor's claimed equivalence); every other kind
-// (a gate, a ratchet finding, a mutation/viability finding) is Ack's
-// domain. Named generically — not "ErrNotACriterion" — because by the time
-// this sentinel was introduced Sign's domain had already grown to include
-// a SECOND row shape (`mutant`) that has nothing to do with criteria; a
-// message that still said "criterion" for a rejected `mutation/viability`
-// row would be actively misleading. ErrNotACriterion (above) is kept as an
-// alias so no S3 test has to change to keep passing.
-var ErrNotSignable = errors.New("quality: sign only applies to attested rows — criterion or mutant (use quality ack for this row)")
-
-// ErrRequiresSign is returned by Ack when the targeted row's Kind IS one
-// quality.RequiresSignature accepts — an attested row (a criterion, or a
-// mutant survivor's claimed equivalence) is never absolved, only verified;
-// naming `mneme quality sign` in the wrapped message is what makes this
-// error actionable rather than a dead end (D8, mirroring D11's own
-// posture from S3). ErrCriterionRequiresSign (above) is kept as an alias.
-var ErrRequiresSign = errors.New("quality: attested rows (criterion or mutant) require quality sign, not quality ack")
-
-// ErrInvalidBudget is returned when a spec's budget.toml fails to parse or
-// fails ValidateBudgetAnchors — spec_doc_write with kind "budget" refuses
-// to write the document at all (SPEC-118 D11's declare-time half).
-var ErrInvalidBudget = errors.New("quality: budget document is invalid or unparseable")
-
-// ErrBudgetNotFound is returned when `verify` looks for a spec's
-// budget.toml and finds none — the budget/declared row's own `fail` cause
-// (SPEC-118 D9), never silently skipped once [budget] is enabled.
-var ErrBudgetNotFound = errors.New("quality: no budget.toml found for this spec")
-
-// ErrUnsupportedBudgetSchema is returned when budget.toml declares a
-// schema_version mneme does not recognise — mirrors
-// ErrUnsupportedSchema/ErrUnsupportedCriteriaSchema's own posture: the
-// remedy is upgrading mneme, not fixing a typo.
-var ErrUnsupportedBudgetSchema = errors.New("quality: budget schema_version unsupported")
-
-// ErrReportNotGenerated is returned by Report when qa-report.md already
-// exists and does NOT carry mneme's own generation marker — Report
-// refuses to silently overwrite a manually-authored report unless --force
-// is passed (D12).
-var ErrReportNotGenerated = errors.New("quality: existing qa-report.md was not generated by mneme (pass --force to overwrite)")
-
-// --- Mutation sentinel errors (SPEC-119 EPIC-calidad S5) ---
-
-// ErrEquivalentQuotaExceeded is returned by Sign when a `mutant` row's
-// certificate has already reached mutation.max_equivalent signed
-// equivalents (D9) — the cupo is ABSOLUTE, read from the certificate's own
-// mutation/score row, never from the constitution file on disk (D9: what
-// governs is what was recorded at certification time, not what the file
-// says NOW). The targeted row is left in "finding", unsigned.
-var ErrEquivalentQuotaExceeded = errors.New("quality: max_equivalent signed mutants already reached for this certificate")
+// ErrCriteriaNotFound is returned when a spec's criteria.toml is required
+// (before the human approval gate, speccing -> specced) and none exists.
+var ErrCriteriaNotFound = errors.New("no criteria.toml found for this spec")

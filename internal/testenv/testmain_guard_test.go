@@ -23,7 +23,6 @@ var isolatedPackages = []string{
 	"internal/http",
 	"internal/install",
 	"internal/upgrade",
-	"internal/quality",
 	"internal/gitrepo",
 	"internal/laneaudit",
 }
