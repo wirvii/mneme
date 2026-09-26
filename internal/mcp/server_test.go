@@ -223,8 +223,6 @@ func TestToolsList(t *testing.T) {
 		"spec_reject", "lane_stats",
 		// SDD git-native read tools (SPEC-131 §2b)
 		"sdd_status", "sdd_import",
-		// Quality tools (SPEC-115 EPIC-calidad S1 + SPEC-117 S3)
-		"quality_verify", "quality_status", "quality_ack", "quality_sign", "quality_report",
 		// Graph tools
 		"mem_gaps",
 		"mem_explore",
@@ -267,7 +265,7 @@ func TestCallerPolicyFiltersAndAuthorizesSubagentTools(t *testing.T) {
 	srv.WithCallerPolicy(CallerPolicy{Role: "backend", Archetype: "backend"})
 
 	for _, tool := range srv.tools {
-		if tool.Name == "spec_advance" || tool.Name == "spec_quick" || tool.Name == "quality_ack" || tool.Name == "quality_sign" {
+		if tool.Name == "spec_advance" || tool.Name == "spec_quick" {
 			t.Fatalf("restricted tool %q remained visible", tool.Name)
 		}
 	}
@@ -289,10 +287,6 @@ func TestCallerPolicyAllowsArchitectDocsAndQASign(t *testing.T) {
 	architect := CallerPolicy{Role: "architect", Archetype: "architect"}
 	if err := architect.authorizeCall(ToolCallParams{Name: "spec_doc_write", Arguments: json.RawMessage(`{"kind":"budget"}`)}); err != nil {
 		t.Fatalf("architect budget denied: %v", err)
-	}
-	qa := CallerPolicy{Role: "qa-tester", Archetype: "qa-tester"}
-	if !qa.allowsTool("quality_sign") {
-		t.Fatal("qa-tester quality_sign denied")
 	}
 }
 

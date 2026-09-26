@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -99,34 +100,44 @@ Follow the existing code style.
 	}
 }
 
-// TestInit_QualityConstitution_CheckModeNoWrite covers AC23's --check half
-// at the CLI wiring level: EnsureQualityConstitution(cwd, true) must never
-// create .mneme/quality.toml, mirroring the --check contract every other
-// init step in newInitCmd's RunE already honours.
-func TestInit_QualityConstitution_CheckModeNoWrite(t *testing.T) {
-	tmpDir := t.TempDir()
-	svc := newCheckTestInitService(t)
+// TestInit_NeverWritesQualityConstitution covers SPEC-158 AC15's CLI half:
+// after the certification mechanism's retirement, `mneme init` never writes
+// .mneme/quality.toml — the step that used to materialize it (D15's own
+// "absent -> written with enabled=false") is gone entirely. Drives the REAL
+// init command via NewRootCmd() (the pattern runSubagentsCmd already
+// establishes), from a freshly `git init`-ed, isolated temp directory —
+// HOME is already sandboxed by this package's own TestMain. Mutation: were
+// the step 3b call restored, this test would find quality.toml on disk and
+// fail.
+func TestInit_NeverWritesQualityConstitution(t *testing.T) {
+	repoDir := t.TempDir()
+	initGitRepo(t, repoDir)
 
-	if _, err := svc.EnsureQualityConstitution(tmpDir, true); err != nil {
-		t.Fatalf("EnsureQualityConstitution: %v", err)
+	origWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(tmpDir, ".mneme", "quality.toml")); !os.IsNotExist(err) {
-		t.Errorf("expected no quality.toml to be written in --check mode, stat err = %v", err)
+	if err := os.Chdir(repoDir); err != nil {
+		t.Fatalf("chdir: %v", err)
 	}
-}
+	t.Cleanup(func() { _ = os.Chdir(origWD) })
 
-// TestInit_QualityConstitution_AppliesWhenAbsent covers the non-check half:
-// EnsureQualityConstitution(cwd, false) writes a template that mneme quality
-// status can read immediately.
-func TestInit_QualityConstitution_AppliesWhenAbsent(t *testing.T) {
-	tmpDir := t.TempDir()
-	svc := newCheckTestInitService(t)
+	origDataDir, origProject := flagDataDir, flagProject
+	t.Cleanup(func() { flagDataDir, flagProject = origDataDir, origProject })
 
-	if _, err := svc.EnsureQualityConstitution(tmpDir, false); err != nil {
-		t.Fatalf("EnsureQualityConstitution: %v", err)
+	root := NewRootCmd()
+	outBuf := new(bytes.Buffer)
+	errBuf := new(bytes.Buffer)
+	root.SetOut(outBuf)
+	root.SetErr(errBuf)
+	root.SetArgs([]string{"--data-dir", t.TempDir(), "--project", "init-never-writes-quality", "init"})
+
+	if err := root.Execute(); err != nil {
+		t.Fatalf("mneme init: %v\nstderr:\n%s", err, errBuf.String())
 	}
-	if _, err := os.Stat(filepath.Join(tmpDir, ".mneme", "quality.toml")); err != nil {
-		t.Errorf("expected quality.toml to be written, stat err = %v", err)
+
+	if _, statErr := os.Stat(filepath.Join(repoDir, ".mneme", "quality.toml")); !os.IsNotExist(statErr) {
+		t.Errorf(".mneme/quality.toml exists after `mneme init`, want it never written (stat err = %v)", statErr)
 	}
 }
 

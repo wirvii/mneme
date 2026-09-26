@@ -2001,82 +2001,27 @@ var delegationTools = map[string]bool{
 //
 // spec_pushback, spec_resolve, spec_status, spec_doc_write, mem_*, and
 // codegraph_* are deliberately NOT in this set — see AC6.
-// mcp__mneme__quality_ack joins the set for a DIFFERENT reason than
-// spec_advance/spec_quick (SPEC-115 D11): it is not the SDD lifecycle, it is
-// the same "the author does not absolve themselves" principle D3/D9 already
-// establish for the constitution itself. A quality_ack is a human's
-// approval, channelled by the orchestrator — an implementer acking their
-// own finding reproduces the exact dishonest green report this whole
-// mechanism exists to eliminate. printLifecycleBlock names the correct
-// reason for this tool specifically; see its godoc.
 var lifecycleTools = map[string]bool{
 	"mcp__mneme__spec_advance":    true,
 	"mcp__mneme__spec_quick":      true,
-	"mcp__mneme__quality_ack":     true,
 	"mcp__mneme__backlog_archive": true,
 	// SPEC-131 D58: R1 means a record an implementer just edited can move
 	// its own spec's status — the same "the author does not authorize
-	// their own change" family as the four entries above. sdd_status is
+	// their own change" family as the entries above. sdd_status is
 	// read-only and stays OUT of this map.
 	"mcp__mneme__sdd_import": true,
 }
 
-// roleScopedTools maps an MCP tool name to the ONE subagent role allowed
-// to invoke it (SPEC-117 S3 D11) — evaluated right after lifecycleTools,
-// with the same shape, but a DIFFERENT enforcement posture: this is the
-// first rule in the repo that FAILS CLOSED when a subagent's role cannot
-// be resolved (RoleSource=="unresolved"), deliberately breaking SPEC-086's
-// fail-open stance for this one tool. The reason is D14 of the grill: a
-// signing tool that fails open would let the author of a change sign
-// their own manual criteria, which is exactly what D14 forbids — SPEC-086's
-// fail-open existed to avoid blocking work, not to let anyone sign.
-//
-// quality_sign is deliberately NOT in lifecycleTools: the qa-tester MUST
-// be able to call it, and lifecycleTools is an unconditional, no-role
-// block for every subagent.
-var roleScopedTools = map[string]string{
-	"mcp__mneme__quality_sign": "qa-tester",
-}
-
-// roleScopedBlockMessage is the message printed when a subagent's
-// role-scoped MCP call is denied (SPEC-117 D11) — names the required
-// role and the CLI escape hatch (the human's own channel, which never
-// passes through this hook) so a legitimately blocked subagent is not
-// left stuck with no path forward.
-const roleScopedBlockMessage = "⛔ mneme: %s está restringido al rol %q. Este subagente no puede invocarlo. El orquestador (o un humano vía `mneme quality sign`) puede hacerlo en su lugar.\n"
-
-// roleScopedUnresolvedMessage is printed when the role-scoped guard fails
-// CLOSED because the caller's role could not be resolved at all
-// (RoleSource=="unresolved", D2) — distinct from roleScopedBlockMessage's
-// "wrong role" case: here mneme does not even know WHO is calling, and a
-// firma cuyo firmante no se puede identificar es peor que no tener firma.
-const roleScopedUnresolvedMessage = "⛔ mneme: %s exige un rol resuelto (agent_type) y este payload no lo trae — la regla falla CERRADA a propósito (D11), rompiendo la postura fail-open de SPEC-086 solo para esta herramienta. Usa el CLI (`mneme quality sign`) como humano.\n"
-
-// printRoleScopedBlock writes the SPEC-117 D11 role-scoped denial message
-// to w — the "wrong role" message when the role resolved but does not
-// match requiredRole, or the "unresolved" message when it could not be
-// determined at all.
-func printRoleScopedBlock(w io.Writer, tool, requiredRole string, unresolved bool) {
-	if unresolved {
-		fmt.Fprintf(w, roleScopedUnresolvedMessage, tool)
-		return
-	}
-	fmt.Fprintf(w, roleScopedBlockMessage, tool, requiredRole)
-}
-
 // roleScopedDocKinds maps a spec_doc_write `kind` argument to the ONE
 // subagent role allowed to write it (SPEC-118 D10) — evaluated ONLY when
-// input.ToolName == "mcp__mneme__spec_doc_write", after both
-// lifecycleTools and roleScopedTools above, and indexed by KIND rather
+// input.ToolName == "mcp__mneme__spec_doc_write", indexed by KIND rather
 // than by tool name: spec_doc_write itself stays open to every
 // implementer (its "changes" kind is exactly their entregable channel) —
 // only the specific kinds below are restricted.
 //
 // "budget" is D10's own case: the architect's ONLY write channel for the
-// budget document, and cerrojo 2 against an implementer examining itself
-// (cerrojo 1 — quality_ack denied to every subagent — does not alone
-// close the hole: an implementer could otherwise write its OWN original
-// budget with no [revision] to sign).
+// budget document (SPEC-158 retires the kind itself in a later commit —
+// this entry goes with it).
 //
 // "criteria" is the ORCHESTRATOR's addition to this map, not part of the
 // architect's original SPEC-118 design: the same gap H4 of the design
@@ -2095,16 +2040,13 @@ var roleScopedDocKinds = map[string]string{
 // restricted — only specific kinds are).
 const roleScopedDocKindBlockMessage = "⛔ mneme: spec_doc_write kind %q está restringido al rol %q. Este subagente no puede escribirlo. El orquestador (o el arquitecto) puede hacerlo en su lugar.\n"
 
-// roleScopedDocKindUnresolvedMessage documents D10's deliberate asymmetry
-// with roleScopedTools/quality_sign: THIS rule fails OPEN when the role
-// cannot be resolved, the opposite of quality_sign's fail-closed posture.
-// Closing it would leave the architect unable to write ANY budget/criteria
-// document the moment agent_type stopped arriving in the payload, breaking
-// the common path for every spec; the document that slips through stays
-// subject to the structural cerrojo downstream (a revision is always a
-// firmable finding, and quality_ack is denied to every subagent
-// regardless of role resolution).
-const roleScopedDocKindUnresolvedMessage = "⚠ mneme: spec_doc_write kind %q está restringido al rol %q, pero el rol de este subagente no se pudo resolver — se permite (D10 falla ABIERTO a propósito, al revés que quality_sign): el documento sigue sujeto al cerrojo estructural (quality_ack denegado a todo subagente).\n"
+// roleScopedDocKindUnresolvedMessage documents D10's deliberate posture:
+// this rule fails OPEN when the role cannot be resolved. Closing it would
+// leave the architect unable to write ANY budget/criteria document the
+// moment agent_type stopped arriving in the payload, breaking the common
+// path for every spec — the reason architect edits reach the human approval
+// gate is enough of a downstream check on their own.
+const roleScopedDocKindUnresolvedMessage = "⚠ mneme: spec_doc_write kind %q está restringido al rol %q, pero el rol de este subagente no se pudo resolver — se permite (D10 falla ABIERTO a propósito).\n"
 
 // printRoleScopedDocKindBlock writes the SPEC-118 D10 role-scoped-by-kind
 // denial message to w.
@@ -2131,12 +2073,6 @@ func printLifecycleBlock(w io.Writer, tool string) {
 	case "mcp__mneme__spec_advance":
 		// Canonical message only — byte-for-byte identical to before
 		// SPEC-115 (verified by the pre-existing SPEC-087 test).
-	case "mcp__mneme__quality_ack":
-		// SPEC-115 D11: the WRONG reason here is "the lifecycle SDD lo
-		// gobierna el orquestador" (that is spec_advance/spec_quick's
-		// reason) — a quality_ack is a human's approval of a finding,
-		// channelled by the orchestrator, never the change's own author.
-		fmt.Fprintf(w, "(bloqueado: %s — motivo distinto: la aprobación de un hallazgo de calidad es del humano vía el orquestador, nunca del autor del cambio bajo revisión.)\n", tool)
 	case "mcp__mneme__backlog_archive":
 		// SPEC-125 DD11: the WRONG reason here is also "el lifecycle SDD lo
 		// gobierna el orquestador" — archiving a backlog item is the
@@ -2201,33 +2137,12 @@ func runHookEnforceDelegation(r io.Reader, errW io.Writer) error {
 		return nil
 	}
 
-	// SPEC-117 D11: a SECOND, independent guard, evaluated right after
-	// lifecycleTools with the same shape (before the delegationTools
-	// filter — quality_sign is neither a file tool nor Bash, so that
-	// filter would otherwise short-circuit past it entirely). Unlike
-	// EVERY other subagent rule in this file, this one fails CLOSED when
-	// the role cannot be resolved: a signing tool whose caller cannot be
-	// identified is worse than no signing tool at all.
-	if identity.IsSubagent {
-		if requiredRole, scoped := roleScopedTools[input.ToolName]; scoped {
-			unresolved := identity.RoleSource == "unresolved"
-			if unresolved || identity.Role != requiredRole {
-				printRoleScopedBlock(errW, input.ToolName, requiredRole, unresolved)
-				logRoleScopedToolDeniedEvent(input, identity, requiredRole)
-				//nolint:gocritic // os.Exit(2) is the documented hook exit code for rejection
-				os.Exit(2)
-				return nil
-			}
-		}
-	}
-
-	// SPEC-118 D10: a THIRD, independent guard, evaluated right after
-	// roleScopedTools, and only for spec_doc_write specifically — indexed
+	// SPEC-118 D10: a SECOND, independent guard, evaluated right after
+	// lifecycleTools, and only for spec_doc_write specifically — indexed
 	// by the call's own `kind` argument (roleScopedDocKinds), never by
 	// tool name: every OTHER kind (changes, spec, plan, qa-report) stays
 	// open to whichever implementer already writes it. Deliberately fails
-	// OPEN when the role cannot be resolved (the opposite of
-	// roleScopedTools' fail-closed posture above) — see
+	// OPEN when the role cannot be resolved — see
 	// roleScopedDocKindUnresolvedMessage's own godoc for why.
 	if identity.IsSubagent && input.ToolName == "mcp__mneme__spec_doc_write" {
 		if requiredRole, scoped := roleScopedDocKinds[input.ToolInput.Kind]; scoped {
@@ -2515,9 +2430,10 @@ func logContainmentEvent(cfg *config.Config, slug string, input hookPreToolInput
 
 // logRoleScopedDocKindDeniedEvent appends a best-effort enforcelog.Event for
 // a SPEC-118 D10 role-scoped-by-kind denial (Reason:
-// "role_scoped_dockind_denied") — mirrors logRoleScopedToolDeniedEvent's own
-// shape, with Target naming "<kind>:<requiredRole>" so a report can tell
-// which document kind was denied without a schema change to enforcelog.Event.
+// "role_scoped_dockind_denied") — mirrors logLifecycleToolDeniedEvent's own
+// self-contained shape, with Target naming "<kind>:<requiredRole>" so a
+// report can tell which document kind was denied without a schema change to
+// enforcelog.Event.
 func logRoleScopedDocKindDeniedEvent(input hookPreToolInput, identity CallerIdentity, requiredRole string) {
 	cfg, err := config.Load(config.DefaultPath())
 	if err != nil {
@@ -2585,41 +2501,6 @@ func logLifecycleToolDeniedEvent(input hookPreToolInput, identity CallerIdentity
 		Target:     input.ToolInput.ID,
 		Decision:   enforcelog.DecisionBlock,
 		Reason:     "lifecycle_tool_denied_to_subagent",
-	}
-	_ = enforcelog.Append(path, ev, enforcelog.DefaultMaxBytes) //nolint:errcheck // best-effort telemetry
-}
-
-// logRoleScopedToolDeniedEvent appends a best-effort enforcelog.Event for
-// a SPEC-117 D11 role-scoped tool denial (Reason: "role_scoped_tool_denied")
-// — self-contained (resolves cwd/config/project itself), the same posture
-// as logLifecycleToolDeniedEvent, and for the same reason: this guard also
-// fires before runHookEnforceDelegation's own cwd resolution.
-func logRoleScopedToolDeniedEvent(input hookPreToolInput, identity CallerIdentity, requiredRole string) {
-	cfg, err := config.Load(config.DefaultPath())
-	if err != nil {
-		return
-	}
-	cwd, err := os.Getwd()
-	if err != nil {
-		return
-	}
-	cwd = resolveHookCWD(input, cwd)
-	det := project.NewDetector(cwd)
-	slug, _ := det.DetectProject()
-
-	path := enforcelogPath(cfg.Storage.DataDir, slug)
-	ev := enforcelog.Event{
-		TS:         time.Now().UTC(),
-		Session:    input.SessionID,
-		Project:    slug,
-		Caller:     "subagent",
-		AgentID:    identity.AgentID,
-		Role:       identity.Role,
-		RoleSource: identity.RoleSource,
-		Tool:       input.ToolName,
-		Target:     requiredRole,
-		Decision:   enforcelog.DecisionBlock,
-		Reason:     "role_scoped_tool_denied",
 	}
 	_ = enforcelog.Append(path, ev, enforcelog.DefaultMaxBytes) //nolint:errcheck // best-effort telemetry
 }

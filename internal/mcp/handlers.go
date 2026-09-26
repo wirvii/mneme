@@ -31,7 +31,6 @@ type handlers struct {
 	subagentSvc *service.SubagentService  // wraps svc; always available (SPEC-057/SS-4)
 	profileSvc  *service.ProfileService   // wraps cfg.ProfilesDir(); always available (SPEC-091 §1)
 	speechSvc   *service.SpeechService    // host-local speech control; always available
-	qualitySvc  *service.QualityService   // optional; nil until wired via Server.WithQualityService (SPEC-115 P10)
 	logger      *slog.Logger
 }
 
@@ -178,18 +177,6 @@ func (h *handlers) handleToolCall(ctx context.Context, params ToolCallParams) (*
 		return h.handleSDDStatus(ctx, params.Arguments)
 	case "sdd_import":
 		return h.handleSDDImport(ctx, params.Arguments)
-
-	// --- QUALITY TOOLS (SPEC-115 EPIC-calidad S1) ---
-	case "quality_verify":
-		return h.handleQualityVerify(ctx, params.Arguments)
-	case "quality_status":
-		return h.handleQualityStatus(ctx, params.Arguments)
-	case "quality_ack":
-		return h.handleQualityAck(ctx, params.Arguments)
-	case "quality_sign":
-		return h.handleQualitySign(ctx, params.Arguments)
-	case "quality_report":
-		return h.handleQualityReport(ctx, params.Arguments)
 
 	// --- SKILLS TOOLS ---
 	case "skills_list":
@@ -934,16 +921,6 @@ func (h *handlers) sddUnavailable(method string) *JSONRPCError {
 	}
 }
 
-// qualityUnavailable returns a JSONRPCError indicating the quality service
-// was never wired via Server.WithQualityService — the mirror of
-// sddUnavailable for the three quality_* tools (SPEC-115 P10).
-func (h *handlers) qualityUnavailable(method string) *JSONRPCError {
-	return &JSONRPCError{
-		Code:    CodeInternalError,
-		Message: fmt.Sprintf("mcp: handle %s: quality service not available", method),
-	}
-}
-
 // backlogAddResponse is the envelope handleBacklogAdd returns (SPEC-103 D7):
 // the created item plus an advisory refinement nudge, mirroring the
 // {spec, executor, review_range?} envelope handleSpecAdvance returns
@@ -1537,7 +1514,7 @@ func (h *handlers) handleSDDStatus(ctx context.Context, _ json.RawMessage) (*Too
 // via lifecycleTools (internal/cli/hook.go): R1 means a file the caller
 // itself just edited can move a spec's status, so this is the same
 // "the author does not authorize their own change" family
-// spec_advance/spec_quick/quality_ack/backlog_archive already belong to.
+// spec_advance/spec_quick/backlog_archive already belong to.
 func (h *handlers) handleSDDImport(ctx context.Context, _ json.RawMessage) (*ToolCallResult, *JSONRPCError) {
 	if h.sdd == nil {
 		return nil, h.sddUnavailable("sdd_import")
@@ -2594,12 +2571,11 @@ func (h *handlers) handleInit(ctx context.Context, raw json.RawMessage) (*ToolCa
 	initSvc := service.NewInitService(cfg, h.sdd, h.svc, h.svc.ProjectSlug(), opts)
 
 	type initResult struct {
-		RepoRoot                string   `json:"repo_root"`
-		CheckMode               bool     `json:"check_mode"`
-		ManualApplied           bool     `json:"manual_applied"`
-		RepoBlock               bool     `json:"repo_block_applied"`
-		QualityConstitutionInit bool     `json:"quality_constitution_applied"`
-		DriftFindings           []string `json:"drift_findings"`
+		RepoRoot      string   `json:"repo_root"`
+		CheckMode     bool     `json:"check_mode"`
+		ManualApplied bool     `json:"manual_applied"`
+		RepoBlock     bool     `json:"repo_block_applied"`
+		DriftFindings []string `json:"drift_findings"`
 	}
 
 	result := initResult{
@@ -2630,17 +2606,8 @@ func (h *handlers) handleInit(ctx context.Context, raw json.RawMessage) (*ToolCa
 		}
 	}
 
-	// Quality constitution (SPEC-115 D15): absent -> written with
-	// enabled=false; present -> never touched. --check never writes.
-	qualityFindings, qualityErr := initSvc.EnsureQualityConstitution(repoRoot, args.Check)
-	if qualityErr != nil {
-		h.logger.Warn("mcp: init: quality constitution", "error", qualityErr)
-	} else if !args.Check {
-		result.QualityConstitutionInit = true
-	}
-
-	// .gitattributes (SPEC-140 D9-D11), same checkMode contract as the
-	// quality constitution step above.
+	// .gitattributes (SPEC-140 D9-D11): absent -> written; present -> never
+	// touched. --check never writes.
 	gitattrsFindings, gitattrsErr := service.EnsureGitattributes(repoRoot, args.Check)
 	if gitattrsErr != nil {
 		h.logger.Warn("mcp: init: gitattributes", "error", gitattrsErr)
@@ -2651,7 +2618,6 @@ func (h *handlers) handleInit(ctx context.Context, raw json.RawMessage) (*ToolCa
 	if driftErr != nil {
 		h.logger.Warn("mcp: init: drift", "error", driftErr)
 	}
-	findings = append(findings, qualityFindings...)
 	findings = append(findings, gitattrsFindings...)
 	for _, f := range findings {
 		result.DriftFindings = append(result.DriftFindings, f.String())

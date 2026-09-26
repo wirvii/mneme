@@ -6,13 +6,32 @@ import (
 	"testing"
 )
 
-// TestAllTools_Count87 verifies the tool count after SPEC-131 §2b adds
-// sdd_status/sdd_import: 85 (established since backlog_archive, SPEC-125)
-// -> 87.
-func TestAllTools_Count87(t *testing.T) {
+// TestAllTools_Count82 verifies the tool count after SPEC-158 retires the
+// five quality_* tools: 87 -> 82.
+func TestAllTools_Count82(t *testing.T) {
 	tools := allTools()
-	if len(tools) != 87 {
-		t.Errorf("allTools() returned %d tools, want 87", len(tools))
+	if len(tools) != 82 {
+		t.Errorf("allTools() returned %d tools, want 82", len(tools))
+	}
+}
+
+// TestAllTools_NoQualityFamily covers SPEC-158 AC10: no tool name starts
+// with quality_ any more — asked of allTools() directly, never of prose.
+// Positive anchor: spec_advance must still be present, so this test cannot
+// pass vacuously against an empty tool list.
+func TestAllTools_NoQualityFamily(t *testing.T) {
+	tools := allTools()
+	sawSpecAdvance := false
+	for _, tool := range tools {
+		if tool.Name == "spec_advance" {
+			sawSpecAdvance = true
+		}
+		if strings.HasPrefix(tool.Name, "quality_") {
+			t.Errorf("allTools() still declares %q, want the quality_ family entirely retired", tool.Name)
+		}
+	}
+	if !sawSpecAdvance {
+		t.Fatal("allTools() has no spec_advance — this test proves nothing without a positive anchor")
 	}
 }
 

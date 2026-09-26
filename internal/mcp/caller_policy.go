@@ -15,10 +15,8 @@ type CallerPolicy struct {
 
 func (p CallerPolicy) allowsTool(name string) bool {
 	switch name {
-	case "spec_advance", "spec_quick", "quality_ack":
+	case "spec_advance", "spec_quick":
 		return false
-	case "quality_sign":
-		return p.Archetype == "qa-tester"
 	default:
 		return true
 	}

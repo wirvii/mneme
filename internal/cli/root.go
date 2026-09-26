@@ -180,7 +180,6 @@ in a local SQLite database and exposes them via MCP for agent integration.`,
 		newAppCmd(),
 		newScaffoldCmd(),
 		newSpeechCmd(),
-		newQualityCmd(),
 		newSDDCmd(),
 	)
 
@@ -366,13 +365,13 @@ func initSDDService() (*service.SDDService, func(), error) {
 	// are saved when SDDService is wired with a MemoryService (e.g. in the MCP server).
 	sddSvc := service.NewSDDService(sddStore, cfg, slug, nil)
 
-	// SPEC-115 D13/P6: initSDDService is the ONE production construction
-	// site for SDDService, serving both the CLI and the MCP server
+	// initSDDService is the ONE production construction site for
+	// SDDService, serving both the CLI and the MCP server
 	// (internal/cli/mcp.go). Fixing repoDir here — falling back to cwd when
 	// the directory is not (or not yet) a git repository — is what makes
-	// the quality mechanism's certificate/worktree checks see a real
-	// repository root instead of running dormant (repoDir == "") the whole
-	// time in production. root, cwdErr already resolved above.
+	// the review frontier (SPEC-157) and the trivial-lane auditor see a
+	// real repository root instead of running dormant (repoDir == "") the
+	// whole time in production. root, cwdErr already resolved above.
 	root, rootErr := repoRoot(cwd)
 	if rootErr != nil {
 		root = cwd
