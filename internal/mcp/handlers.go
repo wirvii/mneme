@@ -2596,12 +2596,21 @@ func (h *handlers) handleInit(ctx context.Context, raw json.RawMessage) (*ToolCa
 		h.logger.Warn("mcp: init: gitattributes", "error", gitattrsErr)
 	}
 
+	// Advisory-only in BOTH modes (SPEC-158 D5.c): names any legacy
+	// .mneme/quality.toml or quality-baseline.toml left by the now-retired
+	// certification mechanism, but never writes or deletes either file.
+	legacyQualityFindings, legacyQualityErr := initSvc.LegacyQualityFindings(repoRoot)
+	if legacyQualityErr != nil {
+		h.logger.Warn("mcp: init: legacy quality files", "error", legacyQualityErr)
+	}
+
 	// Drift detection.
 	findings, driftErr := initSvc.RunDrift(repoRoot)
 	if driftErr != nil {
 		h.logger.Warn("mcp: init: drift", "error", driftErr)
 	}
 	findings = append(findings, gitattrsFindings...)
+	findings = append(findings, legacyQualityFindings...)
 	for _, f := range findings {
 		result.DriftFindings = append(result.DriftFindings, f.String())
 	}

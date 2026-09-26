@@ -121,12 +121,22 @@ The command is idempotent: re-running on an already-configured project is safe.`
 				fmt.Fprintf(cmd.ErrOrStderr(), "Warning: gitattributes: %v\n", gitattrsErr)
 			}
 
+			// Step 3c: advisory-only in BOTH modes (SPEC-158 D5.c) — names
+			// any legacy .mneme/quality.toml or quality-baseline.toml left
+			// by the now-retired certification mechanism, but never writes
+			// or deletes either file (that is `mneme upgrade`'s job).
+			legacyQualityFindings, legacyQualityErr := initSvc.LegacyQualityFindings(cwd)
+			if legacyQualityErr != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "Warning: legacy quality files: %v\n", legacyQualityErr)
+			}
+
 			// Step 4: drift report (always, even in --check mode).
 			findings, driftErr := initSvc.RunDrift(cwd)
 			if driftErr != nil {
 				fmt.Fprintf(cmd.ErrOrStderr(), "Warning: drift detection: %v\n", driftErr)
 			}
 			findings = append(findings, gitattrsFindings...)
+			findings = append(findings, legacyQualityFindings...)
 			if len(findings) > 0 {
 				fmt.Fprintln(cmd.OutOrStdout(), "\n[drift] Advisory findings:")
 				for _, f := range findings {
