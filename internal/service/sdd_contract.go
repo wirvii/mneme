@@ -33,8 +33,7 @@ import (
 // (D2 point 2) — the guarantee that reader and writer never resolve
 // different paths. Returns (nil, "", nil) when the mechanism itself is off:
 // svc.config is nil, or svc.config.WorkflowDir() is empty. There is never a
-// fallback to os.Getwd() (D2 point 5, the same posture ensureCertified and
-// validateCriteriaDoc already establish for repoDir).
+// fallback to os.Getwd() (D2 point 5).
 //
 // When the mechanism is on but the file is absent, the returned error wraps
 // model.ErrCriteriaNotFound and the second return value is the exact path
