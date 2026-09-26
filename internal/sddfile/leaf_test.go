@@ -19,7 +19,7 @@ var sddfileAllowedImports = map[string]bool{
 
 // isStdlibImport reports whether path looks like a standard library
 // import: no dot in the first path segment. The same heuristic
-// internal/quality/leaf_test.go and internal/profile/leaf_test.go already
+// internal/gitrepo/leaf_test.go and internal/profile/leaf_test.go already
 // use for their own perimeter guardians.
 func isStdlibImport(path string) bool {
 	first := path

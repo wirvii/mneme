@@ -49,9 +49,9 @@ func SpecDir(repoRoot, id string) string {
 // SpecRecordPath returns the path to a spec's record file. It is ALWAYS
 // named record.md (D39, firm — accepted by the owner 2026-08-28), never
 // spec.md: that name belongs to model.SpecDocKind's closed vocabulary
-// (spec.md, plan.md, qa-report.md, changes.md, criteria.toml, budget.toml)
-// that BL-196 will deposit in this same directory. record.md does not
-// collide with any of the six.
+// (spec.md, plan.md, qa-report.md, changes.md, criteria.toml) that BL-196
+// will deposit in this same directory. record.md does not collide with any
+// of the five.
 func SpecRecordPath(repoRoot, id string) string {
 	return filepath.Join(SpecDir(repoRoot, id), "record.md")
 }

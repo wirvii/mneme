@@ -562,40 +562,21 @@ regen). Reporta tu resultado y termina; el orquestador avanzará.
 ```
 
 `mneme subagents doctor` reports `stale_agent_fixed` for any manifest entry
-whose `Version` is behind `subagents.AgentFixedVersion` (currently 2); `mneme
+whose `Version` is behind `subagents.AgentFixedVersion` (currently 5); `mneme
 subagents regen [--role R] [--all] [--dry-run]` regenerates the file(s) in
 place, preserving any hand-authored area sections byte-for-byte. See
 [`docs/subagents.md`](subagents.md).
 
-### Role-scoped tool denial (SPEC-117 D11)
-
-A sibling map, `roleScopedTools` (`internal/cli/hook.go`), evaluated
-immediately after `lifecycleTools`, restricts a single MCP tool to a
-single subagent role instead of blocking it for everyone:
-
-```
-mcp__mneme__quality_sign  agent_type=qa-tester -> exit 0 (allowed)
-mcp__mneme__quality_sign  agent_type=backend    -> exit 2 (blocked)
-mcp__mneme__quality_sign  agent_type absent     -> exit 2 (blocked — FAILS CLOSED)
-```
-
-`quality_sign` is a qa-tester's ATTESTATION that a criterion holds
-(SPEC-117 S3 D11) — the author of a change must never be able to certify
-their own work. Runs in the same position as the lifecycle-tool check
-(before `delegationTools`, before the `RoleSource=="unresolved"`
-short-circuit), for the same reason: `quality_sign` is never a file/Bash
-tool.
-
-**The one rule in the repo that fails CLOSED.** Every other guard here
-fails OPEN when `agent_type` is absent (`RoleSource=="unresolved"`) — the
-containment loses its signal and warns loudly, but still allows the call.
-This one denies instead: a signature whose signer cannot be identified is
-worse than none, so SPEC-086's fail-open posture is deliberately broken
-for this single tool. The escape hatch is a human, via
-`mneme quality sign` on the CLI, which never passes through this hook. A
-best-effort `enforcelog` event is recorded on block (`Reason:
-"role_scoped_tool_denied"`); no discovery memory, same reasoning as the
-lifecycle-tool block.
+A role-scoped-by-KIND sibling, `roleScopedDocKinds` (`internal/cli/hook.go`),
+restricts `spec_doc_write`'s `criteria` kind to the `architect` role — an
+implementer writing it would be rewriting the exam it is judged by. Unlike
+the lifecycle guard above, it fails OPEN when the caller's role cannot be
+resolved: closing it would leave the architect unable to write the document
+at all the moment `agent_type` stopped arriving in the payload. The
+certification mechanism used to add a SECOND, tool-scoped map here
+(`roleScopedTools`, restricting `quality_sign` to `qa-tester`, the one rule
+in the repo that failed CLOSED) — it was retired whole by SPEC-158 along
+with the tool it governed.
 
 ### Inherent limits (Layer 2 scope)
 

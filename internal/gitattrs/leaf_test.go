@@ -12,7 +12,7 @@ import (
 
 // isStdlibImport reports whether path looks like a standard library
 // import: no dot in the first path segment. Same heuristic
-// internal/sddfile/leaf_test.go and internal/quality/leaf_test.go already
+// internal/sddfile/leaf_test.go and internal/gitrepo/leaf_test.go already
 // use for their own perimeter guardians.
 func isStdlibImport(path string) bool {
 	first := path

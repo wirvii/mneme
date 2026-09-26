@@ -292,13 +292,11 @@ func (ix *Indexer) indexList(opts IndexOptions) (*IndexResult, error) {
 // files are visited) but harmless, and it is essential in scoped mode where
 // there is no walk to prune anything.
 //
-// Exported since SPEC-118 (D6 point 4): the budget mechanism
-// (internal/quality/internal/service) needs the SAME elegibilidad this
-// indexer already enforces — a `.md`, a `.sql`, or a file under `vendor/`
-// contributes no budgetable symbols and must produce no finding for not
-// contributing them. Reimplementing this predicate in another package would
-// create the second source of truth this function's own name exists to
-// prevent; its LOGIC is unchanged by this export, only its visibility.
+// Exported so any other package needing the SAME eligibility this indexer
+// already enforces (e.g. a `.md`, a `.sql`, or a file under `vendor/`
+// contributing nothing worth indexing) can reuse it instead of
+// reimplementing a second source of truth; its LOGIC is unchanged by this
+// export, only its visibility.
 func IsEligibleSource(relPath string) (lang string, ok bool) {
 	slashed := filepath.ToSlash(relPath)
 	parts := strings.Split(slashed, "/")
