@@ -1,0 +1,287 @@
+schema_version = 1
+
+# SPEC-156 — criterios ejecutables.
+#
+# Dogfooding deliberado: esta spec es la que HACE obligatorio este archivo en
+# carril standard, asi que tiene que traerlo.
+#
+# Por que algunos criterios NO caben en modo assert (documentado en spec.md §4):
+#  - AC10 ("ninguna comprobacion nueva se ejecuta en qa -> done") es la
+#    PRESERVACION de un invariante. Cualquier assert sobre algo que ya se
+#    cumple en el commit base sale `vacuous` por construccion: no prueba nada
+#    sobre el trabajo hecho. Va en modo manual, con la prueba de regresion
+#    nombrada como evidencia.
+#  - "las pruebas pasan" no es una funcion del arbol de git: los cuatro verbos
+#    assert leen contenido, no ejecutan nada. Va en modo command.
+#
+# --- CORRECCION 2026-09-24, despues de la implementacion (b9a31db) ---
+#
+# Dos criterios estaban MAL ESCRITOS. El defecto estaba en el criterio, no en el
+# codigo: la implementacion es correcta y no se toco. Corregidos aqui, sin
+# relajar lo que comprueban.
+#
+#  1. AC8 buscaba el literal EN ESPAÑOL "fuera del contrato" dentro de
+#     internal/install/assets/operating-manual*.md, pero los dos manuales estan
+#     escritos enteramente EN INGLES. El implementador escribio el parrafo en
+#     ingles, fiel al diseño (spec.md §3 D8), y dejo el criterio sin satisfacer
+#     en vez de meter una frase en español en un documento en ingles — decision
+#     correcta, y ademas obligada por la §9 del propio manual (no dejar una
+#     palabra extranjera sin traducir en texto que lee una persona).
+#     Corregido a literales reales del texto en ingles, y de paso REFORZADO:
+#     donde antes habia UNA asercion con un glob que cubria los dos ficheros
+#     (y que un solo fichero con la frase dos veces podia satisfacer), ahora hay
+#     DOS aserciones POR FICHERO, cada una anclada a su ruta exacta. Verificar
+#     que la doctrina aterrizo en los dos manuales pasa de "esperemos que si" a
+#     comprobado fichero a fichero.
+#     Aviso para quien edite estos literales: `pattern_count` cuenta LINEAS, asi
+#     que una frase que cruza un salto de linea NO casa nunca. Las escogidas
+#     caben enteras en una linea en AMBOS manuales, que envuelven a anchos
+#     distintos.
+#
+#  2. AC5 media la declaracion del campo nuevo en el esquema MCP con
+#     `contains = "findings"` (palabra completa) sobre internal/mcp/tools.go, y
+#     esa palabra YA existia en el commit base: la descripcion de la tool `init`
+#     dice "Returns drift findings". El criterio era VACUO — se cumplia antes de
+#     escribir una sola linea. Corregido al literal exacto de la declaracion de
+#     la propiedad en el esquema, que en base no existe.
+#
+# Ningun otro criterio dependia de un idioma o de una redaccion que no coincida
+# con lo escrito: revisados los once, uno por uno, contra el arbol de b9a31db.
+
+[[criterion]]
+id = "AC1"
+mode = "assert"
+text = "SpecRejectRequest gana una lista de hallazgos y RejectFinding existe como tipo propio, con el criterio que cada hallazgo incumple."
+
+  [[criterion.assert]]
+  verb = "symbol_defined"
+  symbol = "RejectFinding"
+  in = ["internal/model/sdd.go"]
+  new = false
+
+  [[criterion.assert]]
+  verb = "symbol_defined"
+  symbol = "CriterionID"
+  in = ["internal/model/sdd.go"]
+  new = false
+
+[[criterion]]
+id = "AC2"
+mode = "assert"
+text = "Las dos sentinelas nuevas existen en internal/model/errors.go y estan mapeadas a CodeInvalidParams en el frontend MCP."
+
+  [[criterion.assert]]
+  verb = "symbol_defined"
+  symbol = "ErrFindingsRequired"
+  in = ["internal/model/errors.go"]
+  new = false
+
+  [[criterion.assert]]
+  verb = "symbol_defined"
+  symbol = "ErrUnknownCriterion"
+  in = ["internal/model/errors.go"]
+  new = false
+
+  [[criterion.assert]]
+  verb = "symbol_referenced"
+  symbol = "ErrFindingsRequired"
+  defined_in = ["internal/model/errors.go"]
+  ignore = ["**/*_test.go"]
+  new = false
+
+[[criterion]]
+id = "AC3"
+mode = "assert"
+text = "La logica nueva vive en su propio archivo (internal/service/sdd_contract.go) y declara los dos guardianes: el que exige criteria.toml en speccing -> specced y el que valida los hallazgos de un rechazo."
+
+  [[criterion.assert]]
+  verb = "file_exists"
+  path = "internal/service/sdd_contract.go"
+  new = true
+
+  [[criterion.assert]]
+  verb = "symbol_defined"
+  symbol = "ensureCriteriaDeclared"
+  in = ["internal/service/sdd_contract.go"]
+  new = true
+
+  [[criterion.assert]]
+  verb = "symbol_defined"
+  symbol = "ensureRejectFindings"
+  in = ["internal/service/sdd_contract.go"]
+  new = true
+
+[[criterion]]
+id = "AC4"
+mode = "assert"
+text = "Los dos guardianes se invocan de verdad desde el motor SDD: no son codigo muerto que compila y no gobierna nada."
+
+  [[criterion.assert]]
+  verb = "symbol_referenced"
+  symbol = "ensureCriteriaDeclared"
+  defined_in = ["internal/service/sdd_contract.go"]
+  ignore = ["**/*_test.go"]
+  new = true
+
+  [[criterion.assert]]
+  verb = "symbol_referenced"
+  symbol = "ensureRejectFindings"
+  defined_in = ["internal/service/sdd_contract.go"]
+  ignore = ["**/*_test.go"]
+  new = true
+
+[[criterion]]
+id = "AC5"
+mode = "assert"
+text = "El campo nuevo de spec_reject esta declarado como propiedad de su esquema de entrada MCP (sin eso, el guardian de contrato de esquema se pone rojo) y la interfaz de linea de comandos acepta hallazgos. El literal del esquema es la declaracion de la propiedad, no la palabra 'findings' suelta: esa ya aparecia en el commit base, en la descripcion de otra tool."
+
+  [[criterion.assert]]
+  verb = "pattern_count"
+  contains = '"findings": map[string]any{'
+  in = ["internal/mcp/tools.go"]
+  word = false
+  comparator = "=="
+  count = 1
+  new = false
+
+  [[criterion.assert]]
+  verb = "pattern_count"
+  contains = "finding"
+  in = ["internal/cli/spec.go"]
+  word = true
+  comparator = ">="
+  count = 1
+  new = false
+
+[[criterion]]
+id = "AC6"
+mode = "assert"
+text = "La doctrina vive en la capa 1 de los perfiles: dos secciones nuevas (una para el architect, una para el qa-tester), asignadas en roleSections, con el informe de QA partido en dentro/fuera del contrato."
+
+  [[criterion.assert]]
+  verb = "pattern_count"
+  contains = "endsection: criteria-contract"
+  in = ["internal/subagents/assets/agent-fixed.md"]
+  word = false
+  comparator = "=="
+  count = 1
+  new = false
+
+  [[criterion.assert]]
+  verb = "pattern_count"
+  contains = "endsection: bounded-review"
+  in = ["internal/subagents/assets/agent-fixed.md"]
+  word = false
+  comparator = "=="
+  count = 1
+  new = false
+
+  [[criterion.assert]]
+  verb = "pattern_count"
+  contains = "Fuera del contrato"
+  in = ["internal/subagents/assets/agent-fixed.md"]
+  word = false
+  comparator = ">="
+  count = 1
+  new = false
+
+  [[criterion.assert]]
+  verb = "pattern_count"
+  contains = "criteria-contract"
+  in = ["internal/subagents/composer.go"]
+  word = false
+  comparator = ">="
+  count = 1
+  new = false
+
+  [[criterion.assert]]
+  verb = "pattern_count"
+  contains = "bounded-review"
+  in = ["internal/subagents/composer.go"]
+  word = false
+  comparator = ">="
+  count = 1
+  new = false
+
+[[criterion]]
+id = "AC7"
+mode = "assert"
+text = "AgentFixedVersion sube a 4, que es lo unico que hace que `mneme subagents doctor` reporte los perfiles desactualizados en los proyectos ya materializados."
+
+  [[criterion.assert]]
+  verb = "pattern_count"
+  contains = "AgentFixedVersion = 4"
+  in = ["internal/subagents/composer.go"]
+  word = false
+  comparator = "=="
+  count = 1
+  new = false
+
+[[criterion]]
+id = "AC8"
+mode = "assert"
+text = "Los DOS manuales operativos (el de Claude Code y el de Codex) llevan las DOS mitades de la doctrina: que el archivo de criterios es obligatorio en carril standard, y que un hallazgo por si solo no autoriza ampliar el alcance. Comprobado fichero a fichero contra el texto real, que esta en ingles como el resto de los dos manuales."
+
+  [[criterion.assert]]
+  verb = "pattern_count"
+  contains = "criteria.toml"
+  in = ["internal/install/assets/operating-manual.md"]
+  word = false
+  comparator = ">="
+  count = 1
+  new = false
+
+  [[criterion.assert]]
+  verb = "pattern_count"
+  contains = "does not authorize widening"
+  in = ["internal/install/assets/operating-manual.md"]
+  word = false
+  comparator = ">="
+  count = 1
+  new = false
+
+  [[criterion.assert]]
+  verb = "pattern_count"
+  contains = "criteria.toml"
+  in = ["internal/install/assets/operating-manual-codex.md"]
+  word = false
+  comparator = ">="
+  count = 1
+  new = false
+
+  [[criterion.assert]]
+  verb = "pattern_count"
+  contains = "does not authorize widening"
+  in = ["internal/install/assets/operating-manual-codex.md"]
+  word = false
+  comparator = ">="
+  count = 1
+  new = false
+
+  [[criterion.assert]]
+  verb = "pattern_count"
+  contains = "criterion_id"
+  in = ["docs/api/sdd.md"]
+  word = true
+  comparator = ">="
+  count = 1
+  new = false
+
+[[criterion]]
+id = "AC9"
+mode = "command"
+text = "Las pruebas de los cuatro paquetes tocados pasan: servicio (los dos guardianes y sus exclusiones), MCP (esquema y mapeo de errores), perfiles (secciones y version) e interfaz de linea de comandos."
+command = ["go", "test", "-count=1", "./internal/service/...", "./internal/mcp/...", "./internal/subagents/...", "./internal/cli/..."]
+timeout = "900s"
+
+[[criterion]]
+id = "AC10"
+mode = "manual"
+text = "La transicion qa -> done no gana NI UNA comprobacion nueva: un spec standard que ya esta en qa sin criteria.toml cierra igual. Es la restriccion mas importante de la ficha — nada de lo diseñado aqui puede convertirse en una puerta que bloquee la entrega."
+evidence_required = "Nombre de la prueba de regresion que avanza un spec standard de qa a done SIN criteria.toml y espera exito, mas la lectura de ensureCriteriaDeclared y ensureRejectFindings confirmando que ninguno de los dos puede alcanzarse desde esa transicion (el primero solo actua en speccing -> specced; el segundo solo dentro de SpecReject)."
+
+[[criterion]]
+id = "AC11"
+mode = "manual"
+text = "Las tres exclusiones del guardian de hallazgos se comportan como dice el diseño: carril trivial desde audit, rechazo desde done, y spec sin criteria.toml aceptan el rechazo sin hallazgos, y el rechazo queda anotado explicando por que no se valido."
+evidence_required = "Los tres casos ejecutados (prueba o sesion real) con el texto exacto que queda en spec_history en cada uno."

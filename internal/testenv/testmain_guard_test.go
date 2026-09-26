@@ -24,6 +24,8 @@ var isolatedPackages = []string{
 	"internal/install",
 	"internal/upgrade",
 	"internal/quality",
+	"internal/gitrepo",
+	"internal/laneaudit",
 }
 
 // TestAllIsolatedPackagesDeclareTestMain parses every *_test.go file in each

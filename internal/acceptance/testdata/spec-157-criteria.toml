@@ -1,0 +1,385 @@
+schema_version = 1
+
+# SPEC-157 — criterios ejecutables.
+#
+# Incluye la ampliacion aprobada por el owner (D2b/D2c): la columna se rellena
+# tambien en la transicion de ENTRADA a revision, con el extremo entregado, y al
+# salir la frontera se COPIA de ahi en vez de recalcularse de HEAD.
+#
+# Dogfooding deliberado: SPEC-156 hace obligatorio este archivo en carril
+# standard, asi que su hermana tambien lo trae.
+#
+# Por que algunos criterios NO caben en modo assert (documentado en spec.md §4):
+#  - "MinFileSchema y CurrentFileSchema siguen valiendo 1" (AC12 de la spec) es la
+#    PRESERVACION de un invariante: un assert sobre algo que ya se cumple en el
+#    commit base sale `vacuous` por construccion. Lo cubre el criterio en modo
+#    command, que ejecuta la prueba que fija ese par exacto.
+#  - "ninguna ruta de codigo devuelve un error porque la frontera no se pudo
+#    calcular, ni porque el HEAD se movio" es una propiedad NEGATIVA sobre rutas
+#    de ejecucion. Ningun verbo que lee el arbol de git puede demostrar una
+#    ausencia asi. Va en manual.
+#  - "la frontera se COPIA del extremo entregado en vez de recalcularse" es una
+#    propiedad del comportamiento en el tiempo (exige un commit intercalado entre
+#    la entrada y la salida de revision). Los verbos assert solo leen contenido:
+#    lo que SI se puede asertar es que existe la prueba que lo ejerce (AC5), y la
+#    prueba misma la ejecuta el criterio en modo command.
+#
+# REVISION DEL PLAN (2026-09-24, contra main @ a9a2f02, tras SPEC-156). Examen
+# contra el catalogo de formas de criterio muerto. Cambios, todos de medicion —
+# ninguno cambia el alcance aprobado de la spec:
+#  - AC3/AC4: `symbol_referenced` se satisfacia con CUALQUIER mencion fuera de
+#    sdd_frontier.go, incluido CLAUDE.md o docs/*.md, que estan en el alcance y
+#    van a nombrar la funcion (septima forma: sustituto que hoy coincide). Ahora
+#    se mide la LLAMADA en el sitio que D2 fija: el envoltorio de sdd_export.go.
+#  - AC5/AC7/AC8: buscar el NOMBRE de un test lo satisface un comentario que lo
+#    cite (septima forma). Se busca la DECLARACION `func TestX(t *testing.T)`,
+#    que un comentario no escribe; AC12 (command) la ejecuta.
+#  - AC7: "ReviewedSHA en >= 3 lineas de format.go" no demostraba que
+#    equalSpecRecord comparase el campo (render y parseo ya suman lineas). Se
+#    sustituye por la existencia de la prueba que detecta esa diferencia.
+#  - AC8: "ReviewedSHA en algun test de sddfile" lo satisfacia cualquier prueba
+#    de ida y vuelta, no la de identidad byte a byte que el criterio dice medir.
+#  - AC6: `IsAncestor` como palabra lo satisface un comentario; se mide la llamada.
+#  - AC11: "frontera" YA EXISTIA en agent-fixed.md en el commit base (seccion
+#    criteria-contract de SPEC-156: "la frontera de un rechazo", "frontera
+#    medible") — asercion muerta. "rango" en los manuales exigia ESPANOL en dos
+#    documentos escritos en INGLES (forma: literal en el idioma equivocado); y
+#    `>= 2` sumado sobre los dos manuales lo cumplia uno solo. Ahora: una
+#    asercion por manual con el nombre del campo que el orquestador copia
+#    (`review_range`), y dos frases nuevas de la capa 1. Se anade
+#    docs/sdd-git-native.md, que AC20 de la spec nombra y el criterio omitia.
+#  - AC10: se anade la existencia de la prueba MCP del campo aditivo (AC17 de la
+#    spec: JSON identico fuera de qa), que ningun criterio medía.
+#  - AC12: la orden no ejecutaba los paquetes cli, subagents e install, donde
+#    viven las pruebas de AC19 (salida de la linea de comandos), de la capa 1 y
+#    de los manuales. Se anaden; timeout ampliado.
+#  - AC18 (nuevo): AC19 de la spec (lo que imprime la linea de comandos) no
+#    tenia ningun criterio. Mide la existencia de su prueba.
+#
+# AMPLIACION APROBADA POR EL OWNER (2026-09-24, Q2 del plan): internal/mcp/tools.go
+# entra en el alcance para que la descripcion de la herramienta spec_advance
+# diga que devuelve {spec, executor, review_range}. AC10 gana una asercion:
+# `review_range` en tools.go (0 lineas en el commit base, asi que no es vacua).
+# Q1 (una mneme anterior borra reviewed_sha al reescribir; CurrentFileSchema NO
+# sube) no necesita criterio propio: la correccion de docs/sdd-git-native.md la
+# cubre la asercion de AC11 sobre ese archivo, y el esquema en 1 lo ejecuta AC12.
+
+[[criterion]]
+id = "AC1"
+mode = "assert"
+text = "La migracion 022 existe y añade la columna de SHA a spec_history. UNA sola columna y UNA sola migracion cubren los dos extremos (el entregado y el revisado)."
+
+  [[criterion.assert]]
+  verb = "file_exists"
+  path = "internal/db/migrations/022_spec_history_reviewed_sha.sql"
+  new = true
+
+  [[criterion.assert]]
+  verb = "pattern_count"
+  contains = "reviewed_sha"
+  in = ["internal/db/migrations/022_spec_history_reviewed_sha.sql"]
+  word = true
+  comparator = ">="
+  count = 1
+  new = true
+
+[[criterion]]
+id = "AC2"
+mode = "assert"
+text = "El modelo lleva el campo y el store lo escribe y lo lee: la columna, su escritura y su lectura no pueden existir por separado."
+
+  [[criterion.assert]]
+  verb = "symbol_defined"
+  symbol = "ReviewedSHA"
+  in = ["internal/model/sdd.go"]
+  new = false
+
+  [[criterion.assert]]
+  verb = "pattern_count"
+  contains = "reviewed_sha"
+  in = ["internal/store/sdd.go"]
+  word = true
+  comparator = ">="
+  count = 2
+  new = false
+
+[[criterion]]
+id = "AC3"
+mode = "assert"
+text = "La logica de la frontera vive en su propio archivo, y la funcion que decide qué graba cada transicion se LLAMA desde el envoltorio updateSpecStatus de sdd_export.go (no es codigo muerto que compila y no gobierna nada, ni una mencion en la documentacion)."
+
+  [[criterion.assert]]
+  verb = "file_exists"
+  path = "internal/service/sdd_frontier.go"
+  new = true
+
+  [[criterion.assert]]
+  verb = "symbol_defined"
+  symbol = "frontierForTransition"
+  in = ["internal/service/sdd_frontier.go"]
+  new = true
+
+  [[criterion.assert]]
+  verb = "pattern_count"
+  contains = "svc.frontierForTransition("
+  in = ["internal/service/sdd_export.go"]
+  word = false
+  comparator = ">="
+  count = 1
+  new = false
+
+[[criterion]]
+id = "AC4"
+mode = "assert"
+text = "Lo que hay que declarar se anexa a la razon de la fila mediante una funcion propia, LLAMADA desde el envoltorio: sin columna nueva, sin migracion nueva, y viajando al repositorio por el mismo camino que ya lleva la razon."
+
+  [[criterion.assert]]
+  verb = "symbol_defined"
+  symbol = "appendFrontierNote"
+  in = ["internal/service/sdd_frontier.go"]
+  new = true
+
+  [[criterion.assert]]
+  verb = "pattern_count"
+  contains = "appendFrontierNote("
+  in = ["internal/service/sdd_export.go"]
+  word = false
+  comparator = ">="
+  count = 1
+  new = false
+
+[[criterion]]
+id = "AC5"
+mode = "assert"
+text = "Existe la prueba que ejerce la decision central de la ampliacion: con un commit intercalado entre la entrada a revision y la salida, la frontera grabada es el extremo ENTREGADO, no el HEAD del momento. (Se busca su declaracion, no su nombre: un comentario que la cite no cuenta. AC12 la ejecuta.)"
+
+  [[criterion.assert]]
+  verb = "pattern_count"
+  contains = "func TestFrontier_AdvancesOnlyToDeliveredEnd(t *testing.T)"
+  in = ["internal/service/*_test.go"]
+  word = false
+  comparator = ">="
+  count = 1
+  new = false
+
+[[criterion]]
+id = "AC6"
+mode = "assert"
+text = "El rango a revisar es un tipo propio del modelo, y la deteccion de historia reescrita LLAMA a la primitiva de git que ya existe (IsAncestor): cero primitivas nuevas."
+
+  [[criterion.assert]]
+  verb = "symbol_defined"
+  symbol = "ReviewRange"
+  in = ["internal/model/sdd.go"]
+  new = false
+
+  [[criterion.assert]]
+  verb = "pattern_count"
+  contains = ".IsAncestor("
+  in = ["internal/service/sdd_frontier.go"]
+  word = false
+  comparator = ">="
+  count = 1
+  new = true
+
+[[criterion]]
+id = "AC7"
+mode = "assert"
+text = "El formato de archivo escribe y lee el atributo, y existe la prueba que demuestra que equalSpecRecord COMPARA el campo: dos registros que solo difieren en el SHA de una fila de historial no son iguales. Esa comparacion es la unica red que tiene el formato contra perder un campo en silencio; quitarla pone esta prueba en rojo (mutacion exigida, documentada en changes.md)."
+
+  [[criterion.assert]]
+  verb = "pattern_count"
+  contains = "reviewed_sha"
+  in = ["internal/sddfile/format.go"]
+  word = true
+  comparator = ">="
+  count = 2
+  new = false
+
+  [[criterion.assert]]
+  verb = "pattern_count"
+  contains = "func TestEqualSpecRecord_DetectsReviewedSHAMismatch(t *testing.T)"
+  in = ["internal/sddfile/*_test.go"]
+  word = false
+  comparator = ">="
+  count = 1
+  new = false
+
+[[criterion]]
+id = "AC8"
+mode = "assert"
+text = "Existe prueba dedicada de la identidad byte a byte: un registro de spec cuyas filas de historial no llevan frontera produce exactamente los mismos bytes que produce hoy (literal esperado capturado ANTES de tocar renderSpec). AC12 la ejecuta."
+
+  [[criterion.assert]]
+  verb = "pattern_count"
+  contains = "func TestMarshalSpec_HistoryWithoutFrontierIsByteIdentical(t *testing.T)"
+  in = ["internal/sddfile/*_test.go"]
+  word = false
+  comparator = ">="
+  count = 1
+  new = false
+
+[[criterion]]
+id = "AC9"
+mode = "assert"
+text = "La importacion entre maquinas lleva la columna: el importador ya viaja con el historial, asi que no hay nada nuevo que decidir sobre choques."
+
+  [[criterion.assert]]
+  verb = "pattern_count"
+  contains = "reviewed_sha"
+  in = ["internal/store/sdd_import.go"]
+  word = true
+  comparator = ">="
+  count = 1
+  new = false
+
+[[criterion]]
+id = "AC10"
+mode = "assert"
+text = "El rango viaja al orquestador por la misma llamada que ya devuelve la resolucion de ejecutor, como campo aditivo del sobre, y tambien en spec_status; la descripcion de la herramienta spec_advance lo anuncia (ampliacion aprobada por el owner el 2026-09-24); y existe la prueba que fija que el campo aparece SOLO al entrar en qa y que el JSON es identico al de hoy en cualquier otro caso."
+
+  [[criterion.assert]]
+  verb = "pattern_count"
+  contains = "ReviewRange"
+  in = ["internal/mcp/handlers.go"]
+  word = true
+  comparator = ">="
+  count = 1
+  new = false
+
+  [[criterion.assert]]
+  verb = "pattern_count"
+  contains = "review_range"
+  in = ["internal/model/sdd.go"]
+  word = true
+  comparator = ">="
+  count = 1
+  new = false
+
+  [[criterion.assert]]
+  verb = "pattern_count"
+  contains = "review_range"
+  in = ["internal/mcp/tools.go"]
+  word = true
+  comparator = ">="
+  count = 1
+  new = false
+
+  [[criterion.assert]]
+  verb = "pattern_count"
+  contains = "func TestHandleSpecAdvance_ReviewRangeOnlyOnEnteringQA(t *testing.T)"
+  in = ["internal/mcp/*_test.go"]
+  word = false
+  comparator = ">="
+  count = 1
+  new = false
+
+[[criterion]]
+id = "AC11"
+mode = "assert"
+text = "La doctrina llega a quien la necesita: la capa 1 del qa-tester habla del extremo entregado y de la frontera perdida; CADA UNO de los dos manuales operativos (escritos en ingles) nombra el campo review_range que el orquestador copia al encargo en vez de calcularlo; y los dos documentos que AC20 de la spec nombra describen la columna (docs/sdd-git-native.md, ademas, la perdida al reescribir con una mneme anterior, decision del owner Q1)."
+
+  [[criterion.assert]]
+  verb = "pattern_count"
+  contains = "extremo entregado"
+  in = ["internal/subagents/assets/agent-fixed.md"]
+  word = false
+  comparator = ">="
+  count = 1
+  new = false
+
+  [[criterion.assert]]
+  verb = "pattern_count"
+  contains = "frontera perdida"
+  in = ["internal/subagents/assets/agent-fixed.md"]
+  word = false
+  comparator = ">="
+  count = 1
+  new = false
+
+  [[criterion.assert]]
+  verb = "pattern_count"
+  contains = "review_range"
+  in = ["internal/install/assets/operating-manual.md"]
+  word = true
+  comparator = ">="
+  count = 1
+  new = false
+
+  [[criterion.assert]]
+  verb = "pattern_count"
+  contains = "review_range"
+  in = ["internal/install/assets/operating-manual-codex.md"]
+  word = true
+  comparator = ">="
+  count = 1
+  new = false
+
+  [[criterion.assert]]
+  verb = "pattern_count"
+  contains = "reviewed_sha"
+  in = ["docs/api/sdd.md"]
+  word = true
+  comparator = ">="
+  count = 1
+  new = false
+
+  [[criterion.assert]]
+  verb = "pattern_count"
+  contains = "reviewed_sha"
+  in = ["docs/sdd-git-native.md"]
+  word = true
+  comparator = ">="
+  count = 1
+  new = false
+
+[[criterion]]
+id = "AC12"
+mode = "command"
+text = "Pasan las pruebas de los ocho paquetes tocados: migraciones, store (columna en la misma transaccion), formato de archivo (identidad byte a byte y esquema en 1), servicio (las tres transiciones que graban, las que no, los tres casos del extremo entregado y el calculo del rango), MCP (campo aditivo del sobre), linea de comandos (lo que se imprime), capa 1 (anclas de la seccion bounded-review) e instalador (manuales)."
+command = ["go", "test", "-count=1", "./internal/db/...", "./internal/store/...", "./internal/sddfile/...", "./internal/service/...", "./internal/mcp/...", "./internal/cli/...", "./internal/subagents/...", "./internal/install/..."]
+timeout = "1800s"
+
+[[criterion]]
+id = "AC13"
+mode = "manual"
+text = "NADA de esto bloquea. Con repoDir vacio, con git fallando, con el HEAD movido durante la revision o con la entrada de revision sin extremo registrado, TODA transicion se completa igual y spec_advance devuelve la spec avanzada y la resolucion de ejecutor con normalidad. Es la restriccion que gobierna la ficha entera."
+evidence_required = "Lectura de frontierForTransition, appendFrontierNote y ReviewRange confirmando que ninguna devuelve error (solo valor), mas el nombre de la prueba que avanza desde qa con el repositorio no disponible y espera exito, mas la comprobacion de que el calculo del rango en el manejador MCP es best-effort igual que la lectura del manifiesto de subagentes."
+
+[[criterion]]
+id = "AC14"
+mode = "manual"
+text = "La ampliacion D2c se comporta como dice el diseño en sus TRES casos: (a) HEAD igual al extremo entregado -> la frontera es ese extremo y la razon queda exactamente como quedaria hoy, sin anexar nada; (b) HEAD distinto -> la frontera sigue siendo el extremo entregado, NUNCA el HEAD, y la razon declara los dos SHA; (c) la entrada vigente sin extremo -> la columna queda VACIA y la razon explica por que, sin inventar HEAD."
+evidence_required = "Los tres casos ejecutados sobre un repositorio real, con el valor observado de la columna y el texto exacto de la razon en cada uno. Para (b), el commit intercalado y la comprobacion de que el rango de la pasada SIGUIENTE cubre ese commit (no se pierde nadie)."
+
+[[criterion]]
+id = "AC15"
+mode = "manual"
+text = "El conjunto de transiciones que graban es exactamente el trio declarado (implementing -> qa, qa -> done, qa -> implementing) y las excluidas quedan vacias: qa -> needs_grill (pushback, no hay informe), done -> implementing (rechazo posterior al cierre) y el par del carril trivial. Y el significado de la columna se distingue por el par de estados de su propia fila, no por su valor."
+evidence_required = "La tabla del conjunto cerrado comprobada fila por fila contra la prueba que la recorre, nombrando la prueba y el valor observado de la columna en cada transicion excluida, mas la salida de `mneme spec history` mostrando que dice cual de los dos extremos es en cada fila."
+
+[[criterion]]
+id = "AC16"
+mode = "manual"
+text = "Los cuatro estados del rango se producen de verdad, con To leido de la fila de entrada y no recalculado, y su frase en claro los dice con palabras: primera pasada (desde el commit base), segunda pasada (desde la frontera), frontera perdida por historia reescrita (nombrando el SHA muerto y volviendo al commit base), y rango vacio (nada nuevo desde la frontera). Y las tres causas de rango no disponible producen su texto."
+evidence_required = "Los cuatro estados mas las tres causas de indisponibilidad, ejecutados —incluido un rebase o aplastado de commits real que invalide la frontera— con el JSON devuelto y la frase exacta que se imprime en cada uno. Para To: un commit posterior a la entrada en qa que demuestre que To no se movio."
+
+[[criterion]]
+id = "AC17"
+mode = "manual"
+text = "La nota de frontera se anexa DESPUES de lo que SPEC-156 compone en la razon de un rechazo, y no lo reordena ni lo reescribe. Orden: razon humana -> hallazgos -> frontera."
+evidence_required = "El texto completo de la razon de un rechazo que lleve a la vez hallazgos y nota de frontera, con los tres bloques en ese orden."
+
+[[criterion]]
+id = "AC18"
+mode = "assert"
+text = "Lo que ve una persona en la linea de comandos (AC19 de la spec) tiene prueba propia: spec advance imprime el aviso del rango al entrar en qa y la nota de frontera al salir, spec reject imprime la nota, y spec history dice cual de los dos extremos es cada SHA. AC12 la ejecuta."
+
+  [[criterion.assert]]
+  verb = "pattern_count"
+  contains = "func TestSpecCLI_FrontierOutput(t *testing.T)"
+  in = ["internal/cli/*_test.go"]
+  word = false
+  comparator = ">="
+  count = 1
+  new = false

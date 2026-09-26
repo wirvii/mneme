@@ -9,7 +9,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
 	"log"
 	"log/slog"
 	"os"
@@ -18,7 +17,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wirvii/mneme/internal/acceptance"
 	"github.com/wirvii/mneme/internal/config"
+	"github.com/wirvii/mneme/internal/gitrepo"
 	"github.com/wirvii/mneme/internal/install"
 	"github.com/wirvii/mneme/internal/model"
 	"github.com/wirvii/mneme/internal/quality"
@@ -662,7 +663,7 @@ func (svc *SDDService) captureBaseSHA(ctx context.Context, spec *model.Spec) {
 		}
 	}
 
-	g := &quality.Git{RepoDir: repoDir}
+	g := &gitrepo.Git{RepoDir: repoDir}
 	sha, err := g.HeadSHA()
 	if err != nil {
 		log.Printf("service: capture base sha: git rev-parse HEAD for %s: %v", spec.ID, err)
@@ -1117,29 +1118,14 @@ func (svc *SDDService) SpecDocWrite(ctx context.Context, req model.SpecDocWriteR
 	}, nil
 }
 
-// validateCriteriaDoc implements SPEC-117 D7's declare-time half: parse
-// content as strict criteria.toml, then — ONLY when svc.repoDir is
-// configured — resolve every new=false assertion's anchor against the
-// ACTUAL working tree. Structural validation (parsing, mode
-// cross-validation, glob syntax) always runs; anchor resolution is simply
-// skipped when repoDir is empty (D13 — no fallback to os.Getwd(), exactly
-// ensureCertified's own posture), which is the safe state for a test that
-// never configured it.
+// validateCriteriaDoc implements SPEC-156's declare-time half: parse
+// content as a criteria.toml document. SPEC-158 D1.c retired the executable
+// evaluator this used to also validate anchors against (quality.
+// ValidateAnchors) — the reader accepts and discards every legacy
+// mode-specific key without resolving anything against the working tree, so
+// this function no longer needs svc.repoDir at all.
 func (svc *SDDService) validateCriteriaDoc(content string) error {
-	doc, err := quality.ParseCriteria([]byte(content))
-	if err != nil {
-		return fmt.Errorf("%s: %w", err, model.ErrInvalidCriteria)
-	}
-
-	if svc.repoDir == "" {
-		return nil
-	}
-
-	files, err := listWorkingTreeFiles(svc.repoDir)
-	if err != nil {
-		return fmt.Errorf("service: spec doc write: list working tree: %w", err)
-	}
-	if err := quality.ValidateAnchors(doc, files); err != nil {
+	if _, err := acceptance.Parse([]byte(content)); err != nil {
 		return fmt.Errorf("%s: %w", err, model.ErrInvalidCriteria)
 	}
 	return nil
@@ -1195,37 +1181,6 @@ func (svc *SDDService) validateBudgetDoc(content string) error {
 		return fmt.Errorf("%s: %w", err, model.ErrInvalidBudget)
 	}
 	return nil
-}
-
-// listWorkingTreeFiles walks repoDir and returns every regular file's
-// path, relative to repoDir and slash-separated, skipping .git entirely.
-// This is the actual working tree on disk (D7: "el arbol de trabajo"),
-// deliberately NOT git's tracked-file list — an uncommitted file the
-// architect is about to reference is exactly what a new=false anchor
-// should be able to resolve against at declare time.
-func listWorkingTreeFiles(repoDir string) ([]string, error) {
-	var files []string
-	err := filepath.WalkDir(repoDir, func(path string, d fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if d.IsDir() {
-			if d.Name() == ".git" {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		rel, relErr := filepath.Rel(repoDir, path)
-		if relErr != nil {
-			return relErr
-		}
-		files = append(files, filepath.ToSlash(rel))
-		return nil
-	})
-	if err != nil {
-		return nil, fmt.Errorf("service: list working tree files: %w", err)
-	}
-	return files, nil
 }
 
 // SpecResolve resolves the oldest unresolved pushback and transitions the spec
@@ -1724,115 +1679,6 @@ func dirtyWorktreeRemedy(dirtyPaths []string) string {
 		return "arbol de trabajo sucio — haz commit o descarta los cambios"
 	}
 	return "arbol de trabajo sucio: " + strings.Join(parts, "; ")
-}
-
-// runLaneAuditEngine computes the file/symbol delta between baseRef and
-// HEAD and evaluates it against quality.DefaultTrivialBudget — the SAME
-// machine standard's budget mechanism uses, with the trivial lane's own
-// limits (D12). Returns the assembled model.LaneAuditResult plus the raw
-// breach strings (used for the discovery memory's own bullet list).
-func (svc *SDDService) runLaneAuditEngine(repoDir, baseRef, scope string) (*model.LaneAuditResult, []string, error) {
-	g := &quality.Git{RepoDir: repoDir}
-
-	numStats, err := g.NumStat(baseRef, "HEAD")
-	if err != nil {
-		return nil, nil, fmt.Errorf("numstat: %w", err)
-	}
-	changes, err := g.ChangedFilesInRange(baseRef, "HEAD")
-	if err != nil {
-		return nil, nil, fmt.Errorf("changed files: %w", err)
-	}
-	changedLines, err := g.ChangedLines(baseRef, "HEAD")
-	if err != nil {
-		return nil, nil, fmt.Errorf("changed lines: %w", err)
-	}
-
-	basePaths, headPaths, renames := splitChangePaths(changes)
-	ex := symbolExtractorAdapter{}
-	baseSymbols, _, err := quality.CollectSymbols(g, baseRef, basePaths, ex)
-	if err != nil {
-		return nil, nil, fmt.Errorf("collect symbols at base: %w", err)
-	}
-	headSymbols, _, err := quality.CollectSymbols(g, "HEAD", headPaths, ex)
-	if err != nil {
-		return nil, nil, fmt.Errorf("collect symbols at head: %w", err)
-	}
-	// No test_globs exclusion here (nil): the trivial lane's public-symbol
-	// check never excluded _test.go files either (its predecessor,
-	// lane.checkGoPublicSymbols, diffed every changed .go file's exported
-	// names regardless of name) — passing nil preserves that behaviour.
-	delta := quality.DiffSymbols(baseSymbols, headSymbols, renames, changedLines, nil)
-
-	breaches := quality.EvaluateTrivialBudget(numStats, delta, scope, quality.DefaultTrivialBudget)
-	breachStrs := make([]string, 0, len(breaches))
-	for _, b := range breaches {
-		breachStrs = append(breachStrs, string(b))
-	}
-
-	fileCount := len(numStats)
-	linesChanged := 0
-	for _, fs := range numStats {
-		linesChanged += fs.Added + fs.Removed
-	}
-
-	result := &model.LaneAuditResult{
-		FileCount:           fileCount,
-		LinesChanged:        linesChanged,
-		OutOfScopeFiles:     laneOutOfScopeFiles(numStats, scope),
-		ForbiddenPaths:      laneForbiddenPaths(numStats),
-		PublicSymbolChanges: lanePublicSymbolChanges(delta),
-		Breaches:            breachStrs,
-		Passed:              len(breachStrs) == 0,
-	}
-	return result, breachStrs, nil
-}
-
-// laneOutOfScopeFiles lists changed paths outside scope, or nil when scope
-// is empty (the scope check is skipped entirely, mirroring
-// EvaluateTrivialBudget's own posture).
-func laneOutOfScopeFiles(stats []quality.FileStat, scope string) []string {
-	if scope == "" {
-		return nil
-	}
-	var out []string
-	for _, fs := range stats {
-		if !quality.MatchGlobs(fs.Path, []string{scope}) {
-			out = append(out, fs.Path)
-		}
-	}
-	return out
-}
-
-// laneForbiddenPaths lists changed paths matching
-// quality.DefaultTrivialBudget's forbidden globs.
-func laneForbiddenPaths(stats []quality.FileStat) []string {
-	var out []string
-	for _, fs := range stats {
-		if quality.MatchGlobs(fs.Path, quality.DefaultTrivialBudget.ForbiddenGlobs) {
-			out = append(out, fs.Path)
-		}
-	}
-	return out
-}
-
-// lanePublicSymbolChanges lists every exported symbol created or deleted
-// between base and HEAD, outside test files — the trivial lane's own
-// public-API-change detector, now the delta of symbols (D12 point 3)
-// instead of internal/lane's go/ast-only checkGoPublicSymbols and its
-// TypeScript regex heuristic.
-func lanePublicSymbolChanges(delta quality.SymbolDelta) []string {
-	var out []string
-	for _, s := range delta.Created {
-		if s.Exported {
-			out = append(out, s.QualifiedName)
-		}
-	}
-	for _, s := range delta.Deleted {
-		if s.Exported {
-			out = append(out, s.QualifiedName)
-		}
-	}
-	return out
 }
 
 // LaneReclassify changes a spec's lane from trivial to standard. After

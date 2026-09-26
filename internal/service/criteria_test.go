@@ -99,12 +99,17 @@ func TestSpecDocWrite_Criteria_InvalidDocument_DoesNotWrite(t *testing.T) {
 		t.Fatalf("SpecNew: %v", err)
 	}
 
+	// SPEC-158 D1.c: the lenient reader no longer validates mode
+	// cross-rules (an "assert" criterion with zero assertions is now a
+	// harmless, discarded key) — a genuinely invalid document is one with
+	// an unknown key at the criterion level, which DisallowUnknownFields
+	// still rejects.
 	invalid := `
 schema_version = 1
 [[criterion]]
 id = "AC1"
-mode = "assert"
 text = "x"
+verbo = "no existe"
 `
 	_, err = svc.SpecDocWrite(ctx, model.SpecDocWriteRequest{
 		ID: spec.ID, Kind: model.SpecDocKindCriteria, Content: invalid,
@@ -153,90 +158,43 @@ func TestSpecDocWrite_Criteria_OverwriteRejectionPreservesPriorContent(t *testin
 	}
 }
 
-// TestSpecDocWrite_Criteria_AnchorValidation covers AC8's declare-time
-// anchor resolution against the REAL working tree: a new=false path that
-// does not exist is rejected naming the path; one that exists is accepted.
-func TestSpecDocWrite_Criteria_AnchorValidation(t *testing.T) {
-	svc, _, repoDir := newTestSDDServiceWithRepoDir(t, "wirvii/mneme")
+// TestSpecDocWrite_Criteria_MinimalDocument covers AC7's first half: a
+// document with nothing but schema_version + one id/text criterion — no
+// mode, no assert, no anchors to resolve — is written byte for byte
+// (SPEC-158 D1.c: the evaluator is gone, so a criteria.toml no longer needs
+// anything beyond id+text).
+func TestSpecDocWrite_Criteria_MinimalDocument(t *testing.T) {
+	svc, workflowDir, _ := newTestSDDServiceWithRepoDir(t, "wirvii/mneme")
 	ctx := context.Background()
-
-	if err := os.WriteFile(filepath.Join(repoDir, "existing.go"), []byte("package x\n"), 0o644); err != nil {
-		t.Fatalf("write existing.go: %v", err)
-	}
 
 	spec, err := svc.SpecNew(ctx, model.SpecNewRequest{Title: "Test spec", Lane: model.LaneStandard})
 	if err != nil {
 		t.Fatalf("SpecNew: %v", err)
 	}
 
-	docWithMissingAnchor := `
+	minimal := `
 schema_version = 1
 [[criterion]]
 id = "AC1"
-mode = "assert"
-text = "x"
-  [[criterion.assert]]
-  verb = "file_exists"
-  path = "docs/api/mcp.md"
-  new = false
+text = "una afirmacion que el qa-tester puede comprobar ejecutando algo"
 `
-	_, err = svc.SpecDocWrite(ctx, model.SpecDocWriteRequest{
-		ID: spec.ID, Kind: model.SpecDocKindCriteria, Content: docWithMissingAnchor,
+	resp, err := svc.SpecDocWrite(ctx, model.SpecDocWriteRequest{
+		ID: spec.ID, Kind: model.SpecDocKindCriteria, Content: minimal,
 	})
-	if err == nil {
-		t.Fatal("SpecDocWrite(criteria, new=false missing anchor): want error, got nil")
-	}
-	if !strings.Contains(err.Error(), "docs/api/mcp.md") {
-		t.Errorf("error = %q, want it to name the missing anchor path", err.Error())
-	}
-
-	docWithExistingAnchor := `
-schema_version = 1
-[[criterion]]
-id = "AC1"
-mode = "assert"
-text = "x"
-  [[criterion.assert]]
-  verb = "file_exists"
-  path = "existing.go"
-  new = false
-`
-	if _, err := svc.SpecDocWrite(ctx, model.SpecDocWriteRequest{
-		ID: spec.ID, Kind: model.SpecDocKindCriteria, Content: docWithExistingAnchor,
-	}); err != nil {
-		t.Fatalf("SpecDocWrite(criteria, new=false existing anchor): unexpected error: %v", err)
-	}
-}
-
-// TestSpecDocWrite_Criteria_EmptyRepoDirSkipsAnchorResolution covers D13:
-// with repoDir never configured, a new=false anchor that would fail
-// resolution against a real tree is NOT rejected — structural validation
-// still runs, but there is no working tree to resolve against, and mneme
-// never falls back to os.Getwd().
-func TestSpecDocWrite_Criteria_EmptyRepoDirSkipsAnchorResolution(t *testing.T) {
-	svc, _ := newTestSDDServiceWithWorkflowDir(t, "wirvii/mneme")
-	ctx := context.Background()
-
-	spec, err := svc.SpecNew(ctx, model.SpecNewRequest{Title: "Test spec", Lane: model.LaneStandard})
 	if err != nil {
-		t.Fatalf("SpecNew: %v", err)
+		t.Fatalf("SpecDocWrite(criteria, minimal): %v", err)
 	}
 
-	docWithUnresolvableAnchor := `
-schema_version = 1
-[[criterion]]
-id = "AC1"
-mode = "assert"
-text = "x"
-  [[criterion.assert]]
-  verb = "file_exists"
-  path = "definitely/does/not/exist.go"
-  new = false
-`
-	if _, err := svc.SpecDocWrite(ctx, model.SpecDocWriteRequest{
-		ID: spec.ID, Kind: model.SpecDocKindCriteria, Content: docWithUnresolvableAnchor,
-	}); err != nil {
-		t.Fatalf("SpecDocWrite(criteria, repoDir empty): unexpected error: %v (D13 — no os.Getwd() fallback, anchor resolution must be skipped)", err)
+	wantPath := filepath.Join(workflowDir, "wirvii-mneme", "specs", spec.ID, "criteria.toml")
+	if resp.Path != wantPath {
+		t.Errorf("Path = %q, want %q", resp.Path, wantPath)
+	}
+	data, err := os.ReadFile(wantPath)
+	if err != nil {
+		t.Fatalf("read written criteria.toml: %v", err)
+	}
+	if string(data) != minimal {
+		t.Errorf("file content = %q, want the exact document written", string(data))
 	}
 }
 

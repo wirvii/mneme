@@ -766,7 +766,7 @@ func (svc *QualityService) runBudgetChecksTrivial(g *quality.Git, constitution *
 	checks = append(checks, detectionRows...)
 	pure = append(pure, detectionPure...)
 
-	forbiddenPaths := laneForbiddenPaths(numStats)
+	forbiddenPaths := budgetLaneForbiddenPaths(numStats)
 	row13Status := "pass"
 	if len(forbiddenPaths) > 0 {
 		row13Status = "fail"
@@ -774,7 +774,7 @@ func (svc *QualityService) runBudgetChecksTrivial(g *quality.Git, constitution *
 	checks = append(checks, &model.QualityCheck{Kind: "budget", Name: "lane-forbidden", Status: row13Status, Summary: fmt.Sprintf("%d ruta(s) prohibida(s)", len(forbiddenPaths))})
 	pure = append(pure, quality.CheckResult{Status: quality.CheckStatus(row13Status)})
 
-	publicSymbolChanges := lanePublicSymbolChanges(delta)
+	publicSymbolChanges := budgetLanePublicSymbolChanges(delta)
 	row14Status := "pass"
 	if len(publicSymbolChanges) > 0 {
 		row14Status = "fail"
@@ -793,4 +793,34 @@ func sumLaneLines(stats []quality.FileStat) int {
 		total += fs.Added + fs.Removed
 	}
 	return total
+}
+
+// budgetLaneForbiddenPaths and budgetLanePublicSymbolChanges are
+// budget.go's OWN copies of the (now moved) lane-audit helpers, over
+// quality's own types — this whole file is deleted in SPEC-158's commit 4
+// together with internal/quality, so this duplication is bounded exactly
+// like symbolExtractorAdapter/splitChangePaths above.
+func budgetLaneForbiddenPaths(stats []quality.FileStat) []string {
+	var out []string
+	for _, fs := range stats {
+		if quality.MatchGlobs(fs.Path, quality.DefaultTrivialBudget.ForbiddenGlobs) {
+			out = append(out, fs.Path)
+		}
+	}
+	return out
+}
+
+func budgetLanePublicSymbolChanges(delta quality.SymbolDelta) []string {
+	var out []string
+	for _, s := range delta.Created {
+		if s.Exported {
+			out = append(out, s.QualifiedName)
+		}
+	}
+	for _, s := range delta.Deleted {
+		if s.Exported {
+			out = append(out, s.QualifiedName)
+		}
+	}
+	return out
 }
