@@ -393,7 +393,7 @@ Exactly one forward path per current state.
 
 ```bash
 mneme spec advance SPEC-001 --by orchestrator
-mneme spec advance SPEC-001 --by architect --reason "All quality gates passed"
+mneme spec advance SPEC-001 --by architect --reason "Revisión QA aprobada por el owner"
 ```
 
 | Flag | Default | Description |

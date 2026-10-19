@@ -63,14 +63,6 @@ Configure your agent to run: mneme mcp`,
 				sddSvc.WithMemoryService(svc)
 			}
 
-			// Same tolerant pattern as sddSvc above (SPEC-115 P10): a quality
-			// service init failure must not prevent memory/SDD tools from
-			// serving. quality_* tools report qualityUnavailable individually.
-			qualitySvc, qualityCleanup, qualityErr := initQualityService()
-			if qualityErr == nil {
-				defer qualityCleanup()
-			}
-
 			cfg := svc.Config()
 
 			// Build a logger at the configured log level. MCP servers write
@@ -113,9 +105,6 @@ Configure your agent to run: mneme mcp`,
 			srv := mcp.NewServer(svc, sddSvc, skillsSvc, modelsSvc, logger, toolsMode, Version)
 			if flagCallerRole != "" {
 				srv.WithCallerPolicy(mcp.CallerPolicy{Role: flagCallerRole, Archetype: flagCallerArchetype})
-			}
-			if qualityErr == nil {
-				srv.WithQualityService(qualitySvc)
 			}
 			return srv.Run(cmd.Context(), os.Stdin, os.Stdout)
 		},

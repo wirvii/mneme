@@ -157,9 +157,9 @@ func (svc *SDDService) resolvePushback(ctx context.Context, pushbackID, resoluti
 // every one of the nine wrappers (D38 is still honoured: repoDir is a
 // parameter — it is just SDDService's OWN constructor parameter,
 // svc.WithRepoDir, set once by the frontend at startup, the same
-// precedent ensureCertified and LaneAudit already use for the identical
-// field). An empty svc.repoDir means the mechanism is off — never a
-// fallback to os.Getwd().
+// precedent the review frontier and LaneAudit already use for the
+// identical field). An empty svc.repoDir means the mechanism is off —
+// never a fallback to os.Getwd().
 func (svc *SDDService) materializeBacklogItem(ctx context.Context, itemID string) {
 	repoRoot := svc.repoDir
 	if repoRoot == "" {

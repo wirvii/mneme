@@ -70,7 +70,7 @@ func codexCapabilityInstructions(archetype Role, perm Permission) string {
 		return "mneme capability contract: editing and command execution are allowed only inside the role areas declared by the project manifest. Lifecycle transitions remain reserved to the coordinator."
 	}
 	if archetype == RoleQATester {
-		return "mneme capability contract: commands may be executed for verification, but source files must not be edited. quality_sign is allowed only for this QA role; lifecycle transitions remain reserved to the coordinator."
+		return "mneme capability contract: commands may be executed for verification, but source files must not be edited; lifecycle transitions remain reserved to the coordinator."
 	}
 	if archetype == RoleDiagnostician {
 		return "mneme capability contract: commands may be executed only for diagnosis and log inspection; source files must not be edited and lifecycle transitions remain reserved to the coordinator."

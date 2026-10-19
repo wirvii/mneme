@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/wirvii/mneme/internal/service"
 	"github.com/wirvii/mneme/internal/upgrade"
 )
 
@@ -42,7 +44,7 @@ Use --check to only print whether an update is available.`,
 		Example: `  mneme upgrade
   mneme upgrade --check`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runUpgrade(cmd.OutOrStdout(), flagCheck)
+			return runUpgrade(cmd.OutOrStdout(), cmd.InOrStdin(), flagCheck)
 		},
 	}
 
@@ -51,8 +53,16 @@ Use --check to only print whether an update is available.`,
 	return cmd
 }
 
-// runUpgrade implements the upgrade logic, writing progress to w.
-func runUpgrade(w io.Writer, checkOnly bool) error {
+// runUpgrade implements the upgrade logic, writing progress to w and reading
+// the legacy-cleanup confirmation (SPEC-158 D5.b) from in.
+func runUpgrade(w io.Writer, in io.Reader, checkOnly bool) error {
+	// SPEC-158 D5.b: runs BEFORE the dev-build refusal and before any
+	// network call, so a repository still carrying the retired
+	// certification mechanism's files is offered cleanup on every
+	// invocation of `mneme upgrade`, including one that goes on to refuse
+	// (dev build) or find nothing to upgrade.
+	offerLegacyQualityCleanup(w, in, checkOnly)
+
 	if Version == "dev" {
 		return fmt.Errorf("upgrade: cannot upgrade a development build. Install a release version first")
 	}
@@ -75,6 +85,72 @@ func runUpgrade(w io.Writer, checkOnly bool) error {
 	}
 
 	return performUpgrade(w, result, runtime.GOOS)
+}
+
+// upgradeRepoRoot resolves the current repository's root the same way
+// initSDDService does — the seam a test substitutes so it never resolves
+// this actual dogfooded repository (SPEC-085: a test must not read the real
+// repository's own .mneme/quality.toml).
+var upgradeRepoRoot = func() (string, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	return repoRoot(cwd)
+}
+
+// offerLegacyQualityCleanup implements SPEC-158 D5.b: offers to remove the
+// current repository's legacy .mneme/quality.toml and
+// .mneme/quality-baseline.toml — files the now-retired certification
+// mechanism used to own and no production code reads any more. Silent when
+// the current directory is not a git repository, or when neither file is
+// present. With checkOnly, only lists what it found — never prompts, never
+// deletes. Otherwise prompts once on w/in: only "y"/"yes" (case-insensitive)
+// removes anything; any other answer, an empty line, or EOF leaves both
+// files untouched and prints how to remove them by hand. NEVER runs `git
+// add`/`git rm`/`git commit` — a removed file is left as an unstaged change
+// for the human to review and commit. A failure at any step (permissions)
+// is printed as a warning; it never stops the rest of runUpgrade.
+func offerLegacyQualityCleanup(w io.Writer, in io.Reader, checkOnly bool) {
+	root, err := upgradeRepoRoot()
+	if err != nil {
+		return // Not a git repository (or cwd unresolved) — nothing to offer.
+	}
+
+	found, err := service.LegacyQualityFiles(root)
+	if err != nil {
+		fmt.Fprintf(w, "Warning: legacy quality files: %v\n", err)
+		return
+	}
+	if len(found) == 0 {
+		return
+	}
+
+	fmt.Fprintln(w, "El mecanismo de certificación se retiró; estos archivos ya no hacen nada:")
+	for _, rel := range found {
+		fmt.Fprintf(w, "  %s\n", rel)
+	}
+
+	if checkOnly {
+		return
+	}
+
+	fmt.Fprint(w, "Remove them? [y/N] ")
+	line, _ := bufio.NewReader(in).ReadString('\n')
+	answer := strings.ToLower(strings.TrimSpace(line))
+	if answer != "y" && answer != "yes" {
+		fmt.Fprintln(w, "No se borró nada. Para borrarlos a mano:")
+		for _, rel := range found {
+			fmt.Fprintf(w, "  rm %s\n", filepath.Join(root, rel))
+		}
+		return
+	}
+
+	if err := service.RemoveLegacyQualityFiles(root, found); err != nil {
+		fmt.Fprintf(w, "Warning: no se pudieron borrar los archivos heredados: %v\n", err)
+		return
+	}
+	fmt.Fprintln(w, "Archivos heredados borrados. Revisa `git status` y confirma el borrado tú mismo.")
 }
 
 // performUpgrade applies an already-resolved, available upgrade. It is split

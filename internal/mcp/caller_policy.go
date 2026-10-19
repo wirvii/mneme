@@ -15,10 +15,8 @@ type CallerPolicy struct {
 
 func (p CallerPolicy) allowsTool(name string) bool {
 	switch name {
-	case "spec_advance", "spec_quick", "quality_ack":
+	case "spec_advance", "spec_quick":
 		return false
-	case "quality_sign":
-		return p.Archetype == "qa-tester"
 	default:
 		return true
 	}
@@ -37,7 +35,7 @@ func (p CallerPolicy) authorizeCall(params ToolCallParams) *JSONRPCError {
 	if err := json.Unmarshal(params.Arguments, &args); err != nil {
 		return nil // The handler owns ordinary argument validation.
 	}
-	if (args.Kind == "criteria" || args.Kind == "budget") && p.Archetype != "architect" {
+	if args.Kind == "criteria" && p.Archetype != "architect" {
 		return callerDenied(params.Name, fmt.Sprintf("kind %q is restricted to the architect role", args.Kind))
 	}
 	return nil

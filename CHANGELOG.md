@@ -6,6 +6,71 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Removed (BREAKING)
+
+- **The EPIC-calidad certification mechanism (SPEC-115 through SPEC-137) is
+  retired entirely** (SPEC-158). After this release, nothing in mneme can
+  ever block a spec from closing on account of a certificate — the only
+  authority that decides a spec is done is the human reading the
+  qa-tester's report (SPEC-156/SPEC-157).
+  - **What disappears:** the five `quality_*` MCP tools
+    (`quality_verify`/`quality_status`/`quality_ack`/`quality_sign`/
+    `quality_report`, 87 → 82 tools); the `mneme quality` CLI command and
+    all its subcommands (`verify`/`status`/`ack`/`sign`/`report`/`baseline
+    update`/`baseline show`, 43 → 42 top-level commands); the
+    `spec_doc_write` document kind `"budget"` (6 → 5 kinds; writing it now
+    fails with `ErrUnknownSpecDocKind`); the hook rules that existed only
+    to protect this mechanism (`quality_ack` denied to every subagent; the
+    entire `roleScopedTools` mechanism, which restricted `quality_sign` to
+    the `qa-tester` role and was the one hook rule in the repo that failed
+    CLOSED; the `"budget"` kind restriction in `roleScopedDocKinds`); the
+    `quality_constitution_applied` field `mneme init`/the `init` MCP tool
+    used to return; and the entire `internal/quality` package (66 files).
+    `lane_audit`'s own "absorption" into this mechanism
+    (`[budget].enabled = true` requiring a certificate before a trivial
+    spec's `implementing → audit` transition) is gone along with it —
+    `lane_audit` now ALWAYS runs direct, unconditionally.
+  - **What survives, moved to three new leaf packages:** the criteria.toml
+    READER (`internal/acceptance` — still parses `id`+`text` per criterion,
+    accepts and silently discards every legacy mode-specific key `mode`/
+    `assert`/`command`/`timeout`/`evidence_required`, and still rejects an
+    unknown key or a malformed document; mneme no longer EVALUATES any
+    criterion — the qa-tester verifies each one by hand, running whatever
+    the criterion's own text names); the git primitives the review
+    frontier (SPEC-157) and the trivial-lane auditor still need
+    (`internal/gitrepo`); and the trivial-lane auditor's own engine
+    (`internal/laneaudit`), whose behaviour (thresholds, forbidden paths,
+    breach message text, `lane_audits` shape) is byte-for-byte unchanged.
+  - **Irreversible migration 023** drops the `quality_certificates` and
+    `quality_checks` tables from every database (global and per-project)
+    the next time this version opens them — every certificate ever
+    recorded is gone, with no backup. Schema 22 → 23.
+  - **Subagent layer 1 moves to v5**: the architect's `criteria-contract`
+    section no longer describes the four retired `assert` verbs — a
+    criterion is now just an `id` + a `text` a qa-tester can check by
+    running something. `AgentFixedVersion` 4 → 5, so `mneme subagents
+    doctor` flags every already-materialized project's architect (and
+    qa-tester, whose Codex contract no longer names a signing tool) as
+    needing `mneme subagents regen --all`.
+  - **How to clean up a repository still carrying the retired mechanism's
+    files** (`.mneme/quality.toml`, `.mneme/quality-baseline.toml`): run
+    `mneme upgrade` once more inside it after installing this version — it
+    now offers to remove both files (confirmed interactively, never
+    committed automatically) as its very first step, before anything else.
+    `mneme init` also names them as an advisory drift finding in the
+    meantime. Neither file does anything any more; removing them by hand
+    (`rm .mneme/quality.toml .mneme/quality-baseline.toml`) works just as
+    well.
+  - **Known consequences for anyone who had the mechanism switched on:**
+    any running MCP session from an older mneme version will see its
+    `quality_*` calls fail with "no such table" once its database is
+    migrated — restart the session after upgrading. Any script or CI job
+    calling `mneme quality verify` (or any other `mneme quality`
+    subcommand) will fail with "unknown command". A project's own
+    `budget.toml` files (in the local workflow directory, never committed
+    to this repository) become orphaned and inert — they are not deleted
+    automatically.
+
 ## [v1.47.0] — 2026-09-24 — A QA rejection must name the criterion it breaks, and each review pass covers only what was delivered since the last one
 
 ### Added

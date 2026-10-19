@@ -31,7 +31,6 @@ type handlers struct {
 	subagentSvc *service.SubagentService  // wraps svc; always available (SPEC-057/SS-4)
 	profileSvc  *service.ProfileService   // wraps cfg.ProfilesDir(); always available (SPEC-091 §1)
 	speechSvc   *service.SpeechService    // host-local speech control; always available
-	qualitySvc  *service.QualityService   // optional; nil until wired via Server.WithQualityService (SPEC-115 P10)
 	logger      *slog.Logger
 }
 
@@ -178,18 +177,6 @@ func (h *handlers) handleToolCall(ctx context.Context, params ToolCallParams) (*
 		return h.handleSDDStatus(ctx, params.Arguments)
 	case "sdd_import":
 		return h.handleSDDImport(ctx, params.Arguments)
-
-	// --- QUALITY TOOLS (SPEC-115 EPIC-calidad S1) ---
-	case "quality_verify":
-		return h.handleQualityVerify(ctx, params.Arguments)
-	case "quality_status":
-		return h.handleQualityStatus(ctx, params.Arguments)
-	case "quality_ack":
-		return h.handleQualityAck(ctx, params.Arguments)
-	case "quality_sign":
-		return h.handleQualitySign(ctx, params.Arguments)
-	case "quality_report":
-		return h.handleQualityReport(ctx, params.Arguments)
 
 	// --- SKILLS TOOLS ---
 	case "skills_list":
@@ -791,9 +778,7 @@ func (h *handlers) mapServiceError(method string, err error) *JSONRPCError {
 		errors.Is(err, model.ErrPushbackNotFound) ||
 		errors.Is(err, model.ErrSkillNotFound) ||
 		errors.Is(err, model.ErrProfileNotFound) ||
-		errors.Is(err, model.ErrScaffoldNotFound) ||
-		errors.Is(err, model.ErrCertificateNotFound) ||
-		errors.Is(err, model.ErrBudgetNotFound) {
+		errors.Is(err, model.ErrScaffoldNotFound) {
 		return &JSONRPCError{
 			Code:    CodeMemoryNotFound,
 			Message: fmt.Sprintf("mcp: handle %s: %s", method, err),
@@ -848,25 +833,10 @@ func (h *handlers) mapServiceError(method string, err error) *JSONRPCError {
 		errors.Is(err, model.ErrAppAddNotApplicable) ||
 		errors.Is(err, model.ErrProjectSlugRequired) ||
 		errors.Is(err, model.ErrProfileLockUnsupported) ||
-		errors.Is(err, model.ErrInvalidConstitution) ||
-		errors.Is(err, model.ErrConstitutionAblated) ||
-		errors.Is(err, model.ErrConstitutionChanged) ||
-		errors.Is(err, model.ErrCertificateMissing) ||
-		errors.Is(err, model.ErrCertificateStale) ||
-		errors.Is(err, model.ErrCertificateNotGreen) ||
-		errors.Is(err, model.ErrWorktreeDirty) ||
 		errors.Is(err, model.ErrInvalidCriteria) ||
 		errors.Is(err, model.ErrCriteriaNotFound) ||
 		errors.Is(err, model.ErrFindingsRequired) ||
-		errors.Is(err, model.ErrUnknownCriterion) ||
-		errors.Is(err, model.ErrNotACriterion) ||
-		errors.Is(err, model.ErrCriterionRequiresSign) ||
-		errors.Is(err, model.ErrNotSignable) ||
-		errors.Is(err, model.ErrRequiresSign) ||
-		errors.Is(err, model.ErrEquivalentQuotaExceeded) ||
-		errors.Is(err, model.ErrReportNotGenerated) ||
-		errors.Is(err, model.ErrInvalidBudget) ||
-		errors.Is(err, model.ErrUnsupportedBudgetSchema) {
+		errors.Is(err, model.ErrUnknownCriterion) {
 		return &JSONRPCError{
 			Code:    CodeInvalidParams,
 			Message: fmt.Sprintf("mcp: handle %s: %s", method, err),
@@ -931,16 +901,6 @@ func (h *handlers) sddUnavailable(method string) *JSONRPCError {
 	return &JSONRPCError{
 		Code:    CodeInternalError,
 		Message: fmt.Sprintf("mcp: handle %s: SDD service not available", method),
-	}
-}
-
-// qualityUnavailable returns a JSONRPCError indicating the quality service
-// was never wired via Server.WithQualityService — the mirror of
-// sddUnavailable for the three quality_* tools (SPEC-115 P10).
-func (h *handlers) qualityUnavailable(method string) *JSONRPCError {
-	return &JSONRPCError{
-		Code:    CodeInternalError,
-		Message: fmt.Sprintf("mcp: handle %s: quality service not available", method),
 	}
 }
 
@@ -1537,7 +1497,7 @@ func (h *handlers) handleSDDStatus(ctx context.Context, _ json.RawMessage) (*Too
 // via lifecycleTools (internal/cli/hook.go): R1 means a file the caller
 // itself just edited can move a spec's status, so this is the same
 // "the author does not authorize their own change" family
-// spec_advance/spec_quick/quality_ack/backlog_archive already belong to.
+// spec_advance/spec_quick/backlog_archive already belong to.
 func (h *handlers) handleSDDImport(ctx context.Context, _ json.RawMessage) (*ToolCallResult, *JSONRPCError) {
 	if h.sdd == nil {
 		return nil, h.sddUnavailable("sdd_import")
@@ -2594,12 +2554,11 @@ func (h *handlers) handleInit(ctx context.Context, raw json.RawMessage) (*ToolCa
 	initSvc := service.NewInitService(cfg, h.sdd, h.svc, h.svc.ProjectSlug(), opts)
 
 	type initResult struct {
-		RepoRoot                string   `json:"repo_root"`
-		CheckMode               bool     `json:"check_mode"`
-		ManualApplied           bool     `json:"manual_applied"`
-		RepoBlock               bool     `json:"repo_block_applied"`
-		QualityConstitutionInit bool     `json:"quality_constitution_applied"`
-		DriftFindings           []string `json:"drift_findings"`
+		RepoRoot      string   `json:"repo_root"`
+		CheckMode     bool     `json:"check_mode"`
+		ManualApplied bool     `json:"manual_applied"`
+		RepoBlock     bool     `json:"repo_block_applied"`
+		DriftFindings []string `json:"drift_findings"`
 	}
 
 	result := initResult{
@@ -2630,20 +2589,19 @@ func (h *handlers) handleInit(ctx context.Context, raw json.RawMessage) (*ToolCa
 		}
 	}
 
-	// Quality constitution (SPEC-115 D15): absent -> written with
-	// enabled=false; present -> never touched. --check never writes.
-	qualityFindings, qualityErr := initSvc.EnsureQualityConstitution(repoRoot, args.Check)
-	if qualityErr != nil {
-		h.logger.Warn("mcp: init: quality constitution", "error", qualityErr)
-	} else if !args.Check {
-		result.QualityConstitutionInit = true
-	}
-
-	// .gitattributes (SPEC-140 D9-D11), same checkMode contract as the
-	// quality constitution step above.
+	// .gitattributes (SPEC-140 D9-D11): absent -> written; present -> never
+	// touched. --check never writes.
 	gitattrsFindings, gitattrsErr := service.EnsureGitattributes(repoRoot, args.Check)
 	if gitattrsErr != nil {
 		h.logger.Warn("mcp: init: gitattributes", "error", gitattrsErr)
+	}
+
+	// Advisory-only in BOTH modes (SPEC-158 D5.c): names any legacy
+	// .mneme/quality.toml or quality-baseline.toml left by the now-retired
+	// certification mechanism, but never writes or deletes either file.
+	legacyQualityFindings, legacyQualityErr := initSvc.LegacyQualityFindings(repoRoot)
+	if legacyQualityErr != nil {
+		h.logger.Warn("mcp: init: legacy quality files", "error", legacyQualityErr)
 	}
 
 	// Drift detection.
@@ -2651,8 +2609,8 @@ func (h *handlers) handleInit(ctx context.Context, raw json.RawMessage) (*ToolCa
 	if driftErr != nil {
 		h.logger.Warn("mcp: init: drift", "error", driftErr)
 	}
-	findings = append(findings, qualityFindings...)
 	findings = append(findings, gitattrsFindings...)
+	findings = append(findings, legacyQualityFindings...)
 	for _, f := range findings {
 		result.DriftFindings = append(result.DriftFindings, f.String())
 	}

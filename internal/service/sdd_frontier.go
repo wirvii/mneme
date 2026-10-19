@@ -21,8 +21,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/wirvii/mneme/internal/gitrepo"
 	"github.com/wirvii/mneme/internal/model"
-	"github.com/wirvii/mneme/internal/quality"
 )
 
 // frontierSHAAbbrevLen is how many leading hex characters of a commit SHA
@@ -97,7 +97,7 @@ func (svc *SDDService) frontierOnEnterQA() frontierDecision {
 		}
 	}
 
-	g := &quality.Git{RepoDir: repoDir}
+	g := &gitrepo.Git{RepoDir: repoDir}
 	sha, err := g.HeadSHA()
 	if err != nil {
 		return frontierDecision{Note: fmt.Sprintf("no se registra extremo entregado: %v", err)}
@@ -150,7 +150,7 @@ func (svc *SDDService) frontierOnLeaveQA(ctx context.Context, specID string) fro
 		return decision
 	}
 
-	g := &quality.Git{RepoDir: repoDir}
+	g := &gitrepo.Git{RepoDir: repoDir}
 	head, err := g.HeadSHA()
 	if err != nil {
 		decision.Note = fmt.Sprintf("no se pudo comprobar si el HEAD se movio durante la revision: %v", err)
@@ -308,7 +308,7 @@ func (svc *SDDService) ReviewRange(ctx context.Context, spec *model.Spec) model.
 	if repoDir == "" {
 		err = fmt.Errorf("directorio del repositorio sin configurar")
 	} else {
-		g := &quality.Git{RepoDir: repoDir}
+		g := &gitrepo.Git{RepoDir: repoDir}
 		ancestor, err = g.IsAncestor(frontier, to)
 	}
 

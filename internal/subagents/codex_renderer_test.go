@@ -70,6 +70,25 @@ func TestRenderCodex_SandboxByCapability(t *testing.T) {
 	}
 }
 
+// TestRenderCodex_QATesterContractNamesNoSigningTool covers SPEC-158 AC16's
+// Codex half: since the certification mechanism's retirement removed
+// quality_sign entirely, the qa-tester's rendered Codex contract must never
+// name it (or any other quality_*/_sign tool). Positive anchor: the
+// lifecycle-reservation sentence must still be present, so this test cannot
+// pass vacuously against an empty contract.
+func TestRenderCodex_QATesterContractNamesNoSigningTool(t *testing.T) {
+	got, err := RenderCodex(AgentContract{Role: RoleQATester, Description: "x", Instructions: "x"})
+	if err != nil {
+		t.Fatalf("RenderCodex: %v", err)
+	}
+	if strings.Contains(got, "quality_") || strings.Contains(got, "_sign") {
+		t.Errorf("qa-tester Codex contract still names a signing tool: %s", got)
+	}
+	if !strings.Contains(got, "lifecycle transitions remain reserved") {
+		t.Fatal("qa-tester Codex contract has no lifecycle-reservation sentence — this test proves nothing without it")
+	}
+}
+
 func TestContractFromClaude_ImportsSemanticsNotCapabilities(t *testing.T) {
 	contract, err := ContractFromClaude("---\nname: payments\ndescription: owns payments\nmodel: sonnet\ntools: Write, Bash\n---\n\nUse the ledger.\n", RoleBackend)
 	if err != nil {

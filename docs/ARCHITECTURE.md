@@ -174,7 +174,7 @@ internal/
   frontmatter/          -- surgical YAML frontmatter editor for agent .md files;
                            fixes known keys (name, description, model, tools,
                            permissionMode), preserves every other byte verbatim
-  mcp/                  -- MCP server (JSON-RPC 2.0 over stdio, 87 tools)
+  mcp/                  -- MCP server (JSON-RPC 2.0 over stdio, 82 tools)
   http/                 -- REST API (stdlib net/http, 10 endpoints under /v1/)
   cli/                  -- Cobra commands (42 mneme-registered top-level commands)
   install/              -- agent installer: MCP config, hooks, operating manual,
@@ -741,7 +741,7 @@ list|install|pin|unpin|remove|lint|validate`, `model list|set|reset`,
 fingerprint|profile|compose|write|manifest-list`, `delegation-hook
 enable|disable|status`, `team-memory enable|hooks`, `profile
 new|add|update|list|status|use|default|deactivate`, `project new`, `app add`,
-`scaffold capture`, `quality verify|status|ack|sign|report|baseline`,
+`scaffold capture`,
 `speech on|off|stop|status|voices|voice|mode|test|setup`. Full flag reference:
 [docs/api/cli.md](api/cli.md).
 
@@ -1095,4 +1095,4 @@ this interacts with the write-through materialization path itself.
 
 ---
 
-*Originally written 2026-04-30 for EPIC-1 through EPIC-6 (SPEC-001 through SPEC-026); updated through schema v20 / 87 MCP tools / 43 mneme-registered CLI commands, including SDD+lanes, CodeGraph, Skills, Models, Conflicts, per-project subagents, Team Memory, profiles/scaffolds, quality evidence, and local speech. See [CHANGELOG.md](../CHANGELOG.md) for the full release history.*
+*Originally written 2026-04-30 for EPIC-1 through EPIC-6 (SPEC-001 through SPEC-026); updated through schema v23 / 82 MCP tools / 42 mneme-registered CLI commands, including SDD+lanes, CodeGraph, Skills, Models, Conflicts, per-project subagents, Team Memory, profiles/scaffolds, and local speech (the EPIC-calidad certification mechanism, SPEC-115 through SPEC-137, was retired whole by SPEC-158). See [CHANGELOG.md](../CHANGELOG.md) for the full release history.*

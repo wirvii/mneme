@@ -715,7 +715,7 @@ func allTools() []ToolDefinition {
 					"kind": map[string]any{
 						"type":        "string",
 						"description": "Which document to write.",
-						"enum":        []string{"spec", "plan", "qa-report", "changes", "criteria", "budget"},
+						"enum":        []string{"spec", "plan", "qa-report", "changes", "criteria"},
 					},
 					"content": map[string]any{
 						"type":        "string",
@@ -933,105 +933,6 @@ func allTools() []ToolDefinition {
 			InputSchema: map[string]any{
 				"type":       "object",
 				"properties": map[string]any{},
-			},
-		},
-
-		// Quality tools (SPEC-115 EPIC-calidad S1)
-		{
-			Name:        "quality_verify",
-			Description: "Run the gates declared in .mneme/quality.toml for a spec and emit (or deny) a certificate bound to the current commit. Valid only while the spec is implementing or qa (qa admits recertification when HEAD moved during QA).",
-			InputSchema: map[string]any{
-				"type":     "object",
-				"required": []string{"id"},
-				"properties": map[string]any{
-					"id": map[string]any{
-						"type":        "string",
-						"description": "Spec ID to verify (must be implementing or qa status).",
-					},
-				},
-			},
-		},
-		{
-			Name:        "quality_status",
-			Description: "Report the quality constitution's state (path, hash, enabled, declared gates) and, when a spec ID is given, its latest certificate and checks. Never executes anything.",
-			InputSchema: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"id": map[string]any{
-						"type":        "string",
-						"description": "Spec ID to report the latest certificate for. Omit to report only the constitution's own state.",
-					},
-				},
-			},
-		},
-		{
-			Name:        "quality_ack",
-			Description: "Record a human's justified approval of a quality finding, converting it from 'finding' to 'acked' without re-running anything. The certificate's verdict is recalculated in the same operation.",
-			InputSchema: map[string]any{
-				"type":     "object",
-				"required": []string{"cert_id", "seq", "by", "justification"},
-				"properties": map[string]any{
-					"cert_id": map[string]any{
-						"type":        "string",
-						"description": "Certificate ID the finding belongs to.",
-					},
-					"seq": map[string]any{
-						"type":        "integer",
-						"description": "Seq of the finding within the certificate's checks.",
-					},
-					"by": map[string]any{
-						"type":        "string",
-						"description": "Who is acknowledging the finding — never the author of the change under review.",
-					},
-					"justification": map[string]any{
-						"type":        "string",
-						"description": "Why the finding is acceptable (required, non-empty).",
-					},
-				},
-			},
-		},
-		{
-			Name:        "quality_sign",
-			Description: "Record a qa-tester's attestation that a criterion row genuinely holds, converting it from 'finding' to 'acked'. Distinct from quality_ack (an absolution): a criterion is ATTESTED, never absolved. Only accepts rows whose kind starts with 'criterion'. Restricted to the qa-tester role for a subagent caller.",
-			InputSchema: map[string]any{
-				"type":     "object",
-				"required": []string{"cert_id", "seq", "by", "evidence"},
-				"properties": map[string]any{
-					"cert_id": map[string]any{
-						"type":        "string",
-						"description": "Certificate ID the criterion row belongs to.",
-					},
-					"seq": map[string]any{
-						"type":        "integer",
-						"description": "Seq of the criterion row within the certificate's checks.",
-					},
-					"by": map[string]any{
-						"type":        "string",
-						"description": "Who is signing — the qa-tester.",
-					},
-					"evidence": map[string]any{
-						"type":        "string",
-						"description": "What was verified and how (required, non-empty).",
-					},
-				},
-			},
-		},
-		{
-			Name:        "quality_report",
-			Description: "Generate the QA report from the spec's latest certificate and write it via spec_doc_write's qa-report kind. Renders from the certificate's persisted rows, never from criteria.toml — an edit to that document after certification cannot change what the report says.",
-			InputSchema: map[string]any{
-				"type":     "object",
-				"required": []string{"id"},
-				"properties": map[string]any{
-					"id": map[string]any{
-						"type":        "string",
-						"description": "Spec ID to generate the report for.",
-					},
-					"force": map[string]any{
-						"type":        "boolean",
-						"description": "Overwrite an existing qa-report.md even if it lacks mneme's generation marker.",
-					},
-				},
 			},
 		},
 

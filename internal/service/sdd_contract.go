@@ -24,8 +24,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/wirvii/mneme/internal/acceptance"
 	"github.com/wirvii/mneme/internal/model"
-	"github.com/wirvii/mneme/internal/quality"
 )
 
 // loadSpecCriteria reads and parses spec's criteria.toml, resolving the
@@ -33,8 +33,7 @@ import (
 // (D2 point 2) — the guarantee that reader and writer never resolve
 // different paths. Returns (nil, "", nil) when the mechanism itself is off:
 // svc.config is nil, or svc.config.WorkflowDir() is empty. There is never a
-// fallback to os.Getwd() (D2 point 5, the same posture ensureCertified and
-// validateCriteriaDoc already establish for repoDir).
+// fallback to os.Getwd() (D2 point 5).
 //
 // When the mechanism is on but the file is absent, the returned error wraps
 // model.ErrCriteriaNotFound and the second return value is the exact path
@@ -43,7 +42,7 @@ import (
 // (ensureRejectFindings) simply branch on the error without inspecting it
 // further. When the file exists but fails to parse, the returned error
 // wraps model.ErrInvalidCriteria.
-func (svc *SDDService) loadSpecCriteria(spec *model.Spec) (*quality.CriteriaDoc, string, error) {
+func (svc *SDDService) loadSpecCriteria(spec *model.Spec) (*acceptance.Doc, string, error) {
 	if svc.config == nil {
 		return nil, "", nil
 	}
@@ -65,7 +64,7 @@ func (svc *SDDService) loadSpecCriteria(spec *model.Spec) (*quality.CriteriaDoc,
 		return nil, path, fmt.Errorf("service: load spec criteria: read %s: %w", path, err)
 	}
 
-	doc, err := quality.ParseCriteria(raw)
+	doc, err := acceptance.Parse(raw)
 	if err != nil {
 		return nil, path, fmt.Errorf("service: load spec criteria: %s: %w", err, model.ErrInvalidCriteria)
 	}

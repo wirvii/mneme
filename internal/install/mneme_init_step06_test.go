@@ -10,7 +10,7 @@ import (
 
 // findMnemeInitSkillCopies walks internal/install/assets (this test file's
 // own directory's assets subtree — located via runtime.Caller, the same
-// technique internal/sddfile/leaf_test.go and internal/quality/leaf_test.go
+// technique internal/sddfile/leaf_test.go and internal/gitrepo/leaf_test.go
 // already use for their own perimeter guardians) and returns every path
 // whose suffix is "skills/mneme-init/SKILL.md" — SPEC-140 AC16's literal
 // "internal/install/assets/**/skills/mneme-init/SKILL.md" pattern, DERIVED

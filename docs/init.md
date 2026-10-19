@@ -39,14 +39,14 @@ Rules:
    `mneme install claude-code` is the primary path for this).
 3. **Repo block**: upsert a minimal managed block in `<repo>/CLAUDE.md` pointing to
    the global manual. User prose outside the block is preserved.
-4. **Quality constitution** (SPEC-115): materialize `<repo>/.mneme/quality.toml`
-   when absent — every key present, commented gate examples, always
-   `enabled = false` (materializing the mechanism must never itself start
-   blocking `spec_advance` in a repo that never asked for it). If the file
-   already exists it is **never touched**, no matter what it contains; if its
-   `schema_version` is older than the one this mneme understands, an
-   advisory drift finding is added to step 6 below (never written). See
-   [docs/quality.md](quality.md).
+4. **Legacy quality files advisory** (SPEC-158): the EPIC-calidad
+   certification mechanism was retired whole; `init` never writes a quality
+   constitution any more. If a repository still carries a legacy
+   `<repo>/.mneme/quality.toml` or `<repo>/.mneme/quality-baseline.toml`
+   (files that mechanism used to own and no production code reads any
+   more), each one is named as an advisory drift finding in step 6 below —
+   pointing at `mneme upgrade` to remove them — but `init` never writes or
+   deletes either file itself, in `--check` mode or otherwise.
 5. **`.gitattributes` block** (SPEC-140): ensure `<repo>/.gitattributes`
    carries a marked `eol=lf` block for `.mneme/**`, `.claude/agents/**` and
    `.codex/agents/**` — the paths mneme itself writes and later re-reads
@@ -59,7 +59,7 @@ Rules:
    team-memory enable` write this same block too, since both can run
    without ever passing through `init`.
 6. **Drift report**: scan `<repo>/CLAUDE.md` outside the managed block, plus
-   the quality constitution's schema_version, plus any `.gitattributes`
+   any legacy quality files finding from step 4, plus any `.gitattributes`
    finding from step 5, and print advisory findings (no file is modified by
    this step).
 7. **Legacy plan**: show the legacy migration plan in dry-run mode.
@@ -67,8 +67,9 @@ Rules:
 ### `--check` mode
 
 Report-only: runs drift detection and shows the legacy plan without writing
-anything — including the quality constitution and the `.gitattributes`
-block, both of which are materialized only outside `--check`.
+anything — including the `.gitattributes` block, which is materialized
+only outside `--check` (the legacy quality files advisory never writes
+anything, in either mode).
 
 ### `--apply` mode
 

@@ -1,17 +1,12 @@
-// Package service — this file tests LaneAudit/runLaneAuditEngine after
-// SPEC-118 P11 moved the trivial lane onto the SAME engine the standard
-// lane's budget mechanism uses. Every threshold case migrated from the
-// deleted internal/lane/audit_test.go (R-F) is represented here, now
-// exercised through a REAL git repository instead of a fabricated
-// DiffStats — the engine underneath changed from lane.GitDiffer/lane.Audit
-// to quality.Git/quality.EvaluateTrivialBudget, and this file is the proof
-// the migration preserves behaviour.
+// Package service — this file tests LaneAudit/runLaneAuditEngine. The
+// engine runs on internal/gitrepo/internal/laneaudit, and — since SPEC-158
+// D2 — ALWAYS direct: no certificate of any kind is ever involved, whether
+// or not a legacy .mneme/quality.toml (from the now-retired certification
+// mechanism) still declares [budget].enabled = true.
 package service
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"os"
 	"os/exec"
@@ -20,7 +15,6 @@ import (
 	"testing"
 
 	"github.com/wirvii/mneme/internal/model"
-	"github.com/wirvii/mneme/internal/quality"
 )
 
 // gitRunLaneTest mirrors gitRunBudgetTest — local identity, signing off
@@ -295,10 +289,9 @@ func TestLaneAudit_HappyPath_AdvancesToDone(t *testing.T) {
 
 // writeQuality4BudgetOnConstitution writes a schema_version=4 constitution
 // with [budget].enabled = true (and everything else declared-and-off) at
-// repoDir/.mneme/quality.toml — the AC25/D12 absorption fixture for
-// LaneAudit's own gate (distinct from the ensureCertified-focused
-// writeTestConstitutionV4BudgetEnabled in sdd_quality_test.go, kept local
-// to this file to avoid a cross-file test-only dependency).
+// repoDir/.mneme/quality.toml — a LEGACY fixture (SPEC-158): the file itself
+// is now completely inert, kept here only to prove LaneAudit's own gate
+// never reads it any more, regardless of what it declares.
 func writeQuality4BudgetOnConstitution(t *testing.T, repoDir string) {
 	t.Helper()
 	dir := filepath.Join(repoDir, ".mneme")
@@ -344,17 +337,18 @@ test_reach_depth = 3
 	}
 }
 
-// TestLaneAudit_Absorbed_RequiresCertificate covers D12/AC25's own half
-// for LaneAudit specifically (point 4 of P12): with [budget].enabled =
-// true, LaneAudit refuses without a usable certificate
-// (ErrCertificateMissing, naming `mneme quality verify`), and passes once
-// one exists.
-func TestLaneAudit_Absorbed_RequiresCertificate(t *testing.T) {
+// TestLaneAudit_LegacyBudgetConstitution_RunsDirect covers SPEC-158 AC2: a
+// legacy .mneme/quality.toml declaring [budget].enabled = true (the old
+// absorption switch) is now completely inert — LaneAudit computes the
+// delta and decides via laneaudit.EvaluateTrivialBudget directly, with NO
+// certificate involved at all, and still reaches done with a passing
+// lane_audits row.
+func TestLaneAudit_LegacyBudgetConstitution_RunsDirect(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not found in PATH")
 	}
 
-	svc, workflowDir, repoDir := newTestSDDServiceWithRepoDir(t, "wirvii/mneme")
+	svc, _, repoDir := newTestSDDServiceWithRepoDir(t, "wirvii/mneme")
 	ctx := context.Background()
 
 	gitRunLaneTest(t, repoDir, "init", "-b", "main")
@@ -366,13 +360,7 @@ func TestLaneAudit_Absorbed_RequiresCertificate(t *testing.T) {
 	gitRunLaneTest(t, repoDir, "commit", "-m", "base")
 	base := strings.TrimSpace(gitRunLaneTest(t, repoDir, "rev-parse", "HEAD"))
 
-	// A comment-only change: no NEW symbol is created, so the six graph
-	// detections (which only ever inspect delta.Created) have nothing to
-	// report — the certificate can be genuinely green. Creating a new
-	// symbol here would legitimately fire orphan/untested-reach against
-	// noopGraphFacts (which reports zero edges/reachability for
-	// everything), which is correct detector behaviour, not something
-	// this fixture should paper over.
+	// A comment-only change, small and in scope.
 	writeLaneFile(t, repoDir, "internal/store/existing.go", "package store\n\n// Existing does something.\nfunc Existing() {}\n")
 	gitRunLaneTest(t, repoDir, "add", "-A")
 	gitRunLaneTest(t, repoDir, "commit", "-m", "head")
@@ -385,68 +373,37 @@ func TestLaneAudit_Absorbed_RequiresCertificate(t *testing.T) {
 		t.Fatalf("create spec: %v", err)
 	}
 
-	// No certificate yet — must refuse.
-	_, err := svc.LaneAudit(ctx, model.LaneAuditRequest{ID: spec.ID})
-	if !errors.Is(err, model.ErrCertificateMissing) {
-		t.Fatalf("LaneAudit error = %v, want ErrCertificateMissing", err)
-	}
-
-	// Verify to produce a green certificate for HEAD, sharing the SAME
-	// store svc itself uses. WithGraphFacts is required for a truly GREEN
-	// certificate: without an injected graph, budget/graph-index is a
-	// firmable `finding` (D5), which alone keeps the certificate at
-	// "findings", never "pass" — CertificateUsable requires "pass"
-	// specifically. The fake must also report the CORRECT content hash
-	// for the one changed file, or D5's freshness check itself finds it
-	// divergent.
-	g := &quality.Git{RepoDir: repoDir}
-	headContent, ok, ferr := g.FileAtRef("HEAD", "internal/store/existing.go")
-	if ferr != nil || !ok {
-		t.Fatalf("FileAtRef: ok=%v err=%v", ok, ferr)
-	}
-	sum := sha256.Sum256(headContent)
-	facts := &noopGraphFacts{contentHash: map[string]string{"internal/store/existing.go": hex.EncodeToString(sum[:])}}
-
-	qsvc := NewQualityService(svc.store, "wirvii/mneme", repoDir, &fakeGateRunner{},
-		WithWorkflowDir(workflowDir), WithGraphFacts(facts))
-	cert, err := qsvc.Verify(ctx, model.QualityVerifyRequest{ID: spec.ID})
-	if err != nil {
-		t.Fatalf("Verify: %v", err)
-	}
-	if cert.Verdict != model.QualityVerdictPass {
-		checks, _ := svc.store.ListChecks(ctx, cert.ID)
-		for _, c := range checks {
-			t.Logf("check: kind=%s name=%s status=%s summary=%s", c.Kind, c.Name, c.Status, c.Summary)
-		}
-		t.Fatalf("Verify produced verdict=%q, want pass", cert.Verdict)
-	}
-
+	// No certificate anywhere — never required any more, with or without a
+	// legacy quality.toml lying around.
 	result, err := svc.LaneAudit(ctx, model.LaneAuditRequest{ID: spec.ID})
 	if err != nil {
-		t.Fatalf("LaneAudit (with certificate): %v", err)
+		t.Fatalf("LaneAudit: %v", err)
 	}
 	if !result.Passed {
 		t.Errorf("Passed = false, want true: %+v", result)
 	}
+
+	updated, err := svc.store.GetSpec(ctx, spec.ID)
+	if err != nil {
+		t.Fatalf("GetSpec: %v", err)
+	}
+	if updated.Status != model.SpecStatusDone {
+		t.Errorf("Status = %q, want done", updated.Status)
+	}
 }
 
-// TestLaneAudit_ScopeBreachFailsIndependentlyOfGreenCertificate covers AC12
-// (SPEC-137 D5): with [budget].enabled = true, LaneAudit's own verdict
-// comes from EvaluateTrivialBudget via runLaneAuditEngine — a DIFFERENT
-// code path than the certificate's DeriveVerdict — so a real out-of-scope
-// change must still fail the audit even when the certificate covering the
-// exact same commit is `pass`. detection/out-of-radius (the row that
-// observes the breach) is kind="detection", whose effect is `measures`
-// since SPEC-137 D4/D5: it can report `fail` on that ONE row and the
-// certificate still comes out green, because that row never counted
-// toward the verdict in the first place — proving the two mechanisms are
-// genuinely independent, not "usually agree by coincidence".
-func TestLaneAudit_ScopeBreachFailsIndependentlyOfGreenCertificate(t *testing.T) {
+// TestLaneAudit_LegacyBudgetConstitution_ScopeBreachStillFails covers
+// SPEC-158's own conservation half of the retired AC12/D5: with a legacy
+// .mneme/quality.toml declaring [budget].enabled = true still present, a
+// real out-of-scope change still fails the audit — LaneAudit's own verdict
+// has never depended on any certificate, and the retirement changes nothing
+// about that.
+func TestLaneAudit_LegacyBudgetConstitution_ScopeBreachStillFails(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not found in PATH")
 	}
 
-	svc, workflowDir, repoDir := newTestSDDServiceWithRepoDir(t, "wirvii/mneme")
+	svc, _, repoDir := newTestSDDServiceWithRepoDir(t, "wirvii/mneme")
 	ctx := context.Background()
 
 	gitRunLaneTest(t, repoDir, "init", "-b", "main")
@@ -459,7 +416,7 @@ func TestLaneAudit_ScopeBreachFailsIndependentlyOfGreenCertificate(t *testing.T)
 	base := strings.TrimSpace(gitRunLaneTest(t, repoDir, "rev-parse", "HEAD"))
 
 	// The declared scope is internal/store/** (below) — this file is
-	// OUTSIDE it, a real scope breach EvaluateRadius must catch.
+	// OUTSIDE it, a real scope breach EvaluateTrivialBudget must catch.
 	writeLaneFile(t, repoDir, "internal/other/new.go", "package other\n\nfunc unexportedHelper() {}\n")
 	gitRunLaneTest(t, repoDir, "add", "-A")
 	gitRunLaneTest(t, repoDir, "commit", "-m", "head, out of scope")
@@ -472,46 +429,15 @@ func TestLaneAudit_ScopeBreachFailsIndependentlyOfGreenCertificate(t *testing.T)
 		t.Fatalf("create spec: %v", err)
 	}
 
-	// No graphFacts injected AT ALL (unlike the sibling test above): the
-	// six graph-dependent detections skip as EffectStopped, and
-	// detection/out-of-radius needs no graph — it is pure git/scope
-	// arithmetic (D9's own "the two that need no graph at all").
-	qsvc := NewQualityService(svc.store, "wirvii/mneme", repoDir, &fakeGateRunner{}, WithWorkflowDir(workflowDir))
-	cert, err := qsvc.Verify(ctx, model.QualityVerifyRequest{ID: spec.ID})
-	if err != nil {
-		t.Fatalf("Verify: %v", err)
-	}
-	if cert.Verdict != model.QualityVerdictPass {
-		checks, _ := svc.store.ListChecks(ctx, cert.ID)
-		for _, c := range checks {
-			t.Logf("check: kind=%s name=%s status=%s effect=%s summary=%s", c.Kind, c.Name, c.Status, c.Effect, c.Summary)
-		}
-		t.Fatalf("Verify produced verdict=%q, want pass (the scope breach is a measures-effect row, it must not block the certificate)", cert.Verdict)
-	}
-
-	checks, err := svc.store.ListChecks(ctx, cert.ID)
-	if err != nil {
-		t.Fatalf("ListChecks: %v", err)
-	}
-	sawFailingOutOfRadius := false
-	for _, c := range checks {
-		if c.Kind == "detection" && c.Name == "out-of-radius" {
-			if c.Status != "fail" {
-				t.Fatalf("detection/out-of-radius status = %q, want fail (the fixture's own breach)", c.Status)
-			}
-			sawFailingOutOfRadius = true
-		}
-	}
-	if !sawFailingOutOfRadius {
-		t.Fatal("no detection/out-of-radius row found — this test proves nothing without it")
-	}
-
 	result, err := svc.LaneAudit(ctx, model.LaneAuditRequest{ID: spec.ID})
 	if !errors.Is(err, model.ErrAuditFailed) {
-		t.Fatalf("LaneAudit (with a green certificate) error = %v, want ErrAuditFailed", err)
+		t.Fatalf("LaneAudit error = %v, want ErrAuditFailed", err)
 	}
 	if result.Passed {
-		t.Errorf("Passed = true, want false — LaneAudit's own engine must catch the scope breach regardless of the certificate's verdict: %+v", result)
+		t.Errorf("Passed = true, want false — the scope breach must fail regardless of any legacy constitution: %+v", result)
+	}
+	if !containsSubstr(result.Breaches, "out of scope") {
+		t.Errorf("Breaches = %v, want an out-of-scope breach", result.Breaches)
 	}
 }
 

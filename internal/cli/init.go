@@ -112,17 +112,7 @@ The command is idempotent: re-running on an already-configured project is safe.`
 				}
 			}
 
-			// Step 3b: materialize the quality constitution (SPEC-115 D15).
-			// Absent -> written with enabled=false. Present -> NEVER touched.
-			qualityFindings, qualityErr := initSvc.EnsureQualityConstitution(cwd, flagCheck)
-			if qualityErr != nil {
-				fmt.Fprintf(cmd.ErrOrStderr(), "Warning: quality constitution: %v\n", qualityErr)
-			} else if !flagCheck {
-				fmt.Fprintln(cmd.OutOrStdout(), "[ok] Quality constitution present (.mneme/quality.toml, enabled=false)")
-			}
-
-			// Step 3c: the .gitattributes block (SPEC-140 D9-D11), right
-			// after the quality constitution step it is modeled on:
+			// Step 3b: the .gitattributes block (SPEC-140 D9-D11):
 			// checkMode never writes, an explicit conflicting rule is left
 			// untouched and reported, and a write always names the path
 			// and the three lines added.
@@ -131,13 +121,22 @@ The command is idempotent: re-running on an already-configured project is safe.`
 				fmt.Fprintf(cmd.ErrOrStderr(), "Warning: gitattributes: %v\n", gitattrsErr)
 			}
 
+			// Step 3c: advisory-only in BOTH modes (SPEC-158 D5.c) — names
+			// any legacy .mneme/quality.toml or quality-baseline.toml left
+			// by the now-retired certification mechanism, but never writes
+			// or deletes either file (that is `mneme upgrade`'s job).
+			legacyQualityFindings, legacyQualityErr := initSvc.LegacyQualityFindings(cwd)
+			if legacyQualityErr != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "Warning: legacy quality files: %v\n", legacyQualityErr)
+			}
+
 			// Step 4: drift report (always, even in --check mode).
 			findings, driftErr := initSvc.RunDrift(cwd)
 			if driftErr != nil {
 				fmt.Fprintf(cmd.ErrOrStderr(), "Warning: drift detection: %v\n", driftErr)
 			}
-			findings = append(findings, qualityFindings...)
 			findings = append(findings, gitattrsFindings...)
+			findings = append(findings, legacyQualityFindings...)
 			if len(findings) > 0 {
 				fmt.Fprintln(cmd.OutOrStdout(), "\n[drift] Advisory findings:")
 				for _, f := range findings {

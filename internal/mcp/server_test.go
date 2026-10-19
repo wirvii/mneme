@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
@@ -223,8 +225,6 @@ func TestToolsList(t *testing.T) {
 		"spec_reject", "lane_stats",
 		// SDD git-native read tools (SPEC-131 §2b)
 		"sdd_status", "sdd_import",
-		// Quality tools (SPEC-115 EPIC-calidad S1 + SPEC-117 S3)
-		"quality_verify", "quality_status", "quality_ack", "quality_sign", "quality_report",
 		// Graph tools
 		"mem_gaps",
 		"mem_explore",
@@ -262,37 +262,55 @@ func TestToolsList(t *testing.T) {
 	}
 }
 
-func TestCallerPolicyFiltersAndAuthorizesSubagentTools(t *testing.T) {
+// TestCallerPolicy_DeniesOnlyLifecycleAndRestrictsCriteria covers SPEC-158
+// AC12's MCP half: after the certification mechanism's retirement, the set
+// of tools a backend caller cannot invoke is EXACTLY {spec_advance,
+// spec_quick} — derived from allTools() itself, never a hand-typed list, so
+// a future addition to allowsTool's deny set would fail this test instead
+// of going unnoticed. spec_doc_write's "criteria" kind stays restricted to
+// the architect; "budget" is no longer restricted (and no longer even in
+// the tool's own enum, verified separately by TestAllTools_NoQualityFamily's
+// sibling coverage of the enum in tools_test.go).
+func TestCallerPolicy_DeniesOnlyLifecycleAndRestrictsCriteria(t *testing.T) {
+	backend := CallerPolicy{Role: "backend", Archetype: "backend"}
+
+	var denied []string
+	for _, tool := range allTools() {
+		if !backend.allowsTool(tool.Name) {
+			denied = append(denied, tool.Name)
+		}
+	}
+	sort.Strings(denied)
+	want := []string{"spec_advance", "spec_quick"}
+	if !reflect.DeepEqual(denied, want) {
+		t.Fatalf("tools denied to a backend caller = %v, want exactly %v", denied, want)
+	}
+
+	if err := backend.authorizeCall(ToolCallParams{Name: "spec_doc_write", Arguments: json.RawMessage(`{"kind":"criteria"}`)}); err == nil {
+		t.Error("backend writing kind=criteria: want denied, got allowed")
+	}
+	if err := backend.authorizeCall(ToolCallParams{Name: "spec_doc_write", Arguments: json.RawMessage(`{"kind":"budget"}`)}); err != nil {
+		t.Errorf("backend writing kind=budget: want allowed (no longer restricted), got denied: %v", err)
+	}
+
+	architect := CallerPolicy{Role: "architect", Archetype: "architect"}
+	if err := architect.authorizeCall(ToolCallParams{Name: "spec_doc_write", Arguments: json.RawMessage(`{"kind":"criteria"}`)}); err != nil {
+		t.Errorf("architect writing kind=criteria: want allowed, got denied: %v", err)
+	}
+
 	srv := newTestServer(t)
-	srv.WithCallerPolicy(CallerPolicy{Role: "backend", Archetype: "backend"})
+	srv.WithCallerPolicy(backend)
 
 	for _, tool := range srv.tools {
-		if tool.Name == "spec_advance" || tool.Name == "spec_quick" || tool.Name == "quality_ack" || tool.Name == "quality_sign" {
+		if tool.Name == "spec_advance" || tool.Name == "spec_quick" {
 			t.Fatalf("restricted tool %q remained visible", tool.Name)
 		}
 	}
 
-	denied := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"spec_advance","arguments":{}}}`)
-	resp, ok := srv.handleMessage(denied)
+	deniedCall := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"spec_advance","arguments":{}}}`)
+	resp, ok := srv.handleMessage(deniedCall)
 	if !ok || resp.Error == nil || !strings.Contains(resp.Error.Message, "caller policy") {
 		t.Fatalf("direct restricted call was not denied: %#v", resp)
-	}
-
-	docDenied := []byte(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"spec_doc_write","arguments":{"kind":"budget"}}}`)
-	resp, ok = srv.handleMessage(docDenied)
-	if !ok || resp.Error == nil || !strings.Contains(resp.Error.Message, `kind "budget"`) {
-		t.Fatalf("role-scoped document was not denied: %#v", resp)
-	}
-}
-
-func TestCallerPolicyAllowsArchitectDocsAndQASign(t *testing.T) {
-	architect := CallerPolicy{Role: "architect", Archetype: "architect"}
-	if err := architect.authorizeCall(ToolCallParams{Name: "spec_doc_write", Arguments: json.RawMessage(`{"kind":"budget"}`)}); err != nil {
-		t.Fatalf("architect budget denied: %v", err)
-	}
-	qa := CallerPolicy{Role: "qa-tester", Archetype: "qa-tester"}
-	if !qa.allowsTool("quality_sign") {
-		t.Fatal("qa-tester quality_sign denied")
 	}
 }
 

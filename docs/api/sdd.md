@@ -1,11 +1,12 @@
-# API Reference — SDD Tools (`backlog_*`, `spec_*`, `lane_*`, `quality_*`, `sdd_*`, `init`)
+# API Reference — SDD Tools (`backlog_*`, `spec_*`, `lane_*`, `sdd_*`, `init`)
 
-28 MCP tools over JSON-RPC 2.0 stdio (`mneme mcp`): `backlog_*` (6), `spec_*`
-(9), `lane_*` (5), `quality_*` (5), `sdd_*` (2), `init` (1). Concept guide:
+23 MCP tools over JSON-RPC 2.0 stdio (`mneme mcp`): `backlog_*` (6), `spec_*`
+(9), `lane_*` (5), `sdd_*` (2), `init` (1). Concept guide:
 [docs/lanes.md](../lanes.md) (trivial/standard lanes, auditor thresholds),
-[docs/init.md](../init.md) (managed blocks, drift, legacy migration),
-[docs/quality.md](../quality.md) (the quality constitution, certificates,
-and the `spec_advance` block, SPEC-115),
+[docs/init.md](../init.md) (managed blocks, drift, legacy migration).
+The `quality_*` family (5 tools) existed from SPEC-115 through SPEC-137 and
+was retired whole by SPEC-158, along with the certification mechanism it
+served — `spec_advance` no longer checks for any certificate anywhere.
 [docs/sdd-git-native.md](../sdd-git-native.md) (the SDD git-native
 mechanism's file format, write path, and read path, SPEC-130/SPEC-131).
 Index: [docs/API.md](../API.md).
@@ -299,7 +300,7 @@ Advance a spec to its next lifecycle state (standard-lane state machine above).
 **`speccing -> specced` requires a declared `criteria.toml` for a
 standard-lane spec (SPEC-156 D2).** The document is delivered via
 `spec_doc_write` with `kind: "criteria"` — the architect's only write
-channel for it. Missing it fails with `quality: no criteria.toml found for
+channel for it. Missing it fails with `no criteria.toml found for
 this spec`, naming the exact path and the remedy. This is the ONLY
 transition the check applies to: trivial-lane specs, every other standard
 transition (including `qa -> done`), and a project with the workflow
@@ -320,9 +321,9 @@ fallback when `executor.degraded` is `true`. `review_range` is present ONLY
 when the stage just entered is `qa` (SPEC-157 D5) — see "Review frontier
 and review range" right below.
 
-**Errors:** `-32602` invalid transition, missing `id`/`by`, `quality: no
-criteria.toml found for this spec` (standard lane, `speccing -> specced`,
-no declared criteria document).
+**Errors:** `-32602` invalid transition, missing `id`/`by`, `no criteria.toml
+found for this spec` (standard lane, `speccing -> specced`, no declared
+criteria document).
 
 ### Review frontier and review range (SPEC-157)
 
@@ -415,46 +416,46 @@ lane) or `rationale` (trivial lane).
 
 ### spec_doc_write
 
-Write a spec entregable (`spec`/`plan`/`qa-report`/`changes`/`criteria`/
-`budget`) to its workflow directory (SPEC-087 D3, `criteria` added by
-SPEC-117 S3 D1, `budget` added by SPEC-118 S4 D2) — the path a subagent
-uses instead of copying its report into the workflow directory by hand.
-The destination directory and filename are never caller-supplied: the
-directory is derived from the persisted spec record (`spec.Project`, via
-`GetSpec`) and the filename comes from a closed, Go-authored `kind ->
-filename` map (`spec` → `spec.md`, `plan` → `plan.md`, `qa-report` →
-`qa-report.md`, `changes` → `changes.md`, `criteria` → `criteria.toml`,
-`budget` → `budget.toml`). 0644, parent directories created as needed,
-plain overwrite-or-create — no append, no arbitrary read.
+Write a spec entregable (`spec`/`plan`/`qa-report`/`changes`/`criteria`) to
+its workflow directory (SPEC-087 D3, `criteria` added by SPEC-156) — the
+path a subagent uses instead of copying its report into the workflow
+directory by hand. The destination directory and filename are never
+caller-supplied: the directory is derived from the persisted spec record
+(`spec.Project`, via `GetSpec`) and the filename comes from a closed,
+Go-authored `kind -> filename` map (`spec` → `spec.md`, `plan` → `plan.md`,
+`qa-report` → `qa-report.md`, `changes` → `changes.md`, `criteria` →
+`criteria.toml`). 0644, parent directories created as needed, plain
+overwrite-or-create — no append, no arbitrary read. A sixth kind, `budget`,
+existed from SPEC-118 through SPEC-137 and was retired by SPEC-158 along
+with the certification mechanism it served; `spec_doc_write` now rejects it
+with `ErrUnknownSpecDocKind`, writing nothing.
 
-**`kind = "criteria"` and `kind = "budget"` are both validated BEFORE
-anything is written** (D7/D11): the content is parsed strictly and, when
-the server's `repoDir` is configured, every anchor is resolved against the
-real working tree — `criteria.toml`'s `new = false` assertions, or
-`budget.toml`'s `[[modify]]` symbols and `[[quota]]` directories. Any
-failure returns without writing a single byte — see
-[docs/quality.md](../quality.md#s3-executable-acceptance-criteria-spec-117)
-and [docs/quality.md](../quality.md#s4-the-budget-against-the-graph-and-the-absorption-of-lane-audit-spec-118)
-for the full vocabulary each validates against.
+**`kind = "criteria"` is validated BEFORE anything is written** (SPEC-156):
+the content is parsed as a criteria document (`internal/acceptance`) — id
+and text required per criterion, every legacy mode-specific key from the
+retired evaluator (`mode`, `assert`, `command`, `timeout`,
+`evidence_required`) accepted and discarded, unknown keys rejected. No
+anchor is resolved against the working tree any more — the evaluator that
+used to do that was retired with the rest of the certification mechanism.
+Any failure returns without writing a single byte.
 
-**`kind = "budget"` and `kind = "criteria"` are BOTH restricted to the
-`architect` role for a subagent caller** (SPEC-118 D10,
-`internal/cli/hook.go`'s `roleScopedDocKinds`) — an implementer writing
-either would be examining itself. The rule fails OPEN when a subagent's
-role cannot be resolved, the opposite of `quality_sign`'s fail-closed
-posture (see docs/quality.md's own note on why).
+**`kind = "criteria"` is restricted to the `architect` role for a subagent
+caller** (`internal/cli/hook.go`'s `roleScopedDocKinds`) — an implementer
+writing it would be rewriting the exam it is judged by. The rule fails OPEN
+when a subagent's role cannot be resolved: closing it would leave the
+architect unable to write the document at all the moment `agent_type`
+stopped arriving in the payload.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `id` | string | yes | Spec ID (e.g. `SPEC-001`) |
-| `kind` | string | yes | `spec`, `plan`, `qa-report`, `changes`, `criteria`, or `budget` |
+| `kind` | string | yes | `spec`, `plan`, `qa-report`, `changes`, or `criteria` |
 | `content` | string | yes | Full document content, written verbatim |
 
 **Returns:** `{"path": "/abs/path/to/qa-report.md", "bytes": 1234, "created": true}`
 
 **Errors:** `-32602` unknown `kind`, missing fields, or (for `kind =
-"criteria"`/`"budget"`) an invalid document / an unresolvable anchor.
-`-32000` spec not found.
+"criteria"`) an invalid document. `-32000` spec not found.
 
 ### spec_list
 
@@ -513,8 +514,8 @@ declared `criteria.toml` entry it violates, plus a `detail` of what fails
 about it and optional `evidence`. **When the spec is standard lane, in
 `qa` status, and a `criteria.toml` exists and parses**, at least one
 finding is required — each `criterion_id` must match a declared id
-(`quality: finding names a criterion id that is not declared in
-criteria.toml`, naming both the offending id and the full declared set),
+(`finding names a criterion id that is not declared in criteria.toml`,
+naming both the offending id and the full declared set),
 and every finding's `detail` must be non-empty. Outside those three
 conditions — trivial lane rejecting from `audit`, a rejection from `done`,
 or a spec whose `criteria.toml` is missing or does not parse — the
@@ -573,10 +574,10 @@ would be without this note.
 **Returns:** Updated spec object with `status: "implementing"`.
 
 **Errors:** `-32602` invalid transition (spec not in `qa`/`audit`/`done`),
-missing fields, `quality: spec reject requires at least one finding
-naming a declared criterion...` (no findings, or a finding with an empty
-`detail`), `quality: finding names a criterion id that is not declared in
-criteria.toml` (an unknown `criterion_id`). `-32000` not found.
+missing fields, `spec reject requires at least one finding naming a
+declared criterion...` (no findings, or a finding with an empty `detail`),
+`finding names a criterion id that is not declared in criteria.toml` (an
+unknown `criterion_id`). `-32000` not found.
 
 **`mneme spec reject` accepts a repeatable `--finding <criterion-id>=<detail>`**
 flag (split on the first `=`, so a detail may itself contain `=`).
@@ -750,7 +751,7 @@ D13 already guarantees no file under `.mneme/sdd/` is ever deleted).
 **Denied to subagents** (`lifecycleTools` in `internal/cli/hook.go`): an
 implementer editing its own record file and then calling this tool would
 be authorizing its own status change, the same family `spec_advance`/
-`spec_quick`/`quality_ack`/`backlog_archive` already belong to.
+`spec_quick`/`backlog_archive` already belong to.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|--------------|
@@ -782,252 +783,22 @@ project).
 
 ---
 
-## Quality Tools (SPEC-115 EPIC-calidad S1, extended by SPEC-116 S2 and SPEC-117 S3)
-
-The quality mechanism replaces an agent's self-reported "it works" with a
-result mneme produced by executing something, bound to the exact commit
-(see [docs/quality.md](../quality.md) for the full design). `quality_verify`
-EMITS a certificate; `spec_advance` only ever COMPARES an already-emitted
-one — the two verbs are deliberately separate (D5): running a project's
-full build+test suite inside a synchronous MCP call would risk a client
-timeout, and `spec_advance` is denied to subagents (see below), so an
-implementer could never verify its own work if verification only happened
-there.
-
-**SPEC-116 (S2) added no new tool.** `quality_verify` also emits up to
-seven more `quality_checks` rows (`kind=coverage`/`ratchet`) when the
-constitution declares them; `quality_status`'s response gains the
-registered baseline's fields (below). `quality_ack` and its request/
-response shape are unchanged.
-
-**SPEC-117 (S3) adds two tools**, `quality_sign` and `quality_report` (82 →
-84): `quality_verify` also emits a `criteria/*`/`criterion*` set of rows
-when `[criteria]` is declared and enabled (see
-[docs/quality.md](../quality.md#s3-executable-acceptance-criteria-spec-117)),
-and `spec_doc_write`'s `kind` enum gains `"criteria"` (above).
-
-**SPEC-118 (S4) adds NO new tool.** `quality_verify` also emits up to 12
-(standard lane) or 13 (trivial lane) more `quality_checks` rows
-(`kind=budget`/`detection`) when `[budget]` is declared and enabled (see
-[docs/quality.md](../quality.md#s4-the-budget-against-the-graph-and-the-absorption-of-lane-audit-spec-118));
-`quality_status`'s response gains a `budget` field (path, disk hash,
-certificate hash, margin, budgeted/delivered/overrun); `spec_doc_write`'s
-`kind` enum gains `"budget"` (above); and `lane_audit`'s response type
-changes from `lane.AuditResult` to `model.LaneAuditResult` — same field
-names, same (absent) JSON tags, byte-identical wire shape.
-
-**SPEC-119 (S5) adds NO new tool.** `quality_verify` also emits `6 + N`
-more `quality_checks` rows (`kind=mutation`/`kind=mutant`) when
-`[mutation]` is declared and enabled (see
-[docs/quality.md](../quality.md#s5-mutation-over-the-diff-and-the-equivalent-mutant-escape-hatch-spec-119));
-`quality_status`'s response gains a `mutation` field (declared
-format/`report_path`/cupo, plus the latest certificate's signed-equivalent
-count, survivor count, and full per-status recount); and `quality_sign`'s
-domain GENERALIZES to also accept a `mutant` survivor row (below) —
-`quality_ack`'s domain narrows in exact lockstep, since the two are now
-decided by one predicate, negated. No change to either tool's request or
-response SHAPE.
-
-### quality_verify
-
-Run the gates declared in `.mneme/quality.toml` for a spec and emit (or
-deny) a certificate bound to the current commit. Valid only while the spec
-is `implementing` or `qa` (`qa` admits recertification when HEAD moved
-during QA).
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `id` | string | yes | Spec ID to verify (must be `implementing` or `qa` status) |
-
-**Returns:** the persisted `QualityCertificate` — `id`, `verdict`
-(`pass`/`fail`/`findings`), `head_sha`, `constitution_hash`, `dirty`,
-`started_at`/`finished_at`/`duration_ms`.
-
-**Errors:** `-32602` spec not in `implementing`/`qa`
-(`ErrInvalidTransition`), constitution missing or unparseable
-(`ErrInvalidConstitution`). `-32000` spec not found.
-
-### quality_status
-
-Report the constitution's state (path, hash, `enabled`, declared gates)
-and, when a spec ID is given, its latest certificate and checks. Never
-executes anything — this is the read-only half of the mechanism.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `id` | string | no | Spec ID to report the latest certificate for. Omit to report only the constitution's own state |
-
-**Returns:**
-
-```json
-{
-  "enabled": true, "exists": true, "path": ".mneme/quality.toml",
-  "constitution_hash": "…", "gate_names": ["build", "test"],
-  "note": "mecanismo encendido",
-  "latest_certificate": {"id": "…", "verdict": "pass", "head_sha": "…"},
-  "checks": [{"seq": 1, "kind": "tree", "name": "clean-worktree", "status": "pass"}],
-  "baseline": {
-    "path": ".mneme/quality-baseline.toml",
-    "measured_at_sha": "9f3c…",
-    "measured_at": "2026-08-13T11:04:22Z",
-    "global_line_pct": 70.5,
-    "staleness_known": true,
-    "staleness_pct": 0.3,
-    "stale": false
-  },
-  "mutation": {
-    "format": "gremlins", "report_path": "tmp/mutants.json",
-    "max_equivalent": 2, "signed_equivalent": 0, "survivor_count": 0,
-    "by_status": {"killed": 24, "not_covered": 2, "timed_out": 36}
-  }
-}
-```
-
-`mutation` (SPEC-119) is omitted entirely when the constitution does not
-declare `[mutation]` (schema < 5). `signed_equivalent`/`survivor_count`/
-`by_status` are populated only when `id` was supplied and a certificate
-exists; `by_status` is the LATEST certificate's `mutation/score` recount,
-verbatim.
-
-`baseline` (SPEC-116) is the ratchet's registered baseline — omitted
-entirely when `.mneme/quality-baseline.toml` does not exist (the normal
-state before the repository's first `mneme quality baseline update`,
-which is CLI-only and never exposed over MCP, see docs/quality.md).
-`staleness_known`/`staleness_pct`/`stale` are populated only when `id` was
-supplied AND that spec's latest certificate has a usable
-`coverage/profile` row to compare against; otherwise `staleness_known` is
-`false` and the other two fields are absent. Reading and reporting only —
-`quality_status` never executes anything to compute this.
-
-A repo with no constitution at all (the common case) returns
-`{"enabled": false, "exists": false, "note": "mecanismo apagado: no existe .mneme/quality.toml"}`
-— never an error.
-
-### quality_ack
-
-Record a human's justified approval of a quality finding, converting it from
-`finding` to `acked` without re-running anything. The certificate's verdict
-is recalculated in the same operation. **Denied to subagents**
-(`lifecycleTools`, see below) — the author of a change never absolves
-themselves of its own findings.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `cert_id` | string | yes | Certificate ID the finding belongs to |
-| `seq` | integer | yes | Seq of the finding within the certificate's checks |
-| `by` | string | yes | Who is acknowledging the finding — never the author of the change under review |
-| `justification` | string | yes | Why the finding is acceptable (non-empty) |
-
-**Returns:** `{"acked": true, "cert_id": "…", "seq": 1}`
-
-**Errors:** `-32602` missing `by`/`justification` (`ErrReasonRequired`), or
-the targeted row requires a signature — a criterion, or (SPEC-119 S5) a
-`mutant` survivor row (`ErrRequiresSign`, alias `ErrCriterionRequiresSign`
-— use `quality_sign` instead). `-32000` no such certificate/finding at that
-seq (`ErrCertificateNotFound`).
-
-### quality_sign
-
-Record an ATTESTATION that a row genuinely holds, converting it from
-`finding` to `acked`. Distinct from `quality_ack` (an ABSOLUTION): `ack`
-says "I approve this despite it being a problem", `sign` says "I verified
-this and it holds" — mixing the two verbs would make a count confuse "we
-forgave N findings" with "we verified M manuals". Accepts a row iff
-`quality.RequiresSignature(kind)` — a criterion row (SPEC-117 S3 D11), OR
-(SPEC-119 S5 D8) a `mutant` survivor row, the equivalent-mutant escape
-hatch. **Restricted to the `qa-tester` role** for a subagent caller, and
-**fails CLOSED** when that role cannot be resolved — the first rule in the
-repo to do so (see docs/quality.md).
-
-**SPEC-119 D9: signing a `mutant` row additionally enforces the
-certificate's own `max_equivalent` cupo** — read from that SAME
-certificate's `mutation/score` row, never from `.mneme/quality.toml` on
-disk. Past the cupo, `Sign` refuses (`ErrEquivalentQuotaExceeded`) and the
-row stays `finding`; a certificate with no `mutation/score` row at all
-refuses ANY `mutant` signature (fails closed, never "unlimited").
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `cert_id` | string | yes | Certificate ID the attested row belongs to |
-| `seq` | integer | yes | Seq of the row within the certificate's checks |
-| `by` | string | yes | Who is signing — the qa-tester |
-| `evidence` | string | yes | What was verified and how (non-empty) |
-
-**Returns:** `{"signed": true, "cert_id": "…", "seq": 4}`
-
-**Errors:** `-32602` missing `by`/`evidence` (`ErrReasonRequired`), or the
-targeted row is not one `RequiresSignature` accepts (`ErrNotSignable`,
-alias `ErrNotACriterion`). `-32602` the certificate's `max_equivalent` cupo
-is already reached, for a `mutant` row (`ErrEquivalentQuotaExceeded`,
-SPEC-119). `-32000` no such certificate/row at that seq
-(`ErrCertificateNotFound`).
-
-### quality_report
-
-Generate the QA report from the spec's latest certificate and write it
-via `spec_doc_write`'s `qa-report` kind (SPEC-117 S3 D12). Renders from
-the certificate's own persisted rows — **never** from `criteria.toml`, so
-editing that document after certifying cannot change what the report
-says. Deterministic: the same certificate always produces byte-identical
-output.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `id` | string | yes | Spec ID to generate the report for |
-| `force` | boolean | no | Overwrite an existing `qa-report.md` even if it lacks mneme's generation marker |
-
-**Returns:** `{"path": "/abs/path/to/qa-report.md", "bytes": 4096, "certificate_id": "…"}`
-
-**Errors:** `-32602` an existing `qa-report.md` lacks mneme's generation
-marker and `force` was not set (`ErrReportNotGenerated`). `-32000` spec or
-certificate not found.
-
-### `mneme quality baseline update|show` (SPEC-116, CLI-only)
-
-Not exposed over MCP, by design (docs/quality.md). `mneme quality baseline
-update <spec-id>` writes `.mneme/quality-baseline.toml` from that spec's
-latest **`pass`** certificate — refusing outright (no write) if the latest
-certificate is not `pass`, or none exists. `mneme quality baseline show`
-prints the registered baseline, or a note that none is registered yet;
-never an error either way.
-
-### The `spec_advance` block (D12)
-
-When the mechanism is enabled, `implementing → qa` and `qa → done` of a
-**standard**-lane spec require a usable certificate — `verdict == pass`,
-`head_sha` matches HEAD, `constitution_hash` matches the current file, and
-the worktree is clean. Each broken conjunction has its own error, always
-naming the exact remedy command:
-
-| Error | Cause | Remedy |
-|-------|-------|--------|
-| `ErrCertificateMissing` | No certificate was ever recorded | `mneme quality verify <SPEC-ID>` |
-| `ErrCertificateStale` | HEAD moved since the certificate was issued | re-verify |
-| `ErrCertificateNotGreen` | Verdict is `fail` or `findings` | fix the gates or `quality_ack` the finding, re-verify |
-| `ErrConstitutionChanged` | `.mneme/quality.toml` changed since certification | re-verify |
-| `ErrWorktreeDirty` | Uncommitted changes right now | commit or discard, re-verify |
-| `ErrInvalidConstitution` | The constitution does not parse | fix the file |
-| `ErrConstitutionAblated` | Enabled at the spec's base commit, off now | do not disable the mechanism mid-spec |
-
-**Lane trivial is entirely unaffected** — `implementing → audit → done`
-still runs exactly as before (`lane_audit`); this mechanism does not gate it
-in S1 (see docs/quality.md).
-
----
-
 ## init
 
 Initialise a project with mneme managed blocks and report drift. Applies the
-global operating manual and a minimal repo block to `CLAUDE.md` files,
-materializes `.mneme/quality.toml` when absent (SPEC-115 D15 — always
-`enabled=false`, never overwrites an existing file), then runs the drift
-detector. This is the MCP-tool form of `mneme init`; the destructive
-legacy-project migration (`--apply` DB writes + `rm-rf`) is **CLI-only** and
-not exposed here.
+global operating manual and a minimal repo block to `CLAUDE.md` files, then
+runs the drift detector. This is the MCP-tool form of `mneme init`; the
+destructive legacy-project migration (`--apply` DB writes + `rm-rf`) is
+**CLI-only** and not exposed here. Since SPEC-158 retired the certification
+mechanism, `init` never writes a quality constitution; if a repository still
+carries a legacy `.mneme/quality.toml` or `.mneme/quality-baseline.toml`
+(files the retired mechanism used to own), `init` names each one as an
+advisory drift finding — pointing at `mneme upgrade` to remove them — but
+never writes or deletes either file itself.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `check` | boolean | no | When `true`, report-only mode: drift is reported but no managed blocks (nor the quality constitution) are written. Default: `false` |
+| `check` | boolean | no | When `true`, report-only mode: drift is reported but no managed blocks are written. Default: `false` |
 | `repo_root` | string | no | Absolute path to the repository root. Default: current working directory |
 
 **Returns:**
@@ -1035,7 +806,7 @@ not exposed here.
 ```json
 {
   "repo_root": "/path/to/repo", "check_mode": false, "manual_applied": true,
-  "repo_block_applied": true, "quality_constitution_applied": true,
+  "repo_block_applied": true,
   "drift_findings": ["CLAUDE.md: no drift detected"]
 }
 ```

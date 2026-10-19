@@ -58,8 +58,8 @@ A standard-lane spec cannot cross the human approval gate without its
 acceptance-criteria document on file — the owner approves the spec's prose
 and its measurable boundary in the same act. The architect delivers it via
 `spec_doc_write` with `kind: "criteria"`, its only write channel for that
-file. Missing it fails `spec_advance` with `quality: no criteria.toml
-found for this spec`, naming the exact path. This is the ONLY transition
+file. Missing it fails `spec_advance` with `no criteria.toml found for
+this spec`, naming the exact path. This is the ONLY transition
 the requirement applies to — trivial-lane specs are unaffected, and
 `qa → done` gains no check at all: nothing here can ever block a spec from
 closing.
@@ -108,58 +108,41 @@ veredicto is exactly the failure mode this whole EPIC exists to close —
 S3 already made the same call for the standard lane's own criteria
 (`base-unknown`, never a guess).
 
-## The engine underneath (SPEC-118 P11), and the absorption (D12)
+## The engine underneath, and why nothing can block it any more (SPEC-158)
 
-`internal/lane` — the package that used to implement this auditor — is
-gone. `lane_audit` now runs on the SAME engine the standard lane's budget
-mechanism uses: `internal/quality`'s own `Git` (file/symbol delta) and
-`EvaluateTrivialBudget` (the verdict), reusing `internal/service`'s own
-`symbolExtractorAdapter` for the (now real, cross-language) public-symbol
-check instead of the old package's Go-only `go/ast` walk plus a regex
-heuristic for TypeScript. The 3/20 limits and the five forbidden globs
-are unchanged, migrated verbatim (`DefaultTrivialBudget`); every field of
-`lane_audits`, the `audit` status, `lane_reclassify`/`lane_override`, and
-the JSON shape `lane_audit` returns are all unchanged.
+`internal/lane` — the original package that implemented this auditor — is
+long gone. Its successor, the EPIC-calidad certification mechanism's own
+`internal/quality`, is gone too: SPEC-158 retired that whole mechanism, and
+with it the "absorption" this section used to describe (a `[budget].enabled`
+switch that could require a certificate before a trivial spec's own
+`implementing → audit` transition). `lane_audit` now runs on two small,
+dedicated leaf packages: `internal/gitrepo` (the git primitives — `NumStat`,
+`ChangedFilesInRange`, `ChangedLines`, `FileAtRef`) and `internal/laneaudit`
+(`CollectSymbols`/`DiffSymbols` for the file/symbol delta,
+`EvaluateTrivialBudget` for the verdict). The 3/20 limits and the five
+forbidden globs are unchanged, migrated verbatim (`DefaultTrivialBudget`);
+every field of `lane_audits`, the `audit` status,
+`lane_reclassify`/`lane_override`, and the JSON shape `lane_audit` returns
+are all unchanged.
 
-Two behaviour changes came with the engine swap, both deliberate:
+**`lane_audit` now ALWAYS runs direct — no certificate of any kind is ever
+involved, regardless of what a repository's `.mneme/quality.toml` (a file
+from the retired mechanism, now completely inert wherever it still exists)
+declares.** Before SPEC-158, a constitution with `[budget].enabled = true`
+could require a usable certificate before this transition; that requirement
+is gone along with the mechanism that enforced it. Computing the delta
+in-process, evaluating the trivial form, writing `lane_audits`, and
+advancing `audit → done` is now the ONLY route, unconditionally.
 
-- **`DefaultBaseRef`'s removal**, above.
-- **The public-symbol detector got MORE accurate**, not less: it now uses
-  the real code-graph extractor's `IsExported` for both Go and
-  TypeScript, instead of a `^\+export ` regex heuristic for the latter.
+Two behaviour changes survive from the original engine swap, both
+deliberate:
 
-The mechanism's absorption itself (SPEC-118 D12) means the trivial lane's
-own certificate requirement is now conditioned on the SAME `[budget]`
-switch the standard lane's budget checks use — **not** on `.mneme/quality.toml`'s
-top-level `enabled`, which keeps governing gates/coverage/criteria for
-standard work exactly as before:
-
-| `.mneme/quality.toml` | `mneme lane audit` |
-|---|---|
-| absent · schema < 4 · `[budget].enabled = false` | **Direct route.** Computes the delta in-process, evaluates the trivial form, writes `lane_audits`, advances `audit → done`. No certificate, no gates, no graph. This is TODAY's behaviour, on the new engine. |
-| schema 4 with `[budget].enabled = true` | **Absorbed route.** Requires a usable certificate for HEAD (`quality.CertificateUsable`) before advancing; without one, `ErrCertificateMissing` naming `mneme quality verify <ID>` as the remedy. |
-
-**Turning `[budget]` on activates the certificate requirement for the
-trivial lane too** — `ensureCertified`'s own gate at `implementing → audit`
-now checks `[budget].enabled` specifically for trivial specs (leaving the
-standard lane's own top-level `enabled` gate untouched). This is why the
-project constitution ships with `[budget].enabled = false` by default:
-turning it on is a cost decision (a trivial spec now inherits the full
-gate/coverage/criteria/graph suite, R3 of the SPEC-118 design), not a free
-upgrade.
-
-**SPEC-137 softens what that certificate can fail on, without touching the
-audit's own scope/size checks.** The certificate the absorbed route
-requires can now only turn red for tree/constitution/gate/criteria
-reasons — the budget mechanism's own rows (`budget/*`, `detection/*`,
-including the six graph detections) became measure-only in SPEC-137 and no
-longer block the verdict. `mneme lane audit` itself is **not** weakened by
-this: its own verdict comes from `EvaluateTrivialBudget`, a completely
-separate code path from the certificate's `DeriveVerdict`, so a real
-scope/size/forbidden-path breach still fails the audit exactly as before,
-independent of whether the certificate covering the same commit is green.
-What changed is only how EASY it is to obtain that green certificate in
-the first place.
+- **`DefaultBaseRef`'s removal**: the old auditor used to guess a default
+  base ref when neither `--base`/`base_ref` nor `spec.base_sha` resolved.
+  That guess is gone, not replaced — see above.
+- **The public-symbol detector got MORE accurate**, not less: it uses the
+  real code-graph extractor's `IsExported` for both Go and TypeScript,
+  instead of a `^\+export ` regex heuristic for the latter.
 
 ## Reject (v1.6.0)
 

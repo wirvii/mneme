@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime/debug"
 	"strings"
@@ -15,6 +16,59 @@ import (
 
 	"github.com/wirvii/mneme/internal/upgrade"
 )
+
+// stubUpgradeRepoRoot installs a fake upgradeRepoRoot that returns (root,
+// err) unconditionally, restoring the original via t.Cleanup. No real cwd
+// or git lookup is ever performed — the seam this repository's own tests
+// need so they never resolve THIS dogfooded checkout (SPEC-085).
+func stubUpgradeRepoRoot(t *testing.T, root string, err error) {
+	t.Helper()
+	original := upgradeRepoRoot
+	upgradeRepoRoot = func() (string, error) { return root, err }
+	t.Cleanup(func() { upgradeRepoRoot = original })
+}
+
+// gitInitUpgradeTestRepo turns dir into a minimal git repository with a
+// local, non-signing identity and one committed file, local to this test
+// file (independent of any other package's own git-fixture helper).
+func gitInitUpgradeTestRepo(t *testing.T, dir string) {
+	t.Helper()
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=upgrade-test", "GIT_AUTHOR_EMAIL=upgrade-test@example.com",
+			"GIT_COMMITTER_NAME=upgrade-test", "GIT_COMMITTER_EMAIL=upgrade-test@example.com",
+		)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	run("init", "-b", "main")
+	run("config", "commit.gpgsign", "false")
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("x\n"), 0o644); err != nil {
+		t.Fatalf("write README.md: %v", err)
+	}
+	run("add", ".")
+	run("commit", "-m", "initial")
+}
+
+// writeLegacyQualityFilesForUpgradeTest writes both retired-mechanism files
+// under repoRoot/.mneme/, confirmed (committed) so a later git-index
+// assertion has something meaningful to compare against.
+func writeLegacyQualityFilesForUpgradeTest(t *testing.T, repoRoot string) {
+	t.Helper()
+	dir := filepath.Join(repoRoot, ".mneme")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir .mneme: %v", err)
+	}
+	for _, name := range []string{"quality.toml", "quality-baseline.toml"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("schema_version = 1\n"), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+}
 
 // writeFakeClaudeJSON writes a minimal ~/.claude.json under home that
 // DetectInstalledAgents recognises as an installed "claude-code" agent (a
@@ -246,11 +300,20 @@ func TestRunUpgrade_RefusesDevBuilds(t *testing.T) {
 	original := Version
 	t.Cleanup(func() { Version = original })
 
+	// SPEC-158/SPEC-085: this package's own tests run from INSIDE this
+	// dogfooded repository until commit 8 removes its .mneme/quality.toml —
+	// a test must never resolve the real repository. Point upgradeRepoRoot
+	// at a temp directory with no .mneme/ at all, so
+	// offerLegacyQualityCleanup's own LegacyQualityFiles call finds nothing
+	// to offer and this test's own assertions stay about the dev-build
+	// guard alone.
+	stubUpgradeRepoRoot(t, t.TempDir(), nil)
+
 	// Case 1: the literal "dev" default (no build-info resolution ran, or it
 	// legitimately found nothing to resolve).
 	Version = "dev"
 	var w1 bytes.Buffer
-	err := runUpgrade(&w1, false)
+	err := runUpgrade(&w1, strings.NewReader(""), false)
 	if err == nil {
 		t.Fatal("runUpgrade with Version=\"dev\" must return an error, got nil")
 	}
@@ -270,7 +333,7 @@ func TestRunUpgrade_RefusesDevBuilds(t *testing.T) {
 		t.Fatalf("precondition failed: resolveVersionFromBuildInfo should have kept \"dev\" for a dirty pseudo-version, got %q", Version)
 	}
 	var w2 bytes.Buffer
-	err = runUpgrade(&w2, false)
+	err = runUpgrade(&w2, strings.NewReader(""), false)
 	if err == nil {
 		t.Fatal("runUpgrade after a dirty-pseudo-version build must still return an error, got nil")
 	}
@@ -522,5 +585,182 @@ func TestPerformUpgrade_DispatchesByGOOS(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "en Windows mneme se instala y actualiza con `go install`") {
 		t.Errorf("expected the Windows-branch error, got: %v", err)
+	}
+}
+
+// TestRunUpgrade_LegacyQualityFiles_YesRemoves covers SPEC-158 AC14: with
+// both retired-mechanism files present and a "y" answer, both are removed
+// and the confirmation message prints.
+func TestRunUpgrade_LegacyQualityFiles_YesRemoves(t *testing.T) {
+	origVersion := Version
+	t.Cleanup(func() { Version = origVersion })
+	Version = "dev"
+
+	repoRoot := t.TempDir()
+	gitInitUpgradeTestRepo(t, repoRoot)
+	writeLegacyQualityFilesForUpgradeTest(t, repoRoot)
+	stubUpgradeRepoRoot(t, repoRoot, nil)
+
+	var w bytes.Buffer
+	err := runUpgrade(&w, strings.NewReader("y\n"), false)
+	if err == nil || !strings.Contains(err.Error(), "cannot upgrade a development build") {
+		t.Fatalf("runUpgrade error = %v, want the dev-build refusal", err)
+	}
+	if !strings.Contains(w.String(), "borrados") {
+		t.Errorf("expected a removal confirmation, got: %s", w.String())
+	}
+
+	for _, rel := range []string{"quality.toml", "quality-baseline.toml"} {
+		if _, statErr := os.Stat(filepath.Join(repoRoot, ".mneme", rel)); !os.IsNotExist(statErr) {
+			t.Errorf("%s still exists after a 'y' answer (stat err=%v)", rel, statErr)
+		}
+	}
+}
+
+// TestRunUpgrade_LegacyQualityFiles_NoOrEOFKeeps covers SPEC-158 AC14: "n", an
+// empty line, and EOF all leave both files untouched and print how to remove
+// them by hand.
+func TestRunUpgrade_LegacyQualityFiles_NoOrEOFKeeps(t *testing.T) {
+	origVersion := Version
+	t.Cleanup(func() { Version = origVersion })
+	Version = "dev"
+
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{"explicit n", "n\n"},
+		{"empty line", "\n"},
+		{"EOF (no input at all)", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repoRoot := t.TempDir()
+			gitInitUpgradeTestRepo(t, repoRoot)
+			writeLegacyQualityFilesForUpgradeTest(t, repoRoot)
+			stubUpgradeRepoRoot(t, repoRoot, nil)
+
+			var w bytes.Buffer
+			_ = runUpgrade(&w, strings.NewReader(tt.input), false)
+
+			for _, rel := range []string{"quality.toml", "quality-baseline.toml"} {
+				if _, statErr := os.Stat(filepath.Join(repoRoot, ".mneme", rel)); statErr != nil {
+					t.Errorf("%s missing after a %q answer, want it untouched (err=%v)", rel, tt.input, statErr)
+				}
+			}
+			if !strings.Contains(w.String(), "rm ") {
+				t.Errorf("expected a manual-removal hint, got: %s", w.String())
+			}
+		})
+	}
+}
+
+// TestRunUpgrade_LegacyQualityFiles_CheckOnlyLists covers SPEC-158 AC14:
+// --check only lists the files found — never prompts, never deletes.
+func TestRunUpgrade_LegacyQualityFiles_CheckOnlyLists(t *testing.T) {
+	origVersion := Version
+	t.Cleanup(func() { Version = origVersion })
+	Version = "dev"
+
+	repoRoot := t.TempDir()
+	gitInitUpgradeTestRepo(t, repoRoot)
+	writeLegacyQualityFilesForUpgradeTest(t, repoRoot)
+	stubUpgradeRepoRoot(t, repoRoot, nil)
+
+	// Empty reader: if --check ever tried to read a confirmation, this
+	// would simply see EOF — but the assertion below is that it NEVER
+	// prints the prompt in the first place.
+	var w bytes.Buffer
+	_ = runUpgrade(&w, strings.NewReader(""), true)
+
+	if strings.Contains(w.String(), "Remove them?") {
+		t.Errorf("--check must never prompt, got: %s", w.String())
+	}
+	if !strings.Contains(w.String(), "quality.toml") {
+		t.Errorf("expected --check to list the legacy files, got: %s", w.String())
+	}
+	for _, rel := range []string{"quality.toml", "quality-baseline.toml"} {
+		if _, statErr := os.Stat(filepath.Join(repoRoot, ".mneme", rel)); statErr != nil {
+			t.Errorf("%s missing after --check, want it untouched (err=%v)", rel, statErr)
+		}
+	}
+}
+
+// TestRunUpgrade_LegacyQualityFiles_RunsBeforeDevRefusal covers SPEC-158
+// D5.b's own ordering guarantee: with Version=="dev" AND a "y" answer, the
+// legacy files are STILL removed (the cleanup step ran before the refusal),
+// even though runUpgrade goes on to return the dev-build error.
+func TestRunUpgrade_LegacyQualityFiles_RunsBeforeDevRefusal(t *testing.T) {
+	origVersion := Version
+	t.Cleanup(func() { Version = origVersion })
+	Version = "dev"
+
+	repoRoot := t.TempDir()
+	gitInitUpgradeTestRepo(t, repoRoot)
+	writeLegacyQualityFilesForUpgradeTest(t, repoRoot)
+	stubUpgradeRepoRoot(t, repoRoot, nil)
+
+	var w bytes.Buffer
+	err := runUpgrade(&w, strings.NewReader("y\n"), false)
+	if err == nil || !strings.Contains(err.Error(), "cannot upgrade a development build") {
+		t.Fatalf("runUpgrade error = %v, want the dev-build refusal (the cleanup step must run regardless)", err)
+	}
+	for _, rel := range []string{"quality.toml", "quality-baseline.toml"} {
+		if _, statErr := os.Stat(filepath.Join(repoRoot, ".mneme", rel)); !os.IsNotExist(statErr) {
+			t.Errorf("%s still exists — the cleanup step must run BEFORE the dev-build refusal, not after", rel)
+		}
+	}
+}
+
+// TestRunUpgrade_LegacyQualityFiles_NeverTouchesGitIndex covers SPEC-158
+// AC14's own git-safety half: removing the legacy files never creates a
+// commit and never stages anything — HEAD is unchanged, the index has
+// nothing staged, and the removals show up as ordinary unstaged changes in
+// `git status`.
+func TestRunUpgrade_LegacyQualityFiles_NeverTouchesGitIndex(t *testing.T) {
+	origVersion := Version
+	t.Cleanup(func() { Version = origVersion })
+	Version = "dev"
+
+	repoRoot := t.TempDir()
+	gitInitUpgradeTestRepo(t, repoRoot)
+	writeLegacyQualityFilesForUpgradeTest(t, repoRoot)
+
+	runGit := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repoRoot
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return string(out)
+	}
+	runGit("add", ".")
+	runGit("commit", "-m", "confirm legacy quality files")
+	headBefore := strings.TrimSpace(runGit("rev-parse", "HEAD"))
+
+	stubUpgradeRepoRoot(t, repoRoot, nil)
+
+	var w bytes.Buffer
+	_ = runUpgrade(&w, strings.NewReader("y\n"), false)
+
+	headAfter := strings.TrimSpace(runGit("rev-parse", "HEAD"))
+	if headAfter != headBefore {
+		t.Errorf("HEAD moved from %s to %s — the cleanup step must never commit", headBefore, headAfter)
+	}
+
+	diffCached := exec.Command("git", "diff", "--cached", "--quiet")
+	diffCached.Dir = repoRoot
+	if err := diffCached.Run(); err != nil {
+		t.Errorf("git diff --cached --quiet failed — something was staged: %v", err)
+	}
+
+	status := runGit("status", "--porcelain")
+	for _, rel := range []string{".mneme/quality.toml", ".mneme/quality-baseline.toml"} {
+		if !strings.Contains(status, rel) {
+			t.Errorf("git status --porcelain does not mention %s as an unstaged change:\n%s", rel, status)
+		}
 	}
 }

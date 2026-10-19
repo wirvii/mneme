@@ -441,7 +441,7 @@ func TestCriteriaContractSection_CarriesAllObligations(t *testing.T) {
 	}{
 		{"obligatorio y exigido en speccing->specced", "obligatorio y se\nexige para pasar de `speccing` a `specced`"},
 		{"unico canal de escritura", "tu unico canal de escritura"},
-		{"decir por que no cabia en assert", "por que el\ncriterio no cabia en `assert`"},
+		{"mneme ya no evalua los criterios", "mneme ya no evalua ningun criterio"},
 		{"ampliar es acto visible, no arreglo silencioso", "nunca un\narreglo silencioso"},
 	}
 

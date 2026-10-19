@@ -2387,9 +2387,8 @@ func TestSpecAdvance_QAToDone_DoesNotRequireCriteria(t *testing.T) {
 	}
 
 	// Remove the criteria.toml written above — qa->done must succeed
-	// regardless, since ensureCertified/ensureCriteriaDeclared can only ever
-	// be reached from speccing->specced or the certificate gate, neither of
-	// which qa->done is.
+	// regardless, since ensureCriteriaDeclared only ever fires on
+	// speccing->specced, never on qa->done.
 	path, err := specDocPath(svc.config.WorkflowDir(), spec.Project, spec.ID, model.SpecDocKindCriteria)
 	if err != nil {
 		t.Fatalf("specDocPath: %v", err)
@@ -3173,7 +3172,6 @@ func TestSpecDocPath_ValidatesSpecID(t *testing.T) {
 		{"empty id", "", model.SpecDocKindSpec, true},
 		{"lowercase id rejected", "spec-087", model.SpecDocKindSpec, true},
 		{"absolute path id", "/etc/passwd", model.SpecDocKindSpec, true},
-		{"path traversal via id, kind budget (AC22)", "../../../etc", model.SpecDocKindBudget, true},
 	}
 
 	for _, tt := range tests {

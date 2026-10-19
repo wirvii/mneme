@@ -48,9 +48,8 @@ enforce the role and its declared ownership areas.
 
 Each Codex role also receives its own local, role-bound mneme MCP server. The
 server filters the advertised tools and repeats the authorization check when a
-tool is called: delegated roles cannot advance lifecycle state or acknowledge
-quality findings; only `qa-tester` can sign attested findings; and only
-`architect` can write criteria or budget documents. Those allowed calls are
+tool is called: delegated roles cannot advance lifecycle state; and only
+`architect` can write the criteria document. Those allowed calls are
 pre-approved for that local server because a child running under
 `approval_policy = "never"` cannot answer an MCP approval prompt. Pre-approval
 therefore follows, and never replaces, the role filter.
@@ -287,43 +286,22 @@ that entregable belongs to. See `docs/HOOKS.md`'s own "Lifecycle-tool
 denial" section for the exact block message and `docs/subagents.md` for
 `mneme subagents regen` (the remediation the message names).
 
-### Role-scoped tool denial (SPEC-117 D11)
+### Role-scoped document-kind denial
 
-A THIRD map, `roleScopedTools` (`internal/cli/hook.go`), sits right next
-to `lifecycleTools` and is evaluated immediately after it, with a
-different shape: instead of an unconditional block, it restricts one tool
-to exactly ONE subagent role.
+A sibling map, `roleScopedDocKinds` (`internal/cli/hook.go`), restricts
+`spec_doc_write`'s `criteria` kind to the `architect` role — an implementer
+writing it would be rewriting the exam it is judged by. Unlike
+`lifecycleTools`, it fails OPEN when the caller's role cannot be resolved:
+closing it would leave the architect unable to write the document at all
+the moment `agent_type` stopped arriving in the payload.
 
-| Tool | Required role | Result |
-|---|---|---|
-| `mcp__mneme__quality_sign` | `qa-tester` | **ALLOW** only for that role; **BLOCK** for every other resolved role |
-
-Why this tool needs its own rule: `quality_sign` is a qa-tester's
-ATTESTATION that an acceptance criterion genuinely holds (SPEC-117 S3
-D11) — letting any other subagent invoke it would let the author of a
-change certify their own work, exactly what the mechanism exists to
-prevent.
-
-**This is the first rule in the repo that fails CLOSED.** Every other
-rule described on this page — subagent containment, lifecycle-tool
-denial — fails OPEN when a subagent's role cannot be resolved
-(`RoleSource=="unresolved"`): the containment loses its signal and warns
-loudly, but the call is still allowed. `roleScopedTools` does the
-opposite on purpose: `RoleSource=="unresolved"` **denies** the call. A
-signature whose signer cannot even be identified is worse than no
-signature at all — SPEC-086's fail-open existed to avoid blocking
-legitimate work, never to let anyone sign. The escape hatch is a human
-using the CLI (`mneme quality sign`), which never passes through this
-hook.
-
-The check runs in the SAME position as `lifecycleTools`'s (before the
-`delegationTools` filter, before the `RoleSource=="unresolved"`
-short-circuit that governs the OTHER rules) — `quality_sign` is an MCP
-tool name, never a file/Bash tool, so it would otherwise never reach a
-guard at all. A best-effort `enforcelog` event is recorded on block
-(`Reason: "role_scoped_tool_denied"`), same as the lifecycle-tool block;
-no discovery memory (the same "a contained subagent did not bypass SDD"
-reasoning).
+The EPIC-calidad certification mechanism used to add a SECOND, tool-scoped
+map here (`roleScopedTools`, restricting `quality_sign` to the `qa-tester`
+role) — **the first, and only, rule in the repo that failed CLOSED** when a
+subagent's role could not be resolved, a deliberate exception to this whole
+model's fail-open posture (a signature whose signer cannot be identified is
+worse than no signature at all). SPEC-158 retired that map whole, along
+with `quality_sign` and the rest of the certification mechanism.
 
 #### Inherent limits of Layer 2
 

@@ -9,12 +9,13 @@ import (
 )
 
 // sddGit is the SDD mechanism's own, minimal holder for git primitives
-// (D24). It is deliberately NOT internal/quality.Git — that type exists
-// for the quality mechanism's own vocabulary (certification diffs,
-// merge-base, blobs by ref); growing it with SDD-specific commands would
-// turn it into a junk drawer neither mechanism could reason about cleanly.
-// It is also NOT internal/cli's git helpers (repoRoot, runGitCmd): service
-// cannot import cli — that is the dependency rule running backwards.
+// (D24). It is deliberately NOT internal/gitrepo.Git — that type exists
+// for the review frontier's and the trivial-lane auditor's own vocabulary
+// (ancestry checks, blobs by ref, symbol-delta diffing); growing it with
+// SDD-specific commands would turn it into a junk drawer neither mechanism
+// could reason about cleanly. It is also NOT internal/cli's git helpers
+// (repoRoot, runGitCmd): service cannot import cli — that is the
+// dependency rule running backwards.
 //
 // §2a landed three small primitives, all read-only. §2b (SPEC-131) adds
 // ONE more — HooksDir — because installing a git hook is the first write

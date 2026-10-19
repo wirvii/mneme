@@ -13,7 +13,7 @@ func TestParityMatrix_NoRuntimeGap(t *testing.T) {
 		}
 		seen[capability.Name] = true
 	}
-	for _, required := range []string{"project roles", "memory", "SDD", "skills", "profiles", "codegraph", "quality", "team memory", "mneme-init"} {
+	for _, required := range []string{"project roles", "memory", "SDD", "skills", "profiles", "codegraph", "team memory", "mneme-init"} {
 		if !seen[required] {
 			t.Errorf("required parity capability %q is absent", required)
 		}

@@ -379,7 +379,7 @@ func newSpecAdvanceCmd() *cobra.Command {
 The next state is determined by the current state — there is exactly one
 forward path. Use "spec pushback" to deviate into needs_grill instead.`,
 		Example: `  mneme spec advance SPEC-001 --by orchestrator
-  mneme spec advance SPEC-001 --by architect --reason "All quality gates passed"`,
+  mneme spec advance SPEC-001 --by architect --reason "Revisión QA aprobada por el owner"`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if flagBy == "" {

@@ -10,9 +10,4 @@ profile.lock
 # 8 notas — ya publicadas, y no se reescribe la historia por ellas: el email ya
 # era público vía la autoría de cada commit, y el contenido es técnico sobre
 # este mismo repo abierto. Esta regla impide que vuelva a crecer.
-#
-# OJO al ampliar esta regla: `.mneme/quality.toml` (y su baseline) SÍ deben
-# versionarse — son la constitución de calidad, y SPEC-115 D2 exige que viva en
-# el repo, revisable en PR, con su hash registrado en cada certificado. Ignorar
-# `.mneme/` entero apagaría el mecanismo entero.
 shared/

@@ -133,19 +133,13 @@ func TestRunHookEnforceDelegation_LifecycleTools_Table(t *testing.T) {
 			wantExit: 2,
 		},
 		{
-			name:     "quality_ack denied to a resolved subagent",
-			payload:  `{"agent_id":"x","agent_type":"qa-tester","tool_name":"mcp__mneme__quality_ack","tool_input":{"cert_id":"c1"}}`,
-			wantExit: 2,
-		},
-		{
 			// SPEC-125 AC42: denied regardless of agent_type being present.
 			name:     "backlog_archive denied to a resolved subagent",
 			payload:  `{"agent_id":"x","agent_type":"backend","tool_name":"mcp__mneme__backlog_archive","tool_input":{"id":"BL-190"}}`,
 			wantExit: 2,
 		},
 		{
-			// SPEC-125 AC42: denied even with agent_type absent — this is
-			// what distinguishes lifecycleTools from roleScopedTools.
+			// SPEC-125 AC42: denied even with agent_type absent.
 			name:     "backlog_archive denied with agent_type absent",
 			payload:  `{"agent_id":"x","tool_name":"mcp__mneme__backlog_archive","tool_input":{"id":"BL-190"}}`,
 			wantExit: 2,
@@ -154,16 +148,6 @@ func TestRunHookEnforceDelegation_LifecycleTools_Table(t *testing.T) {
 			// SPEC-125 AC44: the orchestrator (no agent_id) is never blocked.
 			name:     "backlog_archive allowed for the orchestrator",
 			payload:  `{"tool_name":"mcp__mneme__backlog_archive","tool_input":{"id":"BL-190"}}`,
-			wantExit: 0,
-		},
-		{
-			name:     "quality_verify allowed (mneme executes, nothing to falsify)",
-			payload:  `{"agent_id":"x","agent_type":"backend","tool_name":"mcp__mneme__quality_verify"}`,
-			wantExit: 0,
-		},
-		{
-			name:     "quality_status allowed (read-only)",
-			payload:  `{"agent_id":"x","agent_type":"backend","tool_name":"mcp__mneme__quality_status"}`,
 			wantExit: 0,
 		},
 		{
@@ -213,17 +197,15 @@ func TestRunHookEnforceDelegation_LifecycleBlock_MentionsRegenCommand(t *testing
 	}
 }
 
-// TestLifecycleTools_ExactlyFiveMcpPrefixedEntries is the G5 anchor
-// (SPEC-115 P11 plan, widened by SPEC-125, widened again by SPEC-131 D58):
-// the negative rows above ("quality_verify"/"quality_status" allowed)
-// would pass VACUOUSLY if either tool were renamed or stopped existing —
-// an absent tool is not in the map either. Anchoring the map's SIZE (not
-// just membership) makes a silent rename visible: exactly 5 entries
-// (spec_advance, spec_quick, quality_ack, backlog_archive, sdd_import),
-// every one an "mcp__mneme__"-prefixed name.
-func TestLifecycleTools_ExactlyFiveMcpPrefixedEntries(t *testing.T) {
-	if len(lifecycleTools) != 5 {
-		t.Fatalf("len(lifecycleTools) = %d, want 5: %v", len(lifecycleTools), lifecycleTools)
+// TestLifecycleTools_ExactlyFourMcpPrefixedEntries is the G5 anchor
+// (SPEC-115 P11 plan, widened by SPEC-125, widened again by SPEC-131 D58,
+// narrowed by SPEC-158's retirement of quality_ack): anchoring the map's
+// SIZE (not just membership) makes a silent rename visible: exactly 4
+// entries (spec_advance, spec_quick, backlog_archive, sdd_import), every
+// one an "mcp__mneme__"-prefixed name.
+func TestLifecycleTools_ExactlyFourMcpPrefixedEntries(t *testing.T) {
+	if len(lifecycleTools) != 4 {
+		t.Fatalf("len(lifecycleTools) = %d, want 4: %v", len(lifecycleTools), lifecycleTools)
 	}
 	for tool := range lifecycleTools {
 		if !strings.HasPrefix(tool, "mcp__mneme__") {
@@ -268,9 +250,8 @@ func TestLifecycleTools_SDDImport(t *testing.T) {
 
 // TestRunHookEnforceDelegation_BacklogArchive_NamesItsOwnReason is SPEC-125
 // AC43: the backlog_archive block message must NOT reuse the
-// spec_advance/spec_quick "lifecycle SDD lo gobierna el orquestador" line
-// nor the quality_ack "aprobación de un hallazgo de calidad" line — it must
-// name its own reason (discarding work and freezing its record
+// spec_advance/spec_quick "lifecycle SDD lo gobierna el orquestador" line —
+// it must name its own reason (discarding work and freezing its record
 // irreversibly is the owner's call, channelled by the orchestrator).
 func TestRunHookEnforceDelegation_BacklogArchive_NamesItsOwnReason(t *testing.T) {
 	_, stderr := runHookLifecycleSubprocess(t,
@@ -278,25 +259,8 @@ func TestRunHookEnforceDelegation_BacklogArchive_NamesItsOwnReason(t *testing.T)
 	if !strings.Contains(stderr, "congelar su registro de forma irreversible es una decisión del owner") {
 		t.Errorf("expected the backlog_archive-specific reason on stderr, got: %q", stderr)
 	}
-	if strings.Contains(stderr, "aprobación de un hallazgo de calidad es del humano") {
-		t.Errorf("backlog_archive block reused the quality_ack reason, want its own: %q", stderr)
-	}
-}
-
-// TestRunHookEnforceDelegation_QualityAck_NamesTheHumanApprovalReason covers
-// SPEC-115 D11/AC22: the quality_ack block message must NOT reuse the
-// spec_advance/spec_quick "lifecycle SDD lo gobierna el orquestador" line —
-// that would be the WRONG reason for this tool. It must name the actual
-// reason: a human's approval via the orchestrator, never the change's own
-// author.
-func TestRunHookEnforceDelegation_QualityAck_NamesTheHumanApprovalReason(t *testing.T) {
-	_, stderr := runHookLifecycleSubprocess(t,
-		`{"agent_id":"x","agent_type":"backend","tool_name":"mcp__mneme__quality_ack"}`)
-	if !strings.Contains(stderr, "aprobación de un hallazgo de calidad es del humano") {
-		t.Errorf("expected the quality_ack-specific reason on stderr, got: %q", stderr)
-	}
 	if strings.Contains(stderr, "el lifecycle SDD lo gobierna el orquestador") {
-		t.Errorf("quality_ack block reused the spec_advance/spec_quick reason, want its own: %q", stderr)
+		t.Errorf("backlog_archive block reused the spec_advance/spec_quick reason, want its own: %q", stderr)
 	}
 }
 

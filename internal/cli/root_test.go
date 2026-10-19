@@ -5,6 +5,26 @@ import (
 	"testing"
 )
 
+// TestRootCmd_NoQualityCommand covers SPEC-158 AC11: `mneme quality` is no
+// longer registered — recurses the REAL root command's own subcommands,
+// never a hand-written list. Positive anchor: `spec` must still exist, so
+// this test cannot pass vacuously against an empty command tree.
+func TestRootCmd_NoQualityCommand(t *testing.T) {
+	root := NewRootCmd()
+	sawSpec := false
+	for _, cmd := range root.Commands() {
+		if cmd.Name() == "spec" {
+			sawSpec = true
+		}
+		if cmd.Name() == "quality" {
+			t.Errorf("root command still registers %q, want it fully retired", cmd.Name())
+		}
+	}
+	if !sawSpec {
+		t.Fatal("root command has no \"spec\" subcommand — this test proves nothing without a positive anchor")
+	}
+}
+
 // TestResolveVersionFromBuildInfo covers SPEC-070 AC10/AC11: the build-info
 // fallback only fires when Version is still the literal "dev" default, and it
 // distinguishes a real `go install …@vX.Y.Z` build (Main.Version = a clean
