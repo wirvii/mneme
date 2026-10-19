@@ -830,7 +830,9 @@ func TestEnsureSupervisorStartsReusesAndRecoversStaleLock(t *testing.T) {
 	if _, err := Send(context.Background(), dir, Request{Action: "shutdown"}); err != nil {
 		t.Fatal(err)
 	}
-	<-done
+	if err := <-done; err != nil {
+		t.Fatalf("Supervise after shutdown: %v", err)
+	}
 	deadline := time.Now().Add(time.Second)
 	for {
 		if _, err := os.Stat(descriptorPath(dir)); errors.Is(err, os.ErrNotExist) {
@@ -856,7 +858,9 @@ func TestEnsureSupervisorStartsReusesAndRecoversStaleLock(t *testing.T) {
 		t.Fatalf("starts after stale=%d", starts.Load())
 	}
 	_, _ = Send(context.Background(), dir, Request{Action: "shutdown"})
-	<-done
+	if err := <-done; err != nil {
+		t.Fatalf("Supervise after shutdown: %v", err)
+	}
 }
 
 func TestWaitForSupervisorTimeout(t *testing.T) {
