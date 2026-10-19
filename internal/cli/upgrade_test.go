@@ -731,6 +731,10 @@ func TestRunUpgrade_LegacyQualityFiles_NeverTouchesGitIndex(t *testing.T) {
 		t.Helper()
 		cmd := exec.Command("git", args...)
 		cmd.Dir = repoRoot
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=upgrade-test", "GIT_AUTHOR_EMAIL=upgrade-test@example.com",
+			"GIT_COMMITTER_NAME=upgrade-test", "GIT_COMMITTER_EMAIL=upgrade-test@example.com",
+		)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
