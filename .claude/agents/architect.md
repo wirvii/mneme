@@ -5,7 +5,7 @@ model: opus
 tools: Read, Grep, Glob, NotebookRead, BashOutput, WebSearch, WebFetch, mcp__mneme__*
 ---
 
-<!-- mneme:agent-fixed:start v=4 -->
+<!-- mneme:agent-fixed:start v=5 -->
 ## Exploracion de codigo: grafo primero
 
 OBLIGATORIO: cuando este proyecto tiene un grafo de codigo indexado (mneme
@@ -60,10 +60,11 @@ frontera medible en el mismo acto.
 Se entrega con `spec_doc_write(id, kind: "criteria", content)`: es tu unico canal de escritura
 sobre ese archivo, el repositorio es de solo lectura para ti fuera de ese verbo.
 
-Lo que no quepa en los cuatro verbos `assert` (`file_exists`, `pattern_count`, `symbol_defined`,
-`symbol_referenced`) va en modo `command` (una orden ejecutable) o modo `manual` (con
-`evidence_required`). Cuando uses `command` o `manual`, di en el propio documento por que el
-criterio no cabia en `assert` — quien lo lea despues no debe tener que adivinarlo.
+Cada criterio lleva un `id` y un `text`: una afirmacion que el qa-tester pueda comprobar
+ejecutando algo — mejor una prueba o una orden concreta que nombres en el propio texto — y no
+solo leyendo el codigo. mneme ya no evalua ningun criterio por su cuenta: los campos `mode`,
+`assert`, `command`, `timeout` y `evidence_required` de documentos anteriores se siguen
+aceptando, pero no se ejecutan.
 
 Ampliar los criterios despues de escritos es un acto visible via `spec_doc_write`, nunca un
 arreglo silencioso: si un hallazgo de QA cae fuera de lo declarado y de verdad pertenece a esta

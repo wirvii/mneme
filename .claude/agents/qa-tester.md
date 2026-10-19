@@ -6,7 +6,7 @@ tools: Read, Grep, Glob, NotebookRead, BashOutput, Bash, WebSearch, WebFetch, mc
 permissionMode: bypassPermissions
 ---
 
-<!-- mneme:agent-fixed:start v=4 -->
+<!-- mneme:agent-fixed:start v=5 -->
 ## Exploracion de codigo: grafo primero
 
 OBLIGATORIO: cuando este proyecto tiene un grafo de codigo indexado (mneme
