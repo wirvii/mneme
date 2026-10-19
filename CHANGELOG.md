@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [v1.48.0] — 2026-10-19 — The old certification mechanism is retired whole: nothing it left behind can block a delivery
+
 ### Removed (BREAKING)
 
 - **The EPIC-calidad certification mechanism (SPEC-115 through SPEC-137) is
