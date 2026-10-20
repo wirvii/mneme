@@ -72,7 +72,7 @@ Sharing is controlled by a per-memory `shared` level (0/1/2), not a new scope
 |----------|---------|--------|
 | `0` (default) | Local-only. Never materialized to the vault. | Anything saved before team-memory was active, or an explicit opt-out. |
 | `1` (auto-shared) | Shared because its **type** is human-authored, persistent knowledge. | `mem_save`/`svc.Save`, automatically, when team-memory is active. |
-| `2` (team-curated) | Explicitly, deliberately shared regardless of type. | `mneme promote <id>` / `mem_promote`. |
+| `2` (team-curated) | Explicitly, deliberately shared regardless of type. | `mneme promote <id>`. |
 
 **Auto-shared types** — the policy is **share-by-default** (SPEC-071): every
 project-scoped memory auto-shares to `shared=1` when team-memory is active,
@@ -99,7 +99,7 @@ are **never** auto-shared, regardless of type — team-memory only concerns a
 single project's knowledge.
 
 **Opting an excluded memory in:** call `mneme promote <id>` (or the
-`mem_promote` MCP tool) to mark any individual memory as team-curated
+`mem_promote` MCP tool, retired in 2.0) to mark any individual memory as team-curated
 (`shared=2`) and materialize it immediately, independent of its type.
 
 **Opting a memory out:** pass an explicit `shared: 0` on `mem_save`
@@ -262,7 +262,7 @@ early-returns unconditionally, independent of `Shared`. Two independent
 checks, on purpose: either one failing does not let a profile rule slip
 through.
 
-**Promote guard (rejects elevation):** `mneme promote <id>` / `mem_promote`
+**Promote guard (rejects elevation):** `mneme promote <id>`
 refuses to elevate a profile-provenance memory to `shared=2`, returning
 `ErrProfileMemoryNotShareable` before the row is touched — promoting one
 would be an operator error, not a silent no-op.

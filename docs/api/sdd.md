@@ -16,8 +16,7 @@ Index: [docs/API.md](../API.md).
 **The SDD git-native mechanism has no MCP tools.** `sdd_enable`/`sdd_disable`/
 `sdd_export` were never tools — a `--apply` an agent could call unattended
 would defeat the human-confirmation gate that publishing a backlog to git
-requires — and since v2.0 (SPEC-163) the read-only `sdd_status` and the
-importing `sdd_import` (SPEC-131 §2b) are gone from the server too. Run
+requires — and since v2.0 (SPEC-163) the read-only `sdd_status` and the importing `sdd_import` (SPEC-131 §2b) are gone from the server too. Run
 `mneme sdd status [--json]` and `mneme sdd import [--dry-run]` from the
 terminal, or from an agent through Bash.
 

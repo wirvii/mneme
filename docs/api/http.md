@@ -114,7 +114,7 @@ curl 'http://localhost:7437/v1/memories/context?focus=auth&budget=4000'
 
 ## GET /v1/memories/{id}/explore
 
-Explore the knowledge graph from a seed memory. Same shape as `mem_explore`. Served by the same handler as the `/v1/memories/{id}` catch-all.
+Explore the knowledge graph from a seed memory. Same shape as `mneme explore --json`. Served by the same handler as the `/v1/memories/{id}` catch-all.
 
 | Query param | Type | Required | Description |
 |-------------|------|----------|-------------|
@@ -141,7 +141,7 @@ curl -X POST http://localhost:7437/v1/sessions/end \
 
 ## POST /v1/entities/relate
 
-Create or update a relationship between entities. Request body: same schema as `mem_relate`.
+Create or update a relationship between entities. Request body: same schema as `mneme mem relate --json`.
 
 ```bash
 curl -X POST http://localhost:7437/v1/entities/relate \
@@ -153,7 +153,7 @@ curl -X POST http://localhost:7437/v1/entities/relate \
 
 ## GET /v1/stats
 
-Aggregate statistics. Same shape as `mem_stats`.
+Aggregate statistics. Same shape as `mneme stats --json`.
 
 | Query param | Type | Required | Description |
 |-------------|------|----------|-------------|
@@ -165,7 +165,7 @@ curl http://localhost:7437/v1/stats
 
 ## GET /v1/gaps
 
-Knowledge gaps (unresolved wikilinks). Same shape as `mem_gaps`.
+Knowledge gaps (unresolved wikilinks). Same shape as `mneme gaps --json`.
 
 | Query param | Type | Required | Description |
 |-------------|------|----------|-------------|
@@ -214,7 +214,7 @@ parity -- do not assume it should. The `quality_*` family existed from
 SPEC-115 through SPEC-137 and was retired whole by SPEC-158 — it never had
 an HTTP route, and there is nothing left to add parity for.
 
-**SPEC-109 note (D14):** `backlog_list`/`spec_list`/`conflicts_list` (and the
+**SPEC-109 note (D14):** `backlog_list`/`spec_list`/`mneme conflicts list` (and the
 new `backlog_get`) gained an acotado convention — `limit` (default 20, max
 50, silently capped) plus a `total` field reporting the real match count
 before the limit, and `backlog_list` additionally excerpts `description`.

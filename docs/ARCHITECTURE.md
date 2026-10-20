@@ -341,7 +341,7 @@ erDiagram
 | `related_to` | 0.5 | Generic bidirectional (co-occurrence) |
 | `references` | 0.4 | A references B (wikilinks) |
 
-Weight range: `[0.0, 1.0]`. Explicit weights can be passed via `mem_relate`.
+Weight range: `[0.0, 1.0]`. Explicit weights can be passed via `mneme mem relate --weight`.
 
 ---
 
@@ -394,7 +394,7 @@ Supported forms: `[[topic]]`, `[[topic#anchor]]`, `[[topic|alias]]`, `[[topic#an
 3. **Found** -- create a `references` relation (weight from `wikilink_relation_weight`, default 0.6)
 4. **Not found** -- insert into `unresolved_references` table (SPEC-012). Auto-resolved when a memory with that `topic_key` is later saved.
 
-Unresolved references power the `mem_gaps` tool (SPEC-013), which surfaces knowledge debt.
+Unresolved references power the `mneme gaps` command (SPEC-013), which surfaces knowledge debt.
 
 #### 2c. Graph rebuild (SPEC-009)
 
@@ -492,9 +492,9 @@ Channel weights reflect reliability: FTS5 (1.0) is the most precise signal (exac
 
 **Hebbian tracking post-search:** Top-3 results from each search are registered for Hebbian auto-strengthening, reinforcing relations between frequently co-retrieved memories.
 
-#### `mem_explore`: Prioritized BFS (SPEC-008)
+#### `mneme explore`: Prioritized BFS (SPEC-008)
 
-`mem_explore` performs a prioritized BFS (max-heap by `accumulatedWeight` descending) from a seed memory.
+`mneme explore` (CLI since 2.0) performs a prioritized BFS (max-heap by `accumulatedWeight` descending) from a seed memory.
 
 **Seed resolution:** Full UUID, hex prefix (8+ chars), or `topic_key`.
 
@@ -568,7 +568,7 @@ After community detection, a deterministic generator produces `synthesis` type m
 **Lifecycle:**
 - New community -> create synthesis (topic_key: `synthesis/community-{uuid7}`)
 - Stable community (same hash) -> check content; upsert if changed, skip if identical
-- Deleted community -> soft-delete synthesis via `mem_forget`
+- Deleted community -> soft-delete synthesis via `mneme forget`
 
 **Exclusions:** Synthesis memories are excluded from:
 - Community detection seeds (prevents synthesis-of-synthesis loops, D5)
@@ -642,7 +642,7 @@ The vault is a filesystem mirror of the SQLite database in human-readable Markdo
 A second, distinct vault from the personal one above: `.mneme/shared/` inside
 a project's own git repository, opt-in via `mneme team-memory enable`.
 Sharing is a per-memory `shared` level (0 local / 1 auto-shared by durable
-type / 2 team-curated via `mem_promote`) layered on `scope=project` -- not a
+type / 2 team-curated via `mneme promote`) layered on `scope=project` -- not a
 new scope. Writes are synchronous write-through (`service.Save`/`Update`
 materialize immediately, no watcher); reads happen via `post-merge`/
 `post-checkout` git hooks that import the vault in the background. Full
@@ -677,18 +677,18 @@ mneme sync import backup.manifest.tar.gz   # auto-detects format
 
 ### MCP (primary) -- `mneme mcp`
 
-JSON-RPC 2.0 over stdio. ProtocolVersion `2024-11-05`. 64 tools with JSON schemas, grouped by family:
+JSON-RPC 2.0 over stdio. ProtocolVersion `2024-11-05`. 31 tools with JSON schemas, grouped by family:
 
 | Group | Count |
 |-------|-------|
-| **Memory** (`mem_*`, incl. `mem_promote`) | 15 |
-| **Backlog** (`backlog_*`) | 4 |
-| **Spec** (`spec_*`, incl. `spec_quick`/`spec_reject`) | 8 |
+| **Memory** (`mem_*`) | 6 |
+| **Backlog** (`backlog_*`) | 6 |
+| **Spec** (`spec_*`, incl. `spec_quick`/`spec_reject`) | 9 |
 | **Lane** (`lane_*`) | 5 |
 | **CodeGraph** (`codegraph_*`) | 4 |
 | **init** | 1 |
 
-Skills, models, conflicts, subagent generation and the SDD git-native status/import are CLI-only since v2.0 (SPEC-163) and no longer MCP tools.
+Skills, models, conflicts, subagent generation and the SDD git-native status/import are CLI-only since v2.0 (SPEC-163) and no longer MCP tools. Nine `mem_*` tools also moved to `mneme mem ...` (SPEC-164).
 
 Full per-tool contracts (params, returns, errors, examples) live in [docs/api/](api/), one file per family.
 
@@ -716,10 +716,11 @@ serves the `/explore` suffix, so it handles four distinct request shapes:
 Full contract for every route: [docs/api/http.md](api/http.md).
 
 **HTTP gap:** no SDD/lane/codegraph/skills/model/conflicts/subagent endpoints
-at all, and no `mem_checkpoint`, `mem_timeline`, `mem_suggest_topic_key`, or
-`mem_promote`. (`mem_gaps` and `mem_explore` **are** exposed -- via
-`/v1/gaps` and the `/explore` suffix above, respectively; they are not part
-of the gap.) No auth, no rate limiting.
+at all, and no timeline, checkpoint, topic-key suggestion or promote endpoint
+(those are `mneme mem timeline`, `mem_session_end` with `partial: true`,
+`suggested_topic_key` in `mem_save`, and `mneme promote`). Knowledge gaps and
+graph exploration **are** exposed -- via `/v1/gaps` and the `/explore` suffix
+above, respectively; they are not part of the gap. No auth, no rate limiting.
 
 ### CLI -- Cobra
 
@@ -899,7 +900,7 @@ Rules are memories of type `rule` with two additional fields:
 - **`applies_to`**: JSON array of pattern strings
 - **`severity`**: enforcement level (`info` / `warn` / `block`)
 
-Rules are **immune to decay** (`decay_rate = 0`) -- they remain active until explicitly revoked via `mem_forget` or `mem_update` (D016).
+Rules are **immune to decay** (`decay_rate = 0`) -- they remain active until explicitly revoked via `mneme forget` or `mem_update` (D016).
 
 ### Pattern syntax
 
@@ -975,7 +976,7 @@ mneme rule test --tool Edit --path internal/store/memory.go
 | D019 | Map-based adjacency (not CSR) | <50K nodes per project; simplicity > cache locality | SPEC-015 |
 | D020 | MaxNodes=5000 for graph build | PPR benchmarks confirm <20ms at this scale | SPEC-016 |
 | D021 | GraphMode config with per-request override | Allows experimentation without restarting | SPEC-017 |
-| D022 | `mem_suggest_topic_key` via Jaccard + gap boost | Surfaces gap matches alongside existing keys | SPEC-014 |
+| D022 | Topic-key suggestion via Jaccard + gap boost (retired as a tool in 2.0: now `suggested_topic_key` in `mem_save`) | Surfaces gap matches alongside existing keys | SPEC-014 |
 
 ### Community & synthesis decisions
 
@@ -1022,7 +1023,7 @@ mneme rule test --tool Edit --path internal/store/memory.go
 
 **Why Louvain, not spectral clustering / label propagation?** Louvain is the most widely used community detection algorithm (>40K citations). It is fast (O(n log n) in practice), deterministic with sorted input, and produces high-modularity partitions. Reference implementations exist in every language (NetworkX, igraph), making the algorithm well-understood and debuggable.
 
-**Why Hebbian strengthening?** Co-accessed memories should become more strongly related over time. The biological metaphor (Hebb 1949) maps directly to the use case: if an agent repeatedly retrieves "auth model" and "JWT validation" in the same session window, the graph should reflect that association without explicit `mem_relate` calls.
+**Why Hebbian strengthening?** Co-accessed memories should become more strongly related over time. The biological metaphor (Hebb 1949) maps directly to the use case: if an agent repeatedly retrieves "auth model" and "JWT validation" in the same session window, the graph should reflect that association without explicit `mneme mem relate` calls.
 
 **Why rules as first-class memories?** Rules need the same storage, search, and scope isolation as other memories. Making them a memory type with special fields (`applies_to`, `severity`) avoids a parallel system while enabling rule-specific behaviors (zero decay, dedicated context budget, hook enforcement).
 

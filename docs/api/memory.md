@@ -255,6 +255,6 @@ full JSON-RPC transport reference):
 
 ## See also
 
-- [docs/GRAPH.md](../GRAPH.md) — relation weights, Hebbian learning, edge decay, `mem_explore` internals
+- [docs/GRAPH.md](../GRAPH.md) — relation weights, Hebbian learning, edge decay, `mneme explore` internals
 - [docs/RULES.md](../RULES.md) — the `rule` memory type, `applies_to` syntax, severity, `pre-tool-use` hook
 - [docs/api/sdd.md](sdd.md) — backlog/spec/lane/init tools

@@ -31,18 +31,19 @@ not a fixed string -- expect it to match `mneme version`.
 
 ---
 
-## MCP tool families (59 tools on this branch)
+## MCP tool families (31 tools)
 
 Rule: every MCP tool appears in exactly **one** of these files.
 
 | Family | Count | Reference | Concept guide |
 |--------|-------|-----------|---------------|
-| `mem_*` (incl. `mem_promote`) | 15 | [docs/api/memory.md](api/memory.md) | [docs/GRAPH.md](GRAPH.md), [docs/RULES.md](RULES.md), [docs/team-memory.md](team-memory.md) |
+| `mem_*` | 6 | [docs/api/memory.md](api/memory.md) | [docs/GRAPH.md](GRAPH.md), [docs/RULES.md](RULES.md), [docs/team-memory.md](team-memory.md) |
 | `backlog_*` + `spec_*` + `lane_*` + `init` | 6+9+5+1=21 | [docs/api/sdd.md](api/sdd.md) | [docs/lanes.md](lanes.md), [docs/init.md](init.md) |
 | `codegraph_*` | 4 | [docs/api/codegraph.md](api/codegraph.md) | [docs/codegraph.md](codegraph.md) |
 
-15 + 21 + 4 = **40**. The `profile_*`, `project_new`, `app_add` and
-`scaffold_capture` tools (11) were retired by SPEC-162 (v2.0.0). The `speech_*`
+6 + 21 + 4 = **31**. Nine `mem_*` tools moved to `mneme mem ...` in 2.0 (SPEC-164).
+
+The `profile_*` tools, `project_new`, `app_add` and `scaffold_capture` (11 in all) were retired by SPEC-162 (v2.0.0). The `speech_*`
 family (2 tools) was retired whole by SPEC-161 (v2.0.0). Six `codegraph_*` tools
 moved to the CLI with SPEC-165. The `quality_*` family (5 tools) existed
 from SPEC-115 through SPEC-137 and was retired whole by SPEC-158, along

@@ -300,13 +300,11 @@ writing it would be rewriting the exam it is judged by. Unlike
 closing it would leave the architect unable to write the document at all
 the moment `agent_type` stopped arriving in the payload.
 
-The EPIC-calidad certification mechanism used to add a SECOND, tool-scoped
-map here (`roleScopedTools`, restricting `quality_sign` to the `qa-tester`
-role) — **the first, and only, rule in the repo that failed CLOSED** when a
+The EPIC-calidad certification mechanism used to add a SECOND, tool-scoped map here, restricting `quality_sign` to the `qa-tester`
+role (`roleScopedTools`) — **the first, and only, rule in the repo that failed CLOSED** when a
 subagent's role could not be resolved, a deliberate exception to this whole
 model's fail-open posture (a signature whose signer cannot be identified is
-worse than no signature at all). SPEC-158 retired that map whole, along
-with `quality_sign` and the rest of the certification mechanism.
+worse than no signature at all). SPEC-158 retired that map whole, along with `quality_sign` and the rest of the certification mechanism.
 
 #### Task-section denial (SPEC-170)
 

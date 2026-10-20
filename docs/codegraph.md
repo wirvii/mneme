@@ -279,8 +279,8 @@ Before v1.16.0, the TS/JS extractor registered all import bindings in the
 same `topLevel` map as local declarations. This meant that a call like
 `getPayloadClient()` — where `getPayloadClient` was imported — resolved to
 the local **import node** instead of emitting an `unresolved_ref`. The import
-node is a dead end: `codegraph_callers`, `codegraph_callees`, and
-`codegraph_impact` all returned empty results for cross-file TS calls.
+node is a dead end: the callers, callees and impact queries all
+returned empty results for cross-file TS calls.
 
 **Root cause and fix (`internal/codegraph/js/extract.js`):**
 
@@ -556,8 +556,7 @@ The following 4 MCP tools expose the code graph to agents:
 | `codegraph_callers` | Nodes that call a given symbol |
 | `codegraph_impact` | Transitive blast radius of changing a symbol |
 
-`codegraph_callees`, `codegraph_node`, `codegraph_explore`, `codegraph_trace`,
-`codegraph_status` and `codegraph_files` were removed from MCP by SPEC-165 (a
+The `codegraph_callees`, `codegraph_node`, `codegraph_explore`, `codegraph_trace`, `codegraph_status` and `codegraph_files` tools were removed from MCP by SPEC-165 (a
 `tools/call` for them answers `unknown tool: <name>`); the same queries remain
 available through the CLI below.
 

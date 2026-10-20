@@ -238,7 +238,7 @@ Controla los quality gates y el comportamiento del ciclo de vida de specs.
 ## `[graph]`
 
 Controla el grafo de conocimiento: auto-fortalecimiento hebbiano, decaimiento de aristas, expansión
-1-hop/PPR en búsquedas, valores por defecto de `mem_explore`, reconstrucción del grafo y resolución
+1-hop/PPR en búsquedas, valores por defecto de `mneme explore`, reconstrucción del grafo y resolución
 de wikilinks. Para detalles de comportamiento ver [GRAPH.md](GRAPH.md).
 
 | Field | Default | Type | Range | Env Override | Description |
@@ -253,9 +253,9 @@ de wikilinks. Para detalles de comportamiento ver [GRAPH.md](GRAPH.md).
 | `expansion_threshold` | `0.3` | float | [0, 1] | `MNEME_GRAPH_EXPANSION_THRESHOLD` | Peso mínimo de relación para seguirla durante expansión. |
 | `expansion_fan_out_cap` | `50` | int | >= 0 | `MNEME_GRAPH_EXPANSION_FAN_OUT_CAP` | Máximo de relaciones por entidad durante expansión. |
 | `expansion_seed_top_k` | `10` | int | >= 0 | `MNEME_GRAPH_EXPANSION_SEED_TOP_K` | Número de seeds top para expansión de grafo. |
-| `explore_max_nodes` | `200` | int | >= 0 | `MNEME_GRAPH_EXPLORE_MAX_NODES` | Cap duro de BFS para `mem_explore`. 0 = sin cap. |
-| `explore_default_depth` | `2` | int | [0, 5] | `MNEME_GRAPH_EXPLORE_DEFAULT_DEPTH` | Profundidad por defecto para `mem_explore`. |
-| `explore_default_budget` | `4000` | int | >= 0 | `MNEME_GRAPH_EXPLORE_DEFAULT_BUDGET` | Budget de tokens por defecto para `mem_explore`. |
+| `explore_max_nodes` | `200` | int | >= 0 | `MNEME_GRAPH_EXPLORE_MAX_NODES` | Cap duro de BFS para `mneme explore`. 0 = sin cap. |
+| `explore_default_depth` | `2` | int | [0, 5] | `MNEME_GRAPH_EXPLORE_DEFAULT_DEPTH` | Profundidad por defecto para `mneme explore`. |
+| `explore_default_budget` | `4000` | int | >= 0 | `MNEME_GRAPH_EXPLORE_DEFAULT_BUDGET` | Budget de tokens por defecto para `mneme explore`. |
 | `rebuild_min_shared` | `2` | int | >= 1 | `MNEME_GRAPH_REBUILD_MIN_SHARED` | Mínimo de entidades compartidas para relación de co-mención. |
 | `rebuild_max_relations` | `50` | int | >= 1 | `MNEME_GRAPH_REBUILD_MAX_RELATIONS` | Máximo de relaciones de co-mención por memoria. |
 | `wikilinks_enabled` | `true` | bool | — | `MNEME_GRAPH_WIKILINKS_ENABLED` | Parsear `[[topic_key]]` en `mem_save`/`mem_update`. |
@@ -278,7 +278,7 @@ el nombre canónico `MNEME_GRAPH_*` tiene prioridad:
 
 ## `[suggestions]`
 
-Controla el comportamiento de `mem_suggest_topic_key` para matching contra topic keys existentes
+Controla el comportamiento del campo `suggested_topic_key` de la respuesta de `mem_save` para matching contra topic keys existentes
 y gaps de conocimiento no resueltos. Introducido en SPEC-014.
 
 | Field | Default | Type | Range | Env Override | Description |

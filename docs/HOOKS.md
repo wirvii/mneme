@@ -120,7 +120,7 @@ how many orphaned sessions actually exist.
 Two "work" definitions matter here and are asymmetric on purpose (SPEC-108
 D7/D8): a session counts as having left *work* when it has memories that are
 neither soft-deleted nor superseded (same filters as `mem_search`/
-`mem_stats`, so the reported count matches what the user sees); a session
+`mneme stats`, so the reported count matches what the user sees); a session
 counts as *closed* the moment its summary memory exists, even if that
 summary was later superseded by a synthesis — a superseded summary still
 proves the session was closed. Filtering the closure check by `superseded_by`
@@ -591,10 +591,9 @@ implementer writing it would be rewriting the exam it is judged by. Unlike
 the lifecycle guard above, it fails OPEN when the caller's role cannot be
 resolved: closing it would leave the architect unable to write the document
 at all the moment `agent_type` stopped arriving in the payload. The
-certification mechanism used to add a SECOND, tool-scoped map here
-(`roleScopedTools`, restricting `quality_sign` to `qa-tester`, the one rule
-in the repo that failed CLOSED) — it was retired whole by SPEC-158 along
-with the tool it governed.
+certification mechanism used to add a SECOND, tool-scoped map here, restricting `quality_sign`
+to `qa-tester` (`roleScopedTools`, the one rule in the repo that failed CLOSED) — it was retired whole by SPEC-158
+along with the tool it governed.
 
 ### Inherent limits (Layer 2 scope)
 
@@ -761,7 +760,7 @@ rules to evaluate.
 **Q: How do I temporarily disable the hook?**
 A: Remove or comment out the `PreToolUse` entry in `~/.claude/settings.json`.
 Alternatively, set `applies_to=[]` on individual rules or soft-delete them with
-`mem_forget`.
+`mneme forget <id>`.
 
 **Q: The hook is slow — what can I do?**
 A: The hook targets <50ms. If it's slower, check that the project DB is not

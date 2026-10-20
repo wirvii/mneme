@@ -34,7 +34,7 @@ Rule = Memory + applies_to + severity
 | severity | Not present | info / warn / block |
 | Hook integration | No | Yes (pre-tool-use) |
 
-A rule exists until it is explicitly revoked with `mem_forget` or modified with `mem_update`.
+A rule exists until it is explicitly revoked with `mneme forget <id>` or modified with `mem_update`.
 
 ---
 
@@ -476,7 +476,7 @@ mneme rule add -t "Do not edit generated files" \
 A: Rules are injected into `mem_context` at the start of the session (via the `session-start` hook) and evaluated on every call to Edit/Write/MultiEdit (via the `pre-tool-use` hook). They are not injected on every conversation turn -- that's handled by the hook when it applies.
 
 **Q: Are rules overridable?**
-A: `info` and `warn` rules are advisory -- the agent receives them but can proceed. `block` rules are absolute: the hook rejects the tool call with exit code 2 and Claude Code cancels the action. There is no runtime override; to disable a rule, use `mem_forget` or `mem_update`.
+A: `info` and `warn` rules are advisory -- the agent receives them but can proceed. `block` rules are absolute: the hook rejects the tool call with exit code 2 and Claude Code cancels the action. There is no runtime override; to disable a rule, use `mneme forget <id>` or `mem_update`.
 
 **Q: Do they block the architect/backend subagent?**
 A: It depends. `block` rules **without** an `agent:` selector are automatically degraded to `warn` for subagents -- the subagent sees them as context but is not blocked (exit 0). Rules with `agent:*+...` or `agent:subagent+...` DO block subagents (exit 2). Rules with `agent:orchestrator+...` never apply to subagents. See the "Block→warn degradation for subagents" section.
@@ -485,7 +485,7 @@ A: It depends. `block` rules **without** an `agent:` selector are automatically 
 A: `pre-tool-use` exits with code 0 (allow) -- it does nothing. `mem_context` omits the "Active Rules" section.
 
 **Q: How do I temporarily disable the hook?**
-A: Remove or comment out the `PreToolUse` entry in `~/.claude/settings.json`. Alternatively, use `mem_forget` on individual rules.
+A: Remove or comment out the `PreToolUse` entry in `~/.claude/settings.json`. Alternatively, use `mneme forget <id>` on individual rules.
 
 **Q: The hook is slow -- what can I do?**
 A: Target is <50ms. If it's slower, check that the project DB isn't unusually large and that no other process holds a long write lock. The busy timeout is 1s.

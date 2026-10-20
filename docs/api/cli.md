@@ -277,7 +277,7 @@ mneme graph rebuild --force --min-shared 3
 
 ### mneme graph cleanup-orphan-relations
 
-Remove relations whose endpoint entities are unlinked from any memory (unreachable from `mem_explore`; legacy `mem_relate` artifacts pre-SPEC-031).
+Remove relations whose endpoint entities are unlinked from any memory (unreachable from `mneme explore`; legacy artifacts of the retired `mem_relate` tool, pre-SPEC-031).
 
 ```bash
 mneme graph cleanup-orphan-relations
