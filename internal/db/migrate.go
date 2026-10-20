@@ -115,6 +115,15 @@ CREATE TABLE IF NOT EXISTS schema_version (
 		return err
 	}
 
+	// SPEC-178 D5: put back the columns a re-run of migration 005 may have
+	// dropped. Must precede ensureSDDUUIDs, which reads specs.uuid.
+	if err := ensureSpecColumns(ex); err != nil {
+		return fmt.Errorf("db: migrate: %w", err)
+	}
+	if err := ensureSpecHistoryReviewedSHA(ex); err != nil {
+		return fmt.Errorf("db: migrate: %w", err)
+	}
+
 	// SPEC-128 D7 mitad A: the SDD anchor invariant is self-healing, not a
 	// one-shot migration side effect. See ensureSDDUUIDs' own godoc.
 	if err := ensureSDDUUIDs(ex); err != nil {
