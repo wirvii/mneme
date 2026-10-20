@@ -63,19 +63,36 @@ func trivialScopesFromDB(path, project string) trivialScopeLookup {
 		}
 		defer rows.Close() //nolint:errcheck // cleanup path; error is not actionable
 
-		var scopes []string
-		for rows.Next() {
-			var scope string
-			if err := rows.Scan(&scope); err != nil {
-				return nil, fmt.Errorf("cli: trivial scopes: scan: %w", err)
-			}
-			scopes = append(scopes, scope)
-		}
-		if err := rows.Err(); err != nil {
-			return nil, fmt.Errorf("cli: trivial scopes: rows: %w", err)
-		}
-		return scopes, nil
+		return collectTrivialScopes(rows)
 	}
+}
+
+// scopeRows is the part of *sql.Rows collectTrivialScopes needs. It exists so
+// the Scan and Err failure paths can be exercised: the query filters out NULL
+// and empty scopes and database/sql converts every other stored type to a
+// string, so no real table makes either call fail.
+type scopeRows interface {
+	Next() bool
+	Scan(dest ...any) error
+	Err() error
+}
+
+// collectTrivialScopes drains rows into a scope list. Any read failure is an
+// error, never a partial list, so the caller blocks instead of granting a
+// permission from half an answer.
+func collectTrivialScopes(rows scopeRows) ([]string, error) {
+	var scopes []string
+	for rows.Next() {
+		var scope string
+		if err := rows.Scan(&scope); err != nil {
+			return nil, fmt.Errorf("cli: trivial scopes: scan: %w", err)
+		}
+		scopes = append(scopes, scope)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("cli: trivial scopes: rows: %w", err)
+	}
+	return scopes, nil
 }
 
 // withTrivialInline wraps the orchestrator's ownership check (SPEC-171 D2).

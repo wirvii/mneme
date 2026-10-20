@@ -283,6 +283,67 @@ func TestWithTrivialInline_FailClosed(t *testing.T) {
 	})
 }
 
+// fakeScopeRows scripts a scopeRows: it yields values one by one, then fails
+// Scan at scanFailAt (-1 never) and reports errAfter from Err.
+type fakeScopeRows struct {
+	values     []string
+	pos        int
+	scanFailAt int
+	errAfter   error
+}
+
+func (f *fakeScopeRows) Next() bool { f.pos++; return f.pos <= len(f.values) }
+
+func (f *fakeScopeRows) Scan(dest ...any) error {
+	if f.pos-1 == f.scanFailAt {
+		return errors.New("scan boom")
+	}
+	*(dest[0].(*string)) = f.values[f.pos-1]
+	return nil
+}
+
+func (f *fakeScopeRows) Err() error { return f.errAfter }
+
+// TestCollectTrivialScopes_ReadErrors: a Scan or iteration failure yields an
+// error and no scopes, and withTrivialInline then keeps the block
+// (fail-closed).
+func TestCollectTrivialScopes_ReadErrors(t *testing.T) {
+	tests := []struct {
+		name    string
+		rows    *fakeScopeRows
+		wantErr string
+	}{
+		{"scan fails on first row", &fakeScopeRows{values: []string{"a/*"}, scanFailAt: 0}, "scan"},
+		{"scan fails after a good row", &fakeScopeRows{values: []string{"a/*", "b/*"}, scanFailAt: 1}, "scan"},
+		{"iteration error", &fakeScopeRows{values: []string{"a/*"}, scanFailAt: -1, errAfter: errors.New("rows boom")}, "rows"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := collectTrivialScopes(tt.rows)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("err = %v, want one mentioning %q", err, tt.wantErr)
+			}
+			if got != nil {
+				t.Errorf("scopes = %v, want nil on error", got)
+			}
+			tt.rows.pos = 0
+			calls := 0
+			own := withTrivialInline(blockingBase("legacy", &calls),
+				func() ([]string, error) { return collectTrivialScopes(tt.rows) }, "/repo", nil)
+			if block, owner := own("a/1"); !block || owner != "legacy" {
+				t.Errorf("got (%v, %q), want (true, legacy): a read error must fail closed", block, owner)
+			}
+		})
+	}
+
+	t.Run("healthy rows", func(t *testing.T) {
+		got, err := collectTrivialScopes(&fakeScopeRows{values: []string{"a/*", "b/*"}, scanFailAt: -1})
+		if err != nil || !reflect.DeepEqual(got, []string{"a/*", "b/*"}) {
+			t.Errorf("got (%v, %v)", got, err)
+		}
+	})
+}
+
 // --- evaluateDelegation wiring (real config.toml + real database) ---------
 
 // enableTrivialInline writes the opt-in into the sandboxed HOME's config.
