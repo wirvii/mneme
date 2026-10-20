@@ -111,7 +111,7 @@ func TestMigration017_IsIdempotent(t *testing.T) {
 	if err := applyMigration(sqlDB, 17, loadMigration017(t)); err != nil {
 		t.Fatalf("migration 017 first apply: %v", err)
 	}
-	if err := applyMigration(sqlDB, 17, loadMigration017(t)); err != nil {
+	if _, err := sqlDB.Exec(loadMigration017(t)); err != nil {
 		t.Fatalf("migration 017 second apply: %v", err)
 	}
 

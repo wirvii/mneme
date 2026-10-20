@@ -54,9 +54,10 @@ func TestMigration008_Idempotent(t *testing.T) {
 	if err := applyMigration(sqlDB, 8, sql008); err != nil {
 		t.Fatalf("first migration 008: %v", err)
 	}
-	// Second application should be a no-op due to CREATE INDEX IF NOT EXISTS
-	// and INSERT OR IGNORE.
-	if err := applyMigration(sqlDB, 8, sql008); err != nil {
+	// Replaying the file itself must be a no-op (CREATE INDEX IF NOT EXISTS
+	// and the file's own INSERT OR IGNORE). applyMigration would refuse: the
+	// version is already recorded (SPEC-178 D3).
+	if _, err := sqlDB.Exec(sql008); err != nil {
 		t.Fatalf("second migration 008 (idempotency check): %v", err)
 	}
 

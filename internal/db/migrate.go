@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"embed"
+	"errors"
 	"fmt"
 	"io/fs"
 	"sort"
@@ -13,6 +14,13 @@ import (
 
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
+
+// ErrMigrationAlreadyRecorded is returned by applyMigration when schema_version
+// already holds the version it was asked to apply. Migrations are not
+// idempotent (an ALTER TABLE ADD COLUMN fails the second time, migration 005
+// rebuilds tables), so a version that is recorded must never run again; the
+// runner reports it instead of recording it silently (SPEC-178 D3).
+var ErrMigrationAlreadyRecorded = errors.New("db: migration version already recorded")
 
 // sqlExecutor is the subset of database/sql the migration helpers need. It is
 // satisfied by *sql.DB, *sql.Conn and *sql.Tx, so the same helper can run
@@ -174,19 +182,57 @@ func applyPending(ctx context.Context, ex sqlExecutor, fsys fs.FS, current int) 
 // version in schema_version. It does not open a transaction: it runs inside
 // the one migrateFS holds, so a failure anywhere in the pass undoes every
 // file applied before it.
+//
+// A version that is already recorded is never executed again: the function
+// returns ErrMigrationAlreadyRecorded. The shipped files record their own
+// version with an idempotent insert of their own; when a file did not (or the
+// caller passes SQL that does not), the version is recorded here with a plain
+// INSERT, so a duplicate surfaces as an error instead of being ignored.
 func applyMigration(ex sqlExecutor, version int, sqlContent string) error {
 	ctx := context.Background()
+
+	recorded, err := versionRecorded(ctx, ex, version)
+	if err != nil {
+		return err
+	}
+	if recorded {
+		return fmt.Errorf("version %d: %w", version, ErrMigrationAlreadyRecorded)
+	}
+
 	if _, err := ex.ExecContext(ctx, sqlContent); err != nil {
 		return fmt.Errorf("exec sql: %w", err)
 	}
 
-	const insertVersion = `
-INSERT OR IGNORE INTO schema_version (version, applied_at)
-VALUES (?, datetime('now'))`
+	// The file may have recorded its own version inside this same
+	// transaction; that counts as recorded by the transaction that applied it.
+	recorded, err = versionRecorded(ctx, ex, version)
+	if err != nil {
+		return err
+	}
+	if recorded {
+		return nil
+	}
+	return recordVersion(ctx, ex, version)
+}
+
+// versionRecorded reports whether schema_version holds a row for version.
+func versionRecorded(ctx context.Context, ex sqlExecutor, version int) (bool, error) {
+	var recorded bool
+	err := ex.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM schema_version WHERE version = ?)`, version).Scan(&recorded)
+	if err != nil {
+		return false, fmt.Errorf("check version %d: %w", version, err)
+	}
+	return recorded, nil
+}
+
+// recordVersion inserts the schema_version row for version. It is a plain
+// INSERT on purpose: a primary-key clash means the version was recorded
+// without being applied by this transaction, which must not pass silently.
+func recordVersion(ctx context.Context, ex sqlExecutor, version int) error {
+	const insertVersion = `INSERT INTO schema_version (version, applied_at) VALUES (?, datetime('now'))`
 	if _, err := ex.ExecContext(ctx, insertVersion, version); err != nil {
 		return fmt.Errorf("record version %d: %w", version, err)
 	}
-
 	return nil
 }
 

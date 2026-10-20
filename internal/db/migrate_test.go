@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -252,5 +253,36 @@ func TestPragmas_Effective(t *testing.T) {
 	}
 	if foreignKeys != 1 {
 		t.Errorf("expected foreign_keys=1 (ON), got %d", foreignKeys)
+	}
+}
+
+// TestApplyMigration_AlreadyRecorded proves the runner refuses to apply a
+// version that schema_version already holds (SPEC-178 D3): migration 006 is an
+// ALTER TABLE, so silently re-running it would fail with a duplicate column,
+// and re-running 005 would rebuild tables. The sentinel turns any future
+// regression of the serialization into a loud error.
+func TestApplyMigration_AlreadyRecorded(t *testing.T) {
+	d, err := OpenMemory()
+	if err != nil {
+		t.Fatalf("OpenMemory: %v", err)
+	}
+	defer d.Close()
+
+	schemaOf := func() string {
+		t.Helper()
+		var s string
+		if err := d.QueryRow(`SELECT group_concat(sql, ';') FROM (SELECT sql FROM sqlite_master ORDER BY name)`).Scan(&s); err != nil {
+			t.Fatalf("read schema: %v", err)
+		}
+		return s
+	}
+	before := schemaOf()
+
+	err = applyMigration(d.DB, 6, loadMigration006(t))
+	if !errors.Is(err, ErrMigrationAlreadyRecorded) {
+		t.Fatalf("applyMigration on a recorded version = %v, want ErrMigrationAlreadyRecorded", err)
+	}
+	if after := schemaOf(); after != before {
+		t.Error("schema changed although the migration was refused")
 	}
 }

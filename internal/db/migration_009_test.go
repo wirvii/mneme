@@ -79,7 +79,7 @@ func TestMigration009_Idempotent(t *testing.T) {
 	if err := applyMigration(sqlDB, 9, sql009); err != nil {
 		t.Fatalf("first migration 009: %v", err)
 	}
-	if err := applyMigration(sqlDB, 9, sql009); err != nil {
+	if _, err := sqlDB.Exec(sql009); err != nil {
 		t.Fatalf("second migration 009 (idempotency check): %v", err)
 	}
 
