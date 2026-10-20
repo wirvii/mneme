@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -98,6 +99,9 @@ func schemaFingerprint(t *testing.T, q interface {
 // fingerprints are not identical.
 func requireSameFingerprint(t *testing.T, got, want []string) {
 	t.Helper()
+	if len(want) == 0 {
+		t.Fatal("reference fingerprint is empty, the comparison would prove nothing")
+	}
 	if strings.Join(got, "\n") == strings.Join(want, "\n") {
 		return
 	}
@@ -274,6 +278,52 @@ func TestEnsureSpecRepairs_NoOpCases(t *testing.T) {
 			requireSameFingerprint(t, schemaFingerprint(t, d), before)
 		})
 	}
+}
+
+// TestSchema_FreshEqualsMigrated pins the invariant behind SPEC-178: a new
+// database and one migrated from any earlier version have exactly the same
+// tables, columns and indexes. If a migration or a repair ever makes them
+// diverge, this is where it shows up.
+func TestSchema_FreshEqualsMigrated(t *testing.T) {
+	fresh := freshFingerprint(t)
+	latest := latestEmbeddedVersion(t)
+
+	for k := 1; k < latest; k++ {
+		t.Run(fmt.Sprintf("from version %d", k), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "migrated.db")
+			raw := openRawFile(t, path)
+			applyUpToVersion(t, raw, k)
+			if err := raw.Close(); err != nil {
+				t.Fatalf("close raw: %v", err)
+			}
+
+			d, err := Open(path)
+			if err != nil {
+				t.Fatalf("Open from version %d: %v", k, err)
+			}
+			defer d.Close()
+			requireSameFingerprint(t, schemaFingerprint(t, d), fresh)
+		})
+	}
+
+	t.Run("legacy driver fixture", func(t *testing.T) {
+		content, err := os.ReadFile(filepath.Join("testdata", "legacy-driver-fixture.db"))
+		if err != nil {
+			t.Fatalf("read fixture: %v", err)
+		}
+		// Work on a copy: Open migrates and would modify the fixture in place.
+		path := filepath.Join(t.TempDir(), "legacy.db")
+		if err := os.WriteFile(path, content, 0o600); err != nil {
+			t.Fatalf("copy fixture: %v", err)
+		}
+
+		d, err := Open(path)
+		if err != nil {
+			t.Fatalf("Open fixture copy: %v", err)
+		}
+		defer d.Close()
+		requireSameFingerprint(t, schemaFingerprint(t, d), fresh)
+	})
 }
 
 // latestEmbeddedVersion is the highest version registered by the embedded
