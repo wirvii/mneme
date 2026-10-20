@@ -1999,17 +1999,17 @@ var delegationTools = map[string]bool{
 //     call) AND an orchestrator-only operation by CLAUDE.md; a subagent
 //     calling it self-authorises its own work, the same dishonest record.
 //
+// sdd_import left this set in SPEC-163 together with the tool itself, which
+// is CLI-only now. A subagent with Bash can run `mneme sdd import`, exactly
+// as it can already run `mneme spec advance`; denying lifecycle verbs spoken
+// through Bash is a separate piece of work (SPEC-163 R1).
+//
 // spec_pushback, spec_resolve, spec_status, spec_doc_write, mem_*, and
 // codegraph_* are deliberately NOT in this set — see AC6.
 var lifecycleTools = map[string]bool{
 	"mcp__mneme__spec_advance":    true,
 	"mcp__mneme__spec_quick":      true,
 	"mcp__mneme__backlog_archive": true,
-	// SPEC-131 D58: R1 means a record an implementer just edited can move
-	// its own spec's status — the same "the author does not authorize
-	// their own change" family as the entries above. sdd_status is
-	// read-only and stays OUT of this map.
-	"mcp__mneme__sdd_import": true,
 }
 
 // roleScopedDocKinds maps a spec_doc_write `kind` argument to the ONE
