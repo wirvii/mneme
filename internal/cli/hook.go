@@ -1575,18 +1575,24 @@ var delegationTools = map[string]bool{
 //   - spec_quick: disguised advance (draft->rationale->implementing in one
 //     call) AND an orchestrator-only operation by CLAUDE.md; a subagent
 //     calling it self-authorises its own work, the same dishonest record.
+//   - backlog_archive: discarding work and freezing its record is the
+//     owner's call (SPEC-125).
+//   - lane_override: bypassing the trivial-lane auditor is decided by the
+//     orchestrator or the owner, never by the author of the change (SPEC-175).
 //
 // sdd_import left this set in SPEC-163 together with the tool itself, which
-// is CLI-only now. A subagent with Bash can run `mneme sdd import`, exactly
-// as it can already run `mneme spec advance`; denying lifecycle verbs spoken
-// through Bash is a separate piece of work (SPEC-163 R1).
+// is CLI-only now. The same verbs spoken through Bash (`mneme spec advance`,
+// `mneme sdd import`, ...) are denied by the Bash guard of
+// runHookEnforceDelegation (SPEC-175); TestLifecycleTools_MirroredByLifecycleCommands
+// keeps the two lists from drifting apart.
 //
-// spec_pushback, spec_resolve, spec_status, spec_doc_write, mem_*, and
-// codegraph_* are deliberately NOT in this set — see AC6.
+// spec_pushback, spec_resolve, spec_status, spec_doc_write, spec_reject, mem_*,
+// and codegraph_* are deliberately NOT in this set — see AC6.
 var lifecycleTools = map[string]bool{
 	"mcp__mneme__spec_advance":    true,
 	"mcp__mneme__spec_quick":      true,
 	"mcp__mneme__backlog_archive": true,
+	"mcp__mneme__lane_override":   true,
 }
 
 // roleScopedDocKinds maps a spec_doc_write `kind` argument to the ONE
@@ -1652,9 +1658,23 @@ func printLifecycleBlock(w io.Writer, tool string) {
 		// governing its own spec would be cancelling its own work and
 		// freezing the very record that judges it.
 		fmt.Fprintf(w, "(bloqueado: %s — motivo distinto: descartar trabajo y congelar su registro de forma irreversible es una decisión del owner, canalizada por el orquestador, nunca del subagente que lo está ejecutando.)\n", tool)
+	case "mcp__mneme__lane_override":
+		fmt.Fprintf(w, "(bloqueado: %s — saltarse el auditor del carril trivial lo decide el orquestador o el owner; si el auditor rechazó tu cambio, devuélvelo al orquestador.)\n", tool)
 	default:
 		fmt.Fprintf(w, "(bloqueado: %s — mismo motivo: el lifecycle SDD lo gobierna el orquestador, no un subagente.)\n", tool)
 	}
+}
+
+// lifecycleCommandBlockMessage is printed when a subagent runs a mneme
+// lifecycle command through Bash (SPEC-175); %s is the recognised pair, for
+// example "spec advance". It teaches the way out twice: hand the result back
+// to the orchestrator, or aim the same command at an isolated data directory
+// when the subagent is testing mneme itself.
+const lifecycleCommandBlockMessage = "⛔ mneme: `mneme %s` es del orquestador, no de un subagente. No lo ejecutes: reporta tu resultado y devuélvelo al orquestador, que decide o consulta al owner.\nSi estás probando mneme, apunta la misma orden a una carpeta de datos aislada: --data-dir <dir>, HOME=<dir>, USERPROFILE=<dir> o MNEME_DATA_DIR=<dir>.\n"
+
+// printLifecycleCommandBlock writes the SPEC-175 Bash lifecycle denial to w.
+func printLifecycleCommandBlock(w io.Writer, command string) {
+	fmt.Fprintf(w, lifecycleCommandBlockMessage, command)
 }
 
 // runHookEnforceDelegation implements the "mneme hook enforce-delegation"
@@ -1668,8 +1688,11 @@ func printLifecycleBlock(w io.Writer, tool string) {
 // different OwnershipFunc closure (D10).
 //
 // SPEC-087 D5 adds a FIRST, independent guard ahead of everything else: a
-// subagent calling a lifecycleTools MCP tool (spec_advance, spec_quick) is
-// denied unconditionally. It runs before the delegationTools filter — those
+// subagent calling a lifecycleTools MCP tool (spec_advance, spec_quick,
+// backlog_archive, lane_override) is denied unconditionally. SPEC-175 adds a
+// sibling guard right after it: a subagent's Bash command that runs a mneme
+// lifecycle command (enforcement.EvaluateLifecycleCommand) is denied too,
+// unless it names an isolated data directory. It runs before the delegationTools filter — those
 // tools are never file/Bash tools, so the filter would otherwise short-
 // circuit past them entirely — and before the RoleSource=="unresolved"
 // short-circuit below, because this guard only needs identity.IsSubagent
@@ -1706,6 +1729,23 @@ func runHookEnforceDelegation(r io.Reader, errW io.Writer) error {
 		//nolint:gocritic // os.Exit(2) is the documented hook exit code for rejection
 		os.Exit(2)
 		return nil
+	}
+
+	// SPEC-175: the same rule spoken through the terminal. A subagent with
+	// Bash must not run `mneme spec advance` and its siblings either, unless
+	// the very same command points mneme at an isolated data directory. Placed
+	// right after the lifecycleTools guard for the same reason: it needs only
+	// identity.IsSubagent, never agent_type, and must run before the
+	// delegationTools filter and the unresolved-role short-circuit.
+	if identity.IsSubagent && input.ToolName == "Bash" {
+		pc, _ := hostPathContext() // a missing home only disables the absolute-path comparison
+		if d := enforcement.EvaluateLifecycleCommand(input.ToolInput.Command, pc); d.Block {
+			printLifecycleCommandBlock(errW, d.Command)
+			logLifecycleCommandDeniedEvent(input, identity, d.Command)
+			//nolint:gocritic // os.Exit(2) is the documented hook exit code for rejection
+			os.Exit(2)
+			return nil
+		}
 	}
 
 	// SPEC-118 D10: a SECOND, independent guard, evaluated right after
@@ -1770,6 +1810,20 @@ func runHookEnforceDelegation(r io.Reader, errW io.Writer) error {
 	return nil
 }
 
+// hostPathContext builds the enforcement.PathContext of the running host:
+// os.UserHomeDir, os.TempDir and runtime.GOOS. When the home directory cannot
+// be resolved it still returns the context with an empty Home alongside the
+// error, so a caller that can work without a home (the lifecycle command
+// guard) proceeds and one that cannot (evaluateDelegation) fails open.
+func hostPathContext() (enforcement.PathContext, error) {
+	home, err := os.UserHomeDir()
+	return enforcement.PathContext{
+		Home:    home,
+		TempDir: os.TempDir(),
+		GOOS:    runtime.GOOS,
+	}, err
+}
+
 // evaluateDelegation resolves config/project/manifest state once — mirroring
 // runHookPathOwned's own resolution — and delegates to
 // internal/enforcement's pure Evaluate* functions via an in-process
@@ -1797,14 +1851,9 @@ func runHookEnforceDelegation(r io.Reader, errW io.Writer) error {
 // constructs a PathContext from the real environment — internal/enforcement
 // itself never calls os/runtime.
 func evaluateDelegation(input hookPreToolInput, cwd string) enforcement.Decision {
-	home, err := os.UserHomeDir()
-	if err != nil {
+	pc, homeErr := hostPathContext()
+	if homeErr != nil {
 		return enforcement.Decision{}
-	}
-	pc := enforcement.PathContext{
-		Home:    home,
-		TempDir: os.TempDir(),
-		GOOS:    runtime.GOOS,
 	}
 
 	cfg, err := config.Load(config.DefaultPath())
@@ -2054,6 +2103,22 @@ func logRoleScopedDocKindDeniedEvent(input hookPreToolInput, identity CallerIden
 // "orchestrator bypassed SDD" narrative does not apply to a contained
 // subagent (same reasoning logContainmentEvent already documents).
 func logLifecycleToolDeniedEvent(input hookPreToolInput, identity CallerIdentity) {
+	appendLifecycleDenial(input, identity, input.ToolInput.ID, "lifecycle_tool_denied_to_subagent")
+}
+
+// logLifecycleCommandDeniedEvent appends the enforcelog event for a SPEC-175
+// lifecycle command spoken through Bash (Reason: "lifecycle_command_denied_to_
+// subagent"). Target is the recognised command ("mneme spec advance") because
+// a Bash call carries no spec ID of its own. Best-effort, no discovery memory,
+// for the same reason as logLifecycleToolDeniedEvent.
+func logLifecycleCommandDeniedEvent(input hookPreToolInput, identity CallerIdentity, command string) {
+	appendLifecycleDenial(input, identity, "mneme "+command, "lifecycle_command_denied_to_subagent")
+}
+
+// appendLifecycleDenial is the shared best-effort writer behind both lifecycle
+// denial events: it resolves config, cwd and project itself and appends one
+// block event with the given target and reason.
+func appendLifecycleDenial(input hookPreToolInput, identity CallerIdentity, target, reason string) {
 	cfg, err := config.Load(config.DefaultPath())
 	if err != nil {
 		return
@@ -2076,9 +2141,9 @@ func logLifecycleToolDeniedEvent(input hookPreToolInput, identity CallerIdentity
 		Role:       identity.Role,
 		RoleSource: identity.RoleSource,
 		Tool:       input.ToolName,
-		Target:     input.ToolInput.ID,
+		Target:     target,
 		Decision:   enforcelog.DecisionBlock,
-		Reason:     "lifecycle_tool_denied_to_subagent",
+		Reason:     reason,
 	}
 	_ = enforcelog.Append(path, ev, enforcelog.DefaultMaxBytes) //nolint:errcheck // best-effort telemetry
 }

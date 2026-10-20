@@ -151,6 +151,17 @@ func TestRunHookEnforceDelegation_LifecycleTools_Table(t *testing.T) {
 			wantExit: 0,
 		},
 		{
+			// SPEC-175: lane_override joins the denied set.
+			name:     "lane_override denied to a resolved subagent",
+			payload:  `{"agent_id":"x","agent_type":"backend","tool_name":"mcp__mneme__lane_override","tool_input":{"id":"SPEC-1"}}`,
+			wantExit: 2,
+		},
+		{
+			name:     "lane_override allowed for the orchestrator",
+			payload:  `{"tool_name":"mcp__mneme__lane_override","tool_input":{"id":"SPEC-1"}}`,
+			wantExit: 0,
+		},
+		{
 			name:     "spec_pushback allowed",
 			payload:  `{"agent_id":"x","agent_type":"qa-tester","tool_name":"mcp__mneme__spec_pushback"}`,
 			wantExit: 0,
@@ -197,16 +208,16 @@ func TestRunHookEnforceDelegation_LifecycleBlock_MentionsRegenCommand(t *testing
 	}
 }
 
-// TestLifecycleTools_ExactlyThreeMcpPrefixedEntries is the G5 anchor
+// TestLifecycleTools_ExactlyFourMcpPrefixedEntries is the G5 anchor
 // (SPEC-115 P11 plan, widened by SPEC-125, widened again by SPEC-131 D58,
 // narrowed by SPEC-158's retirement of quality_ack, narrowed again by
-// SPEC-163's retirement of sdd_import from MCP): anchoring the map's SIZE
-// (not just membership) makes a silent rename visible: exactly 3 entries
-// (spec_advance, spec_quick, backlog_archive), every one an
-// "mcp__mneme__"-prefixed name.
-func TestLifecycleTools_ExactlyThreeMcpPrefixedEntries(t *testing.T) {
-	if len(lifecycleTools) != 3 {
-		t.Fatalf("len(lifecycleTools) = %d, want 3: %v", len(lifecycleTools), lifecycleTools)
+// SPEC-163's retirement of sdd_import from MCP, widened by SPEC-175's
+// lane_override): anchoring the map's SIZE (not just membership) makes a
+// silent rename visible: exactly 4 entries (spec_advance, spec_quick,
+// backlog_archive, lane_override), every one an "mcp__mneme__"-prefixed name.
+func TestLifecycleTools_ExactlyFourMcpPrefixedEntries(t *testing.T) {
+	if len(lifecycleTools) != 4 {
+		t.Fatalf("len(lifecycleTools) = %d, want 4: %v", len(lifecycleTools), lifecycleTools)
 	}
 	for tool := range lifecycleTools {
 		if !strings.HasPrefix(tool, "mcp__mneme__") {
