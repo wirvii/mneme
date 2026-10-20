@@ -802,6 +802,9 @@ type hookPreToolInput struct {
 		// this, never the tool name alone, so a subagent writing its OWN
 		// legitimate kind (e.g. "changes") is unaffected.
 		Kind string `json:"kind"`
+		// Section is spec_doc_write's tarea.md section argument (SPEC-170
+		// D6); checkTaskSectionScope evaluates it for kind "task".
+		Section string `json:"section"`
 	} `json:"tool_input"`
 
 	// SessionID is the per-session identifier injected by Claude Code (SPEC-044).
@@ -2150,6 +2153,12 @@ func runHookEnforceDelegation(r io.Reader, errW io.Writer) error {
 				return nil
 			}
 		}
+	}
+
+	if checkTaskSectionScope(input, identity, errW, manifestArchetypeLookup(input)) {
+		//nolint:gocritic // os.Exit(2) is the documented hook exit code for rejection
+		os.Exit(2)
+		return nil
 	}
 
 	if !delegationTools[input.ToolName] {

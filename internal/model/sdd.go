@@ -1252,6 +1252,11 @@ const (
 	// above. A fifth kind inherits specDocPath's two defenses (id pattern,
 	// no directory escape) unmodified — see internal/service/sdd.go.
 	SpecDocKindCriteria SpecDocKind = "criteria"
+
+	// SpecDocKindTask writes tarea.md — the single per-spec document with
+	// one fixed section per role (SPEC-170). A task write must name a
+	// TaskSection and replaces only that section.
+	SpecDocKindTask SpecDocKind = "task"
 )
 
 // specDocFilenames maps each closed SpecDocKind to the exact filename it
@@ -1263,6 +1268,7 @@ var specDocFilenames = map[SpecDocKind]string{
 	SpecDocKindQAReport: "qa-report.md",
 	SpecDocKindChanges:  "changes.md",
 	SpecDocKindCriteria: "criteria.toml",
+	SpecDocKindTask:     "tarea.md",
 }
 
 // Filename returns the filename k maps to, and whether k is a recognised
@@ -1282,8 +1288,13 @@ type SpecDocWriteRequest struct {
 	// Kind selects the destination filename via SpecDocKind.Filename.
 	Kind SpecDocKind `json:"kind"`
 
-	// Content is the full document content, written verbatim.
+	// Content is the full document content, written verbatim (for kind
+	// task: the new content of Section only).
 	Content string `json:"content"`
+
+	// Section selects the tarea.md section a task write replaces. It is
+	// required with SpecDocKindTask and forbidden with every other kind.
+	Section TaskSection `json:"section,omitempty"`
 }
 
 // SpecDocWriteResponse is returned by SpecDocWrite.
@@ -1296,4 +1307,75 @@ type SpecDocWriteResponse struct {
 
 	// Created is true when the file did not exist before this call.
 	Created bool `json:"created"`
+
+	// Section echoes the tarea.md section written; empty for other kinds.
+	Section string `json:"section,omitempty"`
+}
+
+// TaskSection names one of the fixed sections of a spec's tarea.md
+// (SPEC-170). The ids are ASCII slugs so the wire stays stable; the
+// human-facing headings (Heading) carry the proper accents.
+type TaskSection string
+
+// The closed vocabulary of tarea.md sections.
+const (
+	// TaskSectionWhat is "Qué y por qué" — the architect's statement of intent.
+	TaskSectionWhat TaskSection = "que"
+	// TaskSectionDesign is "Diseño" — the architect's design.
+	TaskSectionDesign TaskSection = "diseno"
+	// TaskSectionPlan is "Plan" — the architect's implementation plan.
+	TaskSectionPlan TaskSection = "plan"
+	// TaskSectionDelivery is "Entrega" — what the implementer delivered.
+	TaskSectionDelivery TaskSection = "entrega"
+	// TaskSectionReview is "Revisión" — the qa-tester's report.
+	TaskSectionReview TaskSection = "revision"
+)
+
+// TaskSections lists every TaskSection in canonical document order.
+var TaskSections = []TaskSection{
+	TaskSectionWhat, TaskSectionDesign, TaskSectionPlan,
+	TaskSectionDelivery, TaskSectionReview,
+}
+
+var taskSectionHeadings = map[TaskSection]string{
+	TaskSectionWhat:     "## Qué y por qué",
+	TaskSectionDesign:   "## Diseño",
+	TaskSectionPlan:     "## Plan",
+	TaskSectionDelivery: "## Entrega",
+	TaskSectionReview:   "## Revisión",
+}
+
+// taskSectionWriters is the single source of truth for which subagent
+// archetypes may write each section. It lives in model because two
+// independent enforcement points consult it (the Claude Code hook and the
+// Codex CallerPolicy) and they must never disagree.
+var taskSectionWriters = map[TaskSection][]string{
+	TaskSectionWhat:     {"architect"},
+	TaskSectionDesign:   {"architect"},
+	TaskSectionPlan:     {"architect"},
+	TaskSectionDelivery: {"backend", "frontend", "bug-hunter"},
+	TaskSectionReview:   {"qa-tester"},
+}
+
+// Heading returns the Markdown heading of s, and whether s is a known section.
+func (s TaskSection) Heading() (string, bool) {
+	h, ok := taskSectionHeadings[s]
+	return h, ok
+}
+
+// TaskSectionAllows reports whether a subagent of the given archetype may
+// write section s. Unknown sections and archetypes are never allowed.
+func TaskSectionAllows(s TaskSection, archetype string) bool {
+	for _, a := range taskSectionWriters[s] {
+		if a == archetype {
+			return true
+		}
+	}
+	return false
+}
+
+// TaskSectionWriters returns the archetypes allowed to write s, for
+// denial messages.
+func TaskSectionWriters(s TaskSection) []string {
+	return append([]string(nil), taskSectionWriters[s]...)
 }

@@ -254,6 +254,23 @@ var ErrCrossStoreRelation = errors.New("cannot relate a global and a project mem
 // filename.
 var ErrUnknownSpecDocKind = errors.New("unknown spec doc kind")
 
+// ErrTaskSectionRequired is returned when spec_doc_write kind task omits
+// the section to replace (SPEC-170).
+var ErrTaskSectionRequired = errors.New("spec_doc_write kind task requires a section")
+
+// ErrUnknownTaskSection is returned when the section is outside the closed
+// TaskSections vocabulary (SPEC-170).
+var ErrUnknownTaskSection = errors.New("unknown tarea.md section")
+
+// ErrSectionNotApplicable is returned when a section is supplied with a
+// kind other than task; it is never silently ignored (SPEC-170).
+var ErrSectionNotApplicable = errors.New("section is only valid with kind task")
+
+// ErrTaskDocMalformed is returned when an existing tarea.md no longer has
+// each section marker pair exactly once, in order — typically a hand edit.
+// Nothing is written in that case (SPEC-170).
+var ErrTaskDocMalformed = errors.New("tarea.md is malformed")
+
 // --- Profile sentinel errors (SPEC-091 §1) ---
 //
 // These mirror the internal/profile leaf's own sentinels (profile.ErrProfileExists,

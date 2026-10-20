@@ -303,6 +303,30 @@ model's fail-open posture (a signature whose signer cannot be identified is
 worse than no signature at all). SPEC-158 retired that map whole, along
 with `quality_sign` and the rest of the certification mechanism.
 
+#### Task-section denial (SPEC-170)
+
+`spec_doc_write` with `kind: "task"` replaces one section of a spec's
+`tarea.md` (`docs/api/sdd.md`). Which subagent may write which section is
+decided by `model.TaskSectionAllows` — the single table both enforcement
+points consult: `que`/`diseno`/`plan` for `architect`; `entrega` for
+`backend`, `frontend`, `bug-hunter`; `revision` for `qa-tester`;
+`diagnostician` none; the orchestrator any.
+
+- **Claude Code**: `checkTaskSectionScope` (`internal/cli/hook_task_section.go`),
+  called once from `runHookEnforceDelegation` right after the `criteria`
+  check. A denied call exits 2 with a message naming the section and the roles
+  that may write it, and logs an enforcelog event
+  (`role_scoped_task_section_denied`, target `task:<section>`).
+- **Archetype resolution**: if `agent_type` is one of the six archetype
+  names it is used directly with no I/O; a custom role is looked up in the
+  project manifest (`archetype` field, falling back to the role name).
+- **Fail-open**: empty or unknown `section` (the service rejects it), an
+  unresolved role (`agent_type` absent) and an unresolvable archetype
+  (manifest unreadable or role not listed) are all allowed with a warning on
+  stderr — the same posture as the `criteria` rule.
+- **Codex**: `CallerPolicy.authorizeCall` applies the same table using the
+  process's archetype.
+
 #### Inherent limits of Layer 2
 
 Layer 2 is designed to stop the **cooperative orchestrator** from accidentally

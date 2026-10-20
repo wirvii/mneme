@@ -823,6 +823,10 @@ func (h *handlers) mapServiceError(method string, err error) *JSONRPCError {
 		errors.Is(err, model.ErrInvalidModel) ||
 		errors.Is(err, model.ErrInvalidRelation) ||
 		errors.Is(err, model.ErrUnknownSpecDocKind) ||
+		errors.Is(err, model.ErrTaskSectionRequired) ||
+		errors.Is(err, model.ErrUnknownTaskSection) ||
+		errors.Is(err, model.ErrSectionNotApplicable) ||
+		errors.Is(err, model.ErrTaskDocMalformed) ||
 		errors.Is(err, model.ErrProfileExists) ||
 		errors.Is(err, model.ErrProfileNameMismatch) ||
 		errors.Is(err, model.ErrInvalidProfile) ||
