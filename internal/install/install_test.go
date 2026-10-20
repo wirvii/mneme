@@ -182,8 +182,7 @@ func TestClaudeCode_Manual(t *testing.T) {
 		"mem_save",
 		"mem_search",
 		"mem_session_end",
-		"mem_checkpoint",
-		"SDD",
+		"mneme-flow",
 		"trivial",
 		"standard",
 	}
