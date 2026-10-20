@@ -148,3 +148,5 @@ Codegraph: <done | skipped | not requested>
 Shared memory: <done (vault + hooks installed) | skipped | not requested>
 SDD (backlog/specs as files): <done (N backlog items, N specs exported) | skipped | not requested>
 ```
+
+24. Close by telling the user, in plain words, what to read next: the `mneme-flow` skill explains how backlog items and specs move from idea to done, and who may move them.
