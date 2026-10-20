@@ -36,9 +36,10 @@ type handlers struct {
 // on branches integrating v2.0 in parallel keep compiling.
 func newHandlers(svc *service.MemoryService, sdd *service.SDDService, _ *service.SkillsService, _ *service.ModelsService, logger *slog.Logger) *handlers {
 	return &handlers{
-		svc:    svc,
-		sdd:    sdd,
-		logger: logger,
+		svc:         svc,
+		sdd:         sdd,
+		subagentSvc: service.NewSubagentService(svc),
+		logger:      logger,
 	}
 }
 
@@ -1326,24 +1327,6 @@ func (h *handlers) handleLaneStats(ctx context.Context, raw json.RawMessage) (*T
 		return nil, h.mapServiceError("lane_stats", err)
 	}
 	return resultFromAny(newLaneStatsView(resp))
-}
-
-// resolveRepoRoot returns explicit when non-empty, otherwise the current
-// working directory. Wrapped as a JSONRPCError so callers can return it
-// directly. It survived SPEC-163's retirement of the subagent handlers
-// because the profile handlers still resolve their repository root with it.
-func resolveRepoRoot(explicit string) (string, *JSONRPCError) {
-	if explicit != "" {
-		return explicit, nil
-	}
-	dir, err := os.Getwd()
-	if err != nil {
-		return "", &JSONRPCError{
-			Code:    CodeInternalError,
-			Message: fmt.Sprintf("mcp: resolve repo root: %s", err),
-		}
-	}
-	return dir, nil
 }
 
 // resultFromAny serializes v to a compact JSON string and wraps it in a single
