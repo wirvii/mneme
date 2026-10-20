@@ -1,6 +1,6 @@
 ---
 name: mneme-flow
-description: "Use for any work that goes through mneme's backlog and specs: the lifecycle and who may move it, the human approval gate, lanes, the criteria contract, rejections, pushbacks and the review range. The other flow skills (feature, bug, trivial, present-spec, review-brief) build on this one."
+description: "Use when doing any work that goes through mneme's backlog and specs: the lifecycle and who may move it, the human approval gate, lanes, the criteria contract, rejections, pushbacks and the review range. The other flow skills (feature, bug, trivial, present-spec, review-brief) build on this one."
 version: 1.0.0
 pinned: false
 ---

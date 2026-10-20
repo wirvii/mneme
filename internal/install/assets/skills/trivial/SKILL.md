@@ -1,6 +1,6 @@
 ---
 name: trivial
-description: "Use for a tiny, low-risk change that fits mneme's trivial lane (see mneme-flow's references/depth.md): quick-start the spec, stay strictly inside the declared scope, and let the lane auditor decide."
+description: "Use when making a tiny, low-risk change that fits mneme's trivial lane (see mneme-flow's references/depth.md): quick-start the spec, stay strictly inside the declared scope, and let the lane auditor decide."
 version: 1.0.0
 pinned: false
 ---
