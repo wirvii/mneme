@@ -21,9 +21,9 @@ var visualCertificationCoveredRoles = map[string]bool{
 // here, and only on qa-tester/frontend.
 //
 // Population is the DIRECTORY, not a hand-written "the other four" list
-// (SPEC-132 Dp7) — every *.md file present is checked, in both copies (V6):
-// the global installer's assets/agents/*.md AND the OSS default profile's
-// assets/profiles/default/agents/*.md (a separate embed, SPEC-096 §6).
+// (SPEC-132 Dp7) — every *.md file present in the installer's
+// assets/agents/*.md is checked. The OSS default profile's second copy
+// (assets/profiles/default/agents) was retired with SPEC-162.
 //
 // Same two mandatory closures as TestCompose_VisualSectionByRole (AC5):
 // fails on a CutSection error, and fails if the cut section is under 200
