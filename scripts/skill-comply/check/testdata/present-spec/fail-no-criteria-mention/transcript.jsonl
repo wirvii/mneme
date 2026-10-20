@@ -1,0 +1,7 @@
+{"session_id":"s","subtype":"init","type":"system"}
+{"message":{"content":[{"text":"paso","type":"text"},{"id":"ta","input":{"id":"SPEC-001"},"name":"mcp__mneme__spec_status","type":"tool_use"}]},"type":"assistant"}
+{"message":{"content":[{"content":"ok","tool_use_id":"ta","type":"tool_result"}]},"type":"user"}
+{"message":{"content":[{"text":"paso","type":"text"},{"id":"tb","input":{"file_path":"/work/home/.mneme/workflows/skill-comply-fixture/specs/SPEC-001/criteria.toml"},"name":"Read","type":"tool_use"}]},"type":"assistant"}
+{"message":{"content":[{"content":"ok","tool_use_id":"tb","type":"tool_result"}]},"type":"user"}
+{"message":{"content":[{"text":"Aquí tienes la spec en general. ¿La apruebas?","type":"text"}]},"type":"assistant"}
+{"is_error":false,"num_turns":3,"result":"Aquí tienes la spec en general. ¿La apruebas?","subtype":"success","total_cost_usd":0.1234,"type":"result"}
