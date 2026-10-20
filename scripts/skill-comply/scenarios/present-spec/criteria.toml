@@ -1,0 +1,19 @@
+schema_version = 1
+
+[[criterion]]
+id = "C1"
+mode = "manual"
+text = "Reverse invierte por runas: la palabra camión se convierte en nóimac sin corromper la tilde."
+evidence_required = "Salida de la prueba table-driven."
+
+[[criterion]]
+id = "C2"
+mode = "manual"
+text = "La cadena vacía devuelve cadena vacía y no provoca pánico."
+evidence_required = "Salida de la prueba table-driven."
+
+[[criterion]]
+id = "C3"
+mode = "manual"
+text = "El paquete mantiene cobertura por encima del noventa por ciento."
+evidence_required = "Salida de go test -cover."
