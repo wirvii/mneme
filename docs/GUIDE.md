@@ -138,18 +138,12 @@ Public key distributed to API gateway, private key stays in auth service." \
 ### When NOT to save
 
 - Trivial observations that have no reuse value.
-- Information that will change within minutes (use `mem_checkpoint` instead).
+- Information that will change within minutes (use a partial `mem_session_end` instead).
 - Exact code snippets -- save the *decision* or *pattern*, not the code itself.
 
-### Using `mem_suggest_topic_key`
+### Topic keys and conflicts come back with the save
 
-If you are unsure what key to use, ask mneme:
-
-```json
-mem_suggest_topic_key({ "title": "Error handling strategy for API routes" })
-```
-
-It returns scored suggestions from existing keys (Jaccard similarity) and from knowledge gaps (unresolved wikilinks). A gap match means the project already expects this key.
+If you save without a `topic_key`, `mem_save` answers with a `suggested_topic_key` when the note looks like an update to an earlier one (existing keys, by similarity, and unresolved wikilink gaps). It also returns up to three `possible_conflicts`: notes that resemble the new one. The agent judges them in the same turn with `mem_update`, passing the ids in `supersedes`, `conflicts_with` or `unrelated_to`. `mneme mem ...` has the other memory tooling (stats, timeline, relate, forget, promote, gaps, explore).
 
 ---
 
@@ -529,14 +523,15 @@ not be used as a substitute.
 During long tasks, save periodic checkpoints to prevent knowledge loss on context compaction:
 
 ```json
-mem_checkpoint({
+mem_session_end({
+  "partial": true,
   "summary": "Halfway through database migration. Completed schema changes for users and orders tables.",
   "decisions": "Using pgx instead of database/sql for better PostgreSQL support.",
   "next_steps": "Migrate the products table, then update all repository methods."
 })
 ```
 
-Checkpoints are overwritten on each call (same `topic_key`), so they always reflect the latest state.
+A `partial` call is a checkpoint: it is overwritten on each call (same `topic_key`), so it always reflects the latest state, and it does not end the session.
 
 ### Session lifecycle in agents
 
@@ -549,7 +544,7 @@ Session start
 
 During work
   -> mem_save (decisions, discoveries, patterns)
-  -> mem_checkpoint (periodic state snapshots)
+  -> mem_session_end with partial:true (periodic state snapshots)
   -> mem_search (as needed)
 
 Session end
@@ -737,14 +732,14 @@ mneme team-memory enable      # activate: marker + bake/export + import hooks
 mneme promote <id>            # explicitly share one memory regardless of type
 ```
 
-### Slash commands
+### Slash commands and skills
+
+Procedures live in skills (`mneme-flow`, `feature`, `bug`, `trivial`, `review-brief`, `present-spec`, `grill-me`, `mneme-init`, `codegraph`; see [skills.md](skills.md)); an agent loads the one that fits. Two of them also have a slash command in Claude Code:
 
 | Command | What it does |
 |---------|--------------|
 | `/mneme-init` | Thin wrapper that invokes the `mneme-init` skill — the skill (not this command) is the single source of truth for the project-init workflow: scan the project, seed mneme with foundational knowledge from CLAUDE.md, package.json, go.mod, etc., and offer the per-project subagent + team-memory grills. |
 | `/grill-me` | Interview you relentlessly about a design, walking down every branch of the decision tree. |
-| `/hunt-bug` | Orchestrate the bug-hunter subagent against a bug report. |
-| `/bug-to-issue` | Convert a bug diagnosis into a spec via the architect. |
 
 ### Spec-Driven Development (SDD) lifecycle
 
@@ -857,11 +852,12 @@ spec_advance({ "id": "SPEC-042", "by": "architect" })
 
 ## 13. MCP Tools Cheatsheet
 
-The MCP server (`mneme mcp`) exposes 64 tools over JSON-RPC 2.0 stdio. This
-cheatsheet covers the original memory-tool surface; for the complete set
-(SDD, lane, codegraph, skills, model, conflicts, subagents) see [docs/api/](api/).
+The MCP server (`mneme mcp`) exposes 31 tools over JSON-RPC 2.0 stdio: 6
+memory, 6 backlog, 9 spec, 5 lane, 4 codegraph and `init`. Skills, models,
+conflicts, subagents, SDD files and the rest of the memory and graph tooling
+are CLI commands (`mneme --help`). Per-tool reference: [docs/api/](api/).
 
-### Memory tools (15)
+### Memory tools (6)
 
 | Tool | Required params | Key optional params | Purpose |
 |------|-----------------|---------------------|---------|
@@ -869,19 +865,12 @@ cheatsheet covers the original memory-tool surface; for the complete set
 | `mem_search` | `query` | `type`, `scope`, `limit`, `include_graph` | Hybrid search |
 | `mem_get` | `id` | -- | Retrieve by ID |
 | `mem_context` | -- | `budget`, `focus`, `project`, `include_graph` | Curated context |
-| `mem_update` | `id` | `title`, `content`, `type`, `importance`, `confidence`, `files` | Partial update |
-| `mem_session_end` | `summary` | `session_id`, `project` | End session + save summary |
-| `mem_suggest_topic_key` | `title` | `project` | Suggest topic_key for dedup |
-| `mem_relate` | `source`, `target`, `relation` | `source_kind`, `target_kind`, `weight`, `project` | Create/update graph relation |
-| `mem_timeline` | `around` | `window`, `limit`, `project` | Temporal neighborhood |
-| `mem_stats` | -- | `project` | Aggregate statistics |
-| `mem_checkpoint` | `summary` | `decisions`, `next_steps`, `project` | Save work-in-progress state |
-| `mem_forget` | `id` | `reason` | Mark for accelerated decay |
-| `mem_promote` | `id` | -- | Mark a memory as team-curated (`shared=2`) |
-| `mem_explore` | `seed` | `depth`, `budget`, `threshold`, `project` | BFS graph traversal |
-| `mem_gaps` | -- | `scope`, `limit`, `min_mentions`, `include_samples` | List unresolved wikilinks |
+| `mem_update` | `id` | `title`, `content`, `type`, `importance`, `confidence`, `files`, `supersedes`, `conflicts_with`, `unrelated_to`, `confirm` | Partial update, conflict judgment, review renewal |
+| `mem_session_end` | `summary` | `session_id`, `project`, `partial`, `decisions`, `next_steps` | End session + save summary, or checkpoint with `partial` |
 
-### Backlog tools (4)
+Stats, timeline, relate, forget, promote, gaps and explore are `mneme mem ...` CLI commands.
+
+### Backlog tools (6)
 
 | Tool | Required params | Key optional params | Purpose |
 |------|-----------------|---------------------|---------|
@@ -889,8 +878,10 @@ cheatsheet covers the original memory-tool surface; for the complete set
 | `backlog_list` | -- | `status`, `project` | List items |
 | `backlog_refine` | `id`, `refinement` | `by` | Append a refinement (raw or refined item, callable N times — SPEC-110) |
 | `backlog_promote` | `id` | -- | Promote to spec |
+| `backlog_get` | `id` | -- | Full description plus every refinement |
+| `backlog_archive` | `id`, `reason` | -- | Discard an item (freezes its spec) |
 
-### Spec tools (8)
+### Spec tools (9)
 
 | Tool | Required params | Key optional params | Purpose |
 |------|-----------------|---------------------|---------|
@@ -901,7 +892,8 @@ cheatsheet covers the original memory-tool surface; for the complete set
 | `spec_resolve` | `id`, `resolution` | -- | Resolve a pushback |
 | `spec_list` | -- | `status`, `project` | List specs |
 | `spec_quick` | `id`, `rationale`, `by` | -- | Trivial lane: draft -> implementing in one step |
-| `spec_reject` | `id`, `reason`, `by` | -- | Reject from qa/audit back to implementing |
+| `spec_reject` | `id`, `reason`, `by` | `findings` | Reject from qa/audit back to implementing (findings name declared criteria) |
+| `spec_doc_write` | `id`, `kind`, `content` | `section` | Write a spec document (`task` plus `section` for `tarea.md`) |
 
 ---
 
@@ -916,15 +908,9 @@ which mneme
 cd /path/to/mneme && make install
 ```
 
-### Build fails with "undefined: sqlite3"
+### Build problems
 
-CGO must be enabled and a C compiler must be available:
-
-```bash
-CGO_ENABLED=1 go build -tags fts5 -o mneme ./cmd/mneme
-```
-
-On macOS, install Xcode Command Line Tools: `xcode-select --install`.
+mneme is a pure-Go build: no CGO, no C compiler, no build tags. Use Go 1.25 or newer and run `make build` (or `go install github.com/wirvii/mneme/cmd/mneme@latest`).
 
 ### MCP server not connecting
 

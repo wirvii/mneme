@@ -678,7 +678,7 @@ mneme skills list --json
 ### mneme skills install
 
 ```bash
-mneme skills install example-skill --force
+mneme skills install grill-me --force
 ```
 
 | Flag | Default | Description |
@@ -688,8 +688,8 @@ mneme skills install example-skill --force
 ### mneme skills pin / unpin
 
 ```bash
-mneme skills pin example-skill
-mneme skills unpin example-skill
+mneme skills pin grill-me
+mneme skills unpin grill-me
 ```
 
 No flags.
@@ -697,7 +697,7 @@ No flags.
 ### mneme skills remove
 
 ```bash
-mneme skills remove example-skill --force
+mneme skills remove grill-me --force
 ```
 
 | Flag | Default | Description |
@@ -707,7 +707,7 @@ mneme skills remove example-skill --force
 ### mneme skills lint
 
 ```bash
-mneme skills lint example-skill
+mneme skills lint grill-me
 mneme skills lint --json   # lint all installed skills
 ```
 
@@ -720,7 +720,7 @@ mneme skills lint --json   # lint all installed skills
 Runs `validation/run.sh` (120s timeout).
 
 ```bash
-mneme skills validate example-skill --json
+mneme skills validate grill-me --json
 ```
 
 | Flag | Default | Description |
