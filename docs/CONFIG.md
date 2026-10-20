@@ -24,7 +24,6 @@ Para el sistema de reglas ver [RULES.md](RULES.md).
 - [`[spec]`](#spec)
 - [`[graph]`](#graph)
 - [`[suggestions]`](#suggestions)
-- [`[speech]`](#local-speech)
 - [Recetas de ajuste](#recetas-de-ajuste)
 - [Errores de validación](#errores-de-validación)
 - [Preguntas frecuentes](#preguntas-frecuentes)
@@ -404,42 +403,5 @@ El env gana. La prioridad es siempre: env > archivo > defecto.
 mneme config show graph --json | grep "graph_mode" -A4
 # muestra "env_var": "MNEME_GRAPH_MODE"
 ```
-# Local speech
 
-The optional `[speech]` section controls host-local spoken responses. Missing
-configuration always means disabled.
-
-```toml
-[speech]
-enabled = false
-mode = "brief"             # brief | full
-engine = "auto"            # auto | system | say | sapi | piper
-language = "auto"
-fallback_language = "es"
-rate = 1.0                  # 0.5 .. 2.0
-piper_model = ""
-piper_sha256 = ""
-
-[speech.voices]
-es = ""
-en = ""
-
-[speech.languages.es]
-engine = "system"
-voice = "Paulina"
-fallback_engine = "system"
-fallback_voice = "Paulina"
-```
-
-Use `mneme speech on|off` instead of editing `enabled` manually. Per-language
-preferences resolve in exact-locale, base-language, then `default` order.
-`fallback_engine`/`fallback_voice` are kept even though there is no
-engine-to-engine fallback at runtime anymore: they are the native engine and
-voice a retired or unservable preference degrades to (see below). See
-[speech.md](speech.md) for platform setup and privacy guarantees.
-
-A retired engine value from a pre-retirement mneme is never rejected by
-`Validate`: it is rewritten to a native engine automatically, with a
-warning, the first time the config is read or written — never an error. See
-[speech.md](speech.md#legacy-configuration-degrades-it-never-fails) for the
-exact rules and the CHANGELOG for the retired engine's name.
+`[speech]` (retirada en v2.0.0): se ignora si sigue en config.toml.

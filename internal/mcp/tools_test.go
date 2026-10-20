@@ -1,21 +1,23 @@
 package mcp
 
 import (
-	"encoding/json"
 	"strings"
 	"testing"
 )
 
-// TestAllTools_Count53 pins the integrated tool count. SPEC-158 took it from
-// 87 to 82; SPEC-163 retires 23 administration and git-native-SDD tools
-// (skills_*, model_*, conflicts_*, subagent_*, sdd_status, sdd_import): -23;
-// SPEC-165 moves six codegraph_* tools to the CLI (callees, explore, files,
-// node, status, trace): -6. 82 - 23 - 6 = 53. Later v2.0 specs subtract
-// their own delta from this figure.
-func TestAllTools_Count53(t *testing.T) {
+// TestAllTools_Count40 pins the integrated MCP surface. Deltas from the 87
+// tools before v2.0, one line per spec:
+//
+//	SPEC-158: -5  (quality_*)                                    87 -> 82
+//	SPEC-163: -23 (skills_*, model_*, conflicts_*, subagent_*, sdd_status, sdd_import)
+//	SPEC-165: -6  (codegraph_callees, explore, files, node, status, trace)
+//	SPEC-161: -2  (speech_*)
+//	SPEC-162: -11 (profile_*, project_new, app_add, scaffold_capture)
+//	82 - 23 - 6 - 2 - 11 = 40. Later specs adjust the number and append their delta.
+func TestAllTools_Count40(t *testing.T) {
 	tools := allTools()
-	if len(tools) != 53 {
-		t.Errorf("allTools() returned %d tools, want 53", len(tools))
+	if len(tools) != 40 {
+		t.Errorf("allTools() returned %d tools, want 40", len(tools))
 	}
 }
 
@@ -44,6 +46,43 @@ func TestAllTools_NoRetiredAdminTools(t *testing.T) {
 	}
 	if findTool(tools, "init") == nil {
 		t.Fatal("allTools() has no init tool — this test proves nothing without a positive anchor")
+	}
+}
+
+// TestAllTools_NoProfileFamily covers SPEC-162 C1: neither the team-profile
+// tools nor the project-template tools are declared any more. The positive
+// anchor keeps the test from passing vacuously. It deliberately asserts only
+// the absence of the 11 retired tools: the per-project subagent profile tools
+// are a different concept and their presence is not this test's business.
+func TestAllTools_NoProfileFamily(t *testing.T) {
+	retired := map[string]bool{"project_new": true, "app_add": true, "scaffold_capture": true}
+	seen := map[string]bool{}
+	for _, tool := range allTools() {
+		seen[tool.Name] = true
+		if strings.HasPrefix(tool.Name, "profile_") || retired[tool.Name] {
+			t.Errorf("allTools() still declares %q, want it retired", tool.Name)
+		}
+	}
+	if !seen["spec_advance"] {
+		t.Fatal("allTools() has no spec_advance — this test proves nothing without a positive anchor")
+	}
+}
+
+// TestAllTools_NoSpeechFamily covers SPEC-161 C1: no tool name starts with
+// speech_ any more. The positive anchor (spec_advance) keeps the test from
+// passing vacuously against an empty tool list.
+func TestAllTools_NoSpeechFamily(t *testing.T) {
+	sawSpecAdvance := false
+	for _, tool := range allTools() {
+		if tool.Name == "spec_advance" {
+			sawSpecAdvance = true
+		}
+		if strings.HasPrefix(tool.Name, "speech_") {
+			t.Errorf("allTools() still declares %q, want the speech_ family entirely retired", tool.Name)
+		}
+	}
+	if !sawSpecAdvance {
+		t.Fatal("allTools() has no spec_advance — this test proves nothing without a positive anchor")
 	}
 }
 
@@ -165,27 +204,6 @@ func TestBacklogRefineSchema_ByIsOptional(t *testing.T) {
 		if r == "by" {
 			t.Error("backlog_refine must NOT require 'by' — it is optional (D5)")
 		}
-	}
-}
-
-// TestSpeechEmitSchema_Unchanged is AC21/D20's other half: SPEC-129 changes
-// speech_emit's OUTPUT (queued/queue_position are new response fields, D15)
-// but must never touch its published INPUT schema — the queue-with-owner
-// redesign is entirely a server-side behaviour change. Byte-comparing the
-// marshaled schema pins that no property, requirement, or description drifted.
-func TestSpeechEmitSchema_Unchanged(t *testing.T) {
-	tools := allTools()
-	tool := findTool(tools, "speech_emit")
-	if tool == nil {
-		t.Fatal("speech_emit tool not found in allTools()")
-	}
-	got, err := json.Marshal(tool.InputSchema)
-	if err != nil {
-		t.Fatalf("marshal speech_emit InputSchema: %v", err)
-	}
-	want := `{"properties":{"disposition":{"enum":["emit","skip"],"type":"string"},"language":{"description":"Detected BCP-47 language or short locale such as es or en.","type":"string"},"mode":{"enum":["brief","full"],"type":"string"},"session_id":{"description":"Opaque session id supplied by the speech hook.","type":"string"},"text":{"description":"Useful spoken text; required for emit and omitted for skip.","type":"string"}},"required":["disposition","session_id"],"type":"object"}`
-	if string(got) != want {
-		t.Fatalf("speech_emit InputSchema changed:\ngot:  %s\nwant: %s", got, want)
 	}
 }
 

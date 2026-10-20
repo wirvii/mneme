@@ -28,12 +28,12 @@ if [ -f "$TEST_HOME/.mneme/global.db" ]; then
   leaked+=("$TEST_HOME/.mneme/global.db")
 fi
 
-# SPEC-091 §1 AC13: internal/profile's host-level store
-# (Config.ProfilesDir(), ~/.mneme/profiles) is filesystem, not SQLite — a
-# leak here would not show up in the two checks above. Every test that
-# touches profile.Store/service.ProfileService injects its own t.TempDir()
-# (or an isolated --data-dir), so this directory must never appear inside
-# the sandboxed HOME either.
+# SPEC-162: team profiles were retired, but `mneme upgrade` still offers to
+# delete the host-level <data_dir>/profiles directory they left behind. That
+# cleanup is filesystem, not SQLite, so a leak here would not show up in the
+# two checks above: every test of it injects its own t.TempDir() through the
+# upgradeDataDir seam, and this directory must never appear inside the
+# sandboxed HOME either.
 if [ -d "$TEST_HOME/.mneme/profiles" ]; then
   leaked+=("$TEST_HOME/.mneme/profiles")
 fi

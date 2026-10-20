@@ -302,11 +302,10 @@ This applies to `MemoryService.ListRules` (`mneme rule list`/`rule test`),
 `loadActiveRules` (`mem_context`'s rules phase), and — the surface with
 actual teeth, since it can `exit 2` and block a tool call — the
 `PreToolUse` hook's own SQL (`rulesQueryProject`/`rulesQueryGlobal`,
-`internal/cli/hook.go`). A profile's rules (`source=profile:<name>`) are
-additionally rejected at the write path
-(`SaveProfileRule` → `model.ErrProjectSlugRequired`) when no slug resolved,
-so the leak can no longer originate at all — see `docs/profiles.md` §8 for
-the full incident and fix.
+`internal/cli/hook.go`). The leak can no longer originate at all: a project-scoped
+rule written without a resolved slug is rejected at the write path. (Team
+profiles, which were the writer that exposed the incident, were retired in
+v2.0.0; rules they stamped with `source=profile:<name>` stay as ordinary rules.)
 
 ## How the hook works
 

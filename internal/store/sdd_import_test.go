@@ -539,7 +539,7 @@ func TestMarshalPreviousIDs_EmptyIsEmptyString(t *testing.T) {
 // Every method below sat under the 80% floor with its own error return
 // path unexercised. Rather than invent an artificial failure scenario,
 // these reuse the SAME technique already established in this package
-// (TestHardDeleteBySource_BeginTxErrorPropagates, memory_test.go): close
+// (closing the connection pool of the store under test): close
 // the real *sql.DB out from under the store first, then call the method —
 // a genuine driver-level failure (a closed connection pool is a real
 // production condition, not a fabricated one), not a synthetic one.

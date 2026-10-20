@@ -478,27 +478,33 @@ func TestImportFromShared_SkipsProfileProvenanceNote_NeverResurrectsZombie(t *te
 	}
 }
 
-// TestSaveProfileRule_ThenImport_NeverLeavesAnArtifactToResurrect is SPEC-094
-// §4 AC7: the full write->(no)->import round trip. SaveProfileRule under
+// TestProfileProvenance_ThenImport_NeverLeavesAnArtifactToResurrect is
+// SPEC-094 §4 AC7: the full write->(no)->import round trip. Saving a rule with
+// profile provenance (which pre-v2.0.0 profile activations did) under
 // active team-memory must not materialize a file (the write guard), so a
 // subsequent ImportFromShared finds nothing of profile provenance to import —
 // the exact cycle the zombie bug (§11) exploited is closed at both ends.
-func TestSaveProfileRule_ThenImport_NeverLeavesAnArtifactToResurrect(t *testing.T) {
+func TestProfileProvenance_ThenImport_NeverLeavesAnArtifactToResurrect(t *testing.T) {
 	svc, repoDir := newRepoTestService(t, true)
 	ctx := context.Background()
 
-	resp, err := svc.SaveProfileRule(ctx, model.SaveRequest{
+	notShared := 0
+	resp, err := svc.Save(ctx, model.SaveRequest{
 		Title:     "A profile-injected rule",
 		Content:   "Team standard rule.",
+		Type:      model.TypeRule,
+		Scope:     model.ScopeProject,
 		AppliesTo: []string{"**"},
-	}, "chatea-pro")
+		Source:    model.ProfileSourcePrefix + "chatea-pro",
+		Shared:    &notShared,
+	})
 	if err != nil {
-		t.Fatalf("SaveProfileRule: unexpected error: %v", err)
+		t.Fatalf("Save with profile provenance: unexpected error: %v", err)
 	}
 
 	path := sharedVaultFile(repoDir, resp.ID)
 	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
-		t.Fatalf("SaveProfileRule must never materialize a file, but found %s", path)
+		t.Fatalf("a profile-provenance save must never materialize a file, but found %s", path)
 	}
 
 	result, err := svc.ImportFromShared(ctx, repoDir)

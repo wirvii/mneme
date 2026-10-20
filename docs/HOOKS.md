@@ -208,7 +208,7 @@ project store whenever the cwd doesn't resolve a git-remote slug, and a
 project-scoped rule that landed there with no project used to be evaluated
 by this hook in **every repo on the host**, including a `severity=block`
 rule that had nothing to do with the repo currently being edited. See
-`docs/RULES.md`'s "Invariant R" section and `docs/profiles.md` §8 for the
+`docs/RULES.md`'s "Invariant R" section for the
 full incident and fix — `queryRulesFromDB` now takes the query as a
 parameter precisely so the project and global databases can be held to
 different scope filters.
@@ -786,9 +786,4 @@ performance.
 - [API reference: CLI](api/cli.md) → — full flag reference for `mneme hook <event>`
 # Spoken-response prompt hook
 
-`UserPromptSubmit` runs `mneme hook speech-prompt`. With speech disabled it is
-a silent no-op. With speech enabled it cancels prior audio, records the current
-session expectation, and injects the short `<mneme:speech>` contract that asks
-the agent to call `speech_emit` exactly once with useful prose or an explicit
-skip. A later prompt counts an unresolved expectation but never reads the raw
-assistant response as fallback.
+`speech-prompt`: retirado en v2.0.0; queda como no-op y `mneme install` borra su registro.

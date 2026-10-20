@@ -231,9 +231,10 @@ with `sdd_refs:` simply ignores the field (forward compatibility).
 
 ## Profile provenance exclusion (SPEC-094 §4)
 
-An [mneme profile](profiles.md) can inject its rules (commits/PRs/branches/
-conventions) as `rule` memories into the active repository's database
-(SPEC-092 §2, `SaveProfileRule`). Those rules carry a provenance stamp,
+Team profiles (retired in v2.0.0, SPEC-162) used to inject their rules
+(commits/PRs/branches/conventions) as `rule` memories into the active
+repository's database (SPEC-092 §2). Rows they stamped can still exist in a
+database and are still excluded from the vault. Those rules carry a provenance stamp,
 `source = "profile:<name>"`, distinguishing them from hand-authored
 knowledge. Team-memory treats provenance as an invariant, systemic exclusion
 from the shared vault — a profile's standard travels through **its own**

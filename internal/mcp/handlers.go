@@ -27,8 +27,6 @@ type handlers struct {
 	sdd         *service.SDDService
 	cgSvc       *service.CodeGraphService // lazy-initialized on first codegraph tool call
 	subagentSvc *service.SubagentService  // wraps svc; always available (SPEC-057/SS-4)
-	profileSvc  *service.ProfileService   // wraps cfg.ProfilesDir(); always available (SPEC-091 §1)
-	speechSvc   *service.SpeechService    // host-local speech control; always available
 	logger      *slog.Logger
 }
 
@@ -37,46 +35,10 @@ type handlers struct {
 // keep their types after SPEC-163 retired those tools from MCP so call sites
 // on branches integrating v2.0 in parallel keep compiling.
 func newHandlers(svc *service.MemoryService, sdd *service.SDDService, _ *service.SkillsService, _ *service.ModelsService, logger *slog.Logger) *handlers {
-	cfg := svc.Config()
-	subagentSvc := service.NewSubagentService(svc)
-
-	skillsDir := ""
-	codexSkillsDir := ""
-	if home, err := os.UserHomeDir(); err == nil {
-		skillsDir = filepath.Join(home, ".claude", "skills")
-		codexSkillsDir = filepath.Join(home, ".agents", "skills")
-	}
-
 	return &handlers{
-		svc:         svc,
-		sdd:         sdd,
-		subagentSvc: subagentSvc,
-		// noPrompt=true: MCP is an unattended agent session — a git credential
-		// prompt no human will see must fail fast instead of hanging the
-		// process (R1). The CLI frontend passes false instead (see
-		// internal/cli/profile.go's newProfileSvc).
-		// mem/sub/skillsDir/configPath wired (SPEC-093 §3) so profile_use can
-		// materialize (Activate) and profile_default can read/write
-		// [profiles].default — same wiring as the CLI's newActivatingProfileSvc.
-		profileSvc: service.NewProfileService(cfg.ProfilesDir(), true,
-			service.WithProfileMemoryService(svc),
-			service.WithProfileSubagentService(subagentSvc),
-			service.WithProfileSkillsDir(skillsDir),
-			service.WithProfileSkillMirrors(codexSkillsDir),
-			service.WithProfileConfigPath(config.DefaultPath()),
-			// SPEC-096 §6: parity with the CLI's SessionStart/newActivatingProfileSvc
-			// wiring — profile_use is not officially routed at the embedded
-			// default today, but every ProfileService construction that can
-			// call Activate stays consistently capable of a default
-			// activation.
-			service.WithDefaultProfileFS(install.DefaultProfileFS()),
-			// SPEC-098 §7a: project_new assembles a scaffold; wire the real
-			// bootstrapper so a monorepo scaffold (§7b) can run its pinned
-			// generator. A single-layout scaffold never touches it.
-			service.WithProfileBootstrapper(service.NewExecBootstrapper()),
-		),
-		speechSvc: service.NewSpeechService(config.DefaultPath(), cfg.Storage.DataDir),
-		logger:    logger,
+		svc:    svc,
+		sdd:    sdd,
+		logger: logger,
 	}
 }
 
@@ -96,10 +58,6 @@ func (h *handlers) handleToolCall(ctx context.Context, params ToolCallParams) (*
 	}
 
 	switch params.Name {
-	case "speech_emit":
-		return h.handleSpeechEmit(ctx, params.Arguments)
-	case "speech_control":
-		return h.handleSpeechControl(ctx, params.Arguments)
 	case "mem_save":
 		return h.handleMemSave(ctx, params.Arguments)
 	case "mem_search":
@@ -170,32 +128,6 @@ func (h *handlers) handleToolCall(ctx context.Context, params ToolCallParams) (*
 		return h.handleSpecReject(ctx, params.Arguments)
 	case "lane_stats":
 		return h.handleLaneStats(ctx, params.Arguments)
-
-	// --- PROFILE TOOLS (SPEC-091 §1, SPEC-095 §5) ---
-	case "profile_new":
-		return h.handleProfileNew(ctx, params.Arguments)
-	case "profile_add":
-		return h.handleProfileAdd(ctx, params.Arguments)
-	case "profile_update":
-		return h.handleProfileUpdate(ctx, params.Arguments)
-	case "profile_list":
-		return h.handleProfileList(ctx, params.Arguments)
-	case "profile_status":
-		return h.handleProfileStatus(ctx, params.Arguments)
-	case "profile_use":
-		return h.handleProfileUse(ctx, params.Arguments)
-	case "profile_default":
-		return h.handleProfileDefault(ctx, params.Arguments)
-	case "profile_deactivate":
-		return h.handleProfileDeactivate(ctx, params.Arguments)
-
-	// --- PROJECT TOOLS (SPEC-098 §7a) ---
-	case "project_new":
-		return h.handleProjectNew(ctx, params.Arguments)
-	case "app_add":
-		return h.handleAppAdd(ctx, params.Arguments)
-	case "scaffold_capture":
-		return h.handleScaffoldCapture(ctx, params.Arguments)
 
 	case "init":
 		return h.handleInit(ctx, params.Arguments)
@@ -705,9 +637,7 @@ func (h *handlers) mapServiceError(method string, err error) *JSONRPCError {
 		errors.Is(err, model.ErrBacklogNotFound) ||
 		errors.Is(err, model.ErrSpecNotFound) ||
 		errors.Is(err, model.ErrPushbackNotFound) ||
-		errors.Is(err, model.ErrSkillNotFound) ||
-		errors.Is(err, model.ErrProfileNotFound) ||
-		errors.Is(err, model.ErrScaffoldNotFound) {
+		errors.Is(err, model.ErrSkillNotFound) {
 		return &JSONRPCError{
 			Code:    CodeMemoryNotFound,
 			Message: fmt.Sprintf("mcp: handle %s: %s", method, err),
@@ -756,16 +686,6 @@ func (h *handlers) mapServiceError(method string, err error) *JSONRPCError {
 		errors.Is(err, model.ErrUnknownTaskSection) ||
 		errors.Is(err, model.ErrSectionNotApplicable) ||
 		errors.Is(err, model.ErrTaskDocMalformed) ||
-		errors.Is(err, model.ErrProfileExists) ||
-		errors.Is(err, model.ErrProfileNameMismatch) ||
-		errors.Is(err, model.ErrInvalidProfile) ||
-		errors.Is(err, model.ErrInvalidScaffold) ||
-		errors.Is(err, model.ErrBootstrapToolMissing) ||
-		errors.Is(err, model.ErrLayoutUnsupported) ||
-		errors.Is(err, model.ErrUnknownWiringAction) ||
-		errors.Is(err, model.ErrAppAddNotApplicable) ||
-		errors.Is(err, model.ErrProjectSlugRequired) ||
-		errors.Is(err, model.ErrProfileLockUnsupported) ||
 		errors.Is(err, model.ErrInvalidCriteria) ||
 		errors.Is(err, model.ErrCriteriaNotFound) ||
 		errors.Is(err, model.ErrFindingsRequired) ||
@@ -1828,6 +1748,13 @@ func (h *handlers) handleInit(ctx context.Context, raw json.RawMessage) (*ToolCa
 		h.logger.Warn("mcp: init: legacy quality files", "error", legacyQualityErr)
 	}
 
+	// Advisory-only in BOTH modes (SPEC-162): names the pin, lock and host
+	// store the retired team profiles left, but never deletes them.
+	legacyProfileFindings, legacyProfileErr := initSvc.LegacyProfileFindings(repoRoot, cfg.Storage.DataDir)
+	if legacyProfileErr != nil {
+		h.logger.Warn("mcp: init: legacy profile files", "error", legacyProfileErr)
+	}
+
 	// Drift detection.
 	findings, driftErr := initSvc.RunDrift(repoRoot)
 	if driftErr != nil {
@@ -1835,6 +1762,7 @@ func (h *handlers) handleInit(ctx context.Context, raw json.RawMessage) (*ToolCa
 	}
 	findings = append(findings, gitattrsFindings...)
 	findings = append(findings, legacyQualityFindings...)
+	findings = append(findings, legacyProfileFindings...)
 	for _, f := range findings {
 		result.DriftFindings = append(result.DriftFindings, f.String())
 	}

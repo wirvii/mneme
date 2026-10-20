@@ -63,11 +63,11 @@ func WriteCodexHooks(path string) error {
 		return fmt.Errorf("install: codex hooks: hooks key in %s is not an object", path)
 	}
 
-	// Patches to register: SessionStart plus opt-in speech prompt. Stop remains retired,
-	// see the package-level godoc above and Codex().RetiredHooks).
+	// Patches to register: SessionStart only. Stop and the spoken-response
+	// UserPromptSubmit hook (SPEC-161) remain retired, see the package-level
+	// godoc above and Codex().RetiredHooks).
 	patches := []HookPatch{
 		{Event: "SessionStart", Command: "mneme hook session-start"},
-		{Event: "UserPromptSubmit", Command: "mneme hook speech-prompt"},
 	}
 
 	for _, patch := range patches {

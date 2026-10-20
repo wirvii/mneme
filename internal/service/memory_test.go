@@ -2,6 +2,7 @@ package service_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -682,7 +683,7 @@ func TestListRules_Limit(t *testing.T) {
 
 // newTestServiceWithGlobalStore is like newTestService but also returns the
 // raw *store.MemoryStore backing globalStore, so a test can seed a row
-// directly (bypassing Save/SaveProfileRule's normal defaulting) — needed to
+// directly (bypassing Save's normal defaulting) — needed to
 // reproduce the scope=project/project=NULL leak SPEC-105 fixes: no normal
 // write path can create that shape anymore, but it is exactly what a
 // pre-fix repo's global.db already contains.
@@ -767,7 +768,7 @@ func TestListRules_StillServesOrgScopedRules(t *testing.T) {
 // TestListRules_SkipsProjectTierWithoutSlug verifies that a service with no
 // resolved project slug never queries the project tier for rules — there is
 // no project-scoped set to serve without a slug (DD8 layer 2, mirroring
-// SaveProfileRule's write-side guard).
+// the write-side guard that existed for profile rules).
 func TestListRules_SkipsProjectTierWithoutSlug(t *testing.T) {
 	projectDB, err := db.OpenMemory()
 	if err != nil {
@@ -802,5 +803,36 @@ func TestListRules_SkipsProjectTierWithoutSlug(t *testing.T) {
 		if r.Title == "Unscoped rule" {
 			t.Fatalf("expected the project tier to be skipped without a resolved slug, got %+v", r)
 		}
+	}
+}
+
+// TestMemSave_CannotForgeSource verifies the security boundary AC4 requires:
+// a SaveRequest built the way the public mem_save path builds it (from
+// caller-controlled JSON) can never carry a non-empty Source, because the
+// field is json:"-" and therefore never populated by json.Unmarshal —
+// regardless of what key the raw payload contains.
+func TestMemSave_CannotForgeSource(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+
+	raw := []byte(`{"title":"t","content":"c","source":"profile:evil"}`)
+	var req model.SaveRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if req.Source != "" {
+		t.Fatalf("expected Source to stay empty after unmarshaling attacker JSON, got %q", req.Source)
+	}
+
+	resp, err := svc.Save(ctx, req)
+	if err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	mem, err := svc.Get(ctx, resp.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if mem.Source != "" {
+		t.Errorf("Source: got %q, want empty — mem_save must never be able to set provenance", mem.Source)
 	}
 }

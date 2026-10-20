@@ -248,18 +248,6 @@ func TestGlobalDBPath(t *testing.T) {
 	}
 }
 
-// TestProfilesDir verifies that the profile store path is a "profiles"
-// sub-directory directly inside DataDir (SPEC-091 §1 AC4) — mirroring
-// GlobalDBPath/LogDir, no new TOML field or env var backs it.
-func TestProfilesDir(t *testing.T) {
-	cfg := Default()
-	got := cfg.ProfilesDir()
-	want := filepath.Join(cfg.Storage.DataDir, "profiles")
-	if got != want {
-		t.Errorf("ProfilesDir() = %q, want %q", got, want)
-	}
-}
-
 // TestValidate covers the validation rules documented on (*Config).Validate.
 func TestValidate(t *testing.T) {
 	tests := []struct {
@@ -1962,312 +1950,91 @@ subagent_containment = "off"
 	}
 }
 
-// --- SPEC-093 §3: [profiles].default -----------------------------------------
+// TestLoad_LegacySpeechSectionIgnored verifies SPEC-161: a config.toml that
+// still carries the retired [speech] section loads without error or warning
+// and the other sections are read normally.
+func TestLoad_LegacySpeechSectionIgnored(t *testing.T) {
+	const legacy = `[speech]
+enabled = true
+engine = "kokoro"
 
-// TestProfilesConfig_DefaultIsVanilla verifies Default() initialises
-// Profiles.Default to "" — the out-of-box OSS behaviour never changes.
-func TestProfilesConfig_DefaultIsVanilla(t *testing.T) {
-	cfg := Default()
-	if cfg.Profiles.Default != "" {
-		t.Errorf("Profiles.Default = %q, want empty (vanilla)", cfg.Profiles.Default)
-	}
-}
+[speech.languages.es]
+engine = "kokoro"
+voice = "ef_dora"
 
-func TestSpeechDefaultsAreOptIn(t *testing.T) {
-	cfg := Default()
-	if cfg.Speech.Enabled {
-		t.Fatal("speech must be disabled by default")
-	}
-	if cfg.Speech.Mode != "brief" || cfg.Speech.Engine != "auto" || cfg.Speech.Rate != 1.0 {
-		t.Fatalf("unexpected speech defaults: %+v", cfg.Speech)
-	}
-}
-
-func TestSpeechChecksumValidation(t *testing.T) {
-	cfg := Default()
-	cfg.Speech.PiperSHA256 = "xyz"
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("short checksum accepted")
-	}
-	cfg.Speech.PiperSHA256 = strings.Repeat("z", 64)
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("non-hex checksum accepted")
-	}
-	cfg.Speech.PiperSHA256 = strings.Repeat("a", 64)
-	if err := cfg.Validate(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestLoadWithoutSpeechSectionRemainsDisabled(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.toml")
-	if err := os.WriteFile(path, []byte("[profiles]\ndefault = \"team\"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := Load(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.Speech.Enabled || cfg.Speech.Mode != "brief" {
-		t.Fatalf("legacy config enabled speech: %+v", cfg.Speech)
-	}
-}
-
-func TestSetSpeechPreservesOtherSections(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.toml")
-	if err := os.WriteFile(path, []byte("[profiles]\ndefault = \"team\"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	speechCfg := Default().Speech
-	speechCfg.Enabled = true
-	if err := SetSpeech(path, speechCfg); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := Load(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !cfg.Speech.Enabled || cfg.Profiles.Default != "team" {
-		t.Fatalf("SetSpeech result: %+v", cfg)
-	}
-}
-
-// TestNormalizeSpeechEngines covers the four degradation rules of DD4: a
-// retired 'kokoro' engine is always rewritten to a native one, never left to
-// fail Validate, and a config with no retired value is left untouched.
-func TestNormalizeSpeechEngines(t *testing.T) {
+[models.overrides]
+backend = "opus"
+`
 	tests := []struct {
-		name          string
-		speech        SpeechConfig
-		wantSpeech    SpeechConfig
-		wantWarnCount int
+		name string
+		load func(path string) (*Config, error)
 	}{
-		{
-			name:          "R1 top-level engine",
-			speech:        SpeechConfig{Engine: "kokoro"},
-			wantSpeech:    SpeechConfig{Engine: "auto"},
-			wantWarnCount: 1,
-		},
-		{
-			name: "R2 owner's real config with fallback declared",
-			speech: SpeechConfig{
-				Languages: map[string]SpeechLanguageConfig{
-					"es": {Engine: "kokoro", Voice: "ef_dora", FallbackEngine: "system", FallbackVoice: "Paulina"},
-				},
-			},
-			wantSpeech: SpeechConfig{
-				Languages: map[string]SpeechLanguageConfig{
-					"es": {Engine: "system", Voice: "Paulina", FallbackEngine: "", FallbackVoice: ""},
-				},
-			},
-			wantWarnCount: 1,
-		},
-		{
-			name: "R3 no fallback declared",
-			speech: SpeechConfig{
-				Languages: map[string]SpeechLanguageConfig{
-					"es": {Engine: "kokoro", Voice: "ef_dora"},
-				},
-			},
-			wantSpeech: SpeechConfig{
-				Languages: map[string]SpeechLanguageConfig{
-					"es": {Engine: "", Voice: ""},
-				},
-			},
-			wantWarnCount: 1,
-		},
-		{
-			name: "R4 retired fallback_engine",
-			speech: SpeechConfig{
-				Languages: map[string]SpeechLanguageConfig{
-					"es": {Engine: "system", Voice: "Paulina", FallbackEngine: "kokoro", FallbackVoice: "ef_dora"},
-				},
-			},
-			wantSpeech: SpeechConfig{
-				Languages: map[string]SpeechLanguageConfig{
-					"es": {Engine: "system", Voice: "Paulina", FallbackEngine: "", FallbackVoice: ""},
-				},
-			},
-			wantWarnCount: 1,
-		},
-		{
-			name: "control: native engine is untouched",
-			speech: SpeechConfig{
-				Engine: "system",
-				Languages: map[string]SpeechLanguageConfig{
-					"es": {Engine: "say", Voice: "Paulina"},
-				},
-			},
-			wantSpeech: SpeechConfig{
-				Engine: "system",
-				Languages: map[string]SpeechLanguageConfig{
-					"es": {Engine: "say", Voice: "Paulina"},
-				},
-			},
-			wantWarnCount: 0,
-		},
+		{"Load", Load},
+		{"LoadWithOrigins", func(path string) (*Config, error) {
+			cfg, _, err := LoadWithOrigins(path)
+			return cfg, err
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			speech := tt.speech
-			warnings := NormalizeSpeechEngines(&speech)
-			if len(warnings) != tt.wantWarnCount {
-				t.Fatalf("warnings = %v, want %d", warnings, tt.wantWarnCount)
+			path := filepath.Join(t.TempDir(), "config.toml")
+			if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+				t.Fatal(err)
 			}
-			if speech.Engine != tt.wantSpeech.Engine {
-				t.Fatalf("Engine = %q, want %q", speech.Engine, tt.wantSpeech.Engine)
+			cfg, err := tt.load(path)
+			if err != nil {
+				t.Fatalf("load with legacy [speech]: %v", err)
 			}
-			for key, want := range tt.wantSpeech.Languages {
-				got := speech.Languages[key]
-				if got != want {
-					t.Fatalf("Languages[%q] = %+v, want %+v", key, got, want)
-				}
+			if got := cfg.Models.Overrides["backend"]; got != "opus" {
+				t.Errorf("Models.Overrides[backend] = %q, want opus", got)
 			}
 		})
 	}
 }
 
-// TestLoadDegradesLegacyKokoroConfig verifies the read frontier (AC4): a
-// config.toml written by a pre-retirement mneme with the owner's exact
-// real-world settings loads without error and degrades to native values.
-func TestLoadDegradesLegacyKokoroConfig(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.toml")
-	toml := `[speech]
-enabled = true
-mode = "brief"
-engine = "kokoro"
-rate = 1.0
+// TestLoad_LegacyProfilesSectionIgnored verifies SPEC-162: a config.toml that
+// still carries the retired [profiles] section — or an environment that still
+// sets MNEME_PROFILES_DEFAULT — loads without error and the other sections are
+// read normally.
+func TestLoad_LegacyProfilesSectionIgnored(t *testing.T) {
+	const legacy = `[profiles]
+default = "chatea-pro"
 
-[speech.languages.es]
-engine = "kokoro"
-voice = "ef_dora"
-fallback_engine = "system"
-fallback_voice = "Paulina"
+[models.overrides]
+backend = "opus"
 `
-	if err := os.WriteFile(path, []byte(toml), 0o600); err != nil {
-		t.Fatal(err)
+	tests := []struct {
+		name string
+		env  string
+		load func(path string) (*Config, error)
+	}{
+		{"Load", "", Load},
+		{"Load with env", "other", Load},
+		{"LoadWithOrigins", "", func(path string) (*Config, error) {
+			cfg, _, err := LoadWithOrigins(path)
+			return cfg, err
+		}},
+		{"LoadWithOrigins with env", "other", func(path string) (*Config, error) {
+			cfg, _, err := LoadWithOrigins(path)
+			return cfg, err
+		}},
 	}
-	cfg, err := Load(path)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if cfg.Speech.Engine != "auto" {
-		t.Fatalf("Speech.Engine = %q, want auto", cfg.Speech.Engine)
-	}
-	es := cfg.Speech.Languages["es"]
-	if es.Engine != "system" || es.Voice != "Paulina" {
-		t.Fatalf("Languages[es] = %+v", es)
-	}
-	if len(cfg.Warnings) != 2 {
-		t.Fatalf("Warnings = %v, want 2 entries", cfg.Warnings)
-	}
-}
-
-// TestLoadWithOriginsDegradesLegacyKokoroConfig is a regression test for a
-// third read frontier `Load` and `SetSpeech` didn't cover: LoadWithOrigins
-// duplicates Load's applyEnvOverrides -> Validate flow (it is the
-// implementation of `mneme config show`) but, before this fix, never called
-// NormalizeSpeechEngines — so a config.toml with a retired speech engine
-// made Validate reject it and `mneme config show` fail entirely, on any
-// section, exactly what D4 forbids. Mirrors
-// TestLoadDegradesLegacyKokoroConfig's fixture and assertions against
-// LoadWithOrigins instead of Load.
-func TestLoadWithOriginsDegradesLegacyKokoroConfig(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.toml")
-	toml := `[speech]
-enabled = true
-mode = "brief"
-engine = "kokoro"
-rate = 1.0
-
-[speech.languages.es]
-engine = "kokoro"
-voice = "ef_dora"
-fallback_engine = "system"
-fallback_voice = "Paulina"
-`
-	if err := os.WriteFile(path, []byte(toml), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cfg, _, err := LoadWithOrigins(path)
-	if err != nil {
-		t.Fatalf("LoadWithOrigins: %v", err)
-	}
-	if cfg.Speech.Engine != "auto" {
-		t.Fatalf("Speech.Engine = %q, want auto", cfg.Speech.Engine)
-	}
-	es := cfg.Speech.Languages["es"]
-	if es.Engine != "system" || es.Voice != "Paulina" {
-		t.Fatalf("Languages[es] = %+v", es)
-	}
-	if len(cfg.Warnings) != 2 {
-		t.Fatalf("Warnings = %v, want 2 entries", cfg.Warnings)
-	}
-}
-
-// TestSetSpeechDegradesKokoroOnWrite verifies the write frontier (AC9,
-// DD3/DD5): SetSpeech with a retired engine never errors, never persists
-// 'kokoro', and never persists the non-serialized Warnings field.
-func TestSetSpeechDegradesKokoroOnWrite(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.toml")
-	speechCfg := Default().Speech
-	speechCfg.Engine = "kokoro"
-	if err := SetSpeech(path, speechCfg); err != nil {
-		t.Fatal(err)
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(data), "kokoro") {
-		t.Fatalf("persisted config still contains kokoro:\n%s", data)
-	}
-	if strings.Contains(string(data), "warnings") {
-		t.Fatalf("persisted config leaked the Warnings field:\n%s", data)
-	}
-	cfg, err := Load(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.Speech.Engine != "auto" {
-		t.Fatalf("Speech.Engine = %q, want auto", cfg.Speech.Engine)
-	}
-}
-
-// TestProfilesConfig_EnvOverride verifies MNEME_PROFILES_DEFAULT overrides
-// both Default() and whatever the TOML file says.
-func TestProfilesConfig_EnvOverride(t *testing.T) {
-	t.Setenv("MNEME_PROFILES_DEFAULT", "chatea-pro")
-
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "config.toml")
-	if err := os.WriteFile(configPath, []byte("[profiles]\ndefault = \"other-profile\"\n"), 0o600); err != nil {
-		t.Fatalf("write config.toml: %v", err)
-	}
-
-	cfg, err := Load(configPath)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if cfg.Profiles.Default != "chatea-pro" {
-		t.Errorf("Profiles.Default = %q, want %q (env wins)", cfg.Profiles.Default, "chatea-pro")
-	}
-}
-
-// TestProfilesConfig_LoadFromTOML verifies the TOML file sets the default
-// when no env override is present.
-func TestProfilesConfig_LoadFromTOML(t *testing.T) {
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "config.toml")
-	if err := os.WriteFile(configPath, []byte("[profiles]\ndefault = \"chatea-pro\"\n"), 0o600); err != nil {
-		t.Fatalf("write config.toml: %v", err)
-	}
-
-	cfg, err := Load(configPath)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if cfg.Profiles.Default != "chatea-pro" {
-		t.Errorf("Profiles.Default = %q, want %q", cfg.Profiles.Default, "chatea-pro")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.env != "" {
+				t.Setenv("MNEME_PROFILES_DEFAULT", tt.env)
+			}
+			path := filepath.Join(t.TempDir(), "config.toml")
+			if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := tt.load(path)
+			if err != nil {
+				t.Fatalf("load with legacy [profiles]: %v", err)
+			}
+			if got := cfg.Models.Overrides["backend"]; got != "opus" {
+				t.Errorf("Models.Overrides[backend] = %q, want opus", got)
+			}
+		})
 	}
 }

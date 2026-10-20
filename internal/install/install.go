@@ -206,10 +206,6 @@ func ClaudeCode(binaryPath string) *Agent {
 					Command: "mneme hook session-start",
 				},
 				{
-					Event:   "UserPromptSubmit",
-					Command: "mneme hook speech-prompt",
-				},
-				{
 					Event:   "PostToolUse",
 					Matcher: "Skill",
 					Command: "mneme hook skill-usage",
@@ -225,6 +221,8 @@ func ClaudeCode(binaryPath string) *Agent {
 		// claude-code` run now actively removes the stale registration from
 		// ~/.claude/settings.json — convergent and idempotent (D5), matching
 		// what Hooks above no longer writes (see TestRetiredHooksDisjointFromHooks).
+		// SPEC-161 adds the "UserPromptSubmit" -> "mneme hook speech-prompt"
+		// registration of the retired spoken-response channel the same way.
 		RetiredHooks: func() (string, []HookPatch, error) {
 			home, err := os.UserHomeDir()
 			if err != nil {
@@ -235,6 +233,10 @@ func ClaudeCode(binaryPath string) *Agent {
 				{
 					Event:   "Stop",
 					Command: "mneme hook session-end",
+				},
+				{
+					Event:   "UserPromptSubmit",
+					Command: "mneme hook speech-prompt",
 				},
 			}
 			return path, patches, nil
@@ -603,6 +605,9 @@ func (a *Agent) installSteps(opts InstallOptions) []installStep {
 				}
 				if len(result.Skipped) > 0 {
 					parts = append(parts, fmt.Sprintf("pinned: %s", strings.Join(result.Skipped, ", ")))
+				}
+				if len(result.Removed) > 0 {
+					parts = append(parts, fmt.Sprintf("removed: %s", strings.Join(result.Removed, ", ")))
 				}
 				return strings.Join(parts, "; "), nil
 			},

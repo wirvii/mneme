@@ -271,119 +271,19 @@ var ErrSectionNotApplicable = errors.New("section is only valid with kind task")
 // Nothing is written in that case (SPEC-170).
 var ErrTaskDocMalformed = errors.New("tarea.md is malformed")
 
-// --- Profile sentinel errors (SPEC-091 §1) ---
-//
-// These mirror the internal/profile leaf's own sentinels (profile.ErrProfileExists,
-// profile.ErrProfileNotFound, profile.ErrProfileNameMismatch,
-// profile.ErrInvalidManifest, profile.ErrInvalidPin) — ProfileService translates
-// between the two so cli/mcp only ever need to import internal/model for
-// errors.Is comparisons, never internal/profile directly (the same posture
-// SkillsService/ConflictsService already establish for their own leaves).
-
-// ErrProfileExists is returned when `profile add` targets a name already
-// present in the host-level store and --force was not passed.
-var ErrProfileExists = errors.New("profile already installed")
-
-// ErrProfileNotFound is returned when `profile update` targets a name that is
-// not present in the host-level store.
-var ErrProfileNotFound = errors.New("profile not installed")
-
-// ErrProfileNameMismatch is returned when `profile add --name X` is given but
-// the cloned repository's manifest declares a different name — the store
-// directory must never disagree with the profile's own declared identity.
-var ErrProfileNameMismatch = errors.New("requested profile name does not match manifest name")
-
-// ErrInvalidProfile is returned when a profile manifest or pin fails
-// required-field or safe-slug validation.
-var ErrInvalidProfile = errors.New("invalid profile manifest or pin")
-
-// ErrProfileServiceNotConfigured is returned by ProfileService.Activate/
-// Switch/Deactivate when the caller did not wire the memory-service seam
-// (WithProfileMemoryService, SPEC-092 §2) a ProfileService needs to insert
-// or purge provenance-marked rule memories. A ProfileService constructed
-// only for the §1 surface (Add/Update/List/ResolvePin) never needs this seam
-// and is unaffected.
-var ErrProfileServiceNotConfigured = errors.New("profile service: memory/subagent seam not configured")
+// --- Profile provenance (retained after SPEC-162) ---
 
 // ErrProfileMemoryNotShareable is returned by Promote (mem_promote / mneme
 // promote) when the target memory carries profile provenance
 // (IsProfileSource(m.Source) — SPEC-094 §4). A profile's rules are
 // derived/regenerable from the profile's own repository (SPEC-092): the
 // team's standard travels through that channel, never through this
-// project's team-memory vault. Promoting one would duplicate the source of
-// truth and let the rule resurrect as a zombie the next time a peer imports
-// the vault, after a profile switch already purged the row. Rejected before
+// project's team-memory vault. Team profiles were retired in v2.0.0
+// (SPEC-162) but rows they stamped may still exist in a database, and
+// promoting one would let the rule resurrect as a zombie the next time a
+// peer imports the vault. Rejected before
 // the row is touched — silently no-op'ing would hide an operator error.
 var ErrProfileMemoryNotShareable = errors.New("profile-provenance memory cannot be promoted to team-shared")
-
-// ErrDefaultProfileUnavailable is returned by ProfileService.Activate/
-// DefaultManifest when a PinDefault activation is attempted (or the default
-// profile's manifest is requested) but no embedded default profile fs.FS was
-// injected via WithDefaultProfileFS (SPEC-096 §6). This should never happen
-// in a correctly built binary — install.DefaultProfileFS() is always wired
-// by every production frontend — so seeing this in practice points at a
-// ProfileService constructed by hand (e.g. a test) that forgot the option.
-var ErrDefaultProfileUnavailable = errors.New("profile service: default profile fs.FS not configured")
-
-// --- Scaffold sentinel errors (SPEC-098 §7a) ---
-//
-// These mirror the internal/profile leaf's scaffold sentinels
-// (profile.ErrInvalidLayout/ErrInvalidToolchain/ErrBootstrapNotPinned/
-// ErrInvalidScaffold/ErrScaffoldNotFound/ErrLayoutUnsupported) plus one the
-// service itself raises (ErrBootstrapToolMissing) — ProfileService translates
-// between the two so cli/mcp only ever import internal/model for errors.Is.
-
-// ErrInvalidScaffold is returned when a scaffold.toml fails schema validation
-// (bad layout/toolchain, an unpinned bootstrap, or single-layout exclusivity).
-var ErrInvalidScaffold = errors.New("invalid scaffold definition")
-
-// ErrScaffoldNotFound is returned when `project new <scaffold>` names a
-// scaffold absent from the active profile's catalog (or the active profile has
-// no scaffolds at all).
-var ErrScaffoldNotFound = errors.New("scaffold not found in active profile")
-
-// ErrBootstrapToolMissing is returned when a scaffold's pinned bootstrap
-// generator cannot run because the package runner (pnpm/npx) is not on PATH —
-// an actionable environment precondition, never a panic (analogous to
-// ErrCLIUnavailable for conflicts).
-var ErrBootstrapToolMissing = errors.New("scaffold bootstrap tool not found on PATH")
-
-// ErrLayoutUnsupported is returned when a project scaffold uses a layout not
-// yet assembled by the current mneme.
-var ErrLayoutUnsupported = errors.New("scaffold layout not yet supported")
-
-// ErrUnknownWiringAction is returned when a custom-toolchain scaffold's
-// [wiring].on_add declares a verb outside the closed vocabulary
-// (workspace:/json-merge:/copy:) — a parse-time fail-fast (SPEC-099 §7b).
-var ErrUnknownWiringAction = errors.New("unknown scaffold wiring action")
-
-// ErrAppAddNotApplicable is returned when `mneme app add` targets a scaffold
-// whose layout has no composable-app notion — today a single layout (SPEC-099
-// §7b). Adding an app to it simply does not apply.
-var ErrAppAddNotApplicable = errors.New("app add does not apply to this scaffold layout")
-
-// ErrNothingToCapture is returned when `mneme scaffold capture <repo>` finds no
-// capturable content in the exemplar repository — an empty directory, or one
-// holding only VCS/dependency noise (.git, node_modules) with no files, apps,
-// or packages worth turning into a scaffold (SPEC-100 §7c).
-var ErrNothingToCapture = errors.New("nothing to capture from the exemplar repository")
-
-// --- Profile reconciliation sentinel errors (SPEC-105) ---
-
-// ErrProjectSlugRequired is returned by SaveProfileRule when the service did
-// not resolve a project slug: a profile rule is scope=project by definition,
-// and a project-scoped row with no project is served in EVERY repo on the
-// host (the exact cross-repo leak SPEC-105 fixes). Rejected before the row is
-// written; the caller degrades and reports the omission — it is never
-// persisted "provisionally".
-var ErrProjectSlugRequired = errors.New("profile rules require a resolved project slug")
-
-// ErrProfileLockUnsupported is returned when .mneme/profile.lock declares a
-// schema_version newer than this binary understands: an activation whose
-// record cannot be read safely cannot be undone safely either, so
-// Reconcile/Deactivate refuse to mutate anything and surface this sentinel
-// with the remedy (`mneme upgrade`) instead.
-var ErrProfileLockUnsupported = errors.New("profile lock written by a newer mneme")
 
 // --- Criteria sentinel errors (SPEC-156) ---
 

@@ -17,7 +17,7 @@ import (
 var validConfigSections = []string{
 	"storage", "search", "context", "consolidation", "decay",
 	"mcp", "embedding", "personal", "workflow", "delegation",
-	"spec", "graph", "suggestions", "speech",
+	"spec", "graph", "suggestions",
 }
 
 // newConfigCmd returns the "mneme config" subcommand group. It provides

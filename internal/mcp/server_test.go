@@ -212,7 +212,6 @@ func TestToolsList(t *testing.T) {
 	unmarshalResult(t, resp, &result)
 
 	wantNames := []string{
-		"speech_emit", "speech_control",
 		"mem_save", "mem_search", "mem_get", "mem_context",
 		"mem_update", "mem_session_end", "mem_suggest_topic_key",
 		"mem_relate", "mem_timeline", "mem_stats", "mem_checkpoint", "mem_forget", "mem_promote",
@@ -228,13 +227,6 @@ func TestToolsList(t *testing.T) {
 		"mem_explore",
 		// Codegraph tools
 		"codegraph_search", "codegraph_context", "codegraph_callers", "codegraph_impact",
-		// Profile tools (SPEC-091 §1 + SPEC-093 §3 + SPEC-095 §5 + SPEC-105 DD21)
-		"profile_new", "profile_add", "profile_update", "profile_list", "profile_status",
-		"profile_use", "profile_default", "profile_deactivate",
-		// Project tools (SPEC-098 §7a + SPEC-099 §7b)
-		"project_new", "app_add",
-		// Scaffold tool (SPEC-100 §7c)
-		"scaffold_capture",
 		// Init tool (SPEC-041)
 		"init",
 	}
@@ -562,9 +554,8 @@ func TestMemPromote_NotFound(t *testing.T) {
 // come back as CodeInvalidParams — an operator error, not an internal
 // failure — carrying model.ErrProfileMemoryNotShareable's message. There is
 // no public MCP tool that stamps profile provenance (mem_save's Source field
-// is json:"-"), so this seeds the row directly via the underlying
-// MemoryService.SaveProfileRule, exactly as a real profile activation would
-// (SPEC-092 §2).
+// is json:"-"), so this seeds the row from Go, the way a profile activation
+// of a pre-v2.0.0 mneme stamped it (SPEC-092 §2).
 func TestMemPromote_ProfileProvenance_RejectedAsInvalidParams(t *testing.T) {
 	projectDB, err := db.OpenMemory()
 	if err != nil {
@@ -580,13 +571,18 @@ func TestMemPromote_ProfileProvenance_RejectedAsInvalidParams(t *testing.T) {
 	svc := service.NewMemoryService(store.NewMemoryStore(projectDB), store.NewMemoryStore(globalDB), config.Default(), "test-project", embed.NopEmbedder{})
 	srv := NewServer(svc, nil, nil, nil, slog.Default(), "all", "test")
 
-	saveResp, err := svc.SaveProfileRule(t.Context(), model.SaveRequest{
+	notShared := 0
+	saveResp, err := svc.Save(t.Context(), model.SaveRequest{
 		Title:     "A profile-injected rule",
 		Content:   "Team standard rule.",
+		Type:      model.TypeRule,
+		Scope:     model.ScopeProject,
 		AppliesTo: []string{"**"},
-	}, "chatea-pro")
+		Source:    model.ProfileSourcePrefix + "chatea-pro",
+		Shared:    &notShared,
+	})
 	if err != nil {
-		t.Fatalf("SaveProfileRule: unexpected error: %v", err)
+		t.Fatalf("Save with profile provenance: unexpected error: %v", err)
 	}
 
 	resp := process(t, srv, "tools/call", 1, ToolCallParams{
@@ -786,18 +782,24 @@ func TestUnknownMethod(t *testing.T) {
 }
 
 func TestUnknownTool(t *testing.T) {
-	srv := newTestServer(t)
+	// speech_emit is a retired tool (SPEC-161): it must be indistinguishable
+	// from any other unknown name.
+	for _, name := range []string{"mem_does_not_exist", "speech_emit", "speech_control"} {
+		t.Run(name, func(t *testing.T) {
+			srv := newTestServer(t)
 
-	resp := process(t, srv, "tools/call", 1, ToolCallParams{
-		Name:      "mem_does_not_exist",
-		Arguments: mustMarshal(t, map[string]any{}),
-	})
+			resp := process(t, srv, "tools/call", 1, ToolCallParams{
+				Name:      name,
+				Arguments: mustMarshal(t, map[string]any{}),
+			})
 
-	if resp.Error == nil {
-		t.Fatal("expected JSON-RPC error for unknown tool, got nil")
-	}
-	if resp.Error.Code != CodeMethodNotFound {
-		t.Errorf("error code = %d, want %d (CodeMethodNotFound)", resp.Error.Code, CodeMethodNotFound)
+			if resp.Error == nil {
+				t.Fatal("expected JSON-RPC error for unknown tool, got nil")
+			}
+			if resp.Error.Code != CodeMethodNotFound {
+				t.Errorf("error code = %d, want %d (CodeMethodNotFound)", resp.Error.Code, CodeMethodNotFound)
+			}
+		})
 	}
 }
 

@@ -175,11 +175,6 @@ in a local SQLite database and exposes them via MCP for agent integration.`,
 		newSubagentsCmd(),
 		newDelegationHookCmd(),
 		newTeamMemoryCmd(),
-		newProfileCmd(),
-		newProjectCmd(),
-		newAppCmd(),
-		newScaffoldCmd(),
-		newSpeechCmd(),
 		newSDDCmd(),
 	)
 

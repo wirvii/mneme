@@ -41,8 +41,9 @@ func findMnemeInitSkillCopies(t *testing.T) []string {
 	if err != nil {
 		t.Fatalf("walk %s: %v", assetsDir, err)
 	}
-	if len(found) < 2 {
-		t.Fatalf("expected at least 2 copies of mneme-init/SKILL.md under %s, found %d: %v", assetsDir, len(found), found)
+	// SPEC-162 deleted the embedded default profile, which held the second copy.
+	if len(found) < 1 {
+		t.Fatalf("expected at least 1 copy of mneme-init/SKILL.md under %s, found %d: %v", assetsDir, len(found), found)
 	}
 	return found
 }

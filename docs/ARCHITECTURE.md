@@ -737,10 +737,7 @@ index|search|node|callers|callees|impact|trace|files|status|hooks`, `skills
 list|install|pin|unpin|remove|lint|validate`, `model list|set|reset`,
 `conflicts candidates|scan|link|unlink|list`, `subagents
 fingerprint|profile|compose|write|manifest-list`, `delegation-hook
-enable|disable|status`, `team-memory enable|hooks`, `profile
-new|add|update|list|status|use|default|deactivate`, `project new`, `app add`,
-`scaffold capture`,
-`speech on|off|stop|status|voices|voice|mode|test|setup`. Full flag reference:
+enable|disable|status`, `team-memory enable|hooks`. Full flag reference:
 [docs/api/cli.md](api/cli.md).
 
 ### Hooks (`internal/cli/hook.go`)
