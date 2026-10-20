@@ -96,108 +96,30 @@ func TestFilesFromEmbed_Templates(t *testing.T) {
 	}
 }
 
-// codegraphPolicyNoBash is the canonical codegraph-first exploration policy block
-// for agents that do NOT have Bash in their toolset (architect, qa-tester).
-// It is the authoritative source of truth for TestAgentsCodegraphPolicy.
-const codegraphPolicyNoBash = `<!-- mneme:codegraph-policy:start -->
-## Exploracion de codigo: grafo primero
+// codegraphPolicy is the canonical optional code-graph policy block shared by
+// every bundled agent (SPEC-165 replaced the three mandatory, toolset-specific
+// variants of SPEC-045). It is the authoritative source for
+// TestAgentsCodegraphPolicy.
+const codegraphPolicy = `<!-- mneme:codegraph-policy:start -->
+## Grafo de codigo (opcional)
 
-OBLIGATORIO: cuando este proyecto tiene un grafo de codigo indexado (mneme
-codegraph), DEBES consultar el grafo ANTES de usar Read o Grep para ENTENDER el
-codigo —su estructura, quien llama a que, el impacto de un cambio, o donde vive
-un simbolo. Consulta PRIMERO las tools del grafo:
+Si este proyecto tiene un grafo de codigo indexado (` + "`" + `mneme codegraph status` + "`" + `), puede
+ahorrarte lecturas en preguntas de estructura: ` + "`" + `codegraph_search` + "`" + ` (donde vive un
+simbolo), ` + "`" + `codegraph_context` + "`" + ` (definicion + relaciones), ` + "`" + `codegraph_callers` + "`" + ` (quien lo
+llama), ` + "`" + `codegraph_impact` + "`" + ` (que se ve afectado). Las demas consultas van por la CLI
+(` + "`" + `mneme codegraph callees|trace|node|explore|files|status` + "`" + `) si tienes Bash. Cuando
+conviene y cuando no: skill ` + "`" + `codegraph` + "`" + `.
 
-- ` + "`" + `codegraph_search` + "`" + `   — encontrar simbolos por nombre o concepto
-- ` + "`" + `codegraph_context` + "`" + `  — vecindario de un simbolo (definicion + relaciones)
-- ` + "`" + `codegraph_callers` + "`" + `  — quien llama a un simbolo
-- ` + "`" + `codegraph_callees` + "`" + `  — a quien llama un simbolo
-- ` + "`" + `codegraph_impact` + "`" + `   — que se ve afectado si cambias un simbolo
-- ` + "`" + `codegraph_trace` + "`" + `    — caminos entre dos simbolos
-
-Cae a Read/Grep SOLO si: el grafo no cubre la pregunta, esta desactualizado
-(stale), o el repo no esta indexado. Para leer el contenido literal de un archivo
-que YA localizaste, Read es lo correcto.
-
-Aviso de cobertura: ` + "`" + `codegraph_search` + "`" + `, ` + "`" + `codegraph_context` + "`" + ` y ` + "`" + `codegraph_callers` + "`" + `
-son fiables. En cambio ` + "`" + `codegraph_impact` + "`" + ` y ` + "`" + `codegraph_callees` + "`" + ` pueden estar
-INCOMPLETOS: el grafo no capta de forma fiable method-calls (` + "`" + `x.Foo()` + "`" + `) ni
-llamadas cross-package/stdlib. Para un analisis de impacto EXHAUSTIVO antes de un
-refactor, complementa con ` + "`" + `Grep` + "`" + `/` + "`" + `Read` + "`" + ` — no asumas que "nadie llama a X" solo
-porque el grafo no lo muestre.
-<!-- mneme:codegraph-policy:end -->`
-
-// codegraphPolicyWithBash is the canonical codegraph-first exploration policy block
-// for agents that have Bash in their toolset (backend, frontend, bug-hunter).
-// It extends codegraphPolicyNoBash with a clause forbidding Bash for code navigation.
-const codegraphPolicyWithBash = `<!-- mneme:codegraph-policy:start -->
-## Exploracion de codigo: grafo primero
-
-OBLIGATORIO: cuando este proyecto tiene un grafo de codigo indexado (mneme
-codegraph), DEBES consultar el grafo ANTES de usar Read o Grep para ENTENDER el
-codigo —su estructura, quien llama a que, el impacto de un cambio, o donde vive
-un simbolo. Consulta PRIMERO las tools del grafo:
-
-- ` + "`" + `codegraph_search` + "`" + `   — encontrar simbolos por nombre o concepto
-- ` + "`" + `codegraph_context` + "`" + `  — vecindario de un simbolo (definicion + relaciones)
-- ` + "`" + `codegraph_callers` + "`" + `  — quien llama a un simbolo
-- ` + "`" + `codegraph_callees` + "`" + `  — a quien llama un simbolo
-- ` + "`" + `codegraph_impact` + "`" + `   — que se ve afectado si cambias un simbolo
-- ` + "`" + `codegraph_trace` + "`" + `    — caminos entre dos simbolos
-
-Cae a Read/Grep SOLO si: el grafo no cubre la pregunta, esta desactualizado
-(stale), o el repo no esta indexado. Para leer el contenido literal de un archivo
-que YA localizaste, Read es lo correcto.
-
-Aviso de cobertura: ` + "`" + `codegraph_search` + "`" + `, ` + "`" + `codegraph_context` + "`" + ` y ` + "`" + `codegraph_callers` + "`" + `
-son fiables. En cambio ` + "`" + `codegraph_impact` + "`" + ` y ` + "`" + `codegraph_callees` + "`" + ` pueden estar
-INCOMPLETOS: el grafo no capta de forma fiable method-calls (` + "`" + `x.Foo()` + "`" + `) ni
-llamadas cross-package/stdlib. Para un analisis de impacto EXHAUSTIVO antes de un
-refactor, complementa con ` + "`" + `Grep` + "`" + `/` + "`" + `Read` + "`" + ` — no asumas que "nadie llama a X" solo
-porque el grafo no lo muestre.
-
-NO uses ` + "`" + `Bash` + "`" + ` (grep/cat/find/rg/head/tail) para navegar o entender la estructura
-del codigo: eso lo resuelven las tools del grafo y Read/Grep nativos. Reserva Bash
-para build, test, git y operaciones —no para explorar codigo.
-<!-- mneme:codegraph-policy:end -->`
-
-// codegraphPolicyDiagnostician is the canonical codegraph-first exploration policy
-// block for the diagnostician agent. It has Bash but distinguishes code exploration
-// (use codegraph) from log/infra reading (Bash remains valid).
-const codegraphPolicyDiagnostician = `<!-- mneme:codegraph-policy:start -->
-## Exploracion de codigo: grafo primero
-
-OBLIGATORIO: cuando este proyecto tiene un grafo de codigo indexado (mneme
-codegraph), DEBES consultar el grafo ANTES de usar Read o Grep para ENTENDER el
-codigo —su estructura, quien llama a que, el impacto de un cambio, o donde vive
-un simbolo. Consulta PRIMERO las tools del grafo:
-
-- ` + "`" + `codegraph_search` + "`" + `   — encontrar simbolos por nombre o concepto
-- ` + "`" + `codegraph_context` + "`" + `  — vecindario de un simbolo (definicion + relaciones)
-- ` + "`" + `codegraph_callers` + "`" + `  — quien llama a un simbolo
-- ` + "`" + `codegraph_callees` + "`" + `  — a quien llama un simbolo
-- ` + "`" + `codegraph_impact` + "`" + `   — que se ve afectado si cambias un simbolo
-- ` + "`" + `codegraph_trace` + "`" + `    — caminos entre dos simbolos
-
-Cae a Read/Grep SOLO si: el grafo no cubre la pregunta, esta desactualizado
-(stale), o el repo no esta indexado. Para leer el contenido literal de un archivo
-que YA localizaste, Read es lo correcto.
-
-Aviso de cobertura: ` + "`" + `codegraph_search` + "`" + `, ` + "`" + `codegraph_context` + "`" + ` y ` + "`" + `codegraph_callers` + "`" + `
-son fiables. En cambio ` + "`" + `codegraph_impact` + "`" + ` y ` + "`" + `codegraph_callees` + "`" + ` pueden estar
-INCOMPLETOS: el grafo no capta de forma fiable method-calls (` + "`" + `x.Foo()` + "`" + `) ni
-llamadas cross-package/stdlib. Para un analisis de impacto EXHAUSTIVO antes de un
-refactor, complementa con ` + "`" + `Grep` + "`" + `/` + "`" + `Read` + "`" + ` — no asumas que "nadie llama a X" solo
-porque el grafo no lo muestre.
-
-NO uses ` + "`" + `Bash` + "`" + ` (grep/cat/find/rg) para navegar o entender la estructura del CODIGO
-—usa las tools del grafo. Bash sigue siendo tu herramienta para leer LOGS, infra y
-diagnostico operacional (ver ` + "`" + `## Permisos de Bash` + "`" + `): esa exploracion no cambia.
+Aviso de cobertura: ` + "`" + `codegraph_impact` + "`" + ` puede estar INCOMPLETO (method-calls ` + "`" + `x.Foo()` + "`" + `,
+llamadas cross-package/stdlib). Para un impacto exhaustivo antes de un refactor,
+complementa con Grep/Read.
 <!-- mneme:codegraph-policy:end -->`
 
 // TestAgentsCodegraphPolicy verifies that every embedded agent file contains the
-// canonical codegraph-first exploration policy block (SPEC-045). The test fails
-// as soon as any asset diverges from its expected canonical variant, providing
-// anti-drift protection after edits to the agent assets.
+// canonical optional code-graph policy block (SPEC-045, made optional by
+// SPEC-165) and no longer names the tools that moved to the CLI. The test
+// fails as soon as any asset diverges, providing anti-drift protection after
+// edits to the agent assets.
 func TestAgentsCodegraphPolicy(t *testing.T) {
 	destDir := t.TempDir()
 
@@ -206,14 +128,14 @@ func TestAgentsCodegraphPolicy(t *testing.T) {
 		t.Fatalf("filesFromEmbed returned error: %v", err)
 	}
 
-	// Map each agent basename to its expected canonical policy block.
+	// All six agents carry the same block.
 	canonicalPolicy := map[string]string{
-		"architect.md":     codegraphPolicyNoBash,
-		"qa-tester.md":     codegraphPolicyNoBash,
-		"backend.md":       codegraphPolicyWithBash,
-		"frontend.md":      codegraphPolicyWithBash,
-		"bug-hunter.md":    codegraphPolicyWithBash,
-		"diagnostician.md": codegraphPolicyDiagnostician,
+		"architect.md":     codegraphPolicy,
+		"qa-tester.md":     codegraphPolicy,
+		"backend.md":       codegraphPolicy,
+		"frontend.md":      codegraphPolicy,
+		"bug-hunter.md":    codegraphPolicy,
+		"diagnostician.md": codegraphPolicy,
 	}
 
 	// All 6 agents must be covered — fail if the set changes without updating this test.
@@ -230,6 +152,11 @@ func TestAgentsCodegraphPolicy(t *testing.T) {
 			t.Errorf("agent %q: codegraph policy block does not match canonical.\n"+
 				"Expected to find:\n%s\n\nGot content (first 500 bytes):\n%.500s",
 				base, expected, content)
+		}
+		for _, retired := range []string{"codegraph_callees", "codegraph_trace", "OBLIGATORIO: cuando este proyecto tiene un grafo"} {
+			if strings.Contains(content, retired) {
+				t.Errorf("agent %q still contains retired policy text %q", base, retired)
+			}
 		}
 	}
 
