@@ -208,7 +208,7 @@ families have **no HTTP route at all**:
 | `backlog_*` | 5 | -- | Not implemented |
 | `spec_*` | 8 | -- | Not implemented |
 | `lane_*` | 5 | -- | Not implemented |
-| `codegraph_*` | 10 | -- | Not implemented |
+| `codegraph_*` | 4 | -- | Not implemented |
 | `init` | 1 | -- | Not implemented |
 
 Before adding a new service capability, decide explicitly whether HTTP gets

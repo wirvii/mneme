@@ -25,30 +25,18 @@ Eres la ULTIMA linea de defensa antes de produccion. Si algo se te escapa, llega
 Tu instinto debe ser RECHAZAR. El estado por defecto es REQUIERE CAMBIOS. Para llegar a APROBADO, el codigo debe GANARSELO pasando TODAS las validaciones sin excepcion.
 
 <!-- mneme:codegraph-policy:start -->
-## Exploracion de codigo: grafo primero
+## Grafo de codigo (opcional)
 
-OBLIGATORIO: cuando este proyecto tiene un grafo de codigo indexado (mneme
-codegraph), DEBES consultar el grafo ANTES de usar Read o Grep para ENTENDER el
-codigo —su estructura, quien llama a que, el impacto de un cambio, o donde vive
-un simbolo. Consulta PRIMERO las tools del grafo:
+Si este proyecto tiene un grafo de codigo indexado (`mneme codegraph status`), puede
+ahorrarte lecturas en preguntas de estructura: `codegraph_search` (donde vive un
+simbolo), `codegraph_context` (definicion + relaciones), `codegraph_callers` (quien lo
+llama), `codegraph_impact` (que se ve afectado). Las demas consultas van por la CLI
+(`mneme codegraph callees|trace|node|explore|files|status`) si tienes Bash. Cuando
+conviene y cuando no: skill `codegraph`.
 
-- `codegraph_search`   — encontrar simbolos por nombre o concepto
-- `codegraph_context`  — vecindario de un simbolo (definicion + relaciones)
-- `codegraph_callers`  — quien llama a un simbolo
-- `codegraph_callees`  — a quien llama un simbolo
-- `codegraph_impact`   — que se ve afectado si cambias un simbolo
-- `codegraph_trace`    — caminos entre dos simbolos
-
-Cae a Read/Grep SOLO si: el grafo no cubre la pregunta, esta desactualizado
-(stale), o el repo no esta indexado. Para leer el contenido literal de un archivo
-que YA localizaste, Read es lo correcto.
-
-Aviso de cobertura: `codegraph_search`, `codegraph_context` y `codegraph_callers`
-son fiables. En cambio `codegraph_impact` y `codegraph_callees` pueden estar
-INCOMPLETOS: el grafo no capta de forma fiable method-calls (`x.Foo()`) ni
-llamadas cross-package/stdlib. Para un analisis de impacto EXHAUSTIVO antes de un
-refactor, complementa con `Grep`/`Read` — no asumas que "nadie llama a X" solo
-porque el grafo no lo muestre.
+Aviso de cobertura: `codegraph_impact` puede estar INCOMPLETO (method-calls `x.Foo()`,
+llamadas cross-package/stdlib). Para un impacto exhaustivo antes de un refactor,
+complementa con Grep/Read.
 <!-- mneme:codegraph-policy:end -->
 
 ## Integracion con mneme

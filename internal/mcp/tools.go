@@ -1060,28 +1060,6 @@ func allTools() []ToolDefinition {
 			},
 		},
 		{
-			Name:        "codegraph_callees",
-			Description: "Find all functions/methods that a given symbol calls.",
-			InputSchema: map[string]any{
-				"type":     "object",
-				"required": []string{"symbol"},
-				"properties": map[string]any{
-					"symbol": map[string]any{
-						"type":        "string",
-						"description": "Symbol name to find callees of.",
-					},
-					"depth": map[string]any{
-						"type":        "integer",
-						"description": "Traversal depth (default 1, max 5).",
-					},
-					"limit": map[string]any{
-						"type":        "integer",
-						"description": "Max results (default 20).",
-					},
-				},
-			},
-		},
-		{
 			Name:        "codegraph_impact",
 			Description: "Analyze the impact radius of changing a symbol — what transitively depends on it.",
 			InputSchema: map[string]any{
@@ -1099,86 +1077,6 @@ func allTools() []ToolDefinition {
 					"limit": map[string]any{
 						"type":        "integer",
 						"description": "Max results (default 50).",
-					},
-				},
-			},
-		},
-		{
-			Name:        "codegraph_node",
-			Description: "Get detailed information about a specific code symbol including its source code.",
-			InputSchema: map[string]any{
-				"type":     "object",
-				"required": []string{"symbol"},
-				"properties": map[string]any{
-					"symbol": map[string]any{
-						"type":        "string",
-						"description": "Symbol name to look up.",
-					},
-				},
-			},
-		},
-		{
-			Name:        "codegraph_explore",
-			Description: "Explore multiple symbols at once: get their source code and relationships.",
-			InputSchema: map[string]any{
-				"type":     "object",
-				"required": []string{"symbols"},
-				"properties": map[string]any{
-					"symbols": map[string]any{
-						"type":        "array",
-						"items":       map[string]any{"type": "string"},
-						"description": "List of symbol names to explore (max 10).",
-					},
-					"budget": map[string]any{
-						"type":        "integer",
-						"description": "Maximum output length in characters (default 30000).",
-					},
-				},
-			},
-		},
-		{
-			Name:        "codegraph_trace",
-			Description: "Find the call path between two symbols.",
-			InputSchema: map[string]any{
-				"type":     "object",
-				"required": []string{"from", "to"},
-				"properties": map[string]any{
-					"from": map[string]any{
-						"type":        "string",
-						"description": "Source symbol name.",
-					},
-					"to": map[string]any{
-						"type":        "string",
-						"description": "Target symbol name.",
-					},
-					"max_depth": map[string]any{
-						"type":        "integer",
-						"description": "Maximum path length (default 5).",
-					},
-				},
-			},
-		},
-		{
-			Name:        "codegraph_status",
-			Description: "Show the status of the code graph index: counts, languages, last update.",
-			InputSchema: map[string]any{
-				"type":       "object",
-				"properties": map[string]any{},
-			},
-		},
-		{
-			Name:        "codegraph_files",
-			Description: "List indexed files, optionally filtered by language or glob pattern.",
-			InputSchema: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"pattern": map[string]any{
-						"type":        "string",
-						"description": "Glob pattern to filter file paths.",
-					},
-					"language": map[string]any{
-						"type":        "string",
-						"description": "Filter by language (go, typescript, javascript).",
 					},
 				},
 			},

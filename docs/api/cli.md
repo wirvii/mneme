@@ -561,6 +561,18 @@ mneme codegraph node SaveMemory
 
 No flags beyond the positional `<symbol>`.
 
+### mneme codegraph explore
+
+Print the same record as `mneme codegraph node` for several symbols in one call (SPEC-165; it replaces the removed `codegraph_explore` MCP tool). Processes at most 10 symbols; a symbol that is not found prints `## <symbol>` and `Error: ...` and the command continues. Output is cut at `--budget` bytes.
+
+```bash
+mneme codegraph explore SaveMemory Search --budget 8000
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--budget` | 30000 | Maximum output size in bytes |
+
 ### mneme codegraph callers / callees
 
 ```bash

@@ -227,9 +227,7 @@ func TestToolsList(t *testing.T) {
 		"mem_gaps",
 		"mem_explore",
 		// Codegraph tools
-		"codegraph_search", "codegraph_context", "codegraph_callers",
-		"codegraph_callees", "codegraph_impact", "codegraph_node",
-		"codegraph_explore", "codegraph_trace", "codegraph_status", "codegraph_files",
+		"codegraph_search", "codegraph_context", "codegraph_callers", "codegraph_impact",
 		// Profile tools (SPEC-091 §1 + SPEC-093 §3 + SPEC-095 §5 + SPEC-105 DD21)
 		"profile_new", "profile_add", "profile_update", "profile_list", "profile_status",
 		"profile_use", "profile_default", "profile_deactivate",

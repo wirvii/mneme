@@ -6,16 +6,16 @@ import (
 	"testing"
 )
 
-// TestAllTools_Count59 pins the tool count on this branch. SPEC-158 took it
-// from 87 to 82; SPEC-163 retires 23 administration and git-native-SDD tools
-// (skills_*, model_*, conflicts_*, subagent_*, sdd_status, sdd_import):
-// 82 - 23 = 59. Sibling v2.0 specs (SPEC-161/162/164/165) each subtract their
-// own delta from the same base, so the integrated count after merging is
-// 82 - sum(deltas), not 59.
-func TestAllTools_Count59(t *testing.T) {
+// TestAllTools_Count53 pins the integrated tool count. SPEC-158 took it from
+// 87 to 82; SPEC-163 retires 23 administration and git-native-SDD tools
+// (skills_*, model_*, conflicts_*, subagent_*, sdd_status, sdd_import): -23;
+// SPEC-165 moves six codegraph_* tools to the CLI (callees, explore, files,
+// node, status, trace): -6. 82 - 23 - 6 = 53. Later v2.0 specs subtract
+// their own delta from this figure.
+func TestAllTools_Count53(t *testing.T) {
 	tools := allTools()
-	if len(tools) != 59 {
-		t.Errorf("allTools() returned %d tools, want 59", len(tools))
+	if len(tools) != 53 {
+		t.Errorf("allTools() returned %d tools, want 53", len(tools))
 	}
 }
 

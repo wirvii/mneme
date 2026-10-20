@@ -685,7 +685,7 @@ JSON-RPC 2.0 over stdio. ProtocolVersion `2024-11-05`. 64 tools with JSON schema
 | **Backlog** (`backlog_*`) | 4 |
 | **Spec** (`spec_*`, incl. `spec_quick`/`spec_reject`) | 8 |
 | **Lane** (`lane_*`) | 5 |
-| **CodeGraph** (`codegraph_*`) | 10 |
+| **CodeGraph** (`codegraph_*`) | 4 |
 | **init** | 1 |
 
 Skills, models, conflicts, subagent generation and the SDD git-native status/import are CLI-only since v2.0 (SPEC-163) and no longer MCP tools.

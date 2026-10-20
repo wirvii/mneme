@@ -1,0 +1,5 @@
+loadmutable	In the Go repo in the current directory, which exported methods of SDDService call the unexported method loadMutableSpec? Answer with the method names only.	LaneOverride
+resolveexec	In which file is the Go function ResolveStageExecutor defined? Answer with the file path only.	executor_resolver.go
+resolvecallers	Which function outside tests calls service.ResolveStageExecutor? Answer with the function name only.	handleSpecAdvance
+graphnotice	In internal/mcp, which method wraps the result of dispatchCodegraph with the graph-incomplete notice? Answer with the method name only.	withGraphNotice
+internalpath	Which function calls isMnemeInternalPath in internal/cli/hook.go? Answer with the function name only.	recordCodegraphOpportunity

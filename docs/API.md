@@ -39,7 +39,7 @@ Rule: every MCP tool appears in exactly **one** of these files.
 |--------|-------|-----------|---------------|
 | `mem_*` (incl. `mem_promote`) | 15 | [docs/api/memory.md](api/memory.md) | [docs/GRAPH.md](GRAPH.md), [docs/RULES.md](RULES.md), [docs/team-memory.md](team-memory.md) |
 | `backlog_*` + `spec_*` + `lane_*` + `init` | 6+9+5+1=21 | [docs/api/sdd.md](api/sdd.md) | [docs/lanes.md](lanes.md), [docs/init.md](init.md) |
-| `codegraph_*` | 10 | [docs/api/codegraph.md](api/codegraph.md) | [docs/codegraph.md](codegraph.md) |
+| `codegraph_*` | 4 | [docs/api/codegraph.md](api/codegraph.md) | [docs/codegraph.md](codegraph.md) |
 | `profile_*` + `project_*` + `app_*` + `scaffold_*` | 8+1+1+1=11 | [docs/profiles.md](profiles.md) (no dedicated `docs/api/` split yet) | [docs/profiles.md](profiles.md) |
 | `speech_*` | 2 | [docs/speech.md](speech.md) | [docs/speech.md](speech.md) |
 

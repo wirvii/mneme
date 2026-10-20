@@ -1,9 +1,12 @@
 # CodeGraph — Semantic code knowledge graph
 
 mneme embeds a code-graph subsystem that indexes Go and TypeScript/JavaScript
-source files into a SQLite database and exposes symbol relationships via 10 MCP
-tools and 10 CLI subcommands. This document covers the indexing workflow and
-the two automatic-adoption mechanisms added in v1.13.0 (SPEC-044).
+source files into a SQLite database and exposes symbol relationships through 4
+MCP tools and the `mneme codegraph` CLI. The graph is **optional**: since
+SPEC-165 nothing reminds or obliges an agent to use it, the bundled `codegraph`
+skill explains when it pays off, and the procedure in "Medir el ahorro de
+tokens" below measures whether it does. This document covers the indexing
+workflow, the usage telemetry and the auto-reindex git hooks.
 
 ## Quick start
 
@@ -161,7 +164,7 @@ broken toolchain gets fixed heals the graph on its own, with no manual
 command needed.
 
 **Where you see it.**
-- Every one of the ten `codegraph_*` MCP tools prepends a one-line banner —
+- Every one of the four `codegraph_*` MCP tools prepends a one-line banner —
   `[mneme:graph-incomplete] <languages> NOT indexed (<cause>) — a symbol
   missing from this answer may still exist. Details: mneme codegraph
   status` — to a successful result, an EMPTY result, and an error message
@@ -170,9 +173,6 @@ command needed.
   conclusion may simply be wrong.
 - `mem_context`'s `codegraph_hint` carries the same banner instead of an
   unqualified "Code Graph (indexed): N symbols".
-- The pre-tool-use "consult the code graph FIRST" nudge carries the banner
-  too — pushing an agent toward a graph without telling it a language is
-  missing would be the same mistake.
 - `mneme codegraph status` and `mneme codegraph index` print a per-language
   detail block: cause, reason, first/last seen, and files skipped **in the
   last run only**, labelled as such.
@@ -306,136 +306,12 @@ Re-index with `mneme codegraph index --force` to see the improvement.
 
 ---
 
-## Adoption nudge (C1) — SPEC-044
-
-### What it is
-
-When an agent calls `Read`, `Grep`, `Glob`, or a Bash code-search command (see
-below) on a project that has an indexed code graph with at least one node, the
-`mneme hook pre-tool-use` hook appends a short markdown reminder to its stdout
-output:
-
-```
-<!-- mneme:codegraph-nudge:start -->
-## mneme — consult the code graph FIRST
-
-MANDATORY: this project has an indexed code graph. BEFORE reading or grepping
-source to understand its structure, you MUST consult the code graph tools first
-(far fewer tokens): `codegraph_search` (locate a symbol), `codegraph_context` /
-`codegraph_callers` / `codegraph_callees` (relationships), `codegraph_impact`
-(blast radius). This applies to subagents too.
-Use Read/Grep/Bash only for the exact text the graph can't provide, or if the
-graph is stale or the repo is not indexed.
-<!-- mneme:codegraph-nudge:end -->
-```
-
-The tone is **mandatory but non-blocking** (SPEC-083 D-owner-1): Claude Code
-injects this block into the agent's context window as a system-reminder, and the
-hook always exits 0. It never blocks a tool call — the same mandatory vocabulary
-appears in the operating manual and the subagent policy so all three surfaces
-say the same thing.
-
-If the graph is stale (last indexed more than 24 hours ago), one additional
-line is appended before the closing tag:
-
-```
-Note: the graph may be stale (last indexed <N>h ago). Run `mneme codegraph index` to refresh.
-```
-
-### When the nudge fires
-
-All five conditions must be true for the nudge to emit:
-
-1. The tool being invoked is `Read`, `Grep`, `Glob`, or a `Bash` command whose
-   first word in any pipeline/logical segment is a code-search executable —
-   `grep`, `egrep`, `fgrep`, `rg`, `ag`, `ack`, `find`, `fd`, `cat`, `head`, or
-   `tail` (SPEC-083 W2). So `grep -r foo internal/` and `git diff | rg foo`
-   qualify; `go test ./...` does not. Bash commands are tokenized with the
-   shell parser; a tokenizer error fails open (no nudge).
-2. `[codegraph] hook_nudge_enabled` is `true` (default) and the env variable
-   `MNEME_CODEGRAPH_HOOK_NUDGE` is not `false`/`0`.
-3. The path being read (if any) is not inside `~/.mneme/` (anti-loop guard:
-   prevents the nudge firing when the agent reads mneme's own database files
-   or workflow outputs).
-4. A `<slug>-codegraph.db` file exists and contains at least one node.
-   An empty graph (0 nodes) never triggers a nudge.
-5. The nudge has not already been emitted for this session/project within the
-   TTL window (see anti-noise section below).
-
-### Anti-noise: once per session
-
-The nudge fires at most once per Claude Code session. State is persisted in
-`~/.mneme/codegraph-nudge-state.json`:
-
-```json
-{ "sid:abc123": 1739312000000, "proj:wirvii/mneme": 1739311000000 }
-```
-
-- When the hook payload contains a `session_id` (the normal case), the key is
-  `sid:<session_id>`. The nudge fires once for the lifetime of that session —
-  no TTL.
-- When no `session_id` is present (fallback), the key is `proj:<slug>` with a
-  4-hour TTL. Re-injection happens after the TTL expires.
-
-The statefile is pruned on every write: entries older than 24 hours are
-removed automatically so the file stays small.
-
-Concurrent writes are best-effort (no file lock). The worst case is an extra
-nudge in a race, which is harmless.
-
-### Empty and stale graph behaviour
-
-| Graph state | Behaviour |
-|---|---|
-| No DB file | No nudge |
-| DB exists, 0 nodes | No nudge (graph not useful yet) |
-| DB has nodes, last indexed ≤24h | Nudge without stale warning |
-| DB has nodes, last indexed >24h | Nudge **with** stale-refresh line |
-
-### Opt-out
-
-**Per project (config file):**
-
-```toml
-# ~/.mneme/config.toml
-[codegraph]
-hook_nudge_enabled = false
-```
-
-**Per invocation (environment variable):**
-
-```bash
-MNEME_CODEGRAPH_HOOK_NUDGE=false mneme hook pre-tool-use
-```
-
-The environment variable takes precedence over the config file.
-
-### Anti-loop
-
-The nudge is suppressed when the file being read is located inside
-`cfg.Storage.DataDir` (default `~/.mneme/`). This covers the case where an
-agent reads the codegraph DB itself, the nudge statefile, or any other mneme
-output — recursive nudging is prevented.
-
-### Implementation
-
-- Source: `internal/cli/hook.go` — `maybeEmitCodegraphNudge` and helpers.
-- Probe helper: `internal/codegraph/probe.go` — `ProbeGraph(path)` opens the
-  DB read-only, executes `SELECT 1 FROM nodes LIMIT 1` and
-  `SELECT MAX(updated_at) FROM nodes`, and returns immediately. Called only
-  when the statefile confirms the nudge has not been emitted yet for the
-  current session.
-- The hook does not modify `internal/install` or `settings.json` — the
-  existing match-all PreToolUse hook registration already delivers
-  Read/Grep/Glob payloads.
-
----
-
 ## Adoption querylog (C6) — SPEC-083
 
 ### What it is
 
-To know whether the nudge and the codegraph-first prompt policy actually work,
+To know whether the code graph is actually used (SPEC-165 retired the reminder
+that used to push agents toward it, so this is now the only adoption signal),
 mneme records a **local, privacy-preserving adoption querylog**: an append-only
 JSONL file that answers one question — "when an agent could have used the code
 graph, did it?"
@@ -445,11 +321,19 @@ Two event kinds are recorded:
 - **`use`** — the agent called a `codegraph_*` MCP tool. Logged authoritatively
   from the MCP dispatch (`internal/mcp/handlers.go`), so it always fires when the
   tool runs and **excludes human CLI use** (`mneme codegraph search` goes through
-  the service, not the MCP handler).
+  the service, not the MCP handler). Consequently an agent that reaches the
+  graph through the CLI (`mneme codegraph callees ...` via Bash) is not counted:
+  the ratio below slightly understates real use, which is why "Medir el ahorro
+  de tokens" is the source for deciding, not this report.
 - **`opportunity`** — the agent explored code with `Read`/`Grep`/`Glob` or a
   Bash code-search command on a project that HAS an indexed graph, i.e. it could
   have queried the graph but chose not to. Logged by the pre-tool-use hook on
-  **every** qualified call (not once per session).
+  **every** qualified call (not once per session). A Bash command qualifies when
+  the first word of any pipeline/logical segment is a code-search executable —
+  `grep`, `egrep`, `fgrep`, `rg`, `ag`, `ack`, `find`, `fd`, `cat`, `head` or
+  `tail` — so `grep -r foo internal/` and `git diff | rg foo` count and
+  `go test ./...` does not. Reads of mneme's own files under `~/.mneme/` never
+  count (anti-loop guard). The hook itself prints nothing.
 
 The file lives next to the graph DB at
 `~/.mneme/projects/<slug>-codegraph-querylog.jsonl`.
@@ -481,9 +365,9 @@ querylog_enabled = true   # default
 MNEME_CODEGRAPH_QUERYLOG=false mneme hook pre-tool-use   # env wins over TOML
 ```
 
-The two `[codegraph]` flags are independent: turning the nudge off does not turn
-telemetry off, and vice versa. Because config is never rewritten by
-`mneme install`, an opt-out survives `mneme upgrade`.
+Because config is never rewritten by `mneme install`, an opt-out survives
+`mneme upgrade`. A `config.toml` that still carries the retired
+`hook_nudge_enabled` key keeps loading: the key is ignored.
 
 ### The report — `mneme codegraph adoption`
 
@@ -503,8 +387,8 @@ Code graph adoption (last 7d) — wirvii/mneme
 
 The **adoption ratio** is `uses / (uses + opportunities)` — the fraction of
 qualified explorations that went through `codegraph_*`. A ratio rising release
-over release validates the nudge and prompt policy; `Top missed` points at the
-next pattern to target. No data in the window prints a clear message and exits 0.
+over release means agents reach for the graph more; `Top missed` shows which
+generic tool they used instead. No data in the window prints a clear message and exits 0.
 
 The report is **CLI-only** by design (a human diagnostic; the codegraph has no
 HTTP surface; an agent does not read its own adoption metric at runtime).
@@ -516,7 +400,7 @@ HTTP surface; an agent does not read its own adoption metric at runtime).
 - Path helper: `internal/codegraph/db.go` — `QuerylogPath(projectsDir, slug)`.
 - `use` hook: `internal/mcp/handlers.go` — `logCodegraphUse`.
 - `opportunity` hook: `internal/cli/hook.go` — `logOpportunity`, called from
-  `maybeEmitCodegraphNudge` after the graph-existence probe.
+  `recordCodegraphOpportunity` after the graph-existence probe.
 - All writes are best-effort/fail-open: a telemetry failure never affects a tool
   call.
 
@@ -623,82 +507,61 @@ content (`post-commit`, `post-checkout` in `$(git rev-parse --git-path hooks)`).
 
 ---
 
-## Adoption by prompt (C8) — SPEC-045
+## Optional policy in the bundled agents — SPEC-165
 
-### What it is
-
-In addition to the runtime nudge (C1, above), each of the 6 bundled agent assets
-embeds a permanent `## Exploracion de codigo: grafo primero` section in its system
-prompt. Unlike the nudge — which fires once per session and only when the graph is
-indexed — this block is always present and states the policy imperatively.
-
-The block is delimited by markers:
+Each of the 6 bundled agent assets (`internal/install/assets/agents/`) embeds
+one identical, **optional** `## Grafo de codigo (opcional)` section, delimited by
+markers:
 
 ```
 <!-- mneme:codegraph-policy:start -->
-## Exploracion de codigo: grafo primero
+## Grafo de codigo (opcional)
 ...
 <!-- mneme:codegraph-policy:end -->
 ```
 
-The markers exist so `TestAgentsCodegraphPolicy` (`internal/install/assets_test.go`)
-can verify all 6 assets carry the canonical block and fail fast on any drift.
+It says that, when the project has an indexed graph, `codegraph_search`,
+`codegraph_context`, `codegraph_callers` and `codegraph_impact` can save reads on
+structure questions, that the remaining queries go through the CLI
+(`mneme codegraph callees|trace|node|explore|files|status`) for agents with
+Bash, warns that `codegraph_impact` can be incomplete, and points at the
+`codegraph` skill for when the graph is and is not worth using. Before SPEC-165
+the block was mandatory ("consult the graph FIRST") and came in three variants
+by toolset; there is now a single text for all six agents.
 
-### Two canonical variants
+`TestAgentsCodegraphPolicy` (`internal/install/assets_test.go`) checks all 6
+assets carry the canonical block and fail fast on drift. `WriteAgents`
+(`internal/install/install.go`) rewrites each file from the embed on every
+`mneme install claude-code`; after a `mneme upgrade`, run that command and
+restart Claude Code for the change to take effect.
 
-**Without Bash clause** (`architect`, `qa-tester`):
-These agents do not have `Bash` in their tool allowlist, so no Bash-specific
-guidance is needed.
+### The `codegraph` skill
 
-**With Bash clause** (`backend`, `frontend`, `bug-hunter`):
-Adds an explicit prohibition on using `Bash` (grep/cat/find/rg/head/tail) for
-code navigation, since codegraph tools and native Read/Grep cover that need.
-Bash is reserved for build, test, git, and operational tasks.
-
-**Diagnostician variant** (`diagnostician`):
-Same Bash prohibition for code navigation, but adds a sentence that explicitly
-preserves Bash for reading logs, infra, and operational diagnostics
-(so it does not contradict the agent's own `## Permisos de Bash` section).
-
-### How it is deployed
-
-The policy is embedded directly in the agent `.md` assets under
-`internal/install/assets/agents/`. `WriteAgents` (`internal/install/install.go`)
-rewrites each file entirely from the embed on every `mneme install claude-code` —
-no flags required. After a `mneme upgrade`, run `mneme install claude-code` and
-restart Claude Code for the policy to take effect.
-
-### Relationship with the runtime nudge (C1)
-
-The two mechanisms are complementary, not redundant:
-
-| | C8 (prompt, this section) | C1 (runtime nudge, SPEC-044) |
-|---|---|---|
-| Trigger | Always — static system prompt | Once per session when Read/Grep/Glob fires |
-| Content | Imperativ policy + tools list + fallback rules | Short reminder with graph freshness info |
-| Bash gap | Yes — explicit prohibition for agents with Bash | No |
-| Staleness info | No | Yes — warns when graph is >24h stale |
+`internal/install/assets/skills/codegraph/` ships with mneme like any bundled
+skill (mirrored to `~/.claude/skills/` and `$HOME/.agents/skills/` by
+`mneme install`). It names the 4 MCP tools, lists the CLI commands for the rest,
+and states the rule that matters most: the graph never replaces reading the code
+you will change, and a refactor's impact list must be cross-checked with Grep.
 
 ---
 
 ## MCP tools
 
-The following 10 MCP tools expose the code graph to agents:
+The following 4 MCP tools expose the code graph to agents:
 
 | Tool | Description |
 |---|---|
 | `codegraph_search` | Find symbols by name (FTS5 prefix match) |
 | `codegraph_context` | Full node details + callers + callees |
 | `codegraph_callers` | Nodes that call a given symbol |
-| `codegraph_callees` | Nodes called by a given symbol |
 | `codegraph_impact` | Transitive blast radius of changing a symbol |
-| `codegraph_node` | Raw node fields + source lines |
-| `codegraph_explore` | Multi-symbol batch exploration |
-| `codegraph_trace` | Shortest call path between two symbols |
-| `codegraph_status` | Aggregate node/edge/file counts |
-| `codegraph_files` | List indexed files (with optional glob/language filter) |
 
-> **Recall limitation — `codegraph_impact` / `codegraph_callees`:** these tools
+`codegraph_callees`, `codegraph_node`, `codegraph_explore`, `codegraph_trace`,
+`codegraph_status` and `codegraph_files` were removed from MCP by SPEC-165 (a
+`tools/call` for them answers `unknown tool: <name>`); the same queries remain
+available through the CLI below.
+
+> **Recall limitation — `codegraph_impact` / `callees`:** these queries
 > rely on the call-edge graph, which currently captures ~43% of callable
 > relationships in a typical Go codebase. Method-calls (`x.Foo()`),
 > cross-package calls, and stdlib calls are often not recorded as edges.
@@ -721,11 +584,19 @@ mneme codegraph callers <symbol>      # find callers
 mneme codegraph callees <symbol>      # find callees
 mneme codegraph impact <symbol>       # blast radius
 mneme codegraph node <symbol>         # full node detail
+mneme codegraph explore <sym> [<sym>...] [--budget N]  # node detail of up to 10 symbols
 mneme codegraph trace <from> <to>     # shortest call path
 mneme codegraph files [pattern]       # list indexed files
+mneme codegraph adoption [--since 7d] # usage telemetry report
 mneme codegraph hooks install         # install auto-reindex git hooks
 mneme codegraph hooks remove          # remove auto-reindex git hooks
 ```
+
+`mneme codegraph explore` prints, for each symbol, the same detail as
+`mneme codegraph node` (definition and source). A symbol that cannot be found
+prints `## <symbol>` and `Error: ...` and the command continues with the next
+one; at most 10 symbols are processed and the output is cut at `--budget` bytes
+(default 30000). It is the CLI home of what used to be `codegraph_explore`.
 
 `mneme codegraph hooks run-reindex` is a hidden subcommand invoked by the
 installed git hooks. It is not shown in `--help`.
@@ -736,18 +607,73 @@ installed git hooks. It is not shown in `--help`.
 
 ```toml
 [codegraph]
-# Controls whether the pre-tool-use hook emits a reminder to use
-# codegraph_* tools when an agent calls Read/Grep/Glob on a project
-# that has an indexed code graph. Default: true.
-hook_nudge_enabled = true
+# Records the local adoption telemetry (see "Adoption querylog"). Default: true.
+querylog_enabled = true
 ```
 
-Environment override: `MNEME_CODEGRAPH_HOOK_NUDGE=false` disables the nudge
-regardless of the config file value.
+Environment override: `MNEME_CODEGRAPH_QUERYLOG=false`.
+
+The former `hook_nudge_enabled` key and `MNEME_CODEGRAPH_HOOK_NUDGE` variable
+were removed together with the reminder they controlled (SPEC-165). A
+`config.toml` that still has the key loads without error and the value is
+ignored. A leftover `~/.mneme/codegraph-nudge-state.json` is inert and can be
+deleted.
+
+---
+
+## Medir el ahorro de tokens
+
+The graph earns its place only if it costs fewer tokens than reading. This
+procedure measures that with the same questions asked twice, with and without the
+graph. Running it spends subscription usage, so it is a **manual step** for the
+owner; nothing here runs in CI.
+
+**Tasks.** `scripts/codegraph-bench/tasks.tsv`, columns
+`id<TAB>prompt<TAB>expected` where `expected` is a substring (case-insensitive)
+a correct answer must contain. It holds 5 structure questions about this
+repository (who calls `loadMutableSpec`, where `ResolveStageExecutor` lives,
+...), with `expected` verified by hand against the code on the day they were
+written; re-check them if the code moves. Another project can bring its own file
+with `--tasks`.
+
+**Arms.** Same model, same directory, graph freshly indexed
+(`mneme codegraph index`) before starting.
+
+- A, with the graph:
+  `claude -p "<prompt>" --output-format json --allowedTools "Read Grep Glob mcp__mneme__codegraph_search mcp__mneme__codegraph_context mcp__mneme__codegraph_callers mcp__mneme__codegraph_impact"`
+- B, without the graph:
+  `claude -p "<prompt>" --output-format json --allowedTools "Read Grep Glob" --disallowedTools "mcp__mneme__codegraph_search mcp__mneme__codegraph_context mcp__mneme__codegraph_callers mcp__mneme__codegraph_impact Bash(mneme codegraph:*)"`
+
+**Metrics per run**, read from the JSON `claude -p` prints:
+`tokens = usage.input_tokens + usage.cache_creation_input_tokens + usage.cache_read_input_tokens + usage.output_tokens`,
+`total_cost_usd`, `num_turns`, and `correct` (the answer contains `expected`).
+
+**Repetitions.** `--runs N` (default 3). The report gives, per task and arm, the
+median tokens/cost/turns and the correct answers as `k/N`, then the total and the
+relative saving `1 - median(A) / median(B)`. It prints TSV on stdout and keeps
+every raw JSON under `--out DIR` (default: a new temp directory the script
+prints).
+
+**Running it.**
+
+```bash
+mneme codegraph index
+scripts/codegraph-token-bench.sh --dry-run --runs 1   # print the 2 x tasks x N commands, run nothing
+scripts/codegraph-token-bench.sh --runs 3 [--model M] [--out DIR] [--tasks F]
+```
+
+`--dry-run` needs neither `claude` nor `jq`; a real run without either exits 2
+with a message naming it.
+
+**Suggested decision rule (the owner decides).** Total saving of at least 20%
+with no fewer correct answers: keep the graph in mneme. Below 20%, or with fewer
+correct answers: candidate to split out or retire (open a new backlog item).
+Record the outcome as a `decision` memory with `topic_key`
+`codegraph/token-savings`.
 
 ---
 
 ## API reference
 
-Full contract (params, returns, errors, examples) for the 10 `codegraph_*`
+Full contract (params, returns, errors, examples) for the 4 `codegraph_*`
 MCP tools: [docs/api/codegraph.md](api/codegraph.md) →

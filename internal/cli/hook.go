@@ -51,8 +51,9 @@ import (
 //     discipline that actually works lives in the operating manual, not here.
 //   - pre-tool-use: evaluates active rules against the current tool invocation
 //     (stdin JSON) and emits markdown to stdout; exits with code 2 to block.
-//     Also emits a context-only codegraph nudge (SPEC-044) for Read/Grep/Glob
-//     when the project has an indexed code graph — fail-open, exit 0 always.
+//     For Read/Grep/Glob and code-search Bash on a project with an indexed
+//     code graph it records an "opportunity" telemetry event (SPEC-083) —
+//     never output, fail-open, exit 0 always (SPEC-165 retired the reminder).
 //   - enforce-delegation: orchestrator-guard (Layer 2). In-process port of
 //     enforce_delegation.sh (SPEC-069): blocks the orchestrator (never a
 //     subagent) from writing to, or running a Bash command against, a path
@@ -187,7 +188,7 @@ func runHookSessionStart(ctx context.Context, r io.Reader, w, errW io.Writer) er
 
 	// SPEC-093 §3.6: resolve/materialize (or nudge) the active profile BEFORE
 	// the context block — fail-open, exit 0 always, same contract as
-	// maybeEmitCodegraphNudge.
+	// the other SessionStart helpers.
 	maybeActivateProfile(ctx, svc, w, errW)
 	maybeEmitAgentProjectionNudge(ctx, svc, w, errW)
 
@@ -360,8 +361,8 @@ func resolveProfileProjectRoot(cwd string) string {
 //
 // This function NEVER returns an error and never aborts session start: every
 // failure (config load, resolve, materialization) is degraded to a WARN on
-// errW and the function simply returns — the exact fail-open contract
-// maybeEmitCodegraphNudge already established for this same hook.
+// errW and the function simply returns — the same fail-open contract
+// every hook in this file keeps.
 func maybeActivateProfile(ctx context.Context, mem *service.MemoryService, w, errW io.Writer) {
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -1001,9 +1002,9 @@ func runHookPreToolUse(r io.Reader, w, errW io.Writer) error {
 		return nil
 	}
 
-	// C1: nudge agents toward codegraph_* for read/search tools (SPEC-044).
-	// Context-only, fail-open, exit 0. Independent of the rules engine.
-	maybeEmitCodegraphNudge(input, cwd, w, errW)
+	// Telemetry only (SPEC-083 W1, SPEC-165): count read/search calls made on
+	// a project with an indexed graph. Fail-open, writes nothing to w.
+	recordCodegraphOpportunity(input, cwd)
 
 	// Only intercept file-mutating tools; everything else is allowed immediately.
 	if !mutatingTools[input.ToolName] {
@@ -1596,12 +1597,12 @@ func renderPreToolUseOutput(w io.Writer, toolName, filePath, cwd string, result 
 	fmt.Fprintf(w, "<!-- mneme:rules:end -->\n")
 }
 
-// ---- Codegraph nudge (SPEC-044, Workstream C1) ------------------------------
+// ---- Codegraph opportunity telemetry (SPEC-083 W1; SPEC-165) ---------------
 
-// nudgeTools is the set of tool names that trigger the codegraph nudge. These
-// are read/search tools that an agent uses to explore code structure — exactly
-// the cases where an indexed code graph can substitute for token-heavy rereads.
-var nudgeTools = map[string]bool{
+// opportunityTools is the set of tool names that count as code exploration.
+// These are read/search tools an agent uses to explore code structure — exactly
+// the cases where an indexed code graph could have substituted for rereads.
+var opportunityTools = map[string]bool{
 	"Read": true,
 	"Grep": true,
 	"Glob": true,
@@ -1611,7 +1612,7 @@ var nudgeTools = map[string]bool{
 // exploration (SPEC-083 W2/D9). grep/egrep/fgrep/rg/ag/ack = text search;
 // find/fd = structural file discovery; cat/head/tail = file content reads.
 // These mirror the vocabulary the subagent policy already forbids for code
-// navigation, keeping the nudge and the prompts coherent. Non-exploration
+// navigation, keeping the telemetry and the prompts coherent. Non-exploration
 // commands (ls/git/go/make/npm/pnpm/echo, ...) are deliberately excluded.
 var bashSearchCommands = map[string]bool{
 	"grep": true, "egrep": true, "fgrep": true, "rg": true,
@@ -1654,105 +1655,50 @@ func bashSearchHead(command string) (head string, ok bool) {
 	return "", false
 }
 
-// nudgeStateFilename is the name of the JSON file that persists per-session /
-// per-project nudge state under cfg.Storage.DataDir (SPEC-044 D4).
-const nudgeStateFilename = "codegraph-nudge-state.json"
-
-// nudgeTTL4h is the TTL applied to project-keyed fallback entries (no session_id).
-const nudgeTTL4h = 4 * time.Hour
-
-// nudgePruneAge is the maximum age of a statefile entry before it is pruned on
-// the next write. This prevents the statefile from growing without bound.
-const nudgePruneAge = 24 * time.Hour
-
-// nudgeStalenessThreshold is the elapsed time after which a code graph is
-// considered stale and the refresh recommendation is included in the nudge.
-const nudgeStalenessThreshold = 24 * time.Hour
-
-// maybeEmitCodegraphNudge does two independent, fail-open things for a
-// read/search tool invocation on a project with an indexed code graph
-// (SPEC-044 nudge + SPEC-083 W1 opportunity telemetry): it records an
-// "opportunity" telemetry event on EVERY qualified call, and it emits the
-// codegraph nudge block to w at most once per session. It never returns an
-// error or calls os.Exit.
+// recordCodegraphOpportunity records an "opportunity" telemetry event (SPEC-083
+// W1) for a read/search tool invocation on a project with an indexed code
+// graph: `mneme codegraph adoption` divides graph uses by these opportunities.
+// SPEC-165 retired the reminder this function used to emit alongside; it now
+// writes nothing to the hook's output. It never returns an error or calls
+// os.Exit.
 //
 // Order of checks (cheapest-to-costliest, abort early — SPEC-083 D10):
 //  1. Cheap tool filter: Read/Grep/Glob qualify directly; Bash is a candidate
 //     whose command is tokenized only later; anything else returns.
-//  2. Config: load once; read hook_nudge_enabled and querylog_enabled. If both
-//     are off there is nothing to do → return.
-//  3. Resolve the session key and whether the nudge already fired this session.
-//  4. Hot path: if the nudge will not fire (already fired, or disabled) AND
-//     telemetry is off, return before any tokenizing / project detection.
-//  5. Resolve the tool label. For Bash this tokenizes the command (deferred to
-//     here so the hot path never tokenizes) and returns if it is not a
+//  2. Config: load once; if querylog_enabled is off there is nothing to do.
+//  3. Resolve the tool label. For Bash this tokenizes the command (deferred to
+//     here so the disabled path never tokenizes) and returns if it is not a
 //     code-search command.
-//  6. Anti-loop: for Read/Grep/Glob, skip mneme's own files under DataDir.
-//  7. Project detection + os.Stat(dbPath) + ProbeGraph (graph must exist and be
+//  4. Anti-loop: for Read/Grep/Glob, skip mneme's own files under DataDir.
+//  5. Project detection + os.Stat(dbPath) + ProbeGraph (graph must exist and be
 //     non-empty — an unindexed project has no "missed opportunity").
-//  8. Telemetry: log the opportunity on every qualified call (own flag/gate,
-//     independent of the once-per-session nudge state).
-//  9. Nudge: emit + mark statefile, at most once per session (shared across all
-//     read/search tools).
-//
-// Divergence note (SPEC-083 D10 vs D5/AC3): D10 sketches skipping the tokenizer
-// once a session is already nudged, but D5/AC3 require an opportunity to be
-// logged on EVERY qualified call — and qualifying a Bash command necessarily
-// requires tokenizing it. Correctness wins: when querylog is enabled (the
-// default) Bash commands are tokenized on every call. The tokenizer-skip
-// optimization therefore applies only when telemetry is also disabled (step 4).
-// Tokenizing a short command is microseconds, so the <1ms hot-path budget holds.
-func maybeEmitCodegraphNudge(input hookPreToolInput, cwd string, w, errW io.Writer) {
+//  6. Log the opportunity on every qualified call.
+func recordCodegraphOpportunity(input hookPreToolInput, cwd string) {
 	// 1. Cheap tool classification.
-	_, directWorthy := nudgeTools[input.ToolName]
+	_, directWorthy := opportunityTools[input.ToolName]
 	isBash := input.ToolName == "Bash"
 	if !directWorthy && !isBash {
 		return
 	}
 
-	// 2. Config: load once; two independent gates.
+	// 2. Config: telemetry is the only gate.
 	cfg, cfgErr := config.Load(config.DefaultPath())
-	if cfgErr != nil {
+	if cfgErr != nil || !cfg.Codegraph.QuerylogEnabled {
 		return // fail-open
 	}
-	nudgeOn := cfg.Codegraph.HookNudgeEnabled
-	telemetryOn := cfg.Codegraph.QuerylogEnabled
-	if !nudgeOn && !telemetryOn {
-		return
-	}
 
-	// 3. Resolve the session key + whether the nudge already fired this session.
-	stateFilePath := filepath.Join(cfg.Storage.DataDir, nudgeStateFilename)
-	var key string
-	if input.SessionID != "" {
-		key = "sid:" + input.SessionID
-	}
-	alreadyNudged := false
-	if key != "" {
-		state := loadNudgeState(stateFilePath)
-		if _, ok := state[key]; ok {
-			alreadyNudged = true
-		}
-	}
-	nudgeWillFire := nudgeOn && !alreadyNudged
-
-	// 4. Hot path: nothing to nudge and telemetry off → bail before tokenizing.
-	if !nudgeWillFire && !telemetryOn {
-		return
-	}
-
-	// 5. Resolve the tool label. Bash requires tokenizing to confirm it is a
-	//    code-search command; deferred here so the hot path never tokenizes.
+	// 3. Resolve the tool label. Bash requires tokenizing to confirm it is a
+	//    code-search command.
 	toolLabel := input.ToolName
 	if isBash {
 		bashHead, isSearch := bashSearchHead(input.ToolInput.Command)
 		if !isSearch {
-			return // not code exploration → neither nudge nor opportunity.
+			return // not code exploration → no opportunity.
 		}
 		toolLabel = "bash:" + bashHead
 	}
 
-	// 6. Anti-loop: for Read/Grep/Glob, skip mneme's own files under DataDir.
+	// 4. Anti-loop: for Read/Grep/Glob, skip mneme's own files under DataDir.
 	//    Bash has no reliable single path, so the check is omitted for it.
 	if !isBash {
 		candidate := input.ToolInput.FilePath
@@ -1764,7 +1710,7 @@ func maybeEmitCodegraphNudge(input hookPreToolInput, cwd string, w, errW io.Writ
 		}
 	}
 
-	// 7. Project detection + graph existence/probe.
+	// 5. Project detection + graph existence/probe.
 	det := project.NewDetector(cwd)
 	slug, _ := det.DetectProject()
 	if slug == "" {
@@ -1775,60 +1721,13 @@ func maybeEmitCodegraphNudge(input hookPreToolInput, cwd string, w, errW io.Writ
 	if _, statErr := os.Stat(dbPath); os.IsNotExist(statErr) {
 		return
 	}
-	hasNodes, lastUpdatedMs, probeErr := codegraph.ProbeGraph(dbPath)
+	hasNodes, _, probeErr := codegraph.ProbeGraph(dbPath)
 	if probeErr != nil || !hasNodes {
 		return
 	}
 
-	// 8. Telemetry: opportunity logged on EVERY qualified call, independent of
-	//    the once-per-session nudge gate.
-	if telemetryOn {
-		logOpportunity(cfg, slug, input.SessionID, toolLabel)
-	}
-
-	// 9. Nudge: at most once per session, shared across all read/search tools.
-	if !nudgeWillFire {
-		return
-	}
-
-	// Resolve the project-keyed fallback when there is no session_id, honouring
-	// its 4h TTL.
-	if key == "" {
-		key = "proj:" + slug
-		state := loadNudgeState(stateFilePath)
-		if storedMs, found := state[key]; found {
-			elapsed := time.Duration(time.Now().UnixMilli()-storedMs) * time.Millisecond
-			if elapsed < nudgeTTL4h {
-				return
-			}
-			// TTL expired: fall through to re-inject.
-		}
-	}
-
-	stale := false
-	var hoursStale int
-	if lastUpdatedMs > 0 {
-		elapsed := time.Since(time.UnixMilli(lastUpdatedMs))
-		if elapsed > nudgeStalenessThreshold {
-			stale = true
-			hoursStale = int(elapsed.Hours())
-		}
-	}
-
-	// SPEC-142 D14: the degraded-language notice is computed ONLY here, on
-	// the path where the nudge is actually about to fire — never on the hot
-	// telemetry path above (step 8), which every qualifying tool call takes
-	// regardless of whether a nudge will ever be emitted. ProbeDegraded is a
-	// read-only sibling of ProbeGraph: it never creates dbPath if it does
-	// not already exist, matching this whole function's fail-open posture.
-	degradedLangs, probeErr := codegraph.ProbeDegraded(dbPath)
-	noticeLine, showNotice := codegraph.Notice(degradedLangs, probeErr)
-	if !showNotice {
-		noticeLine = ""
-	}
-
-	renderCodegraphNudge(w, stale, hoursStale, noticeLine)
-	markNudgeState(stateFilePath, key)
+	// 6. Telemetry: opportunity logged on EVERY qualified call.
+	logOpportunity(cfg, slug, input.SessionID, toolLabel)
 }
 
 // logOpportunity appends a code graph "opportunity" telemetry event (SPEC-083
@@ -1851,7 +1750,7 @@ func logOpportunity(cfg *config.Config, slug, sessionID, tool string) {
 
 // isMnemeInternalPath reports whether path (after best-effort cleaning) is
 // located inside dataDir (the mneme data directory, e.g. ~/.mneme). This is
-// used to prevent the hook from nudging the agent when it is reading mneme's
+// used to prevent the hook from counting an opportunity when the agent is reading mneme's
 // own database files, statefiles, or workflow outputs.
 func isMnemeInternalPath(path, dataDir string) bool {
 	// Best-effort: if Abs fails we compare the clean paths directly.
@@ -1861,83 +1760,6 @@ func isMnemeInternalPath(path, dataDir string) bool {
 	}
 	cleanData := filepath.Clean(dataDir)
 	return strings.HasPrefix(abs, cleanData+string(filepath.Separator)) || abs == cleanData
-}
-
-// nudgeState is the in-memory representation of the statefile.
-// Keys are "sid:<session_id>" or "proj:<slug>"; values are Unix epoch ms.
-type nudgeState map[string]int64
-
-// loadNudgeState reads the statefile at path and returns the parsed map.
-// On any read or parse error it returns an empty map (fail-open: treat as
-// "never injected").
-func loadNudgeState(path string) nudgeState {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nudgeState{}
-	}
-	var state nudgeState
-	if err := json.Unmarshal(data, &state); err != nil {
-		return nudgeState{}
-	}
-	return state
-}
-
-// markNudgeState writes key=now to the statefile at path, pruning entries
-// older than nudgePruneAge. Write errors are silently ignored (fail-open).
-func markNudgeState(path, key string) {
-	state := loadNudgeState(path)
-	now := time.Now().UnixMilli()
-	state[key] = now
-
-	// Prune entries older than nudgePruneAge to prevent unbounded growth.
-	cutoff := now - nudgePruneAge.Milliseconds()
-	for k, v := range state {
-		if v < cutoff {
-			delete(state, k)
-		}
-	}
-
-	data, err := json.Marshal(state)
-	if err != nil {
-		return // fail-open
-	}
-	_ = os.WriteFile(path, data, 0o600) // errors ignored (fail-open)
-}
-
-// renderCodegraphNudge writes the codegraph nudge markdown block to w. The tone
-// is MANDATORY but non-blocking (SPEC-083 D-owner-1/D11): it instructs the agent
-// to consult the code graph FIRST, but it is still a context-only reminder —
-// this function never calls os.Exit and the hook always exits 0.
-//
-// When stale is true, a recommendation to run "mneme codegraph index" is
-// appended before the closing delimiter, with the approximate hours since the
-// last index in the message.
-//
-// noticeLine is SPEC-142 D14's one extra line: when non-empty (the graph
-// carries a degraded-language mark), it is inserted right after the header,
-// before the MANDATORY instruction — an agent pushed toward this graph
-// should be told in the same breath that a language is missing from it.
-// When noticeLine is EMPTY (the overwhelmingly common case: a healthy
-// project), this function writes EXACTLY what it always has, byte for byte —
-// nothing about this spec may add noise to the 90% of projects it does not
-// concern (AC9).
-func renderCodegraphNudge(w io.Writer, stale bool, hoursStale int, noticeLine string) {
-	fmt.Fprintf(w, "<!-- mneme:codegraph-nudge:start -->\n")
-	fmt.Fprintf(w, "## mneme — consult the code graph FIRST\n\n")
-	if noticeLine != "" {
-		fmt.Fprintf(w, "%s\n", noticeLine)
-	}
-	fmt.Fprintf(w, "MANDATORY: this project has an indexed code graph. BEFORE reading or grepping\n")
-	fmt.Fprintf(w, "source to understand its structure, you MUST consult the code graph tools first\n")
-	fmt.Fprintf(w, "(far fewer tokens): `codegraph_search` (locate a symbol), `codegraph_context` /\n")
-	fmt.Fprintf(w, "`codegraph_callers` / `codegraph_callees` (relationships), `codegraph_impact`\n")
-	fmt.Fprintf(w, "(blast radius). This applies to subagents too.\n")
-	fmt.Fprintf(w, "Use Read/Grep/Bash only for the exact text the graph can't provide, or if the\n")
-	fmt.Fprintf(w, "graph is stale or the repo is not indexed.\n")
-	if stale {
-		fmt.Fprintf(w, "Note: the graph may be stale (last indexed %dh ago). Run `mneme codegraph index` to refresh.\n", hoursStale)
-	}
-	fmt.Fprintf(w, "<!-- mneme:codegraph-nudge:end -->\n")
 }
 
 // resolveHookCWD implements D14: the payload's own cwd field is

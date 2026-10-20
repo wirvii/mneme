@@ -64,6 +64,7 @@ func newCodegraphCmd() *cobra.Command {
 		newCodegraphCalleesCmd(),
 		newCodegraphImpactCmd(),
 		newCodegraphNodeCmd(),
+		newCodegraphExploreCmd(),
 		newCodegraphTraceCmd(),
 		newCodegraphFilesCmd(),
 		newCodegraphHooksCmd(),
@@ -502,29 +503,99 @@ qualified name, file location, signature, docstring, and source code.`,
 				return fmt.Errorf("codegraph node: %w", err)
 			}
 
-			out := cmd.OutOrStdout()
-			fmt.Fprintf(out, "ID:             %s\n", node.ID)
-			fmt.Fprintf(out, "Name:           %s\n", node.Name)
-			fmt.Fprintf(out, "Qualified name: %s\n", node.QualifiedName)
-			fmt.Fprintf(out, "Kind:           %s\n", string(node.Kind))
-			fmt.Fprintf(out, "Language:       %s\n", node.Language)
-			fmt.Fprintf(out, "File:           %s\n", node.FilePath)
-			fmt.Fprintf(out, "Lines:          %d-%d\n", node.StartLine, node.EndLine)
-			if node.Visibility != "" {
-				fmt.Fprintf(out, "Visibility:     %s\n", node.Visibility)
-			}
-			if node.Signature != "" {
-				fmt.Fprintf(out, "Signature:      %s\n", node.Signature)
-			}
-			if node.Docstring != "" {
-				fmt.Fprintf(out, "\nDoc:\n%s\n", node.Docstring)
-			}
-			if source != "" {
-				fmt.Fprintf(out, "\nSource:\n%s\n", source)
-			}
+			printNodeDetail(cmd.OutOrStdout(), node, source)
 			return nil
 		},
 	}
+	return cmd
+}
+
+// printNodeDetail writes the full record of one symbol — identity, location,
+// signature, docstring and source — in the layout shared by "codegraph node"
+// and "codegraph explore", so both commands always describe a symbol alike.
+func printNodeDetail(out io.Writer, node *codegraph.Node, source string) {
+	fmt.Fprintf(out, "ID:             %s\n", node.ID)
+	fmt.Fprintf(out, "Name:           %s\n", node.Name)
+	fmt.Fprintf(out, "Qualified name: %s\n", node.QualifiedName)
+	fmt.Fprintf(out, "Kind:           %s\n", string(node.Kind))
+	fmt.Fprintf(out, "Language:       %s\n", node.Language)
+	fmt.Fprintf(out, "File:           %s\n", node.FilePath)
+	fmt.Fprintf(out, "Lines:          %d-%d\n", node.StartLine, node.EndLine)
+	if node.Visibility != "" {
+		fmt.Fprintf(out, "Visibility:     %s\n", node.Visibility)
+	}
+	if node.Signature != "" {
+		fmt.Fprintf(out, "Signature:      %s\n", node.Signature)
+	}
+	if node.Docstring != "" {
+		fmt.Fprintf(out, "\nDoc:\n%s\n", node.Docstring)
+	}
+	if source != "" {
+		fmt.Fprintf(out, "\nSource:\n%s\n", source)
+	}
+}
+
+const (
+	// exploreMaxSymbols caps how many symbols one explore call processes.
+	exploreMaxSymbols = 10
+	// exploreDefaultBudget is the default output cap, in bytes.
+	exploreDefaultBudget = 30000
+)
+
+// newCodegraphExploreCmd returns the "mneme codegraph explore <symbol>..."
+// subcommand. It prints the node detail of several symbols in one call under a
+// byte budget, so an agent with Bash can replace a chain of "node" calls; it
+// inherits the parent's incomplete-graph notice by defining no pre-run hook.
+func newCodegraphExploreCmd() *cobra.Command {
+	var budget int
+	cmd := &cobra.Command{
+		Use:   "explore <symbol> [<symbol>...]",
+		Short: "Show the details and source of several symbols at once",
+		Long: `Print the same detail "codegraph node" prints for each given symbol, stopping
+once the accumulated output reaches --budget bytes and truncating to it. At most
+10 symbols are processed; a symbol that cannot be found is reported and skipped.`,
+		Args: cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			symbols := args
+			if len(symbols) > exploreMaxSymbols {
+				symbols = symbols[:exploreMaxSymbols]
+			}
+
+			svc, err := initCodeGraphService()
+			if err != nil {
+				return fmt.Errorf("codegraph explore: %w", err)
+			}
+			defer func() { _ = svc.Close() }()
+
+			rootDir, cwdErr := os.Getwd()
+			if cwdErr != nil {
+				rootDir = "."
+			}
+
+			var sb strings.Builder
+			for _, sym := range symbols {
+				if sb.Len() >= budget {
+					break
+				}
+				node, source, err := svc.NodeDetail(sym, rootDir)
+				if err != nil {
+					fmt.Fprintf(&sb, "## %s\nError: %v\n\n", sym, err)
+					continue
+				}
+				fmt.Fprintf(&sb, "## %s\n", sym)
+				printNodeDetail(&sb, node, source)
+				sb.WriteString("\n")
+			}
+
+			output := sb.String()
+			if len(output) > budget {
+				output = output[:budget]
+			}
+			fmt.Fprint(cmd.OutOrStdout(), output)
+			return nil
+		},
+	}
+	cmd.Flags().IntVar(&budget, "budget", exploreDefaultBudget, "maximum output size in bytes")
 	return cmd
 }
 
@@ -662,8 +733,9 @@ adoption querylog (tool names only — never paths, commands, or queries).
 
 The adoption ratio is uses / (uses + opportunities): the fraction of qualified
 explorations that went through codegraph_* instead of Read/Grep/Bash. A ratio
-rising release over release validates that the nudge and prompt policy work;
-the top-missed tools point at the next pattern to target.`,
+rising release over release means agents reach for the graph more; the
+top-missed tools show which generic tool they used instead. Graph use through
+this CLI is not counted, so the ratio slightly understates real use.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			window, err := parseSinceWindow(flagSince)
