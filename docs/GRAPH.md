@@ -18,7 +18,7 @@ Introduced in SPEC-005..009 (EPIC-2).
 8. [Community detection](#community-detection)
 9. [Synthesis (community summaries)](#synthesis-community-summaries)
 10. [Context packing by community](#context-packing-by-community)
-11. [mem_explore](#mem_explore)
+11. [mneme explore](#mneme-explore)
 12. [graph rebuild](#graph-rebuild)
 13. [Related commands](#related-commands)
 14. [Configuration](#configuration)
@@ -84,7 +84,7 @@ Each `RelationType` has a default weight that reflects its structural importance
 | `related_to` | **0.5** | Generic relation (co-mention, thematic) |
 | `references` | **0.4** | A references B (wikilink, weak mention) |
 
-An explicit `weight` can be passed when creating a relation via `mem_relate`. If not passed, the type's default is used.
+An explicit `weight` can be passed when creating a relation via `mneme mem relate`. If not passed, the type's default is used.
 
 **Intuition about weights:** A 2-hop path with weights 0.9 * 0.9 = 0.81 is very strong (transitive dependency). A 2-hop path with weights 0.4 * 0.4 = 0.16 is weak (indirect reference). The product naturally penalizes long paths with weak edges.
 
@@ -148,7 +148,7 @@ mem_save({
 })
 ```
 
-After the save, `mem_explore("impl/auth-middleware")` returns `architecture/auth-model` and `convention/error-codes` at distance 1 with weight=0.6.
+After the save, `mneme explore "impl/auth-middleware"` returns `architecture/auth-model` and `convention/error-codes` at distance 1 with weight=0.6.
 
 ---
 
@@ -158,7 +158,7 @@ When a wikilink `[[topic_key]]` cannot be resolved (the target memory doesn't ex
 
 ### Why it matters
 
-The agent can write `[[decision/retry-strategy]]` before that memory exists. Without gap tracking, this wikilink would be silently lost. With `unresolved_references`, the graph knows there's a gap and can expose it via `mem_gaps` (SPEC-W3, upcoming).
+The agent can write `[[decision/retry-strategy]]` before that memory exists. Without gap tracking, this wikilink would be silently lost. With `unresolved_references`, the graph knows there's a gap and can expose it via `mneme gaps`.
 
 ### Schema
 
@@ -533,9 +533,9 @@ Any error during community packing (ListCommunities, PPR, etc.) is logged as a w
 
 ---
 
-## mem_explore
+## mneme explore
 
-`mem_explore` is an interactive graph exploration tool. Starting from a seed memory, it performs a prioritized BFS and returns connected memories with their distances and accumulated weights.
+`mneme explore` (CLI; it left the MCP surface in 2.0) is an interactive graph exploration command. Starting from a seed memory, it performs a prioritized BFS and returns connected memories with their distances and accumulated weights.
 
 ### When to use it
 
@@ -719,15 +719,15 @@ Rebuild complete in 1.234s:
 
 ## graph cleanup-orphan-relations
 
-`mneme graph cleanup-orphan-relations` detects and optionally deletes **orphan relations**: those whose entities have no row in `memory_entities` and are therefore unreachable from `mem_explore`. Introduced in SPEC-031.
+`mneme graph cleanup-orphan-relations` detects and optionally deletes **orphan relations**: those whose entities have no row in `memory_entities` and are therefore unreachable from `mneme explore`. Introduced in SPEC-031.
 
 ### Why it exists
 
-Before SPEC-031, `mem_relate` did not resolve `topic_key` to a memory and never called `LinkMemoryEntity`. Result: relations created via `mem_relate` were disconnected from the memory_entities bridge and invisible to `mem_explore`. This command allows cleaning up the residue.
+Before SPEC-031, `mneme mem relate` (then the `mem_relate` MCP tool, now retired) did not resolve `topic_key` to a memory and never called `LinkMemoryEntity`. Result: relations created that way were disconnected from the memory_entities bridge and invisible to `mneme explore`. This command allows cleaning up the residue.
 
 ### Recommended recovery flow
 
-For a project affected by the bug (relations exist but `mem_explore` returns 0 hops):
+For a project affected by the bug (relations exist but `mneme explore` returns 0 hops):
 
 ```bash
 # 1) See what would be deleted (dry-run, default)
@@ -743,16 +743,16 @@ mneme graph rebuild --force
 mneme explore <topic_key>
 ```
 
-### mem_relate resolution post-fix
+### mneme mem relate resolution post-fix
 
-After SPEC-031, `mem_relate` resolves each endpoint in this order:
+After SPEC-031, `mneme mem relate` resolves each endpoint in this order:
 
 1. Full UUID or 8+ hex prefix of an existing memory → memory
 2. If `*_kind` is omitted (default `concept`): exact `topic_key` in project store or global store → memory
 3. Entity with `name == string` in project (reuse)
 4. Create new entity with `kind` (default `concept`)
 
-When resolution lands on a memory, `LinkMemoryEntity(memory.ID, proxy_entity.ID, "relate")` is called automatically so the relation is reachable by `mem_explore`'s BFS. Passing an explicit `*_kind` other than `concept` (e.g. `"service"`, `"library"`) preserves the legacy entity-only semantics.
+When resolution lands on a memory, `LinkMemoryEntity(memory.ID, proxy_entity.ID, "relate")` is called automatically so the relation is reachable by `mneme explore`'s BFS. Passing an explicit `*_kind` other than `concept` (e.g. `"service"`, `"library"`) preserves the legacy entity-only semantics.
 
 ### Flags
 
@@ -793,9 +793,9 @@ Re-running the command after a successful `--apply` reports 0 candidates. It is 
 | `mneme gaps` | List knowledge gaps (unresolved wikilinks) |
 | `mneme search --no-graph` | Search without graph expansion |
 | `mneme consolidate` | Run pipeline including community detection + synthesis |
-| `mem_relate` (MCP) | Create/update a relation between entities |
-| `mem_explore` (MCP) | Graph exploration from MCP |
-| `mem_gaps` (MCP) | List knowledge gaps |
+| `mneme mem relate <source> <target> <relation>` (CLI) | Create/update a relation between entities |
+| `mneme explore <seed>` (CLI) | Graph exploration |
+| `mneme gaps` (CLI) | List knowledge gaps |
 
 Full reference for all endpoints: [docs/api/memory.md](api/memory.md).
 
@@ -828,7 +828,7 @@ expansion_threshold = 0.3     # Min weight to follow
 expansion_fan_out_cap = 50    # Max relations per entity
 expansion_seed_top_k = 10     # Seeds for expansion
 
-# mem_explore defaults (MNEME_GRAPH_EXPLORE_*)
+# mneme explore defaults (MNEME_GRAPH_EXPLORE_*)
 explore_max_nodes = 200       # Hard cap on BFS nodes
 explore_default_depth = 2     # Default depth when not specified
 explore_default_budget = 4000 # Default token budget
@@ -864,6 +864,6 @@ mneme config show context
 
 ## See also
 
-- [API reference: Memory tools](api/memory.md) → -- full contract for `mem_relate`, `mem_explore`, and graph-aware fields on `mem_search`/`mem_context`
+- [API reference: Memory tools](api/memory.md) → -- full contract for the memory tools and the graph-aware fields on `mem_search`/`mem_context`
 - [HOOKS.md](HOOKS.md) -- pre-tool-use hook and session hooks
 - [CONFIG.md](CONFIG.md) -- full config reference including `[graph]` and `[context]`

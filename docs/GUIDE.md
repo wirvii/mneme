@@ -149,7 +149,7 @@ If you save without a `topic_key`, `mem_save` answers with a `suggested_topic_ke
 
 ## 3. Searching and Retrieving
 
-mneme has three retrieval tools. Use this decision tree:
+mneme has three MCP retrieval tools plus two CLI commands for exploring the graph and the timeline. Use this decision tree:
 
 ```
 What do I need?
@@ -161,10 +161,10 @@ What do I need?
   |     -> mem_search
   |
   |-- "Explore connections from a known memory"
-  |     -> mem_explore
+  |     -> mneme explore (CLI)
   |
   |-- "See what happened around a point in time"
-        -> mem_timeline
+        -> mneme mem timeline (CLI)
 ```
 
 ### mem_context -- Session bootstrap
@@ -225,9 +225,9 @@ mem_search({
 
 **When to use:** Looking for specific knowledge. The `include_graph` flag (default true) adds topologically related memories even if they do not contain the search terms.
 
-**When NOT to use:** To load broad context at session start (use `mem_context`) or to trace connections from a specific memory (use `mem_explore`).
+**When NOT to use:** To load broad context at session start (use `mem_context`) or to trace connections from a specific memory (use `mneme explore`).
 
-### mem_explore -- Graph traversal
+### mneme explore -- Graph traversal (CLI)
 
 Starting from a seed memory, performs a prioritized BFS following strong graph relations.
 
@@ -247,23 +247,19 @@ mneme explore "architecture/auth-model" --depth 2
 
 **Seed resolution:** Full UUID, hex prefix (8+ chars), or `topic_key`.
 
-**MCP:**
+**Deeper traversal, with budget and threshold:**
 
-```json
-mem_explore({
-  "seed": "architecture/auth-model",
-  "depth": 3,
-  "budget": 8000,
-  "threshold": 0.2
-})
+```bash
+mneme explore "architecture/auth-model" --depth 3 --budget 8000 --threshold 0.2
+mneme explore "architecture/auth-model" --json   # structured output
 ```
 
 **When to use:** Understanding what is connected to a specific piece of knowledge. Debugging the graph. Building deep context for a specific module.
 
-### mem_timeline -- Temporal neighborhood
+### mneme mem timeline -- Temporal neighborhood (CLI)
 
-```json
-mem_timeline({ "around": "2026-04-28T12:00:00Z", "window": "3d", "limit": 10 })
+```bash
+mneme mem timeline 2026-04-28T12:00:00Z --window 3d --limit 10
 ```
 
 Returns memories created around a specific point in time. Useful for reconstructing "what happened last Tuesday."
@@ -384,21 +380,21 @@ mem_save({
 })
 ```
 
-After saving, `mem_explore("impl/auth-middleware")` returns both referenced memories at distance 1 with weight 0.6.
+After saving, `mneme explore "impl/auth-middleware"` returns both referenced memories at distance 1 with weight 0.6.
 
 ### Unresolved references (knowledge gaps)
 
 If a wikilink target does not exist yet, it is tracked in the `unresolved_references` table. When a memory with that `topic_key` is saved later, the link is auto-resolved.
 
-Use `mem_gaps` to see what is missing:
+Use `mneme gaps` to see what is missing:
 
-```json
-mem_gaps({ "limit": 10, "min_mentions": 2 })
+```bash
+mneme gaps --limit 10 --min-count 2
 ```
 
 **When to use wikilinks:**
 - When referencing another memory you know exists (or should exist).
-- To create implicit "see also" connections without calling `mem_relate`.
+- To create implicit "see also" connections without calling `mneme mem relate`.
 
 **When NOT to use:**
 - In code blocks (they are automatically skipped by the parser).
@@ -412,7 +408,7 @@ The graph connects entities (nodes) via weighted directed relations (edges). Thr
 
 ### How edges are created
 
-1. **Explicit:** `mem_relate` creates a specific relation with a chosen type and weight.
+1. **Explicit:** `mneme mem relate` creates a specific relation with a chosen type and weight.
 2. **Wikilinks:** `[[topic_key]]` in content creates `references` relations (weight 0.6).
 3. **Hebbian:** Memories accessed together in the same session window have their entities' relations auto-strengthened.
 4. **Graph rebuild:** `mneme graph rebuild` backfills the graph from existing memories.
@@ -432,15 +428,9 @@ The graph connects entities (nodes) via weighted directed relations (edges). Thr
 
 ### Creating a relation manually
 
-```json
-mem_relate({
-  "source": "auth-service",
-  "target": "jwt-library",
-  "relation": "depends_on",
-  "source_kind": "service",
-  "target_kind": "library",
-  "weight": 0.95
-})
+```bash
+mneme mem relate auth-service jwt-library depends_on \
+  --source-kind service --target-kind library --weight 0.95
 ```
 
 ### Bootstrapping the graph for an existing project
@@ -705,7 +695,7 @@ generation. Since SPEC-073 they are **no longer installed globally** to
 | **bug-hunter** | sonnet | READ-ONLY investigation, never modifies code | `diagnosis.md` |
 | **diagnostician** | sonnet | Reads logs/infra, triages, proposes; `Bash` for reading only, no Edit/Write | `diagnosis` notes |
 
-All agents integrate with mneme memory at start (search + spec_status) and end (save discoveries + spec_advance). Model per role is chosen when the `mneme-init` grill composes a per-project subagent (`subagent_compose`); `mneme model set/list/reset` still manages the `[models.overrides]` config (see [docs/models.md](models.md)).
+All agents integrate with mneme memory at start (search + spec_status) and end (save discoveries + spec_advance). Model per role is chosen when the `mneme-init` grill composes a per-project subagent (`mneme subagents compose`); `mneme model set/list/reset` still manages the `[models.overrides]` config (see [docs/models.md](models.md)).
 
 ### Per-project subagents (mneme-init grill)
 
@@ -1008,7 +998,7 @@ Consolidation enforces the budget. The lowest-scored memories are soft-deleted w
 Yes, as long as they run on the same machine. SQLite handles concurrent reads. Writes are serialized (single writer). The MCP server uses WAL mode for this.
 
 **Q: How do I delete a memory permanently?**
-`mem_forget` sets `decay_rate=1.0` (soft delete). The memory is hard-deleted during the next consolidation cycle after the retention period (default 30 days). There is no instant hard-delete command.
+`mneme forget <id>` sets `decay_rate=1.0` (soft delete). The memory is hard-deleted during the next consolidation cycle after the retention period (default 30 days). There is no instant hard-delete command.
 
 **Q: Can I use mneme for non-code projects?**
 Yes. Memory types like `decision`, `discovery`, and `convention` are domain-agnostic. Use project scope for project-specific knowledge and global scope for personal knowledge.
