@@ -1,12 +1,54 @@
 package db
 
 import (
+	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/fstest"
 	"time"
 )
+
+// TestMigrate_FailedMigrationRecordsNothing proves the whole pass is one unit
+// (SPEC-178 D-B): when the second pending migration is broken, the first one
+// -- which succeeded -- leaves neither its table nor its version behind.
+func TestMigrate_FailedMigrationRecordsNothing(t *testing.T) {
+	fsys := fstest.MapFS{
+		"migrations/001_ok.sql": {Data: []byte(
+			"CREATE TABLE ok_table (id INTEGER);\n" +
+				"INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (1, datetime('now'));\n")},
+		"migrations/002_broken.sql": {Data: []byte("THIS IS NOT SQL;\n")},
+	}
+
+	sqlDB, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "atomic.db"))
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer sqlDB.Close()
+
+	if err := migrateFS(context.Background(), sqlDB, fsys); err == nil {
+		t.Fatal("migrateFS succeeded, want an error from the broken migration")
+	}
+
+	var tables int
+	if err := sqlDB.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE name = 'ok_table'`).Scan(&tables); err != nil {
+		t.Fatalf("count ok_table: %v", err)
+	}
+	if tables != 0 {
+		t.Errorf("ok_table survived a failed pass")
+	}
+
+	var versions int
+	err = sqlDB.QueryRow(`SELECT COUNT(*) FROM schema_version`).Scan(&versions)
+	if err != nil && !isNoSuchTable(err) {
+		t.Fatalf("count schema_version: %v", err)
+	}
+	if versions != 0 {
+		t.Errorf("schema_version holds %d rows after a failed pass, want 0", versions)
+	}
+}
 
 // TestMigrate_Fresh opens an in-memory database and verifies that migrate
 // creates every table and FTS5 virtual table defined in 001_initial.sql.

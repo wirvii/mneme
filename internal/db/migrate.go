@@ -30,12 +30,60 @@ type sqlExecutor interface {
 // migrate applies all pending SQL migration files embedded in migrationsFS.
 // Migration files must be named with a numeric prefix followed by an underscore,
 // e.g. "001_initial.sql". Files are applied in ascending lexicographic order.
-// Each file is executed inside its own transaction. If the transaction succeeds,
-// a row is inserted into schema_version before the transaction is committed.
+//
+// The whole pass -- reading the current version, applying every pending file,
+// recording their versions and the self-healing checks -- runs on one
+// dedicated connection inside a single BEGIN IMMEDIATE transaction (SPEC-178
+// D1). IMMEDIATE takes the write lock when the transaction starts, so a second
+// process opening the same database waits (up to busy_timeout) and, once
+// inside, reads a version that already includes the first process's work
+// instead of a stale one read outside any lock. If any step fails the whole
+// pass is rolled back and the database is left exactly as it was.
 //
 // migrate is idempotent: calling it on an already-migrated database is a no-op.
 // It is called automatically by Open and OpenMemory.
 func migrate(db *sql.DB) error {
+	return migrateFS(context.Background(), db, migrationsFS)
+}
+
+// migrateFS is migrate with the migration source injected, so tests can feed
+// it a fstest.MapFS holding a deliberately broken migration.
+//
+// Nothing inside may touch db directly: BEGIN IMMEDIATE only protects
+// statements that travel through the same physical connection, and
+// OpenMemory pins the pool to a single connection, so a stray db.Exec while
+// conn is checked out would wait forever.
+func migrateFS(ctx context.Context, db *sql.DB, fsys fs.FS) error {
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("db: migrate: take connection: %w", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return fmt.Errorf("db: migrate: begin immediate: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			// Best effort: the original error is the one worth reporting.
+			_, _ = conn.ExecContext(context.WithoutCancel(ctx), "ROLLBACK")
+		}
+	}()
+
+	if err := migrateLocked(ctx, conn, fsys); err != nil {
+		return err
+	}
+	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+		return fmt.Errorf("db: migrate: commit: %w", err)
+	}
+	committed = true
+	return nil
+}
+
+// migrateLocked is the body of a migration pass; the caller holds the write
+// lock and owns the transaction on ex.
+func migrateLocked(ctx context.Context, ex sqlExecutor, fsys fs.FS) error {
 	// Ensure the schema_version table exists before we query it. This is the
 	// bootstrap step that makes migrate safe to call on a brand-new database.
 	const createVersion = `
@@ -43,19 +91,42 @@ CREATE TABLE IF NOT EXISTS schema_version (
     version    INTEGER PRIMARY KEY,
     applied_at TEXT NOT NULL
 )`
-	if _, err := db.Exec(createVersion); err != nil {
+	if _, err := ex.ExecContext(ctx, createVersion); err != nil {
 		return fmt.Errorf("db: migrate: create schema_version: %w", err)
 	}
 
-	// Determine the highest version already applied.
+	// Determine the highest version already applied. Read inside the write
+	// lock: this is the value that decides what to apply.
 	var current int
-	row := db.QueryRow(`SELECT COALESCE(MAX(version), 0) FROM schema_version`)
+	row := ex.QueryRowContext(ctx, `SELECT COALESCE(MAX(version), 0) FROM schema_version`)
 	if err := row.Scan(&current); err != nil {
 		return fmt.Errorf("db: migrate: read schema_version: %w", err)
 	}
 
+	if err := applyPending(ctx, ex, fsys, current); err != nil {
+		return err
+	}
+
+	// SPEC-128 D7 mitad A: the SDD anchor invariant is self-healing, not a
+	// one-shot migration side effect. See ensureSDDUUIDs' own godoc.
+	if err := ensureSDDUUIDs(ex); err != nil {
+		return fmt.Errorf("db: migrate: ensure sdd uuids: %w", err)
+	}
+
+	// SPEC-167 D2: the reviewed_at column is guaranteed by its own check, not
+	// by a migration -- see ensureMemoryReviewedAt's godoc.
+	if err := ensureMemoryReviewedAt(ex); err != nil {
+		return fmt.Errorf("db: migrate: ensure reviewed_at: %w", err)
+	}
+
+	return nil
+}
+
+// applyPending applies, in filename order, every migration in fsys whose
+// version is above current.
+func applyPending(ctx context.Context, ex sqlExecutor, fsys fs.FS, current int) error {
 	// Collect all migration files from the embedded FS.
-	entries, err := fs.ReadDir(migrationsFS, "migrations")
+	entries, err := fs.ReadDir(fsys, "migrations")
 	if err != nil {
 		return fmt.Errorf("db: migrate: read embedded migrations: %w", err)
 	}
@@ -81,62 +152,39 @@ CREATE TABLE IF NOT EXISTS schema_version (
 			continue
 		}
 
-		content, err := migrationsFS.ReadFile("migrations/" + name)
+		content, err := fs.ReadFile(fsys, "migrations/"+name)
 		if err != nil {
 			return fmt.Errorf("db: migrate: read %q: %w", name, err)
 		}
 
 		if version == 5 {
-			if err := migration005PreFlight(db); err != nil {
+			if err := migration005PreFlight(ex); err != nil {
 				return fmt.Errorf("db: migrate: apply %q: %w", name, err)
 			}
 		}
 
-		if err := applyMigration(db, version, string(content)); err != nil {
+		if err := applyMigration(ex, version, string(content)); err != nil {
 			return fmt.Errorf("db: migrate: apply %q: %w", name, err)
 		}
 	}
-
-	// SPEC-128 D7 mitad A: the SDD anchor invariant is self-healing, not a
-	// one-shot migration side effect. See ensureSDDUUIDs' own godoc.
-	if err := ensureSDDUUIDs(db); err != nil {
-		return fmt.Errorf("db: migrate: ensure sdd uuids: %w", err)
-	}
-
-	// SPEC-167 D2: the reviewed_at column is guaranteed by its own check, not
-	// by a migration -- see ensureMemoryReviewedAt's godoc.
-	if err := ensureMemoryReviewedAt(db); err != nil {
-		return fmt.Errorf("db: migrate: ensure reviewed_at: %w", err)
-	}
-
 	return nil
 }
 
-// applyMigration runs the SQL from a single migration file inside a transaction
-// and records the version in schema_version on success. The version row is
-// inserted as part of the same transaction so a partial failure leaves the
-// database in a clean state.
-func applyMigration(db *sql.DB, version int, sqlContent string) error {
-	tx, err := db.Begin()
-	if err != nil {
-		return fmt.Errorf("begin transaction: %w", err)
-	}
-	// Always roll back if we return without committing.
-	defer func() { _ = tx.Rollback() }()
-
-	if _, err := tx.Exec(sqlContent); err != nil {
+// applyMigration runs the SQL from a single migration file and records the
+// version in schema_version. It does not open a transaction: it runs inside
+// the one migrateFS holds, so a failure anywhere in the pass undoes every
+// file applied before it.
+func applyMigration(ex sqlExecutor, version int, sqlContent string) error {
+	ctx := context.Background()
+	if _, err := ex.ExecContext(ctx, sqlContent); err != nil {
 		return fmt.Errorf("exec sql: %w", err)
 	}
 
 	const insertVersion = `
 INSERT OR IGNORE INTO schema_version (version, applied_at)
 VALUES (?, datetime('now'))`
-	if _, err := tx.Exec(insertVersion, version); err != nil {
+	if _, err := ex.ExecContext(ctx, insertVersion, version); err != nil {
 		return fmt.Errorf("record version %d: %w", version, err)
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit: %w", err)
 	}
 
 	return nil

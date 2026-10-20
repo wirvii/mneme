@@ -10,15 +10,39 @@ package db
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	// Register the sqlite driver. modernc.org/sqlite is a pure-Go transpilation
 	// of SQLite with FTS5 compiled in by default — no CGO, no C compiler, no
 	// build tags required.
 	_ "modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
+)
+
+const (
+	// busyTimeoutMillis is the busy_timeout of every read-write connection.
+	// It is a single constant so the DSN and openPingDeadline cannot drift
+	// apart.
+	busyTimeoutMillis = 5000
+
+	// openPingDeadline bounds how long Open keeps retrying Ping on
+	// SQLITE_BUSY. It equals busy_timeout: waiting longer than SQLite itself
+	// would wait for any other lock would only hide a stuck writer.
+	openPingDeadline = busyTimeoutMillis * time.Millisecond
+
+	// openPingRetryInterval is the pause between Ping attempts. Short on
+	// purpose: the contended step (switching a new file to WAL) takes
+	// milliseconds, and the busy handler cannot do this waiting for us.
+	openPingRetryInterval = 10 * time.Millisecond
+
+	// sqliteResultCodeMask extracts the primary result code from an extended
+	// one (SQLITE_BUSY_RECOVERY & mask == SQLITE_BUSY).
+	sqliteResultCodeMask = 0xff
 )
 
 // DB is a thin wrapper around *sql.DB that guarantees the connection was opened
@@ -37,6 +61,12 @@ type DB struct {
 //   - busy_timeout=5000 — wait up to 5 seconds when the DB is locked.
 //   - synchronous=NORMAL — durable enough for a developer tool, faster than FULL.
 //
+// Switching a brand-new file to WAL needs a brief exclusive lock that SQLite
+// does not wait for with busy_timeout: it fails at once with SQLITE_BUSY if
+// another process is creating or migrating the same file. Open therefore
+// retries Ping while the error is SQLITE_BUSY, every 10 ms for at most the
+// busy_timeout (SPEC-178 D1b); any other error returns immediately.
+//
 // Open also runs all pending schema migrations automatically. If any step fails
 // the underlying sql.DB is closed before the error is returned.
 func Open(path string) (*DB, error) {
@@ -45,8 +75,8 @@ func Open(path string) (*DB, error) {
 	}
 
 	dsn := fmt.Sprintf(
-		"file:%s?_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)",
-		path,
+		"file:%s?_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)&_pragma=busy_timeout(%d)&_pragma=synchronous(NORMAL)",
+		path, busyTimeoutMillis,
 	)
 
 	sqlDB, err := sql.Open("sqlite", dsn)
@@ -54,7 +84,7 @@ func Open(path string) (*DB, error) {
 		return nil, fmt.Errorf("db: open: %w", err)
 	}
 
-	if err := sqlDB.Ping(); err != nil {
+	if err := pingWithRetry(sqlDB); err != nil {
 		_ = sqlDB.Close()
 		return nil, fmt.Errorf("db: open: ping: %w", err)
 	}
@@ -65,6 +95,33 @@ func Open(path string) (*DB, error) {
 	}
 
 	return &DB{sqlDB}, nil
+}
+
+// pingWithRetry pings sqlDB, retrying while the driver reports SQLITE_BUSY
+// until openPingDeadline has passed. A failed connect is not kept by the pool,
+// so each attempt opens a fresh connection and re-runs the DSN pragmas. The
+// last error is returned when the deadline is exhausted.
+func pingWithRetry(sqlDB *sql.DB) error {
+	deadline := time.Now().Add(openPingDeadline)
+	for {
+		err := sqlDB.Ping()
+		if err == nil || !isBusy(err) || !time.Now().Before(deadline) {
+			return err
+		}
+		time.Sleep(openPingRetryInterval)
+	}
+}
+
+// isBusy reports whether err carries the SQLite primary result code
+// SQLITE_BUSY, including extended codes such as SQLITE_BUSY_RECOVERY. It
+// inspects the driver's result code (modernc's *sqlite.Error exposes Code())
+// and never the message text, which is not a stable contract.
+func isBusy(err error) bool {
+	var coded interface{ Code() int }
+	if !errors.As(err, &coded) {
+		return false
+	}
+	return coded.Code()&sqliteResultCodeMask == sqlite3.SQLITE_BUSY
 }
 
 // OpenMemory opens an in-memory SQLite database. The database exists only for
