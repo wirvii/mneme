@@ -308,8 +308,8 @@ run_claude() {
   if [[ "$PREFLIGHT" -eq 1 && ! -e "$OUT/.preflight_ok" ]]; then
     local pre
     pre="$(cd "$work" && "$CLAUDE" -p "Responde solo: OK" --max-turns 1 --output-format json </dev/null 2>"$work/preflight.err" || true)"
-    if [[ "$pre" != *'"result"'* ]]; then
-      die_harness "claude no pudo autenticarse en el HOME aislado; exporta CLAUDE_CODE_OAUTH_TOKEN (claude setup-token) o ANTHROPIC_API_KEY."
+    if [[ "$pre" != *'"result"'* || "$pre" =~ \"is_error\":[[:space:]]*true || "$pre" == *authentication_failed* ]]; then
+      die_harness "claude no tiene sesión en el HOME aislado (autenticación fallida); exporta CLAUDE_CODE_OAUTH_TOKEN (claude setup-token) o ANTHROPIC_API_KEY."
     fi
     : >"$OUT/.preflight_ok"
   fi
