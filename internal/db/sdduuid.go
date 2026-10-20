@@ -1,7 +1,7 @@
 package db
 
 import (
-	"database/sql"
+	"context"
 	"fmt"
 
 	"github.com/gofrs/uuid/v5"
@@ -33,19 +33,19 @@ import (
 //
 // OpenReadOnly does not call migrate (and therefore never calls this), so
 // the latency-sensitive pre-tool-use hook path pays nothing here.
-func ensureSDDUUIDs(db *sql.DB) error {
+func ensureSDDUUIDs(ex sqlExecutor) error {
 	var schemaVersion int
-	if err := db.QueryRow(`SELECT COALESCE(MAX(version), 0) FROM schema_version`).Scan(&schemaVersion); err != nil {
+	if err := ex.QueryRowContext(context.Background(), `SELECT COALESCE(MAX(version), 0) FROM schema_version`).Scan(&schemaVersion); err != nil {
 		return fmt.Errorf("db: ensure sdd uuids: read schema_version: %w", err)
 	}
 	if schemaVersion < 19 {
 		return nil
 	}
 
-	if err := fillMissingBacklogUUIDs(db); err != nil {
+	if err := fillMissingBacklogUUIDs(ex); err != nil {
 		return err
 	}
-	if err := fillMissingSpecUUIDs(db); err != nil {
+	if err := fillMissingSpecUUIDs(ex); err != nil {
 		return err
 	}
 	return nil
@@ -55,16 +55,16 @@ func ensureSDDUUIDs(db *sql.DB) error {
 // whose uuid column is still empty. backlog_items' primary key is the bare
 // id column (unlike specs, see fillMissingSpecUUIDs), so id alone is enough
 // to address a row precisely.
-func fillMissingBacklogUUIDs(db *sql.DB) error {
+func fillMissingBacklogUUIDs(ex sqlExecutor) error {
 	var hasMissing bool
-	if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM backlog_items WHERE uuid = '' LIMIT 1)`).Scan(&hasMissing); err != nil {
+	if err := ex.QueryRowContext(context.Background(), `SELECT EXISTS(SELECT 1 FROM backlog_items WHERE uuid = '' LIMIT 1)`).Scan(&hasMissing); err != nil {
 		return fmt.Errorf("db: ensure sdd uuids: check backlog_items: %w", err)
 	}
 	if !hasMissing {
 		return nil
 	}
 
-	rows, err := db.Query(`SELECT id FROM backlog_items WHERE uuid = ''`)
+	rows, err := ex.QueryContext(context.Background(), `SELECT id FROM backlog_items WHERE uuid = ''`)
 	if err != nil {
 		return fmt.Errorf("db: ensure sdd uuids: select backlog_items: %w", err)
 	}
@@ -91,7 +91,7 @@ func fillMissingBacklogUUIDs(db *sql.DB) error {
 		if err != nil {
 			return fmt.Errorf("db: ensure sdd uuids: generate uuid for backlog_items %s: %w", id, err)
 		}
-		if _, err := db.Exec(`UPDATE backlog_items SET uuid = ? WHERE id = ? AND uuid = ''`, anchor.String(), id); err != nil {
+		if _, err := ex.ExecContext(context.Background(), `UPDATE backlog_items SET uuid = ? WHERE id = ? AND uuid = ''`, anchor.String(), id); err != nil {
 			return fmt.Errorf("db: ensure sdd uuids: update backlog_items %s: %w", id, err)
 		}
 	}
@@ -110,16 +110,16 @@ type specKey struct {
 // UPDATE keyed only on id could silently anchor every project's "SPEC-001"
 // to the same row. Both columns are read and used in the WHERE clause for
 // exactly that reason.
-func fillMissingSpecUUIDs(db *sql.DB) error {
+func fillMissingSpecUUIDs(ex sqlExecutor) error {
 	var hasMissing bool
-	if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM specs WHERE uuid = '' LIMIT 1)`).Scan(&hasMissing); err != nil {
+	if err := ex.QueryRowContext(context.Background(), `SELECT EXISTS(SELECT 1 FROM specs WHERE uuid = '' LIMIT 1)`).Scan(&hasMissing); err != nil {
 		return fmt.Errorf("db: ensure sdd uuids: check specs: %w", err)
 	}
 	if !hasMissing {
 		return nil
 	}
 
-	rows, err := db.Query(`SELECT project, id FROM specs WHERE uuid = ''`)
+	rows, err := ex.QueryContext(context.Background(), `SELECT project, id FROM specs WHERE uuid = ''`)
 	if err != nil {
 		return fmt.Errorf("db: ensure sdd uuids: select specs: %w", err)
 	}
@@ -146,7 +146,7 @@ func fillMissingSpecUUIDs(db *sql.DB) error {
 		if err != nil {
 			return fmt.Errorf("db: ensure sdd uuids: generate uuid for specs %s/%s: %w", k.project, k.id, err)
 		}
-		if _, err := db.Exec(
+		if _, err := ex.ExecContext(context.Background(),
 			`UPDATE specs SET uuid = ? WHERE project = ? AND id = ? AND uuid = ''`,
 			anchor.String(), k.project, k.id,
 		); err != nil {

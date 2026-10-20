@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"embed"
 	"fmt"
@@ -12,6 +13,19 @@ import (
 
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
+
+// sqlExecutor is the subset of database/sql the migration helpers need. It is
+// satisfied by *sql.DB, *sql.Conn and *sql.Tx, so the same helper can run
+// against the pool (tests, read-only checks) or against the single dedicated
+// connection that holds the migration write lock (SPEC-178 D1). Accepting the
+// interface instead of *sql.DB is what lets migrate guarantee that every
+// statement of one migration pass travels through the same physical
+// connection and therefore the same transaction.
+type sqlExecutor interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
 
 // migrate applies all pending SQL migration files embedded in migrationsFS.
 // Migration files must be named with a numeric prefix followed by an underscore,
@@ -156,12 +170,12 @@ func versionFromFilename(name string) (int, error) {
 // collisions because SQLite's composite PK only requires uniqueness within the
 // same (project, id) pair. However, allowing duplicates would contradict the
 // intended semantics, so we abort early with a clear message instead.
-func migration005PreFlight(db *sql.DB) error {
+func migration005PreFlight(ex sqlExecutor) error {
 	// The specs table may not exist yet (e.g. a fresh DB running migrations
 	// 001–005 for the first time). Detect its presence before querying.
 	const checkTable = `SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='specs'`
 	var tableCount int
-	if err := db.QueryRow(checkTable).Scan(&tableCount); err != nil {
+	if err := ex.QueryRowContext(context.Background(), checkTable).Scan(&tableCount); err != nil {
 		return fmt.Errorf("migration 005: check specs table: %w", err)
 	}
 	if tableCount == 0 {
@@ -177,7 +191,7 @@ SELECT COUNT(*) FROM (
     HAVING COUNT(DISTINCT project) > 1
 )`
 	var n int
-	if err := db.QueryRow(q).Scan(&n); err != nil {
+	if err := ex.QueryRowContext(context.Background(), q).Scan(&n); err != nil {
 		return fmt.Errorf("migration 005: collision check: %w", err)
 	}
 	if n > 0 {
