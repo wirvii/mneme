@@ -23,7 +23,12 @@ func ParityMatrix() []ParityCapability {
 		{"team memory", "git-native vault", "git-native vault"},
 		{"mneme-init", "slash wrapper or skill", "skill"},
 		{"grill-me", "slash wrapper or skill", "skill"},
-		{"flow skills", "skills (mneme-flow, feature, bug, trivial, review-brief, present-spec)", "skills (same set)"},
+		{"mneme-flow", "skill", "skill"},
+		{"feature", "skill", "skill"},
+		{"bug", "skill", "skill"},
+		{"trivial", "skill", "skill"},
+		{"review-brief", "skill", "skill"},
+		{"present-spec", "skill", "skill"},
 		{"host configuration", "~/.claude", "$CODEX_HOME"},
 	}
 }
