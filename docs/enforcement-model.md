@@ -263,7 +263,7 @@ promote` read to decide when a project has enough evidence to move from
 ### Lifecycle-tool denial (SPEC-087 D5)
 
 A subagent-containment allow does not mean a subagent may do anything MCP
-exposes. `enforce-delegation` separately, unconditionally denies two SDD
+exposes. `enforce-delegation` separately, unconditionally denies four SDD
 lifecycle tools to any resolved subagent — total block, no mode:
 
 | Tool | Result |
@@ -271,6 +271,7 @@ lifecycle tools to any resolved subagent — total block, no mode:
 | `mcp__mneme__spec_advance` | **BLOCK** — the observed defect (SPEC-063's premature `done`) |
 | `mcp__mneme__spec_quick` | **BLOCK** — disguised advance (draft→rationale→implementing) and an orchestrator-only operation |
 | `mcp__mneme__backlog_archive` | **BLOCK** — discarding work and irreversibly freezing the spec it governs is the owner's call, channelled by the orchestrator (SPEC-125 D11/DD11) |
+| `mcp__mneme__lane_override` | **BLOCK** — bypassing the trivial-lane auditor is decided by the orchestrator or the owner, never by the author of the change (SPEC-175) |
 | `mcp__mneme__spec_pushback`, `mcp__mneme__spec_reject`, `mcp__mneme__spec_doc_write`, `mcp__mneme__mem_*`, `mcp__mneme__codegraph_*` | **ALLOW** |
 
 `lifecycleTools` (`internal/cli/hook.go`) is an **exact-match** set —
@@ -283,6 +284,28 @@ if Claude Code ever stops sending `agent_type` and subagent containment
 loses its signal. No discovery memory on block (a contained subagent did
 not bypass SDD); a best-effort `enforcelog` event is recorded instead
 (`Reason: "lifecycle_tool_denied_to_subagent"`).
+
+**The same verbs over Bash (SPEC-175).** Denying only the MCP names left the
+terminal open: a subagent with `Bash` could type `mneme spec advance`. A second
+guard, right after the one above, runs `enforcement.EvaluateLifecycleCommand`
+(pure, over `shell.SimpleCommands`) on a subagent's Bash command and rejects
+`mneme spec advance|quick`, `mneme sdd import`, `mneme backlog archive` and
+`mneme lane override` (exit 2; `Reason: "lifecycle_command_denied_to_subagent"`,
+no discovery memory). A command whose own simple command names an isolated data
+directory (`--data-dir`, `HOME=`, `USERPROFILE=`, `MNEME_DATA_DIR=`, non-empty
+and not the real one) is allowed, so mneme itself can be tested. Limits, all
+accepted: R1 it is a heuristic, not a sandbox (`eval`, a variable holding the
+binary, a renamed binary, `xargs`, script files, unlisted wrappers pass); R2 a
+hand-written path to the real directory that is not a known literal passes; R3
+the git hooks of `mneme sdd hooks install` run `mneme sdd import` against the
+real database on `git pull`/`git checkout` and the hook cannot see that
+subprocess. Details and the literal message: `docs/HOOKS.md`.
+
+**Codex.** Children carry `agent_id`/`agent_type` and send the shell tool as
+`Bash`, so the hook guards apply unchanged. The role-bound MCP server
+(`CallerPolicy` in `internal/mcp/caller_policy.go`) is the second layer and
+denies the same four tools: `spec_advance`, `spec_quick`, `backlog_archive`
+and `lane_override`. `backlog_archive` was a parity gap before SPEC-175.
 
 This closes the gap `spec_doc_write` (SPEC-087 D3) opens on purpose: a
 subagent can now write its own entregable (`spec.md`/`plan.md`/

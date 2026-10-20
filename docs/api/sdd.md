@@ -741,9 +741,11 @@ Calling the former tool names over MCP now answers `-32601` `unknown tool`.
 
 **Behaviour change to know about:** `sdd_import` used to be denied to
 subagents by `lifecycleTools` (`internal/cli/hook.go`). As a CLI command it
-is no longer covered by that map; a subagent with Bash can run it, exactly as
-it can already run `mneme spec advance`. Denying lifecycle verbs spoken
-through Bash is tracked as separate work (SPEC-163 R1).
+is no longer covered by that map, but SPEC-175 closed the terminal: the
+`enforce-delegation` hook rejects `mneme sdd import` (and `mneme spec advance`,
+`spec quick`, `backlog archive`, `lane override`) run by a subagent through
+Bash, unless the same command points at an isolated data directory. See
+`docs/HOOKS.md`, "Lifecycle commands over Bash".
 
 ---
 

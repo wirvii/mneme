@@ -27,7 +27,7 @@ The common base of the flow skills. The operating manual is the authority on the
 | orchestrator | all of them |
 | subagents | `spec_pushback`, `spec_reject` (qa-tester), `spec_doc_write` |
 
-A subagent never calls `spec_advance`, `spec_quick` or `backlog_archive`: the lifecycle is the orchestrator's.
+A subagent never runs `spec_advance`, `spec_quick`, `backlog_archive` or `lane_override`, by MCP or by terminal (`mneme spec advance`, `mneme sdd import`, ...): the hook rejects them. To test mneme itself, point the same command at an isolated data directory.
 
 ## The gate
 

@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- SPEC-175: the `enforce-delegation` hook now rejects a subagent's Bash command
+  that runs `mneme spec advance`, `mneme spec quick`, `mneme sdd import`,
+  `mneme backlog archive` or `mneme lane override` (exit 2), unless the same
+  command points mneme at an isolated data directory (`--data-dir`, `HOME=`,
+  `USERPROFILE=` or `MNEME_DATA_DIR=`). Until now only the MCP names were denied.
+- `shell.SimpleCommands` and `enforcement.EvaluateLifecycleCommand`, the pure
+  pieces behind that guard.
+
+### Changed
+
+- SPEC-175: `lane_override` is denied to subagents over MCP too, and the
+  role-bound MCP server of Codex now denies `backlog_archive` and
+  `lane_override` (it only denied `spec_advance` and `spec_quick`).
+- The `mneme-flow` and `trivial` skills say subagents never run these verbs;
+  the new text reaches an installed machine with `mneme install claude-code` /
+  `mneme install codex`.
+
 ## [v1.49.0] — 2026-10-20 — mneme-ligero: a much smaller surface, a 2.7 KB manual and flow skills that load on demand
 
 This is a breaking release (SPEC-161 through SPEC-172). The always-loaded

@@ -536,14 +536,18 @@ document — the only prerequisite is that `mneme` itself is on `PATH`.
 
 ### Lifecycle-tool denial (SPEC-087 D5)
 
-`enforce-delegation` also intercepts two MCP tool names — `spec_advance` and
-`spec_quick` — for any resolved subagent, unconditionally: a subagent calling
-either is blocked (exit 2), no mode, no config, no ramp. This closed the gap
-that let a subagent prematurely mark a spec `done` (SPEC-063).
+`enforce-delegation` also intercepts four MCP tool names — `spec_advance`,
+`spec_quick`, `backlog_archive` and `lane_override` — for any resolved
+subagent, unconditionally: a subagent calling any of them is blocked (exit 2),
+no mode, no config, no ramp. This closed the gap that let a subagent
+prematurely mark a spec `done` (SPEC-063). `lane_override` (bypassing the
+trivial-lane auditor) joined in SPEC-175.
 
 ```
-mcp__mneme__spec_advance   -> exit 2 (blocked)
-mcp__mneme__spec_quick     -> exit 2 (blocked)
+mcp__mneme__spec_advance    -> exit 2 (blocked)
+mcp__mneme__spec_quick      -> exit 2 (blocked)
+mcp__mneme__backlog_archive -> exit 2 (blocked)
+mcp__mneme__lane_override   -> exit 2 (blocked)
 mcp__mneme__spec_pushback  -> exit 0 (allowed)
 mcp__mneme__spec_reject    -> exit 0 (allowed)
 mcp__mneme__spec_doc_write -> exit 0 (allowed)
@@ -553,7 +557,7 @@ Three properties distinguish this guard from the subagent-containment guard
 above:
 
 - **Exact-match, never a prefix.** `lifecycleTools` (`internal/cli/hook.go`)
-  is a two-entry map. A `strings.HasPrefix(tool, "mcp__mneme__spec_")` would
+  is a four-entry map. A `strings.HasPrefix(tool, "mcp__mneme__spec_")` would
   also catch `spec_pushback` and `spec_doc_write` — the two SDD tools a
   subagent is specifically meant to use.
 - **Runs before everything else in `runHookEnforceDelegation`** — before the
@@ -578,6 +582,60 @@ the agent its profile is stale and names the fix directly:
 te pide avanzar la spec, está desactualizado (regenéralo: mneme subagents
 regen). Reporta tu resultado y termina; el orquestador avanzará.
 ```
+
+#### Lifecycle commands over Bash (SPEC-175)
+
+The same rule applies to the terminal. A resolved or unresolved subagent
+(`agent_id` present) whose Bash command runs one of these is blocked with exit 2:
+
+```
+mneme spec advance    mneme spec quick    mneme sdd import
+mneme backlog archive    mneme lane override
+```
+
+The guard sits right after the `lifecycleTools` one, so it also needs only
+`agent_id`. Recognition is done by `enforcement.EvaluateLifecycleCommand` over
+`shell.SimpleCommands`: every simple command is examined, including those after
+`;`, `&&`, `||`, `|`, inside subshells, `if`/`while`/`for`/`case`, `$(...)` and
+`bash -c "..."` (one level). The binary is `mneme` or `mneme.exe` by exact file
+name (`./mneme`, `/usr/local/bin/mneme`, `"C:\bin\mneme.exe"`; never
+`mnemex` or `mneme-dev`), also behind `env`, `command`, `exec`, `nohup` and
+`timeout`, or as `go run ./cmd/mneme`. Global flags (`--data-dir`, `-p`,
+`--project`, `--log-level`) may sit anywhere before the verb. `--help` and `-h`
+do not execute and are not blocked; every other mneme command
+(`spec status`, `spec reject`, `lane audit`, `mem ...`) passes.
+
+**Isolated data directory exception.** If the *same simple command* points
+mneme elsewhere it is allowed, so a subagent can test mneme itself:
+`--data-dir <dir>`, or a `HOME=<dir>`, `USERPROFILE=<dir>` or
+`MNEME_DATA_DIR=<dir>` prefix (also via `env`, or inherited by `bash -c`). An
+empty value, or one that names the real directory (`HOME=$HOME`, `HOME=~`,
+`--data-dir ~/.mneme`, the absolute home or `<home>/.mneme`), does not count.
+`export HOME=/tmp/x; mneme spec advance` is blocked: only the same command
+counts.
+
+Message (Spanish, `%s` is the verb):
+
+```
+⛔ mneme: `mneme spec advance` es del orquestador, no de un subagente. No lo
+ejecutes: reporta tu resultado y devuélvelo al orquestador, que decide o
+consulta al owner.
+Si estás probando mneme, apunta la misma orden a una carpeta de datos
+aislada: --data-dir <dir>, HOME=<dir>, USERPROFILE=<dir> o MNEME_DATA_DIR=<dir>.
+```
+
+A best-effort `enforcelog` event is recorded (`Tool: "Bash"`, `Target: "mneme
+spec advance"`, `Reason: "lifecycle_command_denied_to_subagent"`), no
+discovery memory. Codex children use the same hook (`tool_name: "Bash"`), so
+the guard applies unchanged.
+
+Limits (a heuristic that stops a mistake, not a sandbox): `eval`, a variable
+holding the binary, a renamed binary, `xargs`, a script file, wrappers outside
+the closed set and `go run .` are not recognised; a hand-written path to the
+real directory that is not one of the literals above slips through; an
+unparseable command fails open; and `mneme sdd import` run indirectly by the
+git hooks of `mneme sdd hooks install` (on `git pull`/`git checkout`) is not
+seen by this hook.
 
 `mneme subagents doctor` reports `stale_agent_fixed` for any manifest entry
 whose `Version` is behind `subagents.AgentFixedVersion` (currently 5); `mneme
