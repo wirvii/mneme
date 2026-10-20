@@ -20,7 +20,7 @@ func ParityMatrix() []ParityCapability {
 		{"SDD", "mneme MCP and CLI", "mneme MCP and CLI"},
 		{"skills", "~/.claude/skills", "$HOME/.agents/skills"},
 		{"profiles", "profile activation", "profile activation"},
-		{"codegraph", "mneme MCP and CLI", "mneme MCP and CLI"},
+		{"codegraph", "mneme MCP (4), CLI and skill", "mneme MCP (4), CLI and skill"},
 		{"team memory", "git-native vault", "git-native vault"},
 		{"mneme-init", "slash wrapper or skill", "skill"},
 		{"mneme-profile-author", "skill", "skill"},
