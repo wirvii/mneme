@@ -881,6 +881,10 @@ func specDocPath(rootWorkflowDir, project, id string, kind model.SpecDocKind) (s
 // specDocPath). 0644 permissions, parent directories created as needed, no
 // append and no arbitrary read — a plain overwrite-or-create write.
 func (svc *SDDService) SpecDocWrite(ctx context.Context, req model.SpecDocWriteRequest) (*model.SpecDocWriteResponse, error) {
+	if err := validateTaskRequest(req); err != nil {
+		return nil, err
+	}
+
 	spec, err := svc.store.GetSpec(ctx, req.ID)
 	if err != nil {
 		return nil, fmt.Errorf("service: spec doc write: get: %w", err)
@@ -904,6 +908,19 @@ func (svc *SDDService) SpecDocWrite(ctx context.Context, req model.SpecDocWriteR
 
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("service: spec doc write: mkdir %s: %w", filepath.Dir(path), err)
+	}
+
+	if req.Kind == model.SpecDocKindTask {
+		created, err := writeTaskSection(path, spec, req.Section, req.Content)
+		if err != nil {
+			return nil, err
+		}
+		return &model.SpecDocWriteResponse{
+			Path:    path,
+			Bytes:   len(req.Content),
+			Created: created,
+			Section: string(req.Section),
+		}, nil
 	}
 
 	_, statErr := os.Stat(path)

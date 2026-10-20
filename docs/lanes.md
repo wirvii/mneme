@@ -47,6 +47,17 @@ draft ──spec_quick──► rationale ──spec_advance──► implementi
 
 `spec_quick` collapses the first two transitions into one step with a rationale string.
 
+**Optional: the orchestrator edits inline (SPEC-171).** By default even a trivial
+change is delegated. A project can opt in, in `~/.mneme/config.toml`
+(`[delegation] orchestrator_trivial_inline = true`, or per project under
+`[delegation.projects."<slug>"]`, or `MNEME_DELEGATION_TRIVIAL_INLINE=1`), so that
+while a trivial spec is in `implementing` the orchestrator may use
+`Edit`/`Write`/`MultiEdit` on files inside that spec's declared scope. `Bash`
+stays blocked, the lane's forbidden paths (SQL, migrations, `cmd/**`, install
+assets) are never granted, and `lane_audit` is unchanged: an edit that exceeds
+the budget still fails the audit and forces reclassification. See
+`docs/enforcement-model.md`.
+
 ## Standard SDD Flow
 
 ```

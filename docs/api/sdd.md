@@ -416,7 +416,7 @@ lane) or `rationale` (trivial lane).
 
 ### spec_doc_write
 
-Write a spec entregable (`spec`/`plan`/`qa-report`/`changes`/`criteria`) to
+Write a spec entregable (`spec`/`plan`/`qa-report`/`changes`/`criteria`/`task`) to
 its workflow directory (SPEC-087 D3, `criteria` added by SPEC-156) — the
 path a subagent uses instead of copying its report into the workflow
 directory by hand. The destination directory and filename are never
@@ -445,6 +445,46 @@ writing it would be rewriting the exam it is judged by. The rule fails OPEN
 when a subagent's role cannot be resolved: closing it would leave the
 architect unable to write the document at all the moment `agent_type`
 stopped arriving in the payload.
+
+**`kind = "task"` writes ONE section of `tarea.md`** (SPEC-170) — a single
+document per spec with five fixed sections, one per role, so no role can
+overwrite another's. `section` is required with `task` and forbidden with
+every other kind; the five legacy kinds keep writing their own files
+unchanged. The ids are ASCII slugs; the headings carry the accents:
+
+| `section` | Heading | Written by (subagent archetypes) |
+|-----------|---------|----------------------------------|
+| `que` | `## Qué y por qué` | `architect` |
+| `diseno` | `## Diseño` | `architect` |
+| `plan` | `## Plan` | `architect` |
+| `entrega` | `## Entrega` | `backend`, `frontend`, `bug-hunter` |
+| `revision` | `## Revisión` | `qa-tester` |
+
+The orchestrator may write any section; `diagnostician` none. The table
+lives in `model.TaskSectionAllows` and is enforced by the Claude Code hook
+and by the Codex `CallerPolicy`.
+
+Format: a `<!-- mneme:tarea v=1 -->` line, a `# SPEC-NNN — <title>` line, then
+five regions fenced by `<!-- mneme:tarea:<section>:start -->` /
+`<!-- mneme:tarea:<section>:end -->` marker lines, in the order above. A task
+write replaces ONLY the lines between its section's markers; everything else
+stays byte for byte. mneme writes the heading itself (a duplicate heading as
+the first line of the content is dropped). Any occurrence of
+`<!-- mneme:tarea` inside content is written as `&lt;!-- mneme:tarea` so it
+can never be mistaken for a marker. The file is created on the first write and
+replaced atomically (temp file + rename). If an existing `tarea.md` was
+edited by hand and no longer has every marker pair exactly once, in order,
+the call fails with `ErrTaskDocMalformed` and writes nothing — fix the file by
+hand. `entrega` is replaced whole: when backend and frontend both deliver, the
+last writer must include both. The qa-tester reads `tarea.md` and
+`criteria.toml` with `Read` (the path is `SpecDocWriteResponse.Path`) and
+writes its report with `section: revision`. The response gains
+`section`; `created` is true when `tarea.md` did not exist. The lock that
+serialises section writes is per mneme process; two processes writing in the
+same instant can lose one write (the real flow is sequential).
+
+Errors (all `-32602`): `ErrTaskSectionRequired`, `ErrUnknownTaskSection`,
+`ErrSectionNotApplicable`, `ErrTaskDocMalformed`.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|

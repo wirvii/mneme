@@ -330,6 +330,14 @@ type DelegationConfig struct {
 	// (SPEC-086 D6) — evaluateDelegation already calls config.Load once per
 	// invocation, so reading this map costs zero extra I/O.
 	Projects map[string]DelegationProjectConfig `toml:"projects"`
+
+	// OrchestratorTrivialInline is the global opt-in (SPEC-171) that lets the
+	// orchestrator edit files with Edit/Write/MultiEdit — never Bash — when
+	// they fall inside the declared scope of an open trivial-lane spec in
+	// implementing status. Defaults to false: delegation stays mandatory
+	// unless a project explicitly chooses otherwise. MNEME_DELEGATION_TRIVIAL_INLINE
+	// overrides this global value; a per-project entry overrides both.
+	OrchestratorTrivialInline bool `toml:"orchestrator_trivial_inline"`
 }
 
 // DelegationProjectConfig holds the per-project delegation settings a
@@ -338,6 +346,12 @@ type DelegationProjectConfig struct {
 	// SubagentContainment overrides DelegationConfig.SubagentContainment for
 	// this one project. Empty means "no override — use the global default".
 	SubagentContainment string `toml:"subagent_containment"`
+
+	// OrchestratorTrivialInline overrides DelegationConfig.OrchestratorTrivialInline
+	// for this one project (SPEC-171). A pointer, not a bool: nil means "not
+	// declared — use the global value", which a plain false could not
+	// distinguish from an explicit opt-out.
+	OrchestratorTrivialInline *bool `toml:"orchestrator_trivial_inline"`
 }
 
 // SpecConfig controls the spec lifecycle quality gates and behavior.
@@ -696,6 +710,9 @@ func Default() *Config {
 // [codegraph] — SPEC-044:
 //   - MNEME_CODEGRAPH_QUERYLOG   → Codegraph.QuerylogEnabled ("false"/"0" disables, "true"/"1" enables; env wins over TOML)
 //
+// [delegation] — SPEC-171:
+//   - MNEME_DELEGATION_TRIVIAL_INLINE → Delegation.OrchestratorTrivialInline ("true"/"1" enables, "false"/"0" disables, anything else ignored; sets the GLOBAL value, a per-project entry still wins)
+//
 // [profiles] — SPEC-093 §3:
 //   - MNEME_PROFILES_DEFAULT → Profiles.Default (host-level default profile name; empty means vanilla)
 //
@@ -908,6 +925,14 @@ func applyEnvOverrides(cfg *Config) {
 	// "false"/"0" disables; "true"/"1" enables. Env value wins over TOML.
 	if v := os.Getenv("MNEME_CODEGRAPH_QUERYLOG"); v != "" {
 		cfg.Codegraph.QuerylogEnabled = v == "true" || v == "1"
+	}
+
+	// [delegation] override (SPEC-171): only recognised values apply.
+	switch os.Getenv("MNEME_DELEGATION_TRIVIAL_INLINE") {
+	case "true", "1":
+		cfg.Delegation.OrchestratorTrivialInline = true
+	case "false", "0":
+		cfg.Delegation.OrchestratorTrivialInline = false
 	}
 
 	// [profiles] override (SPEC-093 §3).
@@ -1184,6 +1209,8 @@ func buildDelegationOrigins(cfg, dflt *Config) []ConfigFieldInfo {
 	fields = append(fields, makeField("allowed_paths", cfg.Delegation.AllowedPaths, o, ev))
 	o, ev = fieldOrigin(cfg.Delegation.SubagentContainment, dflt.Delegation.SubagentContainment, true)
 	fields = append(fields, makeField("subagent_containment", cfg.Delegation.SubagentContainment, o, ev))
+	o, ev = fieldOrigin(cfg.Delegation.OrchestratorTrivialInline, dflt.Delegation.OrchestratorTrivialInline, true, "MNEME_DELEGATION_TRIVIAL_INLINE")
+	fields = append(fields, makeField("orchestrator_trivial_inline", cfg.Delegation.OrchestratorTrivialInline, o, ev))
 	return fields
 }
 
@@ -1539,6 +1566,17 @@ func (c *Config) SubagentContainmentMode(project string) string {
 		return c.Delegation.SubagentContainment
 	}
 	return "warn"
+}
+
+// OrchestratorTrivialInlineEnabled reports whether the orchestrator may edit
+// inside an open trivial spec's scope for project (SPEC-171): a per-project
+// override that is declared wins; otherwise the global value (TOML or
+// MNEME_DELEGATION_TRIVIAL_INLINE) applies, which is false by default.
+func (c *Config) OrchestratorTrivialInlineEnabled(project string) bool {
+	if proj, ok := c.Delegation.Projects[project]; ok && proj.OrchestratorTrivialInline != nil {
+		return *proj.OrchestratorTrivialInline
+	}
+	return c.Delegation.OrchestratorTrivialInline
 }
 
 // DefaultPath returns the default configuration file path (~/.mneme/config.toml).

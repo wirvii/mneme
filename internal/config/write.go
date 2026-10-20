@@ -84,7 +84,9 @@ func SetSubagentContainmentMode(path, project, mode string) error {
 	if cfg.Delegation.Projects == nil {
 		cfg.Delegation.Projects = map[string]DelegationProjectConfig{}
 	}
-	cfg.Delegation.Projects[project] = DelegationProjectConfig{SubagentContainment: mode}
+	entry := cfg.Delegation.Projects[project]
+	entry.SubagentContainment = mode // keep every other per-project setting (e.g. SPEC-171's trivial-inline)
+	cfg.Delegation.Projects[project] = entry
 
 	out, err := toml.Marshal(cfg)
 	if err != nil {

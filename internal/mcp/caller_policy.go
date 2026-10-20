@@ -3,6 +3,9 @@ package mcp
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
+
+	"github.com/wirvii/mneme/internal/model"
 )
 
 // CallerPolicy binds an MCP server process to one generated subagent role.
@@ -30,13 +33,20 @@ func (p CallerPolicy) authorizeCall(params ToolCallParams) *JSONRPCError {
 		return nil
 	}
 	var args struct {
-		Kind string `json:"kind"`
+		Kind    string `json:"kind"`
+		Section string `json:"section"`
 	}
 	if err := json.Unmarshal(params.Arguments, &args); err != nil {
 		return nil // The handler owns ordinary argument validation.
 	}
 	if args.Kind == "criteria" && p.Archetype != "architect" {
 		return callerDenied(params.Name, fmt.Sprintf("kind %q is restricted to the architect role", args.Kind))
+	}
+	if args.Kind == "task" {
+		section := model.TaskSection(args.Section)
+		if _, known := section.Heading(); known && !model.TaskSectionAllows(section, p.Archetype) {
+			return callerDenied(params.Name, fmt.Sprintf("task section %q is restricted to %s", args.Section, strings.Join(model.TaskSectionWriters(section), ", ")))
+		}
 	}
 	return nil
 }
