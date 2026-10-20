@@ -33,7 +33,8 @@ Subcommands:
   unpin       Remove pin protection from an installed skill.
   remove      Remove an installed skill directory.
   lint        Run the deterministic structural linter on a skill.
-  validate    Run the validation/run.sh script for a skill.`,
+  validate    Run the validation/run.sh script for a skill.
+  usage       Show which skills were loaded and which never were.`,
 	}
 
 	cmd.AddCommand(
@@ -44,6 +45,7 @@ Subcommands:
 		newSkillsRemoveCmd(),
 		newSkillsLintCmd(),
 		newSkillsValidateCmd(),
+		newSkillsUsageCmd(),
 	)
 
 	return cmd
