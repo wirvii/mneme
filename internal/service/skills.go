@@ -108,7 +108,7 @@ func (s *SkillsService) List() ([]SkillInfo, error) {
 			if parsed, parseErr := skill.ParseFile(skillMD); parseErr == nil {
 				info.Version = parsed.Version
 				info.Pinned = parsed.Pinned
-				lr := skill.Lint(parsed, n)
+				lr := skill.LintFile(skillMD, n)
 				info.LintOK = lr.Passed
 			}
 		}

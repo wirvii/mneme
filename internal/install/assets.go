@@ -15,6 +15,18 @@ var builtinAgents embed.FS
 //go:embed assets/skills
 var builtinSkills embed.FS
 
+// BundledSkillFS returns the embedded skills tree rooted at the skills
+// directory, so each skill is the sub-directory named after it. Tests and the
+// linter use it to check bundled skills (including their references/ files)
+// without installing anything.
+func BundledSkillFS() (fs.FS, error) {
+	sub, err := fs.Sub(builtinSkills, "assets/skills")
+	if err != nil {
+		return nil, fmt.Errorf("install: bundled skill fs: %w", err)
+	}
+	return sub, nil
+}
+
 //go:embed assets/commands/*.md
 var builtinCommands embed.FS
 

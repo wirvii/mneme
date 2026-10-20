@@ -265,11 +265,16 @@ func newSkillsLintCmd() *cobra.Command {
 		Long: `Run the structural linter against a single skill or all installed skills.
 
 The linter checks:
-  - Required frontmatter fields: name, description, version.
-  - name == directory name.
-  - version is a valid semver string (X.Y.Z).
-  - All 5 required H2 sections are present.
-  - The Automated Checks section contains a 3-column table with the correct headers.
+  - Required frontmatter fields: name (== directory name) and description.
+  - version is optional; when present it must be a valid semver (X.Y.Z).
+  - SKILL.md stays under 8192 bytes (warning above 4096): move detail to references/.
+  - Every references/<file> cited in the body exists inside the skill directory.
+  - The description says when to use the skill (warning otherwise).
+  - If an Automated Checks section exists, its table has 3 columns (warning otherwise).
+
+The 5-section format (When to Use, Critical Rules, Automated Checks,
+Verification, Workflow) is still valid but no longer required; skills that use
+it are exempt from the 8192-byte error.
 
 No scripts are executed during linting. Exit code 1 if any skill has errors.`,
 		Example: `  mneme skills lint example-skill
