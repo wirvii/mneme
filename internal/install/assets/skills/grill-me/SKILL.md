@@ -18,7 +18,7 @@ Use this skill when:
 
 1. **One question at a time. Never a list of questions.**
 2. **Every question carries your recommended answer and what each option costs in practice.**
-3. **What the code can answer, explore it — don't ask.** With an indexed code graph, consult the graph first.
+3. **What the code can answer, explore it — don't ask.** If the repo has an indexed code graph, load the `codegraph` skill.
 4. **In lane standard, the result is poured into `backlog_refine` before `backlog_promote`.** An interview that stays only in the chat never happened.
 5. **Never delegate to `superpowers:brainstorming` to refine a backlog item.** It writes its own design doc and invokes its own planning step, stepping on the architect's job and saving the spec to the wrong path — and it doesn't ship with mneme, so not every teammate has it installed.
 6. **In lane trivial, the interview is optional**: if the item turns out ambiguous, grill it or reclassify it to standard.
@@ -46,5 +46,5 @@ After a refinement: `backlog_get <id>` should show a new refinement row with the
 1. Read the ticket (`backlog_get <id>`) and related memories (`mem_search`).
 2. Build the decision tree the ticket implies.
 3. Walk it one branch at a time, resolving dependencies between decisions, always giving a recommended answer.
-4. When the code can answer a question, explore it (codegraph first) instead of asking.
+4. When the code can answer a question, explore it (the `codegraph` skill, if the repo is indexed) instead of asking.
 5. Close by pouring the result into `backlog_refine`.

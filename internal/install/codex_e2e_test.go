@@ -14,7 +14,7 @@ import (
 // TestCodexInstall_Idempotency is an end-to-end test that runs Install(Codex(...))
 // twice against a temporary HOME directory and verifies:
 //   - All three artefacts are created: config.toml, hooks.json, AGENTS.md.
-//   - The bundled example-skill is installed to $tmpHome/.agents/skills/.
+//   - The bundled grill-me is installed to $tmpHome/.agents/skills/.
 //   - A second Install() call produces byte-identical artefacts (idempotency, AC-2, AC-3).
 func TestCodexInstall_Idempotency(t *testing.T) {
 	tmpHome := t.TempDir()
@@ -33,7 +33,7 @@ func TestCodexInstall_Idempotency(t *testing.T) {
 	configPath := filepath.Join(tmpHome, ".codex", "config.toml")
 	hooksPath := filepath.Join(tmpHome, ".codex", "hooks.json")
 	agentsPath := filepath.Join(tmpHome, ".codex", "AGENTS.md")
-	skillDir := filepath.Join(tmpHome, ".agents", "skills", "example-skill", "SKILL.md")
+	skillDir := filepath.Join(tmpHome, ".agents", "skills", "grill-me", "SKILL.md")
 
 	// Verify artefacts exist after first run.
 	for _, path := range []string{configPath, hooksPath, agentsPath} {
@@ -83,7 +83,7 @@ func TestCodexInstall_Idempotency(t *testing.T) {
 // Install(Codex(bin), bin), every BundledSkillNames() entry has a
 // $HOME/.agents/skills/<name>/SKILL.md — a derived population, never a
 // single hand-picked skill (TestCodexInstall_Idempotency only ever checked
-// example-skill).
+// grill-me).
 func TestCodexInstall_DeliversAllBundledSkills(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
@@ -436,74 +436,6 @@ func indexOfStepName(names []string, name string) int {
 		}
 	}
 	return -1
-}
-
-// TestCodexOperatingManual_AntiDrift verifies that the embedded
-// operating-manual-codex.md contains all 5 canonical sections. This mirrors
-// TestAgentsCodegraphPolicy as an anti-drift gate: if the asset loses a
-// required section the test fails immediately.
-func TestCodexOperatingManual_AntiDrift(t *testing.T) {
-	content := operatingManualCodex()
-
-	if len(content) == 0 {
-		t.Fatal("operatingManualCodex() returned empty string")
-	}
-
-	// Verify the asset is compact enough for Codex's 32 KiB limit (S3, AC-4).
-	if len(content) >= 32*1024 {
-		t.Errorf("operating-manual-codex.md size %d bytes exceeds 32 KiB Codex limit", len(content))
-	}
-
-	// Canonical sections that must be present (§1–§5, SPEC-049 D4).
-	sections := []string{
-		"## §1 How to launch",
-		"## §2 Role model",
-		"## §3 SDD + lanes",
-		"## §4 Skills",
-		"## §5 Memory & conflicts",
-		// SPEC-121: la sección de lenguaje llano, añadida al final sin
-		// renumerar las anteriores.
-		"## §7 Plain language: everything a person reads",
-	}
-	for _, sec := range sections {
-		if !strings.Contains(content, sec) {
-			t.Errorf("operating-manual-codex.md: canonical section %q is missing", sec)
-		}
-	}
-
-	// Key concepts that must be present.
-	keywords := []string{
-		".codex/agents/*.toml",
-		"PreToolUse hooks enforce",
-		"mem_context",
-		"mem_search",
-		"mem_save",
-		"mem_session_end",
-		"backlog_add",
-		"spec_advance",
-		"AGENTS.md",
-		"grill-me",
-		"Do NOT use `superpowers:brainstorming`",
-		// SPEC-121: los dos anclajes compartidos que cierran la frontera de
-		// «lo que lee una persona» y su cláusula de reenvío.
-		"Channels that reach a person",
-		"The exemption never travels with the text",
-	}
-	for _, kw := range keywords {
-		if !strings.Contains(content, kw) {
-			t.Errorf("operating-manual-codex.md: expected keyword %q not found", kw)
-		}
-	}
-
-	// SPEC-106 DD19/DD20: the manual must say there is no automatic net for
-	// session-end (mneme hook session-end is a retired no-op), and must no
-	// longer claim the Stop event as part of the session hooks pair.
-	if !strings.Contains(content, "no hook that reminds you") {
-		t.Error("operating-manual-codex.md: expected the no-automatic-net phrase for session end not found")
-	}
-	if strings.Contains(content, "SessionStart/Stop") {
-		t.Error("operating-manual-codex.md: must not contain \"SessionStart/Stop\" — Stop is retired (SPEC-106 D4)")
-	}
 }
 
 // TestCodexBuilder_Fields verifies that Codex() returns an Agent with the

@@ -38,7 +38,7 @@ mneme is a persistent memory system for AI coding agents. A single Go binary (no
 
 ### The solution
 
-A local SQLite database with FTS5 full-text search, a weighted knowledge graph with Hebbian learning and Personalized PageRank, community detection via Louvain, and automatic synthesis -- all exposed through 84 MCP tools. Agents call `mem_save`, `mem_search`, `mem_context`, `mem_explore`, and `mem_gaps` to manage structured knowledge. Rules are injected automatically and enforced via hooks.
+A local SQLite database with FTS5 full-text search, a weighted knowledge graph with Hebbian learning and Personalized PageRank, community detection via Louvain, and automatic synthesis -- exposed through 31 MCP tools plus the CLI. Agents call `mem_save`, `mem_search`, `mem_context`, `mem_update` and `mem_session_end` to manage structured knowledge (`mneme mem explore` and `mneme mem gaps` cover the graph tooling). Rules are injected automatically and enforced via hooks.
 
 ---
 

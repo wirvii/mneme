@@ -20,7 +20,7 @@ implement either runtime's skill loader.
 | `skills_pin` | `mneme skills pin <name>` | Sets `pinned: true` in the installed `SKILL.md` |
 | `skills_unpin` | `mneme skills unpin <name>` | Sets `pinned: false` |
 | `skills_remove` | `mneme skills remove <name> [--force]` | Refuses a pinned skill unless `--force` |
-| `skills_lint` | `mneme skills lint [<name>] [--json]` | Deterministic structural check (frontmatter, semver, 5 H2 sections, 3-column Automated Checks table); no script is executed. Exits non-zero on findings |
+| `skills_lint` | `mneme skills lint [<name>] [--json]` | Deterministic structural check (frontmatter, semver, size limits of 4096/8192 bytes, `references/` citations that exist); no script is executed. Exits non-zero on findings |
 | `skills_validate` | `mneme skills validate <name> [--json]` | Runs `validation/run.sh` with a 120-second timeout; exits non-zero on failure |
 
 The old tools returned lint and validate failures as `IsError: true` payloads

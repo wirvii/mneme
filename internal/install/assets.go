@@ -68,10 +68,10 @@ func SpecTemplateContent() ([]byte, error) {
 
 // SkillEntry represents a single file within an embedded skill subtree.
 // It carries the path relative to the skill directory root (e.g.
-// "example-skill/validation/run.sh"), the raw file content, and whether
+// "grill-me/validation/run.sh"), the raw file content, and whether
 // the file should be written with executable permissions (0o755).
 type SkillEntry struct {
-	// RelPath is the path relative to "assets/skills" (e.g. "example-skill/SKILL.md").
+	// RelPath is the path relative to "assets/skills" (e.g. "grill-me/SKILL.md").
 	RelPath string
 
 	// Content is the raw file content.
@@ -127,7 +127,7 @@ func BundledSkillEntries() ([]SkillEntry, error) {
 }
 
 // BundledSkillNames returns the names of all skill directories embedded under
-// assets/skills. Each name is the direct subdirectory name (e.g. "example-skill").
+// assets/skills. Each name is the direct subdirectory name (e.g. "grill-me").
 func BundledSkillNames() ([]string, error) {
 	dirEntries, err := builtinSkills.ReadDir("assets/skills")
 	if err != nil {

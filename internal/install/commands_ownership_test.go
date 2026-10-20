@@ -103,11 +103,11 @@ func TestWriteCommands_AdoptsLegacyContent(t *testing.T) {
 // survive byte-for-byte, and WriteCommands must report it in KeptYours.
 func TestWriteCommands_KeepsForeignFile(t *testing.T) {
 	home := t.TempDir()
-	dest := filepath.Join(home, ".claude", "commands", "hunt-bug.md")
+	dest := filepath.Join(home, ".claude", "commands", "grill-me.md")
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	original := []byte("# my own /hunt-bug shortcut, written by hand — do not touch\n")
+	original := []byte("# my own /grill-me shortcut, written by hand — do not touch\n")
 	if err := os.WriteFile(dest, original, 0o644); err != nil {
 		t.Fatalf("write foreign file: %v", err)
 	}
@@ -128,8 +128,8 @@ func TestWriteCommands_KeepsForeignFile(t *testing.T) {
 	if string(got) != string(original) {
 		t.Errorf("foreign file was modified: got %q, want %q", got, original)
 	}
-	if !containsStr(result.KeptYours, "hunt-bug.md") {
-		t.Errorf("expected KeptYours to contain hunt-bug.md, got %+v", result)
+	if !containsStr(result.KeptYours, "grill-me.md") {
+		t.Errorf("expected KeptYours to contain grill-me.md, got %+v", result)
 	}
 }
 
@@ -139,7 +139,7 @@ func TestWriteCommands_KeepsForeignFile(t *testing.T) {
 // keys off, never a literal reconstructed independently in either place.
 func TestSlashCommandsStep_KeptYoursDetail(t *testing.T) {
 	home := t.TempDir()
-	dest := filepath.Join(home, ".claude", "commands", "hunt-bug.md")
+	dest := filepath.Join(home, ".claude", "commands", "grill-me.md")
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -176,11 +176,11 @@ func TestSlashCommandsStep_KeptYoursDetail(t *testing.T) {
 // byte-for-byte, is written alongside it first.
 func TestWriteCommands_ForceBacksUpForeignFile(t *testing.T) {
 	home := t.TempDir()
-	dest := filepath.Join(home, ".claude", "commands", "hunt-bug.md")
+	dest := filepath.Join(home, ".claude", "commands", "grill-me.md")
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	original := []byte("# my own /hunt-bug shortcut — do not touch\n")
+	original := []byte("# my own /grill-me shortcut — do not touch\n")
 	if err := os.WriteFile(dest, original, 0o644); err != nil {
 		t.Fatalf("write foreign file: %v", err)
 	}
@@ -211,8 +211,8 @@ func TestWriteCommands_ForceBacksUpForeignFile(t *testing.T) {
 	if string(backup) != string(original) {
 		t.Errorf("backup content = %q, want original %q", backup, original)
 	}
-	if result.BackupPaths["hunt-bug.md"] != backupPath {
-		t.Errorf("BackupPaths[\"hunt-bug.md\"] = %q, want %q", result.BackupPaths["hunt-bug.md"], backupPath)
+	if result.BackupPaths["grill-me.md"] != backupPath {
+		t.Errorf("BackupPaths[\"grill-me.md\"] = %q, want %q", result.BackupPaths["grill-me.md"], backupPath)
 	}
 }
 

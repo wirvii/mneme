@@ -135,8 +135,8 @@ func newSkillsInstallCmd() *cobra.Command {
 
 If the skill is already installed with pinned:true, installation is skipped
 unless --force is used.`,
-		Example: `  mneme skills install example-skill
-  mneme skills install example-skill --force`,
+		Example: `  mneme skills install grill-me
+  mneme skills install grill-me --force`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			svc, err := newSkillsSvc()
@@ -171,7 +171,7 @@ func newSkillsPinCmd() *cobra.Command {
 A pinned skill will not be overwritten by "mneme install claude-code" or
 "mneme skills install" and cannot be removed without --force. This lets you
 maintain a locally customised skill without future installs clobbering it.`,
-		Example: `  mneme skills pin example-skill`,
+		Example: `  mneme skills pin grill-me`,
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			svc, err := newSkillsSvc()
@@ -200,7 +200,7 @@ func newSkillsUnpinCmd() *cobra.Command {
 
 After unpinning, the skill can be overwritten by "mneme install claude-code"
 or "mneme skills install" and removed without --force.`,
-		Example: `  mneme skills unpin example-skill`,
+		Example: `  mneme skills unpin grill-me`,
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			svc, err := newSkillsSvc()
@@ -231,8 +231,8 @@ func newSkillsRemoveCmd() *cobra.Command {
 
 If the skill has pinned:true in its SKILL.md, removal is refused unless
 --force is supplied. Bundled skills can be reinstalled with "skills install".`,
-		Example: `  mneme skills remove example-skill
-  mneme skills remove example-skill --force`,
+		Example: `  mneme skills remove grill-me
+  mneme skills remove grill-me --force`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			svc, err := newSkillsSvc()
@@ -279,7 +279,7 @@ Verification, Workflow) is still valid but no longer required; skills that use
 it are exempt from the 8192-byte error.
 
 No scripts are executed during linting. Exit code 1 if any skill has errors.`,
-		Example: `  mneme skills lint example-skill
+		Example: `  mneme skills lint grill-me
   mneme skills lint
   mneme skills lint --json`,
 		Args: cobra.MaximumNArgs(1),
@@ -341,8 +341,8 @@ func newSkillsValidateCmd() *cobra.Command {
 
 A timeout of 120s is applied. Exit code 0 = pass; non-zero = fail.
 If no validation/run.sh exists, reports an informational message and exits 1.`,
-		Example: `  mneme skills validate example-skill
-  mneme skills validate example-skill --json`,
+		Example: `  mneme skills validate grill-me
+  mneme skills validate grill-me --json`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			svc, err := newSkillsSvc()

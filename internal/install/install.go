@@ -254,8 +254,9 @@ func ClaudeCode(binaryPath string) *Agent {
 		// Commands installs every file under assets/commands/ as a slash
 		// command (SPEC-141 D7): each one is a thin wrapper over a bundled
 		// skill of the same name — mneme-init (SPEC-058 / EPIC
-		// agnostic-agents SS-5, restored by SPEC-067), grill-me, hunt-bug,
-		// and bug-to-issue (SPEC-141). The skill itself ships via the Skills
+		// agnostic-agents SS-5, restored by SPEC-067) and grill-me (SPEC-141;
+		// hunt-bug and bug-to-issue were retired by SPEC-169 and
+		// removeRetiredCommands cleans them up). The skill itself ships via the Skills
 		// field below, which the generic "Skills" install step already
 		// deploys to ~/.claude/skills; the wrapper only exists to preserve
 		// each one's slash-command entry point in Claude Code. The
@@ -509,6 +510,12 @@ func (a *Agent) installSteps(opts InstallOptions) []installStep {
 				}
 				if len(result.KeptYours) > 0 {
 					parts = append(parts, fmt.Sprintf("%s: %s", CommandKeptYoursLabel, strings.Join(result.KeptYours, ", ")))
+				}
+				if len(result.Removed) > 0 {
+					parts = append(parts, fmt.Sprintf("removed: %s", strings.Join(result.Removed, ", ")))
+				}
+				if len(result.KeptRetired) > 0 {
+					parts = append(parts, fmt.Sprintf("retired but kept (not mneme's own): %s", strings.Join(result.KeptRetired, ", ")))
 				}
 				return strings.Join(parts, "; "), nil
 			},
@@ -1159,6 +1166,39 @@ type CommandsResult struct {
 	// original, foreign content was copied to before force overwrote it.
 	// Empty unless force displaced at least one foreign file.
 	BackupPaths map[string]string
+
+	// Removed lists retired command file basenames mneme deleted because
+	// classifyCommandFile recognised them as its own (SPEC-169).
+	Removed []string
+
+	// KeptRetired lists retired command file basenames left in place because
+	// they are not mneme's own: a person wrote or edited them.
+	KeptRetired []string
+}
+
+// removeRetiredCommands deletes each retired slash command from dir, but only
+// when classifyCommandFile recognises the file as mneme's own (managed-block
+// marker or a known legacy digest). A foreign file is reported, never touched.
+func removeRetiredCommands(dir string, result *CommandsResult) error {
+	for _, name := range retiredCommands {
+		path := filepath.Join(dir, name+".md")
+		ownership, _, _, err := classifyCommandFile(path, name)
+		if err != nil {
+			return err
+		}
+		switch ownership {
+		case commandOurs:
+			if err := os.Remove(path); err != nil {
+				return fmt.Errorf("remove retired command %s: %w", path, err)
+			}
+			result.Removed = append(result.Removed, name+".md")
+		case commandForeign:
+			slog.Warn("install: retired command file is not mneme's own, keeping it", "path", path)
+			result.KeptRetired = append(result.KeptRetired, name+".md")
+		case commandAbsent:
+		}
+	}
+	return nil
 }
 
 // WriteCommands writes each CommandFile returned by agent.Commands to the
@@ -1184,6 +1224,11 @@ func WriteCommands(agent *Agent, force bool) (*CommandsResult, error) {
 	}
 
 	result := &CommandsResult{}
+	if len(commands) > 0 {
+		if err := removeRetiredCommands(filepath.Dir(commands[0].Path), result); err != nil {
+			return nil, fmt.Errorf("install: write commands: %w", err)
+		}
+	}
 	for _, cmd := range commands {
 		base := filepath.Base(cmd.Path)
 		name := strings.TrimSuffix(base, filepath.Ext(base))

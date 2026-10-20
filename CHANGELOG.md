@@ -6,6 +6,157 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-10-20 — mneme-ligero: a much smaller surface, a 2.7 KB manual and flow skills that load on demand
+
+This is a breaking release (SPEC-161 through SPEC-172). The always-loaded
+text an agent carries in every session shrinks from about 13.4 KB (Claude
+Code) and 9 KB (Codex) to about 2.7 KB, the MCP server goes from 82 tools
+to 31, and the procedures that used to live in the manual move into skills an
+agent loads only when it needs them. The human approval gate, role
+permissions and every hook that enforces them are unchanged.
+
+### Removed (BREAKING)
+
+- **MCP tools: 82 to 31.** Fifty-one tools left the MCP server:
+  - SPEC-163, 23 tools that are administration, not agent work: `skills_*`
+    (7), `model_*` (3), `conflicts_*` (5), `subagent_*` (6), `sdd_status`
+    and `sdd_import`. Each capability is a CLI command (`mneme skills`,
+    `mneme model`, `mneme conflicts`, `mneme subagents`, `mneme sdd`);
+    `sdd_import` no longer needs a place in the subagent lifecycle denial list.
+  - SPEC-164, 9 memory tools: `mem_promote`, `mem_forget`, `mem_gaps`,
+    `mem_explore`, `mem_timeline`, `mem_stats`, `mem_checkpoint`,
+    `mem_relate`, `mem_suggest_topic_key`. They live under the new
+    `mneme mem` command (the top-level aliases still work); a checkpoint is
+    now `mem_session_end` with `partial: true`, and the topic-key suggestion
+    arrives inside the `mem_save` answer.
+  - SPEC-165, 6 codegraph tools: `codegraph_callees`, `codegraph_explore`,
+    `codegraph_files`, `codegraph_node`, `codegraph_status`,
+    `codegraph_trace`. Only `codegraph_search`, `codegraph_context`,
+    `codegraph_callers` and `codegraph_impact` stay on MCP; the rest are
+    `mneme codegraph callees|trace|node|explore|files|status` (`explore` is
+    new). The codegraph reminder that the pre-tool-use hook used to print,
+    its `[codegraph] hook_nudge_enabled` setting and the
+    `MNEME_CODEGRAPH_HOOK_NUDGE` variable are gone: the graph is optional and
+    an agent opts in by loading the `codegraph` skill.
+  - SPEC-161, 2 tools: `speech_emit` and `speech_control`.
+  - SPEC-162, 11 tools: `profile_*` (8), `project_new`, `app_add`,
+    `scaffold_capture`.
+  A running MCP session from 1.x keeps asking for tools that no longer
+  exist until it is restarted.
+- **The spoken-response channel (SPEC-161).** The `internal/speech` package,
+  the `mneme speech` command, the `[speech]` configuration section, the
+  `UserPromptSubmit` hook and its operating-manual section. `mneme hook
+  speech-prompt` remains as a silent no-op so an old hook registration does
+  not fail, and `mneme install` removes the registration.
+- **Team profiles and project templates (SPEC-162).** The `internal/profile`
+  package; the `mneme profile`, `mneme project`, `mneme app` and `mneme
+  scaffold` commands; the `[profiles]` configuration section and
+  `MNEME_PROFILES_DEFAULT`; the skills `mneme-profile-author`, `new-project`
+  and `new-app`; the profile handling of SessionStart; and `docs/profiles.md`
+  and `docs/profiles-design.md`. A `.mneme-profile` file is now ignored.
+  `mneme upgrade` and `mneme init` find the traces a profile left behind (its
+  lock file, backups and host store) and `mneme upgrade` offers to remove
+  them.
+- **Skills (SPEC-169).** `hunt-bug` and `bug-to-issue` (merged into one `bug`
+  skill), their `/hunt-bug` and `/bug-to-issue` slash commands, and the
+  structural fixture `example-skill`. `mneme install` removes the copies mneme
+  itself put in `~/.claude` and `$HOME/.agents`; a pinned skill, a skill whose
+  `SKILL.md` declares another name, and a slash command you wrote yourself are
+  kept and reported.
+
+### Changed
+
+- **The operating manual is about 2.7 KB in both runtimes (SPEC-169).** Five
+  sections: roles, the human approval gate, plain language, memory and a skill
+  index. The gate and the plain-language rule keep their full meaning; the
+  procedures moved into skills. New tests pin the size (2700 bytes for Claude
+  Code, 3000 for Codex) and the required and forbidden anchors.
+- **Subagent layer 1 is v6 (SPEC-169).** Firm rules plus a pointer to the
+  skill each role loads (`mneme-flow`, `review-brief`, `bug`, `codegraph`),
+  at most 4096 bytes per role (it was about 12 KB). The three codegraph
+  policy variants become one optional hint, and the QA report template moved
+  to a skill. `AgentFixedVersion` 5 to 6, so `mneme subagents doctor` flags
+  every existing project.
+- **Every role can load skills (SPEC-169).** `Skill` joins the six roles' tool
+  lists; without it a subagent could not follow "load the skill".
+- **Skills have a flexible format (SPEC-168).** `SKILL.md` needs a front
+  matter and a body, at most 4096 bytes (a warning above, an error above
+  8192), with detail in `references/`; the lint checks that every cited
+  reference exists. The old five-section format stays valid.
+- **`mem_save` answers with conflicts and key suggestions (SPEC-164,
+  SPEC-166).** It returns `suggested_topic_key` and up to three
+  `possible_conflicts`; the agent judges them in the same turn with
+  `mem_update` (`supersedes`, `conflicts_with`, `unrelated_to`).
+- **Notes have a review date (SPEC-167).** By type, a note past its date comes
+  back from `mem_search` and `mem_context` with `review_due` and
+  `review_note` for the agent (never shown to people), and `mem_update` with
+  `confirm` renews it. `[memory.review_days]` configures the periods.
+  Migration 024 adds the column to every database.
+- **A spec's work lives in one document, `tarea.md` (SPEC-170).**
+  `spec_doc_write` kind `task` plus `section` (`que`, `diseno`, `plan`,
+  `entrega`, `revision`) rewrites one section; the hook limits each section to
+  the roles that own it. Specs that already use the older document kinds keep
+  them.
+- **Lane thresholds live in one file (SPEC-169):**
+  `mneme-flow/references/depth.md`. The manual, the other skills and layer 1
+  point there.
+
+### Added
+
+- **A family of flow skills (SPEC-169):** `mneme-flow` (the cycle, who may
+  move it, lanes, criteria), `feature`, `bug`, `trivial`, `review-brief` and
+  `present-spec` (the approval gate), next to `grill-me`, `mneme-init` and
+  `codegraph`.
+- **Skill usage log (SPEC-168).** In Claude Code a `PostToolUse` hook records
+  each skill load locally; `mneme skills usage [--since] [--json]` shows
+  which skills were loaded and which never were. Codex is not recorded.
+- **The orchestrator may edit inside a trivial spec (SPEC-171),** off by
+  default: `[delegation] orchestrator_trivial_inline = true` (per project
+  or `MNEME_DELEGATION_TRIVIAL_INLINE`) lets it use Edit, Write and MultiEdit
+  inside the declared scope of a trivial spec in implementing. Bash is not
+  relaxed.
+- **A compliance harness (SPEC-172):** `scripts/skill-comply/run.sh` runs four
+  scenarios against the real `claude` CLI in an isolated HOME and checks the
+  transcript and the resulting state (`--dry-run` and `--self-test` need no
+  network). See `docs/skill-comply.md`.
+- **Documentation:** `docs/README.md` (an index of every current document),
+  rewritten `README.md` and `CLAUDE.md`, and `docs/skills.md` with the
+  catalog of the nine bundled skills.
+
+### Migration
+
+1. Install 2.0.0 (`go install github.com/wirvii/mneme/cmd/mneme@latest` or
+   `mneme upgrade`) and **restart every Claude Code and Codex session**.
+2. Run `mneme install claude-code` and/or `mneme install codex` again: it
+   writes the new manual, registers the skill-usage hook, installs the new
+   skills and removes the retired ones.
+3. Run `mneme upgrade` once more inside each repository and answer the
+   questions about leftovers from team profiles (and from the older
+   certification mechanism).
+4. Run `mneme subagents regen --all` in each project. Until then, roles
+   generated by 1.x still carry layer 1 v5, which names tools that no longer
+   exist, and `mneme subagents doctor` reports them as `stale_agent_fixed`.
+   The command is safe to repeat; it keeps the hand-written part of each role.
+5. Scripts that called a removed MCP tool or `mneme profile|project|app|
+   scaffold|speech` need the CLI equivalent (see above) or must be removed.
+
+### Known pending items
+
+- **Graph token measurement.** SPEC-165 ships the procedure
+  (`scripts/codegraph-token-bench.sh`, documented in `docs/codegraph.md`) but
+  the paid run against the real `claude` CLI has not been done; it needs
+  `claude setup-token`.
+- **Skill compliance measurement.** SPEC-172's harness has only been run
+  against stand-in transcripts. Whether agents actually load the new skills
+  at the right moments is unmeasured until someone runs it with a token, and
+  the `Skill` tool name Claude Code expects in a role's `tools:` line is
+  confirmed only by that run.
+- **Lane depth by risk (BL-244).** Deferred. Lanes still follow size, not
+  risk, and the rule lives in a single file so that change stays small.
+- The owner's real project database keeps `Version: 5` for the regenerated
+  role files in this repository's manifest until `mneme subagents regen
+  --all` is run once with 2.0.0 installed.
+
 ## [v1.48.0] — 2026-10-19 — The old certification mechanism is retired whole: nothing it left behind can block a delivery
 
 ### Removed (BREAKING)

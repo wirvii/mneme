@@ -44,8 +44,8 @@ func TestCompose_FreshProfile(t *testing.T) {
 	if !present {
 		t.Fatal("expected agent-fixed managed block to be present")
 	}
-	if !strings.Contains(content, "NO uses `Bash`") {
-		t.Error("expected implementer codegraph-policy variant in agent-fixed block")
+	if !strings.Contains(content, "carga la skill `codegraph`") {
+		t.Error("expected the optional codegraph-hint section in the agent-fixed block")
 	}
 	if !strings.Contains(content, `spec_pushback(id, from_agent: "backend", questions)`) {
 		t.Error("expected {{ROLE}} substituted with role name in mneme-integration section")
@@ -340,11 +340,15 @@ func TestVisualSection_CarriesAllObligations(t *testing.T) {
 // TestCompose_VisualSectionByRole already established: a CutSection error
 // must never be silently treated as "", and a section trimmed to nothing
 // would make strings.Contains trivially true. minBoundedReviewSectionBytes
-// only ever rises — SPEC-157 raised it from 200 to 1800 when it extended
-// the section with the delivered-end/lost-frontier obligations (D6).
+// used to only ever rise — SPEC-157 raised it from 200 to 1800 when it
+// extended the section with the delivered-end/lost-frontier obligations (D6).
+// SPEC-169 D8 lowers it to 1200 as a declared, one-off exception to that
+// rule: the report template and its example moved into the review-brief skill,
+// so the section shrank to 1336 bytes while keeping all nine obligations
+// (TestBoundedReviewSection_CarriesAllObligations still counts each anchor).
 const (
 	minCriteriaContractSectionBytes = 200
-	minBoundedReviewSectionBytes    = 1800
+	minBoundedReviewSectionBytes    = 1200
 )
 
 // TestCompose_CriteriaContractSectionByRole is SPEC-156 AC10: the
@@ -439,10 +443,12 @@ func TestCriteriaContractSection_CarriesAllObligations(t *testing.T) {
 		obligation string
 		anchor     string
 	}{
-		{"obligatorio y exigido en speccing->specced", "obligatorio y se\nexige para pasar de `speccing` a `specced`"},
-		{"unico canal de escritura", "tu unico canal de escritura"},
-		{"mneme ya no evalua los criterios", "mneme ya no evalua ningun criterio"},
-		{"ampliar es acto visible, no arreglo silencioso", "nunca un\narreglo silencioso"},
+		// SPEC-169: anchors are single-line so re-wrapping the asset cannot
+		// silently break them.
+		{"obligatorio y exigido en speccing->specced", "es obligatorio y se exige para pasar de `speccing` a `specced`"},
+		{"unico canal de escritura", "unico canal de escritura sobre ese archivo es `spec_doc_write"},
+		{"el criterio se comprueba ejecutando algo", "se comprueba ejecutando algo"},
+		{"ampliar es acto visible, no arreglo silencioso", "nunca un arreglo silencioso"},
 	}
 
 	for _, a := range anchors {
@@ -488,6 +494,72 @@ func TestBoundedReviewSection_CarriesAllObligations(t *testing.T) {
 		t.Run(a.obligation, func(t *testing.T) {
 			if got := strings.Count(section, a.anchor); got != 1 {
 				t.Errorf("expected anchor %q exactly once in the bounded-review section, got %d", a.anchor, got)
+			}
+		})
+	}
+}
+
+// agentFixedContent composes a fresh profile for role and returns its
+// agent-fixed block, failing the test on any error.
+func agentFixedContent(t *testing.T, role Role) string {
+	t.Helper()
+	got, err := Compose("", ComposeInput{Role: role, Description: "x", Model: "sonnet"})
+	if err != nil {
+		t.Fatalf("Compose(%q): %v", role, err)
+	}
+	content, _, present := managedblock.ReadText(got, agentFixedMarker)
+	if !present {
+		t.Fatalf("role %q: agent-fixed managed block missing", role)
+	}
+	return content
+}
+
+// maxAgentFixedBlockBytes is SPEC-169 D8's cap on a composed layer-1 block:
+// it is what every subagent carries in every session, so it stays short and
+// points at skills for the detail.
+const maxAgentFixedBlockBytes = 4096
+
+// TestCompose_BlockSizeCap is SPEC-169 C5: for every role in roleSections the
+// composed agent-fixed block fits the cap. The population is roleSections'
+// own keys, so a new role is covered without anyone remembering to add it.
+func TestCompose_BlockSizeCap(t *testing.T) {
+	for role := range roleSections {
+		t.Run(string(role), func(t *testing.T) {
+			content := agentFixedContent(t, role)
+			if len(content) == 0 {
+				t.Fatal("empty agent-fixed block — the cap would pass vacuously")
+			}
+			t.Logf("role %q: agent-fixed block is %d bytes (cap %d)", role, len(content), maxAgentFixedBlockBytes)
+			if len(content) > maxAgentFixedBlockBytes {
+				t.Errorf("role %q: agent-fixed block is %d bytes, cap is %d", role, len(content), maxAgentFixedBlockBytes)
+			}
+		})
+	}
+}
+
+// TestCompose_RolePointsToItsSkill is SPEC-169 C5: each role's block names the
+// skills it is expected to load. A role missing from the table fails, so the
+// table cannot silently fall behind roleSections.
+func TestCompose_RolePointsToItsSkill(t *testing.T) {
+	want := map[Role][]string{
+		RoleArchitect:     {"codegraph", "mneme-flow"},
+		RoleQATester:      {"codegraph", "mneme-flow", "review-brief"},
+		RoleBackend:       {"codegraph", "mneme-flow"},
+		RoleFrontend:      {"codegraph", "mneme-flow"},
+		RoleBugHunter:     {"codegraph", "mneme-flow", "bug"},
+		RoleDiagnostician: {"codegraph", "bug"},
+	}
+	for role := range roleSections {
+		t.Run(string(role), func(t *testing.T) {
+			skills, ok := want[role]
+			if !ok {
+				t.Fatalf("role %q has no expected-skills row", role)
+			}
+			content := agentFixedContent(t, role)
+			for _, skill := range skills {
+				if !strings.Contains(content, "`"+skill+"`") {
+					t.Errorf("role %q: block does not point at skill `%s`", role, skill)
+				}
 			}
 		})
 	}

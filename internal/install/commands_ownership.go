@@ -80,6 +80,12 @@ var legacyCommandDigests = map[string][]string{
 	},
 }
 
+// retiredCommands names the slash commands mneme no longer ships. Their
+// legacyCommandDigests entries stay on purpose: that is how
+// removeRetiredCommands tells a file mneme wrote from one a person wrote.
+// SPEC-169 folded hunt-bug and bug-to-issue into the "bug" skill.
+var retiredCommands = []string{"hunt-bug", "bug-to-issue"}
+
 // CommandOwnershipNotice is the message internal/cli/install.go prints when
 // the "Slash commands" install step reports one or more command files it
 // left untouched (SPEC-141 §4-bis D18): those files were not written by

@@ -173,11 +173,11 @@ func TestBundledSkillEntries(t *testing.T) {
 		t.Fatal("expected at least one bundled skill entry")
 	}
 
-	// example-skill/SKILL.md must be present.
+	// grill-me/SKILL.md must be present.
 	found := false
 	for _, e := range entries {
 		fwd := filepath.ToSlash(e.RelPath)
-		if fwd == "example-skill/SKILL.md" {
+		if fwd == "grill-me/SKILL.md" {
 			found = true
 		}
 		// validation/run.sh must be executable.
@@ -188,7 +188,7 @@ func TestBundledSkillEntries(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Error("example-skill/SKILL.md not found in BundledSkillEntries")
+		t.Error("grill-me/SKILL.md not found in BundledSkillEntries")
 	}
 }
 
@@ -276,13 +276,13 @@ func TestBundledSkillNames(t *testing.T) {
 	}
 	found := false
 	for _, n := range names {
-		if n == "example-skill" {
+		if n == "grill-me" {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Errorf("example-skill not found in BundledSkillNames; got %v", names)
+		t.Errorf("grill-me not found in BundledSkillNames; got %v", names)
 	}
 }
 
@@ -290,7 +290,7 @@ func TestBundledSkillNames(t *testing.T) {
 // first half, format-only, is TestBundledSkills_AllLintClean above): every
 // bundled skill's validation/run.sh actually runs and exits 0. The
 // population is BundledSkillNames() — derived, never hand-typed — so the
-// three new skills (grill-me, hunt-bug, bug-to-issue) are covered without
+// bundled skills (grill-me, codegraph and the flow family) are covered without
 // naming them. ErrNoShell (no "sh" on PATH — expected on a bare Windows
 // host without Git-for-Windows) is tolerated, not treated as a failure.
 func TestBundledSkills_ValidationPasses(t *testing.T) {

@@ -237,14 +237,34 @@ runs through Bash; `lint` and `validate` exit non-zero when checks fail and
 
 ---
 
-## example-skill
+## Bundled skills (v2.0)
 
-The `example-skill` bundled with mneme is a **structural fixture only**. It
-demonstrates the required SKILL.md format and is used in automated tests. It
-contains no real architectural guidance. Do not cite its content as a project
-convention or decision.
+mneme ships nine skills. Each one appears in an agent's context only by its
+`description`, so the descriptions say when to use the skill. The operating
+manual lists the same set.
 
-See `internal/install/assets/skills/example-skill/` for the source.
+| Skill | What it is for | Detail files |
+|---|---|---|
+| `mneme-flow` | The common base of the flow family: the lifecycle and who may move it, the approval gate, lanes, the criteria contract, rejections, pushbacks, the review range | `references/depth.md` (the only place with the lane thresholds), `lifecycle.md`, `criteria.md` |
+| `feature` | Something new, from idea to a done spec, stopping at the approval gate | uses `mneme-flow` |
+| `bug` | A failure: investigate to a diagnosis in the ticket, then promote it only when the root cause is confirmed (replaces the old hunt-and-convert pair) | `references/diagnosis.md` |
+| `trivial` | A tiny, low-risk change in a declared scope, checked by the lane auditor | uses `mneme-flow` |
+| `review-brief` | A spec in QA: the orchestrator's brief and the QA tester's report, bounded by the criteria and the review range | `references/report.md` |
+| `present-spec` | The human approval gate: turn the spec into a plain-language decision and record the explicit answer | none |
+| `grill-me` | Refine a standard backlog item one question at a time | none |
+| `mneme-init` | Set up a project's roles and memory | none |
+| `codegraph` | Use the code graph when the repository is indexed | none |
+
+The two older bug skills (investigation and diagnosis-to-spec, now one `bug`
+skill), the structural fixture skill, and the two slash commands that wrapped
+the bug skills were retired in v2.0. `mneme install`
+removes the copies mneme itself installed earlier from `~/.claude` and
+`$HOME/.agents`; a pinned skill, a skill whose `SKILL.md` declares another
+name, and a slash command you wrote yourself are left in place and reported.
+
+Subagents load these skills with the `Skill` tool (every role has it); where a
+runtime has no such tool they read `~/.claude/skills/<name>/SKILL.md` or
+`$HOME/.agents/skills/<name>/SKILL.md`.
 
 ---
 

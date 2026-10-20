@@ -14,17 +14,21 @@ func TestCutSection(t *testing.T) {
 		wantMissing  string
 	}{
 		{
-			name:         "codegraph-policy-readonly",
-			wantContains: "## Exploracion de codigo: grafo primero",
-			wantMissing:  "NO uses `Bash`",
+			name:         "codegraph-hint",
+			wantContains: "carga la skill `codegraph`",
+			wantMissing:  "codegraph_callees",
 		},
 		{
-			name:         "codegraph-policy-implementer",
-			wantContains: "NO uses `Bash` (grep/cat/find/rg/head/tail)",
+			name:         "criteria-contract",
+			wantContains: "spec_doc_write(id, kind: \"criteria\"",
 		},
 		{
-			name:         "codegraph-policy-diagnostician",
-			wantContains: "## Permisos de Bash",
+			name:         "bounded-review",
+			wantContains: "`## Dentro del contrato`",
+		},
+		{
+			name:         "bug-investigation",
+			wantContains: "skill `bug`",
 		},
 		{
 			name:         "mneme-integration-generic",
@@ -65,7 +69,7 @@ func TestCutSection_UnknownSection(t *testing.T) {
 }
 
 func TestCutSections_JoinsInOrder(t *testing.T) {
-	got, err := CutSections(LayerOneAsset(), "codegraph-policy-readonly", "mneme-integration-generic")
+	got, err := CutSections(LayerOneAsset(), "codegraph-hint", "mneme-integration-generic")
 	if err != nil {
 		t.Fatalf("CutSections: %v", err)
 	}
@@ -81,7 +85,7 @@ func TestCutSections_JoinsInOrder(t *testing.T) {
 }
 
 func TestCutSections_PropagatesFirstError(t *testing.T) {
-	_, err := CutSections(LayerOneAsset(), "codegraph-policy-readonly", "nonexistent")
+	_, err := CutSections(LayerOneAsset(), "codegraph-hint", "nonexistent")
 	if err == nil {
 		t.Fatal("expected error to propagate from CutSections")
 	}
