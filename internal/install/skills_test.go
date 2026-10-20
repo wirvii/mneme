@@ -2,6 +2,7 @@ package install_test
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -220,29 +221,18 @@ func TestBundledSkills_AllLintClean(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BundledSkillNames: %v", err)
 	}
-	entries, err := install.BundledSkillEntries()
+	root, err := install.BundledSkillFS()
 	if err != nil {
-		t.Fatalf("BundledSkillEntries: %v", err)
+		t.Fatalf("BundledSkillFS: %v", err)
 	}
 
 	for _, name := range names {
-		var content []byte
-		for _, e := range entries {
-			if filepath.ToSlash(e.RelPath) == name+"/SKILL.md" {
-				content = e.Content
-				break
-			}
-		}
-		if content == nil {
-			t.Fatalf("%s: SKILL.md not found among bundled entries", name)
-		}
-
-		parsed, err := skill.Parse(content)
+		sub, err := fs.Sub(root, name)
 		if err != nil {
-			t.Fatalf("%s: parse SKILL.md: %v", name, err)
+			t.Fatalf("%s: sub fs: %v", name, err)
 		}
 
-		result := skill.Lint(parsed, name)
+		result := skill.LintFS(sub, name)
 		if !result.Passed {
 			for _, f := range result.Errors {
 				t.Errorf("%s: lint error: %s", name, f.Message)

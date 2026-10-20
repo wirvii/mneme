@@ -61,6 +61,9 @@ import (
 //     no manifest at all — legacy deny-by-default). Exits 2 to block, 0 to
 //     allow. Registered as a portable subcommand (no path to the home
 //     directory) instead of the legacy enforce_delegation.sh script.
+//   - skill-usage: PostToolUse hook (matcher Skill, SPEC-168) that appends one
+//     line per skill load to <data dir>/skill-usage.jsonl; fail-open, exit 0
+//     always, never writes stdout.
 //   - tokenize: parse a shell command from stdin and write structured JSON tokens
 //     to stdout; retained as general-purpose surface / backward compatibility —
 //     enforce-delegation no longer shells out to this subcommand (SPEC-069).
@@ -90,6 +93,8 @@ Events:
                     writing to, or running Bash against, a path outside the static
                     whitelist and owned by an implementer subagent (or legacy
                     deny-by-default when no manifest exists)
+  skill-usage       Record a skill load in skill-usage.jsonl (PostToolUse hook,
+                    matcher Skill); always exits 0 and prints nothing
   tokenize          Parse a shell command from stdin and emit structured JSON tokens
   path-owned <path> Manifest-aware ownership check: exit 2 (block) if <path> is owned
                     by an implementer subagent or no manifest exists (legacy), exit 0
@@ -106,6 +111,8 @@ Events:
 				return runHookPreToolUse(os.Stdin, os.Stdout, os.Stderr)
 			case "speech-prompt":
 				return runHookSpeechPrompt(cmd.Context(), os.Stdin, os.Stdout)
+			case "skill-usage":
+				return runHookSkillUsageCmd(hookStdin(os.Stdin), os.Stderr)
 			case "enforce-delegation":
 				return runHookEnforceDelegation(os.Stdin, os.Stderr)
 			case "tokenize":
@@ -116,7 +123,7 @@ Events:
 				}
 				return runHookPathOwned(args[1])
 			default:
-				return fmt.Errorf("hook: unknown event %q — supported events: session-start, session-end, speech-prompt, pre-tool-use, enforce-delegation, tokenize, path-owned", event)
+				return fmt.Errorf("hook: unknown event %q — supported events: session-start, session-end, speech-prompt, pre-tool-use, skill-usage, enforce-delegation, tokenize, path-owned", event)
 			}
 		},
 	}

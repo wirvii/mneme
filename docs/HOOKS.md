@@ -166,6 +166,24 @@ described in the operating manual (`mem_session_end` before you stop) — see
 
 ---
 
+## Skill Usage Hook: `mneme hook skill-usage` (SPEC-168)
+
+Registered by `mneme install claude-code` on `PostToolUse` with matcher
+`Skill`, so Claude Code only starts the process when a skill is loaded. It
+reads the payload from stdin and appends one line to
+`<data dir>/skill-usage.jsonl` (format and privacy notes in
+[skills.md](skills.md#usage-log-spec-168)). The skill name is read from
+`tool_input.skill`, then `tool_input.name`, then `tool_input.command`; the role
+comes from the same caller identity as the other hooks (`agent_id` /
+`agent_type`).
+
+It is fail-open: it always exits 0, never writes stdout, and does nothing when
+the tool is not `Skill`, the name is missing or the JSON is unreadable. A write
+failure produces one line on stderr and still exits 0. It opens no database.
+Codex is not supported: a skill load there is a file read, not a named tool.
+
+---
+
 ## Pre-Tool-Use Hook: `mneme hook pre-tool-use`
 
 ### What it does

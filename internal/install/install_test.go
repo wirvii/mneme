@@ -1519,8 +1519,9 @@ func TestInstallSteps_DefaultSequence(t *testing.T) {
 }
 
 // TestClaudeCode_NoStopHookRegistered verifies that ClaudeCode().Hooks()
-// registers SessionStart plus UserPromptSubmit and none for the retired "Stop"
-// event (SPEC-106 AC3).
+// registers SessionStart and none for the retired "Stop" event (SPEC-106 AC3).
+// It checks per event, never the total count, so adding or retiring an
+// unrelated hook does not break it.
 func TestClaudeCode_NoStopHookRegistered(t *testing.T) {
 	agent := ClaudeCode("/usr/local/bin/mneme")
 
@@ -1528,19 +1529,85 @@ func TestClaudeCode_NoStopHookRegistered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Hooks: %v", err)
 	}
-	if len(patches) != 2 {
-		t.Fatalf("Hooks() returned %d patches, want exactly 2: %+v", len(patches), patches)
-	}
-	if patches[0].Event != "SessionStart" || patches[0].Command != "mneme hook session-start" {
-		t.Errorf("Hooks()[0] = %+v, want {SessionStart, mneme hook session-start}", patches[0])
-	}
-	if patches[1].Event != "UserPromptSubmit" || patches[1].Command != "mneme hook speech-prompt" {
-		t.Errorf("Hooks()[1] = %+v, want {UserPromptSubmit, mneme hook speech-prompt}", patches[1])
-	}
+	var sessionStart bool
 	for _, p := range patches {
 		if p.Event == "Stop" {
 			t.Errorf("Hooks() must not register a Stop patch, found: %+v", p)
 		}
+		if p.Event == "SessionStart" && p.Command == "mneme hook session-start" {
+			sessionStart = true
+		}
+	}
+	if !sessionStart {
+		t.Errorf("Hooks() must register {SessionStart, mneme hook session-start}: %+v", patches)
+	}
+}
+
+// TestClaudeCode_RegistersSkillUsageHook verifies the PostToolUse hook scoped
+// to the Skill tool (SPEC-168 D6).
+func TestClaudeCode_RegistersSkillUsageHook(t *testing.T) {
+	_, patches, err := ClaudeCode("/usr/local/bin/mneme").Hooks()
+	if err != nil {
+		t.Fatalf("Hooks: %v", err)
+	}
+	want := HookPatch{Event: "PostToolUse", Matcher: "Skill", Command: "mneme hook skill-usage"}
+	for _, p := range patches {
+		if p == want {
+			return
+		}
+	}
+	t.Errorf("Hooks() does not contain %+v: %+v", want, patches)
+}
+
+// TestPatchHooks_WritesMatcher verifies the matcher reaches settings.json and
+// that reinstalling does not duplicate the group.
+func TestPatchHooks_WritesMatcher(t *testing.T) {
+	base := t.TempDir()
+	agent := fakeAgent(t, base, "")
+	agent.Hooks = func() (string, []HookPatch, error) {
+		return filepath.Join(base, ".claude", "settings.json"),
+			[]HookPatch{{Event: "PostToolUse", Matcher: "Skill", Command: "mneme hook skill-usage"}}, nil
+	}
+	for i := 0; i < 2; i++ {
+		if err := PatchHooks(agent); err != nil {
+			t.Fatalf("PatchHooks run %d: %v", i+1, err)
+		}
+	}
+	data, err := os.ReadFile(filepath.Join(base, ".claude", "settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var settings struct {
+		Hooks map[string][]struct {
+			Matcher string `json:"matcher"`
+		} `json:"hooks"`
+	}
+	if err := json.Unmarshal(data, &settings); err != nil {
+		t.Fatal(err)
+	}
+	groups := settings.Hooks["PostToolUse"]
+	if len(groups) != 1 || groups[0].Matcher != "Skill" {
+		t.Fatalf("PostToolUse groups = %+v", groups)
+	}
+}
+
+// TestCodex_DoesNotRegisterSkillUsageHook verifies Codex gets no skill-usage
+// hook: it loads a skill by reading a file, so there is no tool event to hook.
+func TestCodex_DoesNotRegisterSkillUsageHook(t *testing.T) {
+	agent := Codex("/usr/local/bin/mneme")
+	if agent.Hooks != nil {
+		t.Fatal("Codex must not use the PatchHooks path")
+	}
+	path := filepath.Join(t.TempDir(), "hooks.json")
+	if err := WriteCodexHooks(path); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "skill-usage") {
+		t.Errorf("Codex hooks.json mentions skill-usage: %s", data)
 	}
 }
 

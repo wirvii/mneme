@@ -68,6 +68,12 @@ native projections. A legacy manifest, missing projection, or checksum drift
 produces one actionable `mneme-init` nudge and never rewrites the repo from the
 hook. Once reconciled, the nudge disappears.
 
+## Skill usage is not recorded in Codex (SPEC-168)
+
+`mneme hook skill-usage` is registered for Claude Code only. Codex loads a skill
+by reading its file rather than through a tool with its own name, so there is no
+event that identifies the skill; `mneme skills usage` reports Claude Code loads.
+
 ## Session hooks and trust (D3b)
 
 Codex hooks in `~/.codex/hooks.json` require explicit trust before they run:

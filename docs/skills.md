@@ -31,110 +31,83 @@ The directory name is the canonical skill identifier.
 
 ---
 
-## SKILL.md Schema
+## SKILL.md Schema (SPEC-168)
+
+The format is deliberately minimal: a front matter and a body. Keep `SKILL.md`
+short and move detail into `references/` files the agent opens on demand
+(progressive disclosure).
 
 ### Frontmatter
 
 ```yaml
 ---
 name: my-skill                    # REQUIRED — must equal directory name
-description: "1-3 focused sentences describing when to use this skill. Include explicit trigger keywords so the agent can recognise when to apply it."
-version: 1.0.0                    # REQUIRED — semver X.Y.Z
+description: "Use when ... (say WHEN the skill applies, with trigger keywords)."
+version: 1.0.0                    # OPTIONAL — semver X.Y.Z when present
 pinned: false                     # OPTIONAL — set true to protect from overwrite/removal
 license: MIT                      # OPTIONAL — SPDX identifier
 ---
 ```
 
-**Field rules:**
-
 | Field | Required | Format | Lint check |
 |---|---|---|---|
 | name | yes | kebab-case string | Must equal directory name |
-| description | yes | 1-3 sentences | warn if <20 or >500 chars |
-| version | yes | semver X.Y.Z | Regex `^\d+\.\d+\.\d+` |
+| description | yes | 1-3 sentences | warn if <20 or >500 chars; warn if it lacks "when"/"cuando" |
+| version | no | semver X.Y.Z | error if present and not semver; info if absent |
 | pinned | no | boolean, default false | — |
 | license | no | SPDX string | — |
 
 Unknown frontmatter keys are preserved for forward compatibility (INFO finding).
 
-### Body — 5 Required H2 Sections
+### Body, size and `references/`
 
-The body must contain all five of the following H2 headings (case-insensitive,
-order is recommended but not enforced by the linter):
+The body is free-form Markdown. Two limits keep the main file focused:
 
-```markdown
-## When to Use
-## Critical Rules
-## Automated Checks
-## Verification
-## Workflow
-```
+- `SKILL.md` larger than **4096 bytes** (`skill.MainFileSoftLimit`) gives a
+  warning: move detail to `references/`.
+- `SKILL.md` larger than **8192 bytes** (`skill.MainFileHardLimit`) is an error,
+  except for skills in the legacy five-section format (below), where it stays a
+  warning.
 
-#### `## When to Use`
+Cite a reference file in the body with its relative path, for example
+`Open references/checklist.md when you reach the review step.` The linter
+checks every `references/<path>` citation (code blocks included): the file must
+exist inside the skill directory, and a path containing `..` or starting with
+`/` is an error because it escapes the directory. Trailing `.` and `:` are not
+part of the path. A bare `references/` with no file name is ignored.
 
-List explicit trigger conditions. Use concrete keywords and scenarios.
+### Lint rules
 
-```markdown
-## When to Use
+| ID | Rule | Severity |
+|----|------|----------|
+| L1 | `name` present | error |
+| L2 | `name` equals the directory name | error |
+| L3 | `description` present | error |
+| L4 | `description` shorter than 20 or longer than 500 characters | warning |
+| L5 | `description` contains neither `when` nor `cuando` | warning |
+| L6 | `version` present but not semver | error |
+| L7 | `version` absent | info |
+| L8 | `SKILL.md` over 4096 and up to 8192 bytes | warning |
+| L9 | `SKILL.md` over 8192 bytes | error (warning for legacy format) |
+| L10 | a cited `references/<path>` does not exist | error |
+| L11 | a cited reference escapes the directory (`..` or leading `/`) | error |
+| L12 | `## Automated Checks` exists but its table lacks the 3 columns | warning |
+| L13 | unknown front matter key | info |
 
-Use this skill when:
-- You need to implement a new REST endpoint.
-- A reviewer asks for "REST API conventions".
-- The task description mentions "HTTP handler" or "route".
-```
+L10 and L11 need access to the skill directory, so they run through
+`skill.LintFS` (used by `mneme skills lint`, `mneme skills list` and the test
+that lints every bundled skill). `skill.Lint` on an already-parsed skill applies
+the rest.
 
-#### `## Critical Rules`
+### Legacy five-section format (still valid, no longer required)
 
-Numbered list of hard requirements the agent must follow.
-
-```markdown
-## Critical Rules
-
-1. Every handler must accept a `context.Context` as the first argument.
-2. Never embed SQL strings in Go source files — use `.sql` files with sqlc.
-3. Always wrap errors with context: `fmt.Errorf("handler: %w", err)`.
-```
-
-#### `## Automated Checks`
-
-A markdown table with **exactly three columns**: `Check`, `What it verifies`,
-`How to fix`. The linter validates column header names (case-insensitive).
-
-```markdown
-## Automated Checks
-
-| Check | What it verifies | How to fix |
-|---|---|---|
-| No inline SQL | Absence of raw SQL strings in .go files | Move SQL to a .sql file and regenerate with sqlc |
-| Error wrapping | All returned errors use fmt.Errorf with %w | Wrap the error: fmt.Errorf("context: %w", err) |
-```
-
-#### `## Verification`
-
-Describe how the agent can confirm it executed the skill correctly.
-Reference `validation/run.sh` if one exists.
-
-```markdown
-## Verification
-
-Run `mneme skills validate my-skill` to execute the validation script.
-Expected output: `my-skill: validation passed`.
-```
-
-#### `## Workflow`
-
-A numbered procedure the agent should follow.
-
-```markdown
-## Workflow
-
-1. Read the existing handler in the target package.
-2. Define the domain entity in `internal/model/`.
-3. Write the SQL query in `internal/store/queries/`.
-4. Run `make generate` to regenerate sqlc code.
-5. Implement the service method.
-6. Wire the handler in the router.
-```
+A skill that has all five H2 sections — `## When to Use`, `## Critical Rules`,
+`## Automated Checks`, `## Verification`, `## Workflow` — is in the legacy
+format. It remains valid, and as a declared, transitional exemption its
+`SKILL.md` may exceed 8192 bytes: L9 is then a warning that says
+`exento por formato heredado de 5 secciones`. The warning always appears, so the
+exemption is never silent. When `## Automated Checks` is present its table
+should have the columns `Check`, `What it verifies`, `How to fix`.
 
 ---
 
@@ -202,6 +175,40 @@ installed in both runtime destinations
 
 ---
 
+## Usage log (SPEC-168)
+
+mneme can tell you which skills actually get loaded. In Claude Code, `mneme
+install claude-code` registers a `PostToolUse` hook with matcher `Skill`
+(`mneme hook skill-usage`), so the process only runs when a skill is loaded.
+Each load appends one line to `<data dir>/skill-usage.jsonl` (by default
+`~/.mneme/skill-usage.jsonl`, file mode `0600`):
+
+```json
+{"v":1,"ts":"2026-10-20T03:04:05Z","skill":"grill-me","session_id":"0941f295-...","role":"orchestrator","runtime":"claude-code"}
+```
+
+- `v`: record version; a reader skips records with a higher version.
+- `ts`: UTC, RFC 3339, seconds.
+- `skill`: the name as the agent sent it (may carry a plugin namespace),
+  truncated to 200 bytes. `session_id` is truncated to 128, `role` to 64.
+- `role`: `orchestrator` when the payload has no `agent_id`; the `agent_type`
+  when it does; `unresolved` when there is an `agent_id` without `agent_type`.
+- `runtime`: `claude-code`.
+
+Not recorded: skill arguments, file paths, or any content. There is no
+rotation (about 150 bytes per load). The hook never blocks and always exits 0;
+if the payload lacks a recognizable skill name it records nothing.
+
+`mneme skills usage [--since 30d|12h|2026-10-01] [--json]` aggregates the file:
+loads, distinct sessions, last use and roles per skill, plus the known skills
+that were never loaded in the window. Unreadable lines are skipped and counted.
+
+**Codex is not recorded.** Codex loads a skill by reading its file, not through
+a tool with its own name, so there is no event that says "skill X was loaded";
+`mneme install codex` therefore registers no usage hook.
+
+---
+
 ## CLI Reference
 
 ```
@@ -216,6 +223,7 @@ mneme skills lint [<name>]         Lint one or all installed skills
 mneme skills lint --json           JSON output
 mneme skills validate <name>       Run validation/run.sh
 mneme skills validate --json       JSON output
+mneme skills usage [--since 30d] [--json]  Which skills were loaded, and which never
 ```
 
 ---

@@ -1,7 +1,9 @@
 package skill_test
 
 import (
+	"strings"
 	"testing"
+	"testing/fstest"
 
 	"github.com/wirvii/mneme/internal/skill"
 )
@@ -27,10 +29,10 @@ func TestLint_FixturePasses(t *testing.T) {
 // TestLint_Violations tests each individual violation in isolation.
 func TestLint_Violations(t *testing.T) {
 	cases := []struct {
-		name        string
-		md          string
-		dirName     string
-		wantErrMsg  string // substring to find in any error message
+		name       string
+		md         string
+		dirName    string
+		wantErrMsg string // substring to find in any error message
 	}{
 		{
 			name:       "missing name",
@@ -43,12 +45,6 @@ func TestLint_Violations(t *testing.T) {
 			md:         makeSkillMD("my-skill", "", "1.0.0", false, ""),
 			dirName:    "my-skill",
 			wantErrMsg: "description is required",
-		},
-		{
-			name:       "missing version",
-			md:         makeSkillMD("my-skill", "Valid description that is longer than 20 chars.", "", false, ""),
-			dirName:    "my-skill",
-			wantErrMsg: "version is required",
 		},
 		{
 			name:       "name != dirName",
@@ -67,34 +63,6 @@ func TestLint_Violations(t *testing.T) {
 			md:         makeSkillMD("my-skill", "Valid description that is longer than 20 chars.", "1.2.3garbage", false, ""),
 			dirName:    "my-skill",
 			wantErrMsg: "not a valid semver",
-		},
-		{
-			name: "missing section When to Use",
-			md: "---\nname: my-skill\ndescription: \"Valid description that is longer than 20 chars.\"\nversion: 1.0.0\n---\n" +
-				"## Critical Rules\n1. rule\n## Automated Checks\n| Check | What it verifies | How to fix |\n|---|---|---|\n| a | b | c |\n## Verification\nok\n## Workflow\n1. step\n",
-			dirName:    "my-skill",
-			wantErrMsg: "When To Use",
-		},
-		{
-			name: "missing Automated Checks section",
-			md: "---\nname: my-skill\ndescription: \"Valid description that is longer than 20 chars.\"\nversion: 1.0.0\n---\n" +
-				"## When to Use\nuse it\n## Critical Rules\n1. rule\n## Verification\nok\n## Workflow\n1. step\n",
-			dirName:    "my-skill",
-			wantErrMsg: "Automated Checks",
-		},
-		{
-			name: "Automated Checks table malformed",
-			md: "---\nname: my-skill\ndescription: \"Valid description that is longer than 20 chars.\"\nversion: 1.0.0\n---\n" +
-				"## When to Use\nuse it\n## Critical Rules\n1. rule\n## Automated Checks\n| Wrong | Headers | Here |\n|---|---|---|\n## Verification\nok\n## Workflow\n1. step\n",
-			dirName:    "my-skill",
-			wantErrMsg: "does not match required",
-		},
-		{
-			name: "Automated Checks no table",
-			md: "---\nname: my-skill\ndescription: \"Valid description that is longer than 20 chars.\"\nversion: 1.0.0\n---\n" +
-				"## When to Use\nuse it\n## Critical Rules\n1. rule\n## Automated Checks\nNo table here.\n## Verification\nok\n## Workflow\n1. step\n",
-			dirName:    "my-skill",
-			wantErrMsg: "no markdown table found",
 		},
 	}
 
@@ -257,4 +225,165 @@ func repeatChar(c byte, n int) string {
 		b[i] = c
 	}
 	return string(b)
+}
+
+const longDesc = "Use when you need a thing done properly."
+
+// skillOfSize builds a SKILL.md of exactly size bytes with the given extra body.
+func skillOfSize(t *testing.T, size int, body string) string {
+	t.Helper()
+	head := "---\nname: my-skill\ndescription: " + longDesc + "\n---\n" + body
+	if len(head) > size {
+		t.Fatalf("head larger than requested size %d", size)
+	}
+	return head + strings.Repeat("x", size-len(head))
+}
+
+func lintMD(t *testing.T, md string) skill.LintResult {
+	t.Helper()
+	s, err := skill.Parse([]byte(md))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	return skill.Lint(s, "my-skill")
+}
+
+func hasMsg(fs []skill.Finding, sub string) bool {
+	for _, f := range fs {
+		if strings.Contains(f.Message, sub) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestLint_MinimalFormatPasses verifies a front matter plus one paragraph passes.
+func TestLint_MinimalFormatPasses(t *testing.T) {
+	r := lintMD(t, "---\nname: my-skill\ndescription: "+longDesc+"\n---\nHello.\n")
+	if !r.Passed || len(r.Errors) != 0 {
+		t.Fatalf("errors: %v", r.Errors)
+	}
+}
+
+// TestLint_LegacyFiveSectionFormatStillPasses verifies the five-section format.
+func TestLint_LegacyFiveSectionFormatStillPasses(t *testing.T) {
+	r := lintMD(t, makeSkillMD("my-skill", "Valid description for use when testing.", "1.0.0", false, conformantBody))
+	if !r.Passed || len(r.Warnings) != 0 {
+		t.Fatalf("errors %v warnings %v", r.Errors, r.Warnings)
+	}
+}
+
+// TestLint_SizeLimits covers the soft and hard size limits and the legacy exemption.
+func TestLint_SizeLimits(t *testing.T) {
+	legacy := strings.TrimPrefix(conformantBody, "\n")
+	cases := []struct {
+		name      string
+		md        string
+		wantWarn  string
+		wantError bool
+	}{
+		{"at soft limit", skillOfSize(t, skill.MainFileSoftLimit, ""), "", false},
+		{"over soft limit", skillOfSize(t, skill.MainFileSoftLimit+1, ""), "references/", false},
+		{"at hard limit", skillOfSize(t, skill.MainFileHardLimit, ""), "references/", false},
+		{"over hard limit flexible", skillOfSize(t, skill.MainFileHardLimit+1, ""), "", true},
+		{"over hard limit legacy", skillOfSize(t, skill.MainFileHardLimit+1, legacy), "exento por formato heredado", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := lintMD(t, tc.md)
+			if tc.wantError != (len(r.Errors) > 0) {
+				t.Fatalf("wantError=%v errors=%v", tc.wantError, r.Errors)
+			}
+			if tc.wantWarn == "" && !tc.wantError && hasMsg(r.Warnings, "mide") {
+				t.Fatalf("unexpected size warning: %v", r.Warnings)
+			}
+			if tc.wantWarn != "" && !hasMsg(r.Warnings, tc.wantWarn) {
+				t.Fatalf("want warning %q, got %v", tc.wantWarn, r.Warnings)
+			}
+		})
+	}
+}
+
+// TestLint_VersionOptional verifies absent version is info and a bad one an error.
+func TestLint_VersionOptional(t *testing.T) {
+	r := lintMD(t, "---\nname: my-skill\ndescription: "+longDesc+"\n---\nx\n")
+	if len(r.Errors) != 0 || !hasMsg(r.Infos, "version") {
+		t.Fatalf("errors %v infos %v", r.Errors, r.Infos)
+	}
+	r = lintMD(t, "---\nname: my-skill\ndescription: "+longDesc+"\nversion: 1.2\n---\nx\n")
+	if !hasMsg(r.Errors, "not a valid semver") {
+		t.Fatalf("errors %v", r.Errors)
+	}
+}
+
+// TestLint_DescriptionWhenAdvisory verifies the "when/cuando" advisory.
+func TestLint_DescriptionWhenAdvisory(t *testing.T) {
+	cases := []struct {
+		desc string
+		warn bool
+	}{
+		{"Does a thing with files and folders", true},
+		{"Use WHEN the user asks for a thing", false},
+		{"Úsala cuando el usuario pida algo", false},
+	}
+	for _, tc := range cases {
+		r := lintMD(t, "---\nname: my-skill\ndescription: "+tc.desc+"\n---\nx\n")
+		if got := hasMsg(r.Warnings, "WHEN"); got != tc.warn {
+			t.Errorf("%q: warn=%v want %v", tc.desc, got, tc.warn)
+		}
+	}
+}
+
+// TestLint_AutomatedChecksTableIsWarning verifies a bad table is only a warning.
+func TestLint_AutomatedChecksTableIsWarning(t *testing.T) {
+	r := lintMD(t, "---\nname: my-skill\ndescription: "+longDesc+"\n---\n## Automated Checks\n| Wrong | Headers | Here |\n|---|---|---|\n")
+	if len(r.Errors) != 0 || !hasMsg(r.Warnings, "does not match required") {
+		t.Fatalf("errors %v warnings %v", r.Errors, r.Warnings)
+	}
+	r = lintMD(t, "---\nname: my-skill\ndescription: "+longDesc+"\n---\n## Automated Checks\nno table\n")
+	if len(r.Errors) != 0 || !hasMsg(r.Warnings, "no markdown table") {
+		t.Fatalf("errors %v warnings %v", r.Errors, r.Warnings)
+	}
+}
+
+// TestLintFS_References covers existing, missing and escaping references.
+func TestLintFS_References(t *testing.T) {
+	front := "---\nname: my-skill\ndescription: " + longDesc + "\n---\n"
+	cases := []struct {
+		name    string
+		body    string
+		files   []string
+		wantErr string
+	}{
+		{"existing", "Open references/a.md now.\n", []string{"references/a.md"}, ""},
+		{"missing names the path", "Open references/missing.md now.\n", nil, "references/missing.md"},
+		{"escapes with dotdot", "See references/../x here.\n", []string{"x"}, "escapa"},
+		{"trailing dot trimmed", "Read references/a.md.\n", []string{"references/a.md"}, ""},
+		{"code block checked", "```\ncat references/nope.md\n```\n", nil, "references/nope.md"},
+		{"bare prefix ignored", "the references/ folder\n", nil, ""},
+		{"duplicate reported once", "references/z.md and references/z.md\n", nil, "references/z.md"},
+		{"not a reference path", "see myreferences/q.md\n", nil, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fsys := fstest.MapFS{"SKILL.md": {Data: []byte(front + tc.body)}}
+			for _, f := range tc.files {
+				fsys[f] = &fstest.MapFile{Data: []byte("x")}
+			}
+			r := skill.LintFS(fsys, "my-skill")
+			if tc.wantErr == "" {
+				if !r.Passed {
+					t.Fatalf("errors: %v", r.Errors)
+				}
+				return
+			}
+			if !hasMsg(r.Errors, tc.wantErr) || len(r.Errors) != 1 {
+				t.Fatalf("want one error containing %q, got %v", tc.wantErr, r.Errors)
+			}
+		})
+	}
+	r := skill.LintFS(fstest.MapFS{}, "my-skill")
+	if r.Passed || !hasMsg(r.Errors, "cannot parse SKILL.md") {
+		t.Fatalf("missing SKILL.md: %v", r.Errors)
+	}
 }

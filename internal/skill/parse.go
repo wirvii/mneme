@@ -23,7 +23,7 @@ type Metadata struct {
 	// Description is a 1-3 sentence human-readable summary of when to use the skill.
 	Description string
 
-	// Version is the skill version string. Must be semver (X.Y.Z).
+	// Version is the optional skill version string. When present it must be semver (X.Y.Z).
 	Version string
 
 	// Pinned, when true, prevents mneme install from overwriting the skill
@@ -58,6 +58,10 @@ type Skill struct {
 	// RawBody is the full Markdown body after the closing frontmatter delimiter,
 	// preserved verbatim for callers that need to rewrite or display it.
 	RawBody string
+
+	// Size is the length in bytes of the parsed SKILL.md, set by Parse. A zero
+	// value (a hand-built Skill) disables the size checks in Lint.
+	Size int
 }
 
 // ParseFile reads the SKILL.md at path and parses it. It is a convenience
@@ -101,6 +105,7 @@ func Parse(data []byte) (*Skill, error) {
 		Metadata: meta,
 		Sections: parseSections(rawBody),
 		RawBody:  rawBody,
+		Size:     len(data),
 	}, nil
 }
 

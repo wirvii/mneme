@@ -1,8 +1,28 @@
 package skill
 
 import (
+	"fmt"
+	"io/fs"
+	"os"
+	"path"
+	"path/filepath"
 	"regexp"
 	"strings"
+)
+
+const (
+	// MainFileSoftLimit is the SKILL.md size in bytes above which the linter
+	// warns that detail should move into references/ files.
+	MainFileSoftLimit = 4096
+
+	// MainFileHardLimit is the SKILL.md size in bytes above which the linter
+	// reports an error, unless the skill uses the legacy five-section format.
+	MainFileHardLimit = 8192
+
+	// minDescriptionLen and maxDescriptionLen bound the advisory description
+	// length check.
+	minDescriptionLen = 20
+	maxDescriptionLen = 500
 )
 
 // Severity classifies the urgency of a lint finding. Higher severity findings
@@ -75,17 +95,91 @@ var automatedChecksHeaders = []string{
 var semverRe = regexp.MustCompile(`^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$`)
 
 // LintFile parses and lints the SKILL.md at path. dirName is the skill
-// directory name (used to verify name==dir). It is equivalent to calling
-// ParseFile then Lint.
+// directory name (used to verify name==dir). References cited from the body
+// are resolved against the directory that contains the file.
 func LintFile(path, dirName string) LintResult {
-	s, err := ParseFile(path)
+	return LintFS(os.DirFS(filepath.Dir(path)), dirName)
+}
+
+// LintFS lints the skill rooted at fsys, which must contain SKILL.md. It runs
+// every check Lint runs and, because it can reach the directory, also verifies
+// that each references/<path> cited in the body exists and stays inside the
+// skill directory.
+func LintFS(fsys fs.FS, dirName string) LintResult {
+	data, err := fs.ReadFile(fsys, "SKILL.md")
+	var s *Skill
+	if err == nil {
+		s, err = Parse(data)
+	}
 	if err != nil {
 		return LintResult{
 			Name:   dirName,
 			Errors: []Finding{{Severity: SeverityError, Message: "cannot parse SKILL.md: " + err.Error()}},
 		}
 	}
-	return Lint(s, dirName)
+	result := Lint(s, dirName)
+	for _, ref := range citedReferences(s.RawBody) {
+		rel := strings.TrimPrefix(ref, "references/")
+		if strings.HasPrefix(rel, "/") || containsDotDot(rel) {
+			result.Errors = append(result.Errors, Finding{
+				Severity: SeverityError,
+				Message:  "body: la referencia escapa del directorio: " + ref,
+			})
+			continue
+		}
+		if _, statErr := fs.Stat(fsys, path.Clean(ref)); statErr != nil {
+			result.Errors = append(result.Errors, Finding{
+				Severity: SeverityError,
+				Message:  "body: referenced file does not exist: " + ref,
+			})
+		}
+	}
+	result.Passed = len(result.Errors) == 0
+	return result
+}
+
+// referenceRe finds citations of files under references/ in a skill body.
+var referenceRe = regexp.MustCompile("(?:^|[^A-Za-z0-9_./-])(references/[^\\s)\\]'\"`<>,;]+)")
+
+// citedReferences returns the deduplicated references/... paths cited in body,
+// in order of appearance. It scans the raw text (code blocks included) so the
+// result is deterministic without parsing Markdown.
+func citedReferences(body string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, m := range referenceRe.FindAllStringSubmatch(body, -1) {
+		ref := strings.TrimRight(m[1], ".:")
+		if ref == "references/" || seen[ref] {
+			continue
+		}
+		seen[ref] = true
+		out = append(out, ref)
+	}
+	return out
+}
+
+// containsDotDot reports whether any path element of rel is "..".
+func containsDotDot(rel string) bool {
+	for _, el := range strings.Split(rel, "/") {
+		if el == ".." {
+			return true
+		}
+	}
+	return false
+}
+
+// isLegacyFormat reports whether the skill carries all five legacy H2 sections.
+func isLegacyFormat(s *Skill) bool {
+	have := make(map[string]bool, len(s.Sections))
+	for _, sec := range s.Sections {
+		have[strings.ToLower(strings.TrimSpace(sec.Heading))] = true
+	}
+	for _, req := range requiredSections {
+		if !have[req] {
+			return false
+		}
+	}
+	return true
 }
 
 // Lint runs all structural checks against a parsed Skill. dirName is the
@@ -111,9 +205,9 @@ func Lint(s *Skill, dirName string) LintResult {
 		})
 	}
 	if s.Version == "" {
-		result.Errors = append(result.Errors, Finding{
-			Severity: SeverityError,
-			Message:  "frontmatter: version is required",
+		result.Infos = append(result.Infos, Finding{
+			Severity: SeverityInfo,
+			Message:  "frontmatter: version is absent (optional)",
 		})
 	}
 
@@ -139,15 +233,48 @@ func Lint(s *Skill, dirName string) LintResult {
 
 	if s.Description != "" {
 		dlen := len(s.Description)
-		if dlen < 20 {
+		if dlen < minDescriptionLen {
 			result.Warnings = append(result.Warnings, Finding{
 				Severity: SeverityWarning,
 				Message:  "frontmatter: description is very short (< 20 characters); add context about when to use this skill",
 			})
-		} else if dlen > 500 {
+		} else if dlen > maxDescriptionLen {
 			result.Warnings = append(result.Warnings, Finding{
 				Severity: SeverityWarning,
 				Message:  "frontmatter: description exceeds 500 characters; trim to 1-3 focused sentences",
+			})
+		}
+	}
+
+	if s.Description != "" {
+		low := strings.ToLower(s.Description)
+		if !strings.Contains(low, "when") && !strings.Contains(low, "cuando") {
+			result.Warnings = append(result.Warnings, Finding{
+				Severity: SeverityWarning,
+				Message:  "frontmatter: description should say WHEN to use the skill (include \"when\" or \"cuando\")",
+			})
+		}
+	}
+
+	// --- size limits ---
+
+	if s.Size > MainFileSoftLimit {
+		switch {
+		case s.Size <= MainFileHardLimit:
+			result.Warnings = append(result.Warnings, Finding{
+				Severity: SeverityWarning,
+				Message:  fmt.Sprintf("SKILL.md mide %d bytes (> %d); mueve detalle a references/", s.Size, MainFileSoftLimit),
+			})
+		case isLegacyFormat(s):
+			result.Warnings = append(result.Warnings, Finding{
+				Severity: SeverityWarning,
+				Message: fmt.Sprintf("SKILL.md mide %d bytes (> %d); exento por formato heredado de 5 secciones — mueve detalle a references/",
+					s.Size, MainFileHardLimit),
+			})
+		default:
+			result.Errors = append(result.Errors, Finding{
+				Severity: SeverityError,
+				Message:  fmt.Sprintf("SKILL.md mide %d bytes (> %d); mueve detalle a references/", s.Size, MainFileHardLimit),
 			})
 		}
 	}
@@ -161,44 +288,18 @@ func Lint(s *Skill, dirName string) LintResult {
 		})
 	}
 
-	// --- required H2 sections ---
+	// --- Automated Checks table (advisory) ---
 
-	sectionSet := make(map[string]bool, len(s.Sections))
-	for _, sec := range s.Sections {
-		sectionSet[strings.ToLower(strings.TrimSpace(sec.Heading))] = true
-	}
-
-	for _, req := range requiredSections {
-		if !sectionSet[req] {
-			result.Errors = append(result.Errors, Finding{
-				Severity: SeverityError,
-				Message:  "body: required section \"" + titleCase(req) + "\" is missing",
-			})
-		}
-	}
-
-	// --- Automated Checks table validation ---
-
-	checkedTable := false
 	for _, sec := range s.Sections {
 		if strings.ToLower(strings.TrimSpace(sec.Heading)) == "automated checks" {
-			checkedTable = true
-			if err := lintAutomatedChecksTable(sec.Content); err != "" {
-				result.Errors = append(result.Errors, Finding{
-					Severity: SeverityError,
-					Message:  "body: Automated Checks: " + err,
+			if msg := lintAutomatedChecksTable(sec.Content); msg != "" {
+				result.Warnings = append(result.Warnings, Finding{
+					Severity: SeverityWarning,
+					Message:  "body: Automated Checks: " + msg,
 				})
 			}
 			break
 		}
-	}
-
-	if !checkedTable && sectionSet["automated checks"] {
-		// Section exists but we couldn't find it — defensive, should not happen.
-		result.Errors = append(result.Errors, Finding{
-			Severity: SeverityError,
-			Message:  "body: Automated Checks section is present but could not be inspected",
-		})
 	}
 
 	result.Passed = len(result.Errors) == 0
