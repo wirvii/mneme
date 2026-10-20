@@ -28,8 +28,13 @@ type SkillsResult struct {
 // removes their directories from the discovery path of every host that
 // installed them earlier, so a retired skill does not linger as a stale
 // instruction. Another spec that retires a skill appends its name here.
-// SPEC-162 retired the team-profile and project-scaffold skills.
-var retiredSkills = []string{"mneme-profile-author", "new-project", "new-app"}
+// SPEC-162 retired the team-profile and project-scaffold skills; SPEC-169
+// folded hunt-bug and bug-to-issue into the "bug" skill and dropped the
+// structural fixture example-skill.
+var retiredSkills = []string{
+	"mneme-profile-author", "new-project", "new-app",
+	"hunt-bug", "bug-to-issue", "example-skill",
+}
 
 // removeRetiredSkills deletes each retired skill directory under skillsDir,
 // but only when its SKILL.md declares that exact name (a foreign directory

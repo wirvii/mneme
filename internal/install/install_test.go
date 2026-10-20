@@ -239,7 +239,7 @@ func TestInjectManual_Nil(t *testing.T) {
 // (SPEC-058 / EPIC agnostic-agents SS-5; wrapper restored by SPEC-067). The
 // wrapper must reference the skill and must NOT reintroduce the obsolete
 // 5-phase markdown workflow. Since SPEC-141 D7, Commands() installs every
-// assets/commands/ file (mneme-init, grill-me, hunt-bug, bug-to-issue) — see
+// assets/commands/ file (mneme-init, grill-me) — see
 // TestCommandAssets_AllInstalledByClaudeCode (G2) for that population-level
 // invariant; this test stays focused on mneme-init's own content.
 func TestClaudeCode_Commands_MnemeInitWrapper(t *testing.T) {

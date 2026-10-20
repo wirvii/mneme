@@ -290,7 +290,7 @@ func TestBundledSkillNames(t *testing.T) {
 // first half, format-only, is TestBundledSkills_AllLintClean above): every
 // bundled skill's validation/run.sh actually runs and exits 0. The
 // population is BundledSkillNames() — derived, never hand-typed — so the
-// three new skills (grill-me, hunt-bug, bug-to-issue) are covered without
+// bundled skills (grill-me, codegraph and the flow family) are covered without
 // naming them. ErrNoShell (no "sh" on PATH — expected on a bare Windows
 // host without Git-for-Windows) is tolerated, not treated as a failure.
 func TestBundledSkills_ValidationPasses(t *testing.T) {
