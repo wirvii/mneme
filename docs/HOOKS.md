@@ -583,7 +583,7 @@ regen). Reporta tu resultado y termina; el orquestador avanzará.
 whose `Version` is behind `subagents.AgentFixedVersion` (currently 5); `mneme
 subagents regen [--role R] [--all] [--dry-run]` regenerates the file(s) in
 place, preserving any hand-authored area sections byte-for-byte. See
-[`docs/subagents.md`](subagents.md).
+[`docs/api/subagents.md`](api/subagents.md).
 
 A role-scoped-by-KIND sibling, `roleScopedDocKinds` (`internal/cli/hook.go`),
 restricts `spec_doc_write`'s `criteria` kind to the `architect` role — an
