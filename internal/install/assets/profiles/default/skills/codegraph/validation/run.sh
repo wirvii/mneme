@@ -29,7 +29,7 @@ for tool in codegraph_search codegraph_context codegraph_callers codegraph_impac
 done
 
 for cmd in callees trace node explore files status; do
-  if ! grep -Eq "(mneme codegraph |\`)$cmd[ \`]" "$SKILL_FILE"; then
+  if ! grep -Eq "(mneme codegraph |\`)${cmd}[ \`]" "$SKILL_FILE"; then
     echo "codegraph: missing CLI command $cmd" >&2
     exit 1
   fi

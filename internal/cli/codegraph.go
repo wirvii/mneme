@@ -733,8 +733,9 @@ adoption querylog (tool names only — never paths, commands, or queries).
 
 The adoption ratio is uses / (uses + opportunities): the fraction of qualified
 explorations that went through codegraph_* instead of Read/Grep/Bash. A ratio
-rising release over release validates that the nudge and prompt policy work;
-the top-missed tools point at the next pattern to target.`,
+rising release over release means agents reach for the graph more; the
+top-missed tools show which generic tool they used instead. Graph use through
+this CLI is not counted, so the ratio slightly understates real use.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			window, err := parseSinceWindow(flagSince)

@@ -1,13 +1,13 @@
 # API Reference — CodeGraph Tools (`codegraph_*`)
 
-10 MCP tools over JSON-RPC 2.0 stdio (`mneme mcp`). Concept guide:
+4 MCP tools over JSON-RPC 2.0 stdio (`mneme mcp`). Concept guide:
 [docs/codegraph.md](../codegraph.md) (indexing model, coverage caveats, git
 hooks). Index: [docs/API.md](../API.md).
 
 Unlike the other tool families, `codegraph_*` tools return **plain,
 human-readable text** (not JSON) in the single `text` content block — they are
 designed to be read directly by an agent, not machine-parsed. Coverage
-caveat: `codegraph_impact` and `codegraph_callees` are **best-effort**. The
+caveat: `codegraph_impact` is **best-effort**. The
 graph does not reliably capture method-calls (`x.Foo()`) or cross-package/
 stdlib calls — do not assume "nobody calls X" purely from empty results; a
 project must be indexed (`mneme codegraph index`) before any of these tools
@@ -38,8 +38,7 @@ methods, structs, etc. matching the query.
 ## codegraph_context
 
 Get the full context of a code symbol: definition, callers, callees, and
-containing file. Combines `codegraph_node` + `codegraph_callers` +
-`codegraph_callees` into one call.
+containing file, in one call.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -70,29 +69,11 @@ Find all functions/methods that call a given symbol.
 
 ---
 
-## codegraph_callees
-
-Find all functions/methods that a given symbol calls. **Coverage caveat:**
-method-calls and cross-package/stdlib calls are not reliably captured — treat
-empty results as inconclusive, not proof of "no callees".
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `symbol` | string | yes | Symbol name to find callees of |
-| `depth` | integer | no | Traversal depth (default 1, max 5) |
-| `limit` | integer | no | Max results. Default: 20 |
-
-**Returns:** Text list titled `"Callees of <symbol>"`.
-
-**Errors:** `-32602` missing `symbol`. `-32603` traversal failure.
-
----
-
 ## codegraph_impact
 
 Analyze the impact radius of changing a symbol — what transitively depends on
 it, by following incoming `calls`/`imports`/`extends`/`implements` edges.
-**Coverage caveat:** same as `codegraph_callees` — complement with `Grep`/`Read`
+**Coverage caveat:** method-calls and cross-package/stdlib calls are not reliably captured — complement with `Grep`/`Read`
 for an exhaustive pre-refactor analysis; do not assume completeness.
 
 | Parameter | Type | Required | Description |
@@ -109,89 +90,27 @@ for an exhaustive pre-refactor analysis; do not assume completeness.
 
 ---
 
-## codegraph_node
+## Removed tools and CLI parity
 
-Get detailed information about a specific code symbol including its source
-code.
+SPEC-165 reduced MCP from 10 to 4 tools. A `tools/call` for any of the six
+removed tools fails with `-32601` (`unknown tool: <name>`). Their queries live
+on in the CLI:
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `symbol` | string | yes | Symbol name to look up |
+| Removed MCP tool | CLI replacement |
+|---|---|
+| `codegraph_callees` | `mneme codegraph callees <symbol> [-d] [-n]` |
+| `codegraph_node` | `mneme codegraph node <symbol>` |
+| `codegraph_explore` | `mneme codegraph explore <symbol> [<symbol>...] [--budget N]` |
+| `codegraph_trace` | `mneme codegraph trace <from> <to>` |
+| `codegraph_status` | `mneme codegraph status` |
+| `codegraph_files` | `mneme codegraph files [pattern]` |
 
-**Returns:** Text block: kind, qualified name, file location, signature, docstring, and full source code.
-
-**Errors:** `-32602` missing `symbol`. `-32603` symbol not found.
-
----
-
-## codegraph_explore
-
-Explore multiple symbols at once: get their source code and relationships in
-one call. Useful for loading a small cluster of related symbols before making
-a change.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `symbols` | string[] | yes | List of symbol names to explore (max 10; truncated silently beyond that) |
-| `budget` | integer | no | Maximum output length in characters. Default: 30000 |
-
-**Returns:** Concatenated text blocks (one `codegraph_node`-style detail per symbol), truncated to `budget` characters. Symbols that fail lookup are reported inline as `"## <symbol>\nError: ..."` without failing the whole call.
-
-**Errors:** `-32602` missing/empty `symbols`.
-
----
-
-## codegraph_files
-
-List indexed files, optionally filtered by language or glob pattern.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `pattern` | string | no | Glob pattern to filter file paths (`filepath.Match` semantics) |
-| `language` | string | no | Filter by language (`go`, `typescript`, `javascript`) |
-
-**Returns:** Text list: `"Indexed files (N):"` followed by `path  [language] N nodes` per file.
-
-**Errors:** `-32603` query failure.
-
----
-
-## codegraph_status
-
-Show the status of the code graph index: counts, languages, last update.
-
-No parameters.
-
-**Returns:** Text block with node/edge/file counts broken down by kind and language (see `mneme codegraph status` for the exact format).
-
-**Errors:** `-32603` query failure.
-
----
-
-## codegraph_trace
-
-Find the call path between two symbols via BFS on outgoing `calls` edges.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `from` | string | yes | Source symbol name |
-| `to` | string | yes | Target symbol name |
-| `max_depth` | integer | no | Maximum path length. Default: 5 |
-
-**Returns:** Text: each step in the path as `"symbol  →  symbol"`, or a not-found message when no path exists within `max_depth`.
-
-**Errors:** `-32602` missing `from`/`to`. `-32603` traversal failure.
-
----
-
-## CLI parity note
-
-`codegraph_explore` has **no CLI equivalent** — it is an MCP-only batched
-convenience tool. All other 9 tools map 1:1 to `mneme codegraph <subcommand>`
-(see [docs/api/cli.md](cli.md)), plus `mneme codegraph index` and
-`mneme codegraph hooks install|remove`, which are CLI-only (indexing and git
-hook management are not exposed as MCP tools — an agent triggers indexing via
-`Bash` or relies on the auto-reindex git hooks).
+The 3 tools `codegraph_search`, `codegraph_callers` and `codegraph_impact` map
+1:1 to `mneme codegraph search|callers|impact`; `codegraph_context` is MCP-only.
+See [docs/api/cli.md](cli.md). `mneme codegraph index` and
+`mneme codegraph hooks install|remove` are CLI-only (indexing and git hook
+management are not MCP tools — an agent triggers indexing via `Bash` or relies
+on the auto-reindex git hooks).
 
 ## Error codes
 
@@ -202,5 +121,5 @@ hook management are not exposed as MCP tools — an agent triggers indexing via
 
 ## See also
 
-- [docs/codegraph.md](../codegraph.md) — indexing model, extractor coverage by language, auto-reindex git hooks, `hook_nudge_enabled` config
+- [docs/codegraph.md](../codegraph.md) — indexing model, extractor coverage by language, auto-reindex git hooks, usage telemetry, token-savings measurement
 - [docs/api/cli.md](cli.md) — `mneme codegraph index/search/node/callers/callees/impact/trace/files/status/hooks`

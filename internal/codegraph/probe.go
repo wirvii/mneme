@@ -70,7 +70,7 @@ func ProbeGraph(path string) (hasNodes bool, lastUpdatedUnixMs int64, err error)
 // ProbeDegraded is the read-only sibling of ProbeGraph (SPEC-142 D14): it
 // reports the degraded-languages record for the codegraph DB at path without
 // opening it for writes and without creating it if absent. Callers on a hot
-// path (the pre-tool-use nudge) use this instead of the full CodeGraphService
+// path (the CLI's pre-run notice) use this instead of the full CodeGraphService
 // so that probing for a notice never itself materializes a database that
 // would not otherwise exist.
 //
