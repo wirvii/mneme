@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -280,6 +281,95 @@ func TestWriteTaskSection_IOErrors(t *testing.T) {
 	entries, _ := os.ReadDir(dir)
 	if len(entries) != 0 {
 		t.Errorf("debris left behind: %v", entries)
+	}
+}
+
+// errTestSeam is the sentinel the filesystem seams return in
+// TestWriteTaskSection_SeamErrors.
+var errTestSeam = errors.New("test seam failure")
+
+// swapSeam replaces *target with fn and restores it when the test ends.
+func swapSeam[T any](t *testing.T, target *T, fn T) {
+	t.Helper()
+	old := *target
+	*target = fn
+	t.Cleanup(func() { *target = old })
+}
+
+// TestWriteTaskSection_SeamErrors reaches the write, chmod and rename failure
+// branches of the atomic write, with tarea.md absent and present. Each case
+// must report the right error, report created=false, leave no .tarea-* debris
+// and leave tarea.md untouched.
+//
+// It swaps package-level seams, so it must NOT call t.Parallel: a parallel
+// sibling would race on those globals.
+func TestWriteTaskSection_SeamErrors(t *testing.T) {
+	spec := &model.Spec{ID: "SPEC-001", Title: "T"}
+
+	failures := map[string]func(t *testing.T){
+		"write": func(t *testing.T) {
+			swapSeam(t, &taskCreateTemp, func(dir, pattern string) (*os.File, error) {
+				f, err := os.CreateTemp(dir, pattern)
+				if err != nil {
+					return nil, err
+				}
+				name := f.Name()
+				if err := f.Close(); err != nil {
+					return nil, err
+				}
+				// A read-only handle makes WriteString fail for real.
+				return os.Open(name)
+			})
+		},
+		"chmod": func(t *testing.T) {
+			swapSeam(t, &taskChmod, func(string, os.FileMode) error { return errTestSeam })
+		},
+		"rename": func(t *testing.T) {
+			swapSeam(t, &taskRename, func(string, string) error { return errTestSeam })
+		},
+	}
+
+	for _, name := range []string{"write", "chmod", "rename"} {
+		for _, present := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/present=%t", name, present), func(t *testing.T) {
+				dir := t.TempDir()
+				path := filepath.Join(dir, "tarea.md")
+				if present {
+					doc := renderTaskSkeleton(spec.ID, spec.Title)
+					if err := os.WriteFile(path, []byte(doc), 0o644); err != nil {
+						t.Fatal(err)
+					}
+				}
+				before, _ := os.ReadFile(path)
+				failures[name](t)
+
+				created, err := writeTaskSection(path, spec, model.TaskSectionPlan, "x")
+				if err == nil {
+					t.Fatal("expected an error")
+				}
+				if name == "write" {
+					if !strings.Contains(err.Error(), "write temp") {
+						t.Errorf("error %q does not come from the write branch", err)
+					}
+				} else if !errors.Is(err, errTestSeam) {
+					t.Errorf("error %v does not wrap errTestSeam", err)
+				}
+				if created {
+					t.Error("created must be false on failure")
+				}
+				if debris, _ := filepath.Glob(filepath.Join(dir, ".tarea-*")); len(debris) != 0 {
+					t.Errorf("debris left behind: %v", debris)
+				}
+				after, afterErr := os.ReadFile(path)
+				if present {
+					if afterErr != nil || string(after) != string(before) {
+						t.Error("existing tarea.md was modified")
+					}
+				} else if !errors.Is(afterErr, os.ErrNotExist) {
+					t.Errorf("tarea.md must stay absent, got err=%v", afterErr)
+				}
+			})
+		}
 	}
 }
 

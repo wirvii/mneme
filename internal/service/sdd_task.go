@@ -31,6 +31,14 @@ const tareaEscapedPrefix = "&lt;!-- mneme:tarea"
 // qa), so the risk is accepted and documented (SPEC-170 D4).
 var taskDocMu sync.Mutex
 
+// Filesystem seams for writeTaskSection. Tests swap them to reach failure
+// paths (write, chmod, rename) that no real filesystem produces portably.
+var (
+	taskCreateTemp = os.CreateTemp
+	taskChmod      = os.Chmod
+	taskRename     = os.Rename
+)
+
 // taskStartMarker returns the full-line start marker of section s.
 func taskStartMarker(s model.TaskSection) string {
 	return fmt.Sprintf("<!-- mneme:tarea:%s:start -->", s)
@@ -188,7 +196,7 @@ func writeTaskSection(path string, spec *model.Spec, section model.TaskSection, 
 	}
 
 	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, ".tarea-*")
+	tmp, err := taskCreateTemp(dir, ".tarea-*")
 	if err != nil {
 		return false, fmt.Errorf("service: spec doc write: temp file in %s: %w", dir, err)
 	}
@@ -202,11 +210,11 @@ func writeTaskSection(path string, spec *model.Spec, section model.TaskSection, 
 		os.Remove(tmpName)
 		return false, fmt.Errorf("service: spec doc write: close temp: %w", err)
 	}
-	if err := os.Chmod(tmpName, 0o644); err != nil {
+	if err := taskChmod(tmpName, 0o644); err != nil {
 		os.Remove(tmpName)
 		return false, fmt.Errorf("service: spec doc write: chmod temp: %w", err)
 	}
-	if err := os.Rename(tmpName, path); err != nil {
+	if err := taskRename(tmpName, path); err != nil {
 		os.Remove(tmpName)
 		return false, fmt.Errorf("service: spec doc write: rename to %s: %w", path, err)
 	}
