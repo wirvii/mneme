@@ -1,0 +1,15 @@
+-- 024_memory_reviewed_at.sql (SPEC-167)
+--
+-- Deliberately contains NO ALTER TABLE. The migration runner decides by
+-- MAX(version) and skips every file whose version is <= that maximum, and the
+-- owner's databases carry versions registered by old delivery-v2 betas
+-- (BL-240) -- so this file may be skipped entirely, or run against a database
+-- where the column already exists, and SQLite has no
+-- "ADD COLUMN IF NOT EXISTS". An ALTER here could therefore fail Open on a
+-- real database, which would make every mneme command unusable.
+--
+-- The memories.reviewed_at column is created by ensureMemoryReviewedAt
+-- (internal/db/reviewedat.go), which checks the column itself on every Open
+-- and does not depend on the version number. This file only records version
+-- 24 so that `mneme version` and the schema tests see it.
+INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (24, datetime('now'));

@@ -42,7 +42,7 @@ curl -X POST http://localhost:7437/v1/memories \
   -d '{"title": "Auth uses JWT RS256", "content": "RS256 with 2048-bit keys...", "type": "decision", "topic_key": "architecture/auth-model"}'
 ```
 
-**Response:** `201 Created`
+**Response:** `201 Created` (also carries `suggested_topic_key` when no `topic_key` was sent, SPEC-164, and `possible_conflicts`, SPEC-166)
 
 ```json
 {"id": "019de100-...", "title": "Auth uses JWT RS256", "action": "created", "topic_key": "architecture/auth-model"}
@@ -58,7 +58,7 @@ curl http://localhost:7437/v1/memories/019de100-abcd-7fff-8000-000000000001
 
 ## PATCH /v1/memories/{id}
 
-Partial update. Request body: same schema as `mem_update` (minus `id`).
+Partial update. Request body: same schema as `mem_update` (minus `id`), including `supersedes`, `conflicts_with` and `unrelated_to` (SPEC-166); the response then carries `relations_applied`. An invalid target (itself, in two lists, cross-store) answers `400`. `confirm: true` (SPEC-167) restarts the memory's review clock and the response carries `reviewed_at`.
 
 ```bash
 curl -X PATCH http://localhost:7437/v1/memories/019de100-... \
@@ -82,7 +82,7 @@ curl -X DELETE http://localhost:7437/v1/memories/019de100-... \
 
 ## GET /v1/memories/search
 
-Full-text search with optional graph expansion. Same shape as `mem_search`.
+Full-text search with optional graph expansion. Same shape as `mem_search`, including `review_due`/`review_note` on results past their review deadline (SPEC-167; `/v1/memories/context` too). Those fields are for programs acting as the agent, not for display to people.
 
 | Query param | Type | Required | Description |
 |-------------|------|----------|-------------|
@@ -130,7 +130,7 @@ curl 'http://localhost:7437/v1/memories/019de100-.../explore?depth=3'
 
 ## POST /v1/sessions/end
 
-End the current session and save a summary. Request body: same schema as `mem_session_end`.
+End the current session and save a summary. Request body: same schema as `mem_session_end`, including `partial`, `decisions` and `next_steps` (SPEC-164: `partial: true` saves the `checkpoint/latest` memory without closing the session).
 
 ```bash
 curl -X POST http://localhost:7437/v1/sessions/end \
@@ -202,9 +202,7 @@ families have **no HTTP route at all**:
 
 | Family | MCP tools | HTTP route | Status |
 |--------|-----------|------------|--------|
-| `mem_checkpoint` | 1 | -- | Not implemented |
-| `mem_timeline` | 1 | -- | Not implemented |
-| `mem_suggest_topic_key` | 1 | -- | Not implemented |
+| `mem_timeline` (now `mneme mem timeline`) | 1 | -- | Not implemented |
 | `backlog_*` | 5 | -- | Not implemented |
 | `spec_*` | 8 | -- | Not implemented |
 | `lane_*` | 5 | -- | Not implemented |

@@ -4,10 +4,106 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
+	"github.com/wirvii/mneme/internal/config"
+	"github.com/wirvii/mneme/internal/db"
+	"github.com/wirvii/mneme/internal/embed"
 	"github.com/wirvii/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/service"
+	"github.com/wirvii/mneme/internal/store"
 )
+
+// TestSessionEnd_PartialIsCheckpoint verifies SPEC-164 D3: a partial end is a
+// checkpoint/latest upsert that never touches the sessions table.
+func TestSessionEnd_PartialIsCheckpoint(t *testing.T) {
+	projectDB, err := db.OpenMemory()
+	if err != nil {
+		t.Fatalf("open project db: %v", err)
+	}
+	globalDB, err := db.OpenMemory()
+	if err != nil {
+		t.Fatalf("open global db: %v", err)
+	}
+	t.Cleanup(func() { projectDB.Close(); globalDB.Close() })
+	projectStore := store.NewMemoryStore(projectDB)
+	svc := service.NewMemoryService(projectStore, store.NewMemoryStore(globalDB), config.Default(), "test/project", embed.NopEmbedder{})
+	ctx := context.Background()
+
+	resp, err := svc.SessionEnd(ctx, model.SessionEndRequest{
+		Summary: "halfway", Decisions: "use X", NextSteps: "do Y", SessionID: "s-partial", Partial: true,
+	})
+	if err != nil {
+		t.Fatalf("SessionEnd partial: %v", err)
+	}
+	if !resp.Partial || resp.SessionID != "s-partial" {
+		t.Errorf("unexpected response: %+v", resp)
+	}
+	if resp.MemoriesCreated != nil || resp.SessionDuration != "" {
+		t.Errorf("metrics must be absent on partial: %+v", resp)
+	}
+	first, err := svc.Get(ctx, resp.SummaryMemoryID)
+	if err != nil {
+		t.Fatalf("Get checkpoint: %v", err)
+	}
+	if first.TopicKey != "checkpoint/latest" {
+		t.Errorf("topic key = %q", first.TopicKey)
+	}
+	for _, want := range []string{"## Current State", "## Decisions", "## Next Steps"} {
+		if !strings.Contains(first.Content, want) {
+			t.Errorf("content missing %q: %q", want, first.Content)
+		}
+	}
+
+	resp2, err := svc.SessionEnd(ctx, model.SessionEndRequest{Summary: "later", Partial: true})
+	if err != nil {
+		t.Fatalf("second partial: %v", err)
+	}
+	if resp2.SummaryMemoryID != resp.SummaryMemoryID {
+		t.Errorf("two partial calls must leave one checkpoint: %s vs %s", resp.SummaryMemoryID, resp2.SummaryMemoryID)
+	}
+
+	sessions, err := projectStore.ListSessionsByProject(ctx, "test/project")
+	if err != nil {
+		t.Fatalf("ListSessionsByProject: %v", err)
+	}
+	if len(sessions) != 0 {
+		t.Errorf("partial must not create sessions rows, got %d", len(sessions))
+	}
+	if mem, err := projectStore.GetByTopicKey(ctx, model.SessionSummaryTopicKey("s-partial"), "test/project"); err == nil && mem != nil {
+		t.Error("partial must not create a session/<id> summary")
+	}
+
+	_, err = svc.SessionEnd(ctx, model.SessionEndRequest{Partial: true})
+	if !errors.Is(err, model.ErrSummaryRequired) {
+		t.Errorf("expected ErrSummaryRequired, got %v", err)
+	}
+}
+
+// TestSessionEnd_NonPartialIgnoresCheckpointFields verifies that Decisions and
+// NextSteps are only read when Partial is set (SPEC-164 D3).
+func TestSessionEnd_NonPartialIgnoresCheckpointFields(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+
+	resp, err := svc.SessionEnd(ctx, model.SessionEndRequest{
+		Summary: "closing", Decisions: "ignored", NextSteps: "ignored", SessionID: "s-full",
+	})
+	if err != nil {
+		t.Fatalf("SessionEnd: %v", err)
+	}
+	if resp.Partial {
+		t.Error("Partial must be false")
+	}
+	mem, err := svc.Get(ctx, resp.SummaryMemoryID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if mem.TopicKey != model.SessionSummaryTopicKey("s-full") || mem.Content != "closing" {
+		t.Errorf("unexpected summary: topic=%q content=%q", mem.TopicKey, mem.Content)
+	}
+}
 
 func TestSessionEnd_Success(t *testing.T) {
 	svc := newTestService(t)

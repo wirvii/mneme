@@ -86,13 +86,13 @@ func (s *MemoryStore) insertMemory(ctx context.Context, m *model.Memory, errPref
 			session_id, created_by, created_at, updated_at,
 			importance, confidence, access_count, last_accessed,
 			decay_rate, revision_count, superseded_by, deleted_at,
-			applies_to, severity, shared, author, source
+			applies_to, severity, shared, author, source, reviewed_at
 		) VALUES (
 			?, ?, ?, ?, ?, ?, ?,
 			?, ?, ?, ?,
 			?, ?, ?, ?,
 			?, ?, ?, ?,
-			?, ?, ?, ?, ?
+			?, ?, ?, ?, ?, ?
 		)`
 
 	var topicKey, project, sessionID, createdBy, supersededBy sql.NullString
@@ -126,6 +126,8 @@ func (s *MemoryStore) insertMemory(ctx context.Context, m *model.Memory, errPref
 		m.Importance, m.Confidence, m.AccessCount, lastAccessed,
 		m.DecayRate, m.RevisionCount, supersededBy, deletedAt,
 		appliesTo, string(m.Severity), m.Shared, m.Author, m.Source,
+		// SPEC-167 D3: a new memory starts its review clock at creation.
+		m.CreatedAt.Format(time.RFC3339Nano),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("%s: insert: %w", errPrefix, err)
@@ -181,8 +183,15 @@ func (s *MemoryStore) Get(ctx context.Context, id string) (*model.Memory, error)
 // memory_files rows are replaced atomically. Returns model.ErrNotFound if no
 // active memory with that id exists.
 func (s *MemoryStore) Update(ctx context.Context, id string, req *model.UpdateRequest) error {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
 	setClauses := []string{"updated_at = ?", "revision_count = revision_count + 1"}
-	args := []any{time.Now().UTC().Format(time.RFC3339Nano)}
+	args := []any{now}
+
+	// SPEC-167 D3: rewriting the text is a review of it; other edits are not.
+	if req.Title != nil || req.Content != nil {
+		setClauses = append(setClauses, "reviewed_at = ?")
+		args = append(args, now)
+	}
 
 	if req.Title != nil {
 		setClauses = append(setClauses, "title = ?")
@@ -297,7 +306,7 @@ func (s *MemoryStore) Upsert(ctx context.Context, m *model.Memory) (*model.Memor
 		UPDATE memories
 		SET title = ?, content = ?, importance = ?, type = ?,
 		    applies_to = ?, severity = ?,
-		    updated_at = ?, revision_count = revision_count + 1
+		    updated_at = ?, reviewed_at = ?, revision_count = revision_count + 1
 		WHERE id = ? AND deleted_at IS NULL`
 
 	now := time.Now().UTC()
@@ -308,7 +317,7 @@ func (s *MemoryStore) Upsert(ctx context.Context, m *model.Memory) (*model.Memor
 	_, err = s.db.ExecContext(ctx, upd,
 		m.Title, m.Content, m.Importance, string(m.Type),
 		appliesTo, string(m.Severity),
-		now.Format(time.RFC3339Nano),
+		now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano),
 		existingID,
 	)
 	if err != nil {
@@ -336,6 +345,75 @@ func (s *MemoryStore) Upsert(ctx context.Context, m *model.Memory) (*model.Memor
 	}
 
 	return updated, false, nil
+}
+
+// reviewDatesChunk bounds the number of ids per IN clause so the statement
+// stays under SQLite's variable limit.
+const reviewDatesChunk = 500
+
+// MarkReviewed records that the memory identified by id was verified as still
+// true at the given time (SPEC-167). It touches only reviewed_at: neither
+// updated_at nor revision_count move, because confirming is not editing.
+// Returns model.ErrNotFound when no active memory with that id exists.
+func (s *MemoryStore) MarkReviewed(ctx context.Context, id string, at time.Time) error {
+	const q = `UPDATE memories SET reviewed_at = ? WHERE id = ? AND deleted_at IS NULL`
+
+	res, err := s.db.ExecContext(ctx, q, at.UTC().Format(time.RFC3339Nano), id)
+	if err != nil {
+		return fmt.Errorf("store: mark reviewed: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("store: mark reviewed: rows affected: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("store: mark reviewed: %w", model.ErrNotFound)
+	}
+	return nil
+}
+
+// ReviewDates returns, for each given id, the reference date of its review
+// clock: COALESCE(reviewed_at, updated_at) (SPEC-167). It is a separate batch
+// read on purpose -- the nine column lists of the memory SELECTs stay
+// untouched, and only the callers that annotate results pay for it. Ids that
+// do not exist are simply absent from the map.
+func (s *MemoryStore) ReviewDates(ctx context.Context, ids []string) (map[string]time.Time, error) {
+	out := make(map[string]time.Time, len(ids))
+	for start := 0; start < len(ids); start += reviewDatesChunk {
+		end := min(start+reviewDatesChunk, len(ids))
+		chunk := ids[start:end]
+
+		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(chunk)), ",")
+		args := make([]any, len(chunk))
+		for i, id := range chunk {
+			args[i] = id
+		}
+
+		q := "SELECT id, COALESCE(reviewed_at, updated_at) FROM memories WHERE id IN (" + placeholders + ")"
+		rows, err := s.db.QueryContext(ctx, q, args...)
+		if err != nil {
+			return nil, fmt.Errorf("store: review dates: %w", err)
+		}
+		for rows.Next() {
+			var id, raw string
+			if err := rows.Scan(&id, &raw); err != nil {
+				_ = rows.Close()
+				return nil, fmt.Errorf("store: review dates: scan: %w", err)
+			}
+			t, err := parseTime(raw)
+			if err != nil {
+				_ = rows.Close()
+				return nil, fmt.Errorf("store: review dates: %w", err)
+			}
+			out[id] = t
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return nil, fmt.Errorf("store: review dates: rows: %w", err)
+		}
+		_ = rows.Close()
+	}
+	return out, nil
 }
 
 // SetDecayRate updates the decay_rate column for the memory identified by id.

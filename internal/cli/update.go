@@ -25,6 +25,10 @@ func newUpdateCmd() *cobra.Command {
 		flagImportance float64
 		flagStdin      bool
 		flagJSON       bool
+		flagSupersedes []string
+		flagConflicts  []string
+		flagUnrelated  []string
+		flagConfirm    bool
 	)
 
 	cmd := &cobra.Command{
@@ -33,23 +37,31 @@ func newUpdateCmd() *cobra.Command {
 		Long: `Apply a partial update to the memory identified by <id>.
 
 Only the flags you provide are applied — all other fields remain unchanged.
-At least one update flag (--title, --content, --type, --importance, or --stdin)
-must be specified.`,
+At least one update flag (--title, --content, --type, --importance, --stdin,
+--supersedes, --conflicts-with, --unrelated-to, or --confirm) must be specified.
+
+--confirm says the memory is still true: it restarts the memory's review
+clock without counting as an edit.
+
+--supersedes, --conflicts-with and --unrelated-to record your judgement of
+other memories (repeatable, one id each). A call with only those flags is not
+counted as a revision of the memory.`,
 		Example: `  mneme update 019530a1-7e2f-7000-8000-abcdef123456 --title "New title"
   echo "updated content" | mneme update 019530a1-7e2f-7000-8000-abcdef123456 --stdin
   mneme update 019530a1-7e2f-7000-8000-abcdef123456 --type decision --importance 0.9
-  mneme update 019530a1-7e2f-7000-8000-abcdef123456 --title "New title" --json`,
+  mneme update 019530a1-7e2f-7000-8000-abcdef123456 --title "New title" --json
+  mneme update 019530a1-7e2f-7000-8000-abcdef123456 --supersedes <old-id> --unrelated-to <other-id>`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			id := args[0]
 
 			// Require at least one update flag to avoid no-op invocations.
-			updateFlags := []string{"title", "content", "type", "importance", "stdin"}
+			updateFlags := []string{"title", "content", "type", "importance", "stdin", "supersedes", "conflicts-with", "unrelated-to", "confirm"}
 			anyChanged := slices.ContainsFunc(updateFlags, func(name string) bool {
 				return cmd.Flags().Changed(name)
 			})
 			if !anyChanged {
-				return fmt.Errorf("at least one update flag is required (--title, --content, --type, --importance, or --stdin)")
+				return fmt.Errorf("at least one update flag is required (--title, --content, --type, --importance, --stdin, --supersedes, --conflicts-with, --unrelated-to, or --confirm)")
 			}
 
 			// Read content from stdin when --stdin is set; --stdin takes precedence over --content.
@@ -81,6 +93,11 @@ must be specified.`,
 				req.Importance = &flagImportance
 			}
 
+			req.Supersedes = flagSupersedes
+			req.ConflictsWith = flagConflicts
+			req.UnrelatedTo = flagUnrelated
+			req.Confirm = flagConfirm
+
 			svc, cleanup, err := initService()
 			if err != nil {
 				return err
@@ -92,11 +109,19 @@ must be specified.`,
 				return err
 			}
 
+			out := cmd.OutOrStdout()
 			if flagJSON {
-				return printJSON(os.Stdout, resp)
+				return printJSON(out, resp)
 			}
 
-			fmt.Fprintf(os.Stdout, "Updated: %s — %s\n", resp.ID, resp.Title)
+			verb := "Updated"
+			if resp.ReviewedAt != nil && !req.HasFieldChanges() && len(resp.RelationsApplied) == 0 {
+				verb = "Confirmed"
+			}
+			fmt.Fprintf(out, "%s: %s — %s\n", verb, resp.ID, resp.Title)
+			for _, r := range resp.RelationsApplied {
+				fmt.Fprintf(out, "  %s → %s\n", r.Relation, shortID(r.TargetID))
+			}
 			return nil
 		},
 	}
@@ -107,6 +132,10 @@ must be specified.`,
 	cmd.Flags().Float64VarP(&flagImportance, "importance", "i", 0, "New importance score (0.0-1.0)")
 	cmd.Flags().BoolVar(&flagStdin, "stdin", false, "Read new content from stdin")
 	cmd.Flags().BoolVar(&flagJSON, "json", false, "Output result as JSON")
+	cmd.Flags().StringArrayVar(&flagSupersedes, "supersedes", nil, "Id of an older memory this one replaces (repeatable)")
+	cmd.Flags().StringArrayVar(&flagConflicts, "conflicts-with", nil, "Id of a memory this one contradicts (repeatable)")
+	cmd.Flags().BoolVar(&flagConfirm, "confirm", false, "Confirm the memory is still true (restarts its review clock)")
+	cmd.Flags().StringArrayVar(&flagUnrelated, "unrelated-to", nil, "Id of a memory judged unrelated (repeatable)")
 
 	return cmd
 }

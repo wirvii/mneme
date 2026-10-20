@@ -76,6 +76,16 @@ type SessionEndRequest struct {
 
 	// Project identifies the project this session belongs to.
 	Project string `json:"project,omitempty"`
+
+	// Partial turns the call into a checkpoint (SPEC-164): the summary is saved
+	// as checkpoint/latest and the session stays open.
+	Partial bool `json:"partial,omitempty"`
+
+	// Decisions is only read when Partial is true.
+	Decisions string `json:"decisions,omitempty"`
+
+	// NextSteps is only read when Partial is true.
+	NextSteps string `json:"next_steps,omitempty"`
 }
 
 // SessionEndResponse is returned after successfully closing a session.
@@ -100,6 +110,9 @@ type SessionEndResponse struct {
 	// instante del cierre (SPEC-108 D11/§2.2). Ausente cuando no hay nada que
 	// medir.
 	SessionDuration string `json:"session_duration,omitempty"`
+
+	// Partial is true when the call was a checkpoint and no session was closed.
+	Partial bool `json:"partial,omitempty"`
 }
 
 // CheckpointRequest is sent by the agent to save a snapshot of its current

@@ -108,7 +108,7 @@ func TestLogCodegraphUse_NonCodegraphToolIgnored(t *testing.T) {
 	h := newQuerylogTestHandlers(t, dataDir, slug, true)
 
 	_, _ = h.handleToolCall(context.Background(), ToolCallParams{
-		Name:      "mem_stats",
+		Name:      "mem_get",
 		Arguments: json.RawMessage(`{}`),
 	})
 
@@ -118,6 +118,6 @@ func TestLogCodegraphUse_NonCodegraphToolIgnored(t *testing.T) {
 		t.Fatalf("Read: %v", err)
 	}
 	if len(events) != 0 {
-		t.Fatalf("mem_stats must not log a use event, got %d", len(events))
+		t.Fatalf("mem_get must not log a use event, got %d", len(events))
 	}
 }

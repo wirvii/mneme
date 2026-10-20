@@ -108,10 +108,41 @@ The five `conflicts_*` MCP tools (SPEC-039) were removed from the server in
 SPEC-163; the commands in this page are the only surface. The old-tool to
 command table is in [docs/api/conflicts.md](api/conflicts.md).
 
+## Judging at save time (SPEC-166)
+
+`mem_save` no longer only logs a hint. Right after the upsert it returns up to
+three `possible_conflicts` (`id`, `title`, `type`, `updated_at`): existing
+memories that share salient terms with the new one. The lookup is the same
+deterministic FTS5 query `conflicts candidates` uses, with no LLM. It already
+skips the memory itself, deleted and superseded ones, `session_summary` and
+`synthesis`, and any pair judged before (so an `unrelated` verdict is never
+proposed again). A failure in the lookup is logged and the save still succeeds.
+
+The agent judges in the same turn with `mem_update` on the NEW memory (no new
+tool):
+
+| Field | Effect |
+|-------|--------|
+| `supersedes: [id]` | The older memory is hidden from search (`superseded_by = new id`), never deleted |
+| `conflicts_with: [id]` | A `conflicts_with` row in `memory_relations`; both stay visible |
+| `unrelated_to: [id]` | An `unrelated` row: stops being proposed |
+
+Rules: every target must exist, differ from the memory itself, appear in only
+one list, and live in the same store (project vs global); otherwise nothing is
+written (`ErrInvalidRelation`, `ErrNotFound`, `ErrCrossStoreRelation`). A
+request that carries only these lists does not count as a revision (no
+`revision_count` bump, no `updated_at` change). The response lists what was
+recorded in `relations_applied`. Rows are stamped `judged_by = "agent"`
+(`manual` for `conflicts link`, `claude-cli` for `conflicts scan`).
+Everything is reversible with `mneme conflicts unlink <a> <b>`.
+`mneme update <id> --supersedes ID --conflicts-with ID --unrelated-to ID`
+(each repeatable) does the same from the shell. `conflicts scan` remains for
+older memories that were never judged at save time.
+
 ## Anti-scope
 
 - No auto-delete or auto-edit of memories.
-- No automatic judgment on save (only a hint/log).
+- No automatic judgment on save: `mem_save` only proposes candidates (SPEC-166); the saving agent judges.
 - No embeddings/vector similarity.
 - No metered API calls. CLI absent → report and skip.
 - No changes to allowlists, hooks, SDD, lane, skills, or models.

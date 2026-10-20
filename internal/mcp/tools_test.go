@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// TestAllTools_Count40 pins the integrated MCP surface. Deltas from the 87
+// TestAllTools_Count31 pins the integrated MCP surface. Deltas from the 87
 // tools before v2.0, one line per spec:
 //
 //	SPEC-158: -5  (quality_*)                                    87 -> 82
@@ -13,11 +13,13 @@ import (
 //	SPEC-165: -6  (codegraph_callees, explore, files, node, status, trace)
 //	SPEC-161: -2  (speech_*)
 //	SPEC-162: -11 (profile_*, project_new, app_add, scaffold_capture)
-//	82 - 23 - 6 - 2 - 11 = 40. Later specs adjust the number and append their delta.
-func TestAllTools_Count40(t *testing.T) {
+//	SPEC-164: -9  (mem_promote, mem_forget, mem_gaps, mem_explore, mem_timeline, mem_stats,
+//	              mem_checkpoint, mem_relate, mem_suggest_topic_key)
+//	82 - 23 - 6 - 2 - 11 - 9 = 31. Later specs adjust the number and append their delta.
+func TestAllTools_Count31(t *testing.T) {
 	tools := allTools()
-	if len(tools) != 40 {
-		t.Errorf("allTools() returned %d tools, want 40", len(tools))
+	if len(tools) != 31 {
+		t.Errorf("allTools() returned %d tools, want 31", len(tools))
 	}
 }
 
@@ -83,6 +85,29 @@ func TestAllTools_NoSpeechFamily(t *testing.T) {
 	}
 	if !sawSpecAdvance {
 		t.Fatal("allTools() has no spec_advance — this test proves nothing without a positive anchor")
+	}
+}
+
+// TestToolsList_MemSurfaceIsSix is SPEC-164 AC1: the MCP server exposes
+// exactly six mem_* tools; the other nine moved to the CLI or were absorbed.
+func TestToolsList_MemSurfaceIsSix(t *testing.T) {
+	want := map[string]bool{
+		"mem_save": true, "mem_search": true, "mem_get": true,
+		"mem_context": true, "mem_update": true, "mem_session_end": true,
+	}
+	got := map[string]bool{}
+	for _, tool := range allTools() {
+		if strings.HasPrefix(tool.Name, "mem_") {
+			got[tool.Name] = true
+		}
+	}
+	if len(got) != len(want) {
+		t.Fatalf("mem_* tools = %v, want exactly %v", got, want)
+	}
+	for name := range want {
+		if !got[name] {
+			t.Errorf("missing %s", name)
+		}
 	}
 }
 

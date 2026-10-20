@@ -28,3 +28,10 @@ No auto-delete or auto-edit of memories. No automatic judgment on save (only a
 hint/log). No embeddings/vector similarity used for detection (FTS5 only). No
 metered API calls — `mneme conflicts scan` reports and skips when the CLI is
 missing.
+
+## `judged_by` values
+
+`manual` (`mneme conflicts link`), `claude-cli` (`mneme conflicts scan`) and,
+since SPEC-166, `agent`: a judgement the saving agent recorded through
+`mem_update` (`supersedes`, `conflicts_with`, `unrelated_to`). See
+[docs/conflicts.md](../conflicts.md#judging-at-save-time-spec-166).

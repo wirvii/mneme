@@ -1,36 +1,11 @@
 package cli
 
 import (
-	"io"
 	"os"
 	"slices"
 	"strings"
 	"testing"
 )
-
-// captureStdout runs fn while os.Stdout is redirected to a pipe and returns
-// whatever fn wrote there.
-func captureStdout(t *testing.T, fn func()) string {
-	t.Helper()
-	orig := os.Stdout
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("pipe: %v", err)
-	}
-	os.Stdout = w
-	defer func() { os.Stdout = orig }()
-
-	fn()
-
-	if err := w.Close(); err != nil {
-		t.Fatalf("close pipe: %v", err)
-	}
-	out, err := io.ReadAll(r)
-	if err != nil {
-		t.Fatalf("read pipe: %v", err)
-	}
-	return string(out)
-}
 
 // TestHookSpeechPrompt_RetiredNoOp covers SPEC-161 C4: a host that updated the
 // binary but did not reinstall still has `mneme hook speech-prompt`

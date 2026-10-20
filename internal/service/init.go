@@ -292,11 +292,11 @@ Eres el puente entre el usuario y los agentes especializados.
 | ` + "`mneme spec pushback <id> --from <agent> --question \"...\"`" + ` | Pushback |
 | ` + "`mneme spec resolve <id> --resolution \"...\"`" + ` | Resolver pushback |
 
-## MCP tools de mneme (10 SDD + 11 memory)
+## MCP tools de mneme (10 SDD + 6 memory)
 
 SDD: ` + "`backlog_add`" + `, ` + "`backlog_list`" + `, ` + "`backlog_refine`" + `, ` + "`backlog_promote`" + `, ` + "`spec_new`" + `, ` + "`spec_list`" + `, ` + "`spec_status`" + `, ` + "`spec_advance`" + `, ` + "`spec_pushback`" + `, ` + "`spec_resolve`" + `.
 
-Memoria: ` + "`mem_save`" + `, ` + "`mem_search`" + `, ` + "`mem_get`" + `, ` + "`mem_update`" + `, ` + "`mem_forget`" + `, ` + "`mem_context`" + `, ` + "`mem_relate`" + `, ` + "`mem_stats`" + `, ` + "`mem_suggest_topic_key`" + `, ` + "`mem_timeline`" + `, ` + "`mem_checkpoint`" + `, ` + "`mem_session_end`" + `.
+Memoria: ` + "`mem_save`" + `, ` + "`mem_search`" + `, ` + "`mem_get`" + `, ` + "`mem_context`" + `, ` + "`mem_update`" + `, ` + "`mem_session_end`" + `. Administración (stats, timeline, forget, promote, relate, gaps, explore): ` + "`mneme mem …`" + `.
 
 ## Cómo decidir qué flujo usar
 

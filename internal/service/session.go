@@ -29,6 +29,20 @@ func (svc *MemoryService) SessionEnd(ctx context.Context, req model.SessionEndRe
 		req.Project = svc.project
 	}
 
+	// SPEC-164 D3: a partial end is a checkpoint; the session stays open.
+	if req.Partial {
+		cp, err := svc.Checkpoint(ctx, model.CheckpointRequest{
+			Summary:   req.Summary,
+			Decisions: req.Decisions,
+			NextSteps: req.NextSteps,
+			Project:   req.Project,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("service: session end: partial: %w", err)
+		}
+		return &model.SessionEndResponse{SessionID: req.SessionID, SummaryMemoryID: cp.ID, Partial: true}, nil
+	}
+
 	sessionID := req.SessionID
 	if sessionID == "" {
 		id, err := uuid.NewV7()

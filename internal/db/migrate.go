@@ -89,6 +89,12 @@ CREATE TABLE IF NOT EXISTS schema_version (
 		return fmt.Errorf("db: migrate: ensure sdd uuids: %w", err)
 	}
 
+	// SPEC-167 D2: the reviewed_at column is guaranteed by its own check, not
+	// by a migration -- see ensureMemoryReviewedAt's godoc.
+	if err := ensureMemoryReviewedAt(db); err != nil {
+		return fmt.Errorf("db: migrate: ensure reviewed_at: %w", err)
+	}
+
 	return nil
 }
 

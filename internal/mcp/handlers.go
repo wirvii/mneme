@@ -71,24 +71,6 @@ func (h *handlers) handleToolCall(ctx context.Context, params ToolCallParams) (*
 		return h.handleMemUpdate(ctx, params.Arguments)
 	case "mem_session_end":
 		return h.handleMemSessionEnd(ctx, params.Arguments)
-	case "mem_suggest_topic_key":
-		return h.handleMemSuggestTopicKey(ctx, params.Arguments)
-	case "mem_relate":
-		return h.handleMemRelate(ctx, params.Arguments)
-	case "mem_timeline":
-		return h.handleMemTimeline(ctx, params.Arguments)
-	case "mem_stats":
-		return h.handleMemStats(ctx, params.Arguments)
-	case "mem_forget":
-		return h.handleMemForget(ctx, params.Arguments)
-	case "mem_promote":
-		return h.handleMemPromote(ctx, params.Arguments)
-	case "mem_checkpoint":
-		return h.handleMemCheckpoint(ctx, params.Arguments)
-	case "mem_explore":
-		return h.handleMemExplore(ctx, params.Arguments)
-	case "mem_gaps":
-		return h.handleMemGaps(ctx, params.Arguments)
 	case "backlog_add":
 		return h.handleBacklogAdd(ctx, params.Arguments)
 	case "backlog_list":
@@ -430,199 +412,6 @@ func (h *handlers) handleMemSessionEnd(ctx context.Context, raw json.RawMessage)
 	return resultFromAny(resp)
 }
 
-// handleMemSuggestTopicKey processes a mem_suggest_topic_key tool call.
-// Arguments must contain a "title" field; "project" is optional.
-func (h *handlers) handleMemSuggestTopicKey(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
-	var args struct {
-		Title   string `json:"title"`
-		Project string `json:"project"`
-	}
-	if err := json.Unmarshal(raw, &args); err != nil {
-		return nil, &JSONRPCError{
-			Code:    CodeInvalidParams,
-			Message: fmt.Sprintf("mcp: handle mem_suggest_topic_key: invalid arguments: %s", err),
-		}
-	}
-	if args.Title == "" {
-		return nil, &JSONRPCError{
-			Code:    CodeInvalidParams,
-			Message: "mcp: handle mem_suggest_topic_key: title is required",
-		}
-	}
-
-	resp, err := h.svc.SuggestTopicKey(ctx, model.SuggestTopicKeyRequest{
-		Title:   args.Title,
-		Project: args.Project,
-	})
-	if err != nil {
-		return nil, h.mapServiceError("mem_suggest_topic_key", err)
-	}
-
-	return resultFromAny(resp)
-}
-
-// handleMemRelate processes a mem_relate tool call.
-func (h *handlers) handleMemRelate(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
-	var req model.RelateRequest
-	if err := json.Unmarshal(raw, &req); err != nil {
-		return nil, &JSONRPCError{
-			Code:    CodeInvalidParams,
-			Message: fmt.Sprintf("mcp: handle mem_relate: invalid arguments: %s", err),
-		}
-	}
-
-	resp, err := h.svc.Relate(ctx, req)
-	if err != nil {
-		return nil, h.mapServiceError("mem_relate", err)
-	}
-
-	return resultFromAny(resp)
-}
-
-// handleMemTimeline processes a mem_timeline tool call.
-func (h *handlers) handleMemTimeline(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
-	var req model.TimelineRequest
-	if err := json.Unmarshal(raw, &req); err != nil {
-		return nil, &JSONRPCError{
-			Code:    CodeInvalidParams,
-			Message: fmt.Sprintf("mcp: handle mem_timeline: invalid arguments: %s", err),
-		}
-	}
-
-	resp, err := h.svc.Timeline(ctx, req)
-	if err != nil {
-		return nil, h.mapServiceError("mem_timeline", err)
-	}
-
-	return resultFromAny(resp)
-}
-
-// handleMemStats processes a mem_stats tool call. The arguments object may
-// contain an optional "project" string field; when omitted the service's
-// detected project is used.
-func (h *handlers) handleMemStats(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
-	var args struct {
-		Project string `json:"project"`
-	}
-	if len(raw) > 0 {
-		if err := json.Unmarshal(raw, &args); err != nil {
-			return nil, &JSONRPCError{
-				Code:    CodeInvalidParams,
-				Message: fmt.Sprintf("mcp: handle mem_stats: invalid arguments: %s", err),
-			}
-		}
-	}
-
-	// When the caller does not supply a project, use the service's detected slug.
-	project := args.Project
-	if project == "" {
-		project = h.svc.ProjectSlug()
-	}
-
-	resp, err := h.svc.Stats(ctx, project)
-	if err != nil {
-		return nil, h.mapServiceError("mem_stats", err)
-	}
-
-	return resultFromAny(resp)
-}
-
-// handleMemForget processes a mem_forget tool call. The arguments object must
-// contain an "id" field; "reason" is optional.
-func (h *handlers) handleMemForget(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
-	var args struct {
-		ID     string `json:"id"`
-		Reason string `json:"reason"`
-	}
-	if err := json.Unmarshal(raw, &args); err != nil {
-		return nil, &JSONRPCError{
-			Code:    CodeInvalidParams,
-			Message: fmt.Sprintf("mcp: handle mem_forget: invalid arguments: %s", err),
-		}
-	}
-	if args.ID == "" {
-		return nil, &JSONRPCError{
-			Code:    CodeInvalidParams,
-			Message: "mcp: handle mem_forget: id is required",
-		}
-	}
-
-	if err := h.svc.Forget(ctx, args.ID, args.Reason); err != nil {
-		return nil, h.mapServiceError("mem_forget", err)
-	}
-
-	return resultFromAny(map[string]string{
-		"id":     args.ID,
-		"status": "marked_for_decay",
-	})
-}
-
-// handleMemPromote processes a mem_promote tool call. The arguments object
-// must contain an "id" field. Unlike other not-found mappings routed through
-// mapServiceError (CodeMemoryNotFound), an unknown id here is reported as
-// CodeInvalidParams — the caller supplied a bad argument, not a query that
-// legitimately found nothing (SPEC-063 SS-C contract). Promoting a memory
-// with profile provenance (model.ErrProfileMemoryNotShareable, SPEC-094 §4)
-// is mapped the same way: it is always an operator error, not an internal
-// failure.
-func (h *handlers) handleMemPromote(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
-	var args struct {
-		ID string `json:"id"`
-	}
-	if err := json.Unmarshal(raw, &args); err != nil {
-		return nil, &JSONRPCError{
-			Code:    CodeInvalidParams,
-			Message: fmt.Sprintf("mcp: handle mem_promote: invalid arguments: %s", err),
-		}
-	}
-	if args.ID == "" {
-		return nil, &JSONRPCError{
-			Code:    CodeInvalidParams,
-			Message: "mcp: handle mem_promote: id is required",
-		}
-	}
-
-	m, err := h.svc.Promote(ctx, args.ID)
-	if err != nil {
-		if errors.Is(err, model.ErrNotFound) || errors.Is(err, model.ErrProfileMemoryNotShareable) {
-			return nil, &JSONRPCError{
-				Code:    CodeInvalidParams,
-				Message: fmt.Sprintf("mcp: handle mem_promote: %s", err),
-			}
-		}
-		h.logger.Error("mcp: internal error", "method", "mem_promote", "error", err)
-		return nil, &JSONRPCError{
-			Code:    CodeInternalError,
-			Message: fmt.Sprintf("mcp: handle mem_promote: %v", err),
-		}
-	}
-
-	return resultFromAny(map[string]any{
-		"id":     m.ID,
-		"shared": m.Shared,
-		"author": m.Author,
-		"status": "promoted",
-	})
-}
-
-// handleMemCheckpoint processes a mem_checkpoint tool call.
-func (h *handlers) handleMemCheckpoint(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
-	var req model.CheckpointRequest
-	if err := json.Unmarshal(raw, &req); err != nil {
-		return nil, &JSONRPCError{
-			Code:    CodeInvalidParams,
-			Message: fmt.Sprintf("mcp: handle mem_checkpoint: invalid arguments: %s", err),
-		}
-	}
-
-	resp, err := h.svc.Checkpoint(ctx, req)
-	if err != nil {
-		return nil, h.mapServiceError("mem_checkpoint", err)
-	}
-
-	return resultFromAny(resp)
-}
-
 // mapServiceError converts a service-layer error into a JSONRPCError with an
 // appropriate error code. ErrNotFound maps to CodeMemoryNotFound; validation
 // errors map to CodeInvalidParams; all others become CodeInternalError.
@@ -682,6 +471,7 @@ func (h *handlers) mapServiceError(method string, err error) *JSONRPCError {
 		errors.Is(err, model.ErrUnknownAgent) ||
 		errors.Is(err, model.ErrInvalidModel) ||
 		errors.Is(err, model.ErrInvalidRelation) ||
+		errors.Is(err, model.ErrCrossStoreRelation) ||
 		errors.Is(err, model.ErrUnknownSpecDocKind) ||
 		errors.Is(err, model.ErrTaskSectionRequired) ||
 		errors.Is(err, model.ErrUnknownTaskSection) ||
@@ -702,48 +492,6 @@ func (h *handlers) mapServiceError(method string, err error) *JSONRPCError {
 		Code:    CodeInternalError,
 		Message: fmt.Sprintf("mcp: handle %s: %v", method, err),
 	}
-}
-
-// handleMemExplore processes a mem_explore tool call.
-func (h *handlers) handleMemExplore(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
-	var req model.ExploreRequest
-	if err := json.Unmarshal(raw, &req); err != nil {
-		return nil, &JSONRPCError{
-			Code:    CodeInvalidParams,
-			Message: fmt.Sprintf("mcp: handle mem_explore: invalid arguments: %s", err),
-		}
-	}
-	if req.Seed == "" {
-		return nil, &JSONRPCError{
-			Code:    CodeInvalidParams,
-			Message: "mcp: handle mem_explore: seed is required",
-		}
-	}
-
-	resp, err := h.svc.Explore(ctx, req)
-	if err != nil {
-		return nil, h.mapServiceError("mem_explore", err)
-	}
-	return resultFromAny(resp)
-}
-
-// handleMemGaps processes a mem_gaps tool call.
-func (h *handlers) handleMemGaps(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
-	var req model.GapsRequest
-	if len(raw) > 0 {
-		if err := json.Unmarshal(raw, &req); err != nil {
-			return nil, &JSONRPCError{
-				Code:    CodeInvalidParams,
-				Message: fmt.Sprintf("mcp: handle mem_gaps: invalid arguments: %s", err),
-			}
-		}
-	}
-
-	resp, err := h.svc.Gaps(ctx, req)
-	if err != nil {
-		return nil, h.mapServiceError("mem_gaps", err)
-	}
-	return resultFromAny(resp)
 }
 
 // --- SDD HANDLERS ---

@@ -191,6 +191,7 @@ func errorStatus(err error) (int, string) {
 		errors.Is(err, model.ErrAppliesToRequired), errors.Is(err, model.ErrAppliesToForbidden),
 		errors.Is(err, model.ErrInvalidSeverity), errors.Is(err, model.ErrEmptyPattern),
 		errors.Is(err, model.ErrInvalidWeight),
+		errors.Is(err, model.ErrInvalidRelation), errors.Is(err, model.ErrCrossStoreRelation),
 		errors.Is(err, model.ErrAmbiguousSeed):
 		return http.StatusBadRequest, "invalid_request"
 	default:

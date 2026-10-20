@@ -27,6 +27,28 @@ import (
 // Budget defaults to config.Context.DefaultBudget when zero or negative.
 // Project defaults to the service's project when omitted.
 func (svc *MemoryService) Context(ctx context.Context, req model.ContextRequest) (*model.ContextResponse, error) {
+	resp, err := svc.buildContext(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	// SPEC-167: flag memories and rules past their review deadline for the
+	// agent. Cluster overviews are synthesis memories and never expire.
+	mems := make([]*model.Memory, 0, len(resp.Memories)+len(resp.Rules))
+	for i := range resp.Memories {
+		mems = append(mems, &resp.Memories[i])
+	}
+	for i := range resp.Rules {
+		mems = append(mems, &resp.Rules[i])
+	}
+	svc.annotateReviewDue(ctx, mems)
+
+	return resp, nil
+}
+
+// buildContext assembles the bundle Context documents; Context wraps it to add
+// the review annotation without touching its several return paths.
+func (svc *MemoryService) buildContext(ctx context.Context, req model.ContextRequest) (*model.ContextResponse, error) {
 	if req.Project == "" {
 		req.Project = svc.project
 	}
