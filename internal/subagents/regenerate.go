@@ -14,9 +14,9 @@ import (
 //
 // This is the mechanical half of SPEC-087 D7: bumping AgentFixedVersion
 // alone changes nothing for an already-materialised profile — nothing
-// re-composes it automatically (subagent_compose is only ever called by the
+// re-composes it automatically (`mneme subagents compose` is only ever run by the
 // grill, and `mneme install` stopped writing agent files in SPEC-073).
-// `mneme subagents regen` (D7's CLI/MCP surface) calls this function per
+// `mneme subagents regen` (D7's CLI surface) calls this function per
 // manifest entry so the 8+ repos that already ran the grill can pick up a
 // layer-1 change (like D4's removal of the spec_advance instruction)
 // without re-running the grill.

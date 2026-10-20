@@ -11,7 +11,7 @@ import "github.com/wirvii/mneme/internal/managedblock"
 //
 // It intentionally does NOT inspect the manifest (whether a role has a
 // corresponding entry) — that cross-check belongs to the caller
-// (subagent_fingerprint's foreign_agents detection), which has access to
+// (service.SubagentService.DetectForeignAgents), which has access to
 // SubagentService.ReadManifest; this leaf function only ever looks at the
 // bytes it is given.
 func IsForeignAgentFile(content string) bool {

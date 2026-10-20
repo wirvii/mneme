@@ -91,7 +91,6 @@ func initSubagentService() (*service.SubagentService, func(), error) {
 // subagentRoleNamePattern is the safe-slug pattern every role name must
 // match — the primary defense against path traversal in "subagents write"
 // (a role like "../../../etc/cron.d/evil" must never reach filepath.Join).
-// Mirrors internal/mcp/handlers_subagents.go's roleNamePattern exactly.
 var subagentRoleNamePattern = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
 
 // validateSubagentRoleName rejects role names that are empty or don't match
@@ -214,8 +213,7 @@ manifest) already exist for the current project.`,
 
 // seededSubagentMemories reports which of the two typed-memory records the
 // agnostic-agents EPIC persists (project-profile, manifest) already exist,
-// so a scripted grill can decide whether to reuse them. Mirrors
-// internal/mcp/handlers_subagents.go's seededSubagentMemories.
+// so a scripted grill can decide whether to reuse them.
 func seededSubagentMemories(ctx context.Context, svc *service.SubagentService) []string {
 	var seeded []string
 	if profile, err := svc.ReadProfile(ctx, flagProject); err == nil && profile != nil {
@@ -595,8 +593,7 @@ func resolveSubagentCLIEngine(name string) (subagents.GenerationEngine, error) {
 }
 
 // composeSubagentBody renders the layer-2 (profile) and layer-3 (areas)
-// sections that seed a brand-new subagent profile's body. Mirrors
-// internal/mcp/handlers_subagents.go's composeBody.
+// sections that seed a brand-new subagent profile's body.
 func composeSubagentBody(profile service.ProjectProfile, areasMD string) string {
 	var parts []string
 	if section := renderSubagentProjectContext(profile); section != "" {
@@ -881,7 +878,7 @@ already written, the file is rolled back to its exact pre-call state.`,
 }
 
 // checksumOfSubagentContent returns the lowercase hex-encoded sha256 digest
-// of content. Mirrors internal/mcp/handlers_subagents.go's checksumOf.
+// of content.
 func checksumOfSubagentContent(content string) string {
 	sum := sha256.Sum256([]byte(content))
 	return hex.EncodeToString(sum[:])
@@ -890,7 +887,7 @@ func checksumOfSubagentContent(content string) string {
 // rollbackSubagentFile restores path to its exact pre-write state: rewritten
 // with original when it existed before the call, removed otherwise. Errors
 // are deliberately swallowed (best-effort rollback on an already-failing
-// path). Mirrors internal/mcp/handlers_subagents.go's rollbackAgentFile.
+// path).
 func rollbackSubagentFile(path string, existed bool, original []byte) {
 	if existed {
 		_ = os.WriteFile(path, original, 0o644)
@@ -905,14 +902,12 @@ func rollbackSubagentFile(path string, existed bool, original []byte) {
 // relative-to-root from the moment it is written, never absolute. The actual
 // filesystem write still uses the caller's absolute `path` (root-confined,
 // validated above); only the value PERSISTED in the manifest changes.
-// Mirrors internal/mcp/handlers_subagents.go's manifestRelativePath.
 func manifestRelativePath(role string) string {
 	return filepath.ToSlash(filepath.Join(".claude", "agents", role+".md"))
 }
 
 // upsertSubagentManifestEntry replaces the entry matching entry.Role in
-// entries, or appends entry when no matching role is found. Mirrors
-// internal/mcp/handlers_subagents.go's upsertManifestEntry.
+// entries, or appends entry when no matching role is found.
 func upsertSubagentManifestEntry(entries []service.ManifestEntry, entry service.ManifestEntry) []service.ManifestEntry {
 	for i, e := range entries {
 		if e.Role == entry.Role {

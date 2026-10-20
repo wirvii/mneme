@@ -8,7 +8,7 @@ import (
 // GrillContentWrapStart and GrillContentWrapEnd delimit the untrusted-data
 // envelope that wraps grill-provided layer-2/3 content (areas_layer3_md)
 // before it is embedded into a composed subagent profile
-// (internal/mcp/handlers_subagents.go's wrapUntrustedAreasContent). They are
+// (internal/cli/subagents.go's wrapSubagentAreasContent). They are
 // the single source of truth for this boundary (SPEC-090 D1) — both the wrap
 // step and this package's own ExtractGrillRegion read/write exactly these
 // two constants, so the two can never independently drift out of sync (the
@@ -102,7 +102,7 @@ func ScanLayer23Leaks(region string) []Layer23Leak {
 // leading/trailing blank lines the wrap step always adds around it. ok is
 // false when either delimiter is missing from fileBody.
 //
-// This is the ONLY region the SPEC-090 guard (subagent_compose/write) and
+// This is the ONLY region the SPEC-090 guard (`mneme subagents compose`/`write`) and
 // the doctor's lifecycle_in_layer23 finding (DetectLayer23Leaks) are allowed
 // to scan — never the whole fileBody. The layer-1 agent-fixed block
 // legitimately mentions "spec_advance" (the prohibition against ever calling
@@ -126,9 +126,9 @@ func ExtractGrillRegion(fileBody string) (region string, ok bool) {
 // DetectLayer23Leaks reads path via readContent, extracts its grill region
 // via ExtractGrillRegion, and scans that region with ScanLayer23Leaks — the
 // single piece of logic internal/cli/subagents_doctor.go's
-// diagnoseManifestEntry and internal/mcp/handlers_subagents.go's
-// diagnoseManifestEntryMCP both call (SPEC-090 D3) for the
-// lifecycle_in_layer23 finding, so the two frontends can never diverge on
+// diagnoseManifestEntry calls (SPEC-090 D3) for the
+// lifecycle_in_layer23 finding, which both "subagents doctor" and
+// "subagents manifest-list --json" surface, so the two can never diverge on
 // what counts as a leak already materialized on disk.
 //
 // readContent is injected so this stays testable without touching a real

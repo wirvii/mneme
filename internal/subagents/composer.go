@@ -16,8 +16,7 @@ const agentFixedMarker = "agent-fixed"
 // AgentFixedVersion is the current version stamped on the agent-fixed
 // managed block. Bump this whenever LayerOneAsset's content changes in a way
 // that should force every profile to pick up the new wording on next
-// regeneration. Exported so internal/cli/subagents_doctor.go and
-// internal/mcp/handlers_subagents.go can compare it against a manifest
+// regeneration. Exported so internal/cli/subagents_doctor.go can compare it against a manifest
 // entry's persisted Version and report SPEC-087 D7's "stale_agent_fixed"
 // finding without duplicating the number.
 //
@@ -119,7 +118,7 @@ func (in ComposeInput) effectiveArchetype() Role {
 // variant (roleSections) always key off in.effectiveArchetype(). This
 // replaces the previous pattern of composing under Role==Archetype and then
 // patching `name:` afterwards for a custom role — see the removed patch in
-// internal/mcp/handlers_subagents.go and internal/cli/subagents.go.
+// internal/cli/subagents.go.
 //
 // Compose is idempotent: calling it twice with the same in on its own output
 // reproduces the same frontmatter and agent-fixed block, and never

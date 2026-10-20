@@ -160,7 +160,7 @@ func TestCompose_RegeneratePreservesHandAuthoredBody(t *testing.T) {
 // frontmatter and in {{ROLE}} substitutions — never the archetype's name.
 // This is AC4's assertion (1): the antipattern the old
 // Role==Archetype-then-patch-name approach was prone to (see the removed
-// patch in internal/mcp/handlers_subagents.go / internal/cli/subagents.go).
+// patch in internal/cli/subagents.go).
 func TestCompose_RoleArchetypeSeparation(t *testing.T) {
 	got, err := Compose("", ComposeInput{
 		Role:        RoleQATester,
