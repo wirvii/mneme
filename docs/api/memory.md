@@ -45,6 +45,12 @@ proposal built from the title, existing keys and unresolved knowledge gaps.
 mneme never assigns it; reuse it on the next save of the same topic. This
 replaces the retired `mem_suggest_topic_key` tool.
 
+The response may also carry `possible_conflicts` (SPEC-166): up to three
+existing memories (`id`, `title`, `type`, `updated_at`) that share salient terms
+with the new one, found by a deterministic FTS5 query. Judge each in the same
+turn with `mem_update` on the new memory (`supersedes`, `conflicts_with` or
+`unrelated_to`). See [docs/conflicts.md](../conflicts.md#judging-at-save-time-spec-166).
+
 **Errors:** `-32602` missing `title`/`content`, invalid `type`/`scope`/`severity`, `applies_to` required when `type=rule`.
 
 **Example:**
@@ -156,6 +162,15 @@ Update an existing memory by ID. Only the fields provided are changed.
 | `importance` | number | no | New importance (0.0-1.0) |
 | `confidence` | number | no | New confidence (0.0-1.0) |
 | `files` | string[] | no | Replacement list of associated source file paths |
+| `supersedes` | string[] | no | Ids of older memories this one replaces (hidden from search, not deleted; reversible with `mneme conflicts unlink`) |
+| `conflicts_with` | string[] | no | Ids of memories this one contradicts (both stay visible) |
+| `unrelated_to` | string[] | no | Ids judged unrelated (stop being proposed as possible conflicts) |
+
+The three lists record your judgement of the `possible_conflicts` returned by
+`mem_save` (SPEC-166). Targets must exist, differ from `id`, appear in one list
+only and live in the same store (project vs global), or nothing is written
+(`-32602` / `-32000`). A request with only these lists is not a revision. The
+response carries `relations_applied: [{target_id, relation}]`.
 
 **Returns:** Full updated `Memory` object.
 

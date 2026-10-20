@@ -42,7 +42,7 @@ curl -X POST http://localhost:7437/v1/memories \
   -d '{"title": "Auth uses JWT RS256", "content": "RS256 with 2048-bit keys...", "type": "decision", "topic_key": "architecture/auth-model"}'
 ```
 
-**Response:** `201 Created`
+**Response:** `201 Created` (also carries `suggested_topic_key` when no `topic_key` was sent, SPEC-164, and `possible_conflicts`, SPEC-166)
 
 ```json
 {"id": "019de100-...", "title": "Auth uses JWT RS256", "action": "created", "topic_key": "architecture/auth-model"}
@@ -58,7 +58,7 @@ curl http://localhost:7437/v1/memories/019de100-abcd-7fff-8000-000000000001
 
 ## PATCH /v1/memories/{id}
 
-Partial update. Request body: same schema as `mem_update` (minus `id`).
+Partial update. Request body: same schema as `mem_update` (minus `id`), including `supersedes`, `conflicts_with` and `unrelated_to` (SPEC-166); the response then carries `relations_applied`. An invalid target (itself, in two lists, cross-store) answers `400`.
 
 ```bash
 curl -X PATCH http://localhost:7437/v1/memories/019de100-... \

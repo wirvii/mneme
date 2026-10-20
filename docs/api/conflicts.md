@@ -134,3 +134,10 @@ missing. No changes to allowlists, hooks, SDD, lane, skills, or models.
 
 - [docs/conflicts.md](../conflicts.md) — detection algorithm, judgment prompt, `memory_relations` schema (migration 013)
 - [docs/api/cli.md](cli.md) — `mneme conflicts candidates/scan/link/unlink/list`
+
+## `judged_by` values
+
+`manual` (`conflicts_link` / `mneme conflicts link`), `claude-cli`
+(`conflicts_scan`) and, since SPEC-166, `agent`: a judgement the saving agent
+recorded through `mem_update` (`supersedes`, `conflicts_with`, `unrelated_to`).
+See [docs/conflicts.md](../conflicts.md#judging-at-save-time-spec-166).

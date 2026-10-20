@@ -347,20 +347,36 @@ func (svc *MemoryService) ConflictLink(ctx context.Context, from, to, relation, 
 		return fmt.Errorf("service: conflict link: %w", model.ErrCrossStoreRelation)
 	}
 
-	targetStore := storeFrom
-
-	switch relation {
-	case "supersedes":
-		// from supersedes to: mark to as superseded by from.
-		if err := targetStore.SetSupersededBy(ctx, to, from); err != nil {
-			return fmt.Errorf("service: conflict link: set superseded_by: %w", err)
-		}
-	default:
-		if err := targetStore.CreateMemoryRelation(ctx, from, to, relation, "manual", rationale); err != nil {
-			return fmt.Errorf("service: conflict link: create relation: %w", err)
-		}
+	if err := linkMemories(ctx, storeFrom, from, to, relation, judgedByManual, rationale); err != nil {
+		return fmt.Errorf("service: conflict link: %w", err)
 	}
 
+	return nil
+}
+
+// Values of memory_relations.judged_by. The column is free text, so adding
+// "agent" (SPEC-166) needs no migration; it tells a judgement the saving agent
+// made through mem_update apart from "manual" (CLI) and "cli" (scan with LLM).
+const (
+	judgedByManual = "manual"
+	judgedByAgent  = "agent"
+)
+
+// linkMemories is the single write path for a judged relation between two
+// memories of the same store (SPEC-166 D7). "supersedes" means from replaces
+// to (to.superseded_by = from); "conflicts_with" and "unrelated" insert a
+// memory_relations row stamped with judgedBy. Callers validate the relation,
+// existence and store before calling.
+func linkMemories(ctx context.Context, st *store.MemoryStore, from, to, relation, judgedBy, rationale string) error {
+	if relation == "supersedes" {
+		if err := st.SetSupersededBy(ctx, to, from); err != nil {
+			return fmt.Errorf("set superseded_by: %w", err)
+		}
+		return nil
+	}
+	if err := st.CreateMemoryRelation(ctx, from, to, relation, judgedBy, rationale); err != nil {
+		return fmt.Errorf("create relation: %w", err)
+	}
 	return nil
 }
 
@@ -470,42 +486,59 @@ func (svc *MemoryService) ConflictList(ctx context.Context, project string, limi
 	return ConflictListResponse{Relations: result, Total: total}, nil
 }
 
-// logConflictHint is called after a successful Save as a non-blocking hint.
-// It finds FTS5 candidates for the newly saved memory and logs a slog.Info
-// when candidates exist. It NEVER writes relations, NEVER judges, and NEVER
-// propagates an error — a panic or any failure is silently recovered.
-func (svc *MemoryService) logConflictHint(ctx context.Context, result *model.SaveResponse) {
-	defer func() {
-		if r := recover(); r != nil {
-			slog.WarnContext(ctx, "conflict hint panic recovered",
-				"memory_id", result.ID,
-				"panic", r,
-			)
-		}
-	}()
+// Limits for the candidates Save returns (SPEC-166 D2). The scan limit is
+// larger than the cap so that dropping ephemeral types still leaves enough.
+const (
+	maxPossibleConflicts      = 3
+	possibleConflictScanLimit = 10
+)
 
-	// Reload the memory to get its title and content for term extraction.
-	m, _, err := svc.getFromEitherStore(ctx, result.ID)
-	if err != nil || m == nil {
-		return
+// possibleConflicts returns up to maxPossibleConflicts existing memories that
+// share salient terms with m, so the saving agent can judge them in the same
+// turn (SPEC-166). It is deterministic (FTS5, no LLM) and best-effort: any
+// failure is logged and yields nil, never an error. Ephemeral types
+// (session_summary, synthesis) neither get candidates nor are proposed as one.
+func (svc *MemoryService) possibleConflicts(ctx context.Context, m *model.Memory, st *store.MemoryStore) []model.PossibleConflict {
+	if isEphemeralType(m.Type) {
+		return nil
 	}
 
-	terms := conflicts.ExtractSalientTerms(m.Title, m.Content, 10)
-	query := conflicts.BuildCandidateQuery(terms)
+	query := conflicts.BuildCandidateQuery(conflicts.ExtractSalientTerms(m.Title, m.Content, 10))
 	if query == "" {
-		return
+		return nil
 	}
 
-	targetStore := svc.storeFor(m.Scope)
-	candidates, err := targetStore.FTS5Candidates(ctx, m.ID, query, m.Project, 3)
-	if err != nil || len(candidates) == 0 {
-		return
+	ids, err := st.FTS5Candidates(ctx, m.ID, query, m.Project, possibleConflictScanLimit)
+	if err != nil {
+		slog.WarnContext(ctx, "service: save: possible conflicts", "memory_id", m.ID, "error", err)
+		return nil
 	}
 
-	slog.InfoContext(ctx, "conflict_hint",
-		"memory_id", result.ID,
-		"title", result.Title,
-		"candidates", candidates,
-		"hint", "run 'mneme conflicts candidates "+result.ID+"' or 'mneme conflicts scan' to review",
-	)
+	var out []model.PossibleConflict
+	for _, id := range ids {
+		if len(out) >= maxPossibleConflicts {
+			break
+		}
+		cand, err := st.Get(ctx, id)
+		if err != nil {
+			slog.WarnContext(ctx, "service: save: possible conflicts: load candidate", "memory_id", id, "error", err)
+			return nil
+		}
+		if cand == nil || isEphemeralType(cand.Type) {
+			continue
+		}
+		out = append(out, model.PossibleConflict{
+			ID:        cand.ID,
+			Title:     cand.Title,
+			Type:      cand.Type,
+			UpdatedAt: cand.UpdatedAt,
+		})
+	}
+	return out
+}
+
+// isEphemeralType reports whether t is an auto-generated type that takes no
+// part in conflict detection.
+func isEphemeralType(t model.MemoryType) bool {
+	return t == model.TypeSessionSummary || t == model.TypeSynthesis
 }

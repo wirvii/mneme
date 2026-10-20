@@ -313,10 +313,9 @@ func (svc *MemoryService) Save(ctx context.Context, req model.SaveRequest) (*mod
 		resp.SuggestedTopicKey = svc.suggestTopicKeyBestEffort(ctx, result.Title, result.Project)
 	}
 
-	// Non-blocking conflict hint: runs best-effort, never fails the save.
-	// It finds FTS5 candidates and emits a slog.Info when potential conflicts
-	// exist. No judgment, no relation writes.
-	go svc.logConflictHint(context.Background(), resp)
+	// SPEC-166 D2: deterministic, best-effort candidates the agent judges in
+	// the same turn with mem_update. Never fails the save.
+	resp.PossibleConflicts = svc.possibleConflicts(ctx, result, targetStore)
 
 	return resp, nil
 }
@@ -408,6 +407,19 @@ func (svc *MemoryService) Update(ctx context.Context, id string, req model.Updat
 		return nil, fmt.Errorf("service: update: %w", model.ErrNotFound)
 	}
 
+	// SPEC-166 D4/D5: validate every relation target before writing anything,
+	// and decide (before bakeSDDRefsForUpdate can set SDDRefs) whether the
+	// request edits the memory at all. A relations-only request is a judgement,
+	// not a revision.
+	fieldChanges := req.HasFieldChanges()
+	rels, err := svc.validateRelationTargets(ctx, id, targetStore, req)
+	if err != nil {
+		return nil, fmt.Errorf("service: update: relation: %w", err)
+	}
+	if len(rels) > 0 && !fieldChanges {
+		return svc.applyRelationsOnly(ctx, id, targetStore, rels)
+	}
+
 	// SPEC-128 D5: recompute the anchored SDD reference set from the
 	// RESULTANT title+content before applying the update, so store.Update's
 	// insertSDDRefs+pruneSDDRefs (triggered by req.SDDRefs != nil) run in
@@ -445,13 +457,104 @@ func (svc *MemoryService) Update(ctx context.Context, id string, req model.Updat
 	svc.applyTeamMemoryAuthor(updated)
 	svc.materializeTeamMemory(ctx, updated)
 
+	if err := svc.writeRelations(ctx, targetStore, id, rels); err != nil {
+		return nil, err
+	}
+
 	return &model.SaveResponse{
-		ID:            updated.ID,
-		Action:        "updated",
-		RevisionCount: updated.RevisionCount,
-		Title:         updated.Title,
-		TopicKey:      updated.TopicKey,
+		ID:               updated.ID,
+		Action:           "updated",
+		RevisionCount:    updated.RevisionCount,
+		Title:            updated.Title,
+		TopicKey:         updated.TopicKey,
+		RelationsApplied: rels,
 	}, nil
+}
+
+// applyRelationsOnly records the judgements of a relations-only Update
+// without touching the memory row: no revision bump, no updated_at change, no
+// vault re-materialization (SPEC-166 D5).
+func (svc *MemoryService) applyRelationsOnly(ctx context.Context, id string, st *store.MemoryStore, rels []model.AppliedRelation) (*model.SaveResponse, error) {
+	if err := svc.writeRelations(ctx, st, id, rels); err != nil {
+		return nil, err
+	}
+	current, err := st.Get(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("service: update: reload: %w", err)
+	}
+	if current == nil {
+		return nil, fmt.Errorf("service: update: reload: %w", model.ErrNotFound)
+	}
+	return &model.SaveResponse{
+		ID:               current.ID,
+		Action:           "updated",
+		RevisionCount:    current.RevisionCount,
+		Title:            current.Title,
+		TopicKey:         current.TopicKey,
+		RelationsApplied: rels,
+	}, nil
+}
+
+// writeRelations persists the validated judgements one by one through the
+// shared linkMemories path, stamped judged_by="agent". Writes are idempotent,
+// and validateRelationTargets already ruled out every expected failure, so a
+// mid-way error (disk) simply leaves the already-written ones in place.
+func (svc *MemoryService) writeRelations(ctx context.Context, st *store.MemoryStore, id string, rels []model.AppliedRelation) error {
+	for _, r := range rels {
+		if err := linkMemories(ctx, st, id, r.TargetID, r.Relation, judgedByAgent, ""); err != nil {
+			return fmt.Errorf("service: update: relation %s -> %s: %w", r.Relation, r.TargetID, err)
+		}
+	}
+	return nil
+}
+
+// validateRelationTargets checks every id in the request's three relation
+// lists and returns them as an ordered, deduplicated list (supersedes, then
+// conflicts_with, then unrelated_to; input order inside each). It rejects, with
+// nothing written: an empty id or the memory's own id or an id present in two
+// lists (ErrInvalidRelation), a missing memory (ErrNotFound) and a memory in
+// the other store (ErrCrossStoreRelation) — SPEC-166 D4.
+func (svc *MemoryService) validateRelationTargets(ctx context.Context, id string, st *store.MemoryStore, req model.UpdateRequest) ([]model.AppliedRelation, error) {
+	lists := []struct {
+		relation string
+		ids      []string
+	}{
+		{"supersedes", req.Supersedes},
+		{"conflicts_with", req.ConflictsWith},
+		{"unrelated", req.UnrelatedTo},
+	}
+
+	var rels []model.AppliedRelation
+	listOf := make(map[string]string)
+	for _, l := range lists {
+		seen := make(map[string]bool)
+		for _, target := range l.ids {
+			if target == "" || target == id {
+				return nil, fmt.Errorf("%w: %s target %q", model.ErrInvalidRelation, l.relation, target)
+			}
+			if prev, ok := listOf[target]; ok && prev != l.relation {
+				return nil, fmt.Errorf("%w: %s appears as both %s and %s", model.ErrInvalidRelation, target, prev, l.relation)
+			}
+			if seen[target] {
+				continue
+			}
+			seen[target] = true
+			listOf[target] = l.relation
+
+			m, targetStore, err := svc.getFromEitherStore(ctx, target)
+			if err != nil {
+				return nil, fmt.Errorf("load %s: %w", target, err)
+			}
+			if m == nil {
+				return nil, fmt.Errorf("%s: %w", target, model.ErrNotFound)
+			}
+			if targetStore != st {
+				return nil, fmt.Errorf("%s: %w", target, model.ErrCrossStoreRelation)
+			}
+			rels = append(rels, model.AppliedRelation{TargetID: target, Relation: l.relation})
+		}
+	}
+	return rels, nil
 }
 
 // Forget soft-expires a memory by setting its decay rate to 1.0, causing it to

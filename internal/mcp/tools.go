@@ -38,7 +38,7 @@ func allTools() []ToolDefinition {
 		},
 		{
 			Name:        "mem_save",
-			Description: "Save a structured observation to persistent memory. When topic_key is omitted the response carries suggested_topic_key (advisory; reuse it on the next save of this topic).",
+			Description: "Save a structured observation to persistent memory. When topic_key is omitted the response carries suggested_topic_key (advisory; reuse it on the next save of this topic). The response may carry possible_conflicts (up to 3, deterministic FTS5). Judge each in the same turn with mem_update on the NEW memory: supersedes (the old one is replaced), conflicts_with (both stay, contradiction recorded) or unrelated_to (stop proposing it).",
 			InputSchema: map[string]any{
 				"type":     "object",
 				"required": []string{"title", "content"},
@@ -193,7 +193,7 @@ func allTools() []ToolDefinition {
 		},
 		{
 			Name:        "mem_update",
-			Description: "Update an existing memory by ID.",
+			Description: "Update an existing memory by ID. Also records your judgement of possible_conflicts returned by mem_save: pass supersedes, conflicts_with or unrelated_to on the NEW memory. A request that carries only those lists does not count as a revision.",
 			InputSchema: map[string]any{
 				"type":     "object",
 				"required": []string{"id"},
@@ -244,6 +244,21 @@ func allTools() []ToolDefinition {
 						"type":        "string",
 						"description": "Replaces the enforcement level. Only valid when the memory is of type 'rule'.",
 						"enum":        []string{"info", "warn", "block"},
+					},
+					"supersedes": map[string]any{
+						"type":        "array",
+						"description": "Ids of older memories this one replaces: each is hidden from search (superseded_by = this id) but never deleted. Reversible with `mneme conflicts unlink`.",
+						"items":       map[string]any{"type": "string"},
+					},
+					"conflicts_with": map[string]any{
+						"type":        "array",
+						"description": "Ids of memories this one contradicts. Both stay visible; the contradiction is recorded.",
+						"items":       map[string]any{"type": "string"},
+					},
+					"unrelated_to": map[string]any{
+						"type":        "array",
+						"description": "Ids judged unrelated to this memory, so they stop being proposed as possible conflicts.",
+						"items":       map[string]any{"type": "string"},
 					},
 				},
 			},

@@ -434,6 +434,29 @@ type UpdateRequest struct {
 	// Severity replaces the severity when non-nil.
 	// Only valid when the memory is of TypeRule.
 	Severity *Severity `json:"severity,omitempty"`
+
+	// Supersedes lists ids of older memories this one replaces: each gets
+	// superseded_by = this id (hidden from search, never deleted).
+	Supersedes []string `json:"supersedes,omitempty"`
+
+	// ConflictsWith lists ids this memory contradicts (memory_relations
+	// conflicts_with). Both memories stay visible.
+	ConflictsWith []string `json:"conflicts_with,omitempty"`
+
+	// UnrelatedTo lists ids judged unrelated (memory_relations unrelated): a
+	// negative cache, so they stop being proposed as possible conflicts.
+	UnrelatedTo []string `json:"unrelated_to,omitempty"`
+}
+
+// HasFieldChanges reports whether the request edits any content field of the
+// memory (Title, Content, Type, Importance, Confidence, Files, AppliesTo,
+// Severity). A request that carries only relation lists is a judgement, not a
+// revision, and must not bump revision_count or updated_at (SPEC-166 D5).
+// SDDRefs is internal bookkeeping and deliberately not considered.
+func (r UpdateRequest) HasFieldChanges() bool {
+	return r.Title != nil || r.Content != nil || r.Type != nil ||
+		r.Importance != nil || r.Confidence != nil || r.Files != nil ||
+		r.AppliesTo != nil || r.Severity != nil
 }
 
 // Embedding represents a vector representation of a memory's content.
@@ -484,4 +507,39 @@ type SaveResponse struct {
 	// SuggestedTopicKey is a topic_key proposal for this memory, present only
 	// when the caller did not pass one (SPEC-164). Advisory: mneme never assigns it.
 	SuggestedTopicKey string `json:"suggested_topic_key,omitempty"`
+
+	// PossibleConflicts lists up to three existing memories that share salient
+	// terms with the one just saved (SPEC-166). Deterministic (FTS5); mneme
+	// never judges them, the saving agent does, via mem_update.
+	PossibleConflicts []PossibleConflict `json:"possible_conflicts,omitempty"`
+
+	// RelationsApplied echoes the relations a mem_update call recorded
+	// (SPEC-166), in the order supersedes, conflicts_with, unrelated_to.
+	RelationsApplied []AppliedRelation `json:"relations_applied,omitempty"`
+}
+
+// PossibleConflict is a memory that shares salient terms with one just saved
+// and may contradict or be replaced by it (SPEC-166). Deterministic (FTS5),
+// never judged by mneme: the saving agent decides.
+type PossibleConflict struct {
+	// ID is the UUIDv7 of the candidate memory.
+	ID string `json:"id"`
+
+	// Title is the candidate's title, enough for the agent to recognise it.
+	Title string `json:"title"`
+
+	// Type is the candidate's memory type.
+	Type MemoryType `json:"type"`
+
+	// UpdatedAt is when the candidate was last modified.
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// AppliedRelation is one judgement recorded by mem_update (SPEC-166).
+type AppliedRelation struct {
+	// TargetID is the memory the relation points at.
+	TargetID string `json:"target_id"`
+
+	// Relation is "supersedes", "conflicts_with" or "unrelated".
+	Relation string `json:"relation"`
 }
