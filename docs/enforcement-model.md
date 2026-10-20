@@ -327,6 +327,43 @@ points consult: `que`/`diseno`/`plan` for `architect`; `entrega` for
 - **Codex**: `CallerPolicy.authorizeCall` applies the same table using the
   process's archetype.
 
+#### Orchestrator trivial-inline (SPEC-171)
+
+An opt-in, per-project exception to "the orchestrator never edits code": while
+a **trivial-lane** spec is in `implementing`, the orchestrator may edit files
+inside that spec's declared `scope` itself. Off by default.
+
+- **Flag**: `[delegation] orchestrator_trivial_inline = true` in
+  `~/.mneme/config.toml`; `MNEME_DELEGATION_TRIVIAL_INLINE` (`1`/`true`,
+  `0`/`false`) overrides the global value; a per-project
+  `[delegation.projects."<slug>"] orchestrator_trivial_inline` (declared,
+  true or false) beats both. There is no CLI command to flip it.
+- **Which specs count**: lane `trivial`, status `implementing`, non-empty
+  scope, and not frozen (its backlog item is neither archived nor missing —
+  the query mirrors `service.specFreeze`). `draft`, `rationale`, `audit` and
+  `done` grant nothing; after a failed `lane_audit` the spec is rejected back
+  to `implementing` and the permission returns. Several open trivial specs
+  grant the union of their scopes.
+- **What is granted**: only `Edit`, `Write` and `MultiEdit`, only where the
+  ownership check would otherwise block, and only for a path that matches the
+  scope (same doublestar matcher `lane_audit` uses) relative to the hook's
+  cwd. Paths matching the trivial lane's forbidden globs
+  (`laneaudit.DefaultTrivialBudget.ForbiddenGlobs`: SQL, migrations,
+  `cmd/**`, `internal/install/assets/**`) and paths outside the cwd tree are
+  never granted. A cwd below the repository root does not match
+  root-relative scopes, so it blocks (safe direction).
+- **Not relaxed**: `Bash` (redirections, `sed -i`, `cp` ...), `NotebookEdit`,
+  subagents (their containment is unchanged), the standard lane, and
+  `lane_audit` itself.
+- **Fail closed**: any error opening or reading the project database yields
+  exactly the decision the check had without the feature. With the flag off
+  the database is never opened; with it on, it is opened (read-only, at most
+  once per call) only when the call was going to be blocked anyway.
+- **Audit trail**: each granted call appends an enforcement-log event
+  (`caller: orchestrator`, `decision: allow`, `reason: trivial_inline_scope`,
+  target: the relative path). Code: `internal/cli/hook_trivial_inline.go`;
+  `internal/enforcement` is unchanged.
+
 #### Inherent limits of Layer 2
 
 Layer 2 is designed to stop the **cooperative orchestrator** from accidentally

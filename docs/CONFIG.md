@@ -217,6 +217,7 @@ Controla el hook de delegación que previene que el agente orquestador edite có
 | `enabled` | `true` | bool | — | — | Activa o desactiva el enforcement de delegación. |
 | `protected_paths` | `["cmd/", "internal/", ...]` | []string | — | — | Prefijos de ruta protegidos que el orquestador no puede editar. |
 | `allowed_paths` | `["docs/", "*.md", ...]` | []string | — | — | Patrones glob siempre permitidos, aunque coincidan con un prefijo protegido. |
+| `orchestrator_trivial_inline` | `false` | bool | — | `MNEME_DELEGATION_TRIVIAL_INLINE` | Opt-in (SPEC-171): el orquestador puede usar Edit/Write/MultiEdit dentro del alcance declarado de una spec trivial en `implementing`. Un valor por proyecto en `[delegation.projects."<slug>"] orchestrator_trivial_inline` gana sobre éste y sobre el env. Ver [enforcement-model.md](enforcement-model.md). |
 
 ---
 
