@@ -87,7 +87,7 @@ const specListOrder = ` ORDER BY rowid ASC`
 // structural, not a convention a future editor could break by accident. If
 // they diverge, Total lies — and a Total that lies is worse than no Total at
 // all. Precedent and same requirement as sessionWorkWhere (store/session.go)
-// and HardDeleteBySource ("MUST stay byte-identical").
+// ("MUST stay byte-identical").
 const backlogListWhere = ` WHERE project = ?`
 const backlogListWhereStatus = backlogListWhere + ` AND status = ?`
 

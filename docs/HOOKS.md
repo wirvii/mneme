@@ -190,7 +190,7 @@ project store whenever the cwd doesn't resolve a git-remote slug, and a
 project-scoped rule that landed there with no project used to be evaluated
 by this hook in **every repo on the host**, including a `severity=block`
 rule that had nothing to do with the repo currently being edited. See
-`docs/RULES.md`'s "Invariant R" section and `docs/profiles.md` §8 for the
+`docs/RULES.md`'s "Invariant R" section for the
 full incident and fix — `queryRulesFromDB` now takes the query as a
 parameter precisely so the project and global databases can be held to
 different scope filters.

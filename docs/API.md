@@ -45,10 +45,10 @@ Rule: every MCP tool appears in exactly **one** of these files.
 | `model_*` | 3 | [docs/api/models.md](api/models.md) | [docs/models.md](models.md) |
 | `conflicts_*` | 5 | [docs/api/conflicts.md](api/conflicts.md) | [docs/conflicts.md](conflicts.md) |
 | `subagent_*` | 6 | [docs/api/subagents.md](api/subagents.md) | [docs/enforcement-model.md](enforcement-model.md) |
-| `profile_*` + `project_*` + `app_*` + `scaffold_*` | 8+1+1+1=11 | [docs/profiles.md](profiles.md) (no dedicated `docs/api/` split yet) | [docs/profiles.md](profiles.md) |
 
-15 + 21 + 2 + 10 + 7 + 3 + 5 + 6 + 11 = **80**. The `speech_*` family (2 tools)
-was retired whole by SPEC-161 (v2.0.0). The `quality_*` family (5 tools) existed
+15 + 21 + 2 + 10 + 7 + 3 + 5 + 6 = **69**. The `profile_*`, `project_new`,
+`app_add` and `scaffold_capture` tools (11) were retired by SPEC-162
+(v2.0.0). The `speech_*` family (2 tools) was retired whole by SPEC-161 (v2.0.0). The `quality_*` family (5 tools) existed
 from SPEC-115 through SPEC-137 and was retired whole by SPEC-158, along
 with the certification mechanism it served.
 

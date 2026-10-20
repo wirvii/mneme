@@ -130,6 +130,18 @@ The command is idempotent: re-running on an already-configured project is safe.`
 				fmt.Fprintf(cmd.ErrOrStderr(), "Warning: legacy quality files: %v\n", legacyQualityErr)
 			}
 
+			// Step 3d: advisory-only in BOTH modes (SPEC-162) — names the pin,
+			// lock and host store the retired team profiles left, but never
+			// deletes them (that is the job of `mneme upgrade`, with confirmation).
+			dataDir := cfg.Storage.DataDir
+			if flagDataDir != "" {
+				dataDir = flagDataDir
+			}
+			legacyProfileFindings, legacyProfileErr := initSvc.LegacyProfileFindings(cwd, dataDir)
+			if legacyProfileErr != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "Warning: legacy profile files: %v\n", legacyProfileErr)
+			}
+
 			// Step 4: drift report (always, even in --check mode).
 			findings, driftErr := initSvc.RunDrift(cwd)
 			if driftErr != nil {
@@ -137,6 +149,7 @@ The command is idempotent: re-running on an already-configured project is safe.`
 			}
 			findings = append(findings, gitattrsFindings...)
 			findings = append(findings, legacyQualityFindings...)
+			findings = append(findings, legacyProfileFindings...)
 			if len(findings) > 0 {
 				fmt.Fprintln(cmd.OutOrStdout(), "\n[drift] Advisory findings:")
 				for _, f := range findings {

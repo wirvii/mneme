@@ -18,6 +18,46 @@ type SkillsResult struct {
 	// Skipped lists skill names whose target SKILL.md had pinned:true and were
 	// not overwritten because force was false.
 	Skipped []string
+
+	// Removed lists retired skill names whose directory was deleted from the
+	// skills directory (see retiredSkills).
+	Removed []string
+}
+
+// retiredSkills names the bundled skills that no longer ship. WriteSkills
+// removes their directories from the discovery path of every host that
+// installed them earlier, so a retired skill does not linger as a stale
+// instruction. Another spec that retires a skill appends its name here.
+// SPEC-162 retired the team-profile and project-scaffold skills.
+var retiredSkills = []string{"mneme-profile-author", "new-project", "new-app"}
+
+// removeRetiredSkills deletes each retired skill directory under skillsDir,
+// but only when its SKILL.md declares that exact name (a foreign directory
+// that merely shares the name is left alone) and is not pinned. force deletes
+// a pinned skill too, the same override WriteSkills gives the install. It
+// returns the names it deleted.
+func removeRetiredSkills(skillsDir string, force bool) ([]string, error) {
+	var removed []string
+	for _, name := range retiredSkills {
+		skillDir := filepath.Join(skillsDir, name)
+		data, err := os.ReadFile(filepath.Join(skillDir, "SKILL.md"))
+		if err != nil {
+			continue
+		}
+		parsed, err := skill.Parse(data)
+		if err != nil || parsed.Name != name {
+			continue
+		}
+		if parsed.Pinned && !force {
+			slog.Info("install: retired skill pinned, keeping", "name", name)
+			continue
+		}
+		if err := os.RemoveAll(skillDir); err != nil {
+			return removed, fmt.Errorf("install: write skills: remove retired %s: %w", name, err)
+		}
+		removed = append(removed, name)
+	}
+	return removed, nil
 }
 
 // WriteSkills installs all skill entries returned by agent.Skills into
@@ -29,6 +69,8 @@ type SkillsResult struct {
 //   - Otherwise, each file in the skill subtree is written, creating parent
 //     directories as needed. Files marked IsExecutable receive mode 0o755;
 //     all others receive 0o644.
+//
+// Retired skills (see retiredSkills) are removed from skillsDir first.
 //
 // The function groups entries by top-level skill name (the first path component
 // of SkillEntry.RelPath) to implement per-skill pin checking.
@@ -64,6 +106,12 @@ func WriteSkills(agent *Agent, skillsDir string, force bool) (*SkillsResult, err
 	}
 
 	result := &SkillsResult{}
+
+	removed, err := removeRetiredSkills(skillsDir, force)
+	if err != nil {
+		return nil, err
+	}
+	result.Removed = removed
 
 	for _, name := range nameOrder {
 		skillDir := filepath.Join(skillsDir, name)

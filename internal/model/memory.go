@@ -295,16 +295,17 @@ type Memory struct {
 	// activation (SPEC-092), formatted "profile:<name>". Empty means
 	// hand-authored — the default for every memory saved before this field
 	// existed and for every memory the public mem_save path creates. Source
-	// is the switch's deletion key (MemoryStore.HardDeleteBySource) and, in a
-	// later spec, the exclusion key for the team-memory vault: a profile's
+	// was the switch's deletion key and is the exclusion key for the
+	// team-memory vault: a profile's
 	// rules are derived/regenerable (re-materialized by re-activating the
 	// profile) and must never be confused with a human's durable knowledge.
 	Source string `json:"source,omitempty"`
 }
 
 // ProfileSourcePrefix marks the provenance of a memory materialized by a
-// profile activation (SPEC-092 §2's SaveProfileRule stamps the full value
-// "profile:<name>"). It is the single string every layer that stamps or
+// profile activation (SPEC-092 §2 stamped the full value "profile:<name>";
+// team profiles were retired in v2.0.0, SPEC-162, but rows they stamped
+// can still exist in a database). It is the single string every layer that stamps or
 // reads profile provenance must reference — see IsProfileSource, the one
 // predicate the team-memory frontier (SPEC-094 §4) uses to exclude
 // profile-injected memories from the shared vault, both on write (never
@@ -318,8 +319,8 @@ const ProfileSourcePrefix = "profile:"
 // affected by the guards built on top of this predicate (SPEC-071's
 // share-by-default stays intact). Having a single predicate, rather than an
 // inline strings.HasPrefix at each call site, is what keeps the switch's
-// deletion key (MemoryStore.HardDeleteBySource) and the vault-exclusion
-// guards from drifting apart if the prefix ever changes.
+// deletion key and the vault-exclusion guards from drifting apart if the
+// prefix ever changes.
 func IsProfileSource(source string) bool {
 	return strings.HasPrefix(source, ProfileSourcePrefix)
 }
@@ -384,9 +385,8 @@ type SaveRequest struct {
 	// field with a JSON name could be spoofed by a caller that includes it in
 	// the request payload — json:"-" makes that structurally impossible
 	// rather than relying on the tool schema (documentation only, never
-	// enforced) to keep an agent from setting it. The only writer is
-	// MemoryService.SaveProfileRule, which sets this field directly in Go
-	// code before calling Save.
+	// enforced) to keep an agent from setting it. Only Go code can
+	// set it, before calling Save (profile activations did, until v2.0.0).
 	Source string `json:"-"`
 }
 

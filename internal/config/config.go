@@ -34,19 +34,6 @@ type Config struct {
 	Suggestions   SuggestionsConfig   `toml:"suggestions"`
 	Models        ModelsConfig        `toml:"models"`
 	Codegraph     CodegraphConfig     `toml:"codegraph"`
-	Profiles      ProfilesConfig      `toml:"profiles"`
-}
-
-// ProfilesConfig holds the host-level default profile (SPEC-093 §3, decision
-// #6). The default is the "nvm alias default" analogue: it names the
-// profile a session activates when the repo has NO .mneme-profile pin. It
-// is read exactly once, at SessionStart — never live (see
-// runHookSessionStart/ProfileService.ResolveActive). Empty = vanilla (no
-// profile), which is the out-of-box OSS behaviour, unchanged.
-type ProfilesConfig struct {
-	// Default is the safe-slug name of the host default profile, or "" for
-	// vanilla. Set via `mneme profile default <name>`; cleared via --clear.
-	Default string `toml:"default"`
 }
 
 // CodegraphConfig controls codegraph-related runtime behaviour (SPEC-044).
@@ -604,9 +591,6 @@ func Default() *Config {
 			HookNudgeEnabled: true,
 			QuerylogEnabled:  true,
 		},
-		Profiles: ProfilesConfig{
-			Default: "",
-		},
 	}
 }
 
@@ -660,9 +644,6 @@ func Default() *Config {
 // [codegraph] — SPEC-044:
 //   - MNEME_CODEGRAPH_HOOK_NUDGE → Codegraph.HookNudgeEnabled ("false"/"0" disables, "true"/"1" enables; env wins over TOML)
 //   - MNEME_CODEGRAPH_QUERYLOG   → Codegraph.QuerylogEnabled ("false"/"0" disables, "true"/"1" enables; env wins over TOML)
-//
-// [profiles] — SPEC-093 §3:
-//   - MNEME_PROFILES_DEFAULT → Profiles.Default (host-level default profile name; empty means vanilla)
 //
 // The resulting Config is validated before being returned.
 func Load(path string) (*Config, error) {
@@ -874,11 +855,6 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("MNEME_CODEGRAPH_QUERYLOG"); v != "" {
 		cfg.Codegraph.QuerylogEnabled = v == "true" || v == "1"
-	}
-
-	// [profiles] override (SPEC-093 §3).
-	if v := os.Getenv("MNEME_PROFILES_DEFAULT"); v != "" {
-		cfg.Profiles.Default = v
 	}
 }
 
@@ -1224,15 +1200,6 @@ func (c *Config) GlobalDBPath() string {
 // LogDir returns the directory where mneme writes its log files.
 func (c *Config) LogDir() string {
 	return filepath.Join(c.Storage.DataDir, "logs")
-}
-
-// ProfilesDir returns the absolute path to the host-level profile store
-// (~/.mneme/profiles). Each profile is a git checkout under
-// <ProfilesDir>/<name>, shared by every project on the host — see
-// internal/profile (SPEC-091 §1). This is a single method with no backing
-// TOML field or env var, mirroring ProjectDBPath/GlobalDBPath/LogDir.
-func (c *Config) ProfilesDir() string {
-	return filepath.Join(c.Storage.DataDir, "profiles")
 }
 
 // Validate checks that every required field has an acceptable value.

@@ -1,7 +1,6 @@
 package install
 
 import (
-	"io/fs"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -48,25 +47,6 @@ func TestAgentAssets_CarryVisualSection(t *testing.T) {
 			name := filepath.Base(f.Path)
 			role := strings.TrimSuffix(name, ".md")
 			assertVisualSectionPresence(t, name, role, string(f.Content), visualText)
-		}
-	})
-
-	t.Run("assets/profiles/default/agents", func(t *testing.T) {
-		fsys := DefaultProfileFS()
-		entries, err := fs.ReadDir(fsys, "agents")
-		if err != nil {
-			t.Fatalf("read default profile agents dir: %v", err)
-		}
-		for _, entry := range entries {
-			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
-				continue
-			}
-			content, err := fs.ReadFile(fsys, "agents/"+entry.Name())
-			if err != nil {
-				t.Fatalf("read default profile agent %s: %v", entry.Name(), err)
-			}
-			role := strings.TrimSuffix(entry.Name(), ".md")
-			assertVisualSectionPresence(t, entry.Name(), role, string(content), visualText)
 		}
 	})
 }

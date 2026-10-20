@@ -14,6 +14,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/wirvii/mneme/internal/config"
 	"github.com/wirvii/mneme/internal/service"
 	"github.com/wirvii/mneme/internal/upgrade"
 )
@@ -61,7 +62,14 @@ func runUpgrade(w io.Writer, in io.Reader, checkOnly bool) error {
 	// certification mechanism's files is offered cleanup on every
 	// invocation of `mneme upgrade`, including one that goes on to refuse
 	// (dev build) or find nothing to upgrade.
-	offerLegacyQualityCleanup(w, in, checkOnly)
+	//
+	// SPEC-162 adds the same kind of offer for the traces of the retired
+	// team profiles. Both read their answer from ONE shared buffered reader:
+	// two readers built over the same input would let the first swallow
+	// bytes the second needs.
+	answers := bufio.NewReader(in)
+	offerLegacyQualityCleanup(w, answers, checkOnly)
+	offerLegacyProfileCleanup(w, answers, checkOnly)
 
 	if Version == "dev" {
 		return fmt.Errorf("upgrade: cannot upgrade a development build. Install a release version first")
@@ -111,7 +119,7 @@ var upgradeRepoRoot = func() (string, error) {
 // add`/`git rm`/`git commit` — a removed file is left as an unstaged change
 // for the human to review and commit. A failure at any step (permissions)
 // is printed as a warning; it never stops the rest of runUpgrade.
-func offerLegacyQualityCleanup(w io.Writer, in io.Reader, checkOnly bool) {
+func offerLegacyQualityCleanup(w io.Writer, in *bufio.Reader, checkOnly bool) {
 	root, err := upgradeRepoRoot()
 	if err != nil {
 		return // Not a git repository (or cwd unresolved) — nothing to offer.
@@ -136,7 +144,7 @@ func offerLegacyQualityCleanup(w io.Writer, in io.Reader, checkOnly bool) {
 	}
 
 	fmt.Fprint(w, "Remove them? [y/N] ")
-	line, _ := bufio.NewReader(in).ReadString('\n')
+	line, _ := in.ReadString('\n')
 	answer := strings.ToLower(strings.TrimSpace(line))
 	if answer != "y" && answer != "yes" {
 		fmt.Fprintln(w, "No se borró nada. Para borrarlos a mano:")
@@ -151,6 +159,99 @@ func offerLegacyQualityCleanup(w io.Writer, in io.Reader, checkOnly bool) {
 		return
 	}
 	fmt.Fprintln(w, "Archivos heredados borrados. Revisa `git status` y confirma el borrado tú mismo.")
+}
+
+// upgradeDataDir resolves the data directory that holds the host-level
+// state (<data_dir>/profiles among it) — the seam a test substitutes so it
+// never reads or deletes the real ~/.mneme (SPEC-085). It honours --data-dir
+// the same way initService does.
+var upgradeDataDir = func() string {
+	if flagDataDir != "" {
+		return flagDataDir
+	}
+	cfg, err := config.Load(config.DefaultPath())
+	if err != nil {
+		cfg = config.Default()
+	}
+	return cfg.Storage.DataDir
+}
+
+// offerLegacyProfileCleanup implements SPEC-162 section 4: offers to remove
+// the traces the retired team profiles left behind — the repository pin
+// (.mneme-profile), the activation lock (.mneme/profile.lock) and the
+// host-level directory of profile checkouts (<data_dir>/profiles). It also
+// lists .mneme/backups/ when present, but never deletes it: it may hold files
+// the user still wants. Silent when there is nothing. With checkOnly, only
+// lists. Otherwise prompts once on w/in: only "y"/"yes" (case-insensitive)
+// removes anything; any other answer, an empty line, or EOF leaves
+// everything untouched and prints how to remove it by hand. Outside a git
+// repository the host-level part is still offered. It never stages, removes
+// from the index or commits anything in git — a removed tracked file is left
+// as an unstaged change for the human to review and commit. A failure is
+// printed as a warning; it never stops the rest of runUpgrade.
+func offerLegacyProfileCleanup(w io.Writer, in *bufio.Reader, checkOnly bool) {
+	root, rootErr := upgradeRepoRoot()
+	var files []string
+	var backups string
+	var hasBackups bool
+	if rootErr == nil {
+		var err error
+		if files, err = service.LegacyProfileFiles(root); err != nil {
+			fmt.Fprintf(w, "Warning: legacy profile files: %v\n", err)
+			return
+		}
+		if backups, hasBackups, err = service.LegacyProfileBackups(root); err != nil {
+			fmt.Fprintf(w, "Warning: legacy profile backups: %v\n", err)
+			return
+		}
+	}
+	storeDir, hasStore, err := service.LegacyProfileStore(upgradeDataDir())
+	if err != nil {
+		fmt.Fprintf(w, "Warning: legacy profile store: %v\n", err)
+		return
+	}
+	if len(files) == 0 && !hasStore {
+		return
+	}
+
+	fmt.Fprintln(w, "Los perfiles de equipo se retiraron; estos restos ya no hacen nada:")
+	for _, rel := range files {
+		fmt.Fprintf(w, "  %s\n", rel)
+	}
+	if hasStore {
+		fmt.Fprintf(w, "  %s\n", storeDir)
+	}
+	if hasBackups {
+		fmt.Fprintf(w, "Además existe %s con originales que una activación anterior apartó: revísalo a mano; no se borra.\n", backups)
+	}
+
+	if checkOnly {
+		return
+	}
+
+	fmt.Fprint(w, "Remove them? [y/N] ")
+	line, _ := in.ReadString('\n')
+	answer := strings.ToLower(strings.TrimSpace(line))
+	if answer != "y" && answer != "yes" {
+		fmt.Fprintln(w, "No se borró nada. Para borrarlos a mano:")
+		for _, rel := range files {
+			fmt.Fprintf(w, "  rm %s\n", filepath.Join(root, rel))
+		}
+		if hasStore {
+			fmt.Fprintf(w, "  rm -r %s\n", storeDir)
+		}
+		return
+	}
+
+	removeStore := ""
+	if hasStore {
+		removeStore = storeDir
+	}
+	if err := service.RemoveLegacyProfileArtifacts(root, files, removeStore); err != nil {
+		fmt.Fprintf(w, "Warning: no se pudieron borrar los restos de perfiles: %v\n", err)
+		return
+	}
+	fmt.Fprintln(w, "Restos de perfiles borrados. Revisa `git status` y confirma el borrado tú mismo.")
 }
 
 // performUpgrade applies an already-resolved, available upgrade. It is split

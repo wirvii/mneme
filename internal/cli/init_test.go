@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/wirvii/mneme/internal/config"
@@ -138,6 +139,56 @@ func TestInit_NeverWritesQualityConstitution(t *testing.T) {
 
 	if _, statErr := os.Stat(filepath.Join(repoDir, ".mneme", "quality.toml")); !os.IsNotExist(statErr) {
 		t.Errorf(".mneme/quality.toml exists after `mneme init`, want it never written (stat err = %v)", statErr)
+	}
+}
+
+// TestInit_ReportsLegacyProfileTraces covers SPEC-162 C7's CLI half: `mneme
+// init` names the pin and the lock the retired team profiles left behind as
+// advisory findings, and never deletes either.
+func TestInit_ReportsLegacyProfileTraces(t *testing.T) {
+	repoDir := t.TempDir()
+	initGitRepo(t, repoDir)
+	pin := filepath.Join(repoDir, ".mneme-profile")
+	lock := filepath.Join(repoDir, ".mneme", "profile.lock")
+	if err := os.MkdirAll(filepath.Dir(lock), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{pin, lock} {
+		if err := os.WriteFile(p, []byte("x\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	origWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(repoDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(origWD) })
+
+	origDataDir, origProject := flagDataDir, flagProject
+	t.Cleanup(func() { flagDataDir, flagProject = origDataDir, origProject })
+
+	root := NewRootCmd()
+	outBuf := new(bytes.Buffer)
+	errBuf := new(bytes.Buffer)
+	root.SetOut(outBuf)
+	root.SetErr(errBuf)
+	root.SetArgs([]string{"--data-dir", t.TempDir(), "--project", "init-legacy-profile", "init"})
+
+	if err := root.Execute(); err != nil {
+		t.Fatalf("mneme init: %v\nstderr:\n%s", err, errBuf.String())
+	}
+
+	for _, p := range []string{pin, lock} {
+		if !strings.Contains(outBuf.String(), p) {
+			t.Errorf("init report does not mention %s:\n%s", p, outBuf.String())
+		}
+		if _, statErr := os.Stat(p); statErr != nil {
+			t.Errorf("%s must survive `mneme init` (err=%v)", p, statErr)
+		}
 	}
 }
 

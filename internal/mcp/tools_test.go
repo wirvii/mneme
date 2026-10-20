@@ -10,10 +10,30 @@ import (
 //
 //	SPEC-158: -5 (quality_*)
 //	SPEC-161: -2 (speech_*)
+//	SPEC-162: -11 (profile_*, project_new, app_add, scaffold_capture)
 func TestAllTools_Count(t *testing.T) {
 	tools := allTools()
-	if len(tools) != 80 {
-		t.Errorf("allTools() returned %d tools, want 80", len(tools))
+	if len(tools) != 69 {
+		t.Errorf("allTools() returned %d tools, want 69", len(tools))
+	}
+}
+
+// TestAllTools_NoProfileFamily covers SPEC-162 C1: neither the team-profile
+// tools nor the project-template tools are declared any more. The positive
+// anchor keeps the test from passing vacuously. It deliberately asserts only
+// the absence of the 11 retired tools: the per-project subagent profile tools
+// are a different concept and their presence is not this test's business.
+func TestAllTools_NoProfileFamily(t *testing.T) {
+	retired := map[string]bool{"project_new": true, "app_add": true, "scaffold_capture": true}
+	seen := map[string]bool{}
+	for _, tool := range allTools() {
+		seen[tool.Name] = true
+		if strings.HasPrefix(tool.Name, "profile_") || retired[tool.Name] {
+			t.Errorf("allTools() still declares %q, want it retired", tool.Name)
+		}
+	}
+	if !seen["spec_advance"] {
+		t.Fatal("allTools() has no spec_advance — this test proves nothing without a positive anchor")
 	}
 }
 

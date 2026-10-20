@@ -240,8 +240,8 @@ func TestClaudeCodeInstall_DeliversEveryBundledAsset(t *testing.T) {
 // TestClaudeCodeInstall_VanillaGolden is the SPEC-096 §6 AC7 no-regression
 // guard: `mneme install claude-code` against a project with no profile pin
 // (SourceVanilla, §6 3.5) produces EXACTLY the same artefacts it did before
-// §6 landed — §6 adds internal/install/assets/profiles/default/ and
-// DefaultProfileFS() in parallel, but never touches installSteps/
+// §6 landed — §6 added an embedded default profile in parallel (retired by
+// SPEC-162), but never touched installSteps/
 // ClaudeCode()/the existing assets/{agents,skills,templates,operating-manual}
 // tree. This test freezes that contract: every expected artefact exists with
 // the right shape, AND — the regression this guards against — NO

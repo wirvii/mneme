@@ -40,7 +40,7 @@ if ! grep -q 'tools:' "$SKILL_FILE" || ! grep -q 'permissionMode:' "$SKILL_FILE"
   exit 1
 fi
 
-# SPEC-121: the plain-language rule (rule 14) must stay documented in this
+# SPEC-121: the plain-language rule (rule 13) must stay documented in this
 # skill. These are the three anchors shared with both operating manuals — a
 # skill that drops one has silently stopped teaching the rule.
 for anchor in "Plain language" "Channels that reach a person" "The exemption never travels with the text"; do

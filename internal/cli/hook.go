@@ -23,9 +23,7 @@ import (
 	"github.com/wirvii/mneme/internal/db"
 	"github.com/wirvii/mneme/internal/enforcelog"
 	"github.com/wirvii/mneme/internal/enforcement"
-	"github.com/wirvii/mneme/internal/install"
 	"github.com/wirvii/mneme/internal/model"
-	"github.com/wirvii/mneme/internal/profile"
 	"github.com/wirvii/mneme/internal/project"
 	"github.com/wirvii/mneme/internal/querylog"
 	"github.com/wirvii/mneme/internal/rules"
@@ -169,14 +167,10 @@ func runHookSessionStart(ctx context.Context, r io.Reader, w, errW io.Writer) er
 	}
 	defer cleanup()
 
-	// SPEC-093 §3.6: resolve/materialize (or nudge) the active profile BEFORE
-	// the context block — fail-open, exit 0 always, same contract as
-	// maybeEmitCodegraphNudge.
-	maybeActivateProfile(ctx, svc, w, errW)
 	maybeEmitAgentProjectionNudge(ctx, svc, w, errW)
 
 	// SPEC-108 D17: the pending-session-summary notice comes after the
-	// profile block and before the context block.
+	// agent-projection nudge and before the context block.
 	currentSessionID := decodeSessionStartInput(r, errW)
 	maybeEmitPendingSessionNotice(ctx, svc, currentSessionID, w, errW)
 
@@ -214,7 +208,7 @@ func maybeEmitAgentProjectionNudge(ctx context.Context, mem *service.MemoryServi
 	if err != nil {
 		return
 	}
-	root = resolveProfileProjectRoot(root)
+	root = resolveSessionProjectRoot(root)
 	for _, entry := range entries {
 		for _, runtimeName := range []subagents.Runtime{subagents.RuntimeClaudeCode, subagents.RuntimeCodex} {
 			artifact, ok := entry.ArtifactFor(runtimeName)
@@ -316,15 +310,13 @@ func renderPendingSessionNotice(w io.Writer, pending *model.SessionActivity, old
 	fmt.Fprintf(w, "<!-- mneme:session:end -->\n")
 }
 
-// ---- Profile SessionStart integration (SPEC-093 §3.6) -----------------------
-
-// resolveProfileProjectRoot returns cwd's git toplevel when cwd is inside a
-// git repository, or cwd itself otherwise (§3.6 step 1). Mirrors
+// resolveSessionProjectRoot returns cwd's git toplevel when cwd is inside a
+// git repository, or cwd itself otherwise . Mirrors
 // internal/service's own unexported gitRepoRoot helper locally rather than
 // exporting it — the hook's dependency surface stays minimal, same posture as
 // manifestTopicKey/hookManifestEntry mirroring service internals elsewhere in
 // this file.
-func resolveProfileProjectRoot(cwd string) string {
+func resolveSessionProjectRoot(cwd string) string {
 	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
 	cmd.Dir = cwd
 	out, err := cmd.Output()
@@ -332,237 +324,6 @@ func resolveProfileProjectRoot(cwd string) string {
 		return cwd
 	}
 	return strings.TrimSpace(string(out))
-}
-
-// maybeActivateProfile implements SPEC-093 §3.6 + SPEC-096 §6: resolves the
-// profile active for the current repo — pin > host default > vanilla, read
-// exactly once here via ProfileService.ResolveActive (AC10) — and either
-// materializes it (PinInstalled), materializes the embedded OSS default
-// profile (PinDefault, closed by §6 — see activateDefaultProfileForSession),
-// or emits an actionable nudge/gate (PinMissing). A resolution of PinAbsent
-// (vanilla) emits nothing, avoiding noise on every non-profile project.
-//
-// This function NEVER returns an error and never aborts session start: every
-// failure (config load, resolve, materialization) is degraded to a WARN on
-// errW and the function simply returns — the exact fail-open contract
-// maybeEmitCodegraphNudge already established for this same hook.
-func maybeActivateProfile(ctx context.Context, mem *service.MemoryService, w, errW io.Writer) {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return // fail-open: cannot resolve cwd.
-	}
-	root := resolveProfileProjectRoot(cwd)
-
-	cfg := mem.Config()
-	sub := service.NewSubagentService(mem)
-	skillsDir := ""
-	codexSkillsDir := ""
-	if home, herr := os.UserHomeDir(); herr == nil {
-		skillsDir = filepath.Join(home, ".claude", "skills")
-		codexSkillsDir = filepath.Join(home, ".agents", "skills")
-	}
-	profileSvc := service.NewProfileService(cfg.ProfilesDir(), false,
-		service.WithProfileMemoryService(mem),
-		service.WithProfileSubagentService(sub),
-		service.WithProfileSkillsDir(skillsDir),
-		service.WithProfileSkillMirrors(codexSkillsDir),
-		service.WithProfileConfigPath(config.DefaultPath()),
-		service.WithDefaultProfileFS(install.DefaultProfileFS()),
-	)
-
-	res, err := profileSvc.ResolveActive(root)
-	if err != nil {
-		fmt.Fprintf(errW, "[mneme] profile resolve error: %v\n", err)
-		return
-	}
-
-	switch res.Resolution.State {
-	case service.ProfilePinAbsent:
-		// SPEC-105 DD20: silence is the common case (vanilla), but a repo
-		// can still carry an orphaned activation lock (the pin was removed
-		// or never wrote one) — that gets its own actionable-but-passive
-		// report, never a silent no-op and never an automatic deactivation.
-		renderOrphanLockIfPresent(ctx, mem, profileSvc, root, w)
-		return
-	case service.ProfilePinInstalled:
-		activateProfileForSession(ctx, profileSvc, root, res, w, errW)
-	case service.ProfilePinDefault:
-		activateDefaultProfileForSession(ctx, profileSvc, root, w, errW)
-	case service.ProfilePinMissing:
-		renderProfileNudge(w, res.Resolution.Pin)
-	}
-}
-
-// activateProfileForSession resolves the checkout's HEAD commit and invokes
-// Reconcile (SPEC-105 DD15) for the profile res.Resolution.Pin names —
-// replacing a bare Activate so a repeated SessionStart against an
-// already-converged workspace is a cheap noop instead of a redundant
-// re-materialization (the root cause this spec fixes). Any failure
-// (resolving the commit, or Reconcile itself) is degraded: SessionStart
-// stays fail-open (never aborts, never blocks the agent), but — SPEC-105
-// DD16 — the failure block now goes to stdout (w), not just stderr,
-// because the agent reads w as context and never sees errW; errW keeps
-// getting the same line too, for whoever is watching diagnostic logs.
-func activateProfileForSession(ctx context.Context, svc *service.ProfileService, root string, res service.ProfileActiveResolution, w, errW io.Writer) {
-	pin := res.Resolution.Pin
-
-	commit, err := svc.ResolveCommit(pin.Name)
-	if err != nil {
-		renderProfileActivationFailure(w, err)
-		fmt.Fprintf(errW, "[mneme] profile activation failed: resolve commit: %v\n", err)
-		return
-	}
-
-	if _, err := svc.Reconcile(ctx, root, service.ActivationInput{
-		Name:   pin.Name,
-		Source: pin.Source,
-		Ref:    pin.Ref,
-		Commit: commit,
-	}); err != nil {
-		renderProfileActivationFailure(w, err)
-		fmt.Fprintf(errW, "[mneme] profile activation failed: %v\n", err)
-		return
-	}
-
-	origin := "pin"
-	if res.Source == service.ProfileSourceGlobalDefault {
-		origin = "default global"
-	}
-	// The confirmation block is emitted regardless of result.Action (SPEC-105
-	// DD15): the agent needs to know which profile governs this session
-	// whether it was freshly activated, repaired, switched, or already
-	// converged (noop) — only the redundant re-materialization work is
-	// gone, not the confirmation itself.
-	fmt.Fprintf(w, "<!-- mneme:profile:start -->\n")
-	fmt.Fprintf(w, "Profile %s@%s activo (via %s)\n", pin.Name, pin.Ref, origin)
-	fmt.Fprintf(w, "<!-- mneme:profile:end -->\n")
-}
-
-// activateDefaultProfileForSession implements SPEC-096 §6's closure of the
-// hole SPEC-093 §3.6 left open: a PinDefault resolution (a pin with no
-// Source — mneme's internal default profile) now MATERIALIZES the embedded
-// OSS default profile instead of merely confirming a pending state. The
-// synthetic, version-locked commit ("bundled:<mneme-version>+<manifest-
-// version>", AC9) is built here — Reconcile/Activate never resolve a
-// version string for any profile, default or otherwise — from
-// ProfileService's own DefaultManifest (best-effort: a manifest read
-// failure degrades to an empty version segment rather than aborting the
-// activation attempt). SPEC-105 DD15/DD16: uses Reconcile instead of a bare
-// Activate, and a failure's block goes to stdout (w), not only stderr —
-// same fail-open contract, cero red either way.
-func activateDefaultProfileForSession(ctx context.Context, svc *service.ProfileService, root string, w, errW io.Writer) {
-	version := ""
-	if manifest, err := svc.DefaultManifest(); err != nil {
-		fmt.Fprintf(errW, "[mneme] default profile manifest error: %v\n", err)
-	} else {
-		version = manifest.Version
-	}
-	commit := fmt.Sprintf("bundled:%s+%s", Version, version)
-
-	if _, err := svc.Reconcile(ctx, root, service.ActivationInput{
-		Name:    profile.DefaultProfileName,
-		Default: true,
-		Commit:  commit,
-	}); err != nil {
-		renderProfileActivationFailure(w, err)
-		fmt.Fprintf(errW, "[mneme] default profile activation failed: %v\n", err)
-		return
-	}
-
-	fmt.Fprintf(w, "<!-- mneme:profile:start -->\n")
-	fmt.Fprintf(w, "Profile mneme-default (OSS built-in) activo\n")
-	fmt.Fprintf(w, "<!-- mneme:profile:end -->\n")
-}
-
-// renderProfileActivationFailure writes the SPEC-105 DD16/AC26 partial-
-// failure block to stdout: the agent reads w as context, never errW, so a
-// failure that only logged to stderr was effectively invisible to it. When
-// err wraps model.ErrProfileLockUnsupported, the block names the concrete
-// remedy (`mneme upgrade`) rather than a generic message.
-func renderProfileActivationFailure(w io.Writer, err error) {
-	fmt.Fprintf(w, "<!-- mneme:profile:start -->\n")
-	fmt.Fprintf(w, "## Fallo activando el profile\n\n")
-	fmt.Fprintf(w, "%v\n\n", err)
-	if errors.Is(err, model.ErrProfileLockUnsupported) {
-		fmt.Fprintf(w, "Este lock fue escrito por una versión más nueva de mneme. Ejecuta `mneme upgrade`.\n\n")
-	}
-	fmt.Fprintf(w, "<!-- mneme:profile:end -->\n")
-}
-
-// renderOrphanLockIfPresent implements SPEC-105 DD20: a ProfilePinAbsent
-// resolution used to return in silence unconditionally. It still does when
-// there is truly nothing to report, but a repo can carry an activation lock
-// with NO pin pointing at it (the pin was deleted, or a `deactivate` never
-// ran) — this emits an actionable-but-passive report (profile name,
-// ActivatedAt, how many artifacts are still alive, the rule counts by
-// provenance) and the exact `mneme profile deactivate --apply` command,
-// WITHOUT deactivating anything itself: the silence of an absent pin is not
-// consent to delete files from the workspace.
-func renderOrphanLockIfPresent(ctx context.Context, mem *service.MemoryService, profileSvc *service.ProfileService, root string, w io.Writer) {
-	lock, present, err := profileSvc.ActiveLock(root)
-	if err != nil || !present {
-		return // fail-open: no lock, or unreadable — nothing actionable here.
-	}
-
-	alive := 0
-	for _, a := range lock.Artifacts {
-		if _, statErr := os.Stat(a.Path); statErr == nil {
-			alive++
-		}
-	}
-
-	projectCount := 0
-	if ids, _, idsErr := mem.ListProfileRuleIDs(ctx, lock.Profile); idsErr == nil {
-		projectCount = len(ids)
-	}
-	orphanCount := 0
-	if ids, idsErr := mem.ListOrphanProfileRuleIDs(ctx, lock.Profile); idsErr == nil {
-		orphanCount = len(ids)
-	}
-
-	fmt.Fprintf(w, "<!-- mneme:profile:start -->\n")
-	fmt.Fprintf(w, "## Lock de profile huérfano\n\n")
-	fmt.Fprintf(w,
-		"Este repo tiene un lock de activación para el profile `%s` (activado %s), pero no hay pin ni default global apuntando a él.\n\n",
-		lock.Profile, lock.ActivatedAt.Format(time.RFC3339))
-	fmt.Fprintf(w, "- Artefactos vivos: %d de %d\n", alive, len(lock.Artifacts))
-	fmt.Fprintf(w, "- Rules activas: %d (proyecto) + %d (huérfanas en global.db)\n\n", projectCount, orphanCount)
-	fmt.Fprintf(w, "Para limpiarlo: `mneme profile deactivate --apply`\n")
-	fmt.Fprintf(w, "<!-- mneme:profile:end -->\n")
-}
-
-// renderProfileNudge emits the actionable nudge/gate block for a PinMissing
-// resolution (§3.6): the agent converts this into a gate with the dev
-// present — mneme itself NEVER clones. Two variants: when pin.Source is
-// known (the common case — a repo's own pin names an uninstalled profile),
-// the exact `profile add <url> --ref <ref> && profile use <name>` commands
-// are printed; when it is not (a host default names a profile absent from
-// the store — the default only ever records a bare name, never a git URL),
-// a generic message asks for the URL instead.
-func renderProfileNudge(w io.Writer, pin *profile.Pin) {
-	fmt.Fprintf(w, "<!-- mneme:profile:start -->\n")
-	fmt.Fprintf(w, "## Profile no instalado\n\n")
-
-	if pin.Source != "" {
-		refSuffix, refFlag := "", ""
-		if pin.Ref != "" {
-			refSuffix = "@" + pin.Ref
-			refFlag = " --ref " + pin.Ref
-		}
-		fmt.Fprintf(w, "Este repo usa el profile `%s%s` (source `%s`), que no está instalado en este host.\n\n",
-			pin.Name, refSuffix, pin.Source)
-		fmt.Fprintf(w, "**Para instalarlo ahora** (con tu confirmación — mneme nunca clona sin OK):\n")
-		fmt.Fprintf(w, "    mneme profile add %s%s\n", pin.Source, refFlag)
-		fmt.Fprintf(w, "    mneme profile use %s\n\n", pin.Name)
-	} else {
-		fmt.Fprintf(w, "El default global de este host apunta a `%s`, que no está instalado en el store (o no tiene una fuente conocida).\n\n", pin.Name)
-		fmt.Fprintf(w, "**Para instalarlo ahora** necesitas la URL del repo del profile:\n")
-		fmt.Fprintf(w, "    mneme profile add <git-url> --name %s\n", pin.Name)
-		fmt.Fprintf(w, "    mneme profile use %s\n\n", pin.Name)
-	}
-
-	fmt.Fprintf(w, "Hasta entonces la sesión corre en modo **vanilla** (sin el profile del equipo).\n")
-	fmt.Fprintf(w, "<!-- mneme:profile:end -->\n")
 }
 
 // printContextHook writes the context response as a structured markdown block

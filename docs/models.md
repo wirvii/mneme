@@ -53,7 +53,7 @@ mneme init                           # projects effective models to both runtime
 ```
 
 > Global install does not create role files. `mneme model set/list/reset`
-> manages `[models.overrides]`; `mneme-init` and profile activation apply the
+> manages `[models.overrides]`; `mneme-init` applies the
 > effective assignment to each project's Claude Code and Codex projections.
 > Claude aliases are mapped deliberately (`opus`/`sonnet`/`haiku` to verified
 > Codex model ids); an unsafe or unknown cross-runtime mapping fails visibly.

@@ -132,7 +132,7 @@ func (s *MemoryStore) ListSessionsByProject(ctx context.Context, project string)
 // sessionWorkWhere define qué cuenta como "trabajo" de una sesión y es la
 // ÚNICA definición del predicado: los dos consumidores lo embeben por
 // concatenación, así que no pueden divergir. Precedente y misma exigencia que
-// HardDeleteBySource (memory.go:443-446, "MUST stay byte-identical"): la
+// la antigua purga por procedencia ("MUST stay byte-identical"): la
 // asimetría entre dos rutas sobre las mismas filas es exactamente lo que en
 // SPEC-105 dejó un guard divergente para siempre.
 //

@@ -238,13 +238,6 @@ func TestToolsList(t *testing.T) {
 		"model_list", "model_set", "model_reset",
 		// Conflicts tools (SPEC-039)
 		"conflicts_candidates", "conflicts_scan", "conflicts_link", "conflicts_unlink", "conflicts_list",
-		// Profile tools (SPEC-091 §1 + SPEC-093 §3 + SPEC-095 §5 + SPEC-105 DD21)
-		"profile_new", "profile_add", "profile_update", "profile_list", "profile_status",
-		"profile_use", "profile_default", "profile_deactivate",
-		// Project tools (SPEC-098 §7a + SPEC-099 §7b)
-		"project_new", "app_add",
-		// Scaffold tool (SPEC-100 §7c)
-		"scaffold_capture",
 		// Init tool (SPEC-041)
 		"init",
 		// Subagent tools (SPEC-057 / EPIC agnostic-agents SS-4)
@@ -575,9 +568,8 @@ func TestMemPromote_NotFound(t *testing.T) {
 // come back as CodeInvalidParams — an operator error, not an internal
 // failure — carrying model.ErrProfileMemoryNotShareable's message. There is
 // no public MCP tool that stamps profile provenance (mem_save's Source field
-// is json:"-"), so this seeds the row directly via the underlying
-// MemoryService.SaveProfileRule, exactly as a real profile activation would
-// (SPEC-092 §2).
+// is json:"-"), so this seeds the row from Go, the way a profile activation
+// of a pre-v2.0.0 mneme stamped it (SPEC-092 §2).
 func TestMemPromote_ProfileProvenance_RejectedAsInvalidParams(t *testing.T) {
 	projectDB, err := db.OpenMemory()
 	if err != nil {
@@ -593,13 +585,18 @@ func TestMemPromote_ProfileProvenance_RejectedAsInvalidParams(t *testing.T) {
 	svc := service.NewMemoryService(store.NewMemoryStore(projectDB), store.NewMemoryStore(globalDB), config.Default(), "test-project", embed.NopEmbedder{})
 	srv := NewServer(svc, nil, nil, nil, slog.Default(), "all", "test")
 
-	saveResp, err := svc.SaveProfileRule(t.Context(), model.SaveRequest{
+	notShared := 0
+	saveResp, err := svc.Save(t.Context(), model.SaveRequest{
 		Title:     "A profile-injected rule",
 		Content:   "Team standard rule.",
+		Type:      model.TypeRule,
+		Scope:     model.ScopeProject,
 		AppliesTo: []string{"**"},
-	}, "chatea-pro")
+		Source:    model.ProfileSourcePrefix + "chatea-pro",
+		Shared:    &notShared,
+	})
 	if err != nil {
-		t.Fatalf("SaveProfileRule: unexpected error: %v", err)
+		t.Fatalf("Save with profile provenance: unexpected error: %v", err)
 	}
 
 	resp := process(t, srv, "tools/call", 1, ToolCallParams{

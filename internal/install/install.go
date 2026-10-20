@@ -597,6 +597,9 @@ func (a *Agent) installSteps(opts InstallOptions) []installStep {
 				if len(result.Skipped) > 0 {
 					parts = append(parts, fmt.Sprintf("pinned: %s", strings.Join(result.Skipped, ", ")))
 				}
+				if len(result.Removed) > 0 {
+					parts = append(parts, fmt.Sprintf("removed: %s", strings.Join(result.Removed, ", ")))
+				}
 				return strings.Join(parts, "; "), nil
 			},
 		})

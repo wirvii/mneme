@@ -248,18 +248,6 @@ func TestGlobalDBPath(t *testing.T) {
 	}
 }
 
-// TestProfilesDir verifies that the profile store path is a "profiles"
-// sub-directory directly inside DataDir (SPEC-091 §1 AC4) — mirroring
-// GlobalDBPath/LogDir, no new TOML field or env var backs it.
-func TestProfilesDir(t *testing.T) {
-	cfg := Default()
-	got := cfg.ProfilesDir()
-	want := filepath.Join(cfg.Storage.DataDir, "profiles")
-	if got != want {
-		t.Errorf("ProfilesDir() = %q, want %q", got, want)
-	}
-}
-
 // TestValidate covers the validation rules documented on (*Config).Validate.
 func TestValidate(t *testing.T) {
 	tests := []struct {
@@ -2007,17 +1995,6 @@ subagent_containment = "off"
 	}
 }
 
-// --- SPEC-093 §3: [profiles].default -----------------------------------------
-
-// TestProfilesConfig_DefaultIsVanilla verifies Default() initialises
-// Profiles.Default to "" — the out-of-box OSS behaviour never changes.
-func TestProfilesConfig_DefaultIsVanilla(t *testing.T) {
-	cfg := Default()
-	if cfg.Profiles.Default != "" {
-		t.Errorf("Profiles.Default = %q, want empty (vanilla)", cfg.Profiles.Default)
-	}
-}
-
 // TestLoad_LegacySpeechSectionIgnored verifies SPEC-161: a config.toml that
 // still carries the retired [speech] section loads without error or warning
 // and the other sections are read normally.
@@ -2060,40 +2037,49 @@ backend = "opus"
 	}
 }
 
-// TestProfilesConfig_EnvOverride verifies MNEME_PROFILES_DEFAULT overrides
-// both Default() and whatever the TOML file says.
-func TestProfilesConfig_EnvOverride(t *testing.T) {
-	t.Setenv("MNEME_PROFILES_DEFAULT", "chatea-pro")
+// TestLoad_LegacyProfilesSectionIgnored verifies SPEC-162: a config.toml that
+// still carries the retired [profiles] section — or an environment that still
+// sets MNEME_PROFILES_DEFAULT — loads without error and the other sections are
+// read normally.
+func TestLoad_LegacyProfilesSectionIgnored(t *testing.T) {
+	const legacy = `[profiles]
+default = "chatea-pro"
 
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "config.toml")
-	if err := os.WriteFile(configPath, []byte("[profiles]\ndefault = \"other-profile\"\n"), 0o600); err != nil {
-		t.Fatalf("write config.toml: %v", err)
+[models.overrides]
+backend = "opus"
+`
+	tests := []struct {
+		name string
+		env  string
+		load func(path string) (*Config, error)
+	}{
+		{"Load", "", Load},
+		{"Load with env", "other", Load},
+		{"LoadWithOrigins", "", func(path string) (*Config, error) {
+			cfg, _, err := LoadWithOrigins(path)
+			return cfg, err
+		}},
+		{"LoadWithOrigins with env", "other", func(path string) (*Config, error) {
+			cfg, _, err := LoadWithOrigins(path)
+			return cfg, err
+		}},
 	}
-
-	cfg, err := Load(configPath)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if cfg.Profiles.Default != "chatea-pro" {
-		t.Errorf("Profiles.Default = %q, want %q (env wins)", cfg.Profiles.Default, "chatea-pro")
-	}
-}
-
-// TestProfilesConfig_LoadFromTOML verifies the TOML file sets the default
-// when no env override is present.
-func TestProfilesConfig_LoadFromTOML(t *testing.T) {
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "config.toml")
-	if err := os.WriteFile(configPath, []byte("[profiles]\ndefault = \"chatea-pro\"\n"), 0o600); err != nil {
-		t.Fatalf("write config.toml: %v", err)
-	}
-
-	cfg, err := Load(configPath)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if cfg.Profiles.Default != "chatea-pro" {
-		t.Errorf("Profiles.Default = %q, want %q", cfg.Profiles.Default, "chatea-pro")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.env != "" {
+				t.Setenv("MNEME_PROFILES_DEFAULT", tt.env)
+			}
+			path := filepath.Join(t.TempDir(), "config.toml")
+			if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := tt.load(path)
+			if err != nil {
+				t.Fatalf("load with legacy [profiles]: %v", err)
+			}
+			if got := cfg.Models.Overrides["backend"]; got != "opus" {
+				t.Errorf("Models.Overrides[backend] = %q, want opus", got)
+			}
+		})
 	}
 }
