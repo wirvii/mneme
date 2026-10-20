@@ -16,14 +16,12 @@ import (
 	"github.com/wirvii/mneme/internal/store"
 )
 
-// TestMCP_AllCodegraphToolsRegistered verifies that all 10 codegraph tools are
-// present in the allTools() slice.
+// TestMCP_AllCodegraphToolsRegistered verifies that the 4 codegraph tools left on MCP
+// (SPEC-165) are present in the allTools() slice.
 func TestMCP_AllCodegraphToolsRegistered(t *testing.T) {
 	tools := allTools()
 	wantTools := []string{
-		"codegraph_search", "codegraph_context", "codegraph_callers",
-		"codegraph_callees", "codegraph_impact", "codegraph_node",
-		"codegraph_explore", "codegraph_trace", "codegraph_status", "codegraph_files",
+		"codegraph_search", "codegraph_context", "codegraph_callers", "codegraph_impact",
 	}
 	for _, want := range wantTools {
 		found := false
@@ -117,33 +115,6 @@ func writeGoFile(t *testing.T, dir, name, content string) {
 	}
 }
 
-// TestMCP_CodegraphStatus verifies that codegraph_status returns a valid text
-// response when the codegraph DB exists (even if empty).
-func TestMCP_CodegraphStatus(t *testing.T) {
-	srv := newTestServerWithCodeGraph(t)
-
-	resp := process(t, srv, "tools/call", 1, ToolCallParams{
-		Name:      "codegraph_status",
-		Arguments: mustMarshal(t, map[string]any{}),
-	})
-	if resp.Error != nil {
-		t.Fatalf("codegraph_status: code=%d message=%s", resp.Error.Code, resp.Error.Message)
-	}
-
-	// Verify the response has a text content block.
-	var result ToolCallResult
-	unmarshalResult(t, resp, &result)
-	if len(result.Content) == 0 {
-		t.Fatal("expected at least one content block")
-	}
-	if result.Content[0].Type != "text" {
-		t.Errorf("content type = %q, want %q", result.Content[0].Type, "text")
-	}
-	if result.Content[0].Text == "" {
-		t.Error("expected non-empty text in status response")
-	}
-}
-
 // TestMCP_CodegraphSearch_MissingQuery verifies that codegraph_search without
 // a query parameter returns -32602 (CodeInvalidParams).
 func TestMCP_CodegraphSearch_MissingQuery(t *testing.T) {
@@ -200,29 +171,6 @@ func TestMCP_CodegraphCallers_MissingSymbol(t *testing.T) {
 	}
 	if resp.Error.Code != CodeInvalidParams {
 		t.Errorf("error code = %d, want %d", resp.Error.Code, CodeInvalidParams)
-	}
-}
-
-// TestMCP_CodegraphFiles verifies that codegraph_files returns a response listing
-// the indexed files.
-func TestMCP_CodegraphFiles(t *testing.T) {
-	srv := newTestServerWithCodeGraph(t)
-
-	resp := process(t, srv, "tools/call", 1, ToolCallParams{
-		Name:      "codegraph_files",
-		Arguments: mustMarshal(t, map[string]any{}),
-	})
-	if resp.Error != nil {
-		t.Fatalf("codegraph_files: code=%d message=%s", resp.Error.Code, resp.Error.Message)
-	}
-
-	var result ToolCallResult
-	unmarshalResult(t, resp, &result)
-	if len(result.Content) == 0 {
-		t.Fatal("expected content blocks")
-	}
-	if result.Content[0].Text == "" {
-		t.Error("expected non-empty files list")
 	}
 }
 
@@ -389,13 +337,7 @@ var codegraphMinimalArgs = map[string]map[string]any{
 	"codegraph_search":  {"query": "Hello"},
 	"codegraph_context": {"symbol": "Hello"},
 	"codegraph_callers": {"symbol": "Hello"},
-	"codegraph_callees": {"symbol": "Hello"},
 	"codegraph_impact":  {"symbol": "Hello"},
-	"codegraph_node":    {"symbol": "Hello"},
-	"codegraph_explore": {"symbols": []any{"Hello"}},
-	"codegraph_trace":   {"from": "Hello", "to": "Hello"},
-	"codegraph_status":  {},
-	"codegraph_files":   {},
 }
 
 // codegraphToolNames returns the "codegraph_"-prefixed subset of allTools(),
@@ -476,7 +418,7 @@ func TestMCP_CodegraphToolsCarryGraphNotice(t *testing.T) {
 	names := codegraphToolNames(t)
 
 	// Set-equality in BOTH directions against codegraphMinimalArgs (plan
-	// step 1, form 4): neither an eleventh tool nor a stale map entry can go
+	// step 1, form 4): neither a fifth tool nor a stale map entry can go
 	// unnoticed.
 	declared := make(map[string]bool, len(codegraphMinimalArgs))
 	for name := range codegraphMinimalArgs {
@@ -569,33 +511,28 @@ func TestMCP_CodegraphSearch_EmptyResultCarriesNotice(t *testing.T) {
 	}
 }
 
-// TestMCP_CodegraphExplore_NoticeSurvivesBudgetTruncation is SPEC-142 AC8:
-// the notice is prepended AFTER codegraph_explore's own budget cutoff, so it
-// is never itself counted against that budget — the total response length
-// may exceed budget by the notice's own length.
-func TestMCP_CodegraphExplore_NoticeSurvivesBudgetTruncation(t *testing.T) {
-	srv := newTestServerWithMarkedCodeGraph(t)
-
-	const budget = 200
-	resp := process(t, srv, "tools/call", 1, ToolCallParams{
-		Name: "codegraph_explore",
-		Arguments: mustMarshal(t, map[string]any{
-			"symbols": []any{"Hello"},
-			"budget":  budget,
-		}),
-	})
-	if resp.Error != nil {
-		t.Fatalf("codegraph_explore: code=%d message=%s", resp.Error.Code, resp.Error.Message)
-	}
-
-	var result ToolCallResult
-	unmarshalResult(t, resp, &result)
-	if len(result.Content) == 0 {
-		t.Fatal("expected a content block")
-	}
-	text := result.Content[0].Text
-	if !strings.HasPrefix(text, codegraph.NoticeToken) {
-		t.Errorf("codegraph_explore text does not start with the notice: %q", text)
+// TestMCP_RetiredCodegraphToolsAreUnknown is SPEC-165 C2: the six codegraph
+// tools moved to the CLI answer "unknown tool" instead of dispatching.
+func TestMCP_RetiredCodegraphToolsAreUnknown(t *testing.T) {
+	srv := newTestServerWithCodeGraph(t)
+	for _, name := range []string{
+		"codegraph_callees", "codegraph_node", "codegraph_explore",
+		"codegraph_trace", "codegraph_status", "codegraph_files",
+	} {
+		t.Run(name, func(t *testing.T) {
+			resp := process(t, srv, "tools/call", 1, ToolCallParams{
+				Name:      name,
+				Arguments: mustMarshal(t, map[string]any{}),
+			})
+			if resp.Error == nil {
+				t.Fatalf("%s: expected an error", name)
+			}
+			if resp.Error.Code != CodeMethodNotFound {
+				t.Errorf("code = %d, want %d", resp.Error.Code, CodeMethodNotFound)
+			}
+			if want := "unknown tool: " + name; resp.Error.Message != want {
+				t.Errorf("message = %q, want %q", resp.Error.Message, want)
+			}
+		})
 	}
 }
-

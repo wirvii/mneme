@@ -6,12 +6,13 @@ import (
 	"testing"
 )
 
-// TestAllTools_Count82 verifies the tool count after SPEC-158 retires the
-// five quality_* tools: 87 -> 82.
-func TestAllTools_Count82(t *testing.T) {
+// TestAllTools_Count verifies the tool count: SPEC-158 retired the five
+// quality_* tools (87 -> 82) and SPEC-165 moves six codegraph_* tools to the
+// CLI (-6, own delta: 82 -> 76 on this branch's base).
+func TestAllTools_Count(t *testing.T) {
 	tools := allTools()
-	if len(tools) != 82 {
-		t.Errorf("allTools() returned %d tools, want 82", len(tools))
+	if len(tools) != 76 {
+		t.Errorf("allTools() returned %d tools, want 76", len(tools))
 	}
 }
 
