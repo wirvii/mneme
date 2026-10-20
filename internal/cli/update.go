@@ -28,6 +28,7 @@ func newUpdateCmd() *cobra.Command {
 		flagSupersedes []string
 		flagConflicts  []string
 		flagUnrelated  []string
+		flagConfirm    bool
 	)
 
 	cmd := &cobra.Command{
@@ -37,7 +38,10 @@ func newUpdateCmd() *cobra.Command {
 
 Only the flags you provide are applied — all other fields remain unchanged.
 At least one update flag (--title, --content, --type, --importance, --stdin,
---supersedes, --conflicts-with, or --unrelated-to) must be specified.
+--supersedes, --conflicts-with, --unrelated-to, or --confirm) must be specified.
+
+--confirm says the memory is still true: it restarts the memory's review
+clock without counting as an edit.
 
 --supersedes, --conflicts-with and --unrelated-to record your judgement of
 other memories (repeatable, one id each). A call with only those flags is not
@@ -52,12 +56,12 @@ counted as a revision of the memory.`,
 			id := args[0]
 
 			// Require at least one update flag to avoid no-op invocations.
-			updateFlags := []string{"title", "content", "type", "importance", "stdin", "supersedes", "conflicts-with", "unrelated-to"}
+			updateFlags := []string{"title", "content", "type", "importance", "stdin", "supersedes", "conflicts-with", "unrelated-to", "confirm"}
 			anyChanged := slices.ContainsFunc(updateFlags, func(name string) bool {
 				return cmd.Flags().Changed(name)
 			})
 			if !anyChanged {
-				return fmt.Errorf("at least one update flag is required (--title, --content, --type, --importance, --stdin, --supersedes, --conflicts-with, or --unrelated-to)")
+				return fmt.Errorf("at least one update flag is required (--title, --content, --type, --importance, --stdin, --supersedes, --conflicts-with, --unrelated-to, or --confirm)")
 			}
 
 			// Read content from stdin when --stdin is set; --stdin takes precedence over --content.
@@ -92,6 +96,7 @@ counted as a revision of the memory.`,
 			req.Supersedes = flagSupersedes
 			req.ConflictsWith = flagConflicts
 			req.UnrelatedTo = flagUnrelated
+			req.Confirm = flagConfirm
 
 			svc, cleanup, err := initService()
 			if err != nil {
@@ -109,7 +114,11 @@ counted as a revision of the memory.`,
 				return printJSON(out, resp)
 			}
 
-			fmt.Fprintf(out, "Updated: %s — %s\n", resp.ID, resp.Title)
+			verb := "Updated"
+			if resp.ReviewedAt != nil && !req.HasFieldChanges() && len(resp.RelationsApplied) == 0 {
+				verb = "Confirmed"
+			}
+			fmt.Fprintf(out, "%s: %s — %s\n", verb, resp.ID, resp.Title)
 			for _, r := range resp.RelationsApplied {
 				fmt.Fprintf(out, "  %s → %s\n", r.Relation, shortID(r.TargetID))
 			}
@@ -125,6 +134,7 @@ counted as a revision of the memory.`,
 	cmd.Flags().BoolVar(&flagJSON, "json", false, "Output result as JSON")
 	cmd.Flags().StringArrayVar(&flagSupersedes, "supersedes", nil, "Id of an older memory this one replaces (repeatable)")
 	cmd.Flags().StringArrayVar(&flagConflicts, "conflicts-with", nil, "Id of a memory this one contradicts (repeatable)")
+	cmd.Flags().BoolVar(&flagConfirm, "confirm", false, "Confirm the memory is still true (restarts its review clock)")
 	cmd.Flags().StringArrayVar(&flagUnrelated, "unrelated-to", nil, "Id of a memory judged unrelated (repeatable)")
 
 	return cmd

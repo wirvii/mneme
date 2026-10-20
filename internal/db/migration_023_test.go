@@ -60,7 +60,7 @@ func TestMigration023_DropsQualityTablesKeepsTheRest(t *testing.T) {
 
 // assertMigration023State asserts the post-migration invariants shared by
 // both calls to migrate() in the test above: neither quality table nor its
-// indexes exist, MAX(version) is 23, and the specs row survived intact.
+// indexes exist, MAX(version) is 24 (SPEC-167 added 024 on top), and the specs row survived intact.
 func assertMigration023State(t *testing.T, sqlDB *sql.DB) {
 	t.Helper()
 
@@ -88,8 +88,8 @@ func assertMigration023State(t *testing.T, sqlDB *sql.DB) {
 	if err := sqlDB.QueryRow(`SELECT MAX(version) FROM schema_version`).Scan(&version); err != nil {
 		t.Fatalf("query schema_version: %v", err)
 	}
-	if version != 23 {
-		t.Errorf("MAX(version) = %d, want 23", version)
+	if version != 24 {
+		t.Errorf("MAX(version) = %d, want 24", version)
 	}
 
 	var title, project string

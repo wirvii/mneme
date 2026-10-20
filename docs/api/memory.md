@@ -165,6 +165,7 @@ Update an existing memory by ID. Only the fields provided are changed.
 | `supersedes` | string[] | no | Ids of older memories this one replaces (hidden from search, not deleted; reversible with `mneme conflicts unlink`) |
 | `conflicts_with` | string[] | no | Ids of memories this one contradicts (both stay visible) |
 | `unrelated_to` | string[] | no | Ids judged unrelated (stop being proposed as possible conflicts) |
+| `confirm` | boolean | no | `true` says the memory is still true: restarts its review clock (SPEC-167) without counting as an edit (no `revision_count` bump, no `updated_at` change). The response carries `reviewed_at` |
 
 The three lists record your judgement of the `possible_conflicts` returned by
 `mem_save` (SPEC-166). Targets must exist, differ from `id`, appear in one list
@@ -196,6 +197,25 @@ End the current session and save a summary.
 or `session_duration`, no `sessions` row, no `session/<id>` summary).
 
 **Errors:** `-32602` missing `summary`.
+
+---
+
+## Review deadlines (`review_due`, SPEC-167)
+
+Every memory type has a review deadline in days (defaults: `discovery`/`config` 60,
+`decision`/`architecture`/`pattern` 120, `bugfix`/`rule` 180, the rest never; tunable in
+`[memory.review_days]`, see [docs/CONFIG.md](../CONFIG.md#memoryreview_days)). `mem_search` results
+and `mem_context` memories/rules past their deadline stay in place (nothing is reordered or hidden)
+but carry:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `review_due` | boolean | `true` when the deadline has passed. Computed on read, never stored |
+| `review_note` | string | Agent-facing instruction: verify the memory, then `mem_update confirm:true`, correct it, or mark it replaced with `supersedes`. **Internal to the agent: never show it to the user** |
+
+The reference date is `reviewed_at` (falling back to `updated_at`). It restarts on creation, on a
+title/content rewrite, on an upsert by `topic_key` and on `confirm`. It is local to each machine
+(not in the shared vault or the export). `mem_get` does not annotate.
 
 ---
 

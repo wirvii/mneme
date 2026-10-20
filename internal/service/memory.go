@@ -416,8 +416,8 @@ func (svc *MemoryService) Update(ctx context.Context, id string, req model.Updat
 	if err != nil {
 		return nil, fmt.Errorf("service: update: relation: %w", err)
 	}
-	if len(rels) > 0 && !fieldChanges {
-		return svc.applyRelationsOnly(ctx, id, targetStore, rels)
+	if !fieldChanges && (len(rels) > 0 || req.Confirm) {
+		return svc.applyJudgementOnly(ctx, id, targetStore, rels, req.Confirm)
 	}
 
 	// SPEC-128 D5: recompute the anchored SDD reference set from the
@@ -461,22 +461,51 @@ func (svc *MemoryService) Update(ctx context.Context, id string, req model.Updat
 		return nil, err
 	}
 
-	return &model.SaveResponse{
+	resp := &model.SaveResponse{
 		ID:               updated.ID,
 		Action:           "updated",
 		RevisionCount:    updated.RevisionCount,
 		Title:            updated.Title,
 		TopicKey:         updated.TopicKey,
 		RelationsApplied: rels,
-	}, nil
+	}
+	if req.Confirm {
+		// SPEC-167 D6: confirming alongside other changes also restarts the
+		// review clock (a title/content edit already did, this covers the rest).
+		at, err := svc.confirmReviewed(ctx, targetStore, id)
+		if err != nil {
+			return nil, err
+		}
+		resp.ReviewedAt = &at
+	}
+	return resp, nil
 }
 
-// applyRelationsOnly records the judgements of a relations-only Update
-// without touching the memory row: no revision bump, no updated_at change, no
-// vault re-materialization (SPEC-166 D5).
-func (svc *MemoryService) applyRelationsOnly(ctx context.Context, id string, st *store.MemoryStore, rels []model.AppliedRelation) (*model.SaveResponse, error) {
+// confirmReviewed restarts the review clock of id at the current time without
+// touching updated_at or revision_count (SPEC-167 D6).
+func (svc *MemoryService) confirmReviewed(ctx context.Context, st *store.MemoryStore, id string) (time.Time, error) {
+	at := time.Now().UTC()
+	if err := st.MarkReviewed(ctx, id, at); err != nil {
+		return time.Time{}, fmt.Errorf("service: update: confirm: %w", err)
+	}
+	return at, nil
+}
+
+// applyJudgementOnly handles an Update that edits no content field but records
+// relations and/or confirms the memory: it writes those without touching the
+// memory row itself -- no revision bump, no updated_at change, no vault
+// re-materialization (SPEC-166 D5, SPEC-167 D6).
+func (svc *MemoryService) applyJudgementOnly(ctx context.Context, id string, st *store.MemoryStore, rels []model.AppliedRelation, confirm bool) (*model.SaveResponse, error) {
 	if err := svc.writeRelations(ctx, st, id, rels); err != nil {
 		return nil, err
+	}
+	var reviewedAt *time.Time
+	if confirm {
+		at, err := svc.confirmReviewed(ctx, st, id)
+		if err != nil {
+			return nil, err
+		}
+		reviewedAt = &at
 	}
 	current, err := st.Get(ctx, id)
 	if err != nil {
@@ -492,6 +521,7 @@ func (svc *MemoryService) applyRelationsOnly(ctx context.Context, id string, st 
 		Title:            current.Title,
 		TopicKey:         current.TopicKey,
 		RelationsApplied: rels,
+		ReviewedAt:       reviewedAt,
 	}, nil
 }
 

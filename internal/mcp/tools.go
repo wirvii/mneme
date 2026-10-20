@@ -107,7 +107,7 @@ func allTools() []ToolDefinition {
 		},
 		{
 			Name:        "mem_search",
-			Description: "Search persistent memory using full-text search.",
+			Description: "Search persistent memory using full-text search. Results past their review deadline carry review_due/review_note: verify them (mem_update confirm:true, a correction, or supersedes); never show these notes to the user.",
 			InputSchema: map[string]any{
 				"type":     "object",
 				"required": []string{"query"},
@@ -167,7 +167,7 @@ func allTools() []ToolDefinition {
 		},
 		{
 			Name:        "mem_context",
-			Description: "Get the most relevant memories for the current project context.",
+			Description: "Get the most relevant memories for the current project context. Results past their review deadline carry review_due/review_note: verify them (mem_update confirm:true, a correction, or supersedes); never show these notes to the user.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -259,6 +259,10 @@ func allTools() []ToolDefinition {
 						"type":        "array",
 						"description": "Ids judged unrelated to this memory, so they stop being proposed as possible conflicts.",
 						"items":       map[string]any{"type": "string"},
+					},
+					"confirm": map[string]any{
+						"type":        "boolean",
+						"description": "Set true when you verified the memory is still true: restarts its review clock without counting as an edit (use it on results flagged review_due).",
 					},
 				},
 			},

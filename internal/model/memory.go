@@ -258,6 +258,15 @@ type Memory struct {
 	// means.
 	SDDRefs []SDDRef `json:"sdd_refs,omitempty"`
 
+	// ReviewDue is true when the memory's review deadline for its type has
+	// passed (SPEC-167). Computed at read time by mem_search/mem_context; never
+	// stored.
+	ReviewDue bool `json:"review_due,omitempty"`
+
+	// ReviewNote is the agent-facing explanation of ReviewDue. Internal to the
+	// agent: it must never be shown to the user.
+	ReviewNote string `json:"review_note,omitempty"`
+
 	// AppliesTo holds the list of patterns that determine when this rule is
 	// relevant. Patterns can be file path globs (e.g. "internal/**/*.go"),
 	// tool selectors (e.g. "tool:Edit"), combined selectors
@@ -446,13 +455,19 @@ type UpdateRequest struct {
 	// UnrelatedTo lists ids judged unrelated (memory_relations unrelated): a
 	// negative cache, so they stop being proposed as possible conflicts.
 	UnrelatedTo []string `json:"unrelated_to,omitempty"`
+
+	// Confirm states that the memory is still true: it restarts its review
+	// clock without counting as an edit (SPEC-167). Deliberately excluded from
+	// HasFieldChanges.
+	Confirm bool `json:"confirm,omitempty"`
 }
 
 // HasFieldChanges reports whether the request edits any content field of the
 // memory (Title, Content, Type, Importance, Confidence, Files, AppliesTo,
 // Severity). A request that carries only relation lists is a judgement, not a
 // revision, and must not bump revision_count or updated_at (SPEC-166 D5).
-// SDDRefs is internal bookkeeping and deliberately not considered.
+// SDDRefs is internal bookkeeping and Confirm only restarts the review clock;
+// neither is an edit, so neither is considered.
 func (r UpdateRequest) HasFieldChanges() bool {
 	return r.Title != nil || r.Content != nil || r.Type != nil ||
 		r.Importance != nil || r.Confidence != nil || r.Files != nil ||
@@ -516,6 +531,10 @@ type SaveResponse struct {
 	// RelationsApplied echoes the relations a mem_update call recorded
 	// (SPEC-166), in the order supersedes, conflicts_with, unrelated_to.
 	RelationsApplied []AppliedRelation `json:"relations_applied,omitempty"`
+
+	// ReviewedAt is the new review date, present only when a mem_update
+	// confirmed the memory (SPEC-167).
+	ReviewedAt *time.Time `json:"reviewed_at,omitempty"`
 }
 
 // PossibleConflict is a memory that shares salient terms with one just saved

@@ -20,6 +20,7 @@ func TestUpdateRequest_HasFieldChanges(t *testing.T) {
 	}{
 		{"empty", UpdateRequest{}, false},
 		{"only relations", UpdateRequest{Supersedes: []string{"a"}, ConflictsWith: []string{"b"}, UnrelatedTo: []string{"c"}}, false},
+		{"only confirm", UpdateRequest{Confirm: true}, false},
 		{"only sdd refs", UpdateRequest{SDDRefs: &refs}, false},
 		{"title", UpdateRequest{Title: &str}, true},
 		{"content", UpdateRequest{Content: &str}, true},

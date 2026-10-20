@@ -151,6 +151,14 @@ func (svc *MemoryService) Search(ctx context.Context, req model.SearchRequest) (
 	// or filtering is performed. Failures are recovered silently.
 	svc.annotateConflicts(ctx, results)
 
+	// SPEC-167: flag memories past their review deadline for the agent. Also
+	// purely additive: no reordering, no filtering.
+	mems := make([]*model.Memory, 0, len(results))
+	for i := range results {
+		mems = append(mems, results[i].Memory)
+	}
+	svc.annotateReviewDue(ctx, mems)
+
 	return &model.SearchResponse{
 		Results: results,
 		Total:   len(results),

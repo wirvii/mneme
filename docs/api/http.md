@@ -58,7 +58,7 @@ curl http://localhost:7437/v1/memories/019de100-abcd-7fff-8000-000000000001
 
 ## PATCH /v1/memories/{id}
 
-Partial update. Request body: same schema as `mem_update` (minus `id`), including `supersedes`, `conflicts_with` and `unrelated_to` (SPEC-166); the response then carries `relations_applied`. An invalid target (itself, in two lists, cross-store) answers `400`.
+Partial update. Request body: same schema as `mem_update` (minus `id`), including `supersedes`, `conflicts_with` and `unrelated_to` (SPEC-166); the response then carries `relations_applied`. An invalid target (itself, in two lists, cross-store) answers `400`. `confirm: true` (SPEC-167) restarts the memory's review clock and the response carries `reviewed_at`.
 
 ```bash
 curl -X PATCH http://localhost:7437/v1/memories/019de100-... \
@@ -82,7 +82,7 @@ curl -X DELETE http://localhost:7437/v1/memories/019de100-... \
 
 ## GET /v1/memories/search
 
-Full-text search with optional graph expansion. Same shape as `mem_search`.
+Full-text search with optional graph expansion. Same shape as `mem_search`, including `review_due`/`review_note` on results past their review deadline (SPEC-167; `/v1/memories/context` too). Those fields are for programs acting as the agent, not for display to people.
 
 | Query param | Type | Required | Description |
 |-------------|------|----------|-------------|

@@ -24,6 +24,7 @@ Para el sistema de reglas ver [RULES.md](RULES.md).
 - [`[spec]`](#spec)
 - [`[graph]`](#graph)
 - [`[suggestions]`](#suggestions)
+- [`[memory.review_days]`](#memoryreview_days)
 - [`[speech]`](#local-speech)
 - [Recetas de ajuste](#recetas-de-ajuste)
 - [Errores de validación](#errores-de-validación)
@@ -287,6 +288,36 @@ y gaps de conocimiento no resueltos. Introducido en SPEC-014.
 | `gap_jaccard_threshold` | `0.2` | float | [0, 1] | `MNEME_SUGGESTIONS_GAP_JACCARD_THRESHOLD` | Similitud Jaccard mínima para incluir un gap en sugerencias. |
 | `max_gaps_to_consider` | `50` | int | >= 0 | `MNEME_SUGGESTIONS_MAX_GAPS_TO_CONSIDER` | Máximo de gaps top a evaluar por similitud Jaccard. |
 | `max_results` | `10` | int | >= 1 | `MNEME_SUGGESTIONS_MAX_RESULTS` | Máximo de sugerencias totales devueltas. |
+
+---
+
+## `[memory.review_days]`
+
+Plazo de revisión por tipo de memoria, en días (SPEC-167). Pasado el plazo, la memoria **sigue
+apareciendo** en `mem_search`/`mem_context`, pero marcada para el agente (`review_due` y
+`review_note`) para que compruebe si sigue vigente. El aviso es interno del agente: la CLI para
+personas no lo imprime (solo `--json`).
+
+La fecha de referencia es la última revisión (`reviewed_at`) o, si no hay, `updated_at`. Se
+reinicia al crear la memoria, al reescribir su título o contenido, al guardarla de nuevo con el
+mismo `topic_key` y con `mem_update confirm:true` (`mneme update <id> --confirm`). Es local a cada
+máquina: no viaja por el vault compartido ni por el export.
+
+| Tipo | Por defecto (días) |
+|------|--------------------|
+| `discovery`, `config` | `60` |
+| `decision`, `architecture`, `pattern` | `120` |
+| `bugfix`, `rule` | `180` |
+| `preference`, `convention`, `session_summary`, `synthesis` | `0` (no caduca) |
+
+Un valor `<= 0` desactiva la revisión de ese tipo; una clave que no sea un tipo conocido se ignora.
+Solo se sobrescriben los tipos que listes; los demás conservan su valor por defecto.
+
+```toml
+[memory.review_days]
+discovery = 30
+preference = 365
+```
 
 ---
 

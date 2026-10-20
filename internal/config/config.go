@@ -34,7 +34,8 @@ type Config struct {
 	Graph         GraphConfig         `toml:"graph"`
 	Suggestions   SuggestionsConfig   `toml:"suggestions"`
 	Models        ModelsConfig        `toml:"models"`
-	Codegraph     CodegraphConfig     `toml:"codegraph"`
+	Memory        MemoryConfig        `toml:"memory"`
+	Codegraph    CodegraphConfig     `toml:"codegraph"`
 	Profiles      ProfilesConfig      `toml:"profiles"`
 	Speech        SpeechConfig        `toml:"speech"`
 
