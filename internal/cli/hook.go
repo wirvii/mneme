@@ -104,7 +104,11 @@ Events:
 			case "pre-tool-use":
 				return runHookPreToolUse(os.Stdin, os.Stdout, os.Stderr)
 			case "speech-prompt":
-				return runHookSpeechPrompt(cmd.Context(), os.Stdin, os.Stdout)
+				// SPEC-161: la voz se retiró; no-op silencioso para hosts que
+				// aún tienen el hook registrado (mismo patrón que session-end,
+				// SPEC-106). Sin salida y exit 0, para que cada mensaje del
+				// usuario no muestre un error de hook.
+				return nil
 			case "enforce-delegation":
 				return runHookEnforceDelegation(os.Stdin, os.Stderr)
 			case "tokenize":
@@ -115,32 +119,12 @@ Events:
 				}
 				return runHookPathOwned(args[1])
 			default:
-				return fmt.Errorf("hook: unknown event %q — supported events: session-start, session-end, speech-prompt, pre-tool-use, enforce-delegation, tokenize, path-owned", event)
+				return fmt.Errorf("hook: unknown event %q — supported events: session-start, session-end, pre-tool-use, enforce-delegation, tokenize, path-owned", event)
 			}
 		},
 	}
 
 	return cmd
-}
-
-func runHookSpeechPrompt(ctx context.Context, in io.Reader, out io.Writer) error {
-	var input struct {
-		SessionID string `json:"session_id"`
-	}
-	if err := json.NewDecoder(in).Decode(&input); err != nil && !errors.Is(err, io.EOF) {
-		return fmt.Errorf("hook speech-prompt: decode: %w", err)
-	}
-	if input.SessionID == "" {
-		input.SessionID = fmt.Sprintf("local-%d", time.Now().UnixNano())
-	}
-	protocol, err := service.NewSpeechService(config.DefaultPath(), flagDataDir).RegisterPrompt(ctx, input.SessionID)
-	if err != nil {
-		return nil
-	}
-	if protocol != "" {
-		fmt.Fprintln(out, protocol)
-	}
-	return nil
 }
 
 // hookSessionStartInput es el payload que el agente entrega por stdin.

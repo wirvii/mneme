@@ -212,7 +212,6 @@ func TestToolsList(t *testing.T) {
 	unmarshalResult(t, resp, &result)
 
 	wantNames := []string{
-		"speech_emit", "speech_control",
 		"mem_save", "mem_search", "mem_get", "mem_context",
 		"mem_update", "mem_session_end", "mem_suggest_topic_key",
 		"mem_relate", "mem_timeline", "mem_stats", "mem_checkpoint", "mem_forget", "mem_promote",
@@ -800,18 +799,24 @@ func TestUnknownMethod(t *testing.T) {
 }
 
 func TestUnknownTool(t *testing.T) {
-	srv := newTestServer(t)
+	// speech_emit is a retired tool (SPEC-161): it must be indistinguishable
+	// from any other unknown name.
+	for _, name := range []string{"mem_does_not_exist", "speech_emit", "speech_control"} {
+		t.Run(name, func(t *testing.T) {
+			srv := newTestServer(t)
 
-	resp := process(t, srv, "tools/call", 1, ToolCallParams{
-		Name:      "mem_does_not_exist",
-		Arguments: mustMarshal(t, map[string]any{}),
-	})
+			resp := process(t, srv, "tools/call", 1, ToolCallParams{
+				Name:      name,
+				Arguments: mustMarshal(t, map[string]any{}),
+			})
 
-	if resp.Error == nil {
-		t.Fatal("expected JSON-RPC error for unknown tool, got nil")
-	}
-	if resp.Error.Code != CodeMethodNotFound {
-		t.Errorf("error code = %d, want %d (CodeMethodNotFound)", resp.Error.Code, CodeMethodNotFound)
+			if resp.Error == nil {
+				t.Fatal("expected JSON-RPC error for unknown tool, got nil")
+			}
+			if resp.Error.Code != CodeMethodNotFound {
+				t.Errorf("error code = %d, want %d (CodeMethodNotFound)", resp.Error.Code, CodeMethodNotFound)
+			}
+		})
 	}
 }
 

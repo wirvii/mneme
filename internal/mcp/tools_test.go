@@ -1,17 +1,37 @@
 package mcp
 
 import (
-	"encoding/json"
 	"strings"
 	"testing"
 )
 
-// TestAllTools_Count82 verifies the tool count after SPEC-158 retires the
-// five quality_* tools: 87 -> 82.
-func TestAllTools_Count82(t *testing.T) {
+// TestAllTools_Count pins the size of the MCP surface. Each spec that adds or
+// retires tools adjusts the number and appends its delta below.
+//
+//	SPEC-158: -5 (quality_*)
+//	SPEC-161: -2 (speech_*)
+func TestAllTools_Count(t *testing.T) {
 	tools := allTools()
-	if len(tools) != 82 {
-		t.Errorf("allTools() returned %d tools, want 82", len(tools))
+	if len(tools) != 80 {
+		t.Errorf("allTools() returned %d tools, want 80", len(tools))
+	}
+}
+
+// TestAllTools_NoSpeechFamily covers SPEC-161 C1: no tool name starts with
+// speech_ any more. The positive anchor (spec_advance) keeps the test from
+// passing vacuously against an empty tool list.
+func TestAllTools_NoSpeechFamily(t *testing.T) {
+	sawSpecAdvance := false
+	for _, tool := range allTools() {
+		if tool.Name == "spec_advance" {
+			sawSpecAdvance = true
+		}
+		if strings.HasPrefix(tool.Name, "speech_") {
+			t.Errorf("allTools() still declares %q, want the speech_ family entirely retired", tool.Name)
+		}
+	}
+	if !sawSpecAdvance {
+		t.Fatal("allTools() has no spec_advance — this test proves nothing without a positive anchor")
 	}
 }
 
@@ -183,27 +203,6 @@ func TestSubagentWriteSchema_DeclaresAreasComplete(t *testing.T) {
 		if r == "areas_complete" {
 			t.Error("subagent_write must NOT require 'areas_complete' — an uncertified role is a legitimate default state (D1/AC2)")
 		}
-	}
-}
-
-// TestSpeechEmitSchema_Unchanged is AC21/D20's other half: SPEC-129 changes
-// speech_emit's OUTPUT (queued/queue_position are new response fields, D15)
-// but must never touch its published INPUT schema — the queue-with-owner
-// redesign is entirely a server-side behaviour change. Byte-comparing the
-// marshaled schema pins that no property, requirement, or description drifted.
-func TestSpeechEmitSchema_Unchanged(t *testing.T) {
-	tools := allTools()
-	tool := findTool(tools, "speech_emit")
-	if tool == nil {
-		t.Fatal("speech_emit tool not found in allTools()")
-	}
-	got, err := json.Marshal(tool.InputSchema)
-	if err != nil {
-		t.Fatalf("marshal speech_emit InputSchema: %v", err)
-	}
-	want := `{"properties":{"disposition":{"enum":["emit","skip"],"type":"string"},"language":{"description":"Detected BCP-47 language or short locale such as es or en.","type":"string"},"mode":{"enum":["brief","full"],"type":"string"},"session_id":{"description":"Opaque session id supplied by the speech hook.","type":"string"},"text":{"description":"Useful spoken text; required for emit and omitted for skip.","type":"string"}},"required":["disposition","session_id"],"type":"object"}`
-	if string(got) != want {
-		t.Fatalf("speech_emit InputSchema changed:\ngot:  %s\nwant: %s", got, want)
 	}
 }
 

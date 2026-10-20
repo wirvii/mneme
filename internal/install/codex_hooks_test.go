@@ -77,7 +77,6 @@ func TestWriteCodexHooks_NewFile(t *testing.T) {
 	}
 
 	checkCommand("SessionStart", "mneme hook session-start")
-	checkCommand("UserPromptSubmit", "mneme hook speech-prompt")
 }
 
 // TestWriteCodexHooks_Idempotent verifies that running WriteCodexHooks twice
@@ -177,9 +176,6 @@ func TestWriteCodexHooks_CustomisedPathNotDuplicated(t *testing.T) {
 						map[string]any{"type": "command", "command": customised},
 					},
 				},
-			},
-			"UserPromptSubmit": []any{
-				map[string]any{"hooks": []any{map[string]any{"type": "command", "command": "mneme hook speech-prompt"}}},
 			},
 		},
 	}

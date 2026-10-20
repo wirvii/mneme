@@ -5,7 +5,6 @@
 package config
 
 import (
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -36,37 +35,6 @@ type Config struct {
 	Models        ModelsConfig        `toml:"models"`
 	Codegraph     CodegraphConfig     `toml:"codegraph"`
 	Profiles      ProfilesConfig      `toml:"profiles"`
-	Speech        SpeechConfig        `toml:"speech"`
-
-	// Warnings collects non-fatal degradations produced while loading this
-	// Config — for example a retired speech engine rewritten to its native
-	// replacement (see NormalizeSpeechEngines). It is never serialized: a
-	// warning is a fact about this load, not a setting to persist.
-	Warnings []string `toml:"-"`
-}
-
-// SpeechConfig controls mneme's local text-to-speech channel. Speech is
-// deliberately opt-in: a missing configuration section always remains off.
-type SpeechConfig struct {
-	Enabled          bool                            `toml:"enabled"`
-	Mode             string                          `toml:"mode"`
-	Engine           string                          `toml:"engine"`
-	Language         string                          `toml:"language"`
-	FallbackLanguage string                          `toml:"fallback_language"`
-	Rate             float64                         `toml:"rate"`
-	PiperModel       string                          `toml:"piper_model"`
-	PiperSHA256      string                          `toml:"piper_sha256"`
-	Voices           map[string]string               `toml:"voices"`
-	Languages        map[string]SpeechLanguageConfig `toml:"languages"`
-}
-
-// SpeechLanguageConfig selects a preferred and fallback engine/voice for one
-// locale without forcing every language through the same host voice.
-type SpeechLanguageConfig struct {
-	Engine         string `toml:"engine"`
-	Voice          string `toml:"voice"`
-	FallbackEngine string `toml:"fallback_engine"`
-	FallbackVoice  string `toml:"fallback_voice"`
 }
 
 // ProfilesConfig holds the host-level default profile (SPEC-093 §3, decision
@@ -639,16 +607,6 @@ func Default() *Config {
 		Profiles: ProfilesConfig{
 			Default: "",
 		},
-		Speech: SpeechConfig{
-			Enabled:          false,
-			Mode:             "brief",
-			Engine:           "auto",
-			Language:         "auto",
-			FallbackLanguage: "es",
-			Rate:             1.0,
-			Voices:           map[string]string{"es": "", "en": ""},
-			Languages:        map[string]SpeechLanguageConfig{},
-		},
 	}
 }
 
@@ -725,8 +683,6 @@ func Load(path string) (*Config, error) {
 	// Expand ~ after all overrides so every code path benefits.
 	cfg.Storage.DataDir = expandHome(cfg.Storage.DataDir)
 	cfg.Workflow.Dir = expandHome(cfg.Workflow.Dir)
-
-	cfg.Warnings = NormalizeSpeechEngines(&cfg.Speech)
 
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("config: load: %w", err)
@@ -1000,8 +956,6 @@ func LoadWithOrigins(path string) (*Config, *ConfigOrigins, error) {
 	cfg.Storage.DataDir = expandHome(cfg.Storage.DataDir)
 	cfg.Workflow.Dir = expandHome(cfg.Workflow.Dir)
 
-	cfg.Warnings = NormalizeSpeechEngines(&cfg.Speech)
-
 	if err := cfg.Validate(); err != nil {
 		return nil, nil, fmt.Errorf("config: load with origins: %w", err)
 	}
@@ -1022,34 +976,8 @@ func LoadWithOrigins(path string) (*Config, *ConfigOrigins, error) {
 	origins.Sections["graph"] = buildGraphOrigins(cfg, dflt)
 	origins.Sections["suggestions"] = buildSuggestionsOrigins(cfg, dflt)
 	origins.Sections["codegraph"] = buildCodegraphOrigins(cfg, dflt)
-	origins.Sections["speech"] = buildSpeechOrigins(cfg, dflt)
 
 	return cfg, origins, nil
-}
-
-func buildSpeechOrigins(cfg, dflt *Config) []ConfigFieldInfo {
-	values := []struct {
-		key string
-		got any
-		def any
-	}{
-		{"enabled", cfg.Speech.Enabled, dflt.Speech.Enabled},
-		{"mode", cfg.Speech.Mode, dflt.Speech.Mode},
-		{"engine", cfg.Speech.Engine, dflt.Speech.Engine},
-		{"language", cfg.Speech.Language, dflt.Speech.Language},
-		{"fallback_language", cfg.Speech.FallbackLanguage, dflt.Speech.FallbackLanguage},
-		{"rate", cfg.Speech.Rate, dflt.Speech.Rate},
-		{"piper_model", cfg.Speech.PiperModel, dflt.Speech.PiperModel},
-		{"piper_sha256", cfg.Speech.PiperSHA256, dflt.Speech.PiperSHA256},
-		{"voices", cfg.Speech.Voices, dflt.Speech.Voices},
-		{"languages", cfg.Speech.Languages, dflt.Speech.Languages},
-	}
-	fields := make([]ConfigFieldInfo, 0, len(values))
-	for _, value := range values {
-		o, ev := fieldOrigin(value.got, value.def, true)
-		fields = append(fields, makeField(value.key, value.got, o, ev))
-	}
-	return fields
 }
 
 // fieldOrigin determines the origin for a single field. It checks whether the
@@ -1307,60 +1235,6 @@ func (c *Config) ProfilesDir() string {
 	return filepath.Join(c.Storage.DataDir, "profiles")
 }
 
-// NormalizeSpeechEngines rewrites retired speech engines of speech to their
-// native replacement and returns one warning per rewrite. It is pure and is
-// invoked at the two frontiers of the configuration file — reading (Load)
-// and writing (SetSpeech) — so a retired value never reaches Validate nor
-// gets persisted: a legacy config degrades on read and cures itself the
-// first time any voice setting is written. Degrading is never an error,
-// because there are hosts with engine = 'kokoro' already on disk.
-func NormalizeSpeechEngines(speech *SpeechConfig) []string {
-	var warnings []string
-
-	if speech.Engine == "kokoro" {
-		speech.Engine = "auto"
-		warnings = append(warnings, "speech.engine 'kokoro' is retired; using 'auto'")
-	}
-
-	for key, language := range speech.Languages {
-		changed := false
-		if language.Engine == "kokoro" {
-			if language.FallbackEngine != "" || language.FallbackVoice != "" {
-				fallbackEngine, fallbackVoice := language.FallbackEngine, language.FallbackVoice
-				language.Engine, language.Voice = fallbackEngine, fallbackVoice
-				language.FallbackEngine, language.FallbackVoice = "", ""
-				warnings = append(warnings, fmt.Sprintf("speech.languages.%s.engine 'kokoro' is retired; using '%s'/'%s'", key, fallbackEngine, fallbackVoice))
-			} else {
-				language.Engine, language.Voice = "", ""
-				warnings = append(warnings, fmt.Sprintf("speech.languages.%s.engine 'kokoro' is retired; clearing engine and voice", key))
-			}
-			changed = true
-		}
-		if language.FallbackEngine == "kokoro" {
-			language.FallbackEngine, language.FallbackVoice = "", ""
-			warnings = append(warnings, fmt.Sprintf("speech.languages.%s.fallback_engine 'kokoro' is retired; clearing fallback", key))
-			changed = true
-		}
-		if changed {
-			speech.Languages[key] = language
-		}
-	}
-
-	return warnings
-}
-
-func validSpeechEngine(engine string, allowEmpty bool) bool {
-	if engine == "" {
-		return allowEmpty
-	}
-	switch engine {
-	case "auto", "system", "say", "sapi", "piper":
-		return true
-	default:
-		return false
-	}
-}
-
 // Validate checks that every required field has an acceptable value.
 // It returns the first validation error encountered so the caller can surface
 // a clear message without needing to inspect the full Config struct.
@@ -1373,34 +1247,6 @@ func (c *Config) Validate() error {
 	}
 	if c.Storage.GlobalBudget <= 0 {
 		return errors.New("storage.global_budget must be greater than 0")
-	}
-	if c.Speech.Mode != "brief" && c.Speech.Mode != "full" {
-		return fmt.Errorf("speech.mode %q is not valid; accepted values: brief, full", c.Speech.Mode)
-	}
-	if !validSpeechEngine(c.Speech.Engine, true) {
-		return fmt.Errorf("speech.engine %q is not valid; accepted values: auto, system, say, sapi, piper", c.Speech.Engine)
-	}
-	for language, preference := range c.Speech.Languages {
-		if strings.TrimSpace(language) == "" {
-			return errors.New("speech.languages keys must not be empty")
-		}
-		if !validSpeechEngine(preference.Engine, true) {
-			return fmt.Errorf("speech.languages.%s.engine %q is not valid", language, preference.Engine)
-		}
-		if !validSpeechEngine(preference.FallbackEngine, true) {
-			return fmt.Errorf("speech.languages.%s.fallback_engine %q is not valid", language, preference.FallbackEngine)
-		}
-	}
-	if c.Speech.Rate < 0.5 || c.Speech.Rate > 2.0 {
-		return errors.New("speech.rate must be in [0.5, 2.0]")
-	}
-	if c.Speech.PiperSHA256 != "" {
-		if len(c.Speech.PiperSHA256) != 64 {
-			return errors.New("speech.piper_sha256 must be a 64-character SHA-256 digest")
-		}
-		if _, err := hex.DecodeString(c.Speech.PiperSHA256); err != nil {
-			return errors.New("speech.piper_sha256 must be hexadecimal")
-		}
 	}
 	if c.Search.DefaultLimit <= 0 {
 		return errors.New("search.default_limit must be greater than 0")

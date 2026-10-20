@@ -741,8 +741,7 @@ list|install|pin|unpin|remove|lint|validate`, `model list|set|reset`,
 fingerprint|profile|compose|write|manifest-list`, `delegation-hook
 enable|disable|status`, `team-memory enable|hooks`, `profile
 new|add|update|list|status|use|default|deactivate`, `project new`, `app add`,
-`scaffold capture`,
-`speech on|off|stop|status|voices|voice|mode|test|setup`. Full flag reference:
+`scaffold capture`. Full flag reference:
 [docs/api/cli.md](api/cli.md).
 
 ### Hooks (`internal/cli/hook.go`)

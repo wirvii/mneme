@@ -82,6 +82,7 @@ func Codex(binaryPath string) *Agent {
 			path := filepath.Join(codexhome.Resolve(home), "hooks.json")
 			patches := []HookPatch{
 				{Event: "Stop", Command: "mneme hook session-end"},
+				{Event: "UserPromptSubmit", Command: "mneme hook speech-prompt"},
 			}
 			return path, patches, nil
 		},

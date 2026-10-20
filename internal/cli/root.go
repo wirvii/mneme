@@ -179,7 +179,6 @@ in a local SQLite database and exposes them via MCP for agent integration.`,
 		newProjectCmd(),
 		newAppCmd(),
 		newScaffoldCmd(),
-		newSpeechCmd(),
 		newSDDCmd(),
 	)
 
