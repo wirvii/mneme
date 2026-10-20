@@ -278,7 +278,7 @@ var ErrTaskDocMalformed = errors.New("tarea.md is malformed")
 // (IsProfileSource(m.Source) — SPEC-094 §4). A profile's rules are
 // derived/regenerable from the profile's own repository (SPEC-092): the
 // team's standard travels through that channel, never through this
-// project's team-memory vault. Team profiles were retired in v2.0.0
+// project's team-memory vault. Team profiles were retired in v1.49.0
 // (SPEC-162) but rows they stamped may still exist in a database, and
 // promoting one would let the rule resurrect as a zombie the next time a
 // peer imports the vault. Rejected before

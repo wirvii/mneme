@@ -480,7 +480,7 @@ func TestImportFromShared_SkipsProfileProvenanceNote_NeverResurrectsZombie(t *te
 
 // TestProfileProvenance_ThenImport_NeverLeavesAnArtifactToResurrect is
 // SPEC-094 §4 AC7: the full write->(no)->import round trip. Saving a rule with
-// profile provenance (which pre-v2.0.0 profile activations did) under
+// profile provenance (which pre-v1.49.0 profile activations did) under
 // active team-memory must not materialize a file (the write guard), so a
 // subsequent ImportFromShared finds nothing of profile provenance to import —
 // the exact cycle the zombie bug (§11) exploited is closed at both ends.

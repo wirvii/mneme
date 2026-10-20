@@ -1,6 +1,6 @@
-# API Reference — Subagents (CLI only since v2.0)
+# API Reference — Subagents (CLI only since v1.49)
 
-The six `subagent_*` MCP tools (SPEC-057) left the MCP server in v2.0
+The six `subagent_*` MCP tools (SPEC-057) left the MCP server in v1.49
 (SPEC-163). The capability is unchanged and lives entirely in
 `mneme subagents` ([docs/api/cli.md](cli.md#subagents)); the `mneme-init`
 skill's grill runs those commands through Bash. Calling a former tool name

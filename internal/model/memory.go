@@ -313,7 +313,7 @@ type Memory struct {
 
 // ProfileSourcePrefix marks the provenance of a memory materialized by a
 // profile activation (SPEC-092 §2 stamped the full value "profile:<name>";
-// team profiles were retired in v2.0.0, SPEC-162, but rows they stamped
+// team profiles were retired in v1.49.0, SPEC-162, but rows they stamped
 // can still exist in a database). It is the single string every layer that stamps or
 // reads profile provenance must reference — see IsProfileSource, the one
 // predicate the team-memory frontier (SPEC-094 §4) uses to exclude
@@ -395,7 +395,7 @@ type SaveRequest struct {
 	// the request payload — json:"-" makes that structurally impossible
 	// rather than relying on the tool schema (documentation only, never
 	// enforced) to keep an agent from setting it. Only Go code can
-	// set it, before calling Save (profile activations did, until v2.0.0).
+	// set it, before calling Save (profile activations did, until v1.49.0).
 	Source string `json:"-"`
 }
 

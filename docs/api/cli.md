@@ -731,7 +731,7 @@ mneme skills validate grill-me --json
 
 ## Subagents
 
-The ONLY surface for per-project subagent profiles since v2.0: the six
+The ONLY surface for per-project subagent profiles since v1.49: the six
 `subagent_*` MCP tools (SPEC-057) were retired in SPEC-163 and the
 `mneme-init` skill drives these same commands through Bash (EPIC
 agnostic-agents, see [docs/enforcement-model.md](../enforcement-model.md)

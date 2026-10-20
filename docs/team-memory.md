@@ -99,7 +99,7 @@ are **never** auto-shared, regardless of type — team-memory only concerns a
 single project's knowledge.
 
 **Opting an excluded memory in:** call `mneme promote <id>` (or the
-`mem_promote` MCP tool, retired in 2.0) to mark any individual memory as team-curated
+`mem_promote` MCP tool, retired in 1.49) to mark any individual memory as team-curated
 (`shared=2`) and materialize it immediately, independent of its type.
 
 **Opting a memory out:** pass an explicit `shared: 0` on `mem_save`
@@ -231,7 +231,7 @@ with `sdd_refs:` simply ignores the field (forward compatibility).
 
 ## Profile provenance exclusion (SPEC-094 §4)
 
-Team profiles (retired in v2.0.0, SPEC-162) used to inject their rules
+Team profiles (retired in v1.49.0, SPEC-162) used to inject their rules
 (commits/PRs/branches/conventions) as `rule` memories into the active
 repository's database (SPEC-092 §2). Rows they stamped can still exist in a
 database and are still excluded from the vault. Those rules carry a provenance stamp,

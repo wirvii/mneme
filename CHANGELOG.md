@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [2.0.0] - 2026-10-20 — mneme-ligero: a much smaller surface, a 2.7 KB manual and flow skills that load on demand
+## [v1.49.0] — 2026-10-20 — mneme-ligero: a much smaller surface, a 2.7 KB manual and flow skills that load on demand
 
 This is a breaking release (SPEC-161 through SPEC-172). The always-loaded
 text an agent carries in every session shrinks from about 13.4 KB (Claude
@@ -14,6 +14,12 @@ Code) and 9 KB (Codex) to about 2.7 KB, the MCP server goes from 82 tools
 to 31, and the procedures that used to live in the manual move into skills an
 agent loads only when it needs them. The human approval gate, role
 permissions and every hook that enforces them are unchanged.
+
+This release is published as 1.49.0 and not 2.0.0, even though it breaks
+compatibility of the MCP surface, because the Go module path carries no
+`/v2` suffix: a `v2.0.0` tag would be invisible to
+`go install github.com/wirvii/mneme/cmd/mneme@latest`, the only install and
+`mneme upgrade` path on Windows.
 
 ### Removed (BREAKING)
 
@@ -119,13 +125,20 @@ permissions and every hook that enforces them are unchanged.
   scenarios against the real `claude` CLI in an isolated HOME and checks the
   transcript and the resulting state (`--dry-run` and `--self-test` need no
   network). See `docs/skill-comply.md`.
+- **Skill descriptions say when to use them (SPEC-173).** The `description`
+  of every bundled skill now states the situation that should trigger it, so
+  an agent choosing from the skill listing can tell which one applies.
+- **Documentation sweep (SPEC-174).** Every current page under `docs/` was
+  reviewed against the 1.49 surface: references to retired tools, commands
+  and features were removed or rewritten, and a broken link to the
+  subagents page in `docs/HOOKS.md` was fixed.
 - **Documentation:** `docs/README.md` (an index of every current document),
   rewritten `README.md` and `CLAUDE.md`, and `docs/skills.md` with the
   catalog of the nine bundled skills.
 
 ### Migration
 
-1. Install 2.0.0 (`go install github.com/wirvii/mneme/cmd/mneme@latest` or
+1. Install 1.49.0 (`go install github.com/wirvii/mneme/cmd/mneme@latest` or
    `mneme upgrade`) and **restart every Claude Code and Codex session**.
 2. Run `mneme install claude-code` and/or `mneme install codex` again: it
    writes the new manual, registers the skill-usage hook, installs the new
@@ -151,11 +164,18 @@ permissions and every hook that enforces them are unchanged.
   at the right moments is unmeasured until someone runs it with a token, and
   the `Skill` tool name Claude Code expects in a role's `tools:` line is
   confirmed only by that run.
+- **skill-comply authentication check (BL-267).** The harness's preliminary
+  check in `scripts/skill-comply/run.sh` does not detect a failed
+  authentication ("Not logged in" still prints a JSON `result`), so it runs
+  all scenarios, reports them as failures and exits 1 instead of 2.
+- **Per-function coverage of `writeTaskSection` (BL-268).** 69.0% by
+  function (90.5% for the file, which is how SPEC-170's criterion was read);
+  the uncovered branches are read/write errors.
 - **Lane depth by risk (BL-244).** Deferred. Lanes still follow size, not
   risk, and the rule lives in a single file so that change stays small.
 - The owner's real project database keeps `Version: 5` for the regenerated
   role files in this repository's manifest until `mneme subagents regen
-  --all` is run once with 2.0.0 installed.
+  --all` is run once with 1.49.0 installed.
 
 ## [v1.48.0] — 2026-10-19 — The old certification mechanism is retired whole: nothing it left behind can block a delivery
 

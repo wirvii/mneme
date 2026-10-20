@@ -1,6 +1,6 @@
-# API Reference — Conflicts (CLI only since v2.0)
+# API Reference — Conflicts (CLI only since v1.49)
 
-The five `conflicts_*` MCP tools (SPEC-039) left the MCP server in v2.0
+The five `conflicts_*` MCP tools (SPEC-039) left the MCP server in v1.49
 (SPEC-163). The capability is unchanged and lives in `mneme conflicts`
 ([docs/api/cli.md](cli.md#conflicts)). Calling a former tool name over MCP
 now answers `-32601` `unknown tool: <name>`. Concept guide:

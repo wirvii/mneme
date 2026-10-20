@@ -708,7 +708,7 @@ owns, projected to `<repo>/.claude/agents/<role>.md` and
 never LLM-generated — so a generated `backend` subagent has exactly the same
 capability boundary as the global one, just a project-specific prompt. See
 [docs/api/subagents.md](api/subagents.md) for the `mneme subagents` commands
-(the former `subagent_*` MCP tools are CLI-only since v2.0).
+(the former `subagent_*` MCP tools are CLI-only since v1.49).
 
 ### Team memory (git-native, opt-in)
 

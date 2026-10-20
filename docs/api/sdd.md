@@ -2,7 +2,7 @@
 
 21 MCP tools over JSON-RPC 2.0 stdio (`mneme mcp`): `backlog_*` (6), `spec_*`
 (9), `lane_*` (5), `init` (1). The `sdd_status`/`sdd_import` tools left the
-MCP server in v2.0 (SPEC-163) and are CLI-only — see "SDD git-native
+MCP server in v1.49 (SPEC-163) and are CLI-only — see "SDD git-native
 commands" below. Concept guide:
 [docs/lanes.md](../lanes.md) (trivial/standard lanes, auditor thresholds),
 [docs/init.md](../init.md) (managed blocks, drift, legacy migration).
@@ -16,7 +16,7 @@ Index: [docs/API.md](../API.md).
 **The SDD git-native mechanism has no MCP tools.** `sdd_enable`/`sdd_disable`/
 `sdd_export` were never tools — a `--apply` an agent could call unattended
 would defeat the human-confirmation gate that publishing a backlog to git
-requires — and since v2.0 (SPEC-163) the read-only `sdd_status` and the importing `sdd_import` (SPEC-131 §2b) are gone from the server too. Run
+requires — and since v1.49 (SPEC-163) the read-only `sdd_status` and the importing `sdd_import` (SPEC-131 §2b) are gone from the server too. Run
 `mneme sdd status [--json]` and `mneme sdd import [--dry-run]` from the
 terminal, or from an agent through Bash.
 
@@ -726,7 +726,7 @@ could not fully read: absent on a healthy project, truncated to 20 rows,
 
 ---
 
-## SDD git-native commands (CLI only since v2.0, SPEC-163)
+## SDD git-native commands (CLI only since v1.49, SPEC-163)
 
 The reading half of the SDD git-native mechanism — bringing a repository's
 committed `.mneme/sdd/` Markdown files into the local database — is reached

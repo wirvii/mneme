@@ -111,7 +111,7 @@ Start at [docs/README.md](docs/README.md), the index of every current document. 
 
 ## Upgrading from 1.x
 
-Version 2.0 removes many MCP tools and several features. After `mneme upgrade`: restart your agent sessions, run `mneme install claude-code` (and/or `codex`) again, run `mneme upgrade` to be offered cleanup of leftovers, and run `mneme subagents regen --all` in each project. The full list is in [CHANGELOG.md](CHANGELOG.md).
+Version 1.49 removes many MCP tools and several features. After `mneme upgrade`: restart your agent sessions, run `mneme install claude-code` (and/or `codex`) again, run `mneme upgrade` to be offered cleanup of leftovers, and run `mneme subagents regen --all` in each project. The full list is in [CHANGELOG.md](CHANGELOG.md).
 
 ## Development
 

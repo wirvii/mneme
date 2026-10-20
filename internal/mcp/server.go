@@ -53,7 +53,7 @@ func (s *Server) WithCallerPolicy(policy CallerPolicy) {
 //
 // The two untyped parameters between sddSvc and logger used to carry the skills
 // and models services. SPEC-163 moved those capabilities to the CLI only, but
-// the parameter types stay so callers on branches integrating v2.0 in parallel
+// the parameter types stay so callers on branches integrating v1.49 in parallel
 // keep compiling; dropping them is left to a later cleanup once the release
 // has landed.
 func NewServer(svc *service.MemoryService, sddSvc *service.SDDService, _ *service.SkillsService, _ *service.ModelsService, logger *slog.Logger, toolsMode string, version string) *Server {

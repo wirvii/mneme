@@ -494,7 +494,7 @@ Channel weights reflect reliability: FTS5 (1.0) is the most precise signal (exac
 
 #### `mneme explore`: Prioritized BFS (SPEC-008)
 
-`mneme explore` (CLI since 2.0) performs a prioritized BFS (max-heap by `accumulatedWeight` descending) from a seed memory.
+`mneme explore` (CLI since 1.49) performs a prioritized BFS (max-heap by `accumulatedWeight` descending) from a seed memory.
 
 **Seed resolution:** Full UUID, hex prefix (8+ chars), or `topic_key`.
 
@@ -688,7 +688,7 @@ JSON-RPC 2.0 over stdio. ProtocolVersion `2024-11-05`. 31 tools with JSON schema
 | **CodeGraph** (`codegraph_*`) | 4 |
 | **init** | 1 |
 
-Skills, models, conflicts, subagent generation and the SDD git-native status/import are CLI-only since v2.0 (SPEC-163) and no longer MCP tools. Nine `mem_*` tools also moved to `mneme mem ...` (SPEC-164).
+Skills, models, conflicts, subagent generation and the SDD git-native status/import are CLI-only since v1.49 (SPEC-163) and no longer MCP tools. Nine `mem_*` tools also moved to `mneme mem ...` (SPEC-164).
 
 Full per-tool contracts (params, returns, errors, examples) live in [docs/api/](api/), one file per family.
 
@@ -976,7 +976,7 @@ mneme rule test --tool Edit --path internal/store/memory.go
 | D019 | Map-based adjacency (not CSR) | <50K nodes per project; simplicity > cache locality | SPEC-015 |
 | D020 | MaxNodes=5000 for graph build | PPR benchmarks confirm <20ms at this scale | SPEC-016 |
 | D021 | GraphMode config with per-request override | Allows experimentation without restarting | SPEC-017 |
-| D022 | Topic-key suggestion via Jaccard + gap boost (retired as a tool in 2.0: now `suggested_topic_key` in `mem_save`) | Surfaces gap matches alongside existing keys | SPEC-014 |
+| D022 | Topic-key suggestion via Jaccard + gap boost (retired as a tool in 1.49: now `suggested_topic_key` in `mem_save`) | Surfaces gap matches alongside existing keys | SPEC-014 |
 
 ### Community & synthesis decisions
 

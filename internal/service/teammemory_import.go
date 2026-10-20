@@ -265,7 +265,7 @@ func (svc *MemoryService) importSharedNote(ctx context.Context, note *vault.Pars
 	// repo can still carry one from a pre-§4 state, or from a peer running an
 	// older mneme. Never resurrect it as an active rule: the team's standard
 	// re-enters the database from the profile's own repository on the next
-	// activation (SPEC-092, retired in v2.0.0), not from the vault.
+	// activation (SPEC-092, retired in v1.49.0), not from the vault.
 	if model.IsProfileSource(fm.Source) {
 		slog.InfoContext(ctx, "team_memory_import",
 			"event", "skipped",

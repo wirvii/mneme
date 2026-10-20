@@ -785,4 +785,4 @@ performance.
 - [API reference: CLI](api/cli.md) → — full flag reference for `mneme hook <event>`
 # Spoken-response prompt hook
 
-`speech-prompt`: retirado en v2.0.0; queda como no-op y `mneme install` borra su registro.
+`speech-prompt`: retirado en v1.49.0; queda como no-op y `mneme install` borra su registro.

@@ -6,7 +6,7 @@ import (
 )
 
 // TestAllTools_Count31 pins the integrated MCP surface. Deltas from the 87
-// tools before v2.0, one line per spec:
+// tools before v1.49, one line per spec:
 //
 //	SPEC-158: -5  (quality_*)                                    87 -> 82
 //	SPEC-163: -23 (skills_*, model_*, conflicts_*, subagent_*, sdd_status, sdd_import)

@@ -41,15 +41,15 @@ Rule: every MCP tool appears in exactly **one** of these files.
 | `backlog_*` + `spec_*` + `lane_*` + `init` | 6+9+5+1=21 | [docs/api/sdd.md](api/sdd.md) | [docs/lanes.md](lanes.md), [docs/init.md](init.md) |
 | `codegraph_*` | 4 | [docs/api/codegraph.md](api/codegraph.md) | [docs/codegraph.md](codegraph.md) |
 
-6 + 21 + 4 = **31**. Nine `mem_*` tools moved to `mneme mem ...` in 2.0 (SPEC-164).
+6 + 21 + 4 = **31**. Nine `mem_*` tools moved to `mneme mem ...` in 1.49 (SPEC-164).
 
-The `profile_*` tools, `project_new`, `app_add` and `scaffold_capture` (11 in all) were retired by SPEC-162 (v2.0.0). The `speech_*`
-family (2 tools) was retired whole by SPEC-161 (v2.0.0). Six `codegraph_*` tools
+The `profile_*` tools, `project_new`, `app_add` and `scaffold_capture` (11 in all) were retired by SPEC-162 (v1.49.0). The `speech_*`
+family (2 tools) was retired whole by SPEC-161 (v1.49.0). Six `codegraph_*` tools
 moved to the CLI with SPEC-165. The `quality_*` family (5 tools) existed
 from SPEC-115 through SPEC-137 and was retired whole by SPEC-158, along
 with the certification mechanism it served.
 
-**CLI-only since v2.0 (SPEC-163):** `skills_*` (7), `model_*` (3), `conflicts_*` (5), `subagent_*` (6), `sdd_status` and `sdd_import` left the MCP server; each keeps its full capability as a CLI command. References with the old-tool to command table: [docs/api/skills.md](api/skills.md), [docs/api/models.md](api/models.md), [docs/api/conflicts.md](api/conflicts.md), [docs/api/subagents.md](api/subagents.md), [docs/api/sdd.md](api/sdd.md#sdd-git-native-commands-cli-only-since-v20-spec-163).
+**CLI-only since v1.49 (SPEC-163):** `skills_*` (7), `model_*` (3), `conflicts_*` (5), `subagent_*` (6), `sdd_status` and `sdd_import` left the MCP server; each keeps its full capability as a CLI command. References with the old-tool to command table: [docs/api/skills.md](api/skills.md), [docs/api/models.md](api/models.md), [docs/api/conflicts.md](api/conflicts.md), [docs/api/subagents.md](api/subagents.md), [docs/api/sdd.md](api/sdd.md#sdd-git-native-commands-cli-only-since-v149-spec-163).
 
 ## Transport references
 

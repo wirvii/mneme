@@ -33,7 +33,7 @@ type handlers struct {
 // newHandlers constructs a handlers bound to the given services and logger.
 // The two blank parameters used to carry the skills and models services; they
 // keep their types after SPEC-163 retired those tools from MCP so call sites
-// on branches integrating v2.0 in parallel keep compiling.
+// on branches integrating v1.49 in parallel keep compiling.
 func newHandlers(svc *service.MemoryService, sdd *service.SDDService, _ *service.SkillsService, _ *service.ModelsService, logger *slog.Logger) *handlers {
 	return &handlers{
 		svc:         svc,

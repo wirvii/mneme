@@ -435,4 +435,4 @@ mneme config show graph --json | grep "graph_mode" -A4
 # muestra "env_var": "MNEME_GRAPH_MODE"
 ```
 
-`[speech]` (retirada en v2.0.0): se ignora si sigue en config.toml.
+`[speech]` (retirada en v1.49.0): se ignora si sigue en config.toml.

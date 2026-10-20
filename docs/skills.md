@@ -228,7 +228,7 @@ mneme skills usage [--since 30d] [--json]  Which skills were loaded, and which n
 
 ---
 
-## MCP tools (removed in v2.0)
+## MCP tools (removed in v1.49)
 
 The seven `skills_*` MCP tools (SPEC-037) were removed from the server in
 SPEC-163. Every operation above is a `mneme skills` command, which an agent
@@ -237,7 +237,7 @@ runs through Bash; `lint` and `validate` exit non-zero when checks fail and
 
 ---
 
-## Bundled skills (v2.0)
+## Bundled skills (v1.49)
 
 mneme ships nine skills. Each one appears in an agent's context only by its
 `description`, so the descriptions say when to use the skill. The operating
@@ -257,7 +257,7 @@ manual lists the same set.
 
 The two older bug skills (investigation and diagnosis-to-spec, now one `bug`
 skill), the structural fixture skill, and the two slash commands that wrapped
-the bug skills were retired in v2.0. `mneme install`
+the bug skills were retired in v1.49. `mneme install`
 removes the copies mneme itself installed earlier from `~/.claude` and
 `$HOME/.agents`; a pinned skill, a skill whose `SKILL.md` declares another
 name, and a slash command you wrote yourself are left in place and reported.

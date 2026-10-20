@@ -58,7 +58,7 @@ mneme init                           # projects effective models to both runtime
 > Claude aliases are mapped deliberately (`opus`/`sonnet`/`haiku` to verified
 > Codex model ids); an unsafe or unknown cross-runtime mapping fails visibly.
 
-Since v2.0 (SPEC-163) there are no MCP equivalents: the `model_list`,
+Since v1.49 (SPEC-163) there are no MCP equivalents: the `model_list`,
 `model_set` and `model_reset` tools were removed from the server and the CLI
 commands above are the only surface. An agent runs them through Bash.
 

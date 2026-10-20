@@ -305,7 +305,7 @@ actual teeth, since it can `exit 2` and block a tool call — the
 `internal/cli/hook.go`). The leak can no longer originate at all: a project-scoped
 rule written without a resolved slug is rejected at the write path. (Team
 profiles, which were the writer that exposed the incident, were retired in
-v2.0.0; rules they stamped with `source=profile:<name>` stay as ordinary rules.)
+v1.49.0; rules they stamped with `source=profile:<name>` stay as ordinary rules.)
 
 ## How the hook works
 

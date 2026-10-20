@@ -31,7 +31,7 @@ Index of the current documents. Start with the [README](../README.md) for what m
 - [API.md](API.md): index of the API documents.
 - [api/memory.md](api/memory.md), [api/sdd.md](api/sdd.md), [api/codegraph.md](api/codegraph.md): the 31 MCP tools by family.
 - [api/cli.md](api/cli.md): the CLI commands and flags.
-- [api/skills.md](api/skills.md), [api/models.md](api/models.md), [api/conflicts.md](api/conflicts.md), [api/subagents.md](api/subagents.md): administration that moved from MCP to the CLI in 2.0.
+- [api/skills.md](api/skills.md), [api/models.md](api/models.md), [api/conflicts.md](api/conflicts.md), [api/subagents.md](api/subagents.md): administration that moved from MCP to the CLI in 1.49.
 - [api/http.md](api/http.md): the REST API.
 - [ARCHITECTURE.md](ARCHITECTURE.md), [mneme-internals-map.md](mneme-internals-map.md): design and a map of the internals.
 

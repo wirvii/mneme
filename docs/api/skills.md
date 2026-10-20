@@ -1,6 +1,6 @@
-# API Reference — Skills (CLI only since v2.0)
+# API Reference — Skills (CLI only since v1.49)
 
-The seven `skills_*` MCP tools (SPEC-037) left the MCP server in v2.0
+The seven `skills_*` MCP tools (SPEC-037) left the MCP server in v1.49
 (SPEC-163). The capability is unchanged and lives in `mneme skills`
 ([docs/api/cli.md](cli.md#skills)). Calling a former tool name over MCP now
 answers `-32601` `unknown tool: <name>`. Concept guide:

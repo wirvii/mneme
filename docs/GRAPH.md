@@ -535,7 +535,7 @@ Any error during community packing (ListCommunities, PPR, etc.) is logged as a w
 
 ## mneme explore
 
-`mneme explore` (CLI; it left the MCP surface in 2.0) is an interactive graph exploration command. Starting from a seed memory, it performs a prioritized BFS and returns connected memories with their distances and accumulated weights.
+`mneme explore` (CLI; it left the MCP surface in 1.49) is an interactive graph exploration command. Starting from a seed memory, it performs a prioritized BFS and returns connected memories with their distances and accumulated weights.
 
 ### When to use it
 
