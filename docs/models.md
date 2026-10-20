@@ -58,13 +58,9 @@ mneme init                           # projects effective models to both runtime
 > Claude aliases are mapped deliberately (`opus`/`sonnet`/`haiku` to verified
 > Codex model ids); an unsafe or unknown cross-runtime mapping fails visibly.
 
-MCP equivalents (for agent use):
-
-```
-model_list                           # no parameters
-model_set(agent, model)              # ErrUnknownAgent / ErrInvalidModel on bad input
-model_reset(agent?)                  # optional agent; omit to reset all
-```
+Since v2.0 (SPEC-163) there are no MCP equivalents: the `model_list`,
+`model_set` and `model_reset` tools were removed from the server and the CLI
+commands above are the only surface. An agent runs them through Bash.
 
 ## How apply-on-install works
 

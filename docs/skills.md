@@ -220,21 +220,12 @@ mneme skills validate --json       JSON output
 
 ---
 
-## MCP Tools Reference
+## MCP tools (removed in v2.0)
 
-| Tool | Description |
-|---|---|
-| `skills_list` | List bundled + installed skills |
-| `skills_install` | Install a bundled skill (opt: force) |
-| `skills_pin` | Set pinned:true on installed skill |
-| `skills_unpin` | Set pinned:false on installed skill |
-| `skills_remove` | Remove installed skill (opt: force) |
-| `skills_lint` | Lint one or all installed skills (IsError on failure) |
-| `skills_validate` | Run validation/run.sh (IsError on failure) |
-
-`skills_lint` and `skills_validate` return `IsError:true` in the result payload
-when checks fail — this allows the calling agent to inspect the full finding list
-or output without triggering a JSON-RPC protocol error.
+The seven `skills_*` MCP tools (SPEC-037) were removed from the server in
+SPEC-163. Every operation above is a `mneme skills` command, which an agent
+runs through Bash; `lint` and `validate` exit non-zero when checks fail and
+`--json` prints the full finding list or output.
 
 ---
 
@@ -251,5 +242,4 @@ See `internal/install/assets/skills/example-skill/` for the source.
 
 ## API reference
 
-Full contract (params, returns, errors, examples) for the 7 `skills_*` MCP
-tools: [docs/api/skills.md](api/skills.md) →
+Old-tool to CLI-command table: [docs/api/skills.md](api/skills.md) →

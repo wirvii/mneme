@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/wirvii/mneme/internal/model"
@@ -320,6 +322,54 @@ func (s *SubagentService) ReadManifest(ctx context.Context, project string) ([]M
 		return nil, fmt.Errorf("service: subagents: read manifest: unmarshal: %w", err)
 	}
 	return entries, nil
+}
+
+// DetectForeignAgents lists every .claude/agents/*.md file under root
+// (root-relative, slash-separated, sorted) that mneme did not generate
+// (SPEC-090 D5): either subagents.IsForeignAgentFile reports it lacks the
+// agent-fixed managed block, or its role (the filename minus ".md") has no
+// entry in project's manifest. It lives in the service layer so the CLI — the
+// only surface exposing subagent fingerprinting since SPEC-163 — shares one
+// implementation with whatever else needs the verdict. Returns an empty,
+// non-nil slice when the agents directory does not exist yet (not an error);
+// an unreadable file is skipped rather than given a made-up verdict.
+func (s *SubagentService) DetectForeignAgents(ctx context.Context, project, root string) ([]string, error) {
+	agentsDir := filepath.Join(root, ".claude", "agents")
+	dirEntries, err := os.ReadDir(agentsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []string{}, nil
+		}
+		return nil, fmt.Errorf("service: subagents: detect foreign agents: read %s: %w", agentsDir, err)
+	}
+
+	manifest, err := s.ReadManifest(ctx, project)
+	if err != nil {
+		return nil, fmt.Errorf("service: subagents: detect foreign agents: %w", err)
+	}
+	knownRoles := make(map[string]bool, len(manifest))
+	for _, e := range manifest {
+		knownRoles[string(e.Role)] = true
+	}
+
+	foreign := []string{}
+	for _, entry := range dirEntries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
+			continue
+		}
+		role := strings.TrimSuffix(entry.Name(), ".md")
+
+		data, readErr := os.ReadFile(filepath.Join(agentsDir, entry.Name()))
+		if readErr != nil {
+			continue
+		}
+
+		if subagents.IsForeignAgentFile(string(data)) || !knownRoles[role] {
+			foreign = append(foreign, filepath.ToSlash(filepath.Join(".claude", "agents", entry.Name())))
+		}
+	}
+	sort.Strings(foreign)
+	return foreign, nil
 }
 
 // SaveManifest upserts the manifest for project as a type=config,

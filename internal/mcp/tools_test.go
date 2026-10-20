@@ -6,12 +6,44 @@ import (
 	"testing"
 )
 
-// TestAllTools_Count82 verifies the tool count after SPEC-158 retires the
-// five quality_* tools: 87 -> 82.
-func TestAllTools_Count82(t *testing.T) {
+// TestAllTools_Count59 pins the tool count on this branch. SPEC-158 took it
+// from 87 to 82; SPEC-163 retires 23 administration and git-native-SDD tools
+// (skills_*, model_*, conflicts_*, subagent_*, sdd_status, sdd_import):
+// 82 - 23 = 59. Sibling v2.0 specs (SPEC-161/162/164/165) each subtract their
+// own delta from the same base, so the integrated count after merging is
+// 82 - sum(deltas), not 59.
+func TestAllTools_Count59(t *testing.T) {
 	tools := allTools()
-	if len(tools) != 82 {
-		t.Errorf("allTools() returned %d tools, want 82", len(tools))
+	if len(tools) != 59 {
+		t.Errorf("allTools() returned %d tools, want 59", len(tools))
+	}
+}
+
+// retiredAdminTools are the 23 tools SPEC-163 removed from the MCP server.
+// Their capability lives on in the CLI (mneme skills|model|conflicts|sdd|
+// subagents ...).
+var retiredAdminTools = []string{
+	"skills_list", "skills_install", "skills_pin", "skills_unpin",
+	"skills_remove", "skills_lint", "skills_validate",
+	"model_list", "model_set", "model_reset",
+	"conflicts_candidates", "conflicts_scan", "conflicts_link", "conflicts_unlink", "conflicts_list",
+	"subagent_fingerprint", "subagent_profile_get", "subagent_profile_save",
+	"subagent_compose", "subagent_write", "subagent_manifest_list",
+	"sdd_status", "sdd_import",
+}
+
+// TestAllTools_NoRetiredAdminTools is SPEC-163 C1: none of the 23 retired
+// tools is declared any more, while init (the one administration tool that
+// stays) still is — the positive anchor keeps this from passing vacuously.
+func TestAllTools_NoRetiredAdminTools(t *testing.T) {
+	tools := allTools()
+	for _, name := range retiredAdminTools {
+		if findTool(tools, name) != nil {
+			t.Errorf("allTools() still declares retired tool %q", name)
+		}
+	}
+	if findTool(tools, "init") == nil {
+		t.Fatal("allTools() has no init tool — this test proves nothing without a positive anchor")
 	}
 }
 
@@ -50,12 +82,12 @@ func TestAllTools_ExactlyOneBacklogGet(t *testing.T) {
 	}
 }
 
-// TestListToolSchemas_DeclareLimit is AC21: backlog_list, spec_list, and
-// conflicts_list each declare a limit property with type integer, minimum 1,
+// TestListToolSchemas_DeclareLimit is AC21: backlog_list and spec_list
+// each declare a limit property with type integer, minimum 1,
 // maximum 50, and mention the default 20 in their description.
 func TestListToolSchemas_DeclareLimit(t *testing.T) {
 	tools := allTools()
-	for _, name := range []string{"backlog_list", "spec_list", "conflicts_list"} {
+	for _, name := range []string{"backlog_list", "spec_list"} {
 		tool := findTool(tools, name)
 		if tool == nil {
 			t.Fatalf("%s tool not found in allTools()", name)
@@ -132,56 +164,6 @@ func TestBacklogRefineSchema_ByIsOptional(t *testing.T) {
 	for _, r := range required {
 		if r == "by" {
 			t.Error("backlog_refine must NOT require 'by' — it is optional (D5)")
-		}
-	}
-}
-
-// TestSubagentWriteSchema_DeclaresAreasComplete is the regression test for
-// SPEC-113: areas_complete (internal/mcp/handlers_subagents.go's
-// subagentWriteRequest.AreasComplete) is the field that activates role
-// containment (SPEC-086 D4/D5/D11) — before this spec it was accepted by the
-// handler but absent from the published InputSchema, so a client following
-// the published contract had no type hint and could send it as a string
-// ("true"), which json.Unmarshal into a bool rejects. This test pins: the
-// property exists, is declared as a boolean (not a string), is NOT required
-// (an uncertified role is a legitimate, safe default state — see D1/AC2),
-// and its description warns against inferring/defaulting/backfilling it.
-func TestSubagentWriteSchema_DeclaresAreasComplete(t *testing.T) {
-	tools := allTools()
-	tool := findTool(tools, "subagent_write")
-	if tool == nil {
-		t.Fatal("subagent_write tool not found in allTools()")
-	}
-	schema, ok := tool.InputSchema.(map[string]any)
-	if !ok {
-		t.Fatal("subagent_write InputSchema is not map[string]any")
-	}
-	props, ok := schema["properties"].(map[string]any)
-	if !ok {
-		t.Fatal("subagent_write InputSchema.properties is not map[string]any")
-	}
-	field, ok := props["areas_complete"].(map[string]any)
-	if !ok {
-		t.Fatal("subagent_write does not declare an 'areas_complete' property")
-	}
-	if field["type"] != "boolean" {
-		t.Errorf("subagent_write areas_complete.type = %v, want boolean", field["type"])
-	}
-	desc, _ := field["description"].(string)
-	if desc == "" {
-		t.Error("subagent_write areas_complete description is empty")
-	}
-	if !strings.Contains(desc, "backfill") {
-		t.Errorf("subagent_write areas_complete description does not mention backfill: %q", desc)
-	}
-
-	required, ok := schema["required"].([]string)
-	if !ok {
-		t.Fatal("subagent_write InputSchema.required is not []string")
-	}
-	for _, r := range required {
-		if r == "areas_complete" {
-			t.Error("subagent_write must NOT require 'areas_complete' — an uncertified role is a legitimate default state (D1/AC2)")
 		}
 	}
 }

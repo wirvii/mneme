@@ -2,7 +2,8 @@
 # mneme-init/validation/run.sh
 #
 # Deterministic structural check (no network, no LLM calls): confirms this
-# SKILL.md still documents the subagent_* MCP tools the grill depends on,
+# SKILL.md still documents the `mneme subagents ...` CLI commands the grill
+# depends on (SPEC-163 moved it off the retired subagent_* MCP tools),
 # AND (SPEC-090 D4) that it still documents every SDD lifecycle token the
 # layer 2/3 boundary forbids from areas_layer3_md, plus the tools:/
 # permissionMode: capability-key prohibition. This deliberately couples the
@@ -19,9 +20,18 @@ if [ ! -f "$SKILL_FILE" ]; then
   exit 1
 fi
 
-for tool in subagent_fingerprint subagent_profile_save subagent_compose subagent_write subagent_manifest_list; do
-  if ! grep -q "$tool" "$SKILL_FILE"; then
-    echo "mneme-init: missing reference to required tool: $tool" >&2
+for cmd in "mneme subagents fingerprint" "mneme subagents profile save" "mneme subagents compose" "mneme subagents write" "mneme subagents manifest-list"; do
+  if ! grep -q "$cmd" "$SKILL_FILE"; then
+    echo "mneme-init: missing reference to required command: $cmd" >&2
+    exit 1
+  fi
+done
+
+# SPEC-163: the subagent_* MCP tools were retired from the server; a SKILL.md
+# that names them again would send the grill to tools that no longer exist.
+for retired in subagent_compose subagent_write; do
+  if grep -q "$retired" "$SKILL_FILE"; then
+    echo "mneme-init: still references the retired MCP tool: $retired" >&2
     exit 1
   fi
 done

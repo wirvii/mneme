@@ -352,7 +352,7 @@ subagents via the `mneme-init` skill (SPEC-058):
   project operates without delegated roles (the zero-role fallback, which
   never installs this hook).
 - The choice is recorded per role in the subagent manifest's
-  `enforcement_hook` field (`subagent_write`'s `enforcement_hook` parameter),
+  `enforcement_hook` field (`mneme subagents write --enforcement-hook`),
   independent of whether the project-level registration command was actually
   run.
 

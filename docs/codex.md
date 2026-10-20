@@ -123,8 +123,8 @@ directory — this is the expected Codex behaviour.
 ## Skills
 
 Bundled mneme skills are installed to `$HOME/.agents/skills/` for Codex.
-The CLI and MCP skill-management operations mirror installation, pinning,
-unpinning and removal across Claude and Codex discovery directories.
+The `mneme skills` commands mirror installation, pinning, unpinning and
+removal across Claude and Codex discovery directories.
 
 ## Flags
 

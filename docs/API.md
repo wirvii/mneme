@@ -31,7 +31,7 @@ not a fixed string -- expect it to match `mneme version`.
 
 ---
 
-## MCP tool families (82 tools)
+## MCP tool families (59 tools on this branch)
 
 Rule: every MCP tool appears in exactly **one** of these files.
 
@@ -39,20 +39,17 @@ Rule: every MCP tool appears in exactly **one** of these files.
 |--------|-------|-----------|---------------|
 | `mem_*` (incl. `mem_promote`) | 15 | [docs/api/memory.md](api/memory.md) | [docs/GRAPH.md](GRAPH.md), [docs/RULES.md](RULES.md), [docs/team-memory.md](team-memory.md) |
 | `backlog_*` + `spec_*` + `lane_*` + `init` | 6+9+5+1=21 | [docs/api/sdd.md](api/sdd.md) | [docs/lanes.md](lanes.md), [docs/init.md](init.md) |
-| `sdd_*` | 2 | [docs/api/sdd.md](api/sdd.md) | [docs/sdd-git-native.md](sdd-git-native.md) |
 | `codegraph_*` | 10 | [docs/api/codegraph.md](api/codegraph.md) | [docs/codegraph.md](codegraph.md) |
-| `skills_*` | 7 | [docs/api/skills.md](api/skills.md) | [docs/skills.md](skills.md) |
-| `model_*` | 3 | [docs/api/models.md](api/models.md) | [docs/models.md](models.md) |
-| `conflicts_*` | 5 | [docs/api/conflicts.md](api/conflicts.md) | [docs/conflicts.md](conflicts.md) |
-| `subagent_*` | 6 | [docs/api/subagents.md](api/subagents.md) | [docs/enforcement-model.md](enforcement-model.md) |
 | `profile_*` + `project_*` + `app_*` + `scaffold_*` | 8+1+1+1=11 | [docs/profiles.md](profiles.md) (no dedicated `docs/api/` split yet) | [docs/profiles.md](profiles.md) |
 | `speech_*` | 2 | [docs/speech.md](speech.md) | [docs/speech.md](speech.md) |
 
-15 + 21 + 2 + 10 + 7 + 3 + 5 + 6 + 11 + 2 = **82**. The two host-local
+15 + 21 + 10 + 11 + 2 = **59** (SPEC-163 took 23 tools out of the 82 the server exposed before it; sibling v2.0 specs subtract their own, so the integrated count is lower still). The two host-local
 `speech_*` tools intentionally have no HTTP counterpart because they control
 the current user's audio device. The `quality_*` family (5 tools) existed
 from SPEC-115 through SPEC-137 and was retired whole by SPEC-158, along
 with the certification mechanism it served.
+
+**CLI-only since v2.0 (SPEC-163):** `skills_*` (7), `model_*` (3), `conflicts_*` (5), `subagent_*` (6), `sdd_status` and `sdd_import` left the MCP server; each keeps its full capability as a CLI command. References with the old-tool to command table: [docs/api/skills.md](api/skills.md), [docs/api/models.md](api/models.md), [docs/api/conflicts.md](api/conflicts.md), [docs/api/subagents.md](api/subagents.md), [docs/api/sdd.md](api/sdd.md#sdd-git-native-commands-cli-only-since-v20-spec-163).
 
 ## Transport references
 

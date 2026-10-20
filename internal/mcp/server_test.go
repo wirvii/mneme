@@ -223,8 +223,6 @@ func TestToolsList(t *testing.T) {
 		// Lane tools (SPEC-035 + SPEC-036)
 		"spec_quick", "lane_audit", "lane_reclassify", "lane_override", "lane_status",
 		"spec_reject", "lane_stats",
-		// SDD git-native read tools (SPEC-131 §2b)
-		"sdd_status", "sdd_import",
 		// Graph tools
 		"mem_gaps",
 		"mem_explore",
@@ -232,13 +230,6 @@ func TestToolsList(t *testing.T) {
 		"codegraph_search", "codegraph_context", "codegraph_callers",
 		"codegraph_callees", "codegraph_impact", "codegraph_node",
 		"codegraph_explore", "codegraph_trace", "codegraph_status", "codegraph_files",
-		// Skills tools (SPEC-037)
-		"skills_list", "skills_install", "skills_pin", "skills_unpin",
-		"skills_remove", "skills_lint", "skills_validate",
-		// Model tools (SPEC-038)
-		"model_list", "model_set", "model_reset",
-		// Conflicts tools (SPEC-039)
-		"conflicts_candidates", "conflicts_scan", "conflicts_link", "conflicts_unlink", "conflicts_list",
 		// Profile tools (SPEC-091 §1 + SPEC-093 §3 + SPEC-095 §5 + SPEC-105 DD21)
 		"profile_new", "profile_add", "profile_update", "profile_list", "profile_status",
 		"profile_use", "profile_default", "profile_deactivate",
@@ -248,9 +239,6 @@ func TestToolsList(t *testing.T) {
 		"scaffold_capture",
 		// Init tool (SPEC-041)
 		"init",
-		// Subagent tools (SPEC-057 / EPIC agnostic-agents SS-4)
-		"subagent_fingerprint", "subagent_profile_get", "subagent_profile_save",
-		"subagent_compose", "subagent_write", "subagent_manifest_list",
 	}
 	if len(result.Tools) != len(wantNames) {
 		t.Fatalf("got %d tools, want %d", len(result.Tools), len(wantNames))

@@ -1,6 +1,9 @@
-# API Reference — Models Tools (`model_*`)
+# API Reference — Models (CLI only since v2.0)
 
-3 MCP tools over JSON-RPC 2.0 stdio (`mneme mcp`). Concept guide:
+The three `model_*` MCP tools (SPEC-038) left the MCP server in v2.0
+(SPEC-163). The capability is unchanged and lives in `mneme model`
+([docs/api/cli.md](cli.md#models)). Calling a former tool name over MCP now
+answers `-32601` `unknown tool: <name>`. Concept guide:
 [docs/models.md](../models.md) (defaults, apply-on-install flow,
 cross-provider scope). Index: [docs/API.md](../API.md).
 
@@ -9,59 +12,13 @@ Global install does not create role files. Per-project generation applies
 these assignments to both `.claude/agents/*.md` and `.codex/agents/*.toml`;
 mneme uses an explicit verified alias map and rejects unsafe mappings.
 
----
+## Retired tool → CLI command
 
-## model_list
-
-List the effective model for each bundled agent, showing origin (default or
-override).
-
-No parameters.
-
-**Returns:** `ModelListResponse`: `{"agents": [{"agent": "architect", "model": "opus", "origin": "default"}, {"agent": "backend", "model": "sonnet", "origin": "default"}, ...]}` (one entry per bundled agent, alphabetical).
-
-**Errors:** `-32603` models service unavailable, config load failure.
-
-**Example:** `mneme model list --json`
-
----
-
-## model_set
-
-Set the model alias for a specific agent. Writes an override to
-`config.toml`. Validates that the agent is a bundled agent (error if not).
-Accepts any non-empty string as the model alias; warns (does not error) when
-the alias is not in the known-aliases list (`opus`/`sonnet`/`haiku`/`inherit`).
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `agent` | string | yes | Agent name (e.g. `bug-hunter`, `architect`) |
-| `model` | string | yes | Model alias to assign (e.g. `opus`, `sonnet`, `haiku`). Must not be empty |
-
-**Returns:** `ModelSetResponse`: `{"agent": "bug-hunter", "model": "opus", "warning": "", "hint": "run \`mneme install claude-code\` to apply"}`. `warning` is populated (non-empty) when the alias is not a known alias.
-
-**Errors:** `-32602` empty `model` (`ErrInvalidModel`), unknown agent name (`ErrUnknownAgent`).
-
-**Example:** `mneme model set bug-hunter opus`
-
----
-
-## model_reset
-
-Remove the model override for a specific agent, or for all agents when
-`agent` is omitted. Restores default models.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `agent` | string | no | Agent name to reset. Omit to reset all agents |
-
-**Returns:** `ModelResetResponse`: `{"reset": ["bug-hunter"], "hint": "run \`mneme install claude-code\` to apply"}` (lists the agent names whose overrides were removed; all overrides when `agent` was omitted).
-
-**Errors:** `-32602` unknown agent name (`ErrUnknownAgent`).
-
-**Example:** `mneme model reset bug-hunter` or `mneme model reset` (all agents)
-
----
+| Retired MCP tool | CLI command | Notes |
+|---|---|---|
+| `model_list` | `mneme model list [--json]` | One entry per bundled agent, alphabetical: `{agent, model, origin}` with `origin` either `default` or `override` |
+| `model_set` | `mneme model set <agent> <model>` | Any non-empty alias is accepted; an alias outside `opus`/`sonnet`/`haiku`/`inherit` only produces a warning. Empty model → `ErrInvalidModel`, unknown agent → `ErrUnknownAgent` |
+| `model_reset` | `mneme model reset [<agent>]` | Omit the agent to remove every override |
 
 ## Defaults
 
@@ -69,14 +26,7 @@ Remove the model override for a specific agent, or for all agents when
 agents). `backend`, `frontend`, `qa-tester`, `bug-hunter`, `diagnostician`,
 `orchestrator` → `sonnet`.
 
-## Error codes
-
-| Code | Name | Triggered when |
-|------|------|----------------|
-| `-32602` | Invalid params | Empty model string, unknown agent name |
-| `-32603` | Internal error | Models service unavailable, config load/write failure |
-
 ## See also
 
 - [docs/models.md](../models.md) — apply-on-install mechanics, cross-provider scope (deferred)
-- [docs/api/cli.md](cli.md) — `mneme model list/set/reset`
+- [docs/api/cli.md](cli.md#models) — `mneme model list/set/reset`

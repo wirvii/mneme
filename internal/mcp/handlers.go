@@ -26,8 +26,6 @@ type handlers struct {
 	svc         *service.MemoryService
 	sdd         *service.SDDService
 	cgSvc       *service.CodeGraphService // lazy-initialized on first codegraph tool call
-	skillsSvc   *service.SkillsService    // optional; nil disables skills tools
-	modelsSvc   *service.ModelsService    // optional; nil disables model tools
 	subagentSvc *service.SubagentService  // wraps svc; always available (SPEC-057/SS-4)
 	profileSvc  *service.ProfileService   // wraps cfg.ProfilesDir(); always available (SPEC-091 §1)
 	speechSvc   *service.SpeechService    // host-local speech control; always available
@@ -35,7 +33,10 @@ type handlers struct {
 }
 
 // newHandlers constructs a handlers bound to the given services and logger.
-func newHandlers(svc *service.MemoryService, sdd *service.SDDService, skillsSvc *service.SkillsService, modelsSvc *service.ModelsService, logger *slog.Logger) *handlers {
+// The two blank parameters used to carry the skills and models services; they
+// keep their types after SPEC-163 retired those tools from MCP so call sites
+// on branches integrating v2.0 in parallel keep compiling.
+func newHandlers(svc *service.MemoryService, sdd *service.SDDService, _ *service.SkillsService, _ *service.ModelsService, logger *slog.Logger) *handlers {
 	cfg := svc.Config()
 	subagentSvc := service.NewSubagentService(svc)
 
@@ -49,8 +50,6 @@ func newHandlers(svc *service.MemoryService, sdd *service.SDDService, skillsSvc 
 	return &handlers{
 		svc:         svc,
 		sdd:         sdd,
-		skillsSvc:   skillsSvc,
-		modelsSvc:   modelsSvc,
 		subagentSvc: subagentSvc,
 		// noPrompt=true: MCP is an unattended agent session — a git credential
 		// prompt no human will see must fail fast instead of hanging the
@@ -172,48 +171,6 @@ func (h *handlers) handleToolCall(ctx context.Context, params ToolCallParams) (*
 	case "lane_stats":
 		return h.handleLaneStats(ctx, params.Arguments)
 
-	// --- SDD GIT-NATIVE READ TOOLS (SPEC-131 §2b) ---
-	case "sdd_status":
-		return h.handleSDDStatus(ctx, params.Arguments)
-	case "sdd_import":
-		return h.handleSDDImport(ctx, params.Arguments)
-
-	// --- SKILLS TOOLS ---
-	case "skills_list":
-		return h.handleSkillsList(ctx, params.Arguments)
-	case "skills_install":
-		return h.handleSkillsInstall(ctx, params.Arguments)
-	case "skills_pin":
-		return h.handleSkillsPin(ctx, params.Arguments)
-	case "skills_unpin":
-		return h.handleSkillsUnpin(ctx, params.Arguments)
-	case "skills_remove":
-		return h.handleSkillsRemove(ctx, params.Arguments)
-	case "skills_lint":
-		return h.handleSkillsLint(ctx, params.Arguments)
-	case "skills_validate":
-		return h.handleSkillsValidate(ctx, params.Arguments)
-
-	// --- MODEL TOOLS (SPEC-038) ---
-	case "model_list":
-		return h.handleModelList(ctx, params.Arguments)
-	case "model_set":
-		return h.handleModelSet(ctx, params.Arguments)
-	case "model_reset":
-		return h.handleModelReset(ctx, params.Arguments)
-
-	// --- CONFLICTS TOOLS (SPEC-039) ---
-	case "conflicts_candidates":
-		return h.handleConflictsCandidates(ctx, params.Arguments)
-	case "conflicts_scan":
-		return h.handleConflictsScan(ctx, params.Arguments)
-	case "conflicts_link":
-		return h.handleConflictsLink(ctx, params.Arguments)
-	case "conflicts_unlink":
-		return h.handleConflictsUnlink(ctx, params.Arguments)
-	case "conflicts_list":
-		return h.handleConflictsList(ctx, params.Arguments)
-
 	// --- PROFILE TOOLS (SPEC-091 §1, SPEC-095 §5) ---
 	case "profile_new":
 		return h.handleProfileNew(ctx, params.Arguments)
@@ -242,20 +199,6 @@ func (h *handlers) handleToolCall(ctx context.Context, params ToolCallParams) (*
 
 	case "init":
 		return h.handleInit(ctx, params.Arguments)
-
-	// --- SUBAGENT TOOLS (SPEC-057 / EPIC agnostic-agents SS-4) ---
-	case "subagent_fingerprint":
-		return h.handleSubagentFingerprint(ctx, params.Arguments)
-	case "subagent_profile_get":
-		return h.handleSubagentProfileGet(ctx, params.Arguments)
-	case "subagent_profile_save":
-		return h.handleSubagentProfileSave(ctx, params.Arguments)
-	case "subagent_compose":
-		return h.handleSubagentCompose(ctx, params.Arguments)
-	case "subagent_write":
-		return h.handleSubagentWrite(ctx, params.Arguments)
-	case "subagent_manifest_list":
-		return h.handleSubagentManifestList(ctx, params.Arguments)
 
 	default:
 		return nil, &JSONRPCError{
@@ -1475,179 +1418,22 @@ func (h *handlers) handleLaneStats(ctx context.Context, raw json.RawMessage) (*T
 	return resultFromAny(newLaneStatsView(resp))
 }
 
-// --- SDD GIT-NATIVE READ HANDLERS (SPEC-131 §2b) ---
-
-// handleSDDStatus processes an sdd_status tool call. Read-only, takes no
-// arguments — operates on h.sdd.RepoDir(), the same repository root every
-// other `mneme sdd` operation resolves from (never os.Getwd() inside the
-// service layer, D38/D60).
-func (h *handlers) handleSDDStatus(ctx context.Context, _ json.RawMessage) (*ToolCallResult, *JSONRPCError) {
-	if h.sdd == nil {
-		return nil, h.sddUnavailable("sdd_status")
+// resolveRepoRoot returns explicit when non-empty, otherwise the current
+// working directory. Wrapped as a JSONRPCError so callers can return it
+// directly. It survived SPEC-163's retirement of the subagent handlers
+// because the profile handlers still resolve their repository root with it.
+func resolveRepoRoot(explicit string) (string, *JSONRPCError) {
+	if explicit != "" {
+		return explicit, nil
 	}
-	resp, err := h.sdd.SDDStatus(ctx, h.sdd.RepoDir())
+	dir, err := os.Getwd()
 	if err != nil {
-		return nil, h.mapServiceError("sdd_status", err)
-	}
-	return resultFromAny(resp)
-}
-
-// handleSDDImport processes an sdd_import tool call. Takes no arguments —
-// executes (apply=true) against h.sdd.RepoDir(). Denied to every subagent
-// via lifecycleTools (internal/cli/hook.go): R1 means a file the caller
-// itself just edited can move a spec's status, so this is the same
-// "the author does not authorize their own change" family
-// spec_advance/spec_quick/backlog_archive already belong to.
-func (h *handlers) handleSDDImport(ctx context.Context, _ json.RawMessage) (*ToolCallResult, *JSONRPCError) {
-	if h.sdd == nil {
-		return nil, h.sddUnavailable("sdd_import")
-	}
-	resp, err := h.sdd.ImportSDDFromRepo(ctx, h.sdd.RepoDir(), true)
-	if err != nil {
-		return nil, h.mapServiceError("sdd_import", err)
-	}
-	return resultFromAny(resp)
-}
-
-// --- CONFLICTS HANDLERS (SPEC-039) ---
-
-// handleConflictsCandidates processes a conflicts_candidates tool call.
-// Returns candidate memory IDs that share FTS5 terms with the given memory.
-// Purely deterministic — no LLM involved.
-func (h *handlers) handleConflictsCandidates(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
-	var args struct {
-		ID    string `json:"id"`
-		Limit int    `json:"limit"`
-	}
-	if err := json.Unmarshal(raw, &args); err != nil {
-		return nil, &JSONRPCError{Code: CodeInvalidParams, Message: fmt.Sprintf("mcp: handle conflicts_candidates: invalid arguments: %s", err)}
-	}
-	if args.ID == "" {
-		return nil, &JSONRPCError{Code: CodeInvalidParams, Message: "mcp: handle conflicts_candidates: id is required"}
-	}
-
-	ids, err := h.svc.ConflictCandidates(ctx, args.ID, args.Limit)
-	if err != nil {
-		return nil, h.mapServiceError("conflicts_candidates", err)
-	}
-
-	return resultFromAny(map[string]any{"id": args.ID, "candidates": ids, "count": len(ids)})
-}
-
-// handleConflictsScan processes a conflicts_scan tool call.
-// When the Claude CLI is unavailable, returns IsError:true with a structured
-// payload rather than a protocol error, consistent with the SPEC-035 pattern.
-func (h *handlers) handleConflictsScan(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
-	var req service.ConflictScanRequest
-	if len(raw) > 0 {
-		if err := json.Unmarshal(raw, &req); err != nil {
-			return nil, &JSONRPCError{Code: CodeInvalidParams, Message: fmt.Sprintf("mcp: handle conflicts_scan: invalid arguments: %s", err)}
+		return "", &JSONRPCError{
+			Code:    CodeInternalError,
+			Message: fmt.Sprintf("mcp: resolve repo root: %s", err),
 		}
 	}
-
-	resp, err := h.svc.ConflictScan(ctx, req)
-	if err != nil {
-		if errors.Is(err, model.ErrCLIUnavailable) {
-			payload := map[string]any{
-				"error":      err.Error(),
-				"suggestion": "Install the Claude CLI (claude) and ensure it is on PATH, then retry. Run 'mneme conflicts scan' from the terminal for interactive use.",
-			}
-			b, _ := json.Marshal(payload)
-			return &ToolCallResult{
-				Content: []ContentBlock{{Type: "text", Text: string(b)}},
-				IsError: true,
-			}, nil
-		}
-		return nil, h.mapServiceError("conflicts_scan", err)
-	}
-
-	return resultFromAny(resp)
-}
-
-// handleConflictsLink processes a conflicts_link tool call.
-func (h *handlers) handleConflictsLink(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
-	var args struct {
-		FromID    string `json:"from_id"`
-		ToID      string `json:"to_id"`
-		Relation  string `json:"relation"`
-		Rationale string `json:"rationale"`
-	}
-	if err := json.Unmarshal(raw, &args); err != nil {
-		return nil, &JSONRPCError{Code: CodeInvalidParams, Message: fmt.Sprintf("mcp: handle conflicts_link: invalid arguments: %s", err)}
-	}
-	if args.FromID == "" || args.ToID == "" {
-		return nil, &JSONRPCError{Code: CodeInvalidParams, Message: "mcp: handle conflicts_link: from_id and to_id are required"}
-	}
-	if args.Relation == "" {
-		return nil, &JSONRPCError{Code: CodeInvalidParams, Message: "mcp: handle conflicts_link: relation is required"}
-	}
-
-	if err := h.svc.ConflictLink(ctx, args.FromID, args.ToID, args.Relation, args.Rationale); err != nil {
-		return nil, h.mapServiceError("conflicts_link", err)
-	}
-
-	return resultFromAny(map[string]string{
-		"from_id":  args.FromID,
-		"to_id":    args.ToID,
-		"relation": args.Relation,
-		"status":   "linked",
-	})
-}
-
-// handleConflictsUnlink processes a conflicts_unlink tool call.
-func (h *handlers) handleConflictsUnlink(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
-	var args struct {
-		FromID string `json:"from_id"`
-		ToID   string `json:"to_id"`
-	}
-	if err := json.Unmarshal(raw, &args); err != nil {
-		return nil, &JSONRPCError{Code: CodeInvalidParams, Message: fmt.Sprintf("mcp: handle conflicts_unlink: invalid arguments: %s", err)}
-	}
-	if args.FromID == "" || args.ToID == "" {
-		return nil, &JSONRPCError{Code: CodeInvalidParams, Message: "mcp: handle conflicts_unlink: from_id and to_id are required"}
-	}
-
-	if err := h.svc.ConflictUnlink(ctx, args.FromID, args.ToID); err != nil {
-		return nil, h.mapServiceError("conflicts_unlink", err)
-	}
-
-	return resultFromAny(map[string]string{
-		"from_id": args.FromID,
-		"to_id":   args.ToID,
-		"status":  "unlinked",
-	})
-}
-
-// handleConflictsList processes a conflicts_list tool call. The default-20
-// policy mirrors backlog_list/spec_list (D9): a frontend concern, not the
-// service's.
-func (h *handlers) handleConflictsList(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
-	var args struct {
-		Project string `json:"project"`
-		Limit   int    `json:"limit"`
-	}
-	if len(raw) > 0 {
-		if err := json.Unmarshal(raw, &args); err != nil {
-			return nil, &JSONRPCError{Code: CodeInvalidParams, Message: fmt.Sprintf("mcp: handle conflicts_list: invalid arguments: %s", err)}
-		}
-	}
-	if args.Limit <= 0 {
-		args.Limit = model.ListDefaultLimit
-	}
-
-	resp, err := h.svc.ConflictList(ctx, args.Project, args.Limit)
-	if err != nil {
-		return nil, h.mapServiceError("conflicts_list", err)
-	}
-
-	// count (relations actually returned) is kept for backward compatibility
-	// (D16); total (matches before limit) is new and is what stops count
-	// from silently becoming a lie now that a limit exists.
-	return resultFromAny(map[string]any{
-		"relations": resp.Relations,
-		"count":     len(resp.Relations),
-		"total":     resp.Total,
-	})
+	return dir, nil
 }
 
 // resultFromAny serializes v to a compact JSON string and wraps it in a single
@@ -1664,205 +1450,6 @@ func resultFromAny(v any) (*ToolCallResult, *JSONRPCError) {
 	return &ToolCallResult{
 		Content: []ContentBlock{{Type: "text", Text: string(b)}},
 	}, nil
-}
-
-// --- SKILLS HANDLERS ---
-
-// skillsUnavailable returns a JSONRPCError indicating the SkillsService is not
-// initialised. This is the guard used by all skills handlers when skillsSvc is nil.
-func (h *handlers) skillsUnavailable(method string) *JSONRPCError {
-	return &JSONRPCError{
-		Code:    CodeInternalError,
-		Message: fmt.Sprintf("mcp: handle %s: skills service not available", method),
-	}
-}
-
-// handleSkillsList processes a skills_list tool call.
-func (h *handlers) handleSkillsList(_ context.Context, _ json.RawMessage) (*ToolCallResult, *JSONRPCError) {
-	if h.skillsSvc == nil {
-		return nil, h.skillsUnavailable("skills_list")
-	}
-	infos, err := h.skillsSvc.List()
-	if err != nil {
-		return nil, h.mapServiceError("skills_list", err)
-	}
-	return resultFromAny(infos)
-}
-
-// handleSkillsInstall processes a skills_install tool call.
-func (h *handlers) handleSkillsInstall(_ context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
-	if h.skillsSvc == nil {
-		return nil, h.skillsUnavailable("skills_install")
-	}
-	var args struct {
-		Name  string `json:"name"`
-		Force bool   `json:"force"`
-	}
-	if err := json.Unmarshal(raw, &args); err != nil {
-		return nil, &JSONRPCError{Code: CodeInvalidParams, Message: fmt.Sprintf("mcp: handle skills_install: invalid arguments: %s", err)}
-	}
-	if args.Name == "" {
-		return nil, &JSONRPCError{Code: CodeInvalidParams, Message: "mcp: handle skills_install: name is required"}
-	}
-	if err := h.skillsSvc.Install(args.Name, args.Force); err != nil {
-		return nil, h.mapServiceError("skills_install", err)
-	}
-	return resultFromAny(map[string]string{"skill": args.Name, "status": "installed"})
-}
-
-// handleSkillsPin processes a skills_pin tool call.
-func (h *handlers) handleSkillsPin(_ context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
-	if h.skillsSvc == nil {
-		return nil, h.skillsUnavailable("skills_pin")
-	}
-	var args struct {
-		Name string `json:"name"`
-	}
-	if err := json.Unmarshal(raw, &args); err != nil {
-		return nil, &JSONRPCError{Code: CodeInvalidParams, Message: fmt.Sprintf("mcp: handle skills_pin: invalid arguments: %s", err)}
-	}
-	if args.Name == "" {
-		return nil, &JSONRPCError{Code: CodeInvalidParams, Message: "mcp: handle skills_pin: name is required"}
-	}
-	if err := h.skillsSvc.Pin(args.Name); err != nil {
-		return nil, h.mapServiceError("skills_pin", err)
-	}
-	return resultFromAny(map[string]string{"skill": args.Name, "status": "pinned"})
-}
-
-// handleSkillsUnpin processes a skills_unpin tool call.
-func (h *handlers) handleSkillsUnpin(_ context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
-	if h.skillsSvc == nil {
-		return nil, h.skillsUnavailable("skills_unpin")
-	}
-	var args struct {
-		Name string `json:"name"`
-	}
-	if err := json.Unmarshal(raw, &args); err != nil {
-		return nil, &JSONRPCError{Code: CodeInvalidParams, Message: fmt.Sprintf("mcp: handle skills_unpin: invalid arguments: %s", err)}
-	}
-	if args.Name == "" {
-		return nil, &JSONRPCError{Code: CodeInvalidParams, Message: "mcp: handle skills_unpin: name is required"}
-	}
-	if err := h.skillsSvc.Unpin(args.Name); err != nil {
-		return nil, h.mapServiceError("skills_unpin", err)
-	}
-	return resultFromAny(map[string]string{"skill": args.Name, "status": "unpinned"})
-}
-
-// handleSkillsRemove processes a skills_remove tool call.
-func (h *handlers) handleSkillsRemove(_ context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
-	if h.skillsSvc == nil {
-		return nil, h.skillsUnavailable("skills_remove")
-	}
-	var args struct {
-		Name  string `json:"name"`
-		Force bool   `json:"force"`
-	}
-	if err := json.Unmarshal(raw, &args); err != nil {
-		return nil, &JSONRPCError{Code: CodeInvalidParams, Message: fmt.Sprintf("mcp: handle skills_remove: invalid arguments: %s", err)}
-	}
-	if args.Name == "" {
-		return nil, &JSONRPCError{Code: CodeInvalidParams, Message: "mcp: handle skills_remove: name is required"}
-	}
-	if err := h.skillsSvc.Remove(args.Name, args.Force); err != nil {
-		return nil, h.mapServiceError("skills_remove", err)
-	}
-	return resultFromAny(map[string]string{"skill": args.Name, "status": "removed"})
-}
-
-// handleSkillsLint processes a skills_lint tool call.
-// When lint errors are found, the result is returned with IsError:true so the
-// caller receives the full LintResult payload instead of a protocol error.
-func (h *handlers) handleSkillsLint(_ context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
-	if h.skillsSvc == nil {
-		return nil, h.skillsUnavailable("skills_lint")
-	}
-	var args struct {
-		Name string `json:"name"`
-	}
-	if len(raw) > 0 {
-		if err := json.Unmarshal(raw, &args); err != nil {
-			return nil, &JSONRPCError{Code: CodeInvalidParams, Message: fmt.Sprintf("mcp: handle skills_lint: invalid arguments: %s", err)}
-		}
-	}
-
-	results, err := h.skillsSvc.Lint(args.Name)
-	if err != nil {
-		return nil, h.mapServiceError("skills_lint", err)
-	}
-
-	// Determine whether any skill has lint errors.
-	hasErrors := false
-	for _, r := range results {
-		if !r.Passed {
-			hasErrors = true
-			break
-		}
-	}
-
-	b, serErr := json.Marshal(results)
-	if serErr != nil {
-		return nil, &JSONRPCError{Code: CodeInternalError, Message: fmt.Sprintf("mcp: handle skills_lint: serialize: %s", serErr)}
-	}
-
-	if hasErrors {
-		return &ToolCallResult{
-			Content: []ContentBlock{{Type: "text", Text: string(b)}},
-			IsError: true,
-		}, nil
-	}
-	return resultFromAny(results)
-}
-
-// handleSkillsValidate processes a skills_validate tool call.
-// When the script fails or the no-validation sentinel is returned, the result
-// is returned with IsError:true so the caller receives the full output.
-func (h *handlers) handleSkillsValidate(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
-	if h.skillsSvc == nil {
-		return nil, h.skillsUnavailable("skills_validate")
-	}
-	var args struct {
-		Name string `json:"name"`
-	}
-	if err := json.Unmarshal(raw, &args); err != nil {
-		return nil, &JSONRPCError{Code: CodeInvalidParams, Message: fmt.Sprintf("mcp: handle skills_validate: invalid arguments: %s", err)}
-	}
-	if args.Name == "" {
-		return nil, &JSONRPCError{Code: CodeInvalidParams, Message: "mcp: handle skills_validate: name is required"}
-	}
-
-	result, err := h.skillsSvc.Validate(ctx, args.Name)
-	if err != nil {
-		// ErrSkillNotFound → normal not-found protocol error.
-		// ErrSkillNoValidation → IsError:true with structured payload.
-		if errors.Is(err, model.ErrSkillNoValidation) {
-			payload := map[string]any{
-				"skill":  args.Name,
-				"passed": false,
-				"error":  err.Error(),
-			}
-			b, _ := json.Marshal(payload)
-			return &ToolCallResult{
-				Content: []ContentBlock{{Type: "text", Text: string(b)}},
-				IsError: true,
-			}, nil
-		}
-		return nil, h.mapServiceError("skills_validate", err)
-	}
-
-	if !result.Passed {
-		b, serErr := json.Marshal(result)
-		if serErr != nil {
-			return nil, &JSONRPCError{Code: CodeInternalError, Message: fmt.Sprintf("mcp: handle skills_validate: serialize: %s", serErr)}
-		}
-		return &ToolCallResult{
-			Content: []ContentBlock{{Type: "text", Text: string(b)}},
-			IsError: true,
-		}, nil
-	}
-
-	return resultFromAny(result)
 }
 
 // --- CODEGRAPH HANDLERS ---
@@ -2436,67 +2023,6 @@ func formatFiles(files []codegraph.FileRecord) string {
 		fmt.Fprintf(&sb, "  %s  [%s] %d nodes\n", f.Path, f.Language, f.NodeCount)
 	}
 	return sb.String()
-}
-
-// --- MODEL HANDLERS (SPEC-038) ---
-
-// handleModelList processes a model_list tool call.
-func (h *handlers) handleModelList(ctx context.Context, _ json.RawMessage) (*ToolCallResult, *JSONRPCError) {
-	if h.modelsSvc == nil {
-		return nil, &JSONRPCError{
-			Code:    CodeInternalError,
-			Message: "mcp: model_list: models service unavailable",
-		}
-	}
-	resp, err := h.modelsSvc.List(ctx)
-	if err != nil {
-		return nil, h.mapServiceError("model_list", err)
-	}
-	return resultFromAny(resp)
-}
-
-// handleModelSet processes a model_set tool call.
-func (h *handlers) handleModelSet(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
-	if h.modelsSvc == nil {
-		return nil, &JSONRPCError{
-			Code:    CodeInternalError,
-			Message: "mcp: model_set: models service unavailable",
-		}
-	}
-	var req service.ModelSetRequest
-	if err := json.Unmarshal(raw, &req); err != nil {
-		return nil, &JSONRPCError{
-			Code:    CodeInvalidParams,
-			Message: fmt.Sprintf("mcp: model_set: invalid arguments: %s", err),
-		}
-	}
-	resp, err := h.modelsSvc.Set(ctx, req)
-	if err != nil {
-		return nil, h.mapServiceError("model_set", err)
-	}
-	return resultFromAny(resp)
-}
-
-// handleModelReset processes a model_reset tool call.
-func (h *handlers) handleModelReset(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {
-	if h.modelsSvc == nil {
-		return nil, &JSONRPCError{
-			Code:    CodeInternalError,
-			Message: "mcp: model_reset: models service unavailable",
-		}
-	}
-	var req service.ModelResetRequest
-	if err := json.Unmarshal(raw, &req); err != nil {
-		return nil, &JSONRPCError{
-			Code:    CodeInvalidParams,
-			Message: fmt.Sprintf("mcp: model_reset: invalid arguments: %s", err),
-		}
-	}
-	resp, err := h.modelsSvc.Reset(ctx, req)
-	if err != nil {
-		return nil, h.mapServiceError("model_reset", err)
-	}
-	return resultFromAny(resp)
 }
 
 // handleInit processes an init tool call. It applies managed blocks to CLAUDE.md
