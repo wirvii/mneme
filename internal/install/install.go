@@ -29,6 +29,10 @@ type HookPatch struct {
 	// Event is the agent-specific event name this hook fires on.
 	Event string
 
+	// Matcher restricts the hook to the named tool (for example "Skill" on
+	// PostToolUse). Empty means every tool.
+	Matcher string
+
 	// Command is the shell command the agent will execute when the event fires.
 	Command string
 }
@@ -204,6 +208,11 @@ func ClaudeCode(binaryPath string) *Agent {
 				{
 					Event:   "UserPromptSubmit",
 					Command: "mneme hook speech-prompt",
+				},
+				{
+					Event:   "PostToolUse",
+					Matcher: "Skill",
+					Command: "mneme hook skill-usage",
 				},
 			}
 			return path, patches, nil
@@ -995,9 +1004,9 @@ func PatchHooks(agent *Agent) error {
 		// SPEC-107) is not already present in any group — not necessarily an
 		// identical literal string.
 		if !hookCommandExists(eventList, patch.Command) {
-			// Always add as a new matcher-group with an empty matcher (match all).
+			// Add as a new matcher-group; an empty matcher matches all tools.
 			group := map[string]any{
-				"matcher": "",
+				"matcher": patch.Matcher,
 				"hooks":   []any{cmd},
 			}
 			eventList = append(eventList, group)
