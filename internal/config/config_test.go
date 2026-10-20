@@ -1801,8 +1801,6 @@ func TestContextConfig_TopClusterMaxMembersZero(t *testing.T) {
 // written before the reminder was retired still loads, the stale key is
 // ignored, and the effective-config listing no longer shows it.
 func TestCodegraphConfig_LegacyHookNudgeIgnored(t *testing.T) {
-	t.Setenv("MNEME_CODEGRAPH_HOOK_NUDGE", "false")
-
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.toml")
 	if err := os.WriteFile(configPath, []byte("[codegraph]\nhook_nudge_enabled = false\nquerylog_enabled = false\n"), 0o600); err != nil {
