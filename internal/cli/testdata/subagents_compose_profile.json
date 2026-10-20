@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "repo": {
+    "commits": "Conventional Commits",
+    "lang": "Go 1.25 + sqlc",
+    "layout": "modular monolith, apps/*",
+    "cross_rules": ["no Claude signatures in git history"]
+  },
+  "org": "wirvii"
+}
