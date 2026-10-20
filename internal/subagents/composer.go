@@ -49,19 +49,27 @@ const agentFixedMarker = "agent-fixed"
 // subagents doctor` flag an already-materialized project's architect (and
 // qa-tester, whose contract no longer names a signing tool) as needing
 // `regen`.
-const AgentFixedVersion = 5
+//
+// v6 (SPEC-169 D8): layer 1 is cut to firm rules plus a pointer to the skill
+// each role loads (mneme-flow, review-brief, bug, codegraph). The three
+// codegraph-policy-* variants become one optional codegraph-hint, the QA
+// report template and the criteria.toml format move into skills, and every
+// composed block stays under 4096 bytes. The bump is what makes `mneme
+// subagents doctor` flag a profile still carrying the long v5 text (which
+// also names codegraph tools that no longer exist over MCP).
+const AgentFixedVersion = 6
 
 // roleSections maps a Role to the ordered section names cut from
 // LayerOneAsset for that role's agent-fixed block. A slice, not a fixed-size
 // array (SPEC-132 Dp4): qa-tester and frontend now carry a third section
 // (visual-certification) that the other four roles do not.
 var roleSections = map[Role][]string{
-	RoleArchitect:     {"codegraph-policy-readonly", "mneme-integration-generic", "criteria-contract"},
-	RoleQATester:      {"codegraph-policy-readonly", "mneme-integration-generic", "bounded-review", "visual-certification"},
-	RoleBackend:       {"codegraph-policy-implementer", "mneme-integration-generic"},
-	RoleFrontend:      {"codegraph-policy-implementer", "mneme-integration-generic", "visual-certification"},
-	RoleBugHunter:     {"codegraph-policy-implementer", "mneme-integration-generic"},
-	RoleDiagnostician: {"codegraph-policy-diagnostician", "mneme-integration-diagnostician"},
+	RoleArchitect:     {"codegraph-hint", "mneme-integration-generic", "criteria-contract"},
+	RoleQATester:      {"codegraph-hint", "mneme-integration-generic", "bounded-review", "visual-certification"},
+	RoleBackend:       {"codegraph-hint", "mneme-integration-generic"},
+	RoleFrontend:      {"codegraph-hint", "mneme-integration-generic", "visual-certification"},
+	RoleBugHunter:     {"codegraph-hint", "mneme-integration-generic", "bug-investigation"},
+	RoleDiagnostician: {"codegraph-hint", "mneme-integration-diagnostician"},
 }
 
 // ComposeInput holds the values ProfileComposer needs to render or
