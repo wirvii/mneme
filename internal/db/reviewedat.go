@@ -24,19 +24,11 @@ import (
 // OpenReadOnly does not migrate and therefore never reaches this.
 func ensureMemoryReviewedAt(ex sqlExecutor) error {
 	ctx := context.Background()
-	var tables int
-	if err := ex.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'memories'`).Scan(&tables); err != nil {
-		return fmt.Errorf("db: ensure reviewed_at: check memories table: %w", err)
+	pending, err := memoryReviewedAtPending(ctx, ex)
+	if err != nil {
+		return fmt.Errorf("db: ensure reviewed_at: %w", err)
 	}
-	if tables == 0 {
-		return nil
-	}
-
-	var columns int
-	if err := ex.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('memories') WHERE name = 'reviewed_at'`).Scan(&columns); err != nil {
-		return fmt.Errorf("db: ensure reviewed_at: check column: %w", err)
-	}
-	if columns > 0 {
+	if !pending {
 		return nil
 	}
 
@@ -47,4 +39,16 @@ func ensureMemoryReviewedAt(ex sqlExecutor) error {
 		return fmt.Errorf("db: ensure reviewed_at: backfill: %w", err)
 	}
 	return nil
+}
+
+// memoryReviewedAtPending is the read-only condition behind
+// ensureMemoryReviewedAt: the memories table exists but has no reviewed_at
+// column. The migration pass's fast path reuses it to skip the write lock.
+func memoryReviewedAtPending(ctx context.Context, ex sqlExecutor) (bool, error) {
+	exists, err := tableExists(ctx, ex, "memories")
+	if err != nil || !exists {
+		return false, err
+	}
+	present, err := columnExists(ctx, ex, "memories", "reviewed_at")
+	return !present, err
 }

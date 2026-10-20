@@ -62,6 +62,17 @@ func migrate(db *sql.DB) error {
 // OpenMemory pins the pool to a single connection, so a stray db.Exec while
 // conn is checked out would wait forever.
 func migrateFS(ctx context.Context, db *sql.DB, fsys fs.FS) error {
+	// Fast path (SPEC-178 D2): a database with nothing to migrate or repair
+	// opens without asking for the write lock, so it never queues behind an
+	// unrelated writer. The check is read-only and only decides whether to
+	// enter; what to apply is always decided again inside the lock, so a
+	// verdict that goes stale (another process migrating meanwhile) is
+	// harmless. A failing check just means "enter and let the locked pass
+	// report the real problem".
+	if needed, err := workPending(ctx, db, fsys); err == nil && !needed {
+		return nil
+	}
+
 	conn, err := db.Conn(ctx)
 	if err != nil {
 		return fmt.Errorf("db: migrate: take connection: %w", err)
@@ -87,6 +98,74 @@ func migrateFS(ctx context.Context, db *sql.DB, fsys fs.FS) error {
 	}
 	committed = true
 	return nil
+}
+
+// workPending reports, with read-only queries, whether a migration pass has
+// anything to do: schema_version missing or behind the newest embedded
+// migration, a spec/spec_history repair, a backlog/spec row without its uuid
+// or a memories table without reviewed_at. Each condition is the very same
+// function the corresponding ensure* uses inside the lock, so the fast path
+// and the locked path cannot disagree about what "healthy" means.
+func workPending(ctx context.Context, ex sqlExecutor, fsys fs.FS) (bool, error) {
+	hasVersions, err := tableExists(ctx, ex, "schema_version")
+	if err != nil {
+		return false, err
+	}
+	if !hasVersions {
+		return true, nil
+	}
+
+	latest, err := latestVersion(fsys)
+	if err != nil {
+		return false, err
+	}
+	var current int
+	if err := ex.QueryRowContext(ctx, `SELECT COALESCE(MAX(version), 0) FROM schema_version`).Scan(&current); err != nil {
+		return false, fmt.Errorf("db: migrate: read schema_version: %w", err)
+	}
+	if current < latest {
+		return true, nil
+	}
+
+	// Schema repairs come before the uuid check: that one reads specs.uuid,
+	// which a damaged database may not have.
+	checks := []func(context.Context, sqlExecutor) (bool, error){
+		specRepairPending,
+		specHistoryRepairPending,
+		sddUUIDsPending,
+		memoryReviewedAtPending,
+	}
+	for _, check := range checks {
+		pending, err := check(ctx, ex)
+		if err != nil {
+			return false, err
+		}
+		if pending {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// latestVersion returns the highest version among the migration files in
+// fsys, computed from their names so no number has to be kept in sync by hand.
+func latestVersion(fsys fs.FS) (int, error) {
+	entries, err := fs.ReadDir(fsys, "migrations")
+	if err != nil {
+		return 0, fmt.Errorf("db: migrate: read embedded migrations: %w", err)
+	}
+	latest := 0
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		version, err := versionFromFilename(entry.Name())
+		if err != nil {
+			return 0, fmt.Errorf("db: migrate: parse version from %q: %w", entry.Name(), err)
+		}
+		latest = max(latest, version)
+	}
+	return latest, nil
 }
 
 // migrateLocked is the body of a migration pass; the caller holds the write

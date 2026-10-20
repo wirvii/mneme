@@ -38,7 +38,7 @@ func ensureSDDUUIDs(ex sqlExecutor) error {
 	if err := ex.QueryRowContext(context.Background(), `SELECT COALESCE(MAX(version), 0) FROM schema_version`).Scan(&schemaVersion); err != nil {
 		return fmt.Errorf("db: ensure sdd uuids: read schema_version: %w", err)
 	}
-	if schemaVersion < 19 {
+	if schemaVersion < sddUUIDMinVersion {
 		return nil
 	}
 
@@ -51,13 +51,54 @@ func ensureSDDUUIDs(ex sqlExecutor) error {
 	return nil
 }
 
+// Existence checks for rows still missing their anchor. They are shared by
+// the fill functions and by sddUUIDsPending so the fast path of a migration
+// pass and the locked pass agree on what "nothing to fill" means.
+const (
+	backlogMissingUUIDQuery = `SELECT EXISTS(SELECT 1 FROM backlog_items WHERE uuid = '' LIMIT 1)`
+	specsMissingUUIDQuery   = `SELECT EXISTS(SELECT 1 FROM specs WHERE uuid = '' LIMIT 1)`
+
+	// sddUUIDMinVersion is the first schema version that has the uuid
+	// columns (migration 019).
+	sddUUIDMinVersion = 19
+)
+
+// sddUUIDsPending is the read-only condition behind ensureSDDUUIDs: the
+// schema is new enough to have uuid columns and at least one backlog_items or
+// specs row still has an empty one. It assumes the specs repair already ran
+// (or is not pending), because it reads specs.uuid.
+func sddUUIDsPending(ctx context.Context, ex sqlExecutor) (bool, error) {
+	var schemaVersion int
+	if err := ex.QueryRowContext(ctx, `SELECT COALESCE(MAX(version), 0) FROM schema_version`).Scan(&schemaVersion); err != nil {
+		return false, fmt.Errorf("db: ensure sdd uuids: read schema_version: %w", err)
+	}
+	if schemaVersion < sddUUIDMinVersion {
+		return false, nil
+	}
+
+	checks := []struct{ table, query string }{
+		{"backlog_items", backlogMissingUUIDQuery},
+		{"specs", specsMissingUUIDQuery},
+	}
+	for _, check := range checks {
+		var missing bool
+		if err := ex.QueryRowContext(ctx, check.query).Scan(&missing); err != nil {
+			return false, fmt.Errorf("db: ensure sdd uuids: check %s: %w", check.table, err)
+		}
+		if missing {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // fillMissingBacklogUUIDs assigns a fresh UUIDv7 to every backlog_items row
 // whose uuid column is still empty. backlog_items' primary key is the bare
 // id column (unlike specs, see fillMissingSpecUUIDs), so id alone is enough
 // to address a row precisely.
 func fillMissingBacklogUUIDs(ex sqlExecutor) error {
 	var hasMissing bool
-	if err := ex.QueryRowContext(context.Background(), `SELECT EXISTS(SELECT 1 FROM backlog_items WHERE uuid = '' LIMIT 1)`).Scan(&hasMissing); err != nil {
+	if err := ex.QueryRowContext(context.Background(), backlogMissingUUIDQuery).Scan(&hasMissing); err != nil {
 		return fmt.Errorf("db: ensure sdd uuids: check backlog_items: %w", err)
 	}
 	if !hasMissing {
@@ -112,7 +153,7 @@ type specKey struct {
 // exactly that reason.
 func fillMissingSpecUUIDs(ex sqlExecutor) error {
 	var hasMissing bool
-	if err := ex.QueryRowContext(context.Background(), `SELECT EXISTS(SELECT 1 FROM specs WHERE uuid = '' LIMIT 1)`).Scan(&hasMissing); err != nil {
+	if err := ex.QueryRowContext(context.Background(), specsMissingUUIDQuery).Scan(&hasMissing); err != nil {
 		return fmt.Errorf("db: ensure sdd uuids: check specs: %w", err)
 	}
 	if !hasMissing {

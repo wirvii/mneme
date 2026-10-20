@@ -1,6 +1,8 @@
 package db
 
 import (
+	"context"
+	"database/sql"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -171,6 +173,71 @@ func TestOpen_ConcurrentNewDatabase_Processes(t *testing.T) {
 			return
 		}
 		assertFullyMigratedShape(t, path)
+	}
+}
+
+// TestOpen_UpToDateDoesNotWaitForWriter is the fast path of SPEC-178 D2: a
+// database that is already migrated and healthy must open even while another
+// connection holds the write lock, exactly as it did before the lock was
+// introduced; otherwise every mneme command would queue behind any writer.
+func TestOpen_UpToDateDoesNotWaitForWriter(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "uptodate.db")
+	first, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open (migrate): %v", err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	holderDB, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatalf("open holder: %v", err)
+	}
+	defer holderDB.Close()
+	ctx := context.Background()
+	holder, err := holderDB.Conn(ctx)
+	if err != nil {
+		t.Fatalf("holder conn: %v", err)
+	}
+	defer holder.Close()
+	if _, err := holder.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		t.Fatalf("holder BEGIN IMMEDIATE: %v", err)
+	}
+	released := false
+	release := func() {
+		if !released {
+			released = true
+			_, _ = holder.ExecContext(ctx, "ROLLBACK")
+		}
+	}
+	defer release()
+
+	type result struct {
+		err     error
+		elapsed time.Duration
+	}
+	done := make(chan result, 1)
+	go func() {
+		begin := time.Now()
+		d, err := Open(path)
+		if err == nil {
+			err = d.Close()
+		}
+		done <- result{err, time.Since(begin)}
+	}()
+
+	select {
+	case r := <-done:
+		if r.err != nil {
+			t.Fatalf("Open while a writer holds the lock: %v (after %v)", r.err, r.elapsed)
+		}
+		if r.elapsed >= 4*time.Second {
+			t.Errorf("Open took %v, it waited for the writer", r.elapsed)
+		}
+	case <-time.After(10 * time.Second):
+		release()
+		t.Fatal("Open did not return within 10s")
 	}
 }
 

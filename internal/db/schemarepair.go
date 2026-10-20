@@ -84,31 +84,69 @@ func columnExists(ctx context.Context, ex sqlExecutor, table, column string) (bo
 func ensureSpecColumns(ex sqlExecutor) error {
 	ctx := context.Background()
 
-	exists, err := tableExists(ctx, ex, "specs")
+	missing, indexMissing, err := specRepairs(ctx, ex)
 	if err != nil {
 		return fmt.Errorf("db: ensure spec columns: %w", err)
 	}
-	if !exists {
-		return nil
-	}
 
-	for _, col := range specsRepairColumns {
-		present, err := columnExists(ctx, ex, "specs", col.name)
-		if err != nil {
-			return fmt.Errorf("db: ensure spec columns: %w", err)
-		}
-		if present {
-			continue
-		}
+	for _, col := range missing {
 		if _, err := ex.ExecContext(ctx, `ALTER TABLE specs ADD COLUMN `+col.definition); err != nil {
 			return fmt.Errorf("db: ensure spec columns: add %s: %w", col.name, err)
 		}
 	}
 
-	if _, err := ex.ExecContext(ctx, specsUUIDIndex); err != nil {
-		return fmt.Errorf("db: ensure spec columns: create idx_specs_uuid: %w", err)
+	if indexMissing {
+		if _, err := ex.ExecContext(ctx, specsUUIDIndex); err != nil {
+			return fmt.Errorf("db: ensure spec columns: create idx_specs_uuid: %w", err)
+		}
 	}
 	return nil
+}
+
+// specRepairs is the read-only half of ensureSpecColumns: the specs columns
+// that are missing and whether idx_specs_uuid is missing. Both are empty when
+// specs does not exist. The migration pass's fast path reuses it to decide,
+// without taking the write lock, whether there is anything to repair.
+func specRepairs(ctx context.Context, ex sqlExecutor) ([]columnDef, bool, error) {
+	exists, err := tableExists(ctx, ex, "specs")
+	if err != nil || !exists {
+		return nil, false, err
+	}
+
+	var missing []columnDef
+	for _, col := range specsRepairColumns {
+		present, err := columnExists(ctx, ex, "specs", col.name)
+		if err != nil {
+			return nil, false, err
+		}
+		if !present {
+			missing = append(missing, col)
+		}
+	}
+
+	var indexes int
+	err = ex.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_specs_uuid'`).Scan(&indexes)
+	if err != nil {
+		return nil, false, fmt.Errorf("check idx_specs_uuid: %w", err)
+	}
+	return missing, indexes == 0, nil
+}
+
+// specRepairPending reports whether ensureSpecColumns has anything to do.
+func specRepairPending(ctx context.Context, ex sqlExecutor) (bool, error) {
+	missing, indexMissing, err := specRepairs(ctx, ex)
+	return len(missing) > 0 || indexMissing, err
+}
+
+// specHistoryRepairPending reports whether ensureSpecHistoryReviewedSHA has
+// anything to do: spec_history exists but lacks reviewed_sha.
+func specHistoryRepairPending(ctx context.Context, ex sqlExecutor) (bool, error) {
+	exists, err := tableExists(ctx, ex, "spec_history")
+	if err != nil || !exists {
+		return false, err
+	}
+	present, err := columnExists(ctx, ex, "spec_history", "reviewed_sha")
+	return !present, err
 }
 
 // ensureSpecHistoryReviewedSHA guarantees spec_history.reviewed_sha exists
@@ -118,19 +156,11 @@ func ensureSpecColumns(ex sqlExecutor) error {
 func ensureSpecHistoryReviewedSHA(ex sqlExecutor) error {
 	ctx := context.Background()
 
-	exists, err := tableExists(ctx, ex, "spec_history")
+	pending, err := specHistoryRepairPending(ctx, ex)
 	if err != nil {
 		return fmt.Errorf("db: ensure spec_history reviewed_sha: %w", err)
 	}
-	if !exists {
-		return nil
-	}
-
-	present, err := columnExists(ctx, ex, "spec_history", "reviewed_sha")
-	if err != nil {
-		return fmt.Errorf("db: ensure spec_history reviewed_sha: %w", err)
-	}
-	if present {
+	if !pending {
 		return nil
 	}
 	if _, err := ex.ExecContext(ctx, `ALTER TABLE spec_history ADD COLUMN `+specHistoryReviewedSHAColumn); err != nil {
