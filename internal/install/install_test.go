@@ -1312,8 +1312,8 @@ func TestDelegationHookContent_LogsBlockedAttempts(t *testing.T) {
 // internal/subagents.TestPermissionTable_MatchesAgentAssets for the
 // byte-for-byte pin against subagents.PermissionTable.
 func TestAgentAssets_ReadOnlyAllowlists(t *testing.T) {
-	wantArchitectTools := "tools: Read, Grep, Glob, NotebookRead, BashOutput, WebSearch, WebFetch, mcp__mneme__*"
-	wantQATesterTools := "tools: Read, Grep, Glob, NotebookRead, BashOutput, Bash, WebSearch, WebFetch, mcp__chrome-live__*, mcp__plugin_chrome-devtools-mcp_chrome-devtools__*, mcp__plugin_playwright_playwright__*, mcp__mneme__*"
+	wantArchitectTools := "tools: Read, Grep, Glob, NotebookRead, BashOutput, Skill, WebSearch, WebFetch, mcp__mneme__*"
+	wantQATesterTools := "tools: Read, Grep, Glob, NotebookRead, BashOutput, Bash, Skill, WebSearch, WebFetch, mcp__chrome-live__*, mcp__plugin_chrome-devtools-mcp_chrome-devtools__*, mcp__plugin_playwright_playwright__*, mcp__mneme__*"
 	editTools := []string{"Edit", "Write", "MultiEdit"}
 
 	destDir := t.TempDir()
@@ -1395,7 +1395,7 @@ func TestAgentAssets_ImplementerAllowlists(t *testing.T) {
 		"mcp__plugin_chrome-devtools-mcp_chrome-devtools__*",
 		"mcp__plugin_playwright_playwright__*",
 	}
-	wantFrontendTools := "tools: Read, Grep, Glob, NotebookRead, NotebookEdit, BashOutput, Edit, Write, MultiEdit, Bash, WebSearch, WebFetch, mcp__chrome-live__*, mcp__plugin_chrome-devtools-mcp_chrome-devtools__*, mcp__plugin_playwright_playwright__*, mcp__mneme__*"
+	wantFrontendTools := "tools: Read, Grep, Glob, NotebookRead, NotebookEdit, BashOutput, Edit, Write, MultiEdit, Bash, Skill, WebSearch, WebFetch, mcp__chrome-live__*, mcp__plugin_chrome-devtools-mcp_chrome-devtools__*, mcp__plugin_playwright_playwright__*, mcp__mneme__*"
 
 	var implementerAgents []string
 	for role := range subagents.PermissionTable {

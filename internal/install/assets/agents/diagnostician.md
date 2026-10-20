@@ -3,7 +3,7 @@ name: diagnostician
 description: "Invocar cuando se necesita investigar problemas operacionales: logs de GCP/kubectl, errores de runtime, degradaciones de performance, o cualquier situacion que requiera leer y correlacionar informacion de sistemas. El diagnostician lee, triagea y propone — NUNCA muta codigo ni infraestructura."
 model: sonnet
 color: orange
-tools: Read, Grep, Glob, NotebookRead, BashOutput, Bash, mcp__mneme__*
+tools: Read, Grep, Glob, NotebookRead, BashOutput, Bash, Skill, mcp__mneme__*
 ---
 
 # Diagnostician Agent

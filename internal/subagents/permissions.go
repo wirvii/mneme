@@ -48,9 +48,16 @@ func (p Permission) ToolsString() string {
 // WebSearch/WebFetch (canonical order: web-navigation tools immediately
 // before mcp__mneme__*) so architect can research external references
 // without gaining any mutation capability.
+//
+// SPEC-169 D7: "Skill" sits immediately before WebSearch in every list that
+// has web tools, and immediately before mcp__mneme__* in diagnosticianTools
+// (which has none). Without it a subagent with an explicit tools: list cannot
+// load a skill, so a layer-1 pointer such as "load the review-brief skill"
+// would be an impossible instruction. Skill only loads instructions: it
+// edits nothing and runs nothing, so IsImplementer is unchanged.
 var readOnlyTools = []string{
 	"Read", "Grep", "Glob", "NotebookRead", "BashOutput",
-	"WebSearch", "WebFetch", "mcp__mneme__*",
+	"Skill", "WebSearch", "WebFetch", "mcp__mneme__*",
 }
 
 // visualTools are the three browser-server MCP tool patterns mneme
@@ -92,7 +99,7 @@ var visualTools = []string{
 // CODE: no edit tool is added here.
 var qaTesterTools = []string{
 	"Read", "Grep", "Glob", "NotebookRead", "BashOutput", "Bash",
-	"WebSearch", "WebFetch",
+	"Skill", "WebSearch", "WebFetch",
 	"mcp__chrome-live__*", "mcp__plugin_chrome-devtools-mcp_chrome-devtools__*", "mcp__plugin_playwright_playwright__*",
 	"mcp__mneme__*",
 }
@@ -111,7 +118,7 @@ var qaTesterTools = []string{
 // the cheap way to make sure each one gets reviewed.
 var implementerBaseTools = []string{
 	"Read", "Grep", "Glob", "NotebookRead", "NotebookEdit", "BashOutput",
-	"Edit", "Write", "MultiEdit", "Bash", "WebSearch", "WebFetch", "mcp__mneme__*",
+	"Edit", "Write", "MultiEdit", "Bash", "Skill", "WebSearch", "WebFetch", "mcp__mneme__*",
 }
 
 // frontendTools is frontend's own allowlist, split out of the former
@@ -134,7 +141,7 @@ var implementerBaseTools = []string{
 // goes red instead of drifting silently.
 var frontendTools = []string{
 	"Read", "Grep", "Glob", "NotebookRead", "NotebookEdit", "BashOutput",
-	"Edit", "Write", "MultiEdit", "Bash", "WebSearch", "WebFetch",
+	"Edit", "Write", "MultiEdit", "Bash", "Skill", "WebSearch", "WebFetch",
 	"mcp__chrome-live__*", "mcp__plugin_chrome-devtools-mcp_chrome-devtools__*", "mcp__plugin_playwright_playwright__*",
 	"mcp__mneme__*",
 }
@@ -143,9 +150,10 @@ var frontendTools = []string{
 // reading logs/infra) but without any edit tool — the diagnostician reads
 // and triages, never mutates. SPEC-087 D2/decision-3 deliberately leaves
 // this envelope unchanged: the diagnostician does not gain web navigation
-// (see TestDiagnosticianToolsExcludeWebNavigation).
+// (see TestDiagnosticianToolsExcludeWebNavigation). SPEC-169 D7 adds Skill,
+// immediately before mcp__mneme__* since this list has no web tools.
 var diagnosticianTools = []string{
-	"Read", "Grep", "Glob", "NotebookRead", "BashOutput", "Bash", "mcp__mneme__*",
+	"Read", "Grep", "Glob", "NotebookRead", "BashOutput", "Bash", "Skill", "mcp__mneme__*",
 }
 
 // bypassPermissions is the frontmatter permissionMode value implementer

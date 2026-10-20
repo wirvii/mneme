@@ -2,7 +2,7 @@
 name: backend
 description: Implements server-side logic
 model: sonnet
-tools: Read, Grep, Glob, NotebookRead, NotebookEdit, BashOutput, Edit, Write, MultiEdit, Bash, WebSearch, WebFetch, mcp__mneme__*
+tools: Read, Grep, Glob, NotebookRead, NotebookEdit, BashOutput, Edit, Write, MultiEdit, Bash, Skill, WebSearch, WebFetch, mcp__mneme__*
 permissionMode: bypassPermissions
 ---
 
