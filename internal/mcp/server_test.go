@@ -237,8 +237,9 @@ func TestToolsList(t *testing.T) {
 
 // TestCallerPolicy_DeniesOnlyLifecycleAndRestrictsCriteria covers SPEC-158
 // AC12's MCP half: after the certification mechanism's retirement, the set
-// of tools a backend caller cannot invoke is EXACTLY {spec_advance,
-// spec_quick} — derived from allTools() itself, never a hand-typed list, so
+// of tools a backend caller cannot invoke is EXACTLY {backlog_archive,
+// lane_override, spec_advance, spec_quick} (SPEC-175 added the first two, in
+// parity with the Claude hook's lifecycleTools) — derived from allTools() itself, never a hand-typed list, so
 // a future addition to allowsTool's deny set would fail this test instead
 // of going unnoticed. spec_doc_write's "criteria" kind stays restricted to
 // the architect; "budget" is no longer restricted (and no longer even in
@@ -254,7 +255,7 @@ func TestCallerPolicy_DeniesOnlyLifecycleAndRestrictsCriteria(t *testing.T) {
 		}
 	}
 	sort.Strings(denied)
-	want := []string{"spec_advance", "spec_quick"}
+	want := []string{"backlog_archive", "lane_override", "spec_advance", "spec_quick"}
 	if !reflect.DeepEqual(denied, want) {
 		t.Fatalf("tools denied to a backend caller = %v, want exactly %v", denied, want)
 	}
@@ -275,15 +276,23 @@ func TestCallerPolicy_DeniesOnlyLifecycleAndRestrictsCriteria(t *testing.T) {
 	srv.WithCallerPolicy(backend)
 
 	for _, tool := range srv.tools {
-		if tool.Name == "spec_advance" || tool.Name == "spec_quick" {
-			t.Fatalf("restricted tool %q remained visible", tool.Name)
+		for _, name := range want {
+			if tool.Name == name {
+				t.Fatalf("restricted tool %q remained visible", tool.Name)
+			}
 		}
 	}
 
-	deniedCall := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"spec_advance","arguments":{}}}`)
-	resp, ok := srv.handleMessage(deniedCall)
-	if !ok || resp.Error == nil || !strings.Contains(resp.Error.Message, "caller policy") {
-		t.Fatalf("direct restricted call was not denied: %#v", resp)
+	for _, name := range want {
+		deniedCall := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"` + name + `","arguments":{}}}`)
+		resp, ok := srv.handleMessage(deniedCall)
+		if !ok || resp.Error == nil || !strings.Contains(resp.Error.Message, "caller policy") {
+			t.Fatalf("direct restricted call to %s was not denied: %#v", name, resp)
+		}
+	}
+
+	if !backend.allowsTool("spec_reject") {
+		t.Error("spec_reject must stay allowed: the qa-tester uses it")
 	}
 }
 

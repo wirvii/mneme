@@ -16,9 +16,14 @@ type CallerPolicy struct {
 	Archetype string
 }
 
+// allowsTool mirrors the lifecycleTools denial of the Claude hook
+// (internal/cli/hook.go): a subagent never advances, quick-starts or archives
+// work, nor bypasses the trivial-lane auditor. backlog_archive and
+// lane_override were missing here until SPEC-175, a parity gap the Claude hook
+// had already closed (SPEC-125 for backlog_archive).
 func (p CallerPolicy) allowsTool(name string) bool {
 	switch name {
-	case "spec_advance", "spec_quick":
+	case "spec_advance", "spec_quick", "backlog_archive", "lane_override":
 		return false
 	default:
 		return true
