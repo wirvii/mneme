@@ -171,11 +171,43 @@ func applyPending(ctx context.Context, ex sqlExecutor, fsys fs.FS, current int) 
 			}
 		}
 
+		if version == 22 {
+			present, err := migration022PreFlight(ctx, ex)
+			if err != nil {
+				return fmt.Errorf("db: migrate: apply %q: %w", name, err)
+			}
+			if present {
+				// The file's only effect already exists: register the
+				// version without running it.
+				if err := recordVersion(ctx, ex, version); err != nil {
+					return fmt.Errorf("db: migrate: apply %q: %w", name, err)
+				}
+				continue
+			}
+		}
+
 		if err := applyMigration(ex, version, string(content)); err != nil {
 			return fmt.Errorf("db: migrate: apply %q: %w", name, err)
 		}
 	}
 	return nil
+}
+
+// migration022PreFlight reports whether spec_history.reviewed_sha already
+// exists before migration 022 runs. The file's only effect is that ALTER
+// TABLE ADD COLUMN, which SQLite cannot make conditional, so on a database
+// below version 22 that already holds the column (BL-272: added by hand or by
+// an old beta whose version numbers the runner no longer trusts, BL-240) it
+// would abort Open with "duplicate column name". When the column is present
+// the runner records the version without executing the file, which is left
+// untouched because migration files are history.
+func migration022PreFlight(ctx context.Context, ex sqlExecutor) (bool, error) {
+	var columns int
+	err := ex.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('spec_history') WHERE name = 'reviewed_sha'`).Scan(&columns)
+	if err != nil {
+		return false, fmt.Errorf("migration 022: check reviewed_sha column: %w", err)
+	}
+	return columns > 0, nil
 }
 
 // applyMigration runs the SQL from a single migration file and records the
