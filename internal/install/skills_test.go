@@ -173,11 +173,11 @@ func TestBundledSkillEntries(t *testing.T) {
 		t.Fatal("expected at least one bundled skill entry")
 	}
 
-	// example-skill/SKILL.md must be present.
+	// grill-me/SKILL.md must be present.
 	found := false
 	for _, e := range entries {
 		fwd := filepath.ToSlash(e.RelPath)
-		if fwd == "example-skill/SKILL.md" {
+		if fwd == "grill-me/SKILL.md" {
 			found = true
 		}
 		// validation/run.sh must be executable.
@@ -188,7 +188,7 @@ func TestBundledSkillEntries(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Error("example-skill/SKILL.md not found in BundledSkillEntries")
+		t.Error("grill-me/SKILL.md not found in BundledSkillEntries")
 	}
 }
 
@@ -276,13 +276,13 @@ func TestBundledSkillNames(t *testing.T) {
 	}
 	found := false
 	for _, n := range names {
-		if n == "example-skill" {
+		if n == "grill-me" {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Errorf("example-skill not found in BundledSkillNames; got %v", names)
+		t.Errorf("grill-me not found in BundledSkillNames; got %v", names)
 	}
 }
 

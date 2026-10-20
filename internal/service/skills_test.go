@@ -49,9 +49,9 @@ func TestSkillsService_List(t *testing.T) {
 	dir := t.TempDir()
 	svc := service.NewSkillsService(dir)
 
-	// Install the bundled example-skill first so we have something installed.
-	if err := svc.Install("example-skill", false); err != nil {
-		t.Fatalf("Install example-skill: %v", err)
+	// Install the bundled grill-me first so we have something installed.
+	if err := svc.Install("grill-me", false); err != nil {
+		t.Fatalf("Install grill-me: %v", err)
 	}
 
 	infos, err := svc.List()
@@ -64,19 +64,19 @@ func TestSkillsService_List(t *testing.T) {
 
 	found := false
 	for _, i := range infos {
-		if i.Name == "example-skill" {
+		if i.Name == "grill-me" {
 			found = true
 			if !i.Installed {
-				t.Error("example-skill should be Installed=true after install")
+				t.Error("grill-me should be Installed=true after install")
 			}
 			if !i.Bundled {
-				t.Error("example-skill should be Bundled=true")
+				t.Error("grill-me should be Bundled=true")
 			}
 			break
 		}
 	}
 	if !found {
-		t.Error("example-skill not found in List output")
+		t.Error("grill-me not found in List output")
 	}
 }
 
@@ -129,22 +129,22 @@ func TestSkillsService_Install_Pinned(t *testing.T) {
 	svc := service.NewSkillsService(dir)
 
 	// Install first.
-	if err := svc.Install("example-skill", false); err != nil {
+	if err := svc.Install("grill-me", false); err != nil {
 		t.Fatalf("first Install: %v", err)
 	}
 	// Pin it.
-	if err := svc.Pin("example-skill"); err != nil {
+	if err := svc.Pin("grill-me"); err != nil {
 		t.Fatalf("Pin: %v", err)
 	}
 
 	// Try to reinstall without force — should get ErrSkillPinned.
-	err := svc.Install("example-skill", false)
+	err := svc.Install("grill-me", false)
 	if !errors.Is(err, model.ErrSkillPinned) {
 		t.Errorf("expected ErrSkillPinned, got %v", err)
 	}
 
 	// With force — should succeed.
-	if err := svc.Install("example-skill", true); err != nil {
+	if err := svc.Install("grill-me", true); err != nil {
 		t.Errorf("Install with force should succeed: %v", err)
 	}
 }
@@ -153,29 +153,29 @@ func TestSkillsService_PinUnpin(t *testing.T) {
 	dir := t.TempDir()
 	svc := service.NewSkillsService(dir)
 
-	if err := svc.Install("example-skill", false); err != nil {
+	if err := svc.Install("grill-me", false); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
 
-	if err := svc.Pin("example-skill"); err != nil {
+	if err := svc.Pin("grill-me"); err != nil {
 		t.Fatalf("Pin: %v", err)
 	}
 
 	infos, _ := svc.List()
 	for _, i := range infos {
-		if i.Name == "example-skill" && !i.Pinned {
-			t.Error("expected example-skill to be pinned")
+		if i.Name == "grill-me" && !i.Pinned {
+			t.Error("expected grill-me to be pinned")
 		}
 	}
 
-	if err := svc.Unpin("example-skill"); err != nil {
+	if err := svc.Unpin("grill-me"); err != nil {
 		t.Fatalf("Unpin: %v", err)
 	}
 
 	infos, _ = svc.List()
 	for _, i := range infos {
-		if i.Name == "example-skill" && i.Pinned {
-			t.Error("expected example-skill to be unpinned")
+		if i.Name == "grill-me" && i.Pinned {
+			t.Error("expected grill-me to be unpinned")
 		}
 	}
 }
@@ -237,11 +237,11 @@ func TestSkillsService_Lint(t *testing.T) {
 	dir := t.TempDir()
 	svc := service.NewSkillsService(dir)
 
-	if err := svc.Install("example-skill", false); err != nil {
+	if err := svc.Install("grill-me", false); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
 
-	results, err := svc.Lint("example-skill")
+	results, err := svc.Lint("grill-me")
 	if err != nil {
 		t.Fatalf("Lint: %v", err)
 	}
@@ -249,7 +249,7 @@ func TestSkillsService_Lint(t *testing.T) {
 		t.Fatalf("expected 1 result, got %d", len(results))
 	}
 	if !results[0].Passed {
-		t.Errorf("expected example-skill to pass lint, errors: %v", results[0].Errors)
+		t.Errorf("expected grill-me to pass lint, errors: %v", results[0].Errors)
 	}
 }
 
@@ -267,16 +267,16 @@ func TestSkillsService_Validate(t *testing.T) {
 	dir := t.TempDir()
 	svc := service.NewSkillsService(dir)
 
-	if err := svc.Install("example-skill", false); err != nil {
+	if err := svc.Install("grill-me", false); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
 
-	result, err := svc.Validate(context.Background(), "example-skill")
+	result, err := svc.Validate(context.Background(), "grill-me")
 	if err != nil {
 		t.Fatalf("Validate: %v", err)
 	}
 	if !result.Passed {
-		t.Errorf("expected example-skill validation to pass; output: %s", result.Output)
+		t.Errorf("expected grill-me validation to pass; output: %s", result.Output)
 	}
 }
 

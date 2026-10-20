@@ -14,7 +14,7 @@ import (
 // TestCodexInstall_Idempotency is an end-to-end test that runs Install(Codex(...))
 // twice against a temporary HOME directory and verifies:
 //   - All three artefacts are created: config.toml, hooks.json, AGENTS.md.
-//   - The bundled example-skill is installed to $tmpHome/.agents/skills/.
+//   - The bundled grill-me is installed to $tmpHome/.agents/skills/.
 //   - A second Install() call produces byte-identical artefacts (idempotency, AC-2, AC-3).
 func TestCodexInstall_Idempotency(t *testing.T) {
 	tmpHome := t.TempDir()
@@ -33,7 +33,7 @@ func TestCodexInstall_Idempotency(t *testing.T) {
 	configPath := filepath.Join(tmpHome, ".codex", "config.toml")
 	hooksPath := filepath.Join(tmpHome, ".codex", "hooks.json")
 	agentsPath := filepath.Join(tmpHome, ".codex", "AGENTS.md")
-	skillDir := filepath.Join(tmpHome, ".agents", "skills", "example-skill", "SKILL.md")
+	skillDir := filepath.Join(tmpHome, ".agents", "skills", "grill-me", "SKILL.md")
 
 	// Verify artefacts exist after first run.
 	for _, path := range []string{configPath, hooksPath, agentsPath} {
@@ -83,7 +83,7 @@ func TestCodexInstall_Idempotency(t *testing.T) {
 // Install(Codex(bin), bin), every BundledSkillNames() entry has a
 // $HOME/.agents/skills/<name>/SKILL.md — a derived population, never a
 // single hand-picked skill (TestCodexInstall_Idempotency only ever checked
-// example-skill).
+// grill-me).
 func TestCodexInstall_DeliversAllBundledSkills(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
