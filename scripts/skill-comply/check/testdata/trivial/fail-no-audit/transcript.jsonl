@@ -1,0 +1,15 @@
+{"session_id":"s","subtype":"init","type":"system"}
+{"message":{"content":[{"text":"paso","type":"text"},{"id":"ta","input":{"lane":"trivial","title":"errata"},"name":"mcp__mneme__backlog_add","type":"tool_use"}]},"type":"assistant"}
+{"message":{"content":[{"content":"ok","tool_use_id":"ta","type":"tool_result"}]},"type":"user"}
+{"message":{"content":[{"text":"paso","type":"text"},{"id":"tb","input":{"id":"BL-001"},"name":"mcp__mneme__backlog_refine","type":"tool_use"}]},"type":"assistant"}
+{"message":{"content":[{"content":"ok","tool_use_id":"tb","type":"tool_result"}]},"type":"user"}
+{"message":{"content":[{"text":"paso","type":"text"},{"id":"tc","input":{"id":"BL-001"},"name":"mcp__mneme__backlog_promote","type":"tool_use"}]},"type":"assistant"}
+{"message":{"content":[{"content":"ok","tool_use_id":"tc","type":"tool_result"}]},"type":"user"}
+{"message":{"content":[{"text":"paso","type":"text"},{"id":"td","input":{"by":"orchestrator","id":"SPEC-001"},"name":"mcp__mneme__spec_quick","type":"tool_use"}]},"type":"assistant"}
+{"message":{"content":[{"content":"ok","tool_use_id":"td","type":"tool_result"}]},"type":"user"}
+{"message":{"content":[{"text":"paso","type":"text"},{"id":"te","input":{"file_path":"/work/repo/textutil/textutil.go"},"name":"Edit","type":"tool_use"}]},"type":"assistant"}
+{"message":{"content":[{"content":"ok","tool_use_id":"te","type":"tool_result"}]},"type":"user"}
+{"message":{"content":[{"text":"paso","type":"text"},{"id":"tf","input":{"by":"orchestrator","id":"SPEC-001"},"name":"mcp__mneme__spec_advance","type":"tool_use"}]},"type":"assistant"}
+{"message":{"content":[{"content":"ok","tool_use_id":"tf","type":"tool_result"}]},"type":"user"}
+{"message":{"content":[{"text":"Corregida la errata en el comentario.","type":"text"}]},"type":"assistant"}
+{"is_error":false,"num_turns":7,"result":"Corregida la errata en el comentario.","subtype":"success","total_cost_usd":0.1234,"type":"result"}

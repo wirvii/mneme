@@ -1,0 +1,1 @@
+Agrega a `textutil` una función `Reverse(s string) string` que invierta la cadena por runas. Ya está refinado: la firma es exactamente esa, la cadena vacía devuelve cadena vacía, la prueba es table-driven, lane standard. Sigue el flujo de mneme hasta donde te toque parar.

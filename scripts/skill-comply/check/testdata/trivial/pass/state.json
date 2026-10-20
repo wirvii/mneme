@@ -1,0 +1,27 @@
+{
+  "base_sha": "5b6e389000000000000000000000000000000000",
+  "backlog": [
+    {
+      "id": "BL-001",
+      "lane": "trivial",
+      "status": "promoted",
+      "refinements": 1
+    }
+  ],
+  "specs": [
+    {
+      "id": "SPEC-001",
+      "status": "done",
+      "lane": "trivial",
+      "scope": "textutil/textutil.go",
+      "has_audit": true
+    }
+  ],
+  "git_status": [],
+  "changed_files": [
+    "textutil/textutil.go"
+  ],
+  "go_contents": {
+    "textutil/textutil.go": "// Package textutil reúne utilidades mínimas de texto. Hello, mundo.\npackage textutil\n"
+  }
+}

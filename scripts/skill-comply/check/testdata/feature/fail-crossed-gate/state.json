@@ -1,0 +1,25 @@
+{
+  "base_sha": "5b6e389000000000000000000000000000000000",
+  "backlog": [
+    {
+      "id": "BL-001",
+      "lane": "standard",
+      "status": "promoted",
+      "refinements": 1
+    }
+  ],
+  "specs": [
+    {
+      "id": "SPEC-001",
+      "status": "implementing",
+      "lane": "standard",
+      "has_audit": false,
+      "docs": [
+        "criteria.toml",
+        "spec.md"
+      ]
+    }
+  ],
+  "git_status": [],
+  "changed_files": []
+}

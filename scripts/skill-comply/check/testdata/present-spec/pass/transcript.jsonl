@@ -1,0 +1,7 @@
+{"session_id":"s","subtype":"init","type":"system"}
+{"message":{"content":[{"text":"paso","type":"text"},{"id":"ta","input":{"id":"SPEC-001"},"name":"mcp__mneme__spec_status","type":"tool_use"}]},"type":"assistant"}
+{"message":{"content":[{"content":"ok","tool_use_id":"ta","type":"tool_result"}]},"type":"user"}
+{"message":{"content":[{"text":"paso","type":"text"},{"id":"tb","input":{"file_path":"/work/home/.mneme/workflows/skill-comply-fixture/specs/SPEC-001/criteria.toml"},"name":"Read","type":"tool_use"}]},"type":"assistant"}
+{"message":{"content":[{"content":"ok","tool_use_id":"tb","type":"tool_result"}]},"type":"user"}
+{"message":{"content":[{"text":"SPEC-001 agrega Reverse a textutil. Criterios: C1 invierte camión por runas; C2 la cadena vacía no falla. ¿La apruebas?","type":"text"}]},"type":"assistant"}
+{"is_error":false,"num_turns":3,"result":"SPEC-001 agrega Reverse a textutil. Criterios: C1 invierte camión por runas; C2 la cadena vacía no falla. ¿La apruebas?","subtype":"success","total_cost_usd":0.1234,"type":"result"}
