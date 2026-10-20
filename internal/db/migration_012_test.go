@@ -80,7 +80,7 @@ func TestMigration012_EmptyDB(t *testing.T) {
 }
 
 // TestMigration012_ExistingData verifies that migration 012 backfills existing
-// specs with base_sha='' via DEFAULT.
+// specs with base_sha=” via DEFAULT.
 func TestMigration012_ExistingData(t *testing.T) {
 	sqlDB := openRawMemory(t)
 	applyUpToVersion(t, sqlDB, 11)

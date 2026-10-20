@@ -79,8 +79,8 @@ func TestMigration007_BackfillWeights(t *testing.T) {
 	}
 
 	cases := []struct {
-		id       string
-		relType  string
+		id         string
+		relType    string
 		wantWeight float64
 	}{
 		{"r-depends", "depends_on", 0.9},

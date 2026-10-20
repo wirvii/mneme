@@ -37,7 +37,7 @@ func TestMigration011_EmptyDB(t *testing.T) {
 }
 
 // TestMigration011_ExistingData verifies that migration 011 backfills existing
-// rows with lane='standard' and scope='' via DEFAULT values.
+// rows with lane='standard' and scope=” via DEFAULT values.
 func TestMigration011_ExistingData(t *testing.T) {
 	sqlDB := openRawMemory(t)
 	applyUpToVersion(t, sqlDB, 10)

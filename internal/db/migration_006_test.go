@@ -97,7 +97,7 @@ func TestMigration006_ExistingRowsHaveDefaults(t *testing.T) {
 }
 
 // TestMigration006_CheckConstraint verifies that the SQLite CHECK constraint on
-// the severity column rejects values outside ('', 'info', 'warn', 'block').
+// the severity column rejects values outside (”, 'info', 'warn', 'block').
 func TestMigration006_CheckConstraint(t *testing.T) {
 	sqlDB := openRawMemory(t)
 	applyUpToVersion(t, sqlDB, 6)
