@@ -2,8 +2,8 @@
 # bug/validation/run.sh
 #
 # Deterministic structural check (no network, no LLM): size budget, anchors,
-# and the absence of the pre-mneme .claude/bugs workflow the retired hunt-bug
-# skill used to carry.
+# and the absence of the pre-mneme .claude/bugs workflow that the two skills
+# this one replaced used to carry.
 set -e
 
 SKILL_FILE="SKILL.md"
