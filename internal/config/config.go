@@ -83,11 +83,6 @@ type ProfilesConfig struct {
 
 // CodegraphConfig controls codegraph-related runtime behaviour (SPEC-044).
 type CodegraphConfig struct {
-	// HookNudgeEnabled controls whether the pre-tool-use hook injects a reminder
-	// to use codegraph_* tools when an agent runs Read/Grep/Glob on a project
-	// that has an indexed code graph. Default: true.
-	HookNudgeEnabled bool `toml:"hook_nudge_enabled"`
-
 	// QuerylogEnabled controls whether mneme records code graph adoption
 	// telemetry (SPEC-083 W1): an "opportunity" event when an agent explores
 	// code with a generic read/search tool on an indexed project, and a "use"
@@ -633,8 +628,7 @@ func Default() *Config {
 			Overrides: map[string]string{},
 		},
 		Codegraph: CodegraphConfig{
-			HookNudgeEnabled: true,
-			QuerylogEnabled:  true,
+			QuerylogEnabled: true,
 		},
 		Profiles: ProfilesConfig{
 			Default: "",
@@ -700,7 +694,6 @@ func Default() *Config {
 //   - MNEME_SUGGESTIONS_MAX_RESULTS           → Suggestions.MaxResults
 //
 // [codegraph] — SPEC-044:
-//   - MNEME_CODEGRAPH_HOOK_NUDGE → Codegraph.HookNudgeEnabled ("false"/"0" disables, "true"/"1" enables; env wins over TOML)
 //   - MNEME_CODEGRAPH_QUERYLOG   → Codegraph.QuerylogEnabled ("false"/"0" disables, "true"/"1" enables; env wins over TOML)
 //
 // [profiles] — SPEC-093 §3:
@@ -913,9 +906,6 @@ func applyEnvOverrides(cfg *Config) {
 
 	// [codegraph] overrides (SPEC-044).
 	// "false"/"0" disables; "true"/"1" enables. Env value wins over TOML.
-	if v := os.Getenv("MNEME_CODEGRAPH_HOOK_NUDGE"); v != "" {
-		cfg.Codegraph.HookNudgeEnabled = v == "true" || v == "1"
-	}
 	if v := os.Getenv("MNEME_CODEGRAPH_QUERYLOG"); v != "" {
 		cfg.Codegraph.QuerylogEnabled = v == "true" || v == "1"
 	}
@@ -1273,8 +1263,6 @@ func buildSuggestionsOrigins(cfg, dflt *Config) []ConfigFieldInfo {
 // config section (SPEC-044).
 func buildCodegraphOrigins(cfg, dflt *Config) []ConfigFieldInfo {
 	var fields []ConfigFieldInfo
-	o, ev := fieldOrigin(cfg.Codegraph.HookNudgeEnabled, dflt.Codegraph.HookNudgeEnabled, true, "MNEME_CODEGRAPH_HOOK_NUDGE")
-	fields = append(fields, makeField("hook_nudge_enabled", cfg.Codegraph.HookNudgeEnabled, o, ev))
 	qo, qev := fieldOrigin(cfg.Codegraph.QuerylogEnabled, dflt.Codegraph.QuerylogEnabled, true, "MNEME_CODEGRAPH_QUERYLOG")
 	fields = append(fields, makeField("querylog_enabled", cfg.Codegraph.QuerylogEnabled, qo, qev))
 	return fields
