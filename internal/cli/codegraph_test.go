@@ -12,7 +12,7 @@ import (
 	"github.com/wirvii/mneme/internal/codegraph"
 )
 
-// TestCodegraphCmd_Help verifies that all 9 subcommands appear in the
+// TestCodegraphCmd_Help verifies that all 10 subcommands appear in the
 // help output of "mneme codegraph --help".
 func TestCodegraphCmd_Help(t *testing.T) {
 	cmd := newCodegraphCmd()
@@ -25,7 +25,7 @@ func TestCodegraphCmd_Help(t *testing.T) {
 		t.Fatal(err)
 	}
 	output := buf.String()
-	for _, sub := range []string{"index", "status", "search", "callers", "callees", "impact", "node", "trace", "files"} {
+	for _, sub := range []string{"index", "status", "search", "callers", "callees", "impact", "node", "explore", "trace", "files"} {
 		if !strings.Contains(output, sub) {
 			t.Errorf("help output missing subcommand %q", sub)
 		}
@@ -37,7 +37,7 @@ func TestCodegraphCmd_Help(t *testing.T) {
 func TestCodegraphCmd_SubcmdHelp(t *testing.T) {
 	subcommands := []string{
 		"index", "status", "search", "callers", "callees",
-		"impact", "node", "trace", "files",
+		"impact", "node", "explore", "trace", "files",
 	}
 	for _, sub := range subcommands {
 		t.Run(sub, func(t *testing.T) {
