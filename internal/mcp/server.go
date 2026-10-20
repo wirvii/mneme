@@ -13,18 +13,16 @@ import (
 )
 
 // Server is a Model Context Protocol server that speaks JSON-RPC 2.0 over stdio.
-// It wraps a MemoryService, an SDDService, a SkillsService, and a ModelsService,
-// exposing their capabilities as MCP tools.
+// It wraps a MemoryService and an SDDService, exposing their capabilities as
+// MCP tools.
 type Server struct {
-	svc       *service.MemoryService
-	sdd       *service.SDDService
-	skillsSvc *service.SkillsService
-	modelsSvc *service.ModelsService
-	tools     []ToolDefinition
-	handlers  *handlers
-	logger    *slog.Logger
-	version   string
-	caller    *CallerPolicy
+	svc      *service.MemoryService
+	sdd      *service.SDDService
+	tools    []ToolDefinition
+	handlers *handlers
+	logger   *slog.Logger
+	version  string
+	caller   *CallerPolicy
 	// maxMessage is the per-message size ceiling Run enforces (SPEC-104 D2).
 	// It is seeded from maxMessageBytes by NewServer rather than read as a
 	// global directly so tests can lower it (srv.maxMessage = ...) to exercise
@@ -50,9 +48,15 @@ func (s *Server) WithCallerPolicy(policy CallerPolicy) {
 
 // NewServer constructs a Server. toolsMode selects which tool set to expose:
 // "agent" exposes the agent-facing subset; any other value (including "all")
-// exposes the full set. sddSvc, skillsSvc, and modelsSvc may be nil — when nil,
-// the corresponding tools return an error indicating the service is unavailable.
-func NewServer(svc *service.MemoryService, sddSvc *service.SDDService, skillsSvc *service.SkillsService, modelsSvc *service.ModelsService, logger *slog.Logger, toolsMode string, version string) *Server {
+// exposes the full set. sddSvc may be nil — when nil, the SDD tools return an
+// error indicating the service is unavailable.
+//
+// The two untyped parameters between sddSvc and logger used to carry the skills
+// and models services. SPEC-163 moved those capabilities to the CLI only, but
+// the parameter types stay so callers on branches integrating v2.0 in parallel
+// keep compiling; dropping them is left to a later cleanup once the release
+// has landed.
+func NewServer(svc *service.MemoryService, sddSvc *service.SDDService, _ *service.SkillsService, _ *service.ModelsService, logger *slog.Logger, toolsMode string, version string) *Server {
 	var tools []ToolDefinition
 	if toolsMode == "agent" {
 		tools = agentTools()
@@ -63,10 +67,8 @@ func NewServer(svc *service.MemoryService, sddSvc *service.SDDService, skillsSvc
 	return &Server{
 		svc:        svc,
 		sdd:        sddSvc,
-		skillsSvc:  skillsSvc,
-		modelsSvc:  modelsSvc,
 		tools:      tools,
-		handlers:   newHandlers(svc, sddSvc, skillsSvc, modelsSvc, logger),
+		handlers:   newHandlers(svc, sddSvc, nil, nil, logger),
 		logger:     logger,
 		version:    version,
 		maxMessage: maxMessageBytes,
