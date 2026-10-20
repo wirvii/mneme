@@ -691,8 +691,8 @@ is left untouched). Subagents are now generated **per-project** by the
 `mneme-init` skill's grill, so a project's agents match its own stack rather than
 a fixed Go/hexagonal/sqlc template — see
 [docs/enforcement-model.md](enforcement-model.md#project-scoped-opt-in-registration-epic-agnostic-agents-ss-6)
-for the model and the `subagent_*` MCP tools /
-[docs/api/subagents.md](api/subagents.md) for the generation API.
+for the model and `mneme subagents` /
+[docs/api/subagents.md](api/subagents.md) for the generation commands.
 
 ### Built-in role archetypes
 
@@ -722,8 +722,8 @@ owns, projected to `<repo>/.claude/agents/<role>.md` and
 `tools:` allowlist) are always inherited from a fixed Go-authored archetype —
 never LLM-generated — so a generated `backend` subagent has exactly the same
 capability boundary as the global one, just a project-specific prompt. See
-[docs/api/subagents.md](api/subagents.md) for the six `subagent_*` tools and
-`mneme subagents` for their CLI counterpart.
+[docs/api/subagents.md](api/subagents.md) for the `mneme subagents` commands
+(the former `subagent_*` MCP tools are CLI-only since v2.0).
 
 ### Team memory (git-native, opt-in)
 

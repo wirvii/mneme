@@ -209,9 +209,6 @@ families have **no HTTP route at all**:
 | `spec_*` | 8 | -- | Not implemented |
 | `lane_*` | 5 | -- | Not implemented |
 | `codegraph_*` | 10 | -- | Not implemented |
-| `skills_*` | 7 | -- | Not implemented |
-| `model_*` | 3 | -- | Not implemented |
-| `conflicts_*` | 5 | -- | Not implemented |
 | `init` | 1 | -- | Not implemented |
 
 Before adding a new service capability, decide explicitly whether HTTP gets

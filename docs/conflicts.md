@@ -42,8 +42,6 @@ mneme conflicts candidates <memory-id>
 mneme conflicts candidates <memory-id> --limit 10
 ```
 
-Also available as MCP tool `conflicts_candidates`.
-
 After every `mem_save`, a non-blocking background hint logs to `slog.Info`
 when FTS5 candidates exist (`conflict_hint` event). The save itself never
 blocks or fails.
@@ -104,15 +102,11 @@ re-judging the same pair.
 - `store.ClearSupersededBy` is the inverse of `store.SetSupersededBy`, used by
   `ConflictUnlink`.
 
-## MCP tools (51→56)
+## MCP tools (removed in v2.0)
 
-| Tool                  | Description                                      |
-|-----------------------|--------------------------------------------------|
-| `conflicts_candidates`| FTS5 candidate IDs for a memory (deterministic) |
-| `conflicts_scan`      | Judge pairs via Claude CLI subprocess            |
-| `conflicts_link`      | Manual relation creation                         |
-| `conflicts_unlink`    | Remove a relation                                |
-| `conflicts_list`      | List all edges for a project                     |
+The five `conflicts_*` MCP tools (SPEC-039) were removed from the server in
+SPEC-163; the commands in this page are the only surface. The old-tool to
+command table is in [docs/api/conflicts.md](api/conflicts.md).
 
 ## Anti-scope
 
