@@ -1,8 +1,6 @@
 package cli
 
 import (
-	"bytes"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,7 +11,7 @@ import (
 	"github.com/wirvii/mneme/internal/querylog"
 )
 
-// bashInput builds a Bash hookPreToolInput for nudge/telemetry tests.
+// bashInput builds a Bash hookPreToolInput for telemetry tests.
 func bashInput(command, sessionID string) hookPreToolInput {
 	var inp hookPreToolInput
 	inp.ToolName = "Bash"
@@ -34,89 +32,31 @@ func readOpportunities(t *testing.T, dataDir string) []querylog.Event {
 	return events
 }
 
-// ---- W2: Bash-search nudge --------------------------------------------------
+// ---- W2: Bash-search opportunities -----------------------------------------
 
-func TestNudge_FiresOnBashSearch(t *testing.T) {
-	dataDir, _ := setupNudgeDB(t, time.Now().UnixMilli())
-	t.Setenv("MNEME_DATA_DIR", dataDir)
-
-	cwd := mnemeRepoRoot(t)
-	inp := bashInput("grep -r foo internal/", "b1")
-
-	var stdout bytes.Buffer
-	maybeEmitCodegraphNudge(inp, cwd, &stdout, io.Discard)
-
-	if !strings.Contains(stdout.String(), "codegraph-nudge") {
-		t.Errorf("nudge should fire for Bash grep; stdout: %s", stdout.String())
+// TestOpportunity_BashSearchCommands verifies which Bash commands count as
+// code exploration: searches (also inside a pipeline) do, other commands do not.
+func TestOpportunity_BashSearchCommands(t *testing.T) {
+	tests := []struct {
+		name    string
+		command string
+		want    int
+	}{
+		{"grep", "grep -r foo internal/", 1},
+		{"pipeline", "git diff | rg fooBar", 1},
+		{"non-search", "go test ./...", 0},
 	}
-}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dataDir, _ := setupOpportunityDB(t, time.Now().UnixMilli())
+			t.Setenv("MNEME_DATA_DIR", dataDir)
 
-func TestNudge_FiresOnBashPipeline(t *testing.T) {
-	dataDir, _ := setupNudgeDB(t, time.Now().UnixMilli())
-	t.Setenv("MNEME_DATA_DIR", dataDir)
+			recordCodegraphOpportunity(bashInput(tt.command, "b"), mnemeRepoRoot(t))
 
-	cwd := mnemeRepoRoot(t)
-	inp := bashInput("git diff | rg fooBar", "b2")
-
-	var stdout bytes.Buffer
-	maybeEmitCodegraphNudge(inp, cwd, &stdout, io.Discard)
-
-	if !strings.Contains(stdout.String(), "codegraph-nudge") {
-		t.Errorf("nudge should fire for 'git diff | rg' pipeline; stdout: %s", stdout.String())
-	}
-}
-
-func TestNudge_NotFiredOnBashNonSearch(t *testing.T) {
-	dataDir, _ := setupNudgeDB(t, time.Now().UnixMilli())
-	t.Setenv("MNEME_DATA_DIR", dataDir)
-
-	cwd := mnemeRepoRoot(t)
-	inp := bashInput("go test ./...", "b3")
-
-	var stdout bytes.Buffer
-	maybeEmitCodegraphNudge(inp, cwd, &stdout, io.Discard)
-
-	if strings.Contains(stdout.String(), "codegraph-nudge") {
-		t.Errorf("nudge must NOT fire for 'go test'; stdout: %s", stdout.String())
-	}
-}
-
-// TestNudge_SharedBudget_ReadThenBash verifies the once-per-session budget is
-// shared across tools: a Read fires the nudge, a subsequent Bash-search in the
-// same session is suppressed.
-func TestNudge_SharedBudget_ReadThenBash(t *testing.T) {
-	dataDir, _ := setupNudgeDB(t, time.Now().UnixMilli())
-	t.Setenv("MNEME_DATA_DIR", dataDir)
-	cleanStatefile(dataDir)
-
-	cwd := mnemeRepoRoot(t)
-
-	var out1, out2 bytes.Buffer
-	maybeEmitCodegraphNudge(buildNudgeInput("Read", "internal/x.go", "shared-sess", ""), cwd, &out1, io.Discard)
-	maybeEmitCodegraphNudge(bashInput("grep -r foo internal/", "shared-sess"), cwd, &out2, io.Discard)
-
-	if !strings.Contains(out1.String(), "codegraph-nudge") {
-		t.Errorf("first (Read) call should emit nudge; stdout: %s", out1.String())
-	}
-	if strings.Contains(out2.String(), "codegraph-nudge") {
-		t.Errorf("second (Bash) call in same session should be suppressed; stdout: %s", out2.String())
-	}
-}
-
-// TestNudge_MandatoryTone verifies the nudge copy uses mandatory language.
-func TestNudge_MandatoryTone(t *testing.T) {
-	dataDir, _ := setupNudgeDB(t, time.Now().UnixMilli())
-	t.Setenv("MNEME_DATA_DIR", dataDir)
-
-	cwd := mnemeRepoRoot(t)
-	var stdout bytes.Buffer
-	maybeEmitCodegraphNudge(buildNudgeInput("Read", "internal/x.go", "tone", ""), cwd, &stdout, io.Discard)
-
-	out := stdout.String()
-	for _, want := range []string{"MANDATORY", "FIRST", "subagents", "codegraph_search"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("nudge should contain %q (mandatory tone); stdout: %s", want, out)
-		}
+			if got := len(readOpportunities(t, dataDir)); got != tt.want {
+				t.Errorf("opportunity events = %d, want %d", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -125,16 +65,15 @@ func TestNudge_MandatoryTone(t *testing.T) {
 // TestOpportunity_LoggedEveryCall verifies telemetry is recorded on every
 // qualified call, not once per session (AC3).
 func TestOpportunity_LoggedEveryCall(t *testing.T) {
-	dataDir, _ := setupNudgeDB(t, time.Now().UnixMilli())
+	dataDir, _ := setupOpportunityDB(t, time.Now().UnixMilli())
 	t.Setenv("MNEME_DATA_DIR", dataDir)
-	cleanStatefile(dataDir)
 
 	cwd := mnemeRepoRoot(t)
-	inp := buildNudgeInput("Grep", "", "opp-sess", "")
+	inp := buildToolInput("Grep", "", "opp-sess", "")
 
-	maybeEmitCodegraphNudge(inp, cwd, io.Discard, io.Discard)
-	maybeEmitCodegraphNudge(inp, cwd, io.Discard, io.Discard)
-	maybeEmitCodegraphNudge(inp, cwd, io.Discard, io.Discard)
+	recordCodegraphOpportunity(inp, cwd)
+	recordCodegraphOpportunity(inp, cwd)
+	recordCodegraphOpportunity(inp, cwd)
 
 	events := readOpportunities(t, dataDir)
 	if len(events) != 3 {
@@ -150,11 +89,11 @@ func TestOpportunity_LoggedEveryCall(t *testing.T) {
 // TestOpportunity_BashToolLabel verifies the Bash executable head is recorded as
 // "bash:<cmd>" and no command text is stored.
 func TestOpportunity_BashToolLabel(t *testing.T) {
-	dataDir, _ := setupNudgeDB(t, time.Now().UnixMilli())
+	dataDir, _ := setupOpportunityDB(t, time.Now().UnixMilli())
 	t.Setenv("MNEME_DATA_DIR", dataDir)
 
 	cwd := mnemeRepoRoot(t)
-	maybeEmitCodegraphNudge(bashInput("rg --hidden secretPattern internal/", "bl"), cwd, io.Discard, io.Discard)
+	recordCodegraphOpportunity(bashInput("rg --hidden secretPattern internal/", "bl"), cwd)
 
 	events := readOpportunities(t, dataDir)
 	if len(events) != 1 {
@@ -177,11 +116,11 @@ func TestOpportunity_BashToolLabel(t *testing.T) {
 // TestOpportunity_NoGraph_NoLog verifies an unindexed project logs nothing.
 func TestOpportunity_NoGraph_NoLog(t *testing.T) {
 	// updatedAtMs=0 → DB exists but has 0 nodes; ProbeGraph reports no nodes.
-	dataDir, _ := setupNudgeDB(t, 0)
+	dataDir, _ := setupOpportunityDB(t, 0)
 	t.Setenv("MNEME_DATA_DIR", dataDir)
 
 	cwd := mnemeRepoRoot(t)
-	maybeEmitCodegraphNudge(buildNudgeInput("Read", "internal/x.go", "ng", ""), cwd, io.Discard, io.Discard)
+	recordCodegraphOpportunity(buildToolInput("Read", "internal/x.go", "ng", ""), cwd)
 
 	if events := readOpportunities(t, dataDir); len(events) != 0 {
 		t.Fatalf("expected no opportunity events without an indexed graph, got %d", len(events))
@@ -189,19 +128,14 @@ func TestOpportunity_NoGraph_NoLog(t *testing.T) {
 }
 
 // TestOpportunity_OffSwitch verifies MNEME_CODEGRAPH_QUERYLOG=false suppresses
-// telemetry while the nudge still fires.
+// telemetry.
 func TestOpportunity_OffSwitch(t *testing.T) {
-	dataDir, _ := setupNudgeDB(t, time.Now().UnixMilli())
+	dataDir, _ := setupOpportunityDB(t, time.Now().UnixMilli())
 	t.Setenv("MNEME_DATA_DIR", dataDir)
 	t.Setenv("MNEME_CODEGRAPH_QUERYLOG", "false")
 
-	cwd := mnemeRepoRoot(t)
-	var stdout bytes.Buffer
-	maybeEmitCodegraphNudge(buildNudgeInput("Read", "internal/x.go", "off", ""), cwd, &stdout, io.Discard)
+	recordCodegraphOpportunity(buildToolInput("Read", "internal/x.go", "off", ""), mnemeRepoRoot(t))
 
-	if !strings.Contains(stdout.String(), "codegraph-nudge") {
-		t.Errorf("nudge should still fire with querylog off; stdout: %s", stdout.String())
-	}
 	if events := readOpportunities(t, dataDir); len(events) != 0 {
 		t.Fatalf("expected no telemetry when querylog disabled, got %d", len(events))
 	}
