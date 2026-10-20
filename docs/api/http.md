@@ -130,7 +130,7 @@ curl 'http://localhost:7437/v1/memories/019de100-.../explore?depth=3'
 
 ## POST /v1/sessions/end
 
-End the current session and save a summary. Request body: same schema as `mem_session_end`.
+End the current session and save a summary. Request body: same schema as `mem_session_end`, including `partial`, `decisions` and `next_steps` (SPEC-164: `partial: true` saves the `checkpoint/latest` memory without closing the session).
 
 ```bash
 curl -X POST http://localhost:7437/v1/sessions/end \
@@ -202,9 +202,7 @@ families have **no HTTP route at all**:
 
 | Family | MCP tools | HTTP route | Status |
 |--------|-----------|------------|--------|
-| `mem_checkpoint` | 1 | -- | Not implemented |
-| `mem_timeline` | 1 | -- | Not implemented |
-| `mem_suggest_topic_key` | 1 | -- | Not implemented |
+| `mem_timeline` (now `mneme mem timeline`) | 1 | -- | Not implemented |
 | `backlog_*` | 5 | -- | Not implemented |
 | `spec_*` | 8 | -- | Not implemented |
 | `lane_*` | 5 | -- | Not implemented |

@@ -480,4 +480,8 @@ type SaveResponse struct {
 
 	// TopicKey echoes the topic key (empty if none was provided or derived).
 	TopicKey string `json:"topic_key,omitempty"`
+
+	// SuggestedTopicKey is a topic_key proposal for this memory, present only
+	// when the caller did not pass one (SPEC-164). Advisory: mneme never assigns it.
+	SuggestedTopicKey string `json:"suggested_topic_key,omitempty"`
 }

@@ -308,6 +308,11 @@ func (svc *MemoryService) Save(ctx context.Context, req model.SaveRequest) (*mod
 		TopicKey:      result.TopicKey,
 	}
 
+	// SPEC-164 D2: advisory topic_key proposal; never assigned, never fails Save.
+	if req.TopicKey == "" && result.Type != model.TypeSessionSummary && result.Type != model.TypeSynthesis {
+		resp.SuggestedTopicKey = svc.suggestTopicKeyBestEffort(ctx, result.Title, result.Project)
+	}
+
 	// Non-blocking conflict hint: runs best-effort, never fails the save.
 	// It finds FTS5 candidates and emits a slog.Info when potential conflicts
 	// exist. No judgment, no relation writes.

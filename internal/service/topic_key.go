@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"math"
 	"regexp"
 	"sort"
@@ -214,4 +215,17 @@ func inferPrefix(lower string) string {
 	default:
 		return "discovery/"
 	}
+}
+
+// suggestTopicKeyBestEffort returns the topic_key suggestion for a freshly
+// saved memory, or "" when the suggestion fails. A failure is logged and never
+// propagated: the suggestion is advisory and must not turn a successful save
+// into an error (SPEC-164 D2).
+func (svc *MemoryService) suggestTopicKeyBestEffort(ctx context.Context, title, project string) string {
+	sug, err := svc.SuggestTopicKey(ctx, model.SuggestTopicKeyRequest{Title: title, Project: project})
+	if err != nil {
+		slog.WarnContext(ctx, "service: save: suggest topic key", "error", err)
+		return ""
+	}
+	return sug.Suggestion
 }

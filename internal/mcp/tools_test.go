@@ -6,12 +6,36 @@ import (
 	"testing"
 )
 
-// TestAllTools_Count82 verifies the tool count after SPEC-158 retires the
-// five quality_* tools: 87 -> 82.
-func TestAllTools_Count82(t *testing.T) {
+// TestAllTools_Count73 verifies the tool count after SPEC-164 trims the
+// mem_* family from 15 to 6 (-9): 82 -> 73. Other parallel retirements adjust
+// this number on their own.
+func TestAllTools_Count73(t *testing.T) {
 	tools := allTools()
-	if len(tools) != 82 {
-		t.Errorf("allTools() returned %d tools, want 82", len(tools))
+	if len(tools) != 73 {
+		t.Errorf("allTools() returned %d tools, want 73", len(tools))
+	}
+}
+
+// TestToolsList_MemSurfaceIsSix is SPEC-164 AC1: the MCP server exposes
+// exactly six mem_* tools; the other nine moved to the CLI or were absorbed.
+func TestToolsList_MemSurfaceIsSix(t *testing.T) {
+	want := map[string]bool{
+		"mem_save": true, "mem_search": true, "mem_get": true,
+		"mem_context": true, "mem_update": true, "mem_session_end": true,
+	}
+	got := map[string]bool{}
+	for _, tool := range allTools() {
+		if strings.HasPrefix(tool.Name, "mem_") {
+			got[tool.Name] = true
+		}
+	}
+	if len(got) != len(want) {
+		t.Fatalf("mem_* tools = %v, want exactly %v", got, want)
+	}
+	for name := range want {
+		if !got[name] {
+			t.Errorf("missing %s", name)
+		}
 	}
 }
 

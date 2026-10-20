@@ -26,6 +26,7 @@ func newSaveCmd() *cobra.Command {
 		flagStdin      bool
 		flagAppliesTo  []string
 		flagSeverity   string
+		flagJSON       bool
 	)
 
 	cmd := &cobra.Command{
@@ -93,6 +94,10 @@ a duplicate.`,
 				return err
 			}
 
+			if flagJSON {
+				return printJSON(os.Stdout, resp)
+			}
+
 			fmt.Fprintf(os.Stdout, "Saved: %s (%s) — %s\n", resp.ID, resp.Action, resp.Title)
 			return nil
 		},
@@ -107,6 +112,7 @@ a duplicate.`,
 	cmd.Flags().Float64VarP(&flagImportance, "importance", "i", 0, "Importance override (0.0-1.0)")
 	cmd.Flags().BoolVar(&flagStdin, "stdin", false, "Read content from stdin")
 	cmd.Flags().StringArrayVarP(&flagAppliesTo, "applies-to", "a", nil, "Patterns this rule applies to (repeatable, required for --type rule)")
+	cmd.Flags().BoolVar(&flagJSON, "json", false, "Output the save response as JSON (includes suggested_topic_key)")
 	cmd.Flags().StringVar(&flagSeverity, "severity", "", "Rule severity: info, warn, block (default \"warn\" for rules)")
 
 	return cmd

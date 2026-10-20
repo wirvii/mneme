@@ -15,7 +15,6 @@ import (
 	"github.com/wirvii/mneme/internal/config"
 	"github.com/wirvii/mneme/internal/db"
 	"github.com/wirvii/mneme/internal/embed"
-	"github.com/wirvii/mneme/internal/model"
 	"github.com/wirvii/mneme/internal/service"
 	"github.com/wirvii/mneme/internal/store"
 )
@@ -214,8 +213,7 @@ func TestToolsList(t *testing.T) {
 	wantNames := []string{
 		"speech_emit", "speech_control",
 		"mem_save", "mem_search", "mem_get", "mem_context",
-		"mem_update", "mem_session_end", "mem_suggest_topic_key",
-		"mem_relate", "mem_timeline", "mem_stats", "mem_checkpoint", "mem_forget", "mem_promote",
+		"mem_update", "mem_session_end",
 		// SDD tools
 		"backlog_add", "backlog_list", "backlog_get", "backlog_refine", "backlog_promote", "backlog_archive",
 		"spec_new", "spec_status", "spec_advance", "spec_pushback", "spec_resolve",
@@ -225,9 +223,6 @@ func TestToolsList(t *testing.T) {
 		"spec_reject", "lane_stats",
 		// SDD git-native read tools (SPEC-131 §2b)
 		"sdd_status", "sdd_import",
-		// Graph tools
-		"mem_gaps",
-		"mem_explore",
 		// Codegraph tools
 		"codegraph_search", "codegraph_context", "codegraph_callers",
 		"codegraph_callees", "codegraph_impact", "codegraph_node",
@@ -485,148 +480,6 @@ func TestMemUpdate(t *testing.T) {
 	}
 }
 
-// TestMemPromote verifies the mem_promote tool marks a memory as
-// team-curated (shared=2), that the change is durably persisted (verified by
-// a fresh mem_get, not just the promote response), and that calling it twice
-// is idempotent (SPEC-063 SS-C).
-func TestMemPromote(t *testing.T) {
-	srv := newTestServer(t)
-
-	saveResp := process(t, srv, "tools/call", 1, ToolCallParams{
-		Name: "mem_save",
-		Arguments: mustMarshal(t, map[string]any{
-			"title":   "A note to promote",
-			"content": "This starts out local-only.",
-			"type":    "discovery",
-		}),
-	})
-	var saved struct {
-		ID string `json:"id"`
-	}
-	unmarshalToolText(t, saveResp, &saved)
-
-	resp := process(t, srv, "tools/call", 2, ToolCallParams{
-		Name:      "mem_promote",
-		Arguments: mustMarshal(t, map[string]any{"id": saved.ID}),
-	})
-
-	var promoteResp struct {
-		ID     string `json:"id"`
-		Shared int    `json:"shared"`
-		Status string `json:"status"`
-	}
-	unmarshalToolText(t, resp, &promoteResp)
-
-	if promoteResp.Shared != 2 {
-		t.Errorf("shared = %d, want 2", promoteResp.Shared)
-	}
-	if promoteResp.Status != "promoted" {
-		t.Errorf("status = %q, want %q", promoteResp.Status, "promoted")
-	}
-
-	// Reload via mem_get to prove the change was persisted in the DB, not
-	// just returned in-memory by mem_promote.
-	getResp := process(t, srv, "tools/call", 3, ToolCallParams{
-		Name:      "mem_get",
-		Arguments: mustMarshal(t, map[string]any{"id": saved.ID}),
-	})
-	var got struct {
-		Shared int `json:"shared"`
-	}
-	unmarshalToolText(t, getResp, &got)
-	if got.Shared != 2 {
-		t.Errorf("reloaded shared = %d, want 2 (persisted)", got.Shared)
-	}
-
-	// Second call must be idempotent — same shared level, no error.
-	resp2 := process(t, srv, "tools/call", 4, ToolCallParams{
-		Name:      "mem_promote",
-		Arguments: mustMarshal(t, map[string]any{"id": saved.ID}),
-	})
-	var promoteResp2 struct {
-		Shared int `json:"shared"`
-	}
-	unmarshalToolText(t, resp2, &promoteResp2)
-	if promoteResp2.Shared != promoteResp.Shared {
-		t.Errorf("mem_promote is not idempotent: first shared=%d, second shared=%d", promoteResp.Shared, promoteResp2.Shared)
-	}
-}
-
-// TestMemPromote_NotFound verifies that mem_promote with an unknown id
-// returns CodeInvalidParams (not CodeMemoryNotFound — SPEC-063 SS-C contract:
-// the caller supplied a bad argument).
-func TestMemPromote_NotFound(t *testing.T) {
-	srv := newTestServer(t)
-
-	resp := process(t, srv, "tools/call", 1, ToolCallParams{
-		Name:      "mem_promote",
-		Arguments: mustMarshal(t, map[string]any{"id": "01938f1b-0000-7000-8000-000000000000"}),
-	})
-
-	if resp.Error == nil {
-		t.Fatal("expected an error response for a non-existent id")
-	}
-	if resp.Error.Code != CodeInvalidParams {
-		t.Errorf("error code = %d, want %d (CodeInvalidParams)", resp.Error.Code, CodeInvalidParams)
-	}
-}
-
-// TestMemPromote_ProfileProvenance_RejectedAsInvalidParams is SPEC-094 §4
-// AC4/AC9's MCP surface: promoting a memory with profile provenance must
-// come back as CodeInvalidParams — an operator error, not an internal
-// failure — carrying model.ErrProfileMemoryNotShareable's message. There is
-// no public MCP tool that stamps profile provenance (mem_save's Source field
-// is json:"-"), so this seeds the row directly via the underlying
-// MemoryService.SaveProfileRule, exactly as a real profile activation would
-// (SPEC-092 §2).
-func TestMemPromote_ProfileProvenance_RejectedAsInvalidParams(t *testing.T) {
-	projectDB, err := db.OpenMemory()
-	if err != nil {
-		t.Fatalf("open project db: %v", err)
-	}
-	t.Cleanup(func() { projectDB.Close() })
-	globalDB, err := db.OpenMemory()
-	if err != nil {
-		t.Fatalf("open global db: %v", err)
-	}
-	t.Cleanup(func() { globalDB.Close() })
-
-	svc := service.NewMemoryService(store.NewMemoryStore(projectDB), store.NewMemoryStore(globalDB), config.Default(), "test-project", embed.NopEmbedder{})
-	srv := NewServer(svc, nil, nil, nil, slog.Default(), "all", "test")
-
-	saveResp, err := svc.SaveProfileRule(t.Context(), model.SaveRequest{
-		Title:     "A profile-injected rule",
-		Content:   "Team standard rule.",
-		AppliesTo: []string{"**"},
-	}, "chatea-pro")
-	if err != nil {
-		t.Fatalf("SaveProfileRule: unexpected error: %v", err)
-	}
-
-	resp := process(t, srv, "tools/call", 1, ToolCallParams{
-		Name:      "mem_promote",
-		Arguments: mustMarshal(t, map[string]any{"id": saveResp.ID}),
-	})
-
-	if resp.Error == nil {
-		t.Fatal("expected an error response for a profile-provenance memory")
-	}
-	if resp.Error.Code != CodeInvalidParams {
-		t.Errorf("error code = %d, want %d (CodeInvalidParams)", resp.Error.Code, CodeInvalidParams)
-	}
-	if !strings.Contains(resp.Error.Message, "cannot be promoted") {
-		t.Errorf("error message = %q, want it to mention ErrProfileMemoryNotShareable", resp.Error.Message)
-	}
-
-	reloaded, err := svc.Get(t.Context(), saveResp.ID)
-	if err != nil {
-		t.Fatalf("Get after rejected promote: unexpected error: %v", err)
-	}
-	if reloaded.Shared != 0 {
-		t.Errorf("Shared must stay 0 after a rejected promote, got %d", reloaded.Shared)
-	}
-}
-
 func TestMemSessionEnd(t *testing.T) {
 	srv := newTestServer(t)
 
@@ -648,106 +501,6 @@ func TestMemSessionEnd(t *testing.T) {
 	}
 	if sessResp.SummaryMemoryID == "" {
 		t.Error("expected non-empty summary_memory_id")
-	}
-}
-
-func TestMemCheckpoint(t *testing.T) {
-	srv := newTestServer(t)
-
-	// First call should create the checkpoint.
-	resp := process(t, srv, "tools/call", 1, ToolCallParams{
-		Name: "mem_checkpoint",
-		Arguments: mustMarshal(t, map[string]any{
-			"summary":    "working on auth handler",
-			"decisions":  "using JWT tokens",
-			"next_steps": "write tests",
-		}),
-	})
-
-	var checkResp struct {
-		ID     string `json:"id"`
-		Action string `json:"action"`
-	}
-	unmarshalToolText(t, resp, &checkResp)
-
-	if checkResp.ID == "" {
-		t.Error("expected non-empty id in checkpoint response")
-	}
-	if checkResp.Action != "created" {
-		t.Errorf("action = %q, want %q", checkResp.Action, "created")
-	}
-
-	// Second call should update (upsert) the existing checkpoint.
-	resp2 := process(t, srv, "tools/call", 2, ToolCallParams{
-		Name: "mem_checkpoint",
-		Arguments: mustMarshal(t, map[string]any{
-			"summary": "auth handler complete, writing tests now",
-		}),
-	})
-
-	var checkResp2 struct {
-		ID     string `json:"id"`
-		Action string `json:"action"`
-	}
-	unmarshalToolText(t, resp2, &checkResp2)
-
-	if checkResp2.Action != "updated" {
-		t.Errorf("second call action = %q, want %q", checkResp2.Action, "updated")
-	}
-	if checkResp.ID != checkResp2.ID {
-		t.Errorf("id changed between checkpoints: %s → %s", checkResp.ID, checkResp2.ID)
-	}
-}
-
-func TestMemCheckpoint_ValidationError(t *testing.T) {
-	srv := newTestServer(t)
-
-	// Call without required summary field → CodeInvalidParams.
-	resp := process(t, srv, "tools/call", 1, ToolCallParams{
-		Name:      "mem_checkpoint",
-		Arguments: mustMarshal(t, map[string]any{}),
-	})
-
-	if resp.Error == nil {
-		t.Fatal("expected JSON-RPC error for missing summary, got nil")
-	}
-	if resp.Error.Code != CodeInvalidParams {
-		t.Errorf("error code = %d, want %d (CodeInvalidParams)", resp.Error.Code, CodeInvalidParams)
-	}
-	if !strings.Contains(resp.Error.Message, "summary") {
-		t.Errorf("error message %q should mention 'summary'", resp.Error.Message)
-	}
-}
-
-func TestMemSuggestTopicKey(t *testing.T) {
-	srv := newTestServer(t)
-
-	// Save a memory with a topic key so it appears in suggestions.
-	process(t, srv, "tools/call", 1, ToolCallParams{
-		Name: "mem_save",
-		Arguments: mustMarshal(t, map[string]any{
-			"title":     "Architecture decision for auth",
-			"content":   "Use JWT tokens for stateless auth.",
-			"type":      "decision",
-			"topic_key": "decision/auth-model",
-		}),
-	})
-
-	resp := process(t, srv, "tools/call", 2, ToolCallParams{
-		Name: "mem_suggest_topic_key",
-		Arguments: mustMarshal(t, map[string]any{
-			"title": "Architecture decision for auth",
-		}),
-	})
-
-	var suggestion struct {
-		Suggestion string `json:"suggestion"`
-		IsNewTopic bool   `json:"is_new_topic"`
-	}
-	unmarshalToolText(t, resp, &suggestion)
-
-	if suggestion.Suggestion == "" {
-		t.Error("expected non-empty suggestion")
 	}
 }
 

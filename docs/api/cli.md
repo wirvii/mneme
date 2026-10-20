@@ -117,6 +117,28 @@ mneme promote 019de100-abcd-7fff-8000-000000000001
 
 No flags besides the required positional `<id>`.
 
+### mneme mem
+
+Memory administration group (SPEC-164). The MCP surface keeps only six
+`mem_*` tools; the rest live here. `mneme mem stats|forget|promote|gaps|explore`
+are the same commands documented in this section, also kept as top-level
+aliases (`mneme stats`, `mneme forget`, ...).
+
+```bash
+mneme mem timeline <around> [--window 7d] [--limit 20] [--project P] [--json]
+mneme mem relate <source> <target> <relation> [--source-kind K] [--target-kind K] [--weight W] [--project P] [--json]
+```
+
+- `timeline`: memories around a memory UUID or an ISO 8601 timestamp, oldest
+  first (table `CREATED TYPE ID TITLE`, or `--json`).
+- `relate`: `<relation>` is one of `depends_on`, `implements`, `supersedes`,
+  `related_to`, `part_of`, `uses`, `conflicts_with`, `references`. Endpoints
+  are a memory UUID (or 8+ hex prefix), a `topic_key`, or an entity name. An
+  invalid relation fails before anything is written.
+
+`mneme save --json` prints the full save response, including
+`suggested_topic_key` when no `--topic-key` was given.
+
 ### mneme status
 
 Project dashboard: detected project, DB path, memory counts, backlog/spec

@@ -38,7 +38,7 @@ func allTools() []ToolDefinition {
 		},
 		{
 			Name:        "mem_save",
-			Description: "Save a structured observation to persistent memory.",
+			Description: "Save a structured observation to persistent memory. When topic_key is omitted the response carries suggested_topic_key (advisory; reuse it on the next save of this topic).",
 			InputSchema: map[string]any{
 				"type":     "object",
 				"required": []string{"title", "content"},
@@ -267,171 +267,17 @@ func allTools() []ToolDefinition {
 						"type":        "string",
 						"description": "Project slug. Defaults to the detected project.",
 					},
-				},
-			},
-		},
-		{
-			Name:        "mem_suggest_topic_key",
-			Description: "Suggest a topic_key for a new memory. Searches existing topic keys and unresolved knowledge gaps to find the best match. Returns scored suggestions from both existing memories (Jaccard similarity) and gap analysis (Jaccard + urgency boost). Gap matches signal that the project already needs this key.",
-			InputSchema: map[string]any{
-				"type":     "object",
-				"required": []string{"title"},
-				"properties": map[string]any{
-					"title": map[string]any{
-						"type":        "string",
-						"description": "Title of the memory for which to suggest a topic key.",
-					},
-					"project": map[string]any{
-						"type":        "string",
-						"description": "Project slug used to search for existing similar keys and gaps.",
-					},
-				},
-			},
-		},
-		{
-			Name:        "mem_relate",
-			Description: "Create or update a relationship between two graph endpoints. Each endpoint is a string resolved in this order: (1) memory UUID full or 8+ hex prefix, (2) memory topic_key (when *_kind is omitted or 'concept'), (3) entity name. When resolution lands on a memory, the memory is auto-linked to its proxy entity so the relation is reachable from mem_explore. Pass an explicit non-default *_kind (e.g. 'service', 'library') to force entity-only semantics.",
-			InputSchema: map[string]any{
-				"type":     "object",
-				"required": []string{"source", "target", "relation"},
-				"properties": map[string]any{
-					"source": map[string]any{
-						"type":        "string",
-						"description": "Source endpoint: memory UUID, UUID prefix (8+ hex), topic_key, or entity name.",
-					},
-					"target": map[string]any{
-						"type":        "string",
-						"description": "Target endpoint: memory UUID, UUID prefix (8+ hex), topic_key, or entity name.",
-					},
-					"relation": map[string]any{
-						"type":        "string",
-						"description": "Type of relationship between the two entities.",
-						"enum": []string{
-							"depends_on", "implements", "supersedes",
-							"related_to", "part_of", "uses", "conflicts_with",
-							"references",
-						},
-					},
-					"source_kind": map[string]any{
-						"type":        "string",
-						"description": "Entity kind for the source when it needs to be created. Defaults to concept.",
-						"enum": []string{
-							"module", "service", "library", "concept", "person", "pattern", "file",
-						},
-					},
-					"target_kind": map[string]any{
-						"type":        "string",
-						"description": "Entity kind for the target when it needs to be created. Defaults to concept.",
-						"enum": []string{
-							"module", "service", "library", "concept", "person", "pattern", "file",
-						},
-					},
-					"project": map[string]any{
-						"type":        "string",
-						"description": "Project slug. Defaults to the detected project when omitted.",
-					},
-					"weight": map[string]any{
-						"type":        "number",
-						"description": "Override the default weight for this relation type. Must be between 0.0 and 1.0. When omitted, a type-specific default is used (e.g. depends_on=0.9, related_to=0.5).",
-					},
-				},
-			},
-		},
-		{
-			Name:        "mem_timeline",
-			Description: "Get memories around a specific point in time, ordered chronologically.",
-			InputSchema: map[string]any{
-				"type":     "object",
-				"required": []string{"around"},
-				"properties": map[string]any{
-					"around": map[string]any{
-						"type":        "string",
-						"description": "A memory UUID or ISO 8601 timestamp to use as the centre of the timeline window.",
-					},
-					"project": map[string]any{
-						"type":        "string",
-						"description": "Project slug. Defaults to the detected project when omitted.",
-					},
-					"window": map[string]any{
-						"type":        "string",
-						"description": "Time range to search (e.g. '7d', '24h', '30d'). Defaults to '7d'.",
-					},
-					"limit": map[string]any{
-						"type":        "integer",
-						"description": "Maximum number of results. Defaults to 20.",
-						"minimum":     1,
-						"maximum":     100,
-					},
-				},
-			},
-		},
-		{
-			Name:        "mem_stats",
-			Description: "Return aggregate statistics about the project memory store.",
-			InputSchema: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"project": map[string]any{
-						"type":        "string",
-						"description": "Project slug. Defaults to the detected project. Pass empty string for global stats.",
-					},
-				},
-			},
-		},
-		{
-			Name:        "mem_checkpoint",
-			Description: "Save a checkpoint of the current work state. Call periodically during long tasks to prevent knowledge loss on context compaction. Overwrites the previous checkpoint automatically.",
-			InputSchema: map[string]any{
-				"type":     "object",
-				"required": []string{"summary"},
-				"properties": map[string]any{
-					"summary": map[string]any{
-						"type":        "string",
-						"description": "Brief summary of current work state and progress.",
+					"partial": map[string]any{
+						"type":        "boolean",
+						"description": "true saves a checkpoint (checkpoint/latest) without closing the session. Call it periodically during long tasks to survive context compaction.",
 					},
 					"decisions": map[string]any{
 						"type":        "string",
-						"description": "Decisions made since last checkpoint or session start.",
+						"description": "Only read when partial is true: decisions made since the last checkpoint or session start.",
 					},
 					"next_steps": map[string]any{
 						"type":        "string",
-						"description": "What needs to happen next if the context is lost.",
-					},
-					"project": map[string]any{
-						"type":        "string",
-						"description": "Project slug. Defaults to the detected project.",
-					},
-				},
-			},
-		},
-		{
-			Name:        "mem_forget",
-			Description: "Mark a memory for accelerated decay. Sets its decay rate to 1.0 so importance drops to near zero on the next scoring pass.",
-			InputSchema: map[string]any{
-				"type":     "object",
-				"required": []string{"id"},
-				"properties": map[string]any{
-					"id": map[string]any{
-						"type":        "string",
-						"description": "UUIDv7 of the memory to forget.",
-					},
-					"reason": map[string]any{
-						"type":        "string",
-						"description": "Optional reason why the memory should be forgotten.",
-					},
-				},
-			},
-		},
-		{
-			Name:        "mem_promote",
-			Description: "Mark a memory as team-curated (shared=2) and persist it in the database. Materializes it to the shared git vault immediately when team-memory is active. Idempotent.",
-			InputSchema: map[string]any{
-				"type":     "object",
-				"required": []string{"id"},
-				"properties": map[string]any{
-					"id": map[string]any{
-						"type":        "string",
-						"description": "UUIDv7 of the memory to promote.",
+						"description": "Only read when partial is true: what needs to happen next if the context is lost.",
 					},
 				},
 			},
@@ -933,77 +779,6 @@ func allTools() []ToolDefinition {
 			InputSchema: map[string]any{
 				"type":       "object",
 				"properties": map[string]any{},
-			},
-		},
-
-		// mem_gaps
-		{
-			Name:        "mem_gaps",
-			Description: "List knowledge gaps — unresolved [[wikilink]] references. Shows topic_keys that are mentioned in memories but don't have a corresponding memory yet. Use this to discover what knowledge is missing and decide what to create next.",
-			InputSchema: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"scope": map[string]any{
-						"type":        "string",
-						"description": "Query scope: project (default), global, or all.",
-						"enum":        []string{"project", "global", "all"},
-					},
-					"limit": map[string]any{
-						"type":        "integer",
-						"description": "Maximum number of gaps to return. Default: 20, max: 100.",
-						"minimum":     1,
-						"maximum":     100,
-					},
-					"min_mentions": map[string]any{
-						"type":        "integer",
-						"description": "Minimum total_mentions to include a gap. Default: 1.",
-						"minimum":     1,
-					},
-					"include_samples": map[string]any{
-						"type":        "boolean",
-						"description": "Include sample source memories for each gap. Default: true. Set false for faster aggregate-only output.",
-					},
-					"project": map[string]any{
-						"type":        "string",
-						"description": "Project slug. Defaults to the detected project.",
-					},
-				},
-			},
-		},
-		// mem_explore
-		{
-			Name:        "mem_explore",
-			Description: "Explore the knowledge graph starting from a seed memory. Performs a prioritised BFS traversal following strong relations, returning connected memories with their distance and accumulated path weight.",
-			InputSchema: map[string]any{
-				"type":     "object",
-				"required": []string{"seed"},
-				"properties": map[string]any{
-					"seed": map[string]any{
-						"type":        "string",
-						"description": "Starting memory: full UUID, short UUID prefix (8+ hex chars), or topic_key (e.g. 'architecture/auth-model').",
-					},
-					"depth": map[string]any{
-						"type":        "integer",
-						"description": "Maximum hops from seed. Default: 2. Range: 0-5.",
-						"minimum":     0,
-						"maximum":     5,
-					},
-					"budget": map[string]any{
-						"type":        "integer",
-						"description": "Maximum token budget for returned memories. Default: 4000.",
-						"minimum":     1,
-					},
-					"threshold": map[string]any{
-						"type":        "number",
-						"description": "Minimum relation weight to follow. Default: 0.3. Range: 0.0-1.0.",
-						"minimum":     0.0,
-						"maximum":     1.0,
-					},
-					"project": map[string]any{
-						"type":        "string",
-						"description": "Project slug. Defaults to the detected project.",
-					},
-				},
 			},
 		},
 

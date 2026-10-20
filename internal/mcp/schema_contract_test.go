@@ -78,10 +78,10 @@ var undeclaredFieldWaivers = map[string]map[string]string{
 	// HTTP frontend's contract — a behaviour change this spec's scope
 	// explicitly excludes (D7.2/C4.1). Declaring it in the schema was also
 	// rejected: it is not a parameter an agent should choose at save time
-	// (it is set by mem_promote, or by Go call sites building SaveRequest
+	// (it is set by `mneme mem promote`, or by Go call sites building SaveRequest
 	// directly, e.g. vault.Frontmatter.ToSaveRequest) — publishing it would
 	// invite an agent to set it ad hoc.
-	"mem_save": {"shared": "team-memory sharing level; set via mem_promote or Go call sites (ToSaveRequest), not an agent-facing save-time choice; json:\"-\" rejected because internal/http's handleMemories decodes SaveRequest from JSON and would be silently narrowed (SPEC-113 D7.2/C4.1)"},
+	"mem_save": {"shared": "team-memory sharing level; set via `mneme mem promote` or Go call sites (ToSaveRequest), not an agent-facing save-time choice; json:\"-\" rejected because internal/http's handleMemories decodes SaveRequest from JSON and would be silently narrowed (SPEC-113 D7.2/C4.1)"},
 }
 
 // requestField is one JSON-visible field discovered (via AST) on a tool's
