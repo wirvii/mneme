@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [v1.49.1] — 2026-10-20 — a new database no longer breaks when two processes open it at once
+
+### Fixed
+
+- SPEC-178: two mneme processes opening a brand-new project database at the
+  same moment (for example the MCP server and a hook or CLI command) could
+  re-run migration 005, rebuild `specs` with its old 9 columns and still leave
+  `schema_version` at 24, after which every CLI command failed with
+  `ensure sdd uuids: ... no such column: uuid`. Opening a database is now
+  serialized between processes (`BEGIN IMMEDIATE`, one transaction for every
+  pending migration, `Open` retries `SQLITE_BUSY` on its first ping for up to
+  5 seconds), the runner no longer records a version it did not apply, and an
+  up-to-date database opens without taking the write lock.
+- SPEC-178: a database already damaged that way repairs itself when opened:
+  the missing `specs` columns (`lane`, `scope`, `base_sha`, `uuid`,
+  `previous_ids`), `idx_specs_uuid` and `spec_history.reviewed_sha` are added.
+  The repair only adds; it never drops or rebuilds a table.
+- SPEC-178: a database recorded below version 22 whose `spec_history` already
+  has `reviewed_sha` no longer fails with `duplicate column name: reviewed_sha`.
+- SPEC-176: `scripts/skill-comply/run.sh` exits 2 (harness failure) when the
+  Claude CLI fails to authenticate, instead of scoring it as non-compliance.
+
 ### Added
 
 - SPEC-175: the `enforce-delegation` hook now rejects a subagent's Bash command
