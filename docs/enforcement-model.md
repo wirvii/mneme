@@ -299,7 +299,9 @@ binary, a renamed binary, `xargs`, script files, unlisted wrappers pass); R2 a
 hand-written path to the real directory that is not a known literal passes; R3
 the git hooks of `mneme sdd hooks install` run `mneme sdd import` against the
 real database on `git pull`/`git checkout` and the hook cannot see that
-subprocess. Details and the literal message: `docs/HOOKS.md`.
+subprocess (the risk behind it, importing files an agent wrote by hand, is
+closed at its source by the `.mneme/sdd` guard below, SPEC-179). Details and the
+literal message: `docs/HOOKS.md`.
 
 **Codex.** Children carry `agent_id`/`agent_type` and send the shell tool as
 `Bash`, so the hook guards apply unchanged. The role-bound MCP server
@@ -313,6 +315,42 @@ subagent can now write its own entregable (`spec.md`/`plan.md`/
 that entregable belongs to. See `docs/HOOKS.md`'s own "Lifecycle-tool
 denial" section for the exact block message and `docs/subagents.md` for
 `mneme subagents regen` (the remediation the message names).
+
+### `.mneme/sdd` guard (SPEC-179)
+
+Nobody writes by hand in `.mneme/sdd/**` (orchestrator, subagent with a role,
+subagent without one; Claude Code and Codex). The importer applies those files
+as written, with no human approval gate and no rules about who moves a spec, so
+an agent-written `status: done` would be imported by the next `git pull` of
+anyone. Only the mneme binary writes them, and it never passes through hooks.
+
+The guard is the **first** one in `runHookEnforceDelegation`
+(`checkSDDFilesGuard`), before the lifecycle guards above, the `delegationTools`
+filter (Codex's `apply_patch` is not in it), the unresolved-role short-circuit,
+`evaluateDelegation`, the trivial-inline grant (SPEC-171) and area containment
+(SPEC-086). It reads neither identity, manifest, config nor database, so a
+project with no manifest, containment `off`, or a trivial spec whose scope covers
+`.mneme/**` is blocked all the same. It judges `Write`, `Edit`, `MultiEdit`,
+`NotebookEdit`, Bash (redirections, `sed -i`, `tee`, `cp`, `mv`, `rm`,
+`truncate`, `touch`, `rmdir`, `ln`, `install`, `dd`, `perl -i`, inline
+`python`/`node` with a write signal, `git checkout|restore --ours|--theirs|
+--source`, ancestors such as `rm -rf .mneme`, globs, `cd` into the tree) and
+Codex's `apply_patch`, through the leaf `internal/enforcement` (`sddfiles*.go`),
+with symlink resolution and the "does this directory hold `.mneme/sdd`" question
+injected by `internal/cli`.
+
+`IsWhitelisted` is unchanged: the whitelist still allows `.mneme/**`, except
+that this guard runs before it is consulted, so in practice `.mneme/sdd/**` is
+the exception to that entry. Rejections go to the `enforcelog`
+(`Reason: "sdd_files_write_denied"`, `Caller` orchestrator or subagent), never to
+a discovery memory.
+
+Limits, all accepted: it is a second barrier, not a sandbox (`eval`, variables
+holding the path, `xargs`, `find -exec`, `rsync`, `git apply`/`git am`, script
+files, unlisted interpreters, `git checkout <commit> -- <path>`); the Codex
+`apply_patch` payload is not verified live; a conflict in these files is
+resolved by a person. Details, the form table and the literal message:
+`docs/HOOKS.md`.
 
 ### Role-scoped document-kind denial
 

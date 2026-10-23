@@ -40,6 +40,12 @@ thing to understand before enabling this mechanism:
   a pull request and merges it, that edit reaches YOUR database the next
   time you `git pull`/`git merge`/`git checkout`, in the background,
   without you doing anything else.
+- **Editing a file in `.mneme/sdd/` by hand is a human act** (SPEC-179): in an
+  editor, reviewed in a pull request. The agents cannot do it: the
+  `enforce-delegation` hook rejects any write by the orchestrator or a subagent
+  into `.mneme/sdd/**`, because the importer applies those files as written,
+  without the approval gate. Only the mneme binary writes them. If a file is
+  stale, regenerate it with `mneme sdd export`.
 - **A git hook IS installed for this mechanism** — `mneme sdd enable
   --apply` installs it on the machine that turns the mechanism on;
   everyone else runs `mneme sdd hooks install` once, the same one-time
@@ -149,6 +155,11 @@ mneme sdd import --dry-run     # preview without writing
 mneme sdd hooks install        # install this machine's own git hooks
 mneme sdd hooks remove         # remove only the SDD block (team-memory's own survives)
 ```
+
+What it reads was written either by a teammate's mneme or by a person in an
+editor: an agent cannot write there (SPEC-179), so a pull request that changes
+those files is the human review point. A git conflict in them is resolved by a
+person, in an editor or with `mneme sdd import`.
 
 `mneme sdd import` walks the ENTIRE `.mneme/sdd/` directory every time —
 not just what git reports as changed — and creates or updates the local

@@ -633,9 +633,10 @@ Limits (a heuristic that stops a mistake, not a sandbox): `eval`, a variable
 holding the binary, a renamed binary, `xargs`, a script file, wrappers outside
 the closed set and `go run .` are not recognised; a hand-written path to the
 real directory that is not one of the literals above slips through; an
-unparseable command fails open; and `mneme sdd import` run indirectly by the
-git hooks of `mneme sdd hooks install` (on `git pull`/`git checkout`) is not
-seen by this hook.
+unparseable command fails open. The `mneme sdd import` that the
+git hooks of `mneme sdd hooks install` run on `git pull`/`git checkout` is not
+seen by this hook either; the risk it carried (importing files an agent wrote by
+hand) is closed at its source, by the next section (SPEC-179).
 
 `mneme subagents doctor` reports `stale_agent_fixed` for any manifest entry
 whose `Version` is behind `subagents.AgentFixedVersion` (currently 5); `mneme
@@ -652,6 +653,118 @@ at all the moment `agent_type` stopped arriving in the payload. The
 certification mechanism used to add a SECOND, tool-scoped map here, restricting `quality_sign`
 to `qa-tester` (`roleScopedTools`, the one rule in the repo that failed CLOSED) — it was retired whole by SPEC-158
 along with the tool it governed.
+
+### Archivos de `.mneme/sdd` (SPEC-179)
+
+Nobody writes by hand in `.mneme/sdd/**`: not the orchestrator, not a subagent
+with a role, not one without (Claude Code or Codex). Those files are written only
+by the mneme binary (the write-through of `internal/service/sdd_export.go` and
+the importer's fill-in rewrite), which never goes through these hooks. The reason
+is that `ImportSDDFromRepo` applies the backlog and spec state as written, with no
+human approval gate and no rules about who moves a spec: an agent that wrote
+`status: done` in a `record.md` would have it imported by the next `git pull` or
+`git checkout` of anyone on the team. The git hooks keep importing as before; they
+bring real changes written by a teammate's own mneme.
+
+The guard is the first one in `runHookEnforceDelegation` (`checkSDDFilesGuard`,
+`internal/cli/hook_sdd_files.go`), ahead of the `delegationTools` filter, the
+unresolved-role short-circuit, the whitelist (which allows `.mneme/**`), the
+trivial-inline grant (SPEC-171) and area containment (SPEC-086). It reads no
+identity, manifest, config or database, so no setting switches it off. The
+decision logic is the leaf package `internal/enforcement` (`sddfiles.go`,
+`sddfiles_bash.go`); it takes the host facts and the two filesystem questions
+(symlink resolution, "does this directory hold `.mneme/sdd`") as injected values.
+
+**Tools.** `Write`, `Edit`, `MultiEdit`, `NotebookEdit` (by `file_path` or
+`notebook_path`), `Bash` (Claude Code and Codex alike) and Codex's `apply_patch`.
+
+**Paths.** A path is protected when it holds the consecutive segments `.mneme`
+and `sdd`, at any depth (this repository, a sibling one, a worktree under
+`.claude/worktrees`), compared without regard to case on every host. It is judged
+by shape, so a repository with no `.mneme/sdd` yet is protected too (creating
+`.mneme/sdd/.mneme-sdd` by hand would switch the mechanism on for the whole team).
+Relative paths are joined to the payload's `cwd`; `~`, `$HOME` and `${HOME}` are
+expanded; on Windows separators, drive letters, UNC and `\\?\` prefixes are
+understood from any host; symlinks are resolved (the deepest existing ancestor),
+and one protected form (written or resolved) is enough. Not protected:
+`.mneme/sdd.off`, `.mneme/sdd-x/`, `.mneme/shared/**`, `~/.mneme/workflows/**`,
+`~/.mneme/sdd-hooks.log`.
+
+**Bash forms.** Over `shell.SimpleCommands` and `shell.Redirects`, wherever the
+command sits (`;`, `&&`, `||`, `|`, subshells, blocks, `if`/`while`/`for`/`case`,
+functions, `$(...)`, backticks, `bash|sh|zsh -c` one level, behind `env`,
+`command`, `exec`, `nohup`, `timeout`):
+
+| Form | Operands checked |
+|---|---|
+| `>`, `>>`, `>\|`, `&>`, `&>>`, `N>`, `<>`, `>&word` (also on compound statements) | the target; `<` never |
+| `sed -i`, `-i<suffix>`, `--in-place`, `-Ei` | every operand but the script |
+| `tee` | every operand |
+| `cp`, `install`, `ln` | the destination (last operand or `-t`); `install -d`: all |
+| `mv` | sources and destination |
+| `rm`, `rmdir`, `truncate`, `touch` | every operand (`truncate -r` reads its reference) |
+| `dd` | `of=` |
+| `perl -i` | every operand but the `-e` script |
+| `python -c`, `node -e` | path-shaped words of a script that has a write signal |
+| `git checkout` / `git restore` with `--ours`, `--theirs` or `--source`/`-s` | the pathspecs |
+
+Also rejected: removing or moving the directory that holds the tree (`rm -rf
+.mneme`, `mv .mneme /tmp`, `rm -rf .` inside a repository with `.mneme/sdd`);
+copying or moving anything into `.mneme` itself; shell globs and one level of
+braces that can name the tree (`.mneme/*/x`, `.m*/sdd/x`, `.mneme/{sdd,tmp}/x`,
+but never a bare `*`); and `cd`/`pushd` into the tree or `.mneme` in a command
+that also contains any write form above. `apply_patch` run from the terminal with
+a here-document is read as a patch.
+
+Reading and mneme itself never block: `cat`, `grep`, `ls`, `head`, `diff`, `sed`
+without `-i`, `cp .mneme/sdd/x /tmp/y`, `< file`, `git diff|log|show|status`,
+`git pull|fetch|merge|rebase|stash|switch`, `git checkout <branch>`, `git
+restore --staged`, and every `mneme` command (`sdd export`, `sdd import`, `spec
+status`...), unless they carry a redirection into the tree of their own. A command
+that does not parse is allowed.
+
+Message (Spanish, `%s` are the path and the form):
+
+```
+⛔ mneme: nadie escribe a mano en .mneme/sdd/ (ruta: %s, con: %s).
+Esos archivos los escribe solo mneme: el siguiente git pull o checkout de
+cualquier persona del equipo los importa tal cual, sin pasar por la aprobación
+ni por las reglas de quién mueve una spec.
+Cómo proceder: haz el cambio con mneme (backlog_refine, spec_doc_write,
+spec_pushback; avanzar una spec es del orquestador) y, si los archivos quedaron
+desfasados, regenéralos con `mneme sdd export`. Si eres un subagente, reporta y
+devuélvelo al orquestador. Si hay un conflicto de git en esos archivos, lo
+resuelve una persona en su editor o con `mneme sdd import`.
+```
+
+A best-effort `enforcelog` event is recorded with `Reason:
+"sdd_files_write_denied"`, `Tool` the tool name, `Target` the path and `Caller`
+`orchestrator` or `subagent`; never a discovery memory (a repeated rejection must
+not fill the database).
+
+#### `apply_patch` (Codex): behaviour not verified live
+
+When `tool_name` is `apply_patch`, the patch is read from `tool_input.command`
+and, failing that, from `tool_input.input`, and the call is rejected if any
+`*** Add File:`, `*** Update File:`, `*** Delete File:` or `*** Move to:` line
+names a protected path. **This behaviour is not verified live**: the repository
+has no capture of a real Codex `PreToolUse` for `apply_patch` (as SPEC-086 did for
+`agent_type`), so the field holding the patch is an assumption and the guard may
+never fire if Codex sends another shape. If it sent `tool_input.command` as a JSON
+list instead of a string, decoding the payload fails and the whole hook allows (as
+for any such payload today). Pending verification: capture a real `PreToolUse` of
+`apply_patch` and pin it in `internal/cli/testdata`.
+
+#### Limits
+
+A second barrier, not a sandbox. Not recognised: `eval`, a variable holding the
+path or the binary, `xargs`, `find -exec`/`-delete`, `rsync`, `git apply`/`git
+am`, scripts in a file, interpreters not listed, custom binaries, `chmod`,
+`chown` and `patch` (they do not change content or their targets live in the
+diff), and `git checkout <commit> -- <path>` (rewrites a file with old content).
+Writing through the real target of a `.mneme` symlink is seen only if the
+resolved form still contains `.mneme/sdd`. A conflict in these files is resolved
+by a person, in an editor or with `mneme sdd import`.
 
 ### Inherent limits (Layer 2 scope)
 

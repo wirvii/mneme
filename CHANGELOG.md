@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Security
+
+- SPEC-179: no agent can write by hand in `.mneme/sdd/**` any more. The
+  importer behind `git pull`/`git checkout` applies those files as written,
+  without the human approval gate or the rules about who moves a spec, so an
+  agent-written `status: done` would have reached every teammate. The
+  `mneme hook enforce-delegation` hook now rejects (exit 2, Spanish message,
+  `sdd_files_write_denied` in the enforcelog, no memory) any write there by the
+  orchestrator or a subagent, with or without a role, in Claude Code and Codex:
+  `Write`, `Edit`, `MultiEdit`, `NotebookEdit`, Codex's `apply_patch`, and Bash
+  (redirections, `sed -i`, `tee`, `cp`, `mv`, `rm`, `truncate`, `touch`, `rmdir`,
+  `ln`, `install`, `dd`, `perl -i`, inline `python`/`node`, `git checkout|restore
+  --ours|--theirs|--source`, removing the directory that holds the tree, globs,
+  `cd` into it). It runs before every other guard, so no manifest, containment or
+  trivial-inline setting bypasses it. The binary and the git hooks are
+  unaffected. The `apply_patch` payload is not verified against a real Codex
+  capture. New: `shell.Redirects`.
+
 ## [v1.49.1] — 2026-10-20 — a new database no longer breaks when two processes open it at once
 
 ### Fixed
