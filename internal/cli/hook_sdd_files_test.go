@@ -304,6 +304,117 @@ func TestRunHookEnforceDelegation_SDDFiles_Log(t *testing.T) {
 	}
 }
 
+// The subprocess cases above prove the wiring; these run the pieces in-process
+// so their coverage is counted.
+
+func TestCanonicalPath(t *testing.T) {
+	dir := t.TempDir()
+	real := filepath.Join(dir, "real")
+	if err := os.MkdirAll(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	resolvedReal, err := filepath.EvalSymlinks(real)
+	if err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("cannot create symlinks on this system: %v", err)
+	}
+
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"empty", "", ""},
+		{"relative stays", "a/b", "a/b"},
+		{"existing symlink", filepath.ToSlash(link), filepath.ToSlash(resolvedReal)},
+		{"file under symlink that does not exist yet", filepath.ToSlash(filepath.Join(link, "new", "a.md")), filepath.ToSlash(filepath.Join(resolvedReal, "new", "a.md"))},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := canonicalPath(tt.in); got != tt.want {
+				t.Errorf("canonicalPath(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHasSDDDir(t *testing.T) {
+	repo := t.TempDir()
+	if hasSDDDir(filepath.ToSlash(repo)) {
+		t.Error("a directory without .mneme/sdd must not report one")
+	}
+	if err := os.MkdirAll(filepath.Join(repo, ".mneme", "sdd"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !hasSDDDir(filepath.ToSlash(repo)) {
+		t.Error("a directory with .mneme/sdd must report it")
+	}
+}
+
+func TestCheckSDDFilesGuard_InProcessAllows(t *testing.T) {
+	repo := t.TempDir()
+	chdirTemp(t, repo)
+	var errBuf strings.Builder
+
+	for _, tool := range []string{"Read", "Grep", "mcp__mneme__mem_search", "unknown"} {
+		in := hookPreToolInput{ToolName: tool}
+		in.ToolInput.FilePath = filepath.Join(repo, ".mneme", "sdd", "a.md")
+		if checkSDDFilesGuard(in, in.resolveIdentity(), &errBuf) {
+			t.Errorf("tool %q must not be guarded", tool)
+		}
+	}
+	in := hookPreToolInput{ToolName: "Write", CWD: repo}
+	in.ToolInput.FilePath = "internal/x.go"
+	if checkSDDFilesGuard(in, in.resolveIdentity(), &errBuf) {
+		t.Error("an ordinary file must pass")
+	}
+	if errBuf.Len() != 0 {
+		t.Errorf("an allowed call printed %q", errBuf.String())
+	}
+	if d := evaluateSDDFilesCall(hookPreToolInput{ToolName: "Read"}, newSDDContext(in)); d.Block {
+		t.Errorf("evaluateSDDFilesCall of an unrelated tool blocked: %+v", d)
+	}
+}
+
+// TestCheckSDDFilesGuard_InProcessBlocks: the guard only reports; the caller
+// exits, so the block path can be run in-process. The enforcelog write lands in
+// the HOME that TestMain sandboxed.
+func TestCheckSDDFilesGuard_InProcessBlocks(t *testing.T) {
+	repo := t.TempDir()
+	chdirTemp(t, repo)
+	patch := "*** Begin Patch\n*** Add File: .mneme/sdd/n.md\n+x\n*** End Patch\n"
+
+	build := func(tool string, set func(*hookPreToolInput)) hookPreToolInput {
+		in := hookPreToolInput{ToolName: tool, CWD: repo}
+		set(&in)
+		return in
+	}
+	tests := []struct {
+		name string
+		in   hookPreToolInput
+	}{
+		{"Write", build("Write", func(in *hookPreToolInput) { in.ToolInput.FilePath = ".mneme/sdd/a.md" })},
+		{"NotebookEdit", build("NotebookEdit", func(in *hookPreToolInput) { in.ToolInput.NotebookPath = ".mneme/sdd/a.ipynb" })},
+		{"Bash", build("Bash", func(in *hookPreToolInput) { in.ToolInput.Command = "rm .mneme/sdd/a.md" })},
+		{"apply_patch command", build("apply_patch", func(in *hookPreToolInput) { in.ToolInput.Command = patch })},
+		{"apply_patch input", build("apply_patch", func(in *hookPreToolInput) { in.ToolInput.Input = patch })},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var errBuf strings.Builder
+			if !checkSDDFilesGuard(tt.in, tt.in.resolveIdentity(), &errBuf) {
+				t.Fatal("the call must be rejected")
+			}
+			if !strings.Contains(errBuf.String(), "nadie escribe a mano en .mneme/sdd/") {
+				t.Errorf("message = %q", errBuf.String())
+			}
+		})
+	}
+}
+
 func TestRunHookEnforceDelegation_SDDFiles_ApplyPatch(t *testing.T) {
 	env := newSDDHookEnv(t)
 	patch := func(path string) string {
