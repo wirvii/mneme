@@ -558,6 +558,10 @@ type hookPreToolInput struct {
 		// Section is spec_doc_write's tarea.md section argument (SPEC-170
 		// D6); checkTaskSectionScope evaluates it for kind "task".
 		Section string `json:"section"`
+		// Input is the free-text argument of Codex's apply_patch tool, the patch
+		// itself (SPEC-179). The shape is not captured from a real Codex
+		// PreToolUse yet, so the .mneme/sdd guard also reads Command.
+		Input string `json:"input"`
 	} `json:"tool_input"`
 
 	// SessionID is the per-session identifier injected by Claude Code (SPEC-044).
@@ -1687,7 +1691,11 @@ func printLifecycleCommandBlock(w io.Writer, command string) {
 // evaluateDelegation -> enforcement.Evaluate* pipeline, just with a
 // different OwnershipFunc closure (D10).
 //
-// SPEC-087 D5 adds a FIRST, independent guard ahead of everything else: a
+// SPEC-179 adds the very first guard (checkSDDFilesGuard): any write by any
+// agent into .mneme/sdd, through a file tool, Bash or apply_patch, is denied
+// with exit 2 before every guard below, whatever the caller's identity.
+//
+// SPEC-087 D5 adds a guard ahead of the delegation machinery: a
 // subagent calling a lifecycleTools MCP tool (spec_advance, spec_quick,
 // backlog_archive, lane_override) is denied unconditionally. SPEC-175 adds a
 // sibling guard right after it: a subagent's Bash command that runs a mneme
@@ -1722,6 +1730,17 @@ func runHookEnforceDelegation(r io.Reader, errW io.Writer) error {
 	}
 
 	identity := input.resolveIdentity()
+
+	// SPEC-179: nobody writes by hand in .mneme/sdd. First of all the guards:
+	// it needs neither identity, manifest, config nor database, so it must run
+	// before the delegationTools filter (Codex's apply_patch is not in it), the
+	// unresolved-role short-circuit, the whitelist (which allows .mneme/**), the
+	// trivial-inline grant (SPEC-171) and area containment (SPEC-086).
+	if checkSDDFilesGuard(input, identity, errW) {
+		//nolint:gocritic // os.Exit(2) is the documented hook exit code for rejection
+		os.Exit(2)
+		return nil
+	}
 
 	if identity.IsSubagent && lifecycleTools[input.ToolName] {
 		printLifecycleBlock(errW, input.ToolName)
@@ -1929,7 +1948,7 @@ func printDelegationBlock(w io.Writer, decision enforcement.Decision) {
 	}
 	fmt.Fprintln(w, "BLOQUEADO: El orquestador NO puede modificar archivos fuera de la whitelist.")
 	fmt.Fprintf(w, "Razón: %s\n", reason)
-	fmt.Fprintln(w, "Whitelist: .claude/**, ~/.claude/**, ~/.mneme/**, /tmp/**, CLAUDE.md, **/docs/*.md, .claudeignore")
+	fmt.Fprintln(w, "Whitelist: .claude/**, ~/.claude/**, ~/.mneme/** (salvo .mneme/sdd/**), /tmp/**, CLAUDE.md, **/docs/*.md, .claudeignore")
 	fmt.Fprintln(w, "ACCIÓN: Delegá al subagente correspondiente (Agent tool con subagent_type=backend|frontend|architect|...).")
 	fmt.Fprintln(w, "Tu trabajo es coordinar y conversar, NO implementar código.")
 }
@@ -2119,6 +2138,15 @@ func logLifecycleCommandDeniedEvent(input hookPreToolInput, identity CallerIdent
 // denial events: it resolves config, cwd and project itself and appends one
 // block event with the given target and reason.
 func appendLifecycleDenial(input hookPreToolInput, identity CallerIdentity, target, reason string) {
+	appendGuardDenial(input, identity, "subagent", target, reason)
+}
+
+// appendGuardDenial writes one best-effort block event to the project's
+// enforcelog on behalf of the given caller ("orchestrator" or "subagent"). It is
+// the writer behind the lifecycle denials (always a subagent) and the
+// .mneme/sdd guard (SPEC-179, any caller). A failure to log never changes the
+// hook's exit code.
+func appendGuardDenial(input hookPreToolInput, identity CallerIdentity, caller, target, reason string) {
 	cfg, err := config.Load(config.DefaultPath())
 	if err != nil {
 		return
@@ -2136,7 +2164,7 @@ func appendLifecycleDenial(input hookPreToolInput, identity CallerIdentity, targ
 		TS:         time.Now().UTC(),
 		Session:    input.SessionID,
 		Project:    slug,
-		Caller:     "subagent",
+		Caller:     caller,
 		AgentID:    identity.AgentID,
 		Role:       identity.Role,
 		RoleSource: identity.RoleSource,

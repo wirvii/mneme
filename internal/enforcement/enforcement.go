@@ -140,6 +140,11 @@ var quoteAndBracketStripper = strings.NewReplacer(
 //   - /tmp/** and /private/tmp/** (macOS) scratch space
 //   - relative paths under .claude/ or .mneme/
 //
+// The .mneme entries above do not cover .mneme/sdd/**: since SPEC-179 nobody
+// writes there, and the guard that enforces it (IsSDDPath, EvaluateSDDBash...)
+// runs before this whitelist is ever consulted. IsWhitelisted itself is
+// unchanged.
+//
 // pc.Home expands a leading "~/" the same way the bash version used $HOME —
 // callers pass os.UserHomeDir() via PathContext (or "" to disable expansion,
 // in which case a "~/"-prefixed path is left as-is and will not match any of
