@@ -193,6 +193,40 @@ func TestGlobSegment(t *testing.T) {
 	}
 }
 
+func TestEvaluateSDDBash_ExtraForms(t *testing.T) {
+	runSDDBlocks(t, []sddBashCase{
+		{"touch .mneme/sdd/a", "touch"},
+		{"touch -d yesterday .mneme/sdd/a", "touch"},
+		{"rmdir .mneme/sdd/specs/SPEC-1", "rmdir"},
+		{"rmdir .mneme", "rmdir"},
+		{"ln -s /tmp/x .mneme/sdd/a", "ln"},
+		{"install /tmp/x .mneme/sdd/a", "install"},
+		{"install -m 644 /tmp/x .mneme/sdd/a", "install"},
+		{"install -d .mneme/sdd/n", "install"},
+		{"dd if=/tmp/x of=.mneme/sdd/a", "dd"},
+		{"perl -pi -e 's/a/b/' .mneme/sdd/a", "perl -i"},
+		{"perl -i.bak -pe 's/a/b/' .mneme/sdd/a", "perl -i"},
+		{`python3 -c "open('.mneme/sdd/a','w').write('x')"`, "python -c"},
+		{`python -c "import shutil; shutil.copy('/tmp/x', '.mneme/sdd/a')"`, "python -c"},
+		{`node -e "require('fs').writeFileSync('.mneme/sdd/a','x')"`, "node -e"},
+	})
+	runSDDAllows(t, []string{
+		`python3 -c "print(open('.mneme/sdd/a').read())"`,
+		`python3 -c "open('/tmp/a','w').write('x')"`,
+		`node -e "console.log(1)"`,
+		"python3 script.py .mneme/sdd/a",
+		"python3 -c",
+		"chmod 644 .mneme/sdd/a",
+		"chown me .mneme/sdd/a",
+		"patch -p1 < .mneme/sdd/a.patch",
+		"ln -s .mneme/sdd/x /tmp/l",
+		"perl -e 'print 1' .mneme/sdd/a",
+		"touch /tmp/a",
+		"install -d /tmp/n",
+		"dd if=.mneme/sdd/a of=/tmp/x",
+	})
+}
+
 func TestEvaluateSDDBash_Compound(t *testing.T) {
 	w := ".mneme/sdd/a"
 	runSDDBlocks(t, []sddBashCase{

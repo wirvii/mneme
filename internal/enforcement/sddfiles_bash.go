@@ -321,11 +321,32 @@ func writeOf(prog string, args []string) (sddWrite, bool) {
 		return copyWrite("mv", args, true), true
 	case "rm":
 		return rmWrite(args), true
+	case "rmdir":
+		return rmdirWrite(args), true
+	case "touch":
+		return operandsWrite("touch", args, argSpec{
+			longValue:  map[string]bool{"--date": true, "--reference": true, "--time": true},
+			shortValue: "dtr",
+		}), true
+	case "ln":
+		return copyWrite("ln", args, false), true
+	case "install":
+		return installWrite(args), true
+	case "dd":
+		return ddWrite(args), true
+	case "perl":
+		return perlWrite(args)
+	case "node", "nodejs":
+		return inlineScriptWrite("node -e", args, map[string]bool{"-e": true, "--eval": true}, hasNodeWriteSignal)
 	case "truncate":
 		return operandsWrite("truncate", args, argSpec{
 			longValue:  map[string]bool{"--size": true, "--reference": true},
 			shortValue: "sr",
 		}), true
+	default:
+		if strings.HasPrefix(prog, "python") {
+			return inlineScriptWrite("python -c", args, map[string]bool{"-c": true}, hasPythonWriteSignal)
+		}
 	}
 	return sddWrite{}, false
 }
@@ -344,6 +365,65 @@ func rmWrite(args []string) sddWrite {
 		w.ancestors = p.operands
 	}
 	return w
+}
+
+// rmdirWrite removes directories; like rm -r, an ancestor of the tree takes it
+// along.
+func rmdirWrite(args []string) sddWrite {
+	operands := parseArgs(args, argSpec{}).operands
+	return sddWrite{form: "rmdir", operands: operands, ancestors: operands}
+}
+
+// installWrite handles install: with -d every operand is a directory to create,
+// otherwise it copies like cp.
+func installWrite(args []string) sddWrite {
+	p := parseArgs(args, argSpec{
+		longValue:  map[string]bool{"--target-directory": true, "--suffix": true, "--mode": true, "--owner": true, "--group": true},
+		shortValue: "mogtS",
+	})
+	if p.flags["-d"] || p.flags["--directory"] {
+		return sddWrite{form: "install", operands: p.operands}
+	}
+	return copyWrite("install", args, false)
+}
+
+// ddWrite reads the destination from the of=<path> operand.
+func ddWrite(args []string) sddWrite {
+	w := sddWrite{form: "dd"}
+	for _, a := range args {
+		if dest, ok := strings.CutPrefix(a, "of="); ok {
+			w.operands = append(w.operands, dest)
+		}
+	}
+	return w
+}
+
+// perlWrite recognises perl in place (-i, -i<suffix>, a group such as -pi). The
+// -e script is not an operand.
+func perlWrite(args []string) (sddWrite, bool) {
+	p := parseArgs(args, argSpec{shortValue: "eEIMm", shortAttached: "i"})
+	if !p.flags["-i"] {
+		return sddWrite{}, false
+	}
+	return sddWrite{form: "perl -i", operands: p.operands}, true
+}
+
+// inlineScriptWrite looks into the script of `python -c` or `node -e`. Only a
+// script with a write signal counts (a reader that merely names the tree is
+// fine), and then the path-shaped words of the script are its operands. This is
+// a text heuristic, as in EvaluateBash, not an interpreter.
+func inlineScriptWrite(form string, args []string, scriptFlags map[string]bool, hasWriteSignal func(string) bool) (sddWrite, bool) {
+	for i, a := range args {
+		if !scriptFlags[a] || i+1 >= len(args) {
+			continue
+		}
+		script := args[i+1]
+		if !hasWriteSignal(script) {
+			return sddWrite{}, false
+		}
+		return sddWrite{form: form, operands: pathShapedFields(script)}, true
+	}
+	return sddWrite{}, false
 }
 
 // sedWrite recognises sed in place: -i, -i<suffix>, --in-place[=<suffix>] or a

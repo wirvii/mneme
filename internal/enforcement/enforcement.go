@@ -673,6 +673,21 @@ func commandMentionsProtectedPath(cmd string, pc PathContext) bool {
 // returned candidate through the manifest-ownership bridge instead of a hard
 // block.
 func protectedPathCandidates(cmd string, pc PathContext) []string {
+	var candidates []string
+	for _, cleaned := range pathShapedFields(cmd) {
+		if !IsWhitelisted(cleaned, pc) {
+			candidates = append(candidates, cleaned)
+		}
+	}
+	return candidates
+}
+
+// pathShapedFields extracts every path-shaped substring in cmd, cleaned of
+// quotes and brackets, before any whitelist is applied. It is the shared first
+// half of protectedPathCandidates (which then drops whitelisted paths) and of
+// the .mneme/sdd guard (SPEC-179), which cannot use the filtered list because
+// `.mneme/**` is whitelisted.
+func pathShapedFields(cmd string) []string {
 	if !strings.Contains(cmd, "/") && !strings.Contains(cmd, "~/") && !strings.Contains(cmd, `.\`) {
 		return nil // fast path: no path-shaped substring anywhere.
 	}
@@ -720,9 +735,7 @@ func protectedPathCandidates(cmd string, pc PathContext) []string {
 		if cleaned == "" {
 			continue
 		}
-		if !IsWhitelisted(cleaned, pc) {
-			candidates = append(candidates, cleaned)
-		}
+		candidates = append(candidates, cleaned)
 	}
 	return candidates
 }
