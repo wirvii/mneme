@@ -334,6 +334,8 @@ func writeOf(prog string, args []string) (sddWrite, bool) {
 		return installWrite(args), true
 	case "dd":
 		return ddWrite(args), true
+	case "git":
+		return gitSideWrite(args)
 	case "perl":
 		return perlWrite(args)
 	case "node", "nodejs":
@@ -385,6 +387,53 @@ func installWrite(args []string) sddWrite {
 		return sddWrite{form: "install", operands: p.operands}
 	}
 	return copyWrite("install", args, false)
+}
+
+// gitGlobalValueOpts are git's options that precede the subcommand and take the
+// next word as their value when written without "=".
+var gitGlobalValueOpts = map[string]bool{
+	"-C": true, "-c": true, "--git-dir": true, "--work-tree": true, "--namespace": true,
+}
+
+// gitSideWrite recognises the git forms that overwrite a working-tree file with
+// one side of a conflict (`checkout --ours|--theirs`, `restore --ours|--theirs`)
+// or with another revision (`restore --source`): resolving a conflict in
+// .mneme/sdd is a person's job. Everything else git does (pull, fetch, merge,
+// checkout <branch>, restore --staged, stash, rebase) is not a write form.
+func gitSideWrite(args []string) (sddWrite, bool) {
+	i := 0
+	for i < len(args) && strings.HasPrefix(args[i], "-") {
+		if gitGlobalValueOpts[args[i]] {
+			i++
+		}
+		i++
+	}
+	if i >= len(args) {
+		return sddWrite{}, false
+	}
+	sub, rest := args[i], args[i+1:]
+	var spec argSpec
+	switch sub {
+	case "checkout":
+		spec = argSpec{shortValue: "bB", longValue: map[string]bool{"--orphan": true}}
+	case "restore":
+		spec = argSpec{shortValue: "s", longValue: map[string]bool{"--source": true}}
+	default:
+		return sddWrite{}, false
+	}
+	p := parseArgs(rest, spec)
+	flag := ""
+	switch {
+	case p.flags["--ours"]:
+		flag = "--ours"
+	case p.flags["--theirs"]:
+		flag = "--theirs"
+	case sub == "restore" && (p.flags["--source"] || p.flags["-s"]):
+		flag = "--source"
+	default:
+		return sddWrite{}, false
+	}
+	return sddWrite{form: "git " + sub + " " + flag, operands: p.operands}, true
 }
 
 // ddWrite reads the destination from the of=<path> operand.

@@ -227,6 +227,32 @@ func TestEvaluateSDDBash_ExtraForms(t *testing.T) {
 	})
 }
 
+func TestEvaluateSDDBash_GitSides(t *testing.T) {
+	runSDDBlocks(t, []sddBashCase{
+		{"git checkout --theirs .mneme/sdd/a", "git checkout --theirs"},
+		{"git checkout --ours -- .mneme/sdd/a", "git checkout --ours"},
+		{"git restore --theirs .mneme/sdd/a", "git restore --theirs"},
+		{"git restore --source=HEAD~1 .mneme/sdd/a", "git restore --source"},
+		{"git restore --source HEAD~1 .mneme/sdd/a", "git restore --source"},
+		{"git restore -s HEAD~1 .mneme/sdd/a", "git restore --source"},
+		{"git -C /w/repo checkout --theirs .mneme/sdd/a", "git checkout --theirs"},
+		{"git -c core.x=1 --no-pager restore --ours .mneme/sdd/a", "git restore --ours"},
+	})
+	runSDDAllows(t, []string{
+		"git checkout --theirs internal/x.go",
+		"git checkout --theirs -- internal/x.go",
+		"git checkout main",
+		"git pull --rebase",
+		"git restore --staged .mneme/sdd/a",
+		"git restore .mneme/sdd/a",
+		"git checkout -b feat/x",
+		"git stash",
+		"git -C /w/repo status",
+		"git",
+		"git -C",
+	})
+}
+
 func TestEvaluateSDDBash_Compound(t *testing.T) {
 	w := ".mneme/sdd/a"
 	runSDDBlocks(t, []sddBashCase{
