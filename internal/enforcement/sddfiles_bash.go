@@ -144,6 +144,13 @@ func EvaluateSDDBash(command string, c SDDContext) SDDWriteDecision {
 }
 
 func evaluateSDDBash(command string, c SDDContext, depth int) SDDWriteDecision {
+	if depth == 0 && (strings.Contains(command, patchBeginMarker) || strings.Contains(command, applyPatchTool)) {
+		// Codex also runs apply_patch from the terminal with a here-document, whose
+		// body is data to the shell parser: the patch text is read as a patch.
+		if d := EvaluateSDDApplyPatch(command, c); d.Block {
+			return d
+		}
+	}
 	cmds, err := shell.SimpleCommands(command)
 	if err != nil {
 		return SDDWriteDecision{}

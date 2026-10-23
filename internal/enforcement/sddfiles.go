@@ -186,6 +186,48 @@ func EvaluateSDDFileTool(tool, filePath string, c SDDContext) SDDWriteDecision {
 	return SDDWriteDecision{Block: true, Target: filePath, Form: tool}
 }
 
+const (
+	// applyPatchTool is the name of Codex's file-editing tool and of the
+	// program it also runs from the terminal.
+	applyPatchTool = "apply_patch"
+
+	// patchBeginMarker opens an apply_patch patch.
+	patchBeginMarker = "*** Begin Patch"
+)
+
+// applyPatchHeaders are the patch lines that name a file: the ones that add,
+// change or delete it, and the one that renames it to a new path.
+var applyPatchHeaders = []string{
+	"*** Add File:",
+	"*** Update File:",
+	"*** Delete File:",
+	"*** Move to:",
+}
+
+// EvaluateSDDApplyPatch rejects an apply_patch patch (Codex's way to edit
+// files) that names a path inside .mneme/sdd in any of its file headers. The
+// headers name literal files, so no globbing is applied. Leading spaces and a
+// CRLF line ending are tolerated.
+//
+// The shape of the real payload has not been captured from Codex yet; see
+// docs/HOOKS.md for the pending verification.
+func EvaluateSDDApplyPatch(patch string, c SDDContext) SDDWriteDecision {
+	for _, line := range strings.Split(patch, "\n") {
+		line = strings.TrimSpace(strings.TrimSuffix(line, "\r"))
+		for _, header := range applyPatchHeaders {
+			target, ok := strings.CutPrefix(line, header)
+			if !ok {
+				continue
+			}
+			target = strings.TrimSpace(target)
+			if target != "" && IsSDDPath(target, c) {
+				return SDDWriteDecision{Block: true, Target: target, Form: applyPatchTool}
+			}
+		}
+	}
+	return SDDWriteDecision{}
+}
+
 // hasSDDSegments reports two consecutive segments standing for ".mneme" and
 // "sdd".
 func hasSDDSegments(clean string, match segmentMatcher) bool {

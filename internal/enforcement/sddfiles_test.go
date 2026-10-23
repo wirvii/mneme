@@ -105,6 +105,43 @@ func TestEvaluateSDDFileTool(t *testing.T) {
 	}
 }
 
+func TestEvaluateSDDApplyPatch(t *testing.T) {
+	c := sddTestContext("linux", "/w/repo")
+	patch := func(header string) string {
+		return "*** Begin Patch\n" + header + "\n@@\n-a\n+b\n*** End Patch\n"
+	}
+	tests := []struct {
+		name      string
+		patch     string
+		wantBlock bool
+		wantPath  string
+	}{
+		{"update", patch("*** Update File: .mneme/sdd/a.md"), true, ".mneme/sdd/a.md"},
+		{"add", patch("*** Add File: .mneme/sdd/b.md"), true, ".mneme/sdd/b.md"},
+		{"delete", patch("*** Delete File: .mneme/sdd/c.md"), true, ".mneme/sdd/c.md"},
+		{"move to", patch("*** Update File: internal/x.go\n*** Move to: .mneme/sdd/d.md"), true, ".mneme/sdd/d.md"},
+		{"indented", patch("   *** Update File: .mneme/sdd/a.md"), true, ".mneme/sdd/a.md"},
+		{"crlf", "*** Begin Patch\r\n*** Update File: .mneme/sdd/a.md\r\n*** End Patch\r\n", true, ".mneme/sdd/a.md"},
+		{"absolute", patch("*** Update File: /w/repo/.mneme/sdd/a.md"), true, "/w/repo/.mneme/sdd/a.md"},
+		{"ordinary", patch("*** Update File: internal/x.go"), false, ""},
+		{"shared", patch("*** Add File: .mneme/shared/a.md"), false, ""},
+		{"empty header path", patch("*** Update File:"), false, ""},
+		{"no patch", "just text", false, ""},
+		{"empty", "", false, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := EvaluateSDDApplyPatch(tt.patch, c)
+			if got.Block != tt.wantBlock || got.Target != tt.wantPath {
+				t.Fatalf("got %+v, want block=%v target=%q", got, tt.wantBlock, tt.wantPath)
+			}
+			if tt.wantBlock && got.Form != "apply_patch" {
+				t.Errorf("Form = %q, want apply_patch", got.Form)
+			}
+		})
+	}
+}
+
 func TestIsSDDPath_Contexts(t *testing.T) {
 	t.Run("relative with empty cwd stays protected by text", func(t *testing.T) {
 		if !IsSDDPath(".mneme/sdd/x", SDDContext{}) {

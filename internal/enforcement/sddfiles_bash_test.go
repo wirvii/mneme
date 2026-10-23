@@ -253,6 +253,17 @@ func TestEvaluateSDDBash_GitSides(t *testing.T) {
 	})
 }
 
+func TestEvaluateSDDBash_ApplyPatchHeredoc(t *testing.T) {
+	runSDDBlocks(t, []sddBashCase{
+		{"apply_patch <<'EOF'\n*** Begin Patch\n*** Update File: .mneme/sdd/a.md\n@@\n-a\n+b\n*** End Patch\nEOF", "apply_patch"},
+		{"cd /w/repo && apply_patch <<EOF\n*** Begin Patch\n*** Add File: .mneme/sdd/n.md\n+x\n*** End Patch\nEOF", "apply_patch"},
+	})
+	runSDDAllows(t, []string{
+		"apply_patch <<'EOF'\n*** Begin Patch\n*** Update File: internal/x.go\n@@\n-a\n+b\n*** End Patch\nEOF",
+		"echo apply_patch",
+	})
+}
+
 func TestEvaluateSDDBash_Compound(t *testing.T) {
 	w := ".mneme/sdd/a"
 	runSDDBlocks(t, []sddBashCase{
