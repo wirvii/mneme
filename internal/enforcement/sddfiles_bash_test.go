@@ -109,6 +109,90 @@ func TestEvaluateSDDBash_Allows(t *testing.T) {
 	})
 }
 
+func TestEvaluateSDDBash_Ancestor(t *testing.T) {
+	runSDDBlocks(t, []sddBashCase{
+		{"rm -rf .mneme", "rm"},
+		{"rm -r ./.mneme/", "rm"},
+		{"rm -R .mneme", "rm"},
+		{"rm --recursive .mneme", "rm"},
+		{"mv .mneme /tmp/m", "mv"},
+		{"rm -rf /w/repo", "rm"},
+		{"rm -rf .", "rm"},
+		{"mv /w/repo /tmp/r", "mv"},
+	})
+	runSDDAllows(t, []string{
+		"rm -rf /w/other",
+		"rm .mneme/shared/a",
+		"rm -rf *",
+		"rm -f /w/repo",
+		"cp -r /w/repo /tmp/r",
+		"rm -rf docs",
+	})
+}
+
+func TestEvaluateSDDBash_Globs(t *testing.T) {
+	runSDDBlocks(t, []sddBashCase{
+		{"rm .mneme/*/a", "rm"},
+		{"rm .m*/sdd/a", "rm"},
+		{"rm .mneme/s?d/a", "rm"},
+		{"rm .mneme/[s]dd/a", "rm"},
+		{"echo x > .mneme/{sdd,tmp}/a", ">"},
+		{"rm .mneme/{tmp,sdd}/a", "rm"},
+		{"rm .mneme/s{d,x}d/a", "rm"},
+		{"tee .mneme/*", "tee"},
+	})
+	runSDDAllows(t, []string{
+		"rm *",
+		"rm */sdd/a",
+		"rm [.]mneme/sdd/a",
+		"rm .mneme/{tmp,shared}/a",
+		"rm .mneme/{sdd/a",
+		"rm .mneme/{{sdd,x},y}/a",
+		"rm .mneme/[/a",
+	})
+}
+
+func TestEvaluateSDDBash_Cd(t *testing.T) {
+	runSDDBlocks(t, []sddBashCase{
+		{"cd .mneme/sdd && echo x > a", "cd"},
+		{"pushd .mneme && rm -r sdd", "pushd"},
+		{"cd .mneme; sed -i s/a/b/ sdd/a", "cd"},
+		{"cd .mneme/sdd && bash -c 'echo x > a'", "cd"},
+		{"cd /w/repo/.mneme/sdd; tee a", "cd"},
+	})
+	runSDDAllows(t, []string{
+		"cd .mneme/sdd && cat a",
+		"cd .mneme/sdd && ls",
+		"cd internal && echo x > a",
+		"cd .mneme/shared && echo x > a",
+	})
+}
+
+func TestGlobSegment(t *testing.T) {
+	tests := []struct {
+		seg, lit string
+		want     bool
+	}{
+		{"*", ".mneme", false},
+		{"*", "sdd", true},
+		{".m*", ".mneme", true},
+		{"[.]mneme", ".mneme", false},
+		{"?mneme", ".mneme", false},
+		{".MNEME", ".mneme", true},
+		{"S*", "sdd", true},
+		{"[", "sdd", false},
+		{"{sdd,tmp}", "sdd", true},
+		{"{a,b}", "sdd", false},
+		{"{", "sdd", false},
+		{"{{sdd,x},y}", "sdd", false},
+	}
+	for _, tt := range tests {
+		if got := globSegment(tt.seg, tt.lit); got != tt.want {
+			t.Errorf("globSegment(%q, %q) = %v, want %v", tt.seg, tt.lit, got, tt.want)
+		}
+	}
+}
+
 func TestEvaluateSDDBash_Compound(t *testing.T) {
 	w := ".mneme/sdd/a"
 	runSDDBlocks(t, []sddBashCase{

@@ -197,3 +197,50 @@ func hasSDDSegments(clean string, match segmentMatcher) bool {
 	}
 	return false
 }
+
+// globSegment is the Bash matcher: a segment with `*`, `?` or `[` is a shell
+// glob and a segment with one level of `{a,b}` stands for each alternative.
+// It follows the shell's rule that a pattern not starting with "." does not
+// match a hidden name, so `*` is not ".mneme" while `.m*` is. Anything else is
+// compared exactly. Nested braces are not expanded: they stay literal.
+func globSegment(seg, lit string) bool {
+	if alts := expandBraces(seg); alts != nil {
+		for _, alt := range alts {
+			if globSegment(alt, lit) {
+				return true
+			}
+		}
+		return false
+	}
+	if !strings.ContainsAny(seg, "*?[") {
+		return exactSegment(seg, lit)
+	}
+	if strings.HasPrefix(lit, ".") && !strings.HasPrefix(seg, ".") {
+		return false
+	}
+	ok, err := path.Match(strings.ToLower(seg), strings.ToLower(lit))
+	return err == nil && ok
+}
+
+// expandBraces expands the first `{a,b}` group of seg one level, or returns nil
+// when there is none to expand (no group, no comma, or a nested brace).
+func expandBraces(seg string) []string {
+	open := strings.IndexByte(seg, '{')
+	if open < 0 {
+		return nil
+	}
+	closeIdx := strings.IndexByte(seg[open:], '}')
+	if closeIdx < 0 {
+		return nil
+	}
+	closeIdx += open
+	inner := seg[open+1 : closeIdx]
+	if strings.ContainsRune(inner, '{') || !strings.ContainsRune(inner, ',') {
+		return nil
+	}
+	var out []string
+	for _, alt := range strings.Split(inner, ",") {
+		out = append(out, seg[:open]+alt+seg[closeIdx+1:])
+	}
+	return out
+}

@@ -38,6 +38,9 @@ type sddWrite struct {
 	form string
 	// operands are paths the command creates, changes or removes.
 	operands []string
+	// ancestors are operands that, when they are the .mneme directory or the
+	// directory holding .mneme/sdd, take the tree with them (rm -r, mv).
+	ancestors []string
 	// roots are destinations that must not be the bare ".mneme" directory:
 	// copying or moving a directory named sdd into it would create the tree.
 	roots []string
@@ -159,7 +162,67 @@ func evaluateSDDBash(command string, c SDDContext, depth int) SDDWriteDecision {
 			return d
 		}
 	}
+	return evaluateSDDChdir(cmds, command, c, depth)
+}
+
+// evaluateSDDChdir rejects `cd .mneme/sdd && echo x > a`: after the cd, every
+// operand is relative to the tree and no longer looks like it. The rule is
+// deliberately conservative: it does not simulate the working directory between
+// commands, it only asks whether the same command line enters the tree (or
+// .mneme) and also contains any write form. Reading after a cd is untouched.
+func evaluateSDDChdir(cmds []shell.SimpleCommand, command string, c SDDContext, depth int) SDDWriteDecision {
+	for _, sc := range cmds {
+		args, _ := skipWrappers(sc.Args, nil)
+		if len(args) == 0 {
+			continue
+		}
+		prog := programName(args[0])
+		if prog != "cd" && prog != "pushd" {
+			continue
+		}
+		for _, operand := range parseArgs(args[1:], argSpec{}).operands {
+			if (sddOperand(operand, c) || namesMnemeDir(operand, c)) && hasWriteForm(command, depth) {
+				return SDDWriteDecision{Block: true, Target: operand, Form: prog}
+			}
+		}
+	}
 	return SDDWriteDecision{}
+}
+
+// hasWriteForm reports whether command contains any write form of the table,
+// whatever its operands: the cd rule needs to know that something is written,
+// not where.
+func hasWriteForm(command string, depth int) bool {
+	cmds, err := shell.SimpleCommands(command)
+	if err != nil {
+		return false
+	}
+	reds, err := shell.Redirects(command)
+	if err != nil {
+		return false
+	}
+	for _, r := range reds {
+		if isWriteRedirect(r.Op) {
+			return true
+		}
+	}
+	for _, sc := range cmds {
+		args, _ := skipWrappers(sc.Args, nil)
+		if len(args) == 0 {
+			continue
+		}
+		prog := programName(args[0])
+		if isShellBinary(prog) {
+			if depth < maxBashRecursionDepth && len(args) >= dashCArgc && args[1] == shellDashC && hasWriteForm(args[2], depth+1) {
+				return true
+			}
+			continue
+		}
+		if w, ok := writeOf(prog, args[1:]); ok && len(w.operands) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // isWriteRedirect reports whether op, with its descriptor prefix, can write.
@@ -174,7 +237,7 @@ func isWriteRedirect(op string) bool {
 // sddOperand is the single place where a Bash operand is judged, so the rules
 // that widen what counts as a protected operand live in one function.
 func sddOperand(operand string, c SDDContext) bool {
-	return isSDDPath(operand, c, exactSegment)
+	return isSDDPath(operand, c, globSegment)
 }
 
 // evaluateSDDSimple decides one simple command: it peels launcher wrappers,
@@ -210,12 +273,32 @@ func (w sddWrite) check(c SDDContext) SDDWriteDecision {
 			return SDDWriteDecision{Block: true, Target: op, Form: w.form}
 		}
 	}
+	for _, op := range w.ancestors {
+		if isAncestorOperand(op, c) {
+			return SDDWriteDecision{Block: true, Target: op, Form: w.form}
+		}
+	}
 	for _, op := range w.roots {
 		if namesMnemeDir(op, c) {
 			return SDDWriteDecision{Block: true, Target: op, Form: w.form}
 		}
 	}
 	return SDDWriteDecision{}
+}
+
+// isAncestorOperand reports whether removing or moving op takes .mneme/sdd with
+// it: op is a directory named .mneme, or the directory that holds .mneme/sdd
+// (HasSDDDir, answered by the caller from the real file system). A bare "*" is
+// neither: the shell does not expand it to hidden names.
+func isAncestorOperand(op string, c SDDContext) bool {
+	clean, abs := c.normalizeSDD(op)
+	if clean == "" {
+		return false
+	}
+	if globSegment(path.Base(clean), sddRootSegment) {
+		return true
+	}
+	return abs && c.HasSDDDir != nil && c.HasSDDDir(clean)
 }
 
 // namesMnemeDir reports whether op is a directory named ".mneme" exactly.
@@ -237,7 +320,7 @@ func writeOf(prog string, args []string) (sddWrite, bool) {
 	case "mv":
 		return copyWrite("mv", args, true), true
 	case "rm":
-		return operandsWrite("rm", args, argSpec{}), true
+		return rmWrite(args), true
 	case "truncate":
 		return operandsWrite("truncate", args, argSpec{
 			longValue:  map[string]bool{"--size": true, "--reference": true},
@@ -250,6 +333,17 @@ func writeOf(prog string, args []string) (sddWrite, bool) {
 // operandsWrite treats every operand as written.
 func operandsWrite(form string, args []string, spec argSpec) sddWrite {
 	return sddWrite{form: form, operands: parseArgs(args, spec).operands}
+}
+
+// rmWrite treats every operand as removed; with a recursive flag an operand
+// that holds the tree removes it as well.
+func rmWrite(args []string) sddWrite {
+	p := parseArgs(args, argSpec{})
+	w := sddWrite{form: "rm", operands: p.operands}
+	if p.flags["-r"] || p.flags["-R"] || p.flags["--recursive"] {
+		w.ancestors = p.operands
+	}
+	return w
 }
 
 // sedWrite recognises sed in place: -i, -i<suffix>, --in-place[=<suffix>] or a
@@ -293,6 +387,7 @@ func copyWrite(form string, args []string, movesSources bool) sddWrite {
 	w := sddWrite{form: form, operands: dests, roots: dests}
 	if movesSources {
 		w.operands = append(w.operands, sources...)
+		w.ancestors = sources
 	}
 	return w
 }
