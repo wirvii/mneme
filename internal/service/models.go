@@ -219,4 +219,3 @@ func (s *ModelsService) Reset(ctx context.Context, req ModelResetRequest) (Model
 	}
 	return ModelResetResponse{Reset: reset, Hint: hint}, nil
 }
-

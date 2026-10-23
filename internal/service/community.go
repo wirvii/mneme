@@ -3,11 +3,11 @@
 //
 // DetectAndPersistCommunities is the single entry point for the consolidation
 // pipeline (and future callers). It:
-//   1. Gathers all active memory IDs for the scope/project.
-//   2. Builds the entity-level knowledge graph via BuildGraphForSeeds.
-//   3. Runs Louvain community detection.
-//   4. Diffs the result against existing persisted communities.
-//   5. Applies inserts, updates, and deletes atomically via SaveCommunitiesTx.
+//  1. Gathers all active memory IDs for the scope/project.
+//  2. Builds the entity-level knowledge graph via BuildGraphForSeeds.
+//  3. Runs Louvain community detection.
+//  4. Diffs the result against existing persisted communities.
+//  5. Applies inserts, updates, and deletes atomically via SaveCommunitiesTx.
 package service
 
 import (
@@ -109,8 +109,8 @@ func (svc *MemoryService) DetectAndPersistCommunities(
 
 	// Step 4: filter communities below minimum size.
 	type newComm struct {
-		hash      string
-		entityIDs []string
+		hash       string
+		entityIDs  []string
 		modularity float64
 	}
 	var significant []newComm
@@ -124,8 +124,8 @@ func (svc *MemoryService) DetectAndPersistCommunities(
 		}
 		h := communityMembershipHash(members)
 		significant = append(significant, newComm{
-			hash:      h,
-			entityIDs: members,
+			hash:       h,
+			entityIDs:  members,
 			modularity: louvainResult.Modularity,
 		})
 	}

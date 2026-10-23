@@ -384,7 +384,7 @@ func formatTime(t time.Time) string {
 // array-of-strings shape unmarshalPreviousIDs (sdd.go) reads back — each
 // entry rendered via PreviousID.String() (D44's fixed wire format). Returns
 // "" for an empty slice, matching the column's own default (migration 020:
-// previous_ids TEXT NOT NULL DEFAULT ''), not "[]" like
+// previous_ids TEXT NOT NULL DEFAULT ”), not "[]" like
 // assigned_agents/files_changed.
 func marshalPreviousIDs(ids []model.PreviousID) (string, error) {
 	if len(ids) == 0 {

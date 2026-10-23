@@ -110,10 +110,10 @@ func TestManifestImport_FullData(t *testing.T) {
 }
 
 // TestManifestImport_MemoryDedup verifies deduplication semantics for memories:
-// - Memories with topic_key are upserted (update on re-import, not duplicate).
-// - Memories without topic_key receive a new ID each create and cannot be
-//   deduped by ID across different stores — this matches the JSONL importer
-//   behaviour documented in sync.go:215-224.
+//   - Memories with topic_key are upserted (update on re-import, not duplicate).
+//   - Memories without topic_key receive a new ID each create and cannot be
+//     deduped by ID across different stores — this matches the JSONL importer
+//     behaviour documented in sync.go:215-224.
 func TestManifestImport_MemoryDedup(t *testing.T) {
 	src := newTestStore(t)
 	dst := newTestStore(t)

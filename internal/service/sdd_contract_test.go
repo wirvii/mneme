@@ -100,25 +100,25 @@ func TestEnsureCriteriaDeclared(t *testing.T) {
 		wantMsg    string
 	}{
 		{
-			name:    "standard, speccing->specced, no file: ErrCriteriaNotFound with the path",
-			lane:    model.LaneStandard, status: model.SpecStatusSpeccing, next: model.SpecStatusSpecced,
+			name: "standard, speccing->specced, no file: ErrCriteriaNotFound with the path",
+			lane: model.LaneStandard, status: model.SpecStatusSpeccing, next: model.SpecStatusSpecced,
 			wantErr: model.ErrCriteriaNotFound,
 			wantMsg: "criteria.toml",
 		},
 		{
-			name:    "standard, speccing->specced, valid file: nil",
-			lane:    model.LaneStandard, status: model.SpecStatusSpeccing, next: model.SpecStatusSpecced,
+			name: "standard, speccing->specced, valid file: nil",
+			lane: model.LaneStandard, status: model.SpecStatusSpeccing, next: model.SpecStatusSpecced,
 			writeDoc: true,
 			wantErr:  nil,
 		},
 		{
-			name:    "trivial, any transition: nil",
-			lane:    model.LaneTrivial, status: model.SpecStatusSpeccing, next: model.SpecStatusSpecced,
+			name: "trivial, any transition: nil",
+			lane: model.LaneTrivial, status: model.SpecStatusSpeccing, next: model.SpecStatusSpecced,
 			wantErr: nil,
 		},
 		{
-			name:    "standard, planned->implementing, no file: nil (not the gated transition)",
-			lane:    model.LaneStandard, status: model.SpecStatusPlanned, next: model.SpecStatusImplementing,
+			name: "standard, planned->implementing, no file: nil (not the gated transition)",
+			lane: model.LaneStandard, status: model.SpecStatusPlanned, next: model.SpecStatusImplementing,
 			wantErr: nil,
 		},
 	}

@@ -42,9 +42,9 @@ func BenchmarkSearch_GraphExpansion_5K(b *testing.B) {
 	ctx := context.Background()
 
 	const (
-		numMemories  = 500  // scaled down from 5K for in-memory test speed
-		numEntities  = 100  // entities shared across memories
-		relPerEntity = 5    // relations per entity (~10K total at 5K scale)
+		numMemories  = 500 // scaled down from 5K for in-memory test speed
+		numEntities  = 100 // entities shared across memories
+		relPerEntity = 5   // relations per entity (~10K total at 5K scale)
 	)
 
 	// Create entities.

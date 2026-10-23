@@ -153,8 +153,8 @@ func DetectDrift(filePath string) ([]DriftFinding, error) {
 		for _, phrase := range enforcementContradictions {
 			if strings.Contains(lower, phrase) {
 				findings = append(findings, DriftFinding{
-					File: filePath,
-					Line: lineNum,
+					File:    filePath,
+					Line:    lineNum,
 					Message: "contradicts enforcement (orchestrator cannot edit code since v1.4.0); remove or rephrase",
 				})
 				break

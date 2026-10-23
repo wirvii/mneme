@@ -126,7 +126,6 @@ Manifest format (--format manifest):
 	return cmd
 }
 
-
 // newSyncImportCmd returns the "mneme sync import" subcommand. It imports
 // records from a JSONL.gz or manifest.tar.gz archive into the project database,
 // auto-detecting the format from the file name and content.

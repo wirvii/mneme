@@ -504,7 +504,9 @@ func TestExplore_TouchRelations(t *testing.T) {
 // entity pairs. Returns (seedID, neighborIDs).
 func buildStarGraphSvc(
 	t *testing.T, ctx context.Context,
-	svc interface{ Save(context.Context, model.SaveRequest) (*model.SaveResponse, error) },
+	svc interface {
+		Save(context.Context, model.SaveRequest) (*model.SaveResponse, error)
+	},
 	ps *store.MemoryStore,
 	prefix string, n int, weight float64,
 ) (seedID string, neighborIDs []string) {
@@ -553,7 +555,9 @@ func buildStarGraphSvc(
 // Returns (seedID, middleID, leafID).
 func buildChainGraphSvc(
 	t *testing.T, ctx context.Context,
-	svc interface{ Save(context.Context, model.SaveRequest) (*model.SaveResponse, error) },
+	svc interface {
+		Save(context.Context, model.SaveRequest) (*model.SaveResponse, error)
+	},
 	ps *store.MemoryStore,
 	prefix string, w1, w2 float64,
 ) (seedID, middleID, leafID string) {
@@ -579,7 +583,9 @@ func buildChainGraphSvc(
 // buildCycleGraphSvc creates seed→A→B→C→A cycle. Returns (seedID, aID, bID, cID).
 func buildCycleGraphSvc(
 	t *testing.T, ctx context.Context,
-	svc interface{ Save(context.Context, model.SaveRequest) (*model.SaveResponse, error) },
+	svc interface {
+		Save(context.Context, model.SaveRequest) (*model.SaveResponse, error)
+	},
 	ps *store.MemoryStore,
 ) (seedID, aID, bID, cID string) {
 	t.Helper()

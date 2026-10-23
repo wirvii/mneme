@@ -246,8 +246,8 @@ func TestResolver_MultipleRefs(t *testing.T) {
 	targetB := insertNode(t, s, "cccc0022", "Beta", "pkg.Beta", "internal/pkg/beta.go")
 
 	refs := []UnresolvedRef{
-		sampleUnresolvedRef(caller.ID, "pkg.Alpha", EdgeKindCalls), // resolvable (exact)
-		sampleUnresolvedRef(caller.ID, "pkg.Beta", EdgeKindCalls),  // resolvable (exact)
+		sampleUnresolvedRef(caller.ID, "pkg.Alpha", EdgeKindCalls),  // resolvable (exact)
+		sampleUnresolvedRef(caller.ID, "pkg.Beta", EdgeKindCalls),   // resolvable (exact)
 		sampleUnresolvedRef(caller.ID, "ghost.Nope", EdgeKindCalls), // unresolvable
 	}
 	for _, ref := range refs {

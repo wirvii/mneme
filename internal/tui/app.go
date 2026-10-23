@@ -28,8 +28,8 @@ type AppModel struct {
 	width  int
 	height int
 
-	err      error  // last service error, shown in status bar for a short time
-	errTimer bool   // true while the error dismiss timer is running
+	err       error  // last service error, shown in status bar for a short time
+	errTimer  bool   // true while the error dismiss timer is running
 	statusMsg string // informational (non-error) status bar message
 }
 

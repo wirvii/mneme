@@ -18,8 +18,8 @@ type seedKind int
 
 const (
 	seedUUIDFull   seedKind = iota // 36-char UUID with dashes
-	seedUUIDPrefix                  // 8+ hex chars without dashes
-	seedTopicKey                    // topic_key (contains "/" or ".")
+	seedUUIDPrefix                 // 8+ hex chars without dashes
+	seedTopicKey                   // topic_key (contains "/" or ".")
 )
 
 // exploreItem is a candidate node queued during the BFS traversal. The priority
@@ -38,10 +38,10 @@ type exploreItem struct {
 // accumulatedWeight descending.
 type explorePQ []*exploreItem
 
-func (pq explorePQ) Len() int            { return len(pq) }
-func (pq explorePQ) Less(i, j int) bool  { return pq[i].accumulatedWeight > pq[j].accumulatedWeight }
-func (pq explorePQ) Swap(i, j int)       { pq[i], pq[j] = pq[j], pq[i] }
-func (pq *explorePQ) Push(x any)         { *pq = append(*pq, x.(*exploreItem)) }
+func (pq explorePQ) Len() int           { return len(pq) }
+func (pq explorePQ) Less(i, j int) bool { return pq[i].accumulatedWeight > pq[j].accumulatedWeight }
+func (pq explorePQ) Swap(i, j int)      { pq[i], pq[j] = pq[j], pq[i] }
+func (pq *explorePQ) Push(x any)        { *pq = append(*pq, x.(*exploreItem)) }
 func (pq *explorePQ) Pop() any {
 	old := *pq
 	n := len(old)

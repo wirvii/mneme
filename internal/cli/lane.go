@@ -270,7 +270,7 @@ func newLaneStatusCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "status <id>",
 		Short: "Show lane classification and latest audit summary",
-		Long: `Show the lane, scope, and latest audit outcome for a spec.`,
+		Long:  `Show the lane, scope, and latest audit outcome for a spec.`,
 		Example: `  mneme lane status SPEC-007
   mneme lane status SPEC-007 --json`,
 		Args: cobra.ExactArgs(1),

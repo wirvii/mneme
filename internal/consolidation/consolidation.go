@@ -41,10 +41,10 @@ type SynthesisGenerator func(ctx context.Context, detectionResult *model.Detecti
 // SynthesisResult is re-exported here so consolidation callers (e.g. CLI) can
 // reference it without importing the service package.
 type SynthesisResult struct {
-	Created  int `json:"synthesis_created"`
-	Updated  int `json:"synthesis_updated"`
-	Deleted  int `json:"synthesis_deleted"`
-	Skipped  int `json:"synthesis_skipped"`
+	Created int `json:"synthesis_created"`
+	Updated int `json:"synthesis_updated"`
+	Deleted int `json:"synthesis_deleted"`
+	Skipped int `json:"synthesis_skipped"`
 }
 
 // Pipeline orchestrates a single consolidation cycle against a MemoryStore.
@@ -52,12 +52,12 @@ type SynthesisResult struct {
 // Each step is independent: a partial failure returns what was accomplished
 // up to the failing step and wraps the underlying error.
 type Pipeline struct {
-	store               *store.MemoryStore
-	config              *config.Config
-	logger              *slog.Logger
-	project             string             // slug for project stores; empty string for the global store
-	communityDetector   CommunityDetector  // optional; nil = skip community detection step
-	synthesisGenerator  SynthesisGenerator // optional; nil = skip synthesis generation step
+	store              *store.MemoryStore
+	config             *config.Config
+	logger             *slog.Logger
+	project            string             // slug for project stores; empty string for the global store
+	communityDetector  CommunityDetector  // optional; nil = skip community detection step
+	synthesisGenerator SynthesisGenerator // optional; nil = skip synthesis generation step
 }
 
 // NewPipeline constructs a Pipeline. All three arguments are required; passing

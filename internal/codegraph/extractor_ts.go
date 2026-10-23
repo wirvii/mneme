@@ -211,22 +211,22 @@ type tsExtractionResult struct {
 
 // tsNode is the JSON representation of a node from the JS extractor.
 type tsNode struct {
-	ID             string `json:"id"`
-	Kind           string `json:"kind"`
-	Name           string `json:"name"`
-	QualifiedName  string `json:"qualified_name"`
-	FilePath       string `json:"file_path"`
-	Language       string `json:"language"`
-	StartLine      int    `json:"start_line"`
-	EndLine        int    `json:"end_line"`
-	StartColumn    int    `json:"start_column"`
-	EndColumn      int    `json:"end_column"`
-	Docstring      string `json:"docstring,omitempty"`
-	Signature      string `json:"signature,omitempty"`
-	IsExported     bool   `json:"is_exported,omitempty"`
-	IsAsync        bool   `json:"is_async,omitempty"`
-	IsStatic       bool   `json:"is_static,omitempty"`
-	UpdatedAt      int64  `json:"updated_at"`
+	ID            string `json:"id"`
+	Kind          string `json:"kind"`
+	Name          string `json:"name"`
+	QualifiedName string `json:"qualified_name"`
+	FilePath      string `json:"file_path"`
+	Language      string `json:"language"`
+	StartLine     int    `json:"start_line"`
+	EndLine       int    `json:"end_line"`
+	StartColumn   int    `json:"start_column"`
+	EndColumn     int    `json:"end_column"`
+	Docstring     string `json:"docstring,omitempty"`
+	Signature     string `json:"signature,omitempty"`
+	IsExported    bool   `json:"is_exported,omitempty"`
+	IsAsync       bool   `json:"is_async,omitempty"`
+	IsStatic      bool   `json:"is_static,omitempty"`
+	UpdatedAt     int64  `json:"updated_at"`
 }
 
 // tsEdge is the JSON representation of an edge from the JS extractor.

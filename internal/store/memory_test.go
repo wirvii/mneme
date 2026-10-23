@@ -604,16 +604,16 @@ func TestStore_CreateRule_Roundtrip(t *testing.T) {
 	ctx := context.Background()
 
 	rule := &model.Memory{
-		Type:      model.TypeRule,
-		Scope:     model.ScopeProject,
-		Title:     "Never use time.Now() directly",
-		Content:   "Use the injected clock from the service constructor.",
-		Project:   "myproject",
+		Type:       model.TypeRule,
+		Scope:      model.ScopeProject,
+		Title:      "Never use time.Now() directly",
+		Content:    "Use the injected clock from the service constructor.",
+		Project:    "myproject",
 		Importance: 0.95,
 		Confidence: 0.8,
 		DecayRate:  0.0,
-		AppliesTo: []string{"internal/**/*.go", "!internal/**/*_test.go"},
-		Severity:  model.SeverityWarn,
+		AppliesTo:  []string{"internal/**/*.go", "!internal/**/*_test.go"},
+		Severity:   model.SeverityWarn,
 	}
 
 	created, err := s.Create(ctx, rule)
@@ -653,17 +653,17 @@ func TestStore_UpsertRule_UpdatesAppliesTo(t *testing.T) {
 	ctx := context.Background()
 
 	rule := &model.Memory{
-		Type:      model.TypeRule,
-		Scope:     model.ScopeProject,
-		Title:     "No vendor edits",
-		Content:   "All vendor changes must go through go mod vendor.",
-		TopicKey:  "rule/no-vendor-edits",
-		Project:   "myproject",
+		Type:       model.TypeRule,
+		Scope:      model.ScopeProject,
+		Title:      "No vendor edits",
+		Content:    "All vendor changes must go through go mod vendor.",
+		TopicKey:   "rule/no-vendor-edits",
+		Project:    "myproject",
 		Importance: 0.95,
 		Confidence: 0.8,
 		DecayRate:  0.0,
-		AppliesTo: []string{"vendor/**"},
-		Severity:  model.SeverityWarn,
+		AppliesTo:  []string{"vendor/**"},
+		Severity:   model.SeverityWarn,
 	}
 
 	first, created, err := s.Upsert(ctx, rule)
@@ -676,17 +676,17 @@ func TestStore_UpsertRule_UpdatesAppliesTo(t *testing.T) {
 
 	// Now upsert again with changed applies_to and severity.
 	rule2 := &model.Memory{
-		Type:      model.TypeRule,
-		Scope:     model.ScopeProject,
-		Title:     "No vendor edits",
-		Content:   "All vendor changes must go through go mod vendor.",
-		TopicKey:  "rule/no-vendor-edits",
-		Project:   "myproject",
+		Type:       model.TypeRule,
+		Scope:      model.ScopeProject,
+		Title:      "No vendor edits",
+		Content:    "All vendor changes must go through go mod vendor.",
+		TopicKey:   "rule/no-vendor-edits",
+		Project:    "myproject",
 		Importance: 0.95,
 		Confidence: 0.8,
 		DecayRate:  0.0,
-		AppliesTo: []string{"vendor/**", "!vendor/modules.txt"},
-		Severity:  model.SeverityBlock,
+		AppliesTo:  []string{"vendor/**", "!vendor/modules.txt"},
+		Severity:   model.SeverityBlock,
 	}
 
 	second, created2, err := s.Upsert(ctx, rule2)
@@ -723,16 +723,16 @@ func TestStore_UpdateRule_PartialSeverity(t *testing.T) {
 	ctx := context.Background()
 
 	rule := &model.Memory{
-		Type:      model.TypeRule,
-		Scope:     model.ScopeProject,
-		Title:     "No SQL inline",
-		Content:   "SQL must live in .sql files.",
-		Project:   "myproject",
+		Type:       model.TypeRule,
+		Scope:      model.ScopeProject,
+		Title:      "No SQL inline",
+		Content:    "SQL must live in .sql files.",
+		Project:    "myproject",
 		Importance: 0.95,
 		Confidence: 0.8,
 		DecayRate:  0.0,
-		AppliesTo: []string{"**/*.go"},
-		Severity:  model.SeverityWarn,
+		AppliesTo:  []string{"**/*.go"},
+		Severity:   model.SeverityWarn,
 	}
 
 	created, err := s.Create(ctx, rule)
@@ -767,16 +767,16 @@ func TestStore_ListRules_FilterByType(t *testing.T) {
 
 	// Create one rule and one decision.
 	rule := &model.Memory{
-		Type:      model.TypeRule,
-		Scope:     model.ScopeProject,
-		Title:     "A rule",
-		Content:   "Rule content.",
-		Project:   "myproject",
+		Type:       model.TypeRule,
+		Scope:      model.ScopeProject,
+		Title:      "A rule",
+		Content:    "Rule content.",
+		Project:    "myproject",
 		Importance: 0.95,
 		Confidence: 0.8,
 		DecayRate:  0.0,
-		AppliesTo: []string{"**"},
-		Severity:  model.SeverityInfo,
+		AppliesTo:  []string{"**"},
+		Severity:   model.SeverityInfo,
 	}
 	if _, err := s.Create(ctx, rule); err != nil {
 		t.Fatalf("Create rule: %v", err)
@@ -815,16 +815,16 @@ func TestStore_AppliesTo_JSONMarshalling(t *testing.T) {
 	}
 
 	rule := &model.Memory{
-		Type:      model.TypeRule,
-		Scope:     model.ScopeProject,
-		Title:     "Complex patterns rule",
-		Content:   "Testing pattern roundtrip.",
-		Project:   "myproject",
+		Type:       model.TypeRule,
+		Scope:      model.ScopeProject,
+		Title:      "Complex patterns rule",
+		Content:    "Testing pattern roundtrip.",
+		Project:    "myproject",
 		Importance: 0.95,
 		Confidence: 0.8,
 		DecayRate:  0.0,
-		AppliesTo: patterns,
-		Severity:  model.SeverityBlock,
+		AppliesTo:  patterns,
+		Severity:   model.SeverityBlock,
 	}
 
 	created, err := s.Create(ctx, rule)

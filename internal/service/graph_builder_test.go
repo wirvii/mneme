@@ -653,4 +653,3 @@ func benchBuildGraph(b *testing.B, numEntities, numRelations, numSeeds int) {
 		_ = graph
 	}
 }
-

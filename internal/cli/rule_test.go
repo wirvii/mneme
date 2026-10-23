@@ -66,15 +66,15 @@ func TestSlugifyTitle_Empty(t *testing.T) {
 
 func newTestRule(id, title string, sev model.Severity, scope model.Scope, appliesTo []string) *model.Memory {
 	return &model.Memory{
-		ID:        id,
-		Title:     title,
-		Type:      model.TypeRule,
-		Severity:  sev,
-		Scope:     scope,
-		AppliesTo: appliesTo,
+		ID:         id,
+		Title:      title,
+		Type:       model.TypeRule,
+		Severity:   sev,
+		Scope:      scope,
+		AppliesTo:  appliesTo,
 		Importance: 0.95,
-		CreatedAt: time.Now().UTC(),
-		UpdatedAt: time.Now().UTC(),
+		CreatedAt:  time.Now().UTC(),
+		UpdatedAt:  time.Now().UTC(),
 	}
 }
 
@@ -214,11 +214,11 @@ func TestPrintTestOutput_NoMatch(t *testing.T) {
 
 func TestPrintTestOutput_BlockMatch(t *testing.T) {
 	blockRule := model.Memory{
-		ID:       "rule-block",
-		Title:    "Never edit vendor/",
-		Content:  "Do not edit vendor files.",
-		Type:     model.TypeRule,
-		Severity: model.SeverityBlock,
+		ID:        "rule-block",
+		Title:     "Never edit vendor/",
+		Content:   "Do not edit vendor files.",
+		Type:      model.TypeRule,
+		Severity:  model.SeverityBlock,
 		AppliesTo: []string{"vendor/**"},
 	}
 	result := rules.MatchResult{
@@ -247,11 +247,11 @@ func TestPrintTestOutput_BlockMatch(t *testing.T) {
 
 func TestPrintTestOutput_WarnMatch(t *testing.T) {
 	warnRule := model.Memory{
-		ID:       "rule-warn",
-		Title:    "SQL in .sql files only",
-		Content:  "No inline SQL strings.",
-		Type:     model.TypeRule,
-		Severity: model.SeverityWarn,
+		ID:        "rule-warn",
+		Title:     "SQL in .sql files only",
+		Content:   "No inline SQL strings.",
+		Type:      model.TypeRule,
+		Severity:  model.SeverityWarn,
 		AppliesTo: []string{"**/*.go", "!**/*_test.go"},
 	}
 	result := rules.MatchResult{
@@ -294,9 +294,9 @@ func TestPrintTestOutput_NoPath(t *testing.T) {
 
 func TestPrintTestJSON_Output(t *testing.T) {
 	blockRule := model.Memory{
-		ID:       "rule-block",
-		Title:    "Never edit vendor/",
-		Severity: model.SeverityBlock,
+		ID:        "rule-block",
+		Title:     "Never edit vendor/",
+		Severity:  model.SeverityBlock,
 		AppliesTo: []string{"vendor/**"},
 	}
 	result := rules.MatchResult{

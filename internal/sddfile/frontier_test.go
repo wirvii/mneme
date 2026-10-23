@@ -34,7 +34,7 @@ func specLiteralFixture() *SpecRecord {
 			{ID: "h2", SpecID: spec.ID, FromStatus: model.SpecStatusImplementing, ToStatus: model.SpecStatusQA,
 				By: "backend", Reason: "ready for review", At: base.Add(time.Hour)},
 			{ID: "h3", SpecID: spec.ID, FromStatus: model.SpecStatusQA, ToStatus: model.SpecStatusImplementing,
-				By: "qa-tester",
+				By:     "qa-tester",
 				Reason: "rejected: missing tests\n\n[AC1] the coverage gate is red\nevidencia: go test output",
 				At:     base.Add(2 * time.Hour)},
 		},

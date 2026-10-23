@@ -198,15 +198,15 @@ type ruleListJSON struct {
 // content to keep payloads small; callers that need full content should use
 // "mneme get <id>".
 type ruleJSONItem struct {
-	ID        string    `json:"id"`
-	Title     string    `json:"title"`
-	Severity  string    `json:"severity"`
-	AppliesTo []string  `json:"applies_to"`
-	Scope     string    `json:"scope"`
-	TopicKey  string    `json:"topic_key,omitempty"`
-	Importance float64  `json:"importance"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID         string    `json:"id"`
+	Title      string    `json:"title"`
+	Severity   string    `json:"severity"`
+	AppliesTo  []string  `json:"applies_to"`
+	Scope      string    `json:"scope"`
+	TopicKey   string    `json:"topic_key,omitempty"`
+	Importance float64   `json:"importance"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
 }
 
 // newRuleListCmd returns the "mneme rule list" subcommand. It queries all active
@@ -535,20 +535,20 @@ func printTestOutput(w io.Writer, toolName, filePath string, evaluated int, resu
 
 // ruleTestJSON is the JSON structure emitted by "mneme rule test --json".
 type ruleTestJSON struct {
-	Tool      string             `json:"tool"`
-	Path      string             `json:"path,omitempty"`
-	Evaluated int                `json:"evaluated"`
+	Tool      string              `json:"tool"`
+	Path      string              `json:"path,omitempty"`
+	Evaluated int                 `json:"evaluated"`
 	Matched   []ruleTestMatchJSON `json:"matched"`
-	MaxSev    string             `json:"max_severity"`
-	Result    string             `json:"result"`
+	MaxSev    string              `json:"max_severity"`
+	Result    string              `json:"result"`
 }
 
 // ruleTestMatchJSON represents a single matched rule in JSON output.
 type ruleTestMatchJSON struct {
-	ID      string   `json:"id"`
-	Title   string   `json:"title"`
-	Severity string  `json:"severity"`
-	Entries []string `json:"matched_entries"`
+	ID       string   `json:"id"`
+	Title    string   `json:"title"`
+	Severity string   `json:"severity"`
+	Entries  []string `json:"matched_entries"`
 }
 
 // printTestJSON writes the test result as JSON to w.
@@ -616,4 +616,3 @@ func slugifyTitle(title string) string {
 
 	return "rule/" + s
 }
-

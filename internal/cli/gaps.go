@@ -16,9 +16,9 @@ import (
 // gapsListJSON is the versioned JSON wrapper emitted by "mneme gaps --json".
 // The version field lets consumers detect schema changes without introspection.
 type gapsListJSON struct {
-	Version string     `json:"version"`
+	Version string      `json:"version"`
 	Gaps    []model.Gap `json:"gaps"`
-	Total   int        `json:"total"`
+	Total   int         `json:"total"`
 }
 
 // newGapsCmd returns the "mneme gaps" top-level command. It queries aggregated

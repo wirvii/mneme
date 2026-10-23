@@ -90,14 +90,14 @@ func TestProbeGraph_StalenessTimestamp(t *testing.T) {
 	}
 
 	base := time.Now().UnixMilli()
-	oldest := base - 3_600_000  // 1 hour ago
-	middle := base - 1_800_000  // 30 min ago
-	newest := base - 600_000    // 10 min ago
+	oldest := base - 3_600_000 // 1 hour ago
+	middle := base - 1_800_000 // 30 min ago
+	newest := base - 600_000   // 10 min ago
 
 	st := NewStore(cdb)
 	for _, tc := range []struct {
-		id  string
-		ts  int64
+		id string
+		ts int64
 	}{
 		{"node-oldest", oldest},
 		{"node-middle", middle},

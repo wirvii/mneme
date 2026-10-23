@@ -54,7 +54,6 @@ var (
 	reCodeSymbol = regexp.MustCompile(
 		`(?:func|type|struct|interface|const|var|package|class|def|fn)\s+([A-Za-z][A-Za-z0-9_]{2,})`,
 	)
-
 )
 
 // extractEntities extracts candidate entities from a memory using 4 heuristics:

@@ -234,9 +234,9 @@ func TestRelativeTime(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
-		name     string
-		ago      time.Duration
-		wantPfx  string
+		name    string
+		ago     time.Duration
+		wantPfx string
 	}{
 		{"seconds", 30 * time.Second, "just now"},
 		{"minutes", 45 * time.Minute, "45m ago"},

@@ -69,7 +69,7 @@ func TestEvaluatePromoteGate_MutationGuard_AreasCompleteGate(t *testing.T) {
 	var events []enforcelog.Event
 	for i := 0; i < promoteMinEvents+5; i++ {
 		events = append(events, enforcelog.Event{
-			TS: now.Add(-8*24*time.Hour + time.Duration(i)*time.Minute),
+			TS:   now.Add(-8*24*time.Hour + time.Duration(i)*time.Minute),
 			Role: "frontend", Decision: enforcelog.DecisionWouldBlock, Target: "internal/store/foo.go",
 		})
 	}
@@ -101,7 +101,7 @@ func TestEvaluatePromoteGate_PairsDeduplicatedAndSorted(t *testing.T) {
 	var events []enforcelog.Event
 	for i := 0; i < promoteMinEvents+2; i++ {
 		events = append(events, enforcelog.Event{
-			TS: now.Add(-8*24*time.Hour + time.Duration(i)*time.Minute),
+			TS:   now.Add(-8*24*time.Hour + time.Duration(i)*time.Minute),
 			Role: "frontend", Decision: enforcelog.DecisionWouldBlock, Target: "internal/b.go",
 		})
 	}

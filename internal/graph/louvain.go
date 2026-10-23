@@ -92,12 +92,12 @@ type LouvainResult struct {
 // louvainState holds the mutable bookkeeping for a single Phase-1 run on one
 // graph. All slices are indexed by node position in graph.Nodes (D5).
 type louvainState struct {
-	n           int                   // number of nodes
-	node2comm   []int                 // node2comm[i] = community ID of node i; -1 = sentinel (removed)
-	commDegree  []float64             // commDegree[c] = Σ_tot(c): sum of weighted degrees of nodes in c
-	commIntern  []float64             // commIntern[c] = Σ_in(c): sum of internal edge weights in c
-	nodeDegree  []float64             // nodeDegree[i] = k_i: weighted degree of node i (precomputed)
-	totalWeight float64               // m: sum(all edge weights in Adj)/2 (undirected treatment, D9)
+	n           int                    // number of nodes
+	node2comm   []int                  // node2comm[i] = community ID of node i; -1 = sentinel (removed)
+	commDegree  []float64              // commDegree[c] = Σ_tot(c): sum of weighted degrees of nodes in c
+	commIntern  []float64              // commIntern[c] = Σ_in(c): sum of internal edge weights in c
+	nodeDegree  []float64              // nodeDegree[i] = k_i: weighted degree of node i (precomputed)
+	totalWeight float64                // m: sum(all edge weights in Adj)/2 (undirected treatment, D9)
 	nodeIndex   map[scoring.NodeID]int // NodeID -> index in graph.Nodes
 }
 

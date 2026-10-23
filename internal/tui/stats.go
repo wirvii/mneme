@@ -16,7 +16,7 @@ type StatsModel struct {
 	svc     *service.MemoryService
 	project string
 
-	stats  *model.StatsResponse
+	stats   *model.StatsResponse
 	loading bool
 
 	width  int

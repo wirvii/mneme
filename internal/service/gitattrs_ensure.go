@@ -75,8 +75,8 @@ func EnsureGitattributes(repoRoot string, checkMode bool) ([]DriftFinding, error
 			return nil, fmt.Errorf("service: gitattributes: write %s: %w", path, err)
 		}
 		return []DriftFinding{{
-			File: path,
-			Line: 1,
+			File:    path,
+			Line:    1,
 			Message: "wrote .gitattributes: " + strings.Join(gitattrsBlockLines(), " / "),
 		}}, nil
 	}

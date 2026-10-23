@@ -930,4 +930,3 @@ func TestUpdate_WikilinkContentUnchanged(t *testing.T) {
 		t.Error("expected no relation when Content was not updated, got one")
 	}
 }
-

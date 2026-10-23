@@ -78,8 +78,8 @@ type LegacyArtifact struct {
 // LegacyInventory is the output of DetectLegacy.
 type LegacyInventory struct {
 	RepoRoot        string
-	WorkflowLegacy  string   // ~/.workflows/<slug> if it exists
-	WorkflowNew     string   // ~/.mneme/workflows/<slug>
+	WorkflowLegacy  string // ~/.workflows/<slug> if it exists
+	WorkflowNew     string // ~/.mneme/workflows/<slug>
 	Artifacts       []LegacyArtifact
 	FilesToDelete   []string // abs paths that CleanFilesystem will remove
 	FilesToPreserve []string // abs paths that will be kept
@@ -138,17 +138,17 @@ type MigratedEntry struct {
 
 // InitReport aggregates the results of a Plan or Apply run for rendering.
 type InitReport struct {
-	Slug              string
-	Plan              InitPlan
-	Applied           bool
-	MigratedBacklog   []MigratedEntry  // new BL-XXX IDs with their sources
-	MigratedSpecs     []MigratedEntry  // new SPEC-XXX IDs with their sources
-	MigratedMemories  []MigratedEntry  // memory IDs or topic_keys with their sources
-	Ambiguous         []LegacyArtifact // artifacts flagged for manual review
-	Cleanup           CleanupResult
-	CLAUDELocal       ClaudeLocalResult
-	GeneratedAt       time.Time
-	criticalErrors    []string         // internal; not exported to callers
+	Slug             string
+	Plan             InitPlan
+	Applied          bool
+	MigratedBacklog  []MigratedEntry  // new BL-XXX IDs with their sources
+	MigratedSpecs    []MigratedEntry  // new SPEC-XXX IDs with their sources
+	MigratedMemories []MigratedEntry  // memory IDs or topic_keys with their sources
+	Ambiguous        []LegacyArtifact // artifacts flagged for manual review
+	Cleanup          CleanupResult
+	CLAUDELocal      ClaudeLocalResult
+	GeneratedAt      time.Time
+	criticalErrors   []string // internal; not exported to callers
 }
 
 // HasCriticalErrors reports whether any migration step failed in a way that
@@ -224,7 +224,7 @@ func NewInitService(cfg *config.Config, sdd *SDDService, mem *MemoryService, slu
 		slug:          slug,
 		upsertBlock:   ub,
 		manualContent: mc,
-		now:    time.Now,
+		now:           time.Now,
 		readFile: func(p string) ([]byte, error) {
 			return os.ReadFile(p)
 		},
@@ -356,7 +356,7 @@ func (s *InitService) DetectLegacy(ctx context.Context, repoRoot string) (Legacy
 	}
 
 	inv := LegacyInventory{
-		RepoRoot:   repoRoot,
+		RepoRoot:    repoRoot,
 		WorkflowNew: filepath.Join(home, ".mneme", "workflows", s.slug),
 	}
 

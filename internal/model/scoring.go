@@ -25,8 +25,8 @@ var DefaultImportance = map[MemoryType]float64{
 // because it remains valid for months; session summaries decay fast because
 // they become irrelevant after a few days.
 var DefaultDecayRate = map[MemoryType]float64{
-	TypeRule:           0.0,   // Rules do not decay — they remain active until explicitly revoked.
-	TypeSynthesis:      0.0,   // Synthesis memories are regenerated each cycle; decay is meaningless.
+	TypeRule:           0.0, // Rules do not decay — they remain active until explicitly revoked.
+	TypeSynthesis:      0.0, // Synthesis memories are regenerated each cycle; decay is meaningless.
 	TypeArchitecture:   0.005,
 	TypeDecision:       0.005,
 	TypeConvention:     0.005,

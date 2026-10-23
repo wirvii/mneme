@@ -160,7 +160,7 @@ var edgeCases = []tokenCase{
 		},
 	},
 	{
-		name:  "echo_redirect_inside_json_string",
+		name: "echo_redirect_inside_json_string",
 		// The redirect > internal/x.go is a real redirect here; the hook
 		// should detect it. This is separate from a redirect inside a
 		// quoted string.

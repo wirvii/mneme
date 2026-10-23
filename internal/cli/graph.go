@@ -42,11 +42,11 @@ memories using entity extraction heuristics.`,
 // unreferenced after their relations were dropped.
 func newGraphCleanupOrphanCmd() *cobra.Command {
 	var (
-		flagScope             string
-		flagApply             bool
-		flagAlsoDeleteEnts    bool
-		flagOutput            string
-		flagYes               bool
+		flagScope          string
+		flagApply          bool
+		flagAlsoDeleteEnts bool
+		flagOutput         string
+		flagYes            bool
 	)
 
 	cmd := &cobra.Command{
@@ -146,12 +146,12 @@ func printCleanupOrphanResult(result *service.CleanupOrphanRelationsResult) {
 // related_to relations (explicit relation types are never touched).
 func newGraphRebuildCmd() *cobra.Command {
 	var (
-		flagScope      string
-		flagMinShared  int
-		flagMaxRels    int
-		flagBatchSize  int
-		flagForce      bool
-		flagDryRun     bool
+		flagScope     string
+		flagMinShared int
+		flagMaxRels   int
+		flagBatchSize int
+		flagForce     bool
+		flagDryRun    bool
 	)
 
 	cmd := &cobra.Command{

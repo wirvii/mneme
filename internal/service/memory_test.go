@@ -358,10 +358,10 @@ func TestService_Save_RuleValidation(t *testing.T) {
 	ctx := context.Background()
 
 	tests := []struct {
-		name      string
-		req       model.SaveRequest
-		wantErr   error
-		wantOK    bool
+		name    string
+		req     model.SaveRequest
+		wantErr error
+		wantOK  bool
 	}{
 		{
 			name: "rule with valid applies_to and severity",

@@ -31,30 +31,30 @@ func decisionMemory() *model.Memory {
 
 func discoveryMemory() *model.Memory {
 	return &model.Memory{
-		ID:        "02abc123-0000-0000-0000-000000000000",
-		Type:      model.TypeDiscovery,
-		Scope:     model.ScopeProject,
-		Title:     "Legacy API returns 200 for errors",
-		Content:   "The upstream API always returns HTTP 200 with an error field in the body.",
-		TopicKey:  "",
-		Project:   "owner/repo",
-		CreatedAt: fixedDate,
-		UpdatedAt: fixedDate,
+		ID:         "02abc123-0000-0000-0000-000000000000",
+		Type:       model.TypeDiscovery,
+		Scope:      model.ScopeProject,
+		Title:      "Legacy API returns 200 for errors",
+		Content:    "The upstream API always returns HTTP 200 with an error field in the body.",
+		TopicKey:   "",
+		Project:    "owner/repo",
+		CreatedAt:  fixedDate,
+		UpdatedAt:  fixedDate,
 		Importance: 0.75,
 	}
 }
 
 func bugfixMemory() *model.Memory {
 	return &model.Memory{
-		ID:        "03def456-0000-0000-0000-000000000000",
-		Type:      model.TypeBugfix,
-		Scope:     model.ScopeProject,
-		Title:     "Fix N+1 query in UserList",
-		Content:   "Added DataLoader to batch user fetches.",
-		TopicKey:  "bugfix/userlist-n+1",
-		Project:   "owner/repo",
-		CreatedAt: fixedDate,
-		UpdatedAt: fixedDate,
+		ID:         "03def456-0000-0000-0000-000000000000",
+		Type:       model.TypeBugfix,
+		Scope:      model.ScopeProject,
+		Title:      "Fix N+1 query in UserList",
+		Content:    "Added DataLoader to batch user fetches.",
+		TopicKey:   "bugfix/userlist-n+1",
+		Project:    "owner/repo",
+		CreatedAt:  fixedDate,
+		UpdatedAt:  fixedDate,
 		Importance: 0.8,
 	}
 }
@@ -84,12 +84,12 @@ func TestTypeTitle(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(string(tt.memType), func(t *testing.T) {
 			m := &model.Memory{
-				ID: "00000000-0000-0000-0000-000000000000",
-				Type: tt.memType,
-				Title: "test",
-				Content: "body",
-				CreatedAt: fixedDate,
-				UpdatedAt: fixedDate,
+				ID:         "00000000-0000-0000-0000-000000000000",
+				Type:       tt.memType,
+				Title:      "test",
+				Content:    "body",
+				CreatedAt:  fixedDate,
+				UpdatedAt:  fixedDate,
 				Importance: 0.5,
 			}
 			var buf strings.Builder
@@ -299,12 +299,12 @@ func TestRenderType_IDTruncation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			m := &model.Memory{
-				ID:        tt.id,
-				Type:      model.TypeDecision,
-				Title:     "test title",
-				Content:   "body",
-				CreatedAt: fixedDate,
-				UpdatedAt: fixedDate,
+				ID:         tt.id,
+				Type:       model.TypeDecision,
+				Title:      "test title",
+				Content:    "body",
+				CreatedAt:  fixedDate,
+				UpdatedAt:  fixedDate,
 				Importance: 0.5,
 			}
 			var buf strings.Builder

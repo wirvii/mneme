@@ -126,9 +126,9 @@ func isValidSection(name string) bool {
 
 // configShowJSON is the JSON envelope for mneme config show --json.
 type configShowJSON struct {
-	ConfigPath     string                               `json:"config_path"`
-	ConfigFileExists bool                               `json:"config_file_exists"`
-	Sections       map[string][]config.ConfigFieldInfo `json:"sections"`
+	ConfigPath       string                              `json:"config_path"`
+	ConfigFileExists bool                                `json:"config_file_exists"`
+	Sections         map[string][]config.ConfigFieldInfo `json:"sections"`
 }
 
 // printConfigJSON writes machine-readable JSON to w.

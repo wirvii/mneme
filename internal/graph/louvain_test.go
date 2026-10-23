@@ -879,4 +879,3 @@ func BenchmarkLouvain_5K_Nodes(b *testing.B) {
 		}
 	}
 }
-

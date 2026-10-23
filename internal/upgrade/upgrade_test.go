@@ -33,7 +33,7 @@ func TestCompareVersions(t *testing.T) {
 		{"dev", "0.1.0", -1},
 		{"0.1.0", "dev", 1},
 		{"dev", "dev", 0},
-		{"1.0", "1.0.0", 0},  // missing patch treated as 0
+		{"1.0", "1.0.0", 0}, // missing patch treated as 0
 		{"1.0.1", "1.0", 1},
 	}
 
@@ -116,37 +116,37 @@ func TestChecker_Check(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
-		name           string
-		serverResponse string
-		statusCode     int
-		currentVersion string
+		name            string
+		serverResponse  string
+		statusCode      int
+		currentVersion  string
 		wantUpdateAvail bool
-		wantLatestVer  string
-		wantErr        bool
+		wantLatestVer   string
+		wantErr         bool
 	}{
 		{
-			name:           "update available",
-			serverResponse: `{"tag_name": "v0.4.0"}`,
-			statusCode:     http.StatusOK,
-			currentVersion: "0.3.0",
+			name:            "update available",
+			serverResponse:  `{"tag_name": "v0.4.0"}`,
+			statusCode:      http.StatusOK,
+			currentVersion:  "0.3.0",
 			wantUpdateAvail: true,
-			wantLatestVer:  "0.4.0",
+			wantLatestVer:   "0.4.0",
 		},
 		{
-			name:           "already up to date",
-			serverResponse: `{"tag_name": "v0.4.0"}`,
-			statusCode:     http.StatusOK,
-			currentVersion: "0.4.0",
+			name:            "already up to date",
+			serverResponse:  `{"tag_name": "v0.4.0"}`,
+			statusCode:      http.StatusOK,
+			currentVersion:  "0.4.0",
 			wantUpdateAvail: false,
-			wantLatestVer:  "0.4.0",
+			wantLatestVer:   "0.4.0",
 		},
 		{
-			name:           "dev build",
-			serverResponse: `{"tag_name": "v0.1.0"}`,
-			statusCode:     http.StatusOK,
-			currentVersion: "dev",
+			name:            "dev build",
+			serverResponse:  `{"tag_name": "v0.1.0"}`,
+			statusCode:      http.StatusOK,
+			currentVersion:  "dev",
 			wantUpdateAvail: true,
-			wantLatestVer:  "0.1.0",
+			wantLatestVer:   "0.1.0",
 		},
 		{
 			name:           "server error",

@@ -23,9 +23,9 @@ import (
 //
 // The archive format is defined in SPEC-026 sections 3–4.
 type ManifestExporter struct {
-	s             *store.MemoryStore
-	producerName  string
-	producerVer   string
+	s            *store.MemoryStore
+	producerName string
+	producerVer  string
 }
 
 // NewManifestExporter constructs a ManifestExporter backed by s. producerName
@@ -193,10 +193,10 @@ func ExportManifestToFile(ctx context.Context, s *store.MemoryStore, producerNam
 // The header's ModTime is zero (reproducible builds) and Mode is 0644.
 func writeTarEntry(tw *tar.Writer, name string, content []byte) error {
 	hdr := &tar.Header{
-		Name:    name,
-		Size:    int64(len(content)),
-		Mode:    0o644,
-		ModTime: time.Time{},
+		Name:     name,
+		Size:     int64(len(content)),
+		Mode:     0o644,
+		ModTime:  time.Time{},
 		Typeflag: tar.TypeReg,
 	}
 	if err := tw.WriteHeader(hdr); err != nil {

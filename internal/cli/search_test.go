@@ -15,11 +15,11 @@ import (
 //   - --graph (explicit true): graph expansion on
 func TestSearchCmd_GraphFlag(t *testing.T) {
 	tests := []struct {
-		name         string
-		args         []string
-		wantGraph    bool
-		wantNoGraph  bool
-		wantInclude  bool // expected effective include_graph after RunE logic
+		name        string
+		args        []string
+		wantGraph   bool
+		wantNoGraph bool
+		wantInclude bool // expected effective include_graph after RunE logic
 	}{
 		{
 			name:        "default no flags",
@@ -31,7 +31,7 @@ func TestSearchCmd_GraphFlag(t *testing.T) {
 		{
 			name:        "--no-graph disables expansion",
 			args:        []string{"dummy-query", "--no-graph"},
-			wantGraph:   true,  // default for --graph flag itself unchanged
+			wantGraph:   true, // default for --graph flag itself unchanged
 			wantNoGraph: true,
 			wantInclude: false,
 		},

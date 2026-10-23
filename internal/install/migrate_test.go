@@ -48,12 +48,12 @@ func TestMigrateWorkflowDir_MultipleProjects(t *testing.T) {
 
 	projects := map[string]map[string]string{
 		"mneme": {
-			"specs/P001/spec.md":    "# mneme spec",
-			"plans/backlog.md":      "- [ ] Item A",
+			"specs/P001/spec.md": "# mneme spec",
+			"plans/backlog.md":   "- [ ] Item A",
 		},
 		"platform": {
-			"bugs/B001/bug.md":      "# platform bug",
-			"specs/P002/spec.md":    "# platform spec",
+			"bugs/B001/bug.md":   "# platform bug",
+			"specs/P002/spec.md": "# platform spec",
 		},
 	}
 

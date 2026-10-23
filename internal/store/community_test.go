@@ -56,11 +56,11 @@ func insertCommunityTestMemory(t *testing.T, s *MemoryStore, project string, del
 	t.Helper()
 	ctx := context.Background()
 	m := &model.Memory{
-		Type:      model.TypeDiscovery,
-		Scope:     model.ScopeProject,
-		Title:     "test memory",
-		Content:   "content",
-		Project:   project,
+		Type:       model.TypeDiscovery,
+		Scope:      model.ScopeProject,
+		Title:      "test memory",
+		Content:    "content",
+		Project:    project,
 		Importance: 0.5,
 	}
 	created, err := s.Create(ctx, m)

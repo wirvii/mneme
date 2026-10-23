@@ -319,7 +319,7 @@ func TestRun_FullCycle(t *testing.T) {
 	ctx := context.Background()
 
 	cfg := testConfig()
-	cfg.Storage.ProjectBudget = 4 // will force eviction after sweep
+	cfg.Storage.ProjectBudget = 4        // will force eviction after sweep
 	cfg.Consolidation.RetentionDays = -1 // hard-delete anything soft-deleted (cutoff = tomorrow)
 
 	// 1. Two memories that will be soft-deleted by sweep (very old + fast decay).

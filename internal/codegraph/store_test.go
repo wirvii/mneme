@@ -603,12 +603,12 @@ func TestStore_GetStats(t *testing.T) {
 
 	// Insert 1 file record.
 	if err := s.UpsertFile(FileRecord{
-		Path:     "pkg/a.go",
+		Path:        "pkg/a.go",
 		ContentHash: "hA",
-		Language: "go",
-		Size:     100,
-		ModifiedAt: 1000,
-		IndexedAt:  1000,
+		Language:    "go",
+		Size:        100,
+		ModifiedAt:  1000,
+		IndexedAt:   1000,
 	}); err != nil {
 		t.Fatalf("UpsertFile: %v", err)
 	}

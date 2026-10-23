@@ -14,11 +14,11 @@ type KeyMap struct {
 	End      key.Binding
 
 	// Actions
-	Enter  key.Binding
-	Back   key.Binding
-	Quit   key.Binding
-	Forget key.Binding
-	Help   key.Binding
+	Enter   key.Binding
+	Back    key.Binding
+	Quit    key.Binding
+	Forget  key.Binding
+	Help    key.Binding
 	Refresh key.Binding
 
 	// List-specific

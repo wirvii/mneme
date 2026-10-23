@@ -15,11 +15,11 @@ import (
 func makeTestMemory(t *testing.T, s *MemoryStore, title string) string {
 	t.Helper()
 	m := &model.Memory{
-		Type:      model.TypeDiscovery,
-		Scope:     model.ScopeProject,
-		Title:     title,
-		Content:   "content for " + title,
-		Project:   "test-project",
+		Type:       model.TypeDiscovery,
+		Scope:      model.ScopeProject,
+		Title:      title,
+		Content:    "content for " + title,
+		Project:    "test-project",
 		Importance: 0.5,
 		DecayRate:  0.01,
 		Confidence: 0.8,
@@ -249,9 +249,9 @@ func TestVectorSearch_BySimilarity(t *testing.T) {
 	// vec1 and vec2 are close to queryVec; vec3 is orthogonal.
 	dims := 4
 	queryVec := []float32{1.0, 0.0, 0.0, 0.0}
-	vec1 := []float32{0.9, 0.1, 0.0, 0.0}  // high similarity
-	vec2 := []float32{0.7, 0.3, 0.0, 0.0}  // medium similarity
-	vec3 := []float32{0.0, 0.0, 1.0, 0.0}  // orthogonal = low similarity
+	vec1 := []float32{0.9, 0.1, 0.0, 0.0} // high similarity
+	vec2 := []float32{0.7, 0.3, 0.0, 0.0} // medium similarity
+	vec3 := []float32{0.0, 0.0, 1.0, 0.0} // orthogonal = low similarity
 
 	normalise4 := func(v []float32) []float32 {
 		var sum float64

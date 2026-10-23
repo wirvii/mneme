@@ -58,7 +58,7 @@ func ExtractSalientTerms(title, content string, maxTerms int) []string {
 
 	for _, tok := range rawTokens {
 		// Strip leading/trailing punctuation so "tokens," → "tokens".
-		clean := strings.Trim(tok, `.,;:!?()[]{}'"` + "`")
+		clean := strings.Trim(tok, `.,;:!?()[]{}'"`+"`")
 		lower := strings.ToLower(clean)
 
 		// Skip empty, stop words, very short tokens (≤2 chars), and duplicates.

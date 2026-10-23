@@ -523,9 +523,9 @@ func TestDryRunPersonal_LocalSource(t *testing.T) {
 	}
 
 	for _, want := range []string{
-		src,          // source path is mentioned
-		"agents",     // dir mapping is shown
-		"CLAUDE.md",  // CLAUDE.md line is present
+		src,         // source path is mentioned
+		"agents",    // dir mapping is shown
+		"CLAUDE.md", // CLAUDE.md line is present
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("DryRunPersonal output missing %q\nfull output:\n%s", want, out)
