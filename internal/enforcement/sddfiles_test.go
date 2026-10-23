@@ -66,6 +66,45 @@ func TestIsSDDPath(t *testing.T) {
 	}
 }
 
+func TestEvaluateSDDFileTool(t *testing.T) {
+	c := sddTestContext("linux", "/w/repo")
+	c.Canonical = func(abs string) string {
+		if abs == "/w/link/x" {
+			return "/w/repo/.mneme/sdd/x"
+		}
+		return abs
+	}
+	tests := []struct {
+		name      string
+		tool      string
+		path      string
+		wantBlock bool
+	}{
+		{"write", "Write", "/w/repo/.mneme/sdd/backlog/BL-1.md", true},
+		{"edit", "Edit", ".mneme/sdd/a.md", true},
+		{"multiedit", "MultiEdit", "/w/repo/.mneme/sdd/a.md", true},
+		{"notebook", "NotebookEdit", "/w/repo/.mneme/sdd/n.ipynb", true},
+		{"empty path", "Write", "", false},
+		{"shared memory", "Write", "/w/repo/.mneme/shared/a.md", false},
+		{"ordinary file", "Edit", "internal/x.go", false},
+		{"symlink through canonical", "Write", "/w/link/x", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := EvaluateSDDFileTool(tt.tool, tt.path, c)
+			if got.Block != tt.wantBlock {
+				t.Fatalf("Block = %v, want %v", got.Block, tt.wantBlock)
+			}
+			if tt.wantBlock && (got.Target != tt.path || got.Form != tt.tool) {
+				t.Errorf("Target/Form = %q/%q, want %q/%q", got.Target, got.Form, tt.path, tt.tool)
+			}
+			if !tt.wantBlock && got != (SDDWriteDecision{}) {
+				t.Errorf("an allowed call must return the zero decision, got %+v", got)
+			}
+		})
+	}
+}
+
 func TestIsSDDPath_Contexts(t *testing.T) {
 	t.Run("relative with empty cwd stays protected by text", func(t *testing.T) {
 		if !IsSDDPath(".mneme/sdd/x", SDDContext{}) {

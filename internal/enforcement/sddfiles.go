@@ -175,6 +175,17 @@ func isAbsSDD(p string, windows bool) bool {
 	return (letter >= 'a' && letter <= 'z') || (letter >= 'A' && letter <= 'Z')
 }
 
+// EvaluateSDDFileTool rejects a file tool (Write, Edit, MultiEdit,
+// NotebookEdit) whose target is inside .mneme/sdd. filePath is the tool's
+// file_path or notebook_path; an empty one is allowed. The decision's Form is
+// the tool name, so the rejection message can say how the write was attempted.
+func EvaluateSDDFileTool(tool, filePath string, c SDDContext) SDDWriteDecision {
+	if filePath == "" || !IsSDDPath(filePath, c) {
+		return SDDWriteDecision{}
+	}
+	return SDDWriteDecision{Block: true, Target: filePath, Form: tool}
+}
+
 // hasSDDSegments reports two consecutive segments standing for ".mneme" and
 // "sdd".
 func hasSDDSegments(clean string, match segmentMatcher) bool {
