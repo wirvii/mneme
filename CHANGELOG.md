@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [v1.50.0] — 2026-10-25 — no agent writes by hand in `.mneme/sdd/` any more
+
 ### Security
 
 - SPEC-179: no agent can write by hand in `.mneme/sdd/**` any more. The
@@ -23,6 +25,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   trivial-inline setting bypasses it. The binary and the git hooks are
   unaffected. The `apply_patch` payload is not verified against a real Codex
   capture. New: `shell.Redirects`.
+
+### Changed
+
+- SPEC-180: every Go file under `internal/` is now `gofmt`-clean (49 files,
+  format only, no behaviour change).
 
 ## [v1.49.1] — 2026-10-20 — a new database no longer breaks when two processes open it at once
 
