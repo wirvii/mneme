@@ -49,6 +49,7 @@ var sddStoreMutators = map[string]bool{
 	"CreatePushback":          true,
 	"ResolvePushback":         true,
 	"InsertLaneAudit":         false, // lane_audits does not travel to the repository until BL-197 (etapa 4)
+	"SetSpecReviewRequired":   false, // la marca de revisión sin contexto no viaja al repositorio: los informes que exige son locales — SPEC-181 D3
 
 	// SPEC-131 D49/D52: the importer's own seven write methods
 	// (internal/store/sdd_import.go). None goes through a D33 wrapper —

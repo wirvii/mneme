@@ -12,9 +12,89 @@ import (
 	"os"
 	"os/exec"
 	"testing"
+	"time"
 
 	"github.com/wirvii/mneme/internal/model"
 )
+
+// validReviewSpecTOML and validReviewPlanTOML are minimal valid reports of each
+// moment, shared by the service tests of SPEC-181. The CLI and MCP test
+// packages declare byte-identical copies, because these constants are not
+// visible across packages.
+const validReviewSpecTOML = `schema_version = 1
+
+[[revisor]]
+papel = "comprension"
+estado = "completo"
+parafrasis_propuesta = "Propone revisar la spec sin contexto."
+parafrasis_hoy = "Hoy nadie la revisa."
+
+[[revisor]]
+papel = "diseno"
+estado = "completo"
+
+[[revisor]]
+papel = "hechos"
+estado = "completo"
+`
+
+const validReviewPlanTOML = `schema_version = 1
+
+[[revisor]]
+papel = "preparacion"
+estado = "completo"
+
+[[revisor]]
+papel = "hechos"
+estado = "completo"
+`
+
+// writeReviewReport writes a valid fresh-review report of the given kind for
+// spec through SpecDocWrite and then stamps its mtime at
+// max(now, mtime(tarea.md), mtime(criteria.toml)) + 2s, so the guard always
+// sees it as newer than the stage entry and the documents even when the file
+// system rounds mtimes (SPEC-181 plan, decision 9). A file that does not
+// exist does not count.
+func writeReviewReport(t *testing.T, svc *SDDService, spec *model.Spec, kind model.SpecDocKind) {
+	t.Helper()
+	content := validReviewSpecTOML
+	if kind == model.SpecDocKindReviewPlan {
+		content = validReviewPlanTOML
+	}
+	resp, err := svc.SpecDocWrite(context.Background(), model.SpecDocWriteRequest{ID: spec.ID, Kind: kind, Content: content})
+	if err != nil {
+		t.Fatalf("writeReviewReport(%s): %v", kind, err)
+	}
+	stamp := time.Now()
+	for _, docKind := range []model.SpecDocKind{model.SpecDocKindTask, model.SpecDocKindCriteria} {
+		docPath, err := specDocPath(svc.config.WorkflowDir(), spec.Project, spec.ID, docKind)
+		if err != nil {
+			t.Fatalf("specDocPath(%s): %v", docKind, err)
+		}
+		if info, err := os.Stat(docPath); err == nil && info.ModTime().After(stamp) {
+			stamp = info.ModTime()
+		}
+	}
+	stamp = stamp.Add(2 * time.Second)
+	if err := os.Chtimes(resp.Path, stamp, stamp); err != nil {
+		t.Fatalf("chtimes %s: %v", resp.Path, err)
+	}
+}
+
+// writeReviewReportFor writes the report the guard will demand for spec's
+// NEXT SpecAdvance, if any: review-spec while the spec is in speccing (the
+// speccing -> specced transition) and review-plan while it is planned (the
+// planned -> implementing transition). Any other status needs no report, so
+// it is safe to call before every SpecAdvance in a walking loop.
+func writeReviewReportFor(t *testing.T, svc *SDDService, spec *model.Spec) {
+	t.Helper()
+	switch spec.Status {
+	case model.SpecStatusSpeccing:
+		writeReviewReport(t, svc, spec, model.SpecDocKindReviewSpec)
+	case model.SpecStatusPlanned:
+		writeReviewReport(t, svc, spec, model.SpecDocKindReviewPlan)
+	}
+}
 
 // advanceToImplementing walks a fresh standard-lane spec through
 // draft→speccing→specced→planning→planned→implementing (5 SpecAdvance
@@ -31,6 +111,7 @@ func advanceToImplementing(t *testing.T, svc *SDDService, ctx context.Context, t
 	// contract instead of blocking the fixture.
 	writeSpecCriteria(t, svc, spec, "AC1")
 	for _, by := range []string{"orch", "arch", "arch", "arch", "backend"} {
+		writeReviewReportFor(t, svc, spec)
 		spec, err = svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: by})
 		if err != nil {
 			t.Fatalf("SpecAdvance (to implementing, status=%s): %v", spec.Status, err)

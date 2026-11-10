@@ -11,36 +11,6 @@ import (
 	"github.com/wirvii/mneme/internal/specreview"
 )
 
-// validReviewSpecDoc and validReviewPlanDoc are minimal valid reports of each
-// moment, shared by the service tests of SPEC-181.
-const validReviewSpecDoc = `schema_version = 1
-
-[[revisor]]
-papel = "comprension"
-estado = "completo"
-parafrasis_propuesta = "Propone revisar la spec sin contexto."
-parafrasis_hoy = "Hoy nadie la revisa."
-
-[[revisor]]
-papel = "diseno"
-estado = "completo"
-
-[[revisor]]
-papel = "hechos"
-estado = "completo"
-`
-
-const validReviewPlanDoc = `schema_version = 1
-
-[[revisor]]
-papel = "preparacion"
-estado = "completo"
-
-[[revisor]]
-papel = "hechos"
-estado = "completo"
-`
-
 // TestSpecDocWrite_Review covers SPEC-181 C4: both review kinds write their
 // own file inside the spec's workflow directory, and an invalid or
 // wrong-moment document is rejected without touching the disk.
@@ -56,8 +26,8 @@ func TestSpecDocWrite_Review(t *testing.T) {
 			file string
 			doc  string
 		}{
-			{model.SpecDocKindReviewSpec, "revision-spec.toml", validReviewSpecDoc},
-			{model.SpecDocKindReviewPlan, "revision-plan.toml", validReviewPlanDoc},
+			{model.SpecDocKindReviewSpec, "revision-spec.toml", validReviewSpecTOML},
+			{model.SpecDocKindReviewPlan, "revision-plan.toml", validReviewPlanTOML},
 		}
 		for _, tc := range cases {
 			resp, err := svc.SpecDocWrite(ctx, model.SpecDocWriteRequest{ID: spec.ID, Kind: tc.kind, Content: tc.doc})
@@ -97,7 +67,7 @@ func TestSpecDocWrite_Review(t *testing.T) {
 		svc, _ := newContractTestService(t, "wirvii/mneme")
 		spec := insertContractTestSpec(t, svc, "SPEC-100", model.LaneStandard, model.SpecStatusSpeccing)
 
-		resp, err := svc.SpecDocWrite(ctx, model.SpecDocWriteRequest{ID: spec.ID, Kind: model.SpecDocKindReviewSpec, Content: validReviewSpecDoc})
+		resp, err := svc.SpecDocWrite(ctx, model.SpecDocWriteRequest{ID: spec.ID, Kind: model.SpecDocKindReviewSpec, Content: validReviewSpecTOML})
 		if err != nil {
 			t.Fatalf("first write: %v", err)
 		}
@@ -105,7 +75,7 @@ func TestSpecDocWrite_Review(t *testing.T) {
 			t.Fatalf("second write err = %v, want ErrInvalidReviewReport", err)
 		}
 		data, err := os.ReadFile(resp.Path)
-		if err != nil || string(data) != validReviewSpecDoc {
+		if err != nil || string(data) != validReviewSpecTOML {
 			t.Errorf("content changed after a rejected overwrite (err=%v)", err)
 		}
 	})
@@ -114,11 +84,11 @@ func TestSpecDocWrite_Review(t *testing.T) {
 		svc, _ := newContractTestService(t, "wirvii/mneme")
 		spec := insertContractTestSpec(t, svc, "SPEC-100", model.LaneStandard, model.SpecStatusSpeccing)
 
-		_, err := svc.SpecDocWrite(ctx, model.SpecDocWriteRequest{ID: spec.ID, Kind: model.SpecDocKindReviewSpec, Content: validReviewPlanDoc})
+		_, err := svc.SpecDocWrite(ctx, model.SpecDocWriteRequest{ID: spec.ID, Kind: model.SpecDocKindReviewSpec, Content: validReviewPlanTOML})
 		if !errors.Is(err, model.ErrInvalidReviewReport) {
 			t.Errorf("err = %v, want ErrInvalidReviewReport", err)
 		}
-		_, err = svc.SpecDocWrite(ctx, model.SpecDocWriteRequest{ID: spec.ID, Kind: model.SpecDocKindReviewPlan, Content: validReviewSpecDoc})
+		_, err = svc.SpecDocWrite(ctx, model.SpecDocWriteRequest{ID: spec.ID, Kind: model.SpecDocKindReviewPlan, Content: validReviewSpecTOML})
 		if !errors.Is(err, model.ErrInvalidReviewReport) {
 			t.Errorf("spec report as review-plan: err = %v, want ErrInvalidReviewReport", err)
 		}

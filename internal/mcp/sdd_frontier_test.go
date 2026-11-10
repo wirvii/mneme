@@ -47,6 +47,10 @@ func TestHandleSpecAdvance_ReviewRangeOnlyOnEnteringQA(t *testing.T) {
 			if docResp.Error != nil {
 				t.Fatalf("spec_doc_write (criteria fixture): %v", docResp.Error.Message)
 			}
+			writeReviewReportMCP(t, srv, spec.ID, "review-spec")
+		}
+		if i == 4 {
+			writeReviewReportMCP(t, srv, spec.ID, "review-plan")
 		}
 
 		advResp := process(t, srv, "tools/call", i+2, ToolCallParams{
@@ -160,6 +164,10 @@ func advanceStandardSpecToQAOverMCP(t *testing.T, srv *Server, specID string) {
 			if docResp.Error != nil {
 				t.Fatalf("spec_doc_write (criteria fixture): %v", docResp.Error.Message)
 			}
+			writeReviewReportMCP(t, srv, specID, "review-spec")
+		}
+		if i == 4 {
+			writeReviewReportMCP(t, srv, specID, "review-plan")
 		}
 		advResp := process(t, srv, "tools/call", 1400+i, ToolCallParams{
 			Name:      "spec_advance",

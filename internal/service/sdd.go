@@ -586,12 +586,27 @@ func (svc *SDDService) SpecAdvance(ctx context.Context, req model.SpecAdvanceReq
 			spec.Status, nextStatus, model.ErrInvalidTransition)
 	}
 
+	// SPEC-181 D3: a standard spec whose design starts now owes a fresh-context
+	// review. The mark is set before the status moves; if it cannot be
+	// written the spec stays in draft.
+	if spec.Lane == model.LaneStandard && spec.Status == model.SpecStatusDraft && nextStatus == model.SpecStatusSpeccing {
+		if err := svc.store.SetSpecReviewRequired(ctx, spec.ID, true); err != nil {
+			return nil, fmt.Errorf("service: spec advance: mark review required: %w", err)
+		}
+	}
+
 	// SPEC-156 D2: a criterion-of-acceptance document is required before a
 	// standard-lane spec crosses the human approval gate. SPEC-158 D2
 	// retired the certification mechanism entirely — this is now the ONLY
 	// guardian of content SpecAdvance still applies, and only on
 	// speccing -> specced.
 	if err := svc.ensureCriteriaDeclared(spec, nextStatus); err != nil {
+		return nil, fmt.Errorf("service: spec advance: %w", err)
+	}
+
+	// SPEC-181 D3: the fresh-review report, valid and current, at the three
+	// guarded transitions of a marked standard spec.
+	if err := svc.ensureReviewReport(ctx, spec, nextStatus); err != nil {
 		return nil, fmt.Errorf("service: spec advance: %w", err)
 	}
 
@@ -1354,6 +1369,13 @@ func (svc *SDDService) LaneReclassify(ctx context.Context, req model.LaneReclass
 	case model.SpecStatusImplementing, model.SpecStatusAudit, model.SpecStatusDone:
 		return nil, fmt.Errorf("service: lane reclassify: spec %s is in %s status: %w",
 			req.ID, spec.Status, model.ErrLaneImmutable)
+	}
+
+	// SPEC-181 D3: a trivial spec reclassified to standard starts its standard
+	// design now, so it owes the fresh-context review. Marked before anything
+	// else changes: if this fails, lane and status stay as they were.
+	if err := svc.store.SetSpecReviewRequired(ctx, spec.ID, true); err != nil {
+		return nil, fmt.Errorf("service: lane reclassify: mark review required: %w", err)
 	}
 
 	// Update lane and scope.

@@ -632,6 +632,7 @@ func promoteAndAdvance(t *testing.T, svc *SDDService, ctx context.Context, steps
 		t.Fatalf("promoteAndAdvance: steps=%d exceeds the standard lane's %d transitions", steps, len(bys))
 	}
 	for i := range steps {
+		writeReviewReportFor(t, svc, spec)
 		spec, err = svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: bys[i]})
 		if err != nil {
 			t.Fatalf("SpecAdvance step %d (status=%s): %v", i, spec.Status, err)
@@ -1313,6 +1314,7 @@ func TestSpecAdvance_ValidTransitions(t *testing.T) {
 
 	for _, expectedNext := range path {
 		t.Run("advance to "+string(expectedNext), func(t *testing.T) {
+			writeReviewReportFor(t, svc, spec)
 			advanced, err := svc.SpecAdvance(ctx, model.SpecAdvanceRequest{
 				ID: spec.ID,
 				By: "orchestrator",
@@ -1345,6 +1347,7 @@ func TestSpecAdvance_InvalidTransition(t *testing.T) {
 	}
 
 	// Advance to specced (valid).
+	writeReviewReport(t, svc, spec, model.SpecDocKindReviewSpec)
 	if _, err := svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: "test"}); err != nil {
 		t.Fatalf("advance to specced: %v", err)
 	}
@@ -1355,6 +1358,9 @@ func TestSpecAdvance_InvalidTransition(t *testing.T) {
 	// Advance all the way to done first.
 	remaining := []string{"planning", "planned", "implementing", "qa", "done"}
 	for _, s := range remaining {
+		if s == "implementing" {
+			writeReviewReport(t, svc, spec, model.SpecDocKindReviewPlan)
+		}
 		if _, err := svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: "test"}); err != nil {
 			t.Fatalf("advance to %s: %v", s, err)
 		}
@@ -1404,7 +1410,13 @@ func TestSpecPushback_FromImplementing(t *testing.T) {
 	}
 	writeSpecCriteria(t, svc, spec, "AC1")
 	// Advance through: speccing, specced, planning, planned, implementing.
-	for range []int{0, 1, 2, 3, 4} {
+	for i := range 5 {
+		switch i {
+		case 1:
+			writeReviewReport(t, svc, spec, model.SpecDocKindReviewSpec)
+		case 4:
+			writeReviewReport(t, svc, spec, model.SpecDocKindReviewPlan)
+		}
 		if _, err := svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: "test"}); err != nil {
 			t.Fatalf("advance: %v", err)
 		}
@@ -2300,6 +2312,7 @@ func TestSpecReject_StandardQAToImplementing(t *testing.T) {
 
 	// Advance to qa: draft→speccing→specced→planning→planned→implementing→qa (6 steps).
 	for _, by := range []string{"orch", "arch", "arch", "arch", "backend", "backend"} {
+		writeReviewReportFor(t, svc, spec)
 		spec, err = svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: by})
 		if err != nil {
 			t.Fatalf("SpecAdvance (to qa, status=%s): %v", spec.Status, err)
@@ -2348,6 +2361,7 @@ func TestSpecAdvance_SpeccingToSpecced_RequiresCriteria(t *testing.T) {
 	}
 
 	writeSpecCriteria(t, svc, spec, "AC1")
+	writeReviewReport(t, svc, spec, model.SpecDocKindReviewSpec)
 
 	advanced, err := svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: "arch"})
 	if err != nil {
@@ -2377,6 +2391,7 @@ func TestSpecAdvance_QAToDone_DoesNotRequireCriteria(t *testing.T) {
 	writeSpecCriteria(t, svc, spec, "AC1")
 
 	for _, by := range []string{"orch", "arch", "arch", "arch", "backend", "backend"} {
+		writeReviewReportFor(t, svc, spec)
 		spec, err = svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: by})
 		if err != nil {
 			t.Fatalf("SpecAdvance (to qa, status=%s): %v", spec.Status, err)
@@ -2428,6 +2443,7 @@ func TestSpecReject_PersistsFindingsInReason(t *testing.T) {
 	writeSpecCriteria(t, svc, spec, "AC1", "AC2")
 
 	for _, by := range []string{"orch", "arch", "arch", "arch", "backend", "backend"} {
+		writeReviewReportFor(t, svc, spec)
 		spec, err = svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: by})
 		if err != nil {
 			t.Fatalf("SpecAdvance (to qa, status=%s): %v", spec.Status, err)
@@ -2527,6 +2543,7 @@ func TestSpecReject_StandardQANoCriteria_AcceptsWithoutFindings(t *testing.T) {
 	writeSpecCriteria(t, svc, spec, "AC1")
 
 	for _, by := range []string{"orch", "arch", "arch", "arch", "backend", "backend"} {
+		writeReviewReportFor(t, svc, spec)
 		spec, err = svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: by})
 		if err != nil {
 			t.Fatalf("SpecAdvance (to qa, status=%s): %v", spec.Status, err)
@@ -2667,6 +2684,7 @@ func TestSpecReject_StandardDoneToImplementing(t *testing.T) {
 	}
 	writeSpecCriteria(t, svc, spec, "AC1")
 	for _, by := range []string{"orch", "arch", "arch", "arch", "backend", "backend", "qa"} {
+		writeReviewReportFor(t, svc, spec)
 		spec, err = svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: by})
 		if err != nil {
 			t.Fatalf("SpecAdvance (status=%s): %v", spec.Status, err)
@@ -2721,6 +2739,7 @@ func TestSpecReject_TrivialDoneToImplementing(t *testing.T) {
 		t.Fatalf("SpecQuick: %v", err)
 	}
 	for _, by := range []string{"backend", "backend"} {
+		writeReviewReportFor(t, svc, spec)
 		spec, err = svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: by})
 		if err != nil {
 			t.Fatalf("SpecAdvance (status=%s): %v", spec.Status, err)
@@ -2763,6 +2782,7 @@ func TestSpecAdvance_FromDone_StillInvalid(t *testing.T) {
 	}
 	writeSpecCriteria(t, svc, spec, "AC1")
 	for _, by := range []string{"orch", "arch", "arch", "arch", "backend", "backend", "qa"} {
+		writeReviewReportFor(t, svc, spec)
 		spec, err = svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: by})
 		if err != nil {
 			t.Fatalf("SpecAdvance (status=%s): %v", spec.Status, err)
@@ -2791,6 +2811,7 @@ func TestSpecPushback_FromDone_StillInvalid(t *testing.T) {
 	}
 	writeSpecCriteria(t, svc, spec, "AC1")
 	for _, by := range []string{"orch", "arch", "arch", "arch", "backend", "backend", "qa"} {
+		writeReviewReportFor(t, svc, spec)
 		spec, err = svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: by})
 		if err != nil {
 			t.Fatalf("SpecAdvance (status=%s): %v", spec.Status, err)
@@ -2842,6 +2863,7 @@ func TestSpecReject_DoneThenReAdvance_SingleCompletionMemory(t *testing.T) {
 	}
 	writeSpecCriteria(t, svc, spec, "AC1")
 	for _, by := range []string{"orch", "arch", "arch", "arch", "backend", "backend", "qa"} {
+		writeReviewReportFor(t, svc, spec)
 		spec, err = svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: by})
 		if err != nil {
 			t.Fatalf("SpecAdvance (status=%s): %v", spec.Status, err)
@@ -2910,6 +2932,7 @@ func TestCaptureBaseSHA_ImplementingViaSpecAdvance(t *testing.T) {
 
 	// Advance to implementing: draft→speccing→specced→planning→planned→implementing (5 steps).
 	for i := range 5 {
+		writeReviewReportFor(t, svc, spec)
 		spec, err = svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: "test"})
 		if err != nil {
 			t.Fatalf("SpecAdvance %d: %v", i, err)

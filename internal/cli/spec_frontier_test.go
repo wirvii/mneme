@@ -8,7 +8,70 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+// validReviewSpecTOML and validReviewPlanTOML are minimal valid fresh-review
+// reports of each moment (SPEC-181). They are byte-identical to the copies in
+// the service and mcp test packages, which cannot see these constants.
+const validReviewSpecTOML = `schema_version = 1
+
+[[revisor]]
+papel = "comprension"
+estado = "completo"
+parafrasis_propuesta = "Propone revisar la spec sin contexto."
+parafrasis_hoy = "Hoy nadie la revisa."
+
+[[revisor]]
+papel = "diseno"
+estado = "completo"
+
+[[revisor]]
+papel = "hechos"
+estado = "completo"
+`
+
+const validReviewPlanTOML = `schema_version = 1
+
+[[revisor]]
+papel = "preparacion"
+estado = "completo"
+
+[[revisor]]
+papel = "hechos"
+estado = "completo"
+`
+
+// writeReviewReportCLI writes a valid report of kind ("review-spec" or
+// "review-plan") into <workflowDir>/<project with / as ->/specs/<specID>/ and
+// stamps its mtime at max(now, mtime(tarea.md), mtime(criteria.toml)) + 2s,
+// so the SPEC-181 guard always finds it current (plan decision 9). A file
+// that does not exist does not count.
+func writeReviewReportCLI(t *testing.T, workflowDir, project, specID, kind string) {
+	t.Helper()
+	dir := filepath.Join(workflowDir, strings.ReplaceAll(project, "/", "-"), "specs", specID)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir report dir: %v", err)
+	}
+	name, content := "revision-spec.toml", validReviewSpecTOML
+	if kind == "review-plan" {
+		name, content = "revision-plan.toml", validReviewPlanTOML
+	}
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write %s: %v", name, err)
+	}
+	stamp := time.Now()
+	for _, doc := range []string{"tarea.md", "criteria.toml"} {
+		if info, err := os.Stat(filepath.Join(dir, doc)); err == nil && info.ModTime().After(stamp) {
+			stamp = info.ModTime()
+		}
+	}
+	stamp = stamp.Add(2 * time.Second)
+	if err := os.Chtimes(path, stamp, stamp); err != nil {
+		t.Fatalf("chtimes %s: %v", name, err)
+	}
+}
 
 // newFrontierGitRepo initialises a git repository with one commit and
 // returns its path — deliberately WITHOUT .mneme/shared/.mneme-vault or
@@ -153,6 +216,10 @@ func advanceFrontierSpecToQA(t *testing.T, repoDir, dataDir, workflowDir, projec
 	for i, by := range []string{"orch", "arch", "arch", "arch", "backend", "backend"} {
 		if by == "arch" && i == 1 {
 			writeFrontierCriteriaCLI(t, workflowDir, project, specID)
+			writeReviewReportCLI(t, workflowDir, project, specID, "review-spec")
+		}
+		if i == 4 {
+			writeReviewReportCLI(t, workflowDir, project, specID, "review-plan")
 		}
 		_, stderr, err := runSpecCmdInRepo(t, repoDir, dataDir, workflowDir, project, "spec", "advance", specID, "--by", by)
 		if err != nil {
@@ -184,6 +251,10 @@ func TestSpecCLI_FrontierOutput(t *testing.T) {
 		for i, by := range []string{"orch", "arch", "arch", "arch", "backend"} {
 			if by == "arch" && i == 1 {
 				writeFrontierCriteriaCLI(t, workflowDir, project, specID)
+				writeReviewReportCLI(t, workflowDir, project, specID, "review-spec")
+			}
+			if i == 4 {
+				writeReviewReportCLI(t, workflowDir, project, specID, "review-plan")
 			}
 			if _, stderr, err := runSpecCmdInRepo(t, repoDir, dataDir, workflowDir, project, "spec", "advance", specID, "--by", by); err != nil {
 				t.Fatalf("spec advance step %d: %v (stderr=%s)", i, err, stderr)

@@ -330,6 +330,7 @@ func TestFrontier_NoteAppendsAfterRejectFindings(t *testing.T) {
 	}
 	writeSpecCriteria(t, svc, spec, "AC1", "AC2")
 	for _, by := range []string{"orch", "arch", "arch", "arch", "backend", "backend"} {
+		writeReviewReportFor(t, svc, spec)
 		spec, err = svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: by})
 		if err != nil {
 			t.Fatalf("SpecAdvance (to qa, status=%s): %v", spec.Status, err)

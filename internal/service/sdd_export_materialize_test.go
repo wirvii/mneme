@@ -138,6 +138,7 @@ func runFullSDDCycle(t *testing.T, ctx context.Context, svc *SDDService) (itemID
 	// never by weakening the guardian.
 	writeSpecCriteria(t, svc, spec, "AC1")
 
+	writeReviewReport(t, svc, spec, model.SpecDocKindReviewSpec)
 	if _, err := svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: specID, By: "orchestrator"}); err != nil { // speccing->specced
 		t.Fatalf("SpecAdvance (2): %v", err)
 	}

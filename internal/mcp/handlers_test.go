@@ -146,6 +146,7 @@ func advanceSpecToPlanned(t *testing.T, srv *Server, title string) string {
 			if docResp.Error != nil {
 				t.Fatalf("spec_doc_write (criteria fixture): %v", docResp.Error.Message)
 			}
+			writeReviewReportMCP(t, srv, spec.ID, "review-spec")
 		}
 
 		advResp := process(t, srv, "tools/call", i+2, ToolCallParams{
@@ -159,6 +160,9 @@ func advanceSpecToPlanned(t *testing.T, srv *Server, title string) string {
 			t.Fatalf("spec_advance %d (%s): %v", i, by, advResp.Error.Message)
 		}
 	}
+	// The caller performs planned -> implementing itself, so the plan-moment
+	// report the SPEC-181 guard demands there is written now.
+	writeReviewReportMCP(t, srv, spec.ID, "review-plan")
 	return spec.ID
 }
 
@@ -1058,6 +1062,10 @@ func TestHandleSpecReject_HappyPath(t *testing.T) {
 			if docResp.Error != nil {
 				t.Fatalf("spec_doc_write (criteria fixture): %v", docResp.Error.Message)
 			}
+			writeReviewReportMCP(t, srv, spec.ID, "review-spec")
+		}
+		if i == 4 {
+			writeReviewReportMCP(t, srv, spec.ID, "review-plan")
 		}
 
 		advResp := process(t, srv, "tools/call", i+2, ToolCallParams{
@@ -1183,6 +1191,10 @@ func TestHandleSpecReject_MissingFindings_InvalidParams(t *testing.T) {
 			if docResp.Error != nil {
 				t.Fatalf("spec_doc_write (criteria fixture): %v", docResp.Error.Message)
 			}
+			writeReviewReportMCP(t, srv, spec.ID, "review-spec")
+		}
+		if i == 4 {
+			writeReviewReportMCP(t, srv, spec.ID, "review-plan")
 		}
 		advResp := process(t, srv, "tools/call", i+2, ToolCallParams{
 			Name: "spec_advance",
