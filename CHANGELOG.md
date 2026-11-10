@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [v1.51.0] — 2026-11-10 — standard specs get a fresh-context review before approval and before implementation
+
 ### Added
 
 - SPEC-181: fresh-context review of standard specs, before the human approval
