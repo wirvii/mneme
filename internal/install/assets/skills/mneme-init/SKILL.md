@@ -1,7 +1,7 @@
 ---
 name: mneme-init
 description: "Use once, when you need to bootstrap or reconcile a project with mneme for both Claude Code and Codex. Seeds repo knowledge, applies managed instructions, generates both native agent projections, and offers codegraph and shared-memory setup. Trigger: mneme-init, initialize mneme, onboard this repo, generate subagents, reconcile agent profiles."
-version: 1.13.0
+version: 1.14.0
 pinned: false
 ---
 
@@ -22,7 +22,7 @@ Use this skill when:
 3. Never invent MCP tool names, CLI flags, or schemas. Use only the tools and commands listed in this file.
 4. The subagent grill (Phases 0-4) is conducted BY YOU using the deterministic `mneme subagents …` CLI commands (run via Bash) as data sources/writers — permissions (`tools:`, `permissionMode:`) are ALWAYS Go-authored via the `--archetype` flag; never invent them.
 5. `mneme subagents compose` returns a PREVIEW only. Nothing is written to .claude/agents/ until the user confirms and you run `mneme subagents write`.
-6. Every `--role` passed to `mneme subagents compose`/`mneme subagents write` must match `^[a-z][a-z0-9-]*$`. `--archetype` must be one of `architect, backend, frontend, qa-tester, bug-hunter, diagnostician`.
+6. Every `--role` passed to `mneme subagents compose`/`mneme subagents write` must match `^[a-z][a-z0-9-]*$`. `--archetype` must be one of `architect, backend, frontend, qa-tester, bug-hunter, diagnostician, spec-reviewer`.
 7. The codegraph step invokes the EXISTING `mneme codegraph index` / `mneme codegraph hooks install` commands — never reimplement indexing or hook logic yourself.
 8. The shared-memory step invokes the EXISTING `mneme team-memory enable` command (SPEC-053/SPEC-065) — never reimplement vault export or hook-install logic yourself, and always relay its privacy notice to the user verbatim (never paraphrase or suppress it).
 9. ONE fact per `mem_save` call during Phase 0-2 seeding — never dump an entire file as a single memory. Always set `topic_key` so re-runs upsert instead of duplicating.
@@ -95,7 +95,7 @@ Only if the user opts in. Uses the `mneme subagents …` CLI commands (run via B
 | 0 | Deterministic fingerprint: project root, apps/packages, stack markers, what typed-memory already exists, AND `foreign_agents` — pre-existing `.claude/agents/*.md` files mneme did not generate (SPEC-090 D5) | `mneme subagents fingerprint --json`, `mem_context`, `mem_search` |
 | 0.5 | **Fusion (SPEC-090, only when `foreign_agents` is non-empty).** For EACH foreign agent: read the file, then reason (in conversation, no naming heuristic — rule 12) about whether it overlaps a role you are about to propose. Overlaps → offer to EXTRACT its project knowledge into that role's `areas_layer3_md` draft (never concatenate the raw body). No overlap → offer to adopt it as a new CUSTOM role, mapped to the closest archetype. Declines to either → leave the file untouched, do not mention it again this session | `Read` (the foreign file only — never `Glob`/`Read` to re-discover more); `mneme subagents compose`/`mneme subagents write` for the fused or adopted result |
 | 1 | Elicit repo/org knowledge ONCE (commit convention, language, layout, cross-cutting rules) | `mneme subagents profile get`, `mneme subagents profile save --stdin --json` (writes `profile_json.repo` + `profile_json.org`) |
-| 2 | Propose roles + map apps to roles (one subagent per role, covering ALL its apps) — user adjusts the suggestion | `mneme subagents profile save` (writes `profile_json.mapping`) |
+| 2 | Propose roles + map apps to roles (one subagent per role, covering ALL its apps) — user adjusts the suggestion. ALWAYS also propose one `spec-reviewer` role (archetype `spec-reviewer`, no write areas): the read-only fresh-context reviewer of the `spec-review` skill | `mneme subagents profile save` (writes `profile_json.mapping`) |
 | 3 | Per role x area detail: stack, architecture, commands, best practices. Brownfield: pre-seed from Phase 0 + `mem_search` + any Phase 0.5 extraction. Evergreen (no code yet): ask the DESIRED stack from scratch. **Project knowledge only — never lifecycle (`spec_advance`/`spec_quick`/`spec_reject`), capabilities (`tools:`/`permissionMode:`), or role doctrine (rule 11)** | conversation with the user; draft `areas_layer3_md` per role |
 | 4 | Compose a preview, then write only on confirmation | `mneme subagents compose` (preview) → user confirms → `mneme subagents write` |
 

@@ -1,7 +1,7 @@
 ---
 name: mneme-flow
 description: "Use when doing any work that goes through mneme's backlog and specs: the lifecycle and who may move it, the human approval gate, lanes, the criteria contract, rejections, pushbacks and the review range. The other flow skills (feature, bug, trivial, present-spec, review-brief) build on this one."
-version: 1.0.0
+version: 1.1.0
 pinned: false
 ---
 
@@ -26,12 +26,17 @@ The common base of the flow skills. The operating manual is the authority on the
 |---|---|
 | orchestrator | all of them |
 | subagents | `spec_pushback`, `spec_reject` (qa-tester), `spec_doc_write` |
+| spec-reviewer | none (read-only; no `spec_doc_write`) |
 
 A subagent never runs `spec_advance`, `spec_quick`, `backlog_archive` or `lane_override`, by MCP or by terminal (`mneme spec advance`, `mneme sdd import`, ...): the hook rejects them. To test mneme itself, point the same command at an isolated data directory.
 
 ## The gate
 
 Before a spec leaves `specced`, the whole spec is presented in plain words and the person answers with an explicit yes. The operating manual is the authority on this gate; this skill never relaxes it.
+
+## Fresh review
+
+For a standard spec marked when it entered speccing, mneme requires a fresh-review report (`revision-spec.toml`) at speccing to specced and at specced to planning, and another (`revision-plan.toml`) at planned to implementing. It must be valid and current: an edit of `tarea.md` or `criteria.toml` after it makes it stale. Procedure: skill `spec-review`.
 
 ## Criteria
 

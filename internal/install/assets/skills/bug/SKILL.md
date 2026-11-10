@@ -1,7 +1,7 @@
 ---
 name: bug
 description: "Use when something that used to work fails, the person reports a bug, or asks to investigate a failure or turn a diagnosis into a fix. Covers both halves: investigate to a diagnosis recorded in the ticket, then promote it to a spec only when the root cause is confirmed."
-version: 1.0.0
+version: 1.1.0
 pinned: false
 ---
 
@@ -15,7 +15,7 @@ Read `mneme-flow` for the cycle. Two halves: investigate, then (only if the caus
 2. `mem_search` for earlier bugs in the same area.
 3. `backlog_add` with the lane confirmed by the person.
 4. Delegate to the bug-hunter or the diagnostician. If none exists, investigate yourself and say so.
-5. The result goes into the ticket with `backlog_refine`. Open `references/diagnosis.md` for what a diagnosis carries.
+5. The result goes into the ticket with `backlog_refine`. Open `references/diagnosis.md` for what a diagnosis carries. When you know which spec introduced the failure, cite it by its id.
 6. This half ends in a diagnosis, not a fix. Nobody edits code here.
 
 ## Half 2: turn it into work
@@ -23,7 +23,7 @@ Read `mneme-flow` for the cycle. Two halves: investigate, then (only if the caus
 1. Read the ticket with `backlog_get`.
 2. State the confidence in the cause: confirmed, very likely, or low. With low confidence do not promote; investigate more.
 3. Add a proposal (scope, files, risk, lane) with `backlog_refine`, then `backlog_promote`.
-4. Standard lane: architect, then the `present-spec` skill. Trivial lane: the `trivial` skill.
+4. Standard lane: architect; fresh review, moment 1 before the gate and moment 2 after the plan (skill `spec-review`), with moment 2 escalations shown to the person before implementing; then the `present-spec` skill. Trivial lane: the `trivial` skill.
 
 ## Do not
 

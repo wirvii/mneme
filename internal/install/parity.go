@@ -29,6 +29,7 @@ func ParityMatrix() []ParityCapability {
 		{"trivial", "skill", "skill"},
 		{"review-brief", "skill", "skill"},
 		{"present-spec", "skill", "skill"},
+		{"spec-review", "skill", "skill"},
 		{"host configuration", "~/.claude", "$CODEX_HOME"},
 	}
 }
