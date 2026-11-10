@@ -104,7 +104,13 @@ Configure your agent to run: mneme mcp`,
 
 			srv := mcp.NewServer(svc, sddSvc, skillsSvc, modelsSvc, logger, toolsMode, Version)
 			if flagCallerRole != "" {
-				srv.WithCallerPolicy(mcp.CallerPolicy{Role: flagCallerRole, Archetype: flagCallerArchetype})
+				policy := mcp.CallerPolicy{Role: flagCallerRole, Archetype: flagCallerArchetype}
+				// The allowed tools come from PermissionTable, the single source of
+				// permissions (SPEC-181 D4); a role with mcp__mneme__* stays unrestricted.
+				if tools, unrestricted := subagents.MCPToolAllowlist(subagents.Role(flagCallerArchetype)); !unrestricted {
+					policy.AllowedTools = append([]string{}, tools...) // non-nil: an empty list denies every tool
+				}
+				srv.WithCallerPolicy(policy)
 			}
 			return srv.Run(cmd.Context(), os.Stdin, os.Stdout)
 		},

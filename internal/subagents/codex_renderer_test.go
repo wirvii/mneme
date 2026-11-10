@@ -8,7 +8,7 @@ import (
 )
 
 func TestRenderCodex_AllBuiltinsAndCustomRole(t *testing.T) {
-	roles := []Role{RoleArchitect, RoleBackend, RoleFrontend, RoleQATester, RoleBugHunter, RoleDiagnostician}
+	roles := []Role{RoleArchitect, RoleBackend, RoleFrontend, RoleQATester, RoleBugHunter, RoleDiagnostician, RoleSpecReviewer}
 	for _, role := range roles {
 		t.Run(string(role), func(t *testing.T) {
 			contract := AgentContract{Role: role, Description: "project role", Instructions: "Follow the project contract."}
@@ -121,5 +121,20 @@ func TestContractFromClaude_CustomRoleInfersSafeArchetype(t *testing.T) {
 	}
 	if contract.Role != "payments" || contract.EffectiveArchetype() != RoleBackend {
 		t.Fatalf("unexpected custom contract: %#v", contract)
+	}
+}
+
+// TestSpecReviewer_CodexReadOnly covers SPEC-181 C12: the spec-reviewer's
+// Codex file gets the read-only sandbox.
+func TestSpecReviewer_CodexReadOnly(t *testing.T) {
+	out, err := RenderCodex(AgentContract{Role: RoleSpecReviewer, Description: "fresh reviewer", Instructions: "Review without context."})
+	if err != nil {
+		t.Fatalf("RenderCodex: %v", err)
+	}
+	if !strings.Contains(out, `sandbox_mode = "read-only"`) {
+		t.Errorf("spec-reviewer is not read-only in Codex:\n%s", out)
+	}
+	if strings.Contains(out, "workspace-write") {
+		t.Errorf("spec-reviewer must never get workspace-write:\n%s", out)
 	}
 }

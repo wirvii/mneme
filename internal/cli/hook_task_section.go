@@ -32,7 +32,7 @@ const taskSectionUnresolvedArchetypeMessage = "⚠ mneme: spec_doc_write kind \"
 // false when the manifest cannot be read or does not list the role.
 type archetypeLookup func(role string) (archetype string, ok bool)
 
-// builtinArchetypes are the six archetype names a role may carry directly;
+// builtinArchetypes are the seven archetype names a role may carry directly;
 // for them no manifest I/O is needed.
 var builtinArchetypes = map[string]bool{
 	string(subagents.RoleArchitect):     true,
@@ -41,6 +41,7 @@ var builtinArchetypes = map[string]bool{
 	string(subagents.RoleQATester):      true,
 	string(subagents.RoleBugHunter):     true,
 	string(subagents.RoleDiagnostician): true,
+	string(subagents.RoleSpecReviewer):  true,
 }
 
 // checkTaskSectionScope reports whether a spec_doc_write kind=task call must

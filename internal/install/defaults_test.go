@@ -136,6 +136,7 @@ func TestDefaultModelFor(t *testing.T) {
 		{"backend", "sonnet"},
 		{"qa-tester", "sonnet"},
 		{"diagnostician", "sonnet"},
+		{"spec-reviewer", "sonnet"},
 		{"nosuchagent", ""},
 	}
 	for _, tc := range cases {

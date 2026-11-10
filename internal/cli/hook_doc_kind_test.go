@@ -50,7 +50,7 @@ func TestHook_SpecDocKindScope(t *testing.T) {
 			row{"custom architect " + kind, "a1", "arch-lead", kind, realLookup, false, ""},
 			row{"custom backend " + kind, "a1", "api-dev", kind, realLookup, true, "architect"},
 		)
-		for _, role := range []string{"backend", "frontend", "bug-hunter", "qa-tester", "diagnostician"} {
+		for _, role := range []string{"backend", "frontend", "bug-hunter", "qa-tester", "diagnostician", "spec-reviewer"} {
 			tests = append(tests, row{role + " " + kind, "a1", role, kind, panicLookup, true, kind})
 		}
 	}

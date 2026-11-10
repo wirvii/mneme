@@ -252,3 +252,73 @@ func TestPermission_ToolsString(t *testing.T) {
 		t.Errorf("ToolsString() = %q, want %q", got, want)
 	}
 }
+
+// TestSpecReviewer_ReadOnly covers SPEC-181 C12: the reviewer's allowlist is
+// exactly the literal list, with no permission mode and no edit capability.
+func TestSpecReviewer_ReadOnly(t *testing.T) {
+	want := []string{
+		"Read", "Grep", "Glob", "NotebookRead", "Skill",
+		"mcp__mneme__codegraph_search", "mcp__mneme__codegraph_context",
+		"mcp__mneme__codegraph_callers", "mcp__mneme__codegraph_impact",
+	}
+	perm, ok := PermissionTable[RoleSpecReviewer]
+	if !ok {
+		t.Fatal("spec-reviewer has no PermissionTable entry")
+	}
+	if !slices.Equal(perm.Tools, want) {
+		t.Errorf("Tools = %v, want %v", perm.Tools, want)
+	}
+	if perm.PermissionMode != "" {
+		t.Errorf("PermissionMode = %q, want empty", perm.PermissionMode)
+	}
+	if IsImplementer(RoleSpecReviewer) {
+		t.Error("spec-reviewer must not be an implementer")
+	}
+}
+
+// TestMCPToolAllowlist covers SPEC-181 C12: spec-reviewer is limited to the
+// four codegraph tools, the other six roles are unrestricted, and an unknown
+// role gets nothing.
+func TestMCPToolAllowlist(t *testing.T) {
+	tools, unrestricted := MCPToolAllowlist(RoleSpecReviewer)
+	if unrestricted {
+		t.Fatal("spec-reviewer must be restricted")
+	}
+	want := []string{"codegraph_search", "codegraph_context", "codegraph_callers", "codegraph_impact"}
+	if !slices.Equal(tools, want) {
+		t.Errorf("tools = %v, want %v", tools, want)
+	}
+
+	for _, role := range []Role{RoleArchitect, RoleBackend, RoleFrontend, RoleQATester, RoleBugHunter, RoleDiagnostician} {
+		tools, unrestricted := MCPToolAllowlist(role)
+		if !unrestricted || tools != nil {
+			t.Errorf("%s: tools=%v unrestricted=%v, want nil/true", role, tools, unrestricted)
+		}
+	}
+
+	tools, unrestricted = MCPToolAllowlist(Role("ghost"))
+	if tools != nil || unrestricted {
+		t.Errorf("unknown role: tools=%v unrestricted=%v, want nil/false", tools, unrestricted)
+	}
+}
+
+// TestSpecReviewer_BlockWithoutCodegraphHint covers SPEC-181 C13: the composed
+// block carries neither the codegraph-hint section (it points to a skill that
+// needs a shell the reviewer lacks) nor the word Bash.
+func TestSpecReviewer_BlockWithoutCodegraphHint(t *testing.T) {
+	content := agentFixedContent(t, RoleSpecReviewer)
+	hint, err := CutSection(LayerOneAsset(), "codegraph-hint")
+	if err != nil {
+		t.Fatalf("CutSection: %v", err)
+	}
+	hintBody := strings.TrimSpace(strings.SplitN(hint, "\n", 2)[0])
+	if strings.Contains(content, "Exploracion de codigo") || strings.Contains(content, hintBody) {
+		t.Errorf("spec-reviewer block carries the codegraph-hint:\n%s", content)
+	}
+	if strings.Contains(content, "Bash") {
+		t.Errorf("spec-reviewer block mentions Bash:\n%s", content)
+	}
+	if !strings.Contains(content, "`spec-review`") {
+		t.Errorf("spec-reviewer block does not point to spec-review:\n%s", content)
+	}
+}

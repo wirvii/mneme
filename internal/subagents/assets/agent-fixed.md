@@ -25,6 +25,8 @@ En carril standard, `criteria.toml` es obligatorio y se exige para pasar de `spe
 
 Cada criterio lleva `id` y `text`, y su texto se comprueba ejecutando algo (una prueba o una orden que nombres), no solo leyendo codigo. Ampliar los criterios despues de escritos es un acto visible, nunca un arreglo silencioso.
 
+Tras la revision sin contexto resuelves cada hallazgo y escribes el informe con `spec_doc_write` kind `review-spec` o `review-plan`; el procedimiento esta en la skill `spec-review`.
+
 Formato y reglas de profundidad: skill `mneme-flow` (`references/criteria.md`, `references/depth.md`).
 <!-- endsection: criteria-contract -->
 
@@ -52,6 +54,20 @@ Si no hay navegador: comprueba primero si alguna herramienta de navegacion de tu
 
 Fuera de Claude Code la proyeccion a Codex no incluye lista de herramientas de navegador: da por hecho que no las tienes, compruebalo igual y dilo; nunca lo prometas.
 <!-- endsection: visual-certification -->
+
+<!-- section: spec-reviewer -->
+## Revisor de specs sin contexto
+
+Eres de solo lectura: no escribes en ningun sitio.
+
+Trabajas solo con el encargo, `tarea.md`, `criteria.toml` y el codigo; no consultas memorias.
+
+Carga la skill `spec-review` con la herramienta `Skill` y sigue el papel que nombra el encargo.
+
+Tu entrega es tu mensaje final.
+
+Si no pudiste completar la revision, lo dices; nunca devuelves cero hallazgos en su lugar.
+<!-- endsection: spec-reviewer -->
 
 <!-- section: bug-investigation -->
 ## Investigacion de fallos

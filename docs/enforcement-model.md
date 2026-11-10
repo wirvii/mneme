@@ -62,8 +62,9 @@ therefore follows, and never replaces, the role filter.
 | `backend` | `Read, Grep, Glob, NotebookRead, NotebookEdit, BashOutput, Edit, Write, MultiEdit, Bash, Skill, WebSearch, WebFetch, mcp__mneme__*` |
 | `frontend` | `Read, Grep, Glob, NotebookRead, NotebookEdit, BashOutput, Edit, Write, MultiEdit, Bash, Skill, WebSearch, WebFetch, mcp__chrome-live__*, mcp__plugin_chrome-devtools-mcp_chrome-devtools__*, mcp__plugin_playwright_playwright__*, mcp__mneme__*` — the three `mcp__*` browser patterns are SPEC-132 D1/D2: frontend can open the screen it just built. backend and bug-hunter deliberately do NOT get them |
 | `bug-hunter` | `Read, Grep, Glob, NotebookRead, NotebookEdit, BashOutput, Edit, Write, MultiEdit, Bash, Skill, WebSearch, WebFetch, mcp__mneme__*` |
+| `spec-reviewer` | `Read, Grep, Glob, NotebookRead, Skill, mcp__mneme__codegraph_search, mcp__mneme__codegraph_context, mcp__mneme__codegraph_callers, mcp__mneme__codegraph_impact` — the SPEC-181 fresh-context reviewer: read-only, no shell, no web, no memory tools and no `spec_doc_write` (it reports in its final message and the architect writes the report). In Codex the `CallerPolicy` derives the same four tools from this table (`subagents.MCPToolAllowlist`) |
 
-All six roles carry `Skill` (SPEC-169 D7): a subagent with an explicit
+All seven roles carry `Skill` (SPEC-169 D7): a subagent with an explicit
 `tools:` list cannot load a skill otherwise, and layer 1 now points each role
 at its skill. `Skill` only loads instructions — it edits and runs nothing, so
 it never counts toward `IsImplementer`.
@@ -384,7 +385,7 @@ points consult: `que`/`diseno`/`plan` for `architect`; `entrega` for
   check. A denied call exits 2 with a message naming the section and the roles
   that may write it, and logs an enforcelog event
   (`role_scoped_task_section_denied`, target `task:<section>`).
-- **Archetype resolution**: if `agent_type` is one of the six archetype
+- **Archetype resolution**: if `agent_type` is one of the seven archetype
   names it is used directly with no I/O; a custom role is looked up in the
   project manifest (`archetype` field, falling back to the role name).
 - **Fail-open**: empty or unknown `section` (the service rejects it), an

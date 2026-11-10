@@ -57,7 +57,15 @@ const agentFixedMarker = "agent-fixed"
 // composed block stays under 4096 bytes. The bump is what makes `mneme
 // subagents doctor` flag a profile still carrying the long v5 text (which
 // also names codegraph tools that no longer exist over MCP).
-const AgentFixedVersion = 6
+//
+// v7 (SPEC-181 D4): a seventh archetype, spec-reviewer, with its own layer-1
+// section (read-only, no memories, loads the spec-review skill) and no
+// codegraph-hint, because that hint points to a skill that needs a shell the
+// reviewer does not have; architect's criteria-contract gains the sentence
+// that tells it to resolve findings and write the review report. The bump is
+// what makes `mneme subagents doctor` flag an already-materialized architect
+// as needing `regen`.
+const AgentFixedVersion = 7
 
 // roleSections maps a Role to the ordered section names cut from
 // LayerOneAsset for that role's agent-fixed block. A slice, not a fixed-size
@@ -70,6 +78,7 @@ var roleSections = map[Role][]string{
 	RoleFrontend:      {"codegraph-hint", "mneme-integration-generic", "visual-certification"},
 	RoleBugHunter:     {"codegraph-hint", "mneme-integration-generic", "bug-investigation"},
 	RoleDiagnostician: {"codegraph-hint", "mneme-integration-diagnostician"},
+	RoleSpecReviewer:  {"spec-reviewer"},
 }
 
 // ComposeInput holds the values ProfileComposer needs to render or

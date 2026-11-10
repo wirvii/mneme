@@ -40,6 +40,11 @@ func TestCutSection(t *testing.T) {
 			wantContains: "Al INICIO de cada investigacion",
 		},
 		{
+			name:         "spec-reviewer",
+			wantContains: "skill `spec-review`",
+			wantMissing:  "Bash",
+		},
+		{
 			name:         "visual-certification",
 			wantContains: "ABRAS la pantalla y la mires",
 		},

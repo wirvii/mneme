@@ -14,6 +14,13 @@ import (
 type CallerPolicy struct {
 	Role      string
 	Archetype string
+
+	// AllowedTools, when non-nil, is the closed list of mneme MCP tool names
+	// this role may call; anything else is denied on top of the four
+	// lifecycle tools. nil means no additional restriction. The CLI derives it
+	// from subagents.PermissionTable (SPEC-181 D4), so Claude's frontmatter and
+	// Codex's policy never disagree.
+	AllowedTools []string
 }
 
 // allowsTool mirrors the lifecycleTools denial of the Claude hook
@@ -25,9 +32,16 @@ func (p CallerPolicy) allowsTool(name string) bool {
 	switch name {
 	case "spec_advance", "spec_quick", "backlog_archive", "lane_override":
 		return false
-	default:
+	}
+	if p.AllowedTools == nil {
 		return true
 	}
+	for _, allowed := range p.AllowedTools {
+		if allowed == name {
+			return true
+		}
+	}
+	return false
 }
 
 func (p CallerPolicy) authorizeCall(params ToolCallParams) *JSONRPCError {

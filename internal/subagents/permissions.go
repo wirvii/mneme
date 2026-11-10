@@ -7,9 +7,9 @@ import "strings"
 // PermissionTable keys on.
 type Role string
 
-// The six roles mneme ships today (internal/install/assets/agents/*.md).
+// The seven roles mneme ships today (internal/install/assets/agents/*.md).
 // StackFingerprinter/grill-driven role selection (SS-3+) may introduce new
-// roles in the future, but the permission envelope for these six is fixed
+// roles in the future, but the permission envelope for these seven is fixed
 // here and must never be widened by generated content.
 const (
 	RoleArchitect     Role = "architect"
@@ -18,6 +18,9 @@ const (
 	RoleQATester      Role = "qa-tester"
 	RoleBugHunter     Role = "bug-hunter"
 	RoleDiagnostician Role = "diagnostician"
+	// RoleSpecReviewer is the read-only fresh-context reviewer of SPEC-181:
+	// it reads a spec or plan without the conversation that produced it.
+	RoleSpecReviewer Role = "spec-reviewer"
 )
 
 // Permission describes the exact `tools:` allowlist and (optional)
@@ -156,6 +159,17 @@ var diagnosticianTools = []string{
 	"Read", "Grep", "Glob", "NotebookRead", "BashOutput", "Bash", "Skill", "mcp__mneme__*",
 }
 
+// specReviewerTools is spec-reviewer's literal allowlist (SPEC-181 D4): read
+// tools, Skill (to load spec-review) and the four codegraph MCP tools. No
+// shell, no edit, no web, no memory tools and no spec_doc_write: the reviewer
+// reports in its final message and the architect writes the report. A literal
+// list so it can be read byte for byte against the asset frontmatter.
+var specReviewerTools = []string{
+	"Read", "Grep", "Glob", "NotebookRead", "Skill",
+	"mcp__mneme__codegraph_search", "mcp__mneme__codegraph_context",
+	"mcp__mneme__codegraph_callers", "mcp__mneme__codegraph_impact",
+}
+
 // bypassPermissions is the frontmatter permissionMode value implementer
 // roles carry so autonomous runs are not interrupted by per-tool prompts.
 // The real capability barrier is the tools: allowlist above, not this mode.
@@ -198,6 +212,36 @@ var PermissionTable = map[Role]Permission{
 		Tools:          implementerBaseTools,
 		PermissionMode: bypassPermissions,
 	},
+	RoleSpecReviewer: {
+		Tools:          specReviewerTools,
+		PermissionMode: "",
+	},
+}
+
+// mcpToolPrefix is the namespace every mneme MCP tool carries in a role's
+// tools: allowlist.
+const mcpToolPrefix = "mcp__mneme__"
+
+// MCPToolAllowlist derives the mneme MCP tools role may call from its
+// PermissionTable entry, so the Codex CallerPolicy has the same single source
+// of permissions as the Claude frontmatter (SPEC-181 D4). "mcp__mneme__*"
+// means unrestricted and yields (nil, true); otherwise every
+// "mcp__mneme__<x>" entry contributes the tool name <x>. An unknown role
+// yields (nil, false): no tool is allowed.
+func MCPToolAllowlist(role Role) (tools []string, unrestricted bool) {
+	perm, ok := PermissionTable[role]
+	if !ok {
+		return nil, false
+	}
+	for _, tool := range perm.Tools {
+		if tool == mcpToolPrefix+"*" {
+			return nil, true
+		}
+		if name, found := strings.CutPrefix(tool, mcpToolPrefix); found {
+			tools = append(tools, name)
+		}
+	}
+	return tools, false
 }
 
 // implementerCapabilityTools is the set of tools.Tools entries that grant

@@ -548,6 +548,7 @@ func TestCompose_RolePointsToItsSkill(t *testing.T) {
 		RoleFrontend:      {"codegraph", "mneme-flow"},
 		RoleBugHunter:     {"codegraph", "mneme-flow", "bug"},
 		RoleDiagnostician: {"codegraph", "bug"},
+		RoleSpecReviewer:  {"spec-review"},
 	}
 	for role := range roleSections {
 		t.Run(string(role), func(t *testing.T) {

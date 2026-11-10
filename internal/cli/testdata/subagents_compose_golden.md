@@ -6,7 +6,7 @@ tools: Read, Grep, Glob, NotebookRead, NotebookEdit, BashOutput, Edit, Write, Mu
 permissionMode: bypassPermissions
 ---
 
-<!-- mneme:agent-fixed:start v=6 -->
+<!-- mneme:agent-fixed:start v=7 -->
 ## Exploracion de codigo
 
 Si el proyecto tiene grafo de codigo indexado, carga la skill `codegraph` antes de explorar con Read o Grep. Para leer un archivo que YA localizaste, Read es lo correcto.

@@ -16,6 +16,7 @@ var defaultAgentModels = map[string]string{
 	"qa-tester":     "sonnet",
 	"bug-hunter":    "sonnet",
 	"diagnostician": "sonnet",
+	"spec-reviewer": "sonnet",
 }
 
 // knownAliases is the set of model alias strings that Claude Code recognises.
