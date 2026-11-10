@@ -644,9 +644,12 @@ subagents regen [--role R] [--all] [--dry-run]` regenerates the file(s) in
 place, preserving any hand-authored area sections byte-for-byte. See
 [`docs/api/subagents.md`](api/subagents.md).
 
-A role-scoped-by-KIND sibling, `roleScopedDocKinds` (`internal/cli/hook.go`),
-restricts `spec_doc_write`'s `criteria` kind to the `architect` role — an
-implementer writing it would be rewriting the exam it is judged by. Unlike
+A role-scoped-by-KIND sibling, `model.SpecDocKindAllows`
+(`internal/cli/hook_doc_kind.go`, shared with the Codex `CallerPolicy`),
+restricts `spec_doc_write`'s `criteria`, `review-spec` and `review-plan` kinds
+to the `architect` archetype (a custom role name is resolved to its archetype
+through the project manifest) — an implementer writing `criteria` would be
+rewriting the exam it is judged by. Unlike
 the lifecycle guard above, it fails OPEN when the caller's role cannot be
 resolved: closing it would leave the architect unable to write the document
 at all the moment `agent_type` stopped arriving in the payload. The

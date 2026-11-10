@@ -44,8 +44,9 @@ func (p CallerPolicy) authorizeCall(params ToolCallParams) *JSONRPCError {
 	if err := json.Unmarshal(params.Arguments, &args); err != nil {
 		return nil // The handler owns ordinary argument validation.
 	}
-	if args.Kind == "criteria" && p.Archetype != "architect" {
-		return callerDenied(params.Name, fmt.Sprintf("kind %q is restricted to the architect role", args.Kind))
+	kind := model.SpecDocKind(args.Kind)
+	if !model.SpecDocKindAllows(kind, p.Archetype) {
+		return callerDenied(params.Name, fmt.Sprintf("kind %q is restricted to %s", args.Kind, strings.Join(model.SpecDocKindWriters(kind), ", ")))
 	}
 	if args.Kind == "task" {
 		section := model.TaskSection(args.Section)

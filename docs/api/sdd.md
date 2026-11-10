@@ -438,9 +438,10 @@ anchor is resolved against the working tree any more — the evaluator that
 used to do that was retired with the rest of the certification mechanism.
 Any failure returns without writing a single byte.
 
-**`kind = "criteria"` is restricted to the `architect` role for a subagent
-caller** (`internal/cli/hook.go`'s `roleScopedDocKinds`) — an implementer
-writing it would be rewriting the exam it is judged by. The rule fails OPEN
+**`kind = "criteria"` (and `review-spec`, `review-plan`) is restricted to the
+`architect` archetype for a subagent caller** (`model.SpecDocKindAllows`,
+consulted by the hook and by the Codex `CallerPolicy`) — an implementer
+writing `criteria` would be rewriting the exam it is judged by. The rule fails OPEN
 when a subagent's role cannot be resolved: closing it would leave the
 architect unable to write the document at all the moment `agent_type`
 stopped arriving in the payload.

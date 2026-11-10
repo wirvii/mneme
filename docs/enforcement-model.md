@@ -354,9 +354,12 @@ resolved by a person. Details, the form table and the literal message:
 
 ### Role-scoped document-kind denial
 
-A sibling map, `roleScopedDocKinds` (`internal/cli/hook.go`), restricts
-`spec_doc_write`'s `criteria` kind to the `architect` role — an implementer
-writing it would be rewriting the exam it is judged by. Unlike
+A sibling rule, `model.SpecDocKindAllows` (consulted by `checkSpecDocKindScope`
+in `internal/cli/hook_doc_kind.go` and by the Codex `CallerPolicy`), restricts
+`spec_doc_write`'s `criteria`, `review-spec` and `review-plan` kinds to the
+`architect` archetype — an implementer writing `criteria` would be rewriting
+the exam it is judged by. The archetype is resolved through the project
+manifest for a custom role name. Unlike
 `lifecycleTools`, it fails OPEN when the caller's role cannot be resolved:
 closing it would leave the architect unable to write the document at all
 the moment `agent_type` stopped arriving in the payload.

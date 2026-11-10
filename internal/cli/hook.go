@@ -551,7 +551,7 @@ type hookPreToolInput struct {
 		// event so the report shows which spec a blocked call targeted.
 		ID string `json:"id"`
 		// Kind is spec_doc_write's own argument (SPEC-118 D10) — which
-		// SpecDocKind the call is writing. roleScopedDocKinds evaluates
+		// SpecDocKind the call is writing. checkSpecDocKindScope evaluates
 		// this, never the tool name alone, so a subagent writing its OWN
 		// legitimate kind (e.g. "changes") is unaffected.
 		Kind string `json:"kind"`
@@ -1599,42 +1599,6 @@ var lifecycleTools = map[string]bool{
 	"mcp__mneme__lane_override":   true,
 }
 
-// roleScopedDocKinds maps a spec_doc_write `kind` argument to the ONE
-// subagent role allowed to write it — evaluated ONLY when input.ToolName ==
-// "mcp__mneme__spec_doc_write", indexed by KIND rather than by tool name:
-// spec_doc_write itself stays open to every implementer (its "changes" kind
-// is exactly their entregable channel) — only the specific kinds below are
-// restricted.
-//
-// "criteria" is the ORCHESTRATOR's own addition to this map (SPEC-118's
-// design named the gap but declined to close it — "cambiar una decision
-// razonada de S3 no me corresponde"): without this entry an implementer
-// could write criteria.toml, rewriting the very exam it is judged by.
-// SPEC-158 retired this map's OTHER entry, "budget", along with the
-// certification mechanism's budget-against-the-graph tramo it restricted.
-var roleScopedDocKinds = map[string]string{
-	"criteria": "architect",
-}
-
-// roleScopedDocKindBlockMessage mirrors roleScopedBlockMessage's own shape
-// but names the KIND, not the tool (spec_doc_write itself is not
-// restricted — only specific kinds are).
-const roleScopedDocKindBlockMessage = "⛔ mneme: spec_doc_write kind %q está restringido al rol %q. Este subagente no puede escribirlo. El orquestador (o el arquitecto) puede hacerlo en su lugar.\n"
-
-// roleScopedDocKindUnresolvedMessage documents D10's deliberate posture:
-// this rule fails OPEN when the role cannot be resolved. Closing it would
-// leave the architect unable to write ANY budget/criteria document the
-// moment agent_type stopped arriving in the payload, breaking the common
-// path for every spec — the reason architect edits reach the human approval
-// gate is enough of a downstream check on their own.
-const roleScopedDocKindUnresolvedMessage = "⚠ mneme: spec_doc_write kind %q está restringido al rol %q, pero el rol de este subagente no se pudo resolver — se permite (D10 falla ABIERTO a propósito).\n"
-
-// printRoleScopedDocKindBlock writes the SPEC-118 D10 role-scoped-by-kind
-// denial message to w.
-func printRoleScopedDocKindBlock(w io.Writer, kind, requiredRole string) {
-	fmt.Fprintf(w, roleScopedDocKindBlockMessage, kind, requiredRole)
-}
-
 // lifecycleBlockMessage is the load-bearing message printed when a
 // subagent's lifecycle-advancing MCP call is denied (SPEC-087 D5/R5). It
 // must name the concrete cause (an out-of-date profile still instructing
@@ -1767,25 +1731,17 @@ func runHookEnforceDelegation(r io.Reader, errW io.Writer) error {
 		}
 	}
 
-	// SPEC-118 D10: a SECOND, independent guard, evaluated right after
-	// lifecycleTools, and only for spec_doc_write specifically — indexed
-	// by the call's own `kind` argument (roleScopedDocKinds), never by
-	// tool name: every OTHER kind (changes, spec, plan, qa-report) stays
-	// open to whichever implementer already writes it. Deliberately fails
-	// OPEN when the role cannot be resolved — see
-	// roleScopedDocKindUnresolvedMessage's own godoc for why.
-	if identity.IsSubagent && input.ToolName == "mcp__mneme__spec_doc_write" {
-		if requiredRole, scoped := roleScopedDocKinds[input.ToolInput.Kind]; scoped {
-			if identity.RoleSource == "unresolved" {
-				fmt.Fprintf(errW, roleScopedDocKindUnresolvedMessage, input.ToolInput.Kind, requiredRole)
-			} else if identity.Role != requiredRole {
-				printRoleScopedDocKindBlock(errW, input.ToolInput.Kind, requiredRole)
-				logRoleScopedDocKindDeniedEvent(input, identity, requiredRole)
-				//nolint:gocritic // os.Exit(2) is the documented hook exit code for rejection
-				os.Exit(2)
-				return nil
-			}
-		}
+	// SPEC-118 D10 / SPEC-181 D4: a SECOND, independent guard, evaluated
+	// right after lifecycleTools, and only for spec_doc_write specifically.
+	// It is indexed by the call's own `kind` argument and resolved by
+	// archetype (model.SpecDocKindAllows), never by tool name: every kind
+	// without an entry (changes, spec, plan, qa-report) stays open to
+	// whichever implementer already writes it. Deliberately fails OPEN when
+	// the role or its archetype cannot be resolved.
+	if checkSpecDocKindScope(input, identity, errW, manifestArchetypeLookup(input)) {
+		//nolint:gocritic // os.Exit(2) is the documented hook exit code for rejection
+		os.Exit(2)
+		return nil
 	}
 
 	if checkTaskSectionScope(input, identity, errW, manifestArchetypeLookup(input)) {

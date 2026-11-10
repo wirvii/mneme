@@ -7,22 +7,22 @@ import (
 
 // --- role-scoped-by-KIND denial for spec_doc_write ---------------------
 //
-// roleScopedDocKinds' guard, like lifecycleTools', calls os.Exit(2)
+// checkSpecDocKindScope's guard, like lifecycleTools', calls os.Exit(2)
 // directly on a block, so it reuses the same subprocess harness
 // (runHookLifecycleSubprocess).
 
-// TestRunHookEnforceDelegation_RoleScopedDocKinds_Table exercises the
+// TestHook_SpecDocKindScope_Subprocess exercises the
 // kind=criteria rows through the real entrypoint (subprocess, real
 // os.Exit), plus a row proving kind=budget is no longer restricted at all
 // (SPEC-158 retired the kind together with the certification mechanism's
 // budget-against-the-graph tramo).
 //
-// Mutation (verified manually): removing the roleScopedDocKinds check lets
+// Mutation (verified manually): removing the checkSpecDocKindScope check lets
 // row 1 (backend writing kind "criteria") through with exit 0. Mutation
 // (verified manually): denying every subagent unconditionally (ignoring
 // the role match) turns row 2 (architect writing "criteria") and row 3
 // (backend writing "changes", an unrelated kind) both to exit 2.
-func TestRunHookEnforceDelegation_RoleScopedDocKinds_Table(t *testing.T) {
+func TestHook_SpecDocKindScope_Subprocess(t *testing.T) {
 	tests := []struct {
 		name     string
 		payload  string
@@ -54,6 +54,16 @@ func TestRunHookEnforceDelegation_RoleScopedDocKinds_Table(t *testing.T) {
 			wantExit: 0,
 		},
 		{
+			name:     "backend denied kind=review-spec",
+			payload:  `{"agent_id":"x","agent_type":"backend","tool_name":"mcp__mneme__spec_doc_write","tool_input":{"id":"SPEC-001","kind":"review-spec"}}`,
+			wantExit: 2,
+		},
+		{
+			name:     "architect allowed kind=review-plan",
+			payload:  `{"agent_id":"x","agent_type":"architect","tool_name":"mcp__mneme__spec_doc_write","tool_input":{"id":"SPEC-001","kind":"review-plan"}}`,
+			wantExit: 0,
+		},
+		{
 			name:     "backend allowed kind=budget (SPEC-158: no longer a restricted kind)",
 			payload:  `{"agent_id":"x","agent_type":"backend","tool_name":"mcp__mneme__spec_doc_write","tool_input":{"id":"SPEC-001","kind":"budget"}}`,
 			wantExit: 0,
@@ -78,17 +88,5 @@ func TestRunHookEnforceDelegation_RoleScopedDocKindBlock_NamesKindAndRole(t *tes
 		`{"agent_id":"x","agent_type":"backend","tool_name":"mcp__mneme__spec_doc_write","tool_input":{"id":"SPEC-001","kind":"criteria"}}`)
 	if !strings.Contains(stderr, "criteria") || !strings.Contains(stderr, "architect") {
 		t.Errorf("expected the block message to name kind=criteria and role=architect, got: %q", stderr)
-	}
-}
-
-// TestRoleScopedDocKinds_ExactlyOneEntry anchors the map's exact contents
-// (SPEC-158: "budget" is gone, leaving only "criteria") — a silent rename
-// or removal is not otherwise visible.
-func TestRoleScopedDocKinds_ExactlyOneEntry(t *testing.T) {
-	if len(roleScopedDocKinds) != 1 {
-		t.Fatalf("len(roleScopedDocKinds) = %d, want 1: %v", len(roleScopedDocKinds), roleScopedDocKinds)
-	}
-	if role, ok := roleScopedDocKinds["criteria"]; !ok || role != "architect" {
-		t.Errorf("roleScopedDocKinds[criteria] = (%q, %v), want (architect, true)", role, ok)
 	}
 }

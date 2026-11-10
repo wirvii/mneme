@@ -1376,6 +1376,40 @@ var taskSectionWriters = map[TaskSection][]string{
 	TaskSectionReview:   {"qa-tester"},
 }
 
+// specDocKindWriters is the single source of truth for which subagent
+// archetypes may write each restricted spec_doc_write kind (SPEC-181 D4). A
+// kind with no entry is unrestricted. It lives in model because two
+// independent enforcement points consult it (the Claude Code hook and the
+// Codex CallerPolicy) and they must never disagree.
+var specDocKindWriters = map[SpecDocKind][]string{
+	SpecDocKindCriteria:   {"architect"},
+	SpecDocKindReviewSpec: {"architect"},
+	SpecDocKindReviewPlan: {"architect"},
+}
+
+// SpecDocKindAllows reports whether a subagent of the given archetype may
+// write kind k. A kind without an entry in specDocKindWriters has no
+// restriction, so every archetype may write it (task keeps its own
+// per-section control through TaskSectionAllows).
+func SpecDocKindAllows(k SpecDocKind, archetype string) bool {
+	writers, restricted := specDocKindWriters[k]
+	if !restricted {
+		return true
+	}
+	for _, a := range writers {
+		if a == archetype {
+			return true
+		}
+	}
+	return false
+}
+
+// SpecDocKindWriters returns a copy of the archetypes allowed to write k,
+// for denial messages; nil for an unrestricted kind.
+func SpecDocKindWriters(k SpecDocKind) []string {
+	return append([]string(nil), specDocKindWriters[k]...)
+}
+
 // Heading returns the Markdown heading of s, and whether s is a known section.
 func (s TaskSection) Heading() (string, bool) {
 	h, ok := taskSectionHeadings[s]
