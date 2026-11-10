@@ -336,3 +336,38 @@ func TestBacklogArchiveSchema_RequiresIDAndReason(t *testing.T) {
 		}
 	}
 }
+
+// TestSpecDocWrite_KindEnum pins the exact enum of spec_doc_write's kind
+// (SPEC-181 D7): the two review kinds extend the closed set and no tool is
+// added.
+func TestSpecDocWrite_KindEnum(t *testing.T) {
+	tool := findTool(allTools(), "spec_doc_write")
+	if tool == nil {
+		t.Fatal("spec_doc_write is not declared")
+	}
+	schema, ok := tool.InputSchema.(map[string]any)
+	if !ok {
+		t.Fatalf("InputSchema has type %T", tool.InputSchema)
+	}
+	props, ok := schema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("properties has type %T", schema["properties"])
+	}
+	kind, ok := props["kind"].(map[string]any)
+	if !ok {
+		t.Fatalf("kind has type %T", props["kind"])
+	}
+	got, ok := kind["enum"].([]string)
+	if !ok {
+		t.Fatalf("enum has type %T", kind["enum"])
+	}
+	want := []string{"spec", "plan", "qa-report", "changes", "criteria", "task", "review-spec", "review-plan"}
+	if len(got) != len(want) {
+		t.Fatalf("enum = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("enum[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}

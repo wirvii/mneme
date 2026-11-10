@@ -540,7 +540,7 @@ func allTools() []ToolDefinition {
 		},
 		{
 			Name:        "spec_doc_write",
-			Description: "Write a spec entregable (spec/plan/qa-report/changes/criteria/task) to its workflow directory. The destination directory and filename are never caller-supplied: the directory is derived from the persisted spec record and the filename from a closed set of kinds. Kind task writes one section of the spec's single tarea.md and replaces only that section.",
+			Description: "Write a spec entregable (spec/plan/qa-report/changes/criteria/task/review-spec/review-plan) to its workflow directory. Kinds review-spec and review-plan write the fresh-review report (revision-spec.toml / revision-plan.toml), validated before it is written. The destination directory and filename are never caller-supplied: the directory is derived from the persisted spec record and the filename from a closed set of kinds. Kind task writes one section of the spec's single tarea.md and replaces only that section.",
 			InputSchema: map[string]any{
 				"type":     "object",
 				"required": []string{"id", "kind", "content"},
@@ -552,7 +552,7 @@ func allTools() []ToolDefinition {
 					"kind": map[string]any{
 						"type":        "string",
 						"description": "Which document to write.",
-						"enum":        []string{"spec", "plan", "qa-report", "changes", "criteria", "task"},
+						"enum":        []string{"spec", "plan", "qa-report", "changes", "criteria", "task", "review-spec", "review-plan"},
 					},
 					"section": map[string]any{
 						"type":        "string",

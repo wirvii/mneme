@@ -295,3 +295,19 @@ var ErrInvalidCriteria = errors.New("criteria document is invalid or unparseable
 // ErrCriteriaNotFound is returned when a spec's criteria.toml is required
 // (before the human approval gate, speccing -> specced) and none exists.
 var ErrCriteriaNotFound = errors.New("no criteria.toml found for this spec")
+
+// --- Fresh-review report sentinel errors (SPEC-181) ---
+
+// ErrReviewReportNotFound is returned when a guarded transition of a spec
+// marked review_required finds no revision-spec.toml / revision-plan.toml.
+var ErrReviewReportNotFound = errors.New("no fresh-review report found for this spec")
+
+// ErrInvalidReviewReport is returned when a fresh-review report fails to
+// parse or validate, either when written with spec_doc_write or when read by
+// the guard.
+var ErrInvalidReviewReport = errors.New("fresh-review report is invalid or unparseable")
+
+// ErrReviewReportStale is returned when the fresh-review report is older than
+// the stage it reviews or than tarea.md / criteria.toml, so it no longer
+// describes the document being advanced.
+var ErrReviewReportStale = errors.New("fresh-review report is stale")

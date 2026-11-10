@@ -283,6 +283,8 @@ func TestSpecDocKindFilename(t *testing.T) {
 		{SpecDocKindChanges, "changes.md", true},
 		{SpecDocKindCriteria, "criteria.toml", true},
 		{SpecDocKindTask, "tarea.md", true},
+		{SpecDocKindReviewSpec, "revision-spec.toml", true},
+		{SpecDocKindReviewPlan, "revision-plan.toml", true},
 		{SpecDocKind("budget"), "", false},
 		{SpecDocKind("bogus"), "", false},
 		{SpecDocKind(""), "", false},

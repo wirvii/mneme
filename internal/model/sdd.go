@@ -1263,6 +1263,16 @@ const (
 	// one fixed section per role (SPEC-170). A task write must name a
 	// TaskSection and replaces only that section.
 	SpecDocKindTask SpecDocKind = "task"
+
+	// SpecDocKindReviewSpec writes revision-spec.toml — the architect's
+	// report of the fresh-context review of the spec (SPEC-181 moment 1).
+	// The content is parsed and validated before it reaches disk.
+	SpecDocKindReviewSpec SpecDocKind = "review-spec"
+
+	// SpecDocKindReviewPlan writes revision-plan.toml — the architect's
+	// report of the fresh-context review of the plan (SPEC-181 moment 2).
+	// The content is parsed and validated before it reaches disk.
+	SpecDocKindReviewPlan SpecDocKind = "review-plan"
 )
 
 // specDocFilenames maps each closed SpecDocKind to the exact filename it
@@ -1275,6 +1285,9 @@ var specDocFilenames = map[SpecDocKind]string{
 	SpecDocKindChanges:  "changes.md",
 	SpecDocKindCriteria: "criteria.toml",
 	SpecDocKindTask:     "tarea.md",
+
+	SpecDocKindReviewSpec: "revision-spec.toml",
+	SpecDocKindReviewPlan: "revision-plan.toml",
 }
 
 // Filename returns the filename k maps to, and whether k is a recognised

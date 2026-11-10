@@ -901,6 +901,12 @@ func (svc *SDDService) SpecDocWrite(ctx context.Context, req model.SpecDocWriteR
 		}
 	}
 
+	// SPEC-181 D1: a fresh-review report is validated before it reaches
+	// disk, exactly like criteria above.
+	if err := validateReviewDoc(req.Kind, req.Content); err != nil {
+		return nil, err
+	}
+
 	path, err := specDocPath(svc.config.WorkflowDir(), spec.Project, spec.ID, req.Kind)
 	if err != nil {
 		return nil, fmt.Errorf("service: spec doc write: %w", err)

@@ -479,6 +479,9 @@ func (h *handlers) mapServiceError(method string, err error) *JSONRPCError {
 		errors.Is(err, model.ErrTaskDocMalformed) ||
 		errors.Is(err, model.ErrInvalidCriteria) ||
 		errors.Is(err, model.ErrCriteriaNotFound) ||
+		errors.Is(err, model.ErrReviewReportNotFound) ||
+		errors.Is(err, model.ErrInvalidReviewReport) ||
+		errors.Is(err, model.ErrReviewReportStale) ||
 		errors.Is(err, model.ErrFindingsRequired) ||
 		errors.Is(err, model.ErrUnknownCriterion) {
 		return &JSONRPCError{
