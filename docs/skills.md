@@ -251,6 +251,7 @@ manual lists the same set.
 | `trivial` | A tiny, low-risk change in a declared scope, checked by the lane auditor | uses `mneme-flow` |
 | `review-brief` | A spec in QA: the orchestrator's brief and the QA tester's report, bounded by the criteria and the review range | `references/report.md` |
 | `present-spec` | The human approval gate: turn the spec into a plain-language decision and record the explicit answer | none |
+| `spec-review` | The fresh-context review of a standard spec before the gate and of its plan before implementation: reviewers read without the conversation, the architect resolves each finding and writes the report mneme requires | `references/report.md`, one file per role (`comprension.md`, `diseno.md`, `hechos.md`, `preparacion.md`), `NOTICE.md` and the Apache-2.0 license of the adapted origin |
 | `grill-me` | Refine a standard backlog item one question at a time | none |
 | `mneme-init` | Set up a project's roles and memory | none |
 | `codegraph` | Use the code graph when the repository is indexed | none |

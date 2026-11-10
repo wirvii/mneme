@@ -530,6 +530,25 @@ mneme lane status SPEC-007 --json
 |------|---------|-------------|
 | `--json` | false | JSON output |
 
+### mneme spec review-stats
+
+**Experimental** (SPEC-181 P1): retired or consolidated once the owner decides
+whether the fresh review stays; no stable fields. Dumps one row per standard
+spec, newest created first, for the measurement; it does not compute the
+decision rule (`docs/lanes.md`).
+
+```bash
+mneme spec review-stats --limit 0
+mneme spec review-stats --json
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--limit` | 10 | Max specs, newest first; `0` lists all (what P1 needs) |
+| `--json` | false | JSON output (`model.SpecReviewStats`, `follow_up_items` is `[]` never `null`) |
+
+Columns: `SPEC`, `ESTADO`, `REV` (the spec-moment report has a completed reviewer), `M1` and `M2` (`completos/pedidos`, `—` when the report is missing, `error` when unreadable), `B/M/N` (blocker/major/nit), `CORR/REF/ESC/DESC/RIESGO` (outcomes; both moments summed), `RECH.QA`, `REAP.` (done reopenings), `FICHAS` (backlog items created within 21 days after `done` that cite the id as a whole word; ids are local to this machine) and `DONE`.
+
 ### mneme lane stats
 
 Project-wide lane compliance: `trivial_count`, `audit_fail_count`, `audit_fail_rate`, `override_count`, `reclassify_count`.

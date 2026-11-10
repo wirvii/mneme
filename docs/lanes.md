@@ -88,6 +88,32 @@ rule does not apply retroactively). See
 [docs/api/sdd.md](api/sdd.md#spec_reject) for the exact error shapes and
 the persisted reason format.
 
+## Revisión sin contexto (SPEC-181)
+
+A standard spec whose design starts after SPEC-181 is **marked** (`specs.review_required = 1`, local to this machine, never exported by SDD git-native): the mark is set when it enters `speccing` from `draft`, and when a trivial spec is reclassified to standard. Specs already in `speccing` or beyond when the binary was installed stay unmarked and are untouched; trivial specs are out of scope; a spec imported from another machine is created unmarked.
+
+For a marked spec `spec_advance` requires a valid and current fresh-review report at three checkpoints:
+
+| Transition | Report | Must not predate |
+|---|---|---|
+| `speccing → specced` | `revision-spec.toml` (kind `review-spec`, moment 1) | last entry to `speccing`, `tarea.md`, `criteria.toml` |
+| `specced → planning` | `revision-spec.toml` again | last entry to `speccing`, `tarea.md`, `criteria.toml` |
+| `planned → implementing` | `revision-plan.toml` (kind `review-plan`, moment 2) | last entry to `planning`, `tarea.md`, `criteria.toml` |
+
+The reports live in the spec's workflow directory next to `tarea.md` and are written by the architect with `spec_doc_write`; mneme parses them before writing. **Currency:** timestamps are truncated to the second and a tie counts as current, so any edit of `tarea.md` or `criteria.toml` after the report makes it stale, and so does a return to `speccing` through `needs_grill`. There is no override and no way back from `specced` or `planned`: the way out is to rewrite the report (a report whose every reviewer is `no_corrio` with its `nota` is valid). mneme records the review; it cannot prove it happened.
+
+Each finding leaves by one of five outcomes: `corregir`, `refutar` (with evidence), `escalar` (to the person), `descartar` (nits only) and `riesgo_aceptado` (what is pending after the single re-review). Procedure for the orchestrator, the read-only `spec-reviewer` and the architect: skill `spec-review`.
+
+### The P1 measurement and its decision rule
+
+The review is on trial for the next 5 reviewed standard specs. `mneme spec review-stats --limit 0` (experimental, CLI only) dumps one row per standard spec and computes no rule; the owner applies this one by hand once the fifth reviewed spec has 21 days in `done`:
+
+- **Group R:** the first 5 standard specs with `revisada = sí` that reach `done` (by `done_at`).
+- **Group B:** the 5 most recent standard specs with `review_required = 0` whose `done_at` is earlier than the first of R.
+- `a` = sum of `corregir` in R (both moments); `d_R` and `d_B` = QA rejections plus reopenings in each group.
+- **Keep** if `a ≥ 5` and `d_R < d_B`. **Remove** if `a < 5` and `d_R ≥ d_B`. **Adjust** otherwise.
+- Follow-up backlog items citing the spec id (P1-c) are reported apart and stay out of the rule: the duty to cite the id starts with this change, so group B would read systematically low.
+
 ## Automated Checks
 
 The auditor runs when `lane audit <id>` is called on a trivial spec in `audit` status.

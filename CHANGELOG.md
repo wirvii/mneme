@@ -6,6 +6,50 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- SPEC-181: fresh-context review of standard specs, before the human approval
+  gate and before implementation. A standard spec whose design starts now is
+  marked (`specs.review_required`, local to the machine, never exported), and
+  `spec_advance` then requires a valid and current report: `revision-spec.toml`
+  (kind `review-spec`) at `speccing -> specced` and `specced -> planning`, and
+  `revision-plan.toml` (kind `review-plan`) at `planned -> implementing`. The
+  report records each reviewer and its state (a failed reviewer is never zero
+  findings) and each finding with its severity and one of five outcomes
+  (`corregir`, `refutar`, `escalar`, `descartar`, `riesgo_aceptado`); it is
+  parsed before it is written and goes stale when `tarea.md` or `criteria.toml`
+  change after it. Three new `-32602` errors: `ErrReviewReportNotFound`,
+  `ErrInvalidReviewReport`, `ErrReviewReportStale`. Specs already in progress,
+  trivial specs and specs imported from another machine are untouched. New leaf
+  package `internal/specreview`; migration 025 (the column is created by the
+  per-open schema repair, like 024).
+- SPEC-181: the read-only `spec-reviewer` role (seventh archetype, model
+  `sonnet`, only `Read`, `Grep`, `Glob`, `NotebookRead`, `Skill` and the four
+  `codegraph` tools) and the `spec-review` skill with four reviewer roles
+  (`comprension`, `diseno`, `hechos`, `preparacion`), adapted from
+  google/elephant-goldfish-model (Apache-2.0, attributed in
+  `references/NOTICE.md`). `AgentFixedVersion` is now 7: run
+  `mneme subagents regen --all` and create the `spec-reviewer` role.
+  The Codex `CallerPolicy` now derives the allowed MCP tools from
+  `PermissionTable` (`subagents.MCPToolAllowlist`), so a restricted role is
+  limited there too. `present-spec`, `mneme-flow`, `feature`, `bug` and
+  `mneme-init` carry the new steps.
+- SPEC-181: `mneme spec review-stats` (experimental, CLI only) dumps the
+  per-spec numbers of the measurement that decides whether the review stays;
+  `--limit 0` lists every standard spec. It computes no decision rule
+  (`docs/lanes.md`).
+
+### Changed
+
+- SPEC-181: `mneme-flow/references/lifecycle.md` no longer says `needs_grill`
+  is reachable from "any open state": only `speccing`, `implementing` and `qa`
+  accept a pushback, and there is no way back from `specced` or `planned`.
+- SPEC-181: the restricted `spec_doc_write` kinds (`criteria`, `review-spec`,
+  `review-plan`) are resolved by archetype in one place
+  (`model.SpecDocKindAllows`), shared by the Claude Code hook and the Codex
+  policy. An architect with a custom role name can now write `criteria` in
+  Claude Code, as it already could in Codex.
+
 ## [v1.50.0] — 2026-10-25 — no agent writes by hand in `.mneme/sdd/` any more
 
 ### Security

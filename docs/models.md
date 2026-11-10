@@ -12,6 +12,7 @@ tune the cost/quality balance per SDD phase without editing agent files manually
 | `frontend` | `sonnet` | Same as backend |
 | `qa-tester` | `sonnet` | Verification against fixed criteria; strong enough for checklist-based review |
 | `bug-hunter` | `sonnet` | Investigation in a well-scoped area; first candidate to upgrade if quality drops |
+| `spec-reviewer` | `sonnet` | Read-only fresh-context review of a spec or plan (SPEC-181); several short runs per spec, so cost matters more than depth |
 
 **Upgrade signal:** if `qa-tester` or `bug-hunter` misses too many issues, run
 `mneme model set bug-hunter opus` before reinstalling.

@@ -320,9 +320,26 @@ fallback when `executor.degraded` is `true`. `review_range` is present ONLY
 when the stage just entered is `qa` (SPEC-157 D5) — see "Review frontier
 and review range" right below.
 
+**Marked specs also need a fresh-review report (SPEC-181 D3).** A standard
+spec marked `review_required` (local, set when it enters `speccing` from
+`draft` or when a trivial spec is reclassified; never exported, never shown by
+`spec_status`) needs, with the workflow directory configured, a valid and
+current report at `speccing -> specced` and `specced -> planning`
+(`revision-spec.toml`, written with `kind: "review-spec"`) and at `planned ->
+implementing` (`revision-plan.toml`, `kind: "review-plan"`). *Current* means
+the report's mtime is not older, after truncating to the second, than the last
+entry to the reference stage (`speccing`, or `planning` for the plan report),
+nor than `tarea.md` or `criteria.toml`. No other transition changes. Full
+description: `docs/lanes.md`.
+
 **Errors:** `-32602` invalid transition, missing `id`/`by`, `no criteria.toml
 found for this spec` (standard lane, `speccing -> specced`, no declared
-criteria document).
+criteria document), and the three fresh-review errors, all `-32602`:
+`ErrReviewReportNotFound` (`no fresh-review report found for this spec`,
+naming the path and the kind that writes it), `ErrInvalidReviewReport` (the
+report does not parse for its moment) and `ErrReviewReportStale` (older than
+the stage, `tarea.md` or `criteria.toml`, naming the report and the newer
+document).
 
 ### Review frontier and review range (SPEC-157)
 
@@ -415,7 +432,7 @@ lane) or `rationale` (trivial lane).
 
 ### spec_doc_write
 
-Write a spec entregable (`spec`/`plan`/`qa-report`/`changes`/`criteria`/`task`) to
+Write a spec entregable (`spec`/`plan`/`qa-report`/`changes`/`criteria`/`task`/`review-spec`/`review-plan`) to
 its workflow directory (SPEC-087 D3, `criteria` added by SPEC-156) — the
 path a subagent uses instead of copying its report into the workflow
 directory by hand. The destination directory and filename are never
@@ -423,7 +440,8 @@ caller-supplied: the directory is derived from the persisted spec record
 (`spec.Project`, via `GetSpec`) and the filename comes from a closed,
 Go-authored `kind -> filename` map (`spec` → `spec.md`, `plan` → `plan.md`,
 `qa-report` → `qa-report.md`, `changes` → `changes.md`, `criteria` →
-`criteria.toml`). 0644, parent directories created as needed, plain
+`criteria.toml`, `review-spec` → `revision-spec.toml`, `review-plan` →
+`revision-plan.toml`). 0644, parent directories created as needed, plain
 overwrite-or-create — no append, no arbitrary read. A sixth kind, `budget`,
 existed from SPEC-118 through SPEC-137 and was retired by SPEC-158 along
 with the certification mechanism it served; `spec_doc_write` now rejects it
@@ -489,13 +507,15 @@ Errors (all `-32602`): `ErrTaskSectionRequired`, `ErrUnknownTaskSection`,
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `id` | string | yes | Spec ID (e.g. `SPEC-001`) |
-| `kind` | string | yes | `spec`, `plan`, `qa-report`, `changes`, or `criteria` |
+| `kind` | string | yes | `spec`, `plan`, `qa-report`, `changes`, `criteria`, `task`, `review-spec`, or `review-plan` |
 | `content` | string | yes | Full document content, written verbatim |
 
 **Returns:** `{"path": "/abs/path/to/qa-report.md", "bytes": 1234, "created": true}`
 
 **Errors:** `-32602` unknown `kind`, missing fields, or (for `kind =
-"criteria"`) an invalid document. `-32000` spec not found.
+"criteria"`, `"review-spec"` or `"review-plan"`) an invalid document
+(`ErrInvalidReviewReport` for the reports, which are parsed for their moment
+before anything is written). `-32000` spec not found.
 
 ### spec_list
 

@@ -639,7 +639,7 @@ seen by this hook either; the risk it carried (importing files an agent wrote by
 hand) is closed at its source, by the next section (SPEC-179).
 
 `mneme subagents doctor` reports `stale_agent_fixed` for any manifest entry
-whose `Version` is behind `subagents.AgentFixedVersion` (currently 5); `mneme
+whose `Version` is behind `subagents.AgentFixedVersion` (currently 7); `mneme
 subagents regen [--role R] [--all] [--dry-run]` regenerates the file(s) in
 place, preserving any hand-authored area sections byte-for-byte. See
 [`docs/api/subagents.md`](api/subagents.md).
@@ -648,7 +648,9 @@ A role-scoped-by-KIND sibling, `model.SpecDocKindAllows`
 (`internal/cli/hook_doc_kind.go`, shared with the Codex `CallerPolicy`),
 restricts `spec_doc_write`'s `criteria`, `review-spec` and `review-plan` kinds
 to the `architect` archetype (a custom role name is resolved to its archetype
-through the project manifest) — an implementer writing `criteria` would be
+through the project manifest; the built-in archetypes, resolved with no I/O, are
+`architect`, `backend`, `frontend`, `qa-tester`, `bug-hunter`, `diagnostician`
+and, since SPEC-181, the read-only `spec-reviewer`) — an implementer writing `criteria` would be
 rewriting the exam it is judged by. Unlike
 the lifecycle guard above, it fails OPEN when the caller's role cannot be
 resolved: closing it would leave the architect unable to write the document
