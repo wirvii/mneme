@@ -1432,3 +1432,56 @@ func TaskSectionAllows(s TaskSection, archetype string) bool {
 func TaskSectionWriters(s TaskSection) []string {
 	return append([]string(nil), taskSectionWriters[s]...)
 }
+
+// ReviewMomentStats is the per-moment slice of SpecReviewStats: whether the
+// fresh-review report of that moment exists and what it counted. It is
+// EXPERIMENTAL (SPEC-181 P1): the measurement it serves may be retired, and no
+// field is a stable contract.
+type ReviewMomentStats struct {
+	// Present is true when the report file exists (even when it does not parse).
+	Present bool `json:"present"`
+	// Error is why the report could not be read or parsed; empty otherwise.
+	Error string `json:"error,omitempty"`
+
+	Requested    int  `json:"requested"`
+	Completed    int  `json:"completed"`
+	DidNotRun    int  `json:"did_not_run"`
+	Blocker      int  `json:"blocker"`
+	Major        int  `json:"major"`
+	Nit          int  `json:"nit"`
+	Fix          int  `json:"corregir"`
+	Refute       int  `json:"refutar"`
+	Escalate     int  `json:"escalar"`
+	Discard      int  `json:"descartar"`
+	AcceptedRisk int  `json:"riesgo_aceptado"`
+	ReReview     bool `json:"re_revision"`
+}
+
+// SpecReviewStats is one row of `mneme spec review-stats`, the raw material
+// of the SPEC-181 P1 measurement. EXPERIMENTAL: no stable fields; the command
+// dumps rows and never computes the decision rule.
+type SpecReviewStats struct {
+	SpecID         string `json:"spec_id"`
+	Title          string `json:"title"`
+	Status         string `json:"status"`
+	ReviewRequired bool   `json:"review_required"`
+
+	// DoneAt is the last entry to done; nil when the spec never got there.
+	DoneAt *time.Time `json:"done_at,omitempty"`
+
+	// Reviewed is true when the spec-moment report has at least one
+	// completed reviewer: a spec without any does not count as reviewed.
+	Reviewed bool `json:"revisada"`
+
+	SpecReview ReviewMomentStats `json:"spec_review"`
+	PlanReview ReviewMomentStats `json:"plan_review"`
+
+	// QARejections counts qa/audit -> implementing rejections.
+	QARejections int `json:"qa_rejections"`
+	// DoneReopenings counts done -> implementing reopenings.
+	DoneReopenings int `json:"done_reopenings"`
+
+	// FollowUpItems lists the backlog items created within 21 days after
+	// DoneAt that cite this spec's id; [] (never null) when none.
+	FollowUpItems []string `json:"follow_up_items"`
+}

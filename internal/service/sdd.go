@@ -1480,14 +1480,42 @@ func (svc *SDDService) LaneStatus(ctx context.Context, id string) (*model.LaneSt
 	if err != nil {
 		return nil, fmt.Errorf("service: lane status: history: %w", err)
 	}
-	for _, h := range history {
-		if h.ToStatus == model.SpecStatusImplementing &&
-			(h.FromStatus == model.SpecStatusQA || h.FromStatus == model.SpecStatusAudit) {
-			resp.RejectionCount++
-		}
-	}
+	rejections := countRejections(history)
+	resp.RejectionCount = rejections.FromQA + rejections.FromAudit
 
 	return resp, nil
+}
+
+// rejectionCounts tallies the transitions back to implementing found in a
+// spec's history.
+type rejectionCounts struct {
+	// FromQA counts qa -> implementing rejections (standard lane).
+	FromQA int
+	// FromAudit counts audit -> implementing rejections (trivial lane).
+	FromAudit int
+	// FromDone counts done -> implementing reopenings.
+	FromDone int
+}
+
+// countRejections derives the rejection tallies from history alone, with no
+// extra column. LaneStatus (RejectionCount = FromQA + FromAudit) and the
+// SPEC-181 review-stats measurement share it so they can never disagree.
+func countRejections(history []*model.SpecHistory) rejectionCounts {
+	var c rejectionCounts
+	for _, h := range history {
+		if h.ToStatus != model.SpecStatusImplementing {
+			continue
+		}
+		switch h.FromStatus {
+		case model.SpecStatusQA:
+			c.FromQA++
+		case model.SpecStatusAudit:
+			c.FromAudit++
+		case model.SpecStatusDone:
+			c.FromDone++
+		}
+	}
+	return c
 }
 
 // LaneStats returns lane compliance metrics for a project. All counts are

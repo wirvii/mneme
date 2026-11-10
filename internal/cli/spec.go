@@ -39,6 +39,7 @@ machine enforces valid transitions; use pushback/resolve for detours via needs_g
 		newSpecHistoryCmd(),
 		newSpecQuickCmd(),
 		newSpecRejectCmd(),
+		newSpecReviewStatsCmd(),
 	)
 
 	return cmd

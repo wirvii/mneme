@@ -3,7 +3,11 @@ package service
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
+	"regexp"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/wirvii/mneme/internal/model"
@@ -148,4 +152,175 @@ func (svc *SDDService) ensureReviewReport(ctx context.Context, spec *model.Spec,
 	}
 	return fmt.Errorf("%s está caducado: es anterior a %s — repite la revisión o reescribe el informe (skill spec-review): %w",
 		path, latest.reason, model.ErrReviewReportStale)
+}
+
+// followUpWindow is how long after a spec reaches done a new backlog item
+// still counts as a possible bug on that spec (SPEC-181 P1-c).
+const followUpWindow = 21 * 24 * time.Hour
+
+// noWorkflowDirMessage is the error text of a moment when the workflow
+// mechanism is off, so there is nowhere to look for reports.
+const noWorkflowDirMessage = "sin directorio de workflow"
+
+// backlogMention is one backlog item flattened for citation search: when it
+// was created and all the text a person could have cited a spec id in.
+type backlogMention struct {
+	id        string
+	createdAt time.Time
+	text      string
+}
+
+// SpecReviewStats returns one row per standard spec of the project, newest
+// created first, for the EXPERIMENTAL SPEC-181 P1 measurement. limit <= 0
+// returns every spec. Trivial specs never appear. It computes nothing about
+// the decision rule: it only dumps the numbers (reports, rejections,
+// follow-up items) the owner reads by hand.
+func (svc *SDDService) SpecReviewStats(ctx context.Context, project string, limit int) ([]*model.SpecReviewStats, error) {
+	if project == "" {
+		project = svc.project
+	}
+	specs, _, unreadableSpecs, err := svc.store.ListSpecs(ctx, project, "", 0)
+	if err != nil {
+		return nil, fmt.Errorf("service: spec review stats: list specs: %w", err)
+	}
+	logUnreadableRows("spec review stats: specs", unreadableSpecs)
+
+	var standard []*model.Spec
+	for i := len(specs) - 1; i >= 0; i-- { // ListSpecs is oldest first: reverse so ties keep the newest first
+		if specs[i].Lane == model.LaneStandard {
+			standard = append(standard, specs[i])
+		}
+	}
+	sort.SliceStable(standard, func(i, j int) bool { return standard[i].CreatedAt.After(standard[j].CreatedAt) })
+	if limit > 0 && len(standard) > limit {
+		standard = standard[:limit]
+	}
+
+	mentions, err := svc.backlogMentions(ctx, project)
+	if err != nil {
+		return nil, err
+	}
+
+	rows := make([]*model.SpecReviewStats, 0, len(standard))
+	for _, spec := range standard {
+		history, err := svc.store.GetSpecHistory(ctx, spec.ID)
+		if err != nil {
+			return nil, fmt.Errorf("service: spec review stats: history of %s: %w", spec.ID, err)
+		}
+		row := &model.SpecReviewStats{
+			SpecID:         spec.ID,
+			Title:          spec.Title,
+			Status:         string(spec.Status),
+			ReviewRequired: spec.ReviewRequired,
+			FollowUpItems:  []string{},
+		}
+		rejections := countRejections(history)
+		row.QARejections = rejections.FromQA + rejections.FromAudit
+		row.DoneReopenings = rejections.FromDone
+
+		row.SpecReview = svc.reviewMomentStats(spec, model.SpecDocKindReviewSpec, specreview.MomentSpec)
+		row.PlanReview = svc.reviewMomentStats(spec, model.SpecDocKindReviewPlan, specreview.MomentPlan)
+		row.Reviewed = row.SpecReview.Present && row.SpecReview.Error == "" && row.SpecReview.Completed > 0
+
+		if doneAt, ok := latestEntry(history, model.SpecStatusDone); ok {
+			row.DoneAt = &doneAt
+			row.FollowUpItems = followUps(spec.ID, doneAt, mentions)
+		}
+		rows = append(rows, row)
+	}
+	return rows, nil
+}
+
+// reviewMomentStats reads and parses one moment's report for spec. A missing
+// report is absent without error; an unreadable or unparseable one is present
+// with the error as text, so a single bad file never fails the whole table.
+func (svc *SDDService) reviewMomentStats(spec *model.Spec, kind model.SpecDocKind, moment specreview.Moment) model.ReviewMomentStats {
+	if svc.config == nil || svc.config.WorkflowDir() == "" {
+		return model.ReviewMomentStats{Error: noWorkflowDirMessage}
+	}
+	path, err := specDocPath(svc.config.WorkflowDir(), spec.Project, spec.ID, kind)
+	if err != nil {
+		return model.ReviewMomentStats{Error: err.Error()}
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return model.ReviewMomentStats{}
+		}
+		return model.ReviewMomentStats{Present: true, Error: err.Error()}
+	}
+	report, err := specreview.Parse(raw, moment)
+	if err != nil {
+		return model.ReviewMomentStats{Present: true, Error: err.Error()}
+	}
+	c := report.Counts()
+	return model.ReviewMomentStats{
+		Present:      true,
+		Requested:    c.Requested,
+		Completed:    c.Completed,
+		DidNotRun:    c.DidNotRun,
+		Blocker:      c.Blocker,
+		Major:        c.Major,
+		Nit:          c.Nit,
+		Fix:          c.Fix,
+		Refute:       c.Refute,
+		Escalate:     c.Escalate,
+		Discard:      c.Discard,
+		AcceptedRisk: c.AcceptedRisk,
+		ReReview:     c.ReReview,
+	}
+}
+
+// backlogMentions reads every backlog item of the project once, with its
+// refinements, flattened to the text that can cite a spec id.
+func (svc *SDDService) backlogMentions(ctx context.Context, project string) ([]backlogMention, error) {
+	items, _, unreadableItems, err := svc.store.ListBacklogItems(ctx, project, "", 0)
+	if err != nil {
+		return nil, fmt.Errorf("service: spec review stats: list backlog: %w", err)
+	}
+	logUnreadableRows("spec review stats: backlog", unreadableItems)
+	mentions := make([]backlogMention, 0, len(items))
+	for _, item := range items {
+		var b strings.Builder
+		b.WriteString(item.Title)
+		b.WriteString("\n")
+		b.WriteString(item.Description)
+		refinements, err := svc.store.ListBacklogRefinements(ctx, item.ID)
+		if err != nil {
+			return nil, fmt.Errorf("service: spec review stats: refinements of %s: %w", item.ID, err)
+		}
+		for _, r := range refinements {
+			b.WriteString("\n")
+			b.WriteString(r.Body)
+		}
+		mentions = append(mentions, backlogMention{id: item.ID, createdAt: item.CreatedAt, text: b.String()})
+	}
+	return mentions, nil
+}
+
+// logUnreadableRows reports rows that could not be fully read and are
+// therefore missing from the measurement. SpecReviewStats returns a plain row
+// slice, so the log is where they stay visible (SPEC-133 forbids discarding
+// them silently).
+func logUnreadableRows(where string, rows []model.UnreadableRow) {
+	for _, r := range rows {
+		log.Printf("service: %s: %s %s unreadable (%s): %s", where, r.Kind, r.ID, r.Column, r.Reason)
+	}
+}
+
+// followUps returns the ids of the items created in (doneAt, doneAt+21d]
+// whose text cites specID as a whole word: SPEC-18 never matches SPEC-181.
+// Ids are local to this machine. The result is never nil.
+func followUps(specID string, doneAt time.Time, mentions []backlogMention) []string {
+	cite := regexp.MustCompile(`\b` + regexp.QuoteMeta(specID) + `\b`)
+	out := []string{}
+	for _, m := range mentions {
+		if !m.createdAt.After(doneAt) || m.createdAt.After(doneAt.Add(followUpWindow)) {
+			continue
+		}
+		if cite.MatchString(m.text) {
+			out = append(out, m.id)
+		}
+	}
+	return out
 }
