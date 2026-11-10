@@ -66,7 +66,7 @@ func buildDamagedDatabase(t *testing.T) string {
 		`INSERT INTO specs (id, title, project, created_at, updated_at) VALUES ('SPEC-001', 'T', 'p', 'x', 'x')`,
 		loadMigration005(t),
 		`ALTER TABLE memories DROP COLUMN reviewed_at`,
-		`DELETE FROM schema_version WHERE version = 24`,
+		`DELETE FROM schema_version WHERE version >= 24`,
 	}
 	for _, s := range statements {
 		if _, err := d.Exec(s); err != nil {

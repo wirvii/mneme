@@ -32,8 +32,8 @@ func TestMigration024_FreshDB(t *testing.T) {
 	if err := d.QueryRow(`SELECT MAX(version) FROM schema_version`).Scan(&version); err != nil {
 		t.Fatalf("schema_version: %v", err)
 	}
-	if version != 24 {
-		t.Errorf("MAX(version) = %d, want 24", version)
+	if version != 25 {
+		t.Errorf("MAX(version) = %d, want 25", version)
 	}
 
 	sqlText, err := migrationsFS.ReadFile("migrations/024_memory_reviewed_at.sql")
@@ -111,7 +111,7 @@ func TestEnsureMemoryReviewedAt_LegacyVersions(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Open: %v", err)
 		}
-		if _, err := d.Exec(`DELETE FROM schema_version WHERE version = 24`); err != nil {
+		if _, err := d.Exec(`DELETE FROM schema_version WHERE version >= 24`); err != nil {
 			t.Fatalf("delete 24: %v", err)
 		}
 		d.Close()

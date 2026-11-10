@@ -209,6 +209,13 @@ func TestOpen_RepairsSpecsDamagedByRerun005(t *testing.T) {
 	if uuid == "" {
 		t.Error("spec uuid is empty after repair")
 	}
+	var reviewRequired int
+	if err := healed.QueryRow(`SELECT review_required FROM specs WHERE id = 'SPEC-001'`).Scan(&reviewRequired); err != nil {
+		t.Fatalf("review_required not restored: %v", err)
+	}
+	if reviewRequired != 0 {
+		t.Errorf("review_required = %d after repair, want 0", reviewRequired)
+	}
 	var historyRows int
 	if err := healed.QueryRow(`SELECT COUNT(*) FROM spec_history WHERE id = 'h1'`).Scan(&historyRows); err != nil {
 		t.Fatalf("count history: %v", err)

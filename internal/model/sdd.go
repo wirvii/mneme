@@ -860,6 +860,12 @@ type Spec struct {
 	// writes to it yet.
 	PreviousIDs []PreviousID `json:"previous_ids,omitempty"`
 
+	// ReviewRequired is true when the spec owes a fresh-context review report
+	// before it crosses the guarded transitions (SPEC-181 D3). The mark is
+	// local to this machine, never exported to the SDD repository and never
+	// shown by spec_status: the guard's own error says what is missing.
+	ReviewRequired bool `json:"-"`
+
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }

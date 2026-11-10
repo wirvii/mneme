@@ -150,7 +150,7 @@ const specListWhereStatus = specListWhere + ` AND status = ?`
 const specListSelect = `
 	SELECT id, title, status, project, COALESCE(backlog_id, ''),
 	       lane, scope, COALESCE(base_sha, ''), assigned_agents, files_changed,
-	       created_at, updated_at, uuid, previous_ids
+	       created_at, updated_at, uuid, previous_ids, review_required
 	FROM specs`
 
 const specCountSelect = `SELECT COUNT(*) FROM specs`
@@ -567,7 +567,7 @@ func (s *SDDStore) CreateSpec(ctx context.Context, spec *model.Spec) error {
 func (s *SDDStore) GetSpec(ctx context.Context, id string) (*model.Spec, error) {
 	const q = `
 		SELECT id, title, status, project, COALESCE(backlog_id, ''),
-		       lane, scope, COALESCE(base_sha, ''), assigned_agents, files_changed, created_at, updated_at, uuid, previous_ids
+		       lane, scope, COALESCE(base_sha, ''), assigned_agents, files_changed, created_at, updated_at, uuid, previous_ids, review_required
 		FROM specs WHERE id = ?`
 
 	row := s.db.QueryRowContext(ctx, q, id)
@@ -763,6 +763,33 @@ func (s *SDDStore) UpdateSpecBaseSHA(ctx context.Context, specID, sha string) er
 	return nil
 }
 
+// SetSpecReviewRequired sets the review_required mark of a spec (SPEC-181 D3)
+// and refreshes updated_at. The mark never travels to the SDD repository
+// record: the reports it demands are local to this machine, so no export
+// wrapper materializes this write.
+// Returns ErrSpecNotFound when the spec does not exist.
+func (s *SDDStore) SetSpecReviewRequired(ctx context.Context, specID string, required bool) error {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	value := 0
+	if required {
+		value = 1
+	}
+
+	const q = `UPDATE specs SET review_required = ?, updated_at = ? WHERE id = ?`
+	res, err := s.db.ExecContext(ctx, q, value, now, specID)
+	if err != nil {
+		return fmt.Errorf("store: set spec review required: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("store: set spec review required: rows affected: %w", err)
+	}
+	if n == 0 {
+		return model.ErrSpecNotFound
+	}
+	return nil
+}
+
 // InsertLaneAudit writes a structured audit record to the lane_audits table.
 // One row is inserted per auditor run — both passes and failures — so that
 // LaneStatus can read the latest outcome without parsing spec_history text.
@@ -923,7 +950,7 @@ func (s *SDDStore) RecentlyCompletedSpecs(ctx context.Context, project string, n
 	// implementation correction — noted in changes.md).
 	const q = `
 		SELECT id, title, status, project, COALESCE(backlog_id, ''),
-		       lane, scope, COALESCE(base_sha, ''), assigned_agents, files_changed, created_at, updated_at, uuid, previous_ids
+		       lane, scope, COALESCE(base_sha, ''), assigned_agents, files_changed, created_at, updated_at, uuid, previous_ids, review_required
 		FROM specs WHERE project = ? AND status = 'done'
 		ORDER BY updated_at DESC LIMIT ?`
 
@@ -1283,21 +1310,23 @@ func collectBacklogItems(rows *sql.Rows) ([]*model.BacklogItem, []model.Unreadab
 // scanSpec scans a single row into a Spec.
 // The SELECT must include columns in this order: id, title, status, project,
 // backlog_id, lane, scope, base_sha, assigned_agents, files_changed,
-// created_at, updated_at, uuid, previous_ids.
+// created_at, updated_at, uuid, previous_ids, review_required.
 func scanSpec(row *sql.Row) (*model.Spec, error) {
 	spec := &model.Spec{}
 	var createdStr, updatedStr, previousIDsRaw string
+	var reviewRequired int
 	var agentsJSON, filesJSON string
 	err := row.Scan(
 		&spec.ID, &spec.Title, (*string)(&spec.Status),
 		&spec.Project, &spec.BacklogID,
 		(*string)(&spec.Lane), &spec.Scope, &spec.BaseSHA,
 		&agentsJSON, &filesJSON,
-		&createdStr, &updatedStr, &spec.UUID, &previousIDsRaw,
+		&createdStr, &updatedStr, &spec.UUID, &previousIDsRaw, &reviewRequired,
 	)
 	if err != nil {
 		return nil, err
 	}
+	spec.ReviewRequired = reviewRequired != 0
 	if err := json.Unmarshal([]byte(agentsJSON), &spec.AssignedAgents); err != nil {
 		return nil, fmt.Errorf("unmarshal assigned_agents: %w", err)
 	}
@@ -1331,15 +1360,17 @@ func collectSpecs(rows *sql.Rows) ([]*model.Spec, []model.UnreadableRow, error) 
 		spec := &model.Spec{}
 		var createdStr, updatedStr, previousIDsRaw string
 		var agentsJSON, filesJSON string
+		var reviewRequired int
 		if err := rows.Scan(
 			&spec.ID, &spec.Title, (*string)(&spec.Status),
 			&spec.Project, &spec.BacklogID,
 			(*string)(&spec.Lane), &spec.Scope, &spec.BaseSHA,
 			&agentsJSON, &filesJSON,
-			&createdStr, &updatedStr, &spec.UUID, &previousIDsRaw,
+			&createdStr, &updatedStr, &spec.UUID, &previousIDsRaw, &reviewRequired,
 		); err != nil {
 			return nil, nil, fmt.Errorf("scan spec: %w", err)
 		}
+		spec.ReviewRequired = reviewRequired != 0
 
 		if err := json.Unmarshal([]byte(agentsJSON), &spec.AssignedAgents); err != nil {
 			unreadable = append(unreadable, model.UnreadableRow{

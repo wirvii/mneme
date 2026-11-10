@@ -88,8 +88,8 @@ func assertMigration023State(t *testing.T, sqlDB *sql.DB) {
 	if err := sqlDB.QueryRow(`SELECT MAX(version) FROM schema_version`).Scan(&version); err != nil {
 		t.Fatalf("query schema_version: %v", err)
 	}
-	if version != 24 {
-		t.Errorf("MAX(version) = %d, want 24", version)
+	if version != 25 {
+		t.Errorf("MAX(version) = %d, want 25", version)
 	}
 
 	var title, project string

@@ -28,6 +28,10 @@ const (
 	// specHistoryReviewedSHAColumn is spec_history.reviewed_sha as added by
 	// migration 022.
 	specHistoryReviewedSHAColumn = `reviewed_sha TEXT NOT NULL DEFAULT ''`
+	// specsReviewRequiredColumn is specs.review_required as added by
+	// migration 025 (SPEC-181 D3): 1 when the spec owes a fresh-context
+	// review report. It is local to this machine and never exported.
+	specsReviewRequiredColumn = `review_required INTEGER NOT NULL DEFAULT 0`
 )
 
 // columnDef pairs a column name with the definition ALTER TABLE ADD COLUMN
@@ -46,6 +50,7 @@ var specsRepairColumns = []columnDef{
 	{"base_sha", specsBaseSHAColumn},
 	{"uuid", specsUUIDColumn},
 	{"previous_ids", specsPreviousIDsColumn},
+	{"review_required", specsReviewRequiredColumn},
 }
 
 // tableExists reports whether the named table is present.
@@ -69,10 +74,11 @@ func columnExists(ctx context.Context, ex sqlExecutor, table, column string) (bo
 }
 
 // ensureSpecColumns guarantees that specs has every column added after
-// migration 005, plus idx_specs_uuid (SPEC-178 D5). Migration 005 rebuilds
+// migration 005 (lane, scope, base_sha, uuid, previous_ids and review_required),
+// plus idx_specs_uuid (SPEC-178 D5, SPEC-181 D3). Migration 005 rebuilds
 // specs with a fixed column list, so any re-run of it -- the concurrent-open
-// race this spec fixes -- silently drops lane, scope, base_sha, uuid and
-// previous_ids and leaves schema_version claiming a later version; every
+// race this spec fixes -- silently drops lane, scope, base_sha, uuid,
+// previous_ids and review_required and leaves schema_version claiming a later version; every
 // later Open then failed in ensureSDDUUIDs.
 //
 // Like ensureMemoryReviewedAt it checks the columns themselves instead of

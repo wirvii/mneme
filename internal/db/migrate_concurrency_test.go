@@ -26,8 +26,9 @@ const (
 	// concurrentProcesses is how many real test-binary processes race on one file.
 	concurrentProcesses = 4
 	// specsColumnCount is the number of columns specs has once every
-	// migration (004, 005, 011, 012, 019, 020) has been applied.
-	specsColumnCount = 14
+	// migration (004, 005, 011, 012, 019, 020) and the 025 column repair have
+	// been applied.
+	specsColumnCount = 15
 
 	childPathEnv     = "MNEME_DB_TEST_CHILD_PATH"
 	childDeadlineEnv = "MNEME_DB_TEST_CHILD_DEADLINE_NS"

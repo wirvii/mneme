@@ -1,0 +1,13 @@
+-- 025_spec_review_required.sql (SPEC-181)
+--
+-- Deliberately adds no column itself, for the same reason as 024: the
+-- migration runner skips every version already registered, a migration can be
+-- re-run by a concurrent open (005 rebuilds specs), and SQLite has no
+-- "ADD COLUMN IF NOT EXISTS". A statement here could fail Open on a real
+-- database or lose the column.
+--
+-- The specs.review_required column is created by ensureSpecColumns
+-- (internal/db/schemarepair.go), which checks the column itself on every Open.
+-- This file only records version 25 so that `mneme version` and the schema
+-- tests see it.
+INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (25, datetime('now'));
