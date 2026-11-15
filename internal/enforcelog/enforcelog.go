@@ -115,12 +115,24 @@ type Event struct {
 	Decision Decision `json:"decision"`
 	// Mode is the containment mode in effect for this project (off/warn/block).
 	Mode string `json:"mode,omitempty"`
-	// Reason is a short machine label explaining the decision.
+	// Reason is a short machine label explaining the decision. SPEC-185 adds
+	// denied_risk, allowed_by_declaration, risk_archetype_unresolved,
+	// risk_lookup_failed and data_dir_write_denied.
 	Reason string `json:"reason,omitempty"`
 	// Owner is the role whose declared areas actually cover Target, when
 	// known — named in the rendered message so the caller sees who to
 	// delegate to, independent of which role is being contained.
 	Owner string `json:"owner,omitempty"`
+	// RiskItem is the risk item a SPEC-185 risk verdict judged (1..6), so the
+	// log tells which kind of risk was denied or allowed by declaration.
+	RiskItem int `json:"risk_item,omitempty"`
+	// Spec is the spec whose declaration allowed the write, when one did.
+	Spec string `json:"spec,omitempty"`
+	// Source is where that declaration was read: plan, diseno or scope.
+	Source string `json:"source,omitempty"`
+	// Detail is what tripped the risk verdict: the skip marker, "loses all
+	// tests", "removed", "truncated", or the Bash form of the write.
+	Detail string `json:"detail,omitempty"`
 }
 
 // Append serialises ev as one JSON line and appends it to the file at path

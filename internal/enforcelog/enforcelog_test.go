@@ -1,8 +1,10 @@
 package enforcelog
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -28,16 +30,48 @@ func TestAppendAndRead_RoundTrip(t *testing.T) {
 	if err := Append(path, ev, DefaultMaxBytes); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
+	riskEv := Event{
+		TS:       time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC),
+		Project:  "wirvii/mneme",
+		Caller:   "subagent",
+		Role:     "backend",
+		Tool:     "Write",
+		Target:   "internal/db/migrations/024.sql",
+		Decision: DecisionAllow,
+		Reason:   "allowed_by_declaration",
+		RiskItem: 1,
+		Spec:     "SPEC-9",
+		Source:   "plan",
+		Detail:   "t.Skip(",
+	}
+	if err := Append(path, riskEv, DefaultMaxBytes); err != nil {
+		t.Fatalf("Append risk event: %v", err)
+	}
 
 	events, err := Read(path)
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
-	if len(events) != 1 {
-		t.Fatalf("len(events) = %d, want 1", len(events))
+	if len(events) != 2 {
+		t.Fatalf("len(events) = %d, want 2", len(events))
 	}
 	if events[0].Target != "internal/store/foo.go" || events[0].Owner != "backend" {
 		t.Errorf("event = %+v, want target/owner round-tripped", events[0])
+	}
+	if events[1] != riskEv {
+		t.Errorf("risk event = %+v, want %+v unchanged", events[1], riskEv)
+	}
+}
+
+func TestEvent_OmitsEmptyRiskFields(t *testing.T) {
+	line, err := json.Marshal(Event{TS: time.Now().UTC(), Project: "p", Tool: "Edit", Decision: DecisionAllow})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	for _, key := range []string{`"risk_item"`, `"spec"`, `"source"`, `"detail"`} {
+		if strings.Contains(string(line), key) {
+			t.Errorf("event without risk fields serialised %s: %s", key, line)
+		}
 	}
 }
 
