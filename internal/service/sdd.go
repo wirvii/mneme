@@ -922,6 +922,13 @@ func (svc *SDDService) SpecDocWrite(ctx context.Context, req model.SpecDocWriteR
 		return nil, err
 	}
 
+	// SPEC-182: the entrega section's delivery contract block is validated
+	// before any I/O too, so a refused write leaves tarea.md byte-identical.
+	contract, deliveryState, err := validateDeliveryWrite(spec, req)
+	if err != nil {
+		return nil, err
+	}
+
 	path, err := specDocPath(svc.config.WorkflowDir(), spec.Project, spec.ID, req.Kind)
 	if err != nil {
 		return nil, fmt.Errorf("service: spec doc write: %w", err)
@@ -937,10 +944,12 @@ func (svc *SDDService) SpecDocWrite(ctx context.Context, req model.SpecDocWriteR
 			return nil, err
 		}
 		return &model.SpecDocWriteResponse{
-			Path:    path,
-			Bytes:   len(req.Content),
-			Created: created,
-			Section: string(req.Section),
+			Path:          path,
+			Bytes:         len(req.Content),
+			Created:       created,
+			Section:       string(req.Section),
+			Contract:      contract,
+			DeliveryState: deliveryState,
 		}, nil
 	}
 
