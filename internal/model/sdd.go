@@ -1166,6 +1166,83 @@ type SpecStatusResponse struct {
 	// Populated by SDDService.AttachReviewRange, never by this package's
 	// own SpecStatus — see that method's doc for why.
 	ReviewRange *ReviewRange `json:"review_range,omitempty"`
+
+	// DeliveryContract, DeliveryState and DeliveryDetail report the delivery
+	// contract block of the spec's entrega section (SPEC-182 D4). They are
+	// present ONLY when tarea.md exists and Spec.Status is implementing, qa,
+	// audit or done: tarea.md exists from speccing on, and reporting "no
+	// contract" while the spec is still being designed would be noise.
+	// Outside that window all three are absent (omitempty), so the response
+	// stays byte-identical to one from before these fields existed.
+	// Populated by SDDService.AttachDeliveryState.
+	DeliveryContract DeliveryContractState `json:"delivery_contract,omitempty"`
+
+	// DeliveryState is the block's estado, set only when DeliveryContract is
+	// valid.
+	DeliveryState string `json:"delivery_state,omitempty"`
+
+	// DeliveryDetail is the parse error, set only when DeliveryContract is
+	// invalid, so the person can tell a hand-edited block from a malformed
+	// tarea.md.
+	DeliveryDetail string `json:"delivery_detail,omitempty"`
+}
+
+// DeliveryContractState is the outcome of reading a spec's delivery contract
+// block (SPEC-182). It travels as a string because model is the leaf of the
+// layers and never imports internal/delivery.
+type DeliveryContractState string
+
+const (
+	// DeliveryContractValid: tarea.md exists and its entrega holds a block
+	// that passes every rule.
+	DeliveryContractValid DeliveryContractState = "valid"
+	// DeliveryContractMissing: there is no block to read, either because
+	// tarea.md does not exist, the workflow directory is off, or the entrega
+	// section carries no delimiters. Detail says which.
+	DeliveryContractMissing DeliveryContractState = "missing"
+	// DeliveryContractInvalid: something was found but could not be read as
+	// a contract — a malformed block, OR a malformed tarea.md whose sections
+	// cannot be located. Detail carries the parse error so the two are told
+	// apart.
+	DeliveryContractInvalid DeliveryContractState = "invalid"
+)
+
+// DeliveryCheck is what SDDService.DeliveryCheck reports about a spec's
+// entrega section. It never carries an error: a check that could not read
+// anything reports Missing with Detail and Current = false. It is the API the
+// stop hooks of SPEC-183 consume.
+type DeliveryCheck struct {
+	SpecID string     `json:"spec_id"`
+	Status SpecStatus `json:"status"`
+	Lane   Lane       `json:"lane"`
+
+	// Path is tarea.md, set only when os.Stat on it succeeded.
+	Path string `json:"path,omitempty"`
+
+	// Contract is the outcome of reading the block.
+	Contract DeliveryContractState `json:"contract"`
+
+	// State is the block's estado, only when Contract is valid.
+	State string `json:"state,omitempty"`
+
+	// Current is true when tarea.md exists and its mtime, truncated to the
+	// second, is at or after the latest entry to implementing, truncated the
+	// same way (a tie counts as current). It is computed whenever tarea.md
+	// exists, whatever Contract says; without tarea.md or without an entry to
+	// implementing it is false.
+	Current bool `json:"current"`
+
+	// Detail is the parse error, or why nothing was read.
+	Detail string `json:"detail,omitempty"`
+}
+
+// Satisfied reports the condition SPEC-183's stop hooks enforce: a standard
+// spec in implementing whose entrega holds a valid block written at or after
+// the latest entry to implementing. A trivial spec never satisfies it, by the
+// same rule that never requires the block of a trivial spec.
+func (c DeliveryCheck) Satisfied() bool {
+	return c.Lane == LaneStandard && c.Status == SpecStatusImplementing &&
+		c.Contract == DeliveryContractValid && c.Current
 }
 
 // ReviewRange is the tramo of commits a QA pass is being asked to look at
@@ -1329,6 +1406,17 @@ type SpecDocWriteResponse struct {
 
 	// Section echoes the tarea.md section written; empty for other kinds.
 	Section string `json:"section,omitempty"`
+
+	// Contract is set ONLY on writes of the entrega section (SPEC-182):
+	// DeliveryContractValid when the content carried a valid delivery
+	// contract block, DeliveryContractMissing when it carried none and the
+	// spec does not require one (a warning, not a refusal). Never
+	// DeliveryContractInvalid: that write is refused. Absent (omitempty) for
+	// every other kind and section, so those responses stay byte-identical.
+	Contract DeliveryContractState `json:"contract,omitempty"`
+
+	// DeliveryState is the block's estado, set only when Contract is valid.
+	DeliveryState string `json:"delivery_state,omitempty"`
 }
 
 // TaskSection names one of the fixed sections of a spec's tarea.md

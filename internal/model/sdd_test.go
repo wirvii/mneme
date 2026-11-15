@@ -478,3 +478,91 @@ func TestSpecRejectRequest_FindingsJSON(t *testing.T) {
 		}
 	})
 }
+
+// TestDeliveryCheck_Satisfied pins SPEC-182's condition for SPEC-183's stop
+// hooks: only a standard spec in implementing with a valid, current block
+// satisfies it. A trivial spec never does, and neither does a spec past
+// implementing.
+func TestDeliveryCheck_Satisfied(t *testing.T) {
+	base := DeliveryCheck{
+		Lane:     LaneStandard,
+		Status:   SpecStatusImplementing,
+		Contract: DeliveryContractValid,
+		Current:  true,
+	}
+	tests := []struct {
+		name   string
+		mutate func(c *DeliveryCheck)
+		want   bool
+	}{
+		{name: "standard_implementing_valid_current", mutate: func(*DeliveryCheck) {}, want: true},
+		{name: "trivial_implementing_valid_current", mutate: func(c *DeliveryCheck) { c.Lane = LaneTrivial }, want: false},
+		{name: "standard_qa_valid_current", mutate: func(c *DeliveryCheck) { c.Status = SpecStatusQA }, want: false},
+		{name: "standard_implementing_missing_current", mutate: func(c *DeliveryCheck) { c.Contract = DeliveryContractMissing }, want: false},
+		{name: "standard_implementing_invalid_current", mutate: func(c *DeliveryCheck) { c.Contract = DeliveryContractInvalid }, want: false},
+		{name: "standard_implementing_valid_stale", mutate: func(c *DeliveryCheck) { c.Current = false }, want: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			c := base
+			tc.mutate(&c)
+			if got := c.Satisfied(); got != tc.want {
+				t.Errorf("Satisfied() = %v, want %v for %+v", got, tc.want, c)
+			}
+		})
+	}
+}
+
+// TestDeliveryJSON_AdditiveContract is SPEC-182's twin of
+// TestFreezeJSON_AdditiveContract: the delivery fields on SpecDocWriteResponse
+// and SpecStatusResponse stay ABSENT from the wire when there is nothing to
+// report, so every response outside an entrega write or before implementing is
+// byte-identical to one from before SPEC-182.
+func TestDeliveryJSON_AdditiveContract(t *testing.T) {
+	tests := []struct {
+		name     string
+		v        any
+		wantKeys []string
+	}{
+		{
+			name:     "SpecDocWriteResponse zero value has no delivery keys",
+			v:        SpecDocWriteResponse{},
+			wantKeys: []string{"path", "bytes", "created"},
+		},
+		{
+			name:     "SpecStatusResponse zero value has no delivery keys",
+			v:        SpecStatusResponse{},
+			wantKeys: []string{"spec", "history", "pushbacks"},
+		},
+		{
+			name:     "SpecDocWriteResponse with a valid contract adds contract and delivery_state",
+			v:        SpecDocWriteResponse{Contract: DeliveryContractValid, DeliveryState: "hecho"},
+			wantKeys: []string{"path", "bytes", "created", "contract", "delivery_state"},
+		},
+		{
+			name:     "SpecStatusResponse with an invalid contract adds delivery_contract and delivery_detail only",
+			v:        SpecStatusResponse{DeliveryContract: DeliveryContractInvalid, DeliveryDetail: "x"},
+			wantKeys: []string{"spec", "history", "pushbacks", "delivery_contract", "delivery_detail"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, err := json.Marshal(tc.v)
+			if err != nil {
+				t.Fatalf("json.Marshal: %v", err)
+			}
+			var decoded map[string]json.RawMessage
+			if err := json.Unmarshal(raw, &decoded); err != nil {
+				t.Fatalf("json.Unmarshal: %v", err)
+			}
+			if len(decoded) != len(tc.wantKeys) {
+				t.Errorf("key count: got %d (%v), want %d (%v)", len(decoded), keysOf(decoded), len(tc.wantKeys), tc.wantKeys)
+			}
+			for _, k := range tc.wantKeys {
+				if _, ok := decoded[k]; !ok {
+					t.Errorf("missing expected key %q in %s", k, raw)
+				}
+			}
+		})
+	}
+}

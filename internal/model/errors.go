@@ -311,3 +311,16 @@ var ErrInvalidReviewReport = errors.New("fresh-review report is invalid or unpar
 // the stage it reviews or than tarea.md / criteria.toml, so it no longer
 // describes the document being advanced.
 var ErrReviewReportStale = errors.New("fresh-review report is stale")
+
+// --- Delivery contract sentinel errors (SPEC-182) ---
+
+// ErrInvalidDeliveryContract is returned when the entrega section of a spec's
+// tarea.md is written with a delivery contract block that fails to parse or
+// validate. The write is refused and the file is left byte-identical, so a
+// malformed contract never reaches the disk.
+var ErrInvalidDeliveryContract = errors.New("delivery contract block is invalid or unparseable")
+
+// ErrDeliveryContractMissing is returned when a standard spec in implementing
+// writes its entrega section without a delivery contract block: that is the
+// one moment the block is required, because it is the implementer's report.
+var ErrDeliveryContractMissing = errors.New("delivery contract block is required")
