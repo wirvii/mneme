@@ -123,6 +123,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `mneme delegation-hook report`, `delegation-hook promote` and the reminder
   of `mneme status` / `delegation-hook status` exclude the `Stop` and
   `SubagentStop` events from the containment telemetry (SPEC-183).
+- SPEC-189: new `docs/THESIS.md` says what mneme guarantees and through which
+  mechanism, what it leaves to the agent harness, what it will not do, and the
+  retirement rule: no mechanism is retired whole without a measurement period
+  declared beforehand and its datum; it keeps the five past retirements as
+  history. Current docs name retired surfaces only under `Historical`
+  headings, the tool and command counts read 31 and 38, and document titles
+  no longer carry a version. `mneme-init` 2.0.0 is split into a short
+  `SKILL.md` and four references (`core.md`, `subagents.md`, `opt-ins.md`,
+  `report.md`) under the worst-loading-path cap; the skill-size guard loses
+  its exemption mechanism, so no bundled skill is exempt. The `diseno` role of
+  `spec-review` checks the retirement rule.
 
 ### Fixed
 

@@ -103,7 +103,7 @@ Both are off until you enable them. Read the privacy notice they print before yo
 
 ## Documentation
 
-Start at [docs/README.md](docs/README.md), the index of every current document. The most useful: [docs/GUIDE.md](docs/GUIDE.md), [docs/skills.md](docs/skills.md), [docs/lanes.md](docs/lanes.md), [docs/enforcement-model.md](docs/enforcement-model.md), [docs/codex.md](docs/codex.md), [docs/CONFIG.md](docs/CONFIG.md).
+Why mneme is shaped this way, what it guarantees and what it leaves to your agent: [docs/THESIS.md](docs/THESIS.md). Start at [docs/README.md](docs/README.md), the index of every current document. The most useful: [docs/GUIDE.md](docs/GUIDE.md), [docs/skills.md](docs/skills.md), [docs/lanes.md](docs/lanes.md), [docs/enforcement-model.md](docs/enforcement-model.md), [docs/codex.md](docs/codex.md), [docs/CONFIG.md](docs/CONFIG.md).
 
 ## Windows
 

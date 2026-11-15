@@ -2,6 +2,8 @@
 
 Index of the current documents. Start with the [README](../README.md) for what mneme is, and [CLAUDE.md](../CLAUDE.md) for how the code is organised.
 
+Start with [THESIS.md](THESIS.md): what mneme guarantees, what it leaves to your agent, what it will not do, and the rule for retiring a mechanism.
+
 ## Using mneme
 
 - [GUIDE.md](GUIDE.md): end-to-end guide: saving, searching, sessions, the backlog and specs, troubleshooting.
