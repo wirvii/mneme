@@ -131,7 +131,7 @@ Since SPEC-184 it checks only what the diff shows, in this fixed order:
 | Item declared | the `Risk:` line names an item | `risk declared: item <n>; the trivial lane admits only Risk: none` |
 | Contradiction | `Risk: none` but the diff showed items | `risk declaration contradicts diff: Risk: none declared, items <n, m> detected` |
 
-The declaration comes first from the delivery (`Risk:` line in `tarea.md` section `entrega`, outside fenced code blocks), then from the `spec_quick` rationale. File and line counts are recorded in `lane_audits` but never fail an audit. A failed audit returns a `Remedy` that names the risk item and the way out: the orchestrator runs `lane_reclassify` (MCP) / `mneme lane reclassify` (CLI); `lane_override` only for a false positive.
+The declaration comes first from the delivery — the `riesgo` field of the SPEC-182 contract block in `tarea.md` section `entrega`, then a `Risk:` line in that section's prose (outside fenced code blocks and outside the block) — and last from the `spec_quick` rationale. File and line counts are recorded in `lane_audits` but never fail an audit. A failed audit returns a `Remedy` that names the risk item and the way out: the orchestrator runs `lane_reclassify` (MCP) / `mneme lane reclassify` (CLI); `lane_override` only for a false positive.
 
 **Base-SHA binding (v1.6.0):** When a spec enters `implementing`, mneme captures the current HEAD SHA as `base_sha` on the spec. On subsequent `lane_audit` runs the base ref is resolved in this order:
 1. Explicit `--base <ref>` / `base_ref` argument (caller override).

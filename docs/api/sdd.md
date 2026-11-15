@@ -738,8 +738,9 @@ Run the deterministic post-implementation auditor for a trivial-lane spec in
 `audit` status. Since SPEC-184 it checks only what the diff shows: files
 within the declared scope, no path of risk items 1, 2 or 5
 (`mneme-flow/references/risk.md` plus `[lane.risk_globs]`), no exported Go/TS
-symbol changes (risk item 3), and a `Risk:` declaration (delivery section
-`entrega` of `tarea.md` first, then the `spec_quick` rationale) that says
+symbol changes (risk item 3), and a risk declaration (delivery section
+`entrega` of `tarea.md` first — the contract block's `riesgo`, then a `Risk:`
+line in its prose — then the `spec_quick` rationale) that says
 `none` and agrees with the diff. File and line counts are recorded but never
 fail an audit.
 
