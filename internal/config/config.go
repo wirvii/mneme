@@ -96,7 +96,9 @@ type CodegraphConfig struct {
 // Overrides, the built-in default from install.defaultAgentModels is used.
 //
 // This section lives in ~/.mneme/config.toml and is intentionally NOT an asset
-// — it survives upgrade because Install() never rewrites config.toml.
+// — it survives upgrade because `mneme install` never rewrites config.toml: it
+// only adds keys that are not declared yet (EnsureDeclared, SPEC-184), and the
+// writers edit only their own key or table.
 //
 // TOML representation:
 //

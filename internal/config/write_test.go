@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -185,4 +186,62 @@ default_limit = 20
 	if cfg.Search.DefaultLimit != 20 {
 		t.Errorf("Search.DefaultLimit = %d, want 20 (unrelated section must survive)", cfg.Search.DefaultLimit)
 	}
+}
+
+// writeDefaultsGuardStart is the starting file of the two SPEC-184 C15
+// tests: a user comment and one non-default key, nothing else.
+const writeDefaultsGuardStart = "# keep me\n[search]\ndefault_limit = 7\n"
+
+// assertNoDefaultsWritten checks the C15 contract on the file at path.
+func assertNoDefaultsWritten(t *testing.T, path string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(data)
+	for _, want := range []string{"# keep me", "default_limit = 7"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("file lost %q:\n%s", want, got)
+		}
+	}
+	for _, unwanted := range []string{"orchestrator_trivial_inline", "synthesis_enabled"} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("file gained the default %q:\n%s", unwanted, got)
+		}
+	}
+	t.Setenv("MNEME_DELEGATION_TRIVIAL_INLINE", "")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Delegation.OrchestratorTrivialInline {
+		t.Error("Delegation.OrchestratorTrivialInline = false, want the default true")
+	}
+}
+
+// TestSetModelsOverrides_DoesNotWriteDefaults covers SPEC-184 C15: the
+// writer edits only [models.overrides] and never dumps the defaults.
+func TestSetModelsOverrides_DoesNotWriteDefaults(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte(writeDefaultsGuardStart), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetModelsOverrides(path, map[string]string{"architect": "opus"}); err != nil {
+		t.Fatalf("SetModelsOverrides: %v", err)
+	}
+	assertNoDefaultsWritten(t, path)
+}
+
+// TestSetSubagentContainmentMode_DoesNotWriteDefaults covers SPEC-184 C15
+// for the delegation-hook promote writer.
+func TestSetSubagentContainmentMode_DoesNotWriteDefaults(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte(writeDefaultsGuardStart), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetSubagentContainmentMode(path, "wirvii/mneme", "block"); err != nil {
+		t.Fatalf("SetSubagentContainmentMode: %v", err)
+	}
+	assertNoDefaultsWritten(t, path)
 }
