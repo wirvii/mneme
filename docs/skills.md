@@ -76,6 +76,15 @@ exist inside the skill directory, and a path containing `..` or starting with
 `/` is an error because it escapes the directory. Trailing `.` and `:` are not
 part of the path. A bare `references/` with no file name is ignored.
 
+For the skills mneme ships, a Go guard (`internal/install/skills_budget_test.go`,
+SPEC-188) measures the worst real loading path of each one: an agent holds
+`SKILL.md` and at most one reference at a time, so the characters of `SKILL.md`
+plus those of its largest `references/*.md` must stay at or under 20,000, the
+point where Claude Code cuts a skill after compacting; and `SKILL.md` must stay
+at or under 4096 bytes. It needs no shell, so it runs on Windows too.
+`mneme-init` is the one named exemption, temporary until SPEC-189 splits it; an
+exemption that is no longer needed fails the guard until it is removed.
+
 ### Lint rules
 
 | ID | Rule | Severity |
@@ -249,7 +258,7 @@ manual lists the same set.
 | `feature` | Something new, from idea to a done spec, stopping at the approval gate | uses `mneme-flow` |
 | `bug` | A failure: investigate to a diagnosis in the ticket, then promote it only when the root cause is confirmed (replaces the old hunt-and-convert pair) | `references/diagnosis.md` |
 | `trivial` | A tiny, low-risk change in a declared scope, checked by the lane auditor | uses `mneme-flow` |
-| `review-brief` | A spec in QA: the orchestrator's brief and the QA tester's report, bounded by the criteria and the review range | `references/report.md` |
+| `review-brief` | A spec in QA: the orchestrator's brief and the QA tester's report, bounded by the criteria, the review range and a cap of 3 rounds | `references/report.md`, `references/rounds.md`, `references/qa-tester.md` |
 | `present-spec` | The human approval gate: turn the spec into a plain-language decision and record the explicit answer | none |
 | `spec-review` | The fresh-context review of a standard spec before the gate and of its plan before implementation: reviewers read without the conversation, the architect resolves each finding and writes the report mneme requires | `references/report.md`, one file per role (`comprension.md`, `diseno.md`, `hechos.md`, `preparacion.md`), `NOTICE.md` and the Apache-2.0 license of the adapted origin |
 | `grill-me` | Refine a standard backlog item one question at a time | none |

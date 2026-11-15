@@ -44,6 +44,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `mneme spec list --json` stays a bare list whose elements gain the same two
   keys. Informative only: nothing blocks, nothing moves, nothing is written.
   No HTTP parity (HTTP has no SDD endpoints).
+- SPEC-188: a capped QA loop with visible decisions. `mneme spec
+  review-package <ID>` (CLI only) writes the log, stat and `-U10` diff of the
+  spec's current review range to the workflow dir and prints only the path, so
+  the orchestrator hands the qa-tester a path and never the code; the output
+  is deterministic, with the user's git configuration and environment
+  neutralised. `spec_status` (MCP and `mneme spec status`) gains `qa_rounds`,
+  always present and counted per stay (since the last reopening from done),
+  and `review_package_path`, present only when that range's package exists.
+  Layer 1 v8: backend, frontend and bug-hunter also gain the
+  `implementer-contract` section (no subagents or reviewers of their own, the
+  project suite defines green, RED/GREEN evidence when the spec asks for the
+  test first). Skills: a cap of 3 QA rounds, a re-review bounded to the fix,
+  one "necesitas decidir" message at the cap (only the orchestrator reopens a
+  round), a closing "Decisiones que tomé por ti" section saved under
+  `spec/<ID>-rulings-gate` and `spec/<ID>-rulings-qa`, and the qa-tester's
+  steps moved to `review-brief/references/qa-tester.md`. A Go guard keeps every
+  bundled skill's worst loading path (SKILL.md plus its largest reference)
+  under 20,000 characters and SKILL.md under 4096 bytes, with a temporary
+  exemption for `mneme-init` until SPEC-189.
+
+### Changed
+
+- SPEC-188: `internal/gitrepo` runs every `git diff` through one path
+  (`rawDiff`). As a result `ChangedLines` and `NumStat`, used by the trivial
+  lane auditor, no longer obey the user's global attributes file
+  (`core.attributesFile`), the system attributes file, `GIT_DIFF_OPTS` or
+  `GIT_EXTERNAL_DIFF`; without those settings their result is unchanged.
 
 ## [v1.51.0] — 2026-11-10 — standard specs get a fresh-context review before approval and before implementation
 

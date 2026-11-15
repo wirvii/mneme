@@ -193,7 +193,7 @@ mneme spec reject SPEC-012 --reason "payment edge case fails" --by qa-agent
 - Standard lane: `qa → implementing`
 - Trivial lane: `audit → implementing`
 
-The rejection reason is persisted in `spec_history`. `lane status` reports the total `rejection_count` derived from history (no extra column). Distinct from `spec_pushback` which models ambiguity → `needs_grill`.
+The rejection reason is persisted in `spec_history`. `lane status` reports the total `rejection_count` derived from history (no extra column). `spec_status.qa_rounds` (SPEC-188) counts only `qa -> implementing` rejections of the current stay, since the last reopening from `done`; the two numbers differ after a reopening. Distinct from `spec_pushback` which models ambiguity → `needs_grill`.
 
 ## Structured Audit Records (v1.6.0)
 

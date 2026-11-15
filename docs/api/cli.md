@@ -440,6 +440,37 @@ mneme spec status SPEC-001 --json
 |------|---------|-------------|
 | `--json` | false | JSON output |
 
+While the spec is in qa and the review package of its current range exists,
+the text output adds a `Review package: <path>` line after `Review range:`.
+In any status, `QA rounds: <n>` appears when the current stay had at least one
+rejection from qa (SPEC-188). `--json` carries the same data as `qa_rounds`
+(always present) and `review_package_path` (only when that file exists).
+
+### mneme spec review-package
+
+```bash
+mneme spec review-package SPEC-001
+```
+
+Writes the review package of the spec's current `review_range` (SPEC-188):
+one Markdown file with the `git log --oneline --abbrev=8`, the `git diff
+--stat` and the `git diff -U10` of that range, with the user's git
+configuration and environment (`GIT_DIFF_OPTS`, `GIT_EXTERNAL_DIFF`, the
+global and system attributes files, `diff.*` and `core.abbrev` settings)
+neutralised, so the same range produces the same bytes on any machine. The
+file goes to `<workflow dir>/<project>/specs/<ID>/review-package-<from8>-<to8>.md`,
+replacing any earlier file of the same range, and the command prints ONLY
+that path. When the stored frontier was lost, the header says so with
+mneme's own notice.
+
+The path is what the orchestrator puts in the QA brief: the content is never
+pasted into an agent's context. No flags.
+
+The command fails, writes nothing, and the binary prints `Error: ...` on
+stderr and exits 1 when the spec is not in qa, when its review range is not
+available (the error carries mneme's notice), when the workflow or repository
+directory is not configured, or on a git or write failure.
+
 ### mneme spec advance
 
 Exactly one forward path per current state.

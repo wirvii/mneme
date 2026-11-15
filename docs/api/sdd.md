@@ -272,6 +272,8 @@ Get the full status of a spec including history and pushbacks.
   "frozen": {"state": "archived", "backlog_id": "BL-001", "reason": "Superseded by BL-207"},
   "review_range": {"available": true, "from": "abc123...", "from_kind": "base",
     "to": "9a3c1234...", "notice": "primera pasada: revisar desde el commit base abc12345 hasta el extremo entregado 9a3c1234."},
+  "qa_rounds": 1,
+  "review_package_path": "/home/me/.mneme/workflows/wirvii-mneme/specs/SPEC-001/review-package-abc12345-9a3c1234.md",
   "delivery_contract": "valid",
   "delivery_state": "hecho_con_dudas"
 }
@@ -291,6 +293,16 @@ absent (not `null`) in every other status, so a response outside `qa` stays
 byte-identical to one from before this field existed. See "Review frontier
 and review range" below `spec_advance` for its full shape and the four
 states it can be in.
+
+**`qa_rounds` (SPEC-188) is always present**, zero included: the number of
+`qa -> implementing` rejections in the current stay, that is, since the
+latest `done -> implementing` reopening, or over the whole history when the
+spec was never reopened. It differs from `lane_status.rejection_count`, which
+counts over the spec's whole life and adds `qa` and `audit` rejections; the
+two agree on a standard spec that was never reopened. The 3-round cap of the
+`review-brief` skill reads this number. **`review_package_path`** appears only
+while `review_range` is available and the review package of that very range
+already exists (`mneme spec review-package`); absent otherwise.
 
 **`delivery_contract`/`delivery_state`/`delivery_detail` (SPEC-182) are
 present ONLY when `tarea.md` exists and `spec.status` is implementing, qa,
@@ -414,6 +426,16 @@ the tramo computed from that same column:
   qa-tester's brief, the QA report — shows verbatim. The orchestrator
   copies it into the encargo; it never computes or rewrites the range
   itself.
+
+**The review package (SPEC-188).** `mneme spec review-package <ID>` (CLI
+only) writes the log, stat and `-U10` diff of the current `review_range` to
+`<workflow dir>/<project>/specs/<ID>/review-package-<from8>-<to8>.md` and
+prints only the path, which the orchestrator passes to the qa-tester. After a
+rejection the frontier is the rejected delivered end, so the next entry into
+qa yields a new package that holds only the fix. When the frontier was lost,
+the package header carries the literal `notice` as `> FRONTERA PERDIDA:`. The
+cap of 3 qa rounds per stay is doctrine of the `review-brief` skill: mneme
+counts (`qa_rounds`), it never denies a `spec_reject`.
 
 ### spec_pushback
 
