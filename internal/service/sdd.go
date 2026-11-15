@@ -459,6 +459,46 @@ func specFreeze(spec *model.Spec, entry model.BacklogIndexEntry, found bool) *mo
 	}
 }
 
+// freezeIndex marks which of specs are frozen, keyed by spec ID, with at
+// most ONE BacklogStatusIndex read for the whole slice and none when no spec
+// has a BacklogID (SPEC-126 DD4/AC14): never one GetBacklogItem per spec,
+// the N+1 R4 explicitly forbids (up to 50 on the MCP page, over a hundred
+// unwindowed in this repo). freezeIndex is how listings call specFreeze for
+// a whole slice; loadMutableSpec, SpecStatus and the importer call it one
+// spec at a time. The map is nil when nothing is frozen.
+func (svc *SDDService) freezeIndex(ctx context.Context, specs []*model.Spec) (map[string]model.SpecFreeze, error) {
+	needsIndex := false
+	for _, spec := range specs {
+		if spec.BacklogID != "" {
+			needsIndex = true
+			break
+		}
+	}
+	if !needsIndex {
+		return nil, nil
+	}
+	index, err := svc.store.BacklogStatusIndex(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("backlog status index: %w", err)
+	}
+	var frozen map[string]model.SpecFreeze
+	for _, spec := range specs {
+		if spec.BacklogID == "" {
+			continue
+		}
+		entry, found := index[spec.BacklogID]
+		freeze := specFreeze(spec, entry, found)
+		if freeze == nil {
+			continue
+		}
+		if frozen == nil {
+			frozen = make(map[string]model.SpecFreeze, len(specs))
+		}
+		frozen[spec.ID] = *freeze
+	}
+	return frozen, nil
+}
+
 // loadMutableSpec loads a spec that the caller intends to CHANGE. It is the
 // single definition of SPEC-125 D4's freeze: GetSpec, plus — only when the
 // spec has an originating backlog item — one lookup of that item, refusing
@@ -1120,38 +1160,9 @@ func (svc *SDDService) SpecList(ctx context.Context, req model.SpecListRequest) 
 		return model.SpecListResponse{}, fmt.Errorf("service: spec list: %w", err)
 	}
 
-	// SPEC-126 DD4/AC14: at most ONE extra read for the whole page, never
-	// one GetBacklogItem per spec — the N+1 R4 explicitly forbids (up to 50
-	// on the MCP page, up to 127 unwindowed in this repo today). A page
-	// where no spec has a BacklogID — the common case — pays nothing extra:
-	// BacklogStatusIndex is not called at all.
-	var frozen map[string]model.SpecFreeze
-	needsIndex := false
-	for _, spec := range specs {
-		if spec.BacklogID != "" {
-			needsIndex = true
-			break
-		}
-	}
-	if needsIndex {
-		index, indexErr := svc.store.BacklogStatusIndex(ctx)
-		if indexErr != nil {
-			return model.SpecListResponse{}, fmt.Errorf("service: spec list: backlog status index: %w", indexErr)
-		}
-		for _, spec := range specs {
-			if spec.BacklogID == "" {
-				continue
-			}
-			entry, found := index[spec.BacklogID]
-			freeze := specFreeze(spec, entry, found)
-			if freeze == nil {
-				continue
-			}
-			if frozen == nil {
-				frozen = make(map[string]model.SpecFreeze, len(specs))
-			}
-			frozen[spec.ID] = *freeze
-		}
+	frozen, err := svc.freezeIndex(ctx, specs)
+	if err != nil {
+		return model.SpecListResponse{}, fmt.Errorf("service: spec list: %w", err)
 	}
 
 	return model.SpecListResponse{Specs: specs, Total: total, Frozen: frozen, Unreadable: unreadable}, nil
