@@ -175,6 +175,17 @@ var getSessionActivityQuery = `
 	WHERE ` + sessionWorkWhere + `
 	  AND m.session_id = ?`
 
+// getSessionActivitySinceQuery — args: (project, sessionID, since)
+//
+// Es getSessionActivityQuery más un corte por created_at, así que embebe
+// sessionWorkWhere por la misma concatenación y no puede divergir de las
+// otras dos consultas (SPEC-183). since viaja como RFC3339Nano, el formato
+// con que insertMemory escribe created_at (memory.go:124), para que la
+// comparación lexicográfica sea correcta; o como "" cuando es cero: "" es
+// menor que cualquier fecha, así que equivale a GetSessionActivity.
+var getSessionActivitySinceQuery = getSessionActivityQuery + `
+	  AND m.created_at > ?`
+
 // GetSessionActivity devuelve el trabajo registrado por UNA sesión.
 // MemoryCount 0 con FirstAt/LastAt cero cuando no hay filas (nunca error).
 // Solo mira el project store: una sesión que únicamente guardó memorias
@@ -187,11 +198,41 @@ var getSessionActivityQuery = `
 // reporta en segundos: aceptado, no mitigado.
 func (s *MemoryStore) GetSessionActivity(ctx context.Context, project, sessionID string) (*model.SessionActivity, error) {
 	row := s.db.QueryRowContext(ctx, getSessionActivityQuery, toNullString(project), sessionID)
+	activity, err := scanSessionActivity(row, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("store: get session activity: %w", err)
+	}
+	return activity, nil
+}
 
+// GetSessionActivitySince devuelve el trabajo de UNA sesión creado
+// estrictamente después de since: la "ventana de trabajo" que el hook Stop
+// del orquestador mide desde el último cierre (SPEC-183 §3.5). "Trabajo" es
+// exactamente sessionWorkWhere, el mismo predicado de GetSessionActivity y
+// ListSessionsWithoutSummary; since cero equivale a GetSessionActivity.
+// FirstAt es la ancla de la ventana. Hereda el caveat sub-segundo (D20) de
+// GetSessionActivity, ahora también sobre el corte created_at > since.
+func (s *MemoryStore) GetSessionActivitySince(ctx context.Context, project, sessionID string, since time.Time) (*model.SessionActivity, error) {
+	sinceArg := ""
+	if !since.IsZero() {
+		sinceArg = since.UTC().Format(time.RFC3339Nano)
+	}
+	row := s.db.QueryRowContext(ctx, getSessionActivitySinceQuery, toNullString(project), sessionID, sinceArg)
+	activity, err := scanSessionActivity(row, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("store: get session activity since: %w", err)
+	}
+	return activity, nil
+}
+
+// scanSessionActivity lee la fila (COUNT, MIN, MAX) que producen las dos
+// consultas de actividad de una sesión. Las fechas ilegibles quedan en cero,
+// como siempre lo hizo GetSessionActivity.
+func scanSessionActivity(row *sql.Row, sessionID string) (*model.SessionActivity, error) {
 	var count int
 	var firstAt, lastAt sql.NullString
 	if err := row.Scan(&count, &firstAt, &lastAt); err != nil {
-		return nil, fmt.Errorf("store: get session activity: %w", err)
+		return nil, err
 	}
 
 	activity := &model.SessionActivity{
@@ -208,7 +249,6 @@ func (s *MemoryStore) GetSessionActivity(ctx context.Context, project, sessionID
 			activity.LastAt = t
 		}
 	}
-
 	return activity, nil
 }
 

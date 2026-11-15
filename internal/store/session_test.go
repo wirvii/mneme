@@ -476,28 +476,139 @@ func TestSummaryExistence_SoftDeletedSummaryReopens(t *testing.T) {
 }
 
 // TestSessionQueries_ShareSameWherePredicate is the anti-divergence guard
-// (AC8): both listSessionsWithoutSummaryQuery and getSessionActivityQuery
-// MUST embed the exact same sessionWorkWhere fragment, or the asymmetry that
-// left a divergent guard forever in SPEC-105 reappears here.
+// (AC8): listSessionsWithoutSummaryQuery, getSessionActivityQuery and
+// getSessionActivitySinceQuery (SPEC-183) MUST all embed the exact same
+// sessionWorkWhere fragment, or the asymmetry that left a divergent guard
+// forever in SPEC-105 reappears here.
 func TestSessionQueries_ShareSameWherePredicate(t *testing.T) {
-	if !strings.Contains(listSessionsWithoutSummaryQuery, sessionWorkWhere) {
-		t.Error("listSessionsWithoutSummaryQuery does not embed sessionWorkWhere")
+	queries := map[string]string{
+		"listSessionsWithoutSummaryQuery": listSessionsWithoutSummaryQuery,
+		"getSessionActivityQuery":         getSessionActivityQuery,
+		"getSessionActivitySinceQuery":    getSessionActivitySinceQuery,
 	}
-	if !strings.Contains(getSessionActivityQuery, sessionWorkWhere) {
-		t.Error("getSessionActivityQuery does not embed sessionWorkWhere")
+	for name, q := range queries {
+		if !strings.Contains(q, sessionWorkWhere) {
+			t.Errorf("%s does not embed sessionWorkWhere", name)
+		}
 	}
 }
 
-// TestSessionQueries_NoInlineTopicKeyLiteral verifies that neither query
-// contains the inline literal "session/" — the topic_key prefix must always
-// travel as a bound SQL parameter (AC9, SPEC-108 D9).
+// TestSessionQueries_NoInlineTopicKeyLiteral verifies that none of the three
+// queries contains the inline literal "session/" — the topic_key prefix must
+// always travel as a bound SQL parameter (AC9, SPEC-108 D9).
 func TestSessionQueries_NoInlineTopicKeyLiteral(t *testing.T) {
-	if strings.Contains(listSessionsWithoutSummaryQuery, "session/") {
-		t.Error("listSessionsWithoutSummaryQuery contains an inline \"session/\" literal")
+	queries := map[string]string{
+		"listSessionsWithoutSummaryQuery": listSessionsWithoutSummaryQuery,
+		"getSessionActivityQuery":         getSessionActivityQuery,
+		"getSessionActivitySinceQuery":    getSessionActivitySinceQuery,
 	}
-	if strings.Contains(getSessionActivityQuery, "session/") {
-		t.Error("getSessionActivityQuery contains an inline \"session/\" literal")
+	for name, q := range queries {
+		if strings.Contains(q, "session/") {
+			t.Errorf("%s contains an inline \"session/\" literal", name)
+		}
 	}
+}
+
+// TestGetSessionActivitySince covers the window query of SPEC-183: only the
+// work created strictly after since counts, a zero since is the whole
+// session (GetSessionActivity), and the shared work predicate still excludes
+// summaries, deleted and superseded memories, other projects and memories
+// without a session. Every instant falls in its own second (D20 caveat).
+func TestGetSessionActivitySince(t *testing.T) {
+	ctx := context.Background()
+	base := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+
+	t.Run("zero_since_equals_GetSessionActivity", func(t *testing.T) {
+		s := newTestStore(t)
+		sid := newSessionID(t)
+		createSessionWork(t, s, "myproject", sid, base)
+		createSessionWork(t, s, "myproject", sid, base.Add(10*time.Minute))
+		createSessionWork(t, s, "myproject", sid, base.Add(20*time.Minute))
+
+		want, err := s.GetSessionActivity(ctx, "myproject", sid)
+		if err != nil {
+			t.Fatalf("GetSessionActivity: %v", err)
+		}
+		got, err := s.GetSessionActivitySince(ctx, "myproject", sid, time.Time{})
+		if err != nil {
+			t.Fatalf("GetSessionActivitySince: %v", err)
+		}
+		if got.MemoryCount != want.MemoryCount || !got.FirstAt.Equal(want.FirstAt) || !got.LastAt.Equal(want.LastAt) {
+			t.Errorf("got %+v, want %+v", got, want)
+		}
+		if got.MemoryCount != 3 {
+			t.Errorf("MemoryCount: got %d, want 3", got.MemoryCount)
+		}
+	})
+
+	t.Run("since_between_memories", func(t *testing.T) {
+		s := newTestStore(t)
+		sid := newSessionID(t)
+		createSessionWork(t, s, "myproject", sid, base)
+		second := base.Add(10*time.Minute + 117554*time.Microsecond)
+		createSessionWork(t, s, "myproject", sid, second)
+		createSessionWork(t, s, "myproject", sid, base.Add(20*time.Minute))
+
+		got, err := s.GetSessionActivitySince(ctx, "myproject", sid, base.Add(5*time.Minute))
+		if err != nil {
+			t.Fatalf("GetSessionActivitySince: %v", err)
+		}
+		if got.MemoryCount != 2 {
+			t.Errorf("MemoryCount: got %d, want 2", got.MemoryCount)
+		}
+		if !got.FirstAt.Equal(second) {
+			t.Errorf("FirstAt: got %v, want %v", got.FirstAt, second)
+		}
+		if !got.LastAt.Equal(base.Add(20 * time.Minute)) {
+			t.Errorf("LastAt: got %v, want %v", got.LastAt, base.Add(20*time.Minute))
+		}
+	})
+
+	t.Run("since_after_all", func(t *testing.T) {
+		s := newTestStore(t)
+		sid := newSessionID(t)
+		createSessionWork(t, s, "myproject", sid, base)
+
+		got, err := s.GetSessionActivitySince(ctx, "myproject", sid, base.Add(time.Minute))
+		if err != nil {
+			t.Fatalf("GetSessionActivitySince: %v", err)
+		}
+		if got.MemoryCount != 0 || !got.FirstAt.IsZero() || !got.LastAt.IsZero() {
+			t.Errorf("got %+v, want zero count and zero times", got)
+		}
+		if got.SessionID != sid {
+			t.Errorf("SessionID: got %q, want %q", got.SessionID, sid)
+		}
+	})
+
+	t.Run("shared_predicate_exclusions", func(t *testing.T) {
+		s := newTestStore(t)
+		sid := newSessionID(t)
+		kept := createSessionWork(t, s, "myproject", sid, base.Add(30*time.Minute))
+		deleted := createSessionWork(t, s, "myproject", sid, base.Add(31*time.Minute))
+		superseded := createSessionWork(t, s, "myproject", sid, base.Add(32*time.Minute))
+		createSessionWork(t, s, "other-project", sid, base.Add(33*time.Minute))
+		createSessionWork(t, s, "myproject", "", base.Add(34*time.Minute))
+		createSessionSummary(t, s, "myproject", sid)
+
+		if err := s.SoftDelete(ctx, deleted); err != nil {
+			t.Fatalf("SoftDelete: %v", err)
+		}
+		if err := s.SetSupersededBy(ctx, superseded, kept); err != nil {
+			t.Fatalf("SetSupersededBy: %v", err)
+		}
+
+		got, err := s.GetSessionActivitySince(ctx, "myproject", sid, base)
+		if err != nil {
+			t.Fatalf("GetSessionActivitySince: %v", err)
+		}
+		if got.MemoryCount != 1 {
+			t.Errorf("MemoryCount: got %d, want 1 (only the kept work memory)", got.MemoryCount)
+		}
+		if !got.FirstAt.Equal(base.Add(30 * time.Minute)) {
+			t.Errorf("FirstAt: got %v, want %v", got.FirstAt, base.Add(30*time.Minute))
+		}
+	})
 }
 
 // TestSessionWork_ProjectScoped verifies that memories from another project
