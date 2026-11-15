@@ -1567,3 +1567,66 @@ func TestSetSDDRefs_NotFound(t *testing.T) {
 		t.Fatalf("expected model.ErrNotFound, got %v", err)
 	}
 }
+
+// TestList_ExcludeSynthesis verifies that ExcludeSynthesis drops synthesis
+// rows in SQL, before the LIMIT: with a limit smaller than the number of
+// higher-ranked syntheses the human memories still come back (SPEC-187).
+func TestList_ExcludeSynthesis(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	for i := 0; i < 3; i++ {
+		m := makeMemory()
+		m.Type = model.TypeSynthesis
+		m.Title = "synthesis " + string(rune('a'+i))
+		m.Importance = 0.9
+		if _, err := s.Create(ctx, m); err != nil {
+			t.Fatalf("Create synthesis: %v", err)
+		}
+	}
+	for i := 0; i < 2; i++ {
+		m := makeMemory()
+		m.Title = "decision " + string(rune('a'+i))
+		m.Importance = 0.3
+		if _, err := s.Create(ctx, m); err != nil {
+			t.Fatalf("Create decision: %v", err)
+		}
+	}
+	other := makeMemory()
+	other.Project = "otherproject"
+	other.Title = "decision elsewhere"
+	if _, err := s.Create(ctx, other); err != nil {
+		t.Fatalf("Create other-project decision: %v", err)
+	}
+
+	tests := []struct {
+		name string
+		opts ListOptions
+		want int
+	}{
+		{"exclude", ListOptions{Project: "myproject", ExcludeSynthesis: true}, 2},
+		{"include", ListOptions{Project: "myproject"}, 5},
+		{"exclude with type", ListOptions{Project: "myproject", Type: model.TypeDecision, ExcludeSynthesis: true}, 2},
+		{"exclude without project", ListOptions{ExcludeSynthesis: true}, 3},
+		{"exclude before limit", ListOptions{Project: "myproject", ExcludeSynthesis: true, Limit: 2}, 2},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := s.List(ctx, tc.opts)
+			if err != nil {
+				t.Fatalf("List: %v", err)
+			}
+			if len(got) != tc.want {
+				t.Fatalf("len = %d, want %d", len(got), tc.want)
+			}
+			if !tc.opts.ExcludeSynthesis {
+				return
+			}
+			for _, m := range got {
+				if m.Type == model.TypeSynthesis {
+					t.Errorf("synthesis %q returned with ExcludeSynthesis", m.Title)
+				}
+			}
+		})
+	}
+}

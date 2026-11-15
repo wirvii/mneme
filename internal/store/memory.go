@@ -587,6 +587,13 @@ type ListOptions struct {
 	// listings are unaffected by this field's zero value.
 	Source string
 
+	// ExcludeSynthesis drops synthesis memories (SPEC-187). The filter runs in
+	// SQL, before the LIMIT, on purpose: mem_context asks for at most
+	// ProjectBudget rows ordered by importance, and a project with hundreds
+	// of 0.85 syntheses would fill that limit before any human memory, so
+	// filtering in Go afterwards would starve the human ones.
+	ExcludeSynthesis bool
+
 	// OrderBy is the column used for sorting, e.g. "importance", "created_at",
 	// "updated_at". Defaults to "importance DESC" when empty.
 	OrderBy string
@@ -619,6 +626,9 @@ func (s *MemoryStore) List(ctx context.Context, opts ListOptions) ([]*model.Memo
 	}
 	if !opts.IncludeSuperseded {
 		where = append(where, "superseded_by IS NULL")
+	}
+	if opts.ExcludeSynthesis {
+		where = append(where, "type != 'synthesis'")
 	}
 
 	orderBy := opts.OrderBy
