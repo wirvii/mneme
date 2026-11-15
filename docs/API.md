@@ -2,9 +2,9 @@
 
 # mneme -- API Reference
 
-mneme exposes the same service layer through three frontends: **MCP** (82
+mneme exposes the same service layer through three frontends: **MCP** (31
 tools over JSON-RPC 2.0 stdio, primary), **HTTP** (10 REST endpoints under
-`/v1/`), and **CLI** (42 mneme-registered top-level commands, Cobra). This page is an index --
+`/v1/`), and **CLI** (38 top-level commands, Cobra). This page is an index --
 the full contract for every tool, endpoint, and command lives in
 [docs/api/](api/).
 
@@ -43,11 +43,7 @@ Rule: every MCP tool appears in exactly **one** of these files.
 
 6 + 21 + 4 = **31**. Nine `mem_*` tools moved to `mneme mem ...` in 1.49 (SPEC-164).
 
-The `profile_*` tools, `project_new`, `app_add` and `scaffold_capture` (11 in all) were retired by SPEC-162 (v1.49.0). The `speech_*`
-family (2 tools) was retired whole by SPEC-161 (v1.49.0). Six `codegraph_*` tools
-moved to the CLI with SPEC-165. The `quality_*` family (5 tools) existed
-from SPEC-115 through SPEC-137 and was retired whole by SPEC-158, along
-with the certification mechanism it served.
+Six `codegraph_*` tools moved to the CLI with SPEC-165. MCP tools retired whole are listed under [Historical: retired MCP tools](#historical-retired-mcp-tools).
 
 **CLI-only since v1.49 (SPEC-163):** `skills_*` (7), `model_*` (3), `conflicts_*` (5), `subagent_*` (6), `sdd_status` and `sdd_import` left the MCP server; each keeps its full capability as a CLI command. References with the old-tool to command table: [docs/api/skills.md](api/skills.md), [docs/api/models.md](api/models.md), [docs/api/conflicts.md](api/conflicts.md), [docs/api/subagents.md](api/subagents.md), [docs/api/sdd.md](api/sdd.md#sdd-git-native-commands-cli-only-since-v149-spec-163).
 
@@ -75,3 +71,7 @@ Shared across all tool families:
 - [README.md](../README.md) -- project overview, quickstart, feature tour
 - [docs/ARCHITECTURE.md](ARCHITECTURE.md) -- layered design and package boundaries
 - [docs/GUIDE.md](GUIDE.md) -- end-to-end user guide for humans and agents
+
+## Historical: retired MCP tools
+
+The `profile_*` tools, `project_new`, `app_add` and `scaffold_capture` (11 in all) were retired by SPEC-162 (v1.49.0). The `speech_*` family (2 tools) was retired whole by SPEC-161 (v1.49.0). The `quality_*` family (5 tools) existed from SPEC-115 through SPEC-137 and was retired whole by SPEC-158, along with the certification mechanism it served.

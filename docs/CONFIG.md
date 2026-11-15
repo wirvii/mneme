@@ -30,6 +30,7 @@ Para el sistema de reglas ver [RULES.md](RULES.md).
 - [Recetas de ajuste](#recetas-de-ajuste)
 - [Errores de validación](#errores-de-validación)
 - [Preguntas frecuentes](#preguntas-frecuentes)
+- [Historical: secciones retiradas](#historical-secciones-retiradas)
 
 ---
 
@@ -472,5 +473,7 @@ El env gana. La prioridad es siempre: env > archivo > defecto.
 mneme config show graph --json | grep "graph_mode" -A4
 # muestra "env_var": "MNEME_GRAPH_MODE"
 ```
+
+## Historical: secciones retiradas
 
 `[speech]` (retirada en v1.49.0): se ignora si sigue en config.toml.

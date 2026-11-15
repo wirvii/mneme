@@ -5,7 +5,7 @@ Index of the current documents. Start with the [README](../README.md) for what m
 ## Using mneme
 
 - [GUIDE.md](GUIDE.md): end-to-end guide: saving, searching, sessions, the backlog and specs, troubleshooting.
-- [skills.md](skills.md): the skill format, the nine bundled skills, pinning, the usage log.
+- [skills.md](skills.md): the skill format, the ten bundled skills, pinning, the usage log.
 - [lanes.md](lanes.md): trivial and standard lanes and the auditor.
 - [init.md](init.md): `mneme init`, managed blocks and the drift report.
 - [codex.md](codex.md): using mneme with OpenAI Codex.

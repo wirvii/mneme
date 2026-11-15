@@ -1,4 +1,4 @@
-# Memory Manifest Format (v1.0)
+# Memory Manifest Format
 
 The Memory Manifest is a portable interchange format for exporting and importing
 the complete knowledge state of a mneme project — memories, entities, relations,

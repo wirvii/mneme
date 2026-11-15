@@ -174,9 +174,9 @@ internal/
   frontmatter/          -- surgical YAML frontmatter editor for agent .md files;
                            fixes known keys (name, description, model, tools,
                            permissionMode), preserves every other byte verbatim
-  mcp/                  -- MCP server (JSON-RPC 2.0 over stdio, 82 tools)
+  mcp/                  -- MCP server (JSON-RPC 2.0 over stdio, 31 tools)
   http/                 -- REST API (stdlib net/http, 10 endpoints under /v1/)
-  cli/                  -- Cobra commands (42 mneme-registered top-level commands)
+  cli/                  -- Cobra commands (38 top-level commands)
   install/              -- agent installer: MCP config, hooks, operating manual,
                            slash commands, skills embed. Since SPEC-073 it does
                            NOT install global agent profiles (removes legacy ones);
@@ -724,22 +724,10 @@ above, respectively; they are not part of the gap. No auth, no rate limiting.
 
 ### CLI -- Cobra
 
-42 mneme-registered top-level commands (`completion` and `help` are
-Cobra-generated and are not counted in this figure): `save`, `search`, `get`,
-`update`, `forget`, `promote`,
-`status`, `stats`, `consolidate`, `serve`, `mcp`, `init`, `install`,
-`upgrade`, `version`, `sync export|import|status`, `rule add|list|test`,
-`explore`, `graph rebuild|cleanup-orphan-relations`, `gaps`, `vault
-export|import`, `embed backfill`, `export markdown`, `config show`, `hook`,
-`tui`, `backlog add|list|get|refine|promote|archive`, `spec
-new|advance|pushback|resolve|quick|reject|list|status|history`, `lane
-audit|reclassify|override|status|stats`, `codegraph
-index|search|node|callers|callees|impact|trace|files|status|hooks`, `skills
-list|install|pin|unpin|remove|lint|validate`, `model list|set|reset`,
-`conflicts candidates|scan|link|unlink|list`, `subagents
-fingerprint|profile|compose|write|manifest-list`, `delegation-hook
-enable|disable|status`, `team-memory enable|hooks`. Full flag reference:
-[docs/api/cli.md](api/cli.md).
+38 top-level commands registered by the single `root.AddCommand(...)` call in
+`internal/cli/root.go` (`completion` and `help` are Cobra-generated and not
+counted). That call is the inventory; [docs/api/cli.md](api/cli.md) has the
+flags.
 
 ### Hooks (`internal/cli/hook.go`)
 
@@ -1094,4 +1082,4 @@ this interacts with the write-through materialization path itself.
 
 ---
 
-*Originally written 2026-04-30 for EPIC-1 through EPIC-6 (SPEC-001 through SPEC-026); updated through schema v23 / 82 MCP tools / 42 mneme-registered CLI commands, including SDD+lanes, CodeGraph, Skills, Models, Conflicts, per-project subagents, Team Memory, profiles/scaffolds, and local speech (the EPIC-calidad certification mechanism, SPEC-115 through SPEC-137, was retired whole by SPEC-158). See [CHANGELOG.md](../CHANGELOG.md) for the full release history.*
+*Originally written 2026-04-30 for EPIC-1 through EPIC-6 (SPEC-001 through SPEC-026); kept current through v1.51 (schema v25, 31 MCP tools, 38 top-level CLI commands). Mechanisms retired whole are listed in [THESIS.md](THESIS.md); the release history is in [CHANGELOG.md](../CHANGELOG.md).*

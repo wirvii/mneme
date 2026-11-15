@@ -237,7 +237,7 @@ mneme skills usage [--since 30d] [--json]  Which skills were loaded, and which n
 
 ---
 
-## MCP tools (removed in v1.49)
+## Historical: the MCP tools that moved to the CLI in v1.49
 
 The seven `skills_*` MCP tools (SPEC-037) were removed from the server in
 SPEC-163. Every operation above is a `mneme skills` command, which an agent
@@ -246,9 +246,9 @@ runs through Bash; `lint` and `validate` exit non-zero when checks fail and
 
 ---
 
-## Bundled skills (v1.49)
+## Bundled skills
 
-mneme ships nine skills. Each one appears in an agent's context only by its
+mneme ships ten skills. Each one appears in an agent's context only by its
 `description`, so the descriptions say when to use the skill. The operating
 manual lists the same set.
 

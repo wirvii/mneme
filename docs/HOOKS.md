@@ -894,10 +894,7 @@ and, since SPEC-181, the read-only `spec-reviewer`) — an implementer writing `
 rewriting the exam it is judged by. Unlike
 the lifecycle guard above, it fails OPEN when the caller's role cannot be
 resolved: closing it would leave the architect unable to write the document
-at all the moment `agent_type` stopped arriving in the payload. The
-certification mechanism used to add a SECOND, tool-scoped map here, restricting `quality_sign`
-to `qa-tester` (`roleScopedTools`, the one rule in the repo that failed CLOSED) — it was retired whole by SPEC-158
-along with the tool it governed.
+at all the moment `agent_type` stopped arriving in the payload.
 
 ### Archivos de `.mneme/sdd` (SPEC-179)
 
@@ -1195,12 +1192,13 @@ performance.
 
 ---
 
+## Historical: retired hook subcommands
+
+`mneme hook speech-prompt` was retired in v1.49.0 (SPEC-161); it stays as a silent no-op and `mneme install` removes its registration.
+
 ## See Also
 
 - [Rules System](RULES.md) — applies_to syntax, severity levels, examples by stack
 - [Architecture](ARCHITECTURE.md) — overall system design and graph layer
 - [Knowledge Graph](GRAPH.md) — weighted relations, Hebbian learning, decay
 - [API reference: CLI](api/cli.md) → — full flag reference for `mneme hook <event>`
-# Spoken-response prompt hook
-
-`speech-prompt`: retirado en v1.49.0; queda como no-op y `mneme install` borra su registro.

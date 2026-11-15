@@ -1,4 +1,4 @@
-# Lanes Reference (v1.6.0)
+# Lanes Reference
 
 Lanes introduce two SDD workflow paths — **trivial** and **standard** — so that genuinely small changes can move through the system quickly without bypassing process controls.
 
@@ -182,7 +182,7 @@ deliberate:
   real code-graph extractor's `IsExported` for both Go and TypeScript,
   instead of a `^\+export ` regex heuristic for the latter.
 
-## Reject (v1.6.0)
+## Reject
 
 When a QA review finds defects, send the spec backward to `implementing` without changing the spec document:
 
@@ -196,13 +196,13 @@ mneme spec reject SPEC-012 --reason "payment edge case fails" --by qa-agent
 
 The rejection reason is persisted in `spec_history`. `lane status` reports the total `rejection_count` derived from history (no extra column). `spec_status.qa_rounds` (SPEC-188) counts only `qa -> implementing` rejections of the current stay, since the last reopening from `done`; the two numbers differ after a reopening. Distinct from `spec_pushback` which models ambiguity → `needs_grill`.
 
-## Structured Audit Records (v1.6.0)
+## Structured Audit Records
 
 Every `lane_audit` run inserts a row in the `lane_audits` table (migration 012) — both passes and failures. `lane status` reads the latest row instead of parsing `spec_history` text, making audit outcomes deterministic and format-independent.
 
 Fields stored: `spec_id`, `passed`, `file_count`, `lines_changed`, `breaches` (newline-joined), `base_sha` (ref used for diffing), `created_at`. Since SPEC-184 `file_count` and `lines_changed` only inform; they never decide.
 
-## Lane Stats (v1.6.0)
+## Lane Stats
 
 ```bash
 mneme lane stats [--json]

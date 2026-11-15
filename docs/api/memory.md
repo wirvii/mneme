@@ -42,8 +42,7 @@ existing memory in the same project/scope, the existing memory is updated
 When `topic_key` is omitted (and `type` is not `session_summary`/`synthesis`)
 the response also carries `suggested_topic_key` (SPEC-164): an advisory
 proposal built from the title, existing keys and unresolved knowledge gaps.
-mneme never assigns it; reuse it on the next save of the same topic. This
-replaces the retired `mem_suggest_topic_key` tool.
+mneme never assigns it; reuse it on the next save of the same topic.
 
 The response may also carry `possible_conflicts` (SPEC-166): up to three
 existing memories (`id`, `title`, `type`, `updated_at`) that share salient terms
@@ -219,7 +218,7 @@ title/content rewrite, on an upsert by `topic_key` and on `confirm`. It is local
 
 ---
 
-## Where the other nine tools went (SPEC-164)
+## Historical: where the other nine tools went (SPEC-164)
 
 | Retired MCP tool | Now |
 |------------------|-----|

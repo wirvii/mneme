@@ -1,4 +1,4 @@
-# Per-Agent Model Assignment (v1.8.0)
+# Per-Agent Model Assignment
 
 mneme assigns a model alias to each bundled agent at install time. This lets you
 tune the cost/quality balance per SDD phase without editing agent files manually.

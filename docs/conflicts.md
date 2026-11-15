@@ -1,4 +1,4 @@
-# Memory Conflict Surfacing (v1.9.0)
+# Memory Conflict Surfacing
 
 > SPEC-039. Closes "the agent followed a decision we already changed."
 
@@ -102,7 +102,7 @@ re-judging the same pair.
 - `store.ClearSupersededBy` is the inverse of `store.SetSupersededBy`, used by
   `ConflictUnlink`.
 
-## MCP tools (removed in v1.49)
+## Historical: the MCP tools that moved to the CLI in v1.49
 
 The five `conflicts_*` MCP tools (SPEC-039) were removed from the server in
 SPEC-163; the commands in this page are the only surface. The old-tool to
