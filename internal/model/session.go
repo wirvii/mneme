@@ -48,6 +48,32 @@ type SessionActivity struct {
 	LastAt      time.Time `json:"last_at"`
 }
 
+// SessionWindow es la ventana de trabajo de una sesión que el hook Stop del
+// orquestador mide (SPEC-183 §3.5): el trabajo creado después de su último
+// cierre. Existe para que un resumen a media sesión o un checkpoint abran
+// una ventana nueva en vez de silenciar el resto de la sesión, y para que un
+// cierre viejo nunca envejezca la ventana: el reloj corre desde Anchor, la
+// primera memoria de trabajo posterior al cierre, no desde el cierre.
+// Count == 0 significa que no hay nada pendiente; Anchor y LastAt quedan
+// entonces en cero.
+type SessionWindow struct {
+	// SessionID es la sesión medida.
+	SessionID string `json:"session_id"`
+
+	// LastClose es el mayor updated_at entre el resumen session/<id> y el
+	// checkpoint/latest del proyecto; cero si no hay ninguno.
+	LastClose time.Time `json:"last_close"`
+
+	// Count es el número de memorias de trabajo posteriores a LastClose.
+	Count int `json:"count"`
+
+	// Anchor es el created_at de la primera de esas memorias.
+	Anchor time.Time `json:"anchor"`
+
+	// LastAt es el created_at de la última de esas memorias.
+	LastAt time.Time `json:"last_at"`
+}
+
 // PendingSessionsRequest identifica el proyecto y la sesión actual al
 // consultar sesiones anteriores que dejaron trabajo sin resumen.
 type PendingSessionsRequest struct {
