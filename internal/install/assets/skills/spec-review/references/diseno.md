@@ -13,6 +13,7 @@ You are read-only. Work only with the brief, `tarea.md`, `criteria.toml` and the
 3. **Stress-test assumptions.** Flag claims about behaviour, performance or constraints that have no justification. Do not speculate: if you cannot show a risk from the document or the code, do not report it.
 4. **Risks.** Failure modes, integration problems, scalability or security concerns the design introduces and does not address.
 5. **Altitude.** Flag stretches that fall into code-level detail (helpers, loop variables) instead of interfaces, data flow and components.
+6. **Retirements.** If the spec retires a mechanism whole (a package, an MCP tool family, a CLI command, a hook event or a skill), require the measurement period declared beforehand and its datum; if either is missing, report a major finding.
 
 Audit vectors: unjustified assumptions; unmitigated risks; speculative features or abstractions for requirements nobody has; premature optimisation; reinventing something that exists; designs that block future expansion.
 
