@@ -112,9 +112,7 @@ The spec must be on the trivial lane and in draft status. Refused for a scope
 that matches everything or uses braces, for a Risk: line that names an item
 (that change is standard) and for a malformed Risk: line.
 For standard-lane specs use "mneme spec advance" instead.`,
-		Example: `  mneme spec quick SPEC-007 $'Fix a comment typo in audit.go.
-Resumption: the request and the diff say it all.
-Risk: none' --by orchestrator`,
+		Example: `  mneme spec quick SPEC-007 $'Fix a comment typo in audit.go.\nResumption: the request and the diff say it all.\nRisk: none' --by orchestrator`,
 		Args:    cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if flagBy == "" {
