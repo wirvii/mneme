@@ -264,6 +264,9 @@ triggered it. Pushbacks are summarised at the bottom.`,
 			// is qa — the only way to recover the review range after
 			// losing session context, since advancing again is impossible.
 			svc.AttachReviewRange(cmd.Context(), resp)
+			// SPEC-182 D4: additive, present only from implementing on and
+			// only when tarea.md exists.
+			svc.AttachDeliveryState(resp)
 
 			if flagJSON {
 				return printJSON(os.Stdout, resp)
@@ -282,6 +285,15 @@ triggered it. Pushbacks are summarised at the bottom.`,
 
 			if resp.ReviewRange != nil {
 				fmt.Fprintf(os.Stdout, "Review range: %s\n", resp.ReviewRange.Notice)
+			}
+
+			switch resp.DeliveryContract {
+			case model.DeliveryContractValid:
+				fmt.Fprintf(os.Stdout, "Entrega: %s\n", resp.DeliveryState)
+			case model.DeliveryContractMissing:
+				fmt.Fprintln(os.Stdout, "Entrega: sin contrato")
+			case model.DeliveryContractInvalid:
+				fmt.Fprintf(os.Stdout, "Entrega: contrato invalido — %s\n", resp.DeliveryDetail)
 			}
 
 			if len(resp.History) > 0 {
