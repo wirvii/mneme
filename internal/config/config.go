@@ -276,10 +276,17 @@ type GraphConfig struct {
 	// by Validate. Default: 3.
 	CommunityMinSize int `toml:"community_min_size"`
 
-	// SynthesisEnabled controls whether community synthesis memories are
-	// auto-generated after community detection. When false, communities are
-	// detected and persisted but no synthesis memories are created.
-	// Default: true.
+	// SynthesisEnabled controls whether consolidation generates a synthesis
+	// memory per detected community. Default: false since SPEC-187. Nobody
+	// writes syntheses by hand, yet on 2026-11-14 they were 12.098 of the
+	// 21.594 memories across the portfolio (56 %): they crowded the session
+	// start and competed with human memories for every budget. When false,
+	// communities are still detected and persisted, but no synthesis row is
+	// created, refreshed or marked for forgetting; existing ones stay until
+	// `mneme mem synthesis-sweep --apply` retires them. When true, every
+	// consolidation creates and refreshes the synthesis of each community and
+	// marks for forgetting (Forget: decay_rate = 1.0, so the next sweep picks
+	// it up) the synthesis whose community disappeared.
 	SynthesisEnabled bool `toml:"synthesis_enabled"`
 
 	// SynthesisMaxMembers is the maximum number of community members included
@@ -488,13 +495,19 @@ type ContextConfig struct {
 	GlobalMinImportance float64 `toml:"global_min_importance"`
 
 	// ContextPackingMode controls how mem_context assembles the memory bundle:
-	//   - "auto"        — use community packing when communities exist
-	//                     (ListCommunities returns N > 0); otherwise flat.
-	//                     Default. Zero overhead on fresh projects.
+	//   - "auto"        — flat packing without synthesis memories (SPEC-187):
+	//                     no cluster overviews and no synthesis row competes
+	//                     for the general budget. A request with
+	//                     include_synthesis: true gets the pre-SPEC-187
+	//                     behaviour (community packing when communities
+	//                     exist, flat otherwise). Default.
 	//   - "communities" — always attempt community packing; falls back to flat
-	//                     silently when no communities exist.
-	//   - "flat"        — original flat scoring; ignores communities entirely.
-	//                     Useful for debugging or small projects.
+	//                     silently when no communities exist. Syntheses are
+	//                     included unless the request says
+	//                     include_synthesis: false.
+	//   - "flat"        — original flat scoring; ignores communities entirely
+	//                     and lets syntheses compete as ordinary memories
+	//                     unless the request says include_synthesis: false.
 	//
 	// Empty string is treated as "auto".
 	// Env override: MNEME_CONTEXT_PACKING_MODE.
@@ -524,8 +537,9 @@ type ConsolidationConfig struct {
 	// consolidation runs.
 	Interval string `toml:"interval"`
 
-	// RetentionDays is the number of days after which memories with very low
-	// importance become eligible for eviction regardless of budget pressure.
+	// RetentionDays is the number of days a retired memory (deleted_at set)
+	// is kept before consolidation deletes it for good. It is the only window
+	// in which a soft delete can still be undone by hand.
 	RetentionDays int `toml:"retention_days"`
 
 	// DedupThreshold is the minimum similarity score (0–1) at which two
@@ -659,7 +673,7 @@ func Default() *Config {
 			GraphMode:                 "ppr",
 			CommunityDetectionEnabled: true,
 			CommunityMinSize:          3,
-			SynthesisEnabled:          true,
+			SynthesisEnabled:          false,
 			SynthesisMaxMembers:       50,
 			SynthesisTopN:             3,
 		},
@@ -1261,6 +1275,16 @@ func buildGraphOrigins(cfg, dflt *Config) []ConfigFieldInfo {
 	fields = append(fields, makeField("wikilink_relation_weight", cfg.Graph.WikilinkRelationWeight, o, ev))
 	o, ev = fieldOrigin(cfg.Graph.GraphMode, dflt.Graph.GraphMode, true, "MNEME_GRAPH_MODE")
 	fields = append(fields, makeField("graph_mode", cfg.Graph.GraphMode, o, ev))
+	o, ev = fieldOrigin(cfg.Graph.CommunityDetectionEnabled, dflt.Graph.CommunityDetectionEnabled, true)
+	fields = append(fields, makeField("community_detection_enabled", cfg.Graph.CommunityDetectionEnabled, o, ev))
+	o, ev = fieldOrigin(cfg.Graph.CommunityMinSize, dflt.Graph.CommunityMinSize, true)
+	fields = append(fields, makeField("community_min_size", cfg.Graph.CommunityMinSize, o, ev))
+	o, ev = fieldOrigin(cfg.Graph.SynthesisEnabled, dflt.Graph.SynthesisEnabled, true)
+	fields = append(fields, makeField("synthesis_enabled", cfg.Graph.SynthesisEnabled, o, ev))
+	o, ev = fieldOrigin(cfg.Graph.SynthesisMaxMembers, dflt.Graph.SynthesisMaxMembers, true)
+	fields = append(fields, makeField("synthesis_max_members", cfg.Graph.SynthesisMaxMembers, o, ev))
+	o, ev = fieldOrigin(cfg.Graph.SynthesisTopN, dflt.Graph.SynthesisTopN, true)
+	fields = append(fields, makeField("synthesis_top_n", cfg.Graph.SynthesisTopN, o, ev))
 	return fields
 }
 

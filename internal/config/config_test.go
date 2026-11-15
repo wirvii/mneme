@@ -1643,18 +1643,74 @@ func TestGraphConfig_CommunityMinSize_Negative_Error(t *testing.T) {
 }
 
 // TestGraphConfig_SynthesisDefaults verifies the synthesis config defaults.
+// Since SPEC-187 automatic syntheses are off by default: they had grown to
+// more than half of every stored memory without anyone writing them.
 func TestGraphConfig_SynthesisDefaults(t *testing.T) {
 	t.Parallel()
 
 	cfg := Default()
-	if !cfg.Graph.SynthesisEnabled {
-		t.Error("SynthesisEnabled default: got false, want true")
+	if cfg.Graph.SynthesisEnabled {
+		t.Error("SynthesisEnabled default: got true, want false (SPEC-187)")
 	}
 	if cfg.Graph.SynthesisMaxMembers != 50 {
 		t.Errorf("SynthesisMaxMembers default: got %d, want 50", cfg.Graph.SynthesisMaxMembers)
 	}
 	if cfg.Graph.SynthesisTopN != 3 {
 		t.Errorf("SynthesisTopN default: got %d, want 3", cfg.Graph.SynthesisTopN)
+	}
+}
+
+// TestGraphConfig_SynthesisEnabled_TOMLOverride verifies that a project
+// that still wants automatic syntheses can turn them back on by writing the
+// key by hand (SPEC-187, D1).
+func TestGraphConfig_SynthesisEnabled_TOMLOverride(t *testing.T) {
+	path := writeTempTOML(t, "[graph]\nsynthesis_enabled = true\n")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Graph.SynthesisEnabled {
+		t.Error("SynthesisEnabled: got false, want true from the TOML file")
+	}
+}
+
+// TestGraphConfig_SynthesisEnabled_Origin verifies that mneme config shows
+// synthesis_enabled and the other community keys with their origin, so a
+// person can tell whether the new default or their own file is in effect.
+func TestGraphConfig_SynthesisEnabled_Origin(t *testing.T) {
+	findOrigin := func(t *testing.T, origins *ConfigOrigins, key string) (FieldOrigin, bool) {
+		t.Helper()
+		for _, f := range origins.Sections["graph"] {
+			if f.Key == key {
+				return f.Origin, true
+			}
+		}
+		return "", false
+	}
+
+	_, origins, err := LoadWithOrigins(filepath.Join(t.TempDir(), "missing.toml"))
+	if err != nil {
+		t.Fatalf("LoadWithOrigins (no file): %v", err)
+	}
+	for _, key := range []string{
+		"community_detection_enabled", "community_min_size", "synthesis_enabled",
+		"synthesis_max_members", "synthesis_top_n",
+	} {
+		if _, ok := findOrigin(t, origins, key); !ok {
+			t.Errorf("graph section lacks %q", key)
+		}
+	}
+	if o, _ := findOrigin(t, origins, "synthesis_enabled"); o != OriginDefault {
+		t.Errorf("synthesis_enabled origin without file: got %q, want %q", o, OriginDefault)
+	}
+
+	path := writeTempTOML(t, "[graph]\nsynthesis_enabled = true\n")
+	_, origins, err = LoadWithOrigins(path)
+	if err != nil {
+		t.Fatalf("LoadWithOrigins (file): %v", err)
+	}
+	if o, _ := findOrigin(t, origins, "synthesis_enabled"); o != OriginFile {
+		t.Errorf("synthesis_enabled origin with file: got %q, want %q", o, OriginFile)
 	}
 }
 
