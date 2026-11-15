@@ -1160,12 +1160,47 @@ func (svc *SDDService) SpecList(ctx context.Context, req model.SpecListRequest) 
 		return model.SpecListResponse{}, fmt.Errorf("service: spec list: %w", err)
 	}
 
-	frozen, err := svc.freezeIndex(ctx, specs)
+	// SPEC-186: an unfiltered, unwindowed listing (status, `mneme spec
+	// list`) already holds the whole project, so specAges reuses it instead
+	// of reading the specs table a second time. specAges also decides the
+	// freezes, once, over the whole project: SpecList takes its page's
+	// entries from that map rather than calling freezeIndex again.
+	pageIsComplete := req.Status == "" && limit <= 0
+	ages, report, frozenAll, err := svc.specAges(ctx, req.Project, specs, unreadable, pageIsComplete)
 	if err != nil {
 		return model.SpecListResponse{}, fmt.Errorf("service: spec list: %w", err)
 	}
 
-	return model.SpecListResponse{Specs: specs, Total: total, Frozen: frozen, Unreadable: unreadable}, nil
+	pageAges := make(map[string]model.SpecAge, len(specs))
+	var frozen map[string]model.SpecFreeze
+	for _, spec := range specs {
+		pageAges[spec.ID] = ages[spec.ID]
+		freeze, ok := frozenAll[spec.ID]
+		if !ok {
+			continue
+		}
+		if frozen == nil {
+			frozen = make(map[string]model.SpecFreeze, len(specs))
+		}
+		frozen[spec.ID] = freeze
+	}
+
+	staleCount := 0
+	for _, stale := range report.Specs {
+		if req.Status == "" || stale.Status == req.Status {
+			staleCount++
+		}
+	}
+
+	return model.SpecListResponse{
+		Specs:      specs,
+		Total:      total,
+		Frozen:     frozen,
+		Unreadable: unreadable,
+		Ages:       pageAges,
+		Stale:      report,
+		StaleCount: staleCount,
+	}, nil
 }
 
 // SpecHistory returns the full state transition history for a spec.

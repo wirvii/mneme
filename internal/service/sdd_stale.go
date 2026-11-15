@@ -1,6 +1,8 @@
 package service
 
 import (
+	"context"
+	"fmt"
 	"sort"
 	"time"
 
@@ -73,4 +75,54 @@ func (svc *SDDService) staleAfterDays() int {
 		return config.DefaultStaleAfterDays
 	}
 	return svc.config.Spec.StaleAfterDays
+}
+
+// specAges classifies every spec of project (SPEC-186 §4, amended by E2).
+// When pageIsComplete is true, page already holds the project's full,
+// unwindowed spec list and no second read of the specs table happens;
+// otherwise page is ignored and the full list is read here. The unreadable
+// relation of whichever list was classified is counted into
+// StaleReport.UnreadableCount: SPEC-133 D2 made it a return value so every
+// caller has to do something visible with it.
+//
+// ages and frozen cover the whole project, not the page. Cost: at most one
+// read of specs, one of spec_history and one of backlog_items. Read-only:
+// it never writes.
+func (svc *SDDService) specAges(ctx context.Context, project string,
+	page []*model.Spec, pageUnreadable []model.UnreadableRow, pageIsComplete bool,
+) (ages map[string]model.SpecAge, report model.StaleReport, frozen map[string]model.SpecFreeze, err error) {
+	all, unreadable := page, pageUnreadable
+	if !pageIsComplete {
+		all, _, unreadable, err = svc.store.ListSpecs(ctx, project, "", 0)
+		if err != nil {
+			return nil, model.StaleReport{}, nil, fmt.Errorf("service: spec ages: %w", err)
+		}
+	}
+
+	lastHistory, err := svc.store.LatestSpecHistoryAt(ctx, project)
+	if err != nil {
+		return nil, model.StaleReport{}, nil, fmt.Errorf("service: spec ages: %w", err)
+	}
+
+	frozen, err = svc.freezeIndex(ctx, all)
+	if err != nil {
+		return nil, model.StaleReport{}, nil, fmt.Errorf("service: spec ages: %w", err)
+	}
+
+	ages, report = classifyStaleness(all, lastHistory, frozen, svc.now(), svc.staleAfterDays())
+	report.UnreadableCount = len(unreadable)
+	return ages, report, frozen, nil
+}
+
+// StaleSpecs reports every open spec of project that has not moved for more
+// than [spec] stale_after_days (SPEC-186), for the session-start hook. It is
+// SpecList's whole-project report, so the hook and the listings can never
+// disagree. project == "" means the service's own project. Read-only: it
+// never writes (SPEC-186 D3).
+func (svc *SDDService) StaleSpecs(ctx context.Context, project string) (model.StaleReport, error) {
+	resp, err := svc.SpecList(ctx, model.SpecListRequest{Project: project})
+	if err != nil {
+		return model.StaleReport{}, fmt.Errorf("service: stale specs: %w", err)
+	}
+	return resp.Stale, nil
 }

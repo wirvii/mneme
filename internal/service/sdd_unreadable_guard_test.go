@@ -31,7 +31,7 @@ import (
 
 // sddUnreadableRepoRoot returns the absolute path of the mneme repository
 // root, derived from this test file's own location (two levels up from
-// internal/service) — the same technique sddGoPath/sddImportGoPath use for
+// internal/service) — the same technique sddGuardedFiles/sddImportGoPath use for
 // a single file, widened here to a whole-tree walk.
 func sddUnreadableRepoRoot(t *testing.T) string {
 	t.Helper()
