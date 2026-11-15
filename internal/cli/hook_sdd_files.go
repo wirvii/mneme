@@ -67,7 +67,7 @@ func checkSDDFilesGuard(input hookPreToolInput, identity CallerIdentity, errW io
 	if identity.IsSubagent {
 		caller = callerSubagent
 	}
-	appendGuardDenial(input, identity, caller, d.Target, sddFilesDeniedReason)
+	appendGuardDenial(input, identity, nil, caller, d.Target, sddFilesDeniedReason)
 	return true
 }
 

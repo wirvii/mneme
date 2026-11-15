@@ -1695,6 +1695,25 @@ func printLifecycleCommandBlock(w io.Writer, command string) {
 // SPEC-179 adds the very first guard (checkSDDFilesGuard): any write by any
 // agent into .mneme/sdd, through a file tool, Bash or apply_patch, is denied
 // with exit 2 before every guard below, whatever the caller's identity.
+// SPEC-185 layer A (checkDataDirGuard) follows it: a subagent, with a resolved
+// role or not, never writes by hand under mneme's data, workflow or config
+// directories; only the mneme binary is exempt.
+//
+// The order of the guards (SPEC-185 §1):
+//
+//  1. decode stdin (fail-open);
+//  2. resolveIdentity;
+//  3. checkSDDFilesGuard (SPEC-179, any caller);
+//  4. checkDataDirGuard (SPEC-185 layer A, any subagent);
+//  5. lifecycleTools for MCP calls (SPEC-087 D5, subagent);
+//  6. EvaluateLifecycleCommand for Bash (SPEC-175, subagent);
+//  7. checkSpecDocKindScope (SPEC-181 D4);
+//  8. checkTaskSectionScope (SPEC-170 D6);
+//  9. the delegationTools filter;
+//  10. cwd (fail-open);
+//  11. unresolved role: warn and allow (SPEC-086 D2);
+//  12. delegation, containment and the trivial inline grant;
+//  13. exit 0.
 //
 // SPEC-087 D5 adds a guard ahead of the delegation machinery: a
 // subagent calling a lifecycleTools MCP tool (spec_advance, spec_quick,
@@ -1738,6 +1757,17 @@ func runHookEnforceDelegation(r io.Reader, errW io.Writer) error {
 	// unresolved-role short-circuit, the whitelist (which allows .mneme/**), the
 	// trivial-inline grant (SPEC-171) and area containment (SPEC-086).
 	if checkSDDFilesGuard(input, identity, errW) {
+		//nolint:gocritic // os.Exit(2) is the documented hook exit code for rejection
+		os.Exit(2)
+		return nil
+	}
+
+	// SPEC-185 layer A: no subagent writes by hand under mneme's own data (the
+	// data directory, the workflow directory, the folder of config.toml). It
+	// needs only identity.IsSubagent, so it runs before the delegationTools
+	// filter (to see apply_patch), the whitelist (which allows /.mneme/) and
+	// the unresolved-role short-circuit, which it also covers.
+	if checkDataDirGuard(input, identity, errW) {
 		//nolint:gocritic // os.Exit(2) is the documented hook exit code for rejection
 		os.Exit(2)
 		return nil
@@ -2131,18 +2161,23 @@ func logLifecycleCommandDeniedEvent(input hookPreToolInput, identity CallerIdent
 // denial events: it resolves config, cwd and project itself and appends one
 // block event with the given target and reason.
 func appendLifecycleDenial(input hookPreToolInput, identity CallerIdentity, target, reason string) {
-	appendGuardDenial(input, identity, "subagent", target, reason)
+	appendGuardDenial(input, identity, nil, callerSubagent, target, reason)
 }
 
 // appendGuardDenial writes one best-effort block event to the project's
 // enforcelog on behalf of the given caller ("orchestrator" or "subagent"). It is
-// the writer behind the lifecycle denials (always a subagent) and the
-// .mneme/sdd guard (SPEC-179, any caller). A failure to log never changes the
-// hook's exit code.
-func appendGuardDenial(input hookPreToolInput, identity CallerIdentity, caller, target, reason string) {
-	cfg, err := config.Load(config.DefaultPath())
-	if err != nil {
-		return
+// the writer behind the lifecycle denials (always a subagent), the .mneme/sdd
+// guard (SPEC-179, any caller) and the data-directory guard (SPEC-185 layer A).
+// cfg is the configuration the caller already loaded, or nil to load it here:
+// layer A passes its own so config.toml is not read twice. A failure to log
+// never changes the hook's exit code.
+func appendGuardDenial(input hookPreToolInput, identity CallerIdentity, cfg *config.Config, caller, target, reason string) {
+	if cfg == nil {
+		loaded, err := config.Load(config.DefaultPath())
+		if err != nil {
+			return
+		}
+		cfg = loaded
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
