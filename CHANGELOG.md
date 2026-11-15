@@ -6,6 +6,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- SPEC-182: the `entrega` section of `tarea.md` carries a delivery contract
+  block, a small TOML document between `<!-- mneme:entrega:contrato:start -->`
+  and `<!-- mneme:entrega:contrato:end -->`: one of four states (`hecho`,
+  `hecho_con_dudas`, `falta_contexto`, `bloqueado`), `arbol` (the commit the
+  checks ran on), one `[[evidencia]]` per verification command with its exit
+  code and an output excerpt, `[[prueba_en_rojo]]` for every existing test that
+  went red, and `riesgo`. `spec_doc_write` validates it by shape before
+  writing (it never runs the commands): an invalid block is refused and the
+  file is left untouched; a missing block is refused only for a standard spec
+  in implementing. Two new `-32602` errors: `ErrInvalidDeliveryContract`,
+  `ErrDeliveryContractMissing`. `spec_status` and `mneme spec status` gain
+  `delivery_contract`, `delivery_state` and `delivery_detail` (an `Entrega:`
+  line) from implementing on. No transition checks the block. New leaf
+  package `internal/delivery` and `SDDService.DeliveryCheck` for the stop
+  hooks of SPEC-183. Layer 1 v8: backend, frontend and bug-hunter gain the
+  `delivery-contract` section; new `mneme-flow` reference
+  `references/entrega.md`; `review-brief` tells the orchestrator how to read
+  the delivery state and the qa-tester to check that `arbol` lies inside the
+  review range and never to run a `comando` from the block. Run
+  `mneme subagents regen --all` after updating.
+
 ## [v1.51.0] — 2026-11-10 — standard specs get a fresh-context review before approval and before implementation
 
 ### Added

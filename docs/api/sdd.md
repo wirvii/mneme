@@ -271,7 +271,9 @@ Get the full status of a spec including history and pushbacks.
     "resolution": "Use service accounts", "resolved": true, "created_at": "2026-04-30T13:00:00Z"}],
   "frozen": {"state": "archived", "backlog_id": "BL-001", "reason": "Superseded by BL-207"},
   "review_range": {"available": true, "from": "abc123...", "from_kind": "base",
-    "to": "9a3c1234...", "notice": "primera pasada: revisar desde el commit base abc12345 hasta el extremo entregado 9a3c1234."}
+    "to": "9a3c1234...", "notice": "primera pasada: revisar desde el commit base abc12345 hasta el extremo entregado 9a3c1234."},
+  "delivery_contract": "valid",
+  "delivery_state": "hecho_con_dudas"
 }
 ```
 
@@ -289,6 +291,18 @@ absent (not `null`) in every other status, so a response outside `qa` stays
 byte-identical to one from before this field existed. See "Review frontier
 and review range" below `spec_advance` for its full shape and the four
 states it can be in.
+
+**`delivery_contract`/`delivery_state`/`delivery_detail` (SPEC-182) are
+present ONLY when `tarea.md` exists and `spec.status` is implementing, qa,
+audit or done** — absent (not `null`) otherwise, so a spec still being
+designed, or one from before `tarea.md`, answers byte-identical to before.
+`delivery_contract` is `valid` (the `entrega` section holds a delivery
+contract block that passes every rule), `missing` (no block in the section)
+or `invalid` (the block, or `tarea.md` itself, was edited by hand into a
+shape mneme cannot read). `delivery_state` is the block's `estado`
+(`hecho`, `hecho_con_dudas`, `falta_contexto` or `bloqueado`) and appears
+only with `valid`; `delivery_detail` is the parse error and appears only
+with `invalid`. `mneme spec status` prints the same as an `Entrega:` line.
 
 **Errors:** `-32000` not found, `-32602` missing `id`.
 
@@ -501,8 +515,27 @@ writes its report with `section: revision`. The response gains
 serialises section writes is per mneme process; two processes writing in the
 same instant can lose one write (the real flow is sequential).
 
+**`kind = "task"`, `section = "entrega"` carries the delivery contract
+(SPEC-182).** Besides free prose, the section holds one TOML block between the
+lines `<!-- mneme:entrega:contrato:start -->` and
+`<!-- mneme:entrega:contrato:end -->`: `schema_version = 1`, an `estado`
+(`hecho`, `hecho_con_dudas`, `falta_contexto`, `bloqueado`), `arbol` (the
+commit the checks ran on), one `[[evidencia]]` per verification command
+(`comando`, `exit_code`, `salida`, optional `criterio`), any
+`[[prueba_en_rojo]]` and `riesgo` (`"none"` or `{ item = 1..6, razon }`). The
+block is validated by shape before anything is written (`internal/delivery`);
+mneme never runs the commands or compares their output. An invalid block is
+refused with `ErrInvalidDeliveryContract` and `tarea.md` is left
+byte-identical. A missing block is refused with `ErrDeliveryContractMissing`
+only for a standard spec in implementing; anywhere else it is written and the
+response says `"contract": "missing"`. A valid block answers
+`"contract": "valid"` and `"delivery_state"` with its `estado`; writes of
+every other kind and section carry neither key. No transition checks the
+block. Format and rules: `references/entrega.md` of the `mneme-flow` skill.
+
 Errors (all `-32602`): `ErrTaskSectionRequired`, `ErrUnknownTaskSection`,
-`ErrSectionNotApplicable`, `ErrTaskDocMalformed`.
+`ErrSectionNotApplicable`, `ErrTaskDocMalformed`, `ErrInvalidDeliveryContract`,
+`ErrDeliveryContractMissing`.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -515,7 +548,10 @@ Errors (all `-32602`): `ErrTaskSectionRequired`, `ErrUnknownTaskSection`,
 **Errors:** `-32602` unknown `kind`, missing fields, or (for `kind =
 "criteria"`, `"review-spec"` or `"review-plan"`) an invalid document
 (`ErrInvalidReviewReport` for the reports, which are parsed for their moment
-before anything is written). `-32000` spec not found.
+before anything is written), or (for `kind = "task"`, `section = "entrega"`)
+an invalid or required-but-missing delivery contract block
+(`ErrInvalidDeliveryContract`, `ErrDeliveryContractMissing`). `-32000` spec
+not found.
 
 ### spec_list
 
