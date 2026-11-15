@@ -344,6 +344,14 @@ func TestStaleNoticeLine(t *testing.T) {
 // between the session block and the context block, and nothing is written
 // (stdout or stderr) when nothing is stale or the threshold is 0.
 func TestSessionStart_Stale(t *testing.T) {
+	// flagProject is package state that a cobra run earlier in this binary
+	// (runBacklogCmd passes --project) leaves set. Pin it to "" so both the
+	// fixture and the hook resolve the slug from the non-git root, as the
+	// global.db path below assumes; same save/restore as sdd_repodir_test.go.
+	oldProject := flagProject
+	flagProject = ""
+	t.Cleanup(func() { flagProject = oldProject })
+
 	// seed creates 20 specs in root/dataDir's database (a non-git TempDir
 	// resolves to slug "", so global.db) and, when age is true, ages them.
 	seed := func(t *testing.T, root, dataDir string, age bool) {
