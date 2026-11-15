@@ -8,11 +8,12 @@ import (
 	"testing"
 )
 
-// TestLeafPackage_OnlyImportsStdlibAndShell guards AC14: internal/enforcement
-// must import only the standard library plus internal/shell — no
-// config/db/project/service, so it never gains an os.Exit, a database
-// handle, or any other I/O dependency by accident.
-func TestLeafPackage_OnlyImportsStdlibAndShell(t *testing.T) {
+// TestLeafPackage_OnlyImportsStdlibAndSiblingLeaves guards AC14:
+// internal/enforcement must import only the standard library plus the sibling
+// leaves internal/shell (the tokenizer) and internal/risk (the risk items and
+// their path patterns, SPEC-185) — no config/db/project/service, so it never
+// gains an os.Exit, a database handle, or any other I/O dependency by accident.
+func TestLeafPackage_OnlyImportsStdlibAndSiblingLeaves(t *testing.T) {
 	_, thisFile, _, ok := runtime.Caller(0)
 	if !ok {
 		t.Fatal("runtime.Caller failed")
@@ -24,10 +25,13 @@ func TestLeafPackage_OnlyImportsStdlibAndShell(t *testing.T) {
 		t.Fatalf("build.ImportDir: %v", err)
 	}
 
-	const allowedNonStdlib = "github.com/wirvii/mneme/internal/shell"
+	allowedNonStdlib := map[string]bool{
+		"github.com/wirvii/mneme/internal/shell": true,
+		"github.com/wirvii/mneme/internal/risk":  true,
+	}
 
 	for _, imp := range append(append([]string{}, pkg.Imports...), pkg.TestImports...) {
-		if imp == allowedNonStdlib {
+		if allowedNonStdlib[imp] {
 			continue
 		}
 		if !strings.Contains(imp, ".") {
@@ -43,6 +47,6 @@ func TestLeafPackage_OnlyImportsStdlibAndShell(t *testing.T) {
 				continue
 			}
 		}
-		t.Errorf("internal/enforcement imports %q — leaf package must import only stdlib + %s", imp, allowedNonStdlib)
+		t.Errorf("internal/enforcement imports %q — leaf package must import only stdlib + internal/shell + internal/risk", imp)
 	}
 }
