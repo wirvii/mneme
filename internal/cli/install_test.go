@@ -120,3 +120,82 @@ func TestInstall_WritesTrivialInlineDefault(t *testing.T) {
 		}
 	})
 }
+
+// TestInstall_WritesSynthesisEnabledDefault covers SPEC-187 C4 (install
+// part) with a real `mneme install claude-code` in the same sandbox as
+// SPEC-184: the new default of [graph] synthesis_enabled is written into the
+// person's config.toml with its comment, their own comment survives, a file
+// that already declares both keys stays byte for byte, and --dry-run writes
+// nothing.
+func TestInstall_WritesSynthesisEnabledDefault(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("MNEME_DELEGATION_TRIVIAL_INLINE", "")
+	t.Setenv("PATH", t.TempDir())
+	chdirTemp(t, t.TempDir())
+	gitident.Reset()
+	t.Cleanup(gitident.Reset)
+
+	path := filepath.Join(home, ".mneme", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("dry_run_writes_nothing", func(t *testing.T) {
+		out, _ := runInstallSandboxed(t, "claude-code", "--dry-run")
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Errorf("--dry-run created %s (stat err=%v)", path, err)
+		}
+		if strings.Contains(out, "synthesis_enabled") {
+			t.Errorf("--dry-run printed the declaration:\n%s", out)
+		}
+	})
+
+	t.Run("missing_key_written", func(t *testing.T) {
+		if err := os.WriteFile(path, []byte("# mi nota\n[search]\ndefault_limit = 7\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		out, _ := runInstallSandboxed(t, "claude-code")
+		okLine := "  [ok]   Config: synthesis_enabled = false written to " + path + " (set true to re-enable automatic syntheses)"
+		if n := countLinesWith(out, okLine); n != 1 {
+			t.Errorf("found %d [ok] lines %q, want exactly 1:\n%s", n, okLine, out)
+		}
+		if !strings.Contains(out, "Config: synthesis_enabled = false written to") {
+			t.Errorf("output lacks the declaration line:\n%s", out)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := string(data)
+		if !strings.Contains(got, "# mi nota") {
+			t.Errorf("the person's comment was lost:\n%s", got)
+		}
+		graph := strings.Index(got, "[graph]")
+		key := strings.Index(got, "synthesis_enabled = false")
+		comment := strings.Index(got, "# SPEC-187: automatic syntheses are off by default; set true to generate them again")
+		if graph < 0 || key < graph || comment < graph || comment > key {
+			t.Errorf("want [graph], then the SPEC-187 comment, then the key:\n%s", got)
+		}
+	})
+
+	t.Run("declared_true_untouched", func(t *testing.T) {
+		body := []byte("[delegation]\norchestrator_trivial_inline = true\n\n[graph]\nsynthesis_enabled = true\n")
+		if err := os.WriteFile(path, body, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		out, _ := runInstallSandboxed(t, "claude-code")
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(data, body) {
+			t.Errorf("config.toml changed:\n%s", data)
+		}
+		infoLine := "  [info] synthesis_enabled is declared true in " + path + "; the new default does not apply here"
+		if n := countLinesWith(out, infoLine); n != 1 {
+			t.Errorf("found %d [info] lines, want exactly 1:\n%s", n, out)
+		}
+	})
+}

@@ -198,6 +198,7 @@ produces the same result without clobbering existing configuration.`,
 
 			install.RunInstallSteps(steps, progress)
 			declareTrivialInlineDefault(config.DefaultPath())
+			declareSynthesisDefault(config.DefaultPath())
 
 			fmt.Fprintln(os.Stdout, "")
 			fmt.Fprintf(os.Stdout, "Done. Restart %s for changes to take effect.\n", agent.Name)
@@ -255,6 +256,39 @@ func declareTrivialInlineDefault(path string) {
 	}
 	if !cfg.Delegation.OrchestratorTrivialInline {
 		fmt.Fprintf(os.Stdout, "  [info] orchestrator_trivial_inline is declared false in %s; the new default does not apply here\n", path)
+	}
+}
+
+// synthesisEnabledComment is the comment `mneme install` writes above
+// synthesis_enabled (SPEC-187), so whoever opens config.toml learns why
+// syntheses stopped and how to bring them back.
+const synthesisEnabledComment = "SPEC-187: automatic syntheses are off by default; set true to generate them again"
+
+// declareSynthesisDefault leaves `synthesis_enabled = false` written under
+// [graph] in config.toml (SPEC-187 DS6), the second declaration after
+// SPEC-184's, through the same EnsureDeclared so the person's own text is
+// kept. When the key is already declared true (an old `mneme model set`
+// wrote it on some machines) it says the new default does not apply there.
+// It never rewrites what the person wrote, and a failure is a [warn] that
+// never fails the install. The key has no environment variable, so the
+// loaded value is the file's.
+func declareSynthesisDefault(path string) {
+	written, err := config.EnsureDeclared(path, "graph", "synthesis_enabled", "false", synthesisEnabledComment)
+	switch {
+	case err != nil:
+		fmt.Fprintf(os.Stdout, "  [warn] could not declare synthesis_enabled in %s: %v\n", path, err)
+		return
+	case written:
+		fmt.Fprintf(os.Stdout, "  [ok]   Config: synthesis_enabled = false written to %s (set true to re-enable automatic syntheses)\n", path)
+		return
+	}
+	cfg, loadErr := config.Load(path)
+	if loadErr != nil {
+		fmt.Fprintf(os.Stdout, "  [warn] could not read %s: %v\n", path, loadErr)
+		return
+	}
+	if cfg.Graph.SynthesisEnabled {
+		fmt.Fprintf(os.Stdout, "  [info] synthesis_enabled is declared true in %s; the new default does not apply here\n", path)
 	}
 }
 
