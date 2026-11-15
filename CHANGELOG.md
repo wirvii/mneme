@@ -94,8 +94,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   output (at most 14336 bytes over a deterministic 200-memory base) and the
   `tools/list` payload (26576 bytes, 31 tools).
 
+- SPEC-185 layer A: no subagent (with a resolved role or not) writes by hand
+  under mneme's own data — the data directory, the workflow directory with
+  every `tarea.md`, and the folder of `config.toml` — through a file tool, Bash
+  (reads included: Bash does not tell readers from writers) or `apply_patch`.
+  Only the `mneme` binary is exempt, and not after a `cd` into those
+  directories. Enforcelog reason `data_dir_write_denied`. Practice change:
+  the `sqlite3 .backup` copy of the real database that `mneme subagents
+  regen|doctor` tests need is now made by the orchestrator.
+- SPEC-185 layer B: `mneme hook enforce-delegation` denies an implementer the
+  writes on risk paths of items 1, 2 and 5 (migrations, secrets, CI, deploy,
+  manifests and lockfiles), denies every subagent with Bash those writes from
+  the terminal plus the commands that add, remove or update a named dependency
+  and the removal or emptying of a test file, and watches test files for an
+  added skip or focus marker or the loss of every test function (item 6). The
+  orchestrator is judged on unowned and inline-granted paths. The way out is a
+  `Risk: item N (reason)` line in the `plan` or `diseno` section of an open
+  standard spec's `tarea.md`, bounded by its scope, or a scope that covers the
+  path (items 1, 2, 5 only). Installing from the lockfile (`npm ci`, `npm
+  install`, `pip install -r`, `go mod tidy`) is never denied.
+- SPEC-185: `enforcelog.Event` gains `risk_item`, `spec`, `source` and
+  `detail`; new reasons `denied_risk`, `allowed_by_declaration`,
+  `risk_archetype_unresolved`, `risk_lookup_failed`. New exported
+  `service.TaskSectionBody`; `internal/enforcement` now imports `internal/risk`.
+
 ### Changed
 
+- SPEC-185: the `.mneme/sdd` guard also rejects `git rm` (with or without
+  `--cached`) on that tree.
 - SPEC-188: `internal/gitrepo` runs every `git diff` through one path
   (`rawDiff`). As a result `ChangedLines` and `NumStat`, used by the trivial
   lane auditor, no longer obey the user's global attributes file

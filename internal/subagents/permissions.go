@@ -171,8 +171,16 @@ var specReviewerTools = []string{
 }
 
 // bypassPermissions is the frontmatter permissionMode value implementer
-// roles carry so autonomous runs are not interrupted by per-tool prompts.
-// The real capability barrier is the tools: allowlist above, not this mode.
+// roles (and qa-tester) carry so autonomous runs are not interrupted by
+// per-tool prompts. The real capability barrier is the tools: allowlist
+// above, not this mode.
+//
+// It is kept on purpose (SPEC-185 D5). Without bypassPermissions every Bash call would prompt for approval; the hook is the layer that denies.
+// The factory would otherwise stop being autonomous, and Claude Code still
+// runs the PreToolUse hook in this mode: `mneme hook enforce-delegation` rejects a subagent's
+// hand writes under mneme's data and the writes on risk paths, dependency
+// changes and test removals no open standard spec declares (SPEC-185 layers
+// A and B, internal/cli/hook_data_dir.go and hook_risk.go).
 const bypassPermissions = "bypassPermissions"
 
 // PermissionTable is the Go-authored, constant role -> Permission map. It

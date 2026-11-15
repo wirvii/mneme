@@ -738,7 +738,7 @@ flags.
 | `session-start` | Observational | Hydrates context with `mem_context` |
 | `session-end` | Retired no-op (SPEC-106) | Emits `{}`; no longer registered by `mneme install`. Never persisted anything — kept only so hosts with a pre-existing registration exit cleanly |
 | `pre-tool-use` | Enforcement | Matches rules against tool+path, blocks on severity=block |
-| `enforce-delegation` | Enforcement | Blocks `Edit`/`Write`/`MultiEdit` on protected paths |
+| `enforce-delegation` | Enforcement | Blocks `Edit`/`Write`/`MultiEdit`/`NotebookEdit`/Bash on protected paths. Guards in order: `.mneme/sdd` (SPEC-179, any caller), mneme's data (SPEC-185 A, any subagent), lifecycle tools and commands (SPEC-087, SPEC-175), document kinds and task sections, delegation/containment/trivial inline, then risk paths, dependency commands and the test watch (SPEC-185 B). Decision logic in the leaf `internal/enforcement`, which imports only `internal/shell` and `internal/risk` |
 | `stop` | Enforcement (decision JSON) | SPEC-183, Claude Code only: reminds the orchestrator once per work window to call `mem_session_end` (`{"decision":"block","reason":...}`, exit 0) |
 | `subagent-stop` | Enforcement (decision JSON) | SPEC-183, Claude Code only: reminds an implementer once per spec to write its delivery contract block |
 

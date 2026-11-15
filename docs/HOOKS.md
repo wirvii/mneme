@@ -1013,6 +1013,179 @@ Writing through the real target of a `.mneme` symlink is seen only if the
 resolved form still contains `.mneme/sdd`. A conflict in these files is resolved
 by a person, in an editor or with `mneme sdd import`.
 
+### Datos de mneme (SPEC-185, capa A)
+
+No subagent (with a resolved role or not, Claude Code or Codex) writes by hand
+under mneme's own data. The guard is `checkDataDirGuard`
+(`internal/cli/hook_data_dir.go`, pure decision in
+`internal/enforcement/datadir.go`) and runs right after the `.mneme/sdd` guard,
+before the lifecycle guards, the `delegationTools` filter, the whitelist (which
+allows `/.mneme/`) and the unresolved-role short-circuit. The orchestrator is not
+restricted.
+
+**Roots.** The data directory (`[storage] data_dir`, `MNEME_DATA_DIR`), the
+workflow directory (`[workflow] dir`, `MNEME_WORKFLOW_DIR`) and the folder of
+`config.toml` (always `~/.mneme`), deduplicated and resolved through symlinks.
+They cover `projects/<slug>.db` and its `-wal`/`-shm`, `global.db`, every
+`tarea.md`, `config.toml` and the enforcelog. If `config.toml` does not load, the
+defaults plus the two variables give the roots: the guard never switches off.
+
+**Rules.** File tools by their path; `apply_patch` by its file headers (also from
+a terminal here-document). Bash, one level into `bash -c`:
+
+- (a) a write redirection whose target is under a root (form: the operator);
+- (b) any argument under a root, whatever the program (`sqlite3`, `cat`, `cp`,
+  `mv`, `python`...: Bash does not tell readers from writers, and a subagent
+  reads these files with `Read`), except `mneme`/`mneme.exe`, `go run
+  ./cmd/mneme`, and `cd`/`pushd` (form: the program);
+- (c) `cd`/`pushd` into a root when the same line runs any other command, the
+  `mneme` exemption included: `cd ~/.mneme && mneme status` is rejected; a bare
+  `cd ~/.mneme` is not.
+
+Allowed: `mneme spec status SPEC-1`, `mneme --data-dir /tmp/x spec list`,
+`HOME=/tmp/x mneme status`, `ls ~/.mnemex`. A command that does not parse is
+allowed. Consequence for mneme's own tests: the `sqlite3 .backup` copy of the
+real database that `mneme subagents regen|doctor` tests need is made by the
+orchestrator, who hands the sandbox path to the subagent.
+
+Message (`%s` are the path and the form):
+
+```
+⛔ mneme: un subagente no escribe a mano en los datos de mneme: ruta %s, con %s.
+Ahí viven las specs, la memoria, las bases de datos, la configuración y el
+registro del hook; un subagente los cambia solo con las herramientas MCP
+(mem_save, spec_doc_write, spec_pushback...), que validan y registran quién
+escribe. Si necesitas otro cambio ahí, repórtalo al orquestador.
+```
+
+Enforcelog: `Reason: "data_dir_write_denied"`, `Caller: "subagent"`, never a
+discovery memory.
+
+### Denegación por riesgo y vigilancia de pruebas (SPEC-185, capa B)
+
+`checkRiskGuard` (`internal/cli/hook_risk.go`, pure decision in
+`internal/enforcement/risk.go` and `testwatch.go`) runs after delegation,
+containment and the trivial inline grant allowed the call. Subjects: an
+implementer (backend, frontend, bug-hunter, custom roles built on them) on
+`Write`/`Edit`/`MultiEdit`/`NotebookEdit`; any subagent whose archetype carries
+`Bash` (implementers, `qa-tester`, `diagnostician`) on Bash; and the orchestrator
+on any non-whitelisted write that reached this step (a path with no owner, or one
+the inline grant let through, where any match blocks because a trivial spec
+declares nothing). A subagent's writes under `/tmp`, `/private/tmp`, the Windows
+`TempDir` or mneme's data are not judged; the rest of the whitelist does not
+exempt a subagent (a worktree under `.claude/worktrees/` is judged).
+
+**Paths (items 1, 2, 5).** The shared table of `mneme-flow/references/risk.md`
+(`risk.DefaultTable()` plus `[lane.risk_globs]`), matched on the path relative to
+the payload's `cwd`.
+
+**Bash write forms.** Redirections (`>`, `>>`, `>|`, `&>`...), `tee`, the
+destination of `cp`/`mv`/`ln`/`install`, `dd of=`, `touch`, `truncate`, `rm`,
+`rmdir`, `git rm`, `sed -i`/`perl -i` (in practice already hard-blocked by the
+delegation step), and `python -c`/`node -e` with a write signal; one level into
+`bash -c`, behind `env`, `command`, `exec`, `nohup`, `timeout`.
+
+**Dependency commands (item 5).** Only those that add, remove or update a named
+dependency: `go get <module>`, `go mod edit -require|-droprequire|-replace`,
+`npm|pnpm|yarn|bun add|remove|uninstall <package>`, `npm|pnpm|bun install|i
+<package>`, `npm|pnpm|yarn|bun|pip update|upgrade`, `pip|pip3 install|uninstall
+<package>`, `cargo add|remove <crate>`, `cargo update`, `poetry add|remove
+<package>`, `poetry update`. Never: `npm|pnpm|yarn|bun ci`, `install` with no
+package, `pip install -r <file>`, `pip install -e .`, `pip install .`, `go mod
+download|verify|tidy`, `go build|test|vet`, `cargo install|uninstall`, `poetry
+install`, and any global install (`-g`/`--global`). The subcommand is the first
+word that is not a flag, after skipping each manager's flags with a value (pip
+`-r`, `-c`, `-e`, `-i`, `--index-url`, `--target`...; npm `--prefix`,
+`--registry`, `-w`, `--omit`; pnpm `-C`, `--filter`, `-F`; yarn `--cwd`; bun
+`--cwd`, `--filter`; cargo `--registry`, `--manifest-path`; poetry `--source`,
+`-C`); `yarn workspace <name> add p` is understood. Limit: a flag with a value
+not in those lists may have its value read as a package (a false positive); the
+remedy is declaring item 5 in the spec's plan, or widening the list in a
+separate change. A dependency command is logged with the manifest it rewrites
+(`go.mod`, `package.json`) or `<dependency>` as target, and item 5 once.
+
+**Test watch (item 6).** A text heuristic, never semantics:
+
+| Language | Test file | Markers (a count that grows) | Test function |
+|---|---|---|---|
+| Go | `*_test.go` | `t.Skip(`, `t.Skipf(`, `t.SkipNow(`, `b.Skip(`, `b.Skipf(` | `func Test…(`, `Benchmark`, `Example`, `Fuzz` |
+| JS/TS | `*.test.<ext>`, `*.spec.<ext>`, any file under `__tests__/` | `.skip(`, `.only(`, `xit(`, `xtest(`, `xdescribe(`, `fit(`, `fdescribe(` (not inside `exit(` or `benefit(`) | `it(`, `test(`, `describe(` |
+| Python | `test_*.py`, `*_test.py` | `@pytest.mark.skip`/`skipif` (once), `@unittest.skip`, `pytest.skip(`, `self.skipTest(` | `def test_` |
+
+Denied: an `Edit`/`Write`/`MultiEdit` that adds a marker (moving one does not) or
+leaves the file with no test function where it had one; a Bash `rm`, `git rm`
+(not `--cached`), `rmdir`, `> file` or `>| file`, and `mv` of a test file to a
+non-test name or out of the tree (absolute, `~`, `$HOME`, `..`; an existing
+directory inside the tree keeps the name, so `mv x_test.go internal/other` is
+fine). Markers in comments or strings count the same: the way out is declaring
+item 6.
+
+**Declarations.** Any spec with `status = implementing`, `lane = standard`, not
+frozen. Per spec: the last `Risk: item N (reason)` line outside code fences in
+`plan`, then `diseno` (bounded by the spec's scope when it has one, except for a
+dependency command), then the scope itself (items 1, 2, 5 for the paths it
+covers; never item 6). No project database, no open standard spec or no
+`tarea.md` means nobody declared, and blocks.
+
+**Messages** (`%s`/`%d` filled with the path, item, title and form):
+
+```
+⛔ mneme: ruta de riesgo para un implementador: %s (ítem %d, %s; con: %s).
+Ninguna spec standard en implementing declara ese riesgo para esta ruta, así que
+este cambio no es tuyo: para y repórtalo al orquestador. La única salida es que
+el orquestador (o el arquitecto) declare "Risk: item %d (razón)" en la sección
+plan (o diseno) de tarea.md de la spec, o que reclasifique o replantee el
+encargo. No busques otra vía de escritura: la denegación es por rol, no por
+herramienta.
+
+⛔ mneme: vigilancia de pruebas: %s %s (ítem 6, No test would catch the regression; con: %s).
+Un subagente no borra ni salta pruebas por su cuenta. Si una prueba está en
+rojo, para y repórtala en tu entrega como prueba en rojo. Si de verdad debe
+borrarse o saltarse, la única salida es que el orquestador (o el arquitecto)
+declare "Risk: item 6 (razón)" en la sección plan (o diseno) de tarea.md de la
+spec.
+
+⛔ mneme: ruta de riesgo sin dueño: %s (ítem %d, %s; con: %s).
+Nadie delega esta ruta, pero tampoco ninguna spec standard en implementing
+declara ese riesgo para ella. Si el cambio es parte del encargo, declara "Risk:
+item %d (razón)" en la sección plan de tarea.md de la spec (spec_doc_write kind
+task section plan) y repite la escritura; si no lo es, abre un ítem de backlog y
+no lo hagas en línea.
+
+⛔ mneme: permiso inline trivial: %s %s.
+En línea solo cabe lo trivial sin riesgo, y una spec trivial no admite declarar
+ninguno. Reclasifica la spec a standard y delega el cambio.
+```
+
+The test-watch detail reads `añade <marker> a`, `deja sin funciones de prueba`,
+`borra` or `vacía`. A message names a tool only when its reader can call it and
+that resolves the block (`TestBlockMessages_NameOnlyResolvingCommands`).
+
+**Enforcelog.** One event per verdict: `denied_risk` (`block`) or
+`allowed_by_declaration` (`allow`), with `risk_item`, `spec`, `source` (`plan`,
+`diseno`, `scope`) and `detail` (the marker, `loses all tests`, `removed`,
+`truncated` or the Bash form); warnings `risk_archetype_unresolved` and
+`risk_lookup_failed` (`allow`). Never a discovery memory.
+
+**Fail-open.** An unresolved role warns at the earlier step and is allowed;
+a role whose archetype the manifest cannot resolve, or declarations that cannot
+be read (a `tarea.md` that is a directory or malformed), allow with a `⚠`
+warning. If the delegation step failed open before reading the manifest (no
+home, `config.toml` that does not load, a zero-byte database), layer B does not
+run.
+
+**Limits.** R8: a subagent whose `cwd` is not the root of its worktree may not
+match the declaring spec's scope, so the write is denied (launch it with `cwd` at
+the worktree root); a repository living under `/tmp` (Linux `t.TempDir()`)
+leaves a subagent's absolute paths exempt, relative ones not. Same limits as
+SPEC-179 for `eval`, variables, `xargs`, `find -exec` and scripts in files.
+
+**Codex parity.** The same hook runs from `~/.codex/hooks.json`. Both layers
+depend on `agent_id`: without it a Codex child looks like the orchestrator
+(identity arrives only from Codex 0.148.0-alpha.19, not verified). Layer A reads
+`apply_patch` headers; layer B does not judge `apply_patch`. The MCP
+`CallerPolicy` covers MCP tools only.
+
 ### Inherent limits (Layer 2 scope)
 
 `mneme hook enforce-delegation` is Layer 2: it stops the **cooperative

@@ -21,7 +21,13 @@
    D2b — `qa-tester`, so its own gates run without a human permission
    prompt on every `Bash` call). It is never, on its own, what makes a role
    an implementer: `IsImplementer` reads the `tools:` allowlist, not this
-   flag (SPEC-087 D1).
+   flag (SPEC-087 D1). It stays on deliberately (SPEC-185 D5):
+   without `bypassPermissions` every Bash call would prompt for approval and the hook is the layer that denies.
+   The factory would otherwise stop being autonomous; Claude Code still runs
+   the `PreToolUse` hook in this mode: `mneme hook
+   enforce-delegation` rejects writes under mneme's data (layer A) and writes
+   on risk paths, dependency changes and test removals (layer B) whatever
+   the permission mode.
 4. All subagents MUST include `mcp__mneme__*` (wildcard) to retain access to
    mneme memory tools (`mem_save`, `mem_search`, `mem_context`, etc.).
 5. The orchestrator (principal) MUST NOT edit source paths directly. The
@@ -357,6 +363,99 @@ files, unlisted interpreters, `git checkout <commit> -- <path>`); the Codex
 resolved by a person. Details, the form table and the literal message:
 `docs/HOOKS.md`.
 
+### Data-directory guard (SPEC-185 A)
+
+No subagent, with a resolved role or not, writes by hand under mneme's own
+data. Three roots, deduplicated (they usually coincide in `~/.mneme`): the data
+directory (`[storage] data_dir`, `MNEME_DATA_DIR`: project databases,
+`global.db`, the enforcelog), the workflow directory (`[workflow] dir`,
+`MNEME_WORKFLOW_DIR`: every `tarea.md`) and the folder of `config.toml`
+(`filepath.Dir(config.DefaultPath())`, always `~/.mneme`). Specs, memory, the
+risk declarations layer B trusts and the hook's own log live there; a subagent
+changes them only through the MCP tools, which validate and record who writes.
+
+The guard (`checkDataDirGuard`, pure decision in
+`internal/enforcement/datadir.go`) runs right after the `.mneme/sdd` guard,
+before the lifecycle guards, the `delegationTools` filter (to see Codex's
+`apply_patch`), the whitelist (which allows `/.mneme/`) and the
+unresolved-role short-circuit, which it also covers. It judges file tools by
+their path, `apply_patch` by its headers, and Bash with three rules, one level
+into `bash -c`: (a) a write redirection under a root; (b) any argument under a
+root, whatever the program (`sqlite3`, `cat`, `cp`, `python`: Bash does not
+tell readers from writers; a subagent reads with `Read`), except `mneme` itself,
+`go run ./cmd/mneme`, and `cd`/`pushd`; (c) `cd`/`pushd` into a root when the
+same line runs any other command, `mneme` included. Paths are normalised like
+the `.mneme/sdd` guard (quotes, `~`, `$HOME`, Windows separators, the cwd,
+symlinks) and compared without regard to case. If `config.toml` does not load,
+the roots come from the defaults with `MNEME_DATA_DIR`/`MNEME_WORKFLOW_DIR`
+applied: the guard never switches itself off. The orchestrator is not
+restricted (it edits `config.toml` as the person's delegate and makes the
+`sqlite3 .backup` copies tests need). Rejections go to the enforcelog
+(`Reason: "data_dir_write_denied"`), never to a discovery memory.
+
+### Risk denial (SPEC-185 B)
+
+`checkRiskGuard` runs as step 13, after delegation, containment and the trivial
+inline grant allowed the call: a call they block already has its message. It
+judges, per write, three subjects:
+
+- an **implementer** (archetype backend, frontend or bug-hunter, custom roles
+  included) on file tools;
+- **any subagent whose archetype carries Bash** (implementers, `qa-tester`,
+  `diagnostician`) on Bash; `architect` and `spec-reviewer` never reach it;
+- the **orchestrator** on any write that is not on its whitelist: a path no
+  implementer owns (the SPEC-068 fallback) or one the trivial inline grant let
+  through.
+
+What it denies: a path that matches items 1, 2 or 5 of the shared table
+(`risk.DefaultTable()` plus `[lane.risk_globs]`, the same list the lane auditor
+detects and the inline grant excludes); a Bash command that adds, removes or
+updates a named dependency (`go get <m>`, `npm install <p>`, `pip install <p>`,
+`cargo add`...; installing from the lockfile — `npm ci`, `npm install` with no
+package, `pip install -r`, `go mod tidy|download|verify` — is not); and item 6,
+the test watch: an edit that adds a skip or focus marker to a test file, or
+leaves it without test functions, and a Bash `rm`, `git rm` (not `--cached`),
+`rmdir`, `> file`, or `mv` of a test file to a non-test name or out of the
+tree.
+
+Which writes are judged is decided **per write**, not by whether the ownership
+bridge was consulted (Dp1c): `EvaluateBash` does consult it for `git rm` and for
+any form with the word `install`, but never for `go get`, `npm add` or `cargo
+add`, so "the bridge was asked" cannot tell a whitelisted write from the rest.
+For the orchestrator the whole whitelist exempts a write (`IsWhitelisted`); for
+a subagent only scratch space (`/tmp`, `/private/tmp`, the Windows `TempDir`)
+and the data-directory roots do (`IsRiskExempt`), because the rest of the
+whitelist would exempt a subagent working in `.claude/worktrees/`. An `mv`
+destination is judged with the cwd: absolute, home-relative or `..` leaves the
+tree; an existing directory receives the file's name.
+
+| Subject | Write | Declaration | Decision | Enforcelog |
+|---|---|---|---|---|
+| Orchestrator, whitelisted | any | — | not judged | — |
+| Orchestrator, unowned path | item 1/2/5 path, dependency command, test harm | declared / not | allow / block (names `spec_doc_write`) | `allowed_by_declaration` / `denied_risk` |
+| Orchestrator, inline grant | item 1/2/5 path or test harm | not declarable | block | `denied_risk` |
+| Subagent, unresolved role | any | — | allow with warning (layer A still applies) | `agent_type_unresolved` |
+| Subagent, archetype not resolvable | any | — | allow with warning | `risk_archetype_unresolved` |
+| Implementer, file tool | item 1/2/5 path or test harm | declared / not | allow / block | idem |
+| Subagent with Bash | write form on a 1/2/5 path, dependency command, test removal | declared / not | allow / block | idem |
+| Any | lockfile installs, reads, scratch, `mv a_test.go b_test.go` | — | allow, no event | — |
+| Any | declarations unreadable (a `tarea.md` that is a directory or malformed, a database without `specs`) | — | allow with warning | `risk_lookup_failed` |
+| Any | no project database, no open standard spec, no `tarea.md` | nobody declared | block | `denied_risk` |
+
+**Where a declaration comes from.** Every spec with `status = implementing`,
+`lane = standard`, not frozen by an archived backlog item; any of them is
+enough. Per spec, in order: the last `Risk: item N (reason)` line outside code
+fences of the `plan` section of its `tarea.md`, then of `diseno` (both written
+only by the architect or the orchestrator), bounded by the spec's scope when it
+has one; then the scope itself, which declares items 1, 2 and 5 for the paths it
+covers but never item 6. A dependency command is never bounded by the scope. The
+delivery section never declares: the implementer writes it. A trivial spec
+declares nothing.
+
+Each verdict is logged with `risk_item`, `spec`, `source` (`plan`, `diseno`,
+`scope`) and `detail` (the marker, `loses all tests`, `removed`, `truncated` or
+the Bash form). Messages and the full form table: `docs/HOOKS.md`.
+
 ### Role-scoped document-kind denial
 
 A sibling rule, `model.SpecDocKindAllows` (consulted by `checkSpecDocKindScope`
@@ -582,7 +681,7 @@ subagents.
 | **Read-only agents minimal** | `architect` and `qa-tester` have no edit tools | Remove `Edit`, `Write`, `MultiEdit`, `NotebookEdit`, `Bash` |
 | **Implementer agents full** | `backend`, `frontend`, `bug-hunter` have the full edit toolset | Add the missing tools |
 | **mcp__mneme__\* present** | Every agent retains mneme memory access | Add `mcp__mneme__*` to the `tools:` line |
-| **No stray bypassPermissions on read-only** | `architect` and `qa-tester` do not set `permissionMode: bypassPermissions` | Remove the line |
+| **No stray bypassPermissions on read-only** | `architect`, `spec-reviewer` and `diagnostician` do not set `permissionMode: bypassPermissions`; `qa-tester` does since SPEC-087 D2b (`permissions.go`), to run its gates unattended | Remove the line from the read-only role |
 | **Hook installed** | `mneme hook enforce-delegation` is registered as a `PreToolUse` hook | Run `mneme install claude-code` |
 | **Hook logs to mneme** | Blocked attempts produce a `discovery` memory | Check stderr for a "log discovery: save failed" warning |
 
@@ -636,24 +735,30 @@ read stdin (PreToolUse JSON payload)
   else emit markdown context → exit 0
 ```
 
-### `enforce-delegation` guard (Layer 2b — orchestrator only, in-process since SPEC-069)
+### `enforce-delegation` guard (Layer 2b — orchestrator and subagents, in-process since SPEC-069)
 
 ```
-read stdin (PreToolUse JSON payload)
-  if agent_id present (any of 5 locations) → exit 0  (subagent)
+read stdin (PreToolUse JSON payload)                        fail-open on bad input
+  identity := resolveIdentity()      agent_id → subagent; agent_type → role
+  checkSDDFilesGuard                 SPEC-179, any caller: no hand write in .mneme/sdd → exit 2
+  checkDataDirGuard                  SPEC-185 A, any subagent: no hand write under mneme's data → exit 2
+  lifecycleTools (MCP)               SPEC-087 D5, subagent → exit 2
+  EvaluateLifecycleCommand (Bash)    SPEC-175, subagent → exit 2
+  checkSpecDocKindScope              SPEC-181 D4, spec_doc_write
+  checkTaskSectionScope              SPEC-170 D6, spec_doc_write kind task
   if tool not in {Write, Edit, MultiEdit, NotebookEdit, Bash} → exit 0
-  resolve config/project/manifest once (fail-open on any hard error)
-  own := closure over resolvePathOwnership(target, cwd, manifest)
-  if Bash:
-    decision := enforcement.EvaluateBash(command, home, own)
-  else:
-    decision := enforcement.EvaluateFileTool(file_path, home, own)
+  resolve cwd (fail-open)
+  if subagent without agent_type → warn, exit 0              SPEC-086 D2
+  decision := evaluateDelegationWith(input, cwd, &facts)     delegation (orchestrator),
+                                                             containment (subagent),
+                                                             trivial inline grant (SPEC-171)
   if decision.Block:
-    print BLOQUEADO message (naming the owning role when known) to stderr
-    log discovery memory (best-effort, in-process service.Save)
-    exit 2
-  else:
-    exit 0
+    subagent → containment message, exit 2
+    orchestrator → BLOQUEADO message, discovery memory, exit 2
+  checkRiskGuard(input, identity, cwd, facts)                SPEC-185 B: risk paths 1/2/5,
+                                                             dependency commands, test watch
+    → undeclared → risk message, exit 2
+  exit 0
 ```
 
 Whitelist (always-allow fast-path, never reaches the ownership bridge):

@@ -103,7 +103,7 @@ Controla dónde mneme persiste sus bases de datos SQLite y los presupuestos de m
 
 | Field | Default | Type | Range | Env Override | Description |
 |-------|---------|------|-------|-------------|-------------|
-| `data_dir` | `~/.mneme` | string | — | `MNEME_DATA_DIR` | Directorio raíz para todos los archivos de datos. Soporta expansión de `~`. |
+| `data_dir` | `~/.mneme` | string | — | `MNEME_DATA_DIR` | Directorio raíz para todos los archivos de datos. Soporta expansión de `~`. Desde SPEC-185 ningún subagente escribe aquí a mano (ni por Bash, ni siquiera para leer): cambia ese estado solo con las herramientas MCP. |
 | `project_budget` | `1000` | int | >= 1 | — | Número máximo de memorias por scope de proyecto. |
 | `global_budget` | `200` | int | >= 1 | — | Número máximo de memorias en el scope global. |
 
@@ -211,7 +211,7 @@ Controla dónde se almacenan los artefactos del ciclo de vida SDD (specs, bugs, 
 
 | Field | Default | Type | Range | Env Override | Description |
 |-------|---------|------|-------|-------------|-------------|
-| `dir` | `~/.mneme/workflows` | string | — | `MNEME_WORKFLOW_DIR` | Directorio raíz para artefactos de workflow. Soporta expansión de `~`. |
+| `dir` | `~/.mneme/workflows` | string | — | `MNEME_WORKFLOW_DIR` | Directorio raíz para artefactos de workflow. Soporta expansión de `~`. Desde SPEC-185 ningún subagente escribe aquí a mano: los `tarea.md` se cambian con `spec_doc_write`. |
 
 ---
 
@@ -238,7 +238,7 @@ Entradas configurables del carril trivial (SPEC-184). Solo existe la tabla `[lan
 
 | Field | Default | Type | Range | Env Override | Description |
 |-------|---------|------|-------|-------------|-------------|
-| `risk_globs` | (vacío) | tabla de `[]string` | claves `"1"`, `"2"`, `"5"` | — | **Añade** patrones de ruta a los riesgos 1 (datos irreversibles), 2 (seguridad) o 5 (entrega y entorno) de `mneme-flow/references/risk.md`; nunca quita los de serie. Los usan el auditor del carril trivial y el permiso de edición en línea del orquestador. Solo global. |
+| `risk_globs` | (vacío) | tabla de `[]string` | claves `"1"`, `"2"`, `"5"` | — | **Añade** patrones de ruta a los riesgos 1 (datos irreversibles), 2 (seguridad) o 5 (entrega y entorno) de `mneme-flow/references/risk.md`; nunca quita los de serie. Los usan el auditor del carril trivial, el permiso de edición en línea del orquestador y la denegación por rol del hook (SPEC-185), que lee la misma tabla. Solo global. |
 
 ```toml
 [lane.risk_globs]
