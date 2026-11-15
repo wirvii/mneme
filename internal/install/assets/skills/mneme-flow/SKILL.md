@@ -28,7 +28,7 @@ The common base of the flow skills. The operating manual is the authority on the
 | subagents | `spec_pushback`, `spec_reject` (qa-tester), `spec_doc_write` |
 | spec-reviewer | none (read-only; no `spec_doc_write`) |
 
-A subagent never runs `spec_advance`, `spec_quick`, `backlog_archive` or `lane_override`, by MCP or by terminal (`mneme spec advance`, `mneme sdd import`, ...): the hook rejects them. To test mneme itself, point the same command at an isolated data directory.
+A subagent never runs `spec_advance`, `spec_quick`, `backlog_archive`, `lane_override` or `lane_reclassify`, by MCP or by terminal (`mneme spec advance`, `mneme sdd import`, ...): the hook rejects them. To test mneme itself, point the same command at an isolated data directory.
 
 ## The gate
 
@@ -64,4 +64,4 @@ Archiving a backlog item freezes its spec for good. The way back is a new backlo
 
 ## Lane and depth
 
-Open `references/depth.md` before choosing a lane or deciding whether a stage can be skipped. Open `references/lifecycle.md` for the full transition table.
+Open `references/depth.md` before choosing a lane or deciding whether a stage can be skipped; it is the only place that states what makes a change trivial. The six risk items it names, and the paths the lane auditor detects, are in `references/risk.md`. Open `references/lifecycle.md` for the full transition table.

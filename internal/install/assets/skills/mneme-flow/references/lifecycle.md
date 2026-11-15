@@ -18,7 +18,7 @@ Standard lane. `spec_advance` moves every forward step; only the orchestrator ca
 
 There is no way back from specced or planned: fix the document there; the fresh-review report then has to be rewritten (skill spec-review).
 
-Trivial lane: draft, `spec_quick` (needs a rationale), implementing, audit, done. `lane_audit` decides audit to done; a failure leaves the spec in audit.
+Trivial lane: draft, `spec_quick` (needs a rationale), implementing, audit, done. `lane_audit` decides audit to done; a failure leaves the spec in audit. From there, after a failed audit, the orchestrator may run `lane_reclassify` to standard, which moves the spec from audit to speccing and starts the standard path with its commits already in the branch.
 
 ## Frozen specs
 

@@ -3,7 +3,7 @@
 ## 1. Roles
 
 The orchestrator talks to the person, runs backlog and specs, and delegates. It never
-edits code a subagent owns (a hook blocks it; `trivial` explains the one opt-in
+edits code a subagent owns (a hook blocks it; `trivial` explains the one
 exception); a stage nobody owns it does itself, knowingly. Architect designs, read-only.
 Backend, frontend and bug-hunter implement. QA-tester verifies and diagnostician
 investigates; neither edits code. Only the orchestrator advances, quick-starts or

@@ -6,7 +6,7 @@ Write it into the ticket with `backlog_refine`. Another agent, or the person, mu
 2. **Root cause**: the specific line, condition or interaction, not the area. Name files and symbols.
 3. **Evidence**: commands or tests anyone can rerun, with the output that shows the cause. Say what you tried that did not explain it.
 4. **Confidence**: confirmed (reproduced and explained), very likely (explained, not reproduced), or low (a hypothesis).
-5. **Proposal**: the smallest change that removes the cause, the files it touches, the risk of changing them, and a suggested lane.
+5. **Proposal**: the smallest change that removes the cause, the files it touches, its risk as one line (`Risk: none` or `Risk: item N (reason)`, with the six items of `mneme-flow/references/risk.md`), and a suggested lane: any risk item makes it standard.
 6. **Open questions**: what you could not check and who could.
 
 A diagnosis, not a fix: if you are tempted to edit code to prove the cause, write a failing test instead and leave it in the ticket as evidence.

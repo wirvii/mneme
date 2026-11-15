@@ -12,7 +12,7 @@ Read `mneme-flow` first for the cycle and the roles. This skill is the path for 
 ## Steps
 
 1. `mem_search` for earlier decisions, conventions and related bugs in the area.
-2. `backlog_add` with a proposed lane. Wait for the person to confirm the lane; never decide it alone. If the lane is unclear, open `mneme-flow/references/depth.md`.
+2. `backlog_add` with a proposed lane. Wait for the person to confirm the lane; never decide it alone. If the lane is unclear, open `mneme-flow/references/depth.md` (what makes a change trivial) and `mneme-flow/references/risk.md` (the six risk items).
 3. If the lane is trivial, switch to the `trivial` skill and stop reading here.
 4. Standard: run `grill-me` with the person, then pour the result into `backlog_refine`.
 5. `backlog_promote`, then `spec_advance` to speccing and delegate to the architect for the design and `criteria.toml`.

@@ -17,7 +17,7 @@ if [ "$size" -gt "$MAX_BYTES" ]; then
   exit 1
 fi
 
-for anchor in spec_quick lane_audit lane_reclassify "Stay strictly within the declared scope" references/depth.md; do
+for anchor in spec_quick lane_audit lane_reclassify "Stay strictly within the declared scope" references/depth.md references/risk.md; do
   if ! grep -q -- "$anchor" "$SKILL_FILE"; then
     echo "trivial: missing anchor: $anchor" >&2
     exit 1

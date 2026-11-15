@@ -22,7 +22,7 @@ Read `mneme-flow` for the cycle. Two halves: investigate, then (only if the caus
 
 1. Read the ticket with `backlog_get`.
 2. State the confidence in the cause: confirmed, very likely, or low. With low confidence do not promote; investigate more.
-3. Add a proposal (scope, files, risk, lane) with `backlog_refine`, then `backlog_promote`.
+3. Add a proposal (scope, files, risk as `Risk: none` or `Risk: item N (reason)` with the items of `mneme-flow/references/risk.md`, lane) with `backlog_refine`, then `backlog_promote`. Any risk item makes the lane standard.
 4. Standard lane: architect; fresh review, moment 1 before the gate and moment 2 after the plan (skill `spec-review`), with moment 2 escalations shown to the person before implementing; then the `present-spec` skill. Trivial lane: the `trivial` skill.
 
 ## Do not

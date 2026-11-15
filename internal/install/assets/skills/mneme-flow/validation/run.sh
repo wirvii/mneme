@@ -29,7 +29,7 @@ if grep -Eq '3 fi''les|20 li''nes' "$SKILL_FILE"; then
   exit 1
 fi
 
-for ref in references/depth.md references/lifecycle.md references/criteria.md references/entrega.md; do
+for ref in references/depth.md references/risk.md references/lifecycle.md references/criteria.md references/entrega.md; do
   [ -f "$ref" ] || { echo "mneme-flow: missing $ref" >&2; exit 1; }
 done
 
