@@ -1116,6 +1116,7 @@ func (svc *SDDService) SpecStatus(ctx context.Context, id string) (*model.SpecSt
 		History:   history,
 		Pushbacks: pushbacks,
 		Frozen:    frozen,
+		QARounds:  qaRoundsOf(history),
 	}, nil
 }
 

@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -3362,5 +3363,75 @@ func TestSpecDocWrite_UnknownKind(t *testing.T) {
 	})
 	if !errors.Is(err, model.ErrUnknownSpecDocKind) {
 		t.Errorf("expected ErrUnknownSpecDocKind, got %v", err)
+	}
+}
+
+// TestSpecStatus_QARounds is C9's service half: qa_rounds counts the
+// qa -> implementing rejections of the current stay, restarts at 0 after a
+// reopening from done, and is always present in the JSON, while
+// LaneStatus.RejectionCount keeps counting over the whole life.
+func TestSpecStatus_QARounds(t *testing.T) {
+	svc := newTestSDDService(t, "project")
+	ctx := context.Background()
+	spec := advanceToQA(t, svc, ctx, "qa rounds")
+
+	check := func(step string, want int) {
+		t.Helper()
+		resp, err := svc.SpecStatus(ctx, spec.ID)
+		if err != nil {
+			t.Fatalf("%s: SpecStatus: %v", step, err)
+		}
+		if resp.QARounds != want {
+			t.Errorf("%s: QARounds = %d, want %d", step, resp.QARounds, want)
+		}
+		raw, err := json.Marshal(resp)
+		if err != nil {
+			t.Fatalf("%s: marshal: %v", step, err)
+		}
+		var keys map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &keys); err != nil {
+			t.Fatalf("%s: unmarshal: %v", step, err)
+		}
+		if _, ok := keys["qa_rounds"]; !ok {
+			t.Errorf("%s: qa_rounds missing from JSON: %s", step, raw)
+		}
+	}
+	reject := func(findings bool) {
+		t.Helper()
+		req := model.SpecRejectRequest{ID: spec.ID, Reason: "falla", By: "qa-agent"}
+		if findings {
+			req.Findings = []model.RejectFinding{{CriterionID: "AC1", Detail: "does not hold"}}
+		}
+		if _, err := svc.SpecReject(ctx, req); err != nil {
+			t.Fatalf("SpecReject: %v", err)
+		}
+	}
+	advance := func() {
+		t.Helper()
+		if _, err := svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: "orch"}); err != nil {
+			t.Fatalf("SpecAdvance: %v", err)
+		}
+	}
+
+	check("in qa, no rejection", 0)
+	reject(true)
+	check("one rejection", 1)
+	advance()
+	reject(true)
+	check("two rejections", 2)
+	advance()
+	advance()
+	reject(false)
+	check("reopened from done", 0)
+	advance()
+	reject(true)
+	check("one rejection after reopening", 1)
+
+	lane, err := svc.LaneStatus(ctx, spec.ID)
+	if err != nil {
+		t.Fatalf("LaneStatus: %v", err)
+	}
+	if lane.RejectionCount != 3 {
+		t.Errorf("LaneStatus.RejectionCount = %d, want 3 (lifetime)", lane.RejectionCount)
 	}
 }

@@ -19,6 +19,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/wirvii/mneme/internal/gitrepo"
@@ -401,4 +402,18 @@ func (svc *SDDService) AttachReviewRange(ctx context.Context, resp *model.SpecSt
 		return
 	}
 	resp.ReviewRange = svc.ReviewRangeForEntered(ctx, resp.Spec)
+
+	// SPEC-188 D1: name the review package of this very range when it was
+	// already written. Never an error, like the range itself: a missing
+	// configuration or file just leaves the path out.
+	if resp.ReviewRange == nil || !resp.ReviewRange.Available || svc.config == nil || svc.config.WorkflowDir() == "" {
+		return
+	}
+	path, err := reviewPackagePath(svc.config.WorkflowDir(), resp.Spec.Project, resp.Spec.ID,
+		resp.ReviewRange.From, resp.ReviewRange.To)
+	if err == nil {
+		if _, statErr := os.Stat(path); statErr == nil {
+			resp.ReviewPackagePath = path
+		}
+	}
 }

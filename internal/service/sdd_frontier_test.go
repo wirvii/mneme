@@ -453,3 +453,59 @@ func TestLatestHistoryRow_TieBreaksByID(t *testing.T) {
 		t.Errorf("latestHistoryRow = %+v, want the row with the greater ID (the deterministic tie-break)", got)
 	}
 }
+
+// TestAttachReviewRange_ReviewPackagePath is C9's service half for the
+// path: absent before the package is written, present after, absent outside
+// qa even when the file exists, and absent without panicking when the
+// configuration is nil.
+func TestAttachReviewRange_ReviewPackagePath(t *testing.T) {
+	svc := newTestSDDServiceWithGitRepo(t, "project")
+	ctx := context.Background()
+	spec := advanceToImplementing(t, svc, ctx, "review package path")
+	commitOneMore(t, svc.repoDir, "entrega.txt", "entrega")
+	if _, err := svc.SpecAdvance(ctx, model.SpecAdvanceRequest{ID: spec.ID, By: "backend"}); err != nil {
+		t.Fatalf("SpecAdvance to qa: %v", err)
+	}
+
+	status := func() *model.SpecStatusResponse {
+		t.Helper()
+		resp, err := svc.SpecStatus(ctx, spec.ID)
+		if err != nil {
+			t.Fatalf("SpecStatus: %v", err)
+		}
+		svc.AttachReviewRange(ctx, resp)
+		return resp
+	}
+
+	if got := status().ReviewPackagePath; got != "" {
+		t.Errorf("before writing: ReviewPackagePath = %q, want empty", got)
+	}
+	pkg, err := svc.SpecReviewPackage(ctx, spec.ID)
+	if err != nil {
+		t.Fatalf("SpecReviewPackage: %v", err)
+	}
+	if got := status().ReviewPackagePath; got != pkg.Path {
+		t.Errorf("after writing: ReviewPackagePath = %q, want %q", got, pkg.Path)
+	}
+
+	cfg := svc.config
+	svc.config = nil
+	resp := status()
+	if resp.ReviewPackagePath != "" || resp.ReviewRange == nil {
+		t.Errorf("nil config: ReviewPackagePath = %q, ReviewRange = %v; want empty path and a range", resp.ReviewPackagePath, resp.ReviewRange)
+	}
+	svc.config = cfg
+
+	if _, err := svc.SpecReject(ctx, model.SpecRejectRequest{
+		ID: spec.ID, Reason: "falla", By: "qa-agent",
+		Findings: []model.RejectFinding{{CriterionID: "AC1", Detail: "does not hold"}},
+	}); err != nil {
+		t.Fatalf("SpecReject: %v", err)
+	}
+	if _, statErr := os.Stat(pkg.Path); statErr != nil {
+		t.Fatalf("setup: package file should still exist: %v", statErr)
+	}
+	if got := status().ReviewPackagePath; got != "" {
+		t.Errorf("outside qa: ReviewPackagePath = %q, want empty", got)
+	}
+}
