@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/pelletier/go-toml/v2"
 
@@ -32,6 +33,7 @@ type Config struct {
 	Embedding     EmbeddingConfig     `toml:"embedding"`
 	Workflow      WorkflowConfig      `toml:"workflow"`
 	Delegation    DelegationConfig    `toml:"delegation"`
+	Hooks         HooksConfig         `toml:"hooks"`
 	Spec          SpecConfig          `toml:"spec"`
 	Graph         GraphConfig         `toml:"graph"`
 	Suggestions   SuggestionsConfig   `toml:"suggestions"`
@@ -363,6 +365,17 @@ type DelegationProjectConfig struct {
 // to surface it before it rots for months.
 const DefaultStaleAfterDays = 14
 
+// HooksConfig tunes the agent-lifecycle hooks mneme registers (SPEC-183).
+// It exists so a person who finds the Stop reminder noisy can lengthen or
+// switch it off without reinstalling the hooks.
+type HooksConfig struct {
+	// StopReminderAfter is how long a session's work window may stay open
+	// (work after the last session summary or checkpoint) before
+	// `mneme hook stop` reminds the orchestrator once for that window.
+	// Go duration ("30m", "1h"). "0" disables the reminder.
+	StopReminderAfter string `toml:"stop_reminder_after"`
+}
+
 // SpecConfig controls the spec lifecycle quality gates and behavior.
 type SpecConfig struct {
 	// AutoGrill requires a grill session before a spec can advance
@@ -611,6 +624,9 @@ func Default() *Config {
 			AllowedPaths:              []string{"docs/", "*.md", "CLAUDE.md", "CLAUDE.local.md"},
 			SubagentContainment:       "warn",
 			OrchestratorTrivialInline: true,
+		},
+		Hooks: HooksConfig{
+			StopReminderAfter: "30m",
 		},
 		Spec: SpecConfig{
 			AutoGrill: true,
@@ -1025,6 +1041,7 @@ func LoadWithOrigins(path string) (*Config, *ConfigOrigins, error) {
 	origins.Sections["personal"] = buildPersonalOrigins(cfg, dflt)
 	origins.Sections["workflow"] = buildWorkflowOrigins(cfg, dflt)
 	origins.Sections["delegation"] = buildDelegationOrigins(cfg, dflt)
+	origins.Sections["hooks"] = buildHooksOrigins(cfg, dflt)
 	origins.Sections["spec"] = buildSpecOrigins(cfg, dflt)
 	origins.Sections["graph"] = buildGraphOrigins(cfg, dflt)
 	origins.Sections["suggestions"] = buildSuggestionsOrigins(cfg, dflt)
@@ -1179,6 +1196,13 @@ func buildDelegationOrigins(cfg, dflt *Config) []ConfigFieldInfo {
 	o, ev = fieldOrigin(cfg.Delegation.OrchestratorTrivialInline, dflt.Delegation.OrchestratorTrivialInline, true, "MNEME_DELEGATION_TRIVIAL_INLINE")
 	fields = append(fields, makeField("orchestrator_trivial_inline", cfg.Delegation.OrchestratorTrivialInline, o, ev))
 	return fields
+}
+
+// buildHooksOrigins reports the single [hooks] field. It has no env var of
+// its own: nothing has asked for one yet (SPEC-183 §8).
+func buildHooksOrigins(cfg, dflt *Config) []ConfigFieldInfo {
+	o, ev := fieldOrigin(cfg.Hooks.StopReminderAfter, dflt.Hooks.StopReminderAfter, true)
+	return []ConfigFieldInfo{makeField("stop_reminder_after", cfg.Hooks.StopReminderAfter, o, ev)}
 }
 
 func buildSpecOrigins(cfg, dflt *Config) []ConfigFieldInfo {
@@ -1451,7 +1475,34 @@ func (c *Config) Validate() error {
 		return err
 	}
 
+	if _, err := parseStopReminderAfter(c.Hooks.StopReminderAfter); err != nil {
+		return err
+	}
+
 	return nil
+}
+
+// parseStopReminderAfter parses [hooks] stop_reminder_after: any Go duration
+// that is not negative; zero means the reminder is off.
+func parseStopReminderAfter(value string) (time.Duration, error) {
+	d, err := time.ParseDuration(value)
+	if err != nil || d < 0 {
+		return 0, fmt.Errorf("hooks.stop_reminder_after %q is not a valid duration (e.g. 30m, 1h; 0 disables)", value)
+	}
+	return d, nil
+}
+
+// StopReminderAfter returns the parsed [hooks] stop_reminder_after, the age
+// at which `mneme hook stop` reminds the orchestrator of an open work window.
+// Zero means the reminder is disabled. Validate already rejected a bad value,
+// so a config that passed it never yields an error here; an unvalidated one
+// falls back to zero, the silent side.
+func (c *Config) StopReminderAfter() time.Duration {
+	d, err := parseStopReminderAfter(c.Hooks.StopReminderAfter)
+	if err != nil {
+		return 0
+	}
+	return d
 }
 
 // validContainmentModes is the accepted value set for

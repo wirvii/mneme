@@ -22,6 +22,7 @@ Para el sistema de reglas ver [RULES.md](RULES.md).
 - [`[workflow]`](#workflow)
 - [`[delegation]`](#delegation)
 - [`[lane]`](#lane)
+- [`[hooks]`](#hooks)
 - [`[spec]`](#spec)
 - [`[graph]`](#graph)
 - [`[suggestions]`](#suggestions)
@@ -244,6 +245,16 @@ Una clave que no es un número de ítem, un ítem que una ruta no puede revelar 
 
 ---
 
+## `[hooks]`
+
+Ajusta los hooks de ciclo de vida que mneme registra en Claude Code (SPEC-183). Hoy solo gobierna el aviso de cierre de sesión del hook `Stop` (`mneme hook stop`); el hook `SubagentStop` no tiene parámetros.
+
+| Field | Default | Type | Range | Env Override | Description |
+|-------|---------|------|-------|-------------|-------------|
+| `stop_reminder_after` | `"30m"` | duración Go (`"30m"`, `"1h"`) | `>= 0` | — | Tiempo que la ventana de trabajo del orquestador (memorias de la sesión posteriores a su último resumen o checkpoint) puede quedar sin cierre antes de que `mneme hook stop` le recuerde, una sola vez por ventana, llamar a `mem_session_end`. `"0"` desactiva el aviso sin reinstalar. Ver [HOOKS.md](HOOKS.md#stop-and-subagentstop-hooks-spec-183). |
+
+---
+
 ## `[spec]`
 
 Controla los quality gates y el comportamiento del ciclo de vida de specs.
@@ -426,6 +437,7 @@ mneme falla al arrancar con un mensaje claro si la configuración no es válida.
 | `suggestions.max_results must be >= 1` | max_results = 0 | Usar >= 1 |
 | `lane.risk_globs: key "x" is not an item number` | Clave de `[lane.risk_globs]` que no es número | Usar `"1"`, `"2"` o `"5"` |
 | `lane.risk_globs: risk: item is not detectable by path; accepted: 1, 2, 5` | Patrones para el ítem 3, 4 o 6 | Solo los ítems 1, 2 y 5 admiten rutas |
+| `hooks.stop_reminder_after "abc" is not a valid duration (e.g. 30m, 1h; 0 disables)` | Valor no parseable, vacío o negativo | Usar una duración Go >= 0 (`"30m"`, `"1h"`); `"0"` desactiva |
 
 Los valores de variable de entorno con formato incorrecto (no parseables) se ignoran
 silenciosamente. Un valor parseable pero fuera de rango (ej. `MNEME_GRAPH_EDGE_DECAY_RATE=2.0`)

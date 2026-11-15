@@ -24,7 +24,7 @@ func runConfigShow(t *testing.T, args ...string) string {
 }
 
 // TestConfigShow_AllSections verifies that the default output (no filter)
-// contains all 13 expected section headers.
+// contains all 15 expected section headers.
 func TestConfigShow_AllSections(t *testing.T) {
 	output := runConfigShow(t)
 

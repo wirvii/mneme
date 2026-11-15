@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestDefault verifies that Default() returns the expected value for every
@@ -1438,7 +1439,7 @@ graph_mode = "1hop"
 }
 
 // TestLoadWithOrigins_AllSectionsPresent verifies that the returned ConfigOrigins
-// contains all 13 expected section keys.
+// contains all 16 expected section keys.
 func TestLoadWithOrigins_AllSectionsPresent(t *testing.T) {
 	_, origins, err := LoadWithOrigins("/nonexistent/path/config.toml")
 	if err != nil {
@@ -1447,8 +1448,8 @@ func TestLoadWithOrigins_AllSectionsPresent(t *testing.T) {
 
 	wantSections := []string{
 		"storage", "search", "context", "consolidation", "decay",
-		"mcp", "embedding", "personal", "workflow", "delegation",
-		"spec", "graph", "suggestions",
+		"mcp", "embedding", "personal", "workflow", "delegation", "hooks",
+		"spec", "graph", "suggestions", "codegraph", "lane",
 	}
 	for _, s := range wantSections {
 		if _, ok := origins.Sections[s]; !ok {
@@ -2092,4 +2093,75 @@ func TestSpecStaleAfterDays(t *testing.T) {
 		}
 		t.Error("stale_after_days not listed in the spec section's origins")
 	})
+}
+
+// TestHooksConfig_Default pins the SPEC-183 default: the orchestrator's work
+// window may stay open 30 minutes before the Stop hook reminds it.
+func TestHooksConfig_Default(t *testing.T) {
+	cfg := Default()
+	if cfg.Hooks.StopReminderAfter != "30m" {
+		t.Errorf("Hooks.StopReminderAfter: got %q, want %q", cfg.Hooks.StopReminderAfter, "30m")
+	}
+	if got := cfg.StopReminderAfter(); got != 30*time.Minute {
+		t.Errorf("StopReminderAfter(): got %v, want 30m", got)
+	}
+}
+
+// TestHooksConfig_Validate covers the accepted and rejected values of
+// [hooks] stop_reminder_after: any non-negative Go duration, "0" disables.
+func TestHooksConfig_Validate(t *testing.T) {
+	tests := []struct {
+		value   string
+		wantErr bool
+		want    time.Duration
+	}{
+		{value: "30m", want: 30 * time.Minute},
+		{value: "1h", want: time.Hour},
+		{value: "0", want: 0},
+		{value: "abc", wantErr: true},
+		{value: "-5m", wantErr: true},
+		{value: "", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.value, func(t *testing.T) {
+			cfg := Default()
+			cfg.Hooks.StopReminderAfter = tt.value
+			err := cfg.Validate()
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("Validate(%q): want error, got nil", tt.value)
+				}
+				if !strings.Contains(err.Error(), "hooks.stop_reminder_after") {
+					t.Errorf("error %q does not name hooks.stop_reminder_after", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Validate(%q): %v", tt.value, err)
+			}
+			if got := cfg.StopReminderAfter(); got != tt.want {
+				t.Errorf("StopReminderAfter(): got %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestHooksConfig_LoadFromFile checks that a [hooks] table in config.toml is
+// read and that show reports the value as coming from the file.
+func TestHooksConfig_LoadFromFile(t *testing.T) {
+	path := writeTempTOML(t, "[hooks]\nstop_reminder_after = \"10m\"\n")
+	cfg, origins, err := LoadWithOrigins(path)
+	if err != nil {
+		t.Fatalf("LoadWithOrigins: %v", err)
+	}
+	if got := cfg.StopReminderAfter(); got != 10*time.Minute {
+		t.Errorf("StopReminderAfter(): got %v, want 10m", got)
+	}
+	fields := origins.Sections["hooks"]
+	if len(fields) != 1 || fields[0].Key != "stop_reminder_after" {
+		t.Fatalf("hooks origins: got %+v, want one stop_reminder_after field", fields)
+	}
+	if fields[0].Origin != OriginFile {
+		t.Errorf("origin: got %v, want %v", fields[0].Origin, OriginFile)
+	}
 }
