@@ -1,7 +1,7 @@
 ---
 name: feature
 description: "Use when the person asks for something new: a capability, command, screen or behaviour that does not exist yet. Takes it from idea to a done spec through mneme's flow, stopping at the human approval gate."
-version: 1.1.0
+version: 1.2.0
 pinned: false
 ---
 
@@ -19,7 +19,7 @@ Read `mneme-flow` first for the cycle and the roles. This skill is the path for 
 6. Fresh review, moment 1 (skill `spec-review`): reviewers read the spec without the conversation and the architect resolves each finding. Then the `present-spec` skill. Do not move on without an explicit yes to the whole spec.
 7. After the yes: `spec_advance` through planning to planned. Fresh review, moment 2 (skill `spec-review`) on the plan; present its escalated findings to the person before implementing. Then `spec_advance` to implementing. Delegate to the implementer who owns the area; if none exists, do it yourself and say so.
 8. `spec_advance` to qa and use the `review-brief` skill.
-9. Show the QA report to the person in plain words. They decide whether the spec is done.
+9. Show the QA report to the person in plain words, ending with "Decisiones que tomé por ti" (skill `review-brief`). They decide whether the spec is done.
 10. `mem_save` what was decided and learned.
 
 ## Do not

@@ -1,7 +1,7 @@
 ---
 name: present-spec
 description: "Use at the human approval gate, when a spec is designed (specced) and the person must approve it before planning or implementation. Turns the spec into a plain-language decision and records the explicit answer."
-version: 1.1.0
+version: 1.2.0
 pinned: false
 ---
 
@@ -23,6 +23,10 @@ The gate is the point of the whole flow: the person decides with full knowledge,
    - which reviewer did not run and which changes were not reviewed (the `nota` fields).
 3. Ask one question: do they approve this whole spec? Wait for an explicit yes or no.
 4. On a yes, call `spec_advance` and record in its reason who approved and when, plus the person's answer to each escalated finding. On a no or a change request, send it to the architect: the spec stays in specced, the architect edits the documents there and the review report must be redone (see `spec-review`, "Changes after the report"); present the whole spec again.
+
+## Decisions made for the person
+
+Every message that closes a step with the person (the approval question, and your reply to their answer) ends with a section headed "Decisiones que tomé por ti": each decision you or the architect took for them without asking (a grill resolved under their authorization, a default chosen, a criterion narrowed), why, and what it costs if it is wrong. Write "ninguna" when there were none. Then `mem_search` for `spec/<ID>-rulings-gate`; if it exists, keep its list and append; `mem_save` type decision with that topic_key.
 
 ## What is not approval
 

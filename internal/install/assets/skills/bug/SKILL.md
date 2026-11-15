@@ -1,7 +1,7 @@
 ---
 name: bug
 description: "Use when something that used to work fails, the person reports a bug, or asks to investigate a failure or turn a diagnosis into a fix. Covers both halves: investigate to a diagnosis recorded in the ticket, then promote it to a spec only when the root cause is confirmed."
-version: 1.1.0
+version: 1.2.0
 pinned: false
 ---
 
@@ -29,3 +29,4 @@ Read `mneme-flow` for the cycle. Two halves: investigate, then (only if the caus
 
 - Do not fix during the investigation; the fix has its own spec.
 - Do not promote a guess. A confirmed cause comes with evidence anyone can rerun.
+- Do not close a step with the person without the "Decisiones que tomé por ti" section (skills `present-spec` and `review-brief`).

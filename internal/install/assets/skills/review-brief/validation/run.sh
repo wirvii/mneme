@@ -35,5 +35,7 @@ if grep -Eq '3 fi''les|20 li''nes' "$SKILL_FILE"; then
   exit 1
 fi
 
+[ -f references/rounds.md ] || { echo "review-brief: missing references/rounds.md" >&2; exit 1; }
+
 echo "review-brief: validation passed"
 exit 0

@@ -1,7 +1,7 @@
 ---
 name: mneme-flow
 description: "Use when doing any work that goes through mneme's backlog and specs: the lifecycle and who may move it, the human approval gate, lanes, the criteria contract, rejections, pushbacks and the review range. The other flow skills (feature, bug, trivial, present-spec, review-brief) build on this one."
-version: 1.1.0
+version: 1.2.0
 pinned: false
 ---
 
@@ -48,7 +48,7 @@ A standard-lane spec needs `criteria.toml` before speccing to specced. It is wri
 
 ## Review range
 
-`spec_advance` returns `review_range` when a spec enters qa. Copy its notice as it is; never recompute it. See `review-brief`.
+`spec_advance` returns `review_range` when a spec enters qa. Copy its notice as it is; never recompute it. `mneme spec review-package <ID>` writes it to a file: pass the path. At most 3 qa rounds (`qa_rounds`). See `review-brief`.
 
 ## Pushback
 
