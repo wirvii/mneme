@@ -28,6 +28,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the delivery state and the qa-tester to check that `arbol` lies inside the
   review range and never to run a `comando` from the block. Run
   `mneme subagents regen --all` after updating.
+- SPEC-186: specs left open for too long are announced. An open spec (any
+  status but `done`, `draft` included) that has not moved for more than
+  `[spec] stale_after_days` (new key, default 14; `0` disables it, a negative
+  value fails config validation) is "stale"; the last move is the later of
+  `updated_at` and the newest `spec_history` row, and a spec frozen by its
+  archived or missing backlog item is never stale, only counted apart. One
+  definition, computed in `service` with an injected clock, shown in three
+  places: a `STALE` section in `mneme status` (count per status, at most 10
+  rows, `and N more`; `--json` key `stale_specs`, present only when something
+  is stale), one line of at most 400 bytes and 5 ids in the `session-start`
+  hook right before the context block, and `spec_list` (each spec gains
+  `stale` and `days_since_last_move`; MCP adds `stale_count`, counted over
+  all matches). `mneme spec list` marks stale rows (`— stale, N d`) and
+  `mneme spec list --json` stays a bare list whose elements gain the same two
+  keys. Informative only: nothing blocks, nothing moves, nothing is written.
+  No HTTP parity (HTTP has no SDD endpoints).
 
 ## [v1.51.0] — 2026-11-10 — standard specs get a fresh-context review before approval and before implementation
 

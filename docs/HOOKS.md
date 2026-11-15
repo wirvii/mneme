@@ -127,6 +127,26 @@ proves the session was closed. Filtering the closure check by `superseded_by`
 too would leave the notice nagging forever once a synthesis absorbs the
 summary.
 
+#### The stale-specs line (SPEC-186)
+
+After the `mneme:session` block (or after the nudge, when there is no
+`session_id`) and immediately before `<!-- mneme:context:start -->`, the hook
+prints ONE line, in Spanish, when at least one open spec of the project has
+not moved for more than `[spec] stale_after_days` (default 14):
+
+```
+3 specs llevan más de 14 días sin moverse: SPEC-151 (specced, 123 d), SPEC-140 (qa, 31 d), SPEC-139 (draft, 16 d). Detalle: `mneme status`.
+```
+
+At most 5 specs are named, the oldest first; the rest become `y N más`. The
+line never exceeds 400 bytes: if very long ids or statuses would push it
+past that, entries are dropped from the end, and as a last resort only the
+count is printed. Frozen specs and unreadable rows are not mentioned (they
+are in `mneme status`). With nothing stale, or `stale_after_days = 0`,
+nothing is printed, not even an empty line. The full output order is: the
+agent-projection nudge, the `mneme:session` block, the stale-specs line, the
+`mneme:context` block.
+
 #### Fail-open matrix
 
 | stdin | Result |
@@ -135,6 +155,7 @@ summary.
 | invalid JSON | WARN on stderr, no block, context block still prints. |
 | valid JSON without `session_id` | No block, **no** WARN — an absent `session_id` is indistinguishable from "this session genuinely has none", and warning would falsely accuse the current session. |
 | `PendingSessionSummaries` store error | WARN on stderr, no block, context block still prints — the summary lookup failing must never suppress the context load that follows. |
+| `StaleSpecs` error (SPEC-186: opening the SDD service or computing the report) | WARN on stderr (`[mneme] session-start hook: stale specs error: ...`), no stale line, context block unchanged. |
 
 #### Manual invocation
 

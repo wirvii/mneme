@@ -578,6 +578,25 @@ under `backlog_list` above, naming a `specs` row instead: absent on a
 healthy project, truncated to 20 rows, `unreadable_total` always the real
 count. `total` is unaffected — it still counts every matching row.
 
+**Stale specs (SPEC-186).** Every object in `specs` keeps all its keys and
+gains two:
+
+- `days_since_last_move` — whole days since the spec last moved: the later
+  of its `updated_at` and its most recent history row (a status change, a
+  history note or an edit such as a new title all count). `0` when that
+  instant lies in the future.
+- `stale` — `true` when the spec is not `done`, not frozen, and has not moved
+  for more than `[spec] stale_after_days` (default 14; `0` disables it, and
+  then no spec is stale). Informative only: nothing is blocked or moved.
+
+The response also carries **`stale_count`**, the number of stale specs among
+**all** the matches of the request's `status` filter — not only the returned
+page, the same contract as `total`. It is always present, `0` included.
+Example: `{"specs": [{"id": "SPEC-140", "status": "qa", ..., "days_since_last_move": 31, "stale": true}], "total": 127, "stale_count": 9}`.
+The count per status lives in `mneme status` (`stale_specs.by_status`), not
+here. `mneme spec list --json` gains the two per-spec keys but stays a bare
+list, without `stale_count`.
+
 ### spec_quick
 
 Advance a trivial-lane spec from `draft` directly to `implementing` in one

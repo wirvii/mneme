@@ -148,6 +148,30 @@ pipeline state. Falls back to basic stats if the SDD engine isn't initialised.
 mneme status --json
 ```
 
+**Stale specs (SPEC-186).** When at least one open spec has not moved for
+more than `[spec] stale_after_days` (default 14, `0` disables it), a `STALE`
+section is printed after `UNREADABLE` and before `BACKLOG`: a headline with
+the count per status (count descending, then status name), at most 10 rows
+ordered by days descending, and footers for frozen specs and unreadable rows,
+which are not counted as stale:
+
+```
+--- STALE ----------------------------------------
+  3 specs have not moved for more than 14 days (draft 1, qa 1, specced 1):
+  SPEC-151    [specced]          123 d  Title truncated to forty runes incl…
+  SPEC-140    [qa]                31 d  Another title
+  SPEC-139    [draft]             16 d  Another
+  and 2 more (mneme spec list marks them all)
+  2 frozen specs (backlog item archived or missing) are not counted here: they can never move.
+  1 spec row could not be read and was not classified (see UNREADABLE above).
+```
+
+With nothing stale the section is not printed and the output is unchanged; a
+frozen spec alone does not open it. `--json` gains the key `stale_specs`,
+present only when something is stale: `threshold_days`, `count`,
+`by_status`, `frozen_count`, `unreadable_count` and the full `specs` list
+(`id`, `title`, `status`, `days_since_last_move`; no cap of 10).
+
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--json` | false | JSON output |
@@ -398,6 +422,13 @@ mneme spec list --status implementing --json
 |------|---------|-------------|
 | `--status` | | `draft`, `speccing`, `needs_grill`, `specced`, `planning`, `planned`, `implementing`, `qa`, `done` (also `rationale`, `audit` for trivial lane) |
 | `--json` | false | JSON output |
+
+A stale spec (SPEC-186: open, not frozen, not moved for more than
+`[spec] stale_after_days`, default 14) gets the suffix `— stale, N d` on its
+row, and the table ends with a note such as `1 spec has not moved for more
+than 14 days (marked "stale"). The threshold is [spec] stale_after_days in
+~/.mneme/config.toml.` With nothing stale the table is unchanged. `--json`
+stays a bare list; each element gains `stale` and `days_since_last_move`.
 
 ### mneme spec status
 
