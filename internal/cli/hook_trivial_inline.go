@@ -9,6 +9,7 @@ import (
 	"github.com/wirvii/mneme/internal/enforcelog"
 	"github.com/wirvii/mneme/internal/enforcement"
 	"github.com/wirvii/mneme/internal/laneaudit"
+	"github.com/wirvii/mneme/internal/risk"
 )
 
 // trivialInlineTools are the only tools whose block the trivial-inline
@@ -98,17 +99,20 @@ func collectTrivialScopes(rows scopeRows) ([]string, error) {
 // withTrivialInline wraps the orchestrator's ownership check (SPEC-171 D2).
 // It asks base first and only when base blocks does it consult lookup — once
 // per call, memoised — and lift the block if the target sits inside an open
-// trivial spec's scope and outside the trivial lane's forbidden globs. Every
-// other outcome, including any lookup error, returns exactly what base
-// returned, so the new permission can only ever fail closed. onGrant, when
-// non-nil, receives the cwd-relative path of each lifted block.
+// trivial spec's scope and matches none of the excluded globs (the paths of
+// risk items 1, 2 and 5, SPEC-184). A scope that matches everything or uses
+// braces (laneaudit.IsCatchAllScope) is ignored, so a spec opened with such
+// a scope before creation refused it never grants anything. Every other
+// outcome, including any lookup error, returns exactly what base returned,
+// so the permission can only ever fail closed. onGrant, when non-nil,
+// receives the cwd-relative path of each lifted block.
 //
 // Paths are matched relative to cwd with laneaudit.MatchGlobs, the same
 // function lane_audit uses to decide "out of scope", so what the hook allows
 // and what the audit later accepts cannot disagree. A cwd below the
 // repository root yields paths that do not match root-relative scopes, which
 // blocks: the safe direction.
-func withTrivialInline(base enforcement.OwnershipFunc, lookup trivialScopeLookup, cwd string, onGrant func(rel string)) enforcement.OwnershipFunc {
+func withTrivialInline(base enforcement.OwnershipFunc, lookup trivialScopeLookup, cwd string, excluded []string, onGrant func(rel string)) enforcement.OwnershipFunc {
 	var (
 		loaded  bool
 		scopes  []string
@@ -123,11 +127,12 @@ func withTrivialInline(base enforcement.OwnershipFunc, lookup trivialScopeLookup
 		if outOfTree || rel == "" {
 			return block, owner
 		}
-		if laneaudit.MatchGlobs(rel, laneaudit.DefaultTrivialBudget.ForbiddenGlobs) {
+		if laneaudit.MatchGlobs(rel, excluded) {
 			return block, owner
 		}
 		if !loaded {
 			scopes, lookErr = lookup()
+			scopes = withoutCatchAllScopes(scopes)
 			loaded = true
 		}
 		if lookErr != nil || !laneaudit.MatchGlobs(rel, scopes) {
@@ -140,17 +145,34 @@ func withTrivialInline(base enforcement.OwnershipFunc, lookup trivialScopeLookup
 	}
 }
 
+// withoutCatchAllScopes drops the scopes laneaudit.IsCatchAllScope rejects.
+func withoutCatchAllScopes(scopes []string) []string {
+	out := scopes[:0:0]
+	for _, s := range scopes {
+		if !laneaudit.IsCatchAllScope(s) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 // withTrivialInlineIfEnabled is evaluateDelegation's single hook into this
 // feature: it wraps own only for the orchestrator, only for the file tools in
-// trivialInlineTools, and only when the project opted in. In every other case
-// it returns own untouched and builds no lookup at all, so a project that
-// never opts in pays nothing.
+// trivialInlineTools, and only when the permission is on (the default since
+// SPEC-184). In every other case it returns own untouched and builds no
+// lookup at all, so a project that turns it off pays nothing. The excluded
+// globs come from the configured risk table, or from risk.DefaultTable()
+// when that fails — never fewer than the defaults.
 func withTrivialInlineIfEnabled(own enforcement.OwnershipFunc, input hookPreToolInput, identity CallerIdentity, cfg *config.Config, slug, cwd string) enforcement.OwnershipFunc {
 	if identity.IsSubagent || !trivialInlineTools[input.ToolName] || !cfg.OrchestratorTrivialInlineEnabled(slug) {
 		return own
 	}
+	excluded := risk.DefaultTable().Globs()
+	if table, err := cfg.LaneRiskTable(); err == nil {
+		excluded = table.Globs()
+	}
 	lookup := newTrivialScopeLookup(cfg.ProjectDBPath(slug), slug)
-	return withTrivialInline(own, lookup, cwd, func(rel string) {
+	return withTrivialInline(own, lookup, cwd, excluded, func(rel string) {
 		logTrivialInlineGrantEvent(cfg, slug, input, rel)
 	})
 }

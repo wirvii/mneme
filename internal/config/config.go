@@ -329,12 +329,15 @@ type DelegationConfig struct {
 	// invocation, so reading this map costs zero extra I/O.
 	Projects map[string]DelegationProjectConfig `toml:"projects"`
 
-	// OrchestratorTrivialInline is the global opt-in (SPEC-171) that lets the
+	// OrchestratorTrivialInline is the global switch (SPEC-171) that lets the
 	// orchestrator edit files with Edit/Write/MultiEdit — never Bash — when
 	// they fall inside the declared scope of an open trivial-lane spec in
-	// implementing status. Defaults to false: delegation stays mandatory
-	// unless a project explicitly chooses otherwise. MNEME_DELEGATION_TRIVIAL_INLINE
-	// overrides this global value; a per-project entry overrides both.
+	// implementing status and outside the paths of risk items 1, 2 and 5.
+	// On by default since SPEC-184 (decided by the orchestrator on the
+	// owner's behalf, reversible): small, risk-free work no longer forces a
+	// subagent launch. Set false to make delegation mandatory again.
+	// MNEME_DELEGATION_TRIVIAL_INLINE overrides this global value; a
+	// per-project entry overrides both.
 	OrchestratorTrivialInline bool `toml:"orchestrator_trivial_inline"`
 }
 
@@ -346,9 +349,10 @@ type DelegationProjectConfig struct {
 	SubagentContainment string `toml:"subagent_containment"`
 
 	// OrchestratorTrivialInline overrides DelegationConfig.OrchestratorTrivialInline
-	// for this one project (SPEC-171). A pointer, not a bool: nil means "not
-	// declared — use the global value", which a plain false could not
-	// distinguish from an explicit opt-out.
+	// for this one project (SPEC-171; the global value is on by default since
+	// SPEC-184). A pointer, not a bool: nil means "not declared — use the
+	// global value", which a plain false could not distinguish from an
+	// explicit opt-out.
 	OrchestratorTrivialInline *bool `toml:"orchestrator_trivial_inline"`
 }
 
@@ -600,10 +604,11 @@ func Default() *Config {
 			Dir: filepath.Join(home, ".mneme", "workflows"),
 		},
 		Delegation: DelegationConfig{
-			Enabled:             true,
-			ProtectedPaths:      []string{"cmd/", "internal/", "src/", "apps/", "packages/", "lib/"},
-			AllowedPaths:        []string{"docs/", "*.md", "CLAUDE.md", "CLAUDE.local.md"},
-			SubagentContainment: "warn",
+			Enabled:                   true,
+			ProtectedPaths:            []string{"cmd/", "internal/", "src/", "apps/", "packages/", "lib/"},
+			AllowedPaths:              []string{"docs/", "*.md", "CLAUDE.md", "CLAUDE.local.md"},
+			SubagentContainment:       "warn",
+			OrchestratorTrivialInline: true,
 		},
 		Spec: SpecConfig{
 			AutoGrill: true,
@@ -1480,7 +1485,8 @@ func (c *Config) SubagentContainmentMode(project string) string {
 // OrchestratorTrivialInlineEnabled reports whether the orchestrator may edit
 // inside an open trivial spec's scope for project (SPEC-171): a per-project
 // override that is declared wins; otherwise the global value (TOML or
-// MNEME_DELEGATION_TRIVIAL_INLINE) applies, which is false by default.
+// MNEME_DELEGATION_TRIVIAL_INLINE) applies, which is on by default since
+// SPEC-184.
 func (c *Config) OrchestratorTrivialInlineEnabled(project string) bool {
 	if proj, ok := c.Delegation.Projects[project]; ok && proj.OrchestratorTrivialInline != nil {
 		return *proj.OrchestratorTrivialInline

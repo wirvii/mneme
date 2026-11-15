@@ -1867,7 +1867,7 @@ func evaluateDelegation(input hookPreToolInput, cwd string) enforcement.Decision
 			d := resolvePathOwnership(target, cwd, found, content)
 			return d.ExitCode == 2, d.Owner
 		}
-		own = withTrivialInlineIfEnabled(own, input, identity, cfg, slug, cwd) // SPEC-171, opt-in
+		own = withTrivialInlineIfEnabled(own, input, identity, cfg, slug, cwd) // SPEC-171, on by default since SPEC-184
 	}
 
 	if input.ToolName == "Bash" {

@@ -14,6 +14,7 @@ import (
 	"github.com/wirvii/mneme/internal/db"
 	"github.com/wirvii/mneme/internal/enforcement"
 	"github.com/wirvii/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/risk"
 	"github.com/wirvii/mneme/internal/service"
 	"github.com/wirvii/mneme/internal/store"
 )
@@ -189,7 +190,7 @@ func TestWithTrivialInline_Table(t *testing.T) {
 			calls := 0
 			var granted string
 			own := withTrivialInline(blockingBase("legacy", &calls),
-				func() ([]string, error) { return tc.scopes, nil }, cwd,
+				func() ([]string, error) { return tc.scopes, nil }, cwd, riskGlobs(),
 				func(rel string) { granted = rel })
 			block, owner := own(tc.target)
 			if block != tc.wantBlock {
@@ -205,22 +206,33 @@ func TestWithTrivialInline_Table(t *testing.T) {
 	}
 }
 
+// riskGlobs is the exclusion list production builds from the default risk
+// table (SPEC-184: every path of risk items 1, 2 and 5).
+func riskGlobs() []string { return risk.DefaultTable().Globs() }
+
 // TestWithTrivialInline_ForbiddenAndOutOfTree covers criterion
-// "forbidden-globs".
+// "forbidden-globs", widened by SPEC-184 C10 to every path of risk items
+// 1, 2 and 5. The scopes internal/** and cmd/** cover every row, so only
+// the exclusion can block them.
 func TestWithTrivialInline_ForbiddenAndOutOfTree(t *testing.T) {
 	cwd := t.TempDir()
 	calls := 0
 	own := withTrivialInline(blockingBase("legacy", &calls),
-		func() ([]string, error) { return []string{"**"}, nil }, cwd, nil)
+		func() ([]string, error) { return []string{"internal/**", "cmd/**"}, nil }, cwd, riskGlobs(), nil)
 
 	for _, target := range []string{
 		"internal/db/migrations/023_x.sql",
 		"cmd/mneme/main.go",
 		"internal/install/assets/x.md",
-		"schema.go",
+		"internal/db/schema.sql",
+		"internal/db/migrations/x.sql",
+		"internal/deploy/run.sh",
+		"internal/web/package.json",
+		"internal/.env",
+		"internal/x/go.mod",
 	} {
 		if block, _ := own(target); !block {
-			t.Errorf("%s granted, want blocked (forbidden glob)", target)
+			t.Errorf("%s granted, want blocked (risk path)", target)
 		}
 	}
 	if block, _ := own(filepath.Join(filepath.Dir(cwd), "outside", "x.go")); !block {
@@ -229,8 +241,24 @@ func TestWithTrivialInline_ForbiddenAndOutOfTree(t *testing.T) {
 	if block, _ := own(""); !block {
 		t.Error("empty target granted")
 	}
-	if block, _ := own("internal/ok.go"); block {
-		t.Error("control: an ordinary path under scope ** must be granted")
+	if block, _ := own("internal/model/x.go"); block {
+		t.Error("control: an ordinary path under scope internal/** must be granted")
+	}
+}
+
+// TestWithTrivialInline_IgnoresCatchAllScopes covers SPEC-184 C10: a spec
+// already in implementing with scope ** grants nothing, while a sibling
+// spec with a concrete scope still grants its own paths.
+func TestWithTrivialInline_IgnoresCatchAllScopes(t *testing.T) {
+	cwd := t.TempDir()
+	calls := 0
+	own := withTrivialInline(blockingBase("legacy", &calls),
+		func() ([]string, error) { return []string{"**", "internal/model/*.go"}, nil }, cwd, riskGlobs(), nil)
+	if block, _ := own("internal/x.go"); !block {
+		t.Error("internal/x.go granted by scope **, want blocked")
+	}
+	if block, _ := own("internal/model/sdd.go"); block {
+		t.Error("internal/model/sdd.go blocked, want granted by the sibling scope")
 	}
 }
 
@@ -241,7 +269,7 @@ func TestWithTrivialInline_FailClosed(t *testing.T) {
 	t.Run("lookup error returns base result", func(t *testing.T) {
 		calls := 0
 		own := withTrivialInline(blockingBase("backend", &calls),
-			func() ([]string, error) { return []string{"**"}, errors.New("db broken") }, cwd, nil)
+			func() ([]string, error) { return []string{"internal/**"}, errors.New("db broken") }, cwd, riskGlobs(), nil)
 		block, owner := own("internal/x.go")
 		if !block || owner != "backend" {
 			t.Errorf("got (%v, %q), want the base result (true, backend)", block, owner)
@@ -251,7 +279,7 @@ func TestWithTrivialInline_FailClosed(t *testing.T) {
 	t.Run("base allowing never consults the lookup", func(t *testing.T) {
 		lookups := 0
 		own := withTrivialInline(func(string) (bool, string) { return false, "" },
-			func() ([]string, error) { lookups++; return nil, nil }, cwd, nil)
+			func() ([]string, error) { lookups++; return nil, nil }, cwd, riskGlobs(), nil)
 		if block, _ := own("internal/x.go"); block {
 			t.Error("base allowed, result blocked")
 		}
@@ -264,7 +292,7 @@ func TestWithTrivialInline_FailClosed(t *testing.T) {
 		lookups := 0
 		calls := 0
 		own := withTrivialInline(blockingBase("x", &calls),
-			func() ([]string, error) { lookups++; return []string{"a/*"}, nil }, cwd, nil)
+			func() ([]string, error) { lookups++; return []string{"a/*"}, nil }, cwd, riskGlobs(), nil)
 		own("a/1")
 		own("a/2")
 		own("b/1")
@@ -276,7 +304,7 @@ func TestWithTrivialInline_FailClosed(t *testing.T) {
 	t.Run("missing database via production lookup", func(t *testing.T) {
 		calls := 0
 		own := withTrivialInline(blockingBase("legacy", &calls),
-			trivialScopesFromDB(filepath.Join(t.TempDir(), "none.db"), "p"), cwd, nil)
+			trivialScopesFromDB(filepath.Join(t.TempDir(), "none.db"), "p"), cwd, riskGlobs(), nil)
 		if block, owner := own("internal/x.go"); !block || owner != "legacy" {
 			t.Errorf("got (%v, %q), want (true, legacy)", block, owner)
 		}
@@ -329,7 +357,7 @@ func TestCollectTrivialScopes_ReadErrors(t *testing.T) {
 			tt.rows.pos = 0
 			calls := 0
 			own := withTrivialInline(blockingBase("legacy", &calls),
-				func() ([]string, error) { return collectTrivialScopes(tt.rows) }, "/repo", nil)
+				func() ([]string, error) { return collectTrivialScopes(tt.rows) }, "/repo", riskGlobs(), nil)
 			if block, owner := own("a/1"); !block || owner != "legacy" {
 				t.Errorf("got (%v, %q), want (true, legacy): a read error must fail closed", block, owner)
 			}
@@ -346,17 +374,24 @@ func TestCollectTrivialScopes_ReadErrors(t *testing.T) {
 
 // --- evaluateDelegation wiring (real config.toml + real database) ---------
 
-// enableTrivialInline writes the opt-in into the sandboxed HOME's config.
-func enableTrivialInline(t *testing.T) {
+// setTrivialInline declares the switch in the sandboxed HOME's config.
+func setTrivialInline(t *testing.T, on bool) {
 	t.Helper()
 	path := config.DefaultPath()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte("[delegation]\norchestrator_trivial_inline = true\n"), 0o644); err != nil {
+	body := "[delegation]\norchestrator_trivial_inline = false\n"
+	if on {
+		body = "[delegation]\norchestrator_trivial_inline = true\n"
+	}
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
+
+// enableTrivialInline declares the switch on explicitly.
+func enableTrivialInline(t *testing.T) { t.Helper(); setTrivialInline(t, true) }
 
 func orchestratorInput(tool, path string) hookPreToolInput {
 	in := hookPreToolInput{ToolName: tool}
@@ -364,12 +399,30 @@ func orchestratorInput(tool, path string) hookPreToolInput {
 	return in
 }
 
-// TestEvaluateDelegation_TrivialInline_DefaultOff covers "default-off": with
-// the option undeclared the edit is blocked as always and the scope lookup is
-// never even built.
-func TestEvaluateDelegation_TrivialInline_DefaultOff(t *testing.T) {
+// TestEvaluateDelegation_TrivialInline_DefaultOn covers SPEC-184 C10: with
+// no config at all, the orchestrator's Edit inside an open trivial scope is
+// allowed.
+func TestEvaluateDelegation_TrivialInline_DefaultOn(t *testing.T) {
 	slug, dbPath := setupDelegationRepo(t)
 	newSDDFixture(t, dbPath, slug).openTrivialSpec("open", "internal/model/*.go")
+	t.Setenv("MNEME_DELEGATION_TRIVIAL_INLINE", "")
+	if _, err := os.Stat(config.DefaultPath()); err == nil {
+		t.Fatalf("precondition: %s must not exist", config.DefaultPath())
+	}
+
+	cwd, _ := os.Getwd()
+	if got := evaluateDelegation(orchestratorInput("Edit", "internal/model/sdd.go"), cwd); got.Block {
+		t.Fatalf("Block = true with no config, want allowed by default: %+v", got)
+	}
+}
+
+// TestEvaluateDelegation_TrivialInline_ExplicitOff covers SPEC-184 C10:
+// orchestrator_trivial_inline = false blocks the edit as before and the
+// scope lookup is never even built.
+func TestEvaluateDelegation_TrivialInline_ExplicitOff(t *testing.T) {
+	slug, dbPath := setupDelegationRepo(t)
+	newSDDFixture(t, dbPath, slug).openTrivialSpec("open", "internal/model/*.go")
+	setTrivialInline(t, false)
 
 	built := 0
 	orig := newTrivialScopeLookup
@@ -458,6 +511,7 @@ func TestEvaluateDelegation_TrivialInline_SubagentUnchanged(t *testing.T) {
 	in := orchestratorInput("Edit", "internal/model/sdd.go")
 	in.AgentID, in.AgentType = "agent-1", "backend"
 
+	setTrivialInline(t, false)
 	off := evaluateDelegation(in, cwd)
 	enableTrivialInline(t)
 	on := evaluateDelegation(in, cwd)

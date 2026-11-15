@@ -7,7 +7,7 @@ import (
 )
 
 // TestOrchestratorTrivialInlineEnabled covers criterion "config": default
-// off, global TOML, per-project override in both directions, and the env
+// on since SPEC-184, global TOML, per-project override in both directions, and the env
 // override of the GLOBAL value (which never beats a project declaration).
 func TestOrchestratorTrivialInlineEnabled(t *testing.T) {
 	yes, no := true, false
@@ -19,13 +19,14 @@ func TestOrchestratorTrivialInlineEnabled(t *testing.T) {
 		env  string
 		want bool
 	}{
-		{"default off", "", "", false},
+		{"default on", "", "", true},
+		{"global false disables", "[delegation]\norchestrator_trivial_inline = false\n", "", false},
 		{"global toml true", "[delegation]\norchestrator_trivial_inline = true\n", "", true},
 		{"project false beats global true", "[delegation]\norchestrator_trivial_inline = true\n[delegation.projects.\"" + slug + "\"]\norchestrator_trivial_inline = false\n", "", false},
-		{"project true beats global false", "[delegation.projects.\"" + slug + "\"]\norchestrator_trivial_inline = true\n", "", true},
-		{"other project does not apply", "[delegation.projects.\"other/x\"]\norchestrator_trivial_inline = true\n", "", false},
-		{"env 1 enables", "", "1", true},
-		{"env true enables", "", "true", true},
+		{"project true beats global false", "[delegation]\norchestrator_trivial_inline = false\n[delegation.projects.\"" + slug + "\"]\norchestrator_trivial_inline = true\n", "", true},
+		{"other project does not apply", "[delegation.projects.\"other/x\"]\norchestrator_trivial_inline = false\n", "", true},
+		{"env 1 enables", "[delegation]\norchestrator_trivial_inline = false\n", "1", true},
+		{"env true enables", "[delegation]\norchestrator_trivial_inline = false\n", "true", true},
 		{"env 0 disables global true", "[delegation]\norchestrator_trivial_inline = true\n", "0", false},
 		{"env false disables", "[delegation]\norchestrator_trivial_inline = true\n", "false", false},
 		{"env garbage ignored", "[delegation]\norchestrator_trivial_inline = true\n", "maybe", true},
