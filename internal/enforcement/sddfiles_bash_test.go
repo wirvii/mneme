@@ -159,6 +159,8 @@ func TestEvaluateSDDBash_Cd(t *testing.T) {
 		{"cd .mneme; sed -i s/a/b/ sdd/a", "cd"},
 		{"cd .mneme/sdd && bash -c 'echo x > a'", "cd"},
 		{"cd /w/repo/.mneme/sdd; tee a", "cd"},
+		{"cd .mneme/sdd && git rm a", "cd"},
+		{`bash -c "cd .mneme/sdd && echo x > a"`, "cd"},
 	})
 	runSDDAllows(t, []string{
 		"cd .mneme/sdd && cat a",
@@ -237,6 +239,9 @@ func TestEvaluateSDDBash_GitSides(t *testing.T) {
 		{"git restore -s HEAD~1 .mneme/sdd/a", "git restore --source"},
 		{"git -C /w/repo checkout --theirs .mneme/sdd/a", "git checkout --theirs"},
 		{"git -c core.x=1 --no-pager restore --ours .mneme/sdd/a", "git restore --ours"},
+		{"git rm .mneme/sdd/backlog/BL-1.md", "git rm"},
+		{"git -C /w/repo rm .mneme/sdd/a", "git rm"},
+		{"git rm --cached .mneme/sdd/a", "git rm"},
 	})
 	runSDDAllows(t, []string{
 		"git checkout --theirs internal/x.go",
@@ -250,6 +255,7 @@ func TestEvaluateSDDBash_GitSides(t *testing.T) {
 		"git -C /w/repo status",
 		"git",
 		"git -C",
+		"git rm docs/a.md",
 	})
 }
 
@@ -293,4 +299,54 @@ func TestEvaluateSDDBash_Compound(t *testing.T) {
 		{"f() { rm " + w + "; }; f", "rm"},
 		{"case x in x) rm " + w + ";; esac", "rm"},
 	})
+}
+
+func TestWalkWriteForms(t *testing.T) {
+	if walkWriteForms("echo x > a; cp a b", 0, nil, nil, nil) {
+		t.Error("nil callbacks must not stop the walk")
+	}
+
+	var levels []int
+	var redirects [][2]string
+	var progs []string
+	walkWriteForms(`bash -c "echo x > a"`, 0,
+		func(_ string, depth int) bool { levels = append(levels, depth); return false },
+		func(op, target string) bool { redirects = append(redirects, [2]string{op, target}); return false },
+		func(prog string, _ []string) bool { progs = append(progs, prog); return false },
+	)
+	if len(levels) != 2 || levels[0] != 0 || levels[1] != 1 {
+		t.Errorf("onLevel depths = %v, want [0 1]", levels)
+	}
+	if len(redirects) != 1 || redirects[0] != [2]string{">", "a"} {
+		t.Errorf("onRedirect = %v, want [[> a]]", redirects)
+	}
+	for _, p := range progs {
+		if p == "bash" {
+			t.Error("onSimple received the shell binary of bash -c")
+		}
+	}
+
+	var gotArgs []string
+	walkWriteForms("env X=1 cp a b", 0, nil, nil, func(prog string, args []string) bool {
+		if prog == "cp" {
+			gotArgs = args
+		}
+		return false
+	})
+	if len(gotArgs) != 2 || gotArgs[0] != "a" || gotArgs[1] != "b" {
+		t.Errorf("onSimple args = %v, want [a b] without the program", gotArgs)
+	}
+
+	called := false
+	walkWriteForms("cat < a 2>&1", 0, nil, func(string, string) bool { called = true; return false }, nil)
+	if called {
+		t.Error("onRedirect called for an input redirection or a descriptor duplication")
+	}
+
+	if !walkWriteForms("rm a; rm b", 0, nil, nil, func(string, []string) bool { return true }) {
+		t.Error("a callback returning true must stop the walk and report true")
+	}
+	if walkWriteForms(`echo "`, 0, func(string, int) bool { t.Error("onLevel visited an unparsable command"); return false }, nil, nil) {
+		t.Error("a parse error must report false")
+	}
 }

@@ -44,6 +44,19 @@ type sddWrite struct {
 	// roots are destinations that must not be the bare ".mneme" directory:
 	// copying or moving a directory named sdd into it would create the tree.
 	roots []string
+	// sources are the operands mv takes away from where they were: the risk
+	// guard (SPEC-185) asks whether a test file leaves the tree with them.
+	sources []string
+	// dest is where cp, mv, ln or install put their sources: the value of
+	// -t/--target-directory (with a trailing "/", it is a directory) or the
+	// last operand.
+	dest string
+	// removes is true for the forms that delete their operands: rm, rmdir and
+	// git rm without --cached.
+	removes bool
+	// script is the in-place edit script of sed -i or perl -i, so the risk
+	// guard can look for a skip marker it would add.
+	script string
 }
 
 // argSpec describes the flags of one program: which take a value, so that the
@@ -369,7 +382,7 @@ func operandsWrite(form string, args []string, spec argSpec) sddWrite {
 // that holds the tree removes it as well.
 func rmWrite(args []string) sddWrite {
 	p := parseArgs(args, argSpec{})
-	w := sddWrite{form: "rm", operands: p.operands}
+	w := sddWrite{form: "rm", operands: p.operands, removes: true}
 	if p.flags["-r"] || p.flags["-R"] || p.flags["--recursive"] {
 		w.ancestors = p.operands
 	}
@@ -380,7 +393,7 @@ func rmWrite(args []string) sddWrite {
 // along.
 func rmdirWrite(args []string) sddWrite {
 	operands := parseArgs(args, argSpec{}).operands
-	return sddWrite{form: "rmdir", operands: operands, ancestors: operands}
+	return sddWrite{form: "rmdir", operands: operands, ancestors: operands, removes: true}
 }
 
 // installWrite handles install: with -d every operand is a directory to create,
@@ -405,7 +418,9 @@ var gitGlobalValueOpts = map[string]bool{
 // gitSideWrite recognises the git forms that overwrite a working-tree file with
 // one side of a conflict (`checkout --ours|--theirs`, `restore --ours|--theirs`)
 // or with another revision (`restore --source`): resolving a conflict in
-// .mneme/sdd is a person's job. Everything else git does (pull, fetch, merge,
+// .mneme/sdd is a person's job. `git rm` is a write form too (SPEC-185): it
+// deletes the file, or with --cached drops it from the index, which the .mneme/sdd
+// guard protects all the same. Everything else git does (pull, fetch, merge,
 // checkout <branch>, restore --staged, stash, rebase) is not a write form.
 func gitSideWrite(args []string) (sddWrite, bool) {
 	i := 0
@@ -421,6 +436,9 @@ func gitSideWrite(args []string) (sddWrite, bool) {
 	sub, rest := args[i], args[i+1:]
 	var spec argSpec
 	switch sub {
+	case "rm":
+		p := parseArgs(rest, argSpec{})
+		return sddWrite{form: "git rm", operands: p.operands, removes: !p.flags["--cached"]}, true
 	case "checkout":
 		spec = argSpec{shortValue: "bB", longValue: map[string]bool{"--orphan": true}}
 	case "restore":
@@ -461,7 +479,7 @@ func perlWrite(args []string) (sddWrite, bool) {
 	if !p.flags["-i"] {
 		return sddWrite{}, false
 	}
-	return sddWrite{form: "perl -i", operands: p.operands}, true
+	return sddWrite{form: "perl -i", operands: p.operands, script: strings.Join(p.values["-e"], "\n")}, true
 }
 
 // inlineScriptWrite looks into the script of `python -c` or `node -e`. Only a
@@ -495,11 +513,13 @@ func sedWrite(args []string) (sddWrite, bool) {
 		return sddWrite{}, false
 	}
 	operands := p.operands
+	scripts := append(append([]string(nil), p.values["-e"]...), p.values["--expression"]...)
 	hasScript := p.flags["-e"] || p.flags["-f"] || p.flags["--expression"] || p.flags["--file"]
 	if !hasScript && len(operands) > 0 {
+		scripts = append(scripts, operands[0])
 		operands = operands[1:]
 	}
-	return sddWrite{form: "sed -i", operands: operands}, true
+	return sddWrite{form: "sed -i", operands: operands, script: strings.Join(scripts, "\n")}, true
 }
 
 // copyWrite handles cp and mv. The destination is -t/--target-directory when
@@ -512,18 +532,86 @@ func copyWrite(form string, args []string, movesSources bool) sddWrite {
 	})
 	var sources []string
 	var dests []string
+	var dest string
 	switch targets := append(p.values["-t"], p.values["--target-directory"]...); {
 	case len(targets) > 0:
 		sources, dests = p.operands, targets
+		dest = targets[len(targets)-1]
+		if !strings.HasSuffix(dest, "/") {
+			dest += "/"
+		}
 	case len(p.operands) >= minCopyOperands:
 		sources, dests = p.operands[:len(p.operands)-1], p.operands[len(p.operands)-1:]
+		dest = dests[0]
 	default:
 		return sddWrite{form: form}
 	}
-	w := sddWrite{form: form, operands: dests, roots: dests}
+	w := sddWrite{form: form, operands: dests, roots: dests, dest: dest}
 	if movesSources {
 		w.operands = append(w.operands, sources...)
 		w.ancestors = sources
+		w.sources = sources
 	}
 	return w
+}
+
+// walkWriteForms visits, level by level, the write-capable constructs of
+// command: onLevel(command, depth) once per level (the command itself and the
+// body of each `bash -c`, up to maxBashRecursionDepth); then each redirection
+// for which isWriteRedirect(op) holds and whose target is not a bare file
+// descriptor number, as onRedirect(op, target); then each simple command after
+// skipWrappers as onSimple(prog, args), where prog is programName(argv[0]) and
+// args is argv[1:] (the program is never in args). A shell binary followed by
+// -c is not passed to onSimple: its script is walked as the next level. Any
+// callback may be nil. A callback returning true stops the walk and makes it
+// return true. A parse error visits nothing at that level.
+//
+// It exists so the data-directory and risk guards of SPEC-185 read a command
+// the same way; the .mneme/sdd guard keeps its own walk, which predates it.
+func walkWriteForms(command string, depth int,
+	onLevel func(command string, depth int) bool,
+	onRedirect func(op, target string) bool,
+	onSimple func(prog string, args []string) bool) bool {
+	cmds, err := shell.SimpleCommands(command)
+	if err != nil {
+		return false
+	}
+	reds, err := shell.Redirects(command)
+	if err != nil {
+		return false
+	}
+	if onLevel != nil && onLevel(command, depth) {
+		return true
+	}
+	for _, r := range reds {
+		if !isWriteRedirect(r.Op) || isDescriptorNumber(r.Target) {
+			continue
+		}
+		if onRedirect != nil && onRedirect(r.Op, r.Target) {
+			return true
+		}
+	}
+	for _, sc := range cmds {
+		args, _ := skipWrappers(sc.Args, nil)
+		if len(args) == 0 {
+			continue
+		}
+		prog := programName(args[0])
+		if isShellBinary(prog) && len(args) >= dashCArgc && args[1] == shellDashC {
+			if depth < maxBashRecursionDepth && walkWriteForms(args[2], depth+1, onLevel, onRedirect, onSimple) {
+				return true
+			}
+			continue
+		}
+		if onSimple != nil && onSimple(prog, args[1:]) {
+			return true
+		}
+	}
+	return false
+}
+
+// isDescriptorNumber reports a redirection target that is a file descriptor
+// ("1" in ">&1"), not a file.
+func isDescriptorNumber(target string) bool {
+	return target != "" && strings.Trim(target, fdDigits) == ""
 }
