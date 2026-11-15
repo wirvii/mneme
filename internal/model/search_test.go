@@ -265,3 +265,45 @@ func TestContextResponse_JSONFields(t *testing.T) {
 		}
 	})
 }
+
+// TestContextRequest_IncludeSynthesis_JSON verifies that include_synthesis
+// keeps the three states the resolution matrix of SPEC-187 needs: omitted
+// (nil, decided by context_packing_mode), explicit true and explicit false.
+func TestContextRequest_IncludeSynthesis_JSON(t *testing.T) {
+	t.Run("omitted", func(t *testing.T) {
+		data, err := json.Marshal(ContextRequest{Project: "p"})
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var m map[string]any
+		if err := json.Unmarshal(data, &m); err != nil {
+			t.Fatalf("unmarshal map: %v", err)
+		}
+		if _, ok := m["include_synthesis"]; ok {
+			t.Errorf("include_synthesis present in %s, want omitted", data)
+		}
+		var back ContextRequest
+		if err := json.Unmarshal([]byte(`{"project":"p"}`), &back); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if back.IncludeSynthesis != nil {
+			t.Errorf("IncludeSynthesis = %v, want nil", *back.IncludeSynthesis)
+		}
+	})
+	for _, want := range []bool{true, false} {
+		t.Run("explicit", func(t *testing.T) {
+			v := want
+			data, err := json.Marshal(ContextRequest{Project: "p", IncludeSynthesis: &v})
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			var back ContextRequest
+			if err := json.Unmarshal(data, &back); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if back.IncludeSynthesis == nil || *back.IncludeSynthesis != want {
+				t.Errorf("round trip of %s lost include_synthesis=%v", data, want)
+			}
+		})
+	}
+}

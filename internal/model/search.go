@@ -101,6 +101,14 @@ type ContextRequest struct {
 	// while an explicit false disables graph expansion for this request only.
 	// Has no effect when Focus is empty.
 	IncludeGraph *bool `json:"include_graph,omitempty"`
+
+	// IncludeSynthesis decides whether synthesis memories (and the cluster
+	// overviews built from them) take part in this context (SPEC-187).
+	// Using *bool so that nil (omitted) defers to context_packing_mode:
+	// "auto" (the default) leaves syntheses out, while "communities" and
+	// "flat" keep them, as they did before SPEC-187. An explicit true or
+	// false always wins over the mode.
+	IncludeSynthesis *bool `json:"include_synthesis,omitempty"`
 }
 
 // ContextResponse is the curated memory bundle returned by mem_context.

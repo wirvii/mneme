@@ -160,6 +160,10 @@ func allTools() []ToolDefinition {
 						"type":        "boolean",
 						"description": "Enable graph expansion for focus matching. When true and focus is provided, topologically related memories receive the same +0.3 boost as text-matched focus results. Uses PPR or 1-hop depending on config.graph_mode. Default: true (config default).",
 					},
+					"include_synthesis": map[string]any{
+						"type":        "boolean",
+						"description": "Pack cluster overviews (synthesis memories). Default: false in auto mode, true in communities/flat.",
+					},
 				},
 			},
 		},
