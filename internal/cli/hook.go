@@ -39,6 +39,10 @@ import (
 // Events:
 //   - session-start: loads and prints project context so the agent can consume
 //     it as part of its initialization
+//   - stop: Stop hook of the orchestrator (SPEC-183). When the session has
+//     work after its last close (session summary or checkpoint) older than
+//     [hooks] stop_reminder_after, prints {"decision":"block","reason":...}
+//     once per work window naming mem_session_end. Fail-open, exit 0 always.
 //   - session-end: retired no-op (SPEC-106 D2). No longer registered by
 //     `mneme install` (see Agent.RetiredHooks, which purges any pre-existing
 //     registration) — it survives only so a host that has not reinstalled
@@ -47,6 +51,9 @@ import (
 //     hook's stdout, Codex rejects plain text for that event outright, and
 //     Stop fires once per turn anyway, not once per session. The session-end
 //     discipline that actually works lives in the operating manual, not here.
+//     The Stop event came back with SPEC-183, served by `stop`: the premise
+//     was wrong, Claude Code discards a Stop hook's stdout as text but honours
+//     it as a JSON decision.
 //   - pre-tool-use: evaluates active rules against the current tool invocation
 //     (stdin JSON) and emits markdown to stdout; exits with code 2 to block.
 //     For Read/Grep/Glob and code-search Bash on a project with an indexed
@@ -89,9 +96,13 @@ human use.
 
 Events:
   session-start     Load and print project context for the agent to consume
+  stop              Stop hook: reminds the orchestrator once per work window
+                    to call mem_session_end (prints a JSON block decision);
+                    always exits 0
   session-end       Retired no-op: emits {} (SPEC-106 — no longer registered
                     by mneme install; kept only so hosts that have not
-                    reinstalled get a harmless exit)
+                    reinstalled get a harmless exit). The Stop event is now
+                    served by stop
   pre-tool-use      Evaluate rules against the current tool invocation (PreToolUse hook)
   enforce-delegation  Orchestrator-guard (Layer 2): blocks the orchestrator from
                     writing to, or running Bash against, a path outside the static
@@ -122,6 +133,8 @@ Events:
 				// SPEC-106). Sin salida y exit 0, para que cada mensaje del
 				// usuario no muestre un error de hook.
 				return nil
+			case stopEventStop:
+				return runHookStop(cmd.Context(), stopEventStop, hookStdin(os.Stdin), os.Stdout, os.Stderr, time.Now)
 			case stopEventSubagent:
 				return runHookStop(cmd.Context(), stopEventSubagent, hookStdin(os.Stdin), os.Stdout, os.Stderr, time.Now)
 			case "skill-usage":
@@ -136,7 +149,7 @@ Events:
 				}
 				return runHookPathOwned(args[1])
 			default:
-				return fmt.Errorf("hook: unknown event %q — supported events: session-start, session-end, subagent-stop, pre-tool-use, skill-usage, enforce-delegation, tokenize, path-owned", event)
+				return fmt.Errorf("hook: unknown event %q — supported events: session-start, session-end, stop, subagent-stop, pre-tool-use, skill-usage, enforce-delegation, tokenize, path-owned", event)
 			}
 		},
 	}

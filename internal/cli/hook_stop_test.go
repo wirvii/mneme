@@ -7,12 +7,14 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/wirvii/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/store"
 )
 
 // stopHookFixture is an isolated HOME, a git repo without remote (so the
@@ -116,6 +118,62 @@ func writeDeliveryBlock(f *sddFixture, specID, estado string) {
 	}
 }
 
+// saveMemoryAt stores m in the fixture's project and stamps created_at and
+// updated_at with at: no store write path keeps a caller-supplied instant.
+func (f *stopHookFixture) saveMemoryAt(t *testing.T, m *model.Memory, at time.Time) string {
+	t.Helper()
+	m.Project = f.slug
+	m.Scope = model.ScopeProject
+	if m.Title == "" {
+		m.Title = "title"
+	}
+	m.Content = "content"
+	m.DecayRate = 0.05
+	saved, err := store.NewMemoryStore(f.db).Create(context.Background(), m)
+	if err != nil {
+		t.Fatalf("create memory: %v", err)
+	}
+	stamp := at.UTC().Format(time.RFC3339Nano)
+	if _, err := f.db.Exec("UPDATE memories SET created_at = ?, updated_at = ? WHERE id = ?", stamp, stamp, saved.ID); err != nil {
+		t.Fatalf("backdate memory: %v", err)
+	}
+	return saved.ID
+}
+
+// work saves one work memory of session sid at at.
+func (f *stopHookFixture) work(t *testing.T, sid string, at time.Time) {
+	t.Helper()
+	f.saveMemoryAt(t, &model.Memory{Type: model.TypeDiscovery, SessionID: sid}, at)
+}
+
+// summary saves the session summary SessionEnd writes for sid, at at.
+func (f *stopHookFixture) summary(t *testing.T, sid string, at time.Time) {
+	t.Helper()
+	f.saveMemoryAt(t, &model.Memory{Type: model.TypeSessionSummary, SessionID: sid, TopicKey: model.SessionSummaryTopicKey(sid)}, at)
+}
+
+// checkpoint saves the project's checkpoint/latest at at.
+func (f *stopHookFixture) checkpoint(t *testing.T, at time.Time) {
+	t.Helper()
+	f.saveMemoryAt(t, &model.Memory{Type: model.TypeSessionSummary, TopicKey: "checkpoint/latest"}, at)
+}
+
+// writeRegistry writes a registry file by hand.
+func (f *stopHookFixture) writeRegistry(t *testing.T, reg stopRegistry) {
+	t.Helper()
+	path := f.registryPath(reg.SessionID)
+	if err := os.MkdirAll(filepath.Dir(path), stopRegistryDirPerm); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, stopRegistryFilePerm); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // stopPayload builds a Stop/SubagentStop payload; an empty agentID is the
 // orchestrator.
 func stopPayload(event, sessionID, agentID, agentType, cwd string, active bool) string {
@@ -198,6 +256,16 @@ func TestHookStop_StopHookActive(t *testing.T) {
 		f := newStopHookFixture(t)
 		implementingStandardSpec(f.sddFixture, "pending", false)
 		r := runStop(stopEventSubagent, stopPayload(stopEventSubagent, "s1", "a1", "backend", f.cwd, true), time.Now())
+		assertPass(t, r, false)
+	})
+
+	t.Run("orchestrator_window_pending", func(t *testing.T) {
+		f := newStopHookFixture(t)
+		now := time.Now().UTC().Truncate(time.Second)
+		f.work(t, "s1", now.Add(-45*time.Minute))
+		f.work(t, "s1", now.Add(-30*time.Minute))
+		f.work(t, "s1", now.Add(-10*time.Minute))
+		r := runStop(stopEventStop, stopPayload(stopEventStop, "s1", "", "", f.cwd, true), now)
 		assertPass(t, r, false)
 	})
 }
@@ -323,8 +391,16 @@ func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("stdout c
 // TestHookStop_FailOpen covers C6: every failure lets the agent stop with at
 // most one [mneme] line on stderr.
 func TestHookStop_FailOpen(t *testing.T) {
-	failOpenSubtests(t, stopEventSubagent, "a1", "backend", func(f *stopHookFixture) {
-		implementingStandardSpec(f.sddFixture, "pending", false)
+	t.Run(stopEventSubagent, func(t *testing.T) {
+		failOpenSubtests(t, stopEventSubagent, "a1", "backend", func(f *stopHookFixture) {
+			implementingStandardSpec(f.sddFixture, "pending", false)
+		})
+	})
+	t.Run(stopEventStop, func(t *testing.T) {
+		failOpenSubtests(t, stopEventStop, "", "", func(f *stopHookFixture) {
+			now := time.Now().UTC().Truncate(time.Second)
+			f.work(t, "fail-1", now.Add(-45*time.Minute))
+		})
 	})
 }
 
@@ -470,6 +546,26 @@ func TestHookStop_EnforcelogOnBlock(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("Stop", func(t *testing.T) {
+		f := newStopHookFixture(t)
+		now := time.Now().UTC().Truncate(time.Second)
+		f.work(t, "log-2", now.Add(-45*time.Minute))
+		payload := stopPayload(stopEventStop, "log-2", "", "", f.cwd, false)
+
+		decodeBlock(t, runStop(stopEventStop, payload, now).stdout)
+		assertPass(t, runStop(stopEventStop, payload, now), false)
+
+		lines := readEnforcelog(t, f)
+		if len(lines) != 1 {
+			t.Fatalf("enforcelog has %d lines, want 1: %v", len(lines), lines)
+		}
+		for _, want := range []string{`"tool":"Stop"`, `"caller":"orchestrator"`, `"decision":"block"`, `"reason":"session_summary_pending"`, `"target":"log-2"`} {
+			if !strings.Contains(lines[0], want) {
+				t.Errorf("enforcelog line lacks %s: %s", want, lines[0])
+			}
+		}
+	})
 }
 
 // TestStopRegistry_CorruptOrWrongSchema: a corrupt or foreign-schema registry
@@ -591,5 +687,262 @@ func TestHookSubagentStop_Cobra(t *testing.T) {
 	newStopHookFixture(t)
 	if out := runHookCobra(t, stopEventSubagent, `{"stop_hook_active":true}`); out != "" {
 		t.Errorf("stdout = %q, want empty", out)
+	}
+}
+
+// TestHookStop_OrchestratorReminderPerWindow covers C5: one reminder per work
+// window, the window starting at the first work memory after the latest
+// close, and only past the threshold (default 30m). Every instant falls in its
+// own second (D20 caveat).
+func TestHookStop_OrchestratorReminderPerWindow(t *testing.T) {
+	const sid = "orch-1"
+	now := time.Now().UTC().Truncate(time.Second)
+	ago := func(d time.Duration) time.Time { return now.Add(-d) }
+	payload := func(f *stopHookFixture) string { return stopPayload(stopEventStop, sid, "", "", f.cwd, false) }
+
+	t.Run("first_window", func(t *testing.T) {
+		f := newStopHookFixture(t)
+		f.work(t, sid, ago(45*time.Minute))
+		f.work(t, sid, ago(30*time.Minute))
+		f.work(t, sid, ago(10*time.Minute))
+
+		first := runStop(stopEventStop, payload(f), now)
+		reason := decodeBlock(t, first.stdout)
+		for _, want := range []string{"`mem_session_end`", sid, "3 memorias", "lleva 45m sin resumen"} {
+			if !strings.Contains(reason, want) {
+				t.Errorf("reason does not contain %q:\n%s", want, reason)
+			}
+		}
+		assertPass(t, runStop(stopEventStop, payload(f), now), false)
+	})
+
+	t.Run("shortcut_without_db", func(t *testing.T) {
+		f := newStopHookFixture(t)
+		reminded := ago(5 * time.Minute)
+		f.writeRegistry(t, stopRegistry{Schema: stopRegistrySchema, SessionID: sid, OrchestratorRemindedAt: &reminded})
+		if err := f.db.Close(); err != nil {
+			t.Fatal(err)
+		}
+		for _, suffix := range []string{"", "-wal", "-shm"} {
+			if err := os.Remove(f.dbPath + suffix); err != nil && !os.IsNotExist(err) {
+				t.Fatal(err)
+			}
+		}
+		assertPass(t, runStop(stopEventStop, payload(f), now), false)
+	})
+
+	t.Run("closed_no_new_work", func(t *testing.T) {
+		f := newStopHookFixture(t)
+		f.work(t, sid, ago(45*time.Minute))
+		f.work(t, sid, ago(30*time.Minute))
+		f.summary(t, sid, ago(5*time.Minute))
+		assertPass(t, runStop(stopEventStop, payload(f), now), false)
+	})
+
+	t.Run("rearm_after_close", func(t *testing.T) {
+		f := newStopHookFixture(t)
+		oldAnchor, oldReminder := ago(90*time.Minute), ago(50*time.Minute)
+		f.writeRegistry(t, stopRegistry{Schema: stopRegistrySchema, SessionID: sid, OrchestratorRemindedAt: &oldReminder, OrchestratorRemindedAnchor: &oldAnchor})
+		f.work(t, sid, oldAnchor)
+		f.summary(t, sid, ago(40*time.Minute))
+		anchor := ago(35 * time.Minute).Add(117554 * time.Microsecond)
+		f.work(t, sid, anchor)
+		f.work(t, sid, ago(20*time.Minute))
+
+		reason := decodeBlock(t, runStop(stopEventStop, payload(f), now).stdout)
+		if !strings.Contains(reason, "2 memorias") {
+			t.Errorf("reason does not count 2 memorias:\n%s", reason)
+		}
+		reg := loadStopRegistry(f.registryPath(sid), sid)
+		if reg.OrchestratorRemindedAnchor == nil || !reg.OrchestratorRemindedAnchor.Equal(anchor) {
+			t.Errorf("registry anchor = %v, want %v", reg.OrchestratorRemindedAnchor, anchor)
+		}
+		assertPass(t, runStop(stopEventStop, payload(f), now), false)
+		// Past the shortcut window the anchor itself (nanoseconds included)
+		// still identifies the window as reminded.
+		assertPass(t, runStop(stopEventStop, payload(f), now.Add(time.Hour)), false)
+	})
+
+	t.Run("checkpoint_counts_as_close", func(t *testing.T) {
+		f := newStopHookFixture(t)
+		f.work(t, sid, ago(45*time.Minute))
+		f.work(t, sid, ago(30*time.Minute))
+		f.checkpoint(t, ago(5*time.Minute))
+		assertPass(t, runStop(stopEventStop, payload(f), now), false)
+	})
+
+	t.Run("stale_checkpoint_before_session", func(t *testing.T) {
+		f := newStopHookFixture(t)
+		f.checkpoint(t, ago(72*time.Hour))
+		f.work(t, sid, ago(10*time.Minute))
+		assertPass(t, runStop(stopEventStop, payload(f), now), false)
+	})
+
+	t.Run("close_then_long_pause", func(t *testing.T) {
+		f := newStopHookFixture(t)
+		f.work(t, sid, ago(73*time.Hour))
+		f.summary(t, sid, ago(72*time.Hour))
+		f.work(t, sid, ago(10*time.Minute))
+		assertPass(t, runStop(stopEventStop, payload(f), now), false)
+	})
+
+	t.Run("young_window", func(t *testing.T) {
+		f := newStopHookFixture(t)
+		f.work(t, sid, ago(10*time.Minute))
+		assertPass(t, runStop(stopEventStop, payload(f), now), false)
+	})
+
+	t.Run("no_work", func(t *testing.T) {
+		f := newStopHookFixture(t)
+		f.work(t, "", ago(45*time.Minute))
+		f.work(t, "another-session", ago(45*time.Minute))
+		assertPass(t, runStop(stopEventStop, payload(f), now), false)
+	})
+
+	t.Run("disabled", func(t *testing.T) {
+		_, _ = setupDelegationRepo(t)
+		home := os.Getenv("HOME")
+		cwd, err := os.Getwd()
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfgPath := filepath.Join(home, ".mneme", "config.toml")
+		if err := os.MkdirAll(filepath.Dir(cfgPath), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(cfgPath, []byte("[hooks]\nstop_reminder_after = \"0\"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		assertPass(t, runStop(stopEventStop, stopPayload(stopEventStop, sid, "", "", cwd, false), now), false)
+	})
+}
+
+// backtickIdent extracts what each reason puts between backticks.
+var backtickIdent = regexp.MustCompile("`([^`]+)`")
+
+// backtickSet returns the backticked identifiers of reason minus ignore.
+func backtickSet(reason, ignore string) map[string]bool {
+	set := map[string]bool{}
+	for _, m := range backtickIdent.FindAllStringSubmatch(reason, -1) {
+		if m[1] != ignore {
+			set[m[1]] = true
+		}
+	}
+	return set
+}
+
+// TestStopReasons_OnlyNameResolvingTools covers C7 (D8): a reason names only
+// the tool whose call resolves the block, and doing what it says (or, for a
+// bystander, nothing) lets the agent stop.
+func TestStopReasons_OnlyNameResolvingTools(t *testing.T) {
+	missing := &model.DeliveryCheck{SpecID: "SPEC-007", Contract: model.DeliveryContractMissing}
+	missingDetail := &model.DeliveryCheck{SpecID: "SPEC-008", Contract: model.DeliveryContractMissing, Detail: "tarea.md not readable: no such file"}
+	invalid := &model.DeliveryCheck{SpecID: "SPEC-009", Contract: model.DeliveryContractInvalid, Detail: "delivery: riesgo.item 7 out of range 1..6"}
+	stale := &model.DeliveryCheck{SpecID: "SPEC-010", Contract: model.DeliveryContractValid, Current: false}
+
+	implementerCases := map[string]struct {
+		checks []*model.DeliveryCheck
+		want   []string
+	}{
+		"missing":        {[]*model.DeliveryCheck{missing}, []string{"- SPEC-007 (bloque ausente)", `id = "SPEC-007"`}},
+		"missing_detail": {[]*model.DeliveryCheck{missingDetail}, []string{"(bloque ausente: tarea.md not readable: no such file)"}},
+		"invalid":        {[]*model.DeliveryCheck{invalid}, []string{"(bloque inválido: delivery: riesgo.item 7 out of range 1..6)"}},
+		"stale":          {[]*model.DeliveryCheck{stale}, []string{"(bloque anterior a la última entrada a implementing)"}},
+		"several":        {[]*model.DeliveryCheck{stale, invalid, missing, missingDetail}, []string{`id = "<SPEC>"`, "- SPEC-007", "- SPEC-010"}},
+	}
+	for name, tc := range implementerCases {
+		t.Run("implementer_"+name, func(t *testing.T) {
+			reason := deliveryPendingReason(tc.checks)
+			if got := backtickSet(reason, ""); len(got) != 1 || !got["spec_doc_write"] {
+				t.Errorf("backticked identifiers = %v, want exactly {spec_doc_write}:\n%s", got, reason)
+			}
+			for _, w := range append(tc.want, bystanderPhrase) {
+				if !strings.Contains(reason, w) {
+					t.Errorf("reason does not contain %q:\n%s", w, reason)
+				}
+			}
+		})
+	}
+	if r := deliveryPendingReason([]*model.DeliveryCheck{stale, missing}); strings.Index(r, "SPEC-007") > strings.Index(r, "SPEC-010") {
+		t.Errorf("specs must be listed by id:\n%s", r)
+	}
+
+	for _, tc := range []struct {
+		sid string
+		n   int
+		age time.Duration
+	}{
+		{"abc123", 3, 47 * time.Minute},
+		{"mem_session_end_like.id-1", 1, 65 * time.Minute},
+	} {
+		t.Run("orchestrator_"+tc.sid, func(t *testing.T) {
+			reason := sessionSummaryPendingReason(tc.sid, tc.n, tc.age)
+			if got := backtickSet(reason, tc.sid); len(got) != 1 || !got["mem_session_end"] {
+				t.Errorf("backticked identifiers = %v, want exactly {mem_session_end}:\n%s", got, reason)
+			}
+		})
+	}
+
+	t.Run("resolves_owner", func(t *testing.T) {
+		f := newStopHookFixture(t)
+		specID, _ := implementingStandardSpec(f.sddFixture, "owned", false)
+		payload := stopPayload(stopEventSubagent, "d8-owner", "owner", "backend", f.cwd, false)
+		decodeBlock(t, runStop(stopEventSubagent, payload, time.Now()).stdout)
+
+		writeDeliveryBlock(f.sddFixture, specID, "hecho")
+		if err := os.Remove(f.registryPath("d8-owner")); err != nil {
+			t.Fatal(err)
+		}
+		assertPass(t, runStop(stopEventSubagent, payload, time.Now()), false)
+	})
+
+	t.Run("resolves_bystander", func(t *testing.T) {
+		f := newStopHookFixture(t)
+		implementingStandardSpec(f.sddFixture, "someone else's", false)
+		payload := stopPayload(stopEventSubagent, "d8-bystander", "bystander", "bug-hunter", f.cwd, false)
+		reason := decodeBlock(t, runStop(stopEventSubagent, payload, time.Now()).stdout)
+		if !strings.Contains(reason, bystanderPhrase) {
+			t.Errorf("reason lacks the bystander phrase:\n%s", reason)
+		}
+		assertPass(t, runStop(stopEventSubagent, payload, time.Now()), false)
+	})
+
+	t.Run("resolves_orchestrator", func(t *testing.T) {
+		f := newStopHookFixture(t)
+		now := time.Now().UTC().Truncate(time.Second)
+		f.work(t, "d8-orch", now.Add(-45*time.Minute))
+		f.work(t, "d8-orch", now.Add(-10*time.Minute))
+		payload := stopPayload(stopEventStop, "d8-orch", "", "", f.cwd, false)
+		decodeBlock(t, runStop(stopEventStop, payload, now).stdout)
+
+		f.summary(t, "d8-orch", now.Add(-5*time.Minute))
+		if err := os.Remove(f.registryPath("d8-orch")); err != nil {
+			t.Fatal(err)
+		}
+		assertPass(t, runStop(stopEventStop, payload, now), false)
+	})
+}
+
+// TestHookStop_Cobra: the stop subcommand is wired and honours
+// stop_hook_active end to end.
+func TestHookStop_Cobra(t *testing.T) {
+	newStopHookFixture(t)
+	if out := runHookCobra(t, stopEventStop, `{"stop_hook_active":true}`); out != "" {
+		t.Errorf("stdout = %q, want empty", out)
+	}
+}
+
+// TestFormatStopAge pins the age format of the orchestrator reason.
+func TestFormatStopAge(t *testing.T) {
+	for d, want := range map[time.Duration]string{
+		47*time.Minute + 10*time.Second: "47m",
+		time.Hour + 5*time.Minute:       "1h5m",
+		20 * time.Second:                "0m",
+		0:                               "0m",
+		2 * time.Hour:                   "2h0m",
+	} {
+		if got := formatStopAge(d); got != want {
+			t.Errorf("formatStopAge(%v) = %q, want %q", d, got, want)
+		}
 	}
 }

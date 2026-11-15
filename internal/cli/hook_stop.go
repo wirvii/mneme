@@ -32,6 +32,7 @@ import (
 // failure lets the agent stop (fail-open), with at most one stderr line.
 
 const (
+	stopEventStop         = "stop"
 	stopEventSubagent     = "subagent-stop"
 	stopHookMaxPayload    = 1 << 20
 	stopRegistrySchema    = 1
@@ -40,6 +41,7 @@ const (
 	stopRegistryDirPerm   = 0o700
 	stopRegistryFilePerm  = 0o600
 	stopReasonDelivery    = "delivery_contract_pending"
+	stopReasonSummary     = "session_summary_pending"
 )
 
 // stopSessionIDPattern bounds the session_id that names the registry file:
@@ -60,6 +62,7 @@ const (
 	stopMsgUnresolvedArchetype = "[mneme] %s hook: archetype of role %q not found in the manifest; delivery reminder not applied"
 	stopMsgSpecList            = "[mneme] %s hook: list specs in implementing: %v"
 	stopMsgDeliveryCheck       = "[mneme] %s hook: delivery check %s: %v"
+	stopMsgSessionWindow       = "[mneme] %s hook: read session window: %v"
 	stopMsgStdoutWrite         = "[mneme] %s hook: write decision to stdout: %v"
 	stopMsgSaveRegistry        = "[mneme] %s hook: save stop registry: %v"
 )
@@ -125,6 +128,21 @@ func runHookStop(ctx context.Context, event string, r io.Reader, w, errW io.Writ
 	if !ok {
 		return nil
 	}
+	t := now()
+	regPath := stopRegistryPath(gate.cfg.Storage.DataDir, gate.sessionID)
+
+	// Rows 5-6 (§3.2): the orchestrator's shortcuts, before any database.
+	var orchReg stopRegistry
+	threshold := gate.cfg.StopReminderAfter()
+	if event == stopEventStop {
+		if threshold == 0 {
+			return nil
+		}
+		orchReg = loadStopRegistry(regPath, gate.sessionID)
+		if at := orchReg.OrchestratorRemindedAt; at != nil && t.Sub(*at) < threshold {
+			return nil
+		}
+	}
 
 	database, slug, ok := openStopServices(gate, errW)
 	if !ok {
@@ -132,18 +150,74 @@ func runHookStop(ctx context.Context, event string, r io.Reader, w, errW io.Writ
 	}
 	defer database.Close() //nolint:errcheck // read-only handle; nothing to flush
 
-	regPath := stopRegistryPath(gate.cfg.Storage.DataDir, gate.sessionID)
 	var (
 		dec stopDecision
 		reg stopRegistry
 	)
-	if event == stopEventSubagent {
-		dec, reg = runSubagentStopRule(ctx, gate, database, slug, regPath, errW, now())
+	switch event {
+	case stopEventSubagent:
+		dec, reg = runSubagentStopRule(ctx, gate, database, slug, regPath, errW, t)
+	case stopEventStop:
+		dec, reg = runOrchestratorStopRule(ctx, gate, database, slug, orchReg, threshold, errW, t)
 	}
 	if dec.Block {
-		emitStopBlock(w, errW, gate, slug, regPath, dec, reg, now())
+		emitStopBlock(w, errW, gate, slug, regPath, dec, reg, t)
 	}
 	return nil
+}
+
+// runOrchestratorStopRule is the orchestrator rule of §3.5: read the
+// session's current work window and decide. reg is the registry the
+// shortcuts already read.
+func runOrchestratorStopRule(ctx context.Context, gate stopGate, database *db.DB, slug string, reg stopRegistry, threshold time.Duration, errW io.Writer, now time.Time) (stopDecision, stopRegistry) {
+	win, err := service.NewSessionProbe(store.NewMemoryStore(database)).Window(ctx, slug, gate.sessionID)
+	if err != nil {
+		stopWarn(errW, stopMsgSessionWindow, gate.event, err)
+		return stopDecision{}, reg
+	}
+	return decideOrchestratorStop(win, reg, now, threshold)
+}
+
+// decideOrchestratorStop is the pure orchestrator decision: block once per
+// work window when the window has work and its anchor (the first work
+// memory after the last close) is at least threshold old. The window is
+// identified by its anchor, compared with time.Equal, so a later close opens
+// a new window that can be reminded again.
+func decideOrchestratorStop(win *model.SessionWindow, reg stopRegistry, now time.Time, threshold time.Duration) (stopDecision, stopRegistry) {
+	if win == nil || win.Count < 1 || now.Sub(win.Anchor) < threshold {
+		return stopDecision{}, reg
+	}
+	if a := reg.OrchestratorRemindedAnchor; a != nil && a.Equal(win.Anchor) {
+		return stopDecision{}, reg
+	}
+	at, anchor := now.UTC(), win.Anchor
+	reg.OrchestratorRemindedAt = &at
+	reg.OrchestratorRemindedAnchor = &anchor
+	return stopDecision{
+		Block:   true,
+		Reason:  sessionSummaryPendingReason(win.SessionID, win.Count, now.Sub(win.Anchor)),
+		Label:   stopReasonSummary,
+		Targets: []string{win.SessionID},
+	}, reg
+}
+
+// sessionSummaryPendingReason renders the orchestrator reason of §4. It names
+// only mem_session_end, the tool whose call closes the window (D8); a
+// checkpoint also closes it, but the reason names the action that closes the
+// session.
+func sessionSummaryPendingReason(sessionID string, n int, age time.Duration) string {
+	return fmt.Sprintf("mneme: esta sesión (`%s`) tiene %d memorias posteriores a su último cierre y la ventana lleva %s sin resumen. Antes de terminar llama `mem_session_end` con session_id = %q y un summary de lo hecho. Este aviso se da una sola vez por ventana de trabajo.",
+		sessionID, n, formatStopAge(age), sessionID)
+}
+
+// formatStopAge renders an age rounded to the minute without the seconds
+// suffix: 47m, 1h5m, 0m.
+func formatStopAge(d time.Duration) string {
+	d = d.Round(time.Minute)
+	if d < time.Minute {
+		return "0m"
+	}
+	return strings.TrimSuffix(d.String(), "0s")
 }
 
 // stopCommonGate applies rows 0-4 of §3.1, none of which touches a database:
@@ -391,20 +465,31 @@ func emitStopBlock(w, errW io.Writer, gate stopGate, slug, regPath string, dec s
 		stopWarn(errW, stopMsgSaveRegistry, gate.event, err)
 	}
 
+	ev := stopEnforcelogEvent(gate, slug, dec, now)
+	_ = enforcelog.Append(enforcelogPath(gate.cfg.Storage.DataDir, slug), ev, enforcelog.DefaultMaxBytes) //nolint:errcheck // best-effort telemetry
+}
+
+// stopEnforcelogEvent builds the enforcelog line of one block (§7). Its Tool
+// is the lifecycle event, which every containment consumer filters out.
+func stopEnforcelogEvent(gate stopGate, slug string, dec stopDecision, now time.Time) enforcelog.Event {
 	ev := enforcelog.Event{
 		TS:         now.UTC(),
 		Session:    gate.sessionID,
 		Project:    slug,
-		Caller:     "subagent",
-		AgentID:    gate.identity.AgentID,
-		Role:       gate.identity.Role,
+		Caller:     "orchestrator",
 		RoleSource: gate.identity.RoleSource,
-		Tool:       enforcelog.ToolSubagentStop,
+		Tool:       enforcelog.ToolStop,
 		Target:     strings.Join(dec.Targets, ","),
 		Decision:   enforcelog.DecisionBlock,
 		Reason:     dec.Label,
 	}
-	_ = enforcelog.Append(enforcelogPath(gate.cfg.Storage.DataDir, slug), ev, enforcelog.DefaultMaxBytes) //nolint:errcheck // best-effort telemetry
+	if gate.event == stopEventSubagent {
+		ev.Caller = "subagent"
+		ev.AgentID = gate.identity.AgentID
+		ev.Role = gate.identity.Role
+		ev.Tool = enforcelog.ToolSubagentStop
+	}
+	return ev
 }
 
 // renderStopDecision writes the block decision as exactly one JSON line.
