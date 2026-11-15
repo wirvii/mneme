@@ -935,10 +935,11 @@ func (h *handlers) handleSpecQuick(ctx context.Context, raw json.RawMessage) (*T
 
 // handleLaneAudit processes a lane_audit tool call.
 //
-// When the auditor detects threshold violations it returns both a non-nil
-// AuditResult (containing the breach list) and ErrAuditFailed. In that case we
-// must not discard the result and route it through mapServiceError — the agent
-// needs the breach details to decide whether to reclassify or override. We
+// When the auditor finds breaches (scope, risk items, risk declaration) it
+// returns both a non-nil AuditResult (containing the breach list and the
+// Remedy) and ErrAuditFailed. In that case we must not discard the result and
+// route it through mapServiceError — the agent needs the breach details and
+// the Remedy, which names the way out (reclassify, never override first). We
 // return a ToolCallResult with IsError=true so the agent is signalled that the
 // audit failed while still receiving the full AuditResult payload.
 func (h *handlers) handleLaneAudit(ctx context.Context, raw json.RawMessage) (*ToolCallResult, *JSONRPCError) {

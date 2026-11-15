@@ -88,12 +88,15 @@ or "lane override" to resolve.`,
 						fmt.Fprintf(os.Stderr, "  - %s\n", b)
 					}
 				}
+				if result.Remedy != "" {
+					fmt.Fprintf(os.Stderr, "Remedy: %s\n", result.Remedy)
+				}
 			}
 
 			if err != nil {
-				if errors.Is(err, model.ErrAuditFailed) {
+				if errors.Is(err, model.ErrAuditFailed) && result != nil {
 					// Exit code 1 so scripts can detect failure.
-					return fmt.Errorf("audit failed: use 'lane reclassify' or 'lane override' to resolve")
+					return fmt.Errorf("audit failed: %s", result.Remedy)
 				}
 				return err
 			}

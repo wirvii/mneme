@@ -138,7 +138,8 @@ type LaneAuditResult struct {
 	// OutOfScopeFiles lists files that fall outside the declared scope glob.
 	OutOfScopeFiles []string
 
-	// ForbiddenPaths lists files that match the forbidden-path patterns.
+	// ForbiddenPaths lists files that match the path patterns of risk items
+	// 1, 2 or 5 (SPEC-184; the name predates the risk list).
 	ForbiddenPaths []string
 
 	// PublicSymbolChanges lists exported symbols whose existence changed
@@ -152,6 +153,24 @@ type LaneAuditResult struct {
 
 	// Passed is true when len(Breaches)==0.
 	Passed bool
+
+	// RiskItems lists the risk items the diff revealed, by path (1, 2, 5)
+	// or by exported symbol (3), sorted and without duplicates (SPEC-184).
+	RiskItems []int
+
+	// RiskDeclared is the declaration the auditor contrasted with the diff:
+	// "none", "item 1", "item 1, 5", or "" when none was found or it was
+	// malformed.
+	RiskDeclared string
+
+	// RiskSource names where the declaration came from: "entrega" (the
+	// delivery section of tarea.md), "rationale" (the spec_quick reason),
+	// or "" when there was none.
+	RiskSource string
+
+	// Remedy is the plain-English way out of a failed audit, naming the
+	// risk item and the MCP tool and CLI command to run; empty on a pass.
+	Remedy string
 }
 
 // LaneStatsResponse summarises lane compliance metrics for a project.

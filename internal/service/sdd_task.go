@@ -153,6 +153,31 @@ func spliceTaskSection(doc string, s model.TaskSection, content string) (string,
 	return strings.Join(out, "\n"), nil
 }
 
+// readTaskSectionPresent returns the text between section s's markers in the
+// tarea.md at path, without the markers. ok is false when the file does not
+// exist. A malformed file is an error (ErrTaskDocMalformed) the caller may
+// treat as "nothing here" — the lane auditor does, so a broken tarea.md
+// never fails an audit by itself.
+func readTaskSectionPresent(path string, s model.TaskSection) (string, bool, error) {
+	doc, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("service: read tarea.md %s: %w", path, err)
+	}
+	spans, err := parseTaskDoc(string(doc))
+	if err != nil {
+		return "", false, err
+	}
+	sp, ok := spans[s]
+	if !ok {
+		return "", false, fmt.Errorf("service: read tarea.md section %q: %w", s, model.ErrUnknownTaskSection)
+	}
+	lines := strings.Split(string(doc), "\n")
+	return strings.Join(lines[sp.start+1:sp.end], "\n"), true, nil
+}
+
 // validateTaskRequest enforces the section rules of SPEC-170 D4 before any
 // I/O: a section is mandatory and known for kind task, and forbidden for
 // every other kind.

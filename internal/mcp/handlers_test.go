@@ -821,11 +821,12 @@ func newTestServerWithRepoDir(t *testing.T, dir string) *Server {
 }
 
 // initTrivialBreachRepo creates a throwaway git repository whose current branch
-// (feature) diverges from `main` by more than three files, so that a trivial-lane
-// audit run with base_ref=main is guaranteed to breach (file count 4 > limit 3).
-// It returns the repository root directory. The files are plain .txt so the
-// public-symbol check (Go/TS only) is skipped and the breach comes purely from
-// the file-count rule, keeping the scenario deterministic and self-contained.
+// (feature) diverges from `main` by four plain .txt files at the repository
+// root, so that a trivial-lane audit with scope internal/mcp/*.go and
+// base_ref=main is guaranteed to breach: every file is out of scope (file and
+// line counts never fail an audit since SPEC-184). It returns the repository
+// root directory. The files are plain .txt so the public-symbol check (Go/TS
+// only) is skipped, keeping the scenario deterministic and self-contained.
 func initTrivialBreachRepo(t *testing.T) string {
 	t.Helper()
 
@@ -853,7 +854,7 @@ func initTrivialBreachRepo(t *testing.T) string {
 	run("add", "-A")
 	run("commit", "-q", "-m", "base commit on main")
 
-	// Feature branch adds four files (> trivial limit of 3) → guaranteed breach.
+	// Feature branch adds four files outside the declared scope → guaranteed breach.
 	run("checkout", "-q", "-b", "feature")
 	for i := 1; i <= 4; i++ {
 		name := filepath.Join(dir, fmt.Sprintf("changed_%d.txt", i))
@@ -887,14 +888,14 @@ func unmarshalToolResult(t *testing.T, resp JSONRPCResponse) (ToolCallResult, bo
 }
 
 // TestLaneAudit_FailedAuditReturnsBreaches verifies that when a trivial-lane spec
-// fails the deterministic audit (too many changed files), the MCP handler returns
+// fails the deterministic audit (files out of scope, no Risk: line), the MCP handler returns
 // a ToolCallResult with IsError=true and the AuditResult payload — not an empty
 // JSON-RPC error. This is the regression test for the SPEC-035 QA critical bug.
 func TestLaneAudit_FailedAuditReturnsBreaches(t *testing.T) {
 	// Build a dedicated temporary git repository whose feature branch diverges
-	// from `main` by more than 3 files. This makes the audit breach deterministic
-	// in every environment (clean CI checkout on main, or a local feature branch),
-	// instead of assuming the mneme working tree itself has >3 changed files vs main.
+	// from `main` by four out-of-scope files. This makes the audit breach
+	// deterministic in every environment (clean CI checkout on main, or a local
+	// feature branch), instead of depending on the mneme working tree itself.
 	repoDir := initTrivialBreachRepo(t)
 
 	srv := newTestServerWithRepoDir(t, repoDir)
@@ -944,7 +945,7 @@ func TestLaneAudit_FailedAuditReturnsBreaches(t *testing.T) {
 	// 4. Run lane_audit with an explicit base_ref pointing to main so the diff
 	// spans the whole feature branch. Without an explicit base_ref, SPEC-036 would
 	// use spec.base_sha (HEAD at implementing time), yielding an empty diff.
-	// We override with "main" to guarantee >3 changed files and a breach.
+	// We override with "main" to guarantee out-of-scope files and a breach.
 	auditResp := process(t, srv, "tools/call", 4, ToolCallParams{
 		Name: "lane_audit",
 		Arguments: mustMarshal(t, map[string]any{
@@ -1008,7 +1009,7 @@ func TestLaneAuditResult_SerializesWithLiteralFieldNames(t *testing.T) {
 	if err != nil {
 		t.Fatalf("json.Marshal(LaneAuditResult): %v", err)
 	}
-	const want = `{"FileCount":2,"LinesChanged":14,"OutOfScopeFiles":["docs/readme.md"],"ForbiddenPaths":["internal/db/migrations/001.sql"],"PublicSymbolChanges":["NewExportedFunc"],"Breaches":["too many files"],"Passed":false}`
+	const want = `{"FileCount":2,"LinesChanged":14,"OutOfScopeFiles":["docs/readme.md"],"ForbiddenPaths":["internal/db/migrations/001.sql"],"PublicSymbolChanges":["NewExportedFunc"],"Breaches":["too many files"],"Passed":false,"RiskItems":null,"RiskDeclared":"","RiskSource":"","Remedy":""}`
 	if string(b) != want {
 		t.Errorf("json.Marshal(LaneAuditResult) = %s, want literal:\n%s", b, want)
 	}

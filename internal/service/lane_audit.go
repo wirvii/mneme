@@ -16,6 +16,7 @@ import (
 	"github.com/wirvii/mneme/internal/gitrepo"
 	"github.com/wirvii/mneme/internal/laneaudit"
 	"github.com/wirvii/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/risk"
 )
 
 // laneSymbolExtractor implements laneaudit.SymbolExtractor over
@@ -43,7 +44,7 @@ func (laneSymbolExtractor) Symbols(path string, content []byte) ([]laneaudit.Sym
 	// ErrExtractorIncompatible is the ONE error this adapter propagates — a
 	// toolchain present but unusable means the delta for this file cannot
 	// be trusted at all, and a silently-empty result would read as "nothing
-	// was created here", i.e. as budget respected. Every OTHER extraction
+	// was created here", i.e. as no contract changed. Every OTHER extraction
 	// error is non-fatal per codegraph.Extractor's own contract (it "must
 	// not return nil even when errors occur") — this adapter still uses
 	// whatever partial result came back.
@@ -93,10 +94,13 @@ func splitLaneChangePaths(changes []gitrepo.FileChange) (basePaths, headPaths []
 }
 
 // runLaneAuditEngine computes the file/symbol delta between baseRef and
-// HEAD and evaluates it against laneaudit.DefaultTrivialBudget. Returns the
-// assembled model.LaneAuditResult plus the raw breach strings (used for the
-// discovery memory's own bullet list).
-func (svc *SDDService) runLaneAuditEngine(repoDir, baseRef, scope string) (*model.LaneAuditResult, []string, error) {
+// HEAD and evaluates it with laneaudit.Evaluate against scope, the risk
+// path table and the spec's declaration (decl nil = not declared; declErr
+// non-nil = malformed). File and line counts are recorded but never
+// decide. Returns the assembled model.LaneAuditResult plus the raw breach
+// strings (used for the discovery memory's own bullet list); RiskSource
+// and Remedy are filled in by the caller.
+func (svc *SDDService) runLaneAuditEngine(repoDir, baseRef, scope string, table risk.Table, decl *risk.Declaration, declErr error) (*model.LaneAuditResult, []string, error) {
 	g := &gitrepo.Git{RepoDir: repoDir}
 
 	numStats, err := g.NumStat(baseRef, "HEAD")
@@ -124,7 +128,13 @@ func (svc *SDDService) runLaneAuditEngine(repoDir, baseRef, scope string) (*mode
 	}
 	delta := laneaudit.DiffSymbols(baseSymbols, headSymbols, renames, changedLines)
 
-	breaches := laneaudit.EvaluateTrivialBudget(numStats, delta, scope, laneaudit.DefaultTrivialBudget)
+	if table == nil {
+		table = risk.DefaultTable()
+	}
+	breaches := laneaudit.Evaluate(laneaudit.Input{
+		Files: numStats, Symbols: delta, Scope: scope,
+		Table: table, Declaration: decl, DeclErr: declErr,
+	})
 	breachStrs := make([]string, 0, len(breaches))
 	for _, b := range breaches {
 		breachStrs = append(breachStrs, string(b))
@@ -132,25 +142,30 @@ func (svc *SDDService) runLaneAuditEngine(repoDir, baseRef, scope string) (*mode
 
 	fileCount := len(numStats)
 	linesChanged := 0
+	paths := make([]string, 0, len(numStats))
 	for _, stat := range numStats {
 		linesChanged += stat.Added + stat.Removed
+		paths = append(paths, stat.Path)
 	}
+	publicSymbols := lanePublicSymbolChanges(delta)
 
 	result := &model.LaneAuditResult{
 		FileCount:           fileCount,
 		LinesChanged:        linesChanged,
 		OutOfScopeFiles:     laneOutOfScopeFiles(numStats, scope),
-		ForbiddenPaths:      laneForbiddenPaths(numStats),
-		PublicSymbolChanges: lanePublicSymbolChanges(delta),
+		ForbiddenPaths:      laneForbiddenPaths(numStats, table),
+		PublicSymbolChanges: publicSymbols,
 		Breaches:            breachStrs,
 		Passed:              len(breachStrs) == 0,
+		RiskItems:           laneDetectedItems(paths, table, len(publicSymbols)),
+		RiskDeclared:        formatDeclared(decl, declErr),
 	}
 	return result, breachStrs, nil
 }
 
 // laneOutOfScopeFiles lists changed paths outside scope, or nil when scope
 // is empty (the scope check is skipped entirely, mirroring
-// EvaluateTrivialBudget's own posture).
+// laneaudit.Evaluate's own posture).
 func laneOutOfScopeFiles(stats []gitrepo.FileStat, scope string) []string {
 	if scope == "" {
 		return nil
@@ -164,12 +179,12 @@ func laneOutOfScopeFiles(stats []gitrepo.FileStat, scope string) []string {
 	return out
 }
 
-// laneForbiddenPaths lists changed paths matching
-// laneaudit.DefaultTrivialBudget's forbidden globs.
-func laneForbiddenPaths(stats []gitrepo.FileStat) []string {
+// laneForbiddenPaths lists changed paths matching the patterns of risk
+// items 1, 2 or 5 in table.
+func laneForbiddenPaths(stats []gitrepo.FileStat, table risk.Table) []string {
 	var out []string
 	for _, stat := range stats {
-		if laneaudit.MatchGlobs(stat.Path, laneaudit.DefaultTrivialBudget.ForbiddenGlobs) {
+		if len(laneaudit.RiskItemsForPath(stat.Path, table)) > 0 {
 			out = append(out, stat.Path)
 		}
 	}
@@ -177,8 +192,7 @@ func laneForbiddenPaths(stats []gitrepo.FileStat) []string {
 }
 
 // lanePublicSymbolChanges lists every exported symbol created or deleted
-// between base and HEAD — the trivial lane's own public-API-change
-// detector.
+// between base and HEAD — the part of risk item 3 a diff shows.
 func lanePublicSymbolChanges(delta laneaudit.SymbolDelta) []string {
 	var out []string
 	for _, s := range delta.Created {

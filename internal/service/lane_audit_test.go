@@ -11,10 +11,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/wirvii/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/risk"
 )
 
 // gitRunLaneTest mirrors gitRunBudgetTest — local identity, signing off
@@ -73,120 +75,134 @@ func writeLaneFile(t *testing.T, dir, rel, content string) {
 	}
 }
 
-// TestRunLaneAuditEngine_Thresholds covers AC26's migrated table (R-F):
-// too many files, too many lines, a forbidden path, an out-of-scope file,
-// an exported symbol change, and the obligatory clean-pass hermana.
-func TestRunLaneAuditEngine_Thresholds(t *testing.T) {
+// runEngineNone runs the engine with the default risk table and a
+// "Risk: none" declaration, the shape every row below shares.
+func runEngineNone(t *testing.T, svc *SDDService, dir, base, scope string) (*model.LaneAuditResult, []string) {
+	t.Helper()
+	result, breaches, err := svc.runLaneAuditEngine(dir, base, scope, risk.DefaultTable(), &risk.Declaration{None: true}, nil)
+	if err != nil {
+		t.Fatalf("runLaneAuditEngine: %v", err)
+	}
+	return result, breaches
+}
+
+// TestRunLaneAuditEngine_RiskNotSize covers SPEC-184 C5 against real
+// throwaway git repos: size never decides (500 lines without a risk path
+// pass; 3 lines under migrations fail on risk item 1), plus the migrated
+// rows of the old size-threshold table — out of scope, exported symbol,
+// a clean pass, and four in-scope files that used to fail on file count.
+func TestRunLaneAuditEngine_RiskNotSize(t *testing.T) {
 	svc := &SDDService{}
 
-	t.Run("too many files", func(t *testing.T) {
-		dir, base := laneAuditFixture(t, func(dir string) {
-			for _, name := range []string{"a.go", "b.go", "c.go", "d.go"} {
-				writeLaneFile(t, dir, "internal/store/"+name, "package store\n")
-			}
-		})
-		result, breaches, err := svc.runLaneAuditEngine(dir, base, "internal/store/**")
-		if err != nil {
-			t.Fatalf("runLaneAuditEngine: %v", err)
-		}
-		if result.Passed {
-			t.Error("Passed = true, want false (4 files)")
-		}
-		if !containsSubstr(breaches, "file count") {
-			t.Errorf("breaches = %v, want a file-count breach", breaches)
-		}
-	})
-
-	t.Run("too many lines", func(t *testing.T) {
+	t.Run("500_lines_without_risk_path_passes", func(t *testing.T) {
 		var body strings.Builder
-		body.WriteString("package store\n\n")
-		for i := 0; i < 25; i++ {
+		body.WriteString("package store\n")
+		for i := 1; i < 500; i++ {
 			body.WriteString("var _ = 1\n")
 		}
 		dir, base := laneAuditFixture(t, func(dir string) {
 			writeLaneFile(t, dir, "internal/store/big.go", body.String())
 		})
-		result, breaches, err := svc.runLaneAuditEngine(dir, base, "internal/store/**")
-		if err != nil {
-			t.Fatalf("runLaneAuditEngine: %v", err)
+		result, breaches := runEngineNone(t, svc, dir, base, "internal/**")
+		if !result.Passed || len(breaches) != 0 {
+			t.Errorf("Passed = %v, breaches = %v; want a pass with zero breaches", result.Passed, breaches)
 		}
-		if result.Passed {
-			t.Error("Passed = true, want false (>20 lines)")
-		}
-		if !containsSubstr(breaches, "line count") {
-			t.Errorf("breaches = %v, want a line-count breach", breaches)
+		if result.LinesChanged != 500 {
+			t.Errorf("LinesChanged = %d, want 500", result.LinesChanged)
 		}
 	})
 
-	t.Run("forbidden path", func(t *testing.T) {
+	t.Run("3_lines_in_migrations_fail", func(t *testing.T) {
 		dir, base := laneAuditFixture(t, func(dir string) {
-			writeLaneFile(t, dir, "internal/db/migrations/001.sql", "-- migration\n")
+			writeLaneFile(t, dir, "internal/db/migrations/001.sql", "-- a\n-- b\n-- c\n")
 		})
-		result, breaches, err := svc.runLaneAuditEngine(dir, base, "")
-		if err != nil {
-			t.Fatalf("runLaneAuditEngine: %v", err)
-		}
+		result, breaches := runEngineNone(t, svc, dir, base, "internal/**")
 		if result.Passed {
-			t.Error("Passed = true, want false (forbidden path)")
+			t.Error("Passed = true, want false (risk item 1 path)")
 		}
-		if len(result.ForbiddenPaths) != 1 {
-			t.Errorf("ForbiddenPaths = %v, want exactly one entry", result.ForbiddenPaths)
+		want := []string{
+			"risk item 1: path internal/db/migrations/001.sql",
+			"risk declaration contradicts diff: Risk: none declared, items 1 detected",
 		}
-		if !containsSubstr(breaches, "forbidden path modified") {
-			t.Errorf("breaches = %v, want a forbidden-path breach", breaches)
+		if !reflect.DeepEqual(breaches, want) {
+			t.Errorf("breaches = %q, want exactly %q", breaches, want)
+		}
+		if !reflect.DeepEqual(result.RiskItems, []int{1}) {
+			t.Errorf("RiskItems = %v, want [1]", result.RiskItems)
+		}
+		if len(result.ForbiddenPaths) != 1 || result.ForbiddenPaths[0] != "internal/db/migrations/001.sql" {
+			t.Errorf("ForbiddenPaths = %v, want the migration", result.ForbiddenPaths)
+		}
+		if result.RiskDeclared != "none" {
+			t.Errorf("RiskDeclared = %q, want none", result.RiskDeclared)
 		}
 	})
 
-	t.Run("out of scope", func(t *testing.T) {
+	t.Run("out_of_scope", func(t *testing.T) {
 		dir, base := laneAuditFixture(t, func(dir string) {
 			writeLaneFile(t, dir, "internal/other/x.go", "package other\n")
 		})
-		result, breaches, err := svc.runLaneAuditEngine(dir, base, "internal/store/**")
-		if err != nil {
-			t.Fatalf("runLaneAuditEngine: %v", err)
-		}
+		result, breaches := runEngineNone(t, svc, dir, base, "internal/store/**")
 		if result.Passed {
 			t.Error("Passed = true, want false (out of scope)")
 		}
 		if len(result.OutOfScopeFiles) != 1 || result.OutOfScopeFiles[0] != "internal/other/x.go" {
 			t.Errorf("OutOfScopeFiles = %v, want exactly [internal/other/x.go]", result.OutOfScopeFiles)
 		}
-		if !containsSubstr(breaches, "out of scope") {
-			t.Errorf("breaches = %v, want an out-of-scope breach", breaches)
+		if !reflect.DeepEqual(breaches, []string{"out of scope: internal/other/x.go"}) {
+			t.Errorf("breaches = %q, want only the out-of-scope breach", breaches)
 		}
 	})
 
-	t.Run("exported symbol change", func(t *testing.T) {
+	t.Run("exported_symbol_change", func(t *testing.T) {
 		dir, base := laneAuditFixture(t, func(dir string) {
 			writeLaneFile(t, dir, "internal/store/pub.go", "package store\n\nfunc NewPublicFunc() {}\n")
 		})
-		result, breaches, err := svc.runLaneAuditEngine(dir, base, "internal/store/**")
-		if err != nil {
-			t.Fatalf("runLaneAuditEngine: %v", err)
-		}
+		result, breaches := runEngineNone(t, svc, dir, base, "internal/store/**")
 		if result.Passed {
 			t.Error("Passed = true, want false (exported symbol added)")
 		}
 		if len(result.PublicSymbolChanges) != 1 || result.PublicSymbolChanges[0] != "NewPublicFunc" {
 			t.Errorf("PublicSymbolChanges = %v, want exactly [NewPublicFunc]", result.PublicSymbolChanges)
 		}
-		if !containsSubstr(breaches, "public symbol changed") {
-			t.Errorf("breaches = %v, want a public-symbol breach", breaches)
+		if !containsSubstr(breaches, "risk item 3: public symbol changed: NewPublicFunc in internal/store/pub.go") {
+			t.Errorf("breaches = %v, want the item-3 public-symbol breach", breaches)
+		}
+		if !reflect.DeepEqual(result.RiskItems, []int{3}) {
+			t.Errorf("RiskItems = %v, want [3]", result.RiskItems)
 		}
 	})
 
-	t.Run("clean spec passes (positive)", func(t *testing.T) {
+	t.Run("clean_spec_passes", func(t *testing.T) {
 		dir, base := laneAuditFixture(t, func(dir string) {
 			writeLaneFile(t, dir, "internal/store/small.go", "package store\n\nfunc unexportedHelper() {}\n")
 		})
-		result, breaches, err := svc.runLaneAuditEngine(dir, base, "internal/store/**")
-		if err != nil {
-			t.Fatalf("runLaneAuditEngine: %v", err)
-		}
+		result, breaches := runEngineNone(t, svc, dir, base, "internal/store/**")
 		if !result.Passed {
-			t.Errorf("Passed = false, want true (clean, small, in-scope, unexported): breaches=%v", breaches)
+			t.Errorf("Passed = false, want true (clean, in-scope, unexported): breaches=%v", breaches)
 		}
 	})
+
+	t.Run("four_files_in_scope_pass", func(t *testing.T) {
+		dir, base := laneAuditFixture(t, func(dir string) {
+			for _, name := range []string{"a.go", "b.go", "c.go", "d.go"} {
+				writeLaneFile(t, dir, "internal/store/"+name, "package store\n")
+			}
+		})
+		result, breaches := runEngineNone(t, svc, dir, base, "internal/store/**")
+		if !result.Passed || result.FileCount != 4 {
+			t.Errorf("Passed = %v FileCount = %d breaches = %v; want a pass over 4 files", result.Passed, result.FileCount, breaches)
+		}
+	})
+}
+
+// seedRationale records the draft -> rationale history entry spec_quick
+// would have written, so LaneAudit finds the spec's "Risk:" declaration.
+func seedRationale(t *testing.T, svc *SDDService, id, reason string) {
+	t.Helper()
+	if err := svc.store.InsertSpecHistoryEntry(context.Background(), id, model.SpecStatusDraft, model.SpecStatusRationale, "test", reason); err != nil {
+		t.Fatalf("seed rationale: %v", err)
+	}
 }
 
 // containsSubstr reports whether any element of list contains substr.
@@ -261,6 +277,7 @@ func TestLaneAudit_HappyPath_AdvancesToDone(t *testing.T) {
 	if err := svc.store.CreateSpec(ctx, spec); err != nil {
 		t.Fatalf("create spec: %v", err)
 	}
+	seedRationale(t, svc, spec.ID, "x\nRisk: none")
 
 	result, err := svc.LaneAudit(ctx, model.LaneAuditRequest{ID: spec.ID})
 	if err != nil {
@@ -340,7 +357,7 @@ test_reach_depth = 3
 // TestLaneAudit_LegacyBudgetConstitution_RunsDirect covers SPEC-158 AC2: a
 // legacy .mneme/quality.toml declaring [budget].enabled = true (the old
 // absorption switch) is now completely inert — LaneAudit computes the
-// delta and decides via laneaudit.EvaluateTrivialBudget directly, with NO
+// delta and decides via laneaudit.Evaluate directly, with NO
 // certificate involved at all, and still reaches done with a passing
 // lane_audits row.
 func TestLaneAudit_LegacyBudgetConstitution_RunsDirect(t *testing.T) {
@@ -372,6 +389,7 @@ func TestLaneAudit_LegacyBudgetConstitution_RunsDirect(t *testing.T) {
 	if err := svc.store.CreateSpec(ctx, spec); err != nil {
 		t.Fatalf("create spec: %v", err)
 	}
+	seedRationale(t, svc, spec.ID, "x\nRisk: none")
 
 	// No certificate anywhere — never required any more, with or without a
 	// legacy quality.toml lying around.
@@ -416,7 +434,7 @@ func TestLaneAudit_LegacyBudgetConstitution_ScopeBreachStillFails(t *testing.T) 
 	base := strings.TrimSpace(gitRunLaneTest(t, repoDir, "rev-parse", "HEAD"))
 
 	// The declared scope is internal/store/** (below) — this file is
-	// OUTSIDE it, a real scope breach EvaluateTrivialBudget must catch.
+	// OUTSIDE it, a real scope breach laneaudit.Evaluate must catch.
 	writeLaneFile(t, repoDir, "internal/other/new.go", "package other\n\nfunc unexportedHelper() {}\n")
 	gitRunLaneTest(t, repoDir, "add", "-A")
 	gitRunLaneTest(t, repoDir, "commit", "-m", "head, out of scope")
@@ -428,6 +446,7 @@ func TestLaneAudit_LegacyBudgetConstitution_ScopeBreachStillFails(t *testing.T) 
 	if err := svc.store.CreateSpec(ctx, spec); err != nil {
 		t.Fatalf("create spec: %v", err)
 	}
+	seedRationale(t, svc, spec.ID, "x\nRisk: none")
 
 	result, err := svc.LaneAudit(ctx, model.LaneAuditRequest{ID: spec.ID})
 	if !errors.Is(err, model.ErrAuditFailed) {

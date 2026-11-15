@@ -1315,14 +1315,17 @@ func (svc *SDDService) SpecQuick(ctx context.Context, req model.SpecQuickRequest
 
 // LaneAudit runs the deterministic post-implementation auditor for a
 // trivial-lane spec in audit status: internal/gitrepo for the file/symbol
-// delta, internal/laneaudit's EvaluateTrivialBudget for the veredicto —
+// delta, internal/laneaudit's Evaluate for the veredicto — scope, risk
+// items 1, 2 and 5 by path, exported symbols (item 3) and the declared
+// "Risk:" line (declaredRisk), never file or line counts (SPEC-184) —
 // ALWAYS direct, with no certificate of any kind involved (SPEC-158 D2). A
 // .mneme/quality.toml that still declares [budget].enabled = true (from the
 // now-retired certification mechanism) is completely inert here. If all
 // checks pass the spec advances to done and a completion memory is saved.
 // If any check fails the spec stays in audit, a discovery memory is saved
-// listing the breaches, and ErrAuditFailed is returned (the caller can
-// inspect the returned LaneAuditResult for details).
+// listing the breaches and the Remedy, and ErrAuditFailed is returned (the
+// caller can inspect the returned LaneAuditResult for details, Remedy
+// included).
 //
 // Base ref precedence for the git diff:
 //  1. req.BaseRef (explicit caller override)
@@ -1367,10 +1370,13 @@ func (svc *SDDService) LaneAudit(ctx context.Context, req model.LaneAuditRequest
 			req.ID, model.ErrInvalidTransition)
 	}
 
-	result, breaches, err := svc.runLaneAuditEngine(repoDir, baseRef, spec.Scope)
+	decl, source, declErr := svc.declaredRisk(ctx, spec)
+	result, breaches, err := svc.runLaneAuditEngine(repoDir, baseRef, spec.Scope, svc.laneRiskTable(), decl, declErr)
 	if err != nil {
 		return nil, fmt.Errorf("service: lane audit: run auditor: %w", err)
 	}
+	result.RiskSource = source
+	result.Remedy = laneRemedy(result, breaches, spec.ID)
 
 	breachStr := ""
 	if !result.Passed {
@@ -1404,7 +1410,7 @@ func (svc *SDDService) LaneAudit(ctx context.Context, req model.LaneAuditRequest
 
 	// Audit failed — save a discovery memory; the structured record is already
 	// in lane_audits above. No longer writes the same-status history hack.
-	svc.saveAuditFailureMemory(ctx, spec, breaches)
+	svc.saveAuditFailureMemory(ctx, spec, breaches, result.Remedy)
 	return result, model.ErrAuditFailed
 }
 
@@ -1639,10 +1645,11 @@ func (svc *SDDService) LaneStats(ctx context.Context, project string) (*model.La
 	return resp, nil
 }
 
-// saveAuditFailureMemory saves a discovery memory when the lane auditor detects
-// threshold violations. This gives the orchestrator a searchable record of why
-// the audit failed without needing to re-run the auditor.
-func (svc *SDDService) saveAuditFailureMemory(ctx context.Context, spec *model.Spec, breaches []string) {
+// saveAuditFailureMemory saves a discovery memory when the lane auditor finds
+// breaches. This gives the orchestrator a searchable record of why the audit
+// failed, and its way out (remedy, the same text LaneAuditResult.Remedy
+// carries), without needing to re-run the auditor.
+func (svc *SDDService) saveAuditFailureMemory(ctx context.Context, spec *model.Spec, breaches []string, remedy string) {
 	if svc.memorySvc == nil {
 		return
 	}
@@ -1653,9 +1660,7 @@ func (svc *SDDService) saveAuditFailureMemory(ctx context.Context, spec *model.S
 	for _, b := range breaches {
 		content += "- " + b + "\n"
 	}
-	content += "\nUse `lane reclassify " + spec.ID +
-		" standard` to restart with full SDD flow, or " +
-		"`lane override " + spec.ID + " --reason <justification>` to force completion."
+	content += "\n" + remedy
 
 	_, err := svc.memorySvc.Save(ctx, model.SaveRequest{
 		Title:   fmt.Sprintf("Lane audit failed: %s", spec.ID),
