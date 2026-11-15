@@ -121,10 +121,17 @@ func newBacklogListView(resp model.BacklogListResponse, excerptRunes int) backlo
 // that can no longer change status, keyed by spec ID. Absent from the wire
 // (nil map, omitempty) when nothing is frozen — a caller that has never seen
 // this key sees no change in the common case.
+//
+// SPEC-186: each element of Specs is a model.SpecListEntry — every key of
+// the spec as before, plus `stale` and `days_since_last_move` — and
+// StaleCount counts the stale specs among ALL matches of the request, not
+// the page. No omitempty on stale_count: 0 is data (nothing stale, or the
+// announcement disabled), not an absent field.
 type specListView struct {
-	Specs  []*model.Spec               `json:"specs"`
-	Total  int                         `json:"total"`
-	Frozen map[string]model.SpecFreeze `json:"frozen,omitempty"`
+	Specs      []model.SpecListEntry       `json:"specs"`
+	Total      int                         `json:"total"`
+	StaleCount int                         `json:"stale_count"`
+	Frozen     map[string]model.SpecFreeze `json:"frozen,omitempty"`
 
 	// Unreadable/UnreadableTotal (SPEC-133 D14) — see backlogListView's own
 	// godoc for the truncate-in-the-frontend rationale, identical here.
@@ -137,7 +144,7 @@ type specListView struct {
 func newSpecListView(resp model.SpecListResponse) specListView {
 	unreadable, unreadableTotal := truncateUnreadable(resp.Unreadable)
 	return specListView{
-		Specs: resp.Specs, Total: resp.Total, Frozen: resp.Frozen,
+		Specs: resp.Entries(), Total: resp.Total, StaleCount: resp.StaleCount, Frozen: resp.Frozen,
 		Unreadable: unreadable, UnreadableTotal: unreadableTotal,
 	}
 }

@@ -572,9 +572,14 @@ func allTools() []ToolDefinition {
 		{
 			Name: "spec_list",
 			Description: "List specs for the current project. `total` is the number of matches before " +
-				"`limit` was applied. `frozen` is an object keyed by spec ID naming which of the returned " +
-				"specs can no longer change status (their originating backlog item was archived or is " +
-				"missing); the key is absent from the response entirely when none is frozen.",
+				"`limit` was applied. Each spec carries `days_since_last_move` (whole days since its last " +
+				"recorded move: a status change, a history note or an edit) and `stale` (true when it is " +
+				"not done, not frozen, and has not moved for more than the configured " +
+				"`[spec] stale_after_days`, default 14; 0 disables it). `stale_count` counts the stale " +
+				"specs among ALL matches, not only the returned page. `frozen` is an object keyed by spec " +
+				"ID naming which of the returned specs can no longer change status (their originating " +
+				"backlog item was archived or is missing); the key is absent from the response entirely " +
+				"when none is frozen.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
