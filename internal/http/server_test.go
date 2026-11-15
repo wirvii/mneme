@@ -904,3 +904,110 @@ func TestGapsEndpoint_MethodNotAllowed(t *testing.T) {
 		t.Errorf("expected 405, got %d", resp.StatusCode)
 	}
 }
+
+// TestHandleContext_IncludeSynthesis verifies the HTTP parity of SPEC-187:
+// GET /v1/memories/context accepts include_synthesis like include_graph.
+// With true and a community whose synthesis is linked the response packs
+// cluster overviews; without the parameter the auto default leaves them
+// out; a non-boolean value is a 400 invalid_request.
+func TestHandleContext_IncludeSynthesis(t *testing.T) {
+	const (
+		slug        = "test-project"
+		communityID = "http-comm-1"
+	)
+	projectDB, err := db.OpenMemory()
+	if err != nil {
+		t.Fatalf("open project db: %v", err)
+	}
+	globalDB, err := db.OpenMemory()
+	if err != nil {
+		t.Fatalf("open global db: %v", err)
+	}
+	t.Cleanup(func() { projectDB.Close(); globalDB.Close() })
+	projectStore := store.NewMemoryStore(projectDB)
+	globalStore := store.NewMemoryStore(globalDB)
+	svc := service.NewMemoryService(projectStore, globalStore, config.Default(), slug, embed.NopEmbedder{})
+	srv := httptest.NewServer(mnhttp.NewHandler(svc, slog.New(slog.NewTextHandler(io.Discard, nil))))
+	defer srv.Close()
+
+	ctx := context.Background()
+	if err := projectStore.SaveCommunitiesTx(ctx, []*model.Community{{
+		ID:             communityID,
+		Project:        slug,
+		Scope:          model.ScopeProject,
+		MembershipHash: "http-comm-hash-1",
+		MemberCount:    3,
+		Label:          "HTTP community",
+	}}, nil, nil); err != nil {
+		t.Fatalf("SaveCommunitiesTx: %v", err)
+	}
+	if _, _, err := projectStore.Upsert(ctx, &model.Memory{
+		Type:       model.TypeSynthesis,
+		Scope:      model.ScopeProject,
+		Project:    slug,
+		Title:      "Cluster: HTTP community",
+		Content:    "## Cluster Overview\nHTTP community.",
+		TopicKey:   "synthesis/community-" + communityID,
+		Importance: 0.85,
+	}); err != nil {
+		t.Fatalf("Upsert synthesis: %v", err)
+	}
+
+	get := func(t *testing.T, query string) (*http.Response, []byte) {
+		t.Helper()
+		resp, err := http.Get(srv.URL + "/v1/memories/context" + query)
+		if err != nil {
+			t.Fatalf("GET context%s: %v", query, err)
+		}
+		defer resp.Body.Close()
+		raw, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		return resp, raw
+	}
+
+	t.Run("true", func(t *testing.T) {
+		resp, raw := get(t, "?include_synthesis=true")
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status %d: %s", resp.StatusCode, raw)
+		}
+		var body model.ContextResponse
+		if err := json.Unmarshal(raw, &body); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if len(body.ClusterOverviews) == 0 {
+			t.Errorf("cluster_overviews empty with include_synthesis=true: %s", raw)
+		}
+	})
+	t.Run("omitted", func(t *testing.T) {
+		resp, raw := get(t, "")
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status %d: %s", resp.StatusCode, raw)
+		}
+		var body map[string]any
+		if err := json.Unmarshal(raw, &body); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if v, ok := body["cluster_overviews"]; ok {
+			t.Errorf("cluster_overviews = %v without the parameter, want absent", v)
+		}
+	})
+	t.Run("invalid", func(t *testing.T) {
+		resp, raw := get(t, "?include_synthesis=maybe")
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("status %d, want 400: %s", resp.StatusCode, raw)
+		}
+		var body struct {
+			Error struct {
+				Code string `json:"code"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(raw, &body); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if body.Error.Code != "invalid_request" {
+			t.Errorf("code = %q, want invalid_request", body.Error.Code)
+		}
+	})
+}

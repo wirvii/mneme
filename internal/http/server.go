@@ -446,6 +446,8 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 //	focus         — optional focus phrase
 //	include_graph — enable/disable graph expansion for focus matching;
 //	                accepts true/false/1/0/TRUE/FALSE (default: service config, which defaults to true)
+//	include_synthesis — pack synthesis memories and cluster overviews (SPEC-187);
+//	                same boolean forms (default: false in auto mode, true in communities/flat)
 func (s *Server) handleContext(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "use GET")
@@ -472,6 +474,14 @@ func (s *Server) handleContext(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		req.IncludeGraph = &b
+	}
+	if isStr := r.URL.Query().Get("include_synthesis"); isStr != "" {
+		b, err := strconv.ParseBool(isStr)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_request", "'include_synthesis' must be a boolean (true/false/1/0)")
+			return
+		}
+		req.IncludeSynthesis = &b
 	}
 
 	resp, err := s.svc.Context(r.Context(), req)
