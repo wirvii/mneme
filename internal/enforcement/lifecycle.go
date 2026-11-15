@@ -11,11 +11,15 @@ import (
 // lifecycleCommands is the closed set of `mneme <noun> <verb>` pairs a
 // subagent must not run from the terminal (SPEC-175): the author of a change
 // does not authorize it. It mirrors the lifecycleTools MCP denials in
-// internal/cli/hook.go and adds `sdd import`, which has no MCP surface.
+// internal/cli/hook.go and adds the commands with no MCP surface: `sdd
+// import` and `mem synthesis-sweep`, which is also an act of the person or
+// the orchestrator (SPEC-187). The matcher sees the noun-verb pair and not
+// the flags, so the sweep's dry run is denied to subagents as well.
 var lifecycleCommands = []string{
 	"backlog archive",
 	"lane override",
 	"lane reclassify",
+	"mem synthesis-sweep",
 	"sdd import",
 	"spec advance",
 	"spec quick",

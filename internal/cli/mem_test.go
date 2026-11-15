@@ -139,7 +139,7 @@ func TestMemCmd_SubcommandsAndAliases(t *testing.T) {
 		got = append(got, c.Name())
 	}
 	sort.Strings(got)
-	want := []string{"explore", "forget", "gaps", "promote", "relate", "stats", "timeline"}
+	want := []string{"explore", "forget", "gaps", "promote", "relate", "stats", "synthesis-sweep", "timeline"}
 	if len(got) != len(want) {
 		t.Fatalf("mem subcommands = %v, want %v", got, want)
 	}
@@ -155,5 +155,10 @@ func TestMemCmd_SubcommandsAndAliases(t *testing.T) {
 		if err != nil || c.Name() != alias {
 			t.Errorf("top-level %q alias missing: %v", alias, err)
 		}
+	}
+
+	// SPEC-187: the sweep lives only under mem; it has no top-level alias.
+	if c, _, err := root.Find([]string{"synthesis-sweep"}); err == nil && c.Name() == "synthesis-sweep" {
+		t.Error("synthesis-sweep resolves as a top-level command, want it only under mem")
 	}
 }

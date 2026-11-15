@@ -208,8 +208,40 @@ func TestEvaluateLifecycleCommand_ParseErrorFailsOpen(t *testing.T) {
 
 func TestLifecycleCommands_Set(t *testing.T) {
 	t.Parallel()
-	want := []string{"backlog archive", "lane override", "lane reclassify", "sdd import", "spec advance", "spec quick"}
+	want := []string{"backlog archive", "lane override", "lane reclassify", "mem synthesis-sweep", "sdd import", "spec advance", "spec quick"}
 	if got := LifecycleCommands(); !reflect.DeepEqual(got, want) {
 		t.Errorf("LifecycleCommands() = %v, want %v", got, want)
+	}
+}
+
+// TestEvaluateLifecycleCommand_MemSynthesisSweep verifies SPEC-187: the
+// synthesis sweep is an act of the person or the orchestrator, so a
+// subagent may not run it, dry run included (the matcher sees the noun-verb
+// pair, not the flags), unless the command names an isolated data dir.
+func TestEvaluateLifecycleCommand_MemSynthesisSweep(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		cmd   string
+		block bool
+	}{
+		{`mneme mem synthesis-sweep`, true},
+		{`mneme mem synthesis-sweep --apply`, true},
+		{`mneme -p wirvii/mneme mem synthesis-sweep --apply`, true},
+		{`./mneme mem synthesis-sweep --json`, true},
+		{`mneme --data-dir /tmp/x mem synthesis-sweep --apply`, false},
+		{`MNEME_DATA_DIR=/tmp/x mneme mem synthesis-sweep`, false},
+		{`mneme mem stats`, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.cmd, func(t *testing.T) {
+			t.Parallel()
+			got := EvaluateLifecycleCommand(tt.cmd, linuxPC)
+			if got.Block != tt.block {
+				t.Fatalf("EvaluateLifecycleCommand(%q).Block = %v, want %v (%+v)", tt.cmd, got.Block, tt.block, got)
+			}
+			if tt.block && got.Command != "mem synthesis-sweep" {
+				t.Errorf("Command = %q, want mem synthesis-sweep", got.Command)
+			}
+		})
 	}
 }

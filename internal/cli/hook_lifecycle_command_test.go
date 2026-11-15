@@ -55,6 +55,7 @@ func TestRunHookEnforceDelegation_LifecycleCommands_Table(t *testing.T) {
 		{"sdd import", resolvedSubagent, `./mneme sdd import`, 2, "sdd import"},
 		{"go run backlog archive", resolvedSubagent, `go run ./cmd/mneme backlog archive BL-1`, 2, "backlog archive"},
 		{"lane override", resolvedSubagent, `mneme lane override S`, 2, "lane override"},
+		{"mem synthesis-sweep", resolvedSubagent, "mneme mem synthesis-sweep --apply", 2, "mem synthesis-sweep"},
 		{"agent_type absent", unresolvedAgent, `mneme spec advance SPEC-1`, 2, "spec advance"},
 		{"codex-shaped payload", codexChild, `mneme spec advance S`, 2, "spec advance"},
 		{"orchestrator", "", `mneme spec advance SPEC-1`, 0, ""},

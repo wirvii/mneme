@@ -16,7 +16,7 @@ import (
 func newMemCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "mem",
-		Short: "Memory administration (stats, timeline, forget, promote, relate, gaps, explore)",
+		Short: "Memory administration (stats, timeline, forget, promote, relate, gaps, explore, synthesis-sweep)",
 		Long: `Memory administration verbs that are not exposed to agents over MCP.
 
 Each subcommand is a thin wrapper over the same service the MCP tools and the
@@ -30,6 +30,7 @@ HTTP API use.`,
 		newRelateCmd(),
 		newGapsCmd(),
 		newExploreCmd(),
+		newSynthesisSweepCmd(),
 	)
 	return cmd
 }
