@@ -154,13 +154,15 @@ func newSpecListView(resp model.SpecListResponse) specListView {
 // model.MaxUnreadableListed and UnreadableTotal carries the real count
 // (SPEC-133 D14) — lane_stats had no dedicated view type before this spec
 // (the handler returned *model.LaneStatsResponse directly), so this is the
-// first one.
+// first one. RiskBreachCount is always present here (SPEC-184), unlike the
+// CLI's --json, whose omitempty keeps SPEC-133's byte-for-byte comparison.
 type laneStatsView struct {
 	TrivialCount    int                   `json:"trivial_count"`
 	AuditFailCount  int                   `json:"audit_fail_count"`
 	AuditFailRate   float64               `json:"audit_fail_rate"`
 	OverrideCount   int                   `json:"override_count"`
 	ReclassifyCount int                   `json:"reclassify_count"`
+	RiskBreachCount int                   `json:"risk_breach_count"`
 	Unreadable      []model.UnreadableRow `json:"unreadable,omitempty"`
 	UnreadableTotal int                   `json:"unreadable_total,omitempty"`
 }
@@ -175,6 +177,7 @@ func newLaneStatsView(resp *model.LaneStatsResponse) laneStatsView {
 		AuditFailRate:   resp.AuditFailRate,
 		OverrideCount:   resp.OverrideCount,
 		ReclassifyCount: resp.ReclassifyCount,
+		RiskBreachCount: resp.RiskBreachCount,
 		Unreadable:      unreadable,
 		UnreadableTotal: unreadableTotal,
 	}

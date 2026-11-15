@@ -190,9 +190,18 @@ type LaneStatsResponse struct {
 	// lane_override (detected from history reasons starting with "lane override:").
 	OverrideCount int `json:"override_count"`
 
-	// ReclassifyCount is the number of trivial specs reclassified to standard
-	// (detected from history reasons containing "reclassified from trivial to standard").
+	// ReclassifyCount is the number of specs, of any current lane, ever
+	// reclassified from trivial to standard (detected from history reasons
+	// containing "reclassified from trivial to standard"). Since SPEC-184 it
+	// counts specs already reclassified to standard too, so it is no longer
+	// always 0.
 	ReclassifyCount int `json:"reclassify_count"`
+
+	// RiskBreachCount feeds the "Risk breaches" line of lane stats (SPEC-184).
+	// Risk breaches counts every spec whose latest lane audit failed on a risk item, whatever its current lane, so it can exceed audit failures (which only count specs still trivial).
+	// Absent from JSON means 0 (omitempty keeps `mneme lane stats --json`
+	// byte-identical for a project with none).
+	RiskBreachCount int `json:"risk_breach_count,omitempty"`
 
 	// Unreadable names every spec row LaneStats could identify but not fully
 	// read (SPEC-133 D1/D8): LaneStats aggregates over ListSpecs, so it

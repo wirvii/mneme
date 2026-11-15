@@ -248,6 +248,7 @@ Reported metrics:
 			fmt.Fprintf(os.Stdout, "Trivial specs:   %d\n", resp.TrivialCount)
 			fmt.Fprintf(os.Stdout, "Audit failures:  %d (rate: %.1f%%)\n",
 				resp.AuditFailCount, resp.AuditFailRate*100)
+			fmt.Fprintf(os.Stdout, "Risk breaches:   %d\n", resp.RiskBreachCount)
 			fmt.Fprintf(os.Stdout, "Overrides:       %d\n", resp.OverrideCount)
 			fmt.Fprintf(os.Stdout, "Reclassified:    %d\n", resp.ReclassifyCount)
 			// SPEC-133 D13: lane stats' output is already an informe with

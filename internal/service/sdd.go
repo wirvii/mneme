@@ -715,7 +715,17 @@ func (svc *SDDService) onAdvanceSideEffects(ctx context.Context, spec *model.Spe
 // Called from two sites:
 //  1. onAdvanceSideEffects (case SpecStatusImplementing) for SpecAdvance
 //  2. SpecQuick explicitly after the rationale→implementing transition
+//
+// One exception (SPEC-184 Dp7): a spec reclassified to standard after a
+// failed trivial audit (an audit -> speccing history entry) keeps a
+// non-empty base_sha, so the review range of its standard QA still covers
+// the commits it made in the trivial lane.
 func (svc *SDDService) captureBaseSHA(ctx context.Context, spec *model.Spec) {
+	if spec.BaseSHA != "" && svc.reclassifiedFromAudit(ctx, spec.ID) {
+		log.Printf("service: capture base sha: %s keeps base %s (reclassified after a failed audit)", spec.ID, spec.BaseSHA)
+		return
+	}
+
 	repoDir := svc.repoDir
 	if repoDir == "" {
 		var err error
@@ -736,6 +746,24 @@ func (svc *SDDService) captureBaseSHA(ctx context.Context, spec *model.Spec) {
 	if err := svc.updateSpecBaseSHA(ctx, spec.ID, sha); err != nil {
 		log.Printf("service: capture base sha: store update for %s: %v", spec.ID, err)
 	}
+}
+
+// reclassifiedFromAudit reports whether the spec's history has an
+// audit -> speccing entry, i.e. it was reclassified to standard after a
+// failed trivial audit. Such a spec keeps its original base_sha so the
+// review range (SPEC-157) still starts before its trivial commits.
+func (svc *SDDService) reclassifiedFromAudit(ctx context.Context, specID string) bool {
+	history, err := svc.store.GetSpecHistory(ctx, specID)
+	if err != nil {
+		log.Printf("service: capture base sha: history for %s: %v", specID, err)
+		return false
+	}
+	for _, h := range history {
+		if h.FromStatus == model.SpecStatusAudit && h.ToStatus == model.SpecStatusSpeccing {
+			return true
+		}
+	}
+	return false
 }
 
 // createSpecDirectory creates the per-spec workflow directory and copies
@@ -1440,7 +1468,12 @@ func (svc *SDDService) LaneAudit(ctx context.Context, req model.LaneAuditRequest
 // LaneReclassify changes a spec's lane from trivial to standard. After
 // reclassification the spec moves to speccing so the full workflow can proceed.
 // Upgrading from standard to trivial is forbidden. Lane cannot be changed
-// after implementing has started (ErrLaneImmutable).
+// once implementing has started (ErrLaneImmutable), with one exception
+// (SPEC-184): a spec in audit whose latest lane audit failed may be
+// reclassified, because that is the way out the auditor names. Its commits
+// stay in the branch and its base_sha is kept (captureBaseSHA), so the
+// standard review range still covers them. Only the orchestrator may run it:
+// the hooks deny it to subagents.
 func (svc *SDDService) LaneReclassify(ctx context.Context, req model.LaneReclassifyRequest) (*model.Spec, error) {
 	spec, err := svc.loadMutableSpec(ctx, req.ID)
 	if err != nil {
@@ -1456,11 +1489,24 @@ func (svc *SDDService) LaneReclassify(ctx context.Context, req model.LaneReclass
 			req.ID, model.ErrLaneMismatch)
 	}
 
-	// Immutability check: implementing or later is locked.
+	// Immutability check: implementing or later is locked, except audit
+	// after a failed lane audit (SPEC-184 D5): reclassifying is the way out
+	// the auditor's Remedy names.
+	reason := "reclassified from trivial to standard"
 	switch spec.Status {
-	case model.SpecStatusImplementing, model.SpecStatusAudit, model.SpecStatusDone:
+	case model.SpecStatusImplementing, model.SpecStatusDone:
 		return nil, fmt.Errorf("service: lane reclassify: spec %s is in %s status: %w",
 			req.ID, spec.Status, model.ErrLaneImmutable)
+	case model.SpecStatusAudit:
+		latest, err := svc.store.LatestLaneAudit(ctx, spec.ID)
+		if err != nil {
+			return nil, fmt.Errorf("service: lane reclassify: latest audit: %w", err)
+		}
+		if latest == nil || latest.Passed {
+			return nil, fmt.Errorf("service: lane reclassify: spec %s is in audit without a failed audit: %w",
+				req.ID, model.ErrLaneImmutable)
+		}
+		reason = "reclassified from trivial to standard after a failed audit"
 	}
 
 	// SPEC-181 D3: a trivial spec reclassified to standard starts its standard
@@ -1476,12 +1522,12 @@ func (svc *SDDService) LaneReclassify(ctx context.Context, req model.LaneReclass
 	}
 
 	// Transition to speccing so the standard workflow can begin.
-	// The current status may be draft, rationale, or needs_grill.
-	// We update to speccing regardless of the current state because the
-	// caller has explicitly requested the reclassification.
+	// The current status may be draft, rationale, needs_grill, or audit
+	// after a failed audit. We update to speccing regardless of the current
+	// state because the caller has explicitly requested the reclassification.
 	if err := svc.updateSpecStatus(ctx, spec.ID,
 		spec.Status, model.SpecStatusSpeccing,
-		req.By, "reclassified from trivial to standard"); err != nil {
+		req.By, reason); err != nil {
 		return nil, fmt.Errorf("service: lane reclassify: move to speccing: %w", err)
 	}
 
@@ -1614,7 +1660,12 @@ func countRejections(history []*model.SpecHistory) rejectionCounts {
 // scoped to the provided project (defaults to the service project when empty).
 //
 // Counts are derived by iterating specs and their histories — no dedicated
-// counter columns are needed.
+// counter columns are needed. TrivialCount, AuditFailCount and OverrideCount
+// count only specs whose current lane is trivial; RiskBreachCount and
+// ReclassifyCount count specs of any current lane (SPEC-184), so a spec
+// that failed on a risk item and was then reclassified to standard still
+// counts. A standard spec with no lane audit and no reclassification
+// changes no counter.
 func (svc *SDDService) LaneStats(ctx context.Context, project string) (*model.LaneStatsResponse, error) {
 	if project == "" {
 		project = svc.project
@@ -1630,19 +1681,23 @@ func (svc *SDDService) LaneStats(ctx context.Context, project string) (*model.La
 	resp := &model.LaneStatsResponse{Unreadable: unreadable}
 
 	for _, spec := range specs {
-		if spec.Lane != model.LaneTrivial {
-			continue
+		trivial := spec.Lane == model.LaneTrivial
+		if trivial {
+			resp.TrivialCount++
 		}
-		resp.TrivialCount++
 
-		// Check if the latest audit failed.
 		rec, err := svc.store.LatestLaneAudit(ctx, spec.ID)
 		if err != nil {
 			log.Printf("service: lane stats: latest audit for %s: %v", spec.ID, err)
 			continue
 		}
 		if rec != nil && !rec.Passed {
-			resp.AuditFailCount++
+			if trivial {
+				resp.AuditFailCount++
+			}
+			if hasRiskBreach(rec.Breaches) {
+				resp.RiskBreachCount++
+			}
 		}
 
 		// Scan history for override and reclassify markers.
@@ -1651,13 +1706,17 @@ func (svc *SDDService) LaneStats(ctx context.Context, project string) (*model.La
 			log.Printf("service: lane stats: history for %s: %v", spec.ID, err)
 			continue
 		}
+		reclassified := false
 		for _, h := range history {
-			if strings.HasPrefix(h.Reason, "lane override:") {
+			if trivial && strings.HasPrefix(h.Reason, "lane override:") {
 				resp.OverrideCount++
 			}
 			if strings.Contains(h.Reason, "reclassified from trivial to standard") {
-				resp.ReclassifyCount++
+				reclassified = true
 			}
+		}
+		if reclassified {
+			resp.ReclassifyCount++
 		}
 	}
 
@@ -1666,6 +1725,17 @@ func (svc *SDDService) LaneStats(ctx context.Context, project string) (*model.La
 	}
 
 	return resp, nil
+}
+
+// hasRiskBreach reports whether a persisted, newline-joined breach list
+// holds at least one breach laneaudit.IsRiskBreach recognises.
+func hasRiskBreach(breaches string) bool {
+	for _, b := range strings.Split(breaches, "\n") {
+		if laneaudit.IsRiskBreach(b) {
+			return true
+		}
+	}
+	return false
 }
 
 // saveAuditFailureMemory saves a discovery memory when the lane auditor finds

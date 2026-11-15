@@ -392,3 +392,165 @@ func TestSpecQuick_ScopeTooBroad(t *testing.T) {
 		}
 	})
 }
+
+// initLaneRepo turns dir into a git repo with one commit and returns HEAD.
+func initLaneRepo(t *testing.T, dir string) string {
+	t.Helper()
+	gitRunLaneTest(t, dir, "init", "-b", "main")
+	gitRunLaneTest(t, dir, "config", "user.email", "lane-test@example.com")
+	gitRunLaneTest(t, dir, "config", "user.name", "lane-test")
+	gitRunLaneTest(t, dir, "config", "commit.gpgsign", "false")
+	writeLaneFile(t, dir, "README.md", "x\n")
+	gitRunLaneTest(t, dir, "add", ".")
+	gitRunLaneTest(t, dir, "commit", "-m", "base")
+	return strings.TrimSpace(gitRunLaneTest(t, dir, "rev-parse", "HEAD"))
+}
+
+// insertAudit records a lane_audits row for id.
+func insertAudit(t *testing.T, svc *SDDService, id string, passed bool, breaches string) {
+	t.Helper()
+	if err := svc.store.InsertLaneAudit(context.Background(), &model.LaneAuditRecord{SpecID: id, Passed: passed, Breaches: breaches, BaseSHA: "b"}); err != nil {
+		t.Fatalf("insert lane audit: %v", err)
+	}
+}
+
+// TestLaneReclassify_FromFailedAudit covers SPEC-184 C12 (service part):
+// reclassifying is allowed from audit only after a failed audit, and the
+// reclassified spec keeps its base_sha when it re-enters implementing.
+func TestLaneReclassify_FromFailedAudit(t *testing.T) {
+	ctx := context.Background()
+	svc, _, repoDir := newTestSDDServiceWithRepoDir(t, "wirvii/mneme")
+	base := initLaneRepo(t, repoDir)
+
+	spec := createAuditSpec(t, svc, "SPEC-701", model.SpecStatusAudit, "internal/**", base)
+	insertAudit(t, svc, spec.ID, false, "risk item 1: path x.sql")
+
+	got, err := svc.LaneReclassify(ctx, model.LaneReclassifyRequest{ID: spec.ID, Lane: model.LaneStandard, By: "orchestrator"})
+	if err != nil {
+		t.Fatalf("LaneReclassify: %v", err)
+	}
+	if got.Lane != model.LaneStandard || got.Status != model.SpecStatusSpeccing {
+		t.Fatalf("lane/status = %s/%s, want standard/speccing", got.Lane, got.Status)
+	}
+	history, _ := svc.store.GetSpecHistory(ctx, spec.ID)
+	last := history[len(history)-1]
+	if !strings.Contains(last.Reason, "reclassified from trivial to standard after a failed audit") {
+		t.Errorf("history reason = %q", last.Reason)
+	}
+
+	t.Run("audit_without_failed_row", func(t *testing.T) {
+		none := createAuditSpec(t, svc, "SPEC-702", model.SpecStatusAudit, "internal/**", base)
+		passed := createAuditSpec(t, svc, "SPEC-703", model.SpecStatusAudit, "internal/**", base)
+		insertAudit(t, svc, passed.ID, false, "out of scope: a")
+		insertAudit(t, svc, passed.ID, true, "")
+		for _, id := range []string{none.ID, passed.ID} {
+			_, err := svc.LaneReclassify(ctx, model.LaneReclassifyRequest{ID: id, Lane: model.LaneStandard, By: "orchestrator"})
+			if !errors.Is(err, model.ErrLaneImmutable) {
+				t.Errorf("%s: err = %v, want ErrLaneImmutable", id, err)
+			}
+		}
+	})
+
+	t.Run("implementing_stays_immutable", func(t *testing.T) {
+		impl := createAuditSpec(t, svc, "SPEC-704", model.SpecStatusImplementing, "internal/**", base)
+		_, err := svc.LaneReclassify(ctx, model.LaneReclassifyRequest{ID: impl.ID, Lane: model.LaneStandard, By: "orchestrator"})
+		if !errors.Is(err, model.ErrLaneImmutable) {
+			t.Errorf("err = %v, want ErrLaneImmutable", err)
+		}
+	})
+
+	writeLaneFile(t, repoDir, "later.txt", "y\n")
+	gitRunLaneTest(t, repoDir, "add", ".")
+	gitRunLaneTest(t, repoDir, "commit", "-m", "later")
+	head := strings.TrimSpace(gitRunLaneTest(t, repoDir, "rev-parse", "HEAD"))
+	if head == base {
+		t.Fatal("HEAD did not move")
+	}
+
+	t.Run("base_sha_kept_after_reimplementing", func(t *testing.T) {
+		advanceTo(t, svc, got, model.SpecStatusImplementing)
+		again, err := svc.store.GetSpec(ctx, got.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if again.Status != model.SpecStatusImplementing || again.BaseSHA != base {
+			t.Errorf("BaseSHA = %q, want the original %q", again.BaseSHA, base)
+		}
+	})
+
+	t.Run("control_standard_spec_captures_head", func(t *testing.T) {
+		std, err := svc.SpecNew(ctx, model.SpecNewRequest{Title: "std", Lane: model.LaneStandard})
+		if err != nil {
+			t.Fatal(err)
+		}
+		advanceTo(t, svc, std, model.SpecStatusImplementing)
+		std, err = svc.store.GetSpec(ctx, std.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if std.BaseSHA != head {
+			t.Errorf("BaseSHA = %q, want HEAD %q", std.BaseSHA, head)
+		}
+	})
+}
+
+// TestLaneStats_RiskBreachCount covers SPEC-184 C11 and the P6 rule that
+// risk breaches and reclassifications count specs of any current lane.
+func TestLaneStats_RiskBreachCount(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("four_trivial_specs", func(t *testing.T) {
+		svc := newTestSDDService(t, "wirvii/mneme")
+		rows := []string{
+			"risk item 1: path x.sql",
+			"out of scope: y",
+			"forbidden path modified: z",
+			notDeclaredBreach,
+		}
+		for i, b := range rows {
+			id := "SPEC-" + string(rune('1'+i)) + "10"
+			createAuditSpec(t, svc, id, model.SpecStatusAudit, "internal/**", "")
+			insertAudit(t, svc, id, false, b)
+		}
+		got, err := svc.LaneStats(ctx, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.RiskBreachCount != 2 || got.AuditFailCount != 4 {
+			t.Errorf("RiskBreachCount = %d AuditFailCount = %d, want 2 and 4", got.RiskBreachCount, got.AuditFailCount)
+		}
+	})
+
+	t.Run("earlier_risk_failure_then_pass_does_not_count", func(t *testing.T) {
+		svc := newTestSDDService(t, "wirvii/mneme")
+		createAuditSpec(t, svc, "SPEC-120", model.SpecStatusDone, "internal/**", "")
+		insertAudit(t, svc, "SPEC-120", false, "risk item 1: path x.sql")
+		insertAudit(t, svc, "SPEC-120", true, "")
+		got, err := svc.LaneStats(ctx, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.RiskBreachCount != 0 {
+			t.Errorf("RiskBreachCount = %d, want 0", got.RiskBreachCount)
+		}
+	})
+
+	t.Run("reclassified_after_risk_failure_counts", func(t *testing.T) {
+		svc := newTestSDDService(t, "wirvii/mneme")
+		createAuditSpec(t, svc, "SPEC-130", model.SpecStatusAudit, "internal/**", "b")
+		insertAudit(t, svc, "SPEC-130", false, "risk item 1: path x.sql")
+		if _, err := svc.LaneReclassify(ctx, model.LaneReclassifyRequest{ID: "SPEC-130", Lane: model.LaneStandard, By: "orchestrator"}); err != nil {
+			t.Fatal(err)
+		}
+		got, err := svc.LaneStats(ctx, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.RiskBreachCount != 1 || got.ReclassifyCount != 1 || got.TrivialCount != 0 || got.AuditFailCount != 0 {
+			t.Errorf("stats = %+v, want RiskBreach=1 Reclassify=1 Trivial=0 AuditFail=0", got)
+		}
+	})
+}
+
+// notDeclaredBreach is the auditor's missing-declaration breach text.
+const notDeclaredBreach = `risk not declared: the implementer or the orchestrator adds "Risk: none" to tarea.md section entrega (spec_doc_write kind task section entrega)`

@@ -1256,6 +1256,17 @@ func TestHandleLaneStats_ReturnsResponse(t *testing.T) {
 	if stats.TrivialCount < 0 {
 		t.Errorf("TrivialCount must be ≥ 0, got %d", stats.TrivialCount)
 	}
+
+	// SPEC-184: risk_breach_count is always present on MCP, even when 0.
+	var raw map[string]any
+	unmarshalToolText(t, statsResp, &raw)
+	v, ok := raw["risk_breach_count"]
+	if !ok {
+		t.Fatalf("lane_stats JSON lacks risk_breach_count: %v", raw)
+	}
+	if n, _ := v.(float64); n != 0 {
+		t.Errorf("risk_breach_count = %v, want 0", v)
+	}
 }
 
 // --- SPEC DOC WRITE TESTS (SPEC-087 D3) ---
