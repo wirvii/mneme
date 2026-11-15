@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -269,4 +270,177 @@ func TestSpecList_StaleSuffixAndJSON(t *testing.T) {
 	if !strings.Contains(table, "\n1 spec has not moved for more than 14 days") {
 		t.Errorf("closing note missing:\n%s", table)
 	}
+}
+
+// syntheticStaleReport builds a report of n stale specs with the given id
+// and status strings, days descending from 100.
+func syntheticStaleReport(n int, idFor func(int) string, status model.SpecStatus) model.StaleReport {
+	report := model.StaleReport{ThresholdDays: 14, Count: n, ByStatus: map[model.SpecStatus]int{status: n}}
+	for i := 0; i < n; i++ {
+		report.Specs = append(report.Specs, model.StaleSpec{
+			ID: idFor(i), Title: "t", Status: status, DaysSinceLastMove: 100 - i,
+		})
+	}
+	return report
+}
+
+// TestStaleNoticeLine pins SPEC-186 C7(a)(b): one line, at most 400 bytes
+// and 5 ids, whatever the data.
+func TestStaleNoticeLine(t *testing.T) {
+	plainID := func(i int) string { return fmt.Sprintf("SPEC-%03d", i+1) }
+
+	t.Run("TwentyStale", func(t *testing.T) {
+		line := staleNoticeLine(syntheticStaleReport(20, plainID, model.SpecStatusQA))
+		if !strings.HasPrefix(line, "20 specs llevan más de 14 días sin moverse: ") {
+			t.Errorf("prefix wrong: %q", line)
+		}
+		if got := strings.Count(line, "SPEC-"); got != 5 {
+			t.Errorf("%d ids, want 5: %q", got, line)
+		}
+		if !strings.Contains(line, "SPEC-005 (qa, 96 d) y 15 más. Detalle: `mneme status`.") {
+			t.Errorf("tail wrong: %q", line)
+		}
+		if strings.Contains(line, "\n") {
+			t.Errorf("line has an inner newline: %q", line)
+		}
+		if len(line) > 400 {
+			t.Errorf("len = %d, want <= 400", len(line))
+		}
+	})
+
+	t.Run("Singular", func(t *testing.T) {
+		line := staleNoticeLine(syntheticStaleReport(1, plainID, model.SpecStatusDraft))
+		want := "1 spec lleva más de 14 días sin moverse: SPEC-001 (draft, 100 d). Detalle: `mneme status`."
+		if line != want {
+			t.Errorf("line = %q, want %q", line, want)
+		}
+	})
+
+	t.Run("ExtremeSizesStayWithinBudget", func(t *testing.T) {
+		longID := func(i int) string { return fmt.Sprintf("SPEC-%035d", i) }
+		line := staleNoticeLine(syntheticStaleReport(20, longID, model.SpecStatus(strings.Repeat("s", 30))))
+		if len(line) > 400 {
+			t.Errorf("len = %d, want <= 400: %q", len(line), line)
+		}
+		if got := strings.Count(line, "SPEC-"); got > 5 || got == 0 {
+			t.Errorf("%d ids, want between 1 and 5 after trimming: %q", got, line)
+		}
+		if !strings.Contains(line, " más. Detalle: `mneme status`.") {
+			t.Errorf("trimmed line lost its tail: %q", line)
+		}
+	})
+
+	t.Run("MinimalFormWhenNoEntryFits", func(t *testing.T) {
+		hugeID := func(int) string { return "SPEC-" + strings.Repeat("9", 500) }
+		line := staleNoticeLine(syntheticStaleReport(3, hugeID, model.SpecStatusQA))
+		want := "3 specs llevan más de 14 días sin moverse. Detalle: `mneme status`."
+		if line != want {
+			t.Errorf("line = %q, want %q", line, want)
+		}
+	})
+}
+
+// TestSessionStart_Stale pins SPEC-186 C7(c)(d): the stale line sits
+// between the session block and the context block, and nothing is written
+// (stdout or stderr) when nothing is stale or the threshold is 0.
+func TestSessionStart_Stale(t *testing.T) {
+	// seed creates 20 specs in root/dataDir's database (a non-git TempDir
+	// resolves to slug "", so global.db) and, when age is true, ages them.
+	seed := func(t *testing.T, root, dataDir string, age bool) {
+		t.Helper()
+		orig, err := os.Getwd()
+		if err != nil {
+			t.Fatalf("getwd: %v", err)
+		}
+		if err := os.Chdir(root); err != nil {
+			t.Fatalf("chdir: %v", err)
+		}
+		defer func() {
+			if err := os.Chdir(orig); err != nil {
+				t.Fatalf("restore cwd: %v", err)
+			}
+		}()
+		oldDataDir := flagDataDir
+		flagDataDir = dataDir
+		defer func() { flagDataDir = oldDataDir }()
+
+		svc, cleanup, err := initSDDService()
+		if err != nil {
+			t.Fatalf("initSDDService: %v", err)
+		}
+		var ids []string
+		for i := 1; i <= 20; i++ {
+			spec, err := svc.SpecNew(context.Background(), model.SpecNewRequest{
+				Title: fmt.Sprintf("stale %d", i), Lane: model.LaneStandard,
+			})
+			if err != nil {
+				cleanup()
+				t.Fatalf("SpecNew: %v", err)
+			}
+			ids = append(ids, spec.ID)
+		}
+		cleanup()
+		if !age {
+			return
+		}
+		for i, id := range ids {
+			ageSpecAt(t, filepath.Join(dataDir, "global.db"), id, 40-i)
+		}
+	}
+
+	t.Run("LineBetweenSessionAndContext", func(t *testing.T) {
+		root, dataDir := t.TempDir(), t.TempDir()
+		seed(t, root, dataDir, true)
+
+		stdout, stderr := runSessionStartHook(t, root, dataDir, sessionStartPayload("sess-stale"))
+		lineIdx := strings.Index(stdout, "20 specs llevan más de 14 días sin moverse")
+		sessionEnd := strings.Index(stdout, "<!-- mneme:session:end -->")
+		contextStart := strings.Index(stdout, "<!-- mneme:context:start -->")
+		if lineIdx < 0 || sessionEnd < 0 || contextStart < 0 {
+			t.Fatalf("line %d, session end %d, context start %d; want all present:\n%s", lineIdx, sessionEnd, contextStart, stdout)
+		}
+		if lineIdx <= sessionEnd || lineIdx >= contextStart {
+			t.Errorf("stale line at %d, want after session end %d and before context %d:\n%s",
+				lineIdx, sessionEnd, contextStart, stdout)
+		}
+		if stderr != "" {
+			t.Errorf("stderr = %q, want empty", stderr)
+		}
+	})
+
+	t.Run("NothingStaleWritesNothing", func(t *testing.T) {
+		root, dataDir := t.TempDir(), t.TempDir()
+		seed(t, root, dataDir, false)
+
+		stdout, stderr := runSessionStartHook(t, root, dataDir, sessionStartPayload("sess-fresh"))
+		if strings.Contains(stdout, "sin moverse") {
+			t.Errorf("stale line printed with nothing stale:\n%s", stdout)
+		}
+		if stderr != "" {
+			t.Errorf("stderr = %q, want empty", stderr)
+		}
+	})
+
+	t.Run("ThresholdZeroWritesNothing", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("USERPROFILE", home)
+		cfgDir := filepath.Join(home, ".mneme")
+		if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+			t.Fatalf("mkdir config dir: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(cfgDir, "config.toml"), []byte("[spec]\nstale_after_days = 0\n"), 0o600); err != nil {
+			t.Fatalf("write config: %v", err)
+		}
+		root, dataDir := t.TempDir(), t.TempDir()
+		seed(t, root, dataDir, true)
+
+		stdout, stderr := runSessionStartHook(t, root, dataDir, sessionStartPayload("sess-disabled"))
+		if strings.Contains(stdout, "sin moverse") {
+			t.Errorf("stale line printed with stale_after_days = 0:\n%s", stdout)
+		}
+		if stderr != "" {
+			t.Errorf("stderr = %q, want empty", stderr)
+		}
+	})
 }

@@ -164,7 +164,10 @@ func hookStdin(f *os.File) io.Reader {
 // blocks reading it (SPEC-108 D16).
 //
 // The output is intentionally minimal and machine-readable so the agent can
-// parse or ignore individual sections based on what it needs.
+// parse or ignore individual sections based on what it needs. Its order is
+// fixed: the agent-projection nudge, the mneme:session block (only when the
+// payload carries a session_id), the one-line stale-specs notice (only when
+// a spec is stale, SPEC-186), then the context block.
 func runHookSessionStart(ctx context.Context, r io.Reader, w, errW io.Writer) error {
 	svc, cleanup, err := initService()
 	if err != nil {
@@ -181,6 +184,10 @@ func runHookSessionStart(ctx context.Context, r io.Reader, w, errW io.Writer) er
 	// agent-projection nudge and before the context block.
 	currentSessionID := decodeSessionStartInput(r, errW)
 	maybeEmitPendingSessionNotice(ctx, svc, currentSessionID, w, errW)
+
+	// SPEC-186 D2b: the stale-specs line goes immediately before the
+	// context block, whether or not a session block was printed.
+	maybeEmitStaleSpecsNotice(ctx, w, errW)
 
 	req := model.ContextRequest{
 		// Budget zero signals the service to use its configured default.

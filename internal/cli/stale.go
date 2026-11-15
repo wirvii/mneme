@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"sort"
@@ -81,4 +82,70 @@ func staleByStatusText(byStatus map[model.SpecStatus]int) string {
 		parts[i] = fmt.Sprintf("%s %d", status, byStatus[status])
 	}
 	return strings.Join(parts, ", ")
+}
+
+// staleNoticeMaxIDs caps how many stale specs the session-start line names
+// (SPEC-186 D2b); the rest are summarised as "y N más".
+const staleNoticeMaxIDs = 5
+
+// staleNoticeMaxBytes is the session-start line's byte budget (SPEC-186 D5).
+const staleNoticeMaxBytes = 400
+
+// staleNoticeLine is the one line session-start prints when something is
+// stale (SPEC-186 §6), in Spanish like the session block beside it, without
+// a trailing newline. It names at most staleNoticeMaxIDs specs in the
+// report's order and, should the line exceed staleNoticeMaxBytes whatever
+// the data, drops entries from the end (growing "y N más") until it fits,
+// falling back to the count alone.
+func staleNoticeLine(report model.StaleReport) string {
+	const tail = ". Detalle: `mneme status`."
+	prefix := fmt.Sprintf("%d specs llevan más de %d días sin moverse", report.Count, report.ThresholdDays)
+	if report.Count == 1 {
+		prefix = fmt.Sprintf("1 spec lleva más de %d días sin moverse", report.ThresholdDays)
+	}
+
+	entries := make([]string, 0, staleNoticeMaxIDs)
+	for i, s := range report.Specs {
+		if i == staleNoticeMaxIDs {
+			break
+		}
+		entries = append(entries, fmt.Sprintf("%s (%s, %d d)", s.ID, s.Status, s.DaysSinceLastMove))
+	}
+	for n := len(entries); n > 0; n-- {
+		line := prefix + ": " + strings.Join(entries[:n], ", ")
+		if rest := report.Count - n; rest > 0 {
+			line += fmt.Sprintf(" y %d más", rest)
+		}
+		line += tail
+		if len(line) <= staleNoticeMaxBytes {
+			return line
+		}
+	}
+	return prefix + tail
+}
+
+// maybeEmitStaleSpecsNotice writes staleNoticeLine to w when the current
+// project has at least one stale spec (SPEC-186 D2b). It opens the SDD
+// service through initSDDService, the same composition point `mneme status`
+// uses. Fail-open, like the pending-session notice (SPEC-108 D15): an
+// error goes to errW and nothing to w, and the context block that follows
+// prints regardless. Nothing stale (or the announcement disabled) writes
+// nothing at all, not even an empty line.
+func maybeEmitStaleSpecsNotice(ctx context.Context, w, errW io.Writer) {
+	sddSvc, cleanup, err := initSDDService()
+	if err != nil {
+		fmt.Fprintf(errW, "[mneme] session-start hook: stale specs error: %v\n", err)
+		return
+	}
+	defer cleanup()
+
+	report, err := sddSvc.StaleSpecs(ctx, "")
+	if err != nil {
+		fmt.Fprintf(errW, "[mneme] session-start hook: stale specs error: %v\n", err)
+		return
+	}
+	if report.Count == 0 {
+		return
+	}
+	fmt.Fprintln(w, staleNoticeLine(report))
 }
