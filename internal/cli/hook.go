@@ -1833,7 +1833,8 @@ func runHookEnforceDelegation(r io.Reader, errW io.Writer) error {
 		return nil
 	}
 
-	decision := evaluateDelegation(input, cwd)
+	var facts delegationFacts
+	decision := evaluateDelegationWith(input, cwd, &facts)
 	if !decision.Block {
 		return nil
 	}
@@ -1893,6 +1894,28 @@ func hostPathContext() (enforcement.PathContext, error) {
 // constructs a PathContext from the real environment — internal/enforcement
 // itself never calls os/runtime.
 func evaluateDelegation(input hookPreToolInput, cwd string) enforcement.Decision {
+	return evaluateDelegationWith(input, cwd, nil)
+}
+
+// delegationFacts is what the delegation step (12) leaves to the risk guard
+// (13, SPEC-185 layer B): the configuration, project and manifest it already
+// resolved, so layer B neither reloads them nor queries the manifest again,
+// and the relative paths the trivial inline grant let through. cfg stays nil
+// when step 12 failed open before resolving the manifest; layer B then does
+// not run.
+type delegationFacts struct {
+	cfg           *config.Config
+	slug          string
+	pc            enforcement.PathContext
+	manifestFound bool
+	manifestJSON  string
+	inlineGranted []string
+}
+
+// evaluateDelegationWith is evaluateDelegation recording what it resolved in
+// facts (nil records nothing, byte for byte the old behaviour). facts is
+// filled only after the manifest query succeeds.
+func evaluateDelegationWith(input hookPreToolInput, cwd string, facts *delegationFacts) enforcement.Decision {
 	pc, homeErr := hostPathContext()
 	if homeErr != nil {
 		return enforcement.Decision{}
@@ -1911,6 +1934,12 @@ func evaluateDelegation(input hookPreToolInput, cwd string) enforcement.Decision
 		return enforcement.Decision{}
 	}
 
+	var observe func(rel string)
+	if facts != nil {
+		*facts = delegationFacts{cfg: cfg, slug: slug, pc: pc, manifestFound: found, manifestJSON: content}
+		observe = func(rel string) { facts.inlineGranted = append(facts.inlineGranted, rel) }
+	}
+
 	identity := input.resolveIdentity()
 
 	var own enforcement.OwnershipFunc
@@ -1921,7 +1950,7 @@ func evaluateDelegation(input hookPreToolInput, cwd string) enforcement.Decision
 			d := resolvePathOwnership(target, cwd, found, content)
 			return d.ExitCode == 2, d.Owner
 		}
-		own = withTrivialInlineIfEnabled(own, input, identity, cfg, slug, cwd) // SPEC-171, on by default since SPEC-184
+		own = withTrivialInlineIfEnabled(own, input, identity, cfg, slug, cwd, observe) // SPEC-171, on by default since SPEC-184
 	}
 
 	if input.ToolName == "Bash" {

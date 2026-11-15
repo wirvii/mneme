@@ -162,8 +162,10 @@ func withoutCatchAllScopes(scopes []string) []string {
 // SPEC-184). In every other case it returns own untouched and builds no
 // lookup at all, so a project that turns it off pays nothing. The excluded
 // globs come from the configured risk table, or from risk.DefaultTable()
-// when that fails — never fewer than the defaults.
-func withTrivialInlineIfEnabled(own enforcement.OwnershipFunc, input hookPreToolInput, identity CallerIdentity, cfg *config.Config, slug, cwd string) enforcement.OwnershipFunc {
+// when that fails — never fewer than the defaults. observe, when non-nil,
+// receives each relative path the grant let through, so the risk guard
+// (SPEC-185 layer B) knows which writes came through the inline permission.
+func withTrivialInlineIfEnabled(own enforcement.OwnershipFunc, input hookPreToolInput, identity CallerIdentity, cfg *config.Config, slug, cwd string, observe func(rel string)) enforcement.OwnershipFunc {
 	if identity.IsSubagent || !trivialInlineTools[input.ToolName] || !cfg.OrchestratorTrivialInlineEnabled(slug) {
 		return own
 	}
@@ -174,6 +176,9 @@ func withTrivialInlineIfEnabled(own enforcement.OwnershipFunc, input hookPreTool
 	lookup := newTrivialScopeLookup(cfg.ProjectDBPath(slug), slug)
 	return withTrivialInline(own, lookup, cwd, excluded, func(rel string) {
 		logTrivialInlineGrantEvent(cfg, slug, input, rel)
+		if observe != nil {
+			observe(rel)
+		}
 	})
 }
 
