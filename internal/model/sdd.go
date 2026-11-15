@@ -1078,7 +1078,34 @@ type LaneStatusResponse struct {
 	// implementing from qa (standard) or audit (trivial). Derived from
 	// spec_history entries where to_status=implementing and from_status is
 	// qa or audit. No additional column — history is the source of truth.
+	// It counts over the spec's whole life and adds qa and audit together;
+	// SpecStatusResponse.QARounds counts only qa, and only the current stay.
 	RejectionCount int `json:"rejection_count"`
+}
+
+// SpecReviewPackage reports where `mneme spec review-package` wrote the
+// review package of a spec's current review range (SPEC-188 D1). Only the
+// path travels to the qa-tester; the content never enters the
+// orchestrator's context.
+type SpecReviewPackage struct {
+	// Path is the absolute path of the written file.
+	Path string `json:"path"`
+	// SpecID is the spec the package belongs to.
+	SpecID string `json:"spec_id"`
+	// From is the full SHA the range starts at (base commit or frontier).
+	From string `json:"from"`
+	// To is the full SHA of the delivered end.
+	To string `json:"to"`
+	// FromKind says whether From is the base commit or the earlier frontier,
+	// in ReviewRange's own vocabulary.
+	FromKind string `json:"from_kind"`
+	// FrontierLost is true when the stored frontier was no longer an
+	// ancestor of the delivered end and the range fell back to the base.
+	FrontierLost bool `json:"frontier_lost"`
+	// Notice is mneme's own sentence about the range, copied verbatim.
+	Notice string `json:"notice"`
+	// Bytes is the size of the written file.
+	Bytes int `json:"bytes"`
 }
 
 // AuditSummary summarises the most recent auditor run for a spec.
@@ -1249,6 +1276,22 @@ type SpecStatusResponse struct {
 	// Populated by SDDService.AttachReviewRange, never by this package's
 	// own SpecStatus — see that method's doc for why.
 	ReviewRange *ReviewRange `json:"review_range,omitempty"`
+
+	// QARounds counts the qa -> implementing rejections of the CURRENT stay
+	// (SPEC-188 D2): the rows after the latest done -> implementing
+	// reopening, or the whole history when the spec was never reopened, so
+	// a reopened spec starts with its full round budget again. Always
+	// present: an explicit zero is never mistaken for "unknown". Unlike
+	// LaneStatusResponse.RejectionCount, it counts neither audit rejections
+	// nor earlier stays; the two agree on a standard spec never reopened.
+	QARounds int `json:"qa_rounds"`
+
+	// ReviewPackagePath is the absolute path of the review package of the
+	// CURRENT review range (SPEC-188 D1), present only while ReviewRange is
+	// available and `mneme spec review-package` already wrote that file, so
+	// the orchestrator knows it can hand the path over without regenerating
+	// it. Populated by SDDService.AttachReviewRange.
+	ReviewPackagePath string `json:"review_package_path,omitempty"`
 
 	// DeliveryContract, DeliveryState and DeliveryDetail report the delivery
 	// contract block of the spec's entrega section (SPEC-182 D4). They are

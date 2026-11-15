@@ -315,7 +315,7 @@ func TestFreezeJSON_AdditiveContract(t *testing.T) {
 		{
 			name:     "SpecStatusResponse zero value has no frozen key",
 			v:        SpecStatusResponse{},
-			wantKeys: []string{"spec", "history", "pushbacks"},
+			wantKeys: []string{"spec", "history", "pushbacks", "qa_rounds"},
 		},
 		{
 			name:     "SpecListResponse zero value has no frozen key",
@@ -532,7 +532,7 @@ func TestDeliveryJSON_AdditiveContract(t *testing.T) {
 		{
 			name:     "SpecStatusResponse zero value has no delivery keys",
 			v:        SpecStatusResponse{},
-			wantKeys: []string{"spec", "history", "pushbacks"},
+			wantKeys: []string{"spec", "history", "pushbacks", "qa_rounds"},
 		},
 		{
 			name:     "SpecDocWriteResponse with a valid contract adds contract and delivery_state",
@@ -542,7 +542,7 @@ func TestDeliveryJSON_AdditiveContract(t *testing.T) {
 		{
 			name:     "SpecStatusResponse with an invalid contract adds delivery_contract and delivery_detail only",
 			v:        SpecStatusResponse{DeliveryContract: DeliveryContractInvalid, DeliveryDetail: "x"},
-			wantKeys: []string{"spec", "history", "pushbacks", "delivery_contract", "delivery_detail"},
+			wantKeys: []string{"spec", "history", "pushbacks", "qa_rounds", "delivery_contract", "delivery_detail"},
 		},
 	}
 	for _, tc := range tests {

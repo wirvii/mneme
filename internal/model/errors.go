@@ -324,3 +324,12 @@ var ErrInvalidDeliveryContract = errors.New("delivery contract block is invalid 
 // writes its entrega section without a delivery contract block: that is the
 // one moment the block is required, because it is the implementer's report.
 var ErrDeliveryContractMissing = errors.New("delivery contract block is required")
+
+// --- Review package sentinel (SPEC-188) ---
+
+// ErrReviewPackageUnavailable is returned by `mneme spec review-package` when
+// there is no review package to write: the spec is not in qa, its review
+// range could not be computed, or the workflow directory or the repository
+// directory is not configured. It is an expected condition, not a failure,
+// and nothing is written when it occurs.
+var ErrReviewPackageUnavailable = errors.New("review package unavailable")
