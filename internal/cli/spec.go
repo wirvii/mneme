@@ -162,8 +162,9 @@ Filter by --status to narrow results. Without a filter all specs are shown.`,
 			}
 			defer cleanup()
 
-			// Limit stays zero (no window, SPEC-109 D9); printJSON receives the
-			// bare spec slice so --json output stays byte-identical.
+			// Limit stays zero (no window, SPEC-109 D9); printJSON receives a
+			// bare list (SPEC-109 AC15), each element the spec's own keys plus
+			// SPEC-186's stale and days_since_last_move.
 			req := model.SpecListRequest{
 				Status: model.SpecStatus(flagStatus),
 			}
@@ -180,7 +181,7 @@ Filter by --status to narrow results. Without a filter all specs are shown.`,
 			}
 
 			if flagJSON {
-				return printJSON(os.Stdout, resp.Specs)
+				return printJSON(os.Stdout, resp.Entries())
 			}
 
 			if len(resp.Specs) == 0 {
@@ -195,10 +196,17 @@ Filter by --status to narrow results. Without a filter all specs are shown.`,
 			// SPEC-126 DD7/AC15-AC16: a suffix per row, printed ONLY for a
 			// spec resp.Frozen names — with nothing frozen (the common
 			// case), this loop prints byte-identical to before this spec.
+			//
+			// SPEC-186: the same for a stale spec, "  — stale, N d". A frozen
+			// spec is never stale, so the two suffixes never combine.
 			var firstMarkedID string
-			marked := 0
+			marked, staleMarked := 0, 0
 			for _, s := range resp.Specs {
 				suffix := ""
+				if age := resp.Ages[s.ID]; age.Stale {
+					staleMarked++
+					suffix = fmt.Sprintf("  — stale, %d d", age.DaysSinceLastMove)
+				}
 				if freeze, ok := resp.Frozen[s.ID]; ok {
 					marked++
 					if firstMarkedID == "" {
@@ -224,6 +232,16 @@ Filter by --status to narrow results. Without a filter all specs are shown.`,
 						"item it names is not in this database, so its status cannot change either until that is\n"+
 						"fixed. Run \"mneme spec status %s\" to see which item, and why it was archived.\n",
 					marked, specWord, verb, firstMarkedID)
+			}
+			if staleMarked > 0 {
+				specWord, verb := "specs", "have"
+				if staleMarked == 1 {
+					specWord, verb = "spec", "has"
+				}
+				fmt.Fprintf(os.Stdout,
+					"\n%d %s %s not moved for more than %d days (marked \"stale\"). "+
+						"The threshold is [spec] stale_after_days in ~/.mneme/config.toml.\n",
+					staleMarked, specWord, verb, resp.Stale.ThresholdDays)
 			}
 			return nil
 		},

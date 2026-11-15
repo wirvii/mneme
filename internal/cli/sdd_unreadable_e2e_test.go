@@ -260,7 +260,7 @@ func runExternalMneme(t *testing.T, binPath, dataDir, project string, argv ...st
 
 // TestSDDUnreadable_HealthyTwoTableDatabaseByteForByteAgainstBaseBranch is
 // SPEC-133 AC2's discriminating half: with the two-table fixture's healthy
-// rows only (BL-900, SPEC-900 — no corruption in either table), all seven
+// rows only (BL-900, SPEC-900 — no corruption in either table), all six
 // surfaces produce EXACTLY the same stdout, stderr, and exit code as a
 // binary built from this branch's own merge-base against main. This is
 // what stops a field that is always present from silently satisfying
@@ -278,7 +278,8 @@ func TestSDDUnreadable_HealthyTwoTableDatabaseByteForByteAgainstBaseBranch(t *te
 		{"backlog", "list"},
 		{"backlog", "list", "--json"},
 		{"spec", "list"},
-		{"spec", "list", "--json"},
+		// SPEC-186 changes the shape of each element by design (stale, days_since_last_move);
+		// TestSpecList_JSONIsBareArray still pins the bare list.
 		{"status"},
 		{"status", "--json"},
 		{"lane", "stats", "--json"},

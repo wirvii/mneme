@@ -143,6 +143,10 @@ func renderFullStatus(ctx context.Context, svc *service.MemoryService, sddSvc *s
 	if spErr != nil && !asJSON {
 		fmt.Fprintf(os.Stdout, "warning: could not fully load specs: %v\n", spErr)
 	}
+	// SPEC-186: the stale report is computed by SpecList itself over the
+	// whole project; this dashboard only prints it, never re-derives it.
+	stale := spResp.Stale
+
 	var inProgressSpecs []*model.Spec
 	for _, s := range spResp.Specs {
 		if !s.Status.IsFinal() && s.Status != model.SpecStatusDraft {
@@ -214,6 +218,17 @@ func renderFullStatus(ctx context.Context, svc *service.MemoryService, sddSvc *s
 			// project's JSON stays byte-identical to before this field
 			// existed (AC7).
 			Unreadable []model.UnreadableRow `json:"unreadable,omitempty"`
+
+			// StaleSpecs is SPEC-186's report: present ONLY when at
+			// least one spec is stale (nil pointer, omitempty), with
+			// the full list (no cap of 10), by_status, frozen_count and
+			// unreadable_count. A project with nothing stale keeps its
+			// JSON byte-identical to before this field existed.
+			StaleSpecs *model.StaleReport `json:"stale_specs,omitempty"`
+		}
+		var staleSpecs *model.StaleReport
+		if stale.Count > 0 {
+			staleSpecs = &stale
 		}
 		var dbPath string
 		if slug != "" {
@@ -233,6 +248,7 @@ func renderFullStatus(ctx context.Context, svc *service.MemoryService, sddSvc *s
 			RecentDone:    recentDone,
 			FrozenSpecs:   frozenInProgress,
 			Unreadable:    unreadable,
+			StaleSpecs:    staleSpecs,
 		})
 	}
 
@@ -263,6 +279,14 @@ func renderFullStatus(ctx context.Context, svc *service.MemoryService, sddSvc *s
 		fmt.Fprintln(os.Stdout, section("UNREADABLE", 50))
 		renderUnreadableRows(os.Stdout, unreadable)
 		fmt.Fprintln(os.Stdout)
+	}
+
+	// STALE section (SPEC-186 D2a) — after UNREADABLE and before BACKLOG,
+	// for the same reason as the two above: impossible to miss. Only when
+	// something is stale; a frozen spec alone does not open it (its mark is
+	// already in SPECS IN PROGRESS).
+	if stale.Count > 0 {
+		renderStaleSection(os.Stdout, stale)
 	}
 
 	// BACKLOG section
