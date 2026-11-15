@@ -134,6 +134,33 @@ func findMarkerPair(lines []string, s model.TaskSection) (start, end int, err er
 	return start, end, nil
 }
 
+// TaskSectionBody returns the body of section s of a tarea.md document: the
+// lines between its markers, without its own heading and without leading or
+// trailing blank lines. found is false when the section holds nothing but its
+// heading. Escaped marker text is returned escaped, as it is stored.
+//
+// It is pure and exported because the pre-tool-use hook (SPEC-185) reads the
+// risk declaration of the plan and diseno sections straight from the file,
+// without opening an SDDService for a decision it must take in milliseconds.
+// A document whose markers do not parse returns ErrTaskDocMalformed.
+func TaskSectionBody(doc string, s model.TaskSection) (body string, found bool, err error) {
+	heading, ok := s.Heading()
+	if !ok {
+		return "", false, fmt.Errorf("service: task section body %q: %w", s, model.ErrUnknownTaskSection)
+	}
+	spans, err := parseTaskDoc(doc)
+	if err != nil {
+		return "", false, fmt.Errorf("service: task section body: %w", err)
+	}
+	sp := spans[s]
+	lines := strings.Split(doc, "\n")[sp.start+1 : sp.end]
+	if len(lines) > 0 && strings.TrimSpace(lines[0]) == heading {
+		lines = lines[1:]
+	}
+	body = strings.Trim(strings.Join(lines, "\n"), "\r\n")
+	return body, strings.TrimSpace(body) != "", nil
+}
+
 // spliceTaskSection replaces only the lines between s's markers with the
 // rendered content; every other byte of doc is preserved.
 func spliceTaskSection(doc string, s model.TaskSection, content string) (string, error) {

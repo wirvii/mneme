@@ -378,3 +378,40 @@ func swapLines(doc, a, b string) string {
 	const tmp = "\x00swap\x00"
 	return strings.Replace(strings.Replace(strings.Replace(doc, a, tmp, 1), b, a, 1), tmp, b, 1)
 }
+
+// TestTaskSectionBody covers the pure section reader the risk hook uses
+// (SPEC-185).
+func TestTaskSectionBody(t *testing.T) {
+	skel := renderTaskSkeleton("SPEC-001", "T")
+	doc, err := spliceTaskSection(skel, model.TaskSectionPlan, "\n1. paso\n\nRisk: item 1 (x)\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, found, err := TaskSectionBody(doc, model.TaskSectionPlan)
+	if err != nil || !found || body != "1. paso\n\nRisk: item 1 (x)" {
+		t.Errorf("plan body = (%q, %v, %v), want the content without the heading", body, found, err)
+	}
+
+	body, found, err = TaskSectionBody(doc, model.TaskSectionDesign)
+	if err != nil || found || body != "" {
+		t.Errorf("empty diseno = (%q, %v, %v), want found=false and no error", body, found, err)
+	}
+
+	broken := strings.Replace(doc, taskStartMarker(model.TaskSectionPlan)+"\n", "", 1)
+	if _, _, err := TaskSectionBody(broken, model.TaskSectionPlan); !errors.Is(err, model.ErrTaskDocMalformed) {
+		t.Errorf("missing plan marker: err = %v, want ErrTaskDocMalformed", err)
+	}
+
+	if _, _, err := TaskSectionBody(skel, "bogus"); !errors.Is(err, model.ErrUnknownTaskSection) {
+		t.Errorf("unknown section: err = %v, want ErrUnknownTaskSection", err)
+	}
+
+	escaped, err := spliceTaskSection(skel, model.TaskSectionPlan, "a "+taskEndMarker(model.TaskSectionPlan))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _, err = TaskSectionBody(escaped, model.TaskSectionPlan)
+	if err != nil || !strings.Contains(body, tareaEscapedPrefix) {
+		t.Errorf("escaped marker body = (%q, %v), want it returned escaped", body, err)
+	}
+}
