@@ -593,6 +593,20 @@ type hookPreToolInput struct {
 		// itself (SPEC-179). The shape is not captured from a real Codex
 		// PreToolUse yet, so the .mneme/sdd guard also reads Command.
 		Input string `json:"input"`
+		// OldString, NewString and ReplaceAll are Edit's arguments, Content is
+		// Write's, Edits is MultiEdit's list and NewSource is NotebookEdit's
+		// cell: Claude Code already sends them, and the risk guard's test
+		// watch (SPEC-185 D3) rebuilds the file from them.
+		OldString  string `json:"old_string"`
+		NewString  string `json:"new_string"`
+		ReplaceAll bool   `json:"replace_all"`
+		Content    string `json:"content"`
+		Edits      []struct {
+			OldString  string `json:"old_string"`
+			NewString  string `json:"new_string"`
+			ReplaceAll bool   `json:"replace_all"`
+		} `json:"edits"`
+		NewSource string `json:"new_source"`
 	} `json:"tool_input"`
 
 	// SessionID is the per-session identifier injected by Claude Code (SPEC-044).
@@ -1713,7 +1727,10 @@ func printLifecycleCommandBlock(w io.Writer, command string) {
 //  10. cwd (fail-open);
 //  11. unresolved role: warn and allow (SPEC-086 D2);
 //  12. delegation, containment and the trivial inline grant;
-//  13. exit 0.
+//  13. checkRiskGuard (SPEC-185 layer B: risk paths 1, 2 and 5, dependency
+//     commands and the test watch, unless an open standard spec declares
+//     the item);
+//  14. exit 0.
 //
 // SPEC-087 D5 adds a guard ahead of the delegation machinery: a
 // subagent calling a lifecycleTools MCP tool (spec_advance, spec_quick,
@@ -1836,6 +1853,12 @@ func runHookEnforceDelegation(r io.Reader, errW io.Writer) error {
 	var facts delegationFacts
 	decision := evaluateDelegationWith(input, cwd, &facts)
 	if !decision.Block {
+		// SPEC-185 layer B: a write every earlier guard allowed may still
+		// touch a risk path, change a dependency or harm a test.
+		if checkRiskGuard(input, identity, cwd, &facts, errW) {
+			//nolint:gocritic // os.Exit(2) is the documented hook exit code for rejection
+			os.Exit(2)
+		}
 		return nil
 	}
 
