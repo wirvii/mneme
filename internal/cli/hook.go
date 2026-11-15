@@ -1590,6 +1590,9 @@ var delegationTools = map[string]bool{
 //     owner's call (SPEC-125).
 //   - lane_override: bypassing the trivial-lane auditor is decided by the
 //     orchestrator or the owner, never by the author of the change (SPEC-175).
+//   - lane_reclassify: changing the lane of the spec being implemented is the
+//     orchestrator's call (SPEC-184); the auditor's Remedy invites a
+//     reclassification, and the author of the change must not act on it.
 //
 // sdd_import left this set in SPEC-163 together with the tool itself, which
 // is CLI-only now. The same verbs spoken through Bash (`mneme spec advance`,
@@ -1604,6 +1607,7 @@ var lifecycleTools = map[string]bool{
 	"mcp__mneme__spec_quick":      true,
 	"mcp__mneme__backlog_archive": true,
 	"mcp__mneme__lane_override":   true,
+	"mcp__mneme__lane_reclassify": true,
 }
 
 // lifecycleBlockMessage is the load-bearing message printed when a
@@ -1635,6 +1639,8 @@ func printLifecycleBlock(w io.Writer, tool string) {
 		fmt.Fprintf(w, "(bloqueado: %s — motivo distinto: descartar trabajo y congelar su registro de forma irreversible es una decisión del owner, canalizada por el orquestador, nunca del subagente que lo está ejecutando.)\n", tool)
 	case "mcp__mneme__lane_override":
 		fmt.Fprintf(w, "(bloqueado: %s — saltarse el auditor del carril trivial lo decide el orquestador o el owner; si el auditor rechazó tu cambio, devuélvelo al orquestador.)\n", tool)
+	case "mcp__mneme__lane_reclassify":
+		fmt.Fprintf(w, "(bloqueado: %s — cambiar el carril de la spec que estás implementando lo decide el orquestador; si el auditor nombró un riesgo, devuélvele el resultado.)\n", tool)
 	default:
 		fmt.Fprintf(w, "(bloqueado: %s — mismo motivo: el lifecycle SDD lo gobierna el orquestador, no un subagente.)\n", tool)
 	}
@@ -1668,7 +1674,7 @@ func printLifecycleCommandBlock(w io.Writer, command string) {
 //
 // SPEC-087 D5 adds a guard ahead of the delegation machinery: a
 // subagent calling a lifecycleTools MCP tool (spec_advance, spec_quick,
-// backlog_archive, lane_override) is denied unconditionally. SPEC-175 adds a
+// backlog_archive, lane_override, lane_reclassify) is denied unconditionally. SPEC-175 adds a
 // sibling guard right after it: a subagent's Bash command that runs a mneme
 // lifecycle command (enforcement.EvaluateLifecycleCommand) is denied too,
 // unless it names an isolated data directory. It runs before the delegationTools filter — those

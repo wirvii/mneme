@@ -162,6 +162,17 @@ func TestRunHookEnforceDelegation_LifecycleTools_Table(t *testing.T) {
 			wantExit: 0,
 		},
 		{
+			// SPEC-184: lane_reclassify joins the denied set.
+			name:     "lane_reclassify denied to a resolved subagent",
+			payload:  `{"agent_id":"x","agent_type":"backend","tool_name":"mcp__mneme__lane_reclassify","tool_input":{"id":"SPEC-1","lane":"standard"}}`,
+			wantExit: 2,
+		},
+		{
+			name:     "lane_reclassify allowed for the orchestrator",
+			payload:  `{"tool_name":"mcp__mneme__lane_reclassify","tool_input":{"id":"SPEC-1","lane":"standard"}}`,
+			wantExit: 0,
+		},
+		{
 			name:     "spec_pushback allowed",
 			payload:  `{"agent_id":"x","agent_type":"qa-tester","tool_name":"mcp__mneme__spec_pushback"}`,
 			wantExit: 0,
@@ -208,16 +219,17 @@ func TestRunHookEnforceDelegation_LifecycleBlock_MentionsRegenCommand(t *testing
 	}
 }
 
-// TestLifecycleTools_ExactlyFourMcpPrefixedEntries is the G5 anchor
+// TestLifecycleTools_ExactlyFiveMcpPrefixedEntries is the G5 anchor
 // (SPEC-115 P11 plan, widened by SPEC-125, widened again by SPEC-131 D58,
 // narrowed by SPEC-158's retirement of quality_ack, narrowed again by
 // SPEC-163's retirement of sdd_import from MCP, widened by SPEC-175's
-// lane_override): anchoring the map's SIZE (not just membership) makes a
-// silent rename visible: exactly 4 entries (spec_advance, spec_quick,
-// backlog_archive, lane_override), every one an "mcp__mneme__"-prefixed name.
-func TestLifecycleTools_ExactlyFourMcpPrefixedEntries(t *testing.T) {
-	if len(lifecycleTools) != 4 {
-		t.Fatalf("len(lifecycleTools) = %d, want 4: %v", len(lifecycleTools), lifecycleTools)
+// lane_override and by SPEC-184's lane_reclassify): anchoring the map's SIZE
+// (not just membership) makes a silent rename visible: exactly 5 entries
+// (spec_advance, spec_quick, backlog_archive, lane_override, lane_reclassify),
+// every one an "mcp__mneme__"-prefixed name.
+func TestLifecycleTools_ExactlyFiveMcpPrefixedEntries(t *testing.T) {
+	if len(lifecycleTools) != 5 {
+		t.Fatalf("len(lifecycleTools) = %d, want 5: %v", len(lifecycleTools), lifecycleTools)
 	}
 	for tool := range lifecycleTools {
 		if !strings.HasPrefix(tool, "mcp__mneme__") {

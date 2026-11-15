@@ -238,8 +238,9 @@ func TestToolsList(t *testing.T) {
 // TestCallerPolicy_DeniesOnlyLifecycleAndRestrictsCriteria covers SPEC-158
 // AC12's MCP half: after the certification mechanism's retirement, the set
 // of tools a backend caller cannot invoke is EXACTLY {backlog_archive,
-// lane_override, spec_advance, spec_quick} (SPEC-175 added the first two, in
-// parity with the Claude hook's lifecycleTools) — derived from allTools() itself, never a hand-typed list, so
+// lane_override, lane_reclassify, spec_advance, spec_quick} (SPEC-175 added
+// backlog_archive and lane_override, SPEC-184 lane_reclassify, in parity
+// with the Claude hook's lifecycleTools) — derived from allTools() itself, never a hand-typed list, so
 // a future addition to allowsTool's deny set would fail this test instead
 // of going unnoticed. spec_doc_write's "criteria" kind stays restricted to
 // the architect; "budget" is no longer restricted (and no longer even in
@@ -255,7 +256,7 @@ func TestCallerPolicy_DeniesOnlyLifecycleAndRestrictsCriteria(t *testing.T) {
 		}
 	}
 	sort.Strings(denied)
-	want := []string{"backlog_archive", "lane_override", "spec_advance", "spec_quick"}
+	want := []string{"backlog_archive", "lane_override", "lane_reclassify", "spec_advance", "spec_quick"}
 	if !reflect.DeepEqual(denied, want) {
 		t.Fatalf("tools denied to a backend caller = %v, want exactly %v", denied, want)
 	}

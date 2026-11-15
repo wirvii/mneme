@@ -89,7 +89,7 @@ func TestCallerPolicy_AllowedTools(t *testing.T) {
 			t.Errorf("nil AllowedTools denied %s", name)
 		}
 	}
-	for _, name := range []string{"spec_advance", "spec_quick", "backlog_archive", "lane_override"} {
+	for _, name := range []string{"spec_advance", "spec_quick", "backlog_archive", "lane_override", "lane_reclassify"} {
 		if unrestricted.allowsTool(name) {
 			t.Errorf("nil AllowedTools allowed lifecycle tool %s", name)
 		}

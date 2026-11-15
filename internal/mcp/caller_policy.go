@@ -16,7 +16,7 @@ type CallerPolicy struct {
 	Archetype string
 
 	// AllowedTools, when non-nil, is the closed list of mneme MCP tool names
-	// this role may call; anything else is denied on top of the four
+	// this role may call; anything else is denied on top of the five
 	// lifecycle tools. nil means no additional restriction. The CLI derives it
 	// from subagents.PermissionTable (SPEC-181 D4), so Claude's frontmatter and
 	// Codex's policy never disagree.
@@ -25,12 +25,13 @@ type CallerPolicy struct {
 
 // allowsTool mirrors the lifecycleTools denial of the Claude hook
 // (internal/cli/hook.go): a subagent never advances, quick-starts or archives
-// work, nor bypasses the trivial-lane auditor. backlog_archive and
-// lane_override were missing here until SPEC-175, a parity gap the Claude hook
-// had already closed (SPEC-125 for backlog_archive).
+// work, nor bypasses the trivial-lane auditor or changes its own spec's lane.
+// backlog_archive and lane_override were missing here until SPEC-175, a parity
+// gap the Claude hook had already closed (SPEC-125 for backlog_archive);
+// lane_reclassify joined in SPEC-184.
 func (p CallerPolicy) allowsTool(name string) bool {
 	switch name {
-	case "spec_advance", "spec_quick", "backlog_archive", "lane_override":
+	case "spec_advance", "spec_quick", "backlog_archive", "lane_override", "lane_reclassify":
 		return false
 	}
 	if p.AllowedTools == nil {

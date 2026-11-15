@@ -18,6 +18,8 @@ func TestEvaluateLifecycleCommand_Blocks(t *testing.T) {
 		{`mneme sdd import`, "sdd import"},
 		{`mneme backlog archive BL-1 --reason x`, "backlog archive"},
 		{`mneme lane override SPEC-1 --reason x --by y`, "lane override"},
+		{`mneme lane reclassify S`, "lane reclassify"},
+		{`mneme lane reclassify SPEC-1 standard --by backend`, "lane reclassify"},
 		{`./mneme spec advance S`, "spec advance"},
 		{`bin/mneme spec advance S`, "spec advance"},
 		{`/usr/local/bin/mneme spec advance S`, "spec advance"},
@@ -67,7 +69,6 @@ func TestEvaluateLifecycleCommand_Allows(t *testing.T) {
 		`mneme backlog promote BL-1`,
 		`mneme lane audit S`,
 		`mneme lane status S`,
-		`mneme lane reclassify S`,
 		`mneme sdd status`,
 		`mneme mem save x`,
 		`mneme help spec advance`,
@@ -207,7 +208,7 @@ func TestEvaluateLifecycleCommand_ParseErrorFailsOpen(t *testing.T) {
 
 func TestLifecycleCommands_Set(t *testing.T) {
 	t.Parallel()
-	want := []string{"backlog archive", "lane override", "sdd import", "spec advance", "spec quick"}
+	want := []string{"backlog archive", "lane override", "lane reclassify", "sdd import", "spec advance", "spec quick"}
 	if got := LifecycleCommands(); !reflect.DeepEqual(got, want) {
 		t.Errorf("LifecycleCommands() = %v, want %v", got, want)
 	}

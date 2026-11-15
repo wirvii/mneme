@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -157,6 +158,21 @@ func TestLifecycleTools_MirroredByLifecycleCommands(t *testing.T) {
 			t.Errorf("lifecycleTools entry %q has no lifecycle command %q", tool, name)
 		}
 	}
+
+	// SPEC-184: lane_reclassify is in the set and its block names the
+	// orchestrator as the one who decides.
+	t.Run("lane_reclassify_block_message", func(t *testing.T) {
+		if !lifecycleTools["mcp__mneme__lane_reclassify"] {
+			t.Fatal("lifecycleTools lacks mcp__mneme__lane_reclassify")
+		}
+		var buf bytes.Buffer
+		printLifecycleBlock(&buf, "mcp__mneme__lane_reclassify")
+		for _, want := range []string{"lane_reclassify", "orquestador"} {
+			if !strings.Contains(buf.String(), want) {
+				t.Errorf("block message lacks %q: %q", want, buf.String())
+			}
+		}
+	})
 }
 
 // TestLifecycleCommands_ResolveToRealCobraCommands stops the Bash guard from
@@ -174,5 +190,13 @@ func TestLifecycleCommands_ResolveToRealCobraCommands(t *testing.T) {
 		if len(rest) != 0 || cmd.Name() != words[1] {
 			t.Errorf("Find(%q) = %q with leftovers %v, want a command named %q", c, cmd.Name(), rest, words[1])
 		}
+	}
+
+	// SPEC-184 C12: the real reclassify command line is blocked without an
+	// isolated data directory.
+	const reclassify = "mneme lane reclassify SPEC-1 standard --by backend"
+	got := enforcement.EvaluateLifecycleCommand(reclassify, enforcement.PathContext{Home: "/home/u", TempDir: "/tmp", GOOS: "linux"})
+	if !got.Block || got.Command != "lane reclassify" {
+		t.Errorf("EvaluateLifecycleCommand(%q) = %+v, want Block with lane reclassify", reclassify, got)
 	}
 }

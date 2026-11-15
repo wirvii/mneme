@@ -15,6 +15,7 @@ import (
 var lifecycleCommands = []string{
 	"backlog archive",
 	"lane override",
+	"lane reclassify",
 	"sdd import",
 	"spec advance",
 	"spec quick",
