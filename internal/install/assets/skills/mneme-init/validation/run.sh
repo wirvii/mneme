@@ -68,5 +68,50 @@ if ! grep -q 'Step 0.6' "$SKILL_FILE"; then
   exit 1
 fi
 
+# SPEC-189: the size caps of SPEC-188, measured the same way as
+# internal/install/skills_budget_test.go. SKILL.md is at most 4096 bytes, and
+# the worst loading path (SKILL.md plus the largest references/*.md, in
+# characters) is at most 20000, where Claude Code trims a loaded file.
+main_bytes=$(wc -c < "$SKILL_FILE" | tr -d ' ')
+if [ "$main_bytes" -gt 4096 ]; then
+  echo "mneme-init: $SKILL_FILE is $main_bytes bytes, over 4096" >&2
+  exit 1
+fi
+main_chars=$(LC_ALL=C.UTF-8 wc -m < "$SKILL_FILE" | tr -d ' ')
+largest=0
+largest_name="-"
+for ref in references/*.md; do
+  [ -f "$ref" ] || continue
+  n=$(LC_ALL=C.UTF-8 wc -m < "$ref" | tr -d ' ')
+  if [ "$n" -gt "$largest" ]; then
+    largest=$n
+    largest_name=$ref
+  fi
+done
+if [ $((main_chars + largest)) -gt 20000 ]; then
+  echo "mneme-init: worst loading path $SKILL_FILE ($main_chars) + $largest_name ($largest) = $((main_chars + largest)) characters, over 20000" >&2
+  exit 1
+fi
+
+# SPEC-189: each reference exists and keeps the anchors its step depends on.
+check_ref() {
+  ref="references/$1"
+  shift
+  if [ ! -f "$ref" ]; then
+    echo "mneme-init: missing reference: $ref" >&2
+    exit 1
+  fi
+  for anchor in "$@"; do
+    if ! grep -q -e "$anchor" "$ref"; then
+      echo "mneme-init: $ref is missing anchor: $anchor" >&2
+      exit 1
+    fi
+  done
+}
+check_ref core.md "mneme sdd status" "mneme team-memory status" "mneme sdd import" "mneme team-memory import" "AGENTS.md"
+check_ref subagents.md "foreign_agents" "--areas-stdin" "areas_complete" "--composed-file" "backup_path" "mneme delegation-hook enable" "spec-reviewer"
+check_ref opt-ins.md "mneme codegraph index" "mneme codegraph hooks install" "mneme team-memory enable" "mneme sdd enable" "--apply" "verbatim"
+check_ref report.md "mneme-init complete for" "mneme-flow"
+
 echo "mneme-init: validation passed"
 exit 0

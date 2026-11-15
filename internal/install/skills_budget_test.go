@@ -27,16 +27,6 @@ const (
 // over an embed that silently lost its skills.
 const minBundledSkills = 10
 
-// exemptionUnneeded is the finding an exempt skill that already fits both
-// caps produces, so every exemption expires on its own.
-const exemptionUnneeded = "exencion innecesaria: la skill ya cabe"
-
-// skillBudgetExemptions names the skills exempt from BOTH caps and why. Every
-// entry expires on its own: a skill that fits again fails the test until the
-// entry is removed. SPEC-189 splits mneme-init and removes this map, the
-// exempt parameter, its branch and its test case.
-var skillBudgetExemptions = map[string]string{"mneme-init": "temporal: SPEC-189 la parte y retira este mapa"}
-
 // skillWorstPath returns the rune count of SKILL.md, the largest
 // references/**/*.md (and its name, "-" when there is none).
 func skillWorstPath(files map[string][]byte) (main, largest int, largestName string) {
@@ -57,7 +47,7 @@ func skillWorstPath(files map[string][]byte) (main, largest int, largestName str
 // path relative to the skill directory to its content; only .md files under
 // references/ count towards the worst path (a license text or validation/
 // is not an instruction an agent loads).
-func skillBudgetFindings(name string, files map[string][]byte, exempt bool) []string {
+func skillBudgetFindings(files map[string][]byte) []string {
 	main, largest, _ := skillWorstPath(files)
 	worst := main + largest
 	mainBytes := len(files["SKILL.md"])
@@ -68,13 +58,7 @@ func skillBudgetFindings(name string, files map[string][]byte, exempt bool) []st
 	if worst > skillCharBudget {
 		findings = append(findings, fmt.Sprintf("skill: %d caracteres > %d", worst, skillCharBudget))
 	}
-	if !exempt {
-		return findings
-	}
-	if len(findings) == 0 {
-		return []string{exemptionUnneeded}
-	}
-	return nil
+	return findings
 }
 
 // skillFiles groups the bundled skill entries by skill name.
@@ -104,29 +88,19 @@ func skillFiles(t *testing.T) (names []string, files map[string]map[string][]byt
 }
 
 // checkSkillBudget runs skillBudgetFindings over every bundled skill and
-// reports the findings whose prefix is prefix, plus any unneeded exemption.
+// reports the findings whose prefix is prefix.
 func checkSkillBudget(t *testing.T, prefix string) {
 	t.Helper()
 	names, files := skillFiles(t)
 	if len(names) < minBundledSkills {
 		t.Fatalf("only %d bundled skills, want at least %d", len(names), minBundledSkills)
 	}
-	known := make(map[string]bool, len(names))
 	for _, n := range names {
-		known[n] = true
-	}
-	for n := range skillBudgetExemptions {
-		if !known[n] {
-			t.Errorf("exemption names %q, which is not a bundled skill", n)
-		}
-	}
-	for _, n := range names {
-		reason, exempt := skillBudgetExemptions[n]
 		main, largest, largestName := skillWorstPath(files[n])
-		t.Logf("%s: SKILL.md %d bytes; peor camino %d caracteres (SKILL.md %d + %s %d); exenta=%v (%s)",
-			n, len(files[n]["SKILL.md"]), main+largest, main, largestName, largest, exempt, reason)
-		for _, f := range skillBudgetFindings(n, files[n], exempt) {
-			if strings.HasPrefix(f, prefix) || f == exemptionUnneeded {
+		t.Logf("%s: SKILL.md %d bytes; peor camino %d caracteres (SKILL.md %d + %s %d)",
+			n, len(files[n]["SKILL.md"]), main+largest, main, largestName, largest)
+		for _, f := range skillBudgetFindings(files[n]) {
+			if strings.HasPrefix(f, prefix) {
 				t.Errorf("%s: %s", n, f)
 			}
 		}
@@ -134,50 +108,46 @@ func checkSkillBudget(t *testing.T, prefix string) {
 }
 
 // TestBundledSkills_CharBudget is SPEC-188 C11: no bundled skill's worst
-// loading path exceeds skillCharBudget characters, exemptions aside.
+// loading path exceeds skillCharBudget characters.
 func TestBundledSkills_CharBudget(t *testing.T) {
 	checkSkillBudget(t, "skill:")
 }
 
 // TestBundledSkills_MainFileBytes is SPEC-188 C11: no bundled SKILL.md
-// exceeds skillMainMaxBytes bytes, exemptions aside. Unlike the
+// exceeds skillMainMaxBytes bytes. Unlike the
 // validation/run.sh scripts it needs no sh, so it runs on Windows too.
 func TestBundledSkills_MainFileBytes(t *testing.T) {
 	checkSkillBudget(t, "SKILL.md:")
 }
 
 // TestSkillBudget_FindingsDiscriminate pins skillBudgetFindings on synthetic
-// skills, so each cap and the exemption branch are proven to trigger alone.
+// skills, so each cap is proven to trigger alone.
 func TestSkillBudget_FindingsDiscriminate(t *testing.T) {
 	ascii := func(n int) []byte { return []byte(strings.Repeat("a", n)) }
 	tests := []struct {
-		name   string
-		files  map[string][]byte
-		exempt bool
-		want   []string
+		name  string
+		files map[string][]byte
+		want  []string
 	}{
-		{"SKILL.md over 4096 bytes", map[string][]byte{"SKILL.md": ascii(4097)}, false,
+		{"SKILL.md over 4096 bytes", map[string][]byte{"SKILL.md": ascii(4097)},
 			[]string{"SKILL.md: 4097 bytes > 4096"}},
 		{"characters, not bytes", map[string][]byte{
 			"SKILL.md":        []byte(strings.Repeat("á", 2000)),
 			"references/r.md": ascii(18001),
-		}, false, []string{"skill: 20001 caracteres > 20000"}},
+		}, []string{"skill: 20001 caracteres > 20000"}},
 		{"largest reference, not the sum", map[string][]byte{
 			"SKILL.md":        ascii(1000),
 			"references/a.md": ascii(12000),
 			"references/b.md": ascii(12000),
-		}, false, nil},
-		{"exempt skill that fits", map[string][]byte{"SKILL.md": ascii(100)}, true,
-			[]string{exemptionUnneeded}},
-		{"exempt skill over one cap", map[string][]byte{"SKILL.md": ascii(4097)}, true, nil},
+		}, nil},
 		{"non-md reference ignored", map[string][]byte{
 			"SKILL.md":               ascii(100),
 			"references/LICENSE.txt": ascii(30000),
-		}, false, nil},
+		}, nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := skillBudgetFindings("synthetic", tt.files, tt.exempt)
+			got := skillBudgetFindings(tt.files)
 			if strings.Join(got, "|") != strings.Join(tt.want, "|") {
 				t.Errorf("findings = %q, want %q", got, tt.want)
 			}

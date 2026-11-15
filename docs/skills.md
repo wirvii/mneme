@@ -81,9 +81,8 @@ SPEC-188) measures the worst real loading path of each one: an agent holds
 `SKILL.md` and at most one reference at a time, so the characters of `SKILL.md`
 plus those of its largest `references/*.md` must stay at or under 20,000, the
 point where Claude Code cuts a skill after compacting; and `SKILL.md` must stay
-at or under 4096 bytes. It needs no shell, so it runs on Windows too.
-`mneme-init` is the one named exemption, temporary until SPEC-189 splits it; an
-exemption that is no longer needed fails the guard until it is removed.
+at or under 4096 bytes. It needs no shell, so it runs on Windows too. No
+bundled skill is exempt (SPEC-189).
 
 ### Lint rules
 
@@ -117,6 +116,7 @@ format. It remains valid, and as a declared, transitional exemption its
 `exento por formato heredado de 5 secciones`. The warning always appears, so the
 exemption is never silent. When `## Automated Checks` is present its table
 should have the columns `Check`, `What it verifies`, `How to fix`.
+No bundled skill depends on this exemption any more.
 
 ---
 
@@ -262,7 +262,7 @@ manual lists the same set.
 | `present-spec` | The human approval gate: turn the spec into a plain-language decision and record the explicit answer | none |
 | `spec-review` | The fresh-context review of a standard spec before the gate and of its plan before implementation: reviewers read without the conversation, the architect resolves each finding and writes the report mneme requires | `references/report.md`, one file per role (`comprension.md`, `diseno.md`, `hechos.md`, `preparacion.md`), `NOTICE.md` and the Apache-2.0 license of the adapted origin |
 | `grill-me` | Refine a standard backlog item one question at a time | none |
-| `mneme-init` | Set up a project's roles and memory | none |
+| `mneme-init` | Set up a project's roles and memory | `references/core.md`, `subagents.md`, `opt-ins.md`, `report.md` |
 | `codegraph` | Use the code graph when the repository is indexed | none |
 
 The two older bug skills (investigation and diagnosis-to-spec, now one `bug`
