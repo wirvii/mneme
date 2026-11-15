@@ -42,6 +42,18 @@ Con `hecho` o `hecho_con_dudas`: confirma antes de escribir la entrega, da en `a
 Una prueba existente en rojo se para y se reporta; solo se edita cuando el diseno de la spec lo previo. Ambos casos van en `[[prueba_en_rojo]]` con su motivo. Cierra con `riesgo`. Formato: skill `mneme-flow` (`references/entrega.md`).
 <!-- endsection: delivery-contract -->
 
+<!-- section: implementer-contract -->
+## Entrega: cuatro estados
+
+Tu estado es uno de los cuatro de arriba; ante la duda no adivines para poder decir `hecho`.
+
+No lances subagentes ni revisores propios: quien revisa lo decide el orquestador.
+
+La suite del proyecto define el verde, no tu archivo de prueba: corre la orden completa que nombran la spec o el CLAUDE.md del repositorio.
+
+Si la spec pide prueba primero, tu entrega muestra el ROJO (la prueba nueva fallando antes del cambio, con su salida) y el VERDE (la misma prueba pasando despues).
+<!-- endsection: implementer-contract -->
+
 <!-- section: bounded-review -->
 ## Revision acotada: solo el contrato autoriza un rechazo
 

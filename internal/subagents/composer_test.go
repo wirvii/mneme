@@ -669,3 +669,62 @@ func TestDeliveryContractSection_CarriesAllObligations(t *testing.T) {
 		})
 	}
 }
+
+// minImplementerContractSectionBytes is a positive anchor: the section must
+// exist with real content, or the anchors below would be checked against
+// whatever delivery-contract alone provides.
+const minImplementerContractSectionBytes = 400
+
+// TestImplementerContractSection_CarriesAllObligations is SPEC-188 C10: the
+// composed block of each implementer carries the four delivery states
+// (contributed by delivery-contract) and each obligation of
+// implementer-contract exactly once.
+func TestImplementerContractSection_CarriesAllObligations(t *testing.T) {
+	section, err := CutSection(LayerOneAsset(), "implementer-contract")
+	if err != nil {
+		t.Fatalf("CutSection(implementer-contract): %v", err)
+	}
+	if len(section) < minImplementerContractSectionBytes {
+		t.Fatalf("implementer-contract section is only %d bytes, want >= %d", len(section), minImplementerContractSectionBytes)
+	}
+
+	states := []string{"`hecho`", "`hecho_con_dudas`", "`falta_contexto`", "`bloqueado`"}
+	// SPEC-169: anchors are single-line so re-wrapping the asset cannot
+	// silently break them.
+	once := []string{
+		"No lances subagentes ni revisores propios",
+		"La suite del proyecto define el verde, no tu archivo de prueba",
+		"el ROJO",
+		"el VERDE",
+	}
+	for _, role := range []Role{RoleBackend, RoleFrontend, RoleBugHunter} {
+		t.Run(string(role), func(t *testing.T) {
+			block := agentFixedContent(t, role)
+			for _, s := range states {
+				if strings.Count(block, s) < 1 {
+					t.Errorf("state %s missing from the %s block", s, role)
+				}
+			}
+			for _, a := range once {
+				if got := strings.Count(block, a); got != 1 {
+					t.Errorf("anchor %q appears %d times in the %s block, want exactly 1", a, got, role)
+				}
+			}
+		})
+	}
+}
+
+// TestCompose_ImplementerContractOnlyForImplementers is SPEC-188 C10: over
+// every role roleSections knows, only backend, frontend and bug-hunter carry
+// implementer-contract.
+func TestCompose_ImplementerContractOnlyForImplementers(t *testing.T) {
+	want := map[Role]bool{RoleBackend: true, RoleFrontend: true, RoleBugHunter: true}
+	for role := range roleSections {
+		t.Run(string(role), func(t *testing.T) {
+			got := strings.Contains(agentFixedContent(t, role), "No lances subagentes")
+			if got != want[role] {
+				t.Errorf("role %s carries implementer-contract = %v, want %v", role, got, want[role])
+			}
+		})
+	}
+}

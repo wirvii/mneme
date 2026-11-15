@@ -73,6 +73,7 @@ const agentFixedMarker = "agent-fixed"
 // standard spec in implementing refuses an entrega without the block, so a
 // profile still on v7 would hit that refusal without knowing the format; the
 // bump is what makes `mneme subagents doctor` flag it as needing `regen`.
+// SPEC-188 D3 adds implementer-contract (short variant) to the same three roles in this same version.
 const AgentFixedVersion = 8
 
 // roleSections maps a Role to the ordered section names cut from
@@ -84,9 +85,9 @@ const AgentFixedVersion = 8
 var roleSections = map[Role][]string{
 	RoleArchitect:     {"codegraph-hint", "mneme-integration-generic", "criteria-contract"},
 	RoleQATester:      {"codegraph-hint", "mneme-integration-generic", "bounded-review", "visual-certification"},
-	RoleBackend:       {"codegraph-hint", "mneme-integration-generic", "delivery-contract"},
-	RoleFrontend:      {"codegraph-hint", "mneme-integration-generic", "visual-certification", "delivery-contract"},
-	RoleBugHunter:     {"codegraph-hint", "mneme-integration-generic", "bug-investigation", "delivery-contract"},
+	RoleBackend:       {"codegraph-hint", "mneme-integration-generic", "delivery-contract", "implementer-contract"},
+	RoleFrontend:      {"codegraph-hint", "mneme-integration-generic", "visual-certification", "delivery-contract", "implementer-contract"},
+	RoleBugHunter:     {"codegraph-hint", "mneme-integration-generic", "bug-investigation", "delivery-contract", "implementer-contract"},
 	RoleDiagnostician: {"codegraph-hint", "mneme-integration-diagnostician"},
 	RoleSpecReviewer:  {"spec-reviewer"},
 }

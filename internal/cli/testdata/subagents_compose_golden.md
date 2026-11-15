@@ -32,6 +32,16 @@ Tu seccion `entrega` de `tarea.md` lleva un bloque TOML entre `<!-- mneme:entreg
 Con `hecho` o `hecho_con_dudas`: confirma antes de escribir la entrega, da en `arbol` el SHA de ese commit y una `[[evidencia]]` por comando (orden exacta, `exit_code`, extracto de salida) copiada de lo que de verdad corriste.
 
 Una prueba existente en rojo se para y se reporta; solo se edita cuando el diseno de la spec lo previo. Ambos casos van en `[[prueba_en_rojo]]` con su motivo. Cierra con `riesgo`. Formato: skill `mneme-flow` (`references/entrega.md`).
+
+## Entrega: cuatro estados
+
+Tu estado es uno de los cuatro de arriba; ante la duda no adivines para poder decir `hecho`.
+
+No lances subagentes ni revisores propios: quien revisa lo decide el orquestador.
+
+La suite del proyecto define el verde, no tu archivo de prueba: corre la orden completa que nombran la spec o el CLAUDE.md del repositorio.
+
+Si la spec pide prueba primero, tu entrega muestra el ROJO (la prueba nueva fallando antes del cambio, con su salida) y el VERDE (la misma prueba pasando despues).
 <!-- mneme:agent-fixed:end -->
 
 ## Contexto del proyecto
