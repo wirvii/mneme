@@ -71,6 +71,7 @@ func renderBasicStatus(ctx context.Context, svc *service.MemoryService, asJSON b
 		dbPath = cfg.GlobalDBPath()
 	}
 	dbPath = shortenHome(dbPath)
+	activeSyntheses := activeSynthesesNotice(ctx, svc, slug)
 
 	if asJSON {
 		type basicOut struct {
@@ -79,13 +80,17 @@ func renderBasicStatus(ctx context.Context, svc *service.MemoryService, asJSON b
 			Database     string `json:"database"`
 			ProjectCount int    `json:"project_memories"`
 			GlobalCount  int    `json:"global_memories"`
+			// ActiveSyntheses is set only when the warning line would be
+			// printed (SPEC-187), so a base without syntheses keeps its JSON.
+			ActiveSyntheses int `json:"active_syntheses,omitempty"`
 		}
 		return printJSON(os.Stdout, basicOut{
-			Version:      Version,
-			Project:      slug,
-			Database:     dbPath,
-			ProjectCount: projectCount,
-			GlobalCount:  globalCount,
+			Version:         Version,
+			Project:         slug,
+			Database:        dbPath,
+			ProjectCount:    projectCount,
+			GlobalCount:     globalCount,
+			ActiveSyntheses: activeSyntheses,
 		})
 	}
 
@@ -97,6 +102,9 @@ func renderBasicStatus(ctx context.Context, svc *service.MemoryService, asJSON b
 	}
 	fmt.Fprintf(os.Stdout, "Database: %s\n\n", dbPath)
 	fmt.Fprintf(os.Stdout, "Memories: %d active\n", projectCount)
+	if activeSyntheses > 0 {
+		fmt.Fprintf(os.Stdout, activeSynthesesFormat+"\n", activeSyntheses)
+	}
 	fmt.Fprintf(os.Stdout, "Global:   %d memories\n", globalCount)
 	return nil
 }
@@ -192,6 +200,7 @@ func renderFullStatus(ctx context.Context, svc *service.MemoryService, sddSvc *s
 	// consistent with the rest of this command's fail-open-on-warnings
 	// posture (backlog/spec fetches above also swallow their own errors).
 	nagLine := delegationNagLine(ctx, cfg, slug, service.NewSubagentService(svc))
+	activeSyntheses := activeSynthesesNotice(ctx, svc, slug)
 
 	if asJSON {
 		type fullOut struct {
@@ -225,6 +234,10 @@ func renderFullStatus(ctx context.Context, svc *service.MemoryService, sddSvc *s
 			// unreadable_count. A project with nothing stale keeps its
 			// JSON byte-identical to before this field existed.
 			StaleSpecs *model.StaleReport `json:"stale_specs,omitempty"`
+
+			// ActiveSyntheses is set only when the MEMORIES warning line
+			// would be printed (SPEC-187); absent otherwise.
+			ActiveSyntheses int `json:"active_syntheses,omitempty"`
 		}
 		var staleSpecs *model.StaleReport
 		if stale.Count > 0 {
@@ -237,18 +250,19 @@ func renderFullStatus(ctx context.Context, svc *service.MemoryService, sddSvc *s
 			dbPath = cfg.GlobalDBPath()
 		}
 		return printJSON(os.Stdout, fullOut{
-			Version:       Version,
-			Project:       slug,
-			Database:      shortenHome(dbPath),
-			DelegationNag: nagLine,
-			ProjectCount:  projectCount,
-			GlobalCount:   globalCount,
-			Backlog:       activeBacklog,
-			InProgress:    inProgressSpecs,
-			RecentDone:    recentDone,
-			FrozenSpecs:   frozenInProgress,
-			Unreadable:    unreadable,
-			StaleSpecs:    staleSpecs,
+			Version:         Version,
+			Project:         slug,
+			Database:        shortenHome(dbPath),
+			DelegationNag:   nagLine,
+			ProjectCount:    projectCount,
+			GlobalCount:     globalCount,
+			Backlog:         activeBacklog,
+			InProgress:      inProgressSpecs,
+			RecentDone:      recentDone,
+			FrozenSpecs:     frozenInProgress,
+			Unreadable:      unreadable,
+			StaleSpecs:      staleSpecs,
+			ActiveSyntheses: activeSyntheses,
 		})
 	}
 
@@ -342,9 +356,32 @@ func renderFullStatus(ctx context.Context, svc *service.MemoryService, sddSvc *s
 	// MEMORIES section
 	fmt.Fprintln(os.Stdout, section("MEMORIES", 50))
 	fmt.Fprintf(os.Stdout, "  %d project - %d global\n", projectCount, globalCount)
+	if activeSyntheses > 0 {
+		fmt.Fprintf(os.Stdout, "  "+activeSynthesesFormat+"\n", activeSyntheses)
+	}
 	fmt.Fprintln(os.Stdout)
 
 	return nil
+}
+
+// activeSynthesesFormat is the status warning of SPEC-187. It names the
+// command because, while old syntheses stay active, every consolidation can
+// still evict human memories to keep the project within project_budget.
+const activeSynthesesFormat = "Active syntheses: %d (generation is off; run mneme mem synthesis-sweep --apply to retire them)"
+
+// activeSynthesesNotice returns how many active syntheses the status panel
+// must warn about: the count when generation is off and at least one is
+// still active, 0 otherwise (nothing printed, no JSON key). A counting
+// error is ignored, like the rest of this command's fail-open warnings.
+func activeSynthesesNotice(ctx context.Context, svc *service.MemoryService, slug string) int {
+	if svc.Config().Graph.SynthesisEnabled {
+		return 0
+	}
+	n, err := svc.CountActiveSyntheses(ctx, slug)
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 // frozenDashboardNote is the short mark SPECS IN PROGRESS adds to a frozen

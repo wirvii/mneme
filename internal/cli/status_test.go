@@ -1,9 +1,20 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/wirvii/mneme/internal/config"
+	"github.com/wirvii/mneme/internal/db"
+	"github.com/wirvii/mneme/internal/embed"
+	"github.com/wirvii/mneme/internal/model"
+	"github.com/wirvii/mneme/internal/service"
+	"github.com/wirvii/mneme/internal/store"
 )
 
 // TestStatus_JSONBacklogAndSpecsAreBareArrays is AC15's status half:
@@ -153,4 +164,162 @@ func TestStatus_JSON_NoFrozenSpecs_KeyAbsent(t *testing.T) {
 	if _, ok := out["frozen_specs"]; ok {
 		t.Errorf("expected 'frozen_specs' ABSENT when nothing is frozen, got %#v", out["frozen_specs"])
 	}
+}
+
+// synthesisNoticeLine is the SPEC-187 status warning for n syntheses.
+func synthesisNoticeLine(n int) string {
+	return "Active syntheses: " + strconv.Itoa(n) + " (generation is off; run mneme mem synthesis-sweep --apply to retire them)"
+}
+
+// seedStatusSyntheses writes n active syntheses for project into the
+// project database under dataDir, the database `mneme status` opens.
+func seedStatusSyntheses(t *testing.T, dataDir, project string, n int) {
+	t.Helper()
+	cfg := config.Default()
+	cfg.Storage.DataDir = dataDir
+	d, err := db.Open(cfg.ProjectDBPath(project))
+	if err != nil {
+		t.Fatalf("open project db: %v", err)
+	}
+	defer d.Close()
+	s := store.NewMemoryStore(d)
+	for i := 0; i < n; i++ {
+		if _, err := s.Create(context.Background(), &model.Memory{
+			Type: model.TypeSynthesis, Scope: model.ScopeProject, Project: project,
+			Title: "status synthesis " + strconv.Itoa(i), Content: "body", Importance: 0.85,
+		}); err != nil {
+			t.Fatalf("seed synthesis: %v", err)
+		}
+	}
+}
+
+// lineAfter reports whether want is the line immediately after the first
+// line that contains anchor.
+func lineAfter(out, anchor, want string) bool {
+	lines := strings.Split(out, "\n")
+	for i, l := range lines {
+		if strings.Contains(l, anchor) && i+1 < len(lines) {
+			return lines[i+1] == want
+		}
+	}
+	return false
+}
+
+// TestStatus_SynthesisNotice_ShownWhenActive verifies the SPEC-187 warning
+// in both panels: right after "Memories: N active" in the basic one, right
+// under "  N project - M global" in the full one, and active_syntheses in
+// --json.
+func TestStatus_SynthesisNotice_ShownWhenActive(t *testing.T) {
+	t.Run("basic", func(t *testing.T) {
+		projectDB, err := db.OpenMemory()
+		if err != nil {
+			t.Fatalf("open project db: %v", err)
+		}
+		globalDB, err := db.OpenMemory()
+		if err != nil {
+			t.Fatalf("open global db: %v", err)
+		}
+		t.Cleanup(func() { projectDB.Close(); globalDB.Close() })
+		ps := store.NewMemoryStore(projectDB)
+		for i := 0; i < 2; i++ {
+			if _, err := ps.Create(context.Background(), &model.Memory{
+				Type: model.TypeSynthesis, Scope: model.ScopeProject, Project: "org/basic",
+				Title: "s" + strconv.Itoa(i), Content: "c", Importance: 0.85,
+			}); err != nil {
+				t.Fatalf("seed: %v", err)
+			}
+		}
+		svc := service.NewMemoryService(ps, store.NewMemoryStore(globalDB), config.Default(), "org/basic", embed.NopEmbedder{})
+
+		render := func(asJSON bool) string {
+			return captureStdout(t, func() {
+				if err := renderBasicStatus(context.Background(), svc, asJSON); err != nil {
+					t.Errorf("renderBasicStatus: %v", err)
+				}
+			})
+		}
+		out := render(false)
+		if !lineAfter(out, "Memories: ", synthesisNoticeLine(2)) {
+			t.Errorf("warning not right after Memories:\n%s", out)
+		}
+		js := render(true)
+		var m map[string]any
+		if err := json.Unmarshal([]byte(js), &m); err != nil {
+			t.Fatalf("decode: %v\n%s", err, js)
+		}
+		if m["active_syntheses"] != float64(2) {
+			t.Errorf("active_syntheses = %v, want 2", m["active_syntheses"])
+		}
+	})
+
+	t.Run("full", func(t *testing.T) {
+		dataDir := t.TempDir()
+		project := "test-status-synth"
+		seedStatusSyntheses(t, dataDir, project, 3)
+
+		stdout, stderr, err := runBacklogCmd(t, dataDir, project, "status")
+		if err != nil {
+			t.Fatalf("status: %v (stderr=%s)", err, stderr)
+		}
+		if !lineAfter(stdout, " project - ", "  "+synthesisNoticeLine(3)) {
+			t.Errorf("warning not right under the MEMORIES counts:\n%s", stdout)
+		}
+		js, stderr, err := runBacklogCmd(t, dataDir, project, "status", "--json")
+		if err != nil {
+			t.Fatalf("status --json: %v (stderr=%s)", err, stderr)
+		}
+		var m map[string]any
+		if err := json.Unmarshal([]byte(js), &m); err != nil {
+			t.Fatalf("decode: %v\n%s", err, js)
+		}
+		if m["active_syntheses"] != float64(3) {
+			t.Errorf("active_syntheses = %v, want 3", m["active_syntheses"])
+		}
+	})
+}
+
+// TestStatus_SynthesisNotice_AbsentWhenNone verifies the line and the JSON
+// key are absent without syntheses, and also when generation is on (the
+// warning is about leftovers of a generator that is off).
+func TestStatus_SynthesisNotice_AbsentWhenNone(t *testing.T) {
+	assertAbsent := func(t *testing.T, dataDir, project string) {
+		t.Helper()
+		stdout, stderr, err := runBacklogCmd(t, dataDir, project, "status")
+		if err != nil {
+			t.Fatalf("status: %v (stderr=%s)", err, stderr)
+		}
+		if strings.Contains(stdout, "Active syntheses") {
+			t.Errorf("warning printed:\n%s", stdout)
+		}
+		js, stderr, err := runBacklogCmd(t, dataDir, project, "status", "--json")
+		if err != nil {
+			t.Fatalf("status --json: %v (stderr=%s)", err, stderr)
+		}
+		if strings.Contains(js, "active_syntheses") {
+			t.Errorf("active_syntheses key present:\n%s", js)
+		}
+	}
+
+	t.Run("no syntheses", func(t *testing.T) {
+		dataDir := t.TempDir()
+		project := "test-status-nosynth"
+		seedStatusSyntheses(t, dataDir, project, 0)
+		assertAbsent(t, dataDir, project)
+	})
+
+	t.Run("generation on", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("USERPROFILE", home)
+		if err := os.MkdirAll(filepath.Join(home, ".mneme"), 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(home, ".mneme", "config.toml"), []byte("[graph]\nsynthesis_enabled = true\n"), 0o600); err != nil {
+			t.Fatalf("write config: %v", err)
+		}
+		dataDir := t.TempDir()
+		project := "test-status-synth-on"
+		seedStatusSyntheses(t, dataDir, project, 2)
+		assertAbsent(t, dataDir, project)
+	})
 }
