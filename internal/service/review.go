@@ -23,6 +23,9 @@ const reviewNoteFormat = "Revisión vencida: última revisión hace %d días (pl
 // reviewStatus decides whether a memory whose review clock started at ref is
 // due for review at now, given its type's deadline in days. It returns the
 // whole days elapsed too. A deadline <= 0 never expires. Pure: no clock, no I/O.
+// It is also the day arithmetic of SPEC-186's stale specs: classifyStaleness
+// passes [spec] stale_after_days and the spec's last move, so "more than N
+// whole days" means the same thing for memories and specs.
 func reviewStatus(days int, ref, now time.Time) (due bool, ageDays int) {
 	ageDays = int(now.Sub(ref).Hours() / hoursPerDay)
 	return days > 0 && ageDays > days, ageDays

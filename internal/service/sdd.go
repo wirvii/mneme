@@ -39,6 +39,12 @@ type SDDService struct {
 	// repoDir is the working directory used by the lane auditor to run git
 	// commands. When empty the auditor uses the current working directory.
 	repoDir string
+
+	// now is the clock staleness is measured against (SPEC-186 D4).
+	// NewSDDService sets it to time.Now; this package's tests replace it to
+	// pin "N days ago" exactly. No exported option: nothing outside the
+	// tests needs another clock.
+	now func() time.Time
 }
 
 // NewSDDService constructs an SDDService.
@@ -52,6 +58,7 @@ func NewSDDService(sddStore *store.SDDStore, cfg *config.Config, project string,
 		config:    cfg,
 		project:   project,
 		memorySvc: memorySvc,
+		now:       time.Now,
 	}
 }
 
