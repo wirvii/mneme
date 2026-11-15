@@ -154,6 +154,20 @@ an explicit consumer upgrade.
 
 ---
 
+## Síntesis (SPEC-187)
+
+El manifiesto exporta las memorias de tipo `synthesis` que existan en la base, igual que
+cualquier otro tipo. Lo que cambió es cuántas hay: desde SPEC-187 la consolidación ya no las
+genera por defecto (`[graph] synthesis_enabled = false`). El porqué: el 14-11-2026 eran 12.098 de
+las 21.594 memorias del portafolio (56 %), y en el proyecto mneme 1.028 frente a 407 decisiones.
+
+- Medir las que quedan, por proyecto, sin cambiar nada: `mneme mem synthesis-sweep`.
+- Retirarlas antes de exportar (borrado en blando, solo memorias `synthesis`):
+  `mneme mem synthesis-sweep --apply`. Un manifiesto exportado después ya no las incluye.
+- Regenerarlas: `[graph] synthesis_enabled = true` y `mneme consolidate`.
+
+---
+
 ## What Is Excluded from v1.0
 
 | Item | Rationale |

@@ -6,8 +6,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed — defaults
+
+- SPEC-187: automatic syntheses are off by default. `[graph] synthesis_enabled`
+  now defaults to `false` (no new key): consolidation keeps detecting
+  communities but no longer creates, refreshes or marks for forgetting any
+  `synthesis` memory. On 2026-11-14 they were 12.098 of the 21.594 memories
+  across the portfolio (56 %). `mem_context` in the default `auto` packing
+  mode leaves syntheses and cluster overviews out, filtered in SQL, and the
+  budget they used is not handed to other memories; `communities` and `flat`
+  keep their meaning. To go back: `[graph] synthesis_enabled = true` and
+  `mneme consolidate` regenerate them. `mneme install` writes
+  `synthesis_enabled = false` with a comment into `~/.mneme/config.toml` when
+  the key is not declared; a key already written as `true` (for example by an
+  older `mneme model set`) is not changed: install says so with an `[info]`
+  line, and it has to be edited by hand. Existing syntheses stay until
+  `mneme mem synthesis-sweep --apply` retires them.
+
 ### Added
 
+- SPEC-187: `include_synthesis` on `mem_context` (MCP) and on
+  `GET /v1/memories/context` (HTTP), to pack syntheses and cluster overviews
+  on demand. New CLI command `mneme mem synthesis-sweep [--project P]
+  [--apply] [--json]`: a read-only dry run by default that reports, per
+  project, the syntheses, those never read and their bytes; `--apply` retires
+  them with a soft delete (type `synthesis` only; consolidation deletes them
+  for good after `retention_days`, there is no `--restore`). It is a lifecycle
+  command the enforce-delegation hook denies to subagents. `mneme status`
+  prints `Active syntheses: N (...)` (and `active_syntheses` in `--json`)
+  while generation is off and syntheses remain. Tests pin the session-start
+  output (at most 14336 bytes over a deterministic 200-memory base) and the
+  `tools/list` payload (26576 bytes, 31 tools).
 - SPEC-182: the `entrega` section of `tarea.md` carries a delivery contract
   block, a small TOML document between `<!-- mneme:entrega:contrato:start -->`
   and `<!-- mneme:entrega:contrato:end -->`: one of four states (`hecho`,

@@ -63,8 +63,8 @@ contract:
   `lane_override` (SPEC-175) and `lane_reclassify` (SPEC-184).
 - The same hook also rejects a child's Bash command that runs
   `mneme spec advance`, `spec quick`, `sdd import`, `backlog archive`,
-  `lane override` (SPEC-175) or `lane reclassify` (SPEC-184) against the real
-  data directory.
+  `lane override` (SPEC-175), `lane reclassify` (SPEC-184) or
+  `mem synthesis-sweep` (SPEC-187) against the real data directory.
 
 The formats differ because each runtime uses its native configuration. A
 project initialized from either runtime is ready for both.

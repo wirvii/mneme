@@ -107,6 +107,7 @@ Contextual memories with token budgeting. Same shape as `mem_context`.
 | `budget` | integer | no | Token budget |
 | `focus` | string | no | Focus topic |
 | `include_graph` | boolean | no | `true`/`false`/`1`/`0` |
+| `include_synthesis` | boolean | no | Pack synthesis memories and cluster overviews (SPEC-187). `true`/`false`/`1`/`0`; any other value is a 400 `invalid_request`. Default: `false` in `auto` mode, `true` in `communities`/`flat` |
 
 ```bash
 curl 'http://localhost:7437/v1/memories/context?focus=auth&budget=4000'

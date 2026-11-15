@@ -292,7 +292,9 @@ terminal open: a subagent with `Bash` could type `mneme spec advance`. A second
 guard, right after the one above, runs `enforcement.EvaluateLifecycleCommand`
 (pure, over `shell.SimpleCommands`) on a subagent's Bash command and rejects
 `mneme spec advance|quick`, `mneme sdd import`, `mneme backlog archive`,
-`mneme lane override` and `mneme lane reclassify` (SPEC-184) (exit 2; `Reason: "lifecycle_command_denied_to_subagent"`,
+`mneme lane override`, `mneme lane reclassify` (SPEC-184) and
+`mneme mem synthesis-sweep` (SPEC-187, dry run included: the matcher does not
+read flags) (exit 2; `Reason: "lifecycle_command_denied_to_subagent"`,
 no discovery memory). A command whose own simple command names an isolated data
 directory (`--data-dir`, `HOME=`, `USERPROFILE=`, `MNEME_DATA_DIR=`, non-empty
 and not the real one) is allowed, so mneme itself can be tested. Limits, all

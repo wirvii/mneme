@@ -127,6 +127,7 @@ aliases (`mneme stats`, `mneme forget`, ...).
 ```bash
 mneme mem timeline <around> [--window 7d] [--limit 20] [--project P] [--json]
 mneme mem relate <source> <target> <relation> [--source-kind K] [--target-kind K] [--weight W] [--project P] [--json]
+mneme mem synthesis-sweep [--project P] [--apply] [--json]
 ```
 
 - `timeline`: memories around a memory UUID or an ISO 8601 timestamp, oldest
@@ -135,6 +136,12 @@ mneme mem relate <source> <target> <relation> [--source-kind K] [--target-kind K
   `related_to`, `part_of`, `uses`, `conflicts_with`, `references`. Endpoints
   are a memory UUID (or 8+ hex prefix), a `topic_key`, or an entity name. An
   invalid relation fails before anything is written.
+- `synthesis-sweep` (SPEC-187): per project, how many synthesis memories there
+  are, how many were never read and how many bytes they take. Dry run by
+  default (databases opened read-only); `--apply` retires them with a soft
+  delete, only type `synthesis`. Without `--project` it visits every
+  database; with it, only that project's (both slug forms). Denied to
+  subagents by the enforce-delegation hook.
 
 `mneme save --json` prints the full save response, including
 `suggested_topic_key` when no `--topic-key` was given.

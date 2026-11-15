@@ -128,6 +128,7 @@ always injected first with a separate token budget, then scored memories
 | `budget` | integer | no | Maximum token budget for returned memories (min 1). Default: config value |
 | `focus` | string | no | Optional topic or question that biases memory selection |
 | `include_graph` | boolean | no | Enable graph expansion for focus matching (+0.3 boost via PPR or 1-hop). Default: `true` |
+| `include_synthesis` | boolean | no | Pack cluster overviews (synthesis memories), SPEC-187. Omitted: `false` in `auto` mode (the default), `true` in `communities`/`flat`. An explicit value always wins; the budget syntheses leave unused is not given to other memories |
 
 **Returns:**
 

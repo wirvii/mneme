@@ -579,7 +579,7 @@ After community detection, a deterministic generator produces `synthesis` type m
 
 | Parameter | Default |
 |-----------|---------|
-| `synthesis_enabled` | true |
+| `synthesis_enabled` | false (SPEC-187) |
 | `synthesis_max_members` | 50 |
 | `synthesis_top_n` | 3 |
 

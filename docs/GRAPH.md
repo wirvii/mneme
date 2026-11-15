@@ -842,7 +842,7 @@ wikilinks_enabled = true          # Parse [[topic_key]] in mem_save/mem_update
 wikilink_relation_weight = 0.6    # Weight for wikilink-created relations [0.0, 1.0]
 
 # Synthesis (SPEC-021) (MNEME_GRAPH_SYNTHESIS_*)
-synthesis_enabled = true      # Generate community summaries during consolidation
+synthesis_enabled = false     # Off by default since SPEC-187; true generates community summaries during consolidation
 synthesis_max_members = 50    # Max members in synthesis content table
 synthesis_top_n = 3           # Top members for title generation
 

@@ -25,6 +25,7 @@ Para el sistema de reglas ver [RULES.md](RULES.md).
 - [`[hooks]`](#hooks)
 - [`[spec]`](#spec)
 - [`[graph]`](#graph)
+  - [Síntesis automáticas (SPEC-187)](#síntesis-automáticas-spec-187)
 - [`[suggestions]`](#suggestions)
 - [`[memory.review_days]`](#memoryreview_days)
 - [Recetas de ajuste](#recetas-de-ajuste)
@@ -130,6 +131,9 @@ Controla cómo mneme ensambla la inyección de contexto enviada al agente antes 
 | `rules_budget` | `1500` | int | >= 0 | `MNEME_RULES_BUDGET` | Tokens reservados para memorias de tipo rule. 0 desactiva la inyección de reglas. |
 | `include_global` | `true` | bool | — | — | Incluir memorias de scope global en inyecciones de contexto de proyecto. |
 | `global_min_importance` | `0.7` | float | [0, 1] | — | Importancia mínima para que una memoria global sea incluida. |
+| `context_packing_mode` | `"auto"` | string | auto/communities/flat | `MNEME_CONTEXT_PACKING_MODE` | Cómo se arma el contexto. `auto` (desde SPEC-187): empaque plano **sin síntesis**, salvo que la petición traiga `include_synthesis: true`. `communities`: empaque por comunidades con sus resúmenes (síntesis incluidas). `flat`: plano, ignora comunidades y deja que las síntesis compitan como memorias normales. El arranque de sesión no pasa `include_synthesis`, así que toma lo que diga este modo. |
+| `cluster_overviews_budget` | `1500` | int | >= 0 | — | Tokens reservados para la sección "Cluster Overviews". Solo se gasta cuando las síntesis entran (modo `communities`, o `include_synthesis: true`); si no, no se reparte entre otras memorias. |
+| `top_cluster_max_members` | `10` | int | >= 1 | — | Máximo de memorias del clúster principal en la sección "Top Cluster Detail". |
 
 ---
 
@@ -142,7 +146,7 @@ bases de datos dentro de sus presupuestos.
 |-------|---------|------|-------|-------------|-------------|
 | `enabled` | `true` | bool | — | — | Activa o desactiva la goroutine de consolidación de fondo. |
 | `interval` | `"6h"` | string | Go duration | — | Con qué frecuencia se ejecuta la consolidación (ej. `"6h"`, `"1h30m"`). |
-| `retention_days` | `30` | int | >= 0 | — | Días tras los cuales memorias de baja importancia son elegibles para desalojo. |
+| `retention_days` | `30` | int | >= 0 | — | Días que una memoria retirada (con `deleted_at`) se conserva antes de que la consolidación la borre de forma definitiva. Es la única ventana en la que un borrado en blando todavía se puede deshacer a mano. |
 | `dedup_threshold` | `0.92` | float | [0, 1] | — | Similitud mínima para que dos memorias se consideren duplicadas. |
 
 ---
@@ -297,6 +301,29 @@ de wikilinks. Para detalles de comportamiento ver [GRAPH.md](GRAPH.md).
 | `wikilinks_enabled` | `true` | bool | — | `MNEME_GRAPH_WIKILINKS_ENABLED` | Parsear `[[topic_key]]` en `mem_save`/`mem_update`. |
 | `wikilink_relation_weight` | `0.6` | float | [0, 1] | `MNEME_GRAPH_WIKILINK_RELATION_WEIGHT` | Peso para relaciones creadas por el parser de wikilinks. |
 | `graph_mode` | `"ppr"` | string | ppr/1hop/off | `MNEME_GRAPH_MODE` | Algoritmo de expansión de grafo (`ppr`, `1hop`, o `off`). |
+| `community_detection_enabled` | `true` | bool | — | — | Detecta y guarda comunidades del grafo en cada consolidación. |
+| `community_min_size` | `3` | int | >= 0 | — | Mínimo de entidades para guardar una comunidad. 0 equivale al valor por defecto. |
+| `synthesis_enabled` | `false` | bool | — | — | Genera una memoria `synthesis` por comunidad en cada consolidación. **Apagado por defecto desde SPEC-187**: ver [Síntesis automáticas](#síntesis-automáticas-spec-187). |
+| `synthesis_max_members` | `50` | int | >= 1 | — | Máximo de miembros listados en el contenido de una síntesis. |
+| `synthesis_top_n` | `3` | int | >= 1 | — | Miembros de mayor importancia usados para el título y el detalle de la síntesis. |
+
+### Síntesis automáticas (SPEC-187)
+
+`synthesis_enabled` vale `false` por defecto desde SPEC-187. El porqué, con las cifras del
+14-11-2026: en todo el portafolio había 21.594 memorias y 12.098 (56 %) eran síntesis que nadie
+escribió; en el proyecto mneme había 1.028 síntesis frente a 407 decisiones. Ocupaban el arranque
+de sesión, competían con las memorias humanas por el presupuesto general y contaban para
+`project_budget`.
+
+- Con `false`, la consolidación sigue detectando comunidades, pero no crea, no refresca ni marca
+  para olvido ninguna síntesis. Las que ya existen se quedan hasta que alguien las retire.
+- Para medirlas y retirarlas: `mneme mem synthesis-sweep` (en seco por defecto) y
+  `mneme mem synthesis-sweep --apply` (borrado en blando, solo memorias `synthesis`).
+- Para volver a tenerlas: escribe `synthesis_enabled = true` bajo `[graph]` y ejecuta
+  `mneme consolidate`, que las regenera desde las comunidades.
+- `mneme install` escribe `synthesis_enabled = false` en `~/.mneme/config.toml`, con un comentario,
+  cuando la clave no está declarada. Si ya está declarada (con cualquier valor) no la toca; si vale
+  `true`, lo avisa con una línea `[info]`.
 
 ### Aliases de entorno (compatibilidad hacia atrás)
 

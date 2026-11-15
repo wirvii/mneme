@@ -831,7 +831,12 @@ The same rule applies to the terminal. A resolved or unresolved subagent
 ```
 mneme spec advance    mneme spec quick    mneme sdd import
 mneme backlog archive    mneme lane override    mneme lane reclassify
+mneme mem synthesis-sweep
 ```
+
+`mneme mem synthesis-sweep` (SPEC-187) is on the list because measuring and
+retiring syntheses is an act of the person or the orchestrator. The matcher
+sees the noun-verb pair, not the flags, so the dry run is denied too.
 
 The guard sits right after the `lifecycleTools` one, so it also needs only
 `agent_id`. Recognition is done by `enforcement.EvaluateLifecycleCommand` over
