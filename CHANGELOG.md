@@ -120,8 +120,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- SPEC-185: the `.mneme/sdd` guard also rejects `git rm` (with or without
-  `--cached`) on that tree.
 - SPEC-188: `internal/gitrepo` runs every `git diff` through one path
   (`rawDiff`). As a result `ChangedLines` and `NumStat`, used by the trivial
   lane auditor, no longer obey the user's global attributes file
@@ -186,6 +184,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   older `mneme model set`) is not changed: install says so with an `[info]`
   line, and it has to be edited by hand. Existing syntheses stay until
   `mneme mem synthesis-sweep --apply` retires them.
+- SPEC-185: the `.mneme/sdd` guard also rejects `git rm` (with or without
+  `--cached`) on that tree.
 
 ### Fixed
 
