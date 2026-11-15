@@ -465,7 +465,10 @@ func allTools() []ToolDefinition {
 				"even on a machine whose own numbering differs (SPEC-128). " +
 				"`delivery_contract` (valid, missing or invalid), `delivery_state` (the delivery block's " +
 				"estado, only when valid) and `delivery_detail` (the parse error, only when invalid) are " +
-				"present only from implementing on and only when tarea.md exists (SPEC-182).",
+				"present only from implementing on and only when tarea.md exists (SPEC-182). " +
+				"`qa_rounds` counts the qa->implementing rejections of the current stay (since the last " +
+				"reopening from done); `review_range` (only in qa) and `review_package_path` (only when " +
+				"`mneme spec review-package` already wrote the file for that range) are additive.",
 			InputSchema: map[string]any{
 				"type":     "object",
 				"required": []string{"id"},
