@@ -123,14 +123,26 @@ func (svc *MemoryService) buildContext(ctx context.Context, req model.ContextReq
 		)
 	}
 
+	// ── Packing mode and synthesis inclusion (SPEC-187) ──────────────────────
+	//
+	// Resolved before phase 2 because excluding syntheses has to happen in the
+	// candidate query itself (see store.ListOptions.ExcludeSynthesis).
+
+	effectiveMode := svc.config.Context.ContextPackingMode
+	if effectiveMode == "" {
+		effectiveMode = "auto"
+	}
+	withSynthesis := resolveIncludeSynthesis(req.IncludeSynthesis, effectiveMode)
+
 	// ── PHASE 2: General scoring (unchanged from pre-SPEC-002) ───────────────
 
 	// Collect project-scoped memories ordered by importance DESC.
 	projectMemories, err := svc.projectStore.List(ctx, store.ListOptions{
-		Project: req.Project,
-		Scope:   model.ScopeProject,
-		OrderBy: "importance DESC",
-		Limit:   svc.config.Storage.ProjectBudget,
+		Project:          req.Project,
+		Scope:            model.ScopeProject,
+		ExcludeSynthesis: !withSynthesis,
+		OrderBy:          "importance DESC",
+		Limit:            svc.config.Storage.ProjectBudget,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("service: context: list project memories: %w", err)
@@ -142,9 +154,10 @@ func (svc *MemoryService) buildContext(ctx context.Context, req model.ContextReq
 	// Optionally mix in global memories from the dedicated global store.
 	if svc.config.Context.IncludeGlobal {
 		globalMemories, err := svc.globalStore.List(ctx, store.ListOptions{
-			Scope:   model.ScopeGlobal,
-			OrderBy: "importance DESC",
-			Limit:   svc.config.Storage.GlobalBudget,
+			Scope:            model.ScopeGlobal,
+			ExcludeSynthesis: !withSynthesis,
+			OrderBy:          "importance DESC",
+			Limit:            svc.config.Storage.GlobalBudget,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("service: context: list global memories: %w", err)
@@ -306,15 +319,12 @@ func (svc *MemoryService) buildContext(ctx context.Context, req model.ContextReq
 
 	// ── Determine packing mode ────────────────────────────────────────────────
 
-	effectiveMode := svc.config.Context.ContextPackingMode
-	if effectiveMode == "" {
-		effectiveMode = "auto"
-	}
-
 	// For auto/communities modes, attempt to load communities. Any error falls
 	// back to flat silently to ensure Context() never fails on packing errors.
+	// Without syntheses there is nothing to pack per community, so the
+	// communities are not even loaded and packing stays flat (SPEC-187).
 	var communities []*model.Community
-	if effectiveMode != "flat" {
+	if effectiveMode != "flat" && withSynthesis {
 		var lcErr error
 		communities, lcErr = svc.projectStore.ListCommunities(ctx, req.Project)
 		if lcErr != nil {
@@ -873,4 +883,23 @@ func (svc *MemoryService) contextGraphExpand(ctx context.Context, focusSeedIDs [
 // giving a conservative-enough estimate for budget calculations.
 func estimateTokens(text string) int {
 	return int(float64(utf8.RuneCountInString(text)) / 3.0)
+}
+
+// resolveIncludeSynthesis decides whether synthesis memories take part in a
+// mem_context call (SPEC-187, DS3). The matrix is:
+//
+//	include_synthesis | context_packing_mode | result
+//	explicit true/false | any                | the explicit value
+//	omitted             | communities        | true (the person chose it)
+//	omitted             | flat               | true (syntheses compete as ordinary memories)
+//	omitted             | auto               | false (the only default that changed)
+//
+// mode must already be normalised ("" turned into "auto"). The budget the
+// excluded syntheses would have used is not handed to anything else: the
+// output simply gets smaller.
+func resolveIncludeSynthesis(explicit *bool, mode string) bool {
+	if explicit != nil {
+		return *explicit
+	}
+	return mode == "communities" || mode == "flat"
 }
