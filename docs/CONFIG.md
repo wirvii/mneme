@@ -232,6 +232,7 @@ Controla los quality gates y el comportamiento del ciclo de vida de specs.
 | `quality_gates.require_out_of_scope` | `true` | bool | — | — | Requiere sección explícita de "fuera de scope". |
 | `quality_gates.require_dependencies` | `true` | bool | — | — | Requiere lista de dependencias en la spec. |
 | `quality_gates.max_ambiguous_terms` | `0` | int | >= 0 | — | Máximo de términos ambiguos permitidos (ej. "rápido", "muchos"). |
+| `stale_after_days` | `14` | int | >= 0 | — | Una spec abierta que no se ha movido en más de N días se anuncia como estancada en status, session-start y spec_list. Solo informa. 0 desactiva el aviso. |
 
 ---
 

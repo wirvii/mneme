@@ -310,6 +310,11 @@ type DelegationProjectConfig struct {
 	OrchestratorTrivialInline *bool `toml:"orchestrator_trivial_inline"`
 }
 
+// DefaultStaleAfterDays is the default [spec] stale_after_days (SPEC-186):
+// two weeks without a move is long enough to be forgotten work, short enough
+// to surface it before it rots for months.
+const DefaultStaleAfterDays = 14
+
 // SpecConfig controls the spec lifecycle quality gates and behavior.
 type SpecConfig struct {
 	// AutoGrill requires a grill session before a spec can advance
@@ -319,6 +324,11 @@ type SpecConfig struct {
 	// QualityGates defines the validation rules applied when advancing
 	// a spec through its lifecycle states.
 	QualityGates QualityGatesConfig `toml:"quality_gates"`
+
+	// StaleAfterDays: an open spec that has not moved for more than this many
+	// days is announced as stale by status, session-start and spec_list.
+	// Informative only. 0 disables the announcement; negative is invalid.
+	StaleAfterDays int `toml:"stale_after_days"`
 }
 
 // QualityGatesConfig holds individual quality gate thresholds.
@@ -561,6 +571,7 @@ func Default() *Config {
 				RequireDependencies:   true,
 				MaxAmbiguousTerms:     0,
 			},
+			StaleAfterDays: DefaultStaleAfterDays,
 		},
 		Graph: GraphConfig{
 			HebbianWindow:             5,
@@ -1132,6 +1143,8 @@ func buildSpecOrigins(cfg, dflt *Config) []ConfigFieldInfo {
 	fields = append(fields, makeField("quality_gates.require_dependencies", cfg.Spec.QualityGates.RequireDependencies, o, ev))
 	o, ev = fieldOrigin(cfg.Spec.QualityGates.MaxAmbiguousTerms, dflt.Spec.QualityGates.MaxAmbiguousTerms, true)
 	fields = append(fields, makeField("quality_gates.max_ambiguous_terms", cfg.Spec.QualityGates.MaxAmbiguousTerms, o, ev))
+	o, ev = fieldOrigin(cfg.Spec.StaleAfterDays, dflt.Spec.StaleAfterDays, true)
+	fields = append(fields, makeField("stale_after_days", cfg.Spec.StaleAfterDays, o, ev))
 	return fields
 }
 
@@ -1241,6 +1254,9 @@ func (c *Config) Validate() error {
 
 	if c.Context.RulesBudget < 0 {
 		return errors.New("context.rules_budget must be >= 0")
+	}
+	if c.Spec.StaleAfterDays < 0 {
+		return errors.New("spec.stale_after_days must be >= 0 (0 disables stale announcements)")
 	}
 	validPackingModes := map[string]bool{"": true, "auto": true, "communities": true, "flat": true}
 	if !validPackingModes[c.Context.ContextPackingMode] {

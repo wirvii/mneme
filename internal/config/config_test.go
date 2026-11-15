@@ -2038,3 +2038,58 @@ backend = "opus"
 		})
 	}
 }
+
+// TestSpecStaleAfterDays pins the SPEC-186 [spec] stale_after_days key: a
+// default of 14, 0 accepted as "disabled" (a value that failed Load would
+// take every command down with it), negative rejected by name, and the key
+// listed among the spec section's origins.
+func TestSpecStaleAfterDays(t *testing.T) {
+	t.Run("Default", func(t *testing.T) {
+		if got := Default().Spec.StaleAfterDays; got != 14 {
+			t.Errorf("Default().Spec.StaleAfterDays = %d, want 14", got)
+		}
+	})
+
+	t.Run("LoadsThirty", func(t *testing.T) {
+		cfg, err := Load(writeTempTOML(t, "[spec]\nstale_after_days = 30\n"))
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if cfg.Spec.StaleAfterDays != 30 {
+			t.Errorf("StaleAfterDays = %d, want 30", cfg.Spec.StaleAfterDays)
+		}
+	})
+
+	t.Run("ZeroLoadsWithoutError", func(t *testing.T) {
+		cfg, err := Load(writeTempTOML(t, "[spec]\nstale_after_days = 0\n"))
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if cfg.Spec.StaleAfterDays != 0 {
+			t.Errorf("StaleAfterDays = %d, want 0", cfg.Spec.StaleAfterDays)
+		}
+	})
+
+	t.Run("NegativeFailsLoad", func(t *testing.T) {
+		_, err := Load(writeTempTOML(t, "[spec]\nstale_after_days = -1\n"))
+		if err == nil {
+			t.Fatal("Load accepted stale_after_days = -1, want an error")
+		}
+		if !strings.Contains(err.Error(), "spec.stale_after_days") {
+			t.Errorf("error %q does not name spec.stale_after_days", err)
+		}
+	})
+
+	t.Run("OriginsListsKey", func(t *testing.T) {
+		_, origins, err := LoadWithOrigins("/nonexistent/path/config.toml")
+		if err != nil {
+			t.Fatalf("LoadWithOrigins: %v", err)
+		}
+		for _, f := range origins.Sections["spec"] {
+			if f.Key == "stale_after_days" {
+				return
+			}
+		}
+		t.Error("stale_after_days not listed in the spec section's origins")
+	})
+}
