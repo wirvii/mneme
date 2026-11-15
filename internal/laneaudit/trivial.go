@@ -6,11 +6,6 @@ import (
 	"github.com/wirvii/mneme/internal/gitrepo"
 )
 
-// Breach is a single human-readable trivial-lane threshold violation — a
-// named string type, not a bare string, so a caller cannot accidentally
-// pass an unrelated string where a Breach is expected.
-type Breach string
-
 // TrivialBudget is the trivial lane's own budget: fixed limits on file
 // count and total changed lines, plus the paths a trivial-lane spec must
 // never touch.

@@ -11,17 +11,19 @@ import (
 )
 
 // allowedNonStdlib is the CLOSED set of non-stdlib imports internal/laneaudit
-// may use: doublestar for glob matching, and its sibling leaf
-// internal/gitrepo for git primitives.
+// may use: doublestar for glob matching, its sibling leaf internal/gitrepo
+// for git primitives, and its sibling leaf internal/risk for the closed
+// list of six risk items (SPEC-184).
 var allowedNonStdlib = []string{
 	"github.com/bmatcuk/doublestar/v4",
 	"github.com/wirvii/mneme/internal/gitrepo",
+	"github.com/wirvii/mneme/internal/risk",
 }
 
 // TestLeafPackage_Imports guards SPEC-158 D1.b: internal/laneaudit must
-// import only the standard library plus the two allowedNonStdlib entries —
-// both anchored present — never internal/model or any other internal/*
-// package besides internal/gitrepo.
+// import only the standard library plus the three allowedNonStdlib entries —
+// all anchored present — never internal/model or any other internal/*
+// package besides internal/gitrepo and internal/risk.
 func TestLeafPackage_Imports(t *testing.T) {
 	_, thisFile, _, ok := runtime.Caller(0)
 	if !ok {
@@ -70,7 +72,7 @@ func TestLeafPackage_Imports(t *testing.T) {
 
 // TestLeafPackage_NeverImportsOSExec guards the same purity property
 // internal/gitrepo itself must have: os/exec belongs exclusively to the git
-// primitives package, never to the pure symbol-delta/budget arithmetic
+// primitives package, never to the pure symbol-delta/risk-audit arithmetic
 // here.
 func TestLeafPackage_NeverImportsOSExec(t *testing.T) {
 	_, thisFile, _, ok := runtime.Caller(0)

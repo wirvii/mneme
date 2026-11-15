@@ -45,6 +45,9 @@ func TestParseLine(t *testing.T) {
 				if !strings.Contains(err.Error(), tt.line) {
 					t.Errorf("error %q does not quote the line %q", err, tt.line)
 				}
+				if got.Line != tt.line {
+					t.Errorf("Line on error = %q, want %q", got.Line, tt.line)
+				}
 				return
 			}
 			if err != nil {

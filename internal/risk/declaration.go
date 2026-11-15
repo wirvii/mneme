@@ -38,13 +38,15 @@ type Declaration struct {
 // repeated before each number, and every number is 1..6. Any other line —
 // including one that does not start with the keyword — returns an error
 // wrapping ErrMalformedDeclaration that quotes the line, so a caller never
-// mistakes a typo for a valid "none".
+// mistakes a typo for a valid "none". On error the returned Declaration
+// still carries Line, so a caller can quote the offending line.
 func ParseLine(line string) (Declaration, error) {
 	malformed := fmt.Errorf("%w: %q", ErrMalformedDeclaration, line)
+	bad := Declaration{Line: line}
 
 	rest, ok := afterKeyword(line)
 	if !ok {
-		return Declaration{}, malformed
+		return bad, malformed
 	}
 	rest = strings.TrimSpace(rest)
 
@@ -55,7 +57,7 @@ func ParseLine(line string) (Declaration, error) {
 	head, reason := rest, ""
 	if open := strings.Index(rest, "("); open >= 0 {
 		if !strings.HasSuffix(rest, ")") {
-			return Declaration{}, malformed
+			return bad, malformed
 		}
 		head = rest[:open]
 		reason = strings.TrimSpace(rest[open+1 : len(rest)-1])
@@ -63,7 +65,7 @@ func ParseLine(line string) (Declaration, error) {
 
 	items, ok := parseItemList(head)
 	if !ok {
-		return Declaration{}, malformed
+		return bad, malformed
 	}
 	return Declaration{Items: items, Reason: reason, Line: line}, nil
 }
