@@ -259,8 +259,12 @@ type UnreadableRow struct {
 type Lane string
 
 const (
-	// LaneTrivial identifies changes that touch ≤3 files and ≤20 lines,
-	// add no public symbols, and avoid SQL/migrations/cmd/** paths.
+	// LaneTrivial identifies changes understood in one batch of reads that
+	// touch none of the six risk items (mneme-flow/references/risk.md) and
+	// pass the resumption test (SPEC-184): the request plus git diff is
+	// enough to finish them. File and line counts never decide. The
+	// spec_quick rationale carries the lines "Resumption: ..." and
+	// "Risk: none".
 	LaneTrivial Lane = "trivial"
 
 	// LaneStandard identifies all other changes that require the full
@@ -699,7 +703,8 @@ const (
 	SpecStatusRationale SpecStatus = "rationale"
 
 	// SpecStatusAudit is the trivial-lane equivalent of qa. The deterministic
-	// auditor checks the actual diff against the declared scope and thresholds.
+	// auditor checks the actual diff against the declared scope, the paths of
+	// risk items 1, 2 and 5, exported symbols and the declared Risk: line.
 	SpecStatusAudit SpecStatus = "audit"
 )
 
@@ -983,7 +988,10 @@ type SpecQuickRequest struct {
 	// ID is the spec to advance (must be trivial lane, draft status).
 	ID string `json:"id"`
 
-	// Rationale is a 1–3 sentence justification for the trivial classification.
+	// Rationale is a 1–3 sentence justification for the trivial
+	// classification, followed by two lines: "Resumption: <why the request
+	// plus git diff is enough>" and "Risk: none". spec_quick refuses a
+	// "Risk:" line that names an item or does not parse (SPEC-184).
 	Rationale string `json:"rationale"`
 
 	// By identifies who triggered the advance.

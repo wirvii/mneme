@@ -261,3 +261,134 @@ func TestLaneRemedy(t *testing.T) {
 		t.Error("laneRemedy(nil) != \"\"")
 	}
 }
+
+// newDraftTrivial creates a trivial spec in draft through the service.
+func newDraftTrivial(t *testing.T, svc *SDDService) *model.Spec {
+	t.Helper()
+	spec, err := svc.SpecNew(context.Background(), model.SpecNewRequest{Title: "tiny", Lane: model.LaneTrivial, Scope: "internal/store/**"})
+	if err != nil {
+		t.Fatalf("SpecNew: %v", err)
+	}
+	return spec
+}
+
+// assertUntouchedDraft checks a refused spec_quick left the spec in draft
+// with exactly historyBefore history rows.
+func assertUntouchedDraft(t *testing.T, svc *SDDService, id string, historyBefore int) {
+	t.Helper()
+	ctx := context.Background()
+	got, err := svc.store.GetSpec(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != model.SpecStatusDraft {
+		t.Errorf("status = %s, want draft", got.Status)
+	}
+	history, err := svc.store.GetSpecHistory(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != historyBefore {
+		t.Errorf("history rows = %d, want %d (no new row)", len(history), historyBefore)
+	}
+}
+
+// TestSpecQuick_RiskLine covers SPEC-184 C13 (spec_quick part).
+func TestSpecQuick_RiskLine(t *testing.T) {
+	ctx := context.Background()
+
+	refused := []struct {
+		name      string
+		rationale string
+		sentinel  error
+		contains  string
+	}{
+		{"item_declared", "Tiny.\nResumption: obvious\nRisk: item 2 (x)", model.ErrRiskDeclared, "lane_reclassify"},
+		{"malformed", "Tiny.\nRisk: perhaps", model.ErrRiskMalformed, "Risk: perhaps"},
+	}
+	for _, tt := range refused {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := newTestSDDService(t, "wirvii/mneme")
+			spec := newDraftTrivial(t, svc)
+			before, _ := svc.store.GetSpecHistory(ctx, spec.ID)
+			_, err := svc.SpecQuick(ctx, model.SpecQuickRequest{ID: spec.ID, Rationale: tt.rationale, By: "orchestrator"})
+			if !errors.Is(err, tt.sentinel) {
+				t.Fatalf("err = %v, want %v", err, tt.sentinel)
+			}
+			if !strings.Contains(err.Error(), tt.contains) {
+				t.Errorf("err %q lacks %q", err, tt.contains)
+			}
+			assertUntouchedDraft(t, svc, spec.ID, len(before))
+		})
+	}
+
+	accepted := []struct{ name, rationale string }{
+		{"risk_none", "Tiny.\nResumption: obvious\nRisk: none"},
+		{"no_risk_line", "Tiny fix."},
+		{"fenced_item_ignored", "Tiny.\n```\nRisk: item 1\n```\nRisk: none"},
+	}
+	for _, tt := range accepted {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := newTestSDDService(t, "wirvii/mneme")
+			spec := newDraftTrivial(t, svc)
+			got, err := svc.SpecQuick(ctx, model.SpecQuickRequest{ID: spec.ID, Rationale: tt.rationale, By: "orchestrator"})
+			if err != nil {
+				t.Fatalf("SpecQuick: %v", err)
+			}
+			if got.Status != model.SpecStatusImplementing {
+				t.Errorf("status = %s, want implementing", got.Status)
+			}
+		})
+	}
+}
+
+// TestSpecQuick_ScopeTooBroad covers SPEC-184 C10 (service part): the
+// trivial creation verbs (BacklogAdd and SpecNew, the operations C10 calls
+// CreateBacklogItem/CreateSpec) and SpecQuick refuse a scope that matches
+// everything or uses braces.
+func TestSpecQuick_ScopeTooBroad(t *testing.T) {
+	ctx := context.Background()
+	broad := []string{"**", "*", "**/*.go", "{internal,cmd}/**"}
+
+	t.Run("BacklogAdd", func(t *testing.T) {
+		svc := newTestSDDService(t, "wirvii/mneme")
+		for _, scope := range broad {
+			_, err := svc.BacklogAdd(ctx, model.BacklogAddRequest{Title: "x", Lane: model.LaneTrivial, Scope: scope})
+			if !errors.Is(err, model.ErrScopeTooBroad) {
+				t.Errorf("scope %q: err = %v, want ErrScopeTooBroad", scope, err)
+			}
+		}
+		if _, err := svc.BacklogAdd(ctx, model.BacklogAddRequest{Title: "x", Lane: model.LaneTrivial, Scope: "internal/store/**"}); err != nil {
+			t.Errorf("internal/store/**: %v", err)
+		}
+		if _, err := svc.BacklogAdd(ctx, model.BacklogAddRequest{Title: "x", Lane: model.LaneStandard, Scope: "**"}); err != nil {
+			t.Errorf("standard lane with ** must stay accepted: %v", err)
+		}
+	})
+
+	t.Run("SpecNew", func(t *testing.T) {
+		svc := newTestSDDService(t, "wirvii/mneme")
+		for _, scope := range broad {
+			_, err := svc.SpecNew(ctx, model.SpecNewRequest{Title: "x", Lane: model.LaneTrivial, Scope: scope})
+			if !errors.Is(err, model.ErrScopeTooBroad) {
+				t.Errorf("scope %q: err = %v, want ErrScopeTooBroad", scope, err)
+			}
+		}
+		if _, err := svc.SpecNew(ctx, model.SpecNewRequest{Title: "x", Lane: model.LaneTrivial, Scope: "internal/store/**"}); err != nil {
+			t.Errorf("internal/store/**: %v", err)
+		}
+	})
+
+	t.Run("SpecQuick", func(t *testing.T) {
+		svc := newTestSDDService(t, "wirvii/mneme")
+		for i, scope := range broad {
+			id := "SPEC-" + string(rune('5'+i)) + "01"
+			createAuditSpec(t, svc, id, model.SpecStatusDraft, scope, "")
+			_, err := svc.SpecQuick(ctx, model.SpecQuickRequest{ID: id, Rationale: "x\nRisk: none", By: "orchestrator"})
+			if !errors.Is(err, model.ErrScopeTooBroad) {
+				t.Errorf("scope %q: err = %v, want ErrScopeTooBroad", scope, err)
+			}
+			assertUntouchedDraft(t, svc, id, 0)
+		}
+	})
+}

@@ -234,3 +234,22 @@ func laneDetectedItems(paths []string, table risk.Table, publicSymbols int) []in
 	}
 	return out
 }
+
+// quickRiskCheck validates the "Risk:" line of a spec_quick rationale: a
+// malformed line is ErrRiskMalformed, and one that names items is
+// ErrRiskDeclared with the way out (reclassify) in the message. No line, or
+// "Risk: none", passes.
+func quickRiskCheck(specID, rationale string) error {
+	decl, found, err := risk.FindDeclaration(rationale)
+	if !found {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("service: spec quick: %w: %w", model.ErrRiskMalformed, err)
+	}
+	if len(decl.Items) == 0 {
+		return nil
+	}
+	return fmt.Errorf("risk item %s declared: %w; the orchestrator runs lane_reclassify %s standard (mneme lane reclassify %s standard --by <you>)",
+		joinRiskItems(decl.Items), model.ErrRiskDeclared, specID, specID)
+}

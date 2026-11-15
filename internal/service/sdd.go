@@ -21,6 +21,7 @@ import (
 	"github.com/wirvii/mneme/internal/config"
 	"github.com/wirvii/mneme/internal/gitrepo"
 	"github.com/wirvii/mneme/internal/install"
+	"github.com/wirvii/mneme/internal/laneaudit"
 	"github.com/wirvii/mneme/internal/model"
 	"github.com/wirvii/mneme/internal/sddfile"
 	"github.com/wirvii/mneme/internal/store"
@@ -170,7 +171,8 @@ func (svc *SDDService) nextSpecID(ctx context.Context, project string) (string, 
 //   - Priority must be a recognised value (ErrInvalidPriority)
 //   - Project defaults to the service's project slug when omitted
 //   - Lane must be provided (ErrLaneRequired) and valid (ErrInvalidLane)
-//   - Scope must be provided when lane is trivial (ErrScopeRequired)
+//   - Scope must be provided when lane is trivial (ErrScopeRequired) and
+//     name a real path segment without braces (ErrScopeTooBroad, SPEC-184)
 func (svc *SDDService) BacklogAdd(ctx context.Context, req model.BacklogAddRequest) (*model.BacklogItem, error) {
 	if req.Title == "" {
 		return nil, model.ErrTitleRequired
@@ -192,6 +194,9 @@ func (svc *SDDService) BacklogAdd(ctx context.Context, req model.BacklogAddReque
 	}
 	if req.Lane == model.LaneTrivial && req.Scope == "" {
 		return nil, model.ErrScopeRequired
+	}
+	if req.Lane == model.LaneTrivial && laneaudit.IsCatchAllScope(req.Scope) {
+		return nil, fmt.Errorf("service: scope %q: %w", req.Scope, model.ErrScopeTooBroad)
 	}
 
 	id, err := svc.nextBacklogID(ctx, req.Project)
@@ -549,7 +554,8 @@ func (svc *SDDService) loadMutableSpec(ctx context.Context, id string) (*model.S
 //   - Title must not be empty (ErrTitleRequired)
 //   - Project defaults to the service's project slug when omitted
 //   - Lane must be provided (ErrLaneRequired) and valid (ErrInvalidLane)
-//   - Scope must be provided when lane is trivial (ErrScopeRequired)
+//   - Scope must be provided when lane is trivial (ErrScopeRequired) and
+//     name a real path segment without braces (ErrScopeTooBroad, SPEC-184)
 //
 // An initial history entry ("" -> draft by "system") is recorded.
 func (svc *SDDService) SpecNew(ctx context.Context, req model.SpecNewRequest) (*model.Spec, error) {
@@ -567,6 +573,9 @@ func (svc *SDDService) SpecNew(ctx context.Context, req model.SpecNewRequest) (*
 	}
 	if req.Lane == model.LaneTrivial && req.Scope == "" {
 		return nil, model.ErrScopeRequired
+	}
+	if req.Lane == model.LaneTrivial && laneaudit.IsCatchAllScope(req.Scope) {
+		return nil, fmt.Errorf("service: scope %q: %w", req.Scope, model.ErrScopeTooBroad)
 	}
 
 	id, err := svc.nextSpecID(ctx, req.Project)
@@ -1264,6 +1273,14 @@ func nextForwardStatusForLane(current model.SpecStatus, l model.Lane) (model.Spe
 // transitions: draft→rationale (recording the rationale as the reason) and
 // rationale→implementing. Returns the spec in implementing status.
 // Returns ErrLaneMismatch when the spec is not on the trivial lane.
+//
+// Before any transition (so a refusal leaves the spec in draft with no new
+// history), SPEC-184 refuses a scope that matches everything or uses braces
+// (ErrScopeTooBroad, for specs created before creation checked it), a
+// rationale whose last unfenced "Risk:" line does not parse
+// (ErrRiskMalformed), and one that names a risk item (ErrRiskDeclared,
+// whose message names lane_reclassify as the way out). A rationale without
+// a "Risk:" line is accepted: the delivery may declare it later.
 func (svc *SDDService) SpecQuick(ctx context.Context, req model.SpecQuickRequest) (*model.Spec, error) {
 	spec, err := svc.loadMutableSpec(ctx, req.ID)
 	if err != nil {
@@ -1276,6 +1293,12 @@ func (svc *SDDService) SpecQuick(ctx context.Context, req model.SpecQuickRequest
 	if spec.Status != model.SpecStatusDraft {
 		return nil, fmt.Errorf("service: spec quick: spec %s must be draft, got %s: %w",
 			req.ID, spec.Status, model.ErrInvalidTransition)
+	}
+	if laneaudit.IsCatchAllScope(spec.Scope) {
+		return nil, fmt.Errorf("service: spec quick: spec %s scope %q: %w", req.ID, spec.Scope, model.ErrScopeTooBroad)
+	}
+	if err := quickRiskCheck(spec.ID, req.Rationale); err != nil {
+		return nil, err
 	}
 
 	// Transition 1: draft → rationale.

@@ -461,6 +461,9 @@ func (h *handlers) mapServiceError(method string, err error) *JSONRPCError {
 		errors.Is(err, model.ErrLaneRequired) ||
 		errors.Is(err, model.ErrInvalidLane) ||
 		errors.Is(err, model.ErrScopeRequired) ||
+		errors.Is(err, model.ErrScopeTooBroad) ||
+		errors.Is(err, model.ErrRiskDeclared) ||
+		errors.Is(err, model.ErrRiskMalformed) ||
 		errors.Is(err, model.ErrLaneImmutable) ||
 		errors.Is(err, model.ErrLaneMismatch) ||
 		errors.Is(err, model.ErrAuditFailed) ||
