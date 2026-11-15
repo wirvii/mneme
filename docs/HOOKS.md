@@ -557,18 +557,20 @@ document — the only prerequisite is that `mneme` itself is on `PATH`.
 
 ### Lifecycle-tool denial (SPEC-087 D5)
 
-`enforce-delegation` also intercepts four MCP tool names — `spec_advance`,
-`spec_quick`, `backlog_archive` and `lane_override` — for any resolved
+`enforce-delegation` also intercepts five MCP tool names — `spec_advance`,
+`spec_quick`, `backlog_archive`, `lane_override` and `lane_reclassify` — for any resolved
 subagent, unconditionally: a subagent calling any of them is blocked (exit 2),
 no mode, no config, no ramp. This closed the gap that let a subagent
 prematurely mark a spec `done` (SPEC-063). `lane_override` (bypassing the
-trivial-lane auditor) joined in SPEC-175.
+trivial-lane auditor) joined in SPEC-175, and `lane_reclassify` (changing the
+lane of the spec being implemented) joined in SPEC-184.
 
 ```
 mcp__mneme__spec_advance    -> exit 2 (blocked)
 mcp__mneme__spec_quick      -> exit 2 (blocked)
 mcp__mneme__backlog_archive -> exit 2 (blocked)
 mcp__mneme__lane_override   -> exit 2 (blocked)
+mcp__mneme__lane_reclassify -> exit 2 (blocked)
 mcp__mneme__spec_pushback  -> exit 0 (allowed)
 mcp__mneme__spec_reject    -> exit 0 (allowed)
 mcp__mneme__spec_doc_write -> exit 0 (allowed)
@@ -578,7 +580,7 @@ Three properties distinguish this guard from the subagent-containment guard
 above:
 
 - **Exact-match, never a prefix.** `lifecycleTools` (`internal/cli/hook.go`)
-  is a four-entry map. A `strings.HasPrefix(tool, "mcp__mneme__spec_")` would
+  is a five-entry map. A `strings.HasPrefix(tool, "mcp__mneme__spec_")` would
   also catch `spec_pushback` and `spec_doc_write` — the two SDD tools a
   subagent is specifically meant to use.
 - **Runs before everything else in `runHookEnforceDelegation`** — before the
@@ -611,7 +613,7 @@ The same rule applies to the terminal. A resolved or unresolved subagent
 
 ```
 mneme spec advance    mneme spec quick    mneme sdd import
-mneme backlog archive    mneme lane override
+mneme backlog archive    mneme lane override    mneme lane reclassify
 ```
 
 The guard sits right after the `lifecycleTools` one, so it also needs only

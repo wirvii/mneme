@@ -63,6 +63,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   bundled skill's worst loading path (SKILL.md plus its largest reference)
   under 20,000 characters and SKILL.md under 4096 bytes, with a temporary
   exemption for `mneme-init` until SPEC-189.
+- SPEC-184: `risk_breach_count` in `lane_stats` (always present over MCP,
+  omitted from `mneme lane stats --json` when 0). Risk breaches counts every spec whose latest lane audit failed on a risk item, whatever its current lane, so it can exceed audit failures (which only count specs still trivial).
+- SPEC-184: `[lane.risk_globs]` in `config.toml` adds path patterns to risk
+  items 1, 2 or 5, never removes any (`mneme config show lane`).
 
 ### Changed
 
@@ -71,6 +75,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   lane auditor, no longer obey the user's global attributes file
   (`core.attributesFile`), the system attributes file, `GIT_DIFF_OPTS` or
   `GIT_EXTERNAL_DIFF`; without those settings their result is unchanged.
+- SPEC-184: the trivial lane is decided by risk, never by size. A change is
+  trivial when it is understood in one batch of reads, touches none of the
+  six risk items of the new `mneme-flow/references/risk.md` (Go: the leaf
+  package `internal/risk`) and passes the resumption test; "3 files / 20
+  lines" is gone from `depth.md`, `docs/lanes.md` and `internal/laneaudit`.
+  `lane_audit` now checks the declared scope, the paths of risk items 1, 2
+  and 5, exported symbols and the declared `Risk:` line, and a failure
+  returns a `Remedy` naming the item and the way out. `LaneAuditResult`
+  gains `RiskItems`, `RiskDeclared`, `RiskSource` and `Remedy` at the end.
+  `spec_quick` refuses a `Risk:` line that names an item or does not parse,
+  and trivial creation and `spec_quick` refuse a scope that matches
+  everything or uses braces.
+- SPEC-184: `lane_reclassify` works from `audit` after a failed audit (the
+  spec keeps its `base_sha`) and is orchestrator only: denied to subagents by
+  the hook, the Codex caller policy and over Bash.
+- SPEC-184: `[delegation] orchestrator_trivial_inline` is now `true` by
+  default, a decision the orchestrator took on the owner's behalf; set it to
+  `false` to turn it off. The permission no longer covers any path of risk
+  items 1, 2 or 5 and ignores scopes that match everything. `mneme install`
+  writes the key explicitly when it is not declared and says so when it finds
+  it declared `false`. If `~/.mneme/config.toml` has
+  `orchestrator_trivial_inline = false` in `[delegation]` and you never
+  decided it, delete that line or set it to `true`: `mneme model set|reset`
+  and `mneme delegation-hook promote` used to dump every default into the
+  file, and mneme never rewrites what is already there.
+- SPEC-184: `reclassify_count` in `lane_stats` is no longer always 0: it now
+  counts specs already reclassified to standard too.
+
+### Fixed
+
+- SPEC-184: `mneme model set|reset` and `mneme delegation-hook promote` edit
+  only their own table or key in `config.toml` instead of rewriting the whole
+  file with every default.
 
 ## [v1.51.0] — 2026-11-10 — standard specs get a fresh-context review before approval and before implementation
 

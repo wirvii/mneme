@@ -4,7 +4,7 @@
 (9), `lane_*` (5), `init` (1). The `sdd_status`/`sdd_import` tools left the
 MCP server in v1.49 (SPEC-163) and are CLI-only — see "SDD git-native
 commands" below. Concept guide:
-[docs/lanes.md](../lanes.md) (trivial/standard lanes, auditor thresholds),
+[docs/lanes.md](../lanes.md) (trivial/standard lanes, the risk criterion and what the auditor checks),
 [docs/init.md](../init.md) (managed blocks, drift, legacy migration).
 The `quality_*` family (5 tools) existed from SPEC-115 through SPEC-137 and
 was retired whole by SPEC-158, along with the certification mechanism it
@@ -92,7 +92,7 @@ required when `lane=trivial`.
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `title` | string | yes | Short description of the idea |
-| `lane` | string | yes | `trivial` (≤3 files, ≤20 lines, no public API change, no SQL/cmd) or `standard` |
+| `lane` | string | yes | `trivial` (understood in one batch of reads, touches none of the six risk items of `mneme-flow/references/risk.md`, passes the resumption test; `scope` must name a real path) or `standard` |
 | `description` | string | no | Detailed explanation of the idea |
 | `priority` | string | no | `critical`, `high`, `medium`, `low`. Default: `medium` |
 | `project` | string | no | Project slug. Default: auto-detected |
@@ -100,7 +100,7 @@ required when `lane=trivial`.
 
 **Returns:** `{"id": "BL-001", "uuid": "0198f2c1-4a7b-7c3d-9e10-3f4a5b6c7d8e", "title": "Push notifications", "status": "raw", "priority": "medium", "lane": "standard", "project": "wirvii/mneme", "created_at": "2026-04-30T12:00:00Z"}`
 
-**Errors:** `-32602` missing `title`/`lane`, missing `scope` for trivial lane.
+**Errors:** `-32602` missing `title`/`lane`, missing `scope` for trivial lane, a trivial `scope` that matches everything or uses braces (`**`, `*`, `**/*.go`, `{a,b}`; `ErrScopeTooBroad`, SPEC-184).
 
 ### backlog_list
 
@@ -238,14 +238,14 @@ when `lane=trivial`.
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `title` | string | yes | Title of the spec |
-| `lane` | string | yes | `trivial` or `standard` |
+| `lane` | string | yes | `trivial` (understood in one batch of reads, touches none of the six risk items of `mneme-flow/references/risk.md`, passes the resumption test; `scope` must name a real path) or `standard` |
 | `backlog_id` | string | no | Originating backlog item ID, if any |
 | `project` | string | no | Project slug. Default: auto-detected |
 | `scope` | string | no | Glob pattern for files this spec may touch. Required when `lane=trivial` |
 
 **Returns:** Spec object with `status: "draft"`.
 
-**Errors:** `-32602` missing `title`/`lane`, missing `scope` for trivial lane.
+**Errors:** `-32602` missing `title`/`lane`, missing `scope` for trivial lane, a trivial `scope` that matches everything or uses braces (`**`, `*`, `**/*.go`, `{a,b}`; `ErrScopeTooBroad`, SPEC-184).
 
 ### spec_status
 
@@ -622,7 +622,13 @@ list, without `stale_count`.
 ### spec_quick
 
 Advance a trivial-lane spec from `draft` directly to `implementing` in one
-step by recording a rationale. Rejected for standard-lane specs.
+step by recording a rationale: one to three sentences plus the lines
+`Resumption: <why the request and git diff are enough>` and `Risk: none`.
+Rejected for standard-lane specs. Since SPEC-184 it also refuses, before any
+transition (the spec stays in `draft` with no new history), a scope that
+matches everything or uses braces, a `Risk:` line that names an item (that
+change is standard; the message names `lane_reclassify`) and a malformed
+`Risk:` line. A rationale without a `Risk:` line is accepted.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -632,9 +638,9 @@ step by recording a rationale. Rejected for standard-lane specs.
 
 **Returns:** Updated spec object with `status: "implementing"`.
 
-**Errors:** `-32602` spec is not trivial lane, spec is not in `draft`, missing fields.
+**Errors:** `-32602` spec is not trivial lane, spec is not in `draft`, missing fields, scope too broad (`ErrScopeTooBroad`), risk item declared (`ErrRiskDeclared`), malformed `Risk:` line (`ErrRiskMalformed`).
 
-**Example:** `mneme spec quick SPEC-007 "One-line fix to a comment typo in audit.go" --by orchestrator`
+**Example:** `mneme spec quick SPEC-007 $'Fix a comment typo in audit.go.\nResumption: the request and the diff say it all.\nRisk: none' --by orchestrator`
 
 ### spec_reject
 
@@ -729,9 +735,13 @@ instead.
 ### lane_audit
 
 Run the deterministic post-implementation auditor for a trivial-lane spec in
-`audit` status. Checks: file count ≤3, line count ≤20, no forbidden paths
-(`*.sql`, `migrations/**`, `cmd/**`, `internal/install/assets/**`), files
-within declared scope, no exported Go/TS symbol changes.
+`audit` status. Since SPEC-184 it checks only what the diff shows: files
+within the declared scope, no path of risk items 1, 2 or 5
+(`mneme-flow/references/risk.md` plus `[lane.risk_globs]`), no exported Go/TS
+symbol changes (risk item 3), and a `Risk:` declaration (delivery section
+`entrega` of `tarea.md` first, then the `spec_quick` rationale) that says
+`none` and agrees with the diff. File and line counts are recorded but never
+fail an audit.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -740,7 +750,9 @@ within declared scope, no exported Go/TS symbol changes.
 
 **Returns (pass):** the spec advances to `done`; returns the `AuditResult` (`file_count`, `lines_changed`, `breaches: []`, `passed: true`).
 
-**Returns (fail):** `IsError: true` with the full `AuditResult` payload (`breaches` populated, `out_of_scope_files`, `forbidden_paths`, `public_symbol_changes`) so the caller can decide whether to reclassify or override — the spec stays in `audit`.
+**Returns (fail):** `IsError: true` with the full `AuditResult` payload (`breaches` populated, `out_of_scope_files`, `forbidden_paths`, `public_symbol_changes`) so the caller can decide — the spec stays in `audit`.
+
+Since SPEC-184 the payload also carries, at the end and without JSON tags (field names as in Go): `RiskItems` (items the diff revealed, sorted), `RiskDeclared` (`"none"`, `"item 1"`, `"item 1, 5"` or `""`), `RiskSource` (`"entrega"`, `"rationale"` or `""`) and `Remedy`: one sentence naming the risk item and the way out, `lane_reclassify` (MCP) / `mneme lane reclassify` (CLI), never `lane_override` first. Breach texts: `out of scope: <path>`, `risk item <n>: path <path>`, `risk item 3: public symbol changed: <name> in <file>`, `risk not declared: ...`, `risk declaration malformed: <line>`, `risk declared: item <n>; ...`, `risk declaration contradicts diff: ...`.
 
 **Errors:** `-32602` spec is not trivial lane / not in audit status; spec is
 frozen (its backlog item was archived, SPEC-125) — checked before the audit
@@ -750,6 +762,11 @@ runs, so a frozen spec never executes git or writes a `lane_audits` row.
 
 Reclassify a spec's lane from `trivial` to `standard`. Only `trivial→standard`
 is allowed. Moves the spec to `speccing` so the full SDD workflow can proceed.
+Allowed before implementing and, since SPEC-184, from `audit` when the
+latest lane audit failed (history reason `reclassified from trivial to
+standard after a failed audit`; the spec keeps its `base_sha`, so the review
+range of its QA covers the trivial commits). **Orchestrator only:** denied to
+subagents by the hook, by the Codex caller policy and over Bash.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -761,13 +778,15 @@ is allowed. Moves the spec to `speccing` so the full SDD workflow can proceed.
 **Returns:** Updated spec object with `lane: "standard"`, `status: "speccing"`.
 
 **Errors:** `-32602` target lane is not `standard`, spec already standard,
-spec is frozen (its backlog item was archived, SPEC-125).
+spec in `implementing`/`done` or in `audit` without a failed audit
+(`ErrLaneImmutable`), spec is frozen (its backlog item was archived, SPEC-125).
 
 ### lane_override
 
 Override a failed lane audit and advance a trivial-lane spec from `audit` to
-`done`. Requires a documented reason, persisted as a discovery memory. Use
-sparingly — prefer `lane_reclassify` when possible.
+`done`. Requires a documented reason, persisted as a discovery memory. Only
+for a false positive, such as a generated file; a risk item means
+`lane_reclassify`. Orchestrator only.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -805,7 +824,14 @@ Show the lane classification, scope, and latest audit summary for a spec.
 ### lane_stats
 
 Return lane compliance statistics for the project: trivial spec count,
-audit-fail count and rate, override count, reclassify count.
+audit-fail count and rate, override count, reclassify count, and
+`risk_breach_count` (SPEC-184).
+
+Risk breaches counts every spec whose latest lane audit failed on a risk item, whatever its current lane, so it can exceed audit failures (which only count specs still trivial).
+
+`reclassify_count` counts specs of any current lane, so it is no longer
+always 0. Over MCP `risk_breach_count` is always present; in
+`mneme lane stats --json` it is omitted when 0.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -814,7 +840,7 @@ audit-fail count and rate, override count, reclassify count.
 **Returns:**
 
 ```json
-{"trivial_count": 12, "audit_fail_count": 2, "audit_fail_rate": 0.166, "override_count": 1, "reclassify_count": 1}
+{"trivial_count": 12, "audit_fail_count": 2, "audit_fail_rate": 0.166, "override_count": 1, "reclassify_count": 1, "risk_breach_count": 1}
 ```
 
 **`unreadable`/`unreadable_total` (SPEC-133)** work exactly as documented
@@ -841,7 +867,8 @@ Calling the former tool names over MCP now answers `-32601` `unknown tool`.
 subagents by `lifecycleTools` (`internal/cli/hook.go`). As a CLI command it
 is no longer covered by that map, but SPEC-175 closed the terminal: the
 `enforce-delegation` hook rejects `mneme sdd import` (and `mneme spec advance`,
-`spec quick`, `backlog archive`, `lane override`) run by a subagent through
+`spec quick`, `backlog archive`, `lane override`, `lane reclassify` since
+SPEC-184) run by a subagent through
 Bash, unless the same command points at an isolated data directory. See
 `docs/HOOKS.md`, "Lifecycle commands over Bash".
 
@@ -891,6 +918,6 @@ never writes or deletes either file itself.
 
 ## See also
 
-- [docs/lanes.md](../lanes.md) — lane thresholds, auditor internals, reclassify vs. override decision guide
+- [docs/lanes.md](../lanes.md) — the lane criterion (risk, not size), auditor internals, reclassify vs. override decision guide
 - [docs/init.md](../init.md) — managed blocks, drift detection, legacy migration (CLI-only)
 - [docs/api/memory.md](memory.md) — `mem_*` tools

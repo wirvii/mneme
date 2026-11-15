@@ -59,11 +59,12 @@ contract:
   architect-only documents restricted. Allowed calls are pre-approved for
   that local server because Codex child sessions cannot answer MCP approval
   prompts; the role-bound filter is applied before this approval setting.
-  The server denies `spec_advance`, `spec_quick`, `backlog_archive` and
-  `lane_override` (SPEC-175).
+  The server denies `spec_advance`, `spec_quick`, `backlog_archive`,
+  `lane_override` (SPEC-175) and `lane_reclassify` (SPEC-184).
 - The same hook also rejects a child's Bash command that runs
-  `mneme spec advance`, `spec quick`, `sdd import`, `backlog archive` or
-  `lane override` against the real data directory (SPEC-175).
+  `mneme spec advance`, `spec quick`, `sdd import`, `backlog archive`,
+  `lane override` (SPEC-175) or `lane reclassify` (SPEC-184) against the real
+  data directory.
 
 The formats differ because each runtime uses its native configuration. A
 project initialized from either runtime is ready for both.

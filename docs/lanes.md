@@ -7,31 +7,32 @@ Lanes introduce two SDD workflow paths — **trivial** and **standard** — so t
 Read this document when:
 - You are creating a backlog item or spec and need to choose a lane.
 - A spec is stuck in `audit` status and you need to respond to breaches.
-- You want to understand the thresholds the deterministic auditor enforces.
+- You want to understand what the deterministic auditor checks (SPEC-184: risk, never size).
 
 ## Critical Rules
 
 1. **Lane is required at creation.** `backlog_add` and `spec_new` (MCP and CLI) both require `lane`. There is no default. Omitting it is an error.
-2. **`scope` is required for trivial items.** Declare a glob pattern (e.g. `internal/store/*.go`) that describes which files the change is allowed to touch. The auditor uses this to verify compliance.
+2. **`scope` is required for trivial items.** Declare a glob pattern (e.g. `internal/store/*.go`) that describes which files the change is allowed to touch. The auditor uses this to verify compliance. Since SPEC-184 the scope must name at least one real path segment and may not use braces: `**`, `*`, `**/*.go` or `{internal,cmd}/**` are refused by `backlog_add`, `spec_new` and `spec_quick` (`scope matches everything or uses braces`).
 3. **Classification is explicit — never inferred.** No keyword heuristic, no LLM. The author declares the lane; the auditor validates the claim after the fact.
 4. **Standard lane is unchanged.** All existing SDD flows for standard items remain exactly as before. This release adds a path alongside, not a replacement.
-5. **Lane is immutable after `implementing`.** Once implementation begins the lane cannot be changed. If the change grew beyond trivial, use `lane reclassify` before implementation starts.
+5. **Lane is immutable after `implementing`, with one exception.** Once implementation begins the lane cannot be changed — except from `audit` after a failed `lane audit` (SPEC-184), where `lane reclassify` to standard is the way out the auditor names. Before implementation starts, `lane reclassify` is always available.
 6. **Only trivial→standard reclassification is allowed.** You cannot upgrade a standard spec to trivial.
-7. **The auditor is deterministic.** Same diff + same item always produce the same result. No LLM, no subagent, pure Go reading the diff and comparing numbers.
-8. **Override is the last resort.** `lane override` advances a failed audit to done but requires a documented reason that is persisted as a discovery memory.
-9. **Archiving a spec's backlog item freezes the spec permanently (SPEC-125).** If the backlog item that originated a spec is archived while the spec is still open, the spec can never move again — not even `lane audit`, `lane override`, or `lane reclassify`. This is not a bug: archiving is a deliberate decision to discard the work, and a spec that cannot close is exactly what "discarded" means. There is no unarchive; the way back is to create a NEW backlog item that references the archived one. See "A trivial spec frozen by an archived backlog item" below.
+7. **The auditor is deterministic.** Same diff + same declaration always produce the same result. No LLM, no subagent, pure Go reading the diff. It never counts files or lines to decide (SPEC-184).
+8. **Override is only for a false positive.** `lane override` advances a failed audit to done, for example over a generated file, and requires a documented reason that is persisted as a discovery memory. A real risk item means reclassify.
+9. **Only the orchestrator reclassifies or overrides.** `lane_reclassify` and `lane_override` are denied to subagents by MCP, by the Codex caller policy and by terminal (`mneme lane reclassify`, `mneme lane override`); a subagent returns the auditor's result instead (SPEC-175, SPEC-184).
+10. **Archiving a spec's backlog item freezes the spec permanently (SPEC-125).** If the backlog item that originated a spec is archived while the spec is still open, the spec can never move again — not even `lane audit`, `lane override`, or `lane reclassify`. This is not a bug: archiving is a deliberate decision to discard the work, and a spec that cannot close is exactly what "discarded" means. There is no unarchive; the way back is to create a NEW backlog item that references the archived one. See "A trivial spec frozen by an archived backlog item" below.
 
 ## Trivial vs Standard: Definitions
 
-A change qualifies as **trivial** only if it meets **all** of the following:
+Since SPEC-184 the lane follows risk, never size. A change qualifies as **trivial** only if all three hold (the agent-facing text is `mneme-flow/references/depth.md`, the only source):
 
-| Criterion | Limit |
-|-----------|-------|
-| Files touched | ≤ 3 |
-| Lines changed (added + removed) | ≤ 20 |
-| Public symbols | No additions, removals, or renames of exported Go functions/types/consts, MCP tools, CLI flags, or DB columns |
-| Forbidden paths | None of: `**/*.sql`, `**/migrations/**`, `**/schema.*`, `cmd/**`, `internal/install/assets/**` |
-| Scope compliance | All changed files match the declared `scope` glob |
+| Criterion | What it means |
+|-----------|---------------|
+| One batch of reads | After one short round of reading you can say exactly what changes |
+| No risk item | It touches none of the six items of `mneme-flow/references/risk.md`: (1) irreversible data or migrations, (2) security and permissions, (3) contracts others consume, (4) concurrency, (5) delivery or environment, (6) no test would catch the regression |
+| Resumption test | Someone who was not here could finish it with only the original request and `git diff` |
+
+The number of files or lines never decides, in either direction: a long mechanical change can be trivial, and a one-line change to a migration is not. The orchestrator proposes the lane and the person confirms it. The `spec_quick` rationale ends with two lines, `Resumption: <why>` and `Risk: none`; `spec_quick` refuses a `Risk:` line that names an item (that change is standard) or that does not parse.
 
 Everything else is **standard**.
 
@@ -47,16 +48,16 @@ draft ──spec_quick──► rationale ──spec_advance──► implementi
 
 `spec_quick` collapses the first two transitions into one step with a rationale string.
 
-**Optional: the orchestrator edits inline (SPEC-171).** By default even a trivial
-change is delegated. A project can opt in, in `~/.mneme/config.toml`
-(`[delegation] orchestrator_trivial_inline = true`, or per project under
-`[delegation.projects."<slug>"]`, or `MNEME_DELEGATION_TRIVIAL_INLINE=1`), so that
-while a trivial spec is in `implementing` the orchestrator may use
-`Edit`/`Write`/`MultiEdit` on files inside that spec's declared scope. `Bash`
-stays blocked, the lane's forbidden paths (SQL, migrations, `cmd/**`, install
-assets) are never granted, and `lane_audit` is unchanged: an edit that exceeds
-the budget still fails the audit and forces reclassification. See
-`docs/enforcement-model.md`.
+**The orchestrator edits inline, on by default (SPEC-171, SPEC-184).** While a
+trivial spec is in `implementing`, the orchestrator may use
+`Edit`/`Write`/`MultiEdit` on files inside that spec's declared scope. This
+default was chosen by the orchestrator on the owner's behalf and is reversible:
+turn it off in `~/.mneme/config.toml` with `[delegation]
+orchestrator_trivial_inline = false` (or per project under
+`[delegation.projects."<slug>"]`, or `MNEME_DELEGATION_TRIVIAL_INLINE=0`).
+`Bash` stays blocked, the paths of risk items 1, 2 and 5 are never granted, a
+scope that matches everything or uses braces never grants anything, and
+`lane_audit` still decides. See `docs/enforcement-model.md`.
 
 ## Standard SDD Flow
 
@@ -118,18 +119,19 @@ The review is on trial for the next 5 reviewed standard specs. `mneme spec revie
 
 The auditor runs when `lane audit <id>` is called on a trivial spec in `audit` status.
 
-| Check | Threshold | Breach Message |
-|-------|-----------|----------------|
-| File count | > 3 | `file count N exceeds trivial limit of 3` |
-| Line count | > 20 | `line count N exceeds trivial limit of 20` |
-| Forbidden: SQL | any `**/*.sql` | `forbidden path modified: <path>` |
-| Forbidden: migrations | any `**/migrations/**` | `forbidden path modified: <path>` |
-| Forbidden: schema | any `**/schema.*` | `forbidden path modified: <path>` |
-| Forbidden: cmd | any `cmd/**` | `forbidden path modified: <path>` |
-| Forbidden: install assets | any `internal/install/assets/**` | `forbidden path modified: <path>` |
-| Scope | file outside declared scope glob | `out of scope: <path>` |
-| Go public symbols | exported name added/removed | `public symbol changed: <name> in <path>` |
-| TS/JS exports | `export ` added/removed | `public export changed in <path>` |
+Since SPEC-184 it checks only what the diff shows, in this fixed order:
+
+| Check | Fails when | Breach Message |
+|-------|------------|----------------|
+| Scope | a changed file is outside the declared scope glob | `out of scope: <path>` |
+| Risk paths (items 1, 2, 5) | a changed path matches a pattern of `mneme-flow/references/risk.md` (plus `[lane.risk_globs]`) | `risk item <n>: path <path>` |
+| Exported symbols (item 3) | an exported Go or TS/JS symbol is added or removed | `risk item 3: public symbol changed: <name> in <path>` |
+| Declaration missing | no `Risk:` line in `tarea.md` section `entrega` nor in the `spec_quick` rationale | `risk not declared: ...` |
+| Declaration malformed | the `Risk:` line does not parse | `risk declaration malformed: <line>` |
+| Item declared | the `Risk:` line names an item | `risk declared: item <n>; the trivial lane admits only Risk: none` |
+| Contradiction | `Risk: none` but the diff showed items | `risk declaration contradicts diff: Risk: none declared, items <n, m> detected` |
+
+The declaration comes first from the delivery (`Risk:` line in `tarea.md` section `entrega`, outside fenced code blocks), then from the `spec_quick` rationale. File and line counts are recorded in `lane_audits` but never fail an audit. A failed audit returns a `Remedy` that names the risk item and the way out: the orchestrator runs `lane_reclassify` (MCP) / `mneme lane reclassify` (CLI); `lane_override` only for a false positive.
 
 **Base-SHA binding (v1.6.0):** When a spec enters `implementing`, mneme captures the current HEAD SHA as `base_sha` on the spec. On subsequent `lane_audit` runs the base ref is resolved in this order:
 1. Explicit `--base <ref>` / `base_ref` argument (caller override).
@@ -155,10 +157,9 @@ switch that could require a certificate before a trivial spec's own
 `implementing → audit` transition). `lane_audit` now runs on two small,
 dedicated leaf packages: `internal/gitrepo` (the git primitives — `NumStat`,
 `ChangedFilesInRange`, `ChangedLines`, `FileAtRef`) and `internal/laneaudit`
-(`CollectSymbols`/`DiffSymbols` for the file/symbol delta,
-`EvaluateTrivialBudget` for the verdict). The 3/20 limits and the five
-forbidden globs are unchanged, migrated verbatim (`DefaultTrivialBudget`);
-every field of `lane_audits`, the `audit` status,
+(`CollectSymbols`/`DiffSymbols` for the file/symbol delta, `Evaluate` for the
+verdict since SPEC-184, reading the risk path table of the leaf package
+`internal/risk`); every field of `lane_audits`, the `audit` status,
 `lane_reclassify`/`lane_override`, and the JSON shape `lane_audit` returns
 are all unchanged.
 
@@ -199,7 +200,7 @@ The rejection reason is persisted in `spec_history`. `lane status` reports the t
 
 Every `lane_audit` run inserts a row in the `lane_audits` table (migration 012) — both passes and failures. `lane status` reads the latest row instead of parsing `spec_history` text, making audit outcomes deterministic and format-independent.
 
-Fields stored: `spec_id`, `passed`, `file_count`, `lines_changed`, `breaches` (newline-joined), `base_sha` (ref used for diffing), `created_at`.
+Fields stored: `spec_id`, `passed`, `file_count`, `lines_changed`, `breaches` (newline-joined), `base_sha` (ref used for diffing), `created_at`. Since SPEC-184 `file_count` and `lines_changed` only inform; they never decide.
 
 ## Lane Stats (v1.6.0)
 
@@ -216,21 +217,24 @@ Reports trivial-lane compliance for the current project:
 | `audit_fail_count` | Trivial specs whose latest audit failed |
 | `audit_fail_rate` | `audit_fail_count / trivial_count` |
 | `override_count` | Specs completed via `lane_override` |
-| `reclassify_count` | Specs reclassified trivial → standard |
+| `reclassify_count` | Specs, of any current lane, reclassified trivial → standard (no longer always 0 since SPEC-184) |
+| `risk_breach_count` | Specs whose latest audit failed on a risk item (SPEC-184; absent from the CLI's `--json` when 0, always present over MCP) |
+
+Risk breaches counts every spec whose latest lane audit failed on a risk item, whatever its current lane, so it can exceed audit failures (which only count specs still trivial). Old breach texts `forbidden path modified:` and `public symbol changed:` count as risk too; a missing or malformed declaration does not.
 
 ## How to Fix a Failed Audit
 
-### Option A: Reclassify to standard (preferred)
+### Option A: Reclassify to standard (the way out)
 
-If the change turned out to be larger than trivial, reclassify it so the full SDD workflow applies:
+If the audit named a risk item, the change is standard. The orchestrator reclassifies it, from `audit`, so the full SDD workflow applies (SPEC-184):
 
 ```bash
 mneme lane reclassify SPEC-007 standard --by orchestrator
 ```
 
-The spec moves to `speccing`. Work through the standard flow from there.
+The spec moves from `audit` to `speccing` with its commits already in the branch: fresh-context review, criteria, approval gate, plan and QA follow. Its `base_sha` is kept, so the review range of its QA still covers the trivial commits. If the only breach is a missing `Risk:` line, write `Risk: none` in `tarea.md` section `entrega` (`spec_doc_write` kind `task` section `entrega`) and run `lane audit` again.
 
-### Option B: Override (last resort)
+### Option B: Override (false positives only)
 
 If the breach is a false positive (e.g. an autogenerated file that does not represent real complexity), document the justification and override:
 
@@ -243,7 +247,7 @@ A discovery memory is saved with the reason. The spec advances to `done`.
 ### Prevention
 
 - Declare a tight `scope` at creation time. If you need to touch more files than the scope allows, the spec should be standard.
-- Keep trivial items genuinely small. If the implementation expands, use `lane reclassify` before advancing to `implementing`.
+- Keep trivial items free of risk items. If the implementation turns out to touch one, use `lane reclassify` before advancing to `implementing`, or from `audit` after the failed audit.
 - Never add, remove, or rename exported Go symbols in a trivial item. Even renaming a constant is a public API change.
 
 ### A trivial spec frozen by an archived backlog item (SPEC-125)

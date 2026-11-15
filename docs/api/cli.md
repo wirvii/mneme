@@ -545,7 +545,7 @@ mneme spec reject SPEC-012 --reason "edge case in payment flow" --by qa-agent
 
 ### mneme lane audit
 
-Deterministic auditor for a trivial-lane spec in `audit` status: file count ≤3, line count ≤20, no forbidden paths (`*.sql`, `migrations/**`, `cmd/**`, `internal/install/assets/**`), scope compliance, no exported symbol changes. Advances to `done` on pass.
+Deterministic auditor for a trivial-lane spec in `audit` status (SPEC-184: risk, never size): scope compliance, no path of risk items 1, 2 or 5 (`mneme-flow/references/risk.md` plus `[lane.risk_globs]`), no exported symbol changes (risk item 3), and a `Risk:` line that says `none` and agrees with the diff. File and line counts never fail it. Advances to `done` on pass; on fail prints the breaches and a `Remedy` naming the risk item and the way out (`mneme lane reclassify`).
 
 ```bash
 mneme lane audit SPEC-007
@@ -558,7 +558,7 @@ mneme lane audit SPEC-007 --base HEAD~2
 
 ### mneme lane reclassify
 
-Only `trivial→standard`; moves the spec to `speccing`.
+Only `trivial→standard`; moves the spec to `speccing`. Allowed before implementing and, since SPEC-184, from `audit` after a failed audit. Orchestrator only: the hook rejects it from a subagent's Bash.
 
 ```bash
 mneme lane reclassify SPEC-007 standard --by orchestrator

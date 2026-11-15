@@ -264,7 +264,7 @@ promote` read to decide when a project has enough evidence to move from
 ### Lifecycle-tool denial (SPEC-087 D5)
 
 A subagent-containment allow does not mean a subagent may do anything MCP
-exposes. `enforce-delegation` separately, unconditionally denies four SDD
+exposes. `enforce-delegation` separately, unconditionally denies five SDD
 lifecycle tools to any resolved subagent — total block, no mode:
 
 | Tool | Result |
@@ -273,6 +273,7 @@ lifecycle tools to any resolved subagent — total block, no mode:
 | `mcp__mneme__spec_quick` | **BLOCK** — disguised advance (draft→rationale→implementing) and an orchestrator-only operation |
 | `mcp__mneme__backlog_archive` | **BLOCK** — discarding work and irreversibly freezing the spec it governs is the owner's call, channelled by the orchestrator (SPEC-125 D11/DD11) |
 | `mcp__mneme__lane_override` | **BLOCK** — bypassing the trivial-lane auditor is decided by the orchestrator or the owner, never by the author of the change (SPEC-175) |
+| `mcp__mneme__lane_reclassify` | **BLOCK** — changing the lane of the spec being implemented is the orchestrator's call; a failed audit's `Remedy` invites a reclassification and the author of the change must not act on it (SPEC-184) |
 | `mcp__mneme__spec_pushback`, `mcp__mneme__spec_reject`, `mcp__mneme__spec_doc_write`, `mcp__mneme__mem_*`, `mcp__mneme__codegraph_*` | **ALLOW** |
 
 `lifecycleTools` (`internal/cli/hook.go`) is an **exact-match** set —
@@ -290,8 +291,8 @@ not bypass SDD); a best-effort `enforcelog` event is recorded instead
 terminal open: a subagent with `Bash` could type `mneme spec advance`. A second
 guard, right after the one above, runs `enforcement.EvaluateLifecycleCommand`
 (pure, over `shell.SimpleCommands`) on a subagent's Bash command and rejects
-`mneme spec advance|quick`, `mneme sdd import`, `mneme backlog archive` and
-`mneme lane override` (exit 2; `Reason: "lifecycle_command_denied_to_subagent"`,
+`mneme spec advance|quick`, `mneme sdd import`, `mneme backlog archive`,
+`mneme lane override` and `mneme lane reclassify` (SPEC-184) (exit 2; `Reason: "lifecycle_command_denied_to_subagent"`,
 no discovery memory). A command whose own simple command names an isolated data
 directory (`--data-dir`, `HOME=`, `USERPROFILE=`, `MNEME_DATA_DIR=`, non-empty
 and not the real one) is allowed, so mneme itself can be tested. Limits, all
@@ -307,8 +308,9 @@ literal message: `docs/HOOKS.md`.
 **Codex.** Children carry `agent_id`/`agent_type` and send the shell tool as
 `Bash`, so the hook guards apply unchanged. The role-bound MCP server
 (`CallerPolicy` in `internal/mcp/caller_policy.go`) is the second layer and
-denies the same four tools: `spec_advance`, `spec_quick`, `backlog_archive`
-and `lane_override`. `backlog_archive` was a parity gap before SPEC-175.
+denies the same five tools: `spec_advance`, `spec_quick`, `backlog_archive`,
+`lane_override` and `lane_reclassify` (SPEC-184). `backlog_archive` was a parity
+gap before SPEC-175.
 
 This closes the gap `spec_doc_write` (SPEC-087 D3) opens on purpose: a
 subagent can now write its own entregable (`spec.md`/`plan.md`/
@@ -395,17 +397,21 @@ points consult: `que`/`diseno`/`plan` for `architect`; `entrega` for
 - **Codex**: `CallerPolicy.authorizeCall` applies the same table using the
   process's archetype.
 
-#### Orchestrator trivial-inline (SPEC-171)
+#### Orchestrator trivial-inline (SPEC-171, on by default since SPEC-184)
 
-An opt-in, per-project exception to "the orchestrator never edits code": while
-a **trivial-lane** spec is in `implementing`, the orchestrator may edit files
-inside that spec's declared `scope` itself. Off by default.
+The one exception to "the orchestrator never edits code": while a
+**trivial-lane** spec is in `implementing`, the orchestrator may edit files
+inside that spec's declared `scope` itself. **On by default since SPEC-184**,
+a default chosen by the orchestrator on the owner's behalf and reversible.
 
-- **Flag**: `[delegation] orchestrator_trivial_inline = true` in
-  `~/.mneme/config.toml`; `MNEME_DELEGATION_TRIVIAL_INLINE` (`1`/`true`,
-  `0`/`false`) overrides the global value; a per-project
-  `[delegation.projects."<slug>"] orchestrator_trivial_inline` (declared,
-  true or false) beats both. There is no CLI command to flip it.
+- **Flag**: `[delegation] orchestrator_trivial_inline` in
+  `~/.mneme/config.toml` (default `true`; `false` turns it off);
+  `MNEME_DELEGATION_TRIVIAL_INLINE` (`1`/`true`, `0`/`false`) overrides the
+  global value; a per-project `[delegation.projects."<slug>"]
+  orchestrator_trivial_inline` (declared, true or false) beats both. There is
+  no CLI command to flip it; `mneme install <runtime>` writes the global key
+  explicitly as `true` when it is not declared, with a comment saying how to
+  turn it off, and prints an `[info]` line when it finds it declared `false`.
 - **Which specs count**: lane `trivial`, status `implementing`, non-empty
   scope, and not frozen (its backlog item is neither archived nor missing —
   the query mirrors `service.specFreeze`). `draft`, `rationale`, `audit` and
@@ -415,18 +421,25 @@ inside that spec's declared `scope` itself. Off by default.
 - **What is granted**: only `Edit`, `Write` and `MultiEdit`, only where the
   ownership check would otherwise block, and only for a path that matches the
   scope (same doublestar matcher `lane_audit` uses) relative to the hook's
-  cwd. Paths matching the trivial lane's forbidden globs
-  (`laneaudit.DefaultTrivialBudget.ForbiddenGlobs`: SQL, migrations,
-  `cmd/**`, `internal/install/assets/**`) and paths outside the cwd tree are
-  never granted. A cwd below the repository root does not match
-  root-relative scopes, so it blocks (safe direction).
+  cwd. Paths matching any pattern of risk items 1, 2 and 5 (the risk table
+  of `internal/risk` plus `[lane.risk_globs]`: SQL, migrations, schemas,
+  secrets and keys, `cmd/**`, `internal/install/assets/**`, CI, deploy,
+  release, manifests and lockfiles) and paths outside the cwd tree are never
+  granted. A scope that matches everything or uses braces
+  (`laneaudit.IsCatchAllScope`: `**`, `*`, `**/*.go`, `{a,b}`) is refused at
+  creation and by `spec_quick`, and ignored here for specs opened before that
+  rule, so it never grants anything. A cwd below the repository root does not
+  match root-relative scopes, so it blocks (safe direction). Residual
+  exposure, accepted: a legitimate but wide scope (`internal/**`) still grants
+  that whole area; the enforcement-log trail below is the mitigation.
 - **Not relaxed**: `Bash` (redirections, `sed -i`, `cp` ...), `NotebookEdit`,
   subagents (their containment is unchanged), the standard lane, and
   `lane_audit` itself.
 - **Fail closed**: any error opening or reading the project database yields
   exactly the decision the check had without the feature. With the flag off
-  the database is never opened; with it on, it is opened (read-only, at most
-  once per call) only when the call was going to be blocked anyway.
+  the database is never opened; with it on (the default), it is opened
+  (read-only, at most once per call) only when the call was going to be
+  blocked anyway.
 - **Audit trail**: each granted call appends an enforcement-log event
   (`caller: orchestrator`, `decision: allow`, `reason: trivial_inline_scope`,
   target: the relative path). Code: `internal/cli/hook_trivial_inline.go`;

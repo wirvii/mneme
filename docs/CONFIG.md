@@ -21,6 +21,7 @@ Para el sistema de reglas ver [RULES.md](RULES.md).
 - [`[personal]`](#personal)
 - [`[workflow]`](#workflow)
 - [`[delegation]`](#delegation)
+- [`[lane]`](#lane)
 - [`[spec]`](#spec)
 - [`[graph]`](#graph)
 - [`[suggestions]`](#suggestions)
@@ -217,7 +218,29 @@ Controla el hook de delegación que previene que el agente orquestador edite có
 | `enabled` | `true` | bool | — | — | Activa o desactiva el enforcement de delegación. |
 | `protected_paths` | `["cmd/", "internal/", ...]` | []string | — | — | Prefijos de ruta protegidos que el orquestador no puede editar. |
 | `allowed_paths` | `["docs/", "*.md", ...]` | []string | — | — | Patrones glob siempre permitidos, aunque coincidan con un prefijo protegido. |
-| `orchestrator_trivial_inline` | `false` | bool | — | `MNEME_DELEGATION_TRIVIAL_INLINE` | Opt-in (SPEC-171): el orquestador puede usar Edit/Write/MultiEdit dentro del alcance declarado de una spec trivial en `implementing`. Un valor por proyecto en `[delegation.projects."<slug>"] orchestrator_trivial_inline` gana sobre éste y sobre el env. Ver [enforcement-model.md](enforcement-model.md). |
+| `orchestrator_trivial_inline` | `true` | bool | — | `MNEME_DELEGATION_TRIVIAL_INLINE` | Encendido por defecto desde SPEC-184 (SPEC-171 lo creó apagado): el orquestador puede usar Edit/Write/MultiEdit dentro del alcance declarado de una spec trivial en `implementing`, nunca sobre una ruta de los riesgos 1, 2 o 5. Lo decidió el orquestador en nombre del owner y es reversible: `false` lo apaga. Un valor por proyecto en `[delegation.projects."<slug>"] orchestrator_trivial_inline` gana sobre éste y sobre el env. Ver [enforcement-model.md](enforcement-model.md). |
+
+**`mneme install <runtime>` deja la clave escrita (SPEC-184).** Si `orchestrator_trivial_inline` no está declarada en la tabla global `[delegation]` de `~/.mneme/config.toml`, `mneme install` (y `mneme upgrade`, que lo ejecuta cuando detecta un agente instalado) la escribe como `true` con un comentario que dice cómo apagarla, e imprime `[ok]   Config: orchestrator_trivial_inline = true written to <ruta> (set false to turn it off)`. Si la encuentra declarada en `false`, no la toca e imprime `[info] orchestrator_trivial_inline is declared false in <ruta>; the new default does not apply here`. Nunca reescribe lo que ya está en el archivo.
+
+**Las escrituras de mneme ya no vuelcan los valores por defecto (SPEC-184).** `mneme model set|reset` y `mneme delegation-hook promote` editan solo su tabla o su clave (`[models.overrides]`, `[delegation.projects."<slug>"] subagent_containment`) y dejan el resto del archivo byte a byte. Antes volcaban la configuración entera, así que una máquina donde corrió alguno de esos comandos tiene escrito `orchestrator_trivial_inline = false` sin que nadie lo decidiera: si es tu caso, borra esa línea o ponla en `true`.
+
+---
+
+## `[lane]`
+
+Entradas configurables del carril trivial (SPEC-184). Solo existe la tabla `[lane.risk_globs]`.
+
+| Field | Default | Type | Range | Env Override | Description |
+|-------|---------|------|-------|-------------|-------------|
+| `risk_globs` | (vacío) | tabla de `[]string` | claves `"1"`, `"2"`, `"5"` | — | **Añade** patrones de ruta a los riesgos 1 (datos irreversibles), 2 (seguridad) o 5 (entrega y entorno) de `mneme-flow/references/risk.md`; nunca quita los de serie. Los usan el auditor del carril trivial y el permiso de edición en línea del orquestador. Solo global. |
+
+```toml
+[lane.risk_globs]
+"1" = ["**/*.dbml"]
+"2" = ["config/vault/**"]
+```
+
+Una clave que no es un número de ítem, un ítem que una ruta no puede revelar (3, 4, 6) o un patrón vacío hacen fallar la carga (`lane.risk_globs: ...`). `mneme config show lane` muestra el valor como `1=**/*.dbml; 2=config/vault/**`.
 
 ---
 
@@ -401,6 +424,8 @@ mneme falla al arrancar con un mensaje claro si la configuración no es válida.
 | `graph.graph_mode "invalid" is not valid` | Modo desconocido | Usar ppr/1hop/off |
 | `graph.explore_default_depth must be between 0 and 5` | Profundidad > 5 | Usar [0, 5] |
 | `suggestions.max_results must be >= 1` | max_results = 0 | Usar >= 1 |
+| `lane.risk_globs: key "x" is not an item number` | Clave de `[lane.risk_globs]` que no es número | Usar `"1"`, `"2"` o `"5"` |
+| `lane.risk_globs: risk: item is not detectable by path; accepted: 1, 2, 5` | Patrones para el ítem 3, 4 o 6 | Solo los ítems 1, 2 y 5 admiten rutas |
 
 Los valores de variable de entorno con formato incorrecto (no parseables) se ignoran
 silenciosamente. Un valor parseable pero fuera de rango (ej. `MNEME_GRAPH_EDGE_DECAY_RATE=2.0`)

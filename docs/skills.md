@@ -254,7 +254,7 @@ manual lists the same set.
 
 | Skill | What it is for | Detail files |
 |---|---|---|
-| `mneme-flow` | The common base of the flow family: the lifecycle and who may move it, the approval gate, lanes, the criteria contract, rejections, pushbacks, the review range | `references/depth.md` (the only place with the lane thresholds), `lifecycle.md`, `criteria.md` |
+| `mneme-flow` | The common base of the flow family: the lifecycle and who may move it, the approval gate, lanes, the criteria contract, rejections, pushbacks, the review range | `references/depth.md` (the only place that states what makes a change trivial), `risk.md` (the six risk items and the paths the auditor detects), `lifecycle.md`, `criteria.md` |
 | `feature` | Something new, from idea to a done spec, stopping at the approval gate | uses `mneme-flow` |
 | `bug` | A failure: investigate to a diagnosis in the ticket, then promote it only when the root cause is confirmed (replaces the old hunt-and-convert pair) | `references/diagnosis.md` |
 | `trivial` | A tiny, low-risk change in a declared scope, checked by the lane auditor | uses `mneme-flow` |
