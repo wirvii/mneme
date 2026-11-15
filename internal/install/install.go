@@ -191,19 +191,29 @@ func ClaudeCode(binaryPath string) *Agent {
 				return "", nil, fmt.Errorf("install: claude-code: hooks: home dir: %w", err)
 			}
 			path := filepath.Join(home, ".claude", "settings.json")
-			// SPEC-106: the "Stop" registration is gone from here — see
-			// RetiredHooks below, which purges any pre-existing copy instead of
-			// re-registering it. Stop fires once per TURN (not once per
-			// session) and Claude Code silently discards a Stop hook's stdout
-			// (it is not one of the three events whose stdout is injected as
-			// context), so the registration never delivered anything: neither
-			// the wrong-cadence reminder it was meant to send, nor any usable
-			// signal. SessionStart is unaffected — it IS one of those three
-			// events, and its behaviour does not change.
+			// SPEC-183 D1: the Stop EVENT is back, together with SubagentStop.
+			// SPEC-106 retired it on a false premise: Claude Code discards a
+			// Stop hook's stdout as TEXT, but honours a JSON
+			// {"decision":"block","reason":...} as a DECISION that keeps the
+			// agent working with reason as its next instruction. The new
+			// commands remind once (per work window, per agent and spec) and
+			// stay quiet. The retired COMMAND `mneme hook session-end` stays in
+			// RetiredHooks and keeps being purged (Dp1): hook identity is
+			// compared by subcommand, so the purge never touches these entries.
+			// SubagentStop has an empty matcher on purpose: the role is
+			// resolved in process, through the manifest, like every other hook.
 			patches := []HookPatch{
 				{
 					Event:   "SessionStart",
 					Command: "mneme hook session-start",
+				},
+				{
+					Event:   "Stop",
+					Command: "mneme hook stop",
+				},
+				{
+					Event:   "SubagentStop",
+					Command: "mneme hook subagent-stop",
 				},
 				{
 					Event:   "PostToolUse",
@@ -223,6 +233,8 @@ func ClaudeCode(binaryPath string) *Agent {
 		// what Hooks above no longer writes (see TestRetiredHooksDisjointFromHooks).
 		// SPEC-161 adds the "UserPromptSubmit" -> "mneme hook speech-prompt"
 		// registration of the retired spoken-response channel the same way.
+		// SPEC-183 registers the Stop event again with `mneme hook stop`; the
+		// purge matches by subcommand, so only the session-end entry goes.
 		RetiredHooks: func() (string, []HookPatch, error) {
 			home, err := os.UserHomeDir()
 			if err != nil {

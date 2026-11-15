@@ -49,11 +49,13 @@ func TestClaudeCodeInstall_Idempotency(t *testing.T) {
 	}
 }
 
-// TestClaudeCodeInstall_RetiresStopHook covers AC7 (SPEC-106): starting from a
-// pre-existing ~/.claude/settings.json that already registers the retired
-// Stop -> mneme hook session-end command (and nothing else in Stop), plus a
-// foreign PreToolUse entry and an unrelated top-level key, Install(ClaudeCode(...))
-// removes the Stop key entirely while leaving everything else untouched.
+// TestClaudeCodeInstall_RetiresStopHook covers AC7 (SPEC-106) as amended by
+// SPEC-183: starting from a pre-existing ~/.claude/settings.json that already
+// registers the retired Stop -> mneme hook session-end command, plus a
+// foreign PreToolUse entry and an unrelated top-level key,
+// Install(ClaudeCode(...)) purges the session-end entry and leaves exactly one
+// Stop -> mneme hook stop entry (the event is back with another command),
+// while leaving everything else untouched.
 func TestClaudeCodeInstall_RetiresStopHook(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
@@ -96,9 +98,8 @@ func TestClaudeCodeInstall_RetiresStopHook(t *testing.T) {
 	if !ok {
 		t.Fatal("settings.hooks is not an object")
 	}
-	if _, exists := hooks["Stop"]; exists {
-		t.Errorf("Stop key must not exist after install, got %#v", hooks["Stop"])
-	}
+	assertHookCount(t, hooks, "Stop", "mneme hook stop", 1)
+	assertHookCount(t, hooks, "Stop", "mneme hook session-end", 0)
 	assertHookEntry(t, hooks, "SessionStart", "mneme hook session-start")
 	assertHookEntry(t, hooks, "PreToolUse", "some-other-hook.sh")
 	if settings["theme"] != "dark" {
@@ -151,9 +152,7 @@ func TestClaudeCodeInstall_IdempotencyWithPreexistingStopHook(t *testing.T) {
 		t.Fatalf("unmarshal after first install: %v", err)
 	}
 	if hooks, ok := firstSettings["hooks"].(map[string]any); ok {
-		if _, exists := hooks["Stop"]; exists {
-			t.Fatalf("precondition failed: Stop key still present after first install: %#v", hooks["Stop"])
-		}
+		assertHookCount(t, hooks, "Stop", "mneme hook session-end", 0)
 	}
 
 	if err := Install(ClaudeCode(binPath), binPath); err != nil {
@@ -298,14 +297,15 @@ func TestClaudeCodeInstall_VanillaGolden(t *testing.T) {
 		t.Fatalf("read settings.json: %v", err)
 	}
 	settings := string(settingsData)
-	for _, want := range []string{"mneme hook session-start", "mneme hook pre-tool-use", "mneme hook enforce-delegation"} {
+	for _, want := range []string{"mneme hook session-start", "mneme hook pre-tool-use", "mneme hook enforce-delegation", "mneme hook stop", "mneme hook subagent-stop"} {
 		if !strings.Contains(settings, want) {
 			t.Errorf("settings.json: expected hook command %q not found", want)
 		}
 	}
-	// AC5 (SPEC-106): "session-end" is retired from the Stop event — a
-	// vanilla install must never register it, nor the "Stop" key at all.
-	for _, mustNot := range []string{"mneme hook session-end", "\"Stop\""} {
+	// AC5 (SPEC-106): the "session-end" command is retired — a vanilla install
+	// must never register it. The "Stop" event itself is back (SPEC-183),
+	// served by `mneme hook stop`.
+	for _, mustNot := range []string{"mneme hook session-end"} {
 		if strings.Contains(settings, mustNot) {
 			t.Errorf("settings.json: must not contain %q (SPEC-106 D4), got:\n%s", mustNot, settings)
 		}

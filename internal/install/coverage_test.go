@@ -870,9 +870,9 @@ func TestClaudeCode_MCPConfig_NonEmpty(t *testing.T) {
 }
 
 // TestClaudeCode_Hooks_Structure verifies that the Hooks closure returns a
-// non-empty settings path and exactly one hook patch (SessionStart only —
-// SPEC-106 D4 retired the "Stop" registration; see
-// TestClaudeCode_NoStopHookRegistered for the exact-patch assertion).
+// non-empty settings path and at least one hook patch (SessionStart, Stop,
+// SubagentStop, PostToolUse; see TestClaudeCode_RegistersStopHooks for the
+// exact-patch assertion).
 func TestClaudeCode_Hooks_Structure(t *testing.T) {
 	agent := ClaudeCode("")
 

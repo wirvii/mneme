@@ -37,8 +37,9 @@ import (
 // The function reuses hookCommandExists to prevent duplicate entries.
 //
 // Per D3b (SPEC-049): hooks are best-effort; if the user has not trusted them
-// via Codex's `/hooks` command, the session-lifecycle discipline in AGENTS.md
-// (§5) ensures memory hygiene without automation. The install step always
+// via Codex's `/hooks` command, the session-lifecycle discipline in the Codex
+// operating manual, §4 Memory (operating-manual-codex.md), ensures memory
+// hygiene without automation. The install step always
 // writes the file so the hooks are ready to be trusted at any time.
 func WriteCodexHooks(path string) error {
 	root := map[string]any{}

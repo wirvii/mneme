@@ -1517,28 +1517,36 @@ func TestInstallSteps_DefaultSequence(t *testing.T) {
 	}
 }
 
-// TestClaudeCode_NoStopHookRegistered verifies that ClaudeCode().Hooks()
-// registers SessionStart and none for the retired "Stop" event (SPEC-106 AC3).
-// It checks per event, never the total count, so adding or retiring an
+// TestClaudeCode_RegistersStopHooks verifies that ClaudeCode().Hooks()
+// registers the two stop hooks of SPEC-183 (D1) with an empty matcher, keeps
+// SessionStart, and never registers the retired `mneme hook session-end`
+// command (Dp1: the Stop EVENT came back, served by another command). It
+// checks per patch, never the total count, so adding or retiring an
 // unrelated hook does not break it.
-func TestClaudeCode_NoStopHookRegistered(t *testing.T) {
+func TestClaudeCode_RegistersStopHooks(t *testing.T) {
 	agent := ClaudeCode("/usr/local/bin/mneme")
 
 	_, patches, err := agent.Hooks()
 	if err != nil {
 		t.Fatalf("Hooks: %v", err)
 	}
-	var sessionStart bool
+	want := map[HookPatch]bool{
+		{Event: "SessionStart", Command: "mneme hook session-start"}: false,
+		{Event: "Stop", Command: "mneme hook stop"}:                  false,
+		{Event: "SubagentStop", Command: "mneme hook subagent-stop"}: false,
+	}
 	for _, p := range patches {
-		if p.Event == "Stop" {
-			t.Errorf("Hooks() must not register a Stop patch, found: %+v", p)
+		if p.Command == "mneme hook session-end" {
+			t.Errorf("Hooks() must not register the retired session-end command, found: %+v", p)
 		}
-		if p.Event == "SessionStart" && p.Command == "mneme hook session-start" {
-			sessionStart = true
+		if _, ok := want[p]; ok {
+			want[p] = true
 		}
 	}
-	if !sessionStart {
-		t.Errorf("Hooks() must register {SessionStart, mneme hook session-start}: %+v", patches)
+	for p, found := range want {
+		if !found {
+			t.Errorf("Hooks() must register %+v: %+v", p, patches)
+		}
 	}
 }
 
