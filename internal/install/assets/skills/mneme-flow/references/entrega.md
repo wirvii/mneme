@@ -127,6 +127,10 @@ The first rule that fails wins, and the error names the field (and the entry ind
 
 An invalid block is always refused and `tarea.md` is left untouched. A missing block is refused only for a standard spec in implementing; anywhere else it is written and `spec_doc_write` answers `contract: missing`.
 
+## The SubagentStop reminder
+
+In Claude Code, a `SubagentStop` hook reminds an implementer once per spec when a standard spec in implementing has no current block; `falta_contexto` and `bloqueado` satisfy it. If the spec is not yours, finish without writing.
+
 ## What the orchestrator does with it
 
 `spec_status` shows `delivery_contract` (valid, missing or invalid) and `delivery_state` from implementing on. `falta_contexto` or `bloqueado` is a report, not a delivery: the orchestrator answers it (context, a decision, a pushback) instead of moving the spec to qa. `invalid` means the file was edited outside mneme: the implementer rewrites the block. No transition checks the block; closing the spec stays a human decision.

@@ -1296,7 +1296,9 @@ Invoked by agent hook systems, not typically run directly.
 | Subcommand | Event | Description |
 |------------|-------|-------------|
 | `session-start` | SessionStart | Load and print project context |
-| `session-end` | `Stop` (retired, no longer registered) | No-op: emits `{}` and exits 0 (SPEC-106) |
+| `stop` | `Stop` (Claude Code only) | SPEC-183: reminds the orchestrator once per work window to call `mem_session_end` by printing `{"decision":"block","reason":...}`; prints nothing otherwise; always exits 0. Governed by `[hooks] stop_reminder_after` |
+| `subagent-stop` | `SubagentStop`, matcher `""` (Claude Code only) | SPEC-183: reminds an implementer (backend, frontend, bug-hunter) once per spec to write its delivery contract block, by printing `{"decision":"block","reason":...}`; prints nothing otherwise; always exits 0 |
+| `session-end` | retired; `Stop` is now served by `stop` | No-op: emits `{}` and exits 0 (SPEC-106); still purged by `mneme install` |
 | `pre-tool-use` | PreToolUse | Evaluate rules against the tool invocation |
 | `enforce-delegation` | PreToolUse | Orchestrator-guard (Layer 2, SPEC-069): blocks the orchestrator from editing/running Bash against a path outside the static whitelist and owned by an implementer subagent |
 | `tokenize` | -- | Parse a shell command from stdin into structured JSON tokens (general-purpose surface; `enforce-delegation` no longer spawns this) |

@@ -89,7 +89,8 @@ Codex hooks in `~/.codex/hooks.json` require explicit trust before they run:
 3. Review and trust the mneme hooks
 
 Until the hooks are trusted — and even after, for session end — the
-session-lifecycle instructions in `~/.codex/AGENTS.md §5` (Memory & conflicts)
+session-lifecycle instructions in the Codex operating manual, §4 Memory
+(`~/.codex/AGENTS.md`),
 cover the discipline manually: call `mem_context` on first message,
 `mem_search` before responding, `mem_save` after tasks, `mem_session_end`
 before ending. There is no hook that reminds you of the last step: `mneme
@@ -121,6 +122,28 @@ an absolute `mneme` path, or with extra flags), that variant is recognised
 as the same registration and purged too, flags and all — see the "Hook registration identity" section in [docs/HOOKS.md](HOOKS.md) for
 the full identity rules. You are free to remove any surviving foreign script
 manually from `~/.codex/hooks.json` once you no longer need it.
+
+### Stop/SubagentStop: solo Claude Code (SPEC-183)
+
+In Claude Code, `mneme install claude-code` registers two stop hooks that
+answer with a JSON decision (`{"decision":"block","reason":...}`): `Stop` →
+`mneme hook stop` reminds the orchestrator once per work window to call
+`mem_session_end`, and `SubagentStop` → `mneme hook subagent-stop` reminds an
+implementer once per spec to write its delivery contract block. Codex gets
+**neither**, and `~/.codex/hooks.json` is unchanged, for three reasons:
+
+1. Codex has a `Stop` event (it is the one that surfaced the SPEC-106 defect),
+   but no `SubagentStop` and no child identity on `Stop`, so the implementer
+   rule cannot be applied.
+2. It is not verified that Codex honours `decision: "block"` on `Stop`; an
+   ignored reason would be noise on every session close.
+3. `Codex().RetiredHooks()` still purges `Stop` → `mneme hook session-end`,
+   so reviving any `Stop` registration there would fight that purge.
+
+On Codex the closing discipline stays the operating manual's (§4 Memory).
+If Codex gains `SubagentStop` with `agent_id`/`agent_type` (the same version
+gate that governs containment today), a new backlog item will cover it. See
+[docs/HOOKS.md](HOOKS.md#stop-and-subagentstop-hooks-spec-183).
 
 ## CLAUDE.md fallback behaviour (S1)
 

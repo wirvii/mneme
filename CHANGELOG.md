@@ -8,6 +8,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- SPEC-183: Claude Code `Stop` and `SubagentStop` hooks that answer with
+  `{"decision":"block","reason":...}` and exit 0. `mneme hook subagent-stop`
+  keeps an implementer (backend, frontend, bug-hunter, or a custom role with
+  that archetype) working once per (session, agent, spec) while a standard,
+  unfrozen spec in implementing lacks a valid, current delivery contract
+  block; the reason names only `spec_doc_write` and tells a bystander to
+  finish without writing. `mneme hook stop` reminds the orchestrator once per
+  work window (memories after the last session summary or checkpoint, older
+  than `[hooks] stop_reminder_after`, default `30m`, `0` disables) to call
+  `mem_session_end`. Both honour `stop_hook_active`, keep a per-session
+  registry in `<data dir>/stop-hook/<session_id>.json`, fail open, answer in
+  under 1 s and log each block to the project's enforcelog. New
+  `store.GetSessionActivitySince`, `service.SessionProbe` and
+  `model.SessionWindow`; new config section `[hooks]`.
+
 - SPEC-182: the `entrega` section of `tarea.md` carries a delivery contract
   block, a small TOML document between `<!-- mneme:entrega:contrato:start -->`
   and `<!-- mneme:entrega:contrato:end -->`: one of four states (`hecho`,
@@ -108,6 +123,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - SPEC-184: `mneme model set|reset` and `mneme delegation-hook promote` edit
   only their own table or key in `config.toml` instead of rewriting the whole
   file with every default.
+
+### Changed
+
+- `mneme install claude-code` registers the `Stop` event again, now served by
+  `mneme hook stop`, plus `SubagentStop` → `mneme hook subagent-stop`
+  (SPEC-183). The retired `mneme hook session-end` command is still purged;
+  Codex is unchanged. `mneme upgrade` picks them up because it reinstalls.
+- `mneme delegation-hook report`, `delegation-hook promote` and the reminder
+  of `mneme status` / `delegation-hook status` exclude the `Stop` and
+  `SubagentStop` events from the containment telemetry (SPEC-183).
 
 ## [v1.51.0] — 2026-11-10 — standard specs get a fresh-context review before approval and before implementation
 

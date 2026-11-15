@@ -41,7 +41,7 @@
 
 ## 4. Hooks / tokenizer
 
-- **Hook CLI** (`internal/cli/hook.go`): `mneme hook <event>` → session-start, session-end, pre-tool-use, enforce-delegation, tokenize, path-owned.
+- **Hook CLI** (`internal/cli/hook.go`): `mneme hook <event>` → session-start, session-end, stop, subagent-stop, pre-tool-use, enforce-delegation, tokenize, path-owned.
 - **pre-tool-use**: `runHookPreToolUse` lee JSON de stdin, evalúa reglas (`internal/rules/match.go`), emite markdown a stdout, exit 2 para bloquear.
 - **enforce-delegation** (SPEC-069): `runHookEnforceDelegation` — orchestrator-guard in-process (Go), reemplaza el bash `enforce_delegation.sh` (ahora un shim de ~6 líneas). Lógica pura portada a `internal/enforcement` (leaf: stdlib + `internal/shell`); wiring de I/O + cierre `OwnershipFunc` sobre `resolvePathOwnership` (SPEC-068) sin subprocess.
 - **tokenize**: `runHookTokenize` parsea comandos shell de stdin → JSON estructurado. Superficie general/retro-compat; `enforce-delegation` ya no lo invoca como subprocess (llama `shell.Tokenize` in-process vía `internal/enforcement`).

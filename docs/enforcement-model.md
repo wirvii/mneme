@@ -463,6 +463,23 @@ The **primary defense** against subagent misbehavior remains **Layer 1**
 does not include `Edit`/`Write`/`MultiEdit`, Claude Code will reject those tool
 calls before the hook is even invoked.
 
+### Stop hooks (SPEC-183)
+
+A third kind of hook acts not on a tool call but on the moment an agent ends
+its turn. In Claude Code, `mneme hook subagent-stop` (`SubagentStop`) keeps an
+implementer (backend, frontend, bug-hunter) working once per spec when a
+standard spec in `implementing` has no valid, current delivery contract block,
+and `mneme hook stop` (`Stop`) keeps the orchestrator working once per work
+window when the session has memories older than `[hooks] stop_reminder_after`
+after its last summary or checkpoint. Both answer with
+`{"decision":"block","reason":...}` and exit 0; both fail open.
+
+The frontier is **remind, never judge**: they check shape and state, never
+truth, they name only the tool whose call resolves the block
+(`spec_doc_write`, `mem_session_end`), and after one reminder they stay quiet.
+No lifecycle transition gains a check. Codex does not get them. Reference:
+[HOOKS.md](HOOKS.md#stop-and-subagentstop-hooks-spec-183).
+
 ### Querying blocked attempts
 
 Every orchestrator block produces a discovery memory. Query them with:
@@ -470,6 +487,12 @@ Every orchestrator block produces a discovery memory. Query them with:
 ```bash
 mneme search "Blocked edit"
 ```
+
+The stop hooks write their reminders (`tool` `Stop` or `SubagentStop`) to the
+same per-project enforcement log, but the three consumers of the containment
+telemetry exclude them: `mneme delegation-hook report`,
+`mneme delegation-hook promote`, and the reminder line of `mneme status` /
+`mneme delegation-hook status`. A delivery reminder is not a blocked edit.
 
 ## Project-scoped opt-in registration (EPIC agnostic-agents, SS-6)
 
@@ -531,6 +554,10 @@ mneme delegation-hook enable [path]   # register both PreToolUse entries in <pat
 mneme delegation-hook disable [path]  # remove them, leaving every other setting untouched
 mneme delegation-hook status [path]   # report whether both entries are currently registered
 ```
+
+`report`, `promote` and the status reminder read only containment events:
+the `Stop`/`SubagentStop` reminders of SPEC-183 share the log file but are
+excluded from all three.
 
 Nothing is duplicated per project: both entries are the same portable
 `mneme` subcommand strings the global installation registers (SPEC-069), so

@@ -28,6 +28,17 @@ This adds the following to `~/.claude/settings.json`:
         "hooks": [{"type": "command", "command": "mneme hook session-start"}]
       }
     ],
+    "Stop": [
+      {
+        "hooks": [{"type": "command", "command": "mneme hook stop"}]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "",
+        "hooks": [{"type": "command", "command": "mneme hook subagent-stop"}]
+      }
+    ],
     "PreToolUse": [
       {
         "matcher": "",
@@ -181,11 +192,217 @@ the agent. Codex is stricter: it rejects plain-text stdout for `Stop` outright,
 which is what surfaced the defect as a visible `Stop hook (failed)` error.
 
 The subcommand survives purely as a safe no-op for hosts that have not
-reinstalled yet. The session-end discipline that actually works is the one
-described in the operating manual (`mem_session_end` before you stop) — see
-`operating-manual.md` §7 / `operating-manual-codex.md` §5.
+reinstalled yet. The session-end discipline is the one described in the
+operating manual (`mem_session_end` before you stop) — see
+`operating-manual.md` §4 Memory / `operating-manual-codex.md` §4 Memory.
+
+**The `Stop` event came back in SPEC-183, with another command.** The premise
+above was half wrong: Claude Code discards a `Stop` hook's stdout as *text*,
+but honours a JSON `{"decision":"block","reason":...}` as a *decision*.
+`mneme install claude-code` now registers `Stop -> mneme hook stop` (see
+[Stop and SubagentStop hooks](#stop-and-subagentstop-hooks-spec-183)); the
+`session-end` command stays retired and keeps being purged, because hook
+identity is compared by subcommand. Codex is unchanged.
 
 ---
+
+## Stop and SubagentStop hooks (SPEC-183)
+
+Two hooks, registered **only for Claude Code** by `mneme install claude-code`
+(and therefore by `mneme upgrade`, which reinstalls), that act at the moment an
+agent is about to end its turn:
+
+| Claude Code event | Command | Matcher | Who it reminds |
+|---|---|---|---|
+| `Stop` | `mneme hook stop` | (not supported by the event) | the orchestrator: close the session with `mem_session_end` |
+| `SubagentStop` | `mneme hook subagent-stop` | `""` (every subagent; the role is decided in process) | an implementer: write the delivery contract block of its spec |
+
+Principle: the hooks **remind, they never judge**. They check shape and state
+(is there a current delivery block, is there work after the last close),
+remind once and stay quiet. Whether to close remains the agent's and the
+person's decision.
+
+### Output contract
+
+Claude Code discards a `Stop` hook's stdout as *text* (the premise behind
+SPEC-106), but honours it as a *decision*. To keep the agent working, the hook
+prints exactly one line on stdout and exits 0:
+
+```json
+{"decision":"block","reason":"<text below>"}
+```
+
+`reason` is handed to the agent as its next instruction. To let the agent stop,
+the hook prints **zero bytes** and exits 0. Exit 2 is never used: it would show
+the reminder as a hook *error*. stderr is reserved for fail-open diagnostics.
+
+### Payloads read
+
+Only the fields with a consumer are decoded:
+
+```json
+// Stop (orchestrator)
+{"session_id":"abc123","cwd":"/Users/...","hook_event_name":"Stop","stop_hook_active":false}
+
+// SubagentStop (subagent)
+{"session_id":"abc123","cwd":"/Users/...","hook_event_name":"SubagentStop","stop_hook_active":false,
+ "agent_id":"def456","agent_type":"backend"}
+```
+
+The event is fixed by the subcommand, not by `hook_event_name`. `stop` only
+acts for the orchestrator (no `agent_id`) and `subagent-stop` only for a
+subagent; any other pairing passes with one stderr line, so a payload change
+never applies the wrong rule.
+
+### Common rows (no database)
+
+| # | Condition | Result |
+|---|---|---|
+| 0 | empty stdin | passes silently |
+| 0 | stdin over 1 MiB, or invalid JSON | passes; one stderr line |
+| 1 | `stop_hook_active: true` | passes **silently** (no stdout, no stderr, no I/O): Claude Code is already continuing because of a stop hook |
+| 2 | unexpected event/identity pairing | passes; one stderr line |
+| 3 | `session_id` empty or not matching `^[A-Za-z0-9._-]{1,128}$` | passes; one stderr line |
+| 4 | the configuration does not load | passes; one stderr line |
+
+Then, for `stop` only: `[hooks] stop_reminder_after = "0"` passes (disabled),
+and so does a registry that shows a reminder less than `stop_reminder_after`
+ago (no database is opened). Both events then resolve the project slug
+(`--project` wins over the payload's `cwd`) and open the project database
+**read-only**; no slug or no database passes with one stderr line.
+
+### SubagentStop: the implementer rule
+
+| Resolved role | Specs considered | Result |
+|---|---|---|
+| `agent_id` without `agent_type` (includes Claude Code's internal agents) | — | passes; one stderr line |
+| custom role whose archetype is not in the manifest | — | passes; one stderr line |
+| qa-tester, architect, spec-reviewer, diagnostician (or a custom role with that archetype) | — | passes silently |
+| backend, frontend, bug-hunter (the archetypes allowed to write `entrega`) | standard lane, `implementing`, not frozen | blocks when some spec has no valid, current delivery block (`DeliveryCheck.Satisfied()`, SPEC-182) **and** was not yet reminded to this `agent_id` |
+
+Trivial specs are never demanded a block (SPEC-182 does not require it, and
+the orchestrator may implement them inline); frozen specs are skipped (nobody
+can write their delivery any more). Any of the four `estado` values satisfies
+the check, `falta_contexto` and `bloqueado` included. A spec whose check fails
+on a store error is treated as satisfied (fail-open per spec). The hook does
+not know which spec the subagent was given, so the reason lists **every**
+pending spec and tells a bystander to finish without writing:
+
+```
+mneme: hay specs en implementing cuya sección entrega de tarea.md no tiene un bloque de contrato de entrega vigente:
+- SPEC-183 (bloque ausente)
+- SPEC-190 (bloque inválido: delivery: invalid contract block: riesgo.item 7 out of range 1..6)
+- SPEC-191 (bloque anterior a la última entrada a implementing)
+Solo si una de estas specs es la que te asignaron: escribe tu entrega con `spec_doc_write` (id = "<SPEC>", kind = "task", section = "entrega") incluyendo el bloque entre <!-- mneme:entrega:contrato:start --> y <!-- mneme:entrega:contrato:end --> (formato: skill mneme-flow, references/entrega.md); si no terminaste, declara estado falta_contexto o bloqueado, que también es una entrega válida. Si no trabajaste en ninguna de estas specs, termina sin escribir nada. Este aviso se da una sola vez por spec.
+```
+
+With a single spec, `<SPEC>` is replaced by its id. Specs are listed by id.
+
+### Stop: the orchestrator rule (one reminder per work window)
+
+- **Work** is the session's active memories (the shared predicate of
+  `store.GetSessionActivity`: tagged with the `session_id`, not
+  `session_summary`, not deleted, not superseded, same project).
+- **Last close** is the newest `updated_at` between the session summary
+  (`session/<id>`, superseded or not) and the project's `checkpoint/latest`
+  (`mem_session_end partial: true`). Zero when there is neither.
+- The **work window** is the work created after the last close; its **anchor**
+  is the first memory of that window (`store.GetSessionActivitySince`,
+  `service.SessionProbe`). A close opens a new window, so a long session gets a
+  reminder per window, and an old checkpoint or a close followed by a long
+  pause never ages the window.
+- The hook blocks when the window has at least one memory, `now − anchor` is at
+  least `[hooks] stop_reminder_after` (default `30m`), and this anchor was not
+  reminded yet:
+
+```
+mneme: esta sesión (`abc123`) tiene 3 memorias posteriores a su último cierre y la ventana lleva 47m sin resumen. Antes de terminar llama `mem_session_end` con session_id = "abc123" y un summary de lo hecho. Este aviso se da una sola vez por ventana de trabajo.
+```
+
+A reason names only the tool whose call resolves the block (`spec_doc_write`,
+`mem_session_end`); `TestStopReasons_OnlyNameResolvingTools` pins it. Only
+project-scoped memories with a `session_id` are seen: a session that only saved
+global memories is never reminded.
+
+### Per-session registry
+
+`<data dir>/stop-hook/<session_id>.json` (follows `--data-dir`,
+`MNEME_DATA_DIR` and `HOME`), directory `0700`, file `0600`, written atomically
+and **only when the hook blocks**:
+
+```json
+{
+  "schema": 1,
+  "session_id": "abc123",
+  "orchestrator_reminded_at": "2026-11-15T04:12:09.482913Z",
+  "orchestrator_reminded_anchor": "2026-11-15T03:40:02.117554Z",
+  "delivery_reminded": [
+    {"agent_id": "def456", "spec_id": "SPEC-183", "at": "2026-11-15T04:05:41.009Z"}
+  ]
+}
+```
+
+The implementer key is (session, `agent_id`, spec): a relaunched implementer is
+a new attempt and gets its own single reminder. A corrupt file or another
+`schema` is treated as empty. Each write removes registry files older than 7
+days. Two concurrent `SubagentStop` of the same session may lose each other's
+entry; the cost is one repeated reminder, never a loop (`stop_hook_active` and
+Claude Code's cap of 8 consecutive continuations still hold).
+
+### Fail-open and stderr messages
+
+Every failure lets the agent stop: exit 0, no stdout, at most one stderr line,
+always starting with `[mneme] <event> hook: `.
+
+| Message | When |
+|---|---|
+| `invalid stdin JSON: <err>` | invalid payload |
+| `stdin exceeds 1048576 bytes` | payload over 1 MiB |
+| `unexpected caller for this event (subagent=<bool>); nothing enforced` | event/identity pairing not expected |
+| `missing or invalid session_id; nothing enforced` | row 3 |
+| `load config: <err>` | row 4 |
+| `no project detected for cwd "<cwd>"; nothing enforced` | no slug |
+| `open project database: <err>` | database missing or unreadable |
+| `agent_id present without agent_type; delivery reminder not applied` | unresolved role |
+| `archetype of role "<role>" not found in the manifest; delivery reminder not applied` | custom role without archetype |
+| `list specs in implementing: <err>` | spec listing failed |
+| `delivery check <SPEC>: <err>` | that spec is ignored, the others are still checked |
+| `read session window: <err>` | session window could not be read |
+| `write decision to stdout: <err>` | nothing is recorded, so the next `Stop` can remind again |
+| `save stop registry: <err>` | the decision was already printed |
+
+Budget: under 1 s with a warm database, measured in process by
+`TestHookStop_Under1s`.
+
+### Telemetry
+
+Each block appends one line to the project's enforcelog
+(`<data dir>/projects/<slug>-enforce.jsonl`): `tool` `SubagentStop` (with
+`caller` `subagent`, `agent_id`, `role`, the pending spec ids in `target` and
+`reason` `delivery_contract_pending`) or `Stop` (with `caller` `orchestrator`,
+the `session_id` in `target` and `reason` `session_summary_pending`). A pass
+writes nothing. These events are not containment telemetry:
+`mneme delegation-hook report`, `delegation-hook promote` and the reminder of
+`mneme status` / `delegation-hook status` exclude them.
+
+### Configuration
+
+`[hooks] stop_reminder_after` in `~/.mneme/config.toml`: a Go duration
+(`"30m"` by default, `"10m"` for more coverage), `"0"` turns the orchestrator
+reminder off without reinstalling. See [CONFIG.md](CONFIG.md#hooks). The
+implementer reminder has no setting.
+
+### Codex: not registered
+
+Nothing is written to `~/.codex/hooks.json`. Codex has a `Stop` event, but no
+`SubagentStop` and no child identity on `Stop`, so the implementer rule cannot
+apply; and it is not verified that Codex honours `decision: "block"` on `Stop`,
+where an ignored reason would be noise on every turn. `Codex().RetiredHooks()`
+still purges `Stop -> mneme hook session-end`. On Codex the closing discipline
+remains the operating manual's (§4 Memory). See [codex.md](codex.md).
+
+---
+
 
 ## Skill Usage Hook: `mneme hook skill-usage` (SPEC-168)
 
@@ -969,7 +1186,9 @@ timeout is 1s; if it fires frequently, investigate lock contention.
 **Q: Why a separate `session-start` hook vs. `pre-tool-use`?**
 A: They serve different purposes. `session-start` is observational — it loads
 context in bulk once per session and never blocks (`session-end` is a retired
-no-op — see above; it is no longer part of this distinction). The
+no-op — see above; it is no longer part of this distinction; the `Stop` and
+`SubagentStop` hooks block only once, with a JSON decision, see
+[above](#stop-and-subagentstop-hooks-spec-183)). The
 pre-tool-use hook is active enforcement — it fires on every file mutation and
 can block the action. Combining them would muddle the semantics and hurt
 performance.

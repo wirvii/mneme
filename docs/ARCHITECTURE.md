@@ -743,7 +743,7 @@ enable|disable|status`, `team-memory enable|hooks`. Full flag reference:
 
 ### Hooks (`internal/cli/hook.go`)
 
-4 hook handlers invoked by the agent system:
+6 hook handlers invoked by the agent system:
 
 | Hook | Type | Purpose |
 |------|------|---------|
@@ -751,6 +751,8 @@ enable|disable|status`, `team-memory enable|hooks`. Full flag reference:
 | `session-end` | Retired no-op (SPEC-106) | Emits `{}`; no longer registered by `mneme install`. Never persisted anything — kept only so hosts with a pre-existing registration exit cleanly |
 | `pre-tool-use` | Enforcement | Matches rules against tool+path, blocks on severity=block |
 | `enforce-delegation` | Enforcement | Blocks `Edit`/`Write`/`MultiEdit` on protected paths |
+| `stop` | Enforcement (decision JSON) | SPEC-183, Claude Code only: reminds the orchestrator once per work window to call `mem_session_end` (`{"decision":"block","reason":...}`, exit 0) |
+| `subagent-stop` | Enforcement (decision JSON) | SPEC-183, Claude Code only: reminds an implementer once per spec to write its delivery contract block |
 
 **`pre-tool-use` performance:** <50ms target. Single query with `LIMIT 200`, in-memory matching. **Fail open:** any internal error results in exit 0 (allow).
 
@@ -1043,6 +1045,7 @@ Verified against benchmarks in `internal/service/bench_test.go`.
 | `mem_search` (graph expansion overhead vs no graph) | <50ms additional | SPEC-007 AC3 |
 | `mem_context` (community packing, 5K memories) | <200ms | `BenchmarkContext_CommunityPacking` |
 | Pre-tool-use hook (rule matching) | <50ms | Read-only DB, `LIMIT 200`, in-memory matching |
+| Stop / SubagentStop hooks (warm DB) | <1 s | `TestHookStop_Under1s` (in-process) |
 | PPR convergence (<50K nodes) | <20ms | `scoring.PPR` with MaxNodes=5000 |
 | Louvain community detection | <500ms for typical project graphs | `DefaultLouvainOptions` (gamma=1.0, max_levels=10) |
 | Vault export (5K memories) | <10s | Sequential writes, no parallelism in v1 |
