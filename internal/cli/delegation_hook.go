@@ -308,6 +308,22 @@ func serviceEntriesToHook(entries []service.ManifestEntry) []hookManifestEntry {
 	return out
 }
 
+// containmentEvents returns a new slice with only the containment events of
+// events, dropping the Stop/SubagentStop lifecycle events SPEC-183's hooks
+// write to the same log. Those carry a Role and Decision block, so without
+// this filter a delivery reminder would count as a blocked edit in
+// promote's breaking pairs, and an old one could open the status nag's
+// 14-day window on its own (DV2). Filtering twice is harmless.
+func containmentEvents(events []enforcelog.Event) []enforcelog.Event {
+	out := make([]enforcelog.Event, 0, len(events))
+	for _, ev := range events {
+		if !enforcelog.IsStopHookTool(ev.Tool) {
+			out = append(out, ev)
+		}
+	}
+	return out
+}
+
 // evaluatePromoteGate implements D7's three-part promotion gate as a pure
 // function (no I/O, directly unit-testable):
 //
@@ -321,6 +337,7 @@ func serviceEntriesToHook(entries []service.ManifestEntry) []hookManifestEntry {
 //     sorted deterministically, so the caller can print it and require
 //     explicit confirmation regardless of whether the gate passed.
 func evaluatePromoteGate(events []enforcelog.Event, now time.Time, entries []hookManifestEntry) (ok bool, reasons []string, pairs []promoteBreakingPair) {
+	events = containmentEvents(events)
 	if len(events) == 0 {
 		return false, []string{"no hay eventos de telemetría todavía — deja el proyecto en modo warn más tiempo"}, nil
 	}
@@ -408,6 +425,7 @@ type statusNag struct {
 // own evidence+areas_complete criteria are ALREADY green — i.e. the project
 // could have run "delegation-hook promote" a week ago and simply hasn't.
 func evaluateStatusNag(events []enforcelog.Event, now time.Time, entries []hookManifestEntry, mode, slug string) (statusNag, bool) {
+	events = containmentEvents(events)
 	if mode != "warn" || len(events) == 0 {
 		return statusNag{}, false
 	}

@@ -211,3 +211,55 @@ func TestDelegationHookPromote_RequiresYesFlag(t *testing.T) {
 		}
 	}
 }
+
+// stopHookBlocks returns n SubagentStop block events of role backend, the
+// shape `mneme hook subagent-stop` writes (SPEC-183), spread over the last
+// days so they would satisfy the window if they counted.
+func stopHookBlocks(now time.Time, n int, daysAgo int) []enforcelog.Event {
+	events := make([]enforcelog.Event, 0, n)
+	for i := 0; i < n; i++ {
+		events = append(events, enforcelog.Event{
+			TS:       now.Add(-time.Duration(daysAgo)*24*time.Hour + time.Duration(i)*time.Minute),
+			Tool:     enforcelog.ToolSubagentStop,
+			Caller:   "subagent",
+			Role:     "backend",
+			Decision: enforcelog.DecisionBlock,
+			Target:   "SPEC-001",
+			Reason:   "delivery_contract_pending",
+		})
+	}
+	return events
+}
+
+// TestEvaluatePromoteGate_IgnoresStopHookEvents (SPEC-183 DV2): stop-hook
+// blocks are not containment evidence, so they neither add breaking pairs
+// nor change the gate's verdict.
+func TestEvaluatePromoteGate_IgnoresStopHookEvents(t *testing.T) {
+	now := time.Now()
+	containment := certifiedEvents("frontend", "internal/x.go", 8, 5)
+	entries := []hookManifestEntry{{Role: "frontend", Archetype: "frontend", AreasComplete: true}}
+
+	ok, reasons, _ := evaluatePromoteGate(containment, now, entries)
+	if !ok {
+		t.Fatalf("precondition: containment events alone should pass, reasons: %v", reasons)
+	}
+
+	mixed := append(append([]enforcelog.Event{}, containment...), stopHookBlocks(now, 3, 1)...)
+	ok, reasons, pairs := evaluatePromoteGate(mixed, now, entries)
+	if !ok {
+		t.Errorf("with stop-hook events: ok = false, reasons: %v", reasons)
+	}
+	for _, p := range pairs {
+		if strings.HasPrefix(p.Path, "SPEC-") || p.Role == "backend" {
+			t.Errorf("breaking pair from a stop-hook event: %+v", p)
+		}
+	}
+
+	onlyStop := stopHookBlocks(now, promoteMinEvents+5, 10)
+	okStop, reasonsStop, pairsStop := evaluatePromoteGate(onlyStop, now, entries)
+	okNil, reasonsNil, pairsNil := evaluatePromoteGate(nil, now, entries)
+	if okStop != okNil || strings.Join(reasonsStop, "|") != strings.Join(reasonsNil, "|") || len(pairsStop) != len(pairsNil) {
+		t.Errorf("only stop-hook events: got (%v, %v, %v), want the empty-list result (%v, %v, %v)",
+			okStop, reasonsStop, pairsStop, okNil, reasonsNil, pairsNil)
+	}
+}

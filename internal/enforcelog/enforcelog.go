@@ -67,6 +67,27 @@ const (
 	DecisionBlock Decision = "block"
 )
 
+// Tool values for the lifecycle events of SPEC-183's stop hooks. They share
+// this file with containment events (one log per project, same privacy
+// contract) but are not containment telemetry: a stop-hook block carries a
+// Role and Decision block, and counting it would make a reminder look like a
+// rejected edit. Every containment consumer filters them with IsStopHookTool.
+const (
+	// ToolStop is the Tool of an event written by `mneme hook stop`.
+	ToolStop = "Stop"
+
+	// ToolSubagentStop is the Tool of an event written by
+	// `mneme hook subagent-stop`.
+	ToolSubagentStop = "SubagentStop"
+)
+
+// IsStopHookTool reports whether tool names one of the stop-hook lifecycle
+// events rather than a tool the containment hook evaluated. The comparison
+// is exact: Claude Code spells hook events in PascalCase.
+func IsStopHookTool(tool string) bool {
+	return tool == ToolStop || tool == ToolSubagentStop
+}
+
 // Event is a single containment-evaluation record, serialised as one JSON
 // object per line.
 type Event struct {
@@ -84,9 +105,11 @@ type Event struct {
 	Role string `json:"role,omitempty"`
 	// RoleSource is "payload", "unresolved", or "n/a" (CallerIdentity.RoleSource).
 	RoleSource string `json:"role_source,omitempty"`
-	// Tool is the tool name (Edit/Write/MultiEdit/NotebookEdit/Bash).
+	// Tool is the tool name (Edit/Write/MultiEdit/NotebookEdit/Bash), or the
+	// lifecycle event for the stop hooks: Stop, SubagentStop.
 	Tool string `json:"tool"`
-	// Target is the project-relative path the invocation touched.
+	// Target is the project-relative path the invocation touched, the spec
+	// ids joined by "," or the session id, depending on the event.
 	Target string `json:"target,omitempty"`
 	// Decision is the containment outcome (allow/would_block/block).
 	Decision Decision `json:"decision"`
@@ -214,6 +237,9 @@ type Report struct {
 const maxSamplePaths = 5
 
 // Aggregate computes the containment Report over events at or after since.
+// Stop-hook events (IsStopHookTool) are not containment telemetry and are
+// skipped entirely: they count toward no total, no unresolved counter and no
+// role.
 func Aggregate(events []Event, since time.Time) Report {
 	report := Report{Since: since}
 	roles := make(map[string]*RoleReport)
@@ -230,7 +256,7 @@ func Aggregate(events []Event, since time.Time) Report {
 	}
 
 	for _, ev := range events {
-		if ev.TS.Before(since) {
+		if ev.TS.Before(since) || IsStopHookTool(ev.Tool) {
 			continue
 		}
 		report.Total++

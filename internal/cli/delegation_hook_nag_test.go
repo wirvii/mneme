@@ -168,3 +168,38 @@ func TestDelegationHookStatus_NagsWhenEligible(t *testing.T) {
 		t.Errorf("stdout = %q, want the D7 nag line", stdout)
 	}
 }
+
+// TestEvaluateStatusNag_IgnoresStopHookEvents (SPEC-183 DV2): an old
+// stop-hook event must not stretch the nag's 14-day window on its own.
+func TestEvaluateStatusNag_IgnoresStopHookEvents(t *testing.T) {
+	now := time.Now()
+	entries := []hookManifestEntry{
+		{Role: "frontend", Archetype: "frontend", AreasComplete: true},
+		{Role: "backend", Archetype: "backend", AreasComplete: true},
+		{Role: "bug-hunter", Archetype: "bug-hunter", AreasComplete: true},
+	}
+
+	tests := []struct {
+		name            string
+		containmentDays int
+		wantOK          bool
+		wantDays        int
+	}{
+		{name: "stop_events_do_not_open_the_window", containmentDays: 8, wantOK: false},
+		{name: "control_containment_old_enough", containmentDays: 15, wantOK: true, wantDays: 15},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			events := append(stopHookBlocks(now, 3, 15), certifiedEvents("frontend", "internal/x.go", tt.containmentDays, 0)...)
+			// certifiedEvents stamps from its own, later time.Now(): evaluate
+			// a minute on so the whole-day count is not truncated to 14.
+			nag, ok := evaluateStatusNag(events, time.Now().Add(time.Minute), entries, "warn", "wirvii/x")
+			if ok != tt.wantOK {
+				t.Fatalf("ok: got %v, want %v (nag: %+v)", ok, tt.wantOK, nag)
+			}
+			if ok && nag.DaysInWarn != tt.wantDays {
+				t.Errorf("DaysInWarn: got %d, want %d", nag.DaysInWarn, tt.wantDays)
+			}
+		})
+	}
+}

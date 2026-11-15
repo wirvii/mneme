@@ -156,3 +156,43 @@ func TestAggregate_SamplePathsCapped(t *testing.T) {
 		t.Errorf("SamplePaths len = %d, want %d", len(report.ByRole[0].SamplePaths), maxSamplePaths)
 	}
 }
+
+// TestIsStopHookTool pins the exact, case-sensitive event names SPEC-183's
+// stop hooks write as Tool.
+func TestIsStopHookTool(t *testing.T) {
+	cases := map[string]bool{
+		"Stop":         true,
+		"SubagentStop": true,
+		"Edit":         false,
+		"Bash":         false,
+		"":             false,
+		"stop":         false,
+	}
+	for tool, want := range cases {
+		if got := IsStopHookTool(tool); got != want {
+			t.Errorf("IsStopHookTool(%q) = %v, want %v", tool, got, want)
+		}
+	}
+}
+
+// TestAggregate_ExcludesStopHookEvents checks that a stop-hook block (which
+// carries a Role and Decision block) never counts as containment telemetry
+// (SPEC-183 DV2).
+func TestAggregate_ExcludesStopHookEvents(t *testing.T) {
+	now := time.Now().UTC()
+	events := []Event{
+		{TS: now, Tool: ToolSubagentStop, Role: "backend", Decision: DecisionBlock, Target: "SPEC-001"},
+		{TS: now, Tool: ToolStop, Caller: "orchestrator", Decision: DecisionBlock, Target: "sess"},
+		{TS: now, Tool: "Edit", Role: "backend", Decision: DecisionWouldBlock, Target: "internal/x.go"},
+	}
+	report := Aggregate(events, now.Add(-time.Hour))
+	if report.Total != 1 {
+		t.Errorf("Total: got %d, want 1", report.Total)
+	}
+	if len(report.ByRole) != 1 || report.ByRole[0].Role != "backend" {
+		t.Fatalf("ByRole: got %+v, want one backend entry", report.ByRole)
+	}
+	if rr := report.ByRole[0]; rr.Blocked != 0 || rr.WouldBlock != 1 {
+		t.Errorf("backend: got blocked=%d would_block=%d, want 0 and 1", rr.Blocked, rr.WouldBlock)
+	}
+}
