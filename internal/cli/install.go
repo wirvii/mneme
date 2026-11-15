@@ -197,6 +197,7 @@ produces the same result without clobbering existing configuration.`,
 			}
 
 			install.RunInstallSteps(steps, progress)
+			declareTrivialInlineDefault(config.DefaultPath())
 
 			fmt.Fprintln(os.Stdout, "")
 			fmt.Fprintf(os.Stdout, "Done. Restart %s for changes to take effect.\n", agent.Name)
@@ -219,6 +220,42 @@ produces the same result without clobbering existing configuration.`,
 		"Replace all existing PreToolUse hook entries with mneme hook pre-tool-use (migration from enforce-delegation)")
 
 	return cmd
+}
+
+// trivialInlineComment is the comment `mneme install` writes above the key
+// it declares, so whoever opens config.toml learns how to turn it off.
+const trivialInlineComment = "SPEC-184: on by default, decided by the orchestrator on the owner's behalf; set false to turn it off"
+
+// declareTrivialInlineDefault leaves `orchestrator_trivial_inline = true`
+// written in config.toml (SPEC-184 D4) so that the new default is announced
+// by the file itself, and says so when the key is already declared false
+// there (the new default then does not apply). It never rewrites what the
+// person wrote, and a failure is a [warn] that never fails the install.
+func declareTrivialInlineDefault(path string) {
+	written, err := config.EnsureDeclared(path, "delegation", "orchestrator_trivial_inline", "true", trivialInlineComment)
+	switch {
+	case err != nil:
+		fmt.Fprintf(os.Stdout, "  [warn] could not declare orchestrator_trivial_inline in %s: %v\n", path, err)
+		return
+	case written:
+		fmt.Fprintf(os.Stdout, "  [ok]   Config: orchestrator_trivial_inline = true written to %s (set false to turn it off)\n", path)
+		return
+	}
+	// Already declared. When the environment variable holds a value Load
+	// applies, the environment decides and nothing can be said about the
+	// file from the loaded value.
+	switch os.Getenv("MNEME_DELEGATION_TRIVIAL_INLINE") {
+	case "true", "1", "false", "0":
+		return
+	}
+	cfg, loadErr := config.Load(path)
+	if loadErr != nil {
+		fmt.Fprintf(os.Stdout, "  [warn] could not read %s: %v\n", path, loadErr)
+		return
+	}
+	if !cfg.Delegation.OrchestratorTrivialInline {
+		fmt.Fprintf(os.Stdout, "  [info] orchestrator_trivial_inline is declared false in %s; the new default does not apply here\n", path)
+	}
 }
 
 // runtimeInstallNotice distinguishes the version needed to install mneme
