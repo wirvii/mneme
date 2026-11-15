@@ -61,7 +61,7 @@ Each field is annotated with where its value came from:
 
 Optional positional argument: a section name to filter output.
 Valid sections: storage, search, context, consolidation, decay, mcp,
-  embedding, personal, workflow, delegation, lane, spec, graph,
+  embedding, personal, workflow, delegation, lane, hooks, spec, graph,
   suggestions
 
 Examples:
