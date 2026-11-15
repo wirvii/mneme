@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [v1.52.0] — 2026-11-15 — the evidence gate: delivery contract, stop hooks, risk lanes, role denials, stale specs, QA cap, memory diet and the written thesis
+
 ### Added
 
 - SPEC-182: the `entrega` section of `tarea.md` carries a delivery contract
