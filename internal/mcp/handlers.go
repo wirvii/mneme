@@ -482,6 +482,8 @@ func (h *handlers) mapServiceError(method string, err error) *JSONRPCError {
 		errors.Is(err, model.ErrReviewReportNotFound) ||
 		errors.Is(err, model.ErrInvalidReviewReport) ||
 		errors.Is(err, model.ErrReviewReportStale) ||
+		errors.Is(err, model.ErrInvalidDeliveryContract) ||
+		errors.Is(err, model.ErrDeliveryContractMissing) ||
 		errors.Is(err, model.ErrFindingsRequired) ||
 		errors.Is(err, model.ErrUnknownCriterion) {
 		return &JSONRPCError{
@@ -747,6 +749,9 @@ func (h *handlers) handleSpecStatus(ctx context.Context, raw json.RawMessage) (*
 	}
 	// SPEC-157 D5: additive, present only while resp.Spec.Status is qa.
 	h.sdd.AttachReviewRange(ctx, resp)
+	// SPEC-182 D4: additive, present only from implementing on and only
+	// when tarea.md exists.
+	h.sdd.AttachDeliveryState(resp)
 
 	return resultFromAny(resp)
 }

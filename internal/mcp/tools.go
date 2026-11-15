@@ -462,7 +462,10 @@ func allTools() []ToolDefinition {
 				"though it stays fully readable. The key is absent, not null, when the spec can still move. " +
 				"The spec's `uuid` is its own permanent identity, distinct from `id` — never shown in " +
 				"readable output, present here so a memory citing this spec can be resolved correctly " +
-				"even on a machine whose own numbering differs (SPEC-128).",
+				"even on a machine whose own numbering differs (SPEC-128). " +
+				"`delivery_contract` (valid, missing or invalid), `delivery_state` (the delivery block's " +
+				"estado, only when valid) and `delivery_detail` (the parse error, only when invalid) are " +
+				"present only from implementing on and only when tarea.md exists (SPEC-182).",
 			InputSchema: map[string]any{
 				"type":     "object",
 				"required": []string{"id"},
@@ -540,7 +543,7 @@ func allTools() []ToolDefinition {
 		},
 		{
 			Name:        "spec_doc_write",
-			Description: "Write a spec entregable (spec/plan/qa-report/changes/criteria/task/review-spec/review-plan) to its workflow directory. Kinds review-spec and review-plan write the fresh-review report (revision-spec.toml / revision-plan.toml), validated before it is written. The destination directory and filename are never caller-supplied: the directory is derived from the persisted spec record and the filename from a closed set of kinds. Kind task writes one section of the spec's single tarea.md and replaces only that section.",
+			Description: "Write a spec entregable (spec/plan/qa-report/changes/criteria/task/review-spec/review-plan) to its workflow directory. Kinds review-spec and review-plan write the fresh-review report (revision-spec.toml / revision-plan.toml), validated before it is written. The destination directory and filename are never caller-supplied: the directory is derived from the persisted spec record and the filename from a closed set of kinds. Kind task writes one section of the spec's single tarea.md and replaces only that section. Section entrega must carry the delivery contract block (skill mneme-flow, references/entrega.md); an invalid block is refused and the file is left untouched.",
 			InputSchema: map[string]any{
 				"type":     "object",
 				"required": []string{"id", "kind", "content"},
