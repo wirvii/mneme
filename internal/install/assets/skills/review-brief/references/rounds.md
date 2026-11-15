@@ -1,6 +1,6 @@
 # Rounds and the cap
 
-A round is one rejection, its fix and the re-review of that fix. A spec gets at most 3 rounds. `spec_status` returns `qa_rounds`: how many times the spec went from qa back to implementing since it was last reopened from done (or since the start), counted by mneme from the history. Never count it yourself.
+A round is one rejection, its fix and the re-review of that fix. A spec gets at most three rounds. `spec_status` returns `qa_rounds`: how many times the spec went from qa back to implementing since it was last reopened from done (or since the start), counted by mneme from the history. Never count it yourself.
 
 ## The re-review looks only at the fix
 

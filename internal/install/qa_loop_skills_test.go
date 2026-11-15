@@ -21,7 +21,7 @@ var qaLoopSkillAnchors = map[string][]string{
 		"references/rounds.md", "references/qa-tester.md",
 	},
 	"review-brief/references/rounds.md": {
-		"at most 3 rounds", "3 or more", "necesitas decidir", "never starts a round",
+		"at most three rounds", "3 or more", "necesitas decidir", "never starts a round",
 		"the orchestrator opens it", "the same message goes out again",
 	},
 	"review-brief/references/qa-tester.md": {
