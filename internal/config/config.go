@@ -9,10 +9,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/pelletier/go-toml/v2"
+
+	"github.com/wirvii/mneme/internal/risk"
 )
 
 // Config is the top-level configuration for mneme. All sub-structs hold
@@ -35,6 +38,45 @@ type Config struct {
 	Models        ModelsConfig        `toml:"models"`
 	Memory        MemoryConfig        `toml:"memory"`
 	Codegraph     CodegraphConfig     `toml:"codegraph"`
+	Lane          LaneConfig          `toml:"lane"`
+}
+
+// LaneConfig holds the trivial lane's configurable inputs (SPEC-184).
+type LaneConfig struct {
+	// RiskGlobs ADDS path patterns to risk items 1, 2 or 5, keyed by the
+	// item number as a string ("1", "2", "5"). It never removes a default
+	// pattern of risk.DefaultTable: a project may widen what counts as
+	// risky (its own secret files, its own migration format), never narrow
+	// it. Global only — the lane auditor and the inline-edit hook read the
+	// same file — and with no environment variable.
+	RiskGlobs map[string][]string `toml:"risk_globs"`
+}
+
+// LaneRiskTable returns the risk path table the lane auditor and the
+// inline-edit hook apply: risk.DefaultTable() plus [lane.risk_globs]. A key
+// that is not an item number, an item a path cannot reveal (3, 4, 6) or an
+// empty pattern is an error; Validate calls this, so after a successful
+// Load a caller may rely on it not failing.
+func (c *Config) LaneRiskTable() (risk.Table, error) {
+	keys := make([]string, 0, len(c.Lane.RiskGlobs))
+	for k := range c.Lane.RiskGlobs {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	extra := make(risk.Table, len(keys))
+	for _, k := range keys {
+		n, err := strconv.Atoi(strings.TrimSpace(k))
+		if err != nil {
+			return nil, fmt.Errorf("lane.risk_globs: key %q is not an item number", k)
+		}
+		extra[risk.Item(n)] = append(extra[risk.Item(n)], c.Lane.RiskGlobs[k]...)
+	}
+	table, err := risk.DefaultTable().With(extra)
+	if err != nil {
+		return nil, fmt.Errorf("lane.risk_globs: %w", err)
+	}
+	return table, nil
 }
 
 // CodegraphConfig controls codegraph-related runtime behaviour (SPEC-044).
@@ -980,6 +1022,7 @@ func LoadWithOrigins(path string) (*Config, *ConfigOrigins, error) {
 	origins.Sections["graph"] = buildGraphOrigins(cfg, dflt)
 	origins.Sections["suggestions"] = buildSuggestionsOrigins(cfg, dflt)
 	origins.Sections["codegraph"] = buildCodegraphOrigins(cfg, dflt)
+	origins.Sections["lane"] = buildLaneOrigins(cfg, dflt)
 
 	return cfg, origins, nil
 }
@@ -1214,6 +1257,37 @@ func buildCodegraphOrigins(cfg, dflt *Config) []ConfigFieldInfo {
 	return fields
 }
 
+// buildLaneOrigins reports [lane] for `mneme config show lane`: the one
+// field risk_globs, shown as "1=a,b; 5=c" ordered by item, or "" when the
+// file adds nothing. It has no environment variable.
+func buildLaneOrigins(cfg, dflt *Config) []ConfigFieldInfo {
+	value := formatRiskGlobs(cfg.Lane.RiskGlobs)
+	o, ev := fieldOrigin(value, formatRiskGlobs(dflt.Lane.RiskGlobs), true)
+	return []ConfigFieldInfo{makeField("risk_globs", value, o, ev)}
+}
+
+// formatRiskGlobs renders [lane.risk_globs] as "item=glob,glob" pairs
+// joined by "; ", ordered by item number.
+func formatRiskGlobs(m map[string][]string) string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(a, b int) bool {
+		na, errA := strconv.Atoi(keys[a])
+		nb, errB := strconv.Atoi(keys[b])
+		if errA != nil || errB != nil {
+			return keys[a] < keys[b]
+		}
+		return na < nb
+	})
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, k+"="+strings.Join(m[k], ","))
+	}
+	return strings.Join(parts, "; ")
+}
+
 // ProjectDBPath returns the absolute path to the SQLite database file for the
 // given project slug. Slashes in the slug are replaced with dashes so the
 // result is always a single filename component inside the projects sub-directory.
@@ -1364,6 +1438,10 @@ func (c *Config) Validate() error {
 		if err := validateContainmentMode(fmt.Sprintf("delegation.projects.%q.subagent_containment", slug), proj.SubagentContainment); err != nil {
 			return err
 		}
+	}
+
+	if _, err := c.LaneRiskTable(); err != nil {
+		return err
 	}
 
 	return nil

@@ -17,7 +17,7 @@ import (
 var validConfigSections = []string{
 	"storage", "search", "context", "consolidation", "decay",
 	"mcp", "embedding", "personal", "workflow", "delegation",
-	"spec", "graph", "suggestions",
+	"lane", "spec", "graph", "suggestions",
 }
 
 // newConfigCmd returns the "mneme config" subcommand group. It provides
@@ -61,7 +61,8 @@ Each field is annotated with where its value came from:
 
 Optional positional argument: a section name to filter output.
 Valid sections: storage, search, context, consolidation, decay, mcp,
-  embedding, personal, workflow, delegation, spec, graph, suggestions
+  embedding, personal, workflow, delegation, lane, spec, graph,
+  suggestions
 
 Examples:
   mneme config show

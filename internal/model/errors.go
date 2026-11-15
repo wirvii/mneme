@@ -162,8 +162,10 @@ var ErrInvalidLane = errors.New("invalid lane: must be trivial or standard")
 // is provided. The auditor cannot verify boundary compliance without a scope.
 var ErrScopeRequired = errors.New("scope is required for trivial lane")
 
-// ErrLaneImmutable is returned when a caller attempts to change the lane after
-// the spec has entered implementing status. Lane is immutable at that point.
+// ErrLaneImmutable is returned when a caller attempts to change the lane once
+// the spec has entered implementing. The one exception (SPEC-184) is a
+// trivial spec in audit whose latest lane audit failed: reclassifying it to
+// standard is the documented way out of that failure.
 var ErrLaneImmutable = errors.New("lane cannot be changed after implementing has started")
 
 // ErrLaneMismatch is returned when a lane-specific operation is called on a
@@ -171,9 +173,28 @@ var ErrLaneImmutable = errors.New("lane cannot be changed after implementing has
 var ErrLaneMismatch = errors.New("operation is only valid for the other lane")
 
 // ErrAuditFailed is returned when the deterministic post-implementation auditor
-// detects one or more threshold violations. The caller should inspect the
-// AuditResult breaches field for the list of individual failures.
-var ErrAuditFailed = errors.New("lane audit failed: threshold violations detected")
+// finds one or more breaches (scope, risk items, risk declaration). The caller
+// should inspect the AuditResult breaches field for the list of individual
+// failures and its Remedy for the way out.
+var ErrAuditFailed = errors.New("lane audit failed: risk violations detected")
+
+// ErrScopeTooBroad is returned when a trivial-lane item or spec declares a
+// scope that matches everything or uses braces (SPEC-184). With the
+// orchestrator's inline permission on by default, such a scope would unlock
+// the whole tree.
+var ErrScopeTooBroad = errors.New("scope matches everything or uses braces; declare one concrete path such as internal/store/** or use lane standard")
+
+// ErrRiskDeclared is returned by spec_quick when its rationale declares a
+// risk item: a change that touches any of the six risk items is standard,
+// so the trivial quick-start is refused before any transition. Callers wrap
+// it in the middle of a message that names the item and the way out
+// ("risk item 2 declared: this change is standard; the orchestrator runs
+// lane_reclassify ...").
+var ErrRiskDeclared = errors.New("this change is standard")
+
+// ErrRiskMalformed is returned by spec_quick when its rationale carries a
+// "Risk:" line that does not parse. A typo is never read as "none".
+var ErrRiskMalformed = errors.New("malformed Risk: line")
 
 // ErrReasonRequired is returned when an operation requires a non-empty reason
 // and none was supplied. Used by lane_override and spec_reject, both of which

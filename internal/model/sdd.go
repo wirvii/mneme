@@ -112,8 +112,8 @@ type LaneAuditRecord struct {
 	// LinesChanged is the sum of added and removed lines across all files.
 	LinesChanged int `json:"lines_changed"`
 
-	// Breaches is a newline-joined string of individual threshold violations.
-	// Empty string when Passed is true.
+	// Breaches is a newline-joined string of individual audit breaches (scope,
+	// risk items, risk declaration). Empty string when Passed is true.
 	Breaches string `json:"breaches,omitempty"`
 
 	// BaseSHA is the git ref used as the base for diffing (the actual SHA or
@@ -145,8 +145,9 @@ type LaneAuditResult struct {
 	// (created or deleted) between base and HEAD, outside test files.
 	PublicSymbolChanges []string
 
-	// Breaches is the union of all threshold violations as human-readable
-	// strings. An audit passes when len(Breaches)==0.
+	// Breaches is the union of all audit breaches (scope, risk items, risk
+	// declaration) as human-readable strings. An audit passes when
+	// len(Breaches)==0.
 	Breaches []string
 
 	// Passed is true when len(Breaches)==0.
@@ -1113,7 +1114,8 @@ type AuditSummary struct {
 	// Passed is true when all auditor checks passed.
 	Passed bool `json:"passed"`
 
-	// Breaches lists the individual threshold violations that caused failure.
+	// Breaches lists the individual audit breaches (scope, risk items, risk
+	// declaration) that caused failure.
 	Breaches []string `json:"breaches,omitempty"`
 
 	// At is the timestamp of the audit run.
