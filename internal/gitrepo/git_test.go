@@ -187,7 +187,7 @@ func TestGit_ChangedLines_HostileConfigDoesNotChangeResult(t *testing.T) {
 
 // TestGit_ChangedLines_MutationDroppedQuotePathFlag is a guardian: dropping
 // "-c core.quotePath=false" must turn the case above red — verified
-// manually by temporarily removing that flag from ChangedLines' exec.Command
+// manually by temporarily removing that flag from rawDiff's
 // args, re-running TestGit_ChangedLines_HostileConfigDoesNotChangeResult
 // (fails), and reverting byte-for-byte.
 func TestGit_ChangedLines_MutationDroppedQuotePathFlag(t *testing.T) {

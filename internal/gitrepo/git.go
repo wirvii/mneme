@@ -64,25 +64,17 @@ func (g *Git) IsAncestor(ancestor, descendant string) (bool, error) {
 }
 
 // ChangedLines returns, for every file touched between fromSHA and toRef,
-// the set of line numbers added or modified on the new side. The invocation
-// fixes every flag that a repository's or a user's own .gitconfig could
-// otherwise change the parsed text of — core.quotePath (via -c, so a
-// non-ASCII filename is never quoted), diff.external (--no-ext-diff), and
-// diff.renames (-M forces rename detection on regardless of the
-// repository's own setting) — so the SAME commit range produces the SAME
-// parsed result no matter whose machine or .gitconfig runs it. Rename
-// detection (-M) is deliberately ON: without it, a pure rename would appear
-// as a full delete + full add, demanding coverage of a file nobody actually
-// touched.
+// the set of line numbers added or modified on the new side. Every setting a
+// repository's or a user's own .gitconfig or environment could otherwise
+// change the parsed text of — core.quotePath, diff.external, diff.renames,
+// the global attributes file, GIT_DIFF_OPTS and the rest — is pinned in one
+// place, rawDiff and gitEnv, so the SAME commit range produces the SAME
+// parsed result no matter whose machine runs it. Rename detection (-M) is
+// deliberately ON: without it, a pure rename would appear as a full delete +
+// full add, demanding coverage of a file nobody actually touched.
 func (g *Git) ChangedLines(fromSHA, toRef string) (map[string][]int, error) {
-	cmd := exec.Command("git",
-		"-c", "core.quotePath=false",
-		"diff", "--unified=0", "--no-color", "--no-ext-diff", "--no-textconv", "-M",
-		"--src-prefix=a/", "--dst-prefix=b/",
-		fromSHA+".."+toRef, "--",
-	)
-	cmd.Dir = g.RepoDir
-	out, err := cmd.Output()
+	out, err := g.rawDiff(fromSHA, toRef,
+		"--unified=0", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/")
 	if err != nil {
 		return nil, fmt.Errorf("gitrepo: git diff --unified=0 %s..%s: %w", fromSHA, toRef, err)
 	}
@@ -222,12 +214,7 @@ func ParseNameStatus(data []byte) ([]FileChange, error) {
 // so a non-ASCII filename is never quoted differently depending on the
 // caller's own .gitconfig.
 func (g *Git) ChangedFilesInRange(fromSHA, toRef string) ([]FileChange, error) {
-	cmd := exec.Command("git",
-		"-c", "core.quotePath=false",
-		"diff", "--name-status", "-M", "-z", fromSHA+".."+toRef, "--",
-	)
-	cmd.Dir = g.RepoDir
-	out, err := cmd.Output()
+	out, err := g.rawDiff(fromSHA, toRef, "--name-status", "-z")
 	if err != nil {
 		return nil, fmt.Errorf("gitrepo: git diff --name-status -M -z %s..%s: %w", fromSHA, toRef, err)
 	}
@@ -288,12 +275,7 @@ func ParseNumStat(data []byte) ([]FileStat, error) {
 // NumStat returns per-file added/removed line counts between fromSHA and
 // toRef, over -z/NUL parsing and rename-aware (-M) like ChangedFilesInRange.
 func (g *Git) NumStat(fromSHA, toRef string) ([]FileStat, error) {
-	cmd := exec.Command("git",
-		"-c", "core.quotePath=false",
-		"diff", "--numstat", "-M", "-z", fromSHA+".."+toRef, "--",
-	)
-	cmd.Dir = g.RepoDir
-	out, err := cmd.Output()
+	out, err := g.rawDiff(fromSHA, toRef, "--numstat", "-z")
 	if err != nil {
 		return nil, fmt.Errorf("gitrepo: git diff --numstat -M -z %s..%s: %w", fromSHA, toRef, err)
 	}
