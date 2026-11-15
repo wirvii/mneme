@@ -40,6 +40,7 @@ machine enforces valid transitions; use pushback/resolve for detours via needs_g
 		newSpecQuickCmd(),
 		newSpecRejectCmd(),
 		newSpecReviewStatsCmd(),
+		newSpecReviewPackageCmd(),
 	)
 
 	return cmd
@@ -303,6 +304,15 @@ triggered it. Pushbacks are summarised at the bottom.`,
 
 			if resp.ReviewRange != nil {
 				fmt.Fprintf(os.Stdout, "Review range: %s\n", resp.ReviewRange.Notice)
+				// SPEC-188 D1: only once the package of this range exists.
+				if resp.ReviewPackagePath != "" {
+					fmt.Fprintf(os.Stdout, "Review package: %s\n", resp.ReviewPackagePath)
+				}
+			}
+			// SPEC-188 D2: in any status, only when there was a rejection in
+			// this stay, so a spec without one prints exactly what it did.
+			if resp.QARounds > 0 {
+				fmt.Fprintf(os.Stdout, "QA rounds: %d\n", resp.QARounds)
 			}
 
 			switch resp.DeliveryContract {
