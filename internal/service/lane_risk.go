@@ -5,10 +5,13 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 
+	"github.com/wirvii/mneme/internal/delivery"
 	"github.com/wirvii/mneme/internal/laneaudit"
 	"github.com/wirvii/mneme/internal/model"
 	"github.com/wirvii/mneme/internal/risk"
@@ -30,15 +33,63 @@ type riskSource struct {
 }
 
 // riskSources lists the declaration sources in precedence order: the
-// delivery's prose first (the most recent claim about the change, the one
-// worth testing), then the spec_quick rationale (which travels with the
-// spec to other machines). SPEC-182's delivery contract block adds its own
-// source at the FRONT of this list when it lands; nothing else changes.
+// SPEC-182 delivery contract block (its `riesgo` field), then a "Risk:" line
+// in the delivery's prose — both the most recent claim about the change, the
+// one worth testing — and last the spec_quick rationale (which travels with
+// the spec to other machines).
 func (svc *SDDService) riskSources() []riskSource {
 	return []riskSource{
+		{name: riskSourceDelivery, read: svc.deliveryContractRisk},
 		{name: riskSourceDelivery, read: svc.deliveryProseRisk},
 		{name: riskSourceRationale, read: svc.rationaleRisk},
 	}
+}
+
+// deliverySection reads the entrega section of the spec's tarea.md through
+// SPEC-182's readTaskSection. ok is false when there is nothing to read: no
+// configuration, no tarea.md, or a malformed one (logged), so a broken
+// tarea.md never fails an audit by itself.
+func (svc *SDDService) deliverySection(spec *model.Spec) (string, bool) {
+	if svc.config == nil {
+		return "", false
+	}
+	path, err := specDocPath(svc.config.WorkflowDir(), spec.Project, spec.ID, model.SpecDocKindTask)
+	if err != nil {
+		return "", false
+	}
+	text, err := readTaskSection(path, model.TaskSectionDelivery)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			log.Printf("service: lane audit: read tarea.md for %s: %v", spec.ID, err)
+		}
+		return "", false
+	}
+	return text, true
+}
+
+// deliveryContractRisk translates the `riesgo` field of the SPEC-182
+// contract block in the entrega section. No block means no declaration
+// here; an invalid block is a malformed declaration.
+func (svc *SDDService) deliveryContractRisk(_ context.Context, spec *model.Spec) (*risk.Declaration, bool, error) {
+	text, ok := svc.deliverySection(spec)
+	if !ok {
+		return nil, false, nil
+	}
+	contract, err := delivery.Parse([]byte(text))
+	switch {
+	case errors.Is(err, delivery.ErrMissing):
+		return nil, false, nil
+	case err != nil:
+		return nil, true, fmt.Errorf("%w: delivery contract block: %w", risk.ErrMalformedDeclaration, err)
+	case contract.Risk.None:
+		return &risk.Declaration{None: true, Line: "riesgo = \"none\""}, true, nil
+	}
+	item := risk.Item(contract.Risk.Item)
+	return &risk.Declaration{
+		Items:  []risk.Item{item},
+		Reason: contract.Risk.Reason,
+		Line:   fmt.Sprintf("riesgo = { item = %d }", contract.Risk.Item),
+	}, true, nil
 }
 
 // declaredRisk returns the first declaration any source holds, its source
@@ -55,27 +106,38 @@ func (svc *SDDService) declaredRisk(ctx context.Context, spec *model.Spec) (*ris
 	return nil, "", nil
 }
 
-// deliveryProseRisk reads the last unfenced "Risk:" line of the entrega
-// section of the spec's tarea.md. A missing or malformed tarea.md is not
-// an audit error: this source simply has nothing and the next one is
-// tried.
+// deliveryProseRisk reads the last "Risk:" line of the entrega section of
+// the spec's tarea.md that sits outside fenced code blocks and outside the
+// contract block. A missing or malformed tarea.md is not an audit error:
+// this source simply has nothing and the next one is tried.
 func (svc *SDDService) deliveryProseRisk(_ context.Context, spec *model.Spec) (*risk.Declaration, bool, error) {
-	if svc.config == nil {
-		return nil, false, nil
-	}
-	path, err := specDocPath(svc.config.WorkflowDir(), spec.Project, spec.ID, model.SpecDocKindTask)
-	if err != nil {
-		return nil, false, nil
-	}
-	text, ok, err := readTaskSectionPresent(path, model.TaskSectionDelivery)
-	if err != nil {
-		log.Printf("service: lane audit: read tarea.md for %s: %v", spec.ID, err)
-		return nil, false, nil
-	}
+	text, ok := svc.deliverySection(spec)
 	if !ok {
 		return nil, false, nil
 	}
-	return findRisk(text)
+	return findRisk(withoutContractBlock(text))
+}
+
+// withoutContractBlock drops the lines from the contract block's start
+// marker to its end marker (inclusive), so a "Risk:" line quoted inside the
+// block is never read as prose.
+func withoutContractBlock(text string) string {
+	var out []string
+	inside := false
+	for _, line := range strings.Split(text, "\n") {
+		switch strings.TrimSpace(line) {
+		case delivery.StartMarker:
+			inside = true
+			continue
+		case delivery.EndMarker:
+			inside = false
+			continue
+		}
+		if !inside {
+			out = append(out, line)
+		}
+	}
+	return strings.Join(out, "\n")
 }
 
 // rationaleRisk reads the "Risk:" line of the most recent history entry

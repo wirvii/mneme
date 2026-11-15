@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/wirvii/mneme/internal/delivery"
 	"github.com/wirvii/mneme/internal/model"
 	"github.com/wirvii/mneme/internal/risk"
 )
@@ -61,6 +62,18 @@ func TestDeclaredRisk_Precedence(t *testing.T) {
 			delivery:   ptr("Done.\n\nRisk: item 5 (x)"),
 			rationales: []string{"x\nRisk: none"},
 			wantItems:  []risk.Item{5}, wantSource: "entrega",
+		},
+		{
+			name:       "contract_block_wins_over_prose",
+			delivery:   ptr(entrega(contractBody) + "\nRisk: none\n"),
+			rationales: []string{"x\nRisk: none"},
+			wantItems:  []risk.Item{3}, wantSource: "entrega",
+		},
+		{
+			name:       "contract_block_none",
+			delivery:   ptr(entrega(blockedContractBody)),
+			rationales: []string{"x\nRisk: item 2"},
+			wantNone:   true, wantSource: "entrega",
 		},
 		{
 			name:       "fenced_entrega_ignored",
@@ -129,6 +142,17 @@ func TestDeclaredRisk_Precedence(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("invalid_contract_block_is_malformed", func(t *testing.T) {
+		svc := newTestSDDService(t, "wirvii/mneme")
+		spec := createAuditSpec(t, svc, "SPEC-901", model.SpecStatusAudit, "internal/**", "")
+		seedRationale(t, svc, spec.ID, "x\nRisk: none")
+		writeDelivery(t, svc, spec, entrega("schema_version = 1\nestado = \"hecho\"\n"))
+		_, source, err := svc.declaredRisk(context.Background(), spec)
+		if !errors.Is(err, risk.ErrMalformedDeclaration) || !errors.Is(err, delivery.ErrInvalid) || source != "entrega" {
+			t.Errorf("declaredRisk source=%q err=%v; want an invalid contract reported as malformed from entrega", source, err)
+		}
+	})
 
 	t.Run("malformed_rationale_reports_error", func(t *testing.T) {
 		svc := newTestSDDService(t, "wirvii/mneme")
