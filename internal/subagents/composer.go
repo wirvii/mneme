@@ -65,18 +65,28 @@ const agentFixedMarker = "agent-fixed"
 // that tells it to resolve findings and write the review report. The bump is
 // what makes `mneme subagents doctor` flag an already-materialized architect
 // as needing `regen`.
-const AgentFixedVersion = 7
+//
+// v8 (SPEC-182 D7): backend, frontend and bug-hunter, the three writers of
+// the entrega section of tarea.md, gain the delivery-contract section: the
+// TOML block mneme now validates when entrega is written, its four states,
+// commit-before-delivering, one evidencia per command and prueba_en_rojo. A
+// standard spec in implementing refuses an entrega without the block, so a
+// profile still on v7 would hit that refusal without knowing the format; the
+// bump is what makes `mneme subagents doctor` flag it as needing `regen`.
+const AgentFixedVersion = 8
 
 // roleSections maps a Role to the ordered section names cut from
 // LayerOneAsset for that role's agent-fixed block. A slice, not a fixed-size
-// array (SPEC-132 Dp4): qa-tester and frontend now carry a third section
-// (visual-certification) that the other four roles do not.
+// array (SPEC-132 Dp4): every role starts from its integration section (most
+// with codegraph-hint first) and roles differ in which optional sections they
+// carry on top (criteria-contract, bounded-review, visual-certification,
+// bug-investigation, delivery-contract, ...).
 var roleSections = map[Role][]string{
 	RoleArchitect:     {"codegraph-hint", "mneme-integration-generic", "criteria-contract"},
 	RoleQATester:      {"codegraph-hint", "mneme-integration-generic", "bounded-review", "visual-certification"},
-	RoleBackend:       {"codegraph-hint", "mneme-integration-generic"},
-	RoleFrontend:      {"codegraph-hint", "mneme-integration-generic", "visual-certification"},
-	RoleBugHunter:     {"codegraph-hint", "mneme-integration-generic", "bug-investigation"},
+	RoleBackend:       {"codegraph-hint", "mneme-integration-generic", "delivery-contract"},
+	RoleFrontend:      {"codegraph-hint", "mneme-integration-generic", "visual-certification", "delivery-contract"},
+	RoleBugHunter:     {"codegraph-hint", "mneme-integration-generic", "bug-investigation", "delivery-contract"},
 	RoleDiagnostician: {"codegraph-hint", "mneme-integration-diagnostician"},
 	RoleSpecReviewer:  {"spec-reviewer"},
 }
@@ -192,8 +202,8 @@ func Compose(existing string, in ComposeInput) (string, error) {
 // and substitutes the "{{ROLE}}" placeholder with the role's literal name
 // (used by the spec_pushback from_agent example and the spec_doc_write
 // mention in mneme-integration-generic, SPEC-087 D4). sections is variadic
-// in length (SPEC-132 Dp4): most roles carry two, qa-tester and frontend
-// carry a third (visual-certification).
+// in length (SPEC-132 Dp4): each role's list in roleSections says which
+// optional sections it carries.
 func renderAgentFixed(role Role, sections []string) (string, error) {
 	content, err := CutSections(LayerOneAsset(), sections...)
 	if err != nil {

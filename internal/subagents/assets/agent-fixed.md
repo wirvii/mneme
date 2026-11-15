@@ -30,6 +30,18 @@ Tras la revision sin contexto resuelves cada hallazgo y escribes el informe con 
 Formato y reglas de profundidad: skill `mneme-flow` (`references/criteria.md`, `references/depth.md`).
 <!-- endsection: criteria-contract -->
 
+<!-- section: delivery-contract -->
+## El contrato de entrega
+
+Tu seccion `entrega` de `tarea.md` lleva un bloque TOML entre `<!-- mneme:entrega:contrato:start -->` y `<!-- mneme:entrega:contrato:end -->`; el resto es prosa libre. En una spec standard en `implementing` se rechaza la entrega sin bloque; un bloque mal formado se rechaza siempre sin tocar el archivo.
+
+`estado`, uno de cuatro: `hecho` (todo hecho y comprobado), `hecho_con_dudas` (hecho, dudas en la prosa), `falta_contexto` (necesitas informacion o una decision; nombrala) o `bloqueado` (no puedes completar, incluido el trabajo parcial por fin de turno o de contexto). Los dos ultimos son un reporte valido: dilos en vez de inventar. Definiciones completas: `references/entrega.md`.
+
+Con `hecho` o `hecho_con_dudas`: confirma antes de escribir la entrega, da en `arbol` el SHA de ese commit y una `[[evidencia]]` por comando (orden exacta, `exit_code`, extracto de salida) copiada de lo que de verdad corriste.
+
+Una prueba existente en rojo se para y se reporta; solo se edita cuando el diseno de la spec lo previo. Ambos casos van en `[[prueba_en_rojo]]` con su motivo. Cierra con `riesgo`. Formato: skill `mneme-flow` (`references/entrega.md`).
+<!-- endsection: delivery-contract -->
+
 <!-- section: bounded-review -->
 ## Revision acotada: solo el contrato autoriza un rechazo
 

@@ -587,3 +587,85 @@ func TestHasBodyContent(t *testing.T) {
 		})
 	}
 }
+
+// minDeliveryContractSectionBytes is SPEC-182 P6's minimum-length guard for
+// the delivery-contract section, the same closure as minVisualSectionBytes: a
+// section trimmed to nothing would make strings.Contains trivially true.
+const minDeliveryContractSectionBytes = 1000
+
+// TestCompose_DeliveryContractSectionByRole pins SPEC-182 D7: the
+// delivery-contract section lands in the composed agent-fixed block if and
+// only if the role is one of the three writers of the entrega section
+// (backend, frontend, bug-hunter). Population derived from roleSections' own
+// keys, the mould of TestCompose_VisualSectionByRole.
+func TestCompose_DeliveryContractSectionByRole(t *testing.T) {
+	wantSection := map[Role]bool{
+		RoleBackend:   true,
+		RoleFrontend:  true,
+		RoleBugHunter: true,
+	}
+
+	sectionText, err := CutSection(LayerOneAsset(), "delivery-contract")
+	if err != nil {
+		t.Fatalf("CutSection(delivery-contract): %v", err)
+	}
+	if len(sectionText) < minDeliveryContractSectionBytes {
+		t.Fatalf("delivery-contract section is only %d bytes, want >= %d — guardian would be blind", len(sectionText), minDeliveryContractSectionBytes)
+	}
+
+	for role := range roleSections {
+		t.Run(string(role), func(t *testing.T) {
+			got, err := Compose("", ComposeInput{Role: role, Description: "x", Model: "sonnet"})
+			if err != nil {
+				t.Fatalf("Compose(%q): %v", role, err)
+			}
+			content, _, present := managedblock.ReadText(got, agentFixedMarker)
+			if !present {
+				t.Fatal("expected agent-fixed managed block to be present")
+			}
+			has := strings.Contains(content, sectionText)
+			if wantSection[role] && !has {
+				t.Errorf("role %q must carry the delivery-contract section, but it is absent", role)
+			}
+			if !wantSection[role] && has {
+				t.Errorf("role %q must NOT carry the delivery-contract section, but it is present", role)
+			}
+		})
+	}
+}
+
+// TestDeliveryContractSection_CarriesAllObligations pins SPEC-182 D7: the
+// delivery-contract section states every obligation of the contract, each
+// anchor EXACTLY once in the cut section (amendment E2 for hecho_con_dudas,
+// which the text names twice).
+func TestDeliveryContractSection_CarriesAllObligations(t *testing.T) {
+	section, err := CutSection(LayerOneAsset(), "delivery-contract")
+	if err != nil {
+		t.Fatalf("CutSection(delivery-contract): %v", err)
+	}
+	if len(section) < minDeliveryContractSectionBytes {
+		t.Fatalf("delivery-contract section is only %d bytes, want >= %d", len(section), minDeliveryContractSectionBytes)
+	}
+
+	anchors := []struct {
+		obligation string
+		anchor     string
+	}{
+		{"delimiters", "mneme:entrega:contrato:start"},
+		{"state hecho_con_dudas", "`hecho_con_dudas` (hecho, dudas en la prosa)"},
+		{"state falta_contexto", "falta_contexto"},
+		{"partial work is bloqueado", "fin de turno o de contexto"},
+		{"commit before delivering", "confirma antes de escribir la entrega"},
+		{"evidence exit code", "exit_code"},
+		{"red tests", "prueba_en_rojo"},
+		{"full definitions", "Definiciones completas: `references/entrega.md`"},
+	}
+
+	for _, a := range anchors {
+		t.Run(a.obligation, func(t *testing.T) {
+			if got := strings.Count(section, a.anchor); got != 1 {
+				t.Errorf("expected anchor %q exactly once in the delivery-contract section, got %d", a.anchor, got)
+			}
+		})
+	}
+}
