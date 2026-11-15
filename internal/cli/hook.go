@@ -59,6 +59,12 @@ import (
 //     no manifest at all — legacy deny-by-default). Exits 2 to block, 0 to
 //     allow. Registered as a portable subcommand (no path to the home
 //     directory) instead of the legacy enforce_delegation.sh script.
+//   - subagent-stop: SubagentStop hook (SPEC-183). When an implementer
+//     (backend, frontend, bug-hunter, or a custom role with that archetype)
+//     stops while a standard, unfrozen spec in implementing lacks a current
+//     delivery contract block, prints {"decision":"block","reason":...} once
+//     per (session, agent, spec) so the agent writes its entrega or, if the
+//     spec is not its own, finishes without writing. Fail-open, exit 0 always.
 //   - skill-usage: PostToolUse hook (matcher Skill, SPEC-168) that appends one
 //     line per skill load to <data dir>/skill-usage.jsonl; fail-open, exit 0
 //     always, never writes stdout.
@@ -91,6 +97,9 @@ Events:
                     writing to, or running Bash against, a path outside the static
                     whitelist and owned by an implementer subagent (or legacy
                     deny-by-default when no manifest exists)
+  subagent-stop     SubagentStop hook: reminds an implementer once per spec to
+                    write its delivery contract block (prints a JSON block
+                    decision); always exits 0
   skill-usage       Record a skill load in skill-usage.jsonl (PostToolUse hook,
                     matcher Skill); always exits 0 and prints nothing
   tokenize          Parse a shell command from stdin and emit structured JSON tokens
@@ -113,6 +122,8 @@ Events:
 				// SPEC-106). Sin salida y exit 0, para que cada mensaje del
 				// usuario no muestre un error de hook.
 				return nil
+			case stopEventSubagent:
+				return runHookStop(cmd.Context(), stopEventSubagent, hookStdin(os.Stdin), os.Stdout, os.Stderr, time.Now)
 			case "skill-usage":
 				return runHookSkillUsageCmd(hookStdin(os.Stdin), os.Stderr)
 			case "enforce-delegation":
@@ -125,7 +136,7 @@ Events:
 				}
 				return runHookPathOwned(args[1])
 			default:
-				return fmt.Errorf("hook: unknown event %q — supported events: session-start, session-end, pre-tool-use, skill-usage, enforce-delegation, tokenize, path-owned", event)
+				return fmt.Errorf("hook: unknown event %q — supported events: session-start, session-end, subagent-stop, pre-tool-use, skill-usage, enforce-delegation, tokenize, path-owned", event)
 			}
 		},
 	}
