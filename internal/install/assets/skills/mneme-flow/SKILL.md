@@ -56,7 +56,7 @@ A standard-lane spec needs `criteria.toml` before speccing to specced. It is wri
 
 ## One document per spec
 
-`tarea.md` holds the work: `spec_doc_write` kind `task` plus `section` (que, diseno, plan, entrega, revision). The architect writes que, diseno and plan; implementers write entrega; qa-tester writes revision. Older specs keep their own document kinds.
+`tarea.md` holds the work: `spec_doc_write` kind `task` plus `section` (que, diseno, plan, entrega, revision). The architect writes que, diseno and plan; implementers write entrega; qa-tester writes revision. Older specs keep their own document kinds. The entrega section carries a delivery contract block: open `references/entrega.md` before writing it.
 
 ## Archiving
 
