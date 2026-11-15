@@ -1144,6 +1144,89 @@ type SpecListResponse struct {
 	// read (SPEC-133 D1/D8). See BacklogListResponse.Unreadable for the
 	// accounting identity this field upholds.
 	Unreadable []UnreadableRow `json:"unreadable,omitempty"`
+
+	// Ages, Stale and StaleCount are SPEC-186's derived staleness data. They
+	// carry json:"-" because this response IS serialized whole in its
+	// additive-contract test (TestFreezeJSON_AdditiveContract), and a field
+	// without a tag would surface under its Go name. They reach the wire
+	// only through each frontend's own projection: specListView in MCP,
+	// Entries() in `mneme spec list --json`, StaleReport in `status`.
+
+	// Ages holds one entry per spec in Specs, keyed by spec ID.
+	Ages map[string]SpecAge `json:"-"`
+	// Stale is computed over the whole project, never the page.
+	Stale StaleReport `json:"-"`
+	// StaleCount counts the stale specs among ALL matches of the request's
+	// status filter, not only the returned page (same contract as Total).
+	StaleCount int `json:"-"`
+}
+
+// Entries returns Specs in order, each flattened with its Ages entry (the
+// zero SpecAge when one is missing). It returns nil, not an empty slice,
+// when Specs is empty: `mneme spec list --json` printed `null` for an empty
+// listing before SPEC-186 and must keep that byte.
+func (r SpecListResponse) Entries() []SpecListEntry {
+	if len(r.Specs) == 0 {
+		return nil
+	}
+	entries := make([]SpecListEntry, len(r.Specs))
+	for i, spec := range r.Specs {
+		entries[i] = SpecListEntry{Spec: spec, SpecAge: r.Ages[spec.ID]}
+	}
+	return entries
+}
+
+// SpecAge is the derived age of one spec (SPEC-186): never stored, never a
+// field of Spec itself (same rationale as SpecFreeze, SPEC-126 DD1: a
+// derived fact buried in the entity invites caching it as if it were data).
+type SpecAge struct {
+	// DaysSinceLastMove is the whole number of days since the later of the
+	// spec's updated_at and its most recent history row; 0 when that
+	// instant lies in the future.
+	DaysSinceLastMove int `json:"days_since_last_move"`
+	// Stale is true when the spec is not done, not frozen, and has not
+	// moved for more than [spec] stale_after_days.
+	Stale bool `json:"stale"`
+}
+
+// SpecListEntry is the wire shape of one spec in spec_list (MCP) and in
+// `mneme spec list --json`: Spec's own keys flattened, plus SpecAge's two.
+// Embedding keeps every existing key in place, so a client that does not
+// know the new fields sees nothing removed or renamed.
+type SpecListEntry struct {
+	*Spec
+	SpecAge
+}
+
+// StaleSpec is one row of a StaleReport.
+type StaleSpec struct {
+	ID                string     `json:"id"`
+	Title             string     `json:"title"`
+	Status            SpecStatus `json:"status"`
+	DaysSinceLastMove int        `json:"days_since_last_move"`
+}
+
+// StaleReport is what status and session-start announce (SPEC-186). Count
+// duplicates len(Specs) so a --json consumer gets the number without
+// counting.
+type StaleReport struct {
+	// ThresholdDays is the [spec] stale_after_days the report was built
+	// with; 0 means the announcement is disabled.
+	ThresholdDays int `json:"threshold_days"`
+	// Count is the number of stale specs.
+	Count int `json:"count"`
+	// ByStatus counts stale specs per status; only statuses with at least
+	// one stale spec appear.
+	ByStatus map[SpecStatus]int `json:"by_status"`
+	// FrozenCount counts every open spec frozen by its backlog item,
+	// whatever its age: a frozen spec can never move, so its age says
+	// nothing.
+	FrozenCount int `json:"frozen_count"`
+	// UnreadableCount counts spec rows that could not be read and were
+	// therefore not classified.
+	UnreadableCount int `json:"unreadable_count"`
+	// Specs lists the stale specs, days descending, then ID ascending.
+	Specs []StaleSpec `json:"specs"`
 }
 
 // SpecStatusResponse is returned by spec_status with full context:
