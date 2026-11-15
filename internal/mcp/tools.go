@@ -302,7 +302,7 @@ func allTools() []ToolDefinition {
 					},
 					"lane": map[string]any{
 						"type":        "string",
-						"description": "SDD workflow lane. trivial: ≤3 files, ≤20 lines, no public API change, no SQL/cmd. standard: everything else.",
+						"description": "trivial: understood in one batch of reads, touches none of the six risk items (mneme-flow references/risk.md), passes the resumption test; scope must name a real path. standard: everything else.",
 						"enum":        []string{"trivial", "standard"},
 					},
 					"scope": map[string]any{
@@ -444,7 +444,7 @@ func allTools() []ToolDefinition {
 					},
 					"lane": map[string]any{
 						"type":        "string",
-						"description": "SDD workflow lane. trivial: ≤3 files, ≤20 lines, no public API change, no SQL/cmd. standard: everything else.",
+						"description": "trivial: understood in one batch of reads, touches none of the six risk items (mneme-flow references/risk.md), passes the resumption test; scope must name a real path. standard: everything else.",
 						"enum":        []string{"trivial", "standard"},
 					},
 					"scope": map[string]any{
@@ -612,7 +612,7 @@ func allTools() []ToolDefinition {
 
 		{
 			Name:        "spec_quick",
-			Description: "Advance a trivial-lane spec from draft to implementing in one step by recording a rationale. Rejected for standard-lane specs.",
+			Description: "Advance a trivial-lane spec from draft to implementing in one step by recording a rationale: one to three sentences plus the lines \"Resumption: <why the request and git diff are enough>\" and \"Risk: none\". Refused for standard-lane specs, for a scope that matches everything or uses braces, for a Risk: line that names an item (that change is standard) and for a malformed Risk: line.",
 			InputSchema: map[string]any{
 				"type":     "object",
 				"required": []string{"id", "rationale", "by"},
@@ -634,7 +634,7 @@ func allTools() []ToolDefinition {
 		},
 		{
 			Name:        "lane_audit",
-			Description: "Run the deterministic post-implementation auditor for a trivial-lane spec in audit status. Checks file count, line count, forbidden paths, scope, and public-symbol changes against the declared scope. On pass: advances to done. On fail: stays in audit, saves discovery memory.",
+			Description: "Run the deterministic post-implementation auditor for a trivial-lane spec in audit status. Checks the declared scope, the paths of risk items 1, 2 and 5 (mneme-flow references/risk.md), exported-symbol changes, and that the declared Risk: line says none and agrees with the diff. File and line counts are recorded but never fail an audit. On pass: advances to done. On fail: stays in audit, saves a discovery memory, and Remedy names the risk item and the way out (lane_reclassify).",
 			InputSchema: map[string]any{
 				"type":     "object",
 				"required": []string{"id"},
@@ -652,7 +652,7 @@ func allTools() []ToolDefinition {
 		},
 		{
 			Name:        "lane_reclassify",
-			Description: "Reclassify a spec's lane from trivial to standard. Only trivial→standard is allowed. Moves the spec to speccing so the full SDD workflow can proceed.",
+			Description: "Reclassify a spec's lane from trivial to standard; the opposite direction is not allowed. Allowed before implementing and, after a failed lane_audit, from audit. Orchestrator only: denied to subagents. Moves the spec to speccing so the full SDD workflow can proceed; commits already made stay in the review range.",
 			InputSchema: map[string]any{
 				"type":     "object",
 				"required": []string{"id", "lane", "by"},
@@ -759,7 +759,7 @@ func allTools() []ToolDefinition {
 		},
 		{
 			Name:        "lane_stats",
-			Description: "Return lane compliance statistics for the project: trivial spec count, audit-fail count and rate, override count, reclassify count.",
+			Description: "Return lane compliance statistics for the project: trivial spec count, audit-fail count and rate, override count, reclassify count, and risk_breach_count (specs whose latest audit failed on a risk item, including specs since reclassified to standard).",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{

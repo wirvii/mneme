@@ -105,9 +105,16 @@ func newSpecQuickCmd() *cobra.Command {
 		Use:   "quick <id> <rationale>",
 		Short: "Advance a trivial spec from draft to implementing with a rationale",
 		Long: `Advance a trivial-lane spec from draft directly to implementing by recording
-a 1-3 sentence rationale. The spec must be on the trivial lane and in draft status.
+a 1-3 sentence rationale followed by two lines:
+  Resumption: <why the request and git diff are enough to finish it>
+  Risk: none
+The spec must be on the trivial lane and in draft status. Refused for a scope
+that matches everything or uses braces, for a Risk: line that names an item
+(that change is standard) and for a malformed Risk: line.
 For standard-lane specs use "mneme spec advance" instead.`,
-		Example: `  mneme spec quick SPEC-007 "One-line fix to a comment typo in audit.go" --by orchestrator`,
+		Example: `  mneme spec quick SPEC-007 $'Fix a comment typo in audit.go.
+Resumption: the request and the diff say it all.
+Risk: none' --by orchestrator`,
 		Args:    cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if flagBy == "" {

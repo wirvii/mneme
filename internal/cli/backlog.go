@@ -51,10 +51,14 @@ func newBacklogAddCmd() *cobra.Command {
 		Long: `Add a new idea to the backlog with status raw.
 
 The title is required as the first positional argument. --lane is required
-(trivial or standard). --scope is required when --lane=trivial.
+(trivial or standard). --scope is required when --lane=trivial and must name a
+real path segment without braces (internal/store/**, docs/*.md); a scope that
+matches everything (**, *, **/*.go) or uses {a,b} is refused.
 
-Trivial items (≤3 files, ≤20 lines, no public API change, no SQL/cmd paths)
-follow a shortened SDD path. All other items should use standard.`,
+Trivial items are understood in one batch of reads, touch none of the six risk
+items (mneme-flow references/risk.md) and pass the resumption test: the request
+plus git diff is enough to finish them. They follow a shortened SDD path. File
+and line counts never decide. All other items should use standard.`,
 		Example: `  mneme backlog add "Fix comment typo" --lane trivial --scope "internal/model/*.go"
   mneme backlog add "Add push notifications" --lane standard
   mneme backlog add "Soporte Windows" --lane standard --priority low --description "Support Windows builds"`,
